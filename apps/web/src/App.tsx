@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { ToastHost } from './components/common/ToastHost';
 import { EditorPage } from './routes/EditorPage';
 import { ProjectsPage } from './routes/ProjectsPage';
 
@@ -16,8 +17,18 @@ export function App() {
   );
 
   if (route.name === 'editor') {
-    return <EditorPage projectId={route.projectId} onBack={navigation.openProjects} />;
+    return (
+      <>
+        <EditorPage projectId={route.projectId} onBack={navigation.openProjects} />
+        <ToastHost />
+      </>
+    );
   }
 
-  return <ProjectsPage onOpenProject={navigation.openEditor} />;
+  return (
+    <>
+      <ProjectsPage onOpenProject={navigation.openEditor} />
+      <ToastHost />
+    </>
+  );
 }

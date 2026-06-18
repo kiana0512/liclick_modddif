@@ -1,4 +1,4 @@
-import { Box, Eye, MousePointer2 } from 'lucide-react';
+import { AlertTriangle, Box, Eye, MousePointer2 } from 'lucide-react';
 import { Panel } from '@/components/ui/Panel';
 import { useSceneStore } from '@/stores/sceneStore';
 
@@ -25,8 +25,14 @@ export function ObjectsPanel() {
             <Box className="h-4 w-4 text-liclick-pink" />
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm text-white">{object.name}</div>
-              <div className="text-[11px] uppercase text-white/40">{object.format}</div>
+              <div className="text-[11px] uppercase text-white/40">
+                {object.format}
+                {object.childMeshCount ? ` / ${object.childMeshCount} mesh` : ''}
+              </div>
             </div>
+            {object.warnings && object.warnings.length > 0 && (
+              <AlertTriangle className="h-4 w-4 text-amber-300" />
+            )}
             {object.visible && <Eye className="h-4 w-4 text-white/45" />}
             {selectedObjectId === object.id && <MousePointer2 className="h-4 w-4 text-liclick-orange" />}
           </button>

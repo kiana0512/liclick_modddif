@@ -33,6 +33,9 @@ export const mockProjects: Project[] = [
     captures: [],
     generations: [],
     layers: mockLayers,
+    bakedTextures: [],
+    workspaceMode: 'none',
+    dirty: false,
     settings: {
       resolution: '2K',
       displayMode: 'pbr',
@@ -52,6 +55,9 @@ export const mockProjects: Project[] = [
     captures: [],
     generations: [],
     layers: mockLayers.slice(0, 1),
+    bakedTextures: [],
+    workspaceMode: 'none',
+    dirty: false,
     settings: {
       resolution: '1K',
       displayMode: 'pbr',

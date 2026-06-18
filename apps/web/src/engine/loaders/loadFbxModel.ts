@@ -1,22 +1,45 @@
 import { FBXLoader } from 'three-stdlib';
-import type { LoadedModel, ModelImportOptions } from './modelImportTypes';
+import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } from './modelImportTypes';
+import { summarizeLoadedGroup } from './modelLoadUtils';
 
 export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new FBXLoader();
   const fbx = await loader.loadAsync(options.sourceUrl);
+  const result = summarizeLoadedGroup({
+    group: fbx,
+    format: 'fbx',
+    fileName: options.fileName,
+    objectUrl: options.sourceUrl,
+    normalizeOptions: options.normalizeOptions,
+  });
 
   return {
     root: fbx,
+    result,
     sourceUrl: options.sourceUrl,
     object: {
-      id: crypto.randomUUID(),
-      name: options.fileName,
+      id: result.objectId,
+      name: result.name,
       type: 'mesh',
       sourcePath: options.sourceUrl,
       format: 'fbx',
-      materialSlots: [],
-      uvSets: ['UV0'],
-      transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+      materialSlots: materialSlotsToSceneSlots(result.materialSlots),
+      uvSets: result.uvSets,
+      boundingBox: result.boundingBox,
+      originalBoundingBox: result.originalBoundingBox,
+      importNormalizationTransform: result.importNormalizationTransform,
+      userTransform: {
+        position: result.importNormalizationTransform.position,
+        rotation: [0, 0, 0],
+        scale: result.importNormalizationTransform.scale,
+      },
+      childMeshCount: result.childMeshCount,
+      warnings: result.warnings,
+      transform: {
+        position: result.importNormalizationTransform.position,
+        rotation: [0, 0, 0],
+        scale: result.importNormalizationTransform.scale,
+      },
       visible: true,
       selected: true,
     },

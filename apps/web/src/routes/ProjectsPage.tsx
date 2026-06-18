@@ -1,6 +1,7 @@
 import { FolderPlus, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
+import { runComingSoonCommand } from '@/features/commandRegistry';
 import { AppShell } from '@/layouts/AppShell';
 import { useProjectStore } from '@/stores/projectStore';
 
@@ -23,10 +24,16 @@ export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button icon={<Plus className="h-4 w-4" />} variant="primary">
+            <Button
+              icon={<Plus className="h-4 w-4" />}
+              variant="primary"
+              onClick={() => runComingSoonCommand('newProject')}
+            >
               New Project
             </Button>
-            <Button icon={<FolderPlus className="h-4 w-4" />}>New Folder</Button>
+            <Button icon={<FolderPlus className="h-4 w-4" />} onClick={() => runComingSoonCommand('newFolder')}>
+              New Folder
+            </Button>
           </div>
         </div>
 
@@ -39,6 +46,7 @@ export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
               <button
                 type="button"
                 key={folder}
+                onClick={() => runComingSoonCommand('folderManagement')}
                 className="rounded-lg border border-white/10 bg-white/[0.055] px-4 py-3 text-left text-sm text-white/76 hover:bg-white/[0.09]"
               >
                 {folder}

@@ -11,9 +11,28 @@ Capture starts from the active camera, selected object, viewport resolution, and
 - Depth: depth buffer normalized with enough metadata to compare later.
 - Normal: view-space or world-space normal map, explicitly labeled.
 
+Phase 2 implementation:
+
+- Color uses the current renderer, scene, and camera in a WebGL render target.
+- Mask hides all non-target meshes and renders the selected object white.
+- Normal hides all non-target meshes and renders the selected object with `MeshNormalMaterial`.
+- Depth hides all non-target meshes and renders the selected object with `MeshDepthMaterial`.
+- Each pass restores materials and visibility after render.
+
 ## Projection Back to Model
 
 Generated images become projected layers. The projection material uses the stored camera matrices to map model fragments into image UV coordinates.
+
+Phase 2 uses a Liclick custom shader:
+
+1. Save camera projection matrix and world matrix at capture time.
+2. Build a projector matrix from `projectionMatrix * inverse(matrixWorld)`.
+3. In the vertex shader, pass world position.
+4. In the fragment shader, project world position into clip space.
+5. Convert clip space to projected image UV.
+6. Sample the generated image and blend by layer opacity.
+
+The projection sticks to model world space when the view rotates. It is not a screen overlay.
 
 ## Depth Check
 
@@ -28,6 +47,37 @@ Depth checks prevent painting through the model. Compare the projected fragment 
 5. Composite by order, blend mode, and opacity.
 6. Write final texel into the bake render target.
 
+## Phase 3 UV Bake MVP
+
+The current bake implementation is CPU UV rasterization in `apps/web/src/engine/bake`.
+
+Algorithm:
+
+1. Load the active projected layer image into `ImageData`.
+2. Create a basecolor canvas at 1024, 2048, or experimental 4096.
+3. Traverse meshes under the imported model group.
+4. Require `position` and `uv`; compute normals if absent.
+5. For each indexed or non-indexed triangle, map UVs to canvas pixels.
+6. Rasterize the UV triangle bounding box with barycentric coordinates.
+7. Interpolate world position and world normal.
+8. Optionally skip backfaces using `dot(surfaceNormal, cameraToPointDirection)`.
+9. Project world position through the saved projected layer camera matrix.
+10. Skip texels outside clip space.
+11. Sample the projected image and blend with layer opacity.
+12. Run simple dilation over uncovered neighboring pixels.
+13. Export PNG data URL and apply it to the model material.
+
+Texture direction:
+
+- The bake writes canvas Y as `1.0 - uv.y`.
+- The applied Three.js texture uses `flipY = false` to keep the baked canvas aligned with the model UVs in this MVP.
+
+Depth:
+
+- Strict depth occlusion is not part of Phase 3.
+- The bake uses in-frustum checks and optional normal backface culling.
+- Depth-aware rejection should be added before multiview or production bake.
+
 ## MVP Limits
 
 - Single object.
@@ -35,3 +85,7 @@ Depth checks prevent painting through the model. Compare the projected fragment 
 - Single UV set.
 - 1024 or 2048 output first.
 - Basecolor output before normal, roughness, and masks.
+- UV bake is not implemented in Phase 2.
+- Depth-aware rejection is not implemented in projected preview yet.
+- Active projected layer preview is supported; full multi-layer compositing comes later.
+- Phase 3 implements basecolor UV bake for one active projected layer only.

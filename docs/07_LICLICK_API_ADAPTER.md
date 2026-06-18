@@ -26,6 +26,26 @@ Inputs: prompt, references, selected object id, capture id, resolution, visible-
 
 Output: generation id, status, result image URL, and metadata.
 
+Phase 2 input contract:
+
+```ts
+type GenerateTextureInput = {
+  mode: 'single';
+  prompt: string;
+  negativePrompt?: string;
+  referenceIds: string[];
+  referenceImages?: ReferenceImage[];
+  capture?: Capture;
+  object?: SceneObject;
+  resolution?: '1K' | '2K' | '4K';
+  textureMode?: 'realistic' | 'albedo';
+  visibleOnly: boolean;
+  upscale: boolean;
+};
+```
+
+The mock service now uses the real `capture.id` and object id in generation metadata. The real Liclick API can replace `mockGenerationService.generateTextureMock` by implementing `createLiclickApiClient().generateTextureSingleView` with the same input/output shape.
+
 ## Inpaint
 
 Inputs: prompt, mask, base image, selected object, and optional references.
@@ -40,4 +60,4 @@ Inputs: multiple camera snapshots and captures. Output should preserve per-view 
 
 ## Mock Service
 
-`mockGenerationService.ts` returns a data URL image and Generation object. Use it until backend endpoints are available.
+`mockGenerationService.ts` returns a data URL image and Generation object. Use it until backend endpoints are available. API keys and endpoints must come from settings or environment-backed auth, never committed source.

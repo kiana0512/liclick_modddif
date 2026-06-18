@@ -1,6 +1,20 @@
-import type { CaptureRequest } from './captureTypes';
-import { makeMockCapture } from './captureTypes';
+import * as THREE from 'three';
+import { applyTargetOnlyMaterial, renderSceneToDataUrl } from './renderTargetUtils';
+import type { CapturePassRequest, CapturePassOutput } from './captureTypes';
 
-export async function captureMask(_request: CaptureRequest) {
-  return makeMockCapture('mask', '#111827');
+export async function captureMask(request: CapturePassRequest): Promise<CapturePassOutput> {
+  const restore = applyTargetOnlyMaterial(
+    request.scene,
+    request.objectId,
+    () => new THREE.MeshBasicMaterial({ color: '#ffffff' }),
+  );
+
+  try {
+    return {
+      url: renderSceneToDataUrl(request),
+      warnings: [],
+    };
+  } finally {
+    restore();
+  }
 }

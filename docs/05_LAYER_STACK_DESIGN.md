@@ -32,7 +32,7 @@ The right panel lists layers with thumbnail, visibility toggle, opacity slider, 
 
 ## Persistence
 
-Layer metadata lives in `project.json`. Image assets should be stored as files or object storage blobs referenced by URL.
+Layer metadata lives in `project.liclick.json`. Image assets should be stored in the workspace asset folders or object storage blobs referenced by URL.
 
 ## Blend, Opacity, Visibility
 
@@ -41,3 +41,28 @@ Composition order is determined by `order`. Invisible layers are skipped. Opacit
 ## Go To Camera
 
 Projected layers should restore the camera snapshot that created them so users can reproject or edit from the same view.
+
+Phase 2 implements go-to-camera for projected layers using the serialized capture camera. The Layers panel calls `sceneStore.requestCameraRestore`, and `CameraController` applies position, quaternion, near/far, zoom/fov, and OrbitControls target.
+
+## Projected Preview State
+
+Projected layers now store `generationId`, `captureId`, `objectId`, `imageUrl`, `camera`, `visible`, and `opacity`. The active visible projected layer is applied to the imported model through the projection shader. Visibility and opacity update the preview. Deleting the active layer removes the projected preview and restores the model display material.
+
+## Current Multi-Layer Limit
+
+The data model supports multiple projected layers, but the viewport preview only guarantees one active visible projected layer at a time. Full stacked projection compositing belongs to the UV bake and multi-layer rendering phases.
+
+## Baked Layer State
+
+Phase 3 adds baked state to layers:
+
+- `isBaked`: the layer has produced a basecolor texture.
+- `bakedTextureId`: links to `project.bakedTextures`.
+- `bakedAt`: timestamp of the bake.
+- `needsRebake`: opacity changed after baking, so the baked texture should be regenerated.
+
+The Layers panel highlights the active projected layer and shows a BAKED or Re-bake badge. Clicking a projected layer makes it the active layer for preview and bake.
+
+## Re-Bake Rule
+
+Changing projected layer opacity after baking does not mutate the previous baked PNG. The UI marks the layer as needing re-bake. Users should click `Bake Active Layer` again to produce a new basecolor.

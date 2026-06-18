@@ -1,6 +1,9 @@
-import type { CaptureRequest } from './captureTypes';
-import { makeMockCapture } from './captureTypes';
+import { renderSceneToDataUrl } from './renderTargetUtils';
+import type { CapturePassRequest, CapturePassOutput } from './captureTypes';
 
-export async function captureColor(_request: CaptureRequest) {
-  return makeMockCapture('color', '#8b5cf6');
+export async function captureColor(request: CapturePassRequest): Promise<CapturePassOutput> {
+  return {
+    url: renderSceneToDataUrl(request),
+    warnings: [],
+  };
 }

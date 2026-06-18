@@ -1,6 +1,7 @@
 import { ImagePlus } from 'lucide-react';
 import { Panel } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
+import { runComingSoonCommand } from '@/features/commandRegistry';
 import { useReferenceStore } from '@/stores/referenceStore';
 
 export function ReferenceImagesPanel() {
@@ -9,7 +10,16 @@ export function ReferenceImagesPanel() {
   const toggleReference = useReferenceStore((state) => state.toggleReference);
 
   return (
-    <Panel title="Reference Images" action={<Button variant="ghost" icon={<ImagePlus className="h-4 w-4" />} />}>
+    <Panel
+      title="Reference Images"
+      action={
+        <Button
+          variant="ghost"
+          onClick={() => runComingSoonCommand('referenceUpload')}
+          icon={<ImagePlus className="h-4 w-4" />}
+        />
+      }
+    >
       <div className="grid grid-cols-2 gap-2">
         {references.map((reference) => {
           const selected = selectedReferenceIds.includes(reference.id);
