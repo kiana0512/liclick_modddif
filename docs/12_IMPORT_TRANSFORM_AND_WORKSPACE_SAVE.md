@@ -74,7 +74,7 @@ Implemented MVP commands:
 - Local Save / Save As / Load.
 - Object transform controls.
 
-Visible coming-soon commands must use `features/commandRegistry.ts` and show a toast:
+Visible coming-soon commands must use `features/commandRegistry.ts`. Prefer disabled controls with `title` tooltips. Use lightweight deduped toast only when a placeholder must remain clickable:
 
 - Paint.
 - Eraser.
@@ -93,3 +93,5 @@ Visible coming-soon commands must use `features/commandRegistry.ts` and show a t
 ## Normal Preview
 
 Normal display mode uses `MeshNormalMaterial`. It is a viewport diagnostic mode only. The UI must show that its colors visualize surface normals and are not the final texture.
+
+Phase 5 also adds a top-level Normal workspace mode. It switches the viewport to normal display and shows Normal Visualizer / Normal Generation panels. Normal generation remains a placeholder.

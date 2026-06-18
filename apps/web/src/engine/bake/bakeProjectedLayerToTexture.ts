@@ -21,11 +21,17 @@ export async function bakeProjectedLayerToTexture(
   if (!layer.camera) throw new Error('Projected layer has no capture camera.');
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
 
-  const projectedImage = await loadImageData(layer.imageUrl);
+  const [projectedImage, maskImage, depthImage] = await Promise.all([
+    loadImageData(layer.imageUrl),
+    layer.maskUrl ? loadImageData(layer.maskUrl) : Promise.resolve(undefined),
+    layer.depthUrl ? loadImageData(layer.depthUrl) : Promise.resolve(undefined),
+  ]);
   const rasterized = await rasterizeProjectedLayerToUv({
     group: importedModel.group,
     layer,
     projectedImage,
+    maskImage,
+    depthImage,
     bakeInput: input,
   });
   const imageUrl = rasterized.canvas.toDataURL('image/png');
@@ -40,6 +46,12 @@ export async function bakeProjectedLayerToTexture(
     processedTriangles: rasterized.processedTriangles,
     coveredPixels: rasterized.coveredPixels,
     skippedPixels: rasterized.skippedPixels,
+    totalTexels: input.resolution * input.resolution,
+    inFrustumTexels: rasterized.inFrustumPixels,
+    maskRejectedTexels: rasterized.maskRejectedPixels,
+    depthRejectedTexels: rasterized.depthRejectedPixels,
+    backfaceRejectedTexels: rasterized.backfaceRejectedPixels,
+    writtenTexels: rasterized.coveredPixels,
     coverageRatio,
     warnings: rasterized.warnings,
   });

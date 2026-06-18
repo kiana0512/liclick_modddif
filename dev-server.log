@@ -100,3 +100,214 @@
 [2m上午11:53:05[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ReferenceImagesPanel.tsx, /src/styles/globals.css[22m
 [2m上午11:54:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx[22m
 [2m上午11:55:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx[22m
+[2m下午12:26:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午12:27:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx[22m
+[2m下午12:27:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32m✨ new dependencies optimized: [33mzustand/middleware[32m[39m
+[2m下午12:27:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32m✨ optimized dependencies changed. reloading[39m
+[2m下午12:27:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/ui/Panel.tsx, /src/styles/globals.css[22m
+[2m下午12:27:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayersPanel.tsx, /src/engine/viewport/SceneRoot.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午12:27:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/ProjectsPage.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/engine/viewport/ObjectTransformControls.tsx, /src/components/panels/ObjectTransformPanel.tsx[22m
+[2m下午12:27:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/GeneratePanel.tsx, /src/styles/globals.css[22m
+[2m下午12:28:05[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ReferenceImagesPanel.tsx, /src/styles/globals.css[22m
+[2m下午12:28:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ViewportPanel.tsx, /src/styles/globals.css[22m
+[2m下午12:28:23[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ObjectsPanel.tsx, /src/styles/globals.css[22m
+[2m下午12:28:44[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayersPanel.tsx, /src/styles/globals.css[22m
+[2m下午12:29:12[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayerAdjustmentsPanel.tsx, /src/styles/globals.css[22m
+[2m下午12:29:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ObjectTransformPanel.tsx, /src/styles/globals.css[22m
+[2m下午12:29:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ObjectTransformPanel.tsx, /src/styles/globals.css[22m
+[2m下午12:30:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:30:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:30:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:30:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:30:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:30:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:31:03[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:31:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:31:26[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:31:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/common/ToastHost.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/routes/ProjectsPage.tsx, /src/layouts/AppShell.tsx, /src/components/panels/ObjectTransformPanel.tsx[22m
+[2m下午12:31:45[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/common/ToastHost.tsx, /src/styles/globals.css[22m
+[2m下午12:32:11[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/ProjectsPage.tsx, /src/layouts/AppShell.tsx[22m
+[2m下午12:32:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:37:49[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午12:52:52[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/types/project.ts[22m
+[2m下午12:53:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/ProjectsPage.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/engine/viewport/ObjectTransformControls.tsx, /src/components/panels/ObjectTransformPanel.tsx[22m
+[2m下午12:53:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午12:53:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx[22m
+[2m下午12:54:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/project/ProjectCard.tsx, /src/styles/globals.css[22m
+[2m下午12:54:22[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:54:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:55:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:55:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:55:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:55:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:55:38[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:55:48[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:55:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:56:03[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:56:12[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午12:56:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:56:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:56:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:56:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:56:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午12:57:03[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:57:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/EditorShell.tsx, /src/components/workspace/WorkspaceDock.tsx, /src/routes/EditorPage.tsx[22m
+[2m下午12:57:29[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanelHeader.tsx, /src/styles/globals.css[22m
+[2m下午12:57:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanel.tsx, /src/styles/globals.css[22m
+[2m下午12:57:44[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午12:57:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午12:57:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午12:58:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午12:58:46[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:58:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午12:59:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午1:06:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/AppShell.tsx, /src/styles/globals.css[22m
+[2m下午1:07:02[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午1:07:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx[22m
+[2m下午1:08:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/project/ProjectCard.tsx, /src/styles/globals.css[22m
+[2m下午1:08:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx[22m
+[2m下午1:08:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午1:08:52[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/routes/ProjectsPage.tsx[22m
+[2m下午1:17:44[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/routes/ProjectsPage.tsx[22m
+[2m下午2:10:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx[22m
+[2m下午2:10:48[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewportCanvas.tsx, /src/styles/globals.css[22m
+[2m下午2:10:48[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:11:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:11:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx[22m
+[2m下午2:12:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ObjectsPanel.tsx, /src/styles/globals.css[22m
+[2m下午2:12:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/GeneratePanel.tsx, /src/styles/globals.css[22m
+[2m下午2:12:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ViewportPanel.tsx, /src/styles/globals.css[22m
+[2m下午2:12:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayersPanel.tsx, /src/styles/globals.css[22m
+[2m下午2:12:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayerAdjustmentsPanel.tsx, /src/styles/globals.css[22m
+[2m下午2:12:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ObjectTransformPanel.tsx, /src/styles/globals.css[22m
+[2m下午2:12:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ReferenceImagesPanel.tsx, /src/styles/globals.css[22m
+[2m下午2:12:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:12:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午2:13:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午2:13:26[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:13:50[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午2:13:50[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:17:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/EditorShell.tsx, /src/components/workspace/WorkspaceDock.tsx, /src/routes/EditorPage.tsx[22m
+[2m下午2:17:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:39:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/EditorShell.tsx, /src/components/workspace/WorkspaceDock.tsx, /src/routes/EditorPage.tsx[22m
+[2m下午2:39:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanelHeader.tsx, /src/styles/globals.css[22m
+[2m下午2:39:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanel.tsx, /src/styles/globals.css[22m
+[2m下午2:39:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午2:40:21[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanelBody.tsx, /src/styles/globals.css[22m
+[2m下午2:40:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewportCanvas.tsx, /src/styles/globals.css[22m
+[2m下午2:43:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午2:43:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:44:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:44:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:44:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:44:57[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午2:45:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午2:45:21[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午2:45:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午2:46:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午2:46:21[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午2:53:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewCube.tsx, /src/styles/globals.css[22m
+[2m下午2:53:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewCube.tsx, /src/styles/globals.css[22m
+[2m下午2:53:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午2:54:05[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/editor/ExportMenu.tsx, /src/styles/globals.css[22m
+[2m下午2:54:22[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewCube.tsx, /src/styles/globals.css[22m
+[2m下午2:54:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午2:54:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午3:12:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/EditorShell.tsx, /src/components/workspace/WorkspaceDock.tsx, /src/routes/EditorPage.tsx, /src/routes/ProjectsPage.tsx[22m
+[2m下午3:13:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午3:13:57[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午3:14:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午3:14:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午3:14:53[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewCube.tsx, /src/styles/globals.css[22m
+[2m下午3:15:11[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/ViewportPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/layouts/EditorShell.tsx[22m
+[2m下午3:15:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewportCanvas.tsx, /src/styles/globals.css[22m
+[2m下午3:15:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewportCanvas.tsx, /src/styles/globals.css[22m
+[2m下午3:16:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/engine/viewport/SceneRoot.tsx[22m
+[2m下午3:17:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午3:17:50[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午3:18:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午3:18:30[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewCube.tsx, /src/styles/globals.css[22m
+[2m下午3:18:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewCube.tsx, /src/styles/globals.css[22m
+[2m下午3:19:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/SceneRoot.tsx, /src/styles/globals.css[22m
+[2m下午3:19:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ViewportPanel.tsx, /src/styles/globals.css[22m
+[2m下午3:20:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午3:20:43[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/engine/projection/projectionTypes.ts[22m
+[2m下午3:21:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/engine/viewport/SceneRoot.tsx[22m
+[2m下午3:21:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/types/layer.ts[22m
+[2m下午3:21:44[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayersPanel.tsx, /src/engine/viewport/SceneRoot.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:22:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午3:22:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/SceneRoot.tsx, /src/styles/globals.css[22m
+[2m下午3:22:58[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:23:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:23:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/engine/bake/uvBakeTypes.ts[22m
+[2m下午3:23:58[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:31:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/types/layer.ts[22m
+[2m下午3:31:53[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayersPanel.tsx, /src/engine/viewport/SceneRoot.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:32:12[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/engine/projection/projectionTypes.ts[22m
+[2m下午3:32:49[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/engine/viewport/SceneRoot.tsx[22m
+[2m下午3:33:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewportCanvas.tsx, /src/styles/globals.css[22m
+[2m下午3:34:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/Grid.tsx, /src/styles/globals.css[22m
+[2m下午3:34:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/SceneRoot.tsx, /src/styles/globals.css[22m
+[2m下午3:35:02[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/ViewportPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/layouts/EditorShell.tsx, /src/engine/viewport/ViewportCanvas.tsx, /src/engine/viewport/SceneRoot.tsx[22m
+[2m下午3:35:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayerAdjustmentsPanel.tsx, /src/styles/globals.css[22m
+[2m下午3:36:02[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:36:26[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/SceneRoot.tsx, /src/styles/globals.css[22m
+[2m下午3:36:48[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanel.tsx, /src/styles/globals.css[22m
+[2m下午3:37:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanelHeader.tsx, /src/styles/globals.css[22m
+[2m下午3:37:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanelHeader.tsx, /src/styles/globals.css[22m
+[2m下午3:38:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/engine/viewport/SceneRoot.tsx[22m
+[2m下午3:38:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午3:39:26[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayersPanel.tsx, /src/engine/viewport/SceneRoot.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:46:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午3:47:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午3:47:46[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午3:48:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午3:49:48[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午3:50:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午3:50:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/project/ProjectCard.tsx, /src/styles/globals.css[22m
+[2m下午3:54:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/engine/viewport/SceneRoot.tsx[22m
+[2m下午3:55:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/LayerAdjustmentsPanel.tsx[22m
+[2m下午3:55:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/SceneRoot.tsx, /src/styles/globals.css[22m
+[2m下午3:56:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx[22m
+[2m下午4:09:38[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/ObjectsPanel.tsx, /src/engine/viewport/SceneRoot.tsx, /src/engine/viewport/CameraController.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/engine/viewport/ObjectTransformControls.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/layouts/EditorShell.tsx, /src/engine/viewport/ViewCube.tsx[22m
+[2m下午4:10:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/ObjectsPanel.tsx, /src/engine/viewport/SceneRoot.tsx, /src/engine/viewport/CameraController.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/engine/viewport/ObjectTransformControls.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/layouts/EditorShell.tsx, /src/engine/viewport/ViewCube.tsx[22m
+[2m下午4:11:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ObjectTransformControls.tsx, /src/styles/globals.css[22m
+[2m下午4:11:38[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ObjectsPanel.tsx, /src/styles/globals.css[22m
+[2m下午4:12:43[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午4:13:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/editor/BottomToolDock.tsx, /src/styles/globals.css[22m
+[2m下午4:13:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/routes/ProjectsPage.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午4:14:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/ViewportCanvas.tsx, /src/styles/globals.css[22m
+[2m下午4:14:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午4:16:02[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午4:16:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午4:17:03[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayersPanel.tsx, /src/styles/globals.css[22m
+[2m下午4:17:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayersPanel.tsx, /src/styles/globals.css[22m
+[2m下午4:19:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午4:20:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午4:24:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午4:31:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspaceDock.tsx, /src/styles/globals.css[22m
+[2m下午4:32:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/EditorShell.tsx, /src/components/workspace/WorkspaceDock.tsx, /src/routes/EditorPage.tsx, /src/routes/ProjectsPage.tsx[22m
+[2m下午4:32:52[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午4:33:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/components/panels/ReferenceImagesPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/routes/EditorPage.tsx[22m
+[2m下午4:35:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/layouts/EditorShell.tsx, /src/styles/globals.css[22m
+[2m下午4:35:46[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/Grid.tsx, /src/styles/globals.css[22m
+[2m下午4:36:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/Grid.tsx[22m
+[2m下午4:36:45[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ReferenceImagesPanel.tsx, /src/styles/globals.css[22m
+[2m下午4:37:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/ReferenceImagesPanel.tsx[22m
+[2m下午4:41:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/routes/ProjectsPage.tsx[22m
+[2m下午4:42:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/types/project.ts[22m
+[2m下午4:43:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/project/ProjectCard.tsx, /src/styles/globals.css[22m
+[2m下午4:44:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/project/ProjectCard.tsx, /src/styles/globals.css[22m
+[2m下午4:44:48[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午4:46:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx[22m
+[2m下午4:47:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/layouts/AppShell.tsx, /src/components/project/ProjectCard.tsx, /src/layouts/EditorShell.tsx, /src/routes/EditorPage.tsx, /src/components/panels/ObjectsPanel.tsx, /src/components/panels/GeneratePanel.tsx, /src/components/panels/ViewportPanel.tsx, /src/components/panels/LayersPanel.tsx, /src/components/panels/LayerAdjustmentsPanel.tsx, /src/components/panels/ObjectTransformPanel.tsx, /src/components/panels/ReferenceImagesPanel.tsx, /src/routes/ProjectsPage.tsx[22m
+[2m下午4:48:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/EditorPage.tsx, /src/styles/globals.css[22m
+[2m下午4:48:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/routes/ProjectsPage.tsx, /src/styles/globals.css[22m
+[2m下午4:50:37[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx[22m
+[2m下午4:59:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css[22m
+[2m下午4:59:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanel.tsx, /src/styles/globals.css[22m
+[2m下午5:00:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/workspace/WorkspacePanelHeader.tsx, /src/styles/globals.css[22m
+[2m下午5:01:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/LayerAdjustmentsPanel.tsx, /src/styles/globals.css[22m
+[2m下午5:05:04[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/globals.css, /src/routes/EditorPage.tsx, /src/routes/ProjectsPage.tsx[22m
+[2m下午5:05:46[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/panels/GeneratePanel.tsx, /src/styles/globals.css[22m
+[2m下午5:06:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/engine/viewport/Grid.tsx, /src/styles/globals.css[22m

@@ -10,6 +10,12 @@ export interface BakeReport {
   processedTriangles: number;
   coveredPixels: number;
   skippedPixels: number;
+  totalTexels: number;
+  inFrustumTexels: number;
+  maskRejectedTexels: number;
+  depthRejectedTexels: number;
+  backfaceRejectedTexels: number;
+  writtenTexels: number;
   coverageRatio: number;
   warnings: string[];
   durationMs: number;

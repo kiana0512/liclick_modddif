@@ -10,6 +10,8 @@ type RasterizeInput = {
   group: THREE.Group;
   layer: Layer;
   projectedImage: ImageData;
+  maskImage?: ImageData;
+  depthImage?: ImageData;
   bakeInput: BakeProjectedLayerInput;
 };
 
@@ -20,10 +22,14 @@ export type RasterizeOutput = {
   processedTriangles: number;
   coveredPixels: number;
   skippedPixels: number;
+  inFrustumPixels: number;
+  maskRejectedPixels: number;
+  depthRejectedPixels: number;
+  backfaceRejectedPixels: number;
   warnings: string[];
 };
 
-const baseColor = [185, 163, 255, 255] as const;
+const baseColor = [217, 161, 140, 255] as const;
 
 function createBaseImageData(width: number, height: number) {
   const imageData = new ImageData(width, height);
@@ -59,6 +65,50 @@ function blendPixel(imageData: ImageData, offset: number, color: [number, number
   imageData.data[offset + 3] = 255;
 }
 
+function hueToRgb(p: number, q: number, t: number) {
+  let nextT = t;
+  if (nextT < 0) nextT += 1;
+  if (nextT > 1) nextT -= 1;
+  if (nextT < 1 / 6) return p + (q - p) * 6 * nextT;
+  if (nextT < 1 / 2) return q;
+  if (nextT < 2 / 3) return p + (q - p) * (2 / 3 - nextT) * 6;
+  return p;
+}
+
+function rgbToHsl(r: number, g: number, b: number) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  if (max === min) return { hue: 0, saturation: 0, lightness };
+  const delta = max - min;
+  const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  let hue = 0;
+  if (max === r) hue = (g - b) / delta + (g < b ? 6 : 0);
+  if (max === g) hue = (b - r) / delta + 2;
+  if (max === b) hue = (r - g) / delta + 4;
+  return { hue: hue / 6, saturation, lightness };
+}
+
+function hslToRgb(hue: number, saturation: number, lightness: number) {
+  if (saturation === 0) return [lightness, lightness, lightness] as const;
+  const q = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
+  const p = 2 * lightness - q;
+  return [hueToRgb(p, q, hue + 1 / 3), hueToRgb(p, q, hue), hueToRgb(p, q, hue - 1 / 3)] as const;
+}
+
+function applyLayerAdjustments(color: [number, number, number, number], layer: Layer): [number, number, number, number] {
+  const adjustments = layer.adjustments;
+  if (!adjustments || (adjustments.hue === 0 && adjustments.saturation === 0 && adjustments.lightness === 0)) {
+    return color;
+  }
+  const hsl = rgbToHsl(color[0] / 255, color[1] / 255, color[2] / 255);
+  const hue = (hsl.hue + adjustments.hue / 100 + 1) % 1;
+  const saturation = Math.min(1, Math.max(0, hsl.saturation + adjustments.saturation / 100));
+  const lightness = Math.min(1, Math.max(0, hsl.lightness + adjustments.lightness / 100));
+  const [r, g, b] = hslToRgb(hue, saturation, lightness);
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), color[3]];
+}
+
 function projectWorldToImageUv(worldPosition: THREE.Vector3, projectorMatrix: THREE.Matrix4) {
   const projected = new THREE.Vector4(worldPosition.x, worldPosition.y, worldPosition.z, 1).applyMatrix4(
     projectorMatrix,
@@ -71,6 +121,7 @@ function projectWorldToImageUv(worldPosition: THREE.Vector3, projectorMatrix: TH
   return {
     u: ndcX * 0.5 + 0.5,
     v: 1 - (ndcY * 0.5 + 0.5),
+    depth: ndcZ * 0.5 + 0.5,
   };
 }
 
@@ -95,6 +146,10 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   let totalTriangles = 0;
   let processedTriangles = 0;
   let skippedPixels = 0;
+  let inFrustumPixels = 0;
+  let maskRejectedPixels = 0;
+  let depthRejectedPixels = 0;
+  let backfaceRejectedPixels = 0;
 
   input.group.updateMatrixWorld(true);
 
@@ -170,6 +225,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
             const cameraToPoint = worldPosition.clone().sub(cameraPosition).normalize();
             if (worldNormal.dot(cameraToPoint) >= 0) {
               skippedPixels += 1;
+              backfaceRejectedPixels += 1;
               continue;
             }
           }
@@ -179,8 +235,29 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
             skippedPixels += 1;
             continue;
           }
+          inFrustumPixels += 1;
 
-          const sample = sampleImageNearest(input.projectedImage, imageUv.u, imageUv.v);
+          if (input.maskImage) {
+            const maskSample = sampleImageNearest(input.maskImage, imageUv.u, imageUv.v);
+            const maskValue = Math.max(maskSample[3], maskSample[0], maskSample[1], maskSample[2]);
+            if (maskValue < 24) {
+              skippedPixels += 1;
+              maskRejectedPixels += 1;
+              continue;
+            }
+          }
+
+          if (input.depthImage) {
+            const depthSample = sampleImageNearest(input.depthImage, imageUv.u, imageUv.v);
+            const capturedDepth = depthSample[0] / 255;
+            if (imageUv.depth - 0.025 > capturedDepth + 0.045) {
+              skippedPixels += 1;
+              depthRejectedPixels += 1;
+              continue;
+            }
+          }
+
+          const sample = applyLayerAdjustments(sampleImageNearest(input.projectedImage, imageUv.u, imageUv.v), input.layer);
           if (sample[3] <= 0) {
             skippedPixels += 1;
             continue;
@@ -216,6 +293,10 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
     processedTriangles,
     coveredPixels,
     skippedPixels,
+    inFrustumPixels,
+    maskRejectedPixels,
+    depthRejectedPixels,
+    backfaceRejectedPixels,
     warnings,
   };
 }

@@ -1,5 +1,4 @@
 import type { Project } from '@/types/project';
-import { mockLayers } from './mockLayers';
 import { mockReferences } from './mockReferences';
 
 const now = '2026-06-18T09:00:00.000Z';
@@ -32,7 +31,7 @@ export const mockProjects: Project[] = [
     references: mockReferences,
     captures: [],
     generations: [],
-    layers: mockLayers,
+    layers: [],
     bakedTextures: [],
     workspaceMode: 'none',
     dirty: false,
@@ -54,7 +53,7 @@ export const mockProjects: Project[] = [
     references: [],
     captures: [],
     generations: [],
-    layers: mockLayers.slice(0, 1),
+    layers: [],
     bakedTextures: [],
     workspaceMode: 'none',
     dirty: false,

@@ -15,7 +15,15 @@ Phase 3 adds a browser CPU bake path for one imported object, one UV channel, an
 
 ## Algorithm
 
-The rasterizer maps mesh UV triangles into the output texture. For every covered texel it computes barycentric coordinates, interpolates world position and normal, projects the world position through the saved capture camera, samples the active generated image, and writes the result into a basecolor canvas using layer opacity.
+The rasterizer maps mesh UV triangles into the output texture. For every covered texel it computes barycentric coordinates, interpolates world position and normal, projects the world position through the saved capture camera, applies the same projection visibility rules as the preview, samples the active generated image, and writes the result into a basecolor canvas using layer opacity.
+
+Phase 8 visibility rules:
+
+- reject texels outside the projector frustum;
+- reject backfaces by default;
+- reject mask pixels below threshold when a capture mask is stored;
+- reject approximate depth mismatches when a capture depth image is stored;
+- report in-frustum, mask rejected, depth rejected, backface rejected, and written texel counts.
 
 Phase 4 object transforms are respected through the current mesh `matrixWorld`. If a user moves, rotates, scales, centers, or grounds the model after capture, the active projected layer may need a fresh capture or rebake.
 
@@ -34,7 +42,7 @@ The canvas writes output Y as `1 - uv.y`. The applied texture sets `texture.flip
 - One UV channel named `uv`.
 - Basecolor only.
 - No UDIM.
-- No strict depth occlusion.
+- Depth occlusion is approximate because the capture depth is grayscale-packed for the browser MVP.
 - No multi-layer compositing.
 - No normal/roughness/metallic bake.
 - 4096 is experimental and may be slow.

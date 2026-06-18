@@ -34,9 +34,17 @@ Phase 2 uses a Liclick custom shader:
 
 The projection sticks to model world space when the view rotates. It is not a screen overlay.
 
+Phase 8 tightens visibility:
+
+- fragments must be inside the saved camera frustum;
+- projected UVs are feathered near the image edge;
+- mask alpha/luminance can reject pixels outside the captured object area;
+- grayscale depth is used as an MVP occlusion approximation;
+- backfaces relative to the projector camera are rejected by default.
+
 ## Depth Check
 
-Depth checks prevent painting through the model. Compare the projected fragment depth against captured depth using a tolerance and reject fragments outside the captured surface.
+Depth checks prevent painting through the model. The current MVP compares projected NDC depth against the captured grayscale depth texture with a bias/tolerance. This is approximate because the current depth pass is image-encoded, not a calibrated linear depth buffer.
 
 ## UV Bake Math
 

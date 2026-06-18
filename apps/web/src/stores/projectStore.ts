@@ -10,6 +10,7 @@ import type { AssetManifest, Project, ReferenceImage, WorkspaceMode } from '@/ty
 type ProjectStore = {
   projects: Project[];
   currentProjectId: string;
+  setProjects: (projects: Project[]) => void;
   setCurrentProject: (projectId: string) => void;
   getCurrentProject: () => Project | undefined;
   replaceCurrentProject: (project: Project) => void;
@@ -45,6 +46,13 @@ function updateProject(projects: Project[], projectId: string, patch: Partial<Pr
 export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: mockProjects,
   currentProjectId: mockProjects[0]?.id ?? '',
+  setProjects: (projects) =>
+    set((state) => ({
+      projects,
+      currentProjectId: projects.some((project) => project.id === state.currentProjectId)
+        ? state.currentProjectId
+        : (projects[0]?.id ?? ''),
+    })),
   setCurrentProject: (projectId) => set({ currentProjectId: projectId }),
   getCurrentProject: () =>
     get().projects.find((project) => project.id === get().currentProjectId) ?? get().projects[0],

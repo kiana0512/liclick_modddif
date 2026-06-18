@@ -31,3 +31,24 @@ export async function loadModelFromFile(
   if (format === 'fbx') return loadFbxModel(options);
   return loadObjModel(options);
 }
+
+export async function loadModelFromUrl(input: {
+  sourceUrl: string;
+  fileName: string;
+  normalizeOptions?: NormalizeImportedModelOptions;
+}): Promise<LoadedModel> {
+  const format = getModelFormatFromFileName(input.fileName);
+  if (!format) {
+    throw new Error('Unsupported model format. Please import GLB, GLTF, FBX, or OBJ.');
+  }
+
+  const options = {
+    sourceUrl: input.sourceUrl,
+    fileName: input.fileName,
+    normalizeOptions: input.normalizeOptions,
+  };
+
+  if (format === 'glb' || format === 'gltf') return loadGltfModel(options);
+  if (format === 'fbx') return loadFbxModel(options);
+  return loadObjModel(options);
+}

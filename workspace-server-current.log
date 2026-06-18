@@ -1,0 +1,10 @@
+
+> liclick-3d-texture@0.1.0 dev:server E:\Liclick 3D Texture
+> corepack pnpm --filter @liclick/server dev
+
+
+> @liclick/server@0.1.0 dev E:\Liclick 3D Texture\apps\server
+> tsc -p tsconfig.json && node --watch dist/index.js
+
+Liclick workspace server running at http://127.0.0.1:4517
+Workspace: E:\Liclick 3D Texture\workspace

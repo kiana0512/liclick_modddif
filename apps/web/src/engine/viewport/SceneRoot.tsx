@@ -1,9 +1,14 @@
-import { ContactShadows, Environment, MeshReflectorMaterial } from '@react-three/drei';
+import { ContactShadows, Environment } from '@react-three/drei';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import { createDisplayModeMaterial, createProjectedLayerMaterial } from '@/engine/projection/ProjectedLayerMaterial';
+import {
+  createDisplayModeMaterial,
+  createPbrPreviewMaterial,
+  createProjectedLayerMaterial,
+} from '@/engine/projection/ProjectedLayerMaterial';
 import { useLayerStore } from '@/stores/layerStore';
 import { useSceneStore } from '@/stores/sceneStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { Grid } from './Grid';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { SelectionOutline } from './SelectionOutline';
@@ -64,11 +69,21 @@ function ImportedModel() {
           ? await createProjectedLayerMaterial({
               layerId: activeProjectedLayer.id,
               imageUrl: activeProjectedLayer.imageUrl,
+              maskUrl: activeProjectedLayer.maskUrl,
+              depthUrl: activeProjectedLayer.depthUrl,
               camera: activeProjectedLayer.camera,
               objectId: model.objectId,
               opacity: activeProjectedLayer.opacity,
               visible: activeProjectedLayer.visible,
-              depthTest: false,
+              depthTest: true,
+              hue: (activeProjectedLayer.adjustments?.hue ?? 0) / 100,
+              saturation: (activeProjectedLayer.adjustments?.saturation ?? 0) / 100,
+              lightness: (activeProjectedLayer.adjustments?.lightness ?? 0) / 100,
+              useMask: true,
+              useDepthCheck: true,
+              enableBackfaceCulling: true,
+              edgeFeather: 0.035,
+              depthBias: 0.025,
             })
           : undefined;
 
@@ -82,7 +97,7 @@ function ImportedModel() {
         const originalMaterial = child.userData.originalMaterial as THREE.Material | THREE.Material[] | undefined;
         const bakedTexture = child.userData.bakedTexture as THREE.Texture | undefined;
         if (displayMode === 'pbr' && !projectedMaterial) {
-          child.material = originalMaterial ?? createDisplayModeMaterial(displayMode, selected);
+          child.material = createPbrPreviewMaterial(originalMaterial, selected, bakedTexture);
           return;
         }
         child.material = projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
@@ -112,28 +127,26 @@ function ImportedModel() {
 export function SceneRoot() {
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectObject = useSceneStore((state) => state.selectObject);
+  const environmentPreset = useSettingsStore((state) => state.environmentPreset);
+
+  const environment = environmentPreset === 'dark' || environmentPreset === 'color' ? undefined : 'studio';
+  const ambientIntensity = environmentPreset === 'dark' ? 0.38 : environmentPreset === 'soft' ? 0.46 : 0.5;
+  const keyIntensity = environmentPreset === 'dark' ? 1.05 : environmentPreset === 'soft' ? 1.12 : 1.22;
+  const fillIntensity = environmentPreset === 'dark' ? 0.18 : 0.26;
+  const rimIntensity = environmentPreset === 'dark' ? 0.14 : 0.2;
 
   return (
     <group onPointerMissed={() => selectObject(undefined)}>
-      <ambientLight intensity={0.45} />
-      <directionalLight position={[3, 4, 2]} intensity={1.5} castShadow />
-      <Environment preset="city" />
+      <ambientLight intensity={ambientIntensity} />
+      <hemisphereLight args={['#fff0e8', '#302640', 0.82]} />
+      <directionalLight position={[3.5, 5.2, 2.8]} intensity={keyIntensity} castShadow />
+      <directionalLight position={[-4.5, 2.2, -3.5]} intensity={fillIntensity} />
+      <directionalLight position={[0, 3.2, -5]} intensity={rimIntensity} />
+      {environment && <Environment preset={environment} environmentIntensity={environmentPreset === 'soft' ? 0.22 : 0.3} />}
       <Grid />
       {importedModel ? <ImportedModel /> : <DemoModel />}
       <ObjectTransformControls />
-      <mesh rotation-x={-Math.PI / 2} position={[0, -0.04, 0]}>
-        <planeGeometry args={[18, 18]} />
-        <MeshReflectorMaterial
-          color="#0b0d18"
-          mirror={0}
-          roughness={0.82}
-          metalness={0.05}
-          blur={[500, 80]}
-          mixBlur={0.5}
-          mixStrength={0.15}
-        />
-      </mesh>
-      <ContactShadows position={[0, -0.02, 0]} opacity={0.35} scale={8} blur={2.4} />
+      <ContactShadows position={[0, -0.02, 0]} opacity={0.22} scale={8} blur={2.4} />
     </group>
   );
 }

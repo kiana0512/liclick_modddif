@@ -21,6 +21,7 @@ Liclick projects should serialize to a `project.liclick.json` document plus asse
   "dirty": false,
   "assetManifest": {
     "models": [],
+    "captures": [],
     "references": [],
     "generations": [],
     "layers": [],
@@ -73,6 +74,8 @@ Settings include resolution, display mode, projection mode, and color management
 
 Every persisted project should include schema version metadata before real save/load ships. Add migrations instead of breaking old project files.
 
+Phase 6 writes `workspaceVersion` and stores local-server projects under `workspace/projects/<projectSlug>/project.liclick.json`.
+
 ## Save / Load
 
 Phase 2 added browser-only JSON export and import. Phase 4 adds local workspace persistence:
@@ -106,3 +109,16 @@ Data URLs and blob URLs are materialized into files where possible and replaced 
 ## Fallback Behavior
 
 File System Access is browser-dependent. If directory save is unavailable, Save and Save As fall back to downloading JSON. Browser blob URLs are session-scoped and may be invalid after reload or on another machine, so the workspace folder path is the preferred persistence path for current MVP testing.
+
+## Local Workspace Server
+
+Local-server projects use project-relative asset paths:
+
+- `assets/models`
+- `assets/references`
+- `assets/captures`
+- `assets/generations`
+- `assets/layers`
+- `assets/baked`
+
+The web app resolves relative paths through the server static workspace route. Autosave writes rolling snapshots to `autosave/`.

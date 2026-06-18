@@ -1,6 +1,6 @@
 # Liclick 3D Texture
 
-Liclick 3D Texture is the foundation for a Web AI 3D Texture Studio. The current MVP creates a long-lived React + Three.js workspace with Projects, Editor, Web3D viewport, real local model import, viewport capture, mock generation, projected layers, UV bake, transform controls, and local workspace persistence.
+Liclick 3D Texture is the foundation for a Web AI 3D Texture Studio. The current MVP creates a long-lived React + Three.js workspace with Projects, Editor, Web3D viewport, floating dock panels, real local model import, viewport capture, mock generation, projected layers, UV bake, transform controls, and local workspace persistence.
 
 ## Install
 
@@ -14,7 +14,16 @@ pnpm install
 pnpm dev
 ```
 
-The web app runs from `apps/web` through the root workspace script.
+The root dev script starts both the local workspace server and the web app. If another Liclick workspace server is already running on `4517`, the server dev process now reuses it instead of failing the whole dev script.
+
+```bash
+pnpm dev:web
+pnpm dev:server
+pnpm workspace:up
+```
+
+The local workspace server runs on `127.0.0.1:4517` by default and stores projects in `workspace/`.
+`pnpm workspace:up` starts the workspace server as a background Windows process for longer local sessions. The web app keeps the mock project gallery visible when the server is offline.
 
 ## Tech Stack
 
@@ -29,7 +38,13 @@ The web app runs from `apps/web` through the root workspace script.
 ## Current Status
 
 - Projects home page with mock project cards.
-- Editor workspace shell with toolbar, left panels, viewport, right panels, and bottom tools.
+- Project home sidebar now opens Projects, Folders, Assets, and Settings instead of firing placeholder toasts.
+- Settings includes a Chinese / English language switch; Chinese is the default UX language.
+- Editor workspace shell with a full-height viewport, floating dock panels, overlay icon toolbars, synchronized 3D view cube, and normal / compact dock density.
+- Texture workspace now follows the Modddif-style spatial model more closely: project/function controls on the left, ViewCube reserved on the right, left/right docks lowered below the top controls, and fully collapsed docks tucked to the bottom.
+- Editor panels default to a quieter contextual layout: Objects and Viewport stay available, while Generate, References, Layers, and Transform panels expand when their workflow needs them.
+- Local workspace server for project listing, creation, folders, autosave, project files, and asset files.
+- `pnpm dev` starts the web app and local workspace server together. `pnpm dev:web` and `pnpm dev:server` remain available for isolated debugging.
 - Web3D viewport renders a default primitive model until a real model is imported.
 - Import Model supports local `.glb` and `.gltf`, with experimental `.fbx` and `.obj`.
 - Imported models are mounted as real Three.js groups, centered on XZ, grounded to Y=0, scaled to a practical editor size, measured, and shown in Objects.
@@ -38,9 +53,14 @@ The web app runs from `apps/web` through the root workspace script.
 - Viewport capture now renders real color, mask, normal, and grayscale depth PNG data URLs.
 - Generate still uses the mock service, but generation records are linked to a real capture id.
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
+- Projected preview now rejects out-of-frustum, backface, masked, and approximate depth-failed fragments instead of spreading the image over the full model.
 - Layer visibility, opacity, delete, and go-to-camera work for projected layer preview.
 - Save Project / Save As / Load Project now target a local workspace folder through the File System Access API when available, writing `project.liclick.json` and asset folders. Unsupported browsers fall back to JSON download/import.
-- Paint, Eraser, Quick Mask, Segments, Multiview, Normal generation, GLB export, and DCC connectors are explicitly marked as coming soon instead of silently doing nothing.
+- Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
+- Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
+- Project thumbnails are captured from the WebGL viewport and shown on the Projects page when saved.
+- Export now supports Scene GLB / OBJ / STL, selected Object GLB / OBJ / STL, baked BaseColor PNG, normal-map PNG when the model provides one, viewport PNG snapshot, and 5 second WebM turntable recording.
+- Paint, Eraser, Quick Mask, Segments, Multiview, Normal generation, FBX export, and DCC connectors are either disabled with a tooltip or shown as mode-specific coming-soon panels. Repeated coming-soon toast noise is deduped.
 
 ## Phase 2 Workflow
 
@@ -63,6 +83,30 @@ Phase 4 adds model normalization, object transform controls, and local workspace
 - The right panel shows format, mesh count, UV status, bounding size, normalized scale, and live transform values.
 - `project.liclick.json` is the current project file name. Relative asset paths are used for saved data URLs when a workspace directory is selected.
 - Normal viewport mode is a debug preview: colors visualize surface normals, not the final texture.
+
+## Workspace UI Refactor
+
+Phase 5 changes the editor from a fixed three-column layout to floating dock panels over a large Web3D viewport.
+
+- Texture mode defaults to Objects, Generate, References, Viewport, Layers, Layer Adjustments, and Object Transform.
+- References, Layer Adjustments, and Object Transform can start collapsed and expand when their state becomes relevant.
+- Normal, Segments, and Export switch to their own lightweight dock panels instead of firing disruptive toasts.
+- Panel collapse, visibility, dock side, order, and current mode persist to localStorage.
+- Panel headers can be dragged only from the handle to reorder panels or move them between left and right docks. Dragged panels glow, valid docks highlight, and `Reset Layout` restores defaults.
+- Internal panel drags are tracked separately from file drags so dragging a panel over the viewport does not trigger the model import overlay.
+
+## Project Workspace MVP
+
+Phase 6 adds project-system behavior:
+
+- `apps/server` provides local workspace APIs without external runtime dependencies.
+- `New Project` writes a real project directory and opens it.
+- `New Folder` uses an in-app modal, writes `folders.json`, and avoids native browser prompts.
+- Workspace health checks use short timeouts so a stopped server does not make the UI feel stuck.
+- Folder writes are queued and JSON writes are atomic to reduce local-server race conditions under concurrent use.
+- Dirty local-server projects autosave after 1.5 seconds.
+- Imported model files and data URL assets are saved into project-relative `assets/` paths where possible.
+- `.liclick3d` is documented as the future portable zip package; current export package is a stub.
 
 ## UV Bake MVP
 
@@ -87,8 +131,9 @@ Test flow:
 - Depth capture is grayscale viewport depth, not a calibrated linear depth asset.
 - File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
 - UV bake supports one active projected layer, one object, one UV channel, and basecolor only.
+- UV bake uses the same frustum/mask/depth/backface visibility gates as projected preview, with grayscale depth as an MVP approximation.
 - 4K bake is available as experimental and may be slow in the browser.
-- Export buttons are present but GLB/GLTF export is still coming soon.
+- FBX export, Segments ColorID, MP4, and portable project package zip are still coming soon.
 
 ## Development Rules
 

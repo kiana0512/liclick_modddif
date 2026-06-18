@@ -7,6 +7,7 @@ export type ToastMessage = {
   title: string;
   description?: string;
   tone: ToastTone;
+  dedupeKey?: string;
 };
 
 type ToastStore = {
@@ -19,10 +20,18 @@ export const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
   pushToast: (toast) => {
     const id = crypto.randomUUID();
-    set((state) => ({ toasts: [{ id, ...toast }, ...state.toasts].slice(0, 4) }));
+    set((state) => {
+      if (
+        toast.dedupeKey &&
+        state.toasts.some((item) => item.dedupeKey === toast.dedupeKey)
+      ) {
+        return state;
+      }
+      return { toasts: [{ id, ...toast }, ...state.toasts].slice(0, 3) };
+    });
     window.setTimeout(() => {
       set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));
-    }, 4600);
+    }, toast.dedupeKey?.startsWith('coming-soon:') ? 3000 : 4200);
   },
   dismissToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })),

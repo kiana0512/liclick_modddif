@@ -1,0 +1,259 @@
+{
+  "id": "project-4c8c2eb1-ba74-46a1-9473-4d0367c46c23",
+  "name": "未命名项目",
+  "createdAt": "2026-06-18T06:02:11.052Z",
+  "updatedAt": "2026-06-18T08:53:01.833Z",
+  "thumbnail": "assets/captures/project-thumbnail.png",
+  "objects": [
+    {
+      "id": "8c069c63-32c0-4d25-838f-5e2293e78aa0",
+      "name": "沙发模型.fbx",
+      "type": "mesh",
+      "sourcePath": "http://127.0.0.1:4517/workspace/projects/untitled-project-67c46c23/assets/models/untitled-project.fbx",
+      "format": "fbx",
+      "materialSlots": [
+        {
+          "id": "mat-1",
+          "name": "modddif_material_0"
+        }
+      ],
+      "uvSets": [
+        "UV0"
+      ],
+      "boundingBox": {
+        "min": [
+          -1.330178386425195,
+          0,
+          -1.372248541080674
+        ],
+        "max": [
+          1.330178386425195,
+          3,
+          1.372248541080674
+        ],
+        "center": [
+          0,
+          1.5,
+          0
+        ],
+        "size": [
+          2.66035677285039,
+          3,
+          2.744497082161348
+        ]
+      },
+      "originalBoundingBox": {
+        "min": [
+          -44.3392813205719,
+          -50.00000199942964,
+          -45.741619865165404
+        ],
+        "max": [
+          44.3392813205719,
+          50.00000199942964,
+          45.741619865165404
+        ],
+        "center": [
+          0,
+          0,
+          0
+        ],
+        "size": [
+          88.6785626411438,
+          100.00000399885928,
+          91.48323973033081
+        ]
+      },
+      "importNormalizationTransform": {
+        "position": [
+          0,
+          1.5,
+          0
+        ],
+        "scale": [
+          0.02999999880034226,
+          0.02999999880034226,
+          0.02999999880034226
+        ],
+        "targetMaxDimension": 3,
+        "grounded": true,
+        "normalized": true
+      },
+      "userTransform": {
+        "position": [
+          0,
+          1.5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.02999999880034226,
+          0.02999999880034226,
+          0.02999999880034226
+        ]
+      },
+      "childMeshCount": 1,
+      "warnings": [],
+      "transform": {
+        "position": [
+          0,
+          1.5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.02999999880034226,
+          0.02999999880034226,
+          0.02999999880034226
+        ]
+      },
+      "visible": true,
+      "selected": true
+    }
+  ],
+  "references": [
+    {
+      "id": "ref-marble-01",
+      "name": "Soft lilac ceramic",
+      "url": "https://images.unsplash.com/photo-1618220179428-22790b461013?auto=format&fit=crop&w=640&q=80",
+      "width": 640,
+      "height": 427,
+      "isPrimary": true
+    },
+    {
+      "id": "ref-fabric-01",
+      "name": "Textile grain",
+      "url": "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=640&q=80",
+      "width": 640,
+      "height": 960,
+      "isPrimary": false
+    }
+  ],
+  "captures": [
+    {
+      "id": "7b896341-bac9-4f35-93b1-6a47fbba1081",
+      "objectId": "56ec3da6-d3bd-4dc8-8b78-b9eb16d9e847",
+      "camera": {
+        "type": "perspective",
+        "projection": "perspective",
+        "position": [
+          5.331397415121525,
+          3.6420622969210856,
+          1.9658002742254073
+        ],
+        "quaternion": [
+          -0.1470687263332739,
+          0.5625947636875334,
+          0.1025202448363306,
+          0.8070610392063142
+        ],
+        "target": [
+          0,
+          1.5,
+          0
+        ],
+        "near": 0.01,
+        "far": 100,
+        "fov": 45,
+        "zoom": 1,
+        "projectionMatrix": [
+          1.2165742853527166,
+          0,
+          0,
+          0,
+          0,
+          2.414213562373095,
+          0,
+          0,
+          0,
+          0,
+          -1.0002000200020003,
+          -1,
+          0,
+          0,
+          -0.020002000200020003,
+          0
+        ],
+        "matrixWorld": [
+          0.3459534625401347,
+          2.7755575615628914e-17,
+          -0.938251672930292,
+          0,
+          -0.33096038134917893,
+          0.9357207782668149,
+          -0.12203217238479516,
+          0,
+          0.8779415856044738,
+          0.352741584052329,
+          0.3237158432121542,
+          0,
+          5.331397415121525,
+          3.6420622969210856,
+          1.9658002742254073,
+          1
+        ],
+        "viewMatrix": [
+          0.34595346254013476,
+          -0.330960381349179,
+          0.8779415856044741,
+          0,
+          2.775557561562892e-17,
+          0.935720778266815,
+          0.3527415840523291,
+          0,
+          -0.9382516729302921,
+          -0.12203217238479519,
+          0.3237158432121543,
+          0,
+          8.326672684688677e-17,
+          -1.4035811674002223,
+          -6.601723017310156,
+          1.0000000000000002
+        ],
+        "aspect": 1
+      },
+      "width": 2048,
+      "height": 2048,
+      "colorUrl": "http://127.0.0.1:4517/workspace/projects/untitled-project-67c46c23/assets/captures/7b896341-bac9-4f35-93b1-6a47fbba1081-color.png",
+      "maskUrl": "http://127.0.0.1:4517/workspace/projects/untitled-project-67c46c23/assets/captures/7b896341-bac9-4f35-93b1-6a47fbba1081-mask.png",
+      "normalUrl": "http://127.0.0.1:4517/workspace/projects/untitled-project-67c46c23/assets/captures/7b896341-bac9-4f35-93b1-6a47fbba1081-normal.png",
+      "depthUrl": "http://127.0.0.1:4517/workspace/projects/untitled-project-67c46c23/assets/captures/7b896341-bac9-4f35-93b1-6a47fbba1081-depth.png",
+      "createdAt": "2026-06-18T07:40:22.183Z",
+      "warnings": [
+        "Depth is encoded as viewport grayscale depth for MVP preview."
+      ]
+    }
+  ],
+  "generations": [],
+  "layers": [],
+  "bakedTextures": [],
+  "settings": {
+    "resolution": "2K",
+    "displayMode": "pbr",
+    "projectionMode": "perspective",
+    "colorManagement": "srgb"
+  },
+  "currentMode": "texture",
+  "workspaceVersion": "0.6.0",
+  "workspaceName": "untitled-project-67c46c23",
+  "workspaceMode": "local-server",
+  "dirty": false,
+  "assetManifest": {
+    "models": [],
+    "references": [],
+    "captures": [],
+    "generations": [],
+    "layers": [],
+    "baked": []
+  },
+  "lastSavedAt": "2026-06-18T08:53:01.833Z",
+  "activeObjectId": "8c069c63-32c0-4d25-838f-5e2293e78aa0"
+}

@@ -5,6 +5,7 @@ import type { SerializedCamera } from '@/types/capture';
 import type { DisplayMode, ModelBoundingBox, ProjectionMode, SceneObject, Transform } from '@/types/model';
 
 export type TransformMode = 'select' | 'translate' | 'rotate' | 'scale';
+export type PaintToolMode = 'none' | 'brush' | 'eraser';
 
 export type ImportSettings = {
   normalizeOnImport: boolean;
@@ -31,6 +32,8 @@ type SceneStore = {
   displayMode: DisplayMode;
   projectionMode: ProjectionMode;
   transformMode: TransformMode;
+  paintTool: PaintToolMode;
+  paintMaskRevision: number;
   importSettings: ImportSettings;
   importWarnings: string[];
   restoreCameraRequest?: { camera: SerializedCamera; nonce: number };
@@ -42,9 +45,13 @@ type SceneStore = {
   setDisplayMode: (mode: DisplayMode) => void;
   setProjectionMode: (mode: ProjectionMode) => void;
   setTransformMode: (mode: TransformMode) => void;
+  setPaintTool: (mode: PaintToolMode) => void;
+  markPaintMaskChanged: () => void;
+  clearPaintMask: () => void;
   setImportSettings: (settings: Partial<ImportSettings>) => void;
   setOrbitControlsEnabled: (enabled: boolean) => void;
   updateObjectTransform: (objectId: string, transform: Transform, boundingBox?: ModelBoundingBox) => void;
+  toggleObjectVisibility: (objectId: string) => void;
   requestCameraRestore: (camera: SerializedCamera) => void;
 };
 
@@ -56,6 +63,8 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   displayMode: 'pbr',
   projectionMode: 'perspective',
   transformMode: 'select',
+  paintTool: 'none',
+  paintMaskRevision: 0,
   importSettings: {
     normalizeOnImport: true,
     groundOnImport: true,
@@ -90,7 +99,10 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     })),
   setDisplayMode: (displayMode) => set({ displayMode }),
   setProjectionMode: (projectionMode) => set({ projectionMode }),
-  setTransformMode: (transformMode) => set({ transformMode }),
+  setTransformMode: (transformMode) => set({ transformMode, paintTool: 'none' }),
+  setPaintTool: (paintTool) => set({ paintTool, transformMode: 'select' }),
+  markPaintMaskChanged: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
+  clearPaintMask: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
   setImportSettings: (settings) =>
     set((state) => ({ importSettings: { ...state.importSettings, ...settings } })),
   setOrbitControlsEnabled: (enabled) => get().viewport?.controls?.setEnabled(enabled),
@@ -111,6 +123,16 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
           ? { ...state.importedModel, boundingBox }
           : state.importedModel,
     })),
+  toggleObjectVisibility: (objectId) =>
+    set((state) => {
+      const objects = state.objects.map((object) =>
+        object.id === objectId ? { ...object, visible: !object.visible } : object,
+      );
+      if (state.importedModel?.objectId === objectId) {
+        state.importedModel.group.visible = objects.find((object) => object.id === objectId)?.visible ?? true;
+      }
+      return { objects };
+    }),
   requestCameraRestore: (camera) =>
     set({ restoreCameraRequest: { camera, nonce: (get().restoreCameraRequest?.nonce ?? 0) + 1 } }),
 }));

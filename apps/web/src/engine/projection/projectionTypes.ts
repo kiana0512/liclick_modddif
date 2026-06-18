@@ -4,11 +4,21 @@ import type { SerializedCamera } from '@/types/capture';
 export type ProjectionLayerInput = {
   layerId: string;
   imageUrl: string;
+  maskUrl?: string;
+  depthUrl?: string;
   camera: SerializedCamera;
   objectId: string;
   opacity: number;
   visible: boolean;
   depthTest: boolean;
+  useMask?: boolean;
+  useDepthCheck?: boolean;
+  enableBackfaceCulling?: boolean;
+  edgeFeather?: number;
+  depthBias?: number;
+  hue?: number;
+  saturation?: number;
+  lightness?: number;
 };
 
 export type ProjectionMatrixBundle = {

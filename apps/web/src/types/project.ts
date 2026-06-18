@@ -4,12 +4,13 @@ import type { Layer } from './layer';
 import type { DisplayMode, ProjectionMode, SceneObject } from './model';
 import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
 
-export type WorkspaceMode = 'none' | 'file-system-access' | 'download-fallback';
+export type WorkspaceMode = 'none' | 'file-system-access' | 'download-fallback' | 'local-server';
 
 export type AssetManifest = {
   models: string[];
   references: string[];
   generations: string[];
+  captures?: string[];
   layers: string[];
   baked: string[];
 };
@@ -44,6 +45,11 @@ export type Project = {
   bakedTextures: BakedTexture[];
   workspaceName?: string;
   workspaceMode?: WorkspaceMode;
+  folderId?: string | null;
+  currentMode?: string;
+  activeObjectId?: string;
+  activeLayerId?: string;
+  workspaceVersion?: string;
   lastSavedAt?: string;
   dirty?: boolean;
   assetManifest?: AssetManifest;

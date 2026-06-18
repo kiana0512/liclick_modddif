@@ -6,6 +6,8 @@ The engine lives under `apps/web/src/engine` and should remain separate from UI 
 
 Owns the R3F `Canvas`, background, camera defaults, and viewport overlay.
 
+Phase 5 keeps the viewport as the primary workspace surface. Left and right UI modules now float over the viewport as dock panels, so engine code should not assume the canvas has been narrowed by fixed sidebars.
+
 ## SceneRoot
 
 Owns lights, grid, default primitive model, material mode switching, and selection behavior. Real imported GLB scene roots should be inserted here or through a dedicated scene registry.
@@ -26,7 +28,7 @@ Uses Liclick purple/orange tones for editor orientation. The grid is visual only
 
 ## ViewCube
 
-Currently a UI placeholder. Later it should control camera orientation and expose front/back/left/right/top/bottom snaps.
+The ViewCube is a viewport overlay anchored at the right-top corner above dock panels and toolbars. It reads the active camera and OrbitControls target from `sceneStore.viewport`, rotates a CSS 3D cube to match the camera direction, and labels the dominant view face: Front, Back, Left, Right, Top, or Bottom.
 
 ## Selection
 
@@ -45,13 +47,19 @@ Transform actions are kept under `engine/scene/transformActions.ts`:
 
 ## Display Modes
 
-- PBR: MeshStandardMaterial preview.
-- Flat: unlit MeshBasicMaterial.
+- PBR: MeshStandardMaterial preview with sRGB textures, ACES tone mapping, studio lighting, and fallback material repair for dark or missing materials.
+- Flat: unlit MeshBasicMaterial using baked/base color texture when available.
 - Normal: MeshNormalMaterial.
 - Wire: wireframe material.
 - Segmentation: later material override based on object/segment ids.
 
 Normal mode is a debug preview. The UI should tell users that the colors visualize surface normals and are not the final texture result.
+
+The top workspace modes are UI modes, not new render engines:
+
+- Texture mode uses the existing PBR / Flat / Normal / Wire display controls.
+- Normal mode switches the viewport to normal display and shows normal-related panels.
+- Segments and Export modes show placeholder panel groups until their real engine paths are implemented.
 
 ## Capture Passes
 
@@ -68,9 +76,7 @@ All capture passes restore object visibility and materials after rendering.
 
 ## Projected Layer Material
 
-`ProjectedLayerMaterial.ts` is the current shader projection preview path. Future versions should add stricter depth checks and multi-layer compositing.
-
-Phase 2 replaces the stub with a basic custom `ShaderMaterial`. It projects world-space fragments into the saved capture camera clip space, samples the generated texture, and blends it with a simple shaded base color using layer opacity. The current preview guarantees the active visible projected layer; multi-layer compositing and depth checks are future work.
+`ProjectedLayerMaterial.ts` is the shader projection preview path. It projects world-space fragments into the saved capture camera clip space, rejects pixels outside the projector frustum, applies edge feathering, backface rejection, optional mask sampling, and an MVP grayscale depth comparison before blending the generated image by layer opacity.
 
 `three-projected-material` is installed but not directly coupled to business logic. The current implementation uses the Liclick shader adapter so the projection path remains under local control.
 

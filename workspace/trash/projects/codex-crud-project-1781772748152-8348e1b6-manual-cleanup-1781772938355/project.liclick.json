@@ -1,0 +1,33 @@
+{
+  "id": "project-b8dc879e-af01-435f-b603-cfae8348e1b6",
+  "name": "Codex CRUD Project 1781772748152",
+  "folderId": "folder-d611c045-bde6-490c-8bdb-0b4585cc2504",
+  "createdAt": "2026-06-18T08:52:28.304Z",
+  "updatedAt": "2026-06-18T08:52:28.304Z",
+  "thumbnail": "",
+  "objects": [],
+  "references": [],
+  "captures": [],
+  "generations": [],
+  "layers": [],
+  "bakedTextures": [],
+  "settings": {
+    "resolution": "2K",
+    "displayMode": "pbr",
+    "projectionMode": "perspective",
+    "colorManagement": "srgb"
+  },
+  "currentMode": "texture",
+  "workspaceVersion": "0.6.0",
+  "workspaceName": "codex-crud-project-1781772748152-8348e1b6",
+  "workspaceMode": "local-server",
+  "dirty": false,
+  "assetManifest": {
+    "models": [],
+    "references": [],
+    "captures": [],
+    "generations": [],
+    "layers": [],
+    "baked": []
+  }
+}
