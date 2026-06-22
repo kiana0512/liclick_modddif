@@ -29,6 +29,15 @@ export type ProjectSettings = {
   displayMode: DisplayMode;
   projectionMode: ProjectionMode;
   colorManagement: 'srgb' | 'linear';
+  imageGeneration?: {
+    model: string;
+    aspectRatio: string;
+    imageSize: string;
+    count: number;
+    prompt?: string;
+    mode?: 'visible' | 'upscale';
+    upscaleStrength?: number;
+  };
 };
 
 export type Project = {

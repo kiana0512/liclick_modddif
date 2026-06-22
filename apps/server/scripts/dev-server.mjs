@@ -1,11 +1,26 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const children = new Set();
+const serverRoot = new URL('..', import.meta.url);
+const useShell = process.platform === 'win32';
+
+function runInitialBuild() {
+  const result = spawnSync('tsc', ['-p', 'tsconfig.json'], {
+    cwd: serverRoot,
+    shell: useShell,
+    stdio: 'inherit',
+  });
+  if (result.status && result.status !== 0) process.exit(result.status);
+  if (result.error) {
+    console.error(result.error);
+    process.exit(1);
+  }
+}
 
 function run(command, args, label) {
   const child = spawn(command, args, {
-    cwd: new URL('..', import.meta.url),
-    shell: process.platform === 'win32',
+    cwd: serverRoot,
+    shell: useShell,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -33,5 +48,6 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
+runInitialBuild();
 run('tsc', ['-p', 'tsconfig.json', '--watch', '--preserveWatchOutput', 'false'], 'server:tsc');
 run('node', ['--watch', 'dist/index.js'], 'server');

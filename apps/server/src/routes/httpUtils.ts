@@ -1,11 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 
-const allowedOrigins = new Set([
-  serverConfig.frontendUrl,
-  'http://127.0.0.1:5173',
-  'http://localhost:5173',
-]);
+const allowedOrigins = new Set(serverConfig.allowedOrigins);
 
 export async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
@@ -18,7 +14,7 @@ export async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
 
 export function sendJson(response: ServerResponse, statusCode: number, data: unknown) {
   const requestOrigin = response.req.headers.origin;
-  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendUrl;
+  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendOrigin;
   response.writeHead(statusCode, {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': allowOrigin,
@@ -31,7 +27,7 @@ export function sendJson(response: ServerResponse, statusCode: number, data: unk
 
 export function sendNoContent(response: ServerResponse) {
   const requestOrigin = response.req.headers.origin;
-  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendUrl;
+  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendOrigin;
   response.writeHead(204, {
     'access-control-allow-origin': allowOrigin,
     'access-control-allow-credentials': 'true',

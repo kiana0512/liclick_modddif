@@ -50,8 +50,9 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
         clearDrag();
       }}
       className={cn(
-        'pointer-events-none absolute bottom-[var(--workspace-bottom-offset)] z-20 hidden max-h-[calc(100%-var(--workspace-top-offset)-var(--workspace-bottom-offset))] flex-col justify-end rounded-lg border border-transparent transition-[border,background,box-shadow] lg:flex',
-        side === 'left' ? 'left-3' : 'right-3',
+        'pointer-events-none absolute bottom-[var(--workspace-bottom-offset)] z-20 hidden flex-col justify-end rounded-lg border border-transparent transition-[border,background,box-shadow] lg:flex',
+        side === 'left' && 'left-3 max-h-[calc(100%-var(--workspace-left-top-offset)-var(--workspace-bottom-offset))]',
+        side === 'right' && 'right-3 max-h-[calc(100%-var(--workspace-right-top-offset)-var(--workspace-bottom-offset))]',
         side === 'left' && 'w-[var(--dock-left-width)]',
         side === 'right' && 'w-[var(--dock-right-width)]',
         isPanelDragging && 'pointer-events-auto',
@@ -61,7 +62,7 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
     >
       <div
         className={cn(
-          'pointer-events-auto flex max-h-full flex-col gap-2 overflow-x-hidden rounded-lg p-1 overscroll-contain [scrollbar-gutter:stable]',
+          'scrollbar-none pointer-events-auto flex max-h-full flex-col gap-2 overflow-x-hidden rounded-lg p-1 overscroll-contain',
           allPanelsCollapsed ? 'overflow-y-visible' : 'overflow-y-auto',
         )}
         onWheel={(event) => {

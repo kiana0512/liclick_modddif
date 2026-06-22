@@ -1,5 +1,4 @@
 import type { Project } from '@/types/project';
-import { mockReferences } from './mockReferences';
 
 const now = '2026-06-18T09:00:00.000Z';
 
@@ -28,7 +27,7 @@ export const mockProjects: Project[] = [
         selected: true,
       },
     ],
-    references: mockReferences,
+    references: [],
     captures: [],
     generations: [],
     layers: [],

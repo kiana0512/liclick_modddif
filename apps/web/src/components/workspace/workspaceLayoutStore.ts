@@ -6,19 +6,18 @@ export const defaultWorkspacePanels: WorkspacePanelState[] = [
   { id: 'segments', title: 'Segments', dock: 'left', order: 10, collapsed: true, visible: true, mode: 'texture' },
   { id: 'quickMask', title: 'Quick Mask', dock: 'left', order: 20, collapsed: true, visible: true, mode: 'texture' },
   { id: 'objects', title: 'Objects', dock: 'left', order: 30, collapsed: true, visible: true, mode: 'texture' },
-  { id: 'generate', title: 'Generate', dock: 'left', order: 40, collapsed: false, visible: true, mode: 'texture' },
-  { id: 'references', title: 'References', dock: 'left', order: 50, collapsed: true, visible: true, mode: 'texture' },
+  { id: 'generate', title: 'Generate', dock: 'left', order: 40, collapsed: true, visible: true, mode: 'texture' },
   {
     id: 'layerAdjustments',
     title: 'Layer Adjustments',
     dock: 'right',
     order: 10,
-    collapsed: false,
+    collapsed: true,
     visible: true,
     mode: 'texture',
   },
-  { id: 'viewport', title: 'Viewport', dock: 'right', order: 20, collapsed: false, visible: true, mode: 'texture' },
-  { id: 'layers', title: 'Layers', dock: 'right', order: 30, collapsed: false, visible: true, mode: 'texture' },
+  { id: 'viewport', title: 'Viewport', dock: 'right', order: 20, collapsed: true, visible: true, mode: 'texture' },
+  { id: 'layers', title: 'Layers', dock: 'right', order: 30, collapsed: true, visible: true, mode: 'texture' },
   {
     id: 'objectTransform',
     title: 'Object Transform',
@@ -125,18 +124,13 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutStore>()(
           panels: state.panels.map((panel) => {
             if (mode === 'texture') {
               if (
-                panel.id === 'generate' ||
-                panel.id === 'layerAdjustments' ||
-                panel.id === 'viewport' ||
-                panel.id === 'layers'
-              ) {
-                return { ...panel, collapsed: false };
-              }
-              if (
                 panel.id === 'segments' ||
                 panel.id === 'quickMask' ||
                 panel.id === 'objects' ||
-                panel.id === 'references' ||
+                panel.id === 'generate' ||
+                panel.id === 'layerAdjustments' ||
+                panel.id === 'viewport' ||
+                panel.id === 'layers' ||
                 panel.id === 'objectTransform'
               ) {
                 return { ...panel, collapsed: true };
@@ -155,7 +149,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutStore>()(
         })),
     }),
     {
-      name: 'liclick-workspace-layout-v1',
+      name: 'liclick-workspace-layout-v2',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ mode: state.mode, dockDensity: state.dockDensity, panels: state.panels }),
     },

@@ -4,9 +4,10 @@ import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
 import { GeneratePanel } from '@/components/panels/GeneratePanel';
 import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel';
-import { LayersPanel } from '@/components/panels/LayersPanel';
-import { ObjectsPanel } from '@/components/panels/ObjectsPanel';
-import { ReferenceImagesPanel } from '@/components/panels/ReferenceImagesPanel';
+import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
+import { ObjectsPanel, ObjectsPanelActions } from '@/components/panels/ObjectsPanel';
+import { QuickMaskPanel, QuickMaskPanelActions } from '@/components/panels/QuickMaskPanel';
+import { SegmentsPanel, SegmentsPanelActions } from '@/components/panels/SegmentsPanel';
 import { ViewportPanel } from '@/components/panels/ViewportPanel';
 import { Button } from '@/components/ui/Button';
 import { WorkspaceModeShell } from '@/components/workspace/WorkspaceModeShell';
@@ -23,18 +24,13 @@ import { canRecordTurntable, exportTurntableWebm } from '@/engine/export/exportT
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { EditorShell } from '@/layouts/EditorShell';
-import {
-  getRecentWorkspaceHandle,
-  saveProjectAsWorkspace,
-  saveProjectToWorkspace,
-} from '@/services/localWorkspaceService';
-import { downloadProjectJson, importProjectJson } from '@/services/projectService';
+import { importProjectJson } from '@/services/projectService';
 import {
   fileToDataUrl,
   isWorkspaceAssetUrl,
-  exportProjectPackage,
   loadProject as loadWorkspaceProject,
   saveDataUrlAsset,
+  saveRemoteUrlAsset,
   saveProject as saveWorkspaceProject,
   urlToDataUrl,
 } from '@/services/workspaceApiClient';
@@ -46,8 +42,8 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useToastStore } from '@/stores/toastStore';
-import type { Project } from '@/types/project';
 import type { SceneObject } from '@/types/model';
+import type { Project } from '@/types/project';
 
 type EditorPageProps = {
   projectId: string;
@@ -62,6 +58,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const restoredModelKeyRef = useRef<string>();
   const autosaveTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>('idle');
+  const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>('idle');
   const projects = useProjectStore((state) => state.projects);
   const setCurrentProject = useProjectStore((state) => state.setCurrentProject);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
@@ -91,7 +88,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setReferences = useReferenceStore((state) => state.setReferences);
   const pushToast = useToastStore((state) => state.pushToast);
   const t = useT();
-  const currentWorkspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const workspacePanels = useWorkspaceLayoutStore((state) => state.panels);
   const setPanelCollapsed = useWorkspaceLayoutStore((state) => state.setPanelCollapsed);
   const showPanel = useWorkspaceLayoutStore((state) => state.showPanel);
@@ -99,10 +95,45 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const redo = useEditorHistoryStore((state) => state.redo);
   const canUndo = useEditorHistoryStore((state) => state.past.length > 0);
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
-  const project = projects.find((item) => item.id === projectId) ?? projects[0];
+  const project = projects.find((item) => item.id === projectId);
   const activeLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
   const activeBakedTexture = project?.bakedTextures.find((texture) => texture.id === activeLayer?.bakedTextureId);
   const normalMapTexture = findNormalMapTexture(importedModel);
+
+  useEffect(() => {
+    setRouteProjectStatus('idle');
+  }, [projectId]);
+
+  useEffect(() => {
+    if (project) {
+      setRouteProjectStatus('idle');
+      return;
+    }
+    if (routeProjectStatus !== 'idle') return;
+    setRouteProjectStatus('loading');
+    void loadWorkspaceProject(projectId)
+      .then((result) => {
+        serverLoadedProjectIdRef.current = result.project.id;
+        replaceCurrentProject(result.project);
+        setObjects(result.project.objects.filter((object) => object.format !== 'primitive'));
+        setLayers(result.project.layers);
+        setGenerations(result.project.generations, result.project.id);
+        setReferences(result.project.references);
+        void restoreProjectModel(result.project);
+        setRouteProjectStatus('idle');
+      })
+      .catch(() => {
+        setRouteProjectStatus('missing');
+        pushToast({
+          tone: 'error',
+          title: t('projectLoadFailed'),
+          description: t('projectLoadFailedHelp'),
+          dedupeKey: `project-load:${projectId}`,
+        });
+      });
+    // restoreProjectModel is intentionally not a dependency; this effect should run once per route project id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, projectId, pushToast, replaceCurrentProject, routeProjectStatus, setGenerations, setLayers, setObjects, setReferences, t]);
 
   useEffect(() => {
     if (!project) return;
@@ -111,11 +142,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     setCurrentProject(project.id);
     setObjects(project.objects.filter((object) => object.format !== 'primitive'));
     setLayers(project.layers);
-    setGenerations(project.generations);
+    setGenerations(project.generations, project.id);
+    setReferences(project.references);
     void restoreProjectModel(project);
     // restoreProjectModel is intentionally not a dependency; this effect should run once per project id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, setCurrentProject, setGenerations, setLayers, setObjects]);
+  }, [project, setCurrentProject, setGenerations, setLayers, setObjects, setReferences]);
 
   useEffect(() => {
     if (!project || project.workspaceMode !== 'local-server') return;
@@ -126,7 +158,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         replaceCurrentProject(result.project);
         setObjects(result.project.objects.filter((object) => object.format !== 'primitive'));
         setLayers(result.project.layers);
-        setGenerations(result.project.generations);
+        setGenerations(result.project.generations, result.project.id);
         setReferences(result.project.references);
         void restoreProjectModel(result.project);
       })
@@ -271,6 +303,15 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     };
   }
 
+  function isPersistableRemoteAssetUrl(url: string) {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' && parsed.hostname === 'ai-assets.lilithgames.com';
+    } catch {
+      return false;
+    }
+  }
+
   async function restoreProjectModel(projectToRestore: Project) {
     const object = projectToRestore.objects.find((item) => item.format !== 'primitive' && item.sourcePath);
     if (!object?.sourcePath) {
@@ -318,7 +359,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     category: 'models' | 'references' | 'captures' | 'generations' | 'layers' | 'baked',
     filename: string,
   ) {
-    if (!url || isWorkspaceAssetUrl(url) || (!url.startsWith('data:') && !url.startsWith('blob:'))) return url;
+    if (!url || isWorkspaceAssetUrl(url)) return url;
+    if (url.startsWith('http')) {
+      if (!isPersistableRemoteAssetUrl(url)) return url;
+      const result = await saveRemoteUrlAsset({ projectId, category, url, filename });
+      return result.asset.relativePath;
+    }
+    if (!url.startsWith('data:') && !url.startsWith('blob:')) return url;
     const dataUrl = url.startsWith('data:') ? url : await urlToDataUrl(url);
     const result = await saveDataUrlAsset({ projectId, category, dataUrl, filename });
     return result.asset.relativePath;
@@ -424,113 +471,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
-  async function applyWorkspaceSaveResult(result: Awaited<ReturnType<typeof saveProjectToWorkspace>>) {
-    if (result.mode === 'download-fallback') {
-      const snapshot = getProjectSnapshot();
-      if (snapshot) downloadProjectJson(snapshot);
-      setWorkspaceState({ workspaceMode: 'download-fallback', dirty: false, lastSavedAt: result.lastSavedAt });
-      pushToast({
-        tone: 'warning',
-        title: 'Browser fallback: Download JSON only.',
-        description: 'Use Chrome or Edge File System Access API for folder-based project save.',
-      });
-      setSaveStatus('saved');
-      return;
-    }
-
-    markSaved(result.lastSavedAt, result.project.assetManifest);
-    setWorkspaceState({
-      workspaceName: result.workspaceName,
-      workspaceMode: 'file-system-access',
-      lastSavedAt: result.lastSavedAt,
-      dirty: false,
-      assetManifest: result.project.assetManifest,
-    });
-    pushToast({
-      tone: 'success',
-      title: 'Project saved locally.',
-      description: `Saved to ${result.workspaceName ?? 'selected workspace'}.`,
-    });
-    setSaveStatus('saved');
-  }
-
-  async function handleSaveProject() {
-    const snapshot = getProjectSnapshot();
-    if (!snapshot) return;
-    try {
-      setSaveStatus('saving');
-      if (snapshot.workspaceMode === 'local-server') {
-        await saveToWorkspaceServer(snapshot);
-        setSaveStatus('saved');
-        return;
-      }
-      const recentWorkspace = await getRecentWorkspaceHandle();
-      const result = recentWorkspace
-        ? await saveProjectToWorkspace(snapshot, recentWorkspace)
-        : await saveProjectAsWorkspace(snapshot);
-      await applyWorkspaceSaveResult(result);
-    } catch (error) {
-      console.error('[Liclick 3D Texture] Save project failed:', error);
-      setSaveStatus(project?.workspaceMode === 'local-server' ? 'offline' : 'failed');
-      pushToast({
-        tone: 'error',
-        title:
-          project?.workspaceMode === 'local-server'
-            ? 'Local workspace server is not running.'
-            : 'Save failed',
-        description:
-          project?.workspaceMode === 'local-server'
-            ? 'Start it with corepack pnpm dev:server.'
-            : error instanceof Error
-              ? error.message
-              : 'Could not save this project.',
-        dedupeKey: project?.workspaceMode === 'local-server' ? 'workspace-server-offline' : undefined,
-      });
-    }
-  }
-
-  async function handleSaveAsProject() {
-    const snapshot = getProjectSnapshot();
-    if (!snapshot) return;
-    try {
-      setSaveStatus('saving');
-      await applyWorkspaceSaveResult(await saveProjectAsWorkspace(snapshot));
-    } catch (error) {
-      console.error('[Liclick 3D Texture] Save As failed:', error);
-      setSaveStatus('failed');
-      pushToast({
-        tone: 'error',
-        title: 'Save As failed',
-        description: error instanceof Error ? error.message : 'Could not choose a project workspace.',
-      });
-    }
-  }
-
-  async function handleExportProjectPackage() {
-    if (!project) return;
-    if (project.workspaceMode !== 'local-server') {
-      await handleSaveAsProject();
-      return;
-    }
-    try {
-      const result = await exportProjectPackage(project.id);
-      pushToast({
-        tone: 'info',
-        title: 'Coming soon: Project Package',
-        description: result.message,
-        dedupeKey: 'coming-soon:project-package',
-      });
-    } catch {
-      setSaveStatus('offline');
-      pushToast({
-        tone: 'error',
-        title: 'Local workspace server is not running.',
-        description: 'Start it with corepack pnpm dev:server.',
-        dedupeKey: 'workspace-server-offline',
-      });
-    }
-  }
-
   async function handleLoadProject(file: File) {
     try {
       const importedProject = await importProjectJson(file);
@@ -538,7 +478,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       replaceCurrentProject(importedProject);
       setObjects(importedProject.objects);
       setLayers(importedProject.layers);
-      setGenerations(importedProject.generations);
+      setGenerations(importedProject.generations, importedProject.id);
       setReferences(importedProject.references);
       pushToast({
         tone: 'success',
@@ -559,12 +499,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   function getWorkspaceLabel() {
     if (!project) return undefined;
-    const workspaceName = project.workspaceName ?? 'No workspace';
-    if (saveStatus === 'saving') return `${workspaceName} / Saving...`;
-    if (saveStatus === 'failed') return `${workspaceName} / Save failed`;
-    if (saveStatus === 'offline') return `${workspaceName} / Offline`;
-    if (project.dirty) return `${workspaceName} / Unsaved`;
-    return `${workspaceName} / ${saveStatus === 'saved' ? 'Saved' : 'Saved'}`;
+    if (saveStatus === 'saving') return 'Saving...';
+    if (saveStatus === 'failed') return 'Save failed';
+    if (saveStatus === 'offline') return 'Offline';
+    if (project.dirty) return 'Unsaved';
+    return 'Saved';
   }
 
   function handleExportBaseColorDownload() {
@@ -657,8 +596,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }
 
   function handleReferenceLinkFromToolbar() {
-    showPanel('references');
-    setPanelCollapsed('references', false);
+    showPanel('generate');
+    setPanelCollapsed('generate', false);
+    pushToast({
+      tone: 'info',
+      title: t('referenceImage'),
+      description: t('referenceLinkToolHelp'),
+      dedupeKey: 'reference-link-ready',
+    });
   }
 
   const panelDefinitions = ([
@@ -670,12 +615,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       collapsed: workspacePanels.find((panel) => panel.id === 'segments')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
-      content: (
-        <WorkspaceModeShell
-          title={t('segmentTools')}
-          description={t('segmentToolsDescription')}
-        />
-      ),
+      actions: <SegmentsPanelActions />,
+      content: <SegmentsPanel />,
     },
     {
       id: 'quickMask',
@@ -685,16 +626,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       collapsed: workspacePanels.find((panel) => panel.id === 'quickMask')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
-      content: (
-        <WorkspaceModeShell
-          title={t('segmentsMode')}
-          description={t('quickMaskDescription')}
-        >
-          <Button className="w-full" disabled title={t('quickMaskSoon')}>
-            {t('quickMask')}
-          </Button>
-        </WorkspaceModeShell>
-      ),
+      actions: <QuickMaskPanelActions />,
+      content: <QuickMaskPanel />,
     },
     {
       id: 'objects',
@@ -704,6 +637,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       collapsed: workspacePanels.find((panel) => panel.id === 'objects')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
+      actions: <ObjectsPanelActions />,
       content: <ObjectsPanel />,
     },
     {
@@ -711,20 +645,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       title: t('generatePanel'),
       dock: 'left',
       order: 40,
-      collapsed: workspacePanels.find((panel) => panel.id === 'generate')?.collapsed ?? false,
+      collapsed: workspacePanels.find((panel) => panel.id === 'generate')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
       content: <GeneratePanel />,
-    },
-    {
-      id: 'references',
-      title: t('references'),
-      dock: 'left',
-      order: 50,
-      collapsed: workspacePanels.find((panel) => panel.id === 'references')?.collapsed ?? true,
-      visible: true,
-      mode: 'texture',
-      content: <ReferenceImagesPanel />,
     },
     {
       id: 'layerAdjustments',
@@ -733,7 +657,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       order: 10,
       collapsed:
         workspacePanels.find((panel) => panel.id === 'layerAdjustments')?.collapsed ??
-        false,
+        true,
       visible: true,
       mode: 'texture',
       content: <LayerAdjustmentsPanel />,
@@ -743,7 +667,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       title: t('viewport'),
       dock: 'right',
       order: 20,
-      collapsed: workspacePanels.find((panel) => panel.id === 'viewport')?.collapsed ?? false,
+      collapsed: workspacePanels.find((panel) => panel.id === 'viewport')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
       content: <ViewportPanel />,
@@ -753,9 +677,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       title: t('layers'),
       dock: 'right',
       order: 30,
-      collapsed: workspacePanels.find((panel) => panel.id === 'layers')?.collapsed ?? false,
+      collapsed: workspacePanels.find((panel) => panel.id === 'layers')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
+      actions: <LayersPanelActions />,
       content: <LayersPanel />,
     },
     {
@@ -843,6 +768,24 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     };
   });
 
+  if (!project) {
+    return (
+      <main className="liclick-surface grid min-h-screen place-items-center px-6 text-white">
+        <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
+          <div className="text-lg font-semibold">
+            {routeProjectStatus === 'missing' ? t('projectLoadFailed') : t('projectLoading')}
+          </div>
+          <p className="mt-2 text-sm leading-6 text-white/54">
+            {routeProjectStatus === 'missing' ? t('projectLoadFailedHelp') : t('projectLoadingHelp')}
+          </p>
+          <Button className="mt-5" onClick={onBack}>
+            {t('projects')}
+          </Button>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <>
       <input
@@ -869,13 +812,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         projectName={project?.name ?? 'Untitled Project'}
         workspaceLabel={getWorkspaceLabel()}
         onBack={onBack}
-        onImportModel={() => modelInputRef.current?.click()}
-        onSaveProject={handleSaveProject}
-        onExportProjectPackage={handleExportProjectPackage}
-        onLoadProject={onBack}
         exportMenu={
           <ExportMenu
-            modeIsExport={currentWorkspaceMode === 'export'}
             canExportScene={Boolean(importedModel && viewport)}
             canExportObject={Boolean(importedModel && selectedObjectId)}
             canExportColor={Boolean(activeLayer && activeBakedTexture)}
@@ -892,9 +830,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               turntable: t('turntable'),
               color: t('color'),
               normal: t('normal'),
-              segmentsColorId: t('segmentsColorId'),
-              comingSoon: t('comingSoon'),
-              pro: t('pro'),
               bakeFirst: t('bakeBaseColorFirst'),
               importModelFirst: t('importModelFirst'),
               selectObjectFirst: t('selectObjectFirst'),
@@ -927,6 +862,15 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               referenceLink: t('referenceLink'),
               undo: t('undo'),
               redo: t('redo'),
+              selectHelp: t('selectToolHelp'),
+              moveHelp: t('moveToolHelp'),
+              rotateHelp: t('rotateToolHelp'),
+              scaleHelp: t('scaleToolHelp'),
+              layersHelp: t('layersToolHelp'),
+              brushHelp: t('brushToolHelp'),
+              eraserHelp: t('eraserToolHelp'),
+              localRepaintHelp: t('localRepaintToolHelp'),
+              referenceLinkHelp: t('referenceLinkToolHelp'),
             }}
           />
         }

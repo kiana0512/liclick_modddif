@@ -43,6 +43,11 @@ function updateProject(projects: Project[], projectId: string, patch: Partial<Pr
   );
 }
 
+function upsertGeneration(generations: Generation[], generation: Generation) {
+  const exists = generations.some((item) => item.id === generation.id);
+  return exists ? generations.map((item) => (item.id === generation.id ? generation : item)) : [generation, ...generations];
+}
+
 export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: mockProjects,
   currentProjectId: mockProjects[0]?.id ?? '',
@@ -111,7 +116,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const project = state.projects.find((item) => item.id === state.currentProjectId);
       return {
         projects: updateProject(state.projects, state.currentProjectId, {
-          generations: [generation, ...(project?.generations ?? [])],
+          generations: upsertGeneration(project?.generations ?? [], generation),
         }),
       };
     }),

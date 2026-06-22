@@ -35,9 +35,15 @@ type AtlasClaims = {
 
 function atlasScriptPath() {
   const appData = process.env.APPDATA;
+  const explicitPath = process.env.ATLAS_SKILLHUB_PATH;
   const candidates = [
+    explicitPath ?? '',
     appData ? path.join(appData, 'npm', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js') : '',
     path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js'),
+    path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js'),
+    path.join(os.homedir(), '.local', 'lib', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js'),
+    '/usr/local/lib/node_modules/@lilith/atlas-skillhub/dist/index.js',
+    '/usr/lib/node_modules/@lilith/atlas-skillhub/dist/index.js',
   ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
@@ -50,7 +56,7 @@ function trimOutput(text: string) {
   return text.trim().replace(/\s+/g, ' ').slice(0, 1000);
 }
 
-function parseJsonFromOutput(text: string) {
+export function parseJsonFromOutput(text: string) {
   const raw = text.trim();
   if (!raw) return {};
   try {
@@ -63,7 +69,7 @@ function parseJsonFromOutput(text: string) {
   }
 }
 
-function runAtlas(args: string[], timeoutMs: number, allowNonZero = false) {
+export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false) {
   const script = atlasScriptPath();
   if (!script) {
     return Promise.reject(
@@ -122,6 +128,18 @@ function decodeJwtClaims(token?: string) {
   }
 }
 
+export function getAtlasIdentity() {
+  const tokenCache = readAtlasTokenCache();
+  const claims = decodeJwtClaims(tokenCache.access_token);
+  const email = claims.email ?? claims.username ?? claims.sub;
+  const displayName = claims.name ?? claims.ouName ?? claims.idpUsername ?? email ?? 'Liclick User';
+  return {
+    email,
+    displayName,
+    userId: email ? `atlas-${email.toLowerCase()}` : undefined,
+  };
+}
+
 function avatarDataUrl(displayName: string, email?: string) {
   const hue = Math.abs([...`${displayName}${email ?? ''}`].reduce((sum, char) => sum + char.charCodeAt(0), 0)) % 360;
   const initial = (displayName.trim() || email?.trim() || 'L').slice(0, 1).toUpperCase();
@@ -151,10 +169,7 @@ export async function ensureAtlasLogin() {
 export async function completeAtlasLogin(request: IncomingMessage, response: ServerResponse) {
   const status = await ensureAtlasLogin();
   if (!status.valid) throw new Error('莉刻/Atlas 登录未完成，请在浏览器里完成飞书/IDaaS 登录后重试。');
-  const tokenCache = readAtlasTokenCache();
-  const claims = decodeJwtClaims(tokenCache.access_token);
-  const email = claims.email ?? claims.username ?? claims.sub;
-  const displayName = claims.name ?? claims.ouName ?? claims.idpUsername ?? email ?? 'Liclick User';
+  const { email, displayName } = getAtlasIdentity();
   const user = await upsertUser({
     id: email ? `atlas-${email.toLowerCase()}` : undefined,
     displayName,

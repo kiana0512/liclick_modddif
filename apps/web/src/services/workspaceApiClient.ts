@@ -1,6 +1,7 @@
 import type { Project } from '@/types/project';
+import { getWorkspaceApiBase } from './workspaceApiBase';
 
-const workspaceApiBase = import.meta.env.VITE_LICLICK_WORKSPACE_API ?? 'http://localhost:4517';
+const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
 export class WorkspaceApiError extends Error {
   status: number;
@@ -153,6 +154,22 @@ export async function saveDataUrlAsset(input: {
     {
       method: 'POST',
       body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function saveRemoteUrlAsset(input: {
+  projectId: string;
+  category: AssetCategory;
+  url: string;
+  filename: string;
+}) {
+  return requestJson<{ asset: { category: AssetCategory; relativePath: string; url: string } }>(
+    `/api/projects/${input.projectId}/assets`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+      timeoutMs: 45_000,
     },
   );
 }

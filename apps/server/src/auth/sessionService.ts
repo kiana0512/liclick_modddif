@@ -13,7 +13,7 @@ import {
   readJsonFile,
   writeJsonFile,
 } from '../services/workspaceService.js';
-import type { AuthDatabase, AuthSource, AuthUser, FeishuAccount, UserSession } from './authTypes.js';
+import type { AuthDatabase, AuthSource, AuthUser, UserSession } from './authTypes.js';
 
 const emptyAuthDatabase: AuthDatabase = {
   users: [],
@@ -195,82 +195,6 @@ export async function upsertUser(input: {
     return {
       ...database,
       users: existing ? database.users.map((item) => (item.id === existing.id ? user : item)) : [...database.users, user],
-    };
-  });
-  await ensureUserWorkspace(savedUser!.id);
-  return savedUser!;
-}
-
-export async function upsertFeishuUser(input: {
-  feishuOpenId?: string;
-  feishuUnionId?: string;
-  feishuUserId?: string;
-  tenantKey?: string;
-  displayName: string;
-  email?: string;
-  avatarUrl?: string;
-  rawProfileJson?: string;
-}) {
-  let savedUser: AuthUser | undefined;
-  await updateAuthDatabase((database) => {
-    const now = new Date().toISOString();
-    const matchingAccount = database.feishuAccounts.find((account) =>
-      Boolean(
-        (input.feishuUnionId && account.feishuUnionId === input.feishuUnionId) ||
-          (input.feishuOpenId && account.feishuOpenId === input.feishuOpenId) ||
-          (input.feishuUserId && account.feishuUserId === input.feishuUserId),
-      ),
-    );
-    const matchingUser =
-      (matchingAccount && database.users.find((user) => user.id === matchingAccount.userId)) ||
-      (input.email
-        ? database.users.find((user) => user.email?.toLowerCase() === input.email?.toLowerCase())
-        : undefined);
-    const user: AuthUser = matchingUser
-      ? {
-          ...matchingUser,
-          displayName: input.displayName,
-          email: input.email ?? matchingUser.email,
-          avatarUrl: input.avatarUrl ?? matchingUser.avatarUrl,
-          authSource: 'feishu-oauth',
-          updatedAt: now,
-          lastLoginAt: now,
-        }
-      : {
-          id: createId('user'),
-          displayName: input.displayName,
-          email: input.email,
-          avatarUrl: input.avatarUrl,
-          role: 'user',
-          status: 'active',
-          authSource: 'feishu-oauth',
-          createdAt: now,
-          updatedAt: now,
-          lastLoginAt: now,
-        };
-    const account: FeishuAccount = {
-      id: matchingAccount?.id ?? createId('feishu'),
-      userId: user.id,
-      feishuOpenId: input.feishuOpenId,
-      feishuUnionId: input.feishuUnionId,
-      feishuUserId: input.feishuUserId,
-      tenantKey: input.tenantKey,
-      name: input.displayName,
-      email: input.email,
-      avatarUrl: input.avatarUrl,
-      rawProfileJson: input.rawProfileJson,
-      createdAt: matchingAccount?.createdAt ?? now,
-      updatedAt: now,
-    };
-    savedUser = user;
-    return {
-      ...database,
-      users: matchingUser
-        ? database.users.map((item) => (item.id === matchingUser.id ? user : item))
-        : [...database.users, user],
-      feishuAccounts: matchingAccount
-        ? database.feishuAccounts.map((item) => (item.id === matchingAccount.id ? account : item))
-        : [...database.feishuAccounts, account],
     };
   });
   await ensureUserWorkspace(savedUser!.id);

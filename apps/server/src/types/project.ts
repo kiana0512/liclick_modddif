@@ -3,6 +3,15 @@ export type WorkspaceProjectSettings = {
   displayMode: string;
   projectionMode: string;
   colorManagement: 'srgb' | 'linear';
+  imageGeneration?: {
+    model: string;
+    aspectRatio: string;
+    imageSize: string;
+    count: number;
+    prompt?: string;
+    mode?: 'visible' | 'upscale';
+    upscaleStrength?: number;
+  };
 };
 
 export type WorkspaceProject = {

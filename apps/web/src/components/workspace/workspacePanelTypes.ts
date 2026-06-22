@@ -7,7 +7,6 @@ export type DockSide = 'left' | 'right';
 export type PanelId =
   | 'objects'
   | 'generate'
-  | 'references'
   | 'viewport'
   | 'layers'
   | 'layerAdjustments'

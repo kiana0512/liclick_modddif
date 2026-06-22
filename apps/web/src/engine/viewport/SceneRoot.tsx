@@ -1,4 +1,4 @@
-import { ContactShadows, Environment } from '@react-three/drei';
+import { ContactShadows } from '@react-three/drei';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import {
@@ -127,13 +127,21 @@ function ImportedModel() {
 export function SceneRoot() {
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectObject = useSceneStore((state) => state.selectObject);
+  const displayMode = useSceneStore((state) => state.displayMode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
+  const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
+  const effectiveEnvironmentPreset =
+    displayMode === 'pbr' && environmentPreset === 'color' ? 'studio' : environmentPreset;
 
-  const environment = environmentPreset === 'dark' || environmentPreset === 'color' ? undefined : 'studio';
-  const ambientIntensity = environmentPreset === 'dark' ? 0.38 : environmentPreset === 'soft' ? 0.46 : 0.5;
-  const keyIntensity = environmentPreset === 'dark' ? 1.05 : environmentPreset === 'soft' ? 1.12 : 1.22;
-  const fillIntensity = environmentPreset === 'dark' ? 0.18 : 0.26;
-  const rimIntensity = environmentPreset === 'dark' ? 0.14 : 0.2;
+  const pbrLightScale = displayMode === 'pbr' ? pbrEnvironmentIntensity / 0.3 : 1;
+  const ambientIntensity =
+    (effectiveEnvironmentPreset === 'dark' ? 0.38 : effectiveEnvironmentPreset === 'soft' ? 0.46 : 0.5) *
+    pbrLightScale;
+  const keyIntensity =
+    (effectiveEnvironmentPreset === 'dark' ? 1.05 : effectiveEnvironmentPreset === 'soft' ? 1.12 : 1.22) *
+    pbrLightScale;
+  const fillIntensity = (effectiveEnvironmentPreset === 'dark' ? 0.18 : 0.26) * pbrLightScale;
+  const rimIntensity = (effectiveEnvironmentPreset === 'dark' ? 0.14 : 0.2) * pbrLightScale;
 
   return (
     <group onPointerMissed={() => selectObject(undefined)}>
@@ -142,7 +150,6 @@ export function SceneRoot() {
       <directionalLight position={[3.5, 5.2, 2.8]} intensity={keyIntensity} castShadow />
       <directionalLight position={[-4.5, 2.2, -3.5]} intensity={fillIntensity} />
       <directionalLight position={[0, 3.2, -5]} intensity={rimIntensity} />
-      {environment && <Environment preset={environment} environmentIntensity={environmentPreset === 'soft' ? 0.22 : 0.3} />}
       <Grid />
       {importedModel ? <ImportedModel /> : <DemoModel />}
       <ObjectTransformControls />

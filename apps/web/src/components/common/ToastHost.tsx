@@ -3,10 +3,10 @@ import { cn } from '@/components/common/cn';
 import { useToastStore, type ToastTone } from '@/stores/toastStore';
 
 const tones: Record<ToastTone, string> = {
-  info: 'border-white/12 bg-[#171a30] text-white',
-  success: 'border-emerald-300/20 bg-emerald-500/12 text-emerald-50',
-  warning: 'border-amber-300/24 bg-amber-500/14 text-amber-50',
-  error: 'border-rose-300/24 bg-rose-500/14 text-rose-50',
+  info: 'border-white/14 bg-[#171a30] text-white',
+  success: 'border-emerald-300/30 bg-[#12352a] text-emerald-50',
+  warning: 'border-amber-300/34 bg-[#3a2a12] text-amber-50',
+  error: 'border-rose-300/34 bg-[#3a1420] text-rose-50',
 };
 
 export function ToastHost() {
@@ -14,11 +14,11 @@ export function ToastHost() {
   const dismissToast = useToastStore((state) => state.dismissToast);
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[min(320px,calc(100vw-32px))] flex-col-reverse gap-2">
+    <div className="pointer-events-none fixed left-1/2 top-4 z-[120] flex w-[min(420px,calc(100vw-32px))] -translate-x-1/2 flex-col gap-2">
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={cn('pointer-events-auto rounded-md border p-2.5 shadow-glow backdrop-blur', tones[toast.tone])}
+          className={cn('pointer-events-auto rounded-md border p-3 shadow-[0_18px_58px_rgba(0,0,0,0.42)]', tones[toast.tone])}
         >
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">

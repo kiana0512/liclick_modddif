@@ -1,9 +1,7 @@
-import { useState } from 'react';
-import { Camera, RotateCcw, SunMedium } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { Camera, Circle, Monitor, SlidersHorizontal, SunMedium } from 'lucide-react';
+import { cn } from '@/components/common/cn';
 import { captureCurrentView } from '@/engine/capture/captureCurrentView';
-import { Button } from '@/components/ui/Button';
-import { Panel } from '@/components/ui/Panel';
-import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -17,6 +15,20 @@ const resolutionToSize = {
   '4K': 4096,
 } as const;
 
+const displayOptions: Array<{ value: DisplayMode; label: string }> = [
+  { value: 'pbr', label: 'PBR' },
+  { value: 'flat', label: 'Fla' },
+  { value: 'normal', label: 'Nor' },
+  { value: 'wire', label: 'Wir' },
+];
+
+const environmentOptions = [
+  { value: 'color', label: 'Color' },
+  { value: 'studio', label: 'Studio' },
+  { value: 'soft', label: 'Soft' },
+  { value: 'dark', label: 'Dark' },
+] as const;
+
 export function ViewportPanel() {
   const t = useT();
   const [captureStatus, setCaptureStatus] = useState(t('ready'));
@@ -28,19 +40,18 @@ export function ViewportPanel() {
   const setProjectionMode = useSceneStore((state) => state.setProjectionMode);
   const resolution = useSettingsStore((state) => state.resolution);
   const exposure = useSettingsStore((state) => state.exposure);
+  const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const setExposure = useSettingsStore((state) => state.setExposure);
+  const setPbrEnvironmentIntensity = useSettingsStore((state) => state.setPbrEnvironmentIntensity);
   const setEnvironmentPreset = useSettingsStore((state) => state.setEnvironmentPreset);
-  const resetViewportLighting = useSettingsStore((state) => state.resetViewportLighting);
   const setLastCapture = useGenerationStore((state) => state.setLastCapture);
   const pushToast = useToastStore((state) => state.pushToast);
+  const pbrEnvironmentPreset = environmentPreset === 'color' ? 'studio' : environmentPreset;
 
   async function handleCapture() {
     if (!importedModel) {
-      pushToast({
-        tone: 'warning',
-        title: t('importModelFirst'),
-      });
+      pushToast({ tone: 'warning', title: t('importModelFirst') });
       return;
     }
     const objectId = selectedObjectId ?? importedModel.objectId;
@@ -52,83 +63,180 @@ export function ViewportPanel() {
         resolution: resolutionToSize[resolution],
       });
       setLastCapture(capture);
-      setCaptureStatus(`${capture.width}${t('capturePx')} color / mask / depth / normal`);
+      setCaptureStatus(t('ready'));
       pushToast({
         tone: capture.warnings.length > 0 ? 'warning' : 'success',
-        title: 'Capture complete',
-        description: capture.warnings[0] ?? 'Current viewport was captured for generation and projection.',
+        title: t('captureCurrentView'),
+        description: capture.warnings[0],
       });
     } catch (error) {
       console.error('[Liclick 3D Texture] Capture failed:', error);
       setCaptureStatus(t('captureFailed'));
       pushToast({
         tone: 'error',
-        title: 'Capture failed',
-        description: error instanceof Error ? error.message : 'Could not capture the current view.',
+        title: t('captureFailed'),
+        description: error instanceof Error ? error.message : undefined,
       });
     }
   }
 
   return (
-    <Panel title={t('viewport')}>
-      <div className="space-y-3">
-        <SegmentedControl<DisplayMode>
-          value={displayMode}
-          options={[
-            { value: 'pbr', label: t('pbr') },
-            { value: 'flat', label: t('flat') },
-            { value: 'normal', label: t('normal') },
-            { value: 'wire', label: t('wire') },
-          ]}
-          onChange={setDisplayMode}
-        />
-        {displayMode === 'normal' && (
-          <div className="rounded-md border border-sky-300/15 bg-sky-500/10 px-3 py-2 text-xs leading-5 text-sky-100/80">
-            {t('normalPreviewHelp')}
-          </div>
-        )}
-        <SegmentedControl<ProjectionMode>
-          value={projectionMode}
-          options={[
-            { value: 'perspective', label: t('perspective') },
-            { value: 'orthographic', label: t('orthographic') },
-          ]}
-          onChange={setProjectionMode}
-        />
-        <Button className="w-full" icon={<Camera className="h-4 w-4" />} onClick={handleCapture}>
-          {t('captureCurrentView')}
-        </Button>
-        <label className="block">
-          <div className="mb-1 flex items-center gap-2 text-xs text-white/56">
-            <SunMedium className="h-3.5 w-3.5" />
-            {t('exposure')}
-            <span className="ml-auto text-white/40">{exposure.toFixed(2)}</span>
-          </div>
-          <input
-            type="range"
-            min="0.7"
-            max="2"
-            step="0.01"
+    <div className="space-y-1">
+      <ViewportRow icon={<Camera className="h-4 w-4" />}>
+        <div className="grid flex-1 grid-cols-2 gap-2">
+          {(['perspective', 'orthographic'] as ProjectionMode[]).map((mode) => (
+            <CompactButton
+              key={mode}
+              active={projectionMode === mode}
+              onClick={() => setProjectionMode(mode)}
+            >
+              {t(mode)}
+            </CompactButton>
+          ))}
+        </div>
+      </ViewportRow>
+
+      <ViewportRow icon={<Monitor className="h-4 w-4" />}>
+        <div className="grid flex-1 grid-cols-5 gap-1">
+          <div className="grid h-7 place-items-center text-xs font-semibold text-white/72">MAT</div>
+          {displayOptions.map((option) => (
+            <CompactButton
+              key={option.value}
+              active={displayMode === option.value}
+              onClick={() => setDisplayMode(option.value)}
+            >
+              {option.label}
+            </CompactButton>
+          ))}
+        </div>
+      </ViewportRow>
+
+      {displayMode === 'pbr' && (
+        <>
+          <ViewportRow icon={<Circle className="h-4 w-4" />}>
+            <select
+              value={pbrEnvironmentPreset}
+              onChange={(event) => setEnvironmentPreset(event.target.value as typeof environmentPreset)}
+              className="h-7 min-w-0 flex-1 rounded-md border border-white/18 bg-white px-3 text-[13px] text-[#181820] outline-none"
+            >
+              {environmentOptions
+                .filter((option) => option.value !== 'color')
+                .map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+            </select>
+          </ViewportRow>
+          <PbrSlider
+            icon={<SunMedium className="h-4 w-4" />}
             value={exposure}
-            onChange={(event) => setExposure(Number(event.target.value))}
-            className="w-full accent-liclick-pink"
+            min={0.7}
+            max={1.8}
+            step={0.01}
+            label={t('exposure')}
+            onChange={setExposure}
           />
-        </label>
-        <SegmentedControl
-          value={environmentPreset}
-          options={[
-            { value: 'color', label: 'Color' },
-            { value: 'studio', label: 'Studio' },
-            { value: 'soft', label: 'Soft' },
-            { value: 'dark', label: 'Dark' },
-          ]}
-          onChange={setEnvironmentPreset}
-        />
-        <Button className="w-full" variant="ghost" icon={<RotateCcw className="h-4 w-4" />} onClick={resetViewportLighting}>
-          {t('resetViewportLighting')}
-        </Button>
-        <div className="rounded-md bg-white/[0.045] px-3 py-2 text-xs text-white/48">{captureStatus}</div>
-      </div>
-    </Panel>
+          <PbrSlider
+            icon={<SlidersHorizontal className="h-4 w-4" />}
+            value={pbrEnvironmentIntensity}
+            min={0.12}
+            max={0.72}
+            step={0.01}
+            label={t('environment')}
+            onChange={setPbrEnvironmentIntensity}
+          />
+        </>
+      )}
+
+      <ViewportRow icon={<SlidersHorizontal className="h-4 w-4" />}>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="w-24 truncate text-[13px] font-semibold text-white/76">{t('environment')}</span>
+          <select
+            value="color"
+            onChange={() => undefined}
+            aria-label={t('environment')}
+            className="h-7 min-w-0 flex-1 rounded-md border border-white/18 bg-white text-center text-[13px] text-[#181820] outline-none"
+          >
+            <option value="color">Color</option>
+          </select>
+          <button
+            type="button"
+            onClick={handleCapture}
+            title={captureStatus}
+            aria-label={t('captureCurrentView')}
+            className="grid h-7 w-7 place-items-center rounded-full border border-white/70 text-white transition hover:bg-white/10"
+          >
+            <Circle className="h-4 w-4" />
+          </button>
+        </div>
+      </ViewportRow>
+    </div>
+  );
+}
+
+function PbrSlider({
+  icon,
+  value,
+  min,
+  max,
+  step,
+  label,
+  onChange,
+}: {
+  icon: ReactNode;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  label: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <ViewportRow icon={icon}>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="liclick-range liclick-range-compact w-full"
+        aria-label={label}
+        title={label}
+      />
+    </ViewportRow>
+  );
+}
+
+function ViewportRow({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex min-h-7 items-center gap-2">
+      <div className="grid h-7 w-6 shrink-0 place-items-center text-white/82">{icon}</div>
+      {children}
+    </div>
+  );
+}
+
+function CompactButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'h-7 rounded-md px-2 text-[13px] font-semibold text-white/82 transition hover:bg-white/10',
+        active && 'bg-gradient-to-r from-liclick-pink to-liclick-purple text-white shadow-glow hover:brightness-110',
+      )}
+    >
+      {children}
+    </button>
   );
 }

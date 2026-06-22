@@ -1,17 +1,276 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { checkLiclickApiAccess } from '../auth/atlasAuthService.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { checkLiclickApiAccess, getAtlasIdentity } from '../auth/atlasAuthService.js';
+import type { AuthUser } from '../auth/authTypes.js';
 import { requireAuth } from '../auth/authMiddleware.js';
-import { getPathSegments, sendJson } from './httpUtils.js';
+import {
+  pollLiclickImageTask,
+  submitLiclickImageJob,
+  type GenerateImageInput,
+  type LiclickImageSubmission,
+} from '../services/liclickGenerationService.js';
+import { serverConfig } from '../config.js';
+import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
+
+type GenerationJob = {
+  id: string;
+  userId: string;
+  projectId: string;
+  input: GenerateImageInput;
+  status: 'submitting' | 'running' | 'succeeded' | 'failed';
+  startedAt: string;
+  updatedAt: string;
+  taskId?: string;
+  model?: string;
+  extraParams?: Record<string, unknown>;
+  uploadedReferences?: unknown[];
+  resultUrl?: string;
+  resultUrls?: string[];
+  raw?: unknown;
+  error?: string;
+  promise?: Promise<void>;
+};
+
+const generationJobs = new Map<string, GenerationJob>();
+let jobsLoaded = false;
+let writeQueue = Promise.resolve();
+
+function jobsFile() {
+  return path.join(serverConfig.workspaceDir, 'generation-jobs.json');
+}
+
+async function loadGenerationJobs() {
+  if (jobsLoaded) return;
+  jobsLoaded = true;
+  const file = jobsFile();
+  if (!fs.existsSync(file)) return;
+  const content = await fs.promises.readFile(file, 'utf8').catch(() => '');
+  if (!content.trim()) return;
+  const jobs = JSON.parse(content) as GenerationJob[];
+  for (const job of jobs) {
+    generationJobs.set(job.id, job);
+  }
+}
+
+async function saveGenerationJobs() {
+  await fs.promises.mkdir(serverConfig.workspaceDir, { recursive: true });
+  const jobs = [...generationJobs.values()]
+    .map(({ promise: _promise, ...job }) => job)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 200);
+  const task = writeQueue.then(() => fs.promises.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8'));
+  writeQueue = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  return task;
+}
+
+function isActiveJob(job: GenerationJob) {
+  return job.status === 'submitting' || job.status === 'running';
+}
+
+function getJobResponse(job: GenerationJob) {
+  if (job.status === 'succeeded') {
+    return {
+      id: job.id,
+      status: 'succeeded',
+      resultUrl: job.resultUrl,
+      resultUrls: job.resultUrls,
+      taskId: job.taskId,
+      model: job.model,
+      extraParams: job.extraParams,
+      uploadedReferences: job.uploadedReferences,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      raw: job.raw,
+    };
+  }
+  if (job.status === 'failed') {
+    return {
+      id: job.id,
+      status: 'failed',
+      error: job.error ?? '莉刻图片生成任务失败。',
+      taskId: job.taskId,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+    };
+  }
+  return {
+    id: job.id,
+    status: 'running',
+    taskId: job.taskId,
+    model: job.model,
+    extraParams: job.extraParams,
+    uploadedReferences: job.uploadedReferences,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function findJob(idOrTaskId: string) {
+  return generationJobs.get(idOrTaskId) ?? [...generationJobs.values()].find((job) => job.taskId === idOrTaskId);
+}
+
+function findActiveProjectJob(user: AuthUser, projectId: string) {
+  return [...generationJobs.values()].find((job) => job.userId === user.id && job.projectId === projectId && isActiveJob(job));
+}
+
+async function applySubmission(job: GenerationJob, submission: LiclickImageSubmission) {
+  job.taskId = submission.taskId;
+  job.model = submission.model;
+  job.extraParams = submission.extraParams;
+  job.uploadedReferences = submission.uploadedReferences;
+  job.raw = submission.raw;
+  job.updatedAt = new Date().toISOString();
+  if (submission.resultUrl) {
+    job.status = 'succeeded';
+    job.resultUrl = submission.resultUrl;
+    job.resultUrls = submission.resultUrls;
+  } else {
+    job.status = 'running';
+  }
+  await saveGenerationJobs();
+}
+
+async function pollAndUpdateJob(job: GenerationJob) {
+  if (!job.taskId || job.status !== 'running') return job;
+  const result = await pollLiclickImageTask(job.taskId);
+  job.updatedAt = new Date().toISOString();
+  job.raw = result.raw;
+  if (result.resultUrl) {
+    job.status = 'succeeded';
+    job.resultUrl = result.resultUrl;
+    job.resultUrls = result.resultUrls;
+  }
+  await saveGenerationJobs();
+  return job;
+}
+
+function startGenerationJob(job: GenerationJob) {
+  if (job.promise || job.status === 'succeeded' || job.status === 'failed') return;
+  job.promise = (async () => {
+    try {
+      if (!job.taskId && job.status === 'submitting') {
+        await applySubmission(job, await submitLiclickImageJob(job.input));
+      }
+      const startedPollingAt = Date.now();
+      while (job.status === 'running' && Date.now() - startedPollingAt < 30 * 60 * 1000) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await pollAndUpdateJob(job);
+      }
+    } catch (error) {
+      job.status = 'failed';
+      job.error = error instanceof Error ? error.message : '莉刻图片生成任务失败。';
+      job.updatedAt = new Date().toISOString();
+      await saveGenerationJobs();
+    } finally {
+      job.promise = undefined;
+    }
+  })();
+}
+
+function createGenerationJob(jobId: string, user: AuthUser, input: GenerateImageInput): GenerationJob {
+  const now = new Date().toISOString();
+  const job: GenerationJob = {
+    id: jobId,
+    userId: user.id,
+    projectId: input.projectId ?? 'default',
+    input,
+    status: 'submitting',
+    startedAt: now,
+    updatedAt: now,
+  };
+  generationJobs.set(jobId, job);
+  void saveGenerationJobs();
+  startGenerationJob(job);
+  return job;
+}
+
+async function waitForSubmitted(job: GenerationJob) {
+  const startedAt = Date.now();
+  while (job.status === 'submitting' && Date.now() - startedAt < 3 * 60 * 1000) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
 
 export async function handleLiclickRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
+  await loadGenerationJobs();
   const segments = getPathSegments(url);
-  if (segments[0] !== 'api' || segments[1] !== 'liclick') return false;
+  const isLiclickRoute = segments[0] === 'api' && segments[1] === 'liclick';
+  const isLegacyGenerateRoute = segments[0] === 'api' && segments[1] === 'generate-image';
+  if (!isLiclickRoute && !isLegacyGenerateRoute) return false;
   const user = await requireAuth(request, response);
   if (!user) return true;
 
-  if (request.method === 'GET' && segments[2] === 'status') {
+  if (isLiclickRoute && request.method === 'GET' && segments[2] === 'status') {
     const result = await checkLiclickApiAccess();
     sendJson(response, result.ok ? 200 : 503, result);
+    return true;
+  }
+
+  const isGenerateImageRoute =
+    isLegacyGenerateRoute ||
+    (isLiclickRoute && ['generate-image', 'generate', 'generate_image'].includes(segments[2] ?? ''));
+
+  if (request.method === 'GET' && isLiclickRoute && segments[2] === 'generate-image' && segments[3]) {
+    const job = findJob(segments[3]);
+    if (!job || job.userId !== user.id) {
+      sendJson(response, 404, { error: 'Generation job not found.' });
+      return true;
+    }
+    if (job.status === 'running' && job.taskId) {
+      await pollAndUpdateJob(job).catch((error: unknown) => {
+        job.status = 'failed';
+        job.error = error instanceof Error ? error.message : '莉刻图片生成任务失败。';
+        job.updatedAt = new Date().toISOString();
+        void saveGenerationJobs();
+      });
+    }
+    startGenerationJob(job);
+    sendJson(response, 200, getJobResponse(job));
+    return true;
+  }
+
+  if (request.method === 'POST' && isGenerateImageRoute) {
+    const atlasIdentity = getAtlasIdentity();
+    if (
+      user.email &&
+      atlasIdentity.email &&
+      user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
+    ) {
+      sendJson(response, 403, {
+        error: 'Current Atlas / Liclick account does not match this browser session. Please log in again.',
+        sessionEmail: user.email,
+        atlasEmail: atlasIdentity.email,
+      });
+      return true;
+    }
+    const input = await readJsonBody<GenerateImageInput>(request);
+    const projectId = input.projectId ?? 'default';
+    const activeJob = findActiveProjectJob(user, projectId);
+    if (activeJob) {
+      startGenerationJob(activeJob);
+      sendJson(response, 202, {
+        ...getJobResponse(activeJob),
+        activeProjectJob: true,
+        message: 'This project already has a running image generation task.',
+      });
+      return true;
+    }
+    const jobId = input.clientGenerationId || `liclick-image-${Date.now()}`;
+    const job = createGenerationJob(jobId, user, { ...input, projectId });
+    if (job.userId !== user.id) {
+      sendJson(response, 403, { error: 'Generation job belongs to another user.' });
+      return true;
+    }
+    await waitForSubmitted(job);
+    if (job.status === 'failed') {
+      sendJson(response, 500, getJobResponse(job));
+      return true;
+    }
+    sendJson(response, job.status === 'succeeded' ? 200 : 202, getJobResponse(job));
     return true;
   }
 

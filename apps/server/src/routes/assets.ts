@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireAuth } from '../auth/authMiddleware.js';
-import { saveDataUrlAsset } from '../services/assetFileService.js';
+import { saveDataUrlAsset, saveRemoteImageAsset } from '../services/assetFileService.js';
 import type { AssetCategory } from '../types/asset.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
@@ -15,10 +15,29 @@ export async function handleAssetsRoute(request: IncomingMessage, response: Serv
 
   const body = await readJsonBody<{
     category: AssetCategory;
-    dataUrl: string;
+    dataUrl?: string;
+    url?: string;
     filename: string;
   }>(request);
-  const asset = await saveDataUrlAsset({ userId: user.id, projectId, ...body });
+  if (!body.dataUrl && !body.url) {
+    sendJson(response, 400, { error: 'Asset dataUrl or url is required.' });
+    return true;
+  }
+  const asset = body.url
+    ? await saveRemoteImageAsset({
+        userId: user.id,
+        projectId,
+        category: body.category,
+        url: body.url,
+        filename: body.filename,
+      })
+    : await saveDataUrlAsset({
+        userId: user.id,
+        projectId,
+        category: body.category,
+        dataUrl: body.dataUrl ?? '',
+        filename: body.filename,
+      });
   if (!asset) sendJson(response, 404, { error: 'Project not found.' });
   else sendJson(response, 201, { asset });
   return true;

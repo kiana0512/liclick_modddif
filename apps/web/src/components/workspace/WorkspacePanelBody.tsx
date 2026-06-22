@@ -7,5 +7,5 @@ type WorkspacePanelBodyProps = {
 };
 
 export function WorkspacePanelBody({ children, className }: WorkspacePanelBodyProps) {
-  return <div className={cn('max-h-[calc(100vh-168px)] overflow-y-auto p-2', className)}>{children}</div>;
+  return <div className={cn('scrollbar-none max-h-[calc(100vh-168px)] overflow-y-auto p-2', className)}>{children}</div>;
 }

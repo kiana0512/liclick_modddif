@@ -1,129 +1,631 @@
-import { Camera, Eye, EyeOff, Image, Trash2 } from 'lucide-react';
-import { Button } from '@/components/ui/Button';
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type DragEventHandler,
+  type MouseEventHandler,
+  type PointerEventHandler,
+  type ReactNode,
+} from 'react';
+import { createPortal } from 'react-dom';
+import { Circle, CircleDot, Copy, Eye, EyeOff, Focus, MoreVertical, PaintBucket, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/components/common/cn';
-import { Panel } from '@/components/ui/Panel';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
-import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
-import { useSceneStore } from '@/stores/sceneStore';
-import { useToastStore } from '@/stores/toastStore';
+import { useT } from '@/stores/i18nStore';
+import type { Layer } from '@/types/layer';
+
+type MenuState = {
+  layerId: string;
+  x: number;
+  y: number;
+};
+
+type RenameState = {
+  layerId: string;
+  value: string;
+};
+
+type VisibilityDrag = {
+  visible: boolean;
+  touched: Set<string>;
+};
+
+const checkerStyle = {
+  backgroundColor: '#d6d6d6',
+  backgroundImage:
+    'linear-gradient(45deg, #9e9e9e 25%, transparent 25%), linear-gradient(-45deg, #9e9e9e 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #9e9e9e 75%), linear-gradient(-45deg, transparent 75%, #9e9e9e 75%)',
+  backgroundPosition: '0 0, 0 7px, 7px -7px, -7px 0',
+  backgroundSize: '14px 14px',
+};
 
 export function LayersPanel() {
   const t = useT();
   const layers = useLayerStore((state) => state.layers);
-  const toggleLayer = useLayerStore((state) => state.toggleLayer);
+  const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
+  const setBlendMode = useLayerStore((state) => state.setBlendMode);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
   const deleteLayer = useLayerStore((state) => state.deleteLayer);
+  const duplicateLayer = useLayerStore((state) => state.duplicateLayer);
+  const renameLayer = useLayerStore((state) => state.renameLayer);
+  const moveLayer = useLayerStore((state) => state.moveLayer);
+  const reorderLayer = useLayerStore((state) => state.reorderLayer);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
-  const requestCameraRestore = useSceneStore((state) => state.requestCameraRestore);
-  const pushToast = useToastStore((state) => state.pushToast);
+  const [menu, setMenu] = useState<MenuState>();
+  const [renameState, setRenameState] = useState<RenameState>();
+  const [draggingLayerId, setDraggingLayerId] = useState<string>();
+  const [visibilityDrag, setVisibilityDrag] = useState<VisibilityDrag>();
+  const [hoveredLayerId, setHoveredLayerId] = useState<string>();
+  const [previewLayerId, setPreviewLayerId] = useState<string>();
+  const [isShiftPressed, setIsShiftPressed] = useState(false);
+  const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() =>
+    activeProjectedLayerId ? [activeProjectedLayerId] : [],
+  );
+  const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
+  const layerIds = useMemo(() => layers.map((layer) => layer.id), [layers]);
+  const previewLayer = useMemo(() => {
+    const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? activeProjectedLayerId : undefined);
+    return layers.find((layer) => layer.id === layerId && layer.imageUrl);
+  }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, layers, previewLayerId]);
+
+  useEffect(() => {
+    setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
+  }, [layerIds]);
+
+  useEffect(() => {
+    if (!activeProjectedLayerId || selectedLayerIds.length > 0) return;
+    setSelectedLayerIds([activeProjectedLayerId]);
+    setLastSelectedLayerId(activeProjectedLayerId);
+  }, [activeProjectedLayerId, selectedLayerIds.length]);
+
+  useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => setMenu(undefined);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenu(undefined);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    if (!visibilityDrag) return undefined;
+    const stopDrag = () => setVisibilityDrag(undefined);
+    const continueFromPointer = (event: PointerEvent) => {
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const trigger = element?.closest<HTMLElement>('[data-layer-visibility-id]');
+      const layerId = trigger?.dataset.layerVisibilityId;
+      if (!layerId) return;
+      setVisibilityDrag((current) => {
+        if (!current || current.touched.has(layerId)) return current;
+        setLayerVisibility([layerId], current.visible);
+        return { visible: current.visible, touched: new Set([...current.touched, layerId]) };
+      });
+    };
+    window.addEventListener('pointermove', continueFromPointer);
+    window.addEventListener('pointerup', stopDrag);
+    window.addEventListener('pointercancel', stopDrag);
+    return () => {
+      window.removeEventListener('pointermove', continueFromPointer);
+      window.removeEventListener('pointerup', stopDrag);
+      window.removeEventListener('pointercancel', stopDrag);
+    };
+  }, [setLayerVisibility, visibilityDrag]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') setIsShiftPressed(true);
+      if (event.key === 'Escape') {
+        setPreviewLayerId(undefined);
+        setRenameState(undefined);
+        setIsShiftPressed(false);
+      }
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') setIsShiftPressed(false);
+    };
+    const handleBlur = () => {
+      setPreviewLayerId(undefined);
+      setIsShiftPressed(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
+
+  function commitRename() {
+    if (!renameState) return;
+    const nextName = renameState.value.trim();
+    const layer = layers.find((item) => item.id === renameState.layerId);
+    if (!layer || !nextName || nextName === layer.name) {
+      setRenameState(undefined);
+      return;
+    }
+    captureHistory();
+    renameLayer(renameState.layerId, nextName);
+    setRenameState(undefined);
+  }
+
+  function selectLayer(layerId: string, event: React.MouseEvent<HTMLDivElement>) {
+    setActiveLayer(layerId);
+    setLastSelectedLayerId(layerId);
+
+    if (event.shiftKey && lastSelectedLayerId) {
+      const start = layerIds.indexOf(lastSelectedLayerId);
+      const end = layerIds.indexOf(layerId);
+      if (start >= 0 && end >= 0) {
+        const [from, to] = start < end ? [start, end] : [end, start];
+        setSelectedLayerIds(layerIds.slice(from, to + 1));
+        return;
+      }
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedLayerIds((ids) =>
+        ids.includes(layerId) ? ids.filter((id) => id !== layerId) : [...ids, layerId],
+      );
+      return;
+    }
+
+    setSelectedLayerIds([layerId]);
+  }
+
+  function getAffectedLayerIds(layerId: string) {
+    return selectedLayerIds.includes(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+  }
+
+  function beginVisibilityDrag(layer: Layer) {
+    const nextVisible = !layer.visible;
+    const ids = getAffectedLayerIds(layer.id);
+    captureHistory();
+    setLayerVisibility(ids, nextVisible);
+    setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
+  }
+
+  function continueVisibilityDrag(layerId: string) {
+    if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
+    visibilityDrag.touched.add(layerId);
+    setLayerVisibility([layerId], visibilityDrag.visible);
+    setVisibilityDrag({ visible: visibilityDrag.visible, touched: new Set(visibilityDrag.touched) });
+  }
+
+  function openLayerMenu(layerId: string, rect: DOMRect) {
+    const menuWidth = 224;
+    const menuHeight = 300;
+    setMenu({
+      layerId,
+      x: Math.min(Math.max(8, rect.right - menuWidth), window.innerWidth - menuWidth - 8),
+      y: Math.min(Math.max(8, rect.bottom + 6), window.innerHeight - menuHeight - 8),
+    });
+  }
 
   return (
-    <Panel title={t('layers')}>
-      <div className="space-y-2">
-        <div className="rounded-md border border-white/8 bg-white/[0.035] p-2">
-          <div className="flex items-center gap-2">
-            <div className="grid h-11 w-11 place-items-center rounded bg-gradient-to-br from-[#384458] to-[#202234] text-white/52">
-              <Image className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] font-medium text-white">{t('baseLayer')}</div>
-              <div className="text-[11px] uppercase text-white/38">{t('viewportMaterial')}</div>
-            </div>
-            <Eye className="h-4 w-4 text-white/42" />
-          </div>
-        </div>
-        {layers.length === 0 && (
-          <div className="rounded-md border border-dashed border-white/12 px-3 py-2 text-xs leading-5 text-white/44">
-            {t('noProjectedLayers')}
-          </div>
-        )}
+    <div className="space-y-0">
+      <div className="max-h-[430px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
         {layers.map((layer) => (
-          <div
+          <LayerRow
             key={layer.id}
-            role="button"
-            tabIndex={0}
-            onClick={() => setActiveLayer(layer.id)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') setActiveLayer(layer.id);
+            layer={layer}
+            active={layer.id === activeProjectedLayerId}
+            selected={selectedLayerIds.includes(layer.id)}
+            dragging={draggingLayerId === layer.id}
+            onHover={() => setHoveredLayerId(layer.id)}
+            onSelect={(event) => selectLayer(layer.id, event)}
+            onVisibilityPointerDown={(event) => {
+              event.stopPropagation();
+              beginVisibilityDrag(layer);
             }}
-            className={cn(
-              'rounded-md border bg-white/[0.045] p-2 transition hover:bg-white/[0.075]',
-              activeProjectedLayerId === layer.id ? 'border-liclick-pink/70 shadow-glow' : 'border-white/10',
-            )}
-          >
-            <div className="flex gap-2">
-              <img src={layer.imageUrl} alt="" className="h-11 w-11 rounded object-cover" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[13px] font-medium text-white">{layer.name}</div>
-                <div className="text-[11px] uppercase text-white/42">
-                  {layer.type} {layer.captureId ? `/${layer.captureId.slice(0, 6)}` : ''}
-                </div>
-                {layer.isBaked && (
-                  <div className="mt-1 inline-flex rounded bg-emerald-400/16 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-100">
-                    {layer.needsRebake ? t('rebake') : t('baked')}
-                  </div>
-                )}
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={layer.opacity}
-                  onPointerDown={() => captureHistory()}
-                  onChange={(event) => setOpacity(layer.id, Number(event.target.value))}
-                  className="mt-2 w-full accent-liclick-pink"
-                />
-              </div>
-            </div>
-            <div className="mt-1.5 flex items-center justify-end gap-1">
-              <Button
-                variant="ghost"
-                className="h-7 w-7 px-0"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  captureHistory();
-                  toggleLayer(layer.id);
-                }}
-                title={t('toggleVisibility')}
-              >
-                {layer.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-              </Button>
-              <Button
-                variant="ghost"
-                className="h-7 w-7 px-0"
-                title={t('goToCamera')}
-                disabled={!layer.camera}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (!layer.camera) return;
-                  requestCameraRestore(layer.camera);
-                  pushToast({
-                    tone: 'info',
-                    title: t('goToCamera'),
-                  });
-                }}
-              >
-                <Camera className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="danger"
-                className="h-7 w-7 px-0"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  captureHistory();
-                  deleteLayer(layer.id);
-                }}
-                title={t('deleteLayer')}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
+            onVisibilityPointerEnter={() => continueVisibilityDrag(layer.id)}
+            onOpacityClick={(event) => {
+              event.stopPropagation();
+              captureHistory();
+              setOpacity(layer.id, layer.opacity >= 0.99 ? 0.5 : 1);
+            }}
+            onBlendClick={(event) => {
+              event.stopPropagation();
+              captureHistory();
+              setBlendMode(layer.id, layer.blendMode === 'overlay' ? 'normal' : 'overlay');
+            }}
+            onAdjustClick={(event) => {
+              event.stopPropagation();
+              setActiveLayer(layer.id);
+            }}
+            onMenu={(event) => {
+              event.stopPropagation();
+              openLayerMenu(layer.id, event.currentTarget.getBoundingClientRect());
+            }}
+            onDragStart={() => setDraggingLayerId(layer.id)}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'move';
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (draggingLayerId) {
+                const rect = event.currentTarget.getBoundingClientRect();
+                const placement = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+                captureHistory();
+                reorderLayer(draggingLayerId, layer.id, placement);
+              }
+              setDraggingLayerId(undefined);
+            }}
+            onDragEnd={() => setDraggingLayerId(undefined)}
+          />
         ))}
+        {layers.length === 0 && (
+          <div className="min-h-[68px] border-t border-dashed border-white/35" aria-hidden="true" />
+        )}
       </div>
-    </Panel>
+
+      {menu &&
+        createPortal(
+          <LayerMenu
+            x={menu.x}
+            y={menu.y}
+            layer={layers.find((layer) => layer.id === menu.layerId)}
+            onClose={() => setMenu(undefined)}
+            onView={() => {
+              setActiveLayer(menu.layerId);
+              setPreviewLayerId(menu.layerId);
+            }}
+            onMoveUp={() => {
+              captureHistory();
+              moveLayer(menu.layerId, 'up');
+            }}
+            onMoveDown={() => {
+              captureHistory();
+              moveLayer(menu.layerId, 'down');
+            }}
+            onDuplicate={() => {
+              captureHistory();
+              duplicateLayer(menu.layerId);
+            }}
+            onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
+            onDelete={() => {
+              captureHistory();
+              deleteLayer(menu.layerId);
+            }}
+          />,
+          document.body,
+        )}
+
+      {previewLayer &&
+        createPortal(
+          <button
+            type="button"
+            className="fixed inset-0 z-[92] grid cursor-default place-items-center bg-black/34 p-4 backdrop-blur-[1px]"
+            onClick={() => setPreviewLayerId(undefined)}
+            aria-label={t('view')}
+          >
+            <img
+              src={previewLayer.imageUrl}
+              alt=""
+              className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+              draggable={false}
+            />
+          </button>,
+          document.body,
+        )}
+
+      {renameState &&
+        createPortal(
+          <div className="fixed inset-0 z-[95] grid place-items-center bg-black/48 px-4 backdrop-blur-sm">
+            <form
+              className="w-full max-w-sm rounded-lg border border-white/16 bg-[#17171f] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
+              onSubmit={(event) => {
+                event.preventDefault();
+                commitRename();
+              }}
+            >
+              <div className="mb-3 text-sm font-semibold text-white">{t('renameLayer')}</div>
+              <input
+                autoFocus
+                value={renameState.value}
+                onChange={(event) => setRenameState({ ...renameState, value: event.target.value })}
+                className="h-10 w-full rounded-md border border-white/30 bg-black/38 px-3 text-sm text-white outline-none focus:border-liclick-pink"
+              />
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="h-9 rounded-md px-3 text-sm font-semibold text-white/68 hover:bg-white/8"
+                  onClick={() => setRenameState(undefined)}
+                >
+                  {t('cancel')}
+                </button>
+                <button
+                  type="submit"
+                  className="h-9 rounded-md bg-white px-3 text-sm font-semibold text-black hover:bg-white/90"
+                >
+                  {t('rename')}
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
+export function LayersPanelActions() {
+  const t = useT();
+  const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
+  const captureHistory = useEditorHistoryStore((state) => state.capture);
+
+  function handleAddLayer() {
+    captureHistory();
+    addEmptyLayer();
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <LayerHeaderButton title={t('fitCamera')}>
+        <Focus className="h-4 w-4" />
+      </LayerHeaderButton>
+      <LayerHeaderButton title={t('applyColorAdjustments')}>
+        <PaintBucket className="h-4 w-4" />
+      </LayerHeaderButton>
+      <LayerHeaderButton title={t('addLayer')} onClick={handleAddLayer}>
+        <Plus className="h-4 w-4" />
+      </LayerHeaderButton>
+    </div>
+  );
+}
+
+function LayerRow({
+  layer,
+  active,
+  selected,
+  dragging,
+  onSelect,
+  onHover,
+  onVisibilityPointerDown,
+  onVisibilityPointerEnter,
+  onOpacityClick,
+  onBlendClick,
+  onAdjustClick,
+  onMenu,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+}: {
+  layer: Layer;
+  active: boolean;
+  selected: boolean;
+  dragging: boolean;
+  onSelect: MouseEventHandler<HTMLDivElement>;
+  onHover: () => void;
+  onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
+  onVisibilityPointerEnter: PointerEventHandler<HTMLButtonElement>;
+  onOpacityClick: MouseEventHandler<HTMLButtonElement>;
+  onBlendClick: MouseEventHandler<HTMLButtonElement>;
+  onAdjustClick: MouseEventHandler<HTMLButtonElement>;
+  onMenu: MouseEventHandler<HTMLButtonElement>;
+  onDragStart: () => void;
+  onDragOver: DragEventHandler<HTMLDivElement>;
+  onDrop: DragEventHandler<HTMLDivElement>;
+  onDragEnd: () => void;
+}) {
+  const hasAdjustments =
+    (layer.adjustments?.hue ?? 0) !== 0 ||
+    (layer.adjustments?.saturation ?? 0) !== 0 ||
+    (layer.adjustments?.lightness ?? 0) !== 0;
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      draggable
+      onClick={onSelect}
+      onPointerEnter={onHover}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect(event as unknown as React.MouseEvent<HTMLDivElement>);
+        }
+      }}
+      onDragStart={(event) => {
+        event.dataTransfer.setData('application/liclick-layer-id', layer.id);
+        event.dataTransfer.effectAllowed = 'move';
+        onDragStart();
+      }}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      className={cn(
+        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition hover:bg-white/[0.06]',
+        selected && 'bg-white/[0.22]',
+        active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
+        dragging && 'opacity-45',
+      )}
+    >
+      <button
+        type="button"
+        onPointerDown={onVisibilityPointerDown}
+        onPointerEnter={onVisibilityPointerEnter}
+        data-layer-visibility-id={layer.id}
+        className="grid h-8 w-8 shrink-0 place-items-center rounded text-white transition hover:bg-white/10"
+        title="Toggle visibility"
+        aria-label="Toggle visibility"
+      >
+        {layer.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-white/45" />}
+      </button>
+      <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-sm" style={checkerStyle}>
+        {layer.imageUrl && <img src={layer.imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-base font-semibold leading-5 text-white">{layer.name}</div>
+        <div className="mt-1 flex items-center gap-3 text-white">
+          <SmallLayerToggle
+            active={layer.opacity < 0.99}
+            label="Layer opacity"
+            onClick={onOpacityClick}
+            icon={<Circle className="h-3.5 w-3.5 fill-current" />}
+          />
+          <SmallLayerToggle
+            active={layer.blendMode === 'overlay'}
+            label="Overlay above other layers"
+            onClick={onBlendClick}
+            icon={
+              <span className="flex items-center">
+                <Circle className="h-3 w-3 fill-current" />
+                <Circle className="-ml-1.5 h-3 w-3 fill-current" />
+              </span>
+            }
+          />
+          <SmallLayerToggle
+            active={hasAdjustments}
+            label="Has adjustments"
+            onClick={onAdjustClick}
+            icon={<CircleDot className="h-3.5 w-3.5" />}
+          />
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onMenu}
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-white transition hover:bg-white/18"
+        aria-label="Layer actions"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function SmallLayerToggle({
+  active,
+  label,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick: MouseEventHandler<HTMLButtonElement>;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      className={cn(
+        'grid h-5 w-5 place-items-center rounded-full text-white transition hover:bg-white/18',
+        active ? 'bg-white/22 text-white' : 'text-white/95',
+      )}
+    >
+      {icon}
+    </button>
+  );
+}
+
+function LayerMenu({
+  x,
+  y,
+  layer,
+  onClose,
+  onView,
+  onMoveUp,
+  onMoveDown,
+  onDuplicate,
+  onRename,
+  onDelete,
+}: {
+  x: number;
+  y: number;
+  layer?: Layer;
+  onClose: () => void;
+  onView: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onDuplicate: () => void;
+  onRename: (layer: Layer) => void;
+  onDelete: () => void;
+}) {
+  const t = useT();
+  if (!layer) return null;
+
+  function run(action: () => void) {
+    action();
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed z-[90] w-56 rounded-md border border-white/18 bg-[#1f1f20] p-2 text-sm text-white shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
+      style={{ left: x, top: y }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <div className="px-2 pb-2 text-white/86">{t('thisLayer')}</div>
+      <div className="mb-1 h-px bg-white/45" />
+      <MenuButton onClick={() => run(onView)}>
+        {t('view')}
+        <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">SHIFT</span>
+      </MenuButton>
+      <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
+      <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
+      <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
+        {t('duplicate')}
+      </MenuButton>
+      <MenuButton onClick={() => run(() => onRename(layer))}>{t('rename')}</MenuButton>
+      <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
+        {t('delete')}
+      </MenuButton>
+    </div>
+  );
+}
+
+function MenuButton({
+  children,
+  icon,
+  onClick,
+}: {
+  children: ReactNode;
+  icon?: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-9 w-full items-center gap-2 rounded px-2 text-left font-medium text-white transition hover:bg-white/10"
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function LayerHeaderButton({
+  title,
+  children,
+  onClick,
+}: {
+  title: string;
+  children: ReactNode;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14"
+    >
+      {children}
+    </button>
   );
 }

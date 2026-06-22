@@ -1,4 +1,6 @@
-const workspaceApiBase = import.meta.env.VITE_LICLICK_WORKSPACE_API ?? 'http://localhost:4517';
+import { getWorkspaceApiBase } from './workspaceApiBase';
+
+const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
 export type AuthMode = 'dev-mock' | 'feishu-oauth';
 

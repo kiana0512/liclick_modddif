@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { LogIn, LogOut } from 'lucide-react';
+import { Languages, LogIn, LogOut } from 'lucide-react';
 import { devLogin, logout, startFeishuLogin } from '@/services/authApiClient';
 import { useAuthStore } from '@/stores/authStore';
+import { useI18nStore, useT } from '@/stores/i18nStore';
 import { useToastStore } from '@/stores/toastStore';
 
 export function UserMenu({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen] = useState(false);
+  const t = useT();
+  const language = useI18nStore((state) => state.language);
+  const setLanguage = useI18nStore((state) => state.setLanguage);
   const user = useAuthStore((state) => state.user);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
@@ -24,17 +28,18 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
         pushToast({
           tone: 'success',
-          title: '飞书登录成功',
-          description: result.message ?? '莉刻/Atlas 登录已可用。',
+          title: t('feishuLoginSuccess'),
+          description: result.message ?? t('atlasLoginReady'),
           dedupeKey: 'auth-login-success',
         });
         return;
       }
       if (result.redirectUrl) window.location.href = result.redirectUrl;
+      else throw new Error(t('loginMissingUser'));
     } catch (error) {
       pushToast({
         tone: 'error',
-        title: '飞书登录不可用',
+        title: t('feishuLoginUnavailable'),
         description: error instanceof Error ? error.message : 'Could not start login.',
         dedupeKey: 'auth-login-failed',
       });
@@ -53,10 +58,10 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
         type="button"
         onClick={() => void handleLogin()}
         className="inline-flex h-10 items-center gap-2 rounded-md border border-white/16 bg-black/18 px-3 text-sm font-medium text-white/84 transition hover:bg-white/10 hover:text-white"
-        title="使用飞书登录"
+        title={t('useFeishuLogin')}
       >
         <LogIn className="h-4 w-4" />
-        飞书登录
+        {t('feishuLogin')}
       </button>
     );
   }
@@ -88,9 +93,23 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
               <div className="truncate text-xs text-white/46">{user.email ?? user.authSource}</div>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setLanguage(language === 'zh' ? 'en' : 'zh')}
+            className="mt-1 flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
+            title={t('switchLanguage')}
+          >
+            <span className="inline-flex min-w-0 items-center gap-2">
+              <Languages className="h-4 w-4 shrink-0" />
+              <span className="truncate">{t('language')}</span>
+            </span>
+            <span className="shrink-0 text-xs font-semibold text-liclick-pink">
+              {language === 'zh' ? t('switchToEnglish') : t('switchToChinese')}
+            </span>
+          </button>
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />
-            退出登录
+            {t('logout')}
           </button>
         </div>
       )}

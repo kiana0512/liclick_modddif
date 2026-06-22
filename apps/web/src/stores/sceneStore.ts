@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import type * as THREE from 'three';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { SerializedCamera } from '@/types/capture';
@@ -55,84 +56,97 @@ type SceneStore = {
   requestCameraRestore: (camera: SerializedCamera) => void;
 };
 
-export const useSceneStore = create<SceneStore>((set, get) => ({
-  objects: [],
-  importedModel: undefined,
-  viewport: undefined,
-  selectedObjectId: undefined,
-  displayMode: 'pbr',
-  projectionMode: 'perspective',
-  transformMode: 'select',
-  paintTool: 'none',
-  paintMaskRevision: 0,
-  importSettings: {
-    normalizeOnImport: true,
-    groundOnImport: true,
-    autoFitCamera: true,
-  },
-  importWarnings: [],
-  restoreCameraRequest: undefined,
-  setObjects: (objects) =>
-    set({
-      objects,
-      selectedObjectId: objects.find((object) => object.selected)?.id ?? objects[0]?.id,
-    }),
-  setImportedModel: (model, object) =>
-    set({
-      importedModel: model,
-      objects: [object],
-      selectedObjectId: object.id,
-      importWarnings: model.warnings,
-    }),
-  clearImportedModel: () =>
-    set({
-      importedModel: undefined,
+export const useSceneStore = create<SceneStore>()(
+  persist(
+    (set, get) => ({
       objects: [],
+      importedModel: undefined,
+      viewport: undefined,
       selectedObjectId: undefined,
+      displayMode: 'pbr',
+      projectionMode: 'perspective',
+      transformMode: 'select',
+      paintTool: 'none',
+      paintMaskRevision: 0,
+      importSettings: {
+        normalizeOnImport: true,
+        groundOnImport: true,
+        autoFitCamera: true,
+      },
       importWarnings: [],
+      restoreCameraRequest: undefined,
+      setObjects: (objects) =>
+        set({
+          objects,
+          selectedObjectId: objects.find((object) => object.selected)?.id ?? objects[0]?.id,
+        }),
+      setImportedModel: (model, object) =>
+        set({
+          importedModel: model,
+          objects: [object],
+          selectedObjectId: object.id,
+          importWarnings: model.warnings,
+        }),
+      clearImportedModel: () =>
+        set({
+          importedModel: undefined,
+          objects: [],
+          selectedObjectId: undefined,
+          importWarnings: [],
+        }),
+      setViewportRuntime: (viewport) => set({ viewport }),
+      selectObject: (objectId) =>
+        set((state) => ({
+          selectedObjectId: objectId,
+          objects: state.objects.map((object) => ({ ...object, selected: object.id === objectId })),
+        })),
+      setDisplayMode: (displayMode) => set({ displayMode }),
+      setProjectionMode: (projectionMode) => set({ projectionMode }),
+      setTransformMode: (transformMode) => set({ transformMode, paintTool: 'none' }),
+      setPaintTool: (paintTool) => set({ paintTool, transformMode: 'select' }),
+      markPaintMaskChanged: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
+      clearPaintMask: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
+      setImportSettings: (settings) =>
+        set((state) => ({ importSettings: { ...state.importSettings, ...settings } })),
+      setOrbitControlsEnabled: (enabled) => get().viewport?.controls?.setEnabled(enabled),
+      updateObjectTransform: (objectId, transform, boundingBox) =>
+        set((state) => ({
+          objects: state.objects.map((object) =>
+            object.id === objectId
+              ? {
+                  ...object,
+                  transform,
+                  userTransform: transform,
+                  boundingBox: boundingBox ?? object.boundingBox,
+                }
+              : object,
+          ),
+          importedModel:
+            state.importedModel?.objectId === objectId && boundingBox
+              ? { ...state.importedModel, boundingBox }
+              : state.importedModel,
+        })),
+      toggleObjectVisibility: (objectId) =>
+        set((state) => {
+          const objects = state.objects.map((object) =>
+            object.id === objectId ? { ...object, visible: !object.visible } : object,
+          );
+          if (state.importedModel?.objectId === objectId) {
+            state.importedModel.group.visible = objects.find((object) => object.id === objectId)?.visible ?? true;
+          }
+          return { objects };
+        }),
+      requestCameraRestore: (camera) =>
+        set({ restoreCameraRequest: { camera, nonce: (get().restoreCameraRequest?.nonce ?? 0) + 1 } }),
     }),
-  setViewportRuntime: (viewport) => set({ viewport }),
-  selectObject: (objectId) =>
-    set((state) => ({
-      selectedObjectId: objectId,
-      objects: state.objects.map((object) => ({ ...object, selected: object.id === objectId })),
-    })),
-  setDisplayMode: (displayMode) => set({ displayMode }),
-  setProjectionMode: (projectionMode) => set({ projectionMode }),
-  setTransformMode: (transformMode) => set({ transformMode, paintTool: 'none' }),
-  setPaintTool: (paintTool) => set({ paintTool, transformMode: 'select' }),
-  markPaintMaskChanged: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
-  clearPaintMask: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
-  setImportSettings: (settings) =>
-    set((state) => ({ importSettings: { ...state.importSettings, ...settings } })),
-  setOrbitControlsEnabled: (enabled) => get().viewport?.controls?.setEnabled(enabled),
-  updateObjectTransform: (objectId, transform, boundingBox) =>
-    set((state) => ({
-      objects: state.objects.map((object) =>
-        object.id === objectId
-          ? {
-              ...object,
-              transform,
-              userTransform: transform,
-              boundingBox: boundingBox ?? object.boundingBox,
-            }
-          : object,
-      ),
-      importedModel:
-        state.importedModel?.objectId === objectId && boundingBox
-          ? { ...state.importedModel, boundingBox }
-          : state.importedModel,
-    })),
-  toggleObjectVisibility: (objectId) =>
-    set((state) => {
-      const objects = state.objects.map((object) =>
-        object.id === objectId ? { ...object, visible: !object.visible } : object,
-      );
-      if (state.importedModel?.objectId === objectId) {
-        state.importedModel.group.visible = objects.find((object) => object.id === objectId)?.visible ?? true;
-      }
-      return { objects };
-    }),
-  requestCameraRestore: (camera) =>
-    set({ restoreCameraRequest: { camera, nonce: (get().restoreCameraRequest?.nonce ?? 0) + 1 } }),
-}));
+    {
+      name: 'liclick-viewport-preferences-v1',
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({
+        displayMode: state.displayMode,
+        projectionMode: state.projectionMode,
+        importSettings: state.importSettings,
+      }),
+    },
+  ),
+);

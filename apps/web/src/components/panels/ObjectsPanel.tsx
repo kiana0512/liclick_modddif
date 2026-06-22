@@ -1,5 +1,4 @@
-import { AlertTriangle, Box, Eye, EyeOff, MousePointer2 } from 'lucide-react';
-import { Panel } from '@/components/ui/Panel';
+import { Box, Eye, EyeOff, MoreVertical, Plus } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
@@ -21,18 +20,19 @@ export function ObjectsPanel() {
     setProjectObjects(useSceneStore.getState().objects);
   }
 
+  if (objects.length === 0) {
+    return (
+      <div className="grid min-h-48 place-items-center text-sm font-semibold text-white/48">
+        {t('noImportedModel')}
+      </div>
+    );
+  }
+
   return (
-    <Panel title={t('objectsPanel')}>
-      <div className="space-y-2">
-        {objects.length === 0 && (
-          <div className="rounded-md border border-dashed border-white/15 p-3 text-sm text-white/48">
-            {t('noImportedModel')}
-          </div>
-        )}
-        {objects.map((object) => {
-          const selected = selectedObjectId === object.id;
-          const hasNoUv = object.uvSets.length === 0;
-          return (
+    <div className="min-h-48 overflow-hidden rounded-md border border-white/24">
+      {objects.map((object) => {
+        const selected = selectedObjectId === object.id;
+        return (
           <div
             key={object.id}
             role="button"
@@ -42,25 +42,14 @@ export function ObjectsPanel() {
               if (event.key === 'Enter' || event.key === ' ') selectObject(object.id);
             }}
             className={cn(
-              'flex w-full items-center gap-2 rounded-md border bg-white/[0.045] px-2.5 py-2 text-left hover:bg-white/[0.08]',
-              selected ? 'border-liclick-pink/70 shadow-glow' : 'border-white/8',
+              'flex h-10 w-full items-center gap-2 border-b border-white/24 bg-black/82 px-2 text-left transition hover:bg-white/[0.06]',
+              selected && 'border-liclick-pink bg-liclick-pink/12 text-white shadow-[inset_0_0_0_1px_rgba(255,92,207,0.44)]',
               !object.visible && 'opacity-48',
             )}
           >
-            <Box className="h-4 w-4 text-liclick-pink" />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] text-white">{object.name}</div>
-              <div className="text-[11px] uppercase text-white/40">
-                {object.format}
-                {object.childMeshCount ? ` / ${object.childMeshCount} ${t('mesh')}` : ''}
-              </div>
-            </div>
-            {(hasNoUv || (object.warnings && object.warnings.length > 0)) && (
-              <AlertTriangle className="h-4 w-4 text-amber-300" />
-            )}
             <button
               type="button"
-              className="grid h-7 w-7 place-items-center rounded text-white/45 transition hover:bg-white/10 hover:text-white"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded text-white transition hover:bg-white/10"
               onClick={(event) => {
                 event.stopPropagation();
                 handleToggleVisibility(object.id);
@@ -68,13 +57,48 @@ export function ObjectsPanel() {
               title={t('toggleVisibility')}
               aria-label={t('toggleVisibility')}
             >
-              {object.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              {object.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-white/45" />}
             </button>
-            {selected && <MousePointer2 className="h-4 w-4 text-liclick-orange" />}
+            <Box className="h-4 w-4 shrink-0 text-liclick-pink" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-semibold text-white">{object.name}</div>
+            </div>
+            <button
+              type="button"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-white transition hover:bg-white/18"
+              aria-label={t('objectActions')}
+              title={t('objectActions')}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <MoreVertical className="h-4 w-4" />
+            </button>
           </div>
-          );
-        })}
-      </div>
-    </Panel>
+        );
+      })}
+    </div>
+  );
+}
+
+export function ObjectsPanelActions() {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink"
+        title={t('toggleVisibility')}
+        aria-label={t('toggleVisibility')}
+      >
+        <Eye className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink"
+        title={t('importModel')}
+        aria-label={t('importModel')}
+      >
+        <Plus className="h-4 w-4" />
+      </button>
+    </div>
   );
 }

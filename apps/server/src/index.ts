@@ -42,77 +42,47 @@ function serveWorkspaceFile(response: ServerResponse, url: URL) {
   return true;
 }
 
+function stripPublicPath(url: URL) {
+  const publicPath = serverConfig.publicPath;
+  if (!publicPath || url.pathname === publicPath || !url.pathname.startsWith(`${publicPath}/`)) return url;
+  const stripped = new URL(url.href);
+  stripped.pathname = stripped.pathname.slice(publicPath.length) || '/';
+  return stripped;
+}
+
 async function handleWorkspaceRequest(
   request: IncomingMessage,
   response: ServerResponse,
 ) {
-  const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
-  const routeUrl =
-    url.pathname === '/callback'
-      ? new URL(`/api/auth/feishu/callback${url.search}`, `${url.protocol}//${url.host}`)
-      : url;
+  const rawUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
+  const url = stripPublicPath(rawUrl);
   if (request.method === 'OPTIONS') {
     sendNoContent(response);
     return;
   }
-  if (routeUrl.pathname === '/api/health') {
+  if (url.pathname === '/api/health') {
     sendJson(response, 200, {
       ok: true,
       workspaceDir: serverConfig.workspaceDir,
       workspaceVersion: '0.6.0',
+      host: serverConfig.host,
     });
     return;
   }
-  if (routeUrl.pathname.startsWith('/workspace/')) {
-    serveWorkspaceFile(response, routeUrl);
+  if (url.pathname.startsWith('/workspace/')) {
+    serveWorkspaceFile(response, url);
     return;
   }
-  if (routeUrl.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, routeUrl))) return;
-  if (routeUrl.pathname.startsWith('/api/liclick') && (await handleLiclickRoute(request, response, routeUrl))) return;
-  if (routeUrl.pathname.startsWith('/api/projects') && (await handleAssetsRoute(request, response, routeUrl))) return;
-  if (routeUrl.pathname.startsWith('/api/projects') && (await handleExportRoute(request, response, routeUrl))) return;
-  if (routeUrl.pathname.startsWith('/api/projects') && (await handleProjectsRoute(request, response, routeUrl))) return;
-  if (routeUrl.pathname.startsWith('/api/folders') && (await handleFoldersRoute(request, response, routeUrl))) return;
+  if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;
+  if (
+    (url.pathname.startsWith('/api/liclick') || url.pathname === '/api/generate-image') &&
+    (await handleLiclickRoute(request, response, url))
+  ) return;
+  if (url.pathname.startsWith('/api/projects') && (await handleAssetsRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/projects') && (await handleExportRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/projects') && (await handleProjectsRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/folders') && (await handleFoldersRoute(request, response, url))) return;
   sendJson(response, 404, { error: 'Route not found.' });
-}
-
-function shouldStartFeishuLocalCallbackServer() {
-  try {
-    const redirectUrl = new URL(serverConfig.feishu.redirectUri);
-    return (
-      redirectUrl.hostname === 'localhost' &&
-      redirectUrl.pathname === '/callback' &&
-      Number(redirectUrl.port) !== serverConfig.port
-    );
-  } catch {
-    return false;
-  }
-}
-
-function startFeishuLocalCallbackServer() {
-  if (!shouldStartFeishuLocalCallbackServer()) return;
-  const callbackServer = createServer(async (request, response) => {
-    try {
-      await handleWorkspaceRequest(request, response);
-    } catch (error) {
-      console.error('[Liclick Feishu OAuth Callback]', error);
-      sendJson(response, 500, { error: error instanceof Error ? error.message : 'Internal server error.' });
-    }
-  });
-  callbackServer.on('error', (error: NodeJS.ErrnoException) => {
-    if (error.code === 'EADDRINUSE') {
-      console.warn(
-        `[Liclick Feishu OAuth Callback] localhost:${serverConfig.feishu.localCallbackPort} is already in use. Feishu login can still open, but callback may be handled by that process.`,
-      );
-      return;
-    }
-    console.error('[Liclick Feishu OAuth Callback]', error);
-  });
-  callbackServer.listen(serverConfig.feishu.localCallbackPort, '127.0.0.1', () => {
-    console.log(
-      `Liclick Feishu OAuth callback listening at http://localhost:${serverConfig.feishu.localCallbackPort}/callback`,
-    );
-  });
 }
 
 async function startServer() {
@@ -150,10 +120,9 @@ async function startServer() {
       });
   });
 
-  server.listen(serverConfig.port, '127.0.0.1', () => {
-    console.log(`Liclick workspace server running at http://127.0.0.1:${serverConfig.port}`);
+  server.listen(serverConfig.port, serverConfig.host, () => {
+    console.log(`Liclick workspace server running at http://${serverConfig.host}:${serverConfig.port}`);
     console.log(`Workspace: ${serverConfig.workspaceDir}`);
-    startFeishuLocalCallbackServer();
   });
 }
 

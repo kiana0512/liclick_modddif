@@ -1,25 +1,19 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   ArrowLeft,
-  Archive,
   Boxes,
+  ChevronDown,
   Download,
-  FileDown,
-  FileUp,
-  FolderOpen,
   Image,
   Palette,
   PanelLeft,
   PanelRight,
-  RotateCcw,
-  Save,
   ScanLine,
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
-import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { WorkspaceDock } from '@/components/workspace/WorkspaceDock';
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
@@ -36,10 +30,6 @@ type EditorShellProps = {
   projectName: string;
   workspaceLabel?: string;
   onBack: () => void;
-  onImportModel: () => void;
-  onSaveProject: () => void;
-  onExportProjectPackage: () => void;
-  onLoadProject: () => void;
   exportMenu: ReactNode;
   bottomToolbar: ReactNode;
   center: ReactNode;
@@ -110,20 +100,16 @@ export function EditorShell({
   projectName,
   workspaceLabel,
   onBack,
-  onImportModel,
-  onSaveProject,
-  onExportProjectPackage,
-  onLoadProject,
   exportMenu,
   bottomToolbar,
   center,
   panels,
 }: EditorShellProps) {
   const [mobileDock, setMobileDock] = useState<DockSide>();
+  const [resolutionMenuOpen, setResolutionMenuOpen] = useState(false);
   const t = useT();
   const mode = useWorkspaceLayoutStore((state) => state.mode);
   const setMode = useWorkspaceLayoutStore((state) => state.setMode);
-  const resetWorkspaceLayout = useWorkspaceLayoutStore((state) => state.resetWorkspaceLayout);
   const dockDensity = useWorkspaceLayoutStore((state) => state.dockDensity);
   const resolution = useSettingsStore((state) => state.resolution);
   const setResolution = useSettingsStore((state) => state.setResolution);
@@ -139,7 +125,6 @@ export function EditorShell({
     { value: 'texture', label: t('texture') },
     { value: 'normal', label: t('normal') },
     { value: 'segments', label: t('segments') },
-    { value: 'export', label: t('export') },
   ];
 
   return (
@@ -175,7 +160,7 @@ export function EditorShell({
             {modeOptions.map((option) => {
               const Icon = modeIcons[option.value];
               return (
-                <IconTooltip key={option.value} label={option.label}>
+                <IconTooltip key={option.value} label={option.label} side="bottom">
                   <button
                     type="button"
                     className={cn(
@@ -191,42 +176,49 @@ export function EditorShell({
                 </IconTooltip>
               );
             })}
+            {exportMenu}
           </div>
-          <SegmentedControl
-            value={resolution}
-            options={[
-              { value: '1K', label: '1K' },
-              { value: '2K', label: '2K' },
-              { value: '4K', label: '4K' },
-            ]}
-            onChange={setResolution}
-            className="w-32"
-          />
-          <div className="hidden items-center gap-1 rounded-lg border border-white/10 bg-black/30 p-1 sm:flex">
-            <IconTooltip label={t('resetLayout')}>
-              <Button className="h-9 w-9 px-0" variant="ghost" onClick={resetWorkspaceLayout} aria-label={t('resetLayout')}>
-                <RotateCcw className="h-4 w-4" />
-              </Button>
+          <div className="relative hidden sm:block">
+            <IconTooltip label="Resolution" side="bottom">
+              <button
+                type="button"
+                className="flex h-9 items-center gap-1 rounded-md px-3 text-sm font-semibold text-white/82 transition hover:bg-white/10 hover:text-white"
+                onClick={() => setResolutionMenuOpen((open) => !open)}
+                aria-label="Resolution"
+              >
+                {resolution}
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
             </IconTooltip>
-            <IconTooltip label={t('importModel')}>
-              <Button className="h-9 w-9 px-0" icon={<FileUp className="h-4 w-4" />} onClick={onImportModel} aria-label={t('importModel')} />
-            </IconTooltip>
-            <IconTooltip label={t('save')}>
-              <Button className="h-9 w-9 px-0" icon={<Save className="h-4 w-4" />} onClick={onSaveProject} aria-label={t('save')} />
-            </IconTooltip>
-            <IconTooltip label={t('projectPackage')}>
-              <Button
-                className="h-9 w-9 px-0"
-                icon={<Archive className="h-4 w-4" />}
-                onClick={onExportProjectPackage}
-                aria-label={t('projectPackage')}
-              />
-            </IconTooltip>
-            <IconTooltip label={t('projects')}>
-              <Button className="h-9 w-9 px-0" icon={<FolderOpen className="h-4 w-4" />} onClick={onLoadProject} aria-label={t('projects')} />
-            </IconTooltip>
+            {resolutionMenuOpen && (
+              <>
+                <button
+                  type="button"
+                  className="fixed inset-0 z-40 cursor-default bg-transparent"
+                  aria-label="Close resolution menu"
+                  onClick={() => setResolutionMenuOpen(false)}
+                />
+                <div className="absolute left-0 top-full z-50 mt-2 min-w-24 rounded-md border border-white/12 bg-black/92 p-1 text-sm shadow-xl backdrop-blur">
+                  {(['1K', '2K', '4K'] as const).map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      className={cn(
+                        'block w-full rounded px-3 py-2 text-left font-semibold transition hover:bg-white/10',
+                        resolution === item ? 'bg-white text-black' : 'text-white/80',
+                      )}
+                      onClick={() => {
+                        setResolution(item);
+                        setResolutionMenuOpen(false);
+                      }}
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
-          {exportMenu}
           <div className="flex gap-1 sm:hidden">
             <Button
               className="h-8 w-8 px-0"
@@ -234,16 +226,6 @@ export function EditorShell({
               variant={mode === 'texture' ? 'primary' : 'secondary'}
               onClick={() => handleModeChange('texture')}
               title={t('texture')}
-            />
-            <Button className="h-8 w-8 px-0" icon={<FileUp className="h-4 w-4" />} onClick={onImportModel} title="Import Model" />
-            <Button className="h-8 w-8 px-0" icon={<Save className="h-4 w-4" />} onClick={onSaveProject} title="Save" />
-            <Button className="h-8 w-8 px-0" icon={<FileDown className="h-4 w-4" />} onClick={onLoadProject} title="Load" />
-            <Button
-              className="h-8 w-8 px-0"
-              icon={<Download className="h-4 w-4" />}
-              variant={mode === 'export' ? 'primary' : 'secondary'}
-              onClick={() => setMode('export')}
-              title={t('export')}
             />
           </div>
         </div>
@@ -253,7 +235,8 @@ export function EditorShell({
         className="relative h-full overflow-hidden bg-[#080914]"
         style={
           {
-            '--workspace-top-offset': '176px',
+            '--workspace-left-top-offset': '84px',
+            '--workspace-right-top-offset': '176px',
             '--workspace-bottom-offset': '16px',
             '--dock-left-width': dockDensity === 'normal' ? '320px' : '300px',
             '--dock-right-width': dockDensity === 'normal' ? '400px' : '360px',

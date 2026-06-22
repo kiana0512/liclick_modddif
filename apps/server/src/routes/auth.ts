@@ -4,10 +4,6 @@ import { optionalAuth } from '../auth/authMiddleware.js';
 import { completeAtlasLogin, getAtlasStatus } from '../auth/atlasAuthService.js';
 import { toPublicUser } from '../auth/currentUser.js';
 import { loginDevUser } from '../auth/devMockAuthService.js';
-import {
-  completeFeishuLogin,
-} from '../auth/feishuOAuthService.js';
-import { consumeOAuthState } from '../auth/oauthStateStore.js';
 import { clearSessionCookie, getSessionCookie, revokeSession } from '../auth/sessionService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
@@ -61,25 +57,6 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
       atlas: result.status,
       message: '莉刻/Atlas 登录已可用。',
     });
-    return true;
-  }
-
-  if (request.method === 'GET' && route === 'feishu' && segments[3] === 'callback') {
-    const code = url.searchParams.get('code');
-    const state = url.searchParams.get('state');
-    if (!code || !state || !consumeOAuthState(state)) {
-      response.writeHead(302, { location: `${serverConfig.frontendUrl}/login?error=feishu_login_failed` });
-      response.end();
-      return true;
-    }
-    try {
-      await completeFeishuLogin(code, request, response);
-      response.writeHead(302, { location: `${serverConfig.frontendUrl}/projects` });
-      response.end();
-    } catch {
-      response.writeHead(302, { location: `${serverConfig.frontendUrl}/login?error=feishu_login_failed` });
-      response.end();
-    }
     return true;
   }
 

@@ -14,7 +14,6 @@ type ExportActionId =
   | 'turntable-webm';
 
 type ExportMenuProps = {
-  modeIsExport: boolean;
   canExportScene: boolean;
   canExportObject: boolean;
   canExportColor: boolean;
@@ -31,9 +30,6 @@ type ExportMenuProps = {
     turntable: string;
     color: string;
     normal: string;
-    segmentsColorId: string;
-    comingSoon: string;
-    pro: string;
     bakeFirst: string;
     importModelFirst: string;
     selectObjectFirst: string;
@@ -52,14 +48,12 @@ type ExportMenuRow = {
 function modelRows(target: ExportTarget, canExport: boolean, disabledReason: string): ExportMenuRow[] {
   return [
     { id: `${target}-glb`, label: 'GLB', disabled: !canExport, disabledReason },
-    { label: 'FBX', status: 'PRO', disabled: true },
     { id: `${target}-obj`, label: 'OBJ', disabled: !canExport, disabledReason },
     { id: `${target}-stl`, label: 'STL', disabled: !canExport, disabledReason },
   ];
 }
 
 export function ExportMenu({
-  modeIsExport,
   canExportScene,
   canExportObject,
   canExportColor,
@@ -89,7 +83,6 @@ export function ExportMenu({
       rows: [
         { id: 'texture-color', label: labels.color, disabled: !canExportColor, disabledReason: labels.bakeFirst },
         { id: 'texture-normal', label: labels.normal, disabled: !canExportNormal, disabledReason: labels.importModelFirst },
-        { label: labels.segmentsColorId, status: labels.comingSoon, disabled: true },
       ],
     },
     {
@@ -108,11 +101,11 @@ export function ExportMenu({
 
   return (
     <div className="relative hidden sm:block" onBlur={() => window.setTimeout(() => setOpen(false), 140)}>
-      <IconTooltip label={labels.export}>
+      <IconTooltip label={labels.export} side="bottom">
         <Button
           className="h-9 w-9 px-0"
           icon={<Download className="h-4 w-4" />}
-          variant={modeIsExport ? 'primary' : 'secondary'}
+          variant="secondary"
           onClick={() => setOpen((value) => !value)}
           aria-label={labels.export}
         />

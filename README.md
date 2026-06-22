@@ -25,22 +25,21 @@ pnpm workspace:up
 The local workspace server runs on `127.0.0.1:4517` by default and stores projects in `workspace/`.
 `pnpm workspace:up` starts the workspace server as a background Windows process for longer local sessions. The web app keeps the mock project gallery visible when the server is offline.
 
-## Auth And Feishu Login
+For Linux, Docker, or long-running A100 deployment, build first and run the compiled server through a process manager. See `docs/26_PROJECT_STRUCTURE_AND_DEPLOYMENT_AUDIT.md`.
 
-The Projects homepage and local editor can be viewed without login. AI features that call the Liclick API, such as `Generate Image`, require login. The visible login entry starts Feishu OAuth and the server stores only its own httpOnly Liclick session cookie.
+## Auth And Liclick Login
 
-`dev-mock` is only a deliberate development fallback. Real Feishu login requires the server runtime to receive the Feishu app credentials from deployment secrets or another server-side config source:
+The Projects homepage and local editor can be viewed without login. AI features that call the Liclick API, such as `Generate Image`, require the local Liclick / Atlas gateway login. The visible `飞书登录` entry calls the server, the server asks the installed Atlas runtime for login status, and then stores only its own httpOnly Liclick session cookie.
+
+`dev-mock` is only a deliberate development fallback. The current real login path does not use Feishu Open Platform app credentials, callback URLs, or robot permissions. It relies on the local `@lilith/atlas-skillhub` gateway flow used by Liclick services. If the machine already has a valid Atlas token, login completes without scanning. If the token is missing or expired, Atlas opens the company IDaaS / Feishu authorization flow.
 
 ```bash
 AUTH_MODE=feishu-oauth
-FEISHU_APP_ID=...
-FEISHU_APP_SECRET=...
-FEISHU_REDIRECT_URI=http://127.0.0.1:4517/api/auth/feishu/callback
 ```
 
-The Feishu endpoint URLs have safe defaults aligned with the existing Feishu Animation Downloader flow: `/authen/v1/authorize`, `/auth/v3/app_access_token/internal`, and `/authen/v1/access_token`. If `FEISHU_APP_ID` is missing, clicking Feishu login returns a clear configuration error instead of showing Dev Login. If only `FEISHU_APP_SECRET` is missing, the app can open Feishu authorization but cannot complete the callback and userinfo exchange.
+The frontend never receives Atlas tokens, Feishu tokens, API keys, or session token values. User name and email are decoded server-side from the Atlas gateway token claims and copied into the local user session. Avatar currently falls back to a deterministic local avatar when the Atlas token does not include a profile image URL.
 
-The frontend never receives Feishu tokens. User name and avatar shown in the top-right account menu come from Feishu userinfo after callback.
+`GET /api/liclick/status` verifies whether the logged-in user can reach the Liclick API through Atlas and lists the discovered Liclick tools.
 
 Database setup:
 

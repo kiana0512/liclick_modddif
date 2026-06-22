@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import type { ProjectionLayerInput } from './projectionTypes';
 import { buildProjectionMatrixBundle } from './projectionMath';
 
-const DEFAULT_PREVIEW_COLOR = '#d9a18c';
-const DEFAULT_FLAT_COLOR = '#e6b49f';
+const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
+const DEFAULT_FLAT_COLOR = '#f4f5f2';
+const DEFAULT_WIRE_COLOR = '#e9ebe8';
 
 const vertexShader = `
   varying vec3 vWorldPosition;
@@ -148,17 +149,19 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
   if (displayMode === 'normal') return new THREE.MeshNormalMaterial();
   if (displayMode === 'wire') {
     return new THREE.MeshStandardMaterial({
-      color: DEFAULT_FLAT_COLOR,
+      color: DEFAULT_WIRE_COLOR,
       wireframe: true,
-      roughness: 0.8,
-      metalness: 0.1,
+      roughness: 0.9,
+      metalness: 0,
     });
   }
   if (displayMode === 'flat') {
-    return new THREE.MeshBasicMaterial({
-      color: bakedTexture ? '#ffffff' : DEFAULT_FLAT_COLOR,
-      map: bakedTexture,
-      toneMapped: false,
+    return new THREE.MeshStandardMaterial({
+      color: DEFAULT_FLAT_COLOR,
+      roughness: 0.96,
+      metalness: 0,
+      emissive: '#ffffff',
+      emissiveIntensity: 0.04,
     });
   }
 

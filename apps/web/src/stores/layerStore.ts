@@ -8,30 +8,71 @@ type LayerStore = {
   layers: Layer[];
   activeProjectedLayerId?: string;
   setLayers: (layers: Layer[]) => void;
+  addEmptyLayer: () => Layer;
   addProjectedLayerFromGeneration: (generation: Generation, capture?: Capture, objectId?: string) => Layer;
   toggleLayer: (layerId: string) => void;
+  setLayerVisibility: (layerIds: string[], visible: boolean) => void;
   setOpacity: (layerId: string, opacity: number) => void;
+  setBlendMode: (layerId: string, blendMode: Layer['blendMode']) => void;
   setLayerAdjustment: (layerId: string, key: keyof LayerAdjustments, value: number) => void;
+  resetLayerAdjustments: (layerId: string) => void;
   setActiveLayer: (layerId: string) => void;
+  renameLayer: (layerId: string, name: string) => void;
+  duplicateLayer: (layerId: string) => void;
+  moveLayer: (layerId: string, direction: 'up' | 'down') => void;
+  reorderLayer: (layerId: string, targetLayerId: string, placement?: 'before' | 'after') => void;
   markLayerBaked: (layerId: string, bakedTextureId: string, bakedAt: string) => void;
   deleteLayer: (layerId: string) => void;
 };
+
+const legacyTransparentImage =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
+
+function withOrder(layers: Layer[]) {
+  return layers.map((layer, index) => ({ ...layer, order: index }));
+}
+
+function normalizeLayer(layer: Layer) {
+  return {
+    ...layer,
+    imageUrl: layer.imageUrl === legacyTransparentImage ? '' : layer.imageUrl,
+    adjustments: {
+      hue: layer.adjustments?.hue ?? 0,
+      saturation: layer.adjustments?.saturation ?? 0,
+      lightness: layer.adjustments?.lightness ?? 0,
+    },
+  };
+}
 
 export const useLayerStore = create<LayerStore>((set, get) => ({
   layers: [],
   activeProjectedLayerId: undefined,
   setLayers: (layers) =>
     set({
-      layers: layers.map((layer) => ({
-        ...layer,
-        adjustments: {
-          hue: layer.adjustments?.hue ?? 0,
-          saturation: layer.adjustments?.saturation ?? 0,
-          lightness: layer.adjustments?.lightness ?? 0,
-        },
-      })),
+      layers: withOrder(layers.map(normalizeLayer)),
       activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
     }),
+  addEmptyLayer: () => {
+    const layer: Layer = {
+      id: uuid(),
+      name: 'New layer',
+      type: 'projected',
+      imageUrl: '',
+      visible: true,
+      opacity: 1,
+      blendMode: 'normal',
+      adjustments: { hue: 0, saturation: 0, lightness: 0 },
+      order: 0,
+      createdAt: new Date().toISOString(),
+    };
+
+    set((state) => ({
+      layers: withOrder([layer, ...state.layers]),
+      activeProjectedLayerId: layer.id,
+    }));
+
+    return layer;
+  },
   addProjectedLayerFromGeneration: (generation, capture, objectId) => {
     const layer: Layer = {
       id: uuid(),
@@ -53,7 +94,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     };
 
     set((state) => ({
-      layers: [layer, ...state.layers],
+      layers: withOrder([layer, ...state.layers]),
       activeProjectedLayerId: layer.id,
     }));
 
@@ -71,11 +112,33 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
       };
     }),
+  setLayerVisibility: (layerIds, visible) =>
+    set((state) => {
+      const layerIdSet = new Set(layerIds);
+      const layers = state.layers.map((layer) => (layerIdSet.has(layer.id) ? { ...layer, visible } : layer));
+      const activeStillVisible = layers.some(
+        (layer) => layer.id === state.activeProjectedLayerId && layer.visible && layer.type === 'projected',
+      );
+      return {
+        layers,
+        activeProjectedLayerId: activeStillVisible
+          ? state.activeProjectedLayerId
+          : layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+      };
+    }),
   setOpacity: (layerId, opacity) =>
     set((state) => ({
       layers: state.layers.map((layer) =>
         layer.id === layerId
           ? { ...layer, opacity, needsRebake: layer.isBaked ? true : layer.needsRebake }
+          : layer,
+      ),
+    })),
+  setBlendMode: (layerId, blendMode) =>
+    set((state) => ({
+      layers: state.layers.map((layer) =>
+        layer.id === layerId
+          ? { ...layer, blendMode, needsRebake: layer.isBaked ? true : layer.needsRebake }
           : layer,
       ),
     })),
@@ -96,12 +159,69 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           : layer,
       ),
     })),
+  resetLayerAdjustments: (layerId) =>
+    set((state) => ({
+      layers: state.layers.map((layer) =>
+        layer.id === layerId
+          ? {
+              ...layer,
+              adjustments: { hue: 0, saturation: 0, lightness: 0 },
+              needsRebake: layer.isBaked ? true : layer.needsRebake,
+            }
+          : layer,
+      ),
+    })),
   setActiveLayer: (layerId) =>
     set((state) => ({
       activeProjectedLayerId:
         state.layers.find((layer) => layer.id === layerId && layer.type === 'projected')?.id ??
         state.activeProjectedLayerId,
     })),
+  renameLayer: (layerId, name) =>
+    set((state) => ({
+      layers: state.layers.map((layer) => (layer.id === layerId ? { ...layer, name } : layer)),
+    })),
+  duplicateLayer: (layerId) =>
+    set((state) => {
+      const index = state.layers.findIndex((layer) => layer.id === layerId);
+      if (index < 0) return state;
+      const source = state.layers[index];
+      const layer: Layer = {
+        ...source,
+        id: uuid(),
+        name: `${source.name} Copy`,
+        isBaked: false,
+        needsRebake: false,
+        bakedAt: undefined,
+        bakedTextureId: undefined,
+        createdAt: new Date().toISOString(),
+      };
+      const layers = [...state.layers];
+      layers.splice(index + 1, 0, layer);
+      return { layers: withOrder(layers), activeProjectedLayerId: layer.id };
+    }),
+  moveLayer: (layerId, direction) =>
+    set((state) => {
+      const index = state.layers.findIndex((layer) => layer.id === layerId);
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (index < 0 || targetIndex < 0 || targetIndex >= state.layers.length) return state;
+      const layers = [...state.layers];
+      const [layer] = layers.splice(index, 1);
+      layers.splice(targetIndex, 0, layer);
+      return { layers: withOrder(layers) };
+    }),
+  reorderLayer: (layerId, targetLayerId, placement = 'before') =>
+    set((state) => {
+      if (layerId === targetLayerId) return state;
+      const sourceIndex = state.layers.findIndex((layer) => layer.id === layerId);
+      const targetIndex = state.layers.findIndex((layer) => layer.id === targetLayerId);
+      if (sourceIndex < 0 || targetIndex < 0) return state;
+      const layers = [...state.layers];
+      const [layer] = layers.splice(sourceIndex, 1);
+      const nextTargetIndex = layers.findIndex((item) => item.id === targetLayerId);
+      layers.splice(placement === 'after' ? nextTargetIndex + 1 : nextTargetIndex, 0, layer);
+      return { layers: withOrder(layers) };
+    }),
   markLayerBaked: (layerId, bakedTextureId, bakedAt) =>
     set((state) => ({
       layers: state.layers.map((layer) =>
@@ -114,7 +234,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     set((state) => {
       const layers = state.layers.filter((layer) => layer.id !== layerId);
       return {
-        layers,
+        layers: withOrder(layers),
         activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
       };
     }),

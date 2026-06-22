@@ -1,0 +1,18 @@
+[Liclick Workspace Server] Error: Invalid data URL.
+    at parseDataUrl (file:///E:/Liclick%203D%20Texture/apps/server/dist/services/assetFileService.js:22:15)
+    at saveDataUrlAsset (file:///E:/Liclick%203D%20Texture/apps/server/dist/services/assetFileService.js:43:30)
+    at async handleAssetsRoute (file:///E:/Liclick%203D%20Texture/apps/server/dist/routes/assets.js:14:19)
+    at async handleWorkspaceRequest (file:///E:/Liclick%203D%20Texture/apps/server/dist/index.js:65:54)
+    at async Server.<anonymous> (file:///E:/Liclick%203D%20Texture/apps/server/dist/index.js:79:13)
+[Liclick Workspace Server] Error: Invalid data URL.
+    at parseDataUrl (file:///E:/Liclick%203D%20Texture/apps/server/dist/services/assetFileService.js:22:15)
+    at saveDataUrlAsset (file:///E:/Liclick%203D%20Texture/apps/server/dist/services/assetFileService.js:43:30)
+    at async handleAssetsRoute (file:///E:/Liclick%203D%20Texture/apps/server/dist/routes/assets.js:14:19)
+    at async handleWorkspaceRequest (file:///E:/Liclick%203D%20Texture/apps/server/dist/index.js:65:54)
+    at async Server.<anonymous> (file:///E:/Liclick%203D%20Texture/apps/server/dist/index.js:79:13)
+[Liclick Workspace Server] Error: Invalid data URL.
+    at parseDataUrl (file:///E:/Liclick%203D%20Texture/apps/server/dist/services/assetFileService.js:22:15)
+    at saveDataUrlAsset (file:///E:/Liclick%203D%20Texture/apps/server/dist/services/assetFileService.js:43:30)
+    at async handleAssetsRoute (file:///E:/Liclick%203D%20Texture/apps/server/dist/routes/assets.js:14:19)
+    at async handleWorkspaceRequest (file:///E:/Liclick%203D%20Texture/apps/server/dist/index.js:65:54)
+    at async Server.<anonymous> (file:///E:/Liclick%203D%20Texture/apps/server/dist/index.js:79:13)

@@ -1,4 +1,16 @@
-import { Brush, Eraser, Layers3, Link2, MousePointer2, Move3D, Redo2, Rotate3D, Scale3D, Sparkles, Undo2 } from 'lucide-react';
+import {
+  Brush,
+  Eraser,
+  Layers3,
+  Link2,
+  MousePointer2,
+  Move3D,
+  Redo2,
+  Rotate3D,
+  Scale3D,
+  Sparkles,
+  Undo2,
+} from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
 import type { PaintToolMode, TransformMode } from '@/stores/sceneStore';
@@ -27,6 +39,15 @@ type BottomToolDockProps = {
     referenceLink: string;
     undo: string;
     redo: string;
+    selectHelp: string;
+    moveHelp: string;
+    rotateHelp: string;
+    scaleHelp: string;
+    layersHelp: string;
+    brushHelp: string;
+    eraserHelp: string;
+    localRepaintHelp: string;
+    referenceLinkHelp: string;
   };
 };
 
@@ -52,12 +73,18 @@ export function BottomToolDock({
   labels,
 }: BottomToolDockProps) {
   const baseButton =
-    'grid h-10 w-10 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:bg-white/12 hover:text-white disabled:cursor-not-allowed disabled:opacity-42';
+    'grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:border-white/22 hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/45 disabled:cursor-not-allowed disabled:opacity-42';
+  const divider = <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />;
 
   return (
-    <div className="mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-x-auto rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur">
+    <div className="mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur">
       {tools.map(({ mode, icon: Icon, labelKey }) => (
-        <IconTooltip key={mode} label={labels[labelKey]}>
+        <IconTooltip
+          key={mode}
+          label={labels[labelKey]}
+          description={labels[`${labelKey}Help` as keyof typeof labels]}
+          shortcut={labelKey === 'select' ? 'V' : labelKey === 'move' ? 'W' : labelKey === 'rotate' ? 'E' : 'R'}
+        >
           <button
             type="button"
             className={cn(
@@ -73,9 +100,9 @@ export function BottomToolDock({
         </IconTooltip>
       ))}
 
-      <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />
+      {divider}
 
-      <IconTooltip label={labels.layers}>
+      <IconTooltip label={labels.layers} description={labels.layersHelp}>
         <button
           type="button"
           className={baseButton}
@@ -85,7 +112,7 @@ export function BottomToolDock({
           <Layers3 className="h-4.5 w-4.5" />
         </button>
       </IconTooltip>
-      <IconTooltip label={labels.brush}>
+      <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="P">
         <button
           type="button"
           className={cn(
@@ -99,7 +126,7 @@ export function BottomToolDock({
           <Brush className="h-4.5 w-4.5" />
         </button>
       </IconTooltip>
-      <IconTooltip label={labels.eraser}>
+      <IconTooltip label={labels.eraser} description={labels.eraserHelp} shortcut="E">
         <button
           type="button"
           className={cn(
@@ -113,25 +140,25 @@ export function BottomToolDock({
           <Eraser className="h-4.5 w-4.5" />
         </button>
       </IconTooltip>
-      <IconTooltip label={labels.localRepaint}>
+      <IconTooltip label={labels.localRepaint} description={labels.localRepaintHelp} shortcut="K">
         <button type="button" className={baseButton} onClick={onLocalRepaint} aria-label={labels.localRepaint}>
           <Sparkles className="h-4.5 w-4.5" />
         </button>
       </IconTooltip>
-      <IconTooltip label={labels.referenceLink}>
+      <IconTooltip label={labels.referenceLink} description={labels.referenceLinkHelp} shortcut="I">
         <button type="button" className={baseButton} onClick={onReferenceLink} aria-label={labels.referenceLink}>
           <Link2 className="h-4.5 w-4.5" />
         </button>
       </IconTooltip>
 
-      <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />
+      {divider}
 
-      <IconTooltip label={labels.undo}>
+      <IconTooltip label={labels.undo} shortcut="Ctrl Z">
         <button type="button" className={baseButton} disabled={!canUndo} onClick={onUndo} aria-label={labels.undo}>
           <Undo2 className="h-4.5 w-4.5" />
         </button>
       </IconTooltip>
-      <IconTooltip label={labels.redo}>
+      <IconTooltip label={labels.redo} shortcut="Ctrl Y">
         <button type="button" className={baseButton} disabled={!canRedo} onClick={onRedo} aria-label={labels.redo}>
           <Redo2 className="h-4.5 w-4.5" />
         </button>

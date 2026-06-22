@@ -44,6 +44,7 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: () => Promise<
         return;
       }
       if (result.redirectUrl) window.location.href = result.redirectUrl;
+      else throw new Error('登录服务没有返回用户信息，请确认本机 Atlas/莉刻登录已完成。');
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Feishu login failed.');
       setBusy(false);
