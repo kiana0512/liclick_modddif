@@ -4,7 +4,9 @@ import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { captureCurrentView } from '@/engine/capture/captureCurrentView';
+import { devLogin, startFeishuLogin } from '@/services/authApiClient';
 import { generateTextureMock } from '@/services/mockGenerationService';
+import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
@@ -40,6 +42,41 @@ export function GeneratePanel() {
   const importedModel = useSceneStore((state) => state.importedModel);
   const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
+  const authStatus = useAuthStore((state) => state.status);
+  const providerStatus = useAuthStore((state) => state.providerStatus);
+  const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
+
+  async function requireAiLogin() {
+    if (authStatus === 'authenticated') return true;
+    pushToast({
+      tone: 'warning',
+      title: '需要飞书登录',
+      description: 'AI 生图需要莉刻 API 权限验证，登录后会继续使用当前项目。',
+      dedupeKey: 'ai-login-required',
+    });
+    try {
+      if (providerStatus?.devLoginEnabled && !providerStatus.feishuOAuthEnabled) {
+        const result = await devLogin({ displayName: 'Liclick Dev User', email: 'dev@liclick.local' });
+        setAuthenticated(result.user, 'dev-mock', providerStatus);
+        return true;
+      }
+      const result = await startFeishuLogin();
+      if (result.user) {
+        setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+        return true;
+      }
+      if (result.redirectUrl) window.location.href = result.redirectUrl;
+      return Boolean(result.user);
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: '飞书登录不可用',
+        description: error instanceof Error ? error.message : 'Could not start login.',
+        dedupeKey: 'ai-login-start-failed',
+      });
+      return false;
+    }
+  }
 
   async function ensureCapture() {
     if (!importedModel) throw new Error(t('importModelFirst'));
@@ -56,6 +93,7 @@ export function GeneratePanel() {
 
   async function handleGenerate() {
     try {
+      if (!(await requireAiLogin())) return;
       start();
       const capture = await ensureCapture();
       const object = objects.find((item) => item.id === capture.objectId);

@@ -5,12 +5,12 @@ import { writeAutosave } from './autosaveService.js';
 import {
   createId,
   ensureDir,
-  getProjectDir,
-  getProjectsDir,
-  getTrashProjectsDir,
   readJsonFile,
   slugify,
   toWorkspaceUrl,
+  getUserProjectDir,
+  getUserProjectsDir,
+  getUserTrashProjectsDir,
   writeJsonFile,
 } from './workspaceService.js';
 
@@ -39,12 +39,12 @@ async function ensureProjectFolders(projectDir: string) {
   ]);
 }
 
-export async function createProject(input: { name?: string; folderId?: string }) {
+export async function createProject(userId: string, input: { name?: string; folderId?: string }) {
   const now = new Date().toISOString();
   const id = createId('project');
   const baseName = input.name?.trim() || 'Untitled Project';
   const slug = `${slugify(baseName)}-${id.slice(-8)}`;
-  const projectDir = getProjectDir(slug);
+  const projectDir = getUserProjectDir(userId, slug);
   await ensureProjectFolders(projectDir);
 
   const project: WorkspaceProject = {
@@ -79,15 +79,15 @@ export async function createProject(input: { name?: string; folderId?: string })
   return { project, slug };
 }
 
-export async function listProjects(): Promise<ProjectSummary[]> {
-  await ensureDir(getProjectsDir());
-  const entries = await fs.readdir(getProjectsDir(), { withFileTypes: true });
+export async function listProjects(userId: string): Promise<ProjectSummary[]> {
+  await ensureDir(getUserProjectsDir(userId));
+  const entries = await fs.readdir(getUserProjectsDir(userId), { withFileTypes: true });
   const summaries: Array<ProjectSummary | undefined> = await Promise.all(
     entries
       .filter((entry) => entry.isDirectory())
       .map(async (entry) => {
         const project = await readJsonFile<WorkspaceProject | undefined>(
-          getProjectFile(getProjectDir(entry.name)),
+          getProjectFile(getProjectDir(userId, entry.name)),
           undefined,
         );
         if (!project) return undefined;
@@ -97,10 +97,10 @@ export async function listProjects(): Promise<ProjectSummary[]> {
           folderId: project.folderId ?? null,
           createdAt: project.createdAt,
           updatedAt: project.updatedAt,
-          thumbnail: project.thumbnail ? resolveProjectAssetUrl(entry.name, project.thumbnail) : '',
+          thumbnail: project.thumbnail ? resolveProjectAssetUrl(userId, entry.name, project.thumbnail) : '',
           local: true,
           slug: entry.name,
-          localPath: getProjectDir(entry.name),
+          localPath: getProjectDir(userId, entry.name),
           status: 'local',
         };
         return summary;
@@ -109,20 +109,24 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   return summaries.filter((summary): summary is ProjectSummary => Boolean(summary));
 }
 
-export async function findProjectSlug(projectId: string) {
-  const projects = await listProjects();
+export async function findProjectSlug(userId: string, projectId: string) {
+  const projects = await listProjects(userId);
   return projects.find((project) => project.id === projectId)?.slug;
 }
 
-export function resolveProjectAssetUrl(slug: string, relativePath: string) {
+function getProjectDir(userId: string, slug: string) {
+  return getUserProjectDir(userId, slug);
+}
+
+export function resolveProjectAssetUrl(userId: string, slug: string, relativePath: string) {
   if (!relativePath || relativePath.startsWith('data:') || relativePath.startsWith('blob:') || relativePath.startsWith('http')) {
     return relativePath;
   }
-  return toWorkspaceUrl(path.join('projects', slug, relativePath));
+  return toWorkspaceUrl(path.join('users', userId, 'projects', slug, relativePath));
 }
 
-function resolveProjectAssets(slug: string, project: WorkspaceProject): WorkspaceProject {
-  const resolveUrl = (url?: string) => (url ? resolveProjectAssetUrl(slug, url) : url);
+function resolveProjectAssets(userId: string, slug: string, project: WorkspaceProject): WorkspaceProject {
+  const resolveUrl = (url?: string) => (url ? resolveProjectAssetUrl(userId, slug, url) : url);
   const objects = project.objects ?? [];
   const references = project.references ?? [];
   const captures = project.captures ?? [];
@@ -175,18 +179,18 @@ function resolveProjectAssets(slug: string, project: WorkspaceProject): Workspac
   };
 }
 
-export async function loadProject(projectId: string) {
-  const slug = await findProjectSlug(projectId);
+export async function loadProject(userId: string, projectId: string) {
+  const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
-  const project = await readJsonFile<WorkspaceProject | undefined>(getProjectFile(getProjectDir(slug)), undefined);
+  const project = await readJsonFile<WorkspaceProject | undefined>(getProjectFile(getProjectDir(userId, slug)), undefined);
   if (!project) return undefined;
-  return { project: resolveProjectAssets(slug, project), slug };
+  return { project: resolveProjectAssets(userId, slug, project), slug };
 }
 
-export async function saveProject(projectId: string, inputProject: WorkspaceProject) {
-  const slug = await findProjectSlug(projectId);
+export async function saveProject(userId: string, projectId: string, inputProject: WorkspaceProject) {
+  const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
-  const projectDir = getProjectDir(slug);
+  const projectDir = getProjectDir(userId, slug);
   const now = new Date().toISOString();
   const project = {
     ...inputProject,
@@ -204,17 +208,18 @@ export async function saveProject(projectId: string, inputProject: WorkspaceProj
   return { project, slug };
 }
 
-async function loadRawProjectBySlug(slug: string) {
-  return readJsonFile<WorkspaceProject | undefined>(getProjectFile(getProjectDir(slug)), undefined);
+async function loadRawProjectBySlug(userId: string, slug: string) {
+  return readJsonFile<WorkspaceProject | undefined>(getProjectFile(getProjectDir(userId, slug)), undefined);
 }
 
 async function updateProjectById(
+  userId: string,
   projectId: string,
   updater: (project: WorkspaceProject, slug: string) => WorkspaceProject,
 ) {
-  const slug = await findProjectSlug(projectId);
+  const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
-  const project = await loadRawProjectBySlug(slug);
+  const project = await loadRawProjectBySlug(userId, slug);
   if (!project) return undefined;
   const now = new Date().toISOString();
   const nextProject = {
@@ -226,39 +231,39 @@ async function updateProjectById(
     workspaceMode: 'local-server',
     workspaceName: slug,
   };
-  await writeJsonFile(getProjectFile(getProjectDir(slug)), nextProject);
-  return { project: resolveProjectAssets(slug, nextProject), slug };
+  await writeJsonFile(getProjectFile(getProjectDir(userId, slug)), nextProject);
+  return { project: resolveProjectAssets(userId, slug, nextProject), slug };
 }
 
-export async function renameProject(projectId: string, name: string) {
+export async function renameProject(userId: string, projectId: string, name: string) {
   const nextName = name.trim();
   if (!nextName) return undefined;
-  return updateProjectById(projectId, (project) => ({ ...project, name: nextName }));
+  return updateProjectById(userId, projectId, (project) => ({ ...project, name: nextName }));
 }
 
-export async function moveProject(projectId: string, folderId: string | null) {
-  return updateProjectById(projectId, (project) => ({ ...project, folderId }));
+export async function moveProject(userId: string, projectId: string, folderId: string | null) {
+  return updateProjectById(userId, projectId, (project) => ({ ...project, folderId }));
 }
 
-export async function moveProjectsInFolderToRoot(folderId: string) {
-  const projects = await listProjects();
+export async function moveProjectsInFolderToRoot(userId: string, folderId: string) {
+  const projects = await listProjects(userId);
   const matchingProjects = projects.filter((project) => project.folderId === folderId);
-  await Promise.all(matchingProjects.map((project) => moveProject(project.id, null)));
+  await Promise.all(matchingProjects.map((project) => moveProject(userId, project.id, null)));
   return matchingProjects.length;
 }
 
-export async function duplicateProject(projectId: string) {
-  const slug = await findProjectSlug(projectId);
+export async function duplicateProject(userId: string, projectId: string) {
+  const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
-  const project = await loadRawProjectBySlug(slug);
+  const project = await loadRawProjectBySlug(userId, slug);
   if (!project) return undefined;
 
   const id = createId('project');
   const now = new Date().toISOString();
   const name = `${project.name} Copy`;
   const nextSlug = `${slugify(name)}-${id.slice(-8)}`;
-  const sourceDir = getProjectDir(slug);
-  const targetDir = getProjectDir(nextSlug);
+  const sourceDir = getProjectDir(userId, slug);
+  const targetDir = getProjectDir(userId, nextSlug);
   await fs.cp(sourceDir, targetDir, { recursive: true, errorOnExist: true });
   const duplicatedProject: WorkspaceProject = {
     ...project,
@@ -272,16 +277,16 @@ export async function duplicateProject(projectId: string) {
     dirty: false,
   };
   await writeJsonFile(getProjectFile(targetDir), duplicatedProject);
-  return { project: resolveProjectAssets(nextSlug, duplicatedProject), slug: nextSlug };
+  return { project: resolveProjectAssets(userId, nextSlug, duplicatedProject), slug: nextSlug };
 }
 
-export async function deleteProject(projectId: string) {
-  const slug = await findProjectSlug(projectId);
+export async function deleteProject(userId: string, projectId: string) {
+  const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
-  await ensureDir(getTrashProjectsDir());
-  const sourceDir = getProjectDir(slug);
+  await ensureDir(getUserTrashProjectsDir(userId));
+  const sourceDir = getProjectDir(userId, slug);
   const trashSlug = `${slug}-${Date.now()}`;
-  const targetDir = path.join(getTrashProjectsDir(), trashSlug);
+  const targetDir = path.join(getUserTrashProjectsDir(userId), trashSlug);
   await fs.rename(sourceDir, targetDir);
   return { deleted: true, projectId, slug, trashSlug };
 }

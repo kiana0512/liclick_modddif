@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Folder, FolderPlus, HardDrive, Info, Plus, RefreshCw } from 'lucide-react';
+import { Check, ChevronDown, Folder, FolderPlus, HardDrive, Plus, RefreshCw } from 'lucide-react';
+import { UserMenu } from '@/components/auth/UserMenu';
 import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
 import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
-import type { AppSection } from '@/layouts/AppShell';
-import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { mockProjects } from '@/mock/mockProjects';
 import { useI18nStore, useT } from '@/stores/i18nStore';
 import { useProjectStore } from '@/stores/projectStore';
@@ -23,12 +22,14 @@ import {
   moveProject,
   renameFolder,
   renameProject,
+  WorkspaceApiError,
   type ProjectSummary,
   type WorkspaceFolder,
 } from '@/services/workspaceApiClient';
 
 type ProjectsPageProps = {
   onOpenProject: (projectId: string) => void;
+  onLogout: () => void;
 };
 
 type SortMode = 'updated-desc' | 'created-desc' | 'created-asc' | 'name-asc';
@@ -229,11 +230,10 @@ function MoveDialog({
   );
 }
 
-export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
+export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>('updated-desc');
   const [serverState, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
-  const [activeSection, setActiveSection] = useState<AppSection>('projects');
   const [activeFolderId, setActiveFolderId] = useState<FolderFilter>(undefined);
   const [nameDialog, setNameDialog] = useState<
     | { type: 'new-folder' }
@@ -252,9 +252,6 @@ export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const pushToast = useToastStore((state) => state.pushToast);
   const language = useI18nStore((state) => state.language);
-  const setLanguage = useI18nStore((state) => state.setLanguage);
-  const dockDensity = useWorkspaceLayoutStore((state) => state.dockDensity);
-  const setDockDensity = useWorkspaceLayoutStore((state) => state.setDockDensity);
   const t = useT();
   const visibleProjects = useMemo(() => {
     const filtered =
@@ -267,13 +264,20 @@ export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
   async function refreshWorkspace(showOfflineToast = false) {
     try {
       await getWorkspaceHealth();
-      const [projectResult, folderResult] = await Promise.all([listProjects(), listFolders()]);
       setServerState('online');
+      const [projectResult, folderResult] = await Promise.all([listProjects(), listFolders()]);
       setFolders(folderResult.folders);
       setProjects(mergeProjectsWithMock(projectResult.projects.map(projectFromSummary)));
-    } catch {
-      setServerState('offline');
-      if (showOfflineToast) {
+    } catch (error) {
+      const isAuthRequired =
+        error instanceof WorkspaceApiError && error.status === 401;
+      setServerState(isAuthRequired ? 'online' : 'offline');
+      if (isAuthRequired) {
+        setFolders([]);
+        setProjects(mergeProjectsWithMock([]));
+        return;
+      }
+      if (showOfflineToast && !isAuthRequired) {
         pushToast({
           tone: 'warning',
           title: t('workspaceOfflineToast'),
@@ -294,6 +298,16 @@ export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
       await action();
       await refreshWorkspace();
     } catch (error) {
+      if (error instanceof WorkspaceApiError && error.status === 401) {
+        setServerState('online');
+        pushToast({
+          tone: 'warning',
+          title: '需要飞书登录',
+          description: '创建和管理本地项目需要登录后写入你的用户工作区。',
+          dedupeKey: 'workspace-auth-required',
+        });
+        return;
+      }
       setServerState('offline');
       pushToast({
         tone: 'error',
@@ -343,7 +357,6 @@ export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
             setNameDialog(undefined);
             void runWorkspaceAction(async () => {
               await createFolder(name);
-              setActiveSection('folders');
             });
           }}
         />
@@ -440,6 +453,7 @@ export function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
             <Button className="h-10 px-4" icon={<Plus className="h-4 w-4" />} variant="primary" onClick={() => void handleNewProject()}>
               {t('newProject')}
             </Button>
+            <UserMenu onLogout={onLogout} />
           </div>
         </div>
 

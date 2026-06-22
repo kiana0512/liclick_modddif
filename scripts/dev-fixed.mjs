@@ -9,8 +9,9 @@ const env = {
   ...process.env,
   LICLICK_WORKSPACE_PORT: process.env.LICLICK_WORKSPACE_PORT ?? '4517',
   LICLICK_WORKSPACE_DIR: process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),
-  LICLICK_PUBLIC_WORKSPACE_URL: process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? 'http://127.0.0.1:4517',
-  VITE_LICLICK_WORKSPACE_API: process.env.VITE_LICLICK_WORKSPACE_API ?? 'http://127.0.0.1:4517',
+  LICLICK_PUBLIC_WORKSPACE_URL: process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? 'http://localhost:4517',
+  VITE_LICLICK_WORKSPACE_API: process.env.VITE_LICLICK_WORKSPACE_API ?? 'http://localhost:4517',
+  AUTH_MODE: process.env.AUTH_MODE ?? 'feishu-oauth',
 };
 
 const child = spawn(

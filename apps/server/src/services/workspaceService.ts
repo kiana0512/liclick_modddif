@@ -40,6 +40,26 @@ export function getProjectsDir() {
   return path.join(serverConfig.workspaceDir, 'projects');
 }
 
+export function getUsersDir() {
+  return path.join(serverConfig.workspaceDir, 'users');
+}
+
+export function getUserDir(userId: string) {
+  return path.join(getUsersDir(), userId);
+}
+
+export function getUserProjectsDir(userId: string) {
+  return path.join(getUserDir(userId), 'projects');
+}
+
+export function getUserTrashProjectsDir(userId: string) {
+  return path.join(getUserDir(userId), 'trash', 'projects');
+}
+
+export function getUserProjectDir(userId: string, slug: string) {
+  return path.join(getUserProjectsDir(userId), slug);
+}
+
 export function getTrashProjectsDir() {
   return path.join(serverConfig.workspaceDir, 'trash', 'projects');
 }
@@ -50,6 +70,14 @@ export function getProjectDir(slug: string) {
 
 export function getFoldersFile() {
   return path.join(serverConfig.workspaceDir, 'folders.json');
+}
+
+export function getUserFoldersFile(userId: string) {
+  return path.join(getUserDir(userId), 'folders.json');
+}
+
+export function getAuthFile() {
+  return path.join(serverConfig.workspaceDir, 'auth.json');
 }
 
 export function getRecentProjectsFile() {
@@ -72,6 +100,7 @@ function normalizeArrayFileValue(value: unknown, wrappedKey: string) {
 
 export async function initializeWorkspace() {
   await ensureDir(getProjectsDir());
+  await ensureDir(getUsersDir());
   await writeJsonFile(
     getFoldersFile(),
     normalizeArrayFileValue(await readJsonFile<unknown>(getFoldersFile(), []), 'folders'),
@@ -85,6 +114,14 @@ export async function initializeWorkspace() {
     await readJsonFile(getSettingsFile(), {
       workspaceVersion: '0.6.0',
       createdAt: new Date().toISOString(),
+    }),
+  );
+  await writeJsonFile(
+    getAuthFile(),
+    await readJsonFile(getAuthFile(), {
+      users: [],
+      feishuAccounts: [],
+      sessions: [],
     }),
   );
 }

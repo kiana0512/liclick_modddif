@@ -1,7 +1,7 @@
 import { loadProject } from './projectFileService.js';
 
-export async function exportProjectPackage(projectId: string) {
-  const loaded = await loadProject(projectId);
+export async function exportProjectPackage(userId: string, projectId: string) {
+  const loaded = await loadProject(userId, projectId);
   if (!loaded) return undefined;
   return {
     status: 'coming-soon',

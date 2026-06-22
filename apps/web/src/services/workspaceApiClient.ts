@@ -1,6 +1,16 @@
 import type { Project } from '@/types/project';
 
-const workspaceApiBase = import.meta.env.VITE_LICLICK_WORKSPACE_API ?? 'http://127.0.0.1:4517';
+const workspaceApiBase = import.meta.env.VITE_LICLICK_WORKSPACE_API ?? 'http://localhost:4517';
+
+export class WorkspaceApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'WorkspaceApiError';
+    this.status = status;
+  }
+}
 
 export type WorkspaceFolder = {
   id: string;
@@ -37,10 +47,15 @@ async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: n
     ...fetchInit,
     signal: controller.signal,
     headers: requestHeaders,
+    credentials: 'include',
   }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Workspace request failed: ${response.status}`);
+    const payload = await response.json().catch(() => undefined);
+    const message =
+      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+        ? payload.error
+        : `Workspace request failed: ${response.status}`;
+    throw new WorkspaceApiError(response.status, message);
   }
   return response.json() as Promise<T>;
 }

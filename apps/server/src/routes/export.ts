@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { requireAuth } from '../auth/authMiddleware.js';
 import { exportProjectPackage } from '../services/exportService.js';
 import { getPathSegments, sendJson } from './httpUtils.js';
 
@@ -14,8 +15,10 @@ export async function handleExportRoute(request: IncomingMessage, response: Serv
   ) {
     return false;
   }
+  const user = await requireAuth(request, response);
+  if (!user) return true;
 
-  const result = await exportProjectPackage(projectId);
+  const result = await exportProjectPackage(user.id, projectId);
   if (!result) sendJson(response, 404, { error: 'Project not found.' });
   else sendJson(response, 202, result);
   return true;

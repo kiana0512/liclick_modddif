@@ -4,3 +4,10 @@ dist
 .turbo
 .DS_Store
 *.local
+.env
+apps/server/.env
+workspace/*.db
+workspace/auth.json
+workspace/users/
+workspace-auth-smoke/
+workspace-auth-smoke-feishu/

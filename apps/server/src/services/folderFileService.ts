@@ -1,5 +1,5 @@
 import type { WorkspaceFolder } from '../types/folder.js';
-import { createId, getFoldersFile, readJsonFile, writeJsonFile } from './workspaceService.js';
+import { createId, getUserFoldersFile, readJsonFile, writeJsonFile } from './workspaceService.js';
 import { moveProjectsInFolderToRoot } from './projectFileService.js';
 
 let folderWriteQueue = Promise.resolve();
@@ -35,17 +35,22 @@ function normalizeFolders(value: unknown) {
 }
 
 export async function listFolders() {
-  const rawFolders = await readJsonFile<unknown>(getFoldersFile(), []);
+  return listFoldersForUser('legacy');
+}
+
+export async function listFoldersForUser(userId: string) {
+  const foldersFile = getUserFoldersFile(userId);
+  const rawFolders = await readJsonFile<unknown>(foldersFile, []);
   const folders = normalizeFolders(rawFolders);
   if (!Array.isArray(rawFolders) || folders.length !== rawFolders.length) {
-    await writeJsonFile(getFoldersFile(), folders);
+    await writeJsonFile(foldersFile, folders);
   }
   return folders;
 }
 
-export async function createFolder(name: string) {
+export async function createFolder(userId: string, name: string) {
   const task = folderWriteQueue.then(async () => {
-    const folders = await listFolders();
+    const folders = await listFoldersForUser(userId);
     const now = new Date().toISOString();
     const folder: WorkspaceFolder = {
       id: createId('folder'),
@@ -54,7 +59,7 @@ export async function createFolder(name: string) {
       updatedAt: now,
       order: folders.length,
     };
-    await writeJsonFile(getFoldersFile(), [...folders, folder]);
+    await writeJsonFile(getUserFoldersFile(userId), [...folders, folder]);
     return folder;
   });
   folderWriteQueue = task.then(
@@ -64,18 +69,18 @@ export async function createFolder(name: string) {
   return task;
 }
 
-export async function renameFolder(folderId: string, name: string) {
+export async function renameFolder(userId: string, folderId: string, name: string) {
   const task = folderWriteQueue.then(async () => {
     const nextName = name.trim();
     if (!nextName) return undefined;
-    const folders = await listFolders();
+    const folders = await listFoldersForUser(userId);
     const now = new Date().toISOString();
     const folder = folders.find((item) => item.id === folderId);
     if (!folder) return undefined;
     const nextFolders = folders.map((item) =>
       item.id === folderId ? { ...item, name: nextName, updatedAt: now } : item,
     );
-    await writeJsonFile(getFoldersFile(), nextFolders);
+    await writeJsonFile(getUserFoldersFile(userId), nextFolders);
     return nextFolders.find((item) => item.id === folderId);
   });
   folderWriteQueue = task.then(
@@ -85,14 +90,14 @@ export async function renameFolder(folderId: string, name: string) {
   return task;
 }
 
-export async function deleteFolder(folderId: string) {
+export async function deleteFolder(userId: string, folderId: string) {
   const task = folderWriteQueue.then(async () => {
-    const folders = await listFolders();
+    const folders = await listFoldersForUser(userId);
     const folder = folders.find((item) => item.id === folderId);
     if (!folder) return undefined;
-    const movedProjectCount = await moveProjectsInFolderToRoot(folderId);
+    const movedProjectCount = await moveProjectsInFolderToRoot(userId, folderId);
     await writeJsonFile(
-      getFoldersFile(),
+      getUserFoldersFile(userId),
       folders
         .filter((item) => item.id !== folderId)
         .map((item, index) => ({ ...item, order: index })),
