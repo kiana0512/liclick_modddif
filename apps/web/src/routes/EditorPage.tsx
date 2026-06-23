@@ -33,6 +33,7 @@ import {
   saveRemoteUrlAsset,
   saveProject as saveWorkspaceProject,
   urlToDataUrl,
+  WorkspaceApiError,
 } from '@/services/workspaceApiClient';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
@@ -221,12 +222,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       setSaveStatus('saving');
       void saveToWorkspaceServer(snapshot)
         .then(() => setSaveStatus('saved'))
-        .catch(() => {
+        .catch((error) => {
           setSaveStatus('offline');
+          const authRequired = error instanceof WorkspaceApiError && error.status === 401;
           pushToast({
-            tone: 'warning',
-            title: 'Local workspace server is not running.',
-            dedupeKey: 'workspace-server-offline',
+            tone: authRequired ? 'warning' : 'warning',
+            title: authRequired ? '需要飞书登录' : 'Local workspace server is not running.',
+            description: authRequired ? '当前工程的模型、参考图、图层和生成记录需要登录后才能保存到你的用户工作区。' : undefined,
+            dedupeKey: authRequired ? 'workspace-auth-required-editor-save' : 'workspace-server-offline',
           });
       });
     }, 1500);
@@ -438,13 +441,26 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
       let object = loaded.object;
       if (project?.workspaceMode === 'local-server') {
-        const saved = await saveDataUrlAsset({
-          projectId: project.id,
-          category: 'models',
-          dataUrl: await fileToDataUrl(file),
-          filename: file.name,
-        });
-        object = { ...object, sourcePath: saved.asset.relativePath };
+        try {
+          const saved = await saveDataUrlAsset({
+            projectId: project.id,
+            category: 'models',
+            dataUrl: await fileToDataUrl(file),
+            filename: file.name,
+          });
+          object = { ...object, sourcePath: saved.asset.relativePath };
+        } catch (saveError) {
+          if (saveError instanceof WorkspaceApiError && saveError.status === 401) {
+            pushToast({
+              tone: 'warning',
+              title: '需要飞书登录',
+              description: '模型已临时导入到当前视图，但登录前不能保存到服务器项目。',
+              dedupeKey: 'model-import-auth-required',
+            });
+          } else {
+            throw saveError;
+          }
+        }
       }
       setImportedModel(loaded.result, object);
       updateCurrentProject({ objects: [object] });

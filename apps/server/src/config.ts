@@ -66,6 +66,12 @@ function parseCsv(value?: string) {
     .filter(Boolean);
 }
 
+function getAtlasLoginMode() {
+  const value = process.env.ATLAS_LOGIN_MODE?.trim();
+  if (value === 'interactive' || value === 'service-token') return value;
+  return 'interactive';
+}
+
 export const serverConfig = {
   port,
   host,
@@ -74,6 +80,7 @@ export const serverConfig = {
   publicPath: normalizePublicPath(process.env.LICLICK_PUBLIC_PATH),
   repoRoot,
   authMode: (process.env.AUTH_MODE ?? 'feishu-oauth') as 'dev-mock' | 'feishu-oauth',
+  atlasLoginMode: getAtlasLoginMode(),
   sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'liclick_3d_session',
   sessionSecret: process.env.SESSION_SECRET ?? 'dev-only-change-me',
   sessionMaxAgeDays: Number(process.env.SESSION_MAX_AGE_DAYS ?? 14),

@@ -24,6 +24,7 @@ export type ProviderStatus = {
   devLoginEnabled: boolean;
   feishuOAuthEnabled: boolean;
   feishuConfigured: boolean;
+  atlasLoginMode?: 'interactive' | 'service-token';
   missingConfigKeys: string[];
   atlas?: {
     valid?: boolean;
@@ -71,11 +72,24 @@ export function devLogin(input: { displayName?: string; email?: string }) {
 export function startFeishuLogin() {
   return requestJson<{
     redirectUrl?: string;
+    loginId?: string;
     user?: AuthUser;
     authMode?: AuthMode;
     message?: string;
     atlas?: ProviderStatus['atlas'];
   }>('/api/auth/feishu/start');
+}
+
+export function pollFeishuLogin(loginId: string) {
+  return requestJson<{
+    done: boolean;
+    redirectUrl?: string;
+    loginId?: string;
+    user?: AuthUser;
+    authMode?: AuthMode;
+    message?: string;
+    atlas?: ProviderStatus['atlas'];
+  }>(`/api/auth/feishu/poll/${encodeURIComponent(loginId)}`);
 }
 
 export function logout() {

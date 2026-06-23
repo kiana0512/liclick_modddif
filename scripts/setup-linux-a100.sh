@@ -10,14 +10,26 @@ SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 NGINX_SITE="/etc/nginx/sites-available/${APP_NAME}"
 NGINX_LINK="/etc/nginx/sites-enabled/${APP_NAME}"
 SERVER_PORT="${SERVER_PORT:-4517}"
-PUBLIC_PORT="${PUBLIC_PORT:-46777}"
+MOUNT_MODE="${MOUNT_MODE:-nginx}"
+if [[ "${MOUNT_MODE}" == "comfyui" ]]; then
+  PUBLIC_PORT="${PUBLIC_PORT:-46001}"
+else
+  PUBLIC_PORT="${PUBLIC_PORT:-46777}"
+fi
 PUBLIC_PATH="${PUBLIC_PATH:-/liclick/texture}"
+PUBLIC_HOST="${PUBLIC_HOST:-}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 PUBLIC_URL="${PUBLIC_URL:-}"
+COMFYUI_CUSTOM_NODES_DIR="${COMFYUI_CUSTOM_NODES_DIR:-/data/ai_art_comfyui/apps/ComfyUI/custom_nodes}"
+COMFYUI_RESTART_COMMAND="${COMFYUI_RESTART_COMMAND:-}"
 SOURCE_DIR="${SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 GIT_REPO="${GIT_REPO:-}"
 GIT_REF="${GIT_REF:-main}"
+GIT_REMOTE="${GIT_REMOTE:-origin}"
+UPDATE_FROM_GIT="${UPDATE_FROM_GIT:-0}"
 INSTALL_ATLAS="${INSTALL_ATLAS:-1}"
+ATLAS_NPM_REGISTRY="${ATLAS_NPM_REGISTRY:-https://registry-cnpm.lilithgame.com/}"
+ATLAS_LOGIN_MODE="${ATLAS_LOGIN_MODE:-interactive}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run as root: sudo PUBLIC_URL=https://your-domain.example bash scripts/setup-linux-a100.sh"
@@ -25,8 +37,14 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 if [[ -z "${PUBLIC_URL}" ]]; then
-  PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  PUBLIC_URL="http://${PUBLIC_HOST:-127.0.0.1}:${PUBLIC_PORT}${PUBLIC_PATH}"
+  DETECTED_PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  PUBLIC_HOST="${PUBLIC_HOST:-${DETECTED_PUBLIC_HOST:-127.0.0.1}}"
+  PUBLIC_URL="http://${PUBLIC_HOST}:${PUBLIC_PORT}${PUBLIC_PATH}"
+fi
+
+PUBLIC_HOST_FROM_URL="$(printf '%s' "${PUBLIC_URL}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*$#\1#')"
+if [[ -z "${PUBLIC_HOST}" ]]; then
+  PUBLIC_HOST="${PUBLIC_HOST_FROM_URL}"
 fi
 
 URL_PATH="$(printf '%s' "${PUBLIC_URL}" | sed -E 's#^[a-zA-Z]+://[^/]*##')"
@@ -76,7 +94,10 @@ if [[ "${INSTALL_ATLAS}" == "1" ]]; then
   if [[ -f "${ATLAS_EXISTING}" ]]; then
     echo "Atlas Skillhub already exists at ${ATLAS_EXISTING}"
   else
-    npm install -g @lilith/atlas-skillhub
+    if ! npm install -g @lilith/atlas-skillhub --registry="${ATLAS_NPM_REGISTRY}"; then
+      echo "WARN: @lilith/atlas-skillhub install failed from ${ATLAS_NPM_REGISTRY}."
+      echo "WARN: Deployment will continue. Configure ATLAS_SKILLHUB_PATH after installing the Atlas runtime manually."
+    fi
   fi
 fi
 
@@ -89,9 +110,9 @@ if [[ -n "${GIT_REPO}" ]]; then
   SOURCE_DIR="/tmp/${APP_NAME}-source"
   if [[ -d "${SOURCE_DIR}/.git" ]]; then
     echo "==> Updating source from ${GIT_REPO}"
-    git -C "${SOURCE_DIR}" fetch --all --prune
-    git -C "${SOURCE_DIR}" checkout "${GIT_REF}"
-    git -C "${SOURCE_DIR}" pull --ff-only origin "${GIT_REF}" || true
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" fetch --all --prune
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" checkout "${GIT_REF}"
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" pull --ff-only origin "${GIT_REF}" || true
   else
     echo "==> Cloning source from ${GIT_REPO}"
     rm -rf "${SOURCE_DIR}"
@@ -99,13 +120,24 @@ if [[ -n "${GIT_REPO}" ]]; then
   fi
 fi
 
+if [[ "${UPDATE_FROM_GIT}" == "1" && -d "${SOURCE_DIR}/.git" ]]; then
+  echo "==> Pulling latest source in ${SOURCE_DIR}"
+  git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" fetch "${GIT_REMOTE}" --prune
+  CURRENT_BRANCH="$(git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" rev-parse --abbrev-ref HEAD)"
+  TARGET_REF="${GIT_REF:-${CURRENT_BRANCH}}"
+  if [[ -n "${TARGET_REF}" && "${TARGET_REF}" != "${CURRENT_BRANCH}" ]]; then
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" checkout "${TARGET_REF}"
+  fi
+  git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" pull --ff-only "${GIT_REMOTE}" "${TARGET_REF}"
+fi
+
 echo "==> Copying repository to ${APP_DIR}"
 rsync -a --delete \
   --exclude ".git" \
   --exclude "node_modules" \
   --exclude ".pnpm-store" \
-  --exclude "workspace" \
-  --exclude "logs" \
+  --exclude "/workspace" \
+  --exclude "/logs" \
   --exclude "*.tsbuildinfo" \
   "${SOURCE_DIR}/" "${APP_DIR}/"
 
@@ -129,7 +161,7 @@ env_value() {
 
 SESSION_SECRET="${SESSION_SECRET:-$(env_value SESSION_SECRET)}"
 SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
-ATLAS_PATH="$(npm root -g 2>/dev/null)/@lilith/atlas-skillhub/dist/index.js"
+ATLAS_PATH="${ATLAS_SKILLHUB_PATH:-$(npm root -g 2>/dev/null)/@lilith/atlas-skillhub/dist/index.js}"
 
 echo "==> Writing ${ENV_FILE}"
 cat > "${ENV_FILE}" <<EOF_ENV
@@ -141,6 +173,7 @@ LICLICK_PUBLIC_PATH=${PUBLIC_PATH}
 LICLICK_FRONTEND_URL=${PUBLIC_URL}
 LICLICK_ALLOWED_ORIGINS=${PUBLIC_URL},http://127.0.0.1,http://localhost
 AUTH_MODE=feishu-oauth
+ATLAS_LOGIN_MODE=${ATLAS_LOGIN_MODE}
 SESSION_COOKIE_NAME=liclick_3d_session
 SESSION_SECRET=${SESSION_SECRET}
 SESSION_MAX_AGE_DAYS=14
@@ -149,6 +182,132 @@ ATLAS_SKILLHUB_PATH=${ATLAS_PATH}
 EOF_ENV
 chmod 0640 "${ENV_FILE}"
 chown root:"${APP_USER}" "${ENV_FILE}"
+
+install_comfyui_mount() {
+  local mount_dir="${COMFYUI_CUSTOM_NODES_DIR}/${APP_NAME}-mount"
+
+  echo "==> Installing ComfyUI mount into ${mount_dir}"
+  install -d "${mount_dir}"
+  cat > "${mount_dir}/__init__.py" <<EOF_COMFYUI_MOUNT
+from __future__ import annotations
+
+from pathlib import Path
+from urllib.parse import urlencode
+
+from aiohttp import ClientSession, web
+
+try:
+    from server import PromptServer
+except Exception as exc:
+    print(f"[Liclick 3D Texture] Failed to import ComfyUI PromptServer: {exc}")
+    WEB_DIRECTORY = "./web"
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}
+else:
+    APP_DIR = Path("${APP_DIR}")
+    WEB_DIST = APP_DIR / "apps" / "web" / "dist"
+    PUBLIC_PATH = "${PUBLIC_PATH}".rstrip("/")
+    BACKEND_URL = "http://127.0.0.1:${SERVER_PORT}"
+    ROUTES = PromptServer.instance.routes
+
+    HOP_BY_HOP_HEADERS = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+        "host",
+    }
+
+    def _safe_static_path(tail: str) -> Path | None:
+        base = WEB_DIST.resolve()
+        candidate = (WEB_DIST / tail.lstrip("/")).resolve()
+        if candidate == base or base in candidate.parents:
+            return candidate
+        return None
+
+    async def _index(_request: web.Request) -> web.StreamResponse:
+        index_path = WEB_DIST / "index.html"
+        if not index_path.exists():
+            return web.Response(status=503, text="Liclick frontend has not been built.")
+        return web.FileResponse(index_path)
+
+    async def _mount_health(_request: web.Request) -> web.StreamResponse:
+        return web.json_response({
+            "ok": True,
+            "mount": PUBLIC_PATH,
+            "webDist": str(WEB_DIST),
+            "backend": BACKEND_URL,
+            "indexExists": (WEB_DIST / "index.html").exists(),
+        })
+
+    async def _static_or_index(request: web.Request) -> web.StreamResponse:
+        tail = request.match_info.get("tail", "")
+        static_path = _safe_static_path(tail)
+        if static_path and static_path.is_file():
+            return web.FileResponse(static_path)
+        return await _index(request)
+
+    async def _proxy(request: web.Request, prefix: str) -> web.StreamResponse:
+        tail = request.match_info.get("tail", "")
+        target = f"{BACKEND_URL}/{prefix}/{tail}".rstrip("/")
+        if request.query:
+            target = f"{target}?{urlencode(request.query, doseq=True)}"
+
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+        }
+        body = await request.read()
+
+        async with ClientSession() as session:
+            async with session.request(
+                request.method,
+                target,
+                data=body if body else None,
+                headers=headers,
+                allow_redirects=False,
+            ) as response:
+                response_body = await response.read()
+                response_headers = {
+                    key: value
+                    for key, value in response.headers.items()
+                    if key.lower() not in HOP_BY_HOP_HEADERS
+                }
+                return web.Response(
+                    status=response.status,
+                    body=response_body,
+                    headers=response_headers,
+                )
+
+    async def _api_proxy(request: web.Request) -> web.StreamResponse:
+        return await _proxy(request, "api")
+
+    async def _workspace_proxy(request: web.Request) -> web.StreamResponse:
+        return await _proxy(request, "workspace")
+
+    ROUTES.get(PUBLIC_PATH)(_index)
+    ROUTES.get(f"{PUBLIC_PATH}/")(_index)
+    ROUTES.get(f"{PUBLIC_PATH}/_liclick_mount_health")(_mount_health)
+    ROUTES.route("*", f"{PUBLIC_PATH}/api/{{tail:.*}}")(_api_proxy)
+    ROUTES.route("*", f"{PUBLIC_PATH}/workspace/{{tail:.*}}")(_workspace_proxy)
+    ROUTES.get(f"{PUBLIC_PATH}/{{tail:.*}}")(_static_or_index)
+
+    print(
+        f"[Liclick 3D Texture] Mounted {PUBLIC_PATH} from {WEB_DIST} "
+        f"and proxied API to {BACKEND_URL}"
+    )
+
+    WEB_DIRECTORY = "./web"
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}
+EOF_COMFYUI_MOUNT
+}
 
 echo "==> Writing systemd service"
 cat > "${SERVICE_FILE}" <<EOF_SERVICE
@@ -163,6 +322,7 @@ User=${APP_USER}
 Group=${APP_USER}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
+Environment=HOME=/home/${APP_USER}
 ExecStart=/usr/bin/node ${APP_DIR}/apps/server/dist/index.js
 Restart=always
 RestartSec=5
@@ -173,11 +333,18 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF_SERVICE
 
-echo "==> Writing nginx site"
-cat > "${NGINX_SITE}" <<EOF_NGINX
+if [[ "${MOUNT_MODE}" == "comfyui" ]]; then
+  install_comfyui_mount
+else
+  echo "==> Writing nginx site"
+  NGINX_LISTEN_OPTIONS=""
+  if ! grep -R "listen[[:space:]]\+${PUBLIC_PORT}[^;]*default_server" /etc/nginx/sites-enabled /etc/nginx/conf.d >/dev/null 2>&1; then
+    NGINX_LISTEN_OPTIONS=" default_server"
+  fi
+  cat > "${NGINX_SITE}" <<EOF_NGINX
 server {
-    listen ${PUBLIC_PORT};
-    server_name _;
+    listen ${PUBLIC_PORT}${NGINX_LISTEN_OPTIONS};
+    server_name ${PUBLIC_HOST} 127.0.0.1 localhost _;
 
     client_max_body_size 256m;
 
@@ -220,8 +387,11 @@ server {
 }
 EOF_NGINX
 
-ln -sfn "${NGINX_SITE}" "${NGINX_LINK}"
-rm -f /etc/nginx/sites-enabled/default
+  ln -sfn "${NGINX_SITE}" "${NGINX_LINK}"
+  if [[ "${NGINX_REMOVE_DEFAULT:-0}" == "1" ]]; then
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+fi
 
 echo "==> Fixing ownership"
 chown -R root:root "${APP_DIR}"
@@ -230,15 +400,39 @@ chown -R "${APP_USER}:${APP_USER}" "${WORKSPACE_DIR}"
 echo "==> Starting services"
 systemctl daemon-reload
 systemctl enable --now "${APP_NAME}.service"
-nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
+if [[ "${MOUNT_MODE}" == "comfyui" ]]; then
+  if [[ -n "${COMFYUI_RESTART_COMMAND}" ]]; then
+    echo "==> Restarting ComfyUI through COMFYUI_RESTART_COMMAND"
+    bash -lc "${COMFYUI_RESTART_COMMAND}"
+  else
+    echo "==> ComfyUI mount installed. Restart ComfyUI once so it loads ${PUBLIC_PATH}."
+  fi
+else
+  nginx -t
+  systemctl enable --now nginx
+  systemctl reload nginx
+fi
+
+wait_for_url() {
+  local url="$1"
+  local label="$2"
+  local attempt
+  for attempt in $(seq 1 30); do
+    if curl -fsS "${url}" >/dev/null 2>&1; then
+      echo "${label}: ok"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "${label}: failed after 30s"
+  curl -fsS "${url}"
+}
 
 echo "==> Smoke checking backend"
-curl -fsS "http://127.0.0.1:${SERVER_PORT}/api/health" >/dev/null
+wait_for_url "http://127.0.0.1:${SERVER_PORT}/api/health" "Backend health"
 
 echo "==> Smoke checking frontend"
-curl -fsS "http://127.0.0.1:${PUBLIC_PORT}${PUBLIC_PATH}/" >/dev/null || true
+curl -fsSI "http://127.0.0.1:${PUBLIC_PORT}${PUBLIC_PATH}/" || true
 
 cat <<EOF_DONE
 
@@ -248,13 +442,14 @@ Frontend: ${PUBLIC_URL}
 Backend:  http://127.0.0.1:${SERVER_PORT}
 Public port: ${PUBLIC_PORT}
 Public path: ${PUBLIC_PATH}
+Mount mode: ${MOUNT_MODE}
 Service:  systemctl status ${APP_NAME}.service
 Logs:     journalctl -u ${APP_NAME}.service -f
 
 Important:
-1. Atlas/Liclick login must exist for the service user (${APP_USER}).
-2. If the server is headless, copy a valid ~/.atlas-ai-gateway-oauth.json into /home/${APP_USER}/
-   and run: chown ${APP_USER}:${APP_USER} /home/${APP_USER}/.atlas-ai-gateway-oauth.json
-3. If you put HTTPS in front of nginx later, rerun with PUBLIC_URL=https://your-domain.
+1. ATLAS_LOGIN_MODE=${ATLAS_LOGIN_MODE}. In interactive mode, each browser user authorizes Feishu/IDaaS separately.
+2. If MOUNT_MODE=comfyui, restart ComfyUI after deployment if this script did not do it.
+3. Persistent user data is under ${WORKSPACE_DIR}; do not delete it during updates.
+4. If you put HTTPS in front of nginx later, rerun with PUBLIC_URL=https://your-domain.
 
 EOF_DONE

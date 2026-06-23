@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { LogIn, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { devLogin, getProviderStatus, startFeishuLogin } from '@/services/authApiClient';
+import { devLogin, getProviderStatus } from '@/services/authApiClient';
+import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { useAuthStore } from '@/stores/authStore';
 
 export function LoginGate({ onAuthenticated }: { onAuthenticated: () => Promise<void> | void }) {
   const [displayName, setDisplayName] = useState('Liclick Dev User');
   const [email, setEmail] = useState('dev@liclick.local');
   const [error, setError] = useState<string>();
+  const [loginStatus, setLoginStatus] = useState<string>();
   const [busy, setBusy] = useState(false);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
@@ -36,15 +38,17 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: () => Promise<
   async function handleFeishuLogin() {
     setBusy(true);
     setError(undefined);
+    setLoginStatus(undefined);
     try {
-      const result = await startFeishuLogin();
+      const result = await runFeishuLoginFlow({
+        onStatus: (message) => setLoginStatus(message),
+      });
       if (result.user) {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
         await onAuthenticated();
         return;
       }
-      if (result.redirectUrl) window.location.href = result.redirectUrl;
-      else throw new Error('登录服务没有返回用户信息，请确认本机 Atlas/莉刻登录已完成。');
+      throw new Error('登录服务没有返回用户信息，请确认 Atlas/莉刻登录已完成。');
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Feishu login failed.');
       setBusy(false);
@@ -96,6 +100,7 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: () => Promise<
                 莉刻/Atlas 未登录。点击后会复用本机飞书/IDaaS 登录态发起授权。
               </p>
             )}
+            {loginStatus && <p className="mt-3 text-xs leading-5 text-white/62">{loginStatus}</p>}
           </div>
         )}
 

@@ -21,6 +21,10 @@ export type GenerateImageInput = {
   references?: ReferenceInput[];
 };
 
+export type LiclickAtlasContext = {
+  atlasHomeDir?: string;
+};
+
 type UploadedReference = {
   referenceId?: string;
   assetId: string;
@@ -185,7 +189,11 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>) {
   }
 }
 
-async function uploadReference(reference: ReferenceInput, tempDir: string): Promise<UploadedReference> {
+async function uploadReference(
+  reference: ReferenceInput,
+  tempDir: string,
+  atlasContext: LiclickAtlasContext = {},
+): Promise<UploadedReference> {
   const args = ['gateway', 'call-tool', '--service', 'liclick', '--tool', 'upload_asset', 'asset_type=image'];
   if (reference.url.startsWith('data:')) {
     const { buffer, ext } = dataUrlToBuffer(reference.url);
@@ -196,14 +204,17 @@ async function uploadReference(reference: ReferenceInput, tempDir: string): Prom
     args.push(`url=${reference.url}`);
   }
   args.push('--timeout', '600');
-  const upload = await runAtlas(args, 10 * 60 * 1000, false);
+  const upload = await runAtlas(args, 10 * 60 * 1000, false, atlasContext.atlasHomeDir);
   const parsed = parseJsonFromOutput(upload.stdout);
   const assetId = findField(parsed, ['asset_id', 'assetId']) || findField(upload.stdout, ['asset_id', 'assetId']);
   if (!assetId) throw new Error(`参考图上传完成但没有返回 asset_id：${trimOutput(upload.stdout || upload.stderr)}`);
   return { referenceId: reference.id, assetId };
 }
 
-export async function pollLiclickImageTask(taskId: string): Promise<LiclickImageTaskResult> {
+export async function pollLiclickImageTask(
+  taskId: string,
+  atlasContext: LiclickAtlasContext = {},
+): Promise<LiclickImageTaskResult> {
   const poll = await runAtlas(
     [
       'gateway',
@@ -219,6 +230,7 @@ export async function pollLiclickImageTask(taskId: string): Promise<LiclickImage
     ],
     3 * 60 * 1000,
     false,
+    atlasContext.atlasHomeDir,
   );
   const payload = parseAtlasPayload(poll.stdout);
   const status = findField(payload, ['status']);
@@ -234,11 +246,16 @@ export async function pollLiclickImageTask(taskId: string): Promise<LiclickImage
   };
 }
 
-export async function submitLiclickImageJob(input: GenerateImageInput): Promise<LiclickImageSubmission> {
+export async function submitLiclickImageJob(
+  input: GenerateImageInput,
+  atlasContext: LiclickAtlasContext = {},
+): Promise<LiclickImageSubmission> {
   if (!input.prompt.trim()) throw new Error('请输入图片生成描述。');
   return withTempDir(async (tempDir) => {
     const references = (input.references ?? []).slice(0, 10);
-    const uploadedReferences = await Promise.all(references.map((reference) => uploadReference(reference, tempDir)));
+    const uploadedReferences = await Promise.all(
+      references.map((reference) => uploadReference(reference, tempDir, atlasContext)),
+    );
     const { model, extraParams } = buildExtraParams(input, uploadedReferences);
     const submit = await runAtlas(
       [
@@ -259,6 +276,7 @@ export async function submitLiclickImageJob(input: GenerateImageInput): Promise<
       ],
       4 * 60 * 1000,
       false,
+      atlasContext.atlasHomeDir,
     );
     const payload = parseAtlasPayload(submit.stdout);
     const urls = findUrls(payload);
@@ -281,14 +299,14 @@ export async function submitLiclickImageJob(input: GenerateImageInput): Promise<
   });
 }
 
-export async function generateLiclickImage(input: GenerateImageInput) {
-  const submission = await submitLiclickImageJob(input);
+export async function generateLiclickImage(input: GenerateImageInput, atlasContext: LiclickAtlasContext = {}) {
+  const submission = await submitLiclickImageJob(input, atlasContext);
   if (submission.resultUrl || !submission.taskId) return submission;
   const startedAt = Date.now();
   let result: LiclickImageTaskResult | undefined;
   while (Date.now() - startedAt < 5 * 60 * 1000) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
-    result = await pollLiclickImageTask(submission.taskId);
+    result = await pollLiclickImageTask(submission.taskId, atlasContext);
     if (result.resultUrl) {
       return {
         ...submission,

@@ -108,6 +108,8 @@ function PaintMaskOverlay() {
 
 export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }: ViewportCanvasProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [canvasKey, setCanvasKey] = useState(0);
+  const [viewportIssue, setViewportIssue] = useState<string>();
   const activeDragType = useDragInteractionStore((state) => state.activeDragType);
   const startFileDrag = useDragInteractionStore((state) => state.startFileDrag);
   const clearDrag = useDragInteractionStore((state) => state.clearDrag);
@@ -127,7 +129,7 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
 
   return (
     <div
-      className="relative h-full w-full"
+      className="relative h-full w-full bg-[#080914]"
       onDragOver={(event) => {
         if (activeDragType === 'panel') return;
         event.preventDefault();
@@ -143,6 +145,7 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
       onDrop={handleDrop}
     >
       <Canvas
+        key={canvasKey}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}
         gl={{
           preserveDrawingBuffer: true,
@@ -154,6 +157,23 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
           gl.outputColorSpace = THREE.SRGBColorSpace;
           gl.toneMapping = THREE.ACESFilmicToneMapping;
           gl.toneMappingExposure = exposure;
+          setViewportIssue(undefined);
+          const canvas = gl.domElement;
+          const handleContextLost = (event: Event) => {
+            event.preventDefault();
+            setViewportIssue('WebGL 渲染上下文已中断。当前项目数据仍然保留，可以重新加载视口。');
+          };
+          const handleContextRestored = () => {
+            setViewportIssue(undefined);
+            setCanvasKey((key) => key + 1);
+          };
+          canvas.addEventListener('webglcontextlost', handleContextLost);
+          canvas.addEventListener('webglcontextrestored', handleContextRestored);
+          gl.getContext().canvas.addEventListener('webglcontextlost', handleContextLost);
+        }}
+        onError={(error) => {
+          console.error('[Liclick 3D Texture] Viewport renderer failed:', error);
+          setViewportIssue(error instanceof Error ? error.message : '视口渲染失败。');
         }}
       >
         <color attach="background" args={['#080914']} />
@@ -163,6 +183,24 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
         </Suspense>
         <CameraController />
       </Canvas>
+      {viewportIssue && (
+        <div className="absolute inset-0 z-30 grid place-items-center bg-[#080914]/86 px-5 text-white backdrop-blur-sm">
+          <div className="grid max-w-[420px] gap-3 rounded-lg border border-white/14 bg-black/50 p-4 text-center shadow-2xl">
+            <div className="text-sm font-semibold">视口需要恢复</div>
+            <div className="text-xs leading-5 text-white/66">{viewportIssue}</div>
+            <button
+              type="button"
+              className="mx-auto h-9 rounded-md bg-white px-4 text-xs font-semibold text-black transition hover:bg-white/90"
+              onClick={() => {
+                setViewportIssue(undefined);
+                setCanvasKey((key) => key + 1);
+              }}
+            >
+              重新加载视口
+            </button>
+          </div>
+        </div>
+      )}
       <PaintMaskOverlay />
       <ViewCube />
       {!hasImportedModel && (

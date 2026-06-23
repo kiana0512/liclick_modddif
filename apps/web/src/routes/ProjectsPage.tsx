@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
 import { mockProjects } from '@/mock/mockProjects';
 import { useI18nStore, useT } from '@/stores/i18nStore';
+import { useAuthStore } from '@/stores/authStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useToastStore } from '@/stores/toastStore';
+import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import type { Project } from '@/types/project';
 import {
   createFolder,
@@ -250,6 +252,8 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
   const projects = useProjectStore((state) => state.projects);
   const setProjects = useProjectStore((state) => state.setProjects);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
+  const providerStatus = useAuthStore((state) => state.providerStatus);
+  const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const pushToast = useToastStore((state) => state.pushToast);
   const language = useI18nStore((state) => state.language);
   const t = useT();
@@ -275,6 +279,12 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       if (isAuthRequired) {
         setFolders([]);
         setProjects(mergeProjectsWithMock([]));
+        pushToast({
+          tone: 'warning',
+          title: '需要飞书登录',
+          description: '登录后会显示你自己的项目、文件夹、模型和素材。',
+          dedupeKey: 'workspace-auth-required-project-list',
+        });
         return;
       }
       if (showOfflineToast && !isAuthRequired) {
@@ -303,9 +313,31 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         pushToast({
           tone: 'warning',
           title: '需要飞书登录',
-          description: '创建和管理本地项目需要登录后写入你的用户工作区。',
+          description: '创建和管理项目需要登录。授权完成后会自动重试刚才的操作。',
           dedupeKey: 'workspace-auth-required',
         });
+        try {
+          const result = await runFeishuLoginFlow({
+            onStatus: (message) =>
+              pushToast({
+                tone: 'info',
+                title: '等待飞书授权',
+                description: message,
+                dedupeKey: 'workspace-auth-waiting',
+              }),
+          });
+          if (!result.user) throw new Error('登录服务没有返回用户信息。');
+          setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+          await action();
+          await refreshWorkspace();
+        } catch (loginError) {
+          pushToast({
+            tone: 'error',
+            title: '飞书登录未完成',
+            description: loginError instanceof Error ? loginError.message : '用户取消授权或登录失败。',
+            dedupeKey: 'workspace-auth-failed',
+          });
+        }
         return;
       }
       setServerState('offline');

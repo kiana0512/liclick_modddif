@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { performance } from 'node:perf_hooks';
 
-const baseUrl = (process.env.BASE_URL || process.argv[2] || 'http://127.0.0.1:46777/liclick/texture').replace(/\/$/, '');
+const baseUrl = (process.env.BASE_URL || process.argv[2] || 'http://127.0.0.1:46001/liclick/texture').replace(/\/$/, '');
 const concurrency = Number(process.env.CONCURRENCY || process.argv[3] || 100);
 const durationMs = Number(process.env.DURATION_SECONDS || process.argv[4] || 60) * 1000;
 const sessionCookie = process.env.SESSION_COOKIE || '';

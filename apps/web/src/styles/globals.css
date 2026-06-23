@@ -20,6 +20,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: #0e1020;
   font-feature-settings:
     "liga" 1,
     "kern" 1;
@@ -27,6 +28,11 @@ body {
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+  background: #0e1020;
 }
 
 button,

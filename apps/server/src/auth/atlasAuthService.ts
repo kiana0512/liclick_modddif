@@ -1,9 +1,12 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSession, upsertUser } from './sessionService.js';
+import { serverConfig } from '../config.js';
+import type { AuthUser } from './authTypes.js';
 
 type AtlasCommandResult = {
   code: number | null;
@@ -14,6 +17,23 @@ type AtlasCommandResult = {
 type AtlasStatus = {
   valid?: boolean;
   expires_at?: string;
+};
+
+type PublicAtlasStatus = {
+  valid: boolean;
+  expiresAt?: string;
+  message?: string;
+};
+
+type PendingAtlasLogin = {
+  id: string;
+  homeDir: string;
+  child?: ChildProcessWithoutNullStreams;
+  startedAt: number;
+  stdout: string;
+  stderr: string;
+  closed: boolean;
+  closeCode?: number | null;
 };
 
 type AtlasTokenCache = {
@@ -33,6 +53,9 @@ type AtlasClaims = {
   sub?: string;
 };
 
+const pendingAtlasLogins = new Map<string, PendingAtlasLogin>();
+const pendingLoginTtlMs = 10 * 60 * 1000;
+
 function atlasScriptPath() {
   const appData = process.env.APPDATA;
   const explicitPath = process.env.ATLAS_SKILLHUB_PATH;
@@ -48,8 +71,19 @@ function atlasScriptPath() {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-function atlasTokenFile() {
-  return path.join(os.homedir(), '.atlas-ai-gateway-oauth.json');
+function atlasTokenFile(homeDir = os.homedir()) {
+  return path.join(homeDir, '.atlas-ai-gateway-oauth.json');
+}
+
+function userAtlasHomesRoot() {
+  return path.join(serverConfig.workspaceDir, 'atlas-homes');
+}
+
+async function createAtlasHomeDir() {
+  const dir = path.join(userAtlasHomesRoot(), `login-${randomUUID()}`);
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.promises.chmod(dir, 0o700).catch(() => undefined);
+  return dir;
 }
 
 function trimOutput(text: string) {
@@ -69,7 +103,23 @@ export function parseJsonFromOutput(text: string) {
   }
 }
 
-export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false) {
+function atlasEnv(homeDir?: string, extraEnv: NodeJS.ProcessEnv = {}) {
+  return {
+    ...process.env,
+    ...extraEnv,
+    ...(homeDir
+      ? {
+          HOME: homeDir,
+          USERPROFILE: homeDir,
+          XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+          XDG_CACHE_HOME: path.join(homeDir, '.cache'),
+          XDG_DATA_HOME: path.join(homeDir, '.local', 'share'),
+        }
+      : {}),
+  };
+}
+
+export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false, homeDir?: string, extraEnv: NodeJS.ProcessEnv = {}) {
   const script = atlasScriptPath();
   if (!script) {
     return Promise.reject(
@@ -79,6 +129,7 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
   return new Promise<AtlasCommandResult>((resolve, reject) => {
     const child = spawn('node', [script, ...args], {
       cwd: process.cwd(),
+      env: atlasEnv(homeDir, extraEnv),
       shell: false,
       windowsHide: true,
     });
@@ -106,8 +157,69 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
   });
 }
 
-function readAtlasTokenCache() {
-  const file = atlasTokenFile();
+function prunePendingAtlasLogins() {
+  const now = Date.now();
+  for (const [id, login] of pendingAtlasLogins) {
+    if (now - login.startedAt > pendingLoginTtlMs) {
+      if (!login.closed) login.child?.kill('SIGTERM');
+      pendingAtlasLogins.delete(id);
+    }
+  }
+}
+
+function extractFirstUrl(text: string) {
+  return text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
+}
+
+function startAtlasLoginProcess() {
+  const script = atlasScriptPath();
+  if (!script) throw new Error('未找到 @lilith/atlas-skillhub，请先安装莉刻 Atlas 运行时。');
+
+  const id = randomUUID();
+  return createAtlasHomeDir().then((homeDir) => {
+    const login: PendingAtlasLogin = {
+      id,
+      homeDir,
+      startedAt: Date.now(),
+      stdout: '',
+      stderr: '',
+      closed: false,
+    };
+    pendingAtlasLogins.set(id, login);
+
+    const child = spawn('node', [script, 'gateway', 'login'], {
+      cwd: process.cwd(),
+      env: atlasEnv(homeDir, {
+        // Many CLI browser openers print the URL when BROWSER is echo.
+        // If atlas-skillhub opens a browser directly, polling still catches the token file once it is written.
+        BROWSER: process.env.ATLAS_BROWSER ?? 'echo',
+      }),
+      shell: false,
+      windowsHide: true,
+    });
+    login.child = child;
+
+    child.stdout.on('data', (chunk) => {
+      login.stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      login.stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      login.stderr += `\n${error.message}`;
+      login.closed = true;
+    });
+    child.on('close', (code) => {
+      login.closeCode = code;
+      login.closed = true;
+    });
+
+    return login;
+  });
+}
+
+function readAtlasTokenCache(homeDir?: string) {
+  const file = atlasTokenFile(homeDir);
   if (!fs.existsSync(file)) return {};
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8')) as AtlasTokenCache;
@@ -128,8 +240,8 @@ function decodeJwtClaims(token?: string) {
   }
 }
 
-export function getAtlasIdentity() {
-  const tokenCache = readAtlasTokenCache();
+export function getAtlasIdentity(homeDir?: string) {
+  const tokenCache = readAtlasTokenCache(homeDir);
   const claims = decodeJwtClaims(tokenCache.access_token);
   const email = claims.email ?? claims.username ?? claims.sub;
   const displayName = claims.name ?? claims.ouName ?? claims.idpUsername ?? email ?? 'Liclick User';
@@ -147,8 +259,8 @@ function avatarDataUrl(displayName: string, email?: string) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
-export async function getAtlasStatus() {
-  const result = await runAtlas(['gateway', 'status'], 30_000, true);
+export async function getAtlasStatus(homeDir?: string) {
+  const result = await runAtlas(['gateway', 'status'], 30_000, true, homeDir);
   const parsed = parseJsonFromOutput(result.stdout) as AtlasStatus;
   return {
     valid: Boolean(parsed.valid),
@@ -159,30 +271,83 @@ export async function getAtlasStatus() {
   };
 }
 
-export async function ensureAtlasLogin() {
-  const current = await getAtlasStatus().catch(() => ({ valid: false }));
-  if (current.valid) return current;
-  await runAtlas(['gateway', 'login'], 10 * 60 * 1000, true);
-  return getAtlasStatus();
-}
-
-export async function completeAtlasLogin(request: IncomingMessage, response: ServerResponse) {
-  const status = await ensureAtlasLogin();
-  if (!status.valid) throw new Error('莉刻/Atlas 登录未完成，请在浏览器里完成飞书/IDaaS 登录后重试。');
-  const { email, displayName } = getAtlasIdentity();
+async function createLoggedInSession(homeDir: string, request: IncomingMessage, response: ServerResponse) {
+  const { email, displayName } = getAtlasIdentity(homeDir);
   const user = await upsertUser({
     id: email ? `atlas-${email.toLowerCase()}` : undefined,
     displayName,
     email,
     avatarUrl: avatarDataUrl(displayName, email),
     authSource: 'feishu-oauth',
+    atlasHomeDir: homeDir,
   });
   await createSession(user.id, 'feishu-oauth', request, response);
-  return { user, status };
+  return user;
 }
 
-export async function checkLiclickApiAccess() {
-  const status = await getAtlasStatus();
+export async function startAtlasLogin(request: IncomingMessage, response: ServerResponse) {
+  if (serverConfig.atlasLoginMode === 'service-token') {
+    const status = await getAtlasStatus().catch((error) => ({
+      valid: false,
+      message: error instanceof Error ? error.message : 'Atlas status unavailable.',
+    }));
+    if (!status.valid) {
+      throw new Error('服务器还没有配置莉刻/Atlas 登录凭证，或者当前用户授权未完成。');
+    }
+    const user = await createLoggedInSession(os.homedir(), request, response);
+    return { user, status };
+  }
+
+  prunePendingAtlasLogins();
+  const login = await startAtlasLoginProcess();
+
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const status = await getAtlasStatus(login.homeDir).catch((error) => ({
+    valid: false,
+    message: error instanceof Error ? error.message : 'Atlas status unavailable.',
+  })) as PublicAtlasStatus;
+  if (status.valid) {
+    const user = await createLoggedInSession(login.homeDir, request, response);
+    pendingAtlasLogins.delete(login.id);
+    return { user, status };
+  }
+
+  const output = `${login.stdout}\n${login.stderr}`;
+  return {
+    loginId: login.id,
+    redirectUrl: extractFirstUrl(output),
+    status,
+    message: trimOutput(output) || '飞书/IDaaS 登录任务已启动，请完成浏览器授权后等待页面自动同步。',
+  };
+}
+
+export async function pollAtlasLogin(loginId: string, request: IncomingMessage, response: ServerResponse) {
+  prunePendingAtlasLogins();
+  const login = pendingAtlasLogins.get(loginId);
+  if (!login) throw new Error('登录任务已过期，请重新点击飞书登录。');
+  const status = await getAtlasStatus(login.homeDir).catch((error) => ({
+    valid: false,
+    message: error instanceof Error ? error.message : 'Atlas status unavailable.',
+  })) as PublicAtlasStatus;
+  if (status.valid) {
+    const user = await createLoggedInSession(login.homeDir, request, response);
+    pendingAtlasLogins.delete(login.id);
+    return { done: true, user, status };
+  }
+  if (login.closed && login.closeCode !== 0) {
+    throw new Error(trimOutput(login.stderr || login.stdout || '飞书/IDaaS 登录任务已结束但没有拿到授权。'));
+  }
+  return {
+    done: false,
+    loginId,
+    redirectUrl: extractFirstUrl(`${login.stdout}\n${login.stderr}`),
+    status,
+    message: trimOutput(login.stderr || login.stdout || '等待飞书/IDaaS 授权完成。'),
+  };
+}
+
+export async function checkLiclickApiAccess(user?: AuthUser) {
+  const status = await getAtlasStatus(user?.atlasHomeDir);
   if (!status.valid) {
     return {
       ok: false,
@@ -191,7 +356,7 @@ export async function checkLiclickApiAccess() {
       message: '莉刻/Atlas 未登录。',
     };
   }
-  const result = await runAtlas(['gateway', 'list-tools', '--service', 'liclick'], 60_000, false);
+  const result = await runAtlas(['gateway', 'list-tools', '--service', 'liclick'], 60_000, false, user?.atlasHomeDir);
   const toolNames = [...result.stdout.matchAll(/^\s{2}([a-zA-Z0-9_]+)\(/gm)].map((match) => match[1]);
   return {
     ok: toolNames.length > 0,

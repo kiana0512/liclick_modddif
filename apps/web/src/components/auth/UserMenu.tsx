@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Languages, LogIn, LogOut } from 'lucide-react';
-import { devLogin, logout, startFeishuLogin } from '@/services/authApiClient';
+import { devLogin, logout } from '@/services/authApiClient';
+import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { useAuthStore } from '@/stores/authStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
 import { useToastStore } from '@/stores/toastStore';
 
 export function UserMenu({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const t = useT();
   const language = useI18nStore((state) => state.language);
   const setLanguage = useI18nStore((state) => state.setLanguage);
@@ -17,13 +19,15 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
   const pushToast = useToastStore((state) => state.pushToast);
 
   async function handleLogin() {
+    if (busy) return;
+    setBusy(true);
     try {
       if (providerStatus?.devLoginEnabled && !providerStatus.feishuOAuthEnabled) {
         const result = await devLogin({ displayName: 'Liclick Dev User', email: 'dev@liclick.local' });
         setAuthenticated(result.user, 'dev-mock', providerStatus);
         return;
       }
-      const result = await startFeishuLogin();
+      const result = await runFeishuLoginFlow();
       if (result.user) {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
         pushToast({
@@ -34,8 +38,7 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
         });
         return;
       }
-      if (result.redirectUrl) window.location.href = result.redirectUrl;
-      else throw new Error(t('loginMissingUser'));
+      throw new Error(t('loginMissingUser'));
     } catch (error) {
       pushToast({
         tone: 'error',
@@ -43,6 +46,8 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
         description: error instanceof Error ? error.message : 'Could not start login.',
         dedupeKey: 'auth-login-failed',
       });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -57,10 +62,11 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
       <button
         type="button"
         onClick={() => void handleLogin()}
+        disabled={busy}
         className="inline-flex h-10 items-center gap-2 rounded-md border border-white/16 bg-black/18 px-3 text-sm font-medium text-white/84 transition hover:bg-white/10 hover:text-white"
         title={t('useFeishuLogin')}
       >
-        <LogIn className="h-4 w-4" />
+        <LogIn className={busy ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
         {t('feishuLogin')}
       </button>
     );

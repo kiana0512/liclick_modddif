@@ -6,7 +6,8 @@ import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { captureCurrentView } from '@/engine/capture/captureCurrentView';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
-import { devLogin, startFeishuLogin } from '@/services/authApiClient';
+import { devLogin } from '@/services/authApiClient';
+import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import {
   createLiclickApiClient,
   type LiclickAspectRatio,
@@ -262,14 +263,20 @@ export function GeneratePanel() {
         setAuthenticated(result.user, 'dev-mock', providerStatus);
         return true;
       }
-      const result = await startFeishuLogin();
+      const result = await runFeishuLoginFlow({
+        onStatus: (message) =>
+          pushToast({
+            tone: 'info',
+            title: '等待飞书授权',
+            description: message,
+            dedupeKey: 'ai-login-waiting',
+          }),
+      });
       if (result.user) {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
         return true;
       }
-      if (result.redirectUrl) window.location.href = result.redirectUrl;
-      else throw new Error('登录服务没有返回用户信息，请确认本机 Atlas/莉刻登录已完成。');
-      return Boolean(result.user);
+      throw new Error('登录服务没有返回用户信息，请确认 Atlas/莉刻登录已完成。');
     } catch (error) {
       pushToast({
         tone: 'error',

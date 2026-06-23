@@ -160,6 +160,7 @@ export async function upsertUser(input: {
   email?: string;
   avatarUrl?: string;
   authSource: AuthSource;
+  atlasHomeDir?: string;
 }) {
   let savedUser: AuthUser | undefined;
   await updateAuthDatabase((database) => {
@@ -176,6 +177,7 @@ export async function upsertUser(input: {
           email: input.email ?? existing.email,
           avatarUrl: input.avatarUrl ?? existing.avatarUrl,
           authSource: input.authSource,
+          atlasHomeDir: input.atlasHomeDir ?? existing.atlasHomeDir,
           updatedAt: now,
           lastLoginAt: now,
         }
@@ -187,6 +189,7 @@ export async function upsertUser(input: {
           role: 'user',
           status: 'active',
           authSource: input.authSource,
+          atlasHomeDir: input.atlasHomeDir,
           createdAt: now,
           updatedAt: now,
           lastLoginAt: now,

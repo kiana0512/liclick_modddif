@@ -8,6 +8,7 @@ export type AuthUser = {
   role: string;
   status: 'active' | 'disabled';
   authSource: AuthSource;
+  atlasHomeDir?: string;
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;

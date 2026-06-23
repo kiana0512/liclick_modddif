@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 import { optionalAuth } from '../auth/authMiddleware.js';
-import { completeAtlasLogin, getAtlasStatus } from '../auth/atlasAuthService.js';
+import { getAtlasStatus, pollAtlasLogin, startAtlasLogin } from '../auth/atlasAuthService.js';
 import { toPublicUser } from '../auth/currentUser.js';
 import { loginDevUser } from '../auth/devMockAuthService.js';
 import { clearSessionCookie, getSessionCookie, revokeSession } from '../auth/sessionService.js';
@@ -23,15 +23,22 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
   }
 
   if (request.method === 'GET' && route === 'provider-status') {
-    const atlasStatus = await getAtlasStatus().catch((error) => ({
-      valid: false,
-      message: error instanceof Error ? error.message : 'Atlas status unavailable.',
-    }));
+    const user = await optionalAuth(request);
+    const atlasStatus = user
+      ? await getAtlasStatus(user.atlasHomeDir).catch((error) => ({
+          valid: false,
+          message: error instanceof Error ? error.message : 'Atlas status unavailable.',
+        }))
+      : {
+          valid: false,
+          message: '需要先完成飞书/IDaaS 登录。',
+        };
     sendJson(response, 200, {
       authMode: serverConfig.authMode,
       devLoginEnabled: serverConfig.authMode === 'dev-mock',
       feishuOAuthEnabled: true,
       feishuConfigured: atlasStatus.valid,
+      atlasLoginMode: serverConfig.atlasLoginMode,
       missingConfigKeys: [],
       atlas: atlasStatus,
     });
@@ -50,13 +57,41 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
   }
 
   if (request.method === 'GET' && route === 'feishu' && segments[3] === 'start') {
-    const result = await completeAtlasLogin(request, response);
+    let result: Awaited<ReturnType<typeof startAtlasLogin>>;
+    try {
+      result = await startAtlasLogin(request, response);
+    } catch (error) {
+      sendJson(response, 409, {
+        error: error instanceof Error ? error.message : '莉刻/Atlas 登录不可用。',
+        atlasLoginMode: serverConfig.atlasLoginMode,
+      });
+      return true;
+    }
     sendJson(response, 200, {
-      user: toPublicUser(result.user),
+      user: result.user ? toPublicUser(result.user) : undefined,
+      loginId: 'loginId' in result ? result.loginId : undefined,
+      redirectUrl: 'redirectUrl' in result ? result.redirectUrl : undefined,
       authMode: 'feishu-oauth',
       atlas: result.status,
-      message: '莉刻/Atlas 登录已可用。',
+      message: result.message ?? '莉刻/Atlas 登录已可用。',
     });
+    return true;
+  }
+
+  if (request.method === 'GET' && route === 'feishu' && segments[3] === 'poll' && segments[4]) {
+    try {
+      const result = await pollAtlasLogin(segments[4], request, response);
+      sendJson(response, 200, {
+        ...result,
+        user: result.user ? toPublicUser(result.user) : undefined,
+        authMode: 'feishu-oauth',
+      });
+    } catch (error) {
+      sendJson(response, 409, {
+        error: error instanceof Error ? error.message : '飞书/IDaaS 登录任务不可用。',
+        atlasLoginMode: serverConfig.atlasLoginMode,
+      });
+    }
     return true;
   }
 

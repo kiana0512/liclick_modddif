@@ -17,6 +17,7 @@ type GenerationJob = {
   id: string;
   userId: string;
   projectId: string;
+  atlasHomeDir?: string;
   input: GenerateImageInput;
   status: 'submitting' | 'running' | 'succeeded' | 'failed';
   startedAt: string;
@@ -136,7 +137,7 @@ async function applySubmission(job: GenerationJob, submission: LiclickImageSubmi
 
 async function pollAndUpdateJob(job: GenerationJob) {
   if (!job.taskId || job.status !== 'running') return job;
-  const result = await pollLiclickImageTask(job.taskId);
+  const result = await pollLiclickImageTask(job.taskId, { atlasHomeDir: job.atlasHomeDir });
   job.updatedAt = new Date().toISOString();
   job.raw = result.raw;
   if (result.resultUrl) {
@@ -153,7 +154,7 @@ function startGenerationJob(job: GenerationJob) {
   job.promise = (async () => {
     try {
       if (!job.taskId && job.status === 'submitting') {
-        await applySubmission(job, await submitLiclickImageJob(job.input));
+        await applySubmission(job, await submitLiclickImageJob(job.input, { atlasHomeDir: job.atlasHomeDir }));
       }
       const startedPollingAt = Date.now();
       while (job.status === 'running' && Date.now() - startedPollingAt < 30 * 60 * 1000) {
@@ -177,6 +178,7 @@ function createGenerationJob(jobId: string, user: AuthUser, input: GenerateImage
     id: jobId,
     userId: user.id,
     projectId: input.projectId ?? 'default',
+    atlasHomeDir: user.atlasHomeDir,
     input,
     status: 'submitting',
     startedAt: now,
@@ -205,7 +207,7 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
   if (!user) return true;
 
   if (isLiclickRoute && request.method === 'GET' && segments[2] === 'status') {
-    const result = await checkLiclickApiAccess();
+    const result = await checkLiclickApiAccess(user);
     sendJson(response, result.ok ? 200 : 503, result);
     return true;
   }
@@ -234,7 +236,7 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
   }
 
   if (request.method === 'POST' && isGenerateImageRoute) {
-    const atlasIdentity = getAtlasIdentity();
+    const atlasIdentity = getAtlasIdentity(user.atlasHomeDir);
     if (
       user.email &&
       atlasIdentity.email &&
