@@ -67,7 +67,8 @@ async function handleWorkspaceRequest(
       workspaceVersion: '0.6.0',
       host: serverConfig.host,
       features: {
-        atlasRemoteCallback: true,
+        webOAuthCookieSession: serverConfig.feishuWebOAuthEnabled,
+        atlasManualCallbackFallback: true,
         browserHttpUuidFallback: true,
       },
     });

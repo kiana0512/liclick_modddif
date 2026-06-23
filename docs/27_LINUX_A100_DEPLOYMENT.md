@@ -113,6 +113,37 @@ Browser URL:
 http://10.3.2.59:46001/liclick/texture/projects
 ```
 
+## Auth Smoke Tests
+
+Before pushing an update to users, run the local OAuth smoke test from the Git repo root:
+
+```bash
+corepack pnpm smoke:auth
+```
+
+This starts a local IDaaS-compatible mock provider, starts the Liclick backend with Web OAuth enabled, follows the authorize callback, verifies the `liclick_3d_session` cookie, and confirms `/api/auth/me` returns the logged-in user.
+
+Expected success marker:
+
+```text
+OAuth smoke test passed.
+```
+
+On A100, after deployment, verify that the server is using the Web OAuth path and not the Atlas fallback:
+
+```bash
+curl -fsS http://127.0.0.1:4517/api/health
+curl -fsS http://127.0.0.1:46001/liclick/texture/api/auth/provider-status
+```
+
+The provider status must include:
+
+```json
+{"feishuLoginProvider":"web-oauth"}
+```
+
+If it says `atlas-cli`, the OAuth env vars were not written to `/etc/liclick-3d-texture.env`, or the backend service was not restarted after updating the env file.
+
 ## Logs
 
 Backend service:
@@ -146,19 +177,55 @@ Restart ComfyUI after removing the mount.
 
 ## User Login Model
 
-Use:
+Preferred production login is Web OAuth/IDaaS plus the Liclick HttpOnly session cookie. This is the same browser-style flow as mature internal web products: the user clicks Feishu Login, the browser opens IDaaS/Feishu, IDaaS redirects back to Liclick, and Liclick writes its own `liclick_3d_session` cookie.
 
-```bash
-ATLAS_LOGIN_MODE=interactive
-```
-
-Each browser user clicks Feishu Login and completes IDaaS/Feishu authorization in their own browser. The server creates an isolated Atlas home directory for that user under:
+For the current ComfyUI-mounted A100 URL, register this callback URL in the IDaaS/Feishu OAuth application whitelist:
 
 ```text
-/var/lib/liclick-3d-texture/workspace/atlas-homes/
+http://10.3.2.59:46001/liclick/texture/api/auth/feishu/callback
 ```
 
-User sessions and user metadata are stored in:
+For local Windows development, register or configure one of these callback URLs:
+
+```text
+http://127.0.0.1:4517/api/auth/feishu/callback
+http://127.0.0.1:5173/liclick/texture/api/auth/feishu/callback
+```
+
+Start/update A100 with the OAuth settings:
+
+```bash
+sudo MOUNT_MODE=comfyui \
+  PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
+  FEISHU_OAUTH_CLIENT_ID='<client id>' \
+  FEISHU_OAUTH_CLIENT_SECRET='<client secret>' \
+  FEISHU_OAUTH_AUTHORIZE_URL='<authorize url>' \
+  FEISHU_OAUTH_TOKEN_URL='<token url>' \
+  FEISHU_OAUTH_USERINFO_URL='<userinfo url>' \
+  FEISHU_OAUTH_REDIRECT_URL=http://10.3.2.59:46001/liclick/texture/api/auth/feishu/callback \
+  FEISHU_OAUTH_SCOPE='openid profile email' \
+  bash scripts/linux-start.sh
+```
+
+If the provider requires Basic auth for the token endpoint, add:
+
+```bash
+FEISHU_OAUTH_TOKEN_AUTH_METHOD=client_secret_basic
+```
+
+If IDaaS needs extra authorize params, pass them as comma-separated `key=value` pairs:
+
+```bash
+FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS='enterpriseId=lilith,prompt=login'
+```
+
+Do not configure the real app with local mock URLs such as `http://127.0.0.1:5199/authorize`. The backend blocks loopback OAuth providers unless `FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER=true`, and that flag is only for `corepack pnpm smoke:auth`.
+
+If the OAuth env vars are not configured, Liclick falls back to the older Atlas CLI login path. That fallback may end on `localhost:20265/callback` in the user's browser; paste that full callback URL into the Liclick login prompt to complete the local-listener callback on the server. This fallback is for development only and should not be the normal A100 user path.
+
+The real IDaaS/Feishu login cannot finish unless the callback URL is registered in the IDaaS app. If IDaaS shows a message like "callback address does not exist", update the app whitelist first. Code changes cannot bypass that provider-side whitelist.
+
+Each browser user gets their own Liclick session cookie. User sessions and user metadata are stored in:
 
 ```text
 /var/lib/liclick-3d-texture/workspace/auth.json
@@ -172,15 +239,7 @@ User projects, folders, imported models, references, generated images, layers, c
 
 Do not delete `/var/lib/liclick-3d-texture/workspace` during updates.
 
-The Atlas CLI prints a localhost callback URL during interactive login. On A100 this localhost belongs to the server, not the user's browser, so Liclick rewrites that callback through the public app path:
-
-```text
-http://10.3.2.59:46001/liclick/texture/api/auth/atlas-callback/<loginId>/callback
-```
-
-The backend then forwards the callback to the server-local Atlas listener. If login fails, the page should show the failure reason instead of silently doing nothing.
-
-To verify the server is running the new callback-capable backend:
+To verify the server is running the Web OAuth-capable backend:
 
 ```bash
 curl -fsS http://127.0.0.1:4517/api/health
@@ -189,12 +248,20 @@ curl -i http://127.0.0.1:46001/liclick/texture/api/auth/provider-status
 sudo journalctl -u liclick-3d-texture.service -n 120 --no-pager
 ```
 
+`/api/auth/provider-status` should include:
+
+```json
+{"feishuLoginProvider":"web-oauth"}
+```
+
+If it says `atlas-cli`, the OAuth env vars are missing or incomplete.
+
 If the browser console shows `crypto.randomUUID is not a function`, the server is still serving an old frontend bundle. Run `git pull` and `scripts/linux-start.sh` again, then hard refresh the browser.
 
 The health response from the new backend includes:
 
 ```json
-{"features":{"atlasRemoteCallback":true,"browserHttpUuidFallback":true}}
+{"features":{"webOAuthCookieSession":true,"atlasManualCallbackFallback":true,"browserHttpUuidFallback":true}}
 ```
 
 ## Runtime Paths

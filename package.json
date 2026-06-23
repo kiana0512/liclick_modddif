@@ -18,6 +18,7 @@
     "db:studio": "corepack pnpm --filter @liclick/server db:studio",
     "db:seed": "corepack pnpm --filter @liclick/server db:seed",
     "load:a100": "node scripts/load-test-a100.mjs",
+    "smoke:auth": "corepack pnpm --filter @liclick/server build && node scripts/smoke-auth-oauth.mjs",
     "build": "corepack pnpm -r build",
     "lint": "corepack pnpm -r lint",
     "typecheck": "corepack pnpm -r typecheck",

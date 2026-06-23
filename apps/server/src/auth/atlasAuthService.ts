@@ -29,7 +29,6 @@ type PublicAtlasStatus = {
 type PendingAtlasLogin = {
   id: string;
   homeDir: string;
-  callbackPort?: number;
   child?: ChildProcessWithoutNullStreams;
   startedAt: number;
   stdout: string;
@@ -180,73 +179,15 @@ function extractFirstUrl(text: string) {
   return text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
 }
 
-function publicWorkspaceBase() {
-  const publicUrl = new URL(serverConfig.publicWorkspaceUrl);
-  const pathname = serverConfig.publicPath || publicUrl.pathname;
-  publicUrl.pathname = `/${pathname.split('/').filter(Boolean).join('/')}`;
-  publicUrl.search = '';
-  publicUrl.hash = '';
-  return publicUrl.toString().replace(/\/$/, '');
-}
-
-function isLoopbackHost(hostname: string) {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
-}
-
-function shouldRewriteAtlasCallbackForRemoteBrowser() {
-  if (process.env.ATLAS_REMOTE_CALLBACK_PROXY === '1') return true;
-  if (process.env.ATLAS_REMOTE_CALLBACK_PROXY === '0') return false;
-  try {
-    return !isLoopbackHost(new URL(serverConfig.publicWorkspaceUrl).hostname);
-  } catch {
-    return false;
-  }
-}
-
-function publicCallbackUrl(loginId: string) {
-  return `${publicWorkspaceBase()}/api/auth/atlas-callback/${encodeURIComponent(loginId)}/callback`;
-}
-
-function rewriteLocalCallbackUrl(value: string, login: PendingAtlasLogin) {
-  if (!shouldRewriteAtlasCallbackForRemoteBrowser()) return value;
-  try {
-    const url = new URL(value);
-    if ((url.hostname === 'localhost' || url.hostname === '127.0.0.1') && url.pathname === '/callback') {
-      login.callbackPort = Number(url.port || process.env.ATLAS_CALLBACK_PORT || 20265);
-      const rewritten = new URL(publicCallbackUrl(login.id));
-      rewritten.search = url.search;
-      return rewritten.toString();
-    }
-  } catch {
-    return value;
-  }
-  return value;
-}
-
-function rewriteAuthUrlForRemoteBrowser(value: string | undefined, login: PendingAtlasLogin) {
-  if (!value) return undefined;
-  let rewritten = rewriteLocalCallbackUrl(value, login);
-  try {
-    const url = new URL(rewritten);
-    for (const [key, rawValue] of url.searchParams.entries()) {
-      let decoded = rawValue;
-      try {
-        decoded = decodeURIComponent(rawValue);
-      } catch {
-        decoded = rawValue;
-      }
-      const nextValue = rewriteLocalCallbackUrl(decoded, login);
-      if (nextValue !== decoded) url.searchParams.set(key, nextValue);
-    }
-    rewritten = url.toString();
-  } catch {
-    // Keep the original URL if Atlas prints text that only looks like a URL fragment.
-  }
-  return rewritten;
-}
-
 function loginMessage(login: PendingAtlasLogin, fallback: string) {
   return trimOutput(`${login.stderr}\n${login.stdout}`) || fallback;
+}
+
+function cancelPendingAtlasLogins() {
+  for (const login of pendingAtlasLogins.values()) {
+    if (!login.closed) login.child?.kill('SIGTERM');
+  }
+  pendingAtlasLogins.clear();
 }
 
 function startAtlasLoginProcess() {
@@ -377,6 +318,7 @@ export async function startAtlasLogin(request: IncomingMessage, response: Server
   }
 
   prunePendingAtlasLogins();
+  cancelPendingAtlasLogins();
   const login = await startAtlasLoginProcess();
 
   await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -391,12 +333,13 @@ export async function startAtlasLogin(request: IncomingMessage, response: Server
   }
 
   const output = `${login.stdout}\n${login.stderr}`;
-  const redirectUrl = rewriteAuthUrlForRemoteBrowser(extractFirstUrl(output), login);
   return {
     loginId: login.id,
-    redirectUrl,
+    redirectUrl: extractFirstUrl(output),
     status,
-    message: loginMessage(login, '飞书/IDaaS 登录任务已启动，请完成浏览器授权后等待页面自动同步。'),
+    message:
+      loginMessage(login, '飞书/IDaaS 登录任务已启动，请完成浏览器授权后等待页面自动同步。') +
+      ' 如果授权页最后停在 localhost:20265 拒绝连接，请复制完整 localhost 回调地址并粘贴回 Liclick 登录框。',
   };
 }
 
@@ -420,15 +363,25 @@ export async function pollAtlasLogin(loginId: string, request: IncomingMessage, 
   return {
     done: false,
     loginId,
-    redirectUrl: rewriteAuthUrlForRemoteBrowser(extractFirstUrl(`${login.stdout}\n${login.stderr}`), login),
+    redirectUrl: extractFirstUrl(`${login.stdout}\n${login.stderr}`),
     status,
     message: loginMessage(login, '等待飞书/IDaaS 授权完成。'),
   };
 }
 
-function proxyLocalCallback(port: number, originalUrl: URL) {
+function parseLocalCallbackUrl(rawUrl: string) {
+  const callbackUrl = new URL(rawUrl);
+  const isAllowedHost = callbackUrl.hostname === 'localhost' || callbackUrl.hostname === '127.0.0.1';
+  if (!isAllowedHost || callbackUrl.pathname !== '/callback') {
+    throw new Error('请粘贴浏览器地址栏里的 localhost:20265/callback 完整地址。');
+  }
+  return callbackUrl;
+}
+
+function proxyLocalCallback(callbackUrl: URL) {
   return new Promise<{ statusCode: number; contentType: string; body: string }>((resolve, reject) => {
-    const targetPath = `/callback${originalUrl.search}`;
+    const targetPath = `/callback${callbackUrl.search}`;
+    const port = Number(callbackUrl.port || process.env.ATLAS_CALLBACK_PORT || 20265);
     const request = http.get(
       {
         hostname: '127.0.0.1',
@@ -455,18 +408,17 @@ function proxyLocalCallback(port: number, originalUrl: URL) {
   });
 }
 
-export async function handleAtlasLoginCallback(loginId: string, url: URL) {
+export async function completeAtlasLoginWithLocalCallback(loginId: string, callbackUrl: string, request: IncomingMessage, response: ServerResponse) {
   prunePendingAtlasLogins();
   const login = pendingAtlasLogins.get(loginId);
   if (!login) throw new Error('登录任务已过期，请重新点击飞书登录。');
-  const callbackPort = login.callbackPort ?? Number(process.env.ATLAS_CALLBACK_PORT ?? 20265);
-  const result = await proxyLocalCallback(callbackPort, url);
-  return {
-    ...result,
-    body:
-      result.body ||
-      '<!doctype html><meta charset="utf-8"><title>Liclick 登录完成</title><body style="font-family:sans-serif;padding:32px">飞书/IDaaS 授权已返回服务器，请回到 Liclick 页面。</body>',
-  };
+  await proxyLocalCallback(parseLocalCallbackUrl(callbackUrl));
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const status = await getAtlasStatus(login.homeDir);
+  if (!status.valid) throw new Error('Atlas 已收到回调，但仍未拿到有效登录态。请重新授权。');
+  const user = await createLoggedInSession(login.homeDir, request, response);
+  pendingAtlasLogins.delete(login.id);
+  return { done: true, user, status };
 }
 
 export async function checkLiclickApiAccess(user?: AuthUser) {

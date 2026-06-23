@@ -72,6 +72,60 @@ function getAtlasLoginMode() {
   return 'interactive';
 }
 
+function parseKeyValueList(value?: string) {
+  return Object.fromEntries(
+    parseCsv(value)
+      .map((item) => {
+        const separator = item.indexOf('=');
+        if (separator <= 0) return undefined;
+        return [item.slice(0, separator).trim(), item.slice(separator + 1).trim()] as const;
+      })
+      .filter((item): item is readonly [string, string] => Boolean(item?.[0])),
+  );
+}
+
+function isLoopbackUrl(value?: string) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+const feishuWebOAuth = {
+  clientId: process.env.FEISHU_OAUTH_CLIENT_ID ?? process.env.IDAAS_OAUTH_CLIENT_ID ?? '',
+  clientSecret: process.env.FEISHU_OAUTH_CLIENT_SECRET ?? process.env.IDAAS_OAUTH_CLIENT_SECRET ?? '',
+  authorizeUrl: process.env.FEISHU_OAUTH_AUTHORIZE_URL ?? process.env.IDAAS_OAUTH_AUTHORIZE_URL ?? '',
+  tokenUrl: process.env.FEISHU_OAUTH_TOKEN_URL ?? process.env.IDAAS_OAUTH_TOKEN_URL ?? '',
+  userInfoUrl: process.env.FEISHU_OAUTH_USERINFO_URL ?? process.env.IDAAS_OAUTH_USERINFO_URL ?? '',
+  redirectUrl: process.env.FEISHU_OAUTH_REDIRECT_URL ?? process.env.IDAAS_OAUTH_REDIRECT_URL ?? '',
+  scope: process.env.FEISHU_OAUTH_SCOPE ?? process.env.IDAAS_OAUTH_SCOPE ?? 'openid profile email',
+  tokenAuthMethod:
+    process.env.FEISHU_OAUTH_TOKEN_AUTH_METHOD ?? process.env.IDAAS_OAUTH_TOKEN_AUTH_METHOD ?? 'client_secret_post',
+  extraAuthorizeParams: parseKeyValueList(
+    process.env.FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS ?? process.env.IDAAS_OAUTH_EXTRA_AUTHORIZE_PARAMS,
+  ),
+};
+
+const feishuWebOAuthConfigured = Boolean(
+  feishuWebOAuth.clientId && feishuWebOAuth.authorizeUrl && feishuWebOAuth.tokenUrl,
+);
+const feishuWebOAuthLoopbackProvider = [
+  feishuWebOAuth.authorizeUrl,
+  feishuWebOAuth.tokenUrl,
+  feishuWebOAuth.userInfoUrl,
+].some(isLoopbackUrl);
+const feishuWebOAuthAllowLoopbackProvider = process.env.FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER === 'true';
+const feishuWebOAuthBlockedReason =
+  feishuWebOAuthConfigured && feishuWebOAuthLoopbackProvider && !feishuWebOAuthAllowLoopbackProvider
+    ? 'OAuth provider points to a loopback/mock URL. Set FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER=true only for automated smoke tests, or configure the real IDaaS/Feishu authorize/token URLs.'
+    : '';
+const feishuWebOAuthEnabled = Boolean(
+  feishuWebOAuthConfigured && !feishuWebOAuthBlockedReason,
+);
+
 export const serverConfig = {
   port,
   host,
@@ -81,6 +135,10 @@ export const serverConfig = {
   repoRoot,
   authMode: (process.env.AUTH_MODE ?? 'feishu-oauth') as 'dev-mock' | 'feishu-oauth',
   atlasLoginMode: getAtlasLoginMode(),
+  feishuWebOAuthConfigured,
+  feishuWebOAuthEnabled,
+  feishuWebOAuthBlockedReason,
+  feishuWebOAuth,
   sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'liclick_3d_session',
   sessionSecret: process.env.SESSION_SECRET ?? 'dev-only-change-me',
   sessionMaxAgeDays: Number(process.env.SESSION_MAX_AGE_DAYS ?? 14),

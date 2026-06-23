@@ -4,6 +4,7 @@ type FeishuLoginFlowOptions = {
   timeoutMs?: number;
   pollIntervalMs?: number;
   onStatus?: (message: string) => void;
+  onLoginStarted?: (login: { loginId: string; redirectUrl?: string }) => void;
 };
 
 function wait(ms: number) {
@@ -32,6 +33,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
   if (!loginId) {
     throw new Error(started.message ?? '登录服务没有返回用户信息，请确认 Atlas/莉刻登录已完成。');
   }
+  options.onLoginStarted?.({ loginId, redirectUrl: started.redirectUrl });
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

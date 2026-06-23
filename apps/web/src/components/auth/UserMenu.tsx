@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Languages, LogIn, LogOut } from 'lucide-react';
-import { devLogin, logout } from '@/services/authApiClient';
+import { completeFeishuLogin, devLogin, logout } from '@/services/authApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { useAuthStore } from '@/stores/authStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
@@ -10,6 +10,9 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loginStatus, setLoginStatus] = useState('');
+  const [manualLoginId, setManualLoginId] = useState('');
+  const [callbackUrl, setCallbackUrl] = useState('');
+  const [manualBusy, setManualBusy] = useState(false);
   const t = useT();
   const language = useI18nStore((state) => state.language);
   const setLanguage = useI18nStore((state) => state.setLanguage);
@@ -22,6 +25,8 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
   async function handleLogin() {
     if (busy) return;
     setBusy(true);
+    setManualLoginId('');
+    setCallbackUrl('');
     setLoginStatus('正在启动飞书授权...');
     try {
       if (providerStatus?.devLoginEnabled && !providerStatus.feishuOAuthEnabled) {
@@ -30,6 +35,11 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
         return;
       }
       const result = await runFeishuLoginFlow({
+        onLoginStarted: ({ loginId }) => {
+          if (providerStatus?.feishuLoginProvider === 'atlas-cli') {
+            setManualLoginId(loginId);
+          }
+        },
         onStatus: (message) => {
           setLoginStatus(message);
           pushToast({
@@ -43,6 +53,8 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
       if (result.user) {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
         setLoginStatus('');
+        setManualLoginId('');
+        setCallbackUrl('');
         pushToast({
           tone: 'success',
           title: t('feishuLoginSuccess'),
@@ -65,6 +77,41 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
     }
   }
 
+  async function handleCompleteWithCallback() {
+    if (!manualLoginId || !callbackUrl.trim() || manualBusy) return;
+    setManualBusy(true);
+    setLoginStatus('正在把 localhost 回调提交到 A100 服务器...');
+    try {
+      const result = await completeFeishuLogin({
+        loginId: manualLoginId,
+        callbackUrl: callbackUrl.trim(),
+      });
+      if (!result.user) throw new Error('回调已提交，但登录服务没有返回用户信息。');
+      setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+      setManualLoginId('');
+      setCallbackUrl('');
+      setLoginStatus('');
+      setBusy(false);
+      pushToast({
+        tone: 'success',
+        title: t('feishuLoginSuccess'),
+        description: result.message ?? t('atlasLoginReady'),
+        dedupeKey: 'auth-login-success',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '回调提交失败。';
+      setLoginStatus(message);
+      pushToast({
+        tone: 'error',
+        title: '飞书回调提交失败',
+        description: message,
+        dedupeKey: 'auth-callback-complete-failed',
+      });
+    } finally {
+      setManualBusy(false);
+    }
+  }
+
   async function handleLogout() {
     await logout().catch(() => undefined);
     setAnonymous();
@@ -73,17 +120,57 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
 
   if (!user) {
     return (
-      <button
-        type="button"
-        onClick={() => void handleLogin()}
-        disabled={busy}
-        className="inline-flex h-10 items-center gap-2 rounded-md border border-white/16 bg-black/18 px-3 text-sm font-medium text-white/84 transition hover:bg-white/10 hover:text-white"
-        title={t('useFeishuLogin')}
-      >
-        <LogIn className={busy ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
-        {busy ? '等待授权' : t('feishuLogin')}
-        {busy && loginStatus && <span className="sr-only">{loginStatus}</span>}
-      </button>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => void handleLogin()}
+          disabled={busy}
+          className="inline-flex h-10 items-center gap-2 rounded-md border border-white/16 bg-black/18 px-3 text-sm font-medium text-white/84 transition hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-80"
+          title={t('useFeishuLogin')}
+        >
+          <LogIn className={busy ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
+          {busy ? '等待授权' : t('feishuLogin')}
+          {busy && loginStatus && <span className="sr-only">{loginStatus}</span>}
+        </button>
+        {manualLoginId && (
+          <div className="absolute right-0 top-12 z-40 w-[420px] rounded-md border border-amber-300/28 bg-[#20180d] p-3 text-white shadow-2xl">
+            <div className="text-sm font-semibold text-amber-50">需要提交 Atlas 本地回调</div>
+            <div className="mt-1 text-xs leading-5 text-white/70">
+              授权窗口如果停在 <span className="font-mono text-amber-100">localhost:20265/callback</span> 拒绝连接，
+              请复制地址栏完整 URL 粘贴到这里。
+            </div>
+            <textarea
+              value={callbackUrl}
+              onChange={(event) => setCallbackUrl(event.target.value)}
+              placeholder="http://localhost:20265/callback?id_token=..."
+              className="mt-3 h-20 w-full resize-none rounded-md border border-white/14 bg-black/24 p-2 text-xs text-white outline-none focus:border-liclick-pink"
+            />
+            {loginStatus && <div className="mt-2 line-clamp-2 text-xs text-white/62">{loginStatus}</div>}
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                className="h-8 rounded-md px-3 text-xs font-semibold text-white/70 hover:bg-white/10"
+                onClick={() => {
+                  setManualLoginId('');
+                  setCallbackUrl('');
+                  setLoginStatus('');
+                  setBusy(false);
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={!callbackUrl.trim() || manualBusy}
+                className="h-8 rounded-md bg-gradient-to-r from-liclick-pink to-liclick-purple px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => void handleCompleteWithCallback()}
+              >
+                {manualBusy ? '提交中...' : '提交回调完成登录'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     );
   }
 
