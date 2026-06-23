@@ -44,6 +44,12 @@ function normalizeLayer(layer: Layer) {
   };
 }
 
+function getObjectMatrixWorld(generation: Generation) {
+  const value = generation.metadata.objectMatrixWorld;
+  if (!Array.isArray(value) || value.length !== 16) return undefined;
+  return value.every((item) => typeof item === 'number') ? value : undefined;
+}
+
 export const useLayerStore = create<LayerStore>((set, get) => ({
   layers: [],
   activeProjectedLayerId: undefined,
@@ -80,6 +86,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       type: 'projected',
       imageUrl: generation.resultUrl ?? '',
       objectId: objectId ?? capture?.objectId,
+      objectMatrixWorld: getObjectMatrixWorld(generation),
       camera: capture?.camera,
       maskUrl: capture?.maskUrl,
       depthUrl: capture?.depthUrl,

@@ -17,6 +17,7 @@ export type Layer = {
   maskUrl?: string;
   depthUrl?: string;
   objectId?: string;
+  objectMatrixWorld?: number[];
   camera?: SerializedCamera;
   generationId?: string;
   captureId?: string;

@@ -8,6 +8,8 @@ export type ProjectionLayerInput = {
   depthUrl?: string;
   camera: SerializedCamera;
   objectId: string;
+  objectMatrixWorld?: number[];
+  currentObjectMatrixWorld?: number[];
   opacity: number;
   visible: boolean;
   depthTest: boolean;

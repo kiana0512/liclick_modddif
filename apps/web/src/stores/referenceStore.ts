@@ -13,7 +13,8 @@ type ReferenceStore = {
   selectedReferenceIds: string[];
   setReferences: (references: ReferenceImage[]) => void;
   addReferences: (references: ReferenceImage[]) => void;
-  toggleReference: (referenceId: string) => void;
+  setSelectedReferences: (referenceIds: string[]) => void;
+  toggleReference: (referenceId: string, selectionMode?: 'multiple' | 'single') => void;
   renameReference: (referenceId: string, name: string) => void;
   duplicateReference: (referenceId: string) => void;
   deleteReference: (referenceId: string) => void;
@@ -41,11 +42,28 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
         selectedReferenceIds,
       };
     }),
-  toggleReference: (referenceId) =>
+  setSelectedReferences: (referenceIds) =>
     set((state) => {
-      const selectedReferenceIds = state.selectedReferenceIds.includes(referenceId)
-        ? state.selectedReferenceIds.filter((id) => id !== referenceId)
-        : [...state.selectedReferenceIds, referenceId];
+      const availableIds = new Set(state.references.map((reference) => reference.id));
+      const selectedReferenceIds = referenceIds.filter((id, index) => availableIds.has(id) && referenceIds.indexOf(id) === index);
+      return {
+        selectedReferenceIds,
+        references: state.references.map((reference) => ({
+          ...reference,
+          isPrimary: selectedReferenceIds.includes(reference.id),
+        })),
+      };
+    }),
+  toggleReference: (referenceId, selectionMode = 'multiple') =>
+    set((state) => {
+      const selectedReferenceIds =
+        selectionMode === 'single'
+          ? state.selectedReferenceIds.includes(referenceId)
+            ? []
+            : [referenceId]
+          : state.selectedReferenceIds.includes(referenceId)
+            ? state.selectedReferenceIds.filter((id) => id !== referenceId)
+            : [...state.selectedReferenceIds, referenceId];
       return {
         selectedReferenceIds,
         references: state.references.map((reference) => ({

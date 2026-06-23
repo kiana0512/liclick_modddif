@@ -12,7 +12,7 @@ export function renderSceneToDataUrl(request: CapturePassRequest) {
   const previousClearAlpha = request.gl.getClearAlpha();
 
   request.gl.setRenderTarget(target);
-  request.gl.setClearColor('#000000', 1);
+  request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
   request.gl.clear();
   request.gl.render(request.scene, request.camera);
 
@@ -46,12 +46,30 @@ export function applyTargetOnlyMaterial(
   materialFactory: () => THREE.Material,
 ) {
   const snapshots: SceneMaterialSnapshot[] = [];
+  const targetMeshes = new Set<THREE.Mesh>();
+  const targetAncestors = new Set<THREE.Object3D>([scene]);
 
   scene.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
-    const isTarget = object.userData.liclickObjectId === objectId;
-    snapshots.push({ object, visible: object.visible, material: object.material });
-    object.visible = isTarget;
+    if (object.userData.liclickObjectId !== objectId) return;
+    targetMeshes.add(object);
+    let parent: THREE.Object3D | null = object.parent;
+    while (parent) {
+      targetAncestors.add(parent);
+      parent = parent.parent;
+    }
+  });
+
+  scene.traverse((object) => {
+    if (object === scene || object instanceof THREE.Camera || object instanceof THREE.Light) return;
+    const isTarget = object instanceof THREE.Mesh && targetMeshes.has(object);
+    const isTargetAncestor = targetAncestors.has(object);
+    snapshots.push({
+      object,
+      visible: object.visible,
+      material: object instanceof THREE.Mesh ? object.material : undefined,
+    });
+    object.visible = isTarget || isTargetAncestor;
     if (isTarget) object.material = materialFactory();
   });
 

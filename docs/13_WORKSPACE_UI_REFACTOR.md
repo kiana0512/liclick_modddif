@@ -74,6 +74,8 @@ Normal mode switches the viewport to normal display and shows:
 
 Normal colors are surface-normal debug colors, not final texture output.
 
+Switching workspace modes preserves each dock panel's current collapsed or expanded state. Users should not have to reopen their working panels after briefly checking Normal, Segments, or Export mode.
+
 ## Segments Mode
 
 Segments mode shows:

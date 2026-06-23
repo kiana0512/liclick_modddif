@@ -118,35 +118,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutStore>()(
           };
         }),
       resetWorkspaceLayout: () => set({ mode: 'texture', panels: defaultWorkspacePanels }),
-      setMode: (mode) =>
-        set((state) => ({
-          mode,
-          panels: state.panels.map((panel) => {
-            if (mode === 'texture') {
-              if (
-                panel.id === 'segments' ||
-                panel.id === 'quickMask' ||
-                panel.id === 'objects' ||
-                panel.id === 'generate' ||
-                panel.id === 'layerAdjustments' ||
-                panel.id === 'viewport' ||
-                panel.id === 'layers' ||
-                panel.id === 'objectTransform'
-              ) {
-                return { ...panel, collapsed: true };
-              }
-            }
-            if (mode === 'normal') {
-              if (panel.id === 'normalVisualizer') return { ...panel, collapsed: false };
-              if (panel.id === 'normalGeneration') return { ...panel, collapsed: true };
-            }
-            if (mode === 'segments') {
-              if (panel.id === 'quickMask') return { ...panel, collapsed: false };
-              if (panel.id === 'segments') return { ...panel, collapsed: true };
-            }
-            return panel;
-          }),
-        })),
+      setMode: (mode) => set({ mode }),
     }),
     {
       name: 'liclick-workspace-layout-v2',

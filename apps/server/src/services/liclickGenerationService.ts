@@ -250,7 +250,6 @@ export async function submitLiclickImageJob(
   input: GenerateImageInput,
   atlasContext: LiclickAtlasContext = {},
 ): Promise<LiclickImageSubmission> {
-  if (!input.prompt.trim()) throw new Error('请输入图片生成描述。');
   return withTempDir(async (tempDir) => {
     const references = (input.references ?? []).slice(0, 10);
     const uploadedReferences = await Promise.all(

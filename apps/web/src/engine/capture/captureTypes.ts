@@ -10,6 +10,8 @@ export type CapturePassRequest = {
   objectId: string;
   width: number;
   height: number;
+  clearColor?: THREE.ColorRepresentation;
+  clearAlpha?: number;
 };
 
 export type CapturePassOutput = {
@@ -20,6 +22,9 @@ export type CapturePassOutput = {
 export type CaptureCurrentViewRequest = {
   objectId: string;
   resolution: CaptureResolution;
+  framing?: 'current' | 'fit-object';
+  colorMode?: 'viewport' | 'clay-target';
+  fillRatio?: number;
 };
 
 export type SceneMaterialSnapshot = {

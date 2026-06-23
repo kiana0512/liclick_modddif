@@ -48,9 +48,18 @@ type LiclickApiClient = {
 };
 ```
 
+## Generate Panel Mode Boundary
+
+The Generate panel exposes two user-facing modes:
+
+- `Liclick`: calls the authenticated Liclick image API and returns a normal generated image. This is the current implemented path.
+- `Texture Map`: planned clean-room texture-transfer mode. It should use material references plus the current model view as a shape and camera reference, then produce an aligned transparent projected layer. This mode is not the same as a generic Liclick image generation request.
+
+Liclick mode no longer requires a user-entered prompt at the UI boundary. Texture Map mode also allows an empty user prompt, but the client combines any optional user prompt with an internal shape-preserving material-transfer prompt before submission.
+
 ## generateTextureSingleView
 
-Inputs: prompt, references, selected object id, capture id, resolution, visible-only flag, and upscale flag.
+Inputs: optional prompt, references, selected object id, capture id, resolution, visible-only flag, and upscale flag.
 
 Output: generation id, status, result image URL, and metadata.
 

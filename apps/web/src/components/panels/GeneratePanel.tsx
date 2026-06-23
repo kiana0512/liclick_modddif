@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Image, ImagePlus, Plus, Settings, Sparkles, X } from 'lucide-react';
+import { Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
+import { bakeProjectedLayerToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { captureCurrentView } from '@/engine/capture/captureCurrentView';
+import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
 import { devLogin } from '@/services/authApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
@@ -70,6 +73,14 @@ const defaultImageGenerationSettings = {
   upscaleStrength: 0,
 };
 
+const textureMapDefaultPrompt =
+  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。不要改变模型形状、朝向、透视、比例、裁切和可见区域。第二张参考图只提供材质纹理、颜色、粗糙度和细节风格，禁止复制第二张参考图的多视角排版、背景、构图或物体姿态。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。不要生成地面网格、场景背景、文字、边框、拼图、多视角图或额外物体。';
+
+function buildTextureMapPrompt(userPrompt: string) {
+  const trimmedPrompt = userPrompt.trim();
+  return trimmedPrompt ? `${textureMapDefaultPrompt}\n\n用户补充材质要求：${trimmedPrompt}` : textureMapDefaultPrompt;
+}
+
 function getImageSize(url: string) {
   return new Promise<{ width: number; height: number }>((resolve) => {
     const image = new window.Image();
@@ -79,10 +90,18 @@ function getImageSize(url: string) {
   });
 }
 
+function getImportedModelMatrixWorld() {
+  const model = useSceneStore.getState().importedModel;
+  if (!model) return undefined;
+  model.group.updateMatrixWorld(true);
+  return model.group.matrixWorld.toArray();
+}
+
 export function GeneratePanel() {
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('single');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [generateNotice, setGenerateNotice] = useState<GenerateNotice | undefined>();
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
@@ -102,6 +121,7 @@ export function GeneratePanel() {
   const upscaleStrength = generationSettings.upscaleStrength ?? 0;
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
   const references = useReferenceStore((state) => state.references);
+  const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const addReferences = useReferenceStore((state) => state.addReferences);
   const { generations, currentGeneration, lastCapture, isGenerating, start, finish, addGeneration, setLastCapture } =
     useGenerationStore();
@@ -125,7 +145,6 @@ export function GeneratePanel() {
     return belongsToProject && !generation.resultUrl && (generation.status === 'queued' || generation.status === 'running');
   });
   const previewGeneration = activeProjectGeneration ?? currentGeneration;
-  const currentTaskId = typeof previewGeneration?.metadata.taskId === 'string' ? previewGeneration.metadata.taskId : undefined;
   const previewIsGenerating =
     isGenerating ||
     Boolean(activeProjectGeneration) ||
@@ -144,6 +163,12 @@ export function GeneratePanel() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [settingsOpen]);
+
+  useEffect(() => {
+    if (tab === 'multiview' && selectedReferenceIds.length > 1) {
+      setSelectedReferences([selectedReferenceIds[0]]);
+    }
+  }, [selectedReferenceIds, setSelectedReferences, tab]);
 
   useEffect(() => {
     if (!previewGeneration || previewGeneration.resultUrl) return undefined;
@@ -321,7 +346,25 @@ export function GeneratePanel() {
     return capture;
   }
 
+  async function captureTextureMapReferenceView() {
+    if (!importedModel) throw new Error(t('importModelFirst'));
+    const objectId = selectedObjectId ?? importedModel.objectId;
+    const capture = await captureCurrentView({
+      objectId,
+      resolution: resolutionToSize[resolution],
+      framing: 'fit-object',
+      colorMode: 'clay-target',
+      fillRatio: 0.97,
+    });
+    setLastCapture(capture);
+    return capture;
+  }
+
   async function handleGenerate() {
+    if (tab === 'multiview') {
+      await handleTextureMapGenerate();
+      return;
+    }
     let pendingGeneration: Generation | undefined;
     try {
       if (submitLockRef.current || previewIsGenerating) {
@@ -338,25 +381,14 @@ export function GeneratePanel() {
         return;
       }
       submitLockRef.current = true;
-      if (!prompt.trim()) {
-        setGenerateNotice({
-          tone: 'warning',
-          message: '请输入 Prompt 后再生成。',
-        });
-        pushToast({
-          tone: 'warning',
-          title: '请输入描述',
-          description: 'Prompt 会直接发送到莉刻图片生成。',
-          dedupeKey: 'generate-empty-prompt',
-        });
-        return;
-      }
       if (!(await requireAiLogin())) return;
+      const submittedPrompt = prompt.trim();
       const generationId = createId('liclick-image');
+      const objectMatrixWorld = getImportedModelMatrixWorld();
       pendingGeneration = {
         id: generationId,
         mode: 'single',
-        prompt: prompt.trim(),
+        prompt: submittedPrompt,
         referenceIds: [...selectedReferenceIds],
         status: 'running',
         metadata: {
@@ -384,6 +416,7 @@ export function GeneratePanel() {
         metadata: {
           ...pendingGeneration.metadata,
           objectId: object?.id,
+          objectMatrixWorld,
         },
       };
       start(pendingGeneration);
@@ -392,7 +425,7 @@ export function GeneratePanel() {
         clientGenerationId: generationId,
         projectId: currentProject?.id,
         mode: 'single',
-        prompt: prompt.trim(),
+        prompt: submittedPrompt,
         referenceIds: selectedReferenceIds,
         referenceImages: references.filter((reference) => selectedReferenceIds.includes(reference.id)),
         capture,
@@ -406,9 +439,16 @@ export function GeneratePanel() {
         imageSize,
         count,
       });
-      addGeneration(generation);
-      addProjectGeneration(generation);
-      if (generation.status === 'succeeded' && generation.resultUrl) {
+      const alignedGeneration: Generation = {
+        ...generation,
+        metadata: {
+          ...generation.metadata,
+          objectMatrixWorld,
+        },
+      };
+      addGeneration(alignedGeneration);
+      addProjectGeneration(alignedGeneration);
+      if (alignedGeneration.status === 'succeeded' && alignedGeneration.resultUrl) {
         setGenerateNotice(undefined);
         pushToast({
           tone: 'success',
@@ -418,13 +458,13 @@ export function GeneratePanel() {
       } else {
         setGenerateNotice({
           tone: 'info',
-          message: '莉刻任务已提交，正在按任务 ID 轮询结果。完成前不能再次提交。',
+          message: '莉刻任务已提交，正在等待生成结果。',
         });
         pushToast({
           tone: 'info',
           title: '莉刻任务已提交',
           description: '正在按任务 ID 轮询结果，完成前请等待。',
-          dedupeKey: `generation-submitted:${generation.metadata.taskId ?? generation.id}`,
+          dedupeKey: `generation-submitted:${alignedGeneration.metadata.taskId ?? alignedGeneration.id}`,
         });
       }
     } catch (error) {
@@ -451,6 +491,147 @@ export function GeneratePanel() {
         tone: 'error',
         title: 'Generate failed',
         description: error instanceof Error ? error.message : 'Could not generate a texture image.',
+      });
+    } finally {
+      submitLockRef.current = false;
+    }
+  }
+
+  async function handleTextureMapGenerate() {
+    let pendingGeneration: Generation | undefined;
+    try {
+      if (submitLockRef.current || previewIsGenerating) {
+        setGenerateNotice({
+          tone: 'warning',
+          message: '当前工程已有莉刻生图任务在运行，完成前不能再次提交。',
+        });
+        return;
+      }
+      const materialReference = references.find((reference) => reference.id === selectedReferenceIds[0]);
+      if (!materialReference) {
+        setGenerateNotice({
+          tone: 'warning',
+          message: t('selectOneMaterialReference'),
+        });
+        pushToast({
+          tone: 'warning',
+          title: t('textureMap'),
+          description: t('selectOneMaterialReference'),
+          dedupeKey: 'texture-map-reference-required',
+        });
+        return;
+      }
+      submitLockRef.current = true;
+      const capture = await captureTextureMapReferenceView();
+      const object = objects.find((item) => item.id === capture.objectId);
+      if (!(await requireAiLogin())) return;
+      const texturePrompt = buildTextureMapPrompt(prompt);
+      const generationId = createId('texture-map');
+      const objectMatrixWorld = getImportedModelMatrixWorld();
+      const modelViewReference: ReferenceImage = {
+        id: `${capture.id}-model-view`,
+        name: 'Current model view',
+        url: capture.colorUrl,
+        width: capture.width,
+        height: capture.height,
+        isPrimary: false,
+      };
+      pendingGeneration = {
+        id: generationId,
+        mode: 'single',
+        prompt: texturePrompt,
+        referenceIds: [modelViewReference.id, materialReference.id],
+        captureId: capture.id,
+        status: 'running',
+        metadata: {
+          provider: 'liclick-atlas',
+          workflow: 'texture-map',
+          clientGenerationId: generationId,
+          projectId: currentProject?.id,
+          model: imageModel,
+          objectId: object?.id,
+          objectMatrixWorld,
+          materialReferenceId: materialReference.id,
+          modelViewReferenceId: modelViewReference.id,
+          resolution,
+          startedAt: new Date().toISOString(),
+          alphaMode: 'pending-geometry-mask',
+        },
+      };
+      start(pendingGeneration);
+      addProjectGeneration(pendingGeneration);
+      setGenerateNotice({
+        tone: 'info',
+        message: t('textureMapSubmitting'),
+      });
+      const generation = await createLiclickApiClient().generateTextureSingleView({
+        clientGenerationId: generationId,
+        projectId: currentProject?.id,
+        mode: 'single',
+        prompt: texturePrompt,
+        referenceIds: [modelViewReference.id, materialReference.id],
+        referenceImages: [modelViewReference, materialReference],
+        capture,
+        object,
+        resolution,
+        textureMode: 'realistic',
+        visibleOnly: true,
+        upscale: false,
+        model: imageModel,
+        aspectRatio,
+        imageSize,
+        count: 1,
+      });
+      const textureMapGeneration: Generation = {
+        ...generation,
+        metadata: {
+          ...generation.metadata,
+          workflow: 'texture-map',
+          objectMatrixWorld,
+          materialReferenceId: materialReference.id,
+          modelViewReferenceId: modelViewReference.id,
+          alphaMode: 'pending-geometry-mask',
+        },
+      };
+      addGeneration(textureMapGeneration);
+      addProjectGeneration(textureMapGeneration);
+      if (textureMapGeneration.status === 'succeeded' && textureMapGeneration.resultUrl) {
+        setGenerateNotice(undefined);
+        pushToast({
+          tone: 'success',
+          title: t('textureMapGenerated'),
+          description: t('textureMapGeneratedHelp'),
+        });
+      } else {
+        setGenerateNotice({
+          tone: 'info',
+          message: '莉刻任务已提交，正在等待生成结果。',
+        });
+      }
+    } catch (error) {
+      console.error('[Liclick 3D Texture] Texture map generation failed:', error);
+      setGenerateNotice({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Could not generate a texture map image.',
+      });
+      if (pendingGeneration) {
+        const failedGeneration: Generation = {
+          ...pendingGeneration,
+          status: 'failed',
+          metadata: {
+            ...pendingGeneration.metadata,
+            error: error instanceof Error ? error.message : 'Could not generate a texture map image.',
+            completedAt: new Date().toISOString(),
+          },
+        };
+        addGeneration(failedGeneration);
+        addProjectGeneration(failedGeneration);
+      }
+      finish();
+      pushToast({
+        tone: 'error',
+        title: t('textureMapFailed'),
+        description: error instanceof Error ? error.message : 'Could not generate a texture map image.',
       });
     } finally {
       submitLockRef.current = false;
@@ -493,9 +674,69 @@ export function GeneratePanel() {
     });
   }
 
+  async function autoBakeProjectedLayer(layer: Layer) {
+    const model = useSceneStore.getState().importedModel;
+    if (!model || !layer.camera) return undefined;
+    const result = await bakeProjectedLayerToTexture({
+      objectId: layer.objectId ?? model.objectId,
+      layerId: layer.id,
+      resolution: 2048,
+      opacity: layer.opacity,
+      enableBackfaceCulling: true,
+      enableDilation: false,
+      dilationPixels: 0,
+    });
+    await applyBakedTextureToObject(model.group, result.imageUrl);
+
+    let bakedImageUrl = result.imageUrl;
+    try {
+      bakedImageUrl = await persistGeneratedImage('baked', result.imageUrl, `${result.bakedTexture.id}.png`);
+    } catch (error) {
+      console.warn('[Liclick 3D Texture] Could not persist baked texture asset:', error);
+    }
+
+    if (bakedImageUrl !== result.imageUrl) {
+      const project = useProjectStore.getState().getCurrentProject();
+      if (project) {
+        updateCurrentProject({
+          bakedTextures: project.bakedTextures.map((texture) =>
+            texture.id === result.bakedTexture.id ? { ...texture, imageUrl: bakedImageUrl } : texture,
+          ),
+        });
+        await applyBakedTextureToObject(model.group, bakedImageUrl);
+      }
+    }
+
+    const bakedLayers = useLayerStore.getState().layers;
+    setProjectLayers(bakedLayers);
+    await saveCriticalProjectState({ layers: bakedLayers });
+    return result;
+  }
+
   async function handleAddProjectedLayer() {
     if (!currentGeneration?.resultUrl) return;
-    let layer = addProjectedLayerFromGeneration(currentGeneration, lastCapture, selectedObjectId);
+    const generationCapture =
+      lastCapture?.id === currentGeneration.captureId
+        ? lastCapture
+        : currentProject?.captures.find((capture) => capture.id === currentGeneration.captureId) ?? lastCapture;
+    const isTextureMapGeneration = currentGeneration.metadata.workflow === 'texture-map';
+    const layerGeneration =
+      isTextureMapGeneration && generationCapture?.maskUrl
+        ? {
+            ...currentGeneration,
+            resultUrl: await createMaskedProjectedImage(
+              currentGeneration.resultUrl.startsWith('http')
+                ? await urlToDataUrl(currentGeneration.resultUrl)
+                : currentGeneration.resultUrl,
+              generationCapture.maskUrl,
+            ),
+            metadata: {
+              ...currentGeneration.metadata,
+              alphaMode: 'geometry-mask',
+            },
+          }
+        : currentGeneration;
+    let layer = addProjectedLayerFromGeneration(layerGeneration, generationCapture, selectedObjectId);
     let nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
     try {
@@ -521,6 +762,25 @@ export function GeneratePanel() {
       title: 'Projected layer added',
       description: `${layer.name} is now previewed on the model.`,
     });
+    try {
+      const bakeResult = await autoBakeProjectedLayer(layer);
+      if (bakeResult) {
+        pushToast({
+          tone: 'success',
+          title: '自动烘焙完成',
+          description: `${t('coverage')}: ${Math.round(bakeResult.report.coverageRatio * 100)} %`,
+          dedupeKey: `auto-bake:${layer.id}`,
+        });
+      }
+    } catch (error) {
+      console.error('[Liclick 3D Texture] Auto bake failed:', error);
+      pushToast({
+        tone: 'warning',
+        title: '图层已添加，自动烘焙失败',
+        description: error instanceof Error ? error.message : '请检查模型 UV、投射相机和透明图层。',
+        dedupeKey: `auto-bake-failed:${layer.id}`,
+      });
+    }
   }
 
   async function handleAddGenerationAsReference() {
@@ -571,7 +831,7 @@ export function GeneratePanel() {
         value={tab}
         options={[
           { value: 'single', label: t('single') },
-          { value: 'multiview', label: t('multiview'), disabled: true },
+          { value: 'multiview', label: t('multiview') },
         ]}
         onChange={setTab}
         className="mb-2"
@@ -579,29 +839,47 @@ export function GeneratePanel() {
       <div className="overflow-hidden rounded-md border border-white/10 bg-black/24">
         <div className="relative h-[240px] overflow-hidden bg-[#1b1b1b]">
           {currentGeneration?.resultUrl ? (
-            <>
-              <img src={currentGeneration.resultUrl} alt="" className="h-full w-full object-cover" />
-              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/76 to-transparent px-3 py-3">
-                <div className="line-clamp-2 text-xs font-semibold leading-4 text-white">{currentGeneration.prompt}</div>
-              </div>
-            </>
+            <button
+              type="button"
+              className="h-full w-full cursor-zoom-in"
+              onClick={() => setPreviewImageOpen(true)}
+              aria-label={t('view')}
+              title={t('view')}
+            >
+              <img src={currentGeneration.resultUrl} alt="" className="h-full w-full object-contain" />
+            </button>
           ) : (
             <div className="h-full w-full bg-[#1b1b1b]" />
           )}
           {currentGeneration?.resultUrl && (
-            <div className="absolute inset-x-2 top-2 flex gap-2 rounded-md border border-black/20 bg-black/72 p-1.5 shadow-xl backdrop-blur-sm">
+            <div className="absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 bg-black/68 p-1 shadow-xl backdrop-blur-sm">
               <button
                 type="button"
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-white/18 bg-liclick-pink text-white shadow-glow transition hover:brightness-110"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
                 title={t('addToReferences')}
                 aria-label={t('addToReferences')}
                 onClick={handleAddGenerationAsReference}
               >
                 <ImagePlus className="h-4 w-4" />
               </button>
-              <Button className="h-9 min-w-0 flex-1 truncate px-2 text-xs" variant="primary" onClick={handleAddProjectedLayer}>
-                {t('addAsProjectedLayer')}
-              </Button>
+              <button
+                type="button"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
+                title={t('addAsProjectedLayer')}
+                aria-label={t('addAsProjectedLayer')}
+                onClick={handleAddProjectedLayer}
+              >
+                <Layers className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
+                title={t('view')}
+                aria-label={t('view')}
+                onClick={() => setPreviewImageOpen(true)}
+              >
+                <Maximize2 className="h-4 w-4" />
+              </button>
             </div>
           )}
           {previewIsGenerating && (
@@ -609,10 +887,6 @@ export function GeneratePanel() {
               <div className="grid justify-items-center gap-3">
                 <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/22 border-t-liclick-pink" />
                 <div className="text-sm font-semibold">{t('generating')}</div>
-                <div className="max-w-[220px] text-center text-xs leading-5 text-white/64">
-                  <div>{t('waitingLiclick')}</div>
-                  {currentTaskId && <div className="font-mono text-[11px] text-white/72">{currentTaskId.slice(0, 8)}...</div>}
-                </div>
               </div>
             </div>
           )}
@@ -700,7 +974,11 @@ export function GeneratePanel() {
                     <Plus className="h-4 w-4" />
                   </label>
                 </div>
-                <ReferenceImagePicker compact inputId="generate-reference-upload" />
+                <ReferenceImagePicker
+                  compact
+                  inputId="generate-reference-upload"
+                  selectionMode={tab === 'multiview' ? 'single' : 'multiple'}
+                />
           </section>
             </>
           ) : (
@@ -742,11 +1020,27 @@ export function GeneratePanel() {
             onClick={handleGenerate}
             icon={<Sparkles className="h-4 w-4" />}
           >
-            {previewIsGenerating ? t('generating') : t('generateImage')}
+            {previewIsGenerating ? t('generating') : tab === 'multiview' ? t('generateTextureMap') : t('generateImage')}
           </Button>
         </div>
       </div>
     </Panel>
+    {portalRoot && previewImageOpen && currentGeneration?.resultUrl && createPortal(
+      <button
+        type="button"
+        className="fixed inset-0 z-[135] grid cursor-zoom-out place-items-center bg-black/72 p-4 backdrop-blur-sm"
+        onClick={() => setPreviewImageOpen(false)}
+        aria-label={t('close')}
+      >
+        <img
+          src={currentGeneration.resultUrl}
+          alt=""
+          className="max-h-[92vh] max-w-[94vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+          draggable={false}
+        />
+      </button>,
+      portalRoot,
+    )}
     {portalRoot && settingsOpen && generateMode === 'visible' && createPortal(
       <div
         className="fixed inset-0 z-[130] grid place-items-center bg-black/62 px-4"

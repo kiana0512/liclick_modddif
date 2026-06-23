@@ -8,8 +8,8 @@ This document describes the functional areas Liclick should eventually support b
 | Editor main interface | Toolbar, left panels, central viewport, right panels, bottom tools. | MVP required |
 | Objects | Mesh list, selection, visibility, material slots, UV sets. | MVP required |
 | Reference Images | Upload, select primary references, attach references to generation. | MVP required |
-| Generate Single | Prompt + selected references + current capture to image. | MVP required |
-| Generate Multiview | Multi-camera generation and consistency workflow. | Later phase |
+| Liclick Image | Prompt + selected references + current capture to image through the authenticated Liclick API. | MVP required |
+| Texture Map | Material references + current model view as shape/position reference, producing an aligned transparent projected texture layer. | Core follow-up |
 | Viewport modes | PBR, Flat, Normal, Wire, Segmentation. | PBR/Normal/Wire MVP, others later |
 | Projected Layer | Camera-based generated image projection onto model. | MVP preview, full depth later |
 | UV Layer | Direct UV-space texture layer. | Later phase |
@@ -26,7 +26,7 @@ This document describes the functional areas Liclick should eventually support b
 - Projects page.
 - Editor page.
 - Web3D viewport with default model, OrbitControls, grid, object selection.
-- Generate mock flow.
+- Liclick image generation flow.
 - Layer stack UI with mock data and generated projected layer insertion.
 - Capture and projection stub interfaces.
 
@@ -36,5 +36,5 @@ This document describes the functional areas Liclick should eventually support b
 - True projected material shader.
 - Depth-aware projection.
 - UV bake.
-- Multiview generation.
+- Texture Map mode for view-aligned transparent projected texture generation.
 - DCC connectors.

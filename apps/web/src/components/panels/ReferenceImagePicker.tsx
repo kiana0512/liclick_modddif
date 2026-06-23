@@ -32,6 +32,7 @@ function getImageFiles(files: FileList) {
 type ReferenceImagePickerProps = {
   compact?: boolean;
   inputId?: string;
+  selectionMode?: 'multiple' | 'single';
 };
 
 type MenuState = {
@@ -40,7 +41,7 @@ type MenuState = {
   y: number;
 };
 
-export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImagePickerProps) {
+export function ReferenceImagePicker({ compact = false, inputId, selectionMode = 'multiple' }: ReferenceImagePickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [menu, setMenu] = useState<MenuState | undefined>();
@@ -51,6 +52,7 @@ export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImag
   const references = useReferenceStore((state) => state.references);
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
   const addReferences = useReferenceStore((state) => state.addReferences);
+  const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const toggleReference = useReferenceStore((state) => state.toggleReference);
   const renameReference = useReferenceStore((state) => state.renameReference);
   const duplicateReference = useReferenceStore((state) => state.duplicateReference);
@@ -109,6 +111,15 @@ export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImag
     setPendingImport(nextReferences);
   }
 
+  function confirmPendingImport() {
+    if (!pendingImport) return;
+    addReferences(pendingImport);
+    if (selectionMode === 'single' && pendingImport[0]) {
+      setSelectedReferences([pendingImport[0].id]);
+    }
+    setPendingImport(undefined);
+  }
+
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     event.stopPropagation();
@@ -146,7 +157,7 @@ export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImag
         ref={inputRef}
         type="file"
         accept="image/*"
-        multiple
+        multiple={selectionMode === 'multiple'}
         className="hidden"
         onChange={(event) => {
           if (event.target.files) void importFiles(event.target.files);
@@ -193,7 +204,7 @@ export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImag
                     title="Shift"
                     onClick={(event) => {
                       event.stopPropagation();
-                      toggleReference(reference.id);
+                      toggleReference(reference.id, selectionMode);
                     }}
                     onMouseEnter={() => setHoveredReferenceId(reference.id)}
                     onMouseMove={() => setHoveredReferenceId(reference.id)}
@@ -260,7 +271,7 @@ export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImag
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-white/10"
               onClick={() => {
-                toggleReference(menu.referenceId);
+                toggleReference(menu.referenceId, selectionMode);
                 setMenu(undefined);
               }}
             >
@@ -353,10 +364,7 @@ export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImag
             <button
               type="button"
               className="h-10 rounded-md border border-white/16 bg-white/10 text-sm font-semibold text-white hover:bg-white/16"
-              onClick={() => {
-                addReferences(pendingImport);
-                setPendingImport(undefined);
-              }}
+              onClick={confirmPendingImport}
             >
               {t('importAsReferenceImage')}
             </button>

@@ -23,6 +23,8 @@ const fragmentShader = `
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
   uniform mat4 projectorMatrix;
+  uniform mat4 objectMatrixDelta;
+  uniform mat3 objectNormalDelta;
   uniform vec3 projectorPosition;
   uniform float layerOpacity;
   uniform float useMask;
@@ -62,7 +64,9 @@ const fragmentShader = `
   }
 
   void main() {
-    vec4 projected = projectorMatrix * vec4(vWorldPosition, 1.0);
+    vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
+    vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
+    vec4 projected = projectorMatrix * captureWorldPosition;
     vec3 ndc = projected.xyz / projected.w;
     vec2 uv = ndc.xy * 0.5 + 0.5;
     uv.y = 1.0 - uv.y;
@@ -76,13 +80,13 @@ const fragmentShader = `
     float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
     float featherAlpha = smoothstep(0.0, max(edgeFeather, 0.0001), edgeDistance);
 
-    vec3 normal = normalize(vWorldNormal);
-    vec3 projectorViewDir = normalize(vWorldPosition - projectorPosition);
+    vec3 normal = captureWorldNormal;
+    vec3 projectorViewDir = normalize(captureWorldPosition.xyz - projectorPosition);
     float frontFacing = 1.0 - step(-0.02, dot(normal, projectorViewDir));
     float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
     vec4 maskTexel = texture2D(maskMap, uv);
-    float maskValue = max(maskTexel.a, dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)));
+    float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
     float maskAlpha = mix(1.0, step(0.08, maskValue), useMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
@@ -117,6 +121,14 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   depthTexture.wrapS = THREE.ClampToEdgeWrapping;
   depthTexture.wrapT = THREE.ClampToEdgeWrapping;
 
+  const objectMatrixDelta = new THREE.Matrix4();
+  if (input.objectMatrixWorld && input.currentObjectMatrixWorld) {
+    objectMatrixDelta
+      .fromArray(input.objectMatrixWorld)
+      .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
+  }
+  const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
+
   return new THREE.ShaderMaterial({
     name: `LiclickProjectedLayer:${input.layerId}`,
     vertexShader,
@@ -126,6 +138,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       maskMap: { value: maskTexture },
       depthMap: { value: depthTexture },
       projectorMatrix: { value: buildProjectionMatrixBundle(input.camera).projectorMatrix },
+      objectMatrixDelta: { value: objectMatrixDelta },
+      objectNormalDelta: { value: objectNormalDelta },
       projectorPosition: { value: new THREE.Vector3().fromArray(input.camera.position) },
       layerOpacity: { value: input.opacity },
       useMask: { value: input.useMask && input.maskUrl ? 1 : 0 },

@@ -29,17 +29,8 @@ export type RasterizeOutput = {
   warnings: string[];
 };
 
-const baseColor = [217, 161, 140, 255] as const;
-
 function createBaseImageData(width: number, height: number) {
-  const imageData = new ImageData(width, height);
-  for (let offset = 0; offset < imageData.data.length; offset += 4) {
-    imageData.data[offset] = baseColor[0];
-    imageData.data[offset + 1] = baseColor[1];
-    imageData.data[offset + 2] = baseColor[2];
-    imageData.data[offset + 3] = baseColor[3];
-  }
-  return imageData;
+  return new ImageData(width, height);
 }
 
 function getAttributeTuple3(attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, index: number) {
@@ -58,11 +49,20 @@ function uvToPixel(uv: { x: number; y: number }, resolution: number) {
 }
 
 function blendPixel(imageData: ImageData, offset: number, color: [number, number, number, number], opacity: number) {
-  const alpha = (color[3] / 255) * opacity;
-  imageData.data[offset] = Math.round(imageData.data[offset] * (1 - alpha) + color[0] * alpha);
-  imageData.data[offset + 1] = Math.round(imageData.data[offset + 1] * (1 - alpha) + color[1] * alpha);
-  imageData.data[offset + 2] = Math.round(imageData.data[offset + 2] * (1 - alpha) + color[2] * alpha);
-  imageData.data[offset + 3] = 255;
+  const sourceAlpha = (color[3] / 255) * opacity;
+  const targetAlpha = imageData.data[offset + 3] / 255;
+  const outputAlpha = sourceAlpha + targetAlpha * (1 - sourceAlpha);
+  if (outputAlpha <= 0) return;
+  imageData.data[offset] = Math.round(
+    (color[0] * sourceAlpha + imageData.data[offset] * targetAlpha * (1 - sourceAlpha)) / outputAlpha,
+  );
+  imageData.data[offset + 1] = Math.round(
+    (color[1] * sourceAlpha + imageData.data[offset + 1] * targetAlpha * (1 - sourceAlpha)) / outputAlpha,
+  );
+  imageData.data[offset + 2] = Math.round(
+    (color[2] * sourceAlpha + imageData.data[offset + 2] * targetAlpha * (1 - sourceAlpha)) / outputAlpha,
+  );
+  imageData.data[offset + 3] = Math.round(outputAlpha * 255);
 }
 
 function hueToRgb(p: number, q: number, t: number) {
@@ -125,6 +125,12 @@ function projectWorldToImageUv(worldPosition: THREE.Vector3, projectorMatrix: TH
   };
 }
 
+function createObjectMatrixDelta(group: THREE.Group, layer: Layer) {
+  group.updateMatrixWorld(true);
+  if (!layer.objectMatrixWorld) return new THREE.Matrix4();
+  return new THREE.Matrix4().fromArray(layer.objectMatrixWorld).multiply(group.matrixWorld.clone().invert());
+}
+
 async function yieldToMainThread() {
   await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
@@ -142,6 +148,8 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   const coverage = new Uint8Array(resolution * resolution);
   const projectorMatrix = buildProjectionMatrixBundle(input.layer.camera).projectorMatrix;
   const cameraPosition = new THREE.Vector3().fromArray(input.layer.camera.position);
+  const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
+  const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
   const warnings: string[] = [];
   let totalTriangles = 0;
   let processedTriangles = 0;
@@ -215,14 +223,17 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
             [w2.x, w2.y, w2.z],
           );
           const worldPosition = new THREE.Vector3(...worldTuple);
+          const captureWorldPosition = worldPosition.clone().applyMatrix4(objectMatrixDelta);
           const worldNormal = new THREE.Vector3(
             n0.x * barycentric.a + n1.x * barycentric.b + n2.x * barycentric.c,
             n0.y * barycentric.a + n1.y * barycentric.b + n2.y * barycentric.c,
             n0.z * barycentric.a + n1.z * barycentric.b + n2.z * barycentric.c,
-          ).normalize();
+          )
+            .applyMatrix3(objectNormalDelta)
+            .normalize();
 
           if (input.bakeInput.enableBackfaceCulling) {
-            const cameraToPoint = worldPosition.clone().sub(cameraPosition).normalize();
+            const cameraToPoint = captureWorldPosition.clone().sub(cameraPosition).normalize();
             if (worldNormal.dot(cameraToPoint) >= 0) {
               skippedPixels += 1;
               backfaceRejectedPixels += 1;
@@ -230,7 +241,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
             }
           }
 
-          const imageUv = projectWorldToImageUv(worldPosition, projectorMatrix);
+          const imageUv = projectWorldToImageUv(captureWorldPosition, projectorMatrix);
           if (!imageUv) {
             skippedPixels += 1;
             continue;
@@ -239,7 +250,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
           if (input.maskImage) {
             const maskSample = sampleImageNearest(input.maskImage, imageUv.u, imageUv.v);
-            const maskValue = Math.max(maskSample[3], maskSample[0], maskSample[1], maskSample[2]);
+            const maskValue = Math.max(maskSample[0], maskSample[1], maskSample[2]);
             if (maskValue < 24) {
               skippedPixels += 1;
               maskRejectedPixels += 1;

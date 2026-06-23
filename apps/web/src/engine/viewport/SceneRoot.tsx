@@ -64,6 +64,7 @@ function ImportedModel() {
 
     async function applyMaterials() {
       const selected = selectedObjectId === model.objectId;
+      model.group.updateMatrixWorld(true);
       const projectedMaterial =
         displayMode === 'pbr' && activeProjectedLayer?.camera
           ? await createProjectedLayerMaterial({
@@ -73,6 +74,8 @@ function ImportedModel() {
               depthUrl: activeProjectedLayer.depthUrl,
               camera: activeProjectedLayer.camera,
               objectId: model.objectId,
+              objectMatrixWorld: activeProjectedLayer.objectMatrixWorld,
+              currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
               opacity: activeProjectedLayer.opacity,
               visible: activeProjectedLayer.visible,
               depthTest: true,
