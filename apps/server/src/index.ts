@@ -66,6 +66,10 @@ async function handleWorkspaceRequest(
       workspaceDir: serverConfig.workspaceDir,
       workspaceVersion: '0.6.0',
       host: serverConfig.host,
+      features: {
+        atlasRemoteCallback: true,
+        browserHttpUuidFallback: true,
+      },
     });
     return;
   }

@@ -9,6 +9,7 @@ import { useToastStore } from '@/stores/toastStore';
 export function UserMenu({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loginStatus, setLoginStatus] = useState('');
   const t = useT();
   const language = useI18nStore((state) => state.language);
   const setLanguage = useI18nStore((state) => state.setLanguage);
@@ -21,15 +22,27 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
   async function handleLogin() {
     if (busy) return;
     setBusy(true);
+    setLoginStatus('正在启动飞书授权...');
     try {
       if (providerStatus?.devLoginEnabled && !providerStatus.feishuOAuthEnabled) {
         const result = await devLogin({ displayName: 'Liclick Dev User', email: 'dev@liclick.local' });
         setAuthenticated(result.user, 'dev-mock', providerStatus);
         return;
       }
-      const result = await runFeishuLoginFlow();
+      const result = await runFeishuLoginFlow({
+        onStatus: (message) => {
+          setLoginStatus(message);
+          pushToast({
+            tone: 'info',
+            title: '等待飞书授权',
+            description: message,
+            dedupeKey: 'auth-login-progress',
+          });
+        },
+      });
       if (result.user) {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+        setLoginStatus('');
         pushToast({
           tone: 'success',
           title: t('feishuLoginSuccess'),
@@ -40,6 +53,7 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
       }
       throw new Error(t('loginMissingUser'));
     } catch (error) {
+      setLoginStatus('');
       pushToast({
         tone: 'error',
         title: t('feishuLoginUnavailable'),
@@ -67,7 +81,8 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
         title={t('useFeishuLogin')}
       >
         <LogIn className={busy ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
-        {t('feishuLogin')}
+        {busy ? '等待授权' : t('feishuLogin')}
+        {busy && loginStatus && <span className="sr-only">{loginStatus}</span>}
       </button>
     );
   }

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import type { ReferenceImage } from '@/types/project';
+import { createId } from '@/utils/id';
 
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -96,7 +97,7 @@ export function ReferenceImagePicker({ compact = false, inputId }: ReferenceImag
         const url = await fileToDataUrl(file);
         const size = await getImageSize(url);
         return {
-          id: `reference-${crypto.randomUUID()}`,
+          id: createId('reference'),
           name: file.name.replace(/\.[^.]+$/, '') || `Reference ${index + 1}`,
           url,
           width: size.width,

@@ -7,6 +7,7 @@ import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import type { Capture } from '@/types/capture';
+import { createId } from '@/utils/id';
 import * as THREE from 'three';
 
 const maxCaptureSize = 2048;
@@ -38,7 +39,7 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   ]);
 
   const capture: Capture = {
-    id: crypto.randomUUID(),
+    id: createId('capture'),
     objectId: request.objectId,
     camera: serializeCamera(viewport.camera, size / size, viewport.controls?.target ?? new THREE.Vector3()),
     width: size,

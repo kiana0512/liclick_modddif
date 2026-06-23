@@ -172,6 +172,31 @@ User projects, folders, imported models, references, generated images, layers, c
 
 Do not delete `/var/lib/liclick-3d-texture/workspace` during updates.
 
+The Atlas CLI prints a localhost callback URL during interactive login. On A100 this localhost belongs to the server, not the user's browser, so Liclick rewrites that callback through the public app path:
+
+```text
+http://10.3.2.59:46001/liclick/texture/api/auth/atlas-callback/<loginId>/callback
+```
+
+The backend then forwards the callback to the server-local Atlas listener. If login fails, the page should show the failure reason instead of silently doing nothing.
+
+To verify the server is running the new callback-capable backend:
+
+```bash
+curl -fsS http://127.0.0.1:4517/api/health
+curl -fsS http://127.0.0.1:46001/liclick/texture/_liclick_mount_health
+curl -i http://127.0.0.1:46001/liclick/texture/api/auth/provider-status
+sudo journalctl -u liclick-3d-texture.service -n 120 --no-pager
+```
+
+If the browser console shows `crypto.randomUUID is not a function`, the server is still serving an old frontend bundle. Run `git pull` and `scripts/linux-start.sh` again, then hard refresh the browser.
+
+The health response from the new backend includes:
+
+```json
+{"features":{"atlasRemoteCallback":true,"browserHttpUuidFallback":true}}
+```
+
 ## Runtime Paths
 
 - Deployed app: `/opt/liclick-3d-texture`

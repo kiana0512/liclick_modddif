@@ -36,6 +36,11 @@ type ProjectsPageProps = {
 
 type SortMode = 'updated-desc' | 'created-desc' | 'created-asc' | 'name-asc';
 type FolderFilter = string | null | undefined;
+type PageNotice = {
+  tone: 'info' | 'warning' | 'error';
+  title: string;
+  description?: string;
+};
 
 function projectFromSummary(summary: ProjectSummary): Project {
   return {
@@ -236,6 +241,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>('updated-desc');
   const [serverState, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [pageNotice, setPageNotice] = useState<PageNotice | undefined>();
   const [activeFolderId, setActiveFolderId] = useState<FolderFilter>(undefined);
   const [nameDialog, setNameDialog] = useState<
     | { type: 'new-folder' }
@@ -272,6 +278,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       const [projectResult, folderResult] = await Promise.all([listProjects(), listFolders()]);
       setFolders(folderResult.folders);
       setProjects(mergeProjectsWithMock(projectResult.projects.map(projectFromSummary)));
+      setPageNotice(undefined);
     } catch (error) {
       const isAuthRequired =
         error instanceof WorkspaceApiError && error.status === 401;
@@ -279,6 +286,11 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       if (isAuthRequired) {
         setFolders([]);
         setProjects(mergeProjectsWithMock([]));
+        setPageNotice({
+          tone: 'warning',
+          title: '需要飞书登录',
+          description: '当前服务器要求登录后才能创建、导入、保存和查看个人工程数据。请点击右上角“飞书登录”。',
+        });
         pushToast({
           tone: 'warning',
           title: '需要飞书登录',
@@ -288,6 +300,11 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         return;
       }
       if (showOfflineToast && !isAuthRequired) {
+        setPageNotice({
+          tone: 'error',
+          title: '本地工作区服务不可用',
+          description: t('workspaceOfflineHelp'),
+        });
         pushToast({
           tone: 'warning',
           title: t('workspaceOfflineToast'),
@@ -310,6 +327,11 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
     } catch (error) {
       if (error instanceof WorkspaceApiError && error.status === 401) {
         setServerState('online');
+        setPageNotice({
+          tone: 'warning',
+          title: '需要飞书登录',
+          description: '正在启动飞书/IDaaS 授权；完成后会自动重试刚才的操作。',
+        });
         pushToast({
           tone: 'warning',
           title: '需要飞书登录',
@@ -318,19 +340,35 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         });
         try {
           const result = await runFeishuLoginFlow({
-            onStatus: (message) =>
+            onStatus: (message) => {
+              setPageNotice({
+                tone: 'info',
+                title: '等待飞书授权',
+                description: message,
+              });
               pushToast({
                 tone: 'info',
                 title: '等待飞书授权',
                 description: message,
                 dedupeKey: 'workspace-auth-waiting',
-              }),
+              });
+            },
           });
           if (!result.user) throw new Error('登录服务没有返回用户信息。');
           setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+          setPageNotice({
+            tone: 'info',
+            title: '飞书登录成功',
+            description: '正在恢复你的工程数据并重试刚才的操作。',
+          });
           await action();
           await refreshWorkspace();
         } catch (loginError) {
+          setPageNotice({
+            tone: 'error',
+            title: '飞书登录未完成',
+            description: loginError instanceof Error ? loginError.message : '用户取消授权或登录失败。',
+          });
           pushToast({
             tone: 'error',
             title: '飞书登录未完成',
@@ -341,6 +379,11 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         return;
       }
       setServerState('offline');
+      setPageNotice({
+        tone: 'error',
+        title: t('workspaceActionFailed'),
+        description: error instanceof Error ? error.message : t('workspaceOfflineHelp'),
+      });
       pushToast({
         tone: 'error',
         title: t('workspaceActionFailed'),
@@ -488,6 +531,21 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             <UserMenu onLogout={onLogout} />
           </div>
         </div>
+
+        {pageNotice && (
+          <div
+            className={`mt-5 rounded-md border px-4 py-3 text-sm leading-6 ${
+              pageNotice.tone === 'error'
+                ? 'border-red-400/32 bg-red-500/12 text-red-50'
+                : pageNotice.tone === 'warning'
+                  ? 'border-amber-300/32 bg-amber-400/12 text-amber-50'
+                  : 'border-sky-300/30 bg-sky-400/12 text-sky-50'
+            }`}
+          >
+            <div className="font-semibold">{pageNotice.title}</div>
+            {pageNotice.description && <div className="mt-1 text-white/72">{pageNotice.description}</div>}
+          </div>
+        )}
 
         <section className="mt-9">
           <h2 className="mb-4 text-xl font-medium tracking-normal text-white/90">{t('folders')}</h2>

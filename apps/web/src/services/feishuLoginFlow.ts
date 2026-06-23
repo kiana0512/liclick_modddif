@@ -15,6 +15,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
   const pollIntervalMs = options.pollIntervalMs ?? 2500;
   const started = await startFeishuLogin();
   if (started.user) return started;
+  options.onStatus?.(started.message ?? '飞书/IDaaS 授权任务已启动，正在等待授权窗口。');
 
   let loginId = started.loginId;
   let openedUrl = '';
@@ -25,6 +26,8 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
       throw new Error('浏览器拦截了飞书/IDaaS 授权窗口，请允许弹窗后重新点击登录。');
     }
     options.onStatus?.('授权窗口已打开，请在新窗口里完成飞书/IDaaS 授权。');
+  } else {
+    options.onStatus?.('服务器正在等待 Atlas 返回授权链接，请稍等。');
   }
   if (!loginId) {
     throw new Error(started.message ?? '登录服务没有返回用户信息，请确认 Atlas/莉刻登录已完成。');

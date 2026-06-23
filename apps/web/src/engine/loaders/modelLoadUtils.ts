@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { ModelLoadResult, SupportedImportFormat } from './modelImportTypes';
 import { normalizeImportedModel, type NormalizeImportedModelOptions } from '@/engine/scene/normalizeImportedModel';
+import { createId } from '@/utils/id';
 
 export function summarizeLoadedGroup(input: {
   group: THREE.Group;
@@ -48,7 +49,7 @@ export function summarizeLoadedGroup(input: {
     console.warn('[Liclick 3D Texture] Imported model has no UV set.');
   }
 
-  const objectId = crypto.randomUUID();
+  const objectId = createId('object');
   input.group.name = input.fileName;
   input.group.userData.liclickObjectId = objectId;
   input.group.traverse((child) => {

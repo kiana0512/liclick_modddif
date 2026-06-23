@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createId } from '@/utils/id';
 
 export type ToastTone = 'info' | 'success' | 'warning' | 'error';
 
@@ -19,7 +20,7 @@ type ToastStore = {
 export const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
   pushToast: (toast) => {
-    const id = crypto.randomUUID();
+    const id = createId('toast');
     set((state) => {
       if (
         toast.dedupeKey &&

@@ -26,6 +26,7 @@ import { useToastStore } from '@/stores/toastStore';
 import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
+import { createId } from '@/utils/id';
 import {
   isWorkspaceAssetUrl,
   saveDataUrlAsset,
@@ -37,6 +38,10 @@ import {
 
 type GenerateTab = 'single' | 'multiview';
 type GenerateMode = 'visible' | 'upscale';
+type GenerateNotice = {
+  tone: 'info' | 'warning' | 'error';
+  message: string;
+};
 
 const resolutionToSize = {
   '1K': 1024,
@@ -78,6 +83,7 @@ export function GeneratePanel() {
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('single');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [generateNotice, setGenerateNotice] = useState<GenerateNotice | undefined>();
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
   );
@@ -251,6 +257,10 @@ export function GeneratePanel() {
 
   async function requireAiLogin() {
     if (authStatus === 'authenticated') return true;
+    setGenerateNotice({
+      tone: 'warning',
+      message: 'AI 生图需要先完成飞书/IDaaS 授权。正在启动登录流程...',
+    });
     pushToast({
       tone: 'warning',
       title: '需要飞书登录',
@@ -264,20 +274,30 @@ export function GeneratePanel() {
         return true;
       }
       const result = await runFeishuLoginFlow({
-        onStatus: (message) =>
+        onStatus: (message) => {
+          setGenerateNotice({ tone: 'info', message });
           pushToast({
             tone: 'info',
             title: '等待飞书授权',
             description: message,
             dedupeKey: 'ai-login-waiting',
-          }),
+          });
+        },
       });
       if (result.user) {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+        setGenerateNotice({
+          tone: 'info',
+          message: '飞书授权已完成，正在继续提交莉刻生图任务。',
+        });
         return true;
       }
       throw new Error('登录服务没有返回用户信息，请确认 Atlas/莉刻登录已完成。');
     } catch (error) {
+      setGenerateNotice({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Could not start login.',
+      });
       pushToast({
         tone: 'error',
         title: '飞书登录不可用',
@@ -305,6 +325,10 @@ export function GeneratePanel() {
     let pendingGeneration: Generation | undefined;
     try {
       if (submitLockRef.current || previewIsGenerating) {
+        setGenerateNotice({
+          tone: 'warning',
+          message: '当前工程已有莉刻生图任务在运行，完成前不能再次提交。',
+        });
         pushToast({
           tone: 'warning',
           title: '已有生图任务在运行',
@@ -315,6 +339,10 @@ export function GeneratePanel() {
       }
       submitLockRef.current = true;
       if (!prompt.trim()) {
+        setGenerateNotice({
+          tone: 'warning',
+          message: '请输入 Prompt 后再生成。',
+        });
         pushToast({
           tone: 'warning',
           title: '请输入描述',
@@ -324,7 +352,7 @@ export function GeneratePanel() {
         return;
       }
       if (!(await requireAiLogin())) return;
-      const generationId = `liclick-image-${crypto.randomUUID()}`;
+      const generationId = createId('liclick-image');
       pendingGeneration = {
         id: generationId,
         mode: 'single',
@@ -344,6 +372,10 @@ export function GeneratePanel() {
       };
       start(pendingGeneration);
       addProjectGeneration(pendingGeneration);
+      setGenerateNotice({
+        tone: 'info',
+        message: '正在捕获当前视角并提交莉刻生图任务，请等待。',
+      });
       const capture = await ensureCapture();
       const object = objects.find((item) => item.id === capture.objectId);
       pendingGeneration = {
@@ -377,12 +409,17 @@ export function GeneratePanel() {
       addGeneration(generation);
       addProjectGeneration(generation);
       if (generation.status === 'succeeded' && generation.resultUrl) {
+        setGenerateNotice(undefined);
         pushToast({
           tone: 'success',
           title: '图片生成完成',
           description: '莉刻返回的结果已放入预览区。',
         });
       } else {
+        setGenerateNotice({
+          tone: 'info',
+          message: '莉刻任务已提交，正在按任务 ID 轮询结果。完成前不能再次提交。',
+        });
         pushToast({
           tone: 'info',
           title: '莉刻任务已提交',
@@ -392,6 +429,10 @@ export function GeneratePanel() {
       }
     } catch (error) {
       console.error('[Liclick 3D Texture] Generate failed:', error);
+      setGenerateNotice({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Could not generate a texture image.',
+      });
       if (pendingGeneration) {
         const failedGeneration: Generation = {
           ...pendingGeneration,
@@ -485,7 +526,7 @@ export function GeneratePanel() {
   async function handleAddGenerationAsReference() {
     if (!currentGeneration?.resultUrl) return;
     const size = await getImageSize(currentGeneration.resultUrl);
-    const referenceId = `reference-${crypto.randomUUID()}`;
+    const referenceId = createId('reference');
     const name = currentGeneration.prompt.trim().slice(0, 48) || 'Generated reference';
     let reference: ReferenceImage = {
       id: referenceId,
@@ -660,7 +701,7 @@ export function GeneratePanel() {
                   </label>
                 </div>
                 <ReferenceImagePicker compact inputId="generate-reference-upload" />
-              </section>
+          </section>
             </>
           ) : (
             <label className="grid gap-2 text-sm font-semibold text-white/88">
@@ -678,6 +719,20 @@ export function GeneratePanel() {
                 className="w-full accent-liclick-orange"
               />
             </label>
+          )}
+
+          {generateNotice && (
+            <div
+              className={`rounded-md border px-2.5 py-2 text-xs leading-5 ${
+                generateNotice.tone === 'error'
+                  ? 'border-red-400/30 bg-red-500/12 text-red-50'
+                  : generateNotice.tone === 'warning'
+                    ? 'border-amber-300/30 bg-amber-400/12 text-amber-50'
+                    : 'border-sky-300/28 bg-sky-400/12 text-sky-50'
+              }`}
+            >
+              {generateNotice.message}
+            </div>
           )}
 
           <Button

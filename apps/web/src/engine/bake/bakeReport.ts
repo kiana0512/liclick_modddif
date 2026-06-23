@@ -1,8 +1,9 @@
 import type { BakeReport } from './uvBakeTypes';
+import { createId } from '@/utils/id';
 
 export function createBakeReport(input: Omit<BakeReport, 'id' | 'durationMs'> & { startedAt: number }): BakeReport {
   return {
-    id: crypto.randomUUID(),
+    id: createId('bake-report'),
     durationMs: Math.max(0, Math.round(performance.now() - input.startedAt)),
     objectId: input.objectId,
     layerId: input.layerId,

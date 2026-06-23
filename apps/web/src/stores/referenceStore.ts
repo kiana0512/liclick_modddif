@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { ReferenceImage } from '@/types/project';
+import { createId } from '@/utils/id';
 
 const legacyMockReferenceIds = new Set(['ref-marble-01', 'ref-fabric-01']);
 
@@ -65,7 +66,7 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
       if (!reference) return state;
       const duplicated = {
         ...reference,
-        id: `reference-${crypto.randomUUID()}`,
+        id: createId('reference'),
         name: `${reference.name} copy`,
         isPrimary: true,
       };

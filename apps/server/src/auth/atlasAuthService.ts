@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -28,6 +29,7 @@ type PublicAtlasStatus = {
 type PendingAtlasLogin = {
   id: string;
   homeDir: string;
+  callbackPort?: number;
   child?: ChildProcessWithoutNullStreams;
   startedAt: number;
   stdout: string;
@@ -87,7 +89,14 @@ async function createAtlasHomeDir() {
 }
 
 function trimOutput(text: string) {
-  return text.trim().replace(/\s+/g, ' ').slice(0, 1000);
+  return sanitizeAtlasOutput(text).trim().replace(/\s+/g, ' ').slice(0, 1600);
+}
+
+function sanitizeAtlasOutput(text: string) {
+  return text
+    .replace(/([?&](?:id_token|access_token|refresh_token|token)=)[^&\s"'<>]+/gi, '$1[redacted]')
+    .replace(/(authorization:\s*bearer\s+)[^\s"'<>]+/gi, '$1[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted-jwt]');
 }
 
 export function parseJsonFromOutput(text: string) {
@@ -169,6 +178,75 @@ function prunePendingAtlasLogins() {
 
 function extractFirstUrl(text: string) {
   return text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
+}
+
+function publicWorkspaceBase() {
+  const publicUrl = new URL(serverConfig.publicWorkspaceUrl);
+  const pathname = serverConfig.publicPath || publicUrl.pathname;
+  publicUrl.pathname = `/${pathname.split('/').filter(Boolean).join('/')}`;
+  publicUrl.search = '';
+  publicUrl.hash = '';
+  return publicUrl.toString().replace(/\/$/, '');
+}
+
+function isLoopbackHost(hostname: string) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+}
+
+function shouldRewriteAtlasCallbackForRemoteBrowser() {
+  if (process.env.ATLAS_REMOTE_CALLBACK_PROXY === '1') return true;
+  if (process.env.ATLAS_REMOTE_CALLBACK_PROXY === '0') return false;
+  try {
+    return !isLoopbackHost(new URL(serverConfig.publicWorkspaceUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function publicCallbackUrl(loginId: string) {
+  return `${publicWorkspaceBase()}/api/auth/atlas-callback/${encodeURIComponent(loginId)}/callback`;
+}
+
+function rewriteLocalCallbackUrl(value: string, login: PendingAtlasLogin) {
+  if (!shouldRewriteAtlasCallbackForRemoteBrowser()) return value;
+  try {
+    const url = new URL(value);
+    if ((url.hostname === 'localhost' || url.hostname === '127.0.0.1') && url.pathname === '/callback') {
+      login.callbackPort = Number(url.port || process.env.ATLAS_CALLBACK_PORT || 20265);
+      const rewritten = new URL(publicCallbackUrl(login.id));
+      rewritten.search = url.search;
+      return rewritten.toString();
+    }
+  } catch {
+    return value;
+  }
+  return value;
+}
+
+function rewriteAuthUrlForRemoteBrowser(value: string | undefined, login: PendingAtlasLogin) {
+  if (!value) return undefined;
+  let rewritten = rewriteLocalCallbackUrl(value, login);
+  try {
+    const url = new URL(rewritten);
+    for (const [key, rawValue] of url.searchParams.entries()) {
+      let decoded = rawValue;
+      try {
+        decoded = decodeURIComponent(rawValue);
+      } catch {
+        decoded = rawValue;
+      }
+      const nextValue = rewriteLocalCallbackUrl(decoded, login);
+      if (nextValue !== decoded) url.searchParams.set(key, nextValue);
+    }
+    rewritten = url.toString();
+  } catch {
+    // Keep the original URL if Atlas prints text that only looks like a URL fragment.
+  }
+  return rewritten;
+}
+
+function loginMessage(login: PendingAtlasLogin, fallback: string) {
+  return trimOutput(`${login.stderr}\n${login.stdout}`) || fallback;
 }
 
 function startAtlasLoginProcess() {
@@ -313,11 +391,12 @@ export async function startAtlasLogin(request: IncomingMessage, response: Server
   }
 
   const output = `${login.stdout}\n${login.stderr}`;
+  const redirectUrl = rewriteAuthUrlForRemoteBrowser(extractFirstUrl(output), login);
   return {
     loginId: login.id,
-    redirectUrl: extractFirstUrl(output),
+    redirectUrl,
     status,
-    message: trimOutput(output) || '飞书/IDaaS 登录任务已启动，请完成浏览器授权后等待页面自动同步。',
+    message: loginMessage(login, '飞书/IDaaS 登录任务已启动，请完成浏览器授权后等待页面自动同步。'),
   };
 }
 
@@ -335,14 +414,58 @@ export async function pollAtlasLogin(loginId: string, request: IncomingMessage, 
     return { done: true, user, status };
   }
   if (login.closed && login.closeCode !== 0) {
-    throw new Error(trimOutput(login.stderr || login.stdout || '飞书/IDaaS 登录任务已结束但没有拿到授权。'));
+    pendingAtlasLogins.delete(login.id);
+    throw new Error(loginMessage(login, `飞书/IDaaS 登录任务已结束但没有拿到授权，退出码 ${login.closeCode ?? 'unknown'}。`));
   }
   return {
     done: false,
     loginId,
-    redirectUrl: extractFirstUrl(`${login.stdout}\n${login.stderr}`),
+    redirectUrl: rewriteAuthUrlForRemoteBrowser(extractFirstUrl(`${login.stdout}\n${login.stderr}`), login),
     status,
-    message: trimOutput(login.stderr || login.stdout || '等待飞书/IDaaS 授权完成。'),
+    message: loginMessage(login, '等待飞书/IDaaS 授权完成。'),
+  };
+}
+
+function proxyLocalCallback(port: number, originalUrl: URL) {
+  return new Promise<{ statusCode: number; contentType: string; body: string }>((resolve, reject) => {
+    const targetPath = `/callback${originalUrl.search}`;
+    const request = http.get(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: targetPath,
+        timeout: 15_000,
+      },
+      (callbackResponse) => {
+        const chunks: Buffer[] = [];
+        callbackResponse.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        callbackResponse.on('end', () => {
+          resolve({
+            statusCode: callbackResponse.statusCode ?? 200,
+            contentType: String(callbackResponse.headers['content-type'] ?? 'text/html; charset=utf-8'),
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      },
+    );
+    request.on('timeout', () => {
+      request.destroy(new Error('Atlas local callback timed out.'));
+    });
+    request.on('error', reject);
+  });
+}
+
+export async function handleAtlasLoginCallback(loginId: string, url: URL) {
+  prunePendingAtlasLogins();
+  const login = pendingAtlasLogins.get(loginId);
+  if (!login) throw new Error('登录任务已过期，请重新点击飞书登录。');
+  const callbackPort = login.callbackPort ?? Number(process.env.ATLAS_CALLBACK_PORT ?? 20265);
+  const result = await proxyLocalCallback(callbackPort, url);
+  return {
+    ...result,
+    body:
+      result.body ||
+      '<!doctype html><meta charset="utf-8"><title>Liclick 登录完成</title><body style="font-family:sans-serif;padding:32px">飞书/IDaaS 授权已返回服务器，请回到 Liclick 页面。</body>',
   };
 }
 

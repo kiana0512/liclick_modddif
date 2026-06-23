@@ -5,6 +5,7 @@ import type { BakeProjectedLayerInput, BakeProjectedLayerResult, BakedTexture } 
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
+import { createId } from '@/utils/id';
 
 export async function bakeProjectedLayerToTexture(
   input: BakeProjectedLayerInput,
@@ -57,7 +58,7 @@ export async function bakeProjectedLayerToTexture(
   });
 
   const bakedTexture: BakedTexture = {
-    id: crypto.randomUUID(),
+    id: createId('baked-texture'),
     objectId: input.objectId,
     sourceLayerId: input.layerId,
     imageUrl,

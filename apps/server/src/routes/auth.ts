@@ -1,11 +1,26 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 import { optionalAuth } from '../auth/authMiddleware.js';
-import { getAtlasStatus, pollAtlasLogin, startAtlasLogin } from '../auth/atlasAuthService.js';
+import {
+  getAtlasStatus,
+  handleAtlasLoginCallback,
+  pollAtlasLogin,
+  startAtlasLogin,
+} from '../auth/atlasAuthService.js';
 import { toPublicUser } from '../auth/currentUser.js';
 import { loginDevUser } from '../auth/devMockAuthService.js';
 import { clearSessionCookie, getSessionCookie, revokeSession } from '../auth/sessionService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => {
+    if (char === '&') return '&amp;';
+    if (char === '<') return '&lt;';
+    if (char === '>') return '&gt;';
+    if (char === '"') return '&quot;';
+    return '&#39;';
+  });
+}
 
 export async function handleAuthRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
   const segments = getPathSegments(url);
@@ -42,6 +57,27 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
       missingConfigKeys: [],
       atlas: atlasStatus,
     });
+    return true;
+  }
+
+  if (request.method === 'GET' && route === 'atlas-callback' && segments[3] && segments[4] === 'callback') {
+    try {
+      const result = await handleAtlasLoginCallback(segments[3], url);
+      response.writeHead(result.statusCode, {
+        'content-type': result.contentType,
+        'cache-control': 'no-store',
+      });
+      response.end(result.body);
+    } catch (error) {
+      response.writeHead(502, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+      });
+      const message = error instanceof Error ? error.message : '飞书/IDaaS 授权回调转发失败。';
+      response.end(
+        `<!doctype html><meta charset="utf-8"><title>Liclick 登录失败</title><body style="font-family:sans-serif;padding:32px"><h2>飞书/IDaaS 登录失败</h2><p>${escapeHtml(message)}</p><p>请关闭此窗口，回到 Liclick 页面重新点击飞书登录。</p></body>`,
+      );
+    }
     return true;
   }
 
