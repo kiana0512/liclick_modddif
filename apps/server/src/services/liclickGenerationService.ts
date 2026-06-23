@@ -180,6 +180,15 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
   return { model, extraParams };
 }
 
+function buildSubmissionPrompt(input: GenerateImageInput, model: string) {
+  const prompt = input.prompt.trim();
+  if (prompt) return prompt;
+  if (model === 'nano_banana_2' || model === 'nano_banana_pro') {
+    return '生成一张高质量的参考图。';
+  }
+  return prompt;
+}
+
 async function withTempDir<T>(fn: (dir: string) => Promise<T>) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'liclick-generate-'));
   try {
@@ -256,6 +265,7 @@ export async function submitLiclickImageJob(
       references.map((reference) => uploadReference(reference, tempDir, atlasContext)),
     );
     const { model, extraParams } = buildExtraParams(input, uploadedReferences);
+    const prompt = buildSubmissionPrompt(input, model);
     const submit = await runAtlas(
       [
         'gateway',
@@ -266,7 +276,7 @@ export async function submitLiclickImageJob(
         'generate_image',
         '--args',
         JSON.stringify({
-          prompt: input.prompt.trim(),
+          prompt,
           model,
           extra_params: extraParams,
         }),

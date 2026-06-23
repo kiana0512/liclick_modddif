@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
-import { bakeProjectedLayerToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { captureCurrentView } from '@/engine/capture/captureCurrentView';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
@@ -73,12 +73,35 @@ const defaultImageGenerationSettings = {
   upscaleStrength: 0,
 };
 
+const checkerBackgroundStyle = {
+  backgroundColor: '#d8d8d8',
+  backgroundImage:
+    'linear-gradient(45deg, #a7a7a7 25%, transparent 25%), linear-gradient(-45deg, #a7a7a7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #a7a7a7 75%), linear-gradient(-45deg, transparent 75%, #a7a7a7 75%)',
+  backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0',
+  backgroundSize: '16px 16px',
+};
+
 const textureMapDefaultPrompt =
-  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。不要改变模型形状、朝向、透视、比例、裁切和可见区域。第二张参考图只提供材质纹理、颜色、粗糙度和细节风格，禁止复制第二张参考图的多视角排版、背景、构图或物体姿态。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。不要生成地面网格、场景背景、文字、边框、拼图、多视角图或额外物体。';
+  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质纹理、颜色、粗糙度和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。';
 
 function buildTextureMapPrompt(userPrompt: string) {
   const trimmedPrompt = userPrompt.trim();
   return trimmedPrompt ? `${textureMapDefaultPrompt}\n\n用户补充材质要求：${trimmedPrompt}` : textureMapDefaultPrompt;
+}
+
+function buildLiclickPrompt(userPrompt: string, model: LiclickImageModel) {
+  const trimmedPrompt = userPrompt.trim();
+  if (trimmedPrompt) return trimmedPrompt;
+  if (model === 'nano_banana_2' || model === 'nano_banana_pro') return '生成一张高质量的参考图。';
+  return '';
+}
+
+function isTextureMapGeneration(generation: Generation) {
+  return generation.metadata.workflow === 'texture-map';
+}
+
+function isRunningGeneration(generation?: Generation) {
+  return Boolean(generation && !generation.resultUrl && (generation.status === 'queued' || generation.status === 'running'));
 }
 
 function getImageSize(url: string) {
@@ -123,8 +146,7 @@ export function GeneratePanel() {
   const references = useReferenceStore((state) => state.references);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const addReferences = useReferenceStore((state) => state.addReferences);
-  const { generations, currentGeneration, lastCapture, isGenerating, start, finish, addGeneration, setLastCapture } =
-    useGenerationStore();
+  const { generations, lastCapture, start, finish, addGeneration, setLastCapture } = useGenerationStore();
   const addProjectGeneration = useProjectStore((state) => state.addGeneration);
   const setProjectLayers = useProjectStore((state) => state.setProjectLayers);
   const setProjectReferences = useProjectStore((state) => state.setProjectReferences);
@@ -139,20 +161,15 @@ export function GeneratePanel() {
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const submitLockRef = useRef(false);
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
-  const activeProjectGeneration = generations.find((generation) => {
+  const isTextureMapTab = tab === 'multiview';
+  const tabGenerations = generations.filter((generation) => {
     const projectId = typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
-    return belongsToProject && !generation.resultUrl && (generation.status === 'queued' || generation.status === 'running');
+    return belongsToProject && isTextureMapGeneration(generation) === isTextureMapTab;
   });
-  const previewGeneration = activeProjectGeneration ?? currentGeneration;
-  const previewIsGenerating =
-    isGenerating ||
-    Boolean(activeProjectGeneration) ||
-    Boolean(
-      currentGeneration &&
-        !currentGeneration.resultUrl &&
-        (currentGeneration.status === 'queued' || currentGeneration.status === 'running'),
-    );
+  const activeProjectGeneration = tabGenerations.find((generation) => isRunningGeneration(generation));
+  const previewGeneration = activeProjectGeneration ?? tabGenerations[0];
+  const previewIsGenerating = isRunningGeneration(previewGeneration);
   const previewFailed = previewGeneration?.status === 'failed';
 
   useEffect(() => {
@@ -382,7 +399,7 @@ export function GeneratePanel() {
       }
       submitLockRef.current = true;
       if (!(await requireAiLogin())) return;
-      const submittedPrompt = prompt.trim();
+      const submittedPrompt = buildLiclickPrompt(prompt, imageModel);
       const generationId = createId('liclick-image');
       const objectMatrixWorld = getImportedModelMatrixWorld();
       pendingGeneration = {
@@ -456,16 +473,7 @@ export function GeneratePanel() {
           description: '莉刻返回的结果已放入预览区。',
         });
       } else {
-        setGenerateNotice({
-          tone: 'info',
-          message: '莉刻任务已提交，正在等待生成结果。',
-        });
-        pushToast({
-          tone: 'info',
-          title: '莉刻任务已提交',
-          description: '正在按任务 ID 轮询结果，完成前请等待。',
-          dedupeKey: `generation-submitted:${alignedGeneration.metadata.taskId ?? alignedGeneration.id}`,
-        });
+        setGenerateNotice(undefined);
       }
     } catch (error) {
       console.error('[Liclick 3D Texture] Generate failed:', error);
@@ -555,7 +563,7 @@ export function GeneratePanel() {
           modelViewReferenceId: modelViewReference.id,
           resolution,
           startedAt: new Date().toISOString(),
-          alphaMode: 'pending-geometry-mask',
+          alphaMode: 'pending-guided-foreground-matte',
         },
       };
       start(pendingGeneration);
@@ -590,7 +598,7 @@ export function GeneratePanel() {
           objectMatrixWorld,
           materialReferenceId: materialReference.id,
           modelViewReferenceId: modelViewReference.id,
-          alphaMode: 'pending-geometry-mask',
+          alphaMode: 'pending-guided-foreground-matte',
         },
       };
       addGeneration(textureMapGeneration);
@@ -603,10 +611,7 @@ export function GeneratePanel() {
           description: t('textureMapGeneratedHelp'),
         });
       } else {
-        setGenerateNotice({
-          tone: 'info',
-          message: '莉刻任务已提交，正在等待生成结果。',
-        });
+        setGenerateNotice(undefined);
       }
     } catch (error) {
       console.error('[Liclick 3D Texture] Texture map generation failed:', error);
@@ -674,14 +679,12 @@ export function GeneratePanel() {
     });
   }
 
-  async function autoBakeProjectedLayer(layer: Layer) {
+  async function autoBakeVisibleProjectedLayers(layer: Layer) {
     const model = useSceneStore.getState().importedModel;
     if (!model || !layer.camera) return undefined;
-    const result = await bakeProjectedLayerToTexture({
+    const result = await bakeVisibleProjectedLayersToTexture({
       objectId: layer.objectId ?? model.objectId,
-      layerId: layer.id,
       resolution: 2048,
-      opacity: layer.opacity,
       enableBackfaceCulling: true,
       enableDilation: false,
       dilationPixels: 0,
@@ -714,28 +717,27 @@ export function GeneratePanel() {
   }
 
   async function handleAddProjectedLayer() {
-    if (!currentGeneration?.resultUrl) return;
+    if (!previewGeneration?.resultUrl || !isTextureMapGeneration(previewGeneration)) return;
     const generationCapture =
-      lastCapture?.id === currentGeneration.captureId
+      lastCapture?.id === previewGeneration.captureId
         ? lastCapture
-        : currentProject?.captures.find((capture) => capture.id === currentGeneration.captureId) ?? lastCapture;
-    const isTextureMapGeneration = currentGeneration.metadata.workflow === 'texture-map';
+        : currentProject?.captures.find((capture) => capture.id === previewGeneration.captureId) ?? lastCapture;
     const layerGeneration =
-      isTextureMapGeneration && generationCapture?.maskUrl
+      generationCapture?.maskUrl
         ? {
-            ...currentGeneration,
+            ...previewGeneration,
             resultUrl: await createMaskedProjectedImage(
-              currentGeneration.resultUrl.startsWith('http')
-                ? await urlToDataUrl(currentGeneration.resultUrl)
-                : currentGeneration.resultUrl,
+              previewGeneration.resultUrl.startsWith('http')
+                ? await urlToDataUrl(previewGeneration.resultUrl)
+                : previewGeneration.resultUrl,
               generationCapture.maskUrl,
             ),
             metadata: {
-              ...currentGeneration.metadata,
-              alphaMode: 'geometry-mask',
+              ...previewGeneration.metadata,
+              alphaMode: 'guided-foreground-matte',
             },
           }
-        : currentGeneration;
+        : previewGeneration;
     let layer = addProjectedLayerFromGeneration(layerGeneration, generationCapture, selectedObjectId);
     let nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
@@ -759,11 +761,11 @@ export function GeneratePanel() {
     }
     pushToast({
       tone: 'success',
-      title: 'Projected layer added',
-      description: `${layer.name} is now previewed on the model.`,
+      title: '投影图层已添加',
+      description: `${layer.name} 已按生成时视角投射到模型。`,
     });
     try {
-      const bakeResult = await autoBakeProjectedLayer(layer);
+      const bakeResult = await autoBakeVisibleProjectedLayers(layer);
       if (bakeResult) {
         pushToast({
           tone: 'success',
@@ -784,14 +786,14 @@ export function GeneratePanel() {
   }
 
   async function handleAddGenerationAsReference() {
-    if (!currentGeneration?.resultUrl) return;
-    const size = await getImageSize(currentGeneration.resultUrl);
+    if (!previewGeneration?.resultUrl) return;
+    const size = await getImageSize(previewGeneration.resultUrl);
     const referenceId = createId('reference');
-    const name = currentGeneration.prompt.trim().slice(0, 48) || 'Generated reference';
+    const name = previewGeneration.prompt.trim().slice(0, 48) || 'Generated reference';
     let reference: ReferenceImage = {
       id: referenceId,
       name,
-      url: currentGeneration.resultUrl,
+      url: previewGeneration.resultUrl,
       width: size.width,
       height: size.height,
       isPrimary: true,
@@ -838,20 +840,21 @@ export function GeneratePanel() {
       />
       <div className="overflow-hidden rounded-md border border-white/10 bg-black/24">
         <div className="relative h-[240px] overflow-hidden bg-[#1b1b1b]">
-          {currentGeneration?.resultUrl ? (
+          {previewGeneration?.resultUrl ? (
             <button
               type="button"
               className="h-full w-full cursor-zoom-in"
               onClick={() => setPreviewImageOpen(true)}
               aria-label={t('view')}
               title={t('view')}
+              style={checkerBackgroundStyle}
             >
-              <img src={currentGeneration.resultUrl} alt="" className="h-full w-full object-contain" />
+              <img src={previewGeneration.resultUrl} alt="" className="h-full w-full object-contain" />
             </button>
           ) : (
             <div className="h-full w-full bg-[#1b1b1b]" />
           )}
-          {currentGeneration?.resultUrl && (
+          {previewGeneration?.resultUrl && (
             <div className="absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 bg-black/68 p-1 shadow-xl backdrop-blur-sm">
               <button
                 type="button"
@@ -862,15 +865,17 @@ export function GeneratePanel() {
               >
                 <ImagePlus className="h-4 w-4" />
               </button>
-              <button
-                type="button"
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
-                title={t('addAsProjectedLayer')}
-                aria-label={t('addAsProjectedLayer')}
-                onClick={handleAddProjectedLayer}
-              >
-                <Layers className="h-4 w-4" />
-              </button>
+              {isTextureMapGeneration(previewGeneration) && (
+                <button
+                  type="button"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
+                  title={t('addAsProjectedLayer')}
+                  aria-label={t('addAsProjectedLayer')}
+                  onClick={handleAddProjectedLayer}
+                >
+                  <Layers className="h-4 w-4" />
+                </button>
+              )}
               <button
                 type="button"
                 className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
@@ -893,8 +898,8 @@ export function GeneratePanel() {
           {previewFailed && !previewIsGenerating && (
             <div className="absolute inset-0 grid place-items-center bg-rose-950/28 px-4 text-center text-white">
               <div className="grid gap-1">
-                <div className="text-sm font-semibold">Generate failed</div>
-                <div className="text-xs text-white/66">You can adjust the prompt or references and try again.</div>
+                <div className="text-sm font-semibold">生成失败</div>
+                <div className="text-xs text-white/66">请检查提示词、参考图或模型要求后重试。</div>
               </div>
             </div>
           )}
@@ -1025,7 +1030,7 @@ export function GeneratePanel() {
         </div>
       </div>
     </Panel>
-    {portalRoot && previewImageOpen && currentGeneration?.resultUrl && createPortal(
+    {portalRoot && previewImageOpen && previewGeneration?.resultUrl && createPortal(
       <button
         type="button"
         className="fixed inset-0 z-[135] grid cursor-zoom-out place-items-center bg-black/72 p-4 backdrop-blur-sm"
@@ -1033,9 +1038,10 @@ export function GeneratePanel() {
         aria-label={t('close')}
       >
         <img
-          src={currentGeneration.resultUrl}
+          src={previewGeneration.resultUrl}
           alt=""
           className="max-h-[92vh] max-w-[94vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+          style={checkerBackgroundStyle}
           draggable={false}
         />
       </button>,

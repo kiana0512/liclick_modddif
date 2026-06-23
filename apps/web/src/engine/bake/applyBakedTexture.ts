@@ -4,8 +4,8 @@ function materialWithBakedMap(material: THREE.Material, texture: THREE.Texture) 
   if (material instanceof THREE.MeshStandardMaterial || material instanceof THREE.MeshBasicMaterial) {
     material.map = texture;
     material.color.set('#ffffff');
-    material.transparent = true;
-    material.alphaTest = 0.01;
+    material.transparent = false;
+    material.alphaTest = 0;
     material.needsUpdate = true;
     return material;
   }
@@ -13,8 +13,8 @@ function materialWithBakedMap(material: THREE.Material, texture: THREE.Texture) 
   return new THREE.MeshStandardMaterial({
     name: material.name || 'Liclick baked material',
     map: texture,
-    transparent: true,
-    alphaTest: 0.01,
+    transparent: false,
+    alphaTest: 0,
     roughness: 0.55,
     metalness: 0.08,
   });

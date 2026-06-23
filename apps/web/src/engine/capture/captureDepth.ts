@@ -8,14 +8,14 @@ export async function captureDepth(request: CapturePassRequest): Promise<Capture
     request.objectId,
     () =>
       new THREE.MeshDepthMaterial({
-        depthPacking: THREE.BasicDepthPacking,
+        depthPacking: THREE.RGBADepthPacking,
       }),
   );
 
   try {
     return {
       url: renderSceneToDataUrl(request),
-      warnings: ['Depth is encoded as viewport grayscale depth for MVP preview.'],
+      warnings: [],
     };
   } finally {
     restore();

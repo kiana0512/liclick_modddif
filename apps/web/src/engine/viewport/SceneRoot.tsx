@@ -56,6 +56,7 @@ function ImportedModel() {
       layer.imageUrl &&
       layer.camera,
   );
+  const canPreviewProjectedLayer = displayMode === 'pbr' || displayMode === 'flat';
 
   useEffect(() => {
     if (!importedModel) return;
@@ -66,7 +67,7 @@ function ImportedModel() {
       const selected = selectedObjectId === model.objectId;
       model.group.updateMatrixWorld(true);
       const projectedMaterial =
-        displayMode === 'pbr' && activeProjectedLayer?.camera
+        canPreviewProjectedLayer && activeProjectedLayer?.camera
           ? await createProjectedLayerMaterial({
               layerId: activeProjectedLayer.id,
               imageUrl: activeProjectedLayer.imageUrl,
@@ -112,7 +113,7 @@ function ImportedModel() {
     return () => {
       cancelled = true;
     };
-  }, [activeProjectedLayer, displayMode, importedModel, selectedObjectId]);
+  }, [activeProjectedLayer, canPreviewProjectedLayer, displayMode, importedModel, selectedObjectId]);
 
   if (!importedModel) return null;
 

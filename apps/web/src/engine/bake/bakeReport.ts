@@ -26,7 +26,7 @@ export function createBakeReport(input: Omit<BakeReport, 'id' | 'durationMs'> & 
         ? ['Projection coverage is unusually high. Please check camera/mask/depth settings.']
         : []),
       ...(input.coverageRatio < 0.002
-        ? ['Low projection coverage. Try capturing from a closer view.']
+        ? ['Low projection coverage. Check the saved projector camera, mask, depth, and source alpha.']
         : []),
     ],
   };

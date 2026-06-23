@@ -65,6 +65,15 @@ function blendPixel(imageData: ImageData, offset: number, color: [number, number
   imageData.data[offset + 3] = Math.round(outputAlpha * 255);
 }
 
+function unpackRgbaDepth(sample: [number, number, number, number]) {
+  return (
+    sample[0] / (255 * 256 * 256 * 256) +
+    sample[1] / (255 * 256 * 256) +
+    sample[2] / (255 * 256) +
+    sample[3] / 255
+  );
+}
+
 function hueToRgb(p: number, q: number, t: number) {
   let nextT = t;
   if (nextT < 0) nextT += 1;
@@ -260,8 +269,8 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
           if (input.depthImage) {
             const depthSample = sampleImageNearest(input.depthImage, imageUv.u, imageUv.v);
-            const capturedDepth = depthSample[0] / 255;
-            if (imageUv.depth - 0.025 > capturedDepth + 0.045) {
+            const capturedDepth = unpackRgbaDepth(depthSample);
+            if (imageUv.depth - 0.02 > capturedDepth + 0.01) {
               skippedPixels += 1;
               depthRejectedPixels += 1;
               continue;
@@ -269,7 +278,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
           }
 
           const sample = applyLayerAdjustments(sampleImageNearest(input.projectedImage, imageUv.u, imageUv.v), input.layer);
-          if (sample[3] <= 0) {
+          if (sample[3] < 12) {
             skippedPixels += 1;
             continue;
           }

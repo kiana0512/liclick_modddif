@@ -63,6 +63,16 @@ const fragmentShader = `
     return clamp(shifted, 0.0, 1.0);
   }
 
+  float unpackDepth(vec4 rgbaDepth) {
+    const vec4 bitShift = vec4(
+      1.0 / (256.0 * 256.0 * 256.0),
+      1.0 / (256.0 * 256.0),
+      1.0 / 256.0,
+      1.0
+    );
+    return dot(rgbaDepth, bitShift);
+  }
+
   void main() {
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
@@ -90,8 +100,8 @@ const fragmentShader = `
     float maskAlpha = mix(1.0, step(0.08, maskValue), useMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
-    float capturedDepth = texture2D(depthMap, uv).r;
-    float depthAlpha = mix(1.0, step(projectedDepth - depthBias, capturedDepth + 0.035), useDepthCheck);
+    float capturedDepth = unpackDepth(texture2D(depthMap, uv));
+    float depthAlpha = mix(1.0, step(projectedDepth - depthBias, capturedDepth + 0.01), useDepthCheck);
 
     vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
     float lambert = max(dot(normal, lightDir), 0.0) * 0.45 + 0.55;
@@ -128,7 +138,6 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
   }
   const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
-
   return new THREE.ShaderMaterial({
     name: `LiclickProjectedLayer:${input.layerId}`,
     vertexShader,
@@ -179,14 +188,15 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
     });
   }
 
-  return new THREE.MeshStandardMaterial({
+  const material = new THREE.MeshStandardMaterial({
     color: bakedTexture ? '#ffffff' : DEFAULT_PREVIEW_COLOR,
-    map: bakedTexture,
     roughness: 0.58,
     metalness: 0,
     emissive: selected ? '#3b0764' : '#000000',
     emissiveIntensity: selected ? 0.2 : 0,
   });
+  if (bakedTexture) material.map = bakedTexture;
+  return material;
 }
 
 function prepareSinglePreviewMaterial(material: THREE.Material, selected: boolean, bakedTexture?: THREE.Texture) {

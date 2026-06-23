@@ -44,6 +44,14 @@ export interface BakeProjectedLayerInput {
   dilationPixels: number;
 }
 
+export interface BakeVisibleProjectedLayersInput {
+  objectId: string;
+  resolution: UvBakeResolution;
+  enableBackfaceCulling: boolean;
+  enableDilation: boolean;
+  dilationPixels: number;
+}
+
 export interface BakeProjectedLayerResult {
   bakedTexture: BakedTexture;
   canvas: HTMLCanvasElement;

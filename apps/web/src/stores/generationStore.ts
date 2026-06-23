@@ -3,6 +3,14 @@ import { persist } from 'zustand/middleware';
 import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 
+const generationStorageKeyV1 = 'liclick-generation-state-v1';
+const generationStorageKeyV2 = 'liclick-generation-state-v2';
+
+if (typeof window !== 'undefined') {
+  window.localStorage.removeItem(generationStorageKeyV1);
+  window.localStorage.removeItem(generationStorageKeyV2);
+}
+
 type GenerationStore = {
   generations: Generation[];
   currentGeneration?: Generation;
@@ -70,14 +78,14 @@ export const useGenerationStore = create<GenerationStore>()(
         }),
     }),
     {
-      name: 'liclick-generation-state-v1',
+      name: generationStorageKeyV2,
       partialize: (state) => ({
         generations: state.generations.filter((generation) => generation.status === 'queued' || generation.status === 'running'),
         currentGeneration:
           state.currentGeneration && (state.currentGeneration.status === 'queued' || state.currentGeneration.status === 'running')
             ? state.currentGeneration
             : undefined,
-        lastCapture: state.lastCapture,
+        lastCapture: undefined,
         isGenerating: false,
       }),
     },
