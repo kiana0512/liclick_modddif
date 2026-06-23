@@ -69,7 +69,7 @@ async function handleWorkspaceRequest(
       features: {
         webOAuthCookieSession:
           serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled || serverConfig.atlasLocalLoginEnabled,
-        atlasManualCallbackFallback: serverConfig.atlasLocalLoginEnabled,
+        atlasCliLogin: serverConfig.atlasLocalLoginEnabled,
         browserHttpUuidFallback: true,
       },
     });

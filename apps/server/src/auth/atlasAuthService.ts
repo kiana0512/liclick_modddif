@@ -1,6 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -337,9 +336,7 @@ export async function startAtlasLogin(request: IncomingMessage, response: Server
     loginId: login.id,
     redirectUrl: extractFirstUrl(output),
     status,
-    message:
-      loginMessage(login, '飞书/IDaaS 登录任务已启动，请完成浏览器授权后等待页面自动同步。') +
-      ' 如果授权页最后停在 localhost:20265 拒绝连接，请复制完整 localhost 回调地址并粘贴回 Liclick 登录框。',
+    message: loginMessage(login, 'Atlas gateway 登录任务已启动，请在浏览器中完成授权。'),
   };
 }
 
@@ -365,102 +362,8 @@ export async function pollAtlasLogin(loginId: string, request: IncomingMessage, 
     loginId,
     redirectUrl: extractFirstUrl(`${login.stdout}\n${login.stderr}`),
     status,
-    message: loginMessage(login, '等待飞书/IDaaS 授权完成。'),
+    message: loginMessage(login, '等待 Atlas gateway 授权完成。'),
   };
-}
-
-function parseLocalCallbackUrl(rawUrl: string) {
-  const callbackUrl = new URL(rawUrl);
-  const isAllowedHost = callbackUrl.hostname === 'localhost' || callbackUrl.hostname === '127.0.0.1';
-  if (!isAllowedHost || callbackUrl.pathname !== '/callback') {
-    throw new Error('请粘贴浏览器地址栏里的 localhost:20265/callback 完整地址。');
-  }
-  return callbackUrl;
-}
-
-function getCallbackFragmentToken(callbackUrl: URL) {
-  const fragment = callbackUrl.hash.startsWith('#') ? callbackUrl.hash.slice(1) : callbackUrl.hash;
-  if (!fragment) return undefined;
-  const params = new URLSearchParams(fragment);
-  return params.get('id_token') ?? params.get('access_token') ?? undefined;
-}
-
-function proxyLocalCallback(callbackUrl: URL) {
-  return new Promise<{ statusCode: number; contentType: string; body: string }>((resolve, reject) => {
-    const port = Number(callbackUrl.port || process.env.ATLAS_CALLBACK_PORT || 20265);
-    const fragmentToken = getCallbackFragmentToken(callbackUrl);
-    if (fragmentToken && !callbackUrl.searchParams.get('id_token') && !callbackUrl.searchParams.get('access_token')) {
-      const body = JSON.stringify({ id_token: fragmentToken });
-      const request = http.request(
-        {
-          hostname: '127.0.0.1',
-          port,
-          path: '/callback/token',
-          method: 'POST',
-          timeout: 15_000,
-          headers: {
-            'content-type': 'application/json',
-            'content-length': Buffer.byteLength(body),
-          },
-        },
-        (callbackResponse) => {
-          const chunks: Buffer[] = [];
-          callbackResponse.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-          callbackResponse.on('end', () => {
-            resolve({
-              statusCode: callbackResponse.statusCode ?? 200,
-              contentType: String(callbackResponse.headers['content-type'] ?? 'application/json; charset=utf-8'),
-              body: Buffer.concat(chunks).toString('utf8'),
-            });
-          });
-        },
-      );
-      request.on('timeout', () => {
-        request.destroy(new Error('Atlas local callback timed out.'));
-      });
-      request.on('error', reject);
-      request.end(body);
-      return;
-    }
-
-    const targetPath = `/callback${callbackUrl.search}`;
-    const request = http.get(
-      {
-        hostname: '127.0.0.1',
-        port,
-        path: targetPath,
-        timeout: 15_000,
-      },
-      (callbackResponse) => {
-        const chunks: Buffer[] = [];
-        callbackResponse.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-        callbackResponse.on('end', () => {
-          resolve({
-            statusCode: callbackResponse.statusCode ?? 200,
-            contentType: String(callbackResponse.headers['content-type'] ?? 'text/html; charset=utf-8'),
-            body: Buffer.concat(chunks).toString('utf8'),
-          });
-        });
-      },
-    );
-    request.on('timeout', () => {
-      request.destroy(new Error('Atlas local callback timed out.'));
-    });
-    request.on('error', reject);
-  });
-}
-
-export async function completeAtlasLoginWithLocalCallback(loginId: string, callbackUrl: string, request: IncomingMessage, response: ServerResponse) {
-  prunePendingAtlasLogins();
-  const login = pendingAtlasLogins.get(loginId);
-  if (!login) throw new Error('登录任务已过期，请重新点击飞书登录。');
-  await proxyLocalCallback(parseLocalCallbackUrl(callbackUrl));
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  const status = await getAtlasStatus(login.homeDir);
-  if (!status.valid) throw new Error('Atlas 已收到回调，但仍未拿到有效登录态。请重新授权。');
-  const user = await createLoggedInSession(login.homeDir, request, response);
-  pendingAtlasLogins.delete(login.id);
-  return { done: true, user, status };
 }
 
 export async function checkLiclickApiAccess(user?: AuthUser) {

@@ -111,7 +111,7 @@ const feishuWebOAuth = {
 
 const idaasJwtSso = {
   enabled: process.env.IDAAS_JWT_SSO_ENABLED === 'true',
-  url: process.env.IDAAS_JWT_SSO_URL ?? 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt57',
+  url: process.env.IDAAS_JWT_SSO_URL ?? 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62',
   enterpriseId: process.env.IDAAS_ENTERPRISE_ID ?? 'lilith',
   serviceUrl: process.env.IDAAS_SP_SERVICE_URL ?? process.env.IDAAS_JWT_SERVICE_URL ?? '',
 };

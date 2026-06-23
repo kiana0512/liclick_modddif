@@ -74,7 +74,6 @@ export function startFeishuLogin() {
   return requestJson<{
     redirectUrl?: string;
     loginId?: string;
-    requiresManualCallback?: boolean;
     user?: AuthUser;
     authMode?: AuthMode;
     message?: string;
@@ -87,25 +86,11 @@ export function pollFeishuLogin(loginId: string) {
     done: boolean;
     redirectUrl?: string;
     loginId?: string;
-    requiresManualCallback?: boolean;
     user?: AuthUser;
     authMode?: AuthMode;
     message?: string;
     atlas?: ProviderStatus['atlas'];
   }>(`/api/auth/feishu/poll/${encodeURIComponent(loginId)}`);
-}
-
-export function completeFeishuLogin(input: { loginId: string; callbackUrl: string }) {
-  return requestJson<{
-    done: boolean;
-    user?: AuthUser;
-    authMode?: AuthMode;
-    message?: string;
-    atlas?: ProviderStatus['atlas'];
-  }>(`/api/auth/feishu/complete/${encodeURIComponent(input.loginId)}`, {
-    method: 'POST',
-    body: JSON.stringify({ callbackUrl: input.callbackUrl }),
-  });
 }
 
 export function logout() {

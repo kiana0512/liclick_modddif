@@ -142,7 +142,7 @@ The provider status must include:
 {"feishuLoginProvider":"atlas-cli","atlasLoginMode":"interactive"}
 ```
 
-If the login popup finishes on `localhost:20265/callback`, copy the full URL from the browser address bar and submit it in the Liclick login prompt.
+Clicking `飞书登录` starts the Atlas gateway login flow. For a remote browser to complete the fixed Atlas callback, the tester must temporarily forward local port `20265` to the A100 server.
 
 ## Logs
 
@@ -177,11 +177,13 @@ Restart ComfyUI after removing the mount.
 
 ## User Login Model
 
-Preferred production login is Atlas gateway interactive login plus the Liclick HttpOnly session cookie. Atlas owns the company IDaaS / Feishu authorization flow and uses the user's browser cookies on `idaas.lilith.com`. After IDaaS validates the user, it redirects to Atlas's fixed callback URL, `http://localhost:20265/callback?...id_token=...`.
+The production login path is pure Atlas gateway login plus the Liclick HttpOnly session cookie. Atlas hardcodes the callback to `http://localhost:20265/callback`. On a remote browser, that `localhost` is the tester's computer, not the A100 server. Before clicking `飞书登录`, the tester must run:
 
-On a shared server, that `localhost` points at the user's browser machine, not the A100 server. Liclick handles this with a callback handoff: the user copies the full `localhost:20265/callback?...` URL from the browser address bar into the Liclick login prompt, and the backend forwards it to the Atlas listener running on the server. The IDaaS cookie never leaves the user's browser; only the final callback URL/token is submitted back to Liclick.
+```bash
+ssh -L 20265:127.0.0.1:20265 <ssh-user>@10.3.2.59
+```
 
-Do not expose a new public callback port for this flow. The only browser-accessible Liclick entry should remain the existing mounted app URL, for example `http://10.3.2.59:46001/liclick/texture`. The Atlas callback listener on `127.0.0.1:20265` is server-internal only; Liclick reaches it from the backend after the user submits the full callback URL through the existing `/api/auth/feishu/complete/:loginId` API.
+Keep that SSH session open during login. When IDaaS redirects to `localhost:20265`, the tunnel forwards the callback to the Atlas listener running on A100.
 
 Start/update A100 with the Atlas gateway settings:
 
@@ -241,14 +243,14 @@ sudo journalctl -u liclick-3d-texture.service -n 120 --no-pager
 {"feishuLoginProvider":"atlas-cli","atlasLoginMode":"interactive"}
 ```
 
-If login appears stuck, check that the user submitted the full `localhost:20265/callback?...` URL and that the Atlas process is still waiting for the callback.
+If login redirects to `localhost:20265` and fails, check that the SSH tunnel is still open and that no local process is already using port `20265`.
 
 If the browser console shows `crypto.randomUUID is not a function`, the server is still serving an old frontend bundle. Run `git pull` and `scripts/linux-start.sh` again, then hard refresh the browser.
 
 The health response from the new backend includes:
 
 ```json
-{"features":{"webOAuthCookieSession":true,"atlasManualCallbackFallback":true,"browserHttpUuidFallback":true}}
+{"features":{"webOAuthCookieSession":true,"atlasCliLogin":true,"browserHttpUuidFallback":true}}
 ```
 
 ## Runtime Paths

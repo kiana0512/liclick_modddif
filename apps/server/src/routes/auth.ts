@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 import { optionalAuth } from '../auth/authMiddleware.js';
 import {
-  completeAtlasLoginWithLocalCallback,
   getAtlasStatus,
   pollAtlasLogin,
   startAtlasLogin,
@@ -120,12 +119,10 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
     }
     const user = 'user' in result ? result.user : undefined;
     const loginId = 'loginId' in result ? result.loginId : undefined;
-    const requiresManualCallback = Boolean(loginId && !isWebOAuthLoginId(loginId));
     sendJson(response, 200, {
       user: user ? toPublicUser(user) : undefined,
       loginId,
       redirectUrl: 'redirectUrl' in result ? result.redirectUrl : undefined,
-      requiresManualCallback,
       authMode: 'feishu-oauth',
       atlas: result.status,
       message: result.message ?? '莉刻/Atlas 登录已可用。',
@@ -144,33 +141,11 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
       sendJson(response, 200, {
         ...result,
         user: result.user ? toPublicUser(result.user) : undefined,
-        requiresManualCallback: !isWebOAuthLoginId(segments[4]),
         authMode: 'feishu-oauth',
       });
     } catch (error) {
       sendJson(response, 409, {
         error: error instanceof Error ? error.message : '飞书/IDaaS 登录任务不可用。',
-        atlasLoginMode: serverConfig.atlasLoginMode,
-      });
-    }
-    return true;
-  }
-
-  if (request.method === 'POST' && route === 'feishu' && segments[3] === 'complete' && segments[4]) {
-    try {
-      if (!serverConfig.atlasLocalLoginEnabled) {
-        throw new Error('莉刻/Atlas gateway 登录已禁用。');
-      }
-      const body = await readJsonBody<{ callbackUrl?: string }>(request);
-      const result = await completeAtlasLoginWithLocalCallback(segments[4], body.callbackUrl ?? '', request, response);
-      sendJson(response, 200, {
-        ...result,
-        user: result.user ? toPublicUser(result.user) : undefined,
-        authMode: 'feishu-oauth',
-      });
-    } catch (error) {
-      sendJson(response, 409, {
-        error: error instanceof Error ? error.message : '飞书/IDaaS 回调提交失败。',
         atlasLoginMode: serverConfig.atlasLoginMode,
       });
     }

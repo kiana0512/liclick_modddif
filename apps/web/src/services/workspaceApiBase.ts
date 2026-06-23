@@ -29,6 +29,9 @@ export function getWorkspaceApiBase(configuredBase?: string) {
   try {
     const configuredUrl = new URL(trimmedBase);
     const pageHost = window.location.hostname;
+    if (isLoopbackHost(configuredUrl.hostname) && !isLoopbackHost(pageHost)) {
+      return fallbackBase;
+    }
     if (isLoopbackHost(configuredUrl.hostname) && isLoopbackHost(pageHost) && configuredUrl.hostname !== pageHost) {
       configuredUrl.hostname = pageHost;
       return configuredUrl.href.replace(/\/$/, '');
