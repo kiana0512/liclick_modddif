@@ -2,33 +2,37 @@
 
 Liclick uses the Atlas gateway login path by default. The UI route is still named `/api/auth/feishu/start` for compatibility, but the real login is `atlas-skillhub gateway login`.
 
-## Local Flow
+## Current Atlas Boundary
 
-On a local machine, Atlas starts a listener at:
+Atlas starts a callback listener at:
 
 ```text
 http://localhost:20265/callback
 ```
 
-The browser, Atlas CLI, and Liclick server are all on the same machine, so IDaaS can redirect back to that listener and Atlas writes `.atlas-ai-gateway-oauth.json`. Liclick then reads the Atlas cache and creates the local `liclick_3d_session` cookie.
+This works locally because the browser, Atlas CLI, and Liclick server are on the same machine.
 
-## Server Flow
+On a shared A100/Linux server, a user's browser is not on the server. If IDaaS redirects to `localhost:20265`, that means the user's computer, not A100. A web page cannot open a local TCP listener on the user's computer, so Liclick cannot silently capture that callback from a remote browser.
 
-On a shared A100/Linux server, the user's browser is not on the server. If IDaaS redirects to `localhost:20265`, that means the user's computer, not A100.
+## Standard Enterprise Solutions
 
-Pure Atlas can still work on the server in two practical ways:
+Large internal tools usually avoid this problem with one of these patterns:
 
-1. Use an SSH tunnel while logging in:
+1. **Server-side OAuth callback**
+   The identity provider registers a stable HTTPS callback owned by the web app, such as `/api/auth/callback`. The backend exchanges the code/token and stores a server session. This is the normal web application model.
 
-```bash
-ssh -L 20265:127.0.0.1:20265 <user>@10.3.2.59
-```
+2. **Device authorization flow**
+   The server creates a short-lived device code. The user scans or opens an IDaaS page on any device, while the server polls the identity provider until authorization completes. No localhost callback is required.
 
-Then click `飞书登录` from the browser. When IDaaS redirects to `http://localhost:20265/callback`, the user's local port is forwarded to the Atlas listener on the server.
+3. **Remote browser session**
+   The server launches its own browser or browser automation session. The user sees/interacts with that server browser through the web app. Because the browser runs on the server, `localhost:20265` points to the server and Atlas receives the callback.
 
-2. Use a server-side service account:
+4. **Installed desktop helper**
+   Native desktop apps can own localhost callbacks or custom URL schemes. This is normal for CLIs and desktop tools, but it is not a pure web solution.
 
-Run `atlas-skillhub gateway login` on the server once under the service user, then run Liclick with:
+## Current A100 Test Mode
+
+For A100 testing, Liclick temporarily uses **service-token mode**. The server runs with:
 
 ```env
 ATLAS_LOGIN_MODE=service-token
@@ -36,8 +40,17 @@ LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=true
 IDAAS_JWT_SSO_ENABLED=false
 ```
 
-This makes all users share the server's Atlas credential, so it is only appropriate when that billing and permission model is acceptable.
+Install a real Atlas token cache for the Linux service user:
 
-## Limits
+```bash
+sudo bash scripts/linux-install-atlas-token.sh /path/to/.atlas-ai-gateway-oauth.json
+sudo systemctl restart liclick-3d-texture.service
+```
 
-The current Atlas CLI hardcodes callback port `20265` and does not expose a CLI option for changing it. That means pure Atlas interactive login on one shared server is effectively one login-at-a-time unless the Atlas package changes or IDaaS registers a different server callback flow.
+In this mode, all browser testers use the same Atlas / Liclick API credential. This is intentional for the temporary A100 test phase so AI image generation uses the real account permissions.
+
+Local development remains interactive Atlas login and is not affected by the A100 deployment scripts.
+
+## Future Product Path
+
+For Liclick on A100, the better product path without IDaaS changes is **remote browser session**: start Atlas on the server, open the Atlas/IDaaS URL in a server-side browser, stream that browser view to the user, and let Atlas receive the server-local callback.

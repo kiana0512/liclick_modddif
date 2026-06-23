@@ -8,6 +8,11 @@ dist
 *.tsbuildinfo
 *.local
 .env
+.atlas-ai-gateway-oauth.json
+*.atlas-ai-gateway-oauth.json
+secrets/*
+!secrets/.gitkeep
+!secrets/README.md
 apps/server/.env
 logs/
 workspace/*.db

@@ -29,7 +29,8 @@ GIT_REMOTE="${GIT_REMOTE:-origin}"
 UPDATE_FROM_GIT="${UPDATE_FROM_GIT:-0}"
 INSTALL_ATLAS="${INSTALL_ATLAS:-1}"
 ATLAS_NPM_REGISTRY="${ATLAS_NPM_REGISTRY:-https://registry-cnpm.lilithgame.com/}"
-ATLAS_LOGIN_MODE="${ATLAS_LOGIN_MODE:-interactive}"
+ATLAS_LOGIN_MODE="${ATLAS_LOGIN_MODE:-service-token}"
+ATLAS_TOKEN_FILE="${ATLAS_TOKEN_FILE:-}"
 LICLICK_ENABLE_ATLAS_LOCAL_LOGIN="${LICLICK_ENABLE_ATLAS_LOCAL_LOGIN:-true}"
 FEISHU_OAUTH_CLIENT_ID="${FEISHU_OAUTH_CLIENT_ID:-}"
 FEISHU_OAUTH_CLIENT_SECRET="${FEISHU_OAUTH_CLIENT_SECRET:-}"
@@ -54,6 +55,10 @@ if [[ -z "${PUBLIC_URL}" ]]; then
   DETECTED_PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
   PUBLIC_HOST="${PUBLIC_HOST:-${DETECTED_PUBLIC_HOST:-127.0.0.1}}"
   PUBLIC_URL="http://${PUBLIC_HOST}:${PUBLIC_PORT}${PUBLIC_PATH}"
+fi
+
+if [[ -z "${ATLAS_TOKEN_FILE}" ]]; then
+  ATLAS_TOKEN_FILE="${SOURCE_DIR}/secrets/.atlas-ai-gateway-oauth.json"
 fi
 
 PUBLIC_HOST_FROM_URL="$(printf '%s' "${PUBLIC_URL}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*$#\1#')"
@@ -153,6 +158,8 @@ rsync -a --delete \
   --exclude ".pnpm-store" \
   --exclude "/workspace" \
   --exclude "/logs" \
+  --exclude "/secrets/.atlas-ai-gateway-oauth.json" \
+  --exclude "/secrets/*.json" \
   --exclude "*.tsbuildinfo" \
   "${SOURCE_DIR}/" "${APP_DIR}/"
 
@@ -177,6 +184,43 @@ env_value() {
 SESSION_SECRET="${SESSION_SECRET:-$(env_value SESSION_SECRET)}"
 SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
 ATLAS_PATH="${ATLAS_SKILLHUB_PATH:-$(npm root -g 2>/dev/null)/@lilith/atlas-skillhub/dist/index.js}"
+APP_HOME="$(getent passwd "${APP_USER}" | cut -d: -f6)"
+APP_HOME="${APP_HOME:-/home/${APP_USER}}"
+ATLAS_TOKEN_TARGET="${APP_HOME}/.atlas-ai-gateway-oauth.json"
+
+run_as_app_user() {
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "${APP_USER}" "$@"
+  else
+    runuser -u "${APP_USER}" -- "$@"
+  fi
+}
+
+verify_atlas_token() {
+  run_as_app_user \
+    env HOME="${APP_HOME}" USERPROFILE="${APP_HOME}" \
+    XDG_CONFIG_HOME="${APP_HOME}/.config" \
+    XDG_CACHE_HOME="${APP_HOME}/.cache" \
+    XDG_DATA_HOME="${APP_HOME}/.local/share" \
+    node "${ATLAS_PATH}" gateway status
+}
+
+if [[ "${ATLAS_LOGIN_MODE}" == "service-token" ]]; then
+  if [[ -f "${ATLAS_TOKEN_FILE}" ]]; then
+    echo "==> Installing Atlas token cache from ${ATLAS_TOKEN_FILE}"
+    install -d -o "${APP_USER}" -g "${APP_USER}" -m 0700 "${APP_HOME}"
+    install -o "${APP_USER}" -g "${APP_USER}" -m 0600 "${ATLAS_TOKEN_FILE}" "${ATLAS_TOKEN_TARGET}"
+  elif [[ -f "${ATLAS_TOKEN_TARGET}" ]]; then
+    echo "==> Reusing existing Atlas token cache at ${ATLAS_TOKEN_TARGET}"
+  else
+    echo "ERROR: ATLAS_LOGIN_MODE=service-token but no Atlas token cache was found."
+    echo "Put the token at ${ATLAS_TOKEN_FILE}, or set ATLAS_TOKEN_FILE=/path/to/.atlas-ai-gateway-oauth.json."
+    exit 1
+  fi
+
+  echo "==> Verifying Atlas token cache for ${APP_USER}"
+  verify_atlas_token
+fi
 
 echo "==> Writing ${ENV_FILE}"
 cat > "${ENV_FILE}" <<EOF_ENV
@@ -478,7 +522,8 @@ Service:  systemctl status ${APP_NAME}.service
 Logs:     journalctl -u ${APP_NAME}.service -f
 
 Important:
-1. ATLAS_LOGIN_MODE=${ATLAS_LOGIN_MODE}. In interactive mode, each browser user authorizes Feishu/IDaaS separately.
+1. ATLAS_LOGIN_MODE=${ATLAS_LOGIN_MODE}. In service-token mode, install a valid Atlas token for ${APP_USER} before testing.
+   Atlas token source: ${ATLAS_TOKEN_FILE}
 2. If MOUNT_MODE=comfyui, restart ComfyUI after deployment if this script did not do it.
 3. Persistent user data is under ${WORKSPACE_DIR}; do not delete it during updates.
 4. If you put HTTPS in front of nginx later, rerun with PUBLIC_URL=https://your-domain.

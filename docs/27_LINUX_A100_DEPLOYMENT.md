@@ -34,7 +34,7 @@ git status --short
 git pull --ff-only origin main
 sudo MOUNT_MODE=comfyui \
   PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
-  ATLAS_LOGIN_MODE=interactive \
+  ATLAS_LOGIN_MODE=service-token \
   bash scripts/linux-start.sh
 ```
 
@@ -47,7 +47,7 @@ sudo MOUNT_MODE=comfyui \
   GIT_REMOTE=origin \
   GIT_REF=main \
   PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
-  ATLAS_LOGIN_MODE=interactive \
+  ATLAS_LOGIN_MODE=service-token \
   bash scripts/linux-start.sh
 ```
 
@@ -60,7 +60,7 @@ Run from the Git repo root on the server:
 ```bash
 sudo MOUNT_MODE=comfyui \
   PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
-  ATLAS_LOGIN_MODE=interactive \
+  ATLAS_LOGIN_MODE=service-token \
   bash scripts/linux-start.sh
 ```
 
@@ -142,7 +142,7 @@ The provider status must include:
 {"feishuLoginProvider":"atlas-cli","atlasLoginMode":"interactive"}
 ```
 
-Clicking `飞书登录` starts the Atlas gateway login flow. For a remote browser to complete the fixed Atlas callback, the tester must temporarily forward local port `20265` to the A100 server.
+Clicking `飞书登录` starts the Atlas gateway login flow. In the current interactive mode, Atlas expects a server-local callback at `localhost:20265`.
 
 ## Logs
 
@@ -177,20 +177,58 @@ Restart ComfyUI after removing the mount.
 
 ## User Login Model
 
-The production login path is pure Atlas gateway login plus the Liclick HttpOnly session cookie. Atlas hardcodes the callback to `http://localhost:20265/callback`. On a remote browser, that `localhost` is the tester's computer, not the A100 server. Before clicking `飞书登录`, the tester must run:
+The temporary A100 test path uses Atlas service-token mode. The server uses one real Atlas token cache installed for the Linux `liclick` service user. All browser testers share that Atlas / Liclick API credential so AI image generation uses the real account permissions.
+
+Install or refresh the token cache after deployment:
 
 ```bash
-ssh -L 20265:127.0.0.1:20265 <ssh-user>@10.3.2.59
+cp /path/to/.atlas-ai-gateway-oauth.json secrets/.atlas-ai-gateway-oauth.json
+sudo MOUNT_MODE=comfyui \
+  PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
+  ATLAS_LOGIN_MODE=service-token \
+  bash scripts/linux-start.sh
 ```
 
-Keep that SSH session open during login. When IDaaS redirects to `localhost:20265`, the tunnel forwards the callback to the Atlas listener running on A100.
+The deployment script installs `secrets/.atlas-ai-gateway-oauth.json` into `/home/liclick/.atlas-ai-gateway-oauth.json` and verifies it with `atlas-skillhub gateway status`.
+
+If the token file is on your local Windows machine, copy it separately from git into the server repo's ignored `secrets` folder:
+
+```powershell
+scp "$env:USERPROFILE\.atlas-ai-gateway-oauth.json" "<ssh-user>@10.3.2.59:/data/ai_art_comfyui/apps/Liclick 3D Texture/secrets/.atlas-ai-gateway-oauth.json"
+```
+
+Then deploy/update normally:
+
+```bash
+cd "/data/ai_art_comfyui/apps/Liclick 3D Texture"
+sudo MOUNT_MODE=comfyui \
+  PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
+  ATLAS_LOGIN_MODE=service-token \
+  bash scripts/linux-start.sh
+```
+
+To use a different token path, pass it explicitly:
+
+```bash
+sudo MOUNT_MODE=comfyui \
+  PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
+  ATLAS_LOGIN_MODE=service-token \
+  ATLAS_TOKEN_FILE=/tmp/atlas-token.json \
+  bash scripts/linux-start.sh
+```
+
+Do not commit the token file or paste it into chat/logs. Keep the ignored `secrets/.atlas-ai-gateway-oauth.json` on the server if you want future deploys to reinstall it automatically; delete temporary copies such as `/tmp/atlas-token.json`.
+
+Local development remains normal interactive Atlas login. The service-token mode is only the A100 deployment default.
+
+The later product-grade A100 solution should be server-side browser login: A100 starts Atlas, opens the Atlas/IDaaS URL in a browser running on A100, streams or remotes that browser to the user for scanning/confirmation, and lets IDaaS redirect to A100's own `localhost:20265`.
 
 Start/update A100 with the Atlas gateway settings:
 
 ```bash
 sudo MOUNT_MODE=comfyui \
   PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
-  ATLAS_LOGIN_MODE=interactive \
+  ATLAS_LOGIN_MODE=service-token \
   LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=true \
   IDAAS_JWT_SSO_ENABLED=false \
   bash scripts/linux-start.sh
@@ -243,7 +281,7 @@ sudo journalctl -u liclick-3d-texture.service -n 120 --no-pager
 {"feishuLoginProvider":"atlas-cli","atlasLoginMode":"interactive"}
 ```
 
-If login redirects to `localhost:20265` and fails, check that the SSH tunnel is still open and that no local process is already using port `20265`.
+If login redirects to `localhost:20265` in the user's local browser, the callback cannot reach A100. Use a server-side browser login flow or an IDaaS/Atlas flow that supports a server callback/device code.
 
 If the browser console shows `crypto.randomUUID is not a function`, the server is still serving an old frontend bundle. Run `git pull` and `scripts/linux-start.sh` again, then hard refresh the browser.
 
@@ -272,7 +310,7 @@ cd "/data/ai_art_comfyui/apps/Liclick 3D Texture"
 git pull --ff-only origin main
 sudo MOUNT_MODE=comfyui \
   PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
-  ATLAS_LOGIN_MODE=interactive \
+  ATLAS_LOGIN_MODE=service-token \
   bash scripts/linux-start.sh
 ```
 
@@ -286,7 +324,7 @@ sudo MOUNT_MODE=comfyui \
   UPDATE_FROM_GIT=1 \
   GIT_REF=main \
   PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
-  ATLAS_LOGIN_MODE=interactive \
+  ATLAS_LOGIN_MODE=service-token \
   bash scripts/linux-start.sh
 ```
 
