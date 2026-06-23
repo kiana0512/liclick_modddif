@@ -378,10 +378,52 @@ function parseLocalCallbackUrl(rawUrl: string) {
   return callbackUrl;
 }
 
+function getCallbackFragmentToken(callbackUrl: URL) {
+  const fragment = callbackUrl.hash.startsWith('#') ? callbackUrl.hash.slice(1) : callbackUrl.hash;
+  if (!fragment) return undefined;
+  const params = new URLSearchParams(fragment);
+  return params.get('id_token') ?? params.get('access_token') ?? undefined;
+}
+
 function proxyLocalCallback(callbackUrl: URL) {
   return new Promise<{ statusCode: number; contentType: string; body: string }>((resolve, reject) => {
-    const targetPath = `/callback${callbackUrl.search}`;
     const port = Number(callbackUrl.port || process.env.ATLAS_CALLBACK_PORT || 20265);
+    const fragmentToken = getCallbackFragmentToken(callbackUrl);
+    if (fragmentToken && !callbackUrl.searchParams.get('id_token') && !callbackUrl.searchParams.get('access_token')) {
+      const body = JSON.stringify({ id_token: fragmentToken });
+      const request = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/callback/token',
+          method: 'POST',
+          timeout: 15_000,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body),
+          },
+        },
+        (callbackResponse) => {
+          const chunks: Buffer[] = [];
+          callbackResponse.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+          callbackResponse.on('end', () => {
+            resolve({
+              statusCode: callbackResponse.statusCode ?? 200,
+              contentType: String(callbackResponse.headers['content-type'] ?? 'application/json; charset=utf-8'),
+              body: Buffer.concat(chunks).toString('utf8'),
+            });
+          });
+        },
+      );
+      request.on('timeout', () => {
+        request.destroy(new Error('Atlas local callback timed out.'));
+      });
+      request.on('error', reject);
+      request.end(body);
+      return;
+    }
+
+    const targetPath = `/callback${callbackUrl.search}`;
     const request = http.get(
       {
         hostname: '127.0.0.1',

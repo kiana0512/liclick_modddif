@@ -6,6 +6,7 @@ import { createSession, upsertUser } from './sessionService.js';
 
 type PendingWebOAuthLogin = {
   id: string;
+  provider: 'web-oauth' | 'idaas-sp';
   state: string;
   startedAt: number;
   completedAt?: number;
@@ -65,6 +66,25 @@ function publicWorkspaceBase() {
 
 function oauthRedirectUrl() {
   return serverConfig.feishuWebOAuth.redirectUrl || `${publicWorkspaceBase()}/api/auth/feishu/callback`;
+}
+
+function isLoopbackCallback(value: string) {
+  try {
+    const url = new URL(value);
+    return ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function idaasServiceUrl() {
+  const serviceUrl = serverConfig.idaasJwtSso.serviceUrl || oauthRedirectUrl();
+  if (isLoopbackCallback(serviceUrl) && !serverConfig.idaasJwtSso.serviceUrl) {
+    throw new Error(
+      `IDaaS SP 登录不能使用未登记的本机回跳地址 ${serviceUrl}。请把 IDAAS_SP_SERVICE_URL 配成 IDaaS 后台已登记的 Service URL，或使用已登记的公网/内网访问地址。`,
+    );
+  }
+  return serviceUrl;
 }
 
 function decodeJwtClaims(token?: string) {
@@ -170,32 +190,47 @@ export function isWebOAuthLoginId(loginId: string) {
 }
 
 export function startWebOAuthLogin() {
-  if (!serverConfig.feishuWebOAuthEnabled) throw new Error('服务器未配置 Web OAuth/IDaaS 登录。');
+  if (!serverConfig.feishuWebOAuthEnabled && !serverConfig.idaasJwtSsoEnabled) {
+    throw new Error('服务器未配置 IDaaS/飞书网页登录。');
+  }
   prunePendingWebOAuthLogins();
   const id = `web-oauth-${randomUUID()}`;
   const state = randomUUID();
   const login: PendingWebOAuthLogin = {
     id,
+    provider: serverConfig.feishuWebOAuthEnabled ? 'web-oauth' : 'idaas-sp',
     state,
     startedAt: Date.now(),
   };
   pendingWebOAuthLogins.set(id, login);
   pendingWebOAuthByState.set(state, login);
 
-  const url = new URL(serverConfig.feishuWebOAuth.authorizeUrl);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('client_id', serverConfig.feishuWebOAuth.clientId);
-  url.searchParams.set('redirect_uri', oauthRedirectUrl());
-  url.searchParams.set('state', state);
-  if (serverConfig.feishuWebOAuth.scope) url.searchParams.set('scope', serverConfig.feishuWebOAuth.scope);
-  for (const [key, value] of Object.entries(serverConfig.feishuWebOAuth.extraAuthorizeParams)) {
-    url.searchParams.set(key, value);
+  let redirectUrl: string;
+  if (serverConfig.feishuWebOAuthEnabled) {
+    const url = new URL(serverConfig.feishuWebOAuth.authorizeUrl);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', serverConfig.feishuWebOAuth.clientId);
+    url.searchParams.set('redirect_uri', oauthRedirectUrl());
+    url.searchParams.set('state', state);
+    if (serverConfig.feishuWebOAuth.scope) url.searchParams.set('scope', serverConfig.feishuWebOAuth.scope);
+    for (const [key, value] of Object.entries(serverConfig.feishuWebOAuth.extraAuthorizeParams)) {
+      url.searchParams.set(key, value);
+    }
+    redirectUrl = url.toString();
+  } else {
+    const url = new URL(serverConfig.idaasJwtSso.url);
+    url.searchParams.set('redirect_uri', idaasServiceUrl());
+    url.searchParams.set('state', state);
+    if (serverConfig.idaasJwtSso.enterpriseId) {
+      url.searchParams.set('enterpriseId', serverConfig.idaasJwtSso.enterpriseId);
+    }
+    redirectUrl = url.toString();
   }
   return {
     loginId: id,
-    redirectUrl: url.toString(),
+    redirectUrl,
     status: { valid: false, message: '请在弹出的 IDaaS/飞书页面完成授权。' },
-    message: '已启动 Web OAuth 登录。授权完成后会自动返回 Liclick。',
+    message: '已启动 IDaaS/飞书网页登录。授权完成后会自动返回 Liclick。',
   };
 }
 
@@ -206,8 +241,18 @@ export async function handleWebOAuthCallback(
 ) {
   const state = url.searchParams.get('state') ?? '';
   const code = url.searchParams.get('code') ?? '';
+  const idToken =
+    url.searchParams.get('id_token') ??
+    url.searchParams.get('token') ??
+    url.searchParams.get('jwt') ??
+    url.searchParams.get('assertion') ??
+    '';
   const error = url.searchParams.get('error') ?? '';
-  const login = pendingWebOAuthByState.get(state);
+  const login =
+    pendingWebOAuthByState.get(state) ??
+    (!state && (code || idToken) && pendingWebOAuthLogins.size === 1
+      ? [...pendingWebOAuthLogins.values()][0]
+      : undefined);
   if (!login) {
     response.writeHead(409, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     response.end(callbackHtml(false, '登录任务已过期，请回到 Liclick 重新点击飞书登录。'));
@@ -215,9 +260,16 @@ export async function handleWebOAuthCallback(
   }
   try {
     if (error) throw new Error(url.searchParams.get('error_description') ?? error);
-    if (!code) throw new Error('IDaaS/飞书回调缺少 code。');
-    const token = await exchangeCodeForToken(code);
-    const userInfo = await fetchUserInfo(token.access_token);
+    if (login.provider === 'idaas-sp' && !idToken) {
+      throw new Error('IDaaS 回调缺少 JWT token。请确认 Service URL 指向 Liclick 回调，且 IDaaS 应用使用 JWT 回跳。');
+    }
+    if (login.provider === 'web-oauth' && !code && !idToken) {
+      throw new Error('飞书 OAuth 回调缺少 code 或 id_token。');
+    }
+    const token = idToken
+      ? ({ id_token: idToken, access_token: idToken } satisfies TokenResponse)
+      : await exchangeCodeForToken(code);
+    const userInfo = idToken || login.provider === 'idaas-sp' ? undefined : await fetchUserInfo(token.access_token);
     const profile = extractProfile(token, userInfo);
     if (!profile.externalId) throw new Error('IDaaS/飞书没有返回可识别的用户 ID。');
     const user = await upsertUser({

@@ -4,7 +4,7 @@ type FeishuLoginFlowOptions = {
   timeoutMs?: number;
   pollIntervalMs?: number;
   onStatus?: (message: string) => void;
-  onLoginStarted?: (login: { loginId: string; redirectUrl?: string }) => void;
+  onLoginStarted?: (login: { loginId: string; redirectUrl?: string; requiresManualCallback?: boolean }) => void;
 };
 
 function wait(ms: number) {
@@ -27,13 +27,22 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
       throw new Error('浏览器拦截了飞书/IDaaS 授权窗口，请允许弹窗后重新点击登录。');
     }
     options.onStatus?.('授权窗口已打开，请在新窗口里完成飞书/IDaaS 授权。');
+    if (started.requiresManualCallback) {
+      options.onStatus?.(
+        '服务器正在等待 Atlas gateway 回调。授权窗口完成后如果停在 localhost:20265/callback，请复制地址栏完整 URL 回到 Liclick 提交。',
+      );
+    }
   } else {
     options.onStatus?.('服务器正在等待 Atlas 返回授权链接，请稍等。');
   }
   if (!loginId) {
     throw new Error(started.message ?? '登录服务没有返回用户信息，请确认 Atlas/莉刻登录已完成。');
   }
-  options.onLoginStarted?.({ loginId, redirectUrl: started.redirectUrl });
+  options.onLoginStarted?.({
+    loginId,
+    redirectUrl: started.redirectUrl,
+    requiresManualCallback: started.requiresManualCallback,
+  });
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -42,6 +51,9 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
     if (polled.user) return polled;
     loginId = polled.loginId ?? loginId;
     if (polled.message) options.onStatus?.(polled.message);
+    if (polled.requiresManualCallback) {
+      options.onStatus?.('请在授权窗口完成登录后复制 localhost:20265/callback 完整地址，并回到 Liclick 提交。');
+    }
     if (polled.redirectUrl && polled.redirectUrl !== openedUrl) {
       openedUrl = polled.redirectUrl;
       const popup = window.open(polled.redirectUrl, '_blank', 'noopener,noreferrer');

@@ -29,15 +29,17 @@ For Linux, Docker, or long-running A100 deployment, build first and run the comp
 
 ## Auth And Liclick Login
 
-The Projects homepage and local editor can be viewed without login. AI features that call the Liclick API, such as `Generate Image`, require the local Liclick / Atlas gateway login. The visible `飞书登录` entry calls the server, the server asks the installed Atlas runtime for login status, and then stores only its own httpOnly Liclick session cookie.
+The Projects homepage and local editor can be viewed without login. Workspace operations and AI features that call authenticated APIs require the Liclick session. The visible `飞书登录` entry calls the server, the server starts the local `@lilith/atlas-skillhub` gateway login, and then stores only its own httpOnly Liclick session cookie.
 
-`dev-mock` is only a deliberate development fallback. The current real login path does not use Feishu Open Platform app credentials, callback URLs, or robot permissions. It relies on the local `@lilith/atlas-skillhub` gateway flow used by Liclick services. If the machine already has a valid Atlas token, login completes without scanning. If the token is missing or expired, Atlas opens the company IDaaS / Feishu authorization flow.
+`dev-mock` is only a deliberate development fallback. The current real login path does not require Liclick to register a localhost Service URL in IDaaS. It relies on the local Atlas gateway runtime used by Liclick services. If Atlas needs authorization, it opens the company IDaaS / Feishu flow itself and writes the local Atlas token cache.
 
 ```bash
 AUTH_MODE=feishu-oauth
+LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=true
+IDAAS_JWT_SSO_ENABLED=false
 ```
 
-The frontend never receives Atlas tokens, Feishu tokens, API keys, or session token values. User name and email are decoded server-side from the Atlas gateway token claims and copied into the local user session. Avatar currently falls back to a deterministic local avatar when the Atlas token does not include a profile image URL.
+The frontend never receives Atlas tokens, Feishu tokens, API keys, or session token values. User name and email are decoded server-side from the Atlas gateway token claims and copied into the local user session. Avatar currently falls back to a deterministic local avatar when the token does not include a profile image URL.
 
 `GET /api/liclick/status` verifies whether the logged-in user can reach the Liclick API through Atlas and lists the discovered Liclick tools.
 

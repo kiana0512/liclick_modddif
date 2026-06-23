@@ -109,6 +109,22 @@ const feishuWebOAuth = {
   ),
 };
 
+const idaasJwtSso = {
+  enabled: process.env.IDAAS_JWT_SSO_ENABLED === 'true',
+  url: process.env.IDAAS_JWT_SSO_URL ?? 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt57',
+  enterpriseId: process.env.IDAAS_ENTERPRISE_ID ?? 'lilith',
+  serviceUrl: process.env.IDAAS_SP_SERVICE_URL ?? process.env.IDAAS_JWT_SERVICE_URL ?? '',
+};
+const idaasJwtSsoEffectiveServiceUrl =
+  idaasJwtSso.serviceUrl || feishuWebOAuth.redirectUrl || `${publicWorkspaceUrl.replace(/\/$/, '')}/api/auth/feishu/callback`;
+
+const feishuWebOAuthMissingConfigKeys = [
+  ['FEISHU_OAUTH_CLIENT_ID or IDAAS_OAUTH_CLIENT_ID', feishuWebOAuth.clientId],
+  ['FEISHU_OAUTH_CLIENT_SECRET or IDAAS_OAUTH_CLIENT_SECRET', feishuWebOAuth.clientSecret],
+  ['FEISHU_OAUTH_AUTHORIZE_URL or IDAAS_OAUTH_AUTHORIZE_URL', feishuWebOAuth.authorizeUrl],
+  ['FEISHU_OAUTH_TOKEN_URL or IDAAS_OAUTH_TOKEN_URL', feishuWebOAuth.tokenUrl],
+].flatMap(([key, value]) => (value ? [] : [key]));
+
 const feishuWebOAuthConfigured = Boolean(
   feishuWebOAuth.clientId && feishuWebOAuth.authorizeUrl && feishuWebOAuth.tokenUrl,
 );
@@ -125,6 +141,12 @@ const feishuWebOAuthBlockedReason =
 const feishuWebOAuthEnabled = Boolean(
   feishuWebOAuthConfigured && !feishuWebOAuthBlockedReason,
 );
+const idaasJwtSsoBlockedReason =
+  idaasJwtSso.enabled && idaasJwtSso.url && isLoopbackUrl(idaasJwtSsoEffectiveServiceUrl) && !idaasJwtSso.serviceUrl
+    ? `IDaaS SP Service URL points to ${idaasJwtSsoEffectiveServiceUrl}. Configure IDAAS_SP_SERVICE_URL with an IDaaS-registered Liclick callback URL; loopback URLs are rejected unless explicitly registered in IDaaS.`
+    : '';
+const idaasJwtSsoEnabled = Boolean(idaasJwtSso.enabled && idaasJwtSso.url && !idaasJwtSsoBlockedReason);
+const atlasLocalLoginEnabled = process.env.LICLICK_ENABLE_ATLAS_LOCAL_LOGIN !== 'false';
 
 export const serverConfig = {
   port,
@@ -138,7 +160,12 @@ export const serverConfig = {
   feishuWebOAuthConfigured,
   feishuWebOAuthEnabled,
   feishuWebOAuthBlockedReason,
+  feishuWebOAuthMissingConfigKeys,
   feishuWebOAuth,
+  idaasJwtSso,
+  idaasJwtSsoBlockedReason,
+  idaasJwtSsoEnabled,
+  atlasLocalLoginEnabled,
   sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'liclick_3d_session',
   sessionSecret: process.env.SESSION_SECRET ?? 'dev-only-change-me',
   sessionMaxAgeDays: Number(process.env.SESSION_MAX_AGE_DAYS ?? 14),
