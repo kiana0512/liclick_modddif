@@ -45,6 +45,7 @@ export type GenerationJobResult = {
   status: Generation['status'];
   resultUrl?: string;
   resultUrls?: string[];
+  workflow?: 'liclick' | 'texture-map';
   model?: string;
   extraParams?: Record<string, unknown>;
   uploadedReferences?: unknown[];
@@ -116,12 +117,14 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         extraParams?: Record<string, unknown>;
         uploadedReferences?: unknown[];
         activeProjectJob?: boolean;
+        workflow?: 'liclick' | 'texture-map';
         message?: string;
       }>(baseUrl, '/api/liclick/generate-image', {
         method: 'POST',
         body: JSON.stringify({
           clientGenerationId: input.clientGenerationId,
           projectId: input.projectId,
+          workflow: input.workflow,
           prompt: input.prompt,
           model: input.model,
           aspectRatio: input.aspectRatio,
@@ -130,7 +133,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           references: await prepareReferences(input.referenceImages),
         }),
       });
-      const generationId = result.activeProjectJob ? result.id : (input.clientGenerationId ?? result.id);
+      const generationId = input.clientGenerationId ?? result.id;
       return {
         id: generationId,
         mode: 'single',
@@ -142,7 +145,9 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         metadata: {
           provider: 'liclick-atlas',
           clientGenerationId: input.clientGenerationId,
+          serverJobId: result.id,
           projectId: input.projectId,
+          workflow: input.workflow ?? result.workflow,
           taskId: result.taskId,
           model: result.model ?? input.model,
           resultUrls: result.resultUrls,

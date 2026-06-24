@@ -1,7 +1,7 @@
 import type * as THREE from 'three';
 import type { SerializedCamera } from '@/types/capture';
 
-export type CaptureResolution = 1024 | 2048 | 4096;
+export type CaptureResolution = 1024 | 2048 | 4096 | 8192;
 
 export type CapturePassRequest = {
   gl: THREE.WebGLRenderer;

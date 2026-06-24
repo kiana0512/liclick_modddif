@@ -13,6 +13,7 @@ type ReferenceInput = {
 export type GenerateImageInput = {
   clientGenerationId?: string;
   projectId?: string;
+  workflow?: 'liclick' | 'texture-map';
   prompt: string;
   model?: string;
   aspectRatio?: 'auto' | '1:1' | '4:3' | '3:4' | '3:2' | '2:3' | '16:9' | '9:16';
@@ -34,6 +35,7 @@ export type LiclickImageTaskResult = {
   status: string;
   resultUrl?: string;
   resultUrls?: string[];
+  terminalWithoutResult?: boolean;
   raw: unknown;
 };
 
@@ -86,7 +88,7 @@ function findField(value: unknown, keys: string[]): string {
 function findUrls(value: unknown): string[] {
   if (!value) return [];
   if (typeof value === 'string') {
-    return [...value.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((match) => match[0]);
+    return [...value.matchAll(/(?:https?:\/\/|data:image\/)[^\s"'<>]+/g)].map((match) => match[0]);
   }
   if (Array.isArray(value)) return value.flatMap((item) => findUrls(item));
   if (typeof value === 'object') {
@@ -100,6 +102,10 @@ function findUrls(value: unknown): string[] {
     return [...prioritized, ...rest];
   }
   return [];
+}
+
+function isTerminalSuccessStatus(status: string) {
+  return /succeed|success|complete|completed|done|finish|finished/i.test(status);
 }
 
 function normalizeAtlasPayload(value: unknown): unknown {
@@ -151,6 +157,8 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
   const model = input.model || 'gpt-image-2';
   const aspectRatio = input.aspectRatio ?? 'auto';
   const imageSize = input.imageSize ?? 'auto';
+  const gptImage2Size = imageSize === 'auto' ? (aspectRatio === 'auto' ? 'auto' : '1K') : imageSize;
+  const submitAspectRatio = model === 'gpt-image-2' && aspectRatio === 'auto' && gptImage2Size !== 'auto' ? '1:1' : aspectRatio;
   const referenceImages = uploadedReferences.map((reference) => ({
     asset_id: reference.assetId,
     type: 'image',
@@ -170,9 +178,9 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
     };
     extraParams.size = sizeMap[aspectRatio] ?? 'auto';
   } else {
-    extraParams.aspect_ratio = aspectRatio;
+    extraParams.aspect_ratio = submitAspectRatio;
     if (model === 'gpt-image-2') {
-      extraParams.image_size = aspectRatio === 'auto' ? 'auto' : imageSize === 'auto' ? '1K' : imageSize;
+      extraParams.image_size = gptImage2Size;
     } else if (model === 'nano_banana_2' || model === 'nano_banana_pro') {
       extraParams.image_size = imageSize === 'auto' ? '1K' : imageSize;
     }
@@ -182,11 +190,12 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
 
 function buildSubmissionPrompt(input: GenerateImageInput, model: string) {
   const prompt = input.prompt.trim();
-  if (prompt) return prompt;
-  if (model === 'nano_banana_2' || model === 'nano_banana_pro') {
-    return '生成一张高质量的参考图。';
-  }
-  return prompt;
+  const basePrompt =
+    prompt ||
+    (model === 'nano_banana_2' || model === 'nano_banana_pro' ? '生成一张高质量的参考图。' : '');
+  const materialConstraint =
+    '贴图生成约束：输出应强调材质贴图本身的颜色、粗糙度、纹理颗粒和细节，避免明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影。';
+  return basePrompt ? `${basePrompt}\n\n${materialConstraint}` : materialConstraint;
 }
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>) {
@@ -251,6 +260,7 @@ export async function pollLiclickImageTask(
     status,
     resultUrl: urls[0],
     resultUrls: urls,
+    terminalWithoutResult: urls.length === 0 && isTerminalSuccessStatus(status),
     raw: payload,
   };
 }

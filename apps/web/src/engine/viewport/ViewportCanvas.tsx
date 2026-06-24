@@ -148,7 +148,8 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
         key={canvasKey}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}
         gl={{
-          preserveDrawingBuffer: true,
+          preserveDrawingBuffer: false,
+          powerPreference: 'high-performance',
           outputColorSpace: THREE.SRGBColorSpace,
           toneMapping: THREE.ACESFilmicToneMapping,
           toneMappingExposure: exposure,

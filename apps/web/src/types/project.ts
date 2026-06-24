@@ -25,7 +25,7 @@ export type ReferenceImage = {
 };
 
 export type ProjectSettings = {
-  resolution: '1K' | '2K' | '4K';
+  resolution: '1K' | '2K' | '4K' | '8K';
   displayMode: DisplayMode;
   projectionMode: ProjectionMode;
   colorManagement: 'srgb' | 'linear';

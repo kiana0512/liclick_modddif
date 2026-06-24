@@ -3,7 +3,7 @@ import type { CapturePassRequest, SceneMaterialSnapshot } from './captureTypes';
 
 export function renderSceneToDataUrl(request: CapturePassRequest) {
   const target = new THREE.WebGLRenderTarget(request.width, request.height, {
-    samples: 4,
+    samples: request.width > 1024 || request.height > 1024 ? 0 : 2,
     colorSpace: THREE.SRGBColorSpace,
   });
   const previousTarget = request.gl.getRenderTarget();

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles, X } from 'lucide-react';
+import { Download, Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
@@ -30,6 +30,7 @@ import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
+import { downloadImageAsset } from '@/utils/downloadImage';
 import {
   isWorkspaceAssetUrl,
   saveDataUrlAsset,
@@ -50,6 +51,7 @@ const resolutionToSize = {
   '1K': 1024,
   '2K': 2048,
   '4K': 4096,
+  '8K': 8192,
 } as const;
 
 const imageModels: { value: LiclickImageModel; label: string }[] = [
@@ -63,6 +65,7 @@ const imageModels: { value: LiclickImageModel; label: string }[] = [
 
 const aspectRatios: LiclickAspectRatio[] = ['auto', '1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16'];
 const imageSizes: LiclickImageSize[] = ['auto', '1K', '2K', '4K'];
+const pendingSubmissionTimeoutMs = 3 * 60 * 1000;
 const defaultImageGenerationSettings = {
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
@@ -82,7 +85,7 @@ const checkerBackgroundStyle = {
 };
 
 const textureMapDefaultPrompt =
-  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质纹理、颜色、粗糙度和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。';
+  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。';
 
 function buildTextureMapPrompt(userPrompt: string) {
   const trimmedPrompt = userPrompt.trim();
@@ -102,6 +105,28 @@ function isTextureMapGeneration(generation: Generation) {
 
 function isRunningGeneration(generation?: Generation) {
   return Boolean(generation && !generation.resultUrl && (generation.status === 'queued' || generation.status === 'running'));
+}
+
+function getGenerationStartedAt(generation: Generation) {
+  const startedAt = generation.metadata.startedAt;
+  return typeof startedAt === 'string' ? Date.parse(startedAt) : Number.NaN;
+}
+
+function isGenerationSubmittedToServer(generation: Generation) {
+  return generation.metadata.serverSubmitted === true || Boolean(generation.metadata.taskId);
+}
+
+function resolveRequestImageSize(imageSize: LiclickImageSize) {
+  return imageSize;
+}
+
+function resolveRequestAspectRatio(
+  model: LiclickImageModel,
+  aspectRatio: LiclickAspectRatio,
+  requestImageSize: LiclickImageSize,
+) {
+  if (model === 'gpt-image-2' && aspectRatio === 'auto' && requestImageSize !== 'auto') return '1:1';
+  return aspectRatio;
 }
 
 function getImageSize(url: string) {
@@ -172,6 +197,34 @@ export function GeneratePanel() {
   const previewIsGenerating = isRunningGeneration(previewGeneration);
   const previewFailed = previewGeneration?.status === 'failed';
 
+  const markGenerationFailed = useCallback(
+    (generationToFail: Generation, message: string) => {
+      const failedGeneration: Generation = {
+        ...generationToFail,
+        status: 'failed',
+        metadata: {
+          ...generationToFail.metadata,
+          error: message,
+          completedAt: new Date().toISOString(),
+        },
+      };
+      addGeneration(failedGeneration);
+      addProjectGeneration(failedGeneration);
+      finish();
+      setGenerateNotice({
+        tone: 'error',
+        message,
+      });
+      pushToast({
+        tone: 'error',
+        title: isTextureMapGeneration(generationToFail) ? t('textureMapFailed') : 'Generate failed',
+        description: message,
+        dedupeKey: `generation-failed:${generationToFail.id}`,
+      });
+    },
+    [addGeneration, addProjectGeneration, finish, pushToast, t],
+  );
+
   useEffect(() => {
     if (!settingsOpen) return undefined;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -191,12 +244,20 @@ export function GeneratePanel() {
     if (!previewGeneration || previewGeneration.resultUrl) return undefined;
     if (previewGeneration.status !== 'queued' && previewGeneration.status !== 'running') return undefined;
     const generationToPoll = previewGeneration;
+    if (!isGenerationSubmittedToServer(generationToPoll)) {
+      const startedAt = getGenerationStartedAt(generationToPoll);
+      if (Number.isFinite(startedAt) && Date.now() - startedAt < pendingSubmissionTimeoutMs) return undefined;
+      markGenerationFailed(generationToPoll, '生图任务没有成功提交到莉刻后台，请重新生成。');
+      return undefined;
+    }
     const taskId = typeof generationToPoll.metadata.taskId === 'string' ? generationToPoll.metadata.taskId : undefined;
     const clientGenerationId =
       typeof generationToPoll.metadata.clientGenerationId === 'string'
         ? generationToPoll.metadata.clientGenerationId
         : undefined;
-    const jobId = taskId ?? clientGenerationId ?? generationToPoll.id;
+    const serverJobId =
+      typeof generationToPoll.metadata.serverJobId === 'string' ? generationToPoll.metadata.serverJobId : undefined;
+    const jobId = taskId ?? serverJobId ?? clientGenerationId ?? generationToPoll.id;
     let cancelled = false;
     let timeoutId: number | undefined;
     const client = createLiclickApiClient();
@@ -228,6 +289,10 @@ export function GeneratePanel() {
             description: '刷新前的莉刻生成任务已恢复结果。',
             dedupeKey: `generation-restored:${generation.id}`,
           });
+          return;
+        }
+        if (result.status === 'succeeded' && !result.resultUrl) {
+          markGenerationFailed(generationToPoll, '莉刻后台任务已结束，但没有返回图片 URL，已停止等待。');
           return;
         }
         if (result.status === 'running' || result.status === 'queued') {
@@ -270,7 +335,7 @@ export function GeneratePanel() {
       } catch (error) {
         const message = error instanceof Error ? error.message : '';
         if (message.includes('Generation job not found')) {
-          if (!cancelled) timeoutId = window.setTimeout(pollJob, 2500);
+          if (!cancelled) markGenerationFailed(generationToPoll, '莉刻后台没有找到这个生图任务，已停止本地等待，请重新生成。');
           return;
         }
       }
@@ -282,7 +347,7 @@ export function GeneratePanel() {
       cancelled = true;
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [addGeneration, addProjectGeneration, previewGeneration, pushToast]);
+  }, [addGeneration, addProjectGeneration, markGenerationFailed, previewGeneration, pushToast]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
     if (!currentProject) return;
@@ -371,7 +436,7 @@ export function GeneratePanel() {
       resolution: resolutionToSize[resolution],
       framing: 'fit-object',
       colorMode: 'clay-target',
-      fillRatio: 0.97,
+      fillRatio: 0.92,
     });
     setLastCapture(capture);
     return capture;
@@ -416,6 +481,7 @@ export function GeneratePanel() {
           visibleOnly: generateMode === 'visible',
           upscale: generateMode === 'upscale',
           resolution,
+          serverSubmitted: false,
           startedAt: new Date().toISOString(),
         },
       };
@@ -434,6 +500,7 @@ export function GeneratePanel() {
           ...pendingGeneration.metadata,
           objectId: object?.id,
           objectMatrixWorld,
+          serverSubmitted: false,
         },
       };
       start(pendingGeneration);
@@ -441,6 +508,7 @@ export function GeneratePanel() {
       const generation = await createLiclickApiClient().generateTextureSingleView({
         clientGenerationId: generationId,
         projectId: currentProject?.id,
+        workflow: 'liclick',
         mode: 'single',
         prompt: submittedPrompt,
         referenceIds: selectedReferenceIds,
@@ -452,8 +520,8 @@ export function GeneratePanel() {
         visibleOnly: generateMode === 'visible',
         upscale: generateMode === 'upscale',
         model: imageModel,
-        aspectRatio,
-        imageSize,
+        aspectRatio: resolveRequestAspectRatio(imageModel, aspectRatio, resolveRequestImageSize(imageSize)),
+        imageSize: resolveRequestImageSize(imageSize),
         count,
       });
       const alignedGeneration: Generation = {
@@ -461,6 +529,8 @@ export function GeneratePanel() {
         metadata: {
           ...generation.metadata,
           objectMatrixWorld,
+          serverSubmitted: true,
+          serverJobId: generation.metadata.serverJobId ?? generation.id,
         },
       };
       addGeneration(alignedGeneration);
@@ -562,6 +632,7 @@ export function GeneratePanel() {
           materialReferenceId: materialReference.id,
           modelViewReferenceId: modelViewReference.id,
           resolution,
+          serverSubmitted: false,
           startedAt: new Date().toISOString(),
           alphaMode: 'pending-guided-foreground-matte',
         },
@@ -575,6 +646,7 @@ export function GeneratePanel() {
       const generation = await createLiclickApiClient().generateTextureSingleView({
         clientGenerationId: generationId,
         projectId: currentProject?.id,
+        workflow: 'texture-map',
         mode: 'single',
         prompt: texturePrompt,
         referenceIds: [modelViewReference.id, materialReference.id],
@@ -586,8 +658,8 @@ export function GeneratePanel() {
         visibleOnly: true,
         upscale: false,
         model: imageModel,
-        aspectRatio,
-        imageSize,
+        aspectRatio: resolveRequestAspectRatio(imageModel, aspectRatio, resolveRequestImageSize(imageSize)),
+        imageSize: resolveRequestImageSize(imageSize),
         count: 1,
       });
       const textureMapGeneration: Generation = {
@@ -598,6 +670,8 @@ export function GeneratePanel() {
           objectMatrixWorld,
           materialReferenceId: materialReference.id,
           modelViewReferenceId: modelViewReference.id,
+          serverSubmitted: true,
+          serverJobId: generation.metadata.serverJobId ?? generation.id,
           alphaMode: 'pending-guided-foreground-matte',
         },
       };
@@ -722,22 +796,16 @@ export function GeneratePanel() {
       lastCapture?.id === previewGeneration.captureId
         ? lastCapture
         : currentProject?.captures.find((capture) => capture.id === previewGeneration.captureId) ?? lastCapture;
-    const layerGeneration =
-      generationCapture?.maskUrl
-        ? {
-            ...previewGeneration,
-            resultUrl: await createMaskedProjectedImage(
-              previewGeneration.resultUrl.startsWith('http')
-                ? await urlToDataUrl(previewGeneration.resultUrl)
-                : previewGeneration.resultUrl,
-              generationCapture.maskUrl,
-            ),
-            metadata: {
-              ...previewGeneration.metadata,
-              alphaMode: 'guided-foreground-matte',
-            },
-          }
-        : previewGeneration;
+    const layerGeneration = {
+      ...previewGeneration,
+      resultUrl: await createMaskedProjectedImage(
+        previewGeneration.resultUrl.startsWith('http') ? await urlToDataUrl(previewGeneration.resultUrl) : previewGeneration.resultUrl,
+      ),
+      metadata: {
+        ...previewGeneration.metadata,
+        alphaMode: 'solid-background-cutout',
+      },
+    };
     let layer = addProjectedLayerFromGeneration(layerGeneration, generationCapture, selectedObjectId);
     let nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
@@ -826,6 +894,12 @@ export function GeneratePanel() {
     });
   }
 
+  function handleDownloadGenerationImage() {
+    if (!previewGeneration?.resultUrl) return;
+    const kind = isTextureMapGeneration(previewGeneration) ? 'texture_map' : 'liclick_generation';
+    void downloadImageAsset(previewGeneration.resultUrl, `liclick_${kind}_${previewGeneration.id}`);
+  }
+
   return (
     <>
     <Panel title={t('generatePanel')}>
@@ -876,6 +950,15 @@ export function GeneratePanel() {
                   <Layers className="h-4 w-4" />
                 </button>
               )}
+              <button
+                type="button"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
+                title={t('downloadImage')}
+                aria-label={t('downloadImage')}
+                onClick={handleDownloadGenerationImage}
+              >
+                <Download className="h-4 w-4" />
+              </button>
               <button
                 type="button"
                 className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"

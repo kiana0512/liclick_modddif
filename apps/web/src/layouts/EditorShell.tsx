@@ -199,7 +199,7 @@ export function EditorShell({
                   onClick={() => setResolutionMenuOpen(false)}
                 />
                 <div className="absolute left-0 top-full z-50 mt-2 min-w-24 rounded-md border border-white/12 bg-black/92 p-1 text-sm shadow-xl backdrop-blur">
-                  {(['1K', '2K', '4K'] as const).map((item) => (
+                  {(['1K', '2K', '4K', '8K'] as const).map((item) => (
                     <button
                       key={item}
                       type="button"

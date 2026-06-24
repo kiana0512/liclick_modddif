@@ -1,4 +1,4 @@
-export type UvBakeResolution = 1024 | 2048 | 4096;
+export type UvBakeResolution = 1024 | 2048 | 4096 | 8192;
 
 export interface BakeReport {
   id: string;

@@ -161,7 +161,7 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   const size = Math.min(request.resolution, maxCaptureSize);
   const warnings: string[] = [];
   if (request.resolution > maxCaptureSize) {
-    warnings.push('4K capture was limited to 2048px in this browser MVP to avoid freezing the viewport.');
+    warnings.push('Large reference capture was limited to 2048px in this browser MVP to avoid freezing the viewport.');
   }
 
   const aspect = 1;

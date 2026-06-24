@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { getBarycentric, interpolate3, isInsideBarycentric } from './barycentric';
 import { dilateImageData } from './dilation';
-import { sampleImageBilinear, sampleImageNearest } from './imageSampler';
+import { sampleImageBilinear, sampleImageBilinearCleanColor, sampleImageNearest } from './imageSampler';
 import type { BakeProjectedLayerInput } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -21,6 +21,7 @@ const UV_TEXEL_SAMPLE_OFFSETS = [
   [0.25, 0.75],
   [0.75, 0.75],
 ] as const;
+const BACKFACE_DOT_LIMIT = 0.22;
 
 export type RasterizeOutput = {
   canvas: HTMLCanvasElement;
@@ -178,7 +179,7 @@ function resolveProjectedSample({
 
   if (input.bakeInput.enableBackfaceCulling) {
     const cameraToPoint = captureWorldPosition.clone().sub(cameraPosition).normalize();
-    if (worldNormal.dot(cameraToPoint) >= 0) {
+    if (worldNormal.dot(cameraToPoint) > BACKFACE_DOT_LIMIT) {
       return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: true };
     }
   }
@@ -204,7 +205,7 @@ function resolveProjectedSample({
     }
   }
 
-  const sample = applyLayerAdjustments(sampleImageBilinear(input.projectedImage, imageUv.u, imageUv.v), input.layer);
+  const sample = applyLayerAdjustments(sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v), input.layer);
   if (sample[3] <= 4) {
     return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
   }
@@ -228,12 +229,11 @@ function compositeSubpixelSamples(samples: [number, number, number, number][]): 
   }
 
   if (alpha <= 0.00001) return undefined;
-  const coverageAlpha = Math.min(1, alpha / UV_TEXEL_SAMPLE_OFFSETS.length);
   return [
     Math.round(red / alpha),
     Math.round(green / alpha),
     Math.round(blue / alpha),
-    Math.round(coverageAlpha * 255),
+    255,
   ];
 }
 

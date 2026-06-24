@@ -13,6 +13,22 @@ import { useSceneStore } from '@/stores/sceneStore';
 import { createId } from '@/utils/id';
 
 const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
+const MIN_VALID_COVERAGE_RATIO = 0.001;
+const SHARPEN_AMOUNT = 0.24;
+const SHARPEN_DETAIL_THRESHOLD = 5;
+const MAX_CPU_SHARPEN_RESOLUTION = 4096;
+
+function usesSourceAlphaMask(layer: { generationId?: string }) {
+  return typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
+}
+
+function validateBakeCoverage(coveredPixels: number, resolution: number) {
+  const coverageRatio = coveredPixels / (resolution * resolution);
+  if (coverageRatio < MIN_VALID_COVERAGE_RATIO) {
+    throw new Error('UV bake produced almost no valid texels; keeping the projected layer unbaked.');
+  }
+  return coverageRatio;
+}
 
 function fillTransparentTexelsForViewport(imageData: ImageData) {
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
@@ -20,6 +36,63 @@ function fillTransparentTexelsForViewport(imageData: ImageData) {
     imageData.data[offset] = CLAY_TEXTURE_FILL[0];
     imageData.data[offset + 1] = CLAY_TEXTURE_FILL[1];
     imageData.data[offset + 2] = CLAY_TEXTURE_FILL[2];
+  }
+}
+
+function clampByte(value: number) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function isSharpenTarget(imageData: ImageData, coverage: Uint8Array | undefined, pixelIndex: number) {
+  const alpha = imageData.data[pixelIndex * 4 + 3];
+  if (alpha === 0) return false;
+  return coverage ? coverage[pixelIndex] === 1 : true;
+}
+
+function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
+  if (imageData.width > MAX_CPU_SHARPEN_RESOLUTION || imageData.height > MAX_CPU_SHARPEN_RESOLUTION) return;
+
+  const { width, height, data } = imageData;
+  const source = new Uint8ClampedArray(data);
+  const kernel = [
+    { x: -1, y: -1, weight: 1 },
+    { x: 0, y: -1, weight: 2 },
+    { x: 1, y: -1, weight: 1 },
+    { x: -1, y: 0, weight: 2 },
+    { x: 0, y: 0, weight: 4 },
+    { x: 1, y: 0, weight: 2 },
+    { x: -1, y: 1, weight: 1 },
+    { x: 0, y: 1, weight: 2 },
+    { x: 1, y: 1, weight: 1 },
+  ];
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixelIndex = y * width + x;
+      if (!isSharpenTarget(imageData, coverage, pixelIndex)) continue;
+
+      const offset = pixelIndex * 4;
+      for (let channel = 0; channel < 3; channel += 1) {
+        let weightedSum = 0;
+        let totalWeight = 0;
+
+        for (const sample of kernel) {
+          const sampleX = Math.max(0, Math.min(width - 1, x + sample.x));
+          const sampleY = Math.max(0, Math.min(height - 1, y + sample.y));
+          const sampleIndex = sampleY * width + sampleX;
+          if (!isSharpenTarget(imageData, coverage, sampleIndex)) continue;
+
+          weightedSum += source[sampleIndex * 4 + channel] * sample.weight;
+          totalWeight += sample.weight;
+        }
+
+        const original = source[offset + channel];
+        const blurred = totalWeight > 0 ? weightedSum / totalWeight : original;
+        const detail = original - blurred;
+        data[offset + channel] =
+          Math.abs(detail) < SHARPEN_DETAIL_THRESHOLD ? original : clampByte(original + detail * SHARPEN_AMOUNT);
+      }
+    }
   }
 }
 
@@ -39,9 +112,9 @@ export async function bakeProjectedLayerToTexture(
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
 
   const [projectedImage, maskImage, depthImage] = await Promise.all([
-    loadImageData(layer.imageUrl),
-    layer.maskUrl ? loadImageData(layer.maskUrl) : Promise.resolve(undefined),
-    layer.depthUrl ? loadImageData(layer.depthUrl) : Promise.resolve(undefined),
+    loadImageData(layer.imageUrl, input.resolution),
+    layer.maskUrl && !usesSourceAlphaMask(layer) ? loadImageData(layer.maskUrl, input.resolution) : Promise.resolve(undefined),
+    layer.depthUrl && !usesSourceAlphaMask(layer) ? loadImageData(layer.depthUrl, input.resolution) : Promise.resolve(undefined),
   ]);
   const rasterized = await rasterizeProjectedLayerToUv({
     group: importedModel.group,
@@ -54,10 +127,11 @@ export async function bakeProjectedLayerToTexture(
   const rasterContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
   if (!rasterContext) throw new Error('Could not read UV bake canvas.');
   const rasterImage = rasterContext.getImageData(0, 0, input.resolution, input.resolution);
+  sharpenCoveredTexels(rasterImage, rasterized.coverage);
   fillTransparentTexelsForViewport(rasterImage);
   rasterContext.putImageData(rasterImage, 0, 0);
   const imageUrl = rasterized.canvas.toDataURL('image/png');
-  const coverageRatio = rasterized.coveredPixels / (input.resolution * input.resolution);
+  const coverageRatio = validateBakeCoverage(rasterized.coveredPixels, input.resolution);
   const report = createBakeReport({
     startedAt,
     objectId: input.objectId,
@@ -167,9 +241,9 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   for (const layer of layers) {
     const [projectedImage, maskImage, depthImage] = await Promise.all([
-      loadImageData(layer.imageUrl),
-      layer.maskUrl ? loadImageData(layer.maskUrl) : Promise.resolve(undefined),
-      layer.depthUrl ? loadImageData(layer.depthUrl) : Promise.resolve(undefined),
+      loadImageData(layer.imageUrl, input.resolution),
+      layer.maskUrl && !usesSourceAlphaMask(layer) ? loadImageData(layer.maskUrl, input.resolution) : Promise.resolve(undefined),
+      layer.depthUrl && !usesSourceAlphaMask(layer) ? loadImageData(layer.depthUrl, input.resolution) : Promise.resolve(undefined),
     ]);
     const rasterized = await rasterizeProjectedLayerToUv({
       group: importedModel.group,
@@ -205,10 +279,11 @@ export async function bakeVisibleProjectedLayersToTexture(
   for (let offset = 3; offset < composite.data.length; offset += 4) {
     if (composite.data[offset] > 0) writtenTexels += 1;
   }
+  sharpenCoveredTexels(composite);
   fillTransparentTexelsForViewport(composite);
   context.putImageData(composite, 0, 0);
   const imageUrl = canvas.toDataURL('image/png');
-  const coverageRatio = writtenTexels / (input.resolution * input.resolution);
+  const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
   const report = createBakeReport({
     startedAt,
     objectId: input.objectId,

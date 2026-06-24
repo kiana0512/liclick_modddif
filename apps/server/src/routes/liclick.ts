@@ -17,6 +17,7 @@ type GenerationJob = {
   id: string;
   userId: string;
   projectId: string;
+  workflow: 'liclick' | 'texture-map';
   atlasHomeDir?: string;
   input: GenerateImageInput;
   status: 'submitting' | 'running' | 'succeeded' | 'failed';
@@ -80,6 +81,7 @@ async function loadGenerationJobs() {
   if (!content.trim()) return;
   const jobs = JSON.parse(content) as GenerationJob[];
   for (const job of jobs) {
+    job.workflow = job.workflow === 'texture-map' ? 'texture-map' : 'liclick';
     generationJobs.set(job.id, job);
   }
 }
@@ -114,6 +116,7 @@ function getJobResponse(job: GenerationJob) {
       resultUrl: job.resultUrl,
       resultUrls: job.resultUrls,
       taskId: job.taskId,
+      workflow: job.workflow,
       model: job.model,
       extraParams: job.extraParams,
       uploadedReferences: job.uploadedReferences,
@@ -128,6 +131,7 @@ function getJobResponse(job: GenerationJob) {
       status: 'failed',
       error: job.error ?? '莉刻图片生成任务失败。',
       taskId: job.taskId,
+      workflow: job.workflow,
       startedAt: job.startedAt,
       updatedAt: job.updatedAt,
     };
@@ -136,6 +140,7 @@ function getJobResponse(job: GenerationJob) {
     id: job.id,
     status: 'running',
     taskId: job.taskId,
+    workflow: job.workflow,
     model: job.model,
     extraParams: job.extraParams,
     uploadedReferences: job.uploadedReferences,
@@ -148,8 +153,10 @@ function findJob(idOrTaskId: string) {
   return generationJobs.get(idOrTaskId) ?? [...generationJobs.values()].find((job) => job.taskId === idOrTaskId);
 }
 
-function findActiveProjectJob(user: AuthUser, projectId: string) {
-  return [...generationJobs.values()].find((job) => job.userId === user.id && job.projectId === projectId && isActiveJob(job));
+function findActiveProjectJob(user: AuthUser, projectId: string, workflow: GenerationJob['workflow']) {
+  return [...generationJobs.values()].find(
+    (job) => job.userId === user.id && job.projectId === projectId && job.workflow === workflow && isActiveJob(job),
+  );
 }
 
 async function applySubmission(job: GenerationJob, submission: LiclickImageSubmission) {
@@ -178,6 +185,9 @@ async function pollAndUpdateJob(job: GenerationJob) {
     job.status = 'succeeded';
     job.resultUrl = result.resultUrl;
     job.resultUrls = result.resultUrls;
+  } else if (result.terminalWithoutResult) {
+    job.status = 'failed';
+    job.error = '莉刻后台任务已结束，但没有返回图片 URL，已停止等待。';
   }
   await saveGenerationJobs();
   return job;
@@ -212,6 +222,7 @@ function createGenerationJob(jobId: string, user: AuthUser, input: GenerateImage
     id: jobId,
     userId: user.id,
     projectId: input.projectId ?? 'default',
+    workflow: input.workflow === 'texture-map' ? 'texture-map' : 'liclick',
     atlasHomeDir: user.atlasHomeDir,
     input,
     status: 'submitting',
@@ -285,7 +296,8 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
     }
     const input = await readJsonBody<GenerateImageInput>(request);
     const projectId = input.projectId ?? 'default';
-    const activeJob = findActiveProjectJob(user, projectId);
+    const workflow = input.workflow === 'texture-map' ? 'texture-map' : 'liclick';
+    const activeJob = findActiveProjectJob(user, projectId, workflow);
     if (activeJob) {
       startGenerationJob(activeJob);
       sendJson(response, 202, {
@@ -296,7 +308,7 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
       return true;
     }
     const jobId = input.clientGenerationId || `liclick-image-${Date.now()}`;
-    const job = createGenerationJob(jobId, user, { ...input, projectId });
+    const job = createGenerationJob(jobId, user, { ...input, projectId, workflow });
     if (job.userId !== user.id) {
       sendJson(response, 403, { error: 'Generation job belongs to another user.' });
       return true;

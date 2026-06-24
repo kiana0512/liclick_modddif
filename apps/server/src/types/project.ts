@@ -1,5 +1,5 @@
 export type WorkspaceProjectSettings = {
-  resolution: '1K' | '2K' | '4K';
+  resolution: '1K' | '2K' | '4K' | '8K';
   displayMode: string;
   projectionMode: string;
   colorManagement: 'srgb' | 'linear';

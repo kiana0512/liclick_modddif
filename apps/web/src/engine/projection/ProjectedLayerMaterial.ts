@@ -5,6 +5,10 @@ import { buildProjectionMatrixBundle } from './projectionMath';
 const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
 const DEFAULT_FLAT_COLOR = '#f4f5f2';
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
+const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
+const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
+const DISPOSED_MATERIAL_FLAG = 'liclickDisposedMaterial';
+const BACKFACE_DOT_LIMIT = 0.22;
 
 const vertexShader = `
   varying vec3 vWorldPosition;
@@ -92,7 +96,7 @@ const fragmentShader = `
 
     vec3 normal = captureWorldNormal;
     vec3 projectorViewDir = normalize(captureWorldPosition.xyz - projectorPosition);
-    float frontFacing = 1.0 - step(-0.02, dot(normal, projectorViewDir));
+    float frontFacing = 1.0 - step(${BACKFACE_DOT_LIMIT.toFixed(2)}, dot(normal, projectorViewDir));
     float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
     vec4 maskTexel = texture2D(maskMap, uv);
@@ -146,7 +150,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
   }
   const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
-  return new THREE.ShaderMaterial({
+  const material = new THREE.ShaderMaterial({
     name: `LiclickProjectedLayer:${input.layerId}`,
     vertexShader,
     fragmentShader,
@@ -170,6 +174,31 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       baseColor: { value: new THREE.Color(DEFAULT_PREVIEW_COLOR) },
     },
   });
+  material.userData[GENERATED_MATERIAL_FLAG] = true;
+  material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set([texture, maskTexture, depthTexture])];
+  return material;
+}
+
+function markGeneratedMaterial<T extends THREE.Material>(material: T) {
+  material.userData[GENERATED_MATERIAL_FLAG] = true;
+  return material;
+}
+
+function disposeGeneratedMaterial(material: THREE.Material) {
+  if (!material.userData[GENERATED_MATERIAL_FLAG]) return;
+  if (material.userData[DISPOSED_MATERIAL_FLAG]) return;
+  material.userData[DISPOSED_MATERIAL_FLAG] = true;
+  const textures = material.userData[DISPOSABLE_TEXTURES_KEY] as THREE.Texture[] | undefined;
+  textures?.forEach((texture) => texture.dispose());
+  material.dispose();
+}
+
+export function disposeGeneratedMaterialTree(material: THREE.Material | THREE.Material[] | undefined) {
+  if (Array.isArray(material)) {
+    material.forEach(disposeGeneratedMaterial);
+    return;
+  }
+  if (material) disposeGeneratedMaterial(material);
 }
 
 export function createDisplayModeMaterial(displayMode: string, selected: boolean, bakedTexture?: THREE.Texture) {
@@ -183,18 +212,18 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
     bakedTexture.anisotropy = 8;
     bakedTexture.needsUpdate = true;
   }
-  if (displayMode === 'normal') return new THREE.MeshNormalMaterial();
+  if (displayMode === 'normal') return markGeneratedMaterial(new THREE.MeshNormalMaterial());
   if (displayMode === 'wire') {
-    return new THREE.MeshStandardMaterial({
+    return markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: DEFAULT_WIRE_COLOR,
       wireframe: true,
       roughness: 0.9,
       metalness: 0,
-    });
+    }));
   }
   if (displayMode === 'flat') {
     if (bakedTexture) {
-      return new THREE.MeshStandardMaterial({
+      return markGeneratedMaterial(new THREE.MeshStandardMaterial({
         color: '#ffffff',
         map: bakedTexture,
         roughness: 0.92,
@@ -202,39 +231,39 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
         emissive: '#ffffff',
         emissiveMap: bakedTexture,
         emissiveIntensity: 0.18,
-      });
+      }));
     }
-    const material = new THREE.MeshStandardMaterial({
+    const material = markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: DEFAULT_FLAT_COLOR,
       roughness: 0.96,
       metalness: 0,
       emissive: '#ffffff',
       emissiveIntensity: 0.04,
-    });
+    }));
     return material;
   }
 
-  const material = new THREE.MeshStandardMaterial({
+  const material = markGeneratedMaterial(new THREE.MeshStandardMaterial({
     color: bakedTexture ? '#ffffff' : DEFAULT_PREVIEW_COLOR,
     roughness: 0.58,
     metalness: 0,
     emissive: !bakedTexture && selected ? '#3b0764' : '#000000',
     emissiveIntensity: !bakedTexture && selected ? 0.2 : 0,
-  });
+  }));
   if (bakedTexture) material.map = bakedTexture;
   return material;
 }
 
 function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: THREE.Texture) {
   if (bakedTexture) {
-    return new THREE.MeshStandardMaterial({
+    return markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: '#ffffff',
       map: bakedTexture,
       roughness: material instanceof THREE.MeshStandardMaterial ? Math.max(0.42, material.roughness) : 0.58,
       metalness: material instanceof THREE.MeshStandardMaterial ? Math.min(0.18, material.metalness) : 0,
       emissive: '#000000',
       emissiveIntensity: 0,
-    });
+    }));
   }
   if (material instanceof THREE.MeshStandardMaterial || material instanceof THREE.MeshPhysicalMaterial) {
     const previewMaterial = material.clone();
@@ -248,23 +277,23 @@ function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: T
     previewMaterial.roughness = Number.isFinite(previewMaterial.roughness) ? Math.max(0.46, previewMaterial.roughness) : 0.58;
     previewMaterial.metalness = Number.isFinite(previewMaterial.metalness) ? Math.min(0.25, previewMaterial.metalness) : 0;
     previewMaterial.needsUpdate = true;
-    return previewMaterial;
+    return markGeneratedMaterial(previewMaterial);
   }
   if (material instanceof THREE.MeshBasicMaterial && material.map) {
     material.map.colorSpace = THREE.SRGBColorSpace;
     material.map.needsUpdate = true;
-    return new THREE.MeshStandardMaterial({
+    return markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: '#ffffff',
       map: material.map,
       roughness: 0.58,
       metalness: 0,
-    });
+    }));
   }
-  return new THREE.MeshStandardMaterial({
+  return markGeneratedMaterial(new THREE.MeshStandardMaterial({
     color: DEFAULT_PREVIEW_COLOR,
     roughness: 0.58,
     metalness: 0,
-  });
+  }));
 }
 
 export function createPbrPreviewMaterial(

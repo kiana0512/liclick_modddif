@@ -5,6 +5,7 @@ import type { ReferenceImage } from './project';
 export type GenerationMode = 'single' | 'multiview' | 'inpaint' | 'normal';
 export type GenerationStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed';
 export type TextureGenerationStyle = 'realistic' | 'albedo';
+export type GenerationWorkflow = 'liclick' | 'texture-map';
 
 export type Generation = {
   id: string;
@@ -24,9 +25,10 @@ export type GenerateTextureInput = {
   negativePrompt?: string;
   referenceIds: string[];
   referenceImages?: ReferenceImage[];
+  workflow?: GenerationWorkflow;
   capture?: Capture;
   object?: SceneObject;
-  resolution?: '1K' | '2K' | '4K';
+  resolution?: '1K' | '2K' | '4K' | '8K';
   textureMode?: TextureGenerationStyle;
   visibleOnly: boolean;
   upscale: boolean;

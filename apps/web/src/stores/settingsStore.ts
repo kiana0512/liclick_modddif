@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-type Resolution = '1K' | '2K' | '4K';
+type Resolution = '1K' | '2K' | '4K' | '8K';
 export type EnvironmentPreset = 'color' | 'studio' | 'soft' | 'dark';
 
 type SettingsStore = {

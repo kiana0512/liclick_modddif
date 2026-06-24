@@ -13,6 +13,7 @@ const resolutionToSize = {
   '1K': 1024,
   '2K': 2048,
   '4K': 4096,
+  '8K': 8192,
 } as const;
 
 const displayOptions: Array<{ value: DisplayMode; label: string }> = [

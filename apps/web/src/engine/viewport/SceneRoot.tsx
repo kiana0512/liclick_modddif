@@ -5,6 +5,7 @@ import {
   createDisplayModeMaterial,
   createPbrPreviewMaterial,
   createProjectedLayerMaterial,
+  disposeGeneratedMaterialTree,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
@@ -77,6 +78,8 @@ function ImportedModel() {
   const visibleStackIsBaked = Boolean(bakedTextureRecord);
   const previewProjectedLayer = visibleStackIsBaked ? undefined : visibleProjectedLayers[0];
   const canPreviewProjectedLayer = displayMode === 'flat';
+  const previewUsesSourceAlpha =
+    typeof previewProjectedLayer?.generationId === 'string' && previewProjectedLayer.generationId.startsWith('texture-map');
 
   useEffect(() => {
     if (!bakedTextureRecord?.imageUrl) {
@@ -84,12 +87,14 @@ function ImportedModel() {
       return undefined;
     }
     let cancelled = false;
+    let loadedTexture: THREE.Texture | undefined;
     const textureLoader = new THREE.TextureLoader();
     textureLoader.loadAsync(bakedTextureRecord.imageUrl).then((texture) => {
       if (cancelled) {
         texture.dispose();
         return;
       }
+      loadedTexture = texture;
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.flipY = false;
       texture.wrapS = THREE.ClampToEdgeWrapping;
@@ -103,6 +108,7 @@ function ImportedModel() {
     });
     return () => {
       cancelled = true;
+      loadedTexture?.dispose();
     };
   }, [bakedTextureRecord?.imageUrl]);
 
@@ -131,8 +137,8 @@ function ImportedModel() {
               hue: (previewProjectedLayer.adjustments?.hue ?? 0) / 100,
               saturation: (previewProjectedLayer.adjustments?.saturation ?? 0) / 100,
               lightness: (previewProjectedLayer.adjustments?.lightness ?? 0) / 100,
-              useMask: true,
-              useDepthCheck: true,
+              useMask: !previewUsesSourceAlpha,
+              useDepthCheck: !previewUsesSourceAlpha,
               enableBackfaceCulling: true,
               edgeFeather: 0.035,
               depthBias: 0.025,
@@ -140,7 +146,7 @@ function ImportedModel() {
           : undefined;
 
       if (cancelled) {
-        projectedMaterial?.dispose();
+        disposeGeneratedMaterialTree(projectedMaterial);
         return;
       }
 
@@ -152,11 +158,14 @@ function ImportedModel() {
           | undefined;
         const bakedTexture = visibleStackIsBaked ? loadedBakedTexture : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
+        const previousMaterial = child.material;
         if (displayMode === 'pbr' && !projectedMaterial) {
           child.material = createPbrPreviewMaterial(originalMaterial, selected, bakedTexture);
+          disposeGeneratedMaterialTree(previousMaterial);
           return;
         }
         child.material = projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
+        if (previousMaterial !== child.material) disposeGeneratedMaterialTree(previousMaterial);
       });
     }
 
@@ -171,6 +180,7 @@ function ImportedModel() {
     importedModel,
     loadedBakedTexture,
     previewProjectedLayer,
+    previewUsesSourceAlpha,
     selectedObjectId,
     visibleStackIsBaked,
   ]);

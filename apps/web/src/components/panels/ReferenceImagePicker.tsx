@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Copy, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
+import { downloadImageAsset } from '@/utils/downloadImage';
 
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -138,6 +139,11 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
   function handleRename(reference: ReferenceImage) {
     const nextName = window.prompt(t('rename'), reference.name)?.trim();
     if (nextName) renameReference(reference.id, nextName);
+    setMenu(undefined);
+  }
+
+  function handleDownload(reference: ReferenceImage) {
+    void downloadImageAsset(reference.url, `liclick_reference_${reference.name || reference.id}`);
     setMenu(undefined);
   }
 
@@ -317,6 +323,17 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
             >
               <Copy className="h-3.5 w-3.5" />
               {t('duplicate')}
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-white/10"
+              onClick={() => {
+                const reference = references.find((item) => item.id === menu.referenceId);
+                if (reference) handleDownload(reference);
+              }}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t('downloadImage')}
             </button>
             <button
               type="button"

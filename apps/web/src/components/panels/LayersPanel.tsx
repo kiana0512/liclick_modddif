@@ -8,12 +8,13 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Circle, CircleDot, Copy, Eye, EyeOff, Focus, MoreVertical, PaintBucket, Plus, Trash2 } from 'lucide-react';
+import { Circle, CircleDot, Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useT } from '@/stores/i18nStore';
 import type { Layer } from '@/types/layer';
+import { downloadImageAsset } from '@/utils/downloadImage';
 
 type MenuState = {
   layerId: string;
@@ -291,6 +292,9 @@ export function LayersPanel() {
               captureHistory();
               duplicateLayer(menu.layerId);
             }}
+            onDownloadImage={(layer) => {
+              void downloadImageAsset(layer.imageUrl, `liclick_layer_${layer.name || layer.id}`);
+            }}
             onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
             onDelete={() => {
               captureHistory();
@@ -540,6 +544,7 @@ function LayerMenu({
   onMoveUp,
   onMoveDown,
   onDuplicate,
+  onDownloadImage,
   onRename,
   onDelete,
 }: {
@@ -551,6 +556,7 @@ function LayerMenu({
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDuplicate: () => void;
+  onDownloadImage: (layer: Layer) => void;
   onRename: (layer: Layer) => void;
   onDelete: () => void;
 }) {
@@ -579,6 +585,11 @@ function LayerMenu({
       <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
         {t('duplicate')}
       </MenuButton>
+      {layer.imageUrl && (
+        <MenuButton onClick={() => run(() => onDownloadImage(layer))} icon={<Download className="h-4 w-4" />}>
+          {t('downloadImage')}
+        </MenuButton>
+      )}
       <MenuButton onClick={() => run(() => onRename(layer))}>{t('rename')}</MenuButton>
       <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
         {t('delete')}
