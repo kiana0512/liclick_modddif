@@ -110,6 +110,7 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
   const [isDragging, setIsDragging] = useState(false);
   const [canvasKey, setCanvasKey] = useState(0);
   const [viewportIssue, setViewportIssue] = useState<string>();
+  const recoveryAttemptsRef = useRef(0);
   const activeDragType = useDragInteractionStore((state) => state.activeDragType);
   const startFileDrag = useDragInteractionStore((state) => state.startFileDrag);
   const clearDrag = useDragInteractionStore((state) => state.clearDrag);
@@ -146,6 +147,7 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
     >
       <Canvas
         key={canvasKey}
+        dpr={[1, 1.5]}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}
         gl={{
           preserveDrawingBuffer: false,
@@ -159,10 +161,16 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
           gl.toneMapping = THREE.ACESFilmicToneMapping;
           gl.toneMappingExposure = exposure;
           setViewportIssue(undefined);
+          recoveryAttemptsRef.current = 0;
           const canvas = gl.domElement;
           const handleContextLost = (event: Event) => {
             event.preventDefault();
-            setViewportIssue('WebGL 渲染上下文已中断。当前项目数据仍然保留，可以重新加载视口。');
+            recoveryAttemptsRef.current += 1;
+            if (recoveryAttemptsRef.current <= 2) {
+              window.setTimeout(() => setCanvasKey((key) => key + 1), 250);
+              return;
+            }
+            setViewportIssue('WebGL 渲染上下文已中断。已尝试自动恢复，当前项目数据仍然保留。');
           };
           const handleContextRestored = () => {
             setViewportIssue(undefined);
@@ -170,7 +178,6 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
           };
           canvas.addEventListener('webglcontextlost', handleContextLost);
           canvas.addEventListener('webglcontextrestored', handleContextRestored);
-          gl.getContext().canvas.addEventListener('webglcontextlost', handleContextLost);
         }}
         onError={(error) => {
           console.error('[Liclick 3D Texture] Viewport renderer failed:', error);

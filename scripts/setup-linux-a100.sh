@@ -45,6 +45,7 @@ IDAAS_JWT_SSO_ENABLED="${IDAAS_JWT_SSO_ENABLED:-false}"
 IDAAS_JWT_SSO_URL="${IDAAS_JWT_SSO_URL:-https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62}"
 IDAAS_ENTERPRISE_ID="${IDAAS_ENTERPRISE_ID:-lilith}"
 IDAAS_SP_SERVICE_URL="${IDAAS_SP_SERVICE_URL:-}"
+LICLICK_AUTO_KILL_PORTS="${LICLICK_AUTO_KILL_PORTS:-1}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run as root: sudo PUBLIC_URL=https://your-domain.example bash scripts/setup-linux-a100.sh"
@@ -87,11 +88,76 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   ca-certificates \
   curl \
   gnupg \
+  lsof \
   rsync \
   nginx \
   openssl \
+  psmisc \
   build-essential \
   git
+
+port_pids() {
+  local port="$1"
+  {
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -nP -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true
+    fi
+    if command -v fuser >/dev/null 2>&1; then
+      fuser "${port}/tcp" 2>/dev/null || true
+    fi
+    if command -v ss >/dev/null 2>&1; then
+      ss -ltnp "sport = :${port}" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' || true
+    fi
+  } | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u || true
+}
+
+wait_for_port_release() {
+  local port="$1"
+  local attempt
+  for attempt in $(seq 1 30); do
+    if [[ -z "$(port_pids "${port}")" ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+ensure_port_free() {
+  local port="$1"
+  local label="$2"
+  local pids
+  pids="$(port_pids "${port}")"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  if [[ "${LICLICK_AUTO_KILL_PORTS}" != "1" ]]; then
+    echo "ERROR: ${label} port ${port} is occupied by PID(s): ${pids//$'\n'/, }"
+    echo "Run: sudo lsof -ti:${port} | xargs -r sudo kill -9"
+    exit 1
+  fi
+
+  echo "==> ${label} port ${port} is occupied by PID(s): ${pids//$'\n'/, }; stopping them"
+  while read -r pid; do
+    [[ -n "${pid}" ]] && kill "${pid}" 2>/dev/null || true
+  done <<< "${pids}"
+
+  if ! wait_for_port_release "${port}"; then
+    pids="$(port_pids "${port}")"
+    echo "==> ${label} port ${port} still busy; force stopping PID(s): ${pids//$'\n'/, }"
+    while read -r pid; do
+      [[ -n "${pid}" ]] && kill -9 "${pid}" 2>/dev/null || true
+    done <<< "${pids}"
+  fi
+
+  if ! wait_for_port_release "${port}"; then
+    pids="$(port_pids "${port}")"
+    echo "ERROR: Could not free ${label} port ${port}. Remaining PID(s): ${pids//$'\n'/, }"
+    echo "Run: sudo lsof -ti:${port} | xargs -r sudo kill -9"
+    exit 1
+  fi
+}
 
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'Number(process.versions.node.split(`.`)[0])')" -lt 20 ]]; then
   echo "==> Installing Node.js ${NODE_MAJOR}.x"
@@ -472,6 +538,12 @@ chown -R "${APP_USER}:${APP_USER}" "${WORKSPACE_DIR}"
 
 echo "==> Starting services"
 systemctl daemon-reload
+systemctl stop "${APP_NAME}.service" 2>/dev/null || true
+ensure_port_free "${SERVER_PORT}" "backend"
+if [[ "${MOUNT_MODE}" != "comfyui" ]]; then
+  systemctl stop nginx 2>/dev/null || true
+  ensure_port_free "${PUBLIC_PORT}" "public nginx"
+fi
 pkill -u "${APP_USER}" -f "atlas-skillhub.*gateway.*login" 2>/dev/null || true
 pkill -u "${APP_USER}" -f "node .*gateway login" 2>/dev/null || true
 systemctl enable --now "${APP_NAME}.service"

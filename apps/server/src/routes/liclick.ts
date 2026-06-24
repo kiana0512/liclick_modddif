@@ -38,6 +38,8 @@ const generationJobs = new Map<string, GenerationJob>();
 let jobsLoaded = false;
 let writeQueue = Promise.resolve();
 const transientWriteErrorCodes = new Set(['UNKNOWN', 'EPERM', 'EBUSY', 'EACCES', 'EMFILE', 'ENFILE']);
+const maxPersistedJobs = 50;
+const maxPersistedStringLength = 2000;
 
 function jobsFile() {
   return path.join(serverConfig.workspaceDir, 'generation-jobs.json');
@@ -72,6 +74,34 @@ async function writeJobsFileWithRetry(filePath: string, content: string) {
   throw lastError;
 }
 
+function trimPersistedString(value: string) {
+  if (value.startsWith('data:')) return `[data-url:${value.length}]`;
+  if (value.length <= maxPersistedStringLength) return value;
+  return `${value.slice(0, maxPersistedStringLength)}...[trimmed:${value.length}]`;
+}
+
+function sanitizeForPersistence(value: unknown, depth = 0): unknown {
+  if (depth > 5) return '[max-depth]';
+  if (typeof value === 'string') return trimPersistedString(value);
+  if (typeof value !== 'object' || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeForPersistence(item, depth + 1));
+  const record = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    if (/raw|content|base64|buffer/i.test(key)) {
+      output[key] = '[omitted]';
+      continue;
+    }
+    output[key] = sanitizeForPersistence(child, depth + 1);
+  }
+  return output;
+}
+
+function getPersistableJob(job: GenerationJob) {
+  const { promise: _promise, ...persisted } = job;
+  return sanitizeForPersistence(persisted) as Omit<GenerationJob, 'promise'>;
+}
+
 async function loadGenerationJobs() {
   if (jobsLoaded) return;
   jobsLoaded = true;
@@ -89,9 +119,9 @@ async function loadGenerationJobs() {
 async function saveGenerationJobs() {
   await fs.promises.mkdir(serverConfig.workspaceDir, { recursive: true });
   const jobs = [...generationJobs.values()]
-    .map(({ promise: _promise, ...job }) => job)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, 200);
+    .slice(0, maxPersistedJobs)
+    .map(getPersistableJob);
   const task = writeQueue
     .then(() => writeJobsFileWithRetry(jobsFile(), `${JSON.stringify(jobs, null, 2)}\n`))
     .catch((error: unknown) => {

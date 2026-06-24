@@ -13,6 +13,8 @@
     "dev:server": "corepack pnpm --filter @liclick/server dev",
     "serve:server": "corepack pnpm --filter @liclick/server serve",
     "workspace:up": "powershell -ExecutionPolicy Bypass -File scripts/start-workspace-server.ps1",
+    "perf:audit": "node scripts/perf-audit.mjs",
+    "perf:stress": "node scripts/perf-audit.mjs --stress",
     "db:generate": "corepack pnpm --filter @liclick/server db:generate",
     "db:push": "corepack pnpm --filter @liclick/server db:push",
     "db:studio": "corepack pnpm --filter @liclick/server db:studio",

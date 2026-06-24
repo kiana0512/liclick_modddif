@@ -62,6 +62,96 @@ function killPortOnWindows(port) {
   });
 }
 
+function runCommand(command, args, options = {}) {
+  const child = spawn(command, args, {
+    cwd: repoRoot,
+    shell: false,
+    stdio: options.stdio ?? ['ignore', 'pipe', 'pipe'],
+  });
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on('exit', (code) => resolve({ code: code ?? 0, stdout, stderr }));
+    child.on('error', reject);
+  });
+}
+
+async function commandExists(command) {
+  const result = await runCommand('sh', ['-lc', `command -v ${command}`]);
+  return result.code === 0;
+}
+
+async function getPortPidsOnUnix(port) {
+  const commands = [];
+  if (await commandExists('lsof')) commands.push(`lsof -nP -tiTCP:${port} -sTCP:LISTEN`);
+  if (await commandExists('fuser')) commands.push(`fuser ${port}/tcp 2>/dev/null`);
+  if (await commandExists('ss')) {
+    commands.push(
+      `ss -ltnp "sport = :${port}" 2>/dev/null | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p'`,
+    );
+  }
+
+  const pids = new Set();
+  for (const command of commands) {
+    const result = await runCommand('sh', ['-lc', command]);
+    for (const token of `${result.stdout}\n${result.stderr}`.matchAll(/\b\d+\b/g)) {
+      const pid = Number(token[0]);
+      if (pid > 1 && pid !== process.pid) pids.add(pid);
+    }
+  }
+  return [...pids];
+}
+
+async function waitForPortReleaseOnUnix(port, timeoutMs = 3000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const pids = await getPortPidsOnUnix(port);
+    if (pids.length === 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return false;
+}
+
+async function killPortOnUnix(port) {
+  const pids = await getPortPidsOnUnix(port);
+  if (pids.length === 0) return;
+  console.log(`[dev] Port ${port} is busy; killing listener PID(s): ${pids.join(', ')}`);
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch (error) {
+      if (error?.code !== 'ESRCH') {
+        throw new Error(`Could not stop PID ${pid} on port ${port}: ${error?.message ?? error}`);
+      }
+    }
+  }
+
+  if (!(await waitForPortReleaseOnUnix(port))) {
+    for (const pid of await getPortPidsOnUnix(port)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch (error) {
+        if (error?.code !== 'ESRCH') {
+          throw new Error(`Could not force-stop PID ${pid} on port ${port}: ${error?.message ?? error}`);
+        }
+      }
+    }
+  }
+
+  if (!(await waitForPortReleaseOnUnix(port))) {
+    throw new Error(
+      `Port ${port} is still occupied. Try: lsof -ti:${port} | xargs kill -9, then restart dev.`,
+    );
+  }
+}
+
 async function prepareWorkspacePort() {
   if (!restartWorkspace) return;
 
@@ -78,10 +168,12 @@ async function prepareWorkspacePort() {
   }
 
   if (health?.ok) {
-    console.warn(
-      `[dev] Existing backend detected, but automatic port cleanup is only implemented for Windows. Stop the process on ${workspacePort} before running dev.`,
+    console.log(
+      `[dev] Found an existing workspace server on 127.0.0.1:${workspacePort}; restarting it so this dev run owns the backend.`,
     );
   }
+  await killPortOnUnix(workspacePort);
+  await killPortOnUnix(webPort);
 }
 
 await prepareWorkspacePort();

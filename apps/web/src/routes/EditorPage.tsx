@@ -217,7 +217,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     window.clearTimeout(autosaveTimerRef.current);
     setSaveStatus('idle');
     autosaveTimerRef.current = window.setTimeout(() => {
-      const snapshot = getProjectSnapshot();
+      const snapshot = getProjectSnapshot({ refreshThumbnail: false });
       if (!snapshot) return;
       setSaveStatus('saving');
       void saveToWorkspaceServer(snapshot)
@@ -232,17 +232,17 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
             dedupeKey: authRequired ? 'workspace-auth-required-editor-save' : 'workspace-server-offline',
           });
       });
-    }, 1500);
+    }, 5000);
     return () => window.clearTimeout(autosaveTimerRef.current);
     // Autosave is intentionally keyed to project dirty/id/mode. The save helpers read the latest stores.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.dirty, project?.id, project?.workspaceMode, pushToast]);
 
-  function getProjectSnapshot(): Project | undefined {
+  function getProjectSnapshot(options: { refreshThumbnail?: boolean } = {}): Project | undefined {
     if (!project) return undefined;
     return {
       ...project,
-      thumbnail: getViewportThumbnailDataUrl() ?? project.thumbnail,
+      thumbnail: options.refreshThumbnail === false ? project.thumbnail : getViewportThumbnailDataUrl() ?? project.thumbnail,
       objects: useSceneStore.getState().objects,
       layers: useLayerStore.getState().layers,
       generations: useGenerationStore.getState().generations,

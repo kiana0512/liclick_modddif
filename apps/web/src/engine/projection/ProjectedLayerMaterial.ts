@@ -122,6 +122,7 @@ const fragmentShader = `
 export async function createProjectedLayerMaterial(input: ProjectionLayerInput) {
   const texture = await new THREE.TextureLoader().loadAsync(input.imageUrl);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -134,6 +135,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   neutralTexture.needsUpdate = true;
   const maskTexture = input.maskUrl ? await new THREE.TextureLoader().loadAsync(input.maskUrl) : neutralTexture;
   const depthTexture = input.depthUrl ? await new THREE.TextureLoader().loadAsync(input.depthUrl) : neutralTexture;
+  maskTexture.flipY = false;
+  depthTexture.flipY = false;
   maskTexture.wrapS = THREE.ClampToEdgeWrapping;
   maskTexture.wrapT = THREE.ClampToEdgeWrapping;
   depthTexture.wrapS = THREE.ClampToEdgeWrapping;

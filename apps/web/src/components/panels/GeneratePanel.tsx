@@ -185,6 +185,8 @@ export function GeneratePanel() {
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const submitLockRef = useRef(false);
+  const autoBakeRunningRef = useRef(false);
+  const autoBakeQueueRef = useRef<Layer[]>([]);
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const isTextureMapTab = tab === 'multiview';
   const tabGenerations = generations.filter((generation) => {
@@ -753,41 +755,100 @@ export function GeneratePanel() {
     });
   }
 
+  function queueAutoBakeTask(callback: () => void) {
+    const idleWindow = window as typeof window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    };
+    if (idleWindow.requestIdleCallback) {
+      idleWindow.requestIdleCallback(callback, { timeout: 900 });
+      return;
+    }
+    window.setTimeout(callback, 120);
+  }
+
   async function autoBakeVisibleProjectedLayers(layer: Layer) {
-    const model = useSceneStore.getState().importedModel;
-    if (!model || !layer.camera) return undefined;
-    const result = await bakeVisibleProjectedLayersToTexture({
-      objectId: layer.objectId ?? model.objectId,
+    const currentImportedModel = useSceneStore.getState().importedModel;
+    if (!currentImportedModel) throw new Error(t('importModelFirst'));
+    const objectId = layer.objectId ?? selectedObjectId ?? currentImportedModel.objectId;
+    const bakeResult = await bakeVisibleProjectedLayersToTexture({
+      objectId,
       resolution: resolutionToSize[resolution],
       enableBackfaceCulling: true,
       enableDilation: true,
-      dilationPixels: 3,
+      dilationPixels: 4,
     });
-    await applyBakedTextureToObject(model.group, result.imageUrl);
+    await applyBakedTextureToObject(currentImportedModel.group, bakeResult.imageUrl);
 
-    let bakedImageUrl = result.imageUrl;
-    try {
-      bakedImageUrl = await persistGeneratedImage('baked', result.imageUrl, `${result.bakedTexture.id}.png`);
-    } catch (error) {
-      console.warn('[Liclick 3D Texture] Could not persist baked texture asset:', error);
-    }
-
-    if (bakedImageUrl !== result.imageUrl) {
-      const project = useProjectStore.getState().getCurrentProject();
-      if (project) {
-        updateCurrentProject({
-          bakedTextures: project.bakedTextures.map((texture) =>
-            texture.id === result.bakedTexture.id ? { ...texture, imageUrl: bakedImageUrl } : texture,
-          ),
-        });
-        await applyBakedTextureToObject(model.group, bakedImageUrl);
+    let bakedTextures = useProjectStore.getState().getCurrentProject()?.bakedTextures ?? currentProject?.bakedTextures ?? [];
+    if (currentProject?.workspaceMode === 'local-server') {
+      const imageUrl = await persistGeneratedImage('baked', bakeResult.imageUrl, `${bakeResult.bakedTexture.id}.png`);
+      if (imageUrl !== bakeResult.imageUrl) {
+        bakedTextures = bakedTextures.map((item) =>
+          item.id === bakeResult.bakedTexture.id ? { ...item, imageUrl } : item,
+        );
+        updateCurrentProject({ bakedTextures });
+        await applyBakedTextureToObject(currentImportedModel.group, imageUrl);
       }
     }
 
     const bakedLayers = useLayerStore.getState().layers;
     setProjectLayers(bakedLayers);
     await saveCriticalProjectState({ layers: bakedLayers });
-    return result;
+    return bakeResult;
+  }
+
+  function drainAutoBakeQueue() {
+    if (autoBakeRunningRef.current) {
+      return;
+    }
+    const layer = autoBakeQueueRef.current.shift();
+    if (!layer) return;
+    autoBakeRunningRef.current = true;
+
+    queueAutoBakeTask(() => {
+      void (async () => {
+        pushToast({
+          tone: 'info',
+          title: '自动烘焙开始',
+          description: `${layer.name} 正在生成 UV 贴图。`,
+          dedupeKey: `auto-bake-start:${layer.id}`,
+        });
+        try {
+          const bakeResult = await autoBakeVisibleProjectedLayers(layer);
+          pushToast({
+            tone: 'success',
+            title: '自动烘焙完成',
+            description: `已应用 ${bakeResult.bakedTexture.width}px UV 贴图，覆盖率 ${(bakeResult.report.coverageRatio * 100).toFixed(1)}%。`,
+            dedupeKey: `auto-bake-success:${layer.id}`,
+          });
+        } catch (error) {
+          console.error('[Liclick 3D Texture] Auto bake failed:', error);
+          pushToast({
+            tone: 'warning',
+            title: '自动烘焙失败',
+            description: error instanceof Error ? error.message : '投影层已保留，请稍后重试烘焙。',
+            dedupeKey: `auto-bake-failed:${layer.id}`,
+          });
+        } finally {
+          autoBakeRunningRef.current = false;
+          drainAutoBakeQueue();
+        }
+      })();
+    });
+  }
+
+  function scheduleAutoBakeVisibleProjectedLayers(layer: Layer) {
+    autoBakeQueueRef.current.push(layer);
+    if (autoBakeRunningRef.current || autoBakeQueueRef.current.length > 1) {
+      pushToast({
+        tone: 'info',
+        title: '自动烘焙已排队',
+        description: `队列中还有 ${autoBakeQueueRef.current.length} 个图层等待烘焙。`,
+        dedupeKey: 'auto-bake-queued',
+      });
+      return;
+    }
+    drainAutoBakeQueue();
   }
 
   async function handleAddProjectedLayer() {
@@ -830,27 +891,9 @@ export function GeneratePanel() {
     pushToast({
       tone: 'success',
       title: '投影图层已添加',
-      description: `${layer.name} 已按生成时视角投射到模型。`,
+      description: `${layer.name} 已按生成时视角投射到模型，正在后台自动烘焙。`,
     });
-    try {
-      const bakeResult = await autoBakeVisibleProjectedLayers(layer);
-      if (bakeResult) {
-        pushToast({
-          tone: 'success',
-          title: '自动烘焙完成',
-          description: `${t('coverage')}: ${Math.round(bakeResult.report.coverageRatio * 100)} %`,
-          dedupeKey: `auto-bake:${layer.id}`,
-        });
-      }
-    } catch (error) {
-      console.error('[Liclick 3D Texture] Auto bake failed:', error);
-      pushToast({
-        tone: 'warning',
-        title: '图层已添加，自动烘焙失败',
-        description: error instanceof Error ? error.message : '请检查模型 UV、投射相机和透明图层。',
-        dedupeKey: `auto-bake-failed:${layer.id}`,
-      });
-    }
+    scheduleAutoBakeVisibleProjectedLayers(layer);
   }
 
   async function handleAddGenerationAsReference() {

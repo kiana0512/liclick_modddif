@@ -16,6 +16,8 @@ secrets/*
 apps/server/.env
 logs/
 workspace/*.db
+workspace/generation-jobs.json
+workspace/atlas-homes/
 workspace/auth.json
 workspace/users/
 workspace/projects/

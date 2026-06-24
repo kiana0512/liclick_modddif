@@ -69,12 +69,39 @@ This command is idempotent. Use the same command for version updates after `git 
 It will:
 
 - install Node.js, pnpm, build tools, nginx packages, and Atlas Skillhub
+- install `lsof` and `psmisc` for deployment-time port cleanup
 - copy source to `/opt/liclick-3d-texture`
 - install dependencies and build frontend/backend
 - write `/etc/liclick-3d-texture.env`
 - create and enable `liclick-3d-texture.service`
 - install a ComfyUI custom node mount into `/data/ai_art_comfyui/apps/ComfyUI/custom_nodes/liclick-3d-texture-mount`
 - keep persistent data under `/var/lib/liclick-3d-texture/workspace`
+
+## Port Cleanup Policy
+
+The Linux deploy scripts now free required ports before starting services.
+
+Default behavior:
+
+- `LICLICK_AUTO_KILL_PORTS=1`
+- stop `liclick-3d-texture.service`
+- free `SERVER_PORT` with `SIGTERM`, then `SIGKILL` if needed
+- in nginx mode, stop nginx and free `PUBLIC_PORT`
+- if a port still cannot be freed, abort with the exact manual command:
+
+```bash
+sudo lsof -ti:PORT | xargs -r sudo kill -9
+```
+
+Disable automatic killing only when debugging a shared host:
+
+```bash
+sudo LICLICK_AUTO_KILL_PORTS=0 MOUNT_MODE=comfyui \
+  PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
+  bash scripts/linux-start.sh
+```
+
+In `MOUNT_MODE=comfyui`, the script frees the backend `SERVER_PORT` only. It does not kill ComfyUI's public listener because ComfyUI owns that process.
 
 After first install, restart ComfyUI once so it loads the custom node:
 
@@ -93,6 +120,18 @@ Backend:
 ```bash
 curl -fsS http://127.0.0.1:4517/api/health
 ```
+
+Performance and garbage audit:
+
+```bash
+node scripts/perf-audit.mjs
+LICLICK_STRESS_BASE_URL=http://127.0.0.1:4517 \
+LICLICK_STRESS_USERS=30 \
+LICLICK_STRESS_SECONDS=30 \
+node scripts/perf-audit.mjs --stress
+```
+
+A healthy run should keep `workspace/generation-jobs.json` below 50 MB, report no unexpected large runtime files, and complete the 30-user health stress with zero failed requests.
 
 ComfyUI mount:
 
@@ -143,6 +182,15 @@ The provider status must include:
 ```
 
 Clicking `飞书登录` starts the Atlas gateway login flow. In the current interactive mode, Atlas expects a server-local callback at `localhost:20265`.
+
+If Atlas reports that its local callback port is occupied, rerun deployment with service-token mode for shared server use:
+
+```bash
+sudo MOUNT_MODE=comfyui \
+  PUBLIC_URL=http://10.3.2.59:46001/liclick/texture \
+  ATLAS_LOGIN_MODE=service-token \
+  bash scripts/linux-start.sh
+```
 
 ## Logs
 
