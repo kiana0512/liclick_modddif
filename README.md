@@ -1,6 +1,6 @@
 # Liclick 3D Texture
 
-Liclick 3D Texture is the foundation for a Web AI 3D Texture Studio. The current MVP creates a long-lived React + Three.js workspace with Projects, Editor, Web3D viewport, floating dock panels, real local model import, viewport capture, mock generation, projected layers, UV bake, transform controls, and local workspace persistence.
+Liclick 3D Texture is the foundation for a Web AI 3D Texture Studio. The current MVP creates a long-lived React + Three.js workspace with Projects, Editor, Web3D viewport, floating dock panels, real local model import, viewport capture, Liclick generation, projected layers, background UV bake, transform controls, and local workspace persistence.
 
 ## Install
 
@@ -76,10 +76,11 @@ corepack pnpm db:push
 - Imported model metadata records original bounding box, normalization transform, user transform, mesh count, UV status, and import warnings.
 - Move / Rotate / Scale controls work for the selected imported model, with Reset, Center, Ground, and Fit Camera actions.
 - Viewport capture now renders real color, mask, normal, and grayscale depth PNG data URLs.
-- Generate still uses the mock service, but generation records are linked to a real capture id.
+- Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. Mock generation remains available only for offline development.
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
 - Projected preview now rejects out-of-frustum, backface, masked, and approximate depth-failed fragments instead of spreading the image over the full model.
 - Layer visibility, opacity, delete, and go-to-camera work for projected layer preview.
+- Texture Map projected layers queue a background UV bake for the visible projected-layer stack. The bake keeps the selected resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
 - Save Project / Save As / Load Project now target a local workspace folder through the File System Access API when available, writing `project.liclick.json` and asset folders. Unsupported browsers fall back to JSON download/import.
 - Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
 - Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
@@ -94,8 +95,8 @@ corepack pnpm db:push
 3. Use `Generate Image`; if no capture exists, the app auto-captures first.
 4. Click `Add as Projected Layer` to preview the generated image projected onto the model.
 5. Use the Layers panel to toggle visibility, adjust opacity, delete, or return to the capture camera.
-6. Use `Bake Active Layer` in Layer Adjustments to write the active projected layer into a UV basecolor texture.
-7. Use `Download BaseColor` to save `basecolor.png`, or `Apply Baked Texture` to reapply the latest baked texture.
+6. Accept a Texture Map result with `Add as Projected Layer`; the visible projected-layer stack is baked in the background at the selected viewport resolution.
+7. Use `Download BaseColor` to save `basecolor.png`, or keep the baked texture applied in PBR / Flat preview.
 8. Use `Save Project` / `Save As...` / `Load Project` for `project.liclick.json` workspace persistence. In unsupported browsers, Save downloads JSON.
 
 ## Import And Workspace MVP
@@ -135,7 +136,7 @@ Phase 6 adds project-system behavior:
 
 ## UV Bake MVP
 
-Phase 3 adds a CPU UV rasterizer that bakes the active projected layer into a single basecolor PNG. The bake reads the imported mesh position, UV, normal, and index buffers, rasterizes each UV triangle, projects every covered texel back through the saved capture camera, samples the generated image, applies opacity, dilates seams, and immediately applies the result as a material map.
+Phase 3 introduced a CPU UV rasterizer. The current bake path can composite the visible projected-layer stack into one BaseColor PNG. The bake reads the imported mesh position, UV, normal, and index buffers, rasterizes each UV triangle, projects every covered texel back through the saved capture camera, samples the generated image, applies opacity, dilates seams, reports progress, and immediately applies the result as a material map.
 
 Test flow:
 
@@ -143,21 +144,22 @@ Test flow:
 2. Capture current view.
 3. Generate image.
 4. Add as Projected Layer.
-5. Keep or select that projected layer in Layers.
-6. Click `Bake Active Layer`.
-7. Switch to PBR or Flat and toggle the projected layer off; the baked texture should remain visible.
+5. Watch the automatic bake progress bar complete.
+6. Switch to PBR or Flat; the baked texture should stay visible without a white-model gap while persisted assets load.
+7. Toggle projected layer visibility and confirm the baked texture remains visible.
 8. Click `Download BaseColor`.
 
 ## Current Limits
 
 - GLB / glTF are the primary formats. FBX / OBJ are experimental.
 - The MVP is optimized for one imported object and one active projected layer preview.
+- Automatic UV bake composites the visible projected-layer stack into one BaseColor texture. Only one automatic bake runs at a time.
 - Projected preview is shader-based and does not yet do depth-aware multi-layer compositing.
 - Depth capture is grayscale viewport depth, not a calibrated linear depth asset.
 - File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
-- UV bake supports one active projected layer, one object, one UV channel, and basecolor only.
+- UV bake supports one object, one UV channel, and basecolor only.
 - UV bake uses the same frustum/mask/depth/backface visibility gates as projected preview, with grayscale depth as an MVP approximation.
-- 4K bake is available as experimental and may be slow in the browser.
+- 4K and 8K bake keep the selected output quality but can be slow in the browser. The next performance step is moving rasterization to a Web Worker or GPU path rather than lowering quality.
 - FBX export, Segments ColorID, MP4, and portable project package zip are still coming soon.
 
 ## Development Rules

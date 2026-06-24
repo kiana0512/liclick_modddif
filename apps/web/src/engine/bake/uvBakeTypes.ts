@@ -1,4 +1,15 @@
 export type UvBakeResolution = 1024 | 2048 | 4096 | 8192;
+export type BakeProgressPhase = 'loading-assets' | 'rasterizing' | 'compositing' | 'encoding' | 'applying' | 'persisting';
+
+export interface BakeProgress {
+  phase: BakeProgressPhase;
+  progress: number;
+  layerName?: string;
+  layerIndex?: number;
+  layerCount?: number;
+  processedTriangles?: number;
+  totalTriangles?: number;
+}
 
 export interface BakeReport {
   id: string;
@@ -43,6 +54,7 @@ export interface BakeProjectedLayerInput {
   enableBackfaceCulling: boolean;
   enableDilation: boolean;
   dilationPixels: number;
+  onProgress?: (progress: BakeProgress) => void;
 }
 
 export interface BakeVisibleProjectedLayersInput {
@@ -51,6 +63,7 @@ export interface BakeVisibleProjectedLayersInput {
   enableBackfaceCulling: boolean;
   enableDilation: boolean;
   dilationPixels: number;
+  onProgress?: (progress: BakeProgress) => void;
 }
 
 export interface BakeProjectedLayerResult {

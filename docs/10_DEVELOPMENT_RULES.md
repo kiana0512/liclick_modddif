@@ -10,8 +10,10 @@ Future Codex sessions must read these docs before modifying core behavior.
 - All core data must have TypeScript types.
 - Placeholder features must include TODO comments or explicit stub naming.
 - Visible but unfinished commands must be routed through `features/commandRegistry.ts`. Prefer disabled controls with tooltips or mode-specific placeholder panels. Use a lightweight "Coming soon" toast only when the placeholder must be clickable.
+- Do not keep disabled placeholder menu items in production panels if they do not help the current workflow.
 - New features must update relevant docs.
 - Prefer existing repo patterns over new abstractions.
+- User-visible frontend strings must go through `stores/i18nStore.ts` unless they are model/API prompts, file-format labels, or debug-only console messages.
 
 ## UI
 
@@ -30,6 +32,7 @@ Future Codex sessions must read these docs before modifying core behavior.
 - Import normalization and transform actions belong under `apps/web/src/engine/scene`.
 - Import normalization must transform the parent object, not mesh geometry.
 - Store camera matrices for projected layers.
+- Keep selected bake quality explicit. Performance fixes should preserve requested resolution unless the user chooses otherwise.
 - Avoid one-off scripts for core workflows.
 
 ## API

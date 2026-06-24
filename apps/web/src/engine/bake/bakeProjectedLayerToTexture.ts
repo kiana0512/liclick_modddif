@@ -30,12 +30,17 @@ function validateBakeCoverage(coveredPixels: number, resolution: number) {
   return coverageRatio;
 }
 
+function clampProgress(progress: number) {
+  return Math.max(0, Math.min(1, progress));
+}
+
 function fillTransparentTexelsForViewport(imageData: ImageData) {
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
     if (imageData.data[offset + 3] !== 0) continue;
     imageData.data[offset] = CLAY_TEXTURE_FILL[0];
     imageData.data[offset + 1] = CLAY_TEXTURE_FILL[1];
     imageData.data[offset + 2] = CLAY_TEXTURE_FILL[2];
+    imageData.data[offset + 3] = 255;
   }
 }
 
@@ -111,6 +116,7 @@ export async function bakeProjectedLayerToTexture(
   if (!layer.camera) throw new Error('Projected layer has no capture camera.');
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
 
+  input.onProgress?.({ phase: 'loading-assets', progress: 0.04, layerName: layer.name, layerIndex: 0, layerCount: 1 });
   const [projectedImage, maskImage, depthImage] = await Promise.all([
     loadImageData(layer.imageUrl, input.resolution),
     layer.maskUrl && !usesSourceAlphaMask(layer) ? loadImageData(layer.maskUrl, input.resolution) : Promise.resolve(undefined),
@@ -122,14 +128,26 @@ export async function bakeProjectedLayerToTexture(
     projectedImage,
     maskImage,
     depthImage,
-    bakeInput: input,
+    bakeInput: {
+      ...input,
+      onProgress: (progress) =>
+        input.onProgress?.({
+          ...progress,
+          progress: 0.08 + clampProgress(progress.progress) * 0.78,
+          layerName: progress.layerName ?? layer.name,
+          layerIndex: 0,
+          layerCount: 1,
+        }),
+    },
   });
   const rasterContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
   if (!rasterContext) throw new Error('Could not read UV bake canvas.');
   const rasterImage = rasterContext.getImageData(0, 0, input.resolution, input.resolution);
   sharpenCoveredTexels(rasterImage, rasterized.coverage);
+  input.onProgress?.({ phase: 'compositing', progress: 0.9, layerName: layer.name, layerIndex: 0, layerCount: 1 });
   fillTransparentTexelsForViewport(rasterImage);
   rasterContext.putImageData(rasterImage, 0, 0);
+  input.onProgress?.({ phase: 'encoding', progress: 0.96, layerName: layer.name, layerIndex: 0, layerCount: 1 });
   const imageUrl = rasterized.canvas.toDataURL('image/png');
   const coverageRatio = validateBakeCoverage(rasterized.coveredPixels, input.resolution);
   const report = createBakeReport({
@@ -221,6 +239,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     .sort((a, b) => b.order - a.order);
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
+  input.onProgress?.({ phase: 'loading-assets', progress: 0.02, layerIndex: 0, layerCount: layers.length });
 
   const canvas = document.createElement('canvas');
   canvas.width = input.resolution;
@@ -239,7 +258,16 @@ export async function bakeVisibleProjectedLayersToTexture(
   let backfaceRejectedTexels = 0;
   const warnings: string[] = [];
 
-  for (const layer of layers) {
+  for (const [layerIndex, layer] of layers.entries()) {
+    const layerStart = 0.04 + (layerIndex / layers.length) * 0.82;
+    const layerSpan = 0.82 / layers.length;
+    input.onProgress?.({
+      phase: 'loading-assets',
+      progress: layerStart,
+      layerName: layer.name,
+      layerIndex,
+      layerCount: layers.length,
+    });
     const [projectedImage, maskImage, depthImage] = await Promise.all([
       loadImageData(layer.imageUrl, input.resolution),
       layer.maskUrl && !usesSourceAlphaMask(layer) ? loadImageData(layer.maskUrl, input.resolution) : Promise.resolve(undefined),
@@ -259,6 +287,14 @@ export async function bakeVisibleProjectedLayersToTexture(
         enableBackfaceCulling: input.enableBackfaceCulling,
         enableDilation: input.enableDilation,
         dilationPixels: input.dilationPixels,
+        onProgress: (progress) =>
+          input.onProgress?.({
+            ...progress,
+            progress: layerStart + clampProgress(progress.progress) * layerSpan,
+            layerName: progress.layerName ?? layer.name,
+            layerIndex,
+            layerCount: layers.length,
+          }),
       },
     });
     const layerContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
@@ -275,6 +311,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     warnings.push(...rasterized.warnings.map((warning) => `${layer.name}: ${warning}`));
   }
 
+  input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
   let writtenTexels = 0;
   for (let offset = 3; offset < composite.data.length; offset += 4) {
     if (composite.data[offset] > 0) writtenTexels += 1;
@@ -282,6 +319,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   sharpenCoveredTexels(composite);
   fillTransparentTexelsForViewport(composite);
   context.putImageData(composite, 0, 0);
+  input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
   const imageUrl = canvas.toDataURL('image/png');
   const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
   const report = createBakeReport({

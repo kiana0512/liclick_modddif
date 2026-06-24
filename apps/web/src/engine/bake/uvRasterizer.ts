@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { getBarycentric, interpolate3, isInsideBarycentric } from './barycentric';
+import { getBarycentric, isInsideBarycentric } from './barycentric';
 import { dilateImageData } from './dilation';
 import { sampleImageBilinear, sampleImageBilinearCleanColor, sampleImageNearest } from './imageSampler';
 import type { BakeProjectedLayerInput } from './uvBakeTypes';
@@ -134,6 +134,30 @@ type SampleResult = {
   backfaceRejected: boolean;
 };
 
+type SampleScratch = {
+  worldPosition: THREE.Vector3;
+  captureWorldPosition: THREE.Vector3;
+  worldNormal: THREE.Vector3;
+  cameraToPoint: THREE.Vector3;
+  imageUv: ProjectedImageUv;
+};
+
+type ProjectedImageUv = {
+  u: number;
+  v: number;
+  depth: number;
+};
+
+function createSampleScratch(): SampleScratch {
+  return {
+    worldPosition: new THREE.Vector3(),
+    captureWorldPosition: new THREE.Vector3(),
+    worldNormal: new THREE.Vector3(),
+    cameraToPoint: new THREE.Vector3(),
+    imageUv: { u: 0, v: 0, depth: 0 },
+  };
+}
+
 function resolveProjectedSample({
   barycentric,
   input,
@@ -147,6 +171,7 @@ function resolveProjectedSample({
   objectNormalDelta,
   cameraPosition,
   projectorMatrix,
+  scratch,
 }: {
   barycentric: { a: number; b: number; c: number };
   input: RasterizeInput;
@@ -160,34 +185,34 @@ function resolveProjectedSample({
   objectNormalDelta: THREE.Matrix3;
   cameraPosition: THREE.Vector3;
   projectorMatrix: THREE.Matrix4;
+  scratch: SampleScratch;
 }): SampleResult {
-  const worldTuple = interpolate3(
-    barycentric,
-    [w0.x, w0.y, w0.z],
-    [w1.x, w1.y, w1.z],
-    [w2.x, w2.y, w2.z],
+  const worldPosition = scratch.worldPosition.set(
+    w0.x * barycentric.a + w1.x * barycentric.b + w2.x * barycentric.c,
+    w0.y * barycentric.a + w1.y * barycentric.b + w2.y * barycentric.c,
+    w0.z * barycentric.a + w1.z * barycentric.b + w2.z * barycentric.c,
   );
-  const worldPosition = new THREE.Vector3(...worldTuple);
-  const captureWorldPosition = worldPosition.clone().applyMatrix4(objectMatrixDelta);
-  const worldNormal = new THREE.Vector3(
-    n0.x * barycentric.a + n1.x * barycentric.b + n2.x * barycentric.c,
-    n0.y * barycentric.a + n1.y * barycentric.b + n2.y * barycentric.c,
-    n0.z * barycentric.a + n1.z * barycentric.b + n2.z * barycentric.c,
-  )
+  const captureWorldPosition = scratch.captureWorldPosition.copy(worldPosition).applyMatrix4(objectMatrixDelta);
+  const worldNormal = scratch.worldNormal
+    .set(
+      n0.x * barycentric.a + n1.x * barycentric.b + n2.x * barycentric.c,
+      n0.y * barycentric.a + n1.y * barycentric.b + n2.y * barycentric.c,
+      n0.z * barycentric.a + n1.z * barycentric.b + n2.z * barycentric.c,
+    )
     .applyMatrix3(objectNormalDelta)
     .normalize();
 
   if (input.bakeInput.enableBackfaceCulling) {
-    const cameraToPoint = captureWorldPosition.clone().sub(cameraPosition).normalize();
+    const cameraToPoint = scratch.cameraToPoint.copy(captureWorldPosition).sub(cameraPosition).normalize();
     if (worldNormal.dot(cameraToPoint) > BACKFACE_DOT_LIMIT) {
       return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: true };
     }
   }
 
-  const imageUv = projectWorldToImageUv(captureWorldPosition, projectorMatrix);
-  if (!imageUv) {
+  if (!projectWorldToImageUv(captureWorldPosition, projectorMatrix, scratch.imageUv)) {
     return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: false };
   }
+  const imageUv = scratch.imageUv;
 
   if (input.maskImage) {
     const maskSample = sampleImageBilinear(input.maskImage, imageUv.u, imageUv.v);
@@ -237,26 +262,42 @@ function compositeSubpixelSamples(samples: [number, number, number, number][]): 
   ];
 }
 
-function projectWorldToImageUv(worldPosition: THREE.Vector3, projectorMatrix: THREE.Matrix4) {
-  const projected = new THREE.Vector4(worldPosition.x, worldPosition.y, worldPosition.z, 1).applyMatrix4(
-    projectorMatrix,
-  );
-  if (projected.w === 0) return undefined;
-  const ndcX = projected.x / projected.w;
-  const ndcY = projected.y / projected.w;
-  const ndcZ = projected.z / projected.w;
-  if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1 || ndcZ < -1 || ndcZ > 1) return undefined;
-  return {
-    u: ndcX * 0.5 + 0.5,
-    v: 1 - (ndcY * 0.5 + 0.5),
-    depth: ndcZ * 0.5 + 0.5,
-  };
+function projectWorldToImageUv(
+  worldPosition: THREE.Vector3,
+  projectorMatrix: THREE.Matrix4,
+  target: ProjectedImageUv,
+) {
+  const e = projectorMatrix.elements;
+  const x = worldPosition.x;
+  const y = worldPosition.y;
+  const z = worldPosition.z;
+  const projectedX = e[0] * x + e[4] * y + e[8] * z + e[12];
+  const projectedY = e[1] * x + e[5] * y + e[9] * z + e[13];
+  const projectedZ = e[2] * x + e[6] * y + e[10] * z + e[14];
+  const projectedW = e[3] * x + e[7] * y + e[11] * z + e[15];
+  if (projectedW === 0) return false;
+  const ndcX = projectedX / projectedW;
+  const ndcY = projectedY / projectedW;
+  const ndcZ = projectedZ / projectedW;
+  if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1 || ndcZ < -1 || ndcZ > 1) return false;
+  target.u = ndcX * 0.5 + 0.5;
+  target.v = 1 - (ndcY * 0.5 + 0.5);
+  target.depth = ndcZ * 0.5 + 0.5;
+  return true;
 }
 
 function createObjectMatrixDelta(group: THREE.Group, layer: Layer) {
   group.updateMatrixWorld(true);
   if (!layer.objectMatrixWorld) return new THREE.Matrix4();
   return new THREE.Matrix4().fromArray(layer.objectMatrixWorld).multiply(group.matrixWorld.clone().invert());
+}
+
+function getTriangleCount(mesh: THREE.Mesh) {
+  const position = mesh.geometry.getAttribute('position');
+  const uv = mesh.geometry.getAttribute('uv');
+  if (!position || !uv) return 0;
+  const index = mesh.geometry.getIndex();
+  return index ? index.count / 3 : position.count / 3;
 }
 
 async function yieldToMainThread() {
@@ -278,8 +319,8 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   const cameraPosition = new THREE.Vector3().fromArray(input.layer.camera.position);
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
   const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
+  const sampleScratch = createSampleScratch();
   const warnings: string[] = [];
-  let totalTriangles = 0;
   let processedTriangles = 0;
   let skippedPixels = 0;
   let inFrustumPixels = 0;
@@ -293,6 +334,22 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   input.group.traverse((child) => {
     if (child instanceof THREE.Mesh) meshes.push(child);
   });
+  const totalTriangles = meshes.reduce((sum, mesh) => sum + getTriangleCount(mesh), 0);
+  let lastProgressAt = 0;
+  const reportRasterProgress = (force = false) => {
+    if (!input.bakeInput.onProgress) return;
+    const now = performance.now();
+    if (!force && now - lastProgressAt < 120) return;
+    lastProgressAt = now;
+    input.bakeInput.onProgress({
+      phase: 'rasterizing',
+      progress: totalTriangles > 0 ? processedTriangles / totalTriangles : 0,
+      layerName: input.layer.name,
+      processedTriangles,
+      totalTriangles,
+    });
+  };
+  reportRasterProgress(true);
 
   for (const mesh of meshes) {
     const geometry = mesh.geometry;
@@ -311,7 +368,6 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
     const normal = geometry.getAttribute('normal');
     const index = geometry.getIndex();
     const triangleCount = index ? index.count / 3 : position.count / 3;
-    totalTriangles += triangleCount;
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
 
     for (let triangle = 0; triangle < triangleCount; triangle += 1) {
@@ -366,6 +422,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
               objectNormalDelta,
               cameraPosition,
               projectorMatrix,
+              scratch: sampleScratch,
             });
 
             touchedFrustum = touchedFrustum || sample.inFrustum;
@@ -395,9 +452,13 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
       }
 
       processedTriangles += 1;
-      if (processedTriangles % 64 === 0) await yieldToMainThread();
+      if (processedTriangles % 64 === 0) {
+        reportRasterProgress();
+        await yieldToMainThread();
+      }
     }
   }
+  reportRasterProgress(true);
 
   if (input.bakeInput.enableDilation) {
     dilateImageData(imageData, coverage, input.bakeInput.dilationPixels);

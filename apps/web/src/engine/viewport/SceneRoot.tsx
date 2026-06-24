@@ -76,8 +76,10 @@ function ImportedModel() {
     });
   }, [project, visibleLayerIds, visibleProjectedLayers]);
   const visibleStackIsBaked = Boolean(bakedTextureRecord);
-  const previewProjectedLayer = visibleStackIsBaked ? undefined : visibleProjectedLayers[0];
-  const canPreviewProjectedLayer = displayMode === 'flat';
+  const bakedTextureIsReady = Boolean(loadedBakedTexture);
+  const previewProjectedLayer = bakedTextureIsReady ? undefined : visibleProjectedLayers[0];
+  const canPreviewProjectedLayer =
+    displayMode === 'flat' || (displayMode === 'pbr' && visibleStackIsBaked && !bakedTextureIsReady);
   const previewUsesSourceAlpha =
     typeof previewProjectedLayer?.generationId === 'string' && previewProjectedLayer.generationId.startsWith('texture-map');
 
@@ -88,24 +90,32 @@ function ImportedModel() {
     }
     let cancelled = false;
     let loadedTexture: THREE.Texture | undefined;
+    setLoadedBakedTexture(undefined);
     const textureLoader = new THREE.TextureLoader();
-    textureLoader.loadAsync(bakedTextureRecord.imageUrl).then((texture) => {
-      if (cancelled) {
-        texture.dispose();
-        return;
-      }
-      loadedTexture = texture;
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.flipY = false;
-      texture.wrapS = THREE.ClampToEdgeWrapping;
-      texture.wrapT = THREE.ClampToEdgeWrapping;
-      texture.minFilter = THREE.LinearMipmapLinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = true;
-      texture.anisotropy = 8;
-      texture.needsUpdate = true;
-      setLoadedBakedTexture(texture);
-    });
+    textureLoader
+      .loadAsync(bakedTextureRecord.imageUrl)
+      .then((texture) => {
+        if (cancelled) {
+          texture.dispose();
+          return;
+        }
+        loadedTexture = texture;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.flipY = false;
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = true;
+        texture.anisotropy = 8;
+        texture.needsUpdate = true;
+        setLoadedBakedTexture(texture);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn('[Liclick 3D Texture] Could not load baked texture for PBR preview:', error);
+        setLoadedBakedTexture(undefined);
+      });
     return () => {
       cancelled = true;
       loadedTexture?.dispose();
@@ -156,7 +166,8 @@ function ImportedModel() {
           | THREE.Material
           | THREE.Material[]
           | undefined;
-        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture : undefined;
+        const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
+        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
         if (displayMode === 'pbr' && !projectedMaterial) {

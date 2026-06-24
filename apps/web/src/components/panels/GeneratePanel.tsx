@@ -4,6 +4,7 @@ import { Download, Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { AutoBakeProgressBar, type AutoBakeProgress } from '@/components/panels/AutoBakeProgressBar';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { captureCurrentView } from '@/engine/capture/captureCurrentView';
@@ -46,7 +47,6 @@ type GenerateNotice = {
   tone: 'info' | 'warning' | 'error';
   message: string;
 };
-
 const resolutionToSize = {
   '1K': 1024,
   '2K': 2048,
@@ -66,6 +66,7 @@ const imageModels: { value: LiclickImageModel; label: string }[] = [
 const aspectRatios: LiclickAspectRatio[] = ['auto', '1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16'];
 const imageSizes: LiclickImageSize[] = ['auto', '1K', '2K', '4K'];
 const pendingSubmissionTimeoutMs = 3 * 60 * 1000;
+const autoBakeProgressHideDelayMs = 1600;
 const defaultImageGenerationSettings = {
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
@@ -101,6 +102,10 @@ function buildLiclickPrompt(userPrompt: string, model: LiclickImageModel) {
 
 function isTextureMapGeneration(generation: Generation) {
   return generation.metadata.workflow === 'texture-map';
+}
+
+function formatAutoBakeCompleteDetail(width: number, baseDetail: string) {
+  return `${width}px ${baseDetail}`;
 }
 
 function isRunningGeneration(generation?: Generation) {
@@ -151,6 +156,7 @@ export function GeneratePanel() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [generateNotice, setGenerateNotice] = useState<GenerateNotice | undefined>();
+  const [autoBakeProgress, setAutoBakeProgress] = useState<AutoBakeProgress | undefined>();
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
   );
@@ -187,6 +193,7 @@ export function GeneratePanel() {
   const submitLockRef = useRef(false);
   const autoBakeRunningRef = useRef(false);
   const autoBakeQueueRef = useRef<Layer[]>([]);
+  const autoBakeProgressTimerRef = useRef<number>();
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const isTextureMapTab = tab === 'multiview';
   const tabGenerations = generations.filter((generation) => {
@@ -198,6 +205,8 @@ export function GeneratePanel() {
   const previewGeneration = activeProjectGeneration ?? tabGenerations[0];
   const previewIsGenerating = isRunningGeneration(previewGeneration);
   const previewFailed = previewGeneration?.status === 'failed';
+
+  useEffect(() => () => window.clearTimeout(autoBakeProgressTimerRef.current), []);
 
   const markGenerationFailed = useCallback(
     (generationToFail: Generation, message: string) => {
@@ -770,30 +779,80 @@ export function GeneratePanel() {
     const currentImportedModel = useSceneStore.getState().importedModel;
     if (!currentImportedModel) throw new Error(t('importModelFirst'));
     const objectId = layer.objectId ?? selectedObjectId ?? currentImportedModel.objectId;
+    window.clearTimeout(autoBakeProgressTimerRef.current);
+    setAutoBakeProgress({
+      title: t('autoBake'),
+      detail: `${layer.name} ${t('autoBakePreparing')}`,
+      progress: 0.02,
+    });
     const bakeResult = await bakeVisibleProjectedLayersToTexture({
       objectId,
       resolution: resolutionToSize[resolution],
       enableBackfaceCulling: true,
       enableDilation: true,
       dilationPixels: 4,
+      onProgress: (progress) => {
+        const percent = Math.round(progress.progress * 100);
+        const triangleDetail =
+          progress.totalTriangles && progress.processedTriangles !== undefined
+            ? ` · ${progress.processedTriangles}/${progress.totalTriangles} ${t('autoBakeTriangles')}`
+            : '';
+        const layerDetail =
+          progress.layerCount && progress.layerName
+            ? ` · ${progress.layerIndex === undefined ? 1 : progress.layerIndex + 1}/${progress.layerCount} ${progress.layerName}`
+            : progress.layerName
+              ? ` · ${progress.layerName}`
+              : '';
+        const phaseLabel =
+          progress.phase === 'loading-assets'
+            ? t('autoBakeLoadingAssets')
+            : progress.phase === 'rasterizing'
+              ? t('autoBakeRasterizing')
+              : progress.phase === 'compositing'
+                ? t('autoBakeCompositing')
+                : progress.phase === 'encoding'
+                  ? t('autoBakeEncoding')
+                  : progress.phase === 'applying'
+                    ? t('autoBakeApplying')
+                    : t('autoBakePersisting');
+        setAutoBakeProgress({
+          title: t('autoBake'),
+          detail: `${phaseLabel} ${percent}%${layerDetail}${triangleDetail}`,
+          progress: progress.progress,
+        });
+      },
+    });
+    setAutoBakeProgress({
+      title: t('autoBake'),
+      detail: t('autoBakeApplyPbr'),
+      progress: 0.98,
     });
     await applyBakedTextureToObject(currentImportedModel.group, bakeResult.imageUrl);
 
     let bakedTextures = useProjectStore.getState().getCurrentProject()?.bakedTextures ?? currentProject?.bakedTextures ?? [];
     if (currentProject?.workspaceMode === 'local-server') {
+      setAutoBakeProgress({
+        title: t('autoBake'),
+        detail: t('autoBakePersistWorkspace'),
+        progress: 0.99,
+      });
       const imageUrl = await persistGeneratedImage('baked', bakeResult.imageUrl, `${bakeResult.bakedTexture.id}.png`);
       if (imageUrl !== bakeResult.imageUrl) {
         bakedTextures = bakedTextures.map((item) =>
           item.id === bakeResult.bakedTexture.id ? { ...item, imageUrl } : item,
         );
         updateCurrentProject({ bakedTextures });
-        await applyBakedTextureToObject(currentImportedModel.group, imageUrl);
       }
     }
 
     const bakedLayers = useLayerStore.getState().layers;
     setProjectLayers(bakedLayers);
     await saveCriticalProjectState({ layers: bakedLayers });
+    setAutoBakeProgress({
+      title: t('autoBakeComplete'),
+      detail: formatAutoBakeCompleteDetail(bakeResult.bakedTexture.width, t('autoBakeCompleteDetail')),
+      progress: 1,
+    });
     return bakeResult;
   }
 
@@ -809,28 +868,31 @@ export function GeneratePanel() {
       void (async () => {
         pushToast({
           tone: 'info',
-          title: '自动烘焙开始',
-          description: `${layer.name} 正在生成 UV 贴图。`,
+          title: t('autoBakeStart'),
+          description: `${layer.name} ${t('autoBakeStartHelp')}`,
           dedupeKey: `auto-bake-start:${layer.id}`,
         });
         try {
           const bakeResult = await autoBakeVisibleProjectedLayers(layer);
           pushToast({
             tone: 'success',
-            title: '自动烘焙完成',
-            description: `已应用 ${bakeResult.bakedTexture.width}px UV 贴图，覆盖率 ${(bakeResult.report.coverageRatio * 100).toFixed(1)}%。`,
+            title: t('autoBakeComplete'),
+            description: `${t('autoBakeSuccessHelp')} ${bakeResult.bakedTexture.width}px，${t('coverage')} ${(bakeResult.report.coverageRatio * 100).toFixed(1)}%。`,
             dedupeKey: `auto-bake-success:${layer.id}`,
           });
         } catch (error) {
           console.error('[Liclick 3D Texture] Auto bake failed:', error);
           pushToast({
             tone: 'warning',
-            title: '自动烘焙失败',
-            description: error instanceof Error ? error.message : '投影层已保留，请稍后重试烘焙。',
+            title: t('autoBakeFailed'),
+            description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
             dedupeKey: `auto-bake-failed:${layer.id}`,
           });
         } finally {
           autoBakeRunningRef.current = false;
+          autoBakeProgressTimerRef.current = window.setTimeout(() => {
+            setAutoBakeProgress(undefined);
+          }, autoBakeProgressHideDelayMs);
           drainAutoBakeQueue();
         }
       })();
@@ -842,8 +904,8 @@ export function GeneratePanel() {
     if (autoBakeRunningRef.current || autoBakeQueueRef.current.length > 1) {
       pushToast({
         tone: 'info',
-        title: '自动烘焙已排队',
-        description: `队列中还有 ${autoBakeQueueRef.current.length} 个图层等待烘焙。`,
+        title: t('autoBakeQueued'),
+        description: `${autoBakeQueueRef.current.length} ${t('autoBakeQueuedHelp')}`,
         dedupeKey: 'auto-bake-queued',
       });
       return;
@@ -890,8 +952,8 @@ export function GeneratePanel() {
     }
     pushToast({
       tone: 'success',
-      title: '投影图层已添加',
-      description: `${layer.name} 已按生成时视角投射到模型，正在后台自动烘焙。`,
+      title: t('autoBakeLayerAdded'),
+      description: `${layer.name} ${t('autoBakeLayerAddedHelp')}`,
     });
     scheduleAutoBakeVisibleProjectedLayers(layer);
   }
@@ -1156,7 +1218,7 @@ export function GeneratePanel() {
         </div>
       </div>
     </Panel>
-    {portalRoot && previewImageOpen && previewGeneration?.resultUrl && createPortal(
+      {portalRoot && previewImageOpen && previewGeneration?.resultUrl && createPortal(
       <button
         type="button"
         className="fixed inset-0 z-[135] grid cursor-zoom-out place-items-center bg-black/72 p-4 backdrop-blur-sm"
@@ -1172,7 +1234,11 @@ export function GeneratePanel() {
         />
       </button>,
       portalRoot,
-    )}
+      )}
+      {portalRoot && autoBakeProgress && createPortal(
+        <AutoBakeProgressBar progress={autoBakeProgress} />,
+        portalRoot,
+      )}
     {portalRoot && settingsOpen && generateMode === 'visible' && createPortal(
       <div
         className="fixed inset-0 z-[130] grid place-items-center bg-black/62 px-4"

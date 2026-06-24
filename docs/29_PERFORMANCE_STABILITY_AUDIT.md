@@ -9,6 +9,9 @@ Updated: 2026-06-24
 - Texture Map projected previews keep image textures, masks, and depth maps with `flipY=false` so the preview matches the CPU UV bake sampling direction.
 - Texture Map layers automatically start a UV bake after being added as projected layers. The add-layer action returns immediately; the bake runs from an idle/background queue and applies the baked texture when it finishes.
 - Only one automatic bake runs at a time from the Generate panel. This avoids piling up multiple 4K/8K CPU bakes and freezing the viewport.
+- Automatic bake keeps the selected resolution instead of silently reducing quality. The UI now shows a top progress bar for loading, UV sampling, compositing, PNG encoding, applying, and workspace persistence.
+- PBR preview avoids the post-bake white-model gap by keeping the projected preview or in-memory baked texture active until the persisted baked texture is loaded.
+- The UV rasterizer now reuses per-sample vectors and computes projector NDC directly from matrix elements, reducing allocation pressure during high-resolution bakes.
 - Autosave skips thumbnail refresh during routine saves and uses a longer debounce, reducing capture work while editing or moving the camera.
 - The WebGL canvas caps DPR at 1.5 and attempts automatic context recovery before showing the manual viewport-recovery overlay.
 - Linux startup scripts can automatically free required ports before launching services. If the port cannot be released, startup fails with the exact kill command to run manually.
@@ -59,5 +62,5 @@ Target workflow:
 
 Known next step for heavier 4K/8K work:
 
-- move UV rasterization and sharpening into a Web Worker or GPU path so the bake itself cannot block camera movement
+- move UV rasterization and sharpening into a Web Worker or GPU path so the bake itself cannot block camera movement while preserving selected output quality
 - add a browser-driven 30-layer WebGL scenario that measures frame responsiveness while auto-bake is queued

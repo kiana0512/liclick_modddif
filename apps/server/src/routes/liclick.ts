@@ -98,7 +98,8 @@ function sanitizeForPersistence(value: unknown, depth = 0): unknown {
 }
 
 function getPersistableJob(job: GenerationJob) {
-  const { promise: _promise, ...persisted } = job;
+  const persisted: Partial<GenerationJob> = { ...job };
+  delete persisted.promise;
   return sanitizeForPersistence(persisted) as Omit<GenerationJob, 'promise'>;
 }
 

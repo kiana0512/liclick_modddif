@@ -47,6 +47,7 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [menu, setMenu] = useState<MenuState | undefined>();
   const [hoveredReferenceId, setHoveredReferenceId] = useState<string | undefined>();
+  const [previewReferenceId, setPreviewReferenceId] = useState<string | undefined>();
   const [isShiftPressed, setIsShiftPressed] = useState(false);
   const [pendingImport, setPendingImport] = useState<ReferenceImage[] | undefined>();
   const t = useT();
@@ -58,8 +59,9 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
   const renameReference = useReferenceStore((state) => state.renameReference);
   const duplicateReference = useReferenceStore((state) => state.duplicateReference);
   const deleteReference = useReferenceStore((state) => state.deleteReference);
-  const previewReference =
-    isShiftPressed && hoveredReferenceId && selectedReferenceIds.includes(hoveredReferenceId)
+  const previewReference = previewReferenceId
+    ? references.find((reference) => reference.id === previewReferenceId)
+    : isShiftPressed && hoveredReferenceId
       ? references.find((reference) => reference.id === hoveredReferenceId)
       : undefined;
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
@@ -69,6 +71,7 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
       if (event.key === 'Shift') setIsShiftPressed(true);
       if (event.key === 'Escape') {
         setMenu(undefined);
+        setPreviewReferenceId(undefined);
         setPendingImport(undefined);
         setIsShiftPressed(false);
       }
@@ -285,22 +288,15 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
             </button>
             <button
               type="button"
-              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-white/38"
-              disabled
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-white/72 hover:bg-white/10"
+              onClick={() => {
+                setPreviewReferenceId(menu.referenceId);
+                setMenu(undefined);
+              }}
             >
-              Generate caption from image
-            </button>
-            <div className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-white/72">
               <Eye className="h-3.5 w-3.5" />
               {t('view')}
               <span className="ml-auto rounded bg-white/70 px-1 text-[10px] text-black">SHIFT</span>
-            </div>
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-white/38"
-              disabled
-            >
-              Create variations
             </button>
             <button
               type="button"
@@ -404,13 +400,21 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
         portalRoot,
       )}
       {portalRoot && previewReference && createPortal(
-        <div className="pointer-events-none fixed inset-0 z-[80] grid place-items-center bg-black/28 p-4">
+        <button
+          type="button"
+          className={`fixed inset-0 z-[112] grid place-items-center bg-black/34 p-4 ${
+            previewReferenceId ? 'cursor-default backdrop-blur-[1px]' : 'pointer-events-none'
+          }`}
+          aria-label={t('view')}
+          onClick={() => setPreviewReferenceId(undefined)}
+        >
           <img
             src={previewReference.url}
             alt=""
             className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+            draggable={false}
           />
-        </div>,
+        </button>,
         portalRoot,
       )}
     </>

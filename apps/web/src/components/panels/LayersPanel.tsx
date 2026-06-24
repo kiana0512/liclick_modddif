@@ -67,9 +67,9 @@ export function LayersPanel() {
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
   const layerIds = useMemo(() => layers.map((layer) => layer.id), [layers]);
   const previewLayer = useMemo(() => {
-    const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? activeProjectedLayerId : undefined);
+    const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId : undefined);
     return layers.find((layer) => layer.id === layerId && layer.imageUrl);
-  }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, layers, previewLayerId]);
+  }, [hoveredLayerId, isShiftPressed, layers, previewLayerId]);
 
   useEffect(() => {
     setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
@@ -222,6 +222,7 @@ export function LayersPanel() {
             selected={selectedLayerIds.includes(layer.id)}
             dragging={draggingLayerId === layer.id}
             onHover={() => setHoveredLayerId(layer.id)}
+            onHoverEnd={() => setHoveredLayerId((current) => (current === layer.id ? undefined : current))}
             onSelect={(event) => selectLayer(layer.id, event)}
             onVisibilityPointerDown={(event) => {
               event.stopPropagation();
@@ -394,6 +395,7 @@ function LayerRow({
   dragging,
   onSelect,
   onHover,
+  onHoverEnd,
   onVisibilityPointerDown,
   onVisibilityPointerEnter,
   onOpacityClick,
@@ -411,6 +413,7 @@ function LayerRow({
   dragging: boolean;
   onSelect: MouseEventHandler<HTMLDivElement>;
   onHover: () => void;
+  onHoverEnd: () => void;
   onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
   onVisibilityPointerEnter: PointerEventHandler<HTMLButtonElement>;
   onOpacityClick: MouseEventHandler<HTMLButtonElement>;
@@ -434,6 +437,7 @@ function LayerRow({
       draggable
       onClick={onSelect}
       onPointerEnter={onHover}
+      onPointerLeave={onHoverEnd}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
