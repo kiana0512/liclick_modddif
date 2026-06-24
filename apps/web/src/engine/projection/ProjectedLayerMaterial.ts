@@ -120,6 +120,10 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = true;
+  texture.anisotropy = 8;
 
   const whitePixel = new Uint8Array([255, 255, 255, 255]);
   const neutralTexture = new THREE.DataTexture(whitePixel, 1, 1, THREE.RGBAFormat);
@@ -130,6 +134,10 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   maskTexture.wrapT = THREE.ClampToEdgeWrapping;
   depthTexture.wrapS = THREE.ClampToEdgeWrapping;
   depthTexture.wrapT = THREE.ClampToEdgeWrapping;
+  maskTexture.minFilter = THREE.LinearFilter;
+  maskTexture.magFilter = THREE.LinearFilter;
+  depthTexture.minFilter = THREE.NearestFilter;
+  depthTexture.magFilter = THREE.NearestFilter;
 
   const objectMatrixDelta = new THREE.Matrix4();
   if (input.objectMatrixWorld && input.currentObjectMatrixWorld) {
@@ -167,6 +175,12 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
 export function createDisplayModeMaterial(displayMode: string, selected: boolean, bakedTexture?: THREE.Texture) {
   if (bakedTexture) {
     bakedTexture.colorSpace = THREE.SRGBColorSpace;
+    bakedTexture.wrapS = THREE.ClampToEdgeWrapping;
+    bakedTexture.wrapT = THREE.ClampToEdgeWrapping;
+    bakedTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    bakedTexture.magFilter = THREE.LinearFilter;
+    bakedTexture.generateMipmaps = true;
+    bakedTexture.anisotropy = 8;
     bakedTexture.needsUpdate = true;
   }
   if (displayMode === 'normal') return new THREE.MeshNormalMaterial();
@@ -179,40 +193,72 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
     });
   }
   if (displayMode === 'flat') {
-    return new THREE.MeshStandardMaterial({
+    if (bakedTexture) {
+      return new THREE.MeshStandardMaterial({
+        color: '#ffffff',
+        map: bakedTexture,
+        roughness: 0.92,
+        metalness: 0,
+        emissive: '#ffffff',
+        emissiveMap: bakedTexture,
+        emissiveIntensity: 0.18,
+      });
+    }
+    const material = new THREE.MeshStandardMaterial({
       color: DEFAULT_FLAT_COLOR,
       roughness: 0.96,
       metalness: 0,
       emissive: '#ffffff',
       emissiveIntensity: 0.04,
     });
+    return material;
   }
 
   const material = new THREE.MeshStandardMaterial({
     color: bakedTexture ? '#ffffff' : DEFAULT_PREVIEW_COLOR,
     roughness: 0.58,
     metalness: 0,
-    emissive: selected ? '#3b0764' : '#000000',
-    emissiveIntensity: selected ? 0.2 : 0,
+    emissive: !bakedTexture && selected ? '#3b0764' : '#000000',
+    emissiveIntensity: !bakedTexture && selected ? 0.2 : 0,
   });
   if (bakedTexture) material.map = bakedTexture;
   return material;
 }
 
-function prepareSinglePreviewMaterial(material: THREE.Material, selected: boolean, bakedTexture?: THREE.Texture) {
-  if (bakedTexture) return createDisplayModeMaterial('pbr', selected, bakedTexture);
+function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: THREE.Texture) {
+  if (bakedTexture) {
+    return new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      map: bakedTexture,
+      roughness: material instanceof THREE.MeshStandardMaterial ? Math.max(0.42, material.roughness) : 0.58,
+      metalness: material instanceof THREE.MeshStandardMaterial ? Math.min(0.18, material.metalness) : 0,
+      emissive: '#000000',
+      emissiveIntensity: 0,
+    });
+  }
   if (material instanceof THREE.MeshStandardMaterial || material instanceof THREE.MeshPhysicalMaterial) {
-    if (material.map) {
-      material.map.colorSpace = THREE.SRGBColorSpace;
-      material.map.needsUpdate = true;
+    const previewMaterial = material.clone();
+    if (previewMaterial.map) {
+      previewMaterial.map.colorSpace = THREE.SRGBColorSpace;
+      previewMaterial.map.needsUpdate = true;
     }
-    if (!material.map) {
-      material.color.set(DEFAULT_PREVIEW_COLOR);
+    if (!previewMaterial.map) {
+      previewMaterial.color.set(DEFAULT_PREVIEW_COLOR);
     }
-    material.roughness = Number.isFinite(material.roughness) ? Math.max(0.46, material.roughness) : 0.58;
-    material.metalness = Number.isFinite(material.metalness) ? Math.min(0.25, material.metalness) : 0;
-    material.needsUpdate = true;
-    return material;
+    previewMaterial.roughness = Number.isFinite(previewMaterial.roughness) ? Math.max(0.46, previewMaterial.roughness) : 0.58;
+    previewMaterial.metalness = Number.isFinite(previewMaterial.metalness) ? Math.min(0.25, previewMaterial.metalness) : 0;
+    previewMaterial.needsUpdate = true;
+    return previewMaterial;
+  }
+  if (material instanceof THREE.MeshBasicMaterial && material.map) {
+    material.map.colorSpace = THREE.SRGBColorSpace;
+    material.map.needsUpdate = true;
+    return new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      map: material.map,
+      roughness: 0.58,
+      metalness: 0,
+    });
   }
   return new THREE.MeshStandardMaterial({
     color: DEFAULT_PREVIEW_COLOR,
@@ -228,6 +274,6 @@ export function createPbrPreviewMaterial(
 ) {
   if (!originalMaterial) return createDisplayModeMaterial('pbr', selected, bakedTexture);
   return Array.isArray(originalMaterial)
-    ? originalMaterial.map((material) => prepareSinglePreviewMaterial(material, selected, bakedTexture))
-    : prepareSinglePreviewMaterial(originalMaterial, selected, bakedTexture);
+    ? originalMaterial.map((material) => prepareSinglePreviewMaterial(material, bakedTexture))
+    : prepareSinglePreviewMaterial(originalMaterial, bakedTexture);
 }

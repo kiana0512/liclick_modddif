@@ -91,6 +91,14 @@ function colorAt(sourceImage: ImageData, index: number): Rgb {
   return [sourceImage.data[index], sourceImage.data[index + 1], sourceImage.data[index + 2]];
 }
 
+function getChroma(color: Rgb) {
+  return Math.max(color[0], color[1], color[2]) - Math.min(color[0], color[1], color[2]);
+}
+
+function getLuma(color: Rgb) {
+  return color[0] * 0.299 + color[1] * 0.587 + color[2] * 0.114;
+}
+
 function colorDistanceFromBackground(sourceImage: ImageData, index: number, model: Pick<BackgroundModel, 'colors'>) {
   return distanceToBackgroundColor(colorAt(sourceImage, index), model);
 }
@@ -144,8 +152,11 @@ function findConnectedBackground(sourceImage: ImageData, maskImage: ImageData, b
     if (visited[pixelIndex]) return false;
     const dataIndex = pixelIndex * 4;
     const geometryAlpha = getGeometryAlpha(maskImage, dataIndex);
-    if (geometryAlpha < 0.04) return true;
-    return colorDistanceFromBackground(sourceImage, dataIndex, background) <= background.soft;
+    if (geometryAlpha < 0.08) return true;
+    if (geometryAlpha < 0.42) {
+      return colorDistanceFromBackground(sourceImage, dataIndex, background) <= background.hard;
+    }
+    return false;
   }
 
   function enqueue(pixelIndex: number) {
@@ -246,6 +257,7 @@ export async function createMaskedProjectedImage(imageUrl: string, maskUrl: stri
     const x = pixelIndex % sourceImage.width;
     const y = Math.floor(pixelIndex / sourceImage.width);
     const geometryAlpha = getGeometryAlpha(maskImage, index);
+    const sourceColor = colorAt(sourceImage, index);
     const matteDistance = colorDistanceFromBackground(sourceImage, index, background);
     const connectedBackgroundAlpha = connectedBackground[pixelIndex]
       ? 1 - smoothstep(background.hard, background.soft, matteDistance)
@@ -258,13 +270,32 @@ export async function createMaskedProjectedImage(imageUrl: string, maskUrl: stri
       y,
     );
     const sourceAlpha = sourceImage.data[index + 3] / 255;
-    const foregroundAlpha = connectedBackground[pixelIndex] ? smoothstep(background.hard, background.soft, matteDistance) : 1;
-    const edgeAlpha = 1 - edgeBackgroundPressure * (1 - smoothstep(background.hard, background.soft, matteDistance));
-    const alpha = geometryAlpha * foregroundAlpha * edgeAlpha * (1 - connectedBackgroundAlpha * 0.35) * sourceAlpha;
+    const isConnectedBackground = connectedBackground[pixelIndex] === 1;
+    const foregroundAlpha = isConnectedBackground ? smoothstep(background.hard, background.soft, matteDistance) : 1;
+    const edgeAlpha = isConnectedBackground
+      ? 1 - edgeBackgroundPressure * (1 - smoothstep(background.hard, background.soft, matteDistance))
+      : 1;
+    const chroma = getChroma(sourceColor);
+    const luma = getLuma(sourceColor);
+    const likelyNeutralResidue =
+      chroma < 32 &&
+      luma > 28 &&
+      luma < 248 &&
+      isConnectedBackground &&
+      (edgeBackgroundPressure > 0.1 || matteDistance < background.soft * 1.35);
+    const neutralResidueAlpha = likelyNeutralResidue ? smoothstep(22, 48, chroma) : 1;
+    const alpha = isConnectedBackground
+      ? geometryAlpha *
+        foregroundAlpha *
+        edgeAlpha *
+        neutralResidueAlpha *
+        (1 - connectedBackgroundAlpha * 0.7) *
+        sourceAlpha
+      : sourceAlpha;
     output.data[index] = sourceImage.data[index];
     output.data[index + 1] = sourceImage.data[index + 1];
     output.data[index + 2] = sourceImage.data[index + 2];
-    output.data[index + 3] = alpha < 0.015 ? 0 : Math.round(Math.min(1, alpha) * 255);
+    output.data[index + 3] = alpha < 0.5 ? 0 : 255;
     if (output.data[index + 3] === 0) {
       output.data[index] = 0;
       output.data[index + 1] = 0;

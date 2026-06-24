@@ -25,6 +25,7 @@ export function summarizeLoadedGroup(input: {
     childMeshCount += 1;
     child.castShadow = true;
     child.receiveShadow = true;
+    child.userData.sourceMaterial = child.material;
     child.userData.originalMaterial = child.material;
 
     const materials = Array.isArray(child.material) ? child.material : [child.material];

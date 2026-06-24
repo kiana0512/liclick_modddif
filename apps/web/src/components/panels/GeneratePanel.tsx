@@ -684,10 +684,10 @@ export function GeneratePanel() {
     if (!model || !layer.camera) return undefined;
     const result = await bakeVisibleProjectedLayersToTexture({
       objectId: layer.objectId ?? model.objectId,
-      resolution: 2048,
+      resolution: resolutionToSize[resolution],
       enableBackfaceCulling: true,
-      enableDilation: false,
-      dilationPixels: 0,
+      enableDilation: true,
+      dilationPixels: 3,
     });
     await applyBakedTextureToObject(model.group, result.imageUrl);
 

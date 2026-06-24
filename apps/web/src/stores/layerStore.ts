@@ -50,6 +50,14 @@ function getObjectMatrixWorld(generation: Generation) {
   return value.every((item) => typeof item === 'number') ? value : undefined;
 }
 
+function isBakeParticipant(layer: Layer) {
+  return layer.type === 'projected' && Boolean(layer.imageUrl && layer.camera);
+}
+
+function markVisibleStackNeedsRebake(layers: Layer[]) {
+  return layers.map((layer) => (isBakeParticipant(layer) && layer.isBaked ? { ...layer, needsRebake: true } : layer));
+}
+
 export const useLayerStore = create<LayerStore>((set, get) => ({
   layers: [],
   activeProjectedLayerId: undefined,
@@ -109,8 +117,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   },
   toggleLayer: (layerId) =>
     set((state) => {
+      const target = state.layers.find((layer) => layer.id === layerId);
+      const nextVisible = !target?.visible;
       const layers = state.layers.map((layer) =>
-        layer.id === layerId ? { ...layer, visible: !layer.visible } : layer,
+        layer.id === layerId ? { ...layer, visible: nextVisible } : layer,
       );
       return {
         layers,
@@ -215,7 +225,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = [...state.layers];
       const [layer] = layers.splice(index, 1);
       layers.splice(targetIndex, 0, layer);
-      return { layers: withOrder(layers) };
+      return { layers: markVisibleStackNeedsRebake(withOrder(layers)) };
     }),
   reorderLayer: (layerId, targetLayerId, placement = 'before') =>
     set((state) => {
@@ -227,7 +237,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const [layer] = layers.splice(sourceIndex, 1);
       const nextTargetIndex = layers.findIndex((item) => item.id === targetLayerId);
       layers.splice(placement === 'after' ? nextTargetIndex + 1 : nextTargetIndex, 0, layer);
-      return { layers: withOrder(layers) };
+      return { layers: markVisibleStackNeedsRebake(withOrder(layers)) };
     }),
   markLayerBaked: (layerId, bakedTextureId, bakedAt) =>
     set((state) => ({
@@ -241,7 +251,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     set((state) => {
       const layers = state.layers.filter((layer) => layer.id !== layerId);
       return {
-        layers: withOrder(layers),
+        layers: markVisibleStackNeedsRebake(withOrder(layers)),
         activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
       };
     }),

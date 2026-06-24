@@ -25,6 +25,7 @@ export interface BakedTexture {
   id: string;
   objectId: string;
   sourceLayerId: string;
+  sourceLayerIds?: string[];
   imageUrl: string;
   width: number;
   height: number;

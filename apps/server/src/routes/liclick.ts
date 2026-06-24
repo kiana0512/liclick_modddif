@@ -36,9 +36,39 @@ type GenerationJob = {
 const generationJobs = new Map<string, GenerationJob>();
 let jobsLoaded = false;
 let writeQueue = Promise.resolve();
+const transientWriteErrorCodes = new Set(['UNKNOWN', 'EPERM', 'EBUSY', 'EACCES', 'EMFILE', 'ENFILE']);
 
 function jobsFile() {
   return path.join(serverConfig.workspaceDir, 'generation-jobs.json');
+}
+
+function isTransientWriteError(error: unknown) {
+  const code = (error as NodeJS.ErrnoException).code;
+  return Boolean(code && transientWriteErrorCodes.has(code));
+}
+
+async function delay(milliseconds: number) {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function writeJobsFileWithRetry(filePath: string, content: string) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.${attempt}.tmp`;
+    try {
+      await fs.promises.writeFile(temporaryPath, content, 'utf8');
+      await fs.promises.rename(temporaryPath, filePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
+      if (!isTransientWriteError(error)) break;
+      await delay(35 * (attempt + 1));
+    }
+  }
+
+  throw lastError;
 }
 
 async function loadGenerationJobs() {
@@ -60,7 +90,11 @@ async function saveGenerationJobs() {
     .map(({ promise: _promise, ...job }) => job)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 200);
-  const task = writeQueue.then(() => fs.promises.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8'));
+  const task = writeQueue
+    .then(() => writeJobsFileWithRetry(jobsFile(), `${JSON.stringify(jobs, null, 2)}\n`))
+    .catch((error: unknown) => {
+      console.warn('[Liclick Workspace Server] Could not persist generation jobs.', error);
+    });
   writeQueue = task.then(
     () => undefined,
     () => undefined,

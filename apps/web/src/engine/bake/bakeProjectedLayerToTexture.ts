@@ -12,6 +12,17 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { createId } from '@/utils/id';
 
+const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
+
+function fillTransparentTexelsForViewport(imageData: ImageData) {
+  for (let offset = 0; offset < imageData.data.length; offset += 4) {
+    if (imageData.data[offset + 3] !== 0) continue;
+    imageData.data[offset] = CLAY_TEXTURE_FILL[0];
+    imageData.data[offset + 1] = CLAY_TEXTURE_FILL[1];
+    imageData.data[offset + 2] = CLAY_TEXTURE_FILL[2];
+  }
+}
+
 export async function bakeProjectedLayerToTexture(
   input: BakeProjectedLayerInput,
 ): Promise<BakeProjectedLayerResult> {
@@ -40,6 +51,11 @@ export async function bakeProjectedLayerToTexture(
     depthImage,
     bakeInput: input,
   });
+  const rasterContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
+  if (!rasterContext) throw new Error('Could not read UV bake canvas.');
+  const rasterImage = rasterContext.getImageData(0, 0, input.resolution, input.resolution);
+  fillTransparentTexelsForViewport(rasterImage);
+  rasterContext.putImageData(rasterImage, 0, 0);
   const imageUrl = rasterized.canvas.toDataURL('image/png');
   const coverageRatio = rasterized.coveredPixels / (input.resolution * input.resolution);
   const report = createBakeReport({
@@ -66,6 +82,7 @@ export async function bakeProjectedLayerToTexture(
     id: createId('baked-texture'),
     objectId: input.objectId,
     sourceLayerId: input.layerId,
+    sourceLayerIds: [input.layerId],
     imageUrl,
     width: input.resolution,
     height: input.resolution,
@@ -166,8 +183,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         resolution: input.resolution,
         opacity: layer.opacity,
         enableBackfaceCulling: input.enableBackfaceCulling,
-        enableDilation: false,
-        dilationPixels: 0,
+        enableDilation: input.enableDilation,
+        dilationPixels: input.dilationPixels,
       },
     });
     const layerContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
@@ -184,12 +201,13 @@ export async function bakeVisibleProjectedLayersToTexture(
     warnings.push(...rasterized.warnings.map((warning) => `${layer.name}: ${warning}`));
   }
 
-  context.putImageData(composite, 0, 0);
-  const imageUrl = canvas.toDataURL('image/png');
   let writtenTexels = 0;
   for (let offset = 3; offset < composite.data.length; offset += 4) {
     if (composite.data[offset] > 0) writtenTexels += 1;
   }
+  fillTransparentTexelsForViewport(composite);
+  context.putImageData(composite, 0, 0);
+  const imageUrl = canvas.toDataURL('image/png');
   const coverageRatio = writtenTexels / (input.resolution * input.resolution);
   const report = createBakeReport({
     startedAt,
@@ -215,6 +233,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     id: createId('baked-texture'),
     objectId: input.objectId,
     sourceLayerId: layers[0].id,
+    sourceLayerIds: layers.map((layer) => layer.id),
     imageUrl,
     width: input.resolution,
     height: input.resolution,

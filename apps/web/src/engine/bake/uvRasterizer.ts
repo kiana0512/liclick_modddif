@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { getBarycentric, interpolate3, isInsideBarycentric } from './barycentric';
 import { dilateImageData } from './dilation';
-import { sampleImageNearest } from './imageSampler';
+import { sampleImageBilinear, sampleImageNearest } from './imageSampler';
 import type { BakeProjectedLayerInput } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -14,6 +14,13 @@ type RasterizeInput = {
   depthImage?: ImageData;
   bakeInput: BakeProjectedLayerInput;
 };
+
+const UV_TEXEL_SAMPLE_OFFSETS = [
+  [0.25, 0.25],
+  [0.75, 0.25],
+  [0.25, 0.75],
+  [0.75, 0.75],
+] as const;
 
 export type RasterizeOutput = {
   canvas: HTMLCanvasElement;
@@ -44,7 +51,7 @@ function getAttributeTuple2(attribute: THREE.BufferAttribute | THREE.Interleaved
 function uvToPixel(uv: { x: number; y: number }, resolution: number) {
   return {
     x: uv.x * (resolution - 1),
-    y: (1 - uv.y) * (resolution - 1),
+    y: uv.y * (resolution - 1),
   };
 }
 
@@ -116,6 +123,118 @@ function applyLayerAdjustments(color: [number, number, number, number], layer: L
   const lightness = Math.min(1, Math.max(0, hsl.lightness + adjustments.lightness / 100));
   const [r, g, b] = hslToRgb(hue, saturation, lightness);
   return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), color[3]];
+}
+
+type SampleResult = {
+  color?: [number, number, number, number];
+  inFrustum: boolean;
+  maskRejected: boolean;
+  depthRejected: boolean;
+  backfaceRejected: boolean;
+};
+
+function resolveProjectedSample({
+  barycentric,
+  input,
+  w0,
+  w1,
+  w2,
+  n0,
+  n1,
+  n2,
+  objectMatrixDelta,
+  objectNormalDelta,
+  cameraPosition,
+  projectorMatrix,
+}: {
+  barycentric: { a: number; b: number; c: number };
+  input: RasterizeInput;
+  w0: THREE.Vector3;
+  w1: THREE.Vector3;
+  w2: THREE.Vector3;
+  n0: THREE.Vector3;
+  n1: THREE.Vector3;
+  n2: THREE.Vector3;
+  objectMatrixDelta: THREE.Matrix4;
+  objectNormalDelta: THREE.Matrix3;
+  cameraPosition: THREE.Vector3;
+  projectorMatrix: THREE.Matrix4;
+}): SampleResult {
+  const worldTuple = interpolate3(
+    barycentric,
+    [w0.x, w0.y, w0.z],
+    [w1.x, w1.y, w1.z],
+    [w2.x, w2.y, w2.z],
+  );
+  const worldPosition = new THREE.Vector3(...worldTuple);
+  const captureWorldPosition = worldPosition.clone().applyMatrix4(objectMatrixDelta);
+  const worldNormal = new THREE.Vector3(
+    n0.x * barycentric.a + n1.x * barycentric.b + n2.x * barycentric.c,
+    n0.y * barycentric.a + n1.y * barycentric.b + n2.y * barycentric.c,
+    n0.z * barycentric.a + n1.z * barycentric.b + n2.z * barycentric.c,
+  )
+    .applyMatrix3(objectNormalDelta)
+    .normalize();
+
+  if (input.bakeInput.enableBackfaceCulling) {
+    const cameraToPoint = captureWorldPosition.clone().sub(cameraPosition).normalize();
+    if (worldNormal.dot(cameraToPoint) >= 0) {
+      return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: true };
+    }
+  }
+
+  const imageUv = projectWorldToImageUv(captureWorldPosition, projectorMatrix);
+  if (!imageUv) {
+    return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: false };
+  }
+
+  if (input.maskImage) {
+    const maskSample = sampleImageBilinear(input.maskImage, imageUv.u, imageUv.v);
+    const maskValue = Math.max(maskSample[0], maskSample[1], maskSample[2]);
+    if (maskValue < 24) {
+      return { inFrustum: true, maskRejected: true, depthRejected: false, backfaceRejected: false };
+    }
+  }
+
+  if (input.depthImage) {
+    const depthSample = sampleImageNearest(input.depthImage, imageUv.u, imageUv.v);
+    const capturedDepth = unpackRgbaDepth(depthSample);
+    if (imageUv.depth - 0.02 > capturedDepth + 0.01) {
+      return { inFrustum: true, maskRejected: false, depthRejected: true, backfaceRejected: false };
+    }
+  }
+
+  const sample = applyLayerAdjustments(sampleImageBilinear(input.projectedImage, imageUv.u, imageUv.v), input.layer);
+  if (sample[3] <= 4) {
+    return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
+  }
+
+  return { color: sample, inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
+}
+
+function compositeSubpixelSamples(samples: [number, number, number, number][]): [number, number, number, number] | undefined {
+  if (samples.length === 0) return undefined;
+
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  let alpha = 0;
+  for (const sample of samples) {
+    const sampleAlpha = sample[3] / 255;
+    red += sample[0] * sampleAlpha;
+    green += sample[1] * sampleAlpha;
+    blue += sample[2] * sampleAlpha;
+    alpha += sampleAlpha;
+  }
+
+  if (alpha <= 0.00001) return undefined;
+  const coverageAlpha = Math.min(1, alpha / UV_TEXEL_SAMPLE_OFFSETS.length);
+  return [
+    Math.round(red / alpha),
+    Math.round(green / alpha),
+    Math.round(blue / alpha),
+    Math.round(coverageAlpha * 255),
+  ];
 }
 
 function projectWorldToImageUv(worldPosition: THREE.Vector3, projectorMatrix: THREE.Matrix4) {
@@ -222,70 +341,55 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
       for (let y = minY; y <= maxY; y += 1) {
         for (let x = minX; x <= maxX; x += 1) {
-          const barycentric = getBarycentric({ x: x + 0.5, y: y + 0.5 }, px0, px1, px2);
-          if (!barycentric || !isInsideBarycentric(barycentric)) continue;
+          const acceptedSamples: [number, number, number, number][] = [];
+          let touchedTriangle = false;
+          let touchedFrustum = false;
+          let touchedMaskReject = false;
+          let touchedDepthReject = false;
+          let touchedBackfaceReject = false;
 
-          const worldTuple = interpolate3(
-            barycentric,
-            [w0.x, w0.y, w0.z],
-            [w1.x, w1.y, w1.z],
-            [w2.x, w2.y, w2.z],
-          );
-          const worldPosition = new THREE.Vector3(...worldTuple);
-          const captureWorldPosition = worldPosition.clone().applyMatrix4(objectMatrixDelta);
-          const worldNormal = new THREE.Vector3(
-            n0.x * barycentric.a + n1.x * barycentric.b + n2.x * barycentric.c,
-            n0.y * barycentric.a + n1.y * barycentric.b + n2.y * barycentric.c,
-            n0.z * barycentric.a + n1.z * barycentric.b + n2.z * barycentric.c,
-          )
-            .applyMatrix3(objectNormalDelta)
-            .normalize();
+          for (const [offsetX, offsetY] of UV_TEXEL_SAMPLE_OFFSETS) {
+            const barycentric = getBarycentric({ x: x + offsetX, y: y + offsetY }, px0, px1, px2);
+            if (!barycentric || !isInsideBarycentric(barycentric)) continue;
+            touchedTriangle = true;
 
-          if (input.bakeInput.enableBackfaceCulling) {
-            const cameraToPoint = captureWorldPosition.clone().sub(cameraPosition).normalize();
-            if (worldNormal.dot(cameraToPoint) >= 0) {
-              skippedPixels += 1;
-              backfaceRejectedPixels += 1;
-              continue;
-            }
+            const sample = resolveProjectedSample({
+              barycentric,
+              input,
+              w0,
+              w1,
+              w2,
+              n0,
+              n1,
+              n2,
+              objectMatrixDelta,
+              objectNormalDelta,
+              cameraPosition,
+              projectorMatrix,
+            });
+
+            touchedFrustum = touchedFrustum || sample.inFrustum;
+            touchedMaskReject = touchedMaskReject || sample.maskRejected;
+            touchedDepthReject = touchedDepthReject || sample.depthRejected;
+            touchedBackfaceReject = touchedBackfaceReject || sample.backfaceRejected;
+            if (sample.color) acceptedSamples.push(sample.color);
           }
 
-          const imageUv = projectWorldToImageUv(captureWorldPosition, projectorMatrix);
-          if (!imageUv) {
-            skippedPixels += 1;
-            continue;
-          }
-          inFrustumPixels += 1;
+          if (!touchedTriangle) continue;
+          if (touchedFrustum) inFrustumPixels += 1;
+          if (touchedMaskReject && acceptedSamples.length === 0) maskRejectedPixels += 1;
+          if (touchedDepthReject && acceptedSamples.length === 0) depthRejectedPixels += 1;
+          if (touchedBackfaceReject && acceptedSamples.length === 0) backfaceRejectedPixels += 1;
 
-          if (input.maskImage) {
-            const maskSample = sampleImageNearest(input.maskImage, imageUv.u, imageUv.v);
-            const maskValue = Math.max(maskSample[0], maskSample[1], maskSample[2]);
-            if (maskValue < 24) {
-              skippedPixels += 1;
-              maskRejectedPixels += 1;
-              continue;
-            }
-          }
-
-          if (input.depthImage) {
-            const depthSample = sampleImageNearest(input.depthImage, imageUv.u, imageUv.v);
-            const capturedDepth = unpackRgbaDepth(depthSample);
-            if (imageUv.depth - 0.02 > capturedDepth + 0.01) {
-              skippedPixels += 1;
-              depthRejectedPixels += 1;
-              continue;
-            }
-          }
-
-          const sample = applyLayerAdjustments(sampleImageNearest(input.projectedImage, imageUv.u, imageUv.v), input.layer);
-          if (sample[3] < 12) {
+          const sampledColor = compositeSubpixelSamples(acceptedSamples);
+          if (!sampledColor) {
             skippedPixels += 1;
             continue;
           }
 
           const coverageIndex = y * resolution + x;
           const offset = coverageIndex * 4;
-          blendPixel(imageData, offset, sample, input.bakeInput.opacity);
+          blendPixel(imageData, offset, sampledColor, input.bakeInput.opacity);
           coverage[coverageIndex] = 1;
         }
       }

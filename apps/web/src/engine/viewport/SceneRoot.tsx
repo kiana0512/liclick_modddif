@@ -1,5 +1,5 @@
 import { ContactShadows } from '@react-three/drei';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
@@ -7,6 +7,7 @@ import {
   createProjectedLayerMaterial,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import { useLayerStore } from '@/stores/layerStore';
+import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { Grid } from './Grid';
@@ -46,17 +47,64 @@ function ImportedModel() {
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const selectObject = useSceneStore((state) => state.selectObject);
   const layers = useLayerStore((state) => state.layers);
-  const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
-
-  const activeProjectedLayer = layers.find(
-    (layer) =>
-      layer.id === activeProjectedLayerId &&
-      layer.type === 'projected' &&
-      layer.visible &&
-      layer.imageUrl &&
-      layer.camera,
+  const project = useProjectStore((state) =>
+    state.currentProjectId ? state.projects.find((item) => item.id === state.currentProjectId) : undefined,
   );
-  const canPreviewProjectedLayer = displayMode === 'pbr' || displayMode === 'flat';
+  const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
+
+  const visibleProjectedLayers = layers
+    .filter(
+      (layer) =>
+        layer.type === 'projected' &&
+        layer.visible &&
+        layer.imageUrl &&
+        layer.camera &&
+        (!layer.objectId || layer.objectId === importedModel?.objectId),
+    )
+    .sort((a, b) => b.order - a.order);
+  const visibleLayerIds = useMemo(() => visibleProjectedLayers.map((layer) => layer.id), [visibleProjectedLayers]);
+  const bakedTextureRecord = useMemo(() => {
+    if (!project || visibleLayerIds.length === 0) return undefined;
+    return project.bakedTextures.find((texture) => {
+      const sourceLayerIds = texture.sourceLayerIds ?? [texture.sourceLayerId];
+      return (
+        sourceLayerIds.length === visibleLayerIds.length &&
+        sourceLayerIds.every((layerId, index) => layerId === visibleLayerIds[index]) &&
+        visibleProjectedLayers.every((layer) => layer.isBaked && !layer.needsRebake && layer.bakedTextureId === texture.id)
+      );
+    });
+  }, [project, visibleLayerIds, visibleProjectedLayers]);
+  const visibleStackIsBaked = Boolean(bakedTextureRecord);
+  const previewProjectedLayer = visibleStackIsBaked ? undefined : visibleProjectedLayers[0];
+  const canPreviewProjectedLayer = displayMode === 'flat';
+
+  useEffect(() => {
+    if (!bakedTextureRecord?.imageUrl) {
+      setLoadedBakedTexture(undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader.loadAsync(bakedTextureRecord.imageUrl).then((texture) => {
+      if (cancelled) {
+        texture.dispose();
+        return;
+      }
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.flipY = false;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.generateMipmaps = true;
+      texture.anisotropy = 8;
+      texture.needsUpdate = true;
+      setLoadedBakedTexture(texture);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [bakedTextureRecord?.imageUrl]);
 
   useEffect(() => {
     if (!importedModel) return;
@@ -67,22 +115,22 @@ function ImportedModel() {
       const selected = selectedObjectId === model.objectId;
       model.group.updateMatrixWorld(true);
       const projectedMaterial =
-        canPreviewProjectedLayer && activeProjectedLayer?.camera
+        canPreviewProjectedLayer && previewProjectedLayer?.camera
           ? await createProjectedLayerMaterial({
-              layerId: activeProjectedLayer.id,
-              imageUrl: activeProjectedLayer.imageUrl,
-              maskUrl: activeProjectedLayer.maskUrl,
-              depthUrl: activeProjectedLayer.depthUrl,
-              camera: activeProjectedLayer.camera,
+              layerId: previewProjectedLayer.id,
+              imageUrl: previewProjectedLayer.imageUrl,
+              maskUrl: previewProjectedLayer.maskUrl,
+              depthUrl: previewProjectedLayer.depthUrl,
+              camera: previewProjectedLayer.camera,
               objectId: model.objectId,
-              objectMatrixWorld: activeProjectedLayer.objectMatrixWorld,
+              objectMatrixWorld: previewProjectedLayer.objectMatrixWorld,
               currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
-              opacity: activeProjectedLayer.opacity,
-              visible: activeProjectedLayer.visible,
+              opacity: previewProjectedLayer.opacity,
+              visible: previewProjectedLayer.visible,
               depthTest: true,
-              hue: (activeProjectedLayer.adjustments?.hue ?? 0) / 100,
-              saturation: (activeProjectedLayer.adjustments?.saturation ?? 0) / 100,
-              lightness: (activeProjectedLayer.adjustments?.lightness ?? 0) / 100,
+              hue: (previewProjectedLayer.adjustments?.hue ?? 0) / 100,
+              saturation: (previewProjectedLayer.adjustments?.saturation ?? 0) / 100,
+              lightness: (previewProjectedLayer.adjustments?.lightness ?? 0) / 100,
               useMask: true,
               useDepthCheck: true,
               enableBackfaceCulling: true,
@@ -98,8 +146,12 @@ function ImportedModel() {
 
       model.group.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
-        const originalMaterial = child.userData.originalMaterial as THREE.Material | THREE.Material[] | undefined;
-        const bakedTexture = child.userData.bakedTexture as THREE.Texture | undefined;
+        const originalMaterial = (child.userData.sourceMaterial ?? child.userData.originalMaterial) as
+          | THREE.Material
+          | THREE.Material[]
+          | undefined;
+        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture : undefined;
+        if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         if (displayMode === 'pbr' && !projectedMaterial) {
           child.material = createPbrPreviewMaterial(originalMaterial, selected, bakedTexture);
           return;
@@ -113,7 +165,15 @@ function ImportedModel() {
     return () => {
       cancelled = true;
     };
-  }, [activeProjectedLayer, canPreviewProjectedLayer, displayMode, importedModel, selectedObjectId]);
+  }, [
+    canPreviewProjectedLayer,
+    displayMode,
+    importedModel,
+    loadedBakedTexture,
+    previewProjectedLayer,
+    selectedObjectId,
+    visibleStackIsBaked,
+  ]);
 
   if (!importedModel) return null;
 
@@ -133,11 +193,13 @@ export function SceneRoot() {
   const selectObject = useSceneStore((state) => state.selectObject);
   const displayMode = useSceneStore((state) => state.displayMode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
+  const exposure = useSettingsStore((state) => state.exposure);
   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
   const effectiveEnvironmentPreset =
     displayMode === 'pbr' && environmentPreset === 'color' ? 'studio' : environmentPreset;
 
-  const pbrLightScale = displayMode === 'pbr' ? pbrEnvironmentIntensity / 0.3 : 1;
+  const displayLightBoost = displayMode === 'flat' ? 1.35 : 1;
+  const pbrLightScale = (displayMode === 'pbr' ? pbrEnvironmentIntensity / 0.3 : 1) * exposure * displayLightBoost;
   const ambientIntensity =
     (effectiveEnvironmentPreset === 'dark' ? 0.38 : effectiveEnvironmentPreset === 'soft' ? 0.46 : 0.5) *
     pbrLightScale;
