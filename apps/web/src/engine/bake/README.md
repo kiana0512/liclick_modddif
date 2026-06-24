@@ -1,12 +1,13 @@
-# Bake MVP Stub
+# Bake Pipeline
 
-This directory reserves the UV bake pipeline. Phase 1 does not implement real baking.
+The current browser bake pipeline composites visible projected layers into one BaseColor PNG for the selected imported object.
 
-Planned flow:
+Flow:
 
 1. Collect projected, UV, and patch layers for a selected object.
-2. Render or compute projection into the target UV set.
-3. Composite visible layers by order, blend mode, and opacity.
-4. Export basecolor first, then normal and masks.
+2. Prefer GPU UV-space rendering for the visible projected-layer stack.
+3. Fall back to CPU UV rasterization at the same resolution when GPU allocation/rendering fails.
+4. Composite visible layers by order and opacity.
+5. Dilate seams, encode BaseColor PNG, apply it to the viewport, and persist it when a local workspace is available.
 
-MVP limits are single object, single material, one UV set, and 1024 or 2048 output.
+Current limits are one imported object, one UV set, BaseColor output, and no UDIM. Output resolution follows the viewport selector and is never reduced automatically by the bake path.

@@ -54,6 +54,7 @@ export interface BakeProjectedLayerInput {
   enableBackfaceCulling: boolean;
   enableDilation: boolean;
   dilationPixels: number;
+  preferBlobOutput?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 }
 
@@ -63,12 +64,15 @@ export interface BakeVisibleProjectedLayersInput {
   enableBackfaceCulling: boolean;
   enableDilation: boolean;
   dilationPixels: number;
+  method?: 'auto' | 'gpu' | 'cpu';
+  preferBlobOutput?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 }
 
 export interface BakeProjectedLayerResult {
   bakedTexture: BakedTexture;
   canvas: HTMLCanvasElement;
+  imageBlob?: Blob;
   imageUrl: string;
   report: BakeReport;
 }

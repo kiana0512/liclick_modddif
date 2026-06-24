@@ -80,7 +80,8 @@ corepack pnpm db:push
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
 - Projected preview now rejects out-of-frustum, backface, masked, and approximate depth-failed fragments instead of spreading the image over the full model.
 - Layer visibility, opacity, delete, and go-to-camera work for projected layer preview.
-- Texture Map projected layers queue a background UV bake for the visible projected-layer stack. The bake keeps the selected resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
+- Texture Map projected layers queue a background GPU-first UV bake for the visible projected-layer stack. The bake keeps the selected resolution, falls back to CPU only at that same resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
+- Local-server projects persist baked textures as binary PNG uploads instead of large base64 JSON payloads, reducing main-thread string work and server JSON parsing during 4K/8K bakes.
 - Save Project / Save As / Load Project now target a local workspace folder through the File System Access API when available, writing `project.liclick.json` and asset folders. Unsupported browsers fall back to JSON download/import.
 - Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
 - Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
@@ -136,7 +137,7 @@ Phase 6 adds project-system behavior:
 
 ## UV Bake MVP
 
-Phase 3 introduced a CPU UV rasterizer. The current bake path can composite the visible projected-layer stack into one BaseColor PNG. The bake reads the imported mesh position, UV, normal, and index buffers, rasterizes each UV triangle, projects every covered texel back through the saved capture camera, samples the generated image, applies opacity, dilates seams, reports progress, and immediately applies the result as a material map.
+Phase 3 introduced UV baking. The current automatic bake path composites the visible projected-layer stack into one BaseColor PNG through a GPU-first UV-space render target. The shader reads imported mesh position, UV, normal, and index buffers, projects UV-space fragments back through the saved capture camera, applies frustum/mask/depth/backface gates, samples the generated image, applies opacity, then dilates seams, reports progress, and immediately applies the result as a material map. If GPU allocation or rendering fails, the CPU rasterizer runs at the same selected resolution.
 
 Test flow:
 
@@ -159,7 +160,7 @@ Test flow:
 - File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
 - UV bake supports one object, one UV channel, and basecolor only.
 - UV bake uses the same frustum/mask/depth/backface visibility gates as projected preview, with grayscale depth as an MVP approximation.
-- 4K and 8K bake keep the selected output quality but can be slow in the browser. The next performance step is moving rasterization to a Web Worker or GPU path rather than lowering quality.
+- 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, PNG encoding, workspace persistence, and CPU fallback on unsupported hardware.
 - FBX export, Segments ColorID, MP4, and portable project package zip are still coming soon.
 
 ## Development Rules

@@ -12,6 +12,18 @@ export async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   return raw ? (JSON.parse(raw) as T) : ({} as T);
 }
 
+export async function readBinaryBody(request: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > maxBytes) throw new Error('Request body is too large.');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
 export function sendJson(response: ServerResponse, statusCode: number, data: unknown) {
   const requestOrigin = response.req.headers.origin;
   const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendOrigin;

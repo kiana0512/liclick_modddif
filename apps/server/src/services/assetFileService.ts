@@ -8,6 +8,7 @@ import { ensureDir, getUserProjectDir, slugify, toWorkspaceUrl } from './workspa
 
 const allowedCategories: AssetCategory[] = ['models', 'references', 'captures', 'generations', 'layers', 'baked'];
 const maxRemoteAssetBytes = 25 * 1024 * 1024;
+export const maxLocalAssetBytes = 160 * 1024 * 1024;
 const allowedRemoteAssetHosts = new Set([
   'ai-assets.lilithgames.com',
   ...serverConfig.allowedRemoteAssetHosts,
@@ -105,6 +106,18 @@ export async function saveDataUrlAsset(input: {
 }): Promise<SavedAsset | undefined> {
   const { mime, buffer } = parseDataUrl(input.dataUrl);
   return writeAsset({ ...input, mime, buffer });
+}
+
+export async function saveBinaryAsset(input: {
+  userId: string;
+  projectId: string;
+  category: AssetCategory;
+  mime: string;
+  buffer: Buffer;
+  filename: string;
+}): Promise<SavedAsset | undefined> {
+  if (input.buffer.byteLength > maxLocalAssetBytes) throw new Error('Asset is too large.');
+  return writeAsset(input);
 }
 
 export async function saveRemoteImageAsset(input: {

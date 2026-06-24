@@ -67,9 +67,9 @@ export function LayersPanel() {
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
   const layerIds = useMemo(() => layers.map((layer) => layer.id), [layers]);
   const previewLayer = useMemo(() => {
-    const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId : undefined);
+    const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? lastSelectedLayerId ?? activeProjectedLayerId : undefined);
     return layers.find((layer) => layer.id === layerId && layer.imageUrl);
-  }, [hoveredLayerId, isShiftPressed, layers, previewLayerId]);
+  }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, layers, previewLayerId]);
 
   useEffect(() => {
     setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
@@ -309,7 +309,10 @@ export function LayersPanel() {
         createPortal(
           <button
             type="button"
-            className="fixed inset-0 z-[92] grid cursor-default place-items-center bg-black/34 p-4 backdrop-blur-[1px]"
+            className={cn(
+              'fixed inset-0 z-[92] grid place-items-center bg-black/34 p-4 backdrop-blur-[1px]',
+              previewLayerId ? 'cursor-default' : 'pointer-events-none',
+            )}
             onClick={() => setPreviewLayerId(undefined)}
             aria-label={t('view')}
           >

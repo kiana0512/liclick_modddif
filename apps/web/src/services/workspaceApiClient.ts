@@ -158,6 +158,39 @@ export async function saveDataUrlAsset(input: {
   );
 }
 
+export async function saveBlobAsset(input: {
+  projectId: string;
+  category: AssetCategory;
+  blob: Blob;
+  filename: string;
+}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 60_000);
+  const params = new URLSearchParams({
+    format: 'blob',
+    category: input.category,
+    filename: input.filename,
+  });
+  const response = await fetch(`${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`, {
+    method: 'POST',
+    body: input.blob,
+    headers: {
+      'content-type': input.blob.type || 'application/octet-stream',
+    },
+    signal: controller.signal,
+    credentials: 'include',
+  }).finally(() => window.clearTimeout(timeout));
+  if (!response.ok) {
+    const payload = await response.json().catch(() => undefined);
+    const message =
+      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+        ? payload.error
+        : `Workspace request failed: ${response.status}`;
+    throw new WorkspaceApiError(response.status, message);
+  }
+  return response.json() as Promise<{ asset: { category: AssetCategory; relativePath: string; url: string } }>;
+}
+
 export async function saveRemoteUrlAsset(input: {
   projectId: string;
   category: AssetCategory;

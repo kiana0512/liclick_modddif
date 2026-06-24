@@ -1,4 +1,6 @@
+import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
+import { bakeProjectedLayerStackWithGpu } from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
 import type {
@@ -6,10 +8,12 @@ import type {
   BakeProjectedLayerResult,
   BakeVisibleProjectedLayersInput,
   BakedTexture,
+  UvBakeResolution,
 } from './uvBakeTypes';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
+import type { Layer } from '@/types/layer';
 import { createId } from '@/utils/id';
 
 const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
@@ -17,6 +21,26 @@ const MIN_VALID_COVERAGE_RATIO = 0.001;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5;
 const MAX_CPU_SHARPEN_RESOLUTION = 4096;
+const GPU_COVERAGE_VALIDATION_RESOLUTION = 512 as UvBakeResolution;
+const MIN_GPU_CPU_COVERAGE_IOU = 0.45;
+const MIN_GPU_CPU_COVERAGE_RATIO = 0.55;
+
+async function encodeBakeCanvas(canvas: HTMLCanvasElement, preferBlobOutput?: boolean) {
+  if (!preferBlobOutput) {
+    return { imageUrl: canvas.toDataURL('image/png') };
+  }
+
+  const imageBlob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not encode baked texture PNG.'));
+    }, 'image/png');
+  });
+  return {
+    imageBlob,
+    imageUrl: URL.createObjectURL(imageBlob),
+  };
+}
 
 function usesSourceAlphaMask(layer: { generationId?: string }) {
   return typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
@@ -148,7 +172,7 @@ export async function bakeProjectedLayerToTexture(
   fillTransparentTexelsForViewport(rasterImage);
   rasterContext.putImageData(rasterImage, 0, 0);
   input.onProgress?.({ phase: 'encoding', progress: 0.96, layerName: layer.name, layerIndex: 0, layerCount: 1 });
-  const imageUrl = rasterized.canvas.toDataURL('image/png');
+  const { imageBlob, imageUrl } = await encodeBakeCanvas(rasterized.canvas, input.preferBlobOutput);
   const coverageRatio = validateBakeCoverage(rasterized.coveredPixels, input.resolution);
   const report = createBakeReport({
     startedAt,
@@ -191,6 +215,7 @@ export async function bakeProjectedLayerToTexture(
   return {
     bakedTexture,
     canvas: rasterized.canvas,
+    imageBlob,
     imageUrl,
     report,
   };
@@ -214,6 +239,96 @@ function compositeCanvas(base: ImageData, layer: ImageData) {
     );
     base.data[offset + 3] = Math.round(outputAlpha * 255);
   }
+}
+
+function downsampleCoverage(coverage: Uint8Array, sourceResolution: number, targetResolution: number) {
+  const downsampled = new Uint8Array(targetResolution * targetResolution);
+  for (let y = 0; y < sourceResolution; y += 1) {
+    for (let x = 0; x < sourceResolution; x += 1) {
+      if (!coverage[y * sourceResolution + x]) continue;
+      const targetX = Math.min(targetResolution - 1, Math.floor((x / sourceResolution) * targetResolution));
+      const targetY = Math.min(targetResolution - 1, Math.floor((y / sourceResolution) * targetResolution));
+      downsampled[targetY * targetResolution + targetX] = 1;
+    }
+  }
+  return downsampled;
+}
+
+function compareCoverage(candidate: Uint8Array, reference: Uint8Array) {
+  let candidateCount = 0;
+  let referenceCount = 0;
+  let intersection = 0;
+  let union = 0;
+  for (let index = 0; index < reference.length; index += 1) {
+    const hasCandidate = candidate[index] > 0;
+    const hasReference = reference[index] > 0;
+    if (hasCandidate) candidateCount += 1;
+    if (hasReference) referenceCount += 1;
+    if (hasCandidate && hasReference) intersection += 1;
+    if (hasCandidate || hasReference) union += 1;
+  }
+  return {
+    candidateCount,
+    referenceCount,
+    iou: union > 0 ? intersection / union : 1,
+    coverageRatio: referenceCount > 0 ? candidateCount / referenceCount : 1,
+  };
+}
+
+async function validateGpuBakeCoverage(input: {
+  group: THREE.Group;
+  layers: Layer[];
+  objectId: string;
+  gpuCoverage: Uint8Array;
+  gpuResolution: UvBakeResolution;
+  enableBackfaceCulling: boolean;
+}) {
+  const referenceCoverage = new Uint8Array(GPU_COVERAGE_VALIDATION_RESOLUTION * GPU_COVERAGE_VALIDATION_RESOLUTION);
+
+  for (const layer of input.layers) {
+    const [projectedImage, maskImage, depthImage] = await Promise.all([
+      loadImageData(layer.imageUrl, GPU_COVERAGE_VALIDATION_RESOLUTION),
+      layer.maskUrl && !usesSourceAlphaMask(layer)
+        ? loadImageData(layer.maskUrl, GPU_COVERAGE_VALIDATION_RESOLUTION)
+        : Promise.resolve(undefined),
+      layer.depthUrl && !usesSourceAlphaMask(layer)
+        ? loadImageData(layer.depthUrl, GPU_COVERAGE_VALIDATION_RESOLUTION)
+        : Promise.resolve(undefined),
+    ]);
+    const rasterized = await rasterizeProjectedLayerToUv({
+      group: input.group,
+      layer,
+      projectedImage,
+      maskImage,
+      depthImage,
+      bakeInput: {
+        objectId: input.objectId,
+        layerId: layer.id,
+        resolution: GPU_COVERAGE_VALIDATION_RESOLUTION,
+        opacity: layer.opacity,
+        enableBackfaceCulling: input.enableBackfaceCulling,
+        enableDilation: false,
+        dilationPixels: 0,
+      },
+    });
+    for (let index = 0; index < rasterized.coverage.length; index += 1) {
+      if (rasterized.coverage[index]) referenceCoverage[index] = 1;
+    }
+  }
+
+  const gpuCoverage = downsampleCoverage(
+    input.gpuCoverage,
+    input.gpuResolution,
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+  );
+  const comparison = compareCoverage(gpuCoverage, referenceCoverage);
+  if (comparison.referenceCount === 0) return comparison;
+  if (comparison.iou < MIN_GPU_CPU_COVERAGE_IOU || comparison.coverageRatio < MIN_GPU_CPU_COVERAGE_RATIO) {
+    throw new Error(
+      `GPU bake coverage diverged from CPU validation (IoU ${comparison.iou.toFixed(2)}, coverage ratio ${comparison.coverageRatio.toFixed(2)}).`,
+    );
+  }
+  return comparison;
 }
 
 export async function bakeVisibleProjectedLayersToTexture(
@@ -241,6 +356,102 @@ export async function bakeVisibleProjectedLayersToTexture(
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   input.onProgress?.({ phase: 'loading-assets', progress: 0.02, layerIndex: 0, layerCount: layers.length });
 
+  const gpuFallbackWarnings: string[] = [];
+  const renderer = useSceneStore.getState().viewport?.gl;
+  if (input.method !== 'cpu' && renderer) {
+    try {
+      const gpuBake = await bakeProjectedLayerStackWithGpu({
+        renderer,
+        group: importedModel.group,
+        layers,
+        resolution: input.resolution,
+        enableBackfaceCulling: input.enableBackfaceCulling,
+        enableDilation: input.enableDilation,
+        dilationPixels: input.dilationPixels,
+        onProgress: (progress) =>
+          input.onProgress?.({
+            ...progress,
+            progress: 0.04 + clampProgress(progress.progress) * 0.84,
+          }),
+      });
+      const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
+      if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
+      await validateGpuBakeCoverage({
+        group: importedModel.group,
+        layers,
+        objectId: input.objectId,
+        gpuCoverage: gpuBake.coverage,
+        gpuResolution: input.resolution,
+        enableBackfaceCulling: input.enableBackfaceCulling,
+      });
+      input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
+      if (!gpuBake.postProcessedOnGpu || !gpuBake.opaqueBaseColorReady) {
+        const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
+        if (!gpuBake.postProcessedOnGpu) {
+          sharpenCoveredTexels(gpuImage, gpuBake.coverage);
+        }
+        if (!gpuBake.opaqueBaseColorReady) {
+          fillTransparentTexelsForViewport(gpuImage);
+        }
+        gpuContext.putImageData(gpuImage, 0, 0);
+      }
+      input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
+      const { imageBlob, imageUrl } = await encodeBakeCanvas(gpuBake.canvas, input.preferBlobOutput);
+      const coverageRatio = validateBakeCoverage(gpuBake.coveredPixels, input.resolution);
+      const report = createBakeReport({
+        startedAt,
+        objectId: input.objectId,
+        layerId: layers[0].id,
+        width: input.resolution,
+        height: input.resolution,
+        totalTriangles: gpuBake.totalTriangles,
+        processedTriangles: gpuBake.processedTriangles,
+        coveredPixels: gpuBake.coveredPixels,
+        skippedPixels: gpuBake.skippedPixels,
+        totalTexels: input.resolution * input.resolution,
+        inFrustumTexels: gpuBake.inFrustumPixels,
+        maskRejectedTexels: gpuBake.maskRejectedPixels,
+        depthRejectedTexels: gpuBake.depthRejectedPixels,
+        backfaceRejectedTexels: gpuBake.backfaceRejectedPixels,
+        writtenTexels: gpuBake.coveredPixels,
+        coverageRatio,
+        warnings: gpuBake.warnings,
+      });
+
+      const bakedTexture: BakedTexture = {
+        id: createId('baked-texture'),
+        objectId: input.objectId,
+        sourceLayerId: layers[0].id,
+        sourceLayerIds: layers.map((layer) => layer.id),
+        imageUrl,
+        width: input.resolution,
+        height: input.resolution,
+        format: 'png',
+        createdAt: new Date().toISOString(),
+        coverageRatio,
+        report,
+      };
+
+      useProjectStore.getState().addBakedTexture(bakedTexture);
+      for (const layer of layers) {
+        useLayerStore.getState().markLayerBaked(layer.id, bakedTexture.id, bakedTexture.createdAt);
+      }
+      console.info('[Liclick 3D Texture] GPU stacked UV bake report:', report);
+
+      return {
+        bakedTexture,
+        canvas: gpuBake.canvas,
+        imageBlob,
+        imageUrl,
+        report,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      gpuFallbackWarnings.push(`GPU bake failed; used CPU fallback at the same resolution. ${message}`);
+      console.warn('[Liclick 3D Texture] GPU UV bake failed; falling back to CPU bake.', error);
+    }
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = input.resolution;
   canvas.height = input.resolution;
@@ -256,7 +467,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   let maskRejectedTexels = 0;
   let depthRejectedTexels = 0;
   let backfaceRejectedTexels = 0;
-  const warnings: string[] = [];
+  const warnings: string[] = [...gpuFallbackWarnings];
 
   for (const [layerIndex, layer] of layers.entries()) {
     const layerStart = 0.04 + (layerIndex / layers.length) * 0.82;
@@ -320,7 +531,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   fillTransparentTexelsForViewport(composite);
   context.putImageData(composite, 0, 0);
   input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
-  const imageUrl = canvas.toDataURL('image/png');
+  const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
   const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
   const report = createBakeReport({
     startedAt,
@@ -365,6 +576,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   return {
     bakedTexture,
     canvas,
+    imageBlob,
     imageUrl,
     report,
   };

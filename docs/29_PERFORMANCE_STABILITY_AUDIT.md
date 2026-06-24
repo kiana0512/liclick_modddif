@@ -10,6 +10,10 @@ Updated: 2026-06-24
 - Texture Map layers automatically start a UV bake after being added as projected layers. The add-layer action returns immediately; the bake runs from an idle/background queue and applies the baked texture when it finishes.
 - Only one automatic bake runs at a time from the Generate panel. This avoids piling up multiple 4K/8K CPU bakes and freezing the viewport.
 - Automatic bake keeps the selected resolution instead of silently reducing quality. The UI now shows a top progress bar for loading, UV sampling, compositing, PNG encoding, applying, and workspace persistence.
+- Automatic visible-layer bake is GPU-first. It renders meshes into UV space on an offscreen WebGL render target, applies projection/mask/depth/backface gates in shader, and falls back to the CPU rasterizer only at the same requested resolution.
+- GPU bake now runs a low-resolution CPU coverage parity check before applying the texture. Obvious GPU/CPU projection divergence is rejected instead of being shown as a baked result.
+- GPU bake keeps seam dilation and covered-texel sharpening on WebGL render targets before readback, reducing the largest CPU image-processing loops for 4K/8K bakes.
+- Local-server baked texture persistence now uploads PNG blobs directly instead of wrapping large baked textures in base64 JSON payloads.
 - PBR preview avoids the post-bake white-model gap by keeping the projected preview or in-memory baked texture active until the persisted baked texture is loaded.
 - The UV rasterizer now reuses per-sample vectors and computes projector NDC directly from matrix elements, reducing allocation pressure during high-resolution bakes.
 - Autosave skips thumbnail refresh during routine saves and uses a longer debounce, reducing capture work while editing or moving the camera.
@@ -62,5 +66,7 @@ Target workflow:
 
 Known next step for heavier 4K/8K work:
 
-- move UV rasterization and sharpening into a Web Worker or GPU path so the bake itself cannot block camera movement while preserving selected output quality
+- move PNG encoding, workspace persistence, and CPU-only post-processing into a Web Worker where browser APIs allow it
+- move PNG encoding off the browser main thread, or replace browser PNG encoding with a server-side/GPU-adjacent export path for A100 deployments
+- add GPU timing/readback telemetry so slow machines can distinguish shader time, readback time, PNG encoding, and project-save time
 - add a browser-driven 30-layer WebGL scenario that measures frame responsiveness while auto-bake is queued

@@ -34,6 +34,7 @@ import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
 import {
   isWorkspaceAssetUrl,
+  saveBlobAsset,
   saveDataUrlAsset,
   saveProject as saveWorkspaceProject,
   saveRemoteUrlAsset,
@@ -728,8 +729,12 @@ export function GeneratePanel() {
     }
   }
 
-  async function persistGeneratedImage(category: AssetCategory, url: string, filename: string) {
+  async function persistGeneratedImage(category: AssetCategory, url: string, filename: string, blob?: Blob) {
     if (!currentProject || currentProject.workspaceMode !== 'local-server' || isWorkspaceAssetUrl(url)) return url;
+    if (blob) {
+      const result = await saveBlobAsset({ projectId: currentProject.id, category, blob, filename });
+      return result.asset.url;
+    }
     if (url.startsWith('http')) {
       const result = await saveRemoteUrlAsset({ projectId: currentProject.id, category, url, filename });
       return result.asset.url;
@@ -791,6 +796,7 @@ export function GeneratePanel() {
       enableBackfaceCulling: true,
       enableDilation: true,
       dilationPixels: 4,
+      preferBlobOutput: currentProject?.workspaceMode === 'local-server',
       onProgress: (progress) => {
         const percent = Math.round(progress.progress * 100);
         const triangleDetail =
@@ -836,7 +842,12 @@ export function GeneratePanel() {
         detail: t('autoBakePersistWorkspace'),
         progress: 0.99,
       });
-      const imageUrl = await persistGeneratedImage('baked', bakeResult.imageUrl, `${bakeResult.bakedTexture.id}.png`);
+      const imageUrl = await persistGeneratedImage(
+        'baked',
+        bakeResult.imageUrl,
+        `${bakeResult.bakedTexture.id}.png`,
+        bakeResult.imageBlob,
+      );
       if (imageUrl !== bakeResult.imageUrl) {
         bakedTextures = bakedTextures.map((item) =>
           item.id === bakeResult.bakedTexture.id ? { ...item, imageUrl } : item,
