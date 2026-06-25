@@ -10,6 +10,7 @@ export type ProjectionLayerInput = {
   objectId: string;
   objectMatrixWorld?: number[];
   currentObjectMatrixWorld?: number[];
+  baseTexture?: THREE.Texture;
   opacity: number;
   visible: boolean;
   depthTest: boolean;

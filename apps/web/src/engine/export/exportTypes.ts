@@ -4,7 +4,7 @@ import type { ViewportRuntime } from '@/stores/sceneStore';
 import type { Project } from '@/types/project';
 
 export type ExportTarget = 'scene' | 'object';
-export type ExportFormat = 'glb' | 'obj' | 'stl';
+export type ExportFormat = 'glb' | 'fbx' | 'obj' | 'stl';
 
 export type ModelExportInput = {
   project: Project;

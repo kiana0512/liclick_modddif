@@ -48,6 +48,7 @@ type ExportMenuRow = {
 function modelRows(target: ExportTarget, canExport: boolean, disabledReason: string): ExportMenuRow[] {
   return [
     { id: `${target}-glb`, label: 'GLB', disabled: !canExport, disabledReason },
+    { id: `${target}-fbx`, label: 'FBX', disabled: !canExport, disabledReason },
     { id: `${target}-obj`, label: 'OBJ', disabled: !canExport, disabledReason },
     { id: `${target}-stl`, label: 'STL', disabled: !canExport, disabledReason },
   ];

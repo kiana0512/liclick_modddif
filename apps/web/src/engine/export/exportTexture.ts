@@ -2,6 +2,7 @@ import type { Material, Mesh, Object3D, Texture } from 'three';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { Project } from '@/types/project';
 import { downloadBlob, getExportFilename } from './exportUtils';
+import { makeTransparentBaseColorForExport } from './texturedExportUtils';
 
 async function blobFromUrl(url: string) {
   const response = await fetch(url);
@@ -66,7 +67,10 @@ export function findNormalMapTexture(model?: ModelLoadResult) {
 
 export async function exportTextureUrl(project: Project, imageUrl: string, suffix: string) {
   const blob = await blobFromUrl(imageUrl);
-  downloadBlob(blob, getExportFilename(project.name, suffix, 'png'));
+  const shouldExportBaseColor =
+    suffix.toLowerCase().includes('color') || suffix.toLowerCase().includes('basecolor') || suffix.toLowerCase().includes('base-color');
+  const outputBlob = shouldExportBaseColor ? await makeTransparentBaseColorForExport(blob) : blob;
+  downloadBlob(outputBlob, getExportFilename(project.name, suffix, 'png'));
 }
 
 export async function exportNormalTexture(project: Project, texture: Texture) {

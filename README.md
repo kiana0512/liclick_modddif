@@ -75,13 +75,13 @@ corepack pnpm db:push
 - Imported models are mounted as real Three.js groups, centered on XZ, grounded to Y=0, scaled to a practical editor size, measured, and shown in Objects.
 - Imported model metadata records original bounding box, normalization transform, user transform, mesh count, UV status, and import warnings.
 - Move / Rotate / Scale controls work for the selected imported model, with Reset, Center, Ground, and Fit Camera actions.
-- Viewport capture now renders real color, mask, normal, and grayscale depth PNG data URLs.
+- Viewport capture now renders real color, mask, normal, and grayscale depth PNGs from WebGL render targets. Browser captures use registered Blob URLs in memory and local-server saves materialize them as binary assets instead of inflating project JSON with base64.
 - Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. Mock generation remains available only for offline development.
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
 - Projected preview now rejects out-of-frustum, backface, masked, and approximate depth-failed fragments instead of spreading the image over the full model.
 - Layer visibility, opacity, delete, and go-to-camera work for projected layer preview.
 - Texture Map projected layers queue a background GPU-first UV bake for the visible projected-layer stack. The bake keeps the selected resolution, falls back to CPU only at that same resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
-- Local-server projects persist baked textures as binary PNG uploads instead of large base64 JSON payloads, reducing main-thread string work and server JSON parsing during 4K/8K bakes.
+- Local-server projects persist captures, generated layer images, and baked textures as binary PNG uploads instead of large base64 JSON payloads, reducing main-thread string work and server JSON parsing during 4K/8K workflows.
 - Save Project / Save As / Load Project now target a local workspace folder through the File System Access API when available, writing `project.liclick.json` and asset folders. Unsupported browsers fall back to JSON download/import.
 - Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
 - Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
@@ -160,7 +160,7 @@ Test flow:
 - File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
 - UV bake supports one object, one UV channel, and basecolor only.
 - UV bake uses the same frustum/mask/depth/backface visibility gates as projected preview, with grayscale depth as an MVP approximation.
-- 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, PNG encoding, workspace persistence, and CPU fallback on unsupported hardware.
+- 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, browser PNG encoding, workspace persistence, the low-resolution CPU coverage validation pass, and same-resolution CPU fallback on unsupported hardware.
 - FBX export, Segments ColorID, MP4, and portable project package zip are still coming soon.
 
 ## Development Rules

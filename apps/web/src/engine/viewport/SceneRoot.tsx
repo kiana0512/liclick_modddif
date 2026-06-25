@@ -7,6 +7,13 @@ import {
   createProjectedLayerMaterial,
   disposeGeneratedMaterialTree,
 } from '@/engine/projection/ProjectedLayerMaterial';
+import {
+  canUseLayerStackCache,
+  findBaseLayerStackTexture,
+  findExactLayerStackTexture,
+  getBakedTextureLayerIds,
+  getVisibleProjectedLayerStack,
+} from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -14,6 +21,51 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { Grid } from './Grid';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { SelectionOutline } from './SelectionOutline';
+
+function useLoadedBakedTexture(imageUrl?: string) {
+  const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
+
+  useEffect(() => {
+    if (!imageUrl) {
+      setLoadedBakedTexture(undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    let loadedTexture: THREE.Texture | undefined;
+    setLoadedBakedTexture(undefined);
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader
+      .loadAsync(imageUrl)
+      .then((texture) => {
+        if (cancelled) {
+          texture.dispose();
+          return;
+        }
+        loadedTexture = texture;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.flipY = false;
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = true;
+        texture.anisotropy = 8;
+        texture.needsUpdate = true;
+        setLoadedBakedTexture(texture);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn('[Liclick 3D Texture] Could not load baked texture for PBR preview:', error);
+        setLoadedBakedTexture(undefined);
+      });
+    return () => {
+      cancelled = true;
+      loadedTexture?.dispose();
+    };
+  }, [imageUrl]);
+
+  return loadedBakedTexture;
+}
 
 function DemoModel() {
   const displayMode = useSceneStore((state) => state.displayMode);
@@ -51,76 +103,33 @@ function ImportedModel() {
   const project = useProjectStore((state) =>
     state.currentProjectId ? state.projects.find((item) => item.id === state.currentProjectId) : undefined,
   );
-  const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
-
-  const visibleProjectedLayers = layers
-    .filter(
-      (layer) =>
-        layer.type === 'projected' &&
-        layer.visible &&
-        layer.imageUrl &&
-        layer.camera &&
-        (!layer.objectId || layer.objectId === importedModel?.objectId),
-    )
-    .sort((a, b) => b.order - a.order);
-  const visibleLayerIds = useMemo(() => visibleProjectedLayers.map((layer) => layer.id), [visibleProjectedLayers]);
-  const bakedTextureRecord = useMemo(() => {
-    if (!project || visibleLayerIds.length === 0) return undefined;
-    return project.bakedTextures.find((texture) => {
-      const sourceLayerIds = texture.sourceLayerIds ?? [texture.sourceLayerId];
-      return (
-        sourceLayerIds.length === visibleLayerIds.length &&
-        sourceLayerIds.every((layerId, index) => layerId === visibleLayerIds[index]) &&
-        visibleProjectedLayers.every((layer) => layer.isBaked && !layer.needsRebake && layer.bakedTextureId === texture.id)
-      );
-    });
-  }, [project, visibleLayerIds, visibleProjectedLayers]);
-  const visibleStackIsBaked = Boolean(bakedTextureRecord);
+  const importedObjectId = importedModel?.objectId;
+  const visibleProjectedLayers = useMemo(
+    () => (importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []),
+    [importedObjectId, layers],
+  );
+  const exactBakedTextureRecord = useMemo(() => {
+    const texture = findExactLayerStackTexture(project, visibleProjectedLayers);
+    return canUseLayerStackCache(visibleProjectedLayers, texture) ? texture : undefined;
+  }, [project, visibleProjectedLayers]);
+  const baseBakedTextureRecord = useMemo(
+    () => (exactBakedTextureRecord ? undefined : findBaseLayerStackTexture(project, visibleProjectedLayers)),
+    [exactBakedTextureRecord, project, visibleProjectedLayers],
+  );
+  const loadedBakedTexture = useLoadedBakedTexture(exactBakedTextureRecord?.imageUrl);
+  const loadedBaseBakedTexture = useLoadedBakedTexture(baseBakedTextureRecord?.imageUrl);
+  const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
   const bakedTextureIsReady = Boolean(loadedBakedTexture);
-  const previewProjectedLayer = bakedTextureIsReady ? undefined : visibleProjectedLayers[0];
+  const baseLayerCount = baseBakedTextureRecord ? getBakedTextureLayerIds(baseBakedTextureRecord).length : 0;
+  const previewProjectedLayer = bakedTextureIsReady
+    ? undefined
+    : visibleProjectedLayers[baseLayerCount] ?? visibleProjectedLayers[visibleProjectedLayers.length - 1];
+  const baseBakedTextureIsReady = Boolean(loadedBaseBakedTexture);
   const canPreviewProjectedLayer =
-    displayMode === 'flat' || (displayMode === 'pbr' && visibleStackIsBaked && !bakedTextureIsReady);
+    displayMode === 'flat' ||
+    (displayMode === 'pbr' && (visibleStackIsBaked || baseBakedTextureIsReady) && !bakedTextureIsReady);
   const previewUsesSourceAlpha =
     typeof previewProjectedLayer?.generationId === 'string' && previewProjectedLayer.generationId.startsWith('texture-map');
-
-  useEffect(() => {
-    if (!bakedTextureRecord?.imageUrl) {
-      setLoadedBakedTexture(undefined);
-      return undefined;
-    }
-    let cancelled = false;
-    let loadedTexture: THREE.Texture | undefined;
-    setLoadedBakedTexture(undefined);
-    const textureLoader = new THREE.TextureLoader();
-    textureLoader
-      .loadAsync(bakedTextureRecord.imageUrl)
-      .then((texture) => {
-        if (cancelled) {
-          texture.dispose();
-          return;
-        }
-        loadedTexture = texture;
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.flipY = false;
-        texture.wrapS = THREE.ClampToEdgeWrapping;
-        texture.wrapT = THREE.ClampToEdgeWrapping;
-        texture.minFilter = THREE.LinearMipmapLinearFilter;
-        texture.magFilter = THREE.LinearFilter;
-        texture.generateMipmaps = true;
-        texture.anisotropy = 8;
-        texture.needsUpdate = true;
-        setLoadedBakedTexture(texture);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.warn('[Liclick 3D Texture] Could not load baked texture for PBR preview:', error);
-        setLoadedBakedTexture(undefined);
-      });
-    return () => {
-      cancelled = true;
-      loadedTexture?.dispose();
-    };
-  }, [bakedTextureRecord?.imageUrl]);
 
   useEffect(() => {
     if (!importedModel) return;
@@ -141,6 +150,7 @@ function ImportedModel() {
               objectId: model.objectId,
               objectMatrixWorld: previewProjectedLayer.objectMatrixWorld,
               currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
+              baseTexture: loadedBaseBakedTexture,
               opacity: previewProjectedLayer.opacity,
               visible: previewProjectedLayer.visible,
               depthTest: true,
@@ -167,7 +177,9 @@ function ImportedModel() {
           | THREE.Material[]
           | undefined;
         const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
-        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : undefined;
+        const bakedTexture = visibleStackIsBaked
+          ? loadedBakedTexture ?? existingBakedTexture
+          : loadedBaseBakedTexture;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
         if (displayMode === 'pbr' && !projectedMaterial) {
@@ -190,6 +202,7 @@ function ImportedModel() {
     displayMode,
     importedModel,
     loadedBakedTexture,
+    loadedBaseBakedTexture,
     previewProjectedLayer,
     previewUsesSourceAlpha,
     selectedObjectId,

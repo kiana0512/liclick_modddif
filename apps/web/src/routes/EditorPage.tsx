@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
+import { AutoBakeProgressBar, type AutoBakeProgress } from '@/components/panels/AutoBakeProgressBar';
 import { GeneratePanel } from '@/components/panels/GeneratePanel';
 import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel';
 import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
@@ -13,8 +15,16 @@ import { Button } from '@/components/ui/Button';
 import { WorkspaceModeShell } from '@/components/workspace/WorkspaceModeShell';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import type { WorkspacePanelDefinition } from '@/components/workspace/workspacePanelTypes';
+import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
+import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import {
+  canUseLayerStackCache,
+  findExactLayerStackTexture,
+  getVisibleProjectedLayerStack,
+} from '@/engine/bake/layerStackCache';
 import { exportModelGlb } from '@/engine/export/exportGltf';
+import { exportModelFbx } from '@/engine/export/exportFbx';
 import { exportModelObj } from '@/engine/export/exportObj';
 import { renderProjectThumbnail } from '@/engine/export/projectThumbnail';
 import { exportViewportSnapshot } from '@/engine/export/exportSnapshot';
@@ -29,6 +39,7 @@ import {
   fileToDataUrl,
   isWorkspaceAssetUrl,
   loadProject as loadWorkspaceProject,
+  saveBlobAsset,
   saveDataUrlAsset,
   saveRemoteUrlAsset,
   saveProject as saveWorkspaceProject,
@@ -42,14 +53,25 @@ import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import { useSceneStore } from '@/stores/sceneStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
+import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
+import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
 import type { Project } from '@/types/project';
+import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 
 type EditorPageProps = {
   projectId: string;
   onBack: () => void;
 };
+
+const resolutionToSize = {
+  '1K': 1024,
+  '2K': 2048,
+  '4K': 4096,
+  '8K': 8192,
+} as const;
 
 export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
@@ -58,8 +80,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const serverLoadedProjectIdRef = useRef<string>();
   const restoredModelKeyRef = useRef<string>();
   const autosaveTimerRef = useRef<number>();
+  const manualBakeRunningRef = useRef(false);
+  const manualBakeProgressTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>('idle');
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>('idle');
+  const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const projects = useProjectStore((state) => state.projects);
   const setCurrentProject = useProjectStore((state) => state.setCurrentProject);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
@@ -80,6 +105,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setLayers = useLayerStore((state) => state.setLayers);
   const layers = useLayerStore((state) => state.layers);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const markLayersBaked = useLayerStore((state) => state.markLayersBaked);
   const generations = useGenerationStore((state) => state.generations);
   const setGenerations = useGenerationStore((state) => state.setGenerations);
   const setProjectGenerations = useProjectStore((state) => state.setProjectGenerations);
@@ -87,6 +113,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setProjectReferences = useProjectStore((state) => state.setProjectReferences);
   const references = useReferenceStore((state) => state.references);
   const setReferences = useReferenceStore((state) => state.setReferences);
+  const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
   const t = useT();
   const workspacePanels = useWorkspaceLayoutStore((state) => state.panels);
@@ -104,6 +131,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   useEffect(() => {
     setRouteProjectStatus('idle');
   }, [projectId]);
+
+  useEffect(() => () => window.clearTimeout(manualBakeProgressTimerRef.current), []);
 
   useEffect(() => {
     if (project) {
@@ -368,6 +397,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       const result = await saveRemoteUrlAsset({ projectId, category, url, filename });
       return result.asset.relativePath;
     }
+    if (url.startsWith('blob:')) {
+      const blob = getRegisteredObjectUrlBlob(url);
+      if (blob) {
+        const result = await saveBlobAsset({ projectId, category, blob, filename });
+        return result.asset.relativePath;
+      }
+    }
     if (!url.startsWith('data:') && !url.startsWith('blob:')) return url;
     const dataUrl = url.startsWith('data:') ? url : await urlToDataUrl(url);
     const result = await saveDataUrlAsset({ projectId, category, dataUrl, filename });
@@ -430,6 +466,174 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       assetManifest: result.project.assetManifest,
     });
     return result;
+  }
+
+  function updateManualBakeProgress(progress: BakeProgress) {
+    const percent = Math.round(progress.progress * 100);
+    const triangleDetail =
+      progress.totalTriangles && progress.processedTriangles !== undefined
+        ? ` · ${progress.processedTriangles}/${progress.totalTriangles} ${t('autoBakeTriangles')}`
+        : '';
+    const layerDetail =
+      progress.layerCount && progress.layerName
+        ? ` · ${progress.layerIndex === undefined ? 1 : progress.layerIndex + 1}/${progress.layerCount} ${progress.layerName}`
+        : progress.layerName
+          ? ` · ${progress.layerName}`
+          : '';
+    const phaseLabel =
+      progress.phase === 'loading-assets'
+        ? t('autoBakeLoadingAssets')
+        : progress.phase === 'rasterizing'
+          ? t('autoBakeRasterizing')
+          : progress.phase === 'compositing'
+            ? t('autoBakeCompositing')
+            : progress.phase === 'encoding'
+              ? t('autoBakeEncoding')
+              : progress.phase === 'applying'
+                ? t('autoBakeApplying')
+                : t('autoBakePersisting');
+    setManualBakeProgress({
+      title: t('autoBake'),
+      detail: `${phaseLabel} ${percent}%${layerDetail}${triangleDetail}`,
+      progress: progress.progress,
+    });
+  }
+
+  async function persistManualBakedTexture(textureId: string, imageUrl: string, imageBlob?: Blob) {
+    if (!project || project.workspaceMode !== 'local-server') return imageUrl;
+    const filename = `${textureId}.png`;
+    const result = imageBlob
+      ? await saveBlobAsset({ projectId: project.id, category: 'baked', blob: imageBlob, filename })
+      : imageUrl.startsWith('http')
+        ? await saveRemoteUrlAsset({ projectId: project.id, category: 'baked', url: imageUrl, filename })
+        : await saveDataUrlAsset({
+            projectId: project.id,
+            category: 'baked',
+            dataUrl: imageUrl.startsWith('data:') ? imageUrl : await urlToDataUrl(imageUrl),
+            filename,
+          });
+    return result.asset.url;
+  }
+
+  async function persistBakeState() {
+    const bakedLayers = useLayerStore.getState().layers;
+    setProjectLayers(bakedLayers);
+    if (!project || project.workspaceMode !== 'local-server') return;
+    const snapshot = getProjectSnapshot({ refreshThumbnail: false });
+    if (snapshot) await saveToWorkspaceServer(snapshot);
+  }
+
+  async function handleLayerBakeRequest(layer: Layer) {
+    if (manualBakeRunningRef.current) {
+      pushToast({
+        tone: 'info',
+        title: t('autoBakeQueued'),
+        description: '当前已有 UV 烘焙在执行，请稍等完成后再双击。',
+        dedupeKey: 'manual-bake-busy',
+      });
+      return;
+    }
+
+    const currentImportedModel = useSceneStore.getState().importedModel;
+    if (!project || !currentImportedModel) {
+      pushToast({ tone: 'error', title: t('autoBakeFailed'), description: t('importModelFirst') });
+      return;
+    }
+
+    const objectId = layer.objectId ?? selectedObjectId ?? currentImportedModel.objectId;
+    const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
+    if (visibleLayers.length === 0) {
+      pushToast({ tone: 'error', title: t('autoBakeFailed'), description: t('addProjectedLayerFirst') });
+      return;
+    }
+
+    manualBakeRunningRef.current = true;
+    window.clearTimeout(manualBakeProgressTimerRef.current);
+    setManualBakeProgress({
+      title: t('autoBake'),
+      detail: `${layer.name} ${t('autoBakePreparing')}`,
+      progress: 0.02,
+    });
+
+    try {
+      const cachedTexture = findExactLayerStackTexture(project, visibleLayers);
+      if (cachedTexture && canUseLayerStackCache(visibleLayers, cachedTexture)) {
+        setManualBakeProgress({ title: t('autoBake'), detail: t('autoBakeApplying'), progress: 0.96 });
+        markLayersBaked(
+          visibleLayers.map((item) => item.id),
+          cachedTexture.id,
+          cachedTexture.createdAt,
+        );
+        await applyBakedTextureToObject(currentImportedModel.group, cachedTexture.imageUrl);
+        await persistBakeState();
+        setManualBakeProgress({
+          title: t('autoBakeComplete'),
+          detail: '已恢复当前可见图层栈的 UV 缓存',
+          progress: 1,
+        });
+        pushToast({
+          tone: 'success',
+          title: t('autoBakeComplete'),
+          description: '已从缓存恢复当前可见图层栈，无需重新烘焙。',
+          dedupeKey: `manual-bake-cache:${cachedTexture.id}`,
+        });
+        return;
+      }
+
+      const bakeResult = await bakeVisibleProjectedLayersToTexture({
+        objectId,
+        resolution: resolutionToSize[resolution],
+        enableBackfaceCulling: true,
+        enableDilation: true,
+        dilationPixels: 4,
+        preferBlobOutput: project.workspaceMode === 'local-server',
+        onProgress: updateManualBakeProgress,
+      });
+      setManualBakeProgress({ title: t('autoBake'), detail: t('autoBakeApplyPbr'), progress: 0.98 });
+      await applyBakedTextureToObject(currentImportedModel.group, bakeResult.imageUrl);
+
+      if (project.workspaceMode === 'local-server') {
+        setManualBakeProgress({ title: t('autoBake'), detail: t('autoBakePersistWorkspace'), progress: 0.99 });
+        const imageUrl = await persistManualBakedTexture(
+          bakeResult.bakedTexture.id,
+          bakeResult.imageUrl,
+          bakeResult.imageBlob,
+        );
+        if (imageUrl !== bakeResult.imageUrl) {
+          const bakedTextures = (useProjectStore.getState().getCurrentProject()?.bakedTextures ?? project.bakedTextures).map(
+            (item) => (item.id === bakeResult.bakedTexture.id ? { ...item, imageUrl } : item),
+          );
+          updateCurrentProject({ bakedTextures });
+        }
+      }
+
+      await persistBakeState();
+      setManualBakeProgress({
+        title: t('autoBakeComplete'),
+        detail: `${bakeResult.bakedTexture.width}px ${t('autoBakeCompleteDetail')}`,
+        progress: 1,
+      });
+      pushToast({
+        tone: 'success',
+        title: t('autoBakeComplete'),
+        description: `${t('autoBakeSuccessHelp')} ${bakeResult.bakedTexture.width}px，${t('coverage')} ${(bakeResult.report.coverageRatio * 100).toFixed(1)}%。`,
+        dedupeKey: `manual-bake-success:${layer.id}`,
+      });
+    } catch (error) {
+      console.error('[Liclick 3D Texture] Manual layer bake failed:', error);
+      pushToast({
+        tone: 'error',
+        title: t('autoBakeFailed'),
+        description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
+        dedupeKey: `manual-bake-failed:${layer.id}`,
+      });
+      setManualBakeProgress(undefined);
+    } finally {
+      manualBakeRunningRef.current = false;
+      manualBakeProgressTimerRef.current = window.setTimeout(() => {
+        setManualBakeProgress(undefined);
+      }, 1600);
+    }
   }
 
   async function handleImportModel(file: File) {
@@ -553,9 +757,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         if (!modelInput) throw new Error(t('importModelFirst'));
         return exportModelGlb({ ...modelInput, target: 'scene' });
       },
+      'scene-fbx': () => {
+        if (!modelInput) throw new Error(t('importModelFirst'));
+        return exportModelFbx({ ...modelInput, target: 'scene' });
+      },
       'scene-obj': () => {
         if (!modelInput) throw new Error(t('importModelFirst'));
-        exportModelObj({ ...modelInput, target: 'scene' });
+        return exportModelObj({ ...modelInput, target: 'scene' });
       },
       'scene-stl': () => {
         if (!modelInput) throw new Error(t('importModelFirst'));
@@ -565,9 +773,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         if (!modelInput) throw new Error(t('selectObjectFirst'));
         return exportModelGlb({ ...modelInput, target: 'object' });
       },
+      'object-fbx': () => {
+        if (!modelInput) throw new Error(t('selectObjectFirst'));
+        return exportModelFbx({ ...modelInput, target: 'object' });
+      },
       'object-obj': () => {
         if (!modelInput) throw new Error(t('selectObjectFirst'));
-        exportModelObj({ ...modelInput, target: 'object' });
+        return exportModelObj({ ...modelInput, target: 'object' });
       },
       'object-stl': () => {
         if (!modelInput) throw new Error(t('selectObjectFirst'));
@@ -697,7 +909,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       visible: true,
       mode: 'texture',
       actions: <LayersPanelActions />,
-      content: <LayersPanel />,
+      content: <LayersPanel onLayerDoubleClick={(layer) => void handleLayerBakeRequest(layer)} />,
     },
     {
       id: 'normalVisualizer',
@@ -899,6 +1111,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         }
         panels={panelDefinitions}
       />
+      {manualBakeProgress && createPortal(<AutoBakeProgressBar progress={manualBakeProgress} />, document.body)}
     </>
   );
 }

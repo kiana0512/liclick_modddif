@@ -1,7 +1,17 @@
 import * as THREE from 'three';
 import type { CapturePassRequest, SceneMaterialSnapshot } from './captureTypes';
+import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
-export function renderSceneToDataUrl(request: CapturePassRequest) {
+function canvasToPngBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not encode capture PNG.'));
+    }, 'image/png');
+  });
+}
+
+export async function renderSceneToPngUrl(request: CapturePassRequest) {
   const target = new THREE.WebGLRenderTarget(request.width, request.height, {
     samples: request.width > 1024 || request.height > 1024 ? 0 : 2,
     colorSpace: THREE.SRGBColorSpace,
@@ -37,7 +47,7 @@ export function renderSceneToDataUrl(request: CapturePassRequest) {
     imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowStride), targetStart);
   }
   context.putImageData(imageData, 0, 0);
-  return canvas.toDataURL('image/png');
+  return createRegisteredObjectUrl(await canvasToPngBlob(canvas));
 }
 
 export function applyTargetOnlyMaterial(

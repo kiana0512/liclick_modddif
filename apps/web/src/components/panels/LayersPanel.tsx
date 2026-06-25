@@ -40,7 +40,11 @@ const checkerStyle = {
   backgroundSize: '14px 14px',
 };
 
-export function LayersPanel() {
+type LayersPanelProps = {
+  onLayerDoubleClick?: (layer: Layer) => void;
+};
+
+export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
   const t = useT();
   const layers = useLayerStore((state) => state.layers);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
@@ -224,6 +228,12 @@ export function LayersPanel() {
             onHover={() => setHoveredLayerId(layer.id)}
             onHoverEnd={() => setHoveredLayerId((current) => (current === layer.id ? undefined : current))}
             onSelect={(event) => selectLayer(layer.id, event)}
+            onDoubleClick={() => {
+              setActiveLayer(layer.id);
+              setSelectedLayerIds([layer.id]);
+              setLastSelectedLayerId(layer.id);
+              onLayerDoubleClick?.(layer);
+            }}
             onVisibilityPointerDown={(event) => {
               event.stopPropagation();
               beginVisibilityDrag(layer);
@@ -397,6 +407,7 @@ function LayerRow({
   selected,
   dragging,
   onSelect,
+  onDoubleClick,
   onHover,
   onHoverEnd,
   onVisibilityPointerDown,
@@ -415,6 +426,7 @@ function LayerRow({
   selected: boolean;
   dragging: boolean;
   onSelect: MouseEventHandler<HTMLDivElement>;
+  onDoubleClick: () => void;
   onHover: () => void;
   onHoverEnd: () => void;
   onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
@@ -439,6 +451,10 @@ function LayerRow({
       tabIndex={0}
       draggable
       onClick={onSelect}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        onDoubleClick();
+      }}
       onPointerEnter={onHover}
       onPointerLeave={onHoverEnd}
       onKeyDown={(event) => {

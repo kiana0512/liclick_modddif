@@ -1,4 +1,5 @@
 import { loadImageData } from '@/engine/bake/imageSampler';
+import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
 type LabColor = [number, number, number];
 type RgbColor = [number, number, number];
@@ -466,17 +467,23 @@ function removeSolidBackground(image: ImageData, options: CutoutOptions = defaul
   return output;
 }
 
-function imageDataToPngDataUrl(imageData: ImageData) {
+async function imageDataToPngUrl(imageData: ImageData) {
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Could not create masked projected image canvas.');
   context.putImageData(imageData, 0, 0);
-  return canvas.toDataURL('image/png');
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((result) => {
+      if (result) resolve(result);
+      else reject(new Error('Could not encode masked projected image.'));
+    }, 'image/png');
+  });
+  return createRegisteredObjectUrl(blob);
 }
 
 export async function createMaskedProjectedImage(imageUrl: string) {
   const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
-  return imageDataToPngDataUrl(removeSolidBackground(sourceImage));
+  return imageDataToPngUrl(removeSolidBackground(sourceImage));
 }

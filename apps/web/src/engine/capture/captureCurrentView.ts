@@ -3,7 +3,7 @@ import { captureDepth } from './captureDepth';
 import { captureMask } from './captureMask';
 import { captureNormal } from './captureNormal';
 import type { CaptureCurrentViewRequest, CapturePassRequest } from './captureTypes';
-import { applyTargetOnlyMaterial, renderSceneToDataUrl } from './renderTargetUtils';
+import { applyTargetOnlyMaterial, renderSceneToPngUrl } from './renderTargetUtils';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -142,7 +142,7 @@ async function captureClayTarget(passRequest: CapturePassRequest) {
   );
   try {
     return {
-      url: renderSceneToDataUrl({
+      url: await renderSceneToPngUrl({
         ...passRequest,
         clearColor: '#f7f7f3',
         clearAlpha: 1,

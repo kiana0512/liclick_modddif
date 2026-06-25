@@ -27,9 +27,11 @@ import { useReferenceStore } from '@/stores/referenceStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
+import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
+import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
 import {
@@ -739,21 +741,54 @@ export function GeneratePanel() {
       const result = await saveRemoteUrlAsset({ projectId: currentProject.id, category, url, filename });
       return result.asset.url;
     }
+    if (url.startsWith('blob:')) {
+      const registeredBlob = getRegisteredObjectUrlBlob(url);
+      if (registeredBlob) {
+        const result = await saveBlobAsset({ projectId: currentProject.id, category, blob: registeredBlob, filename });
+        return result.asset.url;
+      }
+    }
     const dataUrl = url.startsWith('data:') ? url : await urlToDataUrl(url);
     const result = await saveDataUrlAsset({ projectId: currentProject.id, category, dataUrl, filename });
     return result.asset.url;
   }
 
+  async function persistCaptureAssets(captures: Capture[]) {
+    if (!currentProject || currentProject.workspaceMode !== 'local-server') return captures;
+    let changed = false;
+    const persistedCaptures = await Promise.all(
+      captures.map(async (capture) => {
+        const colorUrl = await persistGeneratedImage('captures', capture.colorUrl, `${capture.id}-color.png`);
+        const maskUrl = await persistGeneratedImage('captures', capture.maskUrl, `${capture.id}-mask.png`);
+        const depthUrl = capture.depthUrl
+          ? await persistGeneratedImage('captures', capture.depthUrl, `${capture.id}-depth.png`)
+          : undefined;
+        const normalUrl = capture.normalUrl
+          ? await persistGeneratedImage('captures', capture.normalUrl, `${capture.id}-normal.png`)
+          : undefined;
+        changed ||=
+          colorUrl !== capture.colorUrl ||
+          maskUrl !== capture.maskUrl ||
+          depthUrl !== capture.depthUrl ||
+          normalUrl !== capture.normalUrl;
+        return { ...capture, colorUrl, maskUrl, depthUrl, normalUrl };
+      }),
+    );
+    if (changed) updateCurrentProject({ captures: persistedCaptures });
+    return persistedCaptures;
+  }
+
   async function saveCriticalProjectState(overrides: { layers?: Layer[]; references?: ReferenceImage[] }) {
     const project = useProjectStore.getState().getCurrentProject() ?? currentProject;
     if (!project || project.workspaceMode !== 'local-server') return;
+    const captures = await persistCaptureAssets(useProjectStore.getState().getCurrentProject()?.captures ?? project.captures);
     const projectForSave = {
       ...project,
       objects: useSceneStore.getState().objects,
       layers: overrides.layers ?? useLayerStore.getState().layers,
       references: overrides.references ?? useReferenceStore.getState().references,
       generations: useGenerationStore.getState().generations,
-      captures: useProjectStore.getState().getCurrentProject()?.captures ?? project.captures,
+      captures,
       bakedTextures: useProjectStore.getState().getCurrentProject()?.bakedTextures ?? project.bakedTextures,
       updatedAt: new Date().toISOString(),
       dirty: false,

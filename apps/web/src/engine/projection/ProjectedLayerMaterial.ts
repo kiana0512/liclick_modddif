@@ -13,17 +13,20 @@ const BACKFACE_DOT_LIMIT = 0.22;
 const vertexShader = `
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
+  varying vec2 vUv;
 
   void main() {
     vec4 worldPosition = modelMatrix * vec4(position, 1.0);
     vWorldPosition = worldPosition.xyz;
     vWorldNormal = normalize(mat3(modelMatrix) * normal);
+    vUv = uv;
     gl_Position = projectionMatrix * viewMatrix * worldPosition;
   }
 `;
 
 const fragmentShader = `
   uniform sampler2D projectedMap;
+  uniform sampler2D baseMap;
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
   uniform mat4 projectorMatrix;
@@ -39,9 +42,11 @@ const fragmentShader = `
   uniform float hueShift;
   uniform float saturationShift;
   uniform float lightnessShift;
+  uniform float useBaseMap;
   uniform vec3 baseColor;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
+  varying vec2 vUv;
 
   vec3 applyHslAdjustments(vec3 color) {
     float angle = hueShift * 6.28318530718;
@@ -112,7 +117,9 @@ const fragmentShader = `
     vec4 texel = texture2D(projectedMap, uv);
     texel.rgb = applyHslAdjustments(texel.rgb);
     float projectionAlpha = layerOpacity * inside * featherAlpha * backfaceAlpha * maskAlpha * depthAlpha * texel.a;
-    vec3 shadedBase = baseColor * lambert;
+    vec3 baseTexel = texture2D(baseMap, vUv).rgb;
+    vec3 baseSurfaceColor = mix(baseColor, baseTexel, useBaseMap);
+    vec3 shadedBase = baseSurfaceColor * lambert;
     vec3 mixedColor = mix(shadedBase, texel.rgb, projectionAlpha);
 
     gl_FragColor = vec4(mixedColor, 1.0);
@@ -135,6 +142,17 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   neutralTexture.needsUpdate = true;
   const maskTexture = input.maskUrl ? await new THREE.TextureLoader().loadAsync(input.maskUrl) : neutralTexture;
   const depthTexture = input.depthUrl ? await new THREE.TextureLoader().loadAsync(input.depthUrl) : neutralTexture;
+  const baseTexture = input.baseTexture ?? neutralTexture;
+  if (input.baseTexture) {
+    input.baseTexture.colorSpace = THREE.SRGBColorSpace;
+    input.baseTexture.flipY = false;
+    input.baseTexture.wrapS = THREE.ClampToEdgeWrapping;
+    input.baseTexture.wrapT = THREE.ClampToEdgeWrapping;
+    input.baseTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    input.baseTexture.magFilter = THREE.LinearFilter;
+    input.baseTexture.generateMipmaps = true;
+    input.baseTexture.needsUpdate = true;
+  }
   maskTexture.flipY = false;
   depthTexture.flipY = false;
   maskTexture.wrapS = THREE.ClampToEdgeWrapping;
@@ -159,6 +177,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     fragmentShader,
     uniforms: {
       projectedMap: { value: texture },
+      baseMap: { value: baseTexture },
       maskMap: { value: maskTexture },
       depthMap: { value: depthTexture },
       projectorMatrix: { value: buildProjectionMatrixBundle(input.camera).projectorMatrix },
@@ -175,6 +194,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       saturationShift: { value: input.saturation ?? 0 },
       lightnessShift: { value: input.lightness ?? 0 },
       baseColor: { value: new THREE.Color(DEFAULT_PREVIEW_COLOR) },
+      useBaseMap: { value: input.baseTexture ? 1 : 0 },
     },
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;

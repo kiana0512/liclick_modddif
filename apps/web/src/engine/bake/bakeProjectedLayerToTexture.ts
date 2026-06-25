@@ -2,6 +2,7 @@ import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
 import { bakeProjectedLayerStackWithGpu } from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
+import { getVisibleProjectedLayerStack } from './layerStackCache';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
 import type {
   BakeProjectedLayerInput,
@@ -14,6 +15,7 @@ import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import type { Layer } from '@/types/layer';
+import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 
 const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
@@ -38,7 +40,7 @@ async function encodeBakeCanvas(canvas: HTMLCanvasElement, preferBlobOutput?: bo
   });
   return {
     imageBlob,
-    imageUrl: URL.createObjectURL(imageBlob),
+    imageUrl: createRegisteredObjectUrl(imageBlob),
   };
 }
 
@@ -341,17 +343,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   }
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
 
-  const layers = useLayerStore
-    .getState()
-    .layers.filter(
-      (layer) =>
-        layer.type === 'projected' &&
-        layer.visible &&
-        layer.imageUrl &&
-        layer.camera &&
-        (!layer.objectId || layer.objectId === input.objectId),
-    )
-    .sort((a, b) => b.order - a.order);
+  const layers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   input.onProgress?.({ phase: 'loading-assets', progress: 0.02, layerIndex: 0, layerCount: layers.length });
@@ -433,9 +425,11 @@ export async function bakeVisibleProjectedLayersToTexture(
       };
 
       useProjectStore.getState().addBakedTexture(bakedTexture);
-      for (const layer of layers) {
-        useLayerStore.getState().markLayerBaked(layer.id, bakedTexture.id, bakedTexture.createdAt);
-      }
+      useLayerStore.getState().markLayersBaked(
+        layers.map((layer) => layer.id),
+        bakedTexture.id,
+        bakedTexture.createdAt,
+      );
       console.info('[Liclick 3D Texture] GPU stacked UV bake report:', report);
 
       return {
@@ -568,9 +562,11 @@ export async function bakeVisibleProjectedLayersToTexture(
   };
 
   useProjectStore.getState().addBakedTexture(bakedTexture);
-  for (const layer of layers) {
-    useLayerStore.getState().markLayerBaked(layer.id, bakedTexture.id, bakedTexture.createdAt);
-  }
+  useLayerStore.getState().markLayersBaked(
+    layers.map((layer) => layer.id),
+    bakedTexture.id,
+    bakedTexture.createdAt,
+  );
   console.info('[Liclick 3D Texture] Stacked UV bake report:', report);
 
   return {

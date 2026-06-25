@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { applyTargetOnlyMaterial, renderSceneToDataUrl } from './renderTargetUtils';
+import { applyTargetOnlyMaterial, renderSceneToPngUrl } from './renderTargetUtils';
 import type { CapturePassRequest, CapturePassOutput } from './captureTypes';
 
 export async function captureNormal(request: CapturePassRequest): Promise<CapturePassOutput> {
@@ -7,7 +7,7 @@ export async function captureNormal(request: CapturePassRequest): Promise<Captur
 
   try {
     return {
-      url: renderSceneToDataUrl(request),
+      url: await renderSceneToPngUrl(request),
       warnings: [],
     };
   } finally {

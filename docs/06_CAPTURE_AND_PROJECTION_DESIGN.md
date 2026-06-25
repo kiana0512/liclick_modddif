@@ -18,6 +18,7 @@ Phase 2 implementation:
 - Normal hides all non-target meshes and renders the selected object with `MeshNormalMaterial`.
 - Depth hides all non-target meshes and renders the selected object with `MeshDepthMaterial`.
 - Each pass restores materials and visibility after render.
+- Pass canvases encode through asynchronous PNG Blob URLs. Local-server saves persist those captures into `assets/captures/` through the binary asset API instead of storing base64 payloads in `project.liclick.json`.
 
 ## Projection Back to Model
 
@@ -57,12 +58,12 @@ Depth checks prevent painting through the model. The current MVP compares projec
 
 ## Phase 3 UV Bake MVP
 
-The current bake implementation is CPU UV rasterization in `apps/web/src/engine/bake`.
+The current automatic bake implementation is GPU-first in `apps/web/src/engine/bake`. It renders visible projected layers into UV space on an offscreen WebGL render target, then uses the CPU rasterizer only as a same-resolution fallback or low-resolution coverage validation path.
 
 Algorithm:
 
 1. Load the active projected layer image into `ImageData`.
-2. Create a basecolor canvas at 1024, 2048, or experimental 4096.
+2. Create a basecolor output at the selected viewport resolution.
 3. Traverse meshes under the imported model group.
 4. Require `position` and `uv`; compute normals if absent.
 5. For each indexed or non-indexed triangle, map UVs to canvas pixels.
@@ -72,8 +73,8 @@ Algorithm:
 9. Project world position through the saved projected layer camera matrix.
 10. Skip texels outside clip space.
 11. Sample the projected image and blend with layer opacity.
-12. Run simple dilation over uncovered neighboring pixels.
-13. Export PNG data URL and apply it to the model material.
+12. Run seam dilation and covered-texel sharpening on GPU when the GPU path succeeds.
+13. Encode PNG and apply it to the model material. Local-server projects upload the PNG as a binary asset.
 
 Texture direction:
 
@@ -91,9 +92,7 @@ Depth:
 - Single object.
 - Single material.
 - Single UV set.
-- 1024 or 2048 output first.
+- 1024, 2048, 4096, or 8192 output, constrained by browser/GPU texture limits.
 - Basecolor output before normal, roughness, and masks.
-- UV bake is not implemented in Phase 2.
-- Depth-aware rejection is not implemented in projected preview yet.
-- Active projected layer preview is supported; full multi-layer compositing comes later.
-- Phase 3 implements basecolor UV bake for one active projected layer only.
+- Active projected layer preview is supported; automatic bake composites the visible projected-layer stack into one BaseColor.
+- Phase 3 implements BaseColor UV bake only.

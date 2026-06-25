@@ -22,6 +22,7 @@ type LayerStore = {
   moveLayer: (layerId: string, direction: 'up' | 'down') => void;
   reorderLayer: (layerId: string, targetLayerId: string, placement?: 'before' | 'after') => void;
   markLayerBaked: (layerId: string, bakedTextureId: string, bakedAt: string) => void;
+  markLayersBaked: (layerIds: string[], bakedTextureId: string, bakedAt: string) => void;
   deleteLayer: (layerId: string) => void;
 };
 
@@ -251,6 +252,17 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           : layer,
       ),
     })),
+  markLayersBaked: (layerIds, bakedTextureId, bakedAt) =>
+    set((state) => {
+      const layerIdSet = new Set(layerIds);
+      return {
+        layers: state.layers.map((layer) =>
+          layerIdSet.has(layer.id)
+            ? { ...layer, bakedTextureId, bakedAt, isBaked: true, needsRebake: false }
+            : layer,
+        ),
+      };
+    }),
   deleteLayer: (layerId) =>
     set((state) => {
       const layers = state.layers.filter((layer) => layer.id !== layerId);
