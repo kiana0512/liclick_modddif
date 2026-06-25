@@ -22,6 +22,8 @@ const UV_TEXEL_SAMPLE_OFFSETS = [
   [0.75, 0.75],
 ] as const;
 const BACKFACE_DOT_LIMIT = 0.22;
+const VIEW_CONFIDENCE_MIN = 0.06;
+const VIEW_CONFIDENCE_FULL = 0.5;
 
 export type RasterizeOutput = {
   canvas: HTMLCanvasElement;
@@ -126,6 +128,20 @@ function applyLayerAdjustments(color: [number, number, number, number], layer: L
   return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), color[3]];
 }
 
+function smoothstep(edge0: number, edge1: number, value: number) {
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+function applyViewConfidence(
+  color: [number, number, number, number],
+  normalViewDot: number,
+): [number, number, number, number] | undefined {
+  const confidence = smoothstep(VIEW_CONFIDENCE_MIN, VIEW_CONFIDENCE_FULL, -normalViewDot);
+  if (confidence <= 0.01) return undefined;
+  return [color[0], color[1], color[2], Math.round(color[3] * confidence)];
+}
+
 type SampleResult = {
   color?: [number, number, number, number];
   inFrustum: boolean;
@@ -204,10 +220,14 @@ function resolveProjectedSample({
 
   if (input.bakeInput.enableBackfaceCulling) {
     const cameraToPoint = scratch.cameraToPoint.copy(captureWorldPosition).sub(cameraPosition).normalize();
-    if (worldNormal.dot(cameraToPoint) > BACKFACE_DOT_LIMIT) {
+    const normalViewDot = worldNormal.dot(cameraToPoint);
+    if (normalViewDot > BACKFACE_DOT_LIMIT) {
       return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: true };
     }
+  } else {
+    scratch.cameraToPoint.copy(captureWorldPosition).sub(cameraPosition).normalize();
   }
+  const normalViewDot = worldNormal.dot(scratch.cameraToPoint);
 
   if (!projectWorldToImageUv(captureWorldPosition, projectorMatrix, scratch.imageUv)) {
     return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: false };
@@ -230,7 +250,11 @@ function resolveProjectedSample({
     }
   }
 
-  const sample = applyLayerAdjustments(sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v), input.layer);
+  const sample = applyViewConfidence(
+    applyLayerAdjustments(sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v), input.layer),
+    normalViewDot,
+  );
+  if (!sample) return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
   if (sample[3] <= 4) {
     return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
   }
@@ -258,7 +282,7 @@ function compositeSubpixelSamples(samples: [number, number, number, number][]): 
     Math.round(red / alpha),
     Math.round(green / alpha),
     Math.round(blue / alpha),
-    255,
+    Math.round((alpha / samples.length) * 255),
   ];
 }
 

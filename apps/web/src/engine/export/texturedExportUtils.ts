@@ -1,12 +1,20 @@
 import * as THREE from 'three';
+import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { findExactLayerStackTexture, getVisibleProjectedLayerStack, canUseLayerStackCache } from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
-import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
+import { useSettingsStore } from '@/stores/settingsStore';
+import type { BakedTexture, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { ModelExportInput } from './exportTypes';
 import { getExportRoot, slugifyExportName } from './exportUtils';
 
 export const EXPORT_BASECOLOR_MATERIAL_NAME = 'Liclick_BaseColor';
 const LEGACY_BAKE_FILL: [number, number, number] = [244, 245, 242];
+const exportResolutionToSize: Record<string, UvBakeResolution> = {
+  '1K': 1024,
+  '2K': 2048,
+  '4K': 4096,
+  '8K': 8192,
+};
 
 export type PreparedTexturedExport = {
   root: THREE.Object3D;
@@ -122,7 +130,23 @@ function findCurrentBakedTexture(input: ModelExportInput) {
   const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.importedModel.objectId);
   const exactTexture = findExactLayerStackTexture(input.project, visibleLayers);
   if (canUseLayerStackCache(visibleLayers, exactTexture)) return exactTexture;
-  return input.project.bakedTextures.find((texture) => texture.objectId === input.importedModel.objectId);
+  return undefined;
+}
+
+async function bakeCurrentVisibleTextureForExport(input: ModelExportInput) {
+  const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.importedModel.objectId);
+  if (visibleLayers.length === 0) return undefined;
+
+  const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
+  const result = await bakeVisibleProjectedLayersToTexture({
+    objectId: input.importedModel.objectId,
+    resolution,
+    enableBackfaceCulling: true,
+    enableDilation: true,
+    dilationPixels: 4,
+    preferBlobOutput: true,
+  });
+  return result.bakedTexture;
 }
 
 function makeBaseColorMaterial(texture: THREE.Texture) {
@@ -150,7 +174,7 @@ export async function prepareTexturedModelExport(input: ModelExportInput): Promi
   const root = getExportRoot(input).clone(true);
   root.updateMatrixWorld(true);
 
-  const bakedTexture = findCurrentBakedTexture(input);
+  const bakedTexture = findCurrentBakedTexture(input) ?? await bakeCurrentVisibleTextureForExport(input);
   if (!bakedTexture?.imageUrl) return { root };
 
   const sourceBlob = await blobFromUrl(bakedTexture.imageUrl);

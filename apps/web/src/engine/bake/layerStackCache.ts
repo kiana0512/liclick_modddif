@@ -23,6 +23,22 @@ function layerIdsMatch(a: string[], b: string[]) {
   return a.length === b.length && a.every((layerId, index) => layerId === b[index]);
 }
 
+function layerIdSetsMatch(a: string[], b: string[]) {
+  if (a.length !== b.length) return false;
+  const bIds = new Set(b);
+  return a.every((layerId) => bIds.has(layerId));
+}
+
+function usesOrderIndependentStack(texture: BakedTexture) {
+  const sourceLayerIds = getBakedTextureLayerIds(texture);
+  if (sourceLayerIds.length <= 1) return true;
+  return (
+    texture.report?.warnings?.some((warning) =>
+      warning.includes('order-independent CPU compositing'),
+    ) ?? false
+  );
+}
+
 function isPrefixStack(sourceLayerIds: string[], visibleLayerIds: string[]) {
   if (sourceLayerIds.length === 0 || sourceLayerIds.length >= visibleLayerIds.length) return false;
   return sourceLayerIds.every((layerId, index) => layerId === visibleLayerIds[index]);
@@ -31,7 +47,13 @@ function isPrefixStack(sourceLayerIds: string[], visibleLayerIds: string[]) {
 export function findExactLayerStackTexture(project: Project | undefined, visibleLayers: Layer[]) {
   if (!project || visibleLayers.length === 0) return undefined;
   const visibleLayerIds = visibleLayers.map((layer) => layer.id);
-  return project.bakedTextures.find((texture) => layerIdsMatch(getBakedTextureLayerIds(texture), visibleLayerIds));
+  return (
+    project.bakedTextures.find((texture) => layerIdsMatch(getBakedTextureLayerIds(texture), visibleLayerIds)) ??
+    project.bakedTextures.find(
+      (texture) =>
+        usesOrderIndependentStack(texture) && layerIdSetsMatch(getBakedTextureLayerIds(texture), visibleLayerIds),
+    )
+  );
 }
 
 export function findBaseLayerStackTexture(project: Project | undefined, visibleLayers: Layer[]) {
@@ -43,6 +65,7 @@ export function findBaseLayerStackTexture(project: Project | undefined, visibleL
   let bestLayerCount = 0;
   for (const texture of project.bakedTextures) {
     const sourceLayerIds = getBakedTextureLayerIds(texture);
+    if (sourceLayerIds.length > 1 && !usesOrderIndependentStack(texture)) continue;
     if (!isPrefixStack(sourceLayerIds, visibleLayerIds)) continue;
     if (sourceLayerIds.some((layerId) => rebakeLayerIds.has(layerId))) continue;
     if (sourceLayerIds.length <= bestLayerCount) continue;
@@ -56,5 +79,11 @@ export function canUseLayerStackCache(visibleLayers: Layer[], texture: BakedText
   if (!texture) return false;
   const sourceLayerIds = getBakedTextureLayerIds(texture);
   if (sourceLayerIds.length !== visibleLayers.length) return false;
-  return visibleLayers.every((layer, index) => layer.id === sourceLayerIds[index] && !layer.needsRebake);
+  if (sourceLayerIds.length > 1 && !usesOrderIndependentStack(texture)) return false;
+  if (visibleLayers.some((layer) => layer.needsRebake)) return false;
+  const visibleLayerIds = visibleLayers.map((layer) => layer.id);
+  return (
+    layerIdsMatch(sourceLayerIds, visibleLayerIds) ||
+    (usesOrderIndependentStack(texture) && layerIdSetsMatch(sourceLayerIds, visibleLayerIds))
+  );
 }

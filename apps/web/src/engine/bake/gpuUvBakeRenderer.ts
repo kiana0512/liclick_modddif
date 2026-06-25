@@ -4,6 +4,8 @@ import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath'
 import type { Layer } from '@/types/layer';
 
 const BACKFACE_DOT_LIMIT = 0.22;
+const VIEW_CONFIDENCE_MIN = 0.06;
+const VIEW_CONFIDENCE_FULL = 0.5;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5 / 255;
 const MAX_GPU_SHARPEN_RESOLUTION = 4096;
@@ -154,8 +156,11 @@ const fragmentShader = `
     imageUv.y = 1.0 - imageUv.y;
 
     vec3 projectorViewDir = normalize(captureWorldPosition.xyz - projectorPosition);
-    float frontFacing = 1.0 - step(${BACKFACE_DOT_LIMIT.toFixed(2)}, dot(captureWorldNormal, projectorViewDir));
+    float normalViewDot = dot(captureWorldNormal, projectorViewDir);
+    float frontFacing = 1.0 - step(${BACKFACE_DOT_LIMIT.toFixed(2)}, normalViewDot);
     if (enableBackfaceCulling > 0.5 && frontFacing < 0.5) discard;
+    float viewConfidence = smoothstep(${VIEW_CONFIDENCE_MIN.toFixed(2)}, ${VIEW_CONFIDENCE_FULL.toFixed(2)}, -normalViewDot);
+    if (viewConfidence <= 0.01) discard;
 
     vec4 maskTexel = texture2D(maskMap, imageUv);
     float maskValue = max(maskTexel.r, max(maskTexel.g, maskTexel.b));
@@ -167,7 +172,7 @@ const fragmentShader = `
 
     vec4 texel = texture2D(projectedMap, imageUv);
     texel.rgb = applyHslAdjustments(texel.rgb);
-    float alpha = texel.a * layerOpacity;
+    float alpha = texel.a * layerOpacity * viewConfidence;
     if (alpha <= 0.016) discard;
 
     gl_FragColor = vec4(texel.rgb, alpha);

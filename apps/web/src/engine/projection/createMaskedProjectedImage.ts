@@ -9,6 +9,7 @@ type CutoutOptions = {
   closePx: number;
   openPx: number;
   featherPx: number;
+  bleedPx: number;
   minAreaFrac: number;
 };
 
@@ -17,6 +18,7 @@ const defaultOptions: CutoutOptions = {
   closePx: 3,
   openPx: 1,
   featherPx: 1.5,
+  bleedPx: 18,
   minAreaFrac: 0.00002,
 };
 const maxCutoutDimension = 4096;
@@ -433,6 +435,69 @@ function makeAlpha(foreground: Uint8Array, image: ImageData, options: CutoutOpti
   return alpha;
 }
 
+function growForegroundBleed(image: ImageData, radius: number) {
+  const safeRadius = Math.max(0, Math.round(radius));
+  if (safeRadius <= 0) return image;
+
+  const { width, height, data } = image;
+  const output = new ImageData(new Uint8ClampedArray(data), width, height);
+  const total = width * height;
+  const visited = new Uint8Array(total);
+  let frontier: number[] = [];
+  const neighborOffsets = [
+    [-1, -1],
+    [0, -1],
+    [1, -1],
+    [-1, 0],
+    [1, 0],
+    [-1, 1],
+    [0, 1],
+    [1, 1],
+  ];
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixelIndex = y * width + x;
+      const alpha = data[pixelIndex * 4 + 3];
+      if (alpha < 220) continue;
+      visited[pixelIndex] = 1;
+      const isBoundary = neighborOffsets.some(([ox, oy]) => {
+        const nx = x + ox;
+        const ny = y + oy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) return true;
+        return data[(ny * width + nx) * 4 + 3] < 220;
+      });
+      if (isBoundary) frontier.push(pixelIndex);
+    }
+  }
+
+  for (let step = 1; step <= safeRadius && frontier.length > 0; step += 1) {
+    const nextFrontier: number[] = [];
+    for (const pixelIndex of frontier) {
+      const x = pixelIndex % width;
+      const y = Math.floor(pixelIndex / width);
+      const sourceOffset = pixelIndex * 4;
+      for (const [ox, oy] of neighborOffsets) {
+        const nx = x + ox;
+        const ny = y + oy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const nextPixelIndex = ny * width + nx;
+        if (visited[nextPixelIndex]) continue;
+        visited[nextPixelIndex] = 1;
+        const targetOffset = nextPixelIndex * 4;
+        output.data[targetOffset] = output.data[sourceOffset];
+        output.data[targetOffset + 1] = output.data[sourceOffset + 1];
+        output.data[targetOffset + 2] = output.data[sourceOffset + 2];
+        output.data[targetOffset + 3] = 255;
+        nextFrontier.push(nextPixelIndex);
+      }
+    }
+    frontier = nextFrontier;
+  }
+
+  return output;
+}
+
 function removeSolidBackground(image: ImageData, options: CutoutOptions = defaultOptions) {
   const { maybeBackground, bgRgb } = createBackgroundCandidateMask(image, options);
   const connectedBackground = floodBackground(maybeBackground, image.width, image.height);
@@ -464,7 +529,7 @@ function removeSolidBackground(image: ImageData, options: CutoutOptions = defaul
     output.data[offset + 2] = nextAlpha === 0 ? 0 : Math.round(blue);
     output.data[offset + 3] = nextAlpha;
   }
-  return output;
+  return growForegroundBleed(output, options.bleedPx);
 }
 
 async function imageDataToPngUrl(imageData: ImageData) {

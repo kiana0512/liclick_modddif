@@ -4,14 +4,12 @@ import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
   createPbrPreviewMaterial,
-  createProjectedLayerMaterial,
+  createProjectedLayerStackMaterial,
   disposeGeneratedMaterialTree,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
   canUseLayerStackCache,
-  findBaseLayerStackTexture,
   findExactLayerStackTexture,
-  getBakedTextureLayerIds,
   getVisibleProjectedLayerStack,
 } from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
@@ -112,24 +110,11 @@ function ImportedModel() {
     const texture = findExactLayerStackTexture(project, visibleProjectedLayers);
     return canUseLayerStackCache(visibleProjectedLayers, texture) ? texture : undefined;
   }, [project, visibleProjectedLayers]);
-  const baseBakedTextureRecord = useMemo(
-    () => (exactBakedTextureRecord ? undefined : findBaseLayerStackTexture(project, visibleProjectedLayers)),
-    [exactBakedTextureRecord, project, visibleProjectedLayers],
-  );
   const loadedBakedTexture = useLoadedBakedTexture(exactBakedTextureRecord?.imageUrl);
-  const loadedBaseBakedTexture = useLoadedBakedTexture(baseBakedTextureRecord?.imageUrl);
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
   const bakedTextureIsReady = Boolean(loadedBakedTexture);
-  const baseLayerCount = baseBakedTextureRecord ? getBakedTextureLayerIds(baseBakedTextureRecord).length : 0;
-  const previewProjectedLayer = bakedTextureIsReady
-    ? undefined
-    : visibleProjectedLayers[baseLayerCount] ?? visibleProjectedLayers[visibleProjectedLayers.length - 1];
-  const baseBakedTextureIsReady = Boolean(loadedBaseBakedTexture);
-  const canPreviewProjectedLayer =
-    displayMode === 'flat' ||
-    (displayMode === 'pbr' && (visibleStackIsBaked || baseBakedTextureIsReady) && !bakedTextureIsReady);
-  const previewUsesSourceAlpha =
-    typeof previewProjectedLayer?.generationId === 'string' && previewProjectedLayer.generationId.startsWith('texture-map');
+  const canPreviewProjectedLayers =
+    !bakedTextureIsReady && visibleProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
 
   useEffect(() => {
     if (!importedModel) return;
@@ -140,27 +125,32 @@ function ImportedModel() {
       const selected = selectedObjectId === model.objectId;
       model.group.updateMatrixWorld(true);
       const projectedMaterial =
-        canPreviewProjectedLayer && previewProjectedLayer?.camera
-          ? await createProjectedLayerMaterial({
-              layerId: previewProjectedLayer.id,
-              imageUrl: previewProjectedLayer.imageUrl,
-              maskUrl: previewProjectedLayer.maskUrl,
-              depthUrl: previewProjectedLayer.depthUrl,
-              camera: previewProjectedLayer.camera,
+        canPreviewProjectedLayers
+          ? await createProjectedLayerStackMaterial({
+              layers: visibleProjectedLayers.map((layer) => {
+                const usesSourceAlpha =
+                  typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
+                return {
+                  layerId: layer.id,
+                  imageUrl: layer.imageUrl,
+                  maskUrl: layer.maskUrl,
+                  depthUrl: layer.depthUrl,
+                  camera: layer.camera!,
+                  objectMatrixWorld: layer.objectMatrixWorld,
+                  opacity: layer.opacity,
+                  visible: layer.visible,
+                  hue: (layer.adjustments?.hue ?? 0) / 100,
+                  saturation: (layer.adjustments?.saturation ?? 0) / 100,
+                  lightness: (layer.adjustments?.lightness ?? 0) / 100,
+                  useMask: !usesSourceAlpha,
+                  useDepthCheck: !usesSourceAlpha,
+                };
+              }),
               objectId: model.objectId,
-              objectMatrixWorld: previewProjectedLayer.objectMatrixWorld,
               currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
-              baseTexture: loadedBaseBakedTexture,
-              opacity: previewProjectedLayer.opacity,
-              visible: previewProjectedLayer.visible,
               depthTest: true,
-              hue: (previewProjectedLayer.adjustments?.hue ?? 0) / 100,
-              saturation: (previewProjectedLayer.adjustments?.saturation ?? 0) / 100,
-              lightness: (previewProjectedLayer.adjustments?.lightness ?? 0) / 100,
-              useMask: !previewUsesSourceAlpha,
-              useDepthCheck: !previewUsesSourceAlpha,
               enableBackfaceCulling: true,
-              edgeFeather: 0.035,
+              edgeFeather: 0.004,
               depthBias: 0.025,
             })
           : undefined;
@@ -177,9 +167,7 @@ function ImportedModel() {
           | THREE.Material[]
           | undefined;
         const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
-        const bakedTexture = visibleStackIsBaked
-          ? loadedBakedTexture ?? existingBakedTexture
-          : loadedBaseBakedTexture;
+        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
         if (displayMode === 'pbr' && !projectedMaterial) {
@@ -198,14 +186,12 @@ function ImportedModel() {
       cancelled = true;
     };
   }, [
-    canPreviewProjectedLayer,
+    canPreviewProjectedLayers,
     displayMode,
     importedModel,
     loadedBakedTexture,
-    loadedBaseBakedTexture,
-    previewProjectedLayer,
-    previewUsesSourceAlpha,
     selectedObjectId,
+    visibleProjectedLayers,
     visibleStackIsBaked,
   ]);
 
@@ -241,15 +227,12 @@ export function SceneRoot() {
     (effectiveEnvironmentPreset === 'dark' ? 1.05 : effectiveEnvironmentPreset === 'soft' ? 1.12 : 1.22) *
     pbrLightScale;
   const fillIntensity = (effectiveEnvironmentPreset === 'dark' ? 0.18 : 0.26) * pbrLightScale;
-  const rimIntensity = (effectiveEnvironmentPreset === 'dark' ? 0.14 : 0.2) * pbrLightScale;
-
   return (
     <group onPointerMissed={() => selectObject(undefined)}>
       <ambientLight intensity={ambientIntensity} />
       <hemisphereLight args={['#fff0e8', '#302640', 0.82]} />
       <directionalLight position={[3.5, 5.2, 2.8]} intensity={keyIntensity} castShadow />
       <directionalLight position={[-4.5, 2.2, -3.5]} intensity={fillIntensity} />
-      <directionalLight position={[0, 3.2, -5]} intensity={rimIntensity} />
       <Grid />
       {importedModel ? <ImportedModel /> : <DemoModel />}
       <ObjectTransformControls />

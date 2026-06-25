@@ -189,6 +189,7 @@ export function GeneratePanel() {
   const objects = useSceneStore((state) => state.objects);
   const importedModel = useSceneStore((state) => state.importedModel);
   const resolution = useSettingsStore((state) => state.resolution);
+  const autoUvBakeEnabled = useSettingsStore((state) => state.autoUvBakeEnabled);
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
   const providerStatus = useAuthStore((state) => state.providerStatus);
@@ -429,19 +430,6 @@ export function GeneratePanel() {
     }
   }
 
-  async function ensureCapture() {
-    if (!importedModel) throw new Error(t('importModelFirst'));
-    const objectId = selectedObjectId ?? importedModel.objectId;
-    if (lastCapture?.objectId === objectId) return lastCapture;
-
-    const capture = await captureCurrentView({
-      objectId,
-      resolution: resolutionToSize[resolution],
-    });
-    setLastCapture(capture);
-    return capture;
-  }
-
   async function captureTextureMapReferenceView() {
     if (!importedModel) throw new Error(t('importModelFirst'));
     const objectId = selectedObjectId ?? importedModel.objectId;
@@ -503,22 +491,8 @@ export function GeneratePanel() {
       addProjectGeneration(pendingGeneration);
       setGenerateNotice({
         tone: 'info',
-        message: '正在捕获当前视角并提交莉刻生图任务，请等待。',
+        message: '正在提交莉刻生图任务，请等待。',
       });
-      const capture = await ensureCapture();
-      const object = objects.find((item) => item.id === capture.objectId);
-      pendingGeneration = {
-        ...pendingGeneration,
-        captureId: capture.id,
-        metadata: {
-          ...pendingGeneration.metadata,
-          objectId: object?.id,
-          objectMatrixWorld,
-          serverSubmitted: false,
-        },
-      };
-      start(pendingGeneration);
-      addProjectGeneration(pendingGeneration);
       const generation = await createLiclickApiClient().generateTextureSingleView({
         clientGenerationId: generationId,
         projectId: currentProject?.id,
@@ -527,8 +501,6 @@ export function GeneratePanel() {
         prompt: submittedPrompt,
         referenceIds: selectedReferenceIds,
         referenceImages: references.filter((reference) => selectedReferenceIds.includes(reference.id)),
-        capture,
-        object,
         resolution,
         textureMode: 'realistic',
         visibleOnly: generateMode === 'visible',
@@ -999,9 +971,9 @@ export function GeneratePanel() {
     pushToast({
       tone: 'success',
       title: t('autoBakeLayerAdded'),
-      description: `${layer.name} ${t('autoBakeLayerAddedHelp')}`,
+      description: `${layer.name} ${autoUvBakeEnabled ? t('autoBakeLayerAddedHelp') : t('projectedLayerPreviewOnlyHelp')}`,
     });
-    scheduleAutoBakeVisibleProjectedLayers(layer);
+    if (autoUvBakeEnabled) scheduleAutoBakeVisibleProjectedLayers(layer);
   }
 
   async function handleAddGenerationAsReference() {

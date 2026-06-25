@@ -24,6 +24,10 @@ export type ProjectionLayerInput = {
   lightness?: number;
 };
 
+export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'> & {
+  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'>>;
+};
+
 export type ProjectionMatrixBundle = {
   viewMatrix: THREE.Matrix4;
   projectionMatrix: THREE.Matrix4;

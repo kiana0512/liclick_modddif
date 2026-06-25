@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Languages, LogIn, LogOut } from 'lucide-react';
+import { Check, Languages, Layers, LogIn, LogOut } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { useAuthStore } from '@/stores/authStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 
 export function UserMenu({ onLogout }: { onLogout: () => void }) {
@@ -13,6 +14,8 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
   const t = useT();
   const language = useI18nStore((state) => state.language);
   const setLanguage = useI18nStore((state) => state.setLanguage);
+  const autoUvBakeEnabled = useSettingsStore((state) => state.autoUvBakeEnabled);
+  const setAutoUvBakeEnabled = useSettingsStore((state) => state.setAutoUvBakeEnabled);
   const user = useAuthStore((state) => state.user);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
@@ -128,6 +131,24 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
             </span>
             <span className="shrink-0 text-xs font-semibold text-liclick-pink">
               {language === 'zh' ? t('switchToEnglish') : t('switchToChinese')}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAutoUvBakeEnabled(!autoUvBakeEnabled)}
+            className="mt-1 flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
+            title={t('autoUvBakeHelp')}
+          >
+            <span className="inline-flex min-w-0 items-center gap-2">
+              <Layers className="h-4 w-4 shrink-0" />
+              <span className="truncate">{t('autoUvBake')}</span>
+            </span>
+            <span
+              className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${
+                autoUvBakeEnabled ? 'border-liclick-pink bg-liclick-pink text-white' : 'border-white/24 text-transparent'
+              }`}
+            >
+              <Check className="h-3.5 w-3.5" />
             </span>
           </button>
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">

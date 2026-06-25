@@ -191,12 +191,10 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
     height: size,
   };
 
-  const [color, mask, normal, depth] = await Promise.all([
-    request.colorMode === 'clay-target' ? captureClayTarget(passRequest) : captureColor(passRequest),
-    captureMask(passRequest),
-    captureNormal(passRequest),
-    captureDepth(passRequest),
-  ]);
+  const color = request.colorMode === 'clay-target' ? await captureClayTarget(passRequest) : await captureColor(passRequest);
+  const mask = await captureMask(passRequest);
+  const normal = await captureNormal(passRequest);
+  const depth = await captureDepth(passRequest);
 
   const capture: Capture = {
     id: createId('capture'),

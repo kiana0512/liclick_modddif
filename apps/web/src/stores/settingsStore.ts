@@ -9,10 +9,12 @@ type SettingsStore = {
   exposure: number;
   pbrEnvironmentIntensity: number;
   environmentPreset: EnvironmentPreset;
+  autoUvBakeEnabled: boolean;
   setResolution: (resolution: Resolution) => void;
   setExposure: (exposure: number) => void;
   setPbrEnvironmentIntensity: (pbrEnvironmentIntensity: number) => void;
   setEnvironmentPreset: (environmentPreset: EnvironmentPreset) => void;
+  setAutoUvBakeEnabled: (autoUvBakeEnabled: boolean) => void;
   resetViewportLighting: () => void;
 };
 
@@ -23,10 +25,12 @@ export const useSettingsStore = create<SettingsStore>()(
       exposure: 1.15,
       pbrEnvironmentIntensity: 0.3,
       environmentPreset: 'studio',
+      autoUvBakeEnabled: false,
       setResolution: (resolution) => set({ resolution }),
       setExposure: (exposure) => set({ exposure }),
       setPbrEnvironmentIntensity: (pbrEnvironmentIntensity) => set({ pbrEnvironmentIntensity }),
       setEnvironmentPreset: (environmentPreset) => set({ environmentPreset }),
+      setAutoUvBakeEnabled: (autoUvBakeEnabled) => set({ autoUvBakeEnabled }),
       resetViewportLighting: () => set({ exposure: 1.15, pbrEnvironmentIntensity: 0.3, environmentPreset: 'studio' }),
     }),
     {
@@ -37,6 +41,7 @@ export const useSettingsStore = create<SettingsStore>()(
         exposure: state.exposure,
         pbrEnvironmentIntensity: state.pbrEnvironmentIntensity,
         environmentPreset: state.environmentPreset,
+        autoUvBakeEnabled: state.autoUvBakeEnabled,
       }),
     },
   ),

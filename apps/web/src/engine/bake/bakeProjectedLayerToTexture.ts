@@ -23,6 +23,9 @@ const MIN_VALID_COVERAGE_RATIO = 0.001;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5;
 const MAX_CPU_SHARPEN_RESOLUTION = 4096;
+const BEST_VIEW_TIE_EPSILON = 1 / 255;
+const SEAM_BLEND_SCORE_DELTA = 0.14;
+const SEAM_BLEND_AMOUNT = 0.28;
 const GPU_COVERAGE_VALIDATION_RESOLUTION = 512 as UvBakeResolution;
 const MIN_GPU_CPU_COVERAGE_IOU = 0.45;
 const MIN_GPU_CPU_COVERAGE_RATIO = 0.55;
@@ -223,23 +226,124 @@ export async function bakeProjectedLayerToTexture(
   };
 }
 
-function compositeCanvas(base: ImageData, layer: ImageData) {
-  for (let offset = 0; offset < base.data.length; offset += 4) {
+type BestViewStackComposite = {
+  data: ImageData;
+  score: Float32Array;
+  coverage: Uint8Array;
+  winnerLayerIds: Array<string | undefined>;
+};
+
+function createBestViewStackComposite(resolution: number): BestViewStackComposite {
+  const pixelCount = resolution * resolution;
+  return {
+    data: new ImageData(resolution, resolution),
+    score: new Float32Array(pixelCount),
+    coverage: new Uint8Array(pixelCount),
+    winnerLayerIds: new Array<string | undefined>(pixelCount),
+  };
+}
+
+function shouldReplaceStackPixel(input: {
+  currentScore: number;
+  currentLayerId: string | undefined;
+  candidateScore: number;
+  candidateLayerId: string;
+}) {
+  if (input.candidateScore > input.currentScore + BEST_VIEW_TIE_EPSILON) return true;
+  if (Math.abs(input.candidateScore - input.currentScore) > BEST_VIEW_TIE_EPSILON) return false;
+  return !input.currentLayerId || input.candidateLayerId < input.currentLayerId;
+}
+
+function accumulateBestViewStackLayer(composite: BestViewStackComposite, layer: ImageData, layerId: string) {
+  for (let pixelIndex = 0, offset = 0; offset < layer.data.length; pixelIndex += 1, offset += 4) {
     const sourceAlpha = layer.data[offset + 3] / 255;
     if (sourceAlpha <= 0) continue;
-    const targetAlpha = base.data[offset + 3] / 255;
-    const outputAlpha = sourceAlpha + targetAlpha * (1 - sourceAlpha);
-    if (outputAlpha <= 0) continue;
-    base.data[offset] = Math.round(
-      (layer.data[offset] * sourceAlpha + base.data[offset] * targetAlpha * (1 - sourceAlpha)) / outputAlpha,
-    );
-    base.data[offset + 1] = Math.round(
-      (layer.data[offset + 1] * sourceAlpha + base.data[offset + 1] * targetAlpha * (1 - sourceAlpha)) / outputAlpha,
-    );
-    base.data[offset + 2] = Math.round(
-      (layer.data[offset + 2] * sourceAlpha + base.data[offset + 2] * targetAlpha * (1 - sourceAlpha)) / outputAlpha,
-    );
-    base.data[offset + 3] = Math.round(outputAlpha * 255);
+
+    // Winner-take-best projection merge: a side-view sample cannot tint a texel that
+    // already has a more camera-aligned front-view sample.
+    if (
+      !shouldReplaceStackPixel({
+        currentScore: composite.score[pixelIndex],
+        currentLayerId: composite.winnerLayerIds[pixelIndex],
+        candidateScore: sourceAlpha,
+        candidateLayerId: layerId,
+      })
+    ) {
+      continue;
+    }
+
+    composite.data.data[offset] = layer.data[offset];
+    composite.data.data[offset + 1] = layer.data[offset + 1];
+    composite.data.data[offset + 2] = layer.data[offset + 2];
+    composite.data.data[offset + 3] = layer.data[offset + 3];
+    composite.score[pixelIndex] = sourceAlpha;
+    composite.winnerLayerIds[pixelIndex] = layerId;
+    composite.coverage[pixelIndex] = 1;
+  }
+}
+
+function writeBestViewStackComposite(composite: BestViewStackComposite, output: ImageData) {
+  let writtenTexels = 0;
+  for (let pixelIndex = 0, offset = 0; pixelIndex < composite.score.length; pixelIndex += 1, offset += 4) {
+    if (composite.score[pixelIndex] <= 0) continue;
+    output.data[offset] = composite.data.data[offset];
+    output.data[offset + 1] = composite.data.data[offset + 1];
+    output.data[offset + 2] = composite.data.data[offset + 2];
+    output.data[offset + 3] = composite.data.data[offset + 3];
+    writtenTexels += 1;
+  }
+  return writtenTexels;
+}
+
+function softenBestViewSeams(imageData: ImageData, composite: BestViewStackComposite) {
+  const source = new Uint8ClampedArray(imageData.data);
+  const { width, height, data } = imageData;
+  const neighborOffsets = [
+    { x: -1, y: 0 },
+    { x: 1, y: 0 },
+    { x: 0, y: -1 },
+    { x: 0, y: 1 },
+  ];
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixelIndex = y * width + x;
+      const layerId = composite.winnerLayerIds[pixelIndex];
+      const score = composite.score[pixelIndex];
+      if (!layerId || score <= 0) continue;
+
+      let red = 0;
+      let green = 0;
+      let blue = 0;
+      let totalWeight = 0;
+
+      for (const neighborOffset of neighborOffsets) {
+        const neighborX = x + neighborOffset.x;
+        const neighborY = y + neighborOffset.y;
+        if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
+        const neighborIndex = neighborY * width + neighborX;
+        const neighborLayerId = composite.winnerLayerIds[neighborIndex];
+        const neighborScore = composite.score[neighborIndex];
+        if (!neighborLayerId || neighborLayerId === layerId || neighborScore <= 0) continue;
+        if (Math.abs(score - neighborScore) > SEAM_BLEND_SCORE_DELTA) continue;
+
+        const neighborDataOffset = neighborIndex * 4;
+        const neighborWeight = Math.min(score, neighborScore);
+        red += source[neighborDataOffset] * neighborWeight;
+        green += source[neighborDataOffset + 1] * neighborWeight;
+        blue += source[neighborDataOffset + 2] * neighborWeight;
+        totalWeight += neighborWeight;
+      }
+
+      if (totalWeight <= 0) continue;
+      const offset = pixelIndex * 4;
+      const seamRed = red / totalWeight;
+      const seamGreen = green / totalWeight;
+      const seamBlue = blue / totalWeight;
+      data[offset] = clampByte(source[offset] * (1 - SEAM_BLEND_AMOUNT) + seamRed * SEAM_BLEND_AMOUNT);
+      data[offset + 1] = clampByte(source[offset + 1] * (1 - SEAM_BLEND_AMOUNT) + seamGreen * SEAM_BLEND_AMOUNT);
+      data[offset + 2] = clampByte(source[offset + 2] * (1 - SEAM_BLEND_AMOUNT) + seamBlue * SEAM_BLEND_AMOUNT);
+    }
   }
 }
 
@@ -350,7 +454,7 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
-  if (input.method !== 'cpu' && renderer) {
+  if (input.method !== 'cpu' && renderer && layers.length === 1) {
     try {
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,
@@ -452,6 +556,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create stacked UV bake canvas.');
   const composite = new ImageData(input.resolution, input.resolution);
+  const bestViewComposite = createBestViewStackComposite(input.resolution);
 
   let totalTriangles = 0;
   let processedTriangles = 0;
@@ -462,6 +567,11 @@ export async function bakeVisibleProjectedLayersToTexture(
   let depthRejectedTexels = 0;
   let backfaceRejectedTexels = 0;
   const warnings: string[] = [...gpuFallbackWarnings];
+  if (layers.length > 1) {
+    warnings.push(
+      'Multiple projected layers used order-independent CPU compositing with best-view selection so layer order cannot change the baked result.',
+    );
+  }
 
   for (const [layerIndex, layer] of layers.entries()) {
     const layerStart = 0.04 + (layerIndex / layers.length) * 0.82;
@@ -504,7 +614,11 @@ export async function bakeVisibleProjectedLayersToTexture(
     });
     const layerContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
     if (!layerContext) throw new Error('Could not read layer bake canvas.');
-    compositeCanvas(composite, layerContext.getImageData(0, 0, input.resolution, input.resolution));
+    accumulateBestViewStackLayer(
+      bestViewComposite,
+      layerContext.getImageData(0, 0, input.resolution, input.resolution),
+      layer.id,
+    );
     totalTriangles += rasterized.totalTriangles;
     processedTriangles += rasterized.processedTriangles;
     coveredPixels += rasterized.coveredPixels;
@@ -517,11 +631,9 @@ export async function bakeVisibleProjectedLayersToTexture(
   }
 
   input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
-  let writtenTexels = 0;
-  for (let offset = 3; offset < composite.data.length; offset += 4) {
-    if (composite.data[offset] > 0) writtenTexels += 1;
-  }
-  sharpenCoveredTexels(composite);
+  const writtenTexels = writeBestViewStackComposite(bestViewComposite, composite);
+  if (layers.length > 1) softenBestViewSeams(composite, bestViewComposite);
+  sharpenCoveredTexels(composite, bestViewComposite.coverage);
   fillTransparentTexelsForViewport(composite);
   context.putImageData(composite, 0, 0);
   input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
