@@ -10,10 +10,24 @@ type EditorSnapshot = {
   layers: Layer[];
 };
 
+type EditorRuntimeStep = {
+  kind: 'runtime';
+  undo: () => void;
+  redo: () => void;
+};
+
+type EditorSnapshotStep = {
+  kind: 'snapshot';
+  snapshot: EditorSnapshot;
+};
+
+type EditorHistoryStep = EditorSnapshotStep | EditorRuntimeStep;
+
 type EditorHistoryStore = {
-  past: EditorSnapshot[];
-  future: EditorSnapshot[];
+  past: EditorHistoryStep[];
+  future: EditorHistoryStep[];
   capture: () => void;
+  captureRuntime: (step: Omit<EditorRuntimeStep, 'kind'>) => void;
   undo: () => void;
   redo: () => void;
   clear: () => void;
@@ -63,31 +77,52 @@ export const useEditorHistoryStore = create<EditorHistoryStore>((set, get) => ({
   capture: () => {
     const snapshot = cloneSnapshot(getSnapshot());
     set((state) => ({
-      past: [...state.past.slice(-(maxHistory - 1)), snapshot],
+      past: [...state.past.slice(-(maxHistory - 1)), { kind: 'snapshot', snapshot }],
       future: [],
     }));
   },
+  captureRuntime: (step) =>
+    set((state) => ({
+      past: [...state.past.slice(-(maxHistory - 1)), { kind: 'runtime', ...step }],
+      future: [],
+    })),
   undo: () => {
     const state = get();
     const previous = state.past.at(-1);
     if (!previous) return;
-    const current = cloneSnapshot(getSnapshot());
+    if (previous.kind === 'runtime') {
+      previous.undo();
+      set({
+        past: state.past.slice(0, -1),
+        future: [previous, ...state.future].slice(0, maxHistory),
+      });
+      return;
+    }
+    const current: EditorHistoryStep = { kind: 'snapshot', snapshot: cloneSnapshot(getSnapshot()) };
     set({
       past: state.past.slice(0, -1),
       future: [current, ...state.future].slice(0, maxHistory),
     });
-    applySnapshot(previous);
+    applySnapshot(previous.snapshot);
   },
   redo: () => {
     const state = get();
     const next = state.future[0];
     if (!next) return;
-    const current = cloneSnapshot(getSnapshot());
+    if (next.kind === 'runtime') {
+      next.redo();
+      set({
+        past: [...state.past, next].slice(-maxHistory),
+        future: state.future.slice(1),
+      });
+      return;
+    }
+    const current: EditorHistoryStep = { kind: 'snapshot', snapshot: cloneSnapshot(getSnapshot()) };
     set({
       past: [...state.past, current].slice(-maxHistory),
       future: state.future.slice(1),
     });
-    applySnapshot(next);
+    applySnapshot(next.snapshot);
   },
   clear: () => set({ past: [], future: [] }),
 }));

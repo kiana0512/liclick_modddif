@@ -15,16 +15,16 @@ export function QuickMaskPanel() {
     <div className="space-y-2">
       <div className="grid grid-cols-3 gap-2">
         <MaskToolButton
-          active={paintTool === 'brush'}
+          active={paintTool === 'inpaint-add'}
           title={t('maskAdd')}
-          onClick={() => setPaintTool(paintTool === 'brush' ? 'none' : 'brush')}
+          onClick={() => setPaintTool(paintTool === 'inpaint-add' ? 'none' : 'inpaint-add')}
         >
           <Scan className="h-5 w-5" />
         </MaskToolButton>
         <MaskToolButton
-          active={paintTool === 'eraser'}
+          active={paintTool === 'inpaint-subtract'}
           title={t('maskSubtract')}
-          onClick={() => setPaintTool(paintTool === 'eraser' ? 'none' : 'eraser')}
+          onClick={() => setPaintTool(paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract')}
         >
           <Minus className="h-5 w-5" />
         </MaskToolButton>

@@ -82,7 +82,7 @@ async function stressEndpoint(endpoint) {
           status: 'network-error',
           durationMs: performance.now() - requestStartedAt,
           bytes: 0,
-          error,
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -92,9 +92,27 @@ async function stressEndpoint(endpoint) {
   const failed = results.filter((result) => !result.ok).length;
   const durations = results.map((result) => result.durationMs).sort((a, b) => a - b);
   const p95 = durations[Math.max(0, Math.ceil(durations.length * 0.95) - 1)] ?? 0;
+  const statuses = results.reduce((summary, result) => {
+    const key = String(result.status);
+    summary.set(key, (summary.get(key) ?? 0) + 1);
+    return summary;
+  }, new Map());
   console.log(
     `Stress ${endpoint}: users=${concurrency}, seconds=${stressDurationSeconds}, requests=${results.length}, failed=${failed}, p95=${p95.toFixed(1)}ms`,
   );
+  console.log(
+    `Statuses: ${Array.from(statuses.entries())
+      .map(([status, count]) => `${status}=${count}`)
+      .join(', ')}`,
+  );
+  const firstFailure = results.find((result) => !result.ok);
+  if (firstFailure) {
+    console.log(
+      `First failure: status=${firstFailure.status}, duration=${firstFailure.durationMs.toFixed(1)}ms${
+        firstFailure.error ? `, error=${firstFailure.error}` : ''
+      }`,
+    );
+  }
   if (failed > 0) process.exitCode = 1;
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
 import * as THREE from 'three';
@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/Button';
 import { WorkspaceModeShell } from '@/components/workspace/WorkspaceModeShell';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import type { WorkspacePanelDefinition } from '@/components/workspace/workspacePanelTypes';
+import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
@@ -168,6 +169,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setTransformMode = useSceneStore((state) => state.setTransformMode);
   const paintTool = useSceneStore((state) => state.paintTool);
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
+  const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
+  const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
+  const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayers = useLayerStore((state) => state.setLayers);
   const layers = useLayerStore((state) => state.layers);
@@ -926,33 +930,56 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     void runExportAction(t('exporting'), actions[actionId]);
   }
 
-  function handleOpenLayersFromToolbar() {
-    showPanel('layers');
-    setPanelCollapsed('layers', false);
-  }
-
-  function handleLocalRepaintFromToolbar() {
-    setPaintTool('brush');
+  const handleLocalRepaintFromToolbar = useCallback(() => {
     showPanel('generate');
     setPanelCollapsed('generate', false);
     pushToast({
-      tone: 'info',
-      title: t('paintMaskReady'),
-      description: t('paintMaskReadyHelp'),
-      dedupeKey: 'paint-mask-ready',
+      tone: paintMaskHasContent ? 'info' : 'warning',
+      title: paintMaskHasContent ? t('paintMaskReady') : t('inpaintMaskMissing'),
+      description: paintMaskHasContent ? t('inpaintApiPendingHelp') : t('inpaintMaskMissingHelp'),
+      dedupeKey: paintMaskHasContent ? 'inpaint-api-pending' : 'inpaint-mask-missing',
     });
-  }
+  }, [paintMaskHasContent, pushToast, setPanelCollapsed, showPanel, t]);
 
-  function handleReferenceLinkFromToolbar() {
-    showPanel('generate');
-    setPanelCollapsed('generate', false);
-    pushToast({
-      tone: 'info',
-      title: t('referenceImage'),
-      description: t('referenceLinkToolHelp'),
-      dedupeKey: 'reference-link-ready',
-    });
-  }
+  useEffect(() => {
+    function isEditingText(target: EventTarget | null) {
+      if (!(target instanceof HTMLElement)) return false;
+      return (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        target.isContentEditable
+      );
+    }
+
+    function handleInpaintShortcuts(event: KeyboardEvent) {
+      if (isEditingText(event.target)) return;
+      const key = event.key.toLowerCase();
+      if (event.ctrlKey && key === 'd') {
+        event.preventDefault();
+        clearPaintMask();
+        return;
+      }
+      if (event.ctrlKey && key === 'i') {
+        event.preventDefault();
+        invertPaintMask();
+        return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (key === 'k') {
+        setPaintTool(useSceneStore.getState().paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
+        return;
+      }
+      if (key === 'o') {
+        setPaintTool(useSceneStore.getState().paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract');
+        return;
+      }
+      if (key === 'i') handleLocalRepaintFromToolbar();
+    }
+
+    window.addEventListener('keydown', handleInpaintShortcuts);
+    return () => window.removeEventListener('keydown', handleInpaintShortcuts);
+  }, [clearPaintMask, handleLocalRepaintFromToolbar, invertPaintMask, setPaintTool]);
 
   const panelDefinitions = ([
     {
@@ -1136,6 +1163,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   return (
     <>
+      <PerfScenarioLoader />
       <input
         ref={modelInputRef}
         type="file"
@@ -1191,9 +1219,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
             paintTool={paintTool}
             onTransformModeChange={setTransformMode}
             onPaintToolChange={setPaintTool}
-            onOpenLayers={handleOpenLayersFromToolbar}
             onLocalRepaint={handleLocalRepaintFromToolbar}
-            onReferenceLink={handleReferenceLinkFromToolbar}
             canUndo={canUndo}
             canRedo={canRedo}
             onUndo={undo}
@@ -1207,7 +1233,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               brush: t('brush'),
               eraser: t('eraser'),
               localRepaint: t('localRepaint'),
-              referenceLink: t('referenceLink'),
+              inpaintSelect: t('inpaintSelect'),
+              inpaintUnselect: t('inpaintUnselect'),
               undo: t('undo'),
               redo: t('redo'),
               selectHelp: t('selectToolHelp'),
@@ -1218,7 +1245,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               brushHelp: t('brushToolHelp'),
               eraserHelp: t('eraserToolHelp'),
               localRepaintHelp: t('localRepaintToolHelp'),
-              referenceLinkHelp: t('referenceLinkToolHelp'),
+              inpaintSelectHelp: t('inpaintSelectToolHelp'),
+              inpaintUnselectHelp: t('inpaintUnselectToolHelp'),
             }}
           />
         }

@@ -21,6 +21,8 @@ import { ObjectTransformControls } from './ObjectTransformControls';
 import { SelectionOutline } from './SelectionOutline';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 
+const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
+
 function useLoadedBakedTexture(imageUrl?: string) {
   const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
 
@@ -106,6 +108,10 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     () => (importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []),
     [importedObjectId, layers],
   );
+  const livePreviewProjectedLayers = useMemo(
+    () => visibleProjectedLayers.slice(0, MAX_LIVE_PROJECTED_PREVIEW_LAYERS),
+    [visibleProjectedLayers],
+  );
   const exactBakedTextureRecord = useMemo(() => {
     const texture = findExactLayerStackTexture(project, visibleProjectedLayers);
     return canUseLayerStackCache(visibleProjectedLayers, texture) ? texture : undefined;
@@ -114,7 +120,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
   const bakedTextureIsReady = Boolean(loadedBakedTexture);
   const canPreviewProjectedLayers =
-    !bakedTextureIsReady && visibleProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
+    !bakedTextureIsReady && livePreviewProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
 
   useEffect(() => {
     if (!importedModel) return;
@@ -127,7 +133,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
       const projectedMaterial =
         canPreviewProjectedLayers
           ? await createProjectedLayerStackMaterial({
-              layers: visibleProjectedLayers.map((layer) => {
+              layers: livePreviewProjectedLayers.map((layer) => {
                 const usesSourceAlpha =
                   typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
                 return {
@@ -162,6 +168,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
 
       model.group.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
+        if (child.userData.liclickPaintOverlay) return;
         const originalMaterial = (child.userData.sourceMaterial ?? child.userData.originalMaterial) as
           | THREE.Material
           | THREE.Material[]
@@ -189,9 +196,9 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     canPreviewProjectedLayers,
     displayMode,
     importedModel,
+    livePreviewProjectedLayers,
     loadedBakedTexture,
     selectedObjectId,
-    visibleProjectedLayers,
     visibleStackIsBaked,
   ]);
 

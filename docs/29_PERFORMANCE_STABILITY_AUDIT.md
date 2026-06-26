@@ -1,9 +1,17 @@
 # Performance And Stability Audit
 
-Updated: 2026-06-25
+Updated: 2026-06-26
 
 ## Current Fixes
 
+- 3D surface paint and inpaint-region masking now paint in UV texture space instead of spawning per-dab viewport marks. Brush strokes are continuous line segments on a 1024px canvas texture, so marks stay attached to the model when the camera or model moves.
+- The surface-paint raycast path caches paintable UV meshes per active object and raycasts that flat mesh list without recursive traversal. This removes repeated full model tree walks from pointer-move painting.
+- Paint and mask texture uploads are batched through `requestAnimationFrame`; repeated pointer events only mark canvas textures dirty and the GPU upload happens once per frame.
+- Paint overlays are created lazily only for meshes that are actually hit by the brush. The scene material pass skips those overlay meshes, preventing the overlay from being reprocessed as normal model geometry.
+- Inpaint subtract now erases the mask with `destination-out` and updates mask content state from the stroke history path, avoiding duplicate full-canvas alpha scans at mouse-up.
+- Surface paint history is stroke-based: one drag gesture records one undo/redo runtime step with only the dirty rectangle image data needed for that stroke.
+- Ordinary paint/eraser tools are guarded by the active projected layer. If no valid layer is selected, the editor opens the Layers panel and shows a warning instead of painting into an undefined target.
+- Projected-layer live preview is capped to the first 16 visible layers when the full stack has not been baked yet. Full 100-layer stacks should use the baked texture cache; this avoids generating oversized per-layer shaders that can exceed GPU sampler/uniform limits.
 - Generation job persistence is bounded. `workspace/generation-jobs.json` is treated as runtime cache and ignored by git. Persisted jobs are trimmed to recent sanitized metadata, without raw image payloads or base64 blobs.
 - Texture Map image API settings are no longer forced to 4K. Reference-image generation can stay on `auto` for speed, while bake resolution is controlled separately by the viewport resolution selector.
 - Texture Map projected previews keep image textures, masks, and depth maps with `flipY=false` so the preview matches the CPU UV bake sampling direction.
@@ -41,6 +49,54 @@ Runtime files that should stay out of git:
 - `*.tmp`
 - generated atlas login homes
 - dependency folders and build outputs
+
+Cleanup performed for the 2026-06-26 Windows package pass:
+
+- removed `.codex-tmp`
+- removed `apps/web/dist`
+- removed `apps/server/dist`
+- removed old `dist-installer`
+- kept `node_modules`, `.pnpm-store`, `workspace`, and user project payloads intact
+
+Verification after cleanup:
+
+```text
+corepack pnpm -r typecheck
+corepack pnpm -r lint
+corepack pnpm perf:audit
+LICLICK_STRESS_BASE_URL=http://127.0.0.1:4791 LICLICK_STRESS_USERS=30 LICLICK_STRESS_SECONDS=15 pnpm perf:stress
+LICLICK_STRESS_BASE_URL=http://127.0.0.1:4792 LICLICK_STRESS_USERS=80 LICLICK_STRESS_SECONDS=30 pnpm perf:stress
+```
+
+Current audit result: `generation-jobs.json` is 0.18 MB and there are no files >= 50 MB outside ignored dependency/build folders.
+
+2026-06-26 stress results against a local built server:
+
+- 30 users for 15 seconds: 225,295 `/api/health` requests, 0 failed, p95 3.4 ms, status `200=225295`.
+- 80 users for 30 seconds: 408,781 `/api/health` requests, 0 failed, p95 10.1 ms, status `200=408781`.
+- The stress tool now prints status-code/error summaries and the first failed sample, so network failures are distinguishable from non-2xx server responses.
+
+## Frontend Runtime Stress
+
+Use the hidden perf scenarios on the editor route:
+
+```text
+http://127.0.0.1:5173/project/project-orchid-speaker?perfScenario=100-models
+http://127.0.0.1:5173/project/project-orchid-speaker?perfScenario=100-layers
+http://127.0.0.1:5173/project/project-orchid-speaker?perfScenario=100-layers-unbaked
+```
+
+The scenarios inject synthetic runtime data only when the `perfScenario` query parameter is present.
+
+- `100-models`: one project with 100 UV box models.
+- `100-layers`: one model with 100 projected layers and an exact baked stack texture.
+- `100-layers-unbaked`: one model with 100 projected layers, no baked stack, exercising the 16-layer live-preview guard.
+
+Browser frame-sampling result on 2026-06-26:
+
+- `100-models`: 240 sampled frames after warm-up, average 16.68 ms, p95 16.80 ms, max 17.10 ms, 59.95 FPS, `fallbackTicks=0`, no console warnings/errors.
+- `100-layers`: 240 sampled frames after warm-up, average 16.68 ms, p95 16.80 ms, max 17.10 ms, 59.95 FPS, `fallbackTicks=0`, no console warnings/errors.
+- `100-layers-unbaked`: 240 sampled frames after warm-up, average 16.68 ms, p95 16.80 ms, max 16.80 ms, 59.95 FPS, `fallbackTicks=0`, no console warnings/errors.
 
 ## Stress Test
 

@@ -6,7 +6,20 @@ import type { SerializedCamera } from '@/types/capture';
 import type { DisplayMode, ModelBoundingBox, ProjectionMode, SceneObject, Transform } from '@/types/model';
 
 export type TransformMode = 'select' | 'translate' | 'rotate' | 'scale';
-export type PaintToolMode = 'none' | 'brush' | 'eraser';
+export type PaintToolMode = 'none' | 'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract';
+
+export type PaintMaskSettings = {
+  brushSize: number;
+  brushHardness: number;
+};
+
+export type PaintToolSettings = {
+  brushSize: number;
+  brushHardness: number;
+  eraserSize: number;
+  eraserHardness: number;
+  color: string;
+};
 
 export type ImportSettings = {
   normalizeOnImport: boolean;
@@ -36,6 +49,12 @@ type SceneStore = {
   transformMode: TransformMode;
   paintTool: PaintToolMode;
   paintMaskRevision: number;
+  paintMaskResetRevision: number;
+  paintMaskInvertRevision: number;
+  paintMaskDataUrl?: string;
+  paintMaskHasContent: boolean;
+  paintMaskSettings: PaintMaskSettings;
+  paintToolSettings: PaintToolSettings;
   importSettings: ImportSettings;
   importWarnings: string[];
   restoreCameraRequest?: { camera: SerializedCamera; nonce: number };
@@ -53,7 +72,11 @@ type SceneStore = {
   setTransformMode: (mode: TransformMode) => void;
   setPaintTool: (mode: PaintToolMode) => void;
   markPaintMaskChanged: () => void;
+  setPaintMaskDataUrl: (dataUrl?: string, hasContent?: boolean) => void;
+  setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
+  setPaintToolSettings: (settings: Partial<PaintToolSettings>) => void;
   clearPaintMask: () => void;
+  invertPaintMask: () => void;
   setImportSettings: (settings: Partial<ImportSettings>) => void;
   setOrbitControlsEnabled: (enabled: boolean) => void;
   updateObjectTransform: (objectId: string, transform: Transform, boundingBox?: ModelBoundingBox) => void;
@@ -74,6 +97,21 @@ export const useSceneStore = create<SceneStore>()(
       transformMode: 'select',
       paintTool: 'none',
       paintMaskRevision: 0,
+      paintMaskResetRevision: 0,
+      paintMaskInvertRevision: 0,
+      paintMaskDataUrl: undefined,
+      paintMaskHasContent: false,
+      paintMaskSettings: {
+        brushSize: 10,
+        brushHardness: 50,
+      },
+      paintToolSettings: {
+        brushSize: 1.4,
+        brushHardness: 50,
+        eraserSize: 10,
+        eraserHardness: 50,
+        color: '#ffffff',
+      },
       importSettings: {
         normalizeOnImport: true,
         groundOnImport: true,
@@ -190,7 +228,41 @@ export const useSceneStore = create<SceneStore>()(
       setTransformMode: (transformMode) => set({ transformMode, paintTool: 'none' }),
       setPaintTool: (paintTool) => set({ paintTool, transformMode: 'select' }),
       markPaintMaskChanged: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
-      clearPaintMask: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
+      setPaintMaskDataUrl: (paintMaskDataUrl, paintMaskHasContent) =>
+        set((state) => ({
+          paintMaskDataUrl,
+          paintMaskHasContent: paintMaskHasContent ?? (paintMaskDataUrl ? state.paintMaskHasContent : false),
+          paintMaskRevision: state.paintMaskRevision + 1,
+        })),
+      setPaintMaskSettings: (settings) =>
+        set((state) => ({
+          paintMaskSettings: {
+            brushSize: Math.max(1, Math.min(256, settings.brushSize ?? state.paintMaskSettings.brushSize)),
+            brushHardness: Math.max(0, Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness)),
+          },
+        })),
+      setPaintToolSettings: (settings) =>
+        set((state) => ({
+          paintToolSettings: {
+            brushSize: Math.max(0.5, Math.min(256, settings.brushSize ?? state.paintToolSettings.brushSize)),
+            brushHardness: Math.max(0, Math.min(100, settings.brushHardness ?? state.paintToolSettings.brushHardness)),
+            eraserSize: Math.max(0.5, Math.min(256, settings.eraserSize ?? state.paintToolSettings.eraserSize)),
+            eraserHardness: Math.max(0, Math.min(100, settings.eraserHardness ?? state.paintToolSettings.eraserHardness)),
+            color: settings.color ?? state.paintToolSettings.color,
+          },
+        })),
+      clearPaintMask: () =>
+        set((state) => ({
+          paintMaskDataUrl: undefined,
+          paintMaskHasContent: false,
+          paintMaskRevision: state.paintMaskRevision + 1,
+          paintMaskResetRevision: state.paintMaskResetRevision + 1,
+        })),
+      invertPaintMask: () =>
+        set((state) => ({
+          paintMaskRevision: state.paintMaskRevision + 1,
+          paintMaskInvertRevision: state.paintMaskInvertRevision + 1,
+        })),
       setImportSettings: (settings) =>
         set((state) => ({ importSettings: { ...state.importSettings, ...settings } })),
       setOrbitControlsEnabled: (enabled) => get().viewport?.controls?.setEnabled(enabled),
