@@ -2,20 +2,39 @@ import { Info, Minus, Scan, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '@/components/common/cn';
 import { useT } from '@/stores/i18nStore';
+import { useSceneStore } from '@/stores/sceneStore';
+import { useToastStore } from '@/stores/toastStore';
 
 export function QuickMaskPanel() {
   const t = useT();
+  const paintTool = useSceneStore((state) => state.paintTool);
+  const setPaintTool = useSceneStore((state) => state.setPaintTool);
+  const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
 
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-3 gap-2">
-        <MaskToolButton active title={t('maskAdd')}>
+        <MaskToolButton
+          active={paintTool === 'brush'}
+          title={t('maskAdd')}
+          onClick={() => setPaintTool(paintTool === 'brush' ? 'none' : 'brush')}
+        >
           <Scan className="h-5 w-5" />
         </MaskToolButton>
-        <MaskToolButton title={t('maskSubtract')}>
+        <MaskToolButton
+          active={paintTool === 'eraser'}
+          title={t('maskSubtract')}
+          onClick={() => setPaintTool(paintTool === 'eraser' ? 'none' : 'eraser')}
+        >
           <Minus className="h-5 w-5" />
         </MaskToolButton>
-        <MaskToolButton title={t('delete')}>
+        <MaskToolButton
+          title={t('delete')}
+          onClick={() => {
+            clearPaintMask();
+            setPaintTool('none');
+          }}
+        >
           <Trash2 className="h-5 w-5" />
         </MaskToolButton>
       </div>
@@ -32,9 +51,18 @@ export function QuickMaskPanel() {
 
 export function QuickMaskPanelActions() {
   const t = useT();
+  const pushToast = useToastStore((state) => state.pushToast);
   return (
     <button
       type="button"
+      onClick={() =>
+        pushToast({
+          tone: 'info',
+          title: t('quickMask'),
+          description: t('quickMaskDescription'),
+          dedupeKey: 'quick-mask-description',
+        })
+      }
       className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink"
       title={t('quickMask')}
       aria-label={t('quickMask')}
@@ -48,14 +76,17 @@ function MaskToolButton({
   active,
   title,
   children,
+  onClick,
 }: {
   active?: boolean;
   title: string;
   children: ReactNode;
+  onClick?: () => void;
 }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       title={title}
       aria-label={title}
       className={cn(

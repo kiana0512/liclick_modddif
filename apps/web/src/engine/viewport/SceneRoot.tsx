@@ -19,6 +19,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { Grid } from './Grid';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { SelectionOutline } from './SelectionOutline';
+import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 
 function useLoadedBakedTexture(imageUrl?: string) {
   const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
@@ -92,8 +93,7 @@ function DemoModel() {
   );
 }
 
-function ImportedModel() {
-  const importedModel = useSceneStore((state) => state.importedModel);
+function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
   const displayMode = useSceneStore((state) => state.displayMode);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const selectObject = useSceneStore((state) => state.selectObject);
@@ -209,7 +209,7 @@ function ImportedModel() {
 }
 
 export function SceneRoot() {
-  const importedModel = useSceneStore((state) => state.importedModel);
+  const importedModels = useSceneStore((state) => state.importedModels);
   const selectObject = useSceneStore((state) => state.selectObject);
   const displayMode = useSceneStore((state) => state.displayMode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
@@ -234,7 +234,11 @@ export function SceneRoot() {
       <directionalLight position={[3.5, 5.2, 2.8]} intensity={keyIntensity} castShadow />
       <directionalLight position={[-4.5, 2.2, -3.5]} intensity={fillIntensity} />
       <Grid />
-      {importedModel ? <ImportedModel /> : <DemoModel />}
+      {importedModels.length > 0 ? (
+        importedModels.map((model) => <ImportedModel key={model.objectId} importedModel={model} />)
+      ) : (
+        <DemoModel />
+      )}
       <ObjectTransformControls />
       <ContactShadows position={[0, -0.02, 0]} opacity={0.22} scale={8} blur={2.4} />
     </group>

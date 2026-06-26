@@ -10,10 +10,12 @@ import {
 import { createPortal } from 'react-dom';
 import { Circle, CircleDot, Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/components/common/cn';
+import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useT } from '@/stores/i18nStore';
+import { useToastStore } from '@/stores/toastStore';
 import type { Layer } from '@/types/layer';
 import { downloadImageAsset } from '@/utils/downloadImage';
 
@@ -398,19 +400,39 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
 export function LayersPanelActions() {
   const t = useT();
   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
+  const importedModel = useSceneStore((state) => state.importedModel);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
+  const pushToast = useToastStore((state) => state.pushToast);
 
   function handleAddLayer() {
     captureHistory();
     addEmptyLayer();
   }
 
+  function handleFitCamera() {
+    if (!importedModel) {
+      pushToast({ tone: 'warning', title: t('importModelFirst') });
+      return;
+    }
+    fitCameraToImportedModel();
+  }
+
   return (
     <div className="flex items-center gap-1">
-      <LayerHeaderButton title={t('fitCamera')}>
+      <LayerHeaderButton title={t('fitCamera')} onClick={handleFitCamera}>
         <Focus className="h-4 w-4" />
       </LayerHeaderButton>
-      <LayerHeaderButton title={t('applyColorAdjustments')}>
+      <LayerHeaderButton
+        title={t('applyColorAdjustments')}
+        onClick={() =>
+          pushToast({
+            tone: 'info',
+            title: t('applyColorAdjustments'),
+            description: t('colorAdjustmentsLive'),
+            dedupeKey: 'layer-adjustments-live',
+          })
+        }
+      >
         <PaintBucket className="h-4 w-4" />
       </LayerHeaderButton>
       <LayerHeaderButton title={t('addLayer')} onClick={handleAddLayer}>

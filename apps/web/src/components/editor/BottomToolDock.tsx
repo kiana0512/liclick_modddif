@@ -4,10 +4,7 @@ import {
   Layers3,
   Link2,
   MousePointer2,
-  Move3D,
   Redo2,
-  Rotate3D,
-  Scale3D,
   Sparkles,
   Undo2,
 } from 'lucide-react';
@@ -51,11 +48,8 @@ type BottomToolDockProps = {
   };
 };
 
-const tools: Array<{ mode: TransformMode; icon: typeof MousePointer2; labelKey: 'select' | 'move' | 'rotate' | 'scale' }> = [
+const tools: Array<{ mode: TransformMode; icon: typeof MousePointer2; labelKey: 'select' }> = [
   { mode: 'select', icon: MousePointer2, labelKey: 'select' },
-  { mode: 'translate', icon: Move3D, labelKey: 'move' },
-  { mode: 'rotate', icon: Rotate3D, labelKey: 'rotate' },
-  { mode: 'scale', icon: Scale3D, labelKey: 'scale' },
 ];
 
 export function BottomToolDock({
@@ -83,7 +77,7 @@ export function BottomToolDock({
           key={mode}
           label={labels[labelKey]}
           description={labels[`${labelKey}Help` as keyof typeof labels]}
-          shortcut={labelKey === 'select' ? 'V' : labelKey === 'move' ? 'W' : labelKey === 'rotate' ? 'E' : 'R'}
+          shortcut="V"
         >
           <button
             type="button"

@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import type { ViewportRuntime } from '@/stores/sceneStore';
 import { getBoundingBoxForObject, getMaxDimension } from './boundingBoxUtils';
+import type { ModelBoundingBox } from '@/types/model';
 
-export function fitCameraToObject(runtime: ViewportRuntime, object: THREE.Object3D) {
-  const boundingBox = getBoundingBoxForObject(object);
+export function fitCameraToBoundingBox(runtime: ViewportRuntime, boundingBox: ModelBoundingBox) {
   const center = new THREE.Vector3().fromArray(boundingBox.center);
   const radius = Math.max(getMaxDimension(boundingBox), 1);
 
@@ -25,4 +25,8 @@ export function fitCameraToObject(runtime: ViewportRuntime, object: THREE.Object
 
   runtime.controls?.target.copy(center);
   runtime.controls?.update();
+}
+
+export function fitCameraToObject(runtime: ViewportRuntime, object: THREE.Object3D) {
+  fitCameraToBoundingBox(runtime, getBoundingBoxForObject(object));
 }

@@ -2,6 +2,7 @@ import { CircleSlash, MousePointerClick, Plus, ScanEye } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { useT } from '@/stores/i18nStore';
+import { useToastStore } from '@/stores/toastStore';
 
 export function SegmentsPanel() {
   const t = useT();
@@ -26,12 +27,24 @@ export function SegmentsPanel() {
 
 export function SegmentsPanelActions() {
   const t = useT();
+  const setMode = useWorkspaceLayoutStore((state) => state.setMode);
+  const pushToast = useToastStore((state) => state.pushToast);
   return (
     <div className="flex items-center gap-1">
-      <HeaderIconButton title={t('createSegment')}>
+      <HeaderIconButton title={t('createSegment')} onClick={() => setMode('segments')}>
         <MousePointerClick className="h-4 w-4" />
       </HeaderIconButton>
-      <HeaderIconButton title={t('toggleVisibility')}>
+      <HeaderIconButton
+        title={t('toggleVisibility')}
+        onClick={() =>
+          pushToast({
+            tone: 'info',
+            title: t('segmentTools'),
+            description: t('segmentToolsDescription'),
+            dedupeKey: 'segment-tools-description',
+          })
+        }
+      >
         <ScanEye className="h-4 w-4" />
       </HeaderIconButton>
     </div>

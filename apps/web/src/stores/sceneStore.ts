@@ -43,6 +43,9 @@ type SceneStore = {
   setImportedModel: (model: ModelLoadResult, object: SceneObject) => void;
   setActiveImportedModel: (objectId: string) => void;
   clearImportedModel: () => void;
+  renameObject: (objectId: string, name: string) => void;
+  deleteObject: (objectId: string) => void;
+  setAllObjectsVisible: (visible: boolean) => void;
   setViewportRuntime: (runtime: ViewportRuntime) => void;
   selectObject: (objectId?: string) => void;
   setDisplayMode: (mode: DisplayMode) => void;
@@ -129,6 +132,45 @@ export const useSceneStore = create<SceneStore>()(
           objects: [],
           selectedObjectId: undefined,
           importWarnings: [],
+        }),
+      renameObject: (objectId, name) =>
+        set((state) => ({
+          objects: state.objects.map((object) => (object.id === objectId ? { ...object, name } : object)),
+          importedModels: state.importedModels.map((model) =>
+            model.objectId === objectId ? { ...model, name } : model,
+          ),
+          importedModel:
+            state.importedModel?.objectId === objectId ? { ...state.importedModel, name } : state.importedModel,
+        })),
+      deleteObject: (objectId) =>
+        set((state) => {
+          state.importedModels.find((model) => model.objectId === objectId)?.group.removeFromParent();
+          const objectsWithoutDeleted = state.objects.filter((object) => object.id !== objectId);
+          const selectedObjectId =
+            state.selectedObjectId && state.selectedObjectId !== objectId
+              ? state.selectedObjectId
+              : objectsWithoutDeleted[0]?.id;
+          const importedModels = state.importedModels.filter((model) => model.objectId !== objectId);
+          const importedModel = selectedObjectId
+            ? importedModels.find((model) => model.objectId === selectedObjectId)
+            : undefined;
+
+          return {
+            objects: objectsWithoutDeleted.map((object) => ({ ...object, selected: object.id === selectedObjectId })),
+            importedModels,
+            importedModel,
+            selectedObjectId,
+            importWarnings: importedModel?.warnings ?? [],
+          };
+        }),
+      setAllObjectsVisible: (visible) =>
+        set((state) => {
+          state.importedModels.forEach((model) => {
+            model.group.visible = visible;
+          });
+          return {
+            objects: state.objects.map((object) => ({ ...object, visible })),
+          };
         }),
       setViewportRuntime: (viewport) => set({ viewport }),
       selectObject: (objectId) =>

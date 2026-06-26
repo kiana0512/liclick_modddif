@@ -1,5 +1,67 @@
 [
   {
+    "id": "texture-map-dbee6e5f-69eb-43dc-80c6-dce16beb8d5e",
+    "userId": "atlas-kianaren@lilith.com",
+    "projectId": "project-c56d50e8-82ab-4c20-99a4-069da44343f9",
+    "workflow": "texture-map",
+    "atlasHomeDir": "E:\\Liclick 3D Texture\\workspace\\atlas-homes\\login-cf34cd31-4c55-41e5-99be-01213ff65b1e",
+    "input": {
+      "clientGenerationId": "texture-map-dbee6e5f-69eb-43dc-80c6-dce16beb8d5e",
+      "projectId": "project-c56d50e8-82ab-4c20-99a4-069da44343f9",
+      "workflow": "texture-map",
+      "prompt": "第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。",
+      "model": "nano_banana_pro",
+      "aspectRatio": "auto",
+      "imageSize": "auto",
+      "count": 1,
+      "references": [
+        {
+          "id": "capture-b85d7e69-595c-403c-bbe4-df4647df339d-model-view",
+          "name": "Current model view",
+          "url": "[data-url:1043714]"
+        },
+        {
+          "id": "reference-0b335c66-cdf1-40f3-88d9-5a5c1f90f346",
+          "name": "生成这个椅子的正视图",
+          "url": "[data-url:1673810]"
+        }
+      ]
+    },
+    "status": "running",
+    "startedAt": "2026-06-26T06:30:29.026Z",
+    "updatedAt": "2026-06-26T06:30:37.202Z",
+    "taskId": "c22c164c-be72-4b4c-8682-9ca0413b4f4d",
+    "model": "nano_banana_pro",
+    "extraParams": {
+      "name": "Liclick 3D Texture",
+      "quality": "high",
+      "n": 1,
+      "reference_images": [
+        {
+          "asset_id": "3be06308-f6eb-459d-982e-e094bf3bba37",
+          "type": "image"
+        },
+        {
+          "asset_id": "b0b0fdaf-803b-4590-ad2b-c05d0d6f05f9",
+          "type": "image"
+        }
+      ],
+      "aspect_ratio": "auto",
+      "image_size": "1K"
+    },
+    "uploadedReferences": [
+      {
+        "referenceId": "capture-b85d7e69-595c-403c-bbe4-df4647df339d-model-view",
+        "assetId": "3be06308-f6eb-459d-982e-e094bf3bba37"
+      },
+      {
+        "referenceId": "reference-0b335c66-cdf1-40f3-88d9-5a5c1f90f346",
+        "assetId": "b0b0fdaf-803b-4590-ad2b-c05d0d6f05f9"
+      }
+    ],
+    "raw": "[omitted]"
+  },
+  {
     "id": "texture-map-5a93fa16-d261-4583-a8c2-db51baf75158",
     "userId": "atlas-kianaren@lilith.com",
     "projectId": "project-c56d50e8-82ab-4c20-99a4-069da44343f9",
@@ -3296,72 +3358,6 @@
     "resultUrl": "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-06/0495ee37b49abe5312bd5382553b0b7246cd23744725974cc89810ffca383472.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260625T031412Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260625%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=b93c8ad7ad5aca87a1ee75fe01d6059402a87246fcf943b069c9f7e3810914ba",
     "resultUrls": [
       "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-06/0495ee37b49abe5312bd5382553b0b7246cd23744725974cc89810ffca383472.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260625T031412Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260625%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=b93c8ad7ad5aca87a1ee75fe01d6059402a87246fcf943b069c9f7e3810914ba"
-    ]
-  },
-  {
-    "id": "texture-map-f0949200-3dcf-494a-827e-a7c9c4775b4d",
-    "userId": "atlas-kianaren@lilith.com",
-    "projectId": "project-c56d50e8-82ab-4c20-99a4-069da44343f9",
-    "workflow": "texture-map",
-    "atlasHomeDir": "E:\\Liclick 3D Texture\\workspace\\atlas-homes\\login-96b59e90-6127-4047-98cb-79dc36066e76",
-    "input": {
-      "clientGenerationId": "texture-map-f0949200-3dcf-494a-827e-a7c9c4775b4d",
-      "projectId": "project-c56d50e8-82ab-4c20-99a4-069da44343f9",
-      "workflow": "texture-map",
-      "prompt": "第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。",
-      "model": "nano_banana_pro",
-      "aspectRatio": "auto",
-      "imageSize": "auto",
-      "count": 1,
-      "references": [
-        {
-          "id": "capture-757cb0da-ab34-4aad-bec2-9e2fda811b28-model-view",
-          "name": "Current model view",
-          "url": "[data-url:647282]"
-        },
-        {
-          "id": "reference-0b335c66-cdf1-40f3-88d9-5a5c1f90f346",
-          "name": "生成这个椅子的正视图",
-          "url": "[data-url:1673810]"
-        }
-      ]
-    },
-    "status": "succeeded",
-    "startedAt": "2026-06-25T03:12:50.842Z",
-    "updatedAt": "2026-06-25T03:13:23.355Z",
-    "taskId": "c30c4aad-9bce-4c53-8c64-358ef47f8e7a",
-    "model": "nano_banana_pro",
-    "extraParams": {
-      "name": "Liclick 3D Texture",
-      "quality": "high",
-      "n": 1,
-      "reference_images": [
-        {
-          "asset_id": "ab58882d-c6e4-4bf9-993b-cf50113e1511",
-          "type": "image"
-        },
-        {
-          "asset_id": "b0b0fdaf-803b-4590-ad2b-c05d0d6f05f9",
-          "type": "image"
-        }
-      ],
-      "aspect_ratio": "auto",
-      "image_size": "1K"
-    },
-    "uploadedReferences": [
-      {
-        "referenceId": "capture-757cb0da-ab34-4aad-bec2-9e2fda811b28-model-view",
-        "assetId": "ab58882d-c6e4-4bf9-993b-cf50113e1511"
-      },
-      {
-        "referenceId": "reference-0b335c66-cdf1-40f3-88d9-5a5c1f90f346",
-        "assetId": "b0b0fdaf-803b-4590-ad2b-c05d0d6f05f9"
-      }
-    ],
-    "raw": "[omitted]",
-    "resultUrl": "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-06/0905acf479c8b08106818271e5d289e3af147f1f3b94b37b75dbe78113cb5a83.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260625T031321Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260625%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=8fc7d6b61a05bcb62a439383e8f3c57fb1b0cbf2bfd93bb61c53f01fbb105c03",
-    "resultUrls": [
-      "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-06/0905acf479c8b08106818271e5d289e3af147f1f3b94b37b75dbe78113cb5a83.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260625T031321Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260625%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=8fc7d6b61a05bcb62a439383e8f3c57fb1b0cbf2bfd93bb61c53f01fbb105c03"
     ]
   }
 ]

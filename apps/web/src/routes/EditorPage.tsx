@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
+import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
 import { AutoBakeProgressBar, type AutoBakeProgress } from '@/components/panels/AutoBakeProgressBar';
@@ -32,6 +33,8 @@ import { exportModelStl } from '@/engine/export/exportStl';
 import { exportNormalTexture, exportTextureUrl, findNormalMapTexture } from '@/engine/export/exportTexture';
 import { canRecordTurntable, exportTurntableWebm } from '@/engine/export/exportTurntable';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
+import type { LoadedModel, ModelLoadResult } from '@/engine/loaders/modelImportTypes';
+import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
@@ -73,6 +76,68 @@ const resolutionToSize = {
   '4K': 4096,
   '8K': 8192,
 } as const;
+
+function transformFromLoadedGroup(group: THREE.Group) {
+  return {
+    position: [group.position.x, group.position.y, group.position.z] as [number, number, number],
+    rotation: [group.rotation.x, group.rotation.y, group.rotation.z] as [number, number, number],
+    scale: [group.scale.x, group.scale.y, group.scale.z] as [number, number, number],
+  };
+}
+
+function arrangeImportedModelForComparison(loaded: LoadedModel, existingModels: ModelLoadResult[]): LoadedModel {
+  if (existingModels.length === 0) return loaded;
+
+  const existingBox = new THREE.Box3();
+  let hasExistingModel = false;
+  existingModels.forEach((model) => {
+    model.group.updateMatrixWorld(true);
+    const modelBox = new THREE.Box3().setFromObject(model.group);
+    if (modelBox.isEmpty()) return;
+    existingBox.union(modelBox);
+    hasExistingModel = true;
+  });
+  if (!hasExistingModel) return loaded;
+
+  loaded.result.group.updateMatrixWorld(true);
+  const newBox = new THREE.Box3().setFromObject(loaded.result.group);
+  if (newBox.isEmpty()) return loaded;
+
+  const existingSize = new THREE.Vector3();
+  const newSize = new THREE.Vector3();
+  const newCenter = new THREE.Vector3();
+  existingBox.getSize(existingSize);
+  newBox.getSize(newSize);
+  newBox.getCenter(newCenter);
+
+  const gap = Math.max(0.45, Math.min(1.2, Math.max(existingSize.x, newSize.x) * 0.18));
+  const targetCenterX = existingBox.max.x + newSize.x / 2 + gap;
+  loaded.result.group.position.x += targetCenterX - newCenter.x;
+  loaded.result.group.updateMatrixWorld(true);
+
+  const boundingBox = getBoundingBoxForObject(loaded.result.group);
+  const transform = transformFromLoadedGroup(loaded.result.group);
+  const importNormalizationTransform = {
+    ...loaded.result.importNormalizationTransform,
+    position: transform.position,
+  };
+
+  return {
+    ...loaded,
+    result: {
+      ...loaded.result,
+      boundingBox,
+      importNormalizationTransform,
+    },
+    object: {
+      ...loaded.object,
+      boundingBox,
+      transform,
+      userTransform: transform,
+      importNormalizationTransform,
+    },
+  };
+}
 
 export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
@@ -656,11 +721,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   async function handleImportModel(file: File) {
     try {
-      const loaded = await loadModelFromFile(file, {
+      const loaded = arrangeImportedModelForComparison(await loadModelFromFile(file, {
         normalize: importSettings.normalizeOnImport,
         ground: importSettings.groundOnImport,
         targetMaxDimension: 3,
-      });
+      }), useSceneStore.getState().importedModels);
       let object = loaded.object;
       if (project?.workspaceMode === 'local-server') {
         try {
@@ -920,7 +985,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       collapsed: workspacePanels.find((panel) => panel.id === 'objects')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
-      actions: <ObjectsPanelActions />,
+      actions: <ObjectsPanelActions onImportModelClick={() => modelInputRef.current?.click()} />,
       content: <ObjectsPanel />,
     },
     {
