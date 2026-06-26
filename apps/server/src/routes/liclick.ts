@@ -180,6 +180,14 @@ function getJobResponse(job: GenerationJob) {
   };
 }
 
+async function cancelGenerationJob(job: GenerationJob) {
+  if (job.status === 'succeeded' || job.status === 'failed') return;
+  job.status = 'failed';
+  job.error = '用户已终止莉刻生图任务。';
+  job.updatedAt = new Date().toISOString();
+  await saveGenerationJobs();
+}
+
 function findJob(idOrTaskId: string) {
   return generationJobs.get(idOrTaskId) ?? [...generationJobs.values()].find((job) => job.taskId === idOrTaskId);
 }
@@ -229,7 +237,9 @@ function startGenerationJob(job: GenerationJob) {
   job.promise = (async () => {
     try {
       if (!job.taskId && job.status === 'submitting') {
-        await applySubmission(job, await submitLiclickImageJob(job.input, { atlasHomeDir: job.atlasHomeDir }));
+        const submission = await submitLiclickImageJob(job.input, { atlasHomeDir: job.atlasHomeDir });
+        if (job.status !== 'submitting') return;
+        await applySubmission(job, submission);
       }
       const startedPollingAt = Date.now();
       while (job.status === 'running' && Date.now() - startedPollingAt < 30 * 60 * 1000) {
@@ -307,6 +317,17 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
       });
     }
     startGenerationJob(job);
+    sendJson(response, 200, getJobResponse(job));
+    return true;
+  }
+
+  if (request.method === 'DELETE' && isLiclickRoute && segments[2] === 'generate-image' && segments[3]) {
+    const job = findJob(segments[3]);
+    if (!job || job.userId !== user.id) {
+      sendJson(response, 404, { error: 'Generation job not found.' });
+      return true;
+    }
+    await cancelGenerationJob(job);
     sendJson(response, 200, getJobResponse(job));
     return true;
   }

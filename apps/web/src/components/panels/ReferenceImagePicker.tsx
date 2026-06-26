@@ -4,6 +4,7 @@ import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Tras
 import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
 import { useReferenceStore } from '@/stores/referenceStore';
+import { useSceneStore } from '@/stores/sceneStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
@@ -53,6 +54,10 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
   const t = useT();
   const references = useReferenceStore((state) => state.references);
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const visibleReferences = references.filter((reference) => !reference.objectId || reference.objectId === selectedObjectId);
+  const visibleReferenceIds = new Set(visibleReferences.map((reference) => reference.id));
+  const visibleSelectedReferenceIds = selectedReferenceIds.filter((id) => visibleReferenceIds.has(id));
   const addReferences = useReferenceStore((state) => state.addReferences);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const toggleReference = useReferenceStore((state) => state.toggleReference);
@@ -109,6 +114,7 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
           width: size.width,
           height: size.height,
           isPrimary: index === 0,
+          objectId: selectedObjectId,
         };
       }),
     );
@@ -187,15 +193,15 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
             : `min-h-24 border border-dashed p-2 ${isDraggingImage ? 'border-liclick-pink bg-liclick-pink/14' : 'border-white/14 bg-black/18'}`
         }`}
       >
-        {references.length === 0 ? (
+        {visibleReferences.length === 0 ? (
           <div className={`flex items-center justify-center gap-2 text-xs font-semibold text-white/50 ${compact ? 'h-14' : 'h-20'}`}>
             {!compact && <Plus className="h-4 w-4" />}
             {!compact && t('dropReferenceImages')}
           </div>
         ) : (
           <div className={compact ? 'flex flex-wrap gap-2' : 'grid grid-cols-2 gap-2'}>
-            {references.map((reference) => {
-              const selected = selectedReferenceIds.includes(reference.id);
+            {visibleReferences.map((reference) => {
+              const selected = visibleSelectedReferenceIds.includes(reference.id);
               return (
                 <div
                   key={reference.id}

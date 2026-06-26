@@ -126,7 +126,7 @@ const fragmentShader = `
     float lambert = max(dot(normal, lightDir), 0.0) * 0.2 + 0.8;
     vec4 texel = texture2D(projectedMap, uv);
     texel.rgb = applyHslAdjustments(texel.rgb);
-    float sourceAlpha = smoothstep(0.015, 0.08, texel.a);
+    float sourceAlpha = step(0.015, texel.a);
     float projectionAlpha = layerOpacity * inside * featherAlpha * backfaceAlpha * maskAlpha * depthAlpha * sourceAlpha;
     vec3 baseTexel = texture2D(baseMap, vUv).rgb;
     vec3 baseSurfaceColor = mix(baseColor, baseTexel, useBaseMap);
@@ -190,7 +190,7 @@ function buildStackFragmentShader(layerCount: number) {
 
       vec4 texel = texture2D(projectedMap${index}, uv);
       texel.rgb = applyHslAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
-      float sourceAlpha = smoothstep(0.015, 0.08, texel.a);
+      float sourceAlpha = step(0.015, texel.a);
       float validAlpha = layerOpacity${index} * inside * featherAlpha * backfaceAlpha * maskAlpha * depthAlpha * sourceAlpha;
       float candidateScore = validAlpha * (0.15 + viewConfidence * 0.85) + layerPriority${index};
       if (validAlpha > 0.02 && candidateScore > bestScore) {
@@ -339,6 +339,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       baseColor: { value: new THREE.Color(DEFAULT_PREVIEW_COLOR) },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
     },
+    toneMapped: false,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set([texture, maskTexture, depthTexture])];
@@ -448,6 +449,7 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     vertexShader,
     fragmentShader: buildStackFragmentShader(layers.length),
     uniforms,
+    toneMapped: false,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];

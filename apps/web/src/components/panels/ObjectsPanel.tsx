@@ -12,7 +12,13 @@ export function ObjectsPanel() {
   const selectObject = useSceneStore((state) => state.selectObject);
   const toggleObjectVisibility = useSceneStore((state) => state.toggleObjectVisibility);
   const setProjectObjects = useProjectStore((state) => state.setProjectObjects);
+  const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
+
+  function handleSelectObject(objectId: string) {
+    selectObject(objectId);
+    updateCurrentProject({ objects: useSceneStore.getState().objects, activeObjectId: objectId });
+  }
 
   function handleToggleVisibility(objectId: string) {
     captureHistory();
@@ -37,9 +43,9 @@ export function ObjectsPanel() {
             key={object.id}
             role="button"
             tabIndex={0}
-            onClick={() => selectObject(object.id)}
+            onClick={() => handleSelectObject(object.id)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') selectObject(object.id);
+              if (event.key === 'Enter' || event.key === ' ') handleSelectObject(object.id);
             }}
             className={cn(
               'flex h-10 w-full items-center gap-2 border-b border-white/24 bg-black/82 px-2 text-left transition hover:bg-white/[0.06]',

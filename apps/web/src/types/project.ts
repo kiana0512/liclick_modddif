@@ -22,6 +22,7 @@ export type ReferenceImage = {
   width: number;
   height: number;
   isPrimary: boolean;
+  objectId?: string;
 };
 
 export type ProjectSettings = {
@@ -35,6 +36,8 @@ export type ProjectSettings = {
     imageSize: string;
     count: number;
     prompt?: string;
+    liclickPrompt?: string;
+    textureMapPrompt?: string;
     mode?: 'visible' | 'upscale';
     upscaleStrength?: number;
   };

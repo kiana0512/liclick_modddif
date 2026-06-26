@@ -27,6 +27,7 @@ export type ViewportRuntime = {
 
 type SceneStore = {
   objects: SceneObject[];
+  importedModels: ModelLoadResult[];
   importedModel?: ModelLoadResult;
   viewport?: ViewportRuntime;
   selectedObjectId?: string;
@@ -40,6 +41,7 @@ type SceneStore = {
   restoreCameraRequest?: { camera: SerializedCamera; nonce: number };
   setObjects: (objects: SceneObject[]) => void;
   setImportedModel: (model: ModelLoadResult, object: SceneObject) => void;
+  setActiveImportedModel: (objectId: string) => void;
   clearImportedModel: () => void;
   setViewportRuntime: (runtime: ViewportRuntime) => void;
   selectObject: (objectId?: string) => void;
@@ -60,6 +62,7 @@ export const useSceneStore = create<SceneStore>()(
   persist(
     (set, get) => ({
       objects: [],
+      importedModels: [],
       importedModel: undefined,
       viewport: undefined,
       selectedObjectId: undefined,
@@ -76,19 +79,52 @@ export const useSceneStore = create<SceneStore>()(
       importWarnings: [],
       restoreCameraRequest: undefined,
       setObjects: (objects) =>
-        set({
-          objects,
-          selectedObjectId: objects.find((object) => object.selected)?.id ?? objects[0]?.id,
+        set((state) => {
+          const objectIds = new Set(objects.map((object) => object.id));
+          const importedModels = state.importedModels.filter((model) => objectIds.has(model.objectId));
+          const selectedObjectId = objects.find((object) => object.selected)?.id ?? objects[0]?.id;
+          return {
+            objects,
+            importedModels,
+            importedModel: importedModels.find((model) => model.objectId === selectedObjectId),
+            selectedObjectId,
+          };
         }),
       setImportedModel: (model, object) =>
-        set({
-          importedModel: model,
-          objects: [object],
-          selectedObjectId: object.id,
-          importWarnings: model.warnings,
+        set((state) => {
+          const existingModelIndex = state.importedModels.findIndex((item) => item.objectId === object.id);
+          const importedModels =
+            existingModelIndex >= 0
+              ? state.importedModels.map((item) => (item.objectId === object.id ? model : item))
+              : [...state.importedModels, model];
+          const nextObject = { ...object, selected: true, visible: object.visible ?? true };
+          const hasExistingObject = state.objects.some((item) => item.id === object.id);
+          const objects = (
+            hasExistingObject
+              ? state.objects.map((item) => (item.id === object.id ? nextObject : { ...item, selected: false }))
+              : [...state.objects.map((item) => ({ ...item, selected: false })), nextObject]
+          );
+          return {
+            importedModels,
+            importedModel: model,
+            objects,
+            selectedObjectId: object.id,
+            importWarnings: model.warnings,
+          };
+        }),
+      setActiveImportedModel: (objectId) =>
+        set((state) => {
+          const importedModel = state.importedModels.find((model) => model.objectId === objectId) ?? state.importedModel;
+          return {
+            importedModel,
+            selectedObjectId: objectId,
+            objects: state.objects.map((object) => ({ ...object, selected: object.id === objectId })),
+            importWarnings: importedModel?.warnings ?? [],
+          };
         }),
       clearImportedModel: () =>
         set({
+          importedModels: [],
           importedModel: undefined,
           objects: [],
           selectedObjectId: undefined,
@@ -96,10 +132,17 @@ export const useSceneStore = create<SceneStore>()(
         }),
       setViewportRuntime: (viewport) => set({ viewport }),
       selectObject: (objectId) =>
-        set((state) => ({
-          selectedObjectId: objectId,
-          objects: state.objects.map((object) => ({ ...object, selected: object.id === objectId })),
-        })),
+        set((state) => {
+          const importedModel = objectId
+            ? state.importedModels.find((model) => model.objectId === objectId) ?? state.importedModel
+            : state.importedModel;
+          return {
+            importedModel,
+            selectedObjectId: objectId,
+            objects: state.objects.map((object) => ({ ...object, selected: object.id === objectId })),
+            importWarnings: importedModel?.warnings ?? state.importWarnings,
+          };
+        }),
       setDisplayMode: (displayMode) => set({ displayMode }),
       setProjectionMode: (projectionMode) => set({ projectionMode }),
       setTransformMode: (transformMode) => set({ transformMode, paintTool: 'none' }),
@@ -131,9 +174,9 @@ export const useSceneStore = create<SceneStore>()(
           const objects = state.objects.map((object) =>
             object.id === objectId ? { ...object, visible: !object.visible } : object,
           );
-          if (state.importedModel?.objectId === objectId) {
-            state.importedModel.group.visible = objects.find((object) => object.id === objectId)?.visible ?? true;
-          }
+          const visible = objects.find((object) => object.id === objectId)?.visible ?? true;
+          const importedModel = state.importedModels.find((model) => model.objectId === objectId);
+          if (importedModel) importedModel.group.visible = visible;
           return { objects };
         }),
       requestCameraRestore: (camera) =>

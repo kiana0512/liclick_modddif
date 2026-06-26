@@ -34,6 +34,7 @@ export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
 export type LiclickApiClient = {
   generateTextureSingleView(input: LiclickGenerateTextureSingleViewInput): Promise<Generation>;
   getGenerationJob(jobId: string): Promise<GenerationJobResult>;
+  cancelGenerationJob(jobId: string): Promise<GenerationJobResult>;
   inpaint(input: GenerateTextureInput): Promise<Generation>;
   generateNormal(input: GenerateTextureInput): Promise<Generation>;
   generateMultiview(input: GenerateTextureInput): Promise<Generation>;
@@ -165,6 +166,12 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
     async getGenerationJob(jobId) {
       return requestJson<GenerationJobResult>(baseUrl, `/api/liclick/generate-image/${encodeURIComponent(jobId)}`, {
         method: 'GET',
+        timeoutMs: 30_000,
+      });
+    },
+    async cancelGenerationJob(jobId) {
+      return requestJson<GenerationJobResult>(baseUrl, `/api/liclick/generate-image/${encodeURIComponent(jobId)}`, {
+        method: 'DELETE',
         timeoutMs: 30_000,
       });
     },

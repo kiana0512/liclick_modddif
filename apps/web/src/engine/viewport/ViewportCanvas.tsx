@@ -1,5 +1,5 @@
 import { Canvas, useThree } from '@react-three/fiber';
-import { Suspense, useEffect, useRef, useState, type DragEvent, type PointerEvent } from 'react';
+import { Suspense, useEffect, useRef, useState, type DragEvent, type PointerEvent, type WheelEvent } from 'react';
 import * as THREE from 'three';
 import { useDragInteractionStore } from '@/stores/dragInteractionStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -11,10 +11,12 @@ import { ViewCube } from './ViewCube';
 type ViewportCanvasProps = {
   hasImportedModel: boolean;
   onImportModel: (file: File) => void;
+  onImportReferenceImages: (files: File[]) => void;
   onOpenImport: () => void;
 };
 
 const MODEL_FILE_EXTENSIONS = new Set(['glb', 'gltf', 'fbx', 'obj', 'stl']);
+const IMAGE_FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
 
 function RendererSettings() {
   const { gl } = useThree();
@@ -29,12 +31,26 @@ function RendererSettings() {
   return null;
 }
 
-function getDragModelFile(event: DragEvent<HTMLDivElement>) {
-  const file = event.dataTransfer.files.item(0);
-  if (!file) return undefined;
-  const extension = file.name.split('.').pop()?.toLowerCase();
-  if (!extension || !MODEL_FILE_EXTENSIONS.has(extension)) return undefined;
-  return file;
+function getFileExtension(file: File) {
+  return file.name.split('.').pop()?.toLowerCase();
+}
+
+function getDragPayload(event: DragEvent<HTMLDivElement>) {
+  const files = Array.from(event.dataTransfer.files);
+  const modelFile = files.find((file) => {
+    const extension = getFileExtension(file);
+    return Boolean(extension && MODEL_FILE_EXTENSIONS.has(extension));
+  });
+  const imageFiles = files.filter((file) => {
+    const extension = getFileExtension(file);
+    if (extension && IMAGE_FILE_EXTENSIONS.has(extension)) return true;
+    return file.type.startsWith('image/');
+  });
+  return {
+    modelFile,
+    imageFiles,
+    dragType: modelFile ? 'model-file' : imageFiles.length > 0 ? 'asset-file' : undefined,
+  } as const;
 }
 
 function PaintMaskOverlay() {
@@ -106,15 +122,42 @@ function PaintMaskOverlay() {
   );
 }
 
-export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }: ViewportCanvasProps) {
+export function ViewportCanvas({
+  hasImportedModel,
+  onImportModel,
+  onImportReferenceImages,
+  onOpenImport,
+}: ViewportCanvasProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [captureFrameVisible, setCaptureFrameVisible] = useState(false);
   const [canvasKey, setCanvasKey] = useState(0);
   const [viewportIssue, setViewportIssue] = useState<string>();
   const recoveryAttemptsRef = useRef(0);
+  const captureFrameTimerRef = useRef<number>();
   const activeDragType = useDragInteractionStore((state) => state.activeDragType);
   const startFileDrag = useDragInteractionStore((state) => state.startFileDrag);
   const clearDrag = useDragInteractionStore((state) => state.clearDrag);
   const exposure = useSettingsStore((state) => state.exposure);
+
+  useEffect(() => () => window.clearTimeout(captureFrameTimerRef.current), []);
+
+  function pulseCaptureFrame() {
+    setCaptureFrameVisible(true);
+    window.clearTimeout(captureFrameTimerRef.current);
+    captureFrameTimerRef.current = window.setTimeout(() => {
+      setCaptureFrameVisible(false);
+    }, 1800);
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (event.buttons === 0) return;
+    pulseCaptureFrame();
+  }
+
+  function handleWheel(event: WheelEvent<HTMLDivElement>) {
+    if (event.deltaX === 0 && event.deltaY === 0 && event.deltaZ === 0) return;
+    pulseCaptureFrame();
+  }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -123,20 +166,28 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
       clearDrag();
       return;
     }
-    const file = getDragModelFile(event);
-    if (file) onImportModel(file);
+    const payload = getDragPayload(event);
+    if (payload.modelFile) {
+      onImportModel(payload.modelFile);
+      clearDrag();
+      return;
+    }
+    if (payload.imageFiles.length > 0) onImportReferenceImages(payload.imageFiles);
     clearDrag();
   }
 
   return (
     <div
       className="relative h-full w-full bg-[#080914]"
+      onPointerDownCapture={pulseCaptureFrame}
+      onPointerMoveCapture={handlePointerMove}
+      onWheelCapture={handleWheel}
       onDragOver={(event) => {
         if (activeDragType === 'panel') return;
         event.preventDefault();
-        const file = getDragModelFile(event);
-        if (!file) return;
-        startFileDrag('model-file');
+        const payload = getDragPayload(event);
+        if (!payload.dragType) return;
+        startFileDrag(payload.dragType);
         setIsDragging(true);
       }}
       onDragLeave={() => {
@@ -191,6 +242,12 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
         </Suspense>
         <CameraController />
       </Canvas>
+      <div
+        className={`pointer-events-none absolute left-1/2 top-1/2 z-20 h-[82%] w-[72%] max-w-[1280px] -translate-x-1/2 -translate-y-1/2 rounded-[18px] border-[3px] border-dashed border-[#d9795c]/75 shadow-[0_0_0_1px_rgba(217,121,92,0.12)] transition-opacity duration-300 ${
+          captureFrameVisible ? 'opacity-100' : 'opacity-0'
+        }`}
+        aria-hidden="true"
+      />
       {viewportIssue && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-[#080914]/86 px-5 text-white backdrop-blur-sm">
           <div className="grid max-w-[420px] gap-3 rounded-lg border border-white/14 bg-black/50 p-4 text-center shadow-2xl">
@@ -223,6 +280,11 @@ export function ViewportCanvas({ hasImportedModel, onImportModel, onOpenImport }
       {isDragging && activeDragType === 'model-file' && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center border-2 border-dashed border-liclick-pink bg-liclick-purple/18 text-lg font-semibold text-white backdrop-blur-sm">
           Drop model to import
+        </div>
+      )}
+      {isDragging && activeDragType === 'asset-file' && (
+        <div className="pointer-events-none absolute inset-0 grid place-items-center border-2 border-dashed border-liclick-pink bg-liclick-purple/18 text-lg font-semibold text-white backdrop-blur-sm">
+          Drop image to add reference
         </div>
       )}
     </div>

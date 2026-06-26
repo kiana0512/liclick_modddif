@@ -12,6 +12,7 @@ import { Circle, CircleDot, Copy, Download, Eye, EyeOff, Focus, MoreVertical, Pa
 import { cn } from '@/components/common/cn';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
+import { useSceneStore } from '@/stores/sceneStore';
 import { useT } from '@/stores/i18nStore';
 import type { Layer } from '@/types/layer';
 import { downloadImageAsset } from '@/utils/downloadImage';
@@ -47,6 +48,7 @@ type LayersPanelProps = {
 export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
   const t = useT();
   const layers = useLayerStore((state) => state.layers);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
   const setBlendMode = useLayerStore((state) => state.setBlendMode);
@@ -69,15 +71,32 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
     activeProjectedLayerId ? [activeProjectedLayerId] : [],
   );
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
-  const layerIds = useMemo(() => layers.map((layer) => layer.id), [layers]);
+  const visibleLayers = useMemo(
+    () => layers.filter((layer) => !layer.objectId || layer.objectId === selectedObjectId),
+    [layers, selectedObjectId],
+  );
+  const layerIds = useMemo(() => visibleLayers.map((layer) => layer.id), [visibleLayers]);
   const previewLayer = useMemo(() => {
     const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? lastSelectedLayerId ?? activeProjectedLayerId : undefined);
-    return layers.find((layer) => layer.id === layerId && layer.imageUrl);
-  }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, layers, previewLayerId]);
+    return visibleLayers.find((layer) => layer.id === layerId && layer.imageUrl);
+  }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, previewLayerId, visibleLayers]);
 
   useEffect(() => {
     setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
   }, [layerIds]);
+
+  useEffect(() => {
+    if (!activeProjectedLayerId || visibleLayers.some((layer) => layer.id === activeProjectedLayerId)) return;
+    const nextActiveLayer = visibleLayers.find((layer) => layer.type === 'projected');
+    if (nextActiveLayer) {
+      setActiveLayer(nextActiveLayer.id);
+      setSelectedLayerIds([nextActiveLayer.id]);
+      setLastSelectedLayerId(nextActiveLayer.id);
+    } else {
+      setSelectedLayerIds([]);
+      setLastSelectedLayerId(undefined);
+    }
+  }, [activeProjectedLayerId, setActiveLayer, visibleLayers]);
 
   useEffect(() => {
     if (!activeProjectedLayerId || selectedLayerIds.length > 0) return;
@@ -218,7 +237,7 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
   return (
     <div className="space-y-0">
       <div className="max-h-[430px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
-        {layers.map((layer) => (
+        {visibleLayers.map((layer) => (
           <LayerRow
             key={layer.id}
             layer={layer}
@@ -275,7 +294,7 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
             onDragEnd={() => setDraggingLayerId(undefined)}
           />
         ))}
-        {layers.length === 0 && (
+        {visibleLayers.length === 0 && (
           <div className="min-h-[68px] border-t border-dashed border-white/35" aria-hidden="true" />
         )}
       </div>

@@ -48,6 +48,38 @@ The port can be overridden with:
 LICLICK_WORKSPACE_PORT
 ```
 
+## Windows Installed App
+
+The Windows installed app keeps the same local-server architecture but uses a separate port pair from development:
+
+```text
+backend: 127.0.0.1:4617
+frontend: 127.0.0.1:5673
+```
+
+The installer is built with:
+
+```text
+corepack pnpm package:windows
+```
+
+The generated setup file is:
+
+```text
+dist-installer/Liclick 3D Texture Setup.exe
+```
+
+The desktop shortcut opens a visible terminal. That terminal:
+
+- prepares `%LocalAppData%\Liclick 3D Texture\runtime`
+- installs missing dependencies when needed
+- starts the local workspace server
+- starts the local web UI
+- opens the default browser
+- keeps full stdout/stderr visible and mirrored to logs
+
+Closing the terminal stops the local services. Updating the installer replaces program files but keeps `%LocalAppData%\Liclick 3D Texture\workspace` so user projects survive upgrades.
+
 ## Workspace Layout
 
 ```text

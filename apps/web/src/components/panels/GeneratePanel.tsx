@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles, X } from 'lucide-react';
+import { Download, Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles, Square, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
@@ -76,6 +76,8 @@ const defaultImageGenerationSettings = {
   imageSize: 'auto' as LiclickImageSize,
   count: 1,
   prompt: '',
+  liclickPrompt: '',
+  textureMapPrompt: '',
   mode: 'visible' as GenerateMode,
   upscaleStrength: 0,
 };
@@ -124,6 +126,19 @@ function isGenerationSubmittedToServer(generation: Generation) {
   return generation.metadata.serverSubmitted === true || Boolean(generation.metadata.taskId);
 }
 
+function createFailedGeneration(generation: Generation, message: string, extraMetadata: Record<string, unknown> = {}) {
+  return {
+    ...generation,
+    status: 'failed' as const,
+    metadata: {
+      ...generation.metadata,
+      error: message,
+      completedAt: new Date().toISOString(),
+      ...extraMetadata,
+    },
+  };
+}
+
 function resolveRequestImageSize(imageSize: LiclickImageSize) {
   return imageSize;
 }
@@ -163,13 +178,16 @@ export function GeneratePanel() {
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
   );
+  const isTextureMapTab = tab === 'multiview';
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const setWorkspaceState = useProjectStore((state) => state.setWorkspaceState);
   const generationSettings = {
     ...defaultImageGenerationSettings,
     ...currentProject?.settings.imageGeneration,
   };
-  const prompt = generationSettings.prompt ?? '';
+  const liclickPrompt = generationSettings.liclickPrompt ?? generationSettings.prompt ?? '';
+  const textureMapPrompt = generationSettings.textureMapPrompt ?? '';
+  const prompt = isTextureMapTab ? textureMapPrompt : liclickPrompt;
   const generateMode = generationSettings.mode ?? 'visible';
   const imageModel = generationSettings.model as LiclickImageModel;
   const aspectRatio = generationSettings.aspectRatio as LiclickAspectRatio;
@@ -188,6 +206,15 @@ export function GeneratePanel() {
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const objects = useSceneStore((state) => state.objects);
   const importedModel = useSceneStore((state) => state.importedModel);
+  const activeReferences = useMemo(
+    () => references.filter((reference) => !reference.objectId || reference.objectId === selectedObjectId),
+    [references, selectedObjectId],
+  );
+  const activeReferenceIds = useMemo(() => new Set(activeReferences.map((reference) => reference.id)), [activeReferences]);
+  const activeSelectedReferenceIds = useMemo(
+    () => selectedReferenceIds.filter((id) => activeReferenceIds.has(id)),
+    [activeReferenceIds, selectedReferenceIds],
+  );
   const resolution = useSettingsStore((state) => state.resolution);
   const autoUvBakeEnabled = useSettingsStore((state) => state.autoUvBakeEnabled);
   const pushToast = useToastStore((state) => state.pushToast);
@@ -195,11 +222,11 @@ export function GeneratePanel() {
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const submitLockRef = useRef(false);
+  const cancelledGenerationIdsRef = useRef(new Set<string>());
   const autoBakeRunningRef = useRef(false);
   const autoBakeQueueRef = useRef<Layer[]>([]);
   const autoBakeProgressTimerRef = useRef<number>();
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
-  const isTextureMapTab = tab === 'multiview';
   const tabGenerations = generations.filter((generation) => {
     const projectId = typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
@@ -209,22 +236,23 @@ export function GeneratePanel() {
   const previewGeneration = activeProjectGeneration ?? tabGenerations[0];
   const previewIsGenerating = isRunningGeneration(previewGeneration);
   const previewFailed = previewGeneration?.status === 'failed';
+  const previewCancelled = previewGeneration?.metadata.cancelled === true;
+  const canCancelLiclickGeneration =
+    Boolean(activeProjectGeneration) && !isTextureMapTab && !isTextureMapGeneration(activeProjectGeneration!);
 
   useEffect(() => () => window.clearTimeout(autoBakeProgressTimerRef.current), []);
 
+  const syncGeneration = useCallback(
+    (generation: Generation) => {
+      addGeneration(generation);
+      addProjectGeneration(generation);
+    },
+    [addGeneration, addProjectGeneration],
+  );
+
   const markGenerationFailed = useCallback(
     (generationToFail: Generation, message: string) => {
-      const failedGeneration: Generation = {
-        ...generationToFail,
-        status: 'failed',
-        metadata: {
-          ...generationToFail.metadata,
-          error: message,
-          completedAt: new Date().toISOString(),
-        },
-      };
-      addGeneration(failedGeneration);
-      addProjectGeneration(failedGeneration);
+      syncGeneration(createFailedGeneration(generationToFail, message));
       finish();
       setGenerateNotice({
         tone: 'error',
@@ -237,7 +265,7 @@ export function GeneratePanel() {
         dedupeKey: `generation-failed:${generationToFail.id}`,
       });
     },
-    [addGeneration, addProjectGeneration, finish, pushToast, t],
+    [finish, pushToast, syncGeneration, t],
   );
 
   useEffect(() => {
@@ -250,15 +278,16 @@ export function GeneratePanel() {
   }, [settingsOpen]);
 
   useEffect(() => {
-    if (tab === 'multiview' && selectedReferenceIds.length > 1) {
-      setSelectedReferences([selectedReferenceIds[0]]);
+    if (tab === 'multiview' && activeSelectedReferenceIds.length > 1) {
+      setSelectedReferences([activeSelectedReferenceIds[0]]);
     }
-  }, [selectedReferenceIds, setSelectedReferences, tab]);
+  }, [activeSelectedReferenceIds, setSelectedReferences, tab]);
 
   useEffect(() => {
     if (!previewGeneration || previewGeneration.resultUrl) return undefined;
     if (previewGeneration.status !== 'queued' && previewGeneration.status !== 'running') return undefined;
     const generationToPoll = previewGeneration;
+    if (cancelledGenerationIdsRef.current.has(generationToPoll.id)) return undefined;
     if (!isGenerationSubmittedToServer(generationToPoll)) {
       const startedAt = getGenerationStartedAt(generationToPoll);
       if (Number.isFinite(startedAt) && Date.now() - startedAt < pendingSubmissionTimeoutMs) return undefined;
@@ -273,6 +302,7 @@ export function GeneratePanel() {
     const serverJobId =
       typeof generationToPoll.metadata.serverJobId === 'string' ? generationToPoll.metadata.serverJobId : undefined;
     const jobId = taskId ?? serverJobId ?? clientGenerationId ?? generationToPoll.id;
+    if (cancelledGenerationIdsRef.current.has(jobId)) return undefined;
     let cancelled = false;
     let timeoutId: number | undefined;
     const client = createLiclickApiClient();
@@ -296,8 +326,7 @@ export function GeneratePanel() {
               completedAt: result.updatedAt ?? new Date().toISOString(),
             },
           };
-          addGeneration(generation);
-          addProjectGeneration(generation);
+          syncGeneration(generation);
           pushToast({
             tone: 'success',
             title: '图片生成完成',
@@ -324,21 +353,13 @@ export function GeneratePanel() {
               lastPolledAt: result.updatedAt ?? new Date().toISOString(),
             },
           };
-          addGeneration(generation);
-          addProjectGeneration(generation);
+          syncGeneration(generation);
         }
         if (result.status === 'failed') {
-          const generation: Generation = {
-            ...generationToPoll,
-            status: 'failed',
-            metadata: {
-              ...generationToPoll.metadata,
-              error: result.error ?? '莉刻图片生成任务失败。',
-              completedAt: result.updatedAt ?? new Date().toISOString(),
-            },
-          };
-          addGeneration(generation);
-          addProjectGeneration(generation);
+          const generation = createFailedGeneration(generationToPoll, result.error ?? '莉刻图片生成任务失败。', {
+            completedAt: result.updatedAt ?? new Date().toISOString(),
+          });
+          syncGeneration(generation);
           pushToast({
             tone: 'error',
             title: 'Generate failed',
@@ -362,7 +383,7 @@ export function GeneratePanel() {
       cancelled = true;
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [addGeneration, addProjectGeneration, markGenerationFailed, previewGeneration, pushToast]);
+  }, [markGenerationFailed, previewGeneration, pushToast, syncGeneration]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
     if (!currentProject) return;
@@ -375,6 +396,53 @@ export function GeneratePanel() {
         },
       },
     });
+  }
+
+  function getGenerationJobId(generation: Generation) {
+    const taskId = typeof generation.metadata.taskId === 'string' ? generation.metadata.taskId : undefined;
+    const serverJobId =
+      typeof generation.metadata.serverJobId === 'string' ? generation.metadata.serverJobId : undefined;
+    const clientGenerationId =
+      typeof generation.metadata.clientGenerationId === 'string'
+        ? generation.metadata.clientGenerationId
+        : undefined;
+    return taskId ?? serverJobId ?? clientGenerationId ?? generation.id;
+  }
+
+  function cancelLiclickGeneration() {
+    const generationToCancel = activeProjectGeneration;
+    if (!generationToCancel || isTextureMapGeneration(generationToCancel)) return;
+    const jobId = getGenerationJobId(generationToCancel);
+    cancelledGenerationIdsRef.current.add(generationToCancel.id);
+    cancelledGenerationIdsRef.current.add(jobId);
+    const cancelledGeneration: Generation = {
+      ...generationToCancel,
+      status: 'failed',
+      metadata: {
+        ...generationToCancel.metadata,
+        cancelled: true,
+        error: '用户已终止莉刻生图任务。',
+        completedAt: new Date().toISOString(),
+      },
+    };
+    submitLockRef.current = false;
+    syncGeneration(cancelledGeneration);
+    finish();
+    setGenerateNotice({
+      tone: 'info',
+      message: '已终止当前莉刻生图任务。',
+    });
+    void createLiclickApiClient()
+      .cancelGenerationJob(jobId)
+      .catch((error) => {
+        console.warn('[Liclick 3D Texture] Could not cancel remote generation job:', error);
+        pushToast({
+          tone: 'warning',
+          title: '本地已终止',
+          description: error instanceof Error ? error.message : '后端取消请求失败，但本地已停止等待。',
+          dedupeKey: `generation-cancel-warning:${jobId}`,
+        });
+      });
   }
 
   async function requireAiLogin() {
@@ -473,7 +541,7 @@ export function GeneratePanel() {
         id: generationId,
         mode: 'single',
         prompt: submittedPrompt,
-        referenceIds: [...selectedReferenceIds],
+        referenceIds: [...activeSelectedReferenceIds],
         status: 'running',
         metadata: {
           provider: 'liclick-atlas',
@@ -499,8 +567,8 @@ export function GeneratePanel() {
         workflow: 'liclick',
         mode: 'single',
         prompt: submittedPrompt,
-        referenceIds: selectedReferenceIds,
-        referenceImages: references.filter((reference) => selectedReferenceIds.includes(reference.id)),
+        referenceIds: activeSelectedReferenceIds,
+        referenceImages: activeReferences.filter((reference) => activeSelectedReferenceIds.includes(reference.id)),
         resolution,
         textureMode: 'realistic',
         visibleOnly: generateMode === 'visible',
@@ -519,8 +587,11 @@ export function GeneratePanel() {
           serverJobId: generation.metadata.serverJobId ?? generation.id,
         },
       };
-      addGeneration(alignedGeneration);
-      addProjectGeneration(alignedGeneration);
+      if (cancelledGenerationIdsRef.current.has(generationId) || cancelledGenerationIdsRef.current.has(getGenerationJobId(alignedGeneration))) {
+        finish();
+        return;
+      }
+      syncGeneration(alignedGeneration);
       if (alignedGeneration.status === 'succeeded' && alignedGeneration.resultUrl) {
         setGenerateNotice(undefined);
         pushToast({
@@ -538,17 +609,12 @@ export function GeneratePanel() {
         message: error instanceof Error ? error.message : 'Could not generate a texture image.',
       });
       if (pendingGeneration) {
-        const failedGeneration: Generation = {
-          ...pendingGeneration,
-          status: 'failed',
-          metadata: {
-            ...pendingGeneration.metadata,
-            error: error instanceof Error ? error.message : 'Could not generate a texture image.',
-            completedAt: new Date().toISOString(),
-          },
-        };
-        addGeneration(failedGeneration);
-        addProjectGeneration(failedGeneration);
+        syncGeneration(
+          createFailedGeneration(
+            pendingGeneration,
+            error instanceof Error ? error.message : 'Could not generate a texture image.',
+          ),
+        );
       }
       finish();
       pushToast({
@@ -571,7 +637,7 @@ export function GeneratePanel() {
         });
         return;
       }
-      const materialReference = references.find((reference) => reference.id === selectedReferenceIds[0]);
+      const materialReference = activeReferences.find((reference) => reference.id === activeSelectedReferenceIds[0]);
       if (!materialReference) {
         setGenerateNotice({
           tone: 'warning',
@@ -598,6 +664,7 @@ export function GeneratePanel() {
         url: capture.colorUrl,
         width: capture.width,
         height: capture.height,
+        objectId: capture.objectId,
         isPrimary: false,
       };
       pendingGeneration = {
@@ -661,8 +728,7 @@ export function GeneratePanel() {
           alphaMode: 'pending-guided-foreground-matte',
         },
       };
-      addGeneration(textureMapGeneration);
-      addProjectGeneration(textureMapGeneration);
+      syncGeneration(textureMapGeneration);
       if (textureMapGeneration.status === 'succeeded' && textureMapGeneration.resultUrl) {
         setGenerateNotice(undefined);
         pushToast({
@@ -680,17 +746,12 @@ export function GeneratePanel() {
         message: error instanceof Error ? error.message : 'Could not generate a texture map image.',
       });
       if (pendingGeneration) {
-        const failedGeneration: Generation = {
-          ...pendingGeneration,
-          status: 'failed',
-          metadata: {
-            ...pendingGeneration.metadata,
-            error: error instanceof Error ? error.message : 'Could not generate a texture map image.',
-            completedAt: new Date().toISOString(),
-          },
-        };
-        addGeneration(failedGeneration);
-        addProjectGeneration(failedGeneration);
+        syncGeneration(
+          createFailedGeneration(
+            pendingGeneration,
+            error instanceof Error ? error.message : 'Could not generate a texture map image.',
+          ),
+        );
       }
       finish();
       pushToast({
@@ -987,6 +1048,7 @@ export function GeneratePanel() {
       url: previewGeneration.resultUrl,
       width: size.width,
       height: size.height,
+      objectId: selectedObjectId,
       isPrimary: true,
     };
     addReferences([reference]);
@@ -1104,8 +1166,10 @@ export function GeneratePanel() {
           {previewFailed && !previewIsGenerating && (
             <div className="absolute inset-0 grid place-items-center bg-rose-950/28 px-4 text-center text-white">
               <div className="grid gap-1">
-                <div className="text-sm font-semibold">生成失败</div>
-                <div className="text-xs text-white/66">请检查提示词、参考图或模型要求后重试。</div>
+                <div className="text-sm font-semibold">{previewCancelled ? '已终止' : '生成失败'}</div>
+                <div className="text-xs text-white/66">
+                  {previewCancelled ? '当前莉刻生图任务已停止等待。' : '请检查提示词、参考图或模型要求后重试。'}
+                </div>
               </div>
             </div>
           )}
@@ -1164,7 +1228,13 @@ export function GeneratePanel() {
                 <span>{t('prompt')}</span>
                 <textarea
                   value={prompt}
-                  onChange={(event) => updateGenerationSettings({ prompt: event.target.value })}
+                  onChange={(event) =>
+                    updateGenerationSettings(
+                      isTextureMapTab
+                        ? { textureMapPrompt: event.target.value }
+                        : { liclickPrompt: event.target.value },
+                    )
+                  }
                   className="h-[104px] w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
                 />
               </label>
@@ -1172,9 +1242,9 @@ export function GeneratePanel() {
               <section className="grid gap-2">
                 <div className="flex items-center justify-between gap-2 text-sm font-semibold text-white/88">
                   <span>{t('referenceImage')}</span>
-                  {selectedReferenceIds.length > 0 && (
+                  {activeSelectedReferenceIds.length > 0 && (
                     <span className="rounded-full border border-liclick-pink/40 bg-liclick-pink/16 px-2 py-0.5 text-[11px] font-semibold text-liclick-pink">
-                      {selectedReferenceIds.length} {t('referenceSelected')}
+                      {activeSelectedReferenceIds.length} {t('referenceSelected')}
                     </span>
                   )}
                   <label
@@ -1224,15 +1294,27 @@ export function GeneratePanel() {
             </div>
           )}
 
-          <Button
-            className="h-12 w-full text-base"
-            variant="primary"
-            disabled={previewIsGenerating}
-            onClick={handleGenerate}
-            icon={<Sparkles className="h-4 w-4" />}
-          >
-            {previewIsGenerating ? t('generating') : tab === 'multiview' ? t('generateTextureMap') : t('generateImage')}
-          </Button>
+          <div className={canCancelLiclickGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : undefined}>
+            <Button
+              className="h-12 w-full text-base"
+              variant="primary"
+              disabled={previewIsGenerating}
+              onClick={handleGenerate}
+              icon={<Sparkles className="h-4 w-4" />}
+            >
+              {previewIsGenerating ? t('generating') : tab === 'multiview' ? t('generateTextureMap') : t('generateImage')}
+            </Button>
+            {canCancelLiclickGeneration && (
+              <Button
+                className="h-12 w-full px-0"
+                variant="danger"
+                onClick={cancelLiclickGeneration}
+                title="终止莉刻生图"
+                aria-label="终止莉刻生图"
+                icon={<Square className="h-4 w-4 fill-current" />}
+              />
+            )}
+          </div>
         </div>
       </div>
     </Panel>

@@ -9,6 +9,8 @@ export type WorkspaceProjectSettings = {
     imageSize: string;
     count: number;
     prompt?: string;
+    liclickPrompt?: string;
+    textureMapPrompt?: string;
     mode?: 'visible' | 'upscale';
     upscaleStrength?: number;
   };

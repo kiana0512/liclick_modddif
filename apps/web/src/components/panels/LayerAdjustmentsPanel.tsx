@@ -1,6 +1,7 @@
 import { RotateCcw } from 'lucide-react';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
+import { useSceneStore } from '@/stores/sceneStore';
 import { useT } from '@/stores/i18nStore';
 import type { LayerAdjustments } from '@/types/layer';
 
@@ -14,9 +15,12 @@ export function LayerAdjustmentsPanel() {
   const t = useT();
   const layers = useLayerStore((state) => state.layers);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerAdjustment = useLayerStore((state) => state.setLayerAdjustment);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
-  const activeLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
+  const activeLayer = layers.find(
+    (layer) => layer.id === activeProjectedLayerId && (!layer.objectId || layer.objectId === selectedObjectId),
+  );
   const activeAdjustments = activeLayer?.adjustments ?? { hue: 0, saturation: 0, lightness: 0 };
 
   if (!activeLayer) {

@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import type { Layer, LayerAdjustments } from '@/types/layer';
+import { useSceneStore } from './sceneStore';
 
 type LayerStore = {
   layers: Layer[];
@@ -72,11 +73,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
     }),
   addEmptyLayer: () => {
+    const objectId = useSceneStore.getState().selectedObjectId;
     const layer: Layer = {
       id: uuid(),
       name: 'New layer',
       type: 'projected',
       imageUrl: '',
+      objectId,
       visible: true,
       opacity: 1,
       blendMode: 'normal',

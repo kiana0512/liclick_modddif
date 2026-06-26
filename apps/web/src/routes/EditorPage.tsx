@@ -58,8 +58,9 @@ import { useToastStore } from '@/stores/toastStore';
 import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
-import type { Project } from '@/types/project';
+import type { Project, ReferenceImage } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
+import { createId } from '@/utils/id';
 
 type EditorPageProps = {
   projectId: string;
@@ -93,6 +94,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const markSaved = useProjectStore((state) => state.markSaved);
   const setObjects = useSceneStore((state) => state.setObjects);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
+  const setActiveImportedModel = useSceneStore((state) => state.setActiveImportedModel);
   const clearImportedModel = useSceneStore((state) => state.clearImportedModel);
   const importedModel = useSceneStore((state) => state.importedModel);
   const viewport = useSceneStore((state) => state.viewport);
@@ -113,6 +115,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setProjectReferences = useProjectStore((state) => state.setProjectReferences);
   const references = useReferenceStore((state) => state.references);
   const setReferences = useReferenceStore((state) => state.setReferences);
+  const addReferences = useReferenceStore((state) => state.addReferences);
   const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
   const t = useT();
@@ -300,6 +303,15 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
+  function getImageSize(url: string) {
+    return new Promise<{ width: number; height: number }>((resolve) => {
+      const image = new window.Image();
+      image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+      image.onerror = () => resolve({ width: 0, height: 0 });
+      image.src = url;
+    });
+  }
+
   function getObjectFileName(object: SceneObject) {
     const sourcePath = object.sourcePath?.split('?')[0].split('#')[0];
     const fromPath = sourcePath?.split('/').pop();
@@ -345,35 +357,41 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }
 
   async function restoreProjectModel(projectToRestore: Project) {
-    const object = projectToRestore.objects.find((item) => item.format !== 'primitive' && item.sourcePath);
-    if (!object?.sourcePath) {
+    const objects = projectToRestore.objects.filter((item) => item.format !== 'primitive' && item.sourcePath);
+    if (objects.length === 0) {
       clearImportedModel();
       return;
     }
-    const modelKey = `${projectToRestore.id}:${object.id}:${object.sourcePath}`;
+    const modelKey = `${projectToRestore.id}:${objects.map((object) => `${object.id}:${object.sourcePath}`).join('|')}`;
     if (restoredModelKeyRef.current === modelKey) return;
     restoredModelKeyRef.current = modelKey;
-    if (!/^(https?:|blob:|data:)/.test(object.sourcePath)) {
+    const restorableObjects = objects.filter((object) => object.sourcePath && /^(https?:|blob:|data:)/.test(object.sourcePath));
+    const skippedObjects = objects.filter((object) => !object.sourcePath || !/^(https?:|blob:|data:)/.test(object.sourcePath));
+    if (skippedObjects.length > 0) {
       pushToast({
         tone: 'warning',
         title: t('modelRestoreSkipped'),
         description: t('modelRestoreRelativePath'),
         dedupeKey: `model-restore:${projectToRestore.id}`,
       });
-      return;
     }
+    if (restorableObjects.length === 0) return;
     try {
-      const loaded = await loadModelFromUrl({
-        sourceUrl: object.sourcePath,
-        fileName: getObjectFileName(object),
-        normalizeOptions: {
-          normalize: object.importNormalizationTransform?.normalized ?? true,
-          ground: object.importNormalizationTransform?.grounded ?? true,
-          targetMaxDimension: object.importNormalizationTransform?.targetMaxDimension ?? 3,
-        },
-      });
-      const restoredResult = applySavedObjectToLoadedModel(loaded, object);
-      setImportedModel(restoredResult, { ...object, selected: true });
+      for (const object of restorableObjects) {
+        const loaded = await loadModelFromUrl({
+          sourceUrl: object.sourcePath!,
+          fileName: getObjectFileName(object),
+          normalizeOptions: {
+            normalize: object.importNormalizationTransform?.normalized ?? true,
+            ground: object.importNormalizationTransform?.grounded ?? true,
+            targetMaxDimension: object.importNormalizationTransform?.targetMaxDimension ?? 3,
+          },
+        });
+        const restoredResult = applySavedObjectToLoadedModel(loaded, object);
+        setImportedModel(restoredResult, { ...object, selected: object.id === projectToRestore.activeObjectId });
+      }
+      const activeObjectId = projectToRestore.activeObjectId ?? restorableObjects[0]?.id;
+      if (activeObjectId) setActiveImportedModel(activeObjectId);
     } catch (error) {
       console.error('[Liclick 3D Texture] Restore model failed:', error);
       pushToast({
@@ -667,7 +685,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         }
       }
       setImportedModel(loaded.result, object);
-      updateCurrentProject({ objects: [object] });
+      updateCurrentProject({ objects: useSceneStore.getState().objects, activeObjectId: object.id });
       window.setTimeout(() => {
         const thumbnail = getViewportThumbnailDataUrl();
         if (thumbnail) updateCurrentProject({ thumbnail });
@@ -688,6 +706,43 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
     } finally {
       if (modelInputRef.current) modelInputRef.current.value = '';
+    }
+  }
+
+  async function handleImportReferenceImages(files: File[]) {
+    const imageFiles = files.filter((file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name));
+    if (imageFiles.length === 0) return;
+    try {
+      const objectId = useSceneStore.getState().selectedObjectId;
+      const importedReferences: ReferenceImage[] = [];
+      for (const [index, file] of imageFiles.entries()) {
+        const url = await fileToDataUrl(file);
+        const size = await getImageSize(url);
+        importedReferences.push({
+          id: createId('reference'),
+          name: file.name || `Reference ${index + 1}`,
+          url,
+          width: size.width,
+          height: size.height,
+          objectId,
+          isPrimary: true,
+        });
+      }
+      addReferences(importedReferences);
+      const nextReferences = [...importedReferences, ...useReferenceStore.getState().references.filter((reference) => !importedReferences.some((item) => item.id === reference.id))];
+      setProjectReferences(nextReferences);
+      pushToast({
+        tone: 'success',
+        title: '参考图已添加',
+        description: objectId ? '已添加到当前选中的模型。' : undefined,
+      });
+    } catch (error) {
+      console.error('[Liclick 3D Texture] Import references failed:', error);
+      pushToast({
+        tone: 'error',
+        title: '参考图导入失败',
+        description: error instanceof Error ? error.message : '图片文件无法读取。',
+      });
     }
   }
 
@@ -1106,6 +1161,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           <ViewportCanvas
             hasImportedModel={Boolean(importedModel)}
             onImportModel={(file) => void handleImportModel(file)}
+            onImportReferenceImages={(files) => void handleImportReferenceImages(files)}
             onOpenImport={() => modelInputRef.current?.click()}
           />
         }

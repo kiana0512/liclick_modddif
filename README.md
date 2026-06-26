@@ -27,6 +27,29 @@ The local workspace server runs on `127.0.0.1:4517` by default and stores projec
 
 For Linux, Docker, or long-running A100 deployment, build first and run the compiled server through a process manager. See `docs/26_PROJECT_STRUCTURE_AND_DEPLOYMENT_AUDIT.md`.
 
+## Windows Desktop Installer
+
+The Windows desktop build keeps the browser UI but starts the local backend and frontend through a visible terminal, similar to local creative tools that need a running service process.
+
+```bash
+corepack pnpm package:windows
+```
+
+The installer output is:
+
+```text
+dist-installer/Liclick 3D Texture Setup.exe
+```
+
+Installed builds use dedicated ports so they can run beside development:
+
+- installed backend: `127.0.0.1:4617`
+- installed frontend: `127.0.0.1:5673`
+- development backend: `127.0.0.1:4517`
+- development frontend: `127.0.0.1:5173`
+
+The installed app stores runtime, workspace data, and logs under `%LocalAppData%\Liclick 3D Texture`. Updating the installer replaces program files but keeps user workspace data.
+
 ## Auth And Liclick Login
 
 The Projects homepage and local editor can be viewed without login. Workspace operations and AI features that call authenticated APIs require the Liclick session. The visible `飞书登录` entry calls the server, the server starts the local `@lilith/atlas-skillhub` gateway login, and then stores only its own httpOnly Liclick session cookie.
@@ -72,11 +95,14 @@ corepack pnpm db:push
 - `pnpm dev` starts the web app and local workspace server together. `pnpm dev:web` and `pnpm dev:server` remain available for isolated debugging.
 - Web3D viewport renders a default primitive model until a real model is imported.
 - Import Model supports local `.glb` and `.gltf`, with experimental `.fbx` and `.obj`.
+- The main viewport accepts drag-and-drop for models and reference images. Model files become objects; image files become reference images for the currently selected object.
 - Imported models are mounted as real Three.js groups, centered on XZ, grounded to Y=0, scaled to a practical editor size, measured, and shown in Objects.
+- Multiple imported models can live in one project. Texture mode edits one active model at a time, selected from the Objects panel.
 - Imported model metadata records original bounding box, normalization transform, user transform, mesh count, UV status, and import warnings.
 - Move / Rotate / Scale controls work for the selected imported model, with Reset, Center, Ground, and Fit Camera actions.
 - Viewport capture now renders real color, mask, normal, and grayscale depth PNGs from WebGL render targets. Browser captures use registered Blob URLs in memory and local-server saves materialize them as binary assets instead of inflating project JSON with base64.
 - Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. Mock generation remains available only for offline development.
+- Liclick image generation and Texture Map generation keep separate prompts. Liclick image generation can be stopped from the Generate panel so the UI does not stay locked until the remote task finishes.
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
 - Projected preview now rejects out-of-frustum, backface, masked, and approximate depth-failed fragments instead of spreading the image over the full model.
 - Layer visibility, opacity, delete, and go-to-camera work for projected layer preview.
@@ -87,7 +113,7 @@ corepack pnpm db:push
 - Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
 - Project thumbnails are captured from the WebGL viewport and shown on the Projects page when saved.
 - Export now supports Scene GLB / OBJ / STL, selected Object GLB / OBJ / STL, baked BaseColor PNG, normal-map PNG when the model provides one, viewport PNG snapshot, and 5 second WebM turntable recording.
-- Paint, Eraser, Quick Mask, Segments, Multiview, Normal generation, FBX export, and DCC connectors are either disabled with a tooltip or shown as mode-specific coming-soon panels. Repeated coming-soon toast noise is deduped.
+- Paint, Eraser, Quick Mask, Segments, Multiview, Normal generation, and DCC connectors are either disabled with a tooltip or shown as mode-specific coming-soon panels. Repeated coming-soon toast noise is deduped.
 
 ## Phase 2 Workflow
 
@@ -153,7 +179,7 @@ Test flow:
 ## Current Limits
 
 - GLB / glTF are the primary formats. FBX / OBJ are experimental.
-- The MVP is optimized for one imported object and one active projected layer preview.
+- Texture mode edits one active imported object at a time. Projects can keep multiple imported objects and switch the active object from the Objects panel.
 - Automatic UV bake composites the visible projected-layer stack into one BaseColor texture. Only one automatic bake runs at a time.
 - Projected preview is shader-based and does not yet do depth-aware multi-layer compositing.
 - Depth capture is grayscale viewport depth, not a calibrated linear depth asset.
@@ -161,7 +187,9 @@ Test flow:
 - UV bake supports one object, one UV channel, and basecolor only.
 - UV bake uses the same frustum/mask/depth/backface visibility gates as projected preview, with grayscale depth as an MVP approximation.
 - 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, browser PNG encoding, workspace persistence, the low-resolution CPU coverage validation pass, and same-resolution CPU fallback on unsupported hardware.
-- FBX export, Segments ColorID, MP4, and portable project package zip are still coming soon.
+- Segments ColorID, MP4, and portable project package zip are still coming soon.
+
+See `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for the latest desktop release notes, editor UX details, and audit summary.
 
 ## Development Rules
 
