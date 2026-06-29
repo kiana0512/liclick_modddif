@@ -3,9 +3,11 @@ import type { BakeProgress, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
 
-const BACKFACE_DOT_LIMIT = 0.22;
-const VIEW_CONFIDENCE_MIN = 0.06;
-const VIEW_CONFIDENCE_FULL = 0.5;
+const NDV_HARD_REJECT = -0.35;
+const NDV_COVERAGE_START = -0.25;
+const NDV_COVERAGE_END = 0.08;
+const BASE_ANGLE_GAMMA = 4;
+const MAX_STRENGTH_FOR_ANGLE = 3;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5 / 255;
 const MAX_GPU_SHARPEN_RESOLUTION = 4096;
@@ -73,6 +75,7 @@ const fragmentShader = `
   uniform mat3 objectNormalDelta;
   uniform vec3 projectorPosition;
   uniform float layerOpacity;
+  uniform float layerStrength;
   uniform float useMask;
   uniform float useDepthCheck;
   uniform float enableBackfaceCulling;
@@ -141,6 +144,13 @@ const fragmentShader = `
     return dot(rgbaDepth, bitShift);
   }
 
+  float computeAngleWeight(float ndv, float strength) {
+    float strengthClamped = clamp(strength, 0.25, ${MAX_STRENGTH_FOR_ANGLE.toFixed(1)});
+    float gamma = ${BASE_ANGLE_GAMMA.toFixed(1)} / strengthClamped;
+    float frontFade = smoothstep(0.02, 0.25, ndv);
+    return frontFade * pow(clamp(ndv, 0.0, 1.0), gamma);
+  }
+
   void main() {
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
@@ -155,12 +165,12 @@ const fragmentShader = `
     vec2 imageUv = ndc.xy * 0.5 + 0.5;
     imageUv.y = 1.0 - imageUv.y;
 
-    vec3 projectorViewDir = normalize(captureWorldPosition.xyz - projectorPosition);
-    float normalViewDot = dot(captureWorldNormal, projectorViewDir);
-    float frontFacing = 1.0 - step(${BACKFACE_DOT_LIMIT.toFixed(2)}, normalViewDot);
+    vec3 projectorViewDir = normalize(projectorPosition - captureWorldPosition.xyz);
+    float ndv = dot(captureWorldNormal, projectorViewDir);
+    float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
     if (enableBackfaceCulling > 0.5 && frontFacing < 0.5) discard;
-    float viewConfidence = smoothstep(${VIEW_CONFIDENCE_MIN.toFixed(2)}, ${VIEW_CONFIDENCE_FULL.toFixed(2)}, -normalViewDot);
-    if (viewConfidence <= 0.01) discard;
+    float angleCoverage = smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv);
+    if (angleCoverage <= 0.0001) discard;
 
     vec4 maskTexel = texture2D(maskMap, imageUv);
     float maskValue = max(maskTexel.r, max(maskTexel.g, maskTexel.b));
@@ -168,14 +178,19 @@ const fragmentShader = `
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
     float capturedDepth = unpackDepth(texture2D(depthMap, imageUv));
-    if (useDepthCheck > 0.5 && projectedDepth - depthBias > capturedDepth + 0.01) discard;
+    float depthErr = abs(projectedDepth - capturedDepth);
+    float depthWeight = useDepthCheck > 0.5
+      ? mix(0.2, 1.0, exp(-pow(depthErr / max(depthBias + 0.055, 0.000001), 2.0)))
+      : 1.0;
 
     vec4 texel = texture2D(projectedMap, imageUv);
     texel.rgb = applyHslAdjustments(texel.rgb);
-    float alpha = texel.a * layerOpacity * viewConfidence;
+    if (texel.a < 0.01) discard;
+    float angleWeight = computeAngleWeight(ndv, layerStrength);
+    float alpha = clamp(texel.a * layerOpacity * angleCoverage, 0.0, 1.0);
     if (alpha <= 0.016) discard;
 
-    gl_FragColor = vec4(texel.rgb, alpha);
+    gl_FragColor = vec4(texel.rgb, max(alpha, alpha * depthWeight * angleWeight));
   }
 `;
 
@@ -378,6 +393,7 @@ function createLayerMaterial(input: {
       objectNormalDelta: { value: new THREE.Matrix3().getNormalMatrix(objectMatrixDelta) },
       projectorPosition: { value: new THREE.Vector3().fromArray(input.layer.camera.position) },
       layerOpacity: { value: input.layer.opacity },
+      layerStrength: { value: input.layer.strength ?? 1 },
       useMask: { value: input.textures.useMask ? 1 : 0 },
       useDepthCheck: { value: input.textures.useDepthCheck ? 1 : 0 },
       enableBackfaceCulling: { value: input.enableBackfaceCulling ? 1 : 0 },

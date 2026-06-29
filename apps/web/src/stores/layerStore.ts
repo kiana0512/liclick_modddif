@@ -10,15 +10,26 @@ type LayerStore = {
   activeProjectedLayerId?: string;
   setLayers: (layers: Layer[]) => void;
   addEmptyLayer: () => Layer;
+  addUvLayer: (input: { name?: string; imageUrl: string; objectId?: string; bakedTextureId?: string }) => Layer;
+  mergeLayersIntoUvLayer: (input: {
+    sourceLayerIds: string[];
+    imageUrl: string;
+    objectId?: string;
+    targetUvLayerId?: string;
+    name?: string;
+  }) => Layer;
   addProjectedLayerFromGeneration: (generation: Generation, capture?: Capture, objectId?: string) => Layer;
   toggleLayer: (layerId: string) => void;
   setLayerVisibility: (layerIds: string[], visible: boolean) => void;
   setOpacity: (layerId: string, opacity: number) => void;
+  setStrength: (layerId: string, strength: number) => void;
   setBlendMode: (layerId: string, blendMode: Layer['blendMode']) => void;
   setLayerAdjustment: (layerId: string, key: keyof LayerAdjustments, value: number) => void;
   resetLayerAdjustments: (layerId: string) => void;
   setActiveLayer: (layerId: string) => void;
   renameLayer: (layerId: string, name: string) => void;
+  updateLayerImage: (layerId: string, imageUrl: string) => void;
+  updateLayer: (layerId: string, patch: Partial<Layer>) => void;
   duplicateLayer: (layerId: string) => void;
   moveLayer: (layerId: string, direction: 'up' | 'down') => void;
   reorderLayer: (layerId: string, targetLayerId: string, placement?: 'before' | 'after') => void;
@@ -43,6 +54,7 @@ function normalizeLayer(layer: Layer) {
       saturation: layer.adjustments?.saturation ?? 0,
       lightness: layer.adjustments?.lightness ?? 0,
     },
+    strength: layer.strength ?? 1,
   };
 }
 
@@ -82,6 +94,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       objectId,
       visible: true,
       opacity: 1,
+      strength: 1,
       blendMode: 'normal',
       adjustments: { hue: 0, saturation: 0, lightness: 0 },
       order: 0,
@@ -110,6 +123,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       captureId: capture?.id ?? generation.captureId,
       visible: true,
       opacity: 1,
+      strength: 1,
       blendMode: 'normal',
       adjustments: { hue: 0, saturation: 0, lightness: 0 },
       order: get().layers.length,
@@ -122,6 +136,91 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     }));
 
     return layer;
+  },
+  addUvLayer: (input) => {
+    const layer: Layer = {
+      id: uuid(),
+      name: input.name ?? 'UV Repair Layer',
+      type: 'uv',
+      imageUrl: input.imageUrl,
+      objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
+      visible: true,
+      opacity: 1,
+      strength: 1,
+      blendMode: 'normal',
+      adjustments: { hue: 0, saturation: 0, lightness: 0 },
+      order: 0,
+      bakedTextureId: input.bakedTextureId,
+      bakedAt: input.bakedTextureId ? new Date().toISOString() : undefined,
+      isBaked: Boolean(input.bakedTextureId),
+      needsRebake: false,
+      createdAt: new Date().toISOString(),
+    };
+    set((state) => ({
+      layers: withOrder([layer, ...state.layers]),
+      activeProjectedLayerId: state.activeProjectedLayerId,
+    }));
+    return layer;
+  },
+  mergeLayersIntoUvLayer: (input) => {
+    const sourceLayerIdSet = new Set(input.sourceLayerIds);
+    let mergedLayer: Layer | undefined;
+    set((state) => {
+      const sourceIndexes = state.layers
+        .map((layer, index) => (sourceLayerIdSet.has(layer.id) ? index : -1))
+        .filter((index) => index >= 0);
+      const insertIndex = sourceIndexes.length > 0 ? Math.min(...sourceIndexes) : 0;
+      const createdAt = new Date().toISOString();
+      const nextLayers = state.layers.filter(
+        (layer) => !sourceLayerIdSet.has(layer.id) || layer.id === input.targetUvLayerId,
+      );
+
+      if (input.targetUvLayerId) {
+        nextLayers.forEach((layer, index) => {
+          if (layer.id !== input.targetUvLayerId) return;
+          mergedLayer = {
+            ...layer,
+            type: 'uv',
+            name: layer.name || input.name || 'Merged UV Layer',
+            imageUrl: input.imageUrl,
+            objectId: input.objectId ?? layer.objectId,
+            visible: true,
+            opacity: 1,
+            strength: 1,
+            blendMode: 'normal',
+            isBaked: false,
+            needsRebake: false,
+          };
+          nextLayers[index] = mergedLayer;
+        });
+      }
+
+      if (!mergedLayer) {
+        mergedLayer = {
+          id: uuid(),
+          name: input.name ?? 'Merged UV Layer',
+          type: 'uv',
+          imageUrl: input.imageUrl,
+          objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
+          visible: true,
+          opacity: 1,
+          strength: 1,
+          blendMode: 'normal',
+          adjustments: { hue: 0, saturation: 0, lightness: 0 },
+          order: insertIndex,
+          isBaked: false,
+          needsRebake: false,
+          createdAt,
+        };
+        nextLayers.splice(Math.min(insertIndex, nextLayers.length), 0, mergedLayer);
+      }
+
+      return {
+        layers: withOrder(nextLayers),
+        activeProjectedLayerId: nextLayers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+      };
+    });
+    return mergedLayer!;
   },
   toggleLayer: (layerId) =>
     set((state) => {
@@ -156,6 +255,14 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       layers: state.layers.map((layer) =>
         layer.id === layerId
           ? { ...layer, opacity, needsRebake: layer.isBaked ? true : layer.needsRebake }
+          : layer,
+      ),
+    })),
+  setStrength: (layerId, strength) =>
+    set((state) => ({
+      layers: state.layers.map((layer) =>
+        layer.id === layerId
+          ? { ...layer, strength, needsRebake: layer.isBaked ? true : layer.needsRebake }
           : layer,
       ),
     })),
@@ -205,6 +312,16 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   renameLayer: (layerId, name) =>
     set((state) => ({
       layers: state.layers.map((layer) => (layer.id === layerId ? { ...layer, name } : layer)),
+    })),
+  updateLayerImage: (layerId, imageUrl) =>
+    set((state) => ({
+      layers: state.layers.map((layer) =>
+        layer.id === layerId ? { ...layer, imageUrl, needsRebake: layer.isBaked ? true : layer.needsRebake } : layer,
+      ),
+    })),
+  updateLayer: (layerId, patch) =>
+    set((state) => ({
+      layers: state.layers.map((layer) => (layer.id === layerId ? { ...layer, ...patch } : layer)),
     })),
   duplicateLayer: (layerId) =>
     set((state) => {

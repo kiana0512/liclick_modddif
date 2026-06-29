@@ -1,5 +1,5 @@
 export type ImageSample = [number, number, number, number];
-const COLOR_ALPHA_REJECT_THRESHOLD = 12;
+const COLOR_ALPHA_REJECT_THRESHOLD = 3;
 
 export async function loadImageData(url: string, maxDimension = Number.POSITIVE_INFINITY): Promise<ImageData> {
   const image = new Image();

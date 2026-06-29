@@ -23,6 +23,7 @@ export type Layer = {
   captureId?: string;
   visible: boolean;
   opacity: number;
+  strength?: number;
   blendMode: BlendMode;
   adjustments?: LayerAdjustments;
   order: number;

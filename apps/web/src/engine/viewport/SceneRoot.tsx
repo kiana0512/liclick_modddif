@@ -23,6 +23,37 @@ import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 
 const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
 
+function hasUsableTextureImage(texture: THREE.Texture) {
+  const image = texture.image as
+    | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number; data?: unknown }
+    | undefined;
+  if (!image) return false;
+  if (image.data) return true;
+  const width = image.naturalWidth ?? image.width ?? 0;
+  const height = image.naturalHeight ?? image.height ?? 0;
+  return width > 0 && height > 0;
+}
+
+function getPreviewMaterialBase(material: THREE.Material | THREE.Material[] | undefined) {
+  const sourceMaterial = Array.isArray(material)
+    ? material.find(
+        (item) => 'map' in item && item.map instanceof THREE.Texture && hasUsableTextureImage(item.map),
+      ) ?? material[0]
+    : material;
+  if (!sourceMaterial) return {};
+
+  const baseTexture =
+    'map' in sourceMaterial && sourceMaterial.map instanceof THREE.Texture && hasUsableTextureImage(sourceMaterial.map)
+      ? sourceMaterial.map
+      : undefined;
+  const baseColor =
+    'color' in sourceMaterial && sourceMaterial.color instanceof THREE.Color
+      ? sourceMaterial.color.clone()
+      : undefined;
+
+  return { baseTexture, baseColor };
+}
+
 function useLoadedBakedTexture(imageUrl?: string) {
   const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
 
@@ -108,6 +139,19 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     () => (importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []),
     [importedObjectId, layers],
   );
+  const visibleUvLayer = useMemo(
+    () =>
+      layers
+        .filter(
+          (layer) =>
+            layer.type === 'uv' &&
+            layer.visible &&
+            layer.imageUrl &&
+            (!layer.objectId || layer.objectId === importedObjectId),
+        )
+        .sort((a, b) => a.order - b.order)[0],
+    [importedObjectId, layers],
+  );
   const livePreviewProjectedLayers = useMemo(
     () => visibleProjectedLayers.slice(0, MAX_LIVE_PROJECTED_PREVIEW_LAYERS),
     [visibleProjectedLayers],
@@ -117,6 +161,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     return canUseLayerStackCache(visibleProjectedLayers, texture) ? texture : undefined;
   }, [project, visibleProjectedLayers]);
   const loadedBakedTexture = useLoadedBakedTexture(exactBakedTextureRecord?.imageUrl);
+  const loadedUvTexture = useLoadedBakedTexture(visibleUvLayer?.imageUrl);
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
   const bakedTextureIsReady = Boolean(loadedBakedTexture);
   const canPreviewProjectedLayers =
@@ -130,61 +175,73 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     async function applyMaterials() {
       const selected = selectedObjectId === model.objectId;
       model.group.updateMatrixWorld(true);
-      const projectedMaterial =
-        canPreviewProjectedLayers
-          ? await createProjectedLayerStackMaterial({
-              layers: livePreviewProjectedLayers.map((layer) => {
-                const usesSourceAlpha =
-                  typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
-                return {
-                  layerId: layer.id,
-                  imageUrl: layer.imageUrl,
-                  maskUrl: layer.maskUrl,
-                  depthUrl: layer.depthUrl,
-                  camera: layer.camera!,
-                  objectMatrixWorld: layer.objectMatrixWorld,
-                  opacity: layer.opacity,
-                  visible: layer.visible,
-                  hue: (layer.adjustments?.hue ?? 0) / 100,
-                  saturation: (layer.adjustments?.saturation ?? 0) / 100,
-                  lightness: (layer.adjustments?.lightness ?? 0) / 100,
-                  useMask: !usesSourceAlpha,
-                  useDepthCheck: !usesSourceAlpha,
-                };
-              }),
-              objectId: model.objectId,
-              currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
-              depthTest: true,
-              enableBackfaceCulling: true,
-              edgeFeather: 0.004,
-              depthBias: 0.025,
-            })
-          : undefined;
+      const projectedLayerInput = canPreviewProjectedLayers
+        ? {
+            layers: livePreviewProjectedLayers.map((layer) => {
+              const usesSourceAlpha =
+                typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
+              return {
+                layerId: layer.id,
+                imageUrl: layer.imageUrl,
+                maskUrl: layer.maskUrl,
+                depthUrl: layer.depthUrl,
+                camera: layer.camera!,
+                objectMatrixWorld: layer.objectMatrixWorld,
+                opacity: layer.opacity,
+                strength: layer.strength ?? 1,
+                blendMode: layer.blendMode,
+                visible: layer.visible,
+                hue: (layer.adjustments?.hue ?? 0) / 100,
+                saturation: (layer.adjustments?.saturation ?? 0) / 100,
+                lightness: (layer.adjustments?.lightness ?? 0) / 100,
+                useMask: !usesSourceAlpha,
+                useDepthCheck: !usesSourceAlpha,
+              };
+            }),
+            objectId: model.objectId,
+            currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
+            depthTest: true,
+            enableBackfaceCulling: true,
+            edgeFeather: 0.004,
+            depthBias: 0.025,
+          }
+        : undefined;
 
-      if (cancelled) {
-        disposeGeneratedMaterialTree(projectedMaterial);
-        return;
-      }
-
+      const meshes: THREE.Mesh[] = [];
       model.group.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
         if (child.userData.liclickPaintOverlay) return;
+        meshes.push(child);
+      });
+
+      for (const child of meshes) {
         const originalMaterial = (child.userData.sourceMaterial ?? child.userData.originalMaterial) as
           | THREE.Material
           | THREE.Material[]
           | undefined;
         const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
-        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : undefined;
+        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : loadedUvTexture;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
-        if (displayMode === 'pbr' && !projectedMaterial) {
+        if (displayMode === 'pbr' && !projectedLayerInput) {
           child.material = createPbrPreviewMaterial(originalMaterial, selected, bakedTexture);
           disposeGeneratedMaterialTree(previousMaterial);
+          continue;
+        }
+        const projectedMaterial = projectedLayerInput
+          ? await createProjectedLayerStackMaterial({
+              ...projectedLayerInput,
+              ...getPreviewMaterialBase(originalMaterial),
+              ...(loadedUvTexture ? { baseTexture: loadedUvTexture } : {}),
+            })
+          : undefined;
+        if (cancelled) {
+          disposeGeneratedMaterialTree(projectedMaterial);
           return;
         }
         child.material = projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
         if (previousMaterial !== child.material) disposeGeneratedMaterialTree(previousMaterial);
-      });
+      }
     }
 
     void applyMaterials();
@@ -198,6 +255,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     importedModel,
     livePreviewProjectedLayers,
     loadedBakedTexture,
+    loadedUvTexture,
     selectedObjectId,
     visibleStackIsBaked,
   ]);

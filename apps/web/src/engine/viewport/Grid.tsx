@@ -26,7 +26,7 @@ export function Grid() {
   const majorGeometry = useMemo(() => buildGridGeometry(140, 1, 4, true), []);
 
   return (
-    <group position={[0, -0.018, 0]} renderOrder={-10}>
+    <group position={[0, -0.018, 0]} renderOrder={-10} userData={{ liclickViewportHelper: true }}>
       <lineSegments geometry={minorGeometry} frustumCulled={false}>
         <lineBasicMaterial
           color="#302346"

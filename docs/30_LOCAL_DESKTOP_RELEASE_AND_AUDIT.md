@@ -2,7 +2,7 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-06-26
+Updated: 2026-06-29
 
 ## Windows Desktop Build
 
@@ -51,6 +51,14 @@ Users should keep the terminal open while using the app. Closing the terminal st
 - Surface painting works only on model meshes with UVs. Empty viewport space continues to use the normal orbit/camera behavior.
 - Surface paint, eraser, and inpaint mask strokes are attached to model UV space and participate in the existing undo/redo flow one stroke at a time.
 - Hidden perf URLs can inject synthetic 100-model and 100-layer editor scenes for repeatable runtime testing.
+- Projected layer preview now separates loose coverage from strict quality. `Blend` chooses the best projected candidates without layer-order dependence; `Overlay` paints over the blended base in stack order.
+- Layer rows expose distinct blend/overlay state, layer opacity, and projection strength. Opacity can be dragged down to 0, where the icon becomes an empty circle.
+- Uncovered projected fragments fall back to the model/base material instead of showing black edges, white masks, or accidental checker diagnostics.
+- The global Auto UV bake setting gates every bake entry point. When it is off, double-click and manual bake actions do not bake; newly accepted projected layers stay as live projection previews.
+- Project thumbnails are captured from the real WebGL viewport after projection changes. Grid and paint/helper overlays are hidden during the thumbnail capture and restored immediately afterwards.
+- The Projects page and bottom editor tools now use the shared Chinese / English string store instead of fixed English labels.
+- Local repaint now uses a focused current-view dialog. The brush paints continuous strokes instead of separated dabs, the editable mask is clipped to the visible model alpha, and the request reuses the same authenticated Atlas/Liclick gateway as normal image generation.
+- Local repaint uploads the clean transparent viewport image and the clipped mask through `upload_asset`, submits the `局部重绘_volcengine` ComfyUI workflow through `generate_image`, and polls with `get_task_status(task_type=image)`. It does not require a separate browser token or API-key environment variable.
 
 ## Code Audit Summary
 
@@ -67,16 +75,35 @@ Low-risk cleanup completed in this pass:
 - Consolidated viewport drag payload detection so drag events scan file lists once.
 - Kept texture mode rendering focused on the currently selected imported model instead of rendering every imported model.
 - Kept generated layers, reference images, and new empty layers object-scoped.
+- Removed unused projection thumbnail renderer, UV bake stub, dead frontend mock generation service, unused mock layer/reference seed files, and the uncalled command registry/feature flag pair.
+- Updated docs for projected layer blend/overlay behavior, thumbnail capture, global bake gating, and current offline fallback boundaries.
+- Audited the local repaint chain file by file: frontend dialog, viewport capture, local repaint image/mask utilities, image-edit client, Liclick server route, and Liclick generation service. Removed the accidental direct web-token path and restored the existing Atlas/Liclick auth boundary.
+- Verified the packaging script excludes runtime workspace data, logs, secrets, `.git`, and `node_modules` from staging while keeping built server/web outputs and source files needed by the desktop launcher.
 
-Build checks for this release should run:
+Build checks for this release:
 
 ```text
-corepack pnpm -r typecheck
-corepack pnpm -r lint
-corepack pnpm -r build
-corepack pnpm perf:audit
+corepack pnpm --filter @liclick/web typecheck
+corepack pnpm --filter @liclick/server typecheck
+corepack pnpm --filter @liclick/web lint
+corepack pnpm --filter @liclick/server lint
+corepack pnpm --filter @liclick/server build
+corepack pnpm --filter @liclick/web build
 corepack pnpm package:windows
 ```
+
+The latest Windows installer produced by this pass is:
+
+```text
+dist-installer/Liclick 3D Texture Setup.exe
+Size 3,388,729 bytes
+SHA256 97F7429DABF323423B97C90B44A99CB77764B485A67E6209DDDAD8A525D353A8
+```
+
+Packaging notes for this build:
+
+- `corepack enable` could not write to `C:\Program Files\nodejs\pnpm.ps1` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
+- Vite still reports the known large-chunk warning for the editor bundle. The warning is non-blocking for this installer and remains tracked as a future code-splitting cleanup.
 
 The 2026-06-26 local backend stress pass reached:
 

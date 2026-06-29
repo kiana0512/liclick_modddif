@@ -22,6 +22,17 @@ export type GenerateImageInput = {
   references?: ReferenceInput[];
 };
 
+export type EditImageInput = {
+  image: string;
+  mask: string;
+  prompt: string;
+  references?: string[];
+  mode?: 'local_repaint' | 'image_edit';
+  strength?: number;
+  seed?: number;
+  extra?: Record<string, unknown>;
+};
+
 export type LiclickAtlasContext = {
   atlasHomeDir?: string;
 };
@@ -45,6 +56,7 @@ export type LiclickImageSubmission = {
   resultUrl?: string;
   resultUrls?: string[];
   taskId?: string;
+  workspaceId?: string;
   model: string;
   extraParams: Record<string, unknown>;
   uploadedReferences: UploadedReference[];
@@ -313,6 +325,84 @@ export async function submitLiclickImageJob(
       model,
       extraParams,
       uploadedReferences,
+      raw: payload,
+    };
+  });
+}
+
+export async function submitLiclickImageEdit(
+  input: EditImageInput,
+  atlasContext: LiclickAtlasContext = {},
+): Promise<LiclickImageSubmission> {
+  return withTempDir(async (tempDir) => {
+    const source = await uploadReference({ id: 'local-repaint-source', url: input.image }, tempDir, atlasContext);
+    const mask = await uploadReference({ id: 'local-repaint-mask', url: input.mask }, tempDir, atlasContext);
+    const referenceUploads = await Promise.all(
+      (input.references ?? [])
+        .slice(0, 8)
+        .map((url, index) => uploadReference({ id: `local-repaint-reference-${index + 1}`, url }, tempDir, atlasContext)),
+    );
+    const name = `Inpaint_${input.prompt.trim() || 'Local repaint'}`.slice(0, 48);
+    const repaintStrength = input.strength ?? input.extra?.strength ?? 1;
+    const extraParams: Record<string, unknown> = {
+      name,
+      n: 1,
+      backend: 'comfyui',
+      pipeline_id: '局部重绘_volcengine',
+      request_type: 'single_image',
+      '需要重绘的图': [{ asset_id: source.assetId, type: 'image' }],
+      '输入图片蒙版': [{ asset_id: mask.assetId, type: 'image' }],
+      '正向提示': input.prompt,
+      '重绘幅度': repaintStrength,
+      seed: typeof input.seed === 'number' ? input.seed : -1,
+    };
+    if (referenceUploads.length > 0) {
+      extraParams.reference_images = referenceUploads.map((reference) => ({
+        asset_id: reference.assetId,
+        type: 'image',
+      }));
+    }
+    const workspaceId = input.extra?.workspace_id ?? input.extra?.workspaceId;
+    if (typeof workspaceId === 'string' && workspaceId.trim()) extraParams.workspace_id = workspaceId.trim();
+    const submit = await runAtlas(
+      [
+        'gateway',
+        'call-tool',
+        '--service',
+        'liclick',
+        '--tool',
+        'generate_image',
+        '--args',
+        JSON.stringify({
+          prompt: input.prompt,
+          model: 'comfyui',
+          extra_params: extraParams,
+          ...(typeof workspaceId === 'string' && workspaceId.trim() ? { workspace_id: workspaceId.trim() } : {}),
+        }),
+        '--timeout',
+        '180',
+      ],
+      4 * 60 * 1000,
+      false,
+      atlasContext.atlasHomeDir,
+    );
+    const payload = parseAtlasPayload(submit.stdout);
+    const urls = findUrls(payload);
+    const taskId = findTaskId(payload);
+    if (urls.length === 0 && !taskId) {
+      const message = findField(payload, ['err_msg', 'error', 'message', 'result']) || trimOutput(submit.stdout || submit.stderr);
+      throw new Error(message || '莉刻局部重绘没有返回任务 ID。');
+    }
+    return {
+      id: taskId || `liclick-edit-${Date.now()}`,
+      status: urls.length > 0 ? 'succeeded' : 'running',
+      resultUrl: urls[0],
+      resultUrls: urls,
+      taskId,
+      workspaceId: typeof workspaceId === 'string' ? workspaceId : undefined,
+      model: '局部重绘_volcengine',
+      extraParams,
+      uploadedReferences: [source, mask, ...referenceUploads],
       raw: payload,
     };
   });

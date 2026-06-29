@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type DragEventHandler,
   type MouseEventHandler,
@@ -8,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Circle, CircleDot, Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, Plus, Trash2 } from 'lucide-react';
+import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, Plus, Scissors, Square, Trash2, WandSparkles } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
@@ -35,6 +36,16 @@ type VisibilityDrag = {
   touched: Set<string>;
 };
 
+type OpacityDrag = {
+  layerId: string;
+  startY: number;
+  startOpacity: number;
+  value: number;
+  moved: boolean;
+  x: number;
+  y: number;
+};
+
 const checkerStyle = {
   backgroundColor: '#d6d6d6',
   backgroundImage:
@@ -45,9 +56,17 @@ const checkerStyle = {
 
 type LayersPanelProps = {
   onLayerDoubleClick?: (layer: Layer) => void;
+  onLayerLocalRepaint?: (layer: Layer) => void;
+  onMergeSelectedToUvLayer?: (layerIds: string[]) => void;
+  onMergeIntoSelectedBlankUvLayer?: (layerIds: string[], blankUvLayerId: string) => void;
 };
 
-export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
+export function LayersPanel({
+  onLayerDoubleClick,
+  onLayerLocalRepaint,
+  onMergeSelectedToUvLayer,
+  onMergeIntoSelectedBlankUvLayer,
+}: LayersPanelProps = {}) {
   const t = useT();
   const layers = useLayerStore((state) => state.layers);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
@@ -66,6 +85,7 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
   const [renameState, setRenameState] = useState<RenameState>();
   const [draggingLayerId, setDraggingLayerId] = useState<string>();
   const [visibilityDrag, setVisibilityDrag] = useState<VisibilityDrag>();
+  const [opacityDrag, setOpacityDrag] = useState<OpacityDrag>();
   const [hoveredLayerId, setHoveredLayerId] = useState<string>();
   const [previewLayerId, setPreviewLayerId] = useState<string>();
   const [isShiftPressed, setIsShiftPressed] = useState(false);
@@ -73,6 +93,7 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
     activeProjectedLayerId ? [activeProjectedLayerId] : [],
   );
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
+  const capturedOpacityDragRef = useRef(false);
   const visibleLayers = useMemo(
     () => layers.filter((layer) => !layer.objectId || layer.objectId === selectedObjectId),
     [layers, selectedObjectId],
@@ -143,6 +164,43 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
       window.removeEventListener('pointercancel', stopDrag);
     };
   }, [setLayerVisibility, visibilityDrag]);
+
+  useEffect(() => {
+    if (!opacityDrag) {
+      capturedOpacityDragRef.current = false;
+      return undefined;
+    }
+
+    const continueOpacityDrag = (event: PointerEvent) => {
+      setOpacityDrag((current) => {
+        if (!current) return current;
+        if (!capturedOpacityDragRef.current) {
+          captureHistory();
+          capturedOpacityDragRef.current = true;
+        }
+        const delta = current.startY - event.clientY;
+        const nextOpacity = Math.max(0, Math.min(1, current.startOpacity + delta / 140));
+        setOpacity(current.layerId, nextOpacity);
+        return {
+          ...current,
+          value: nextOpacity,
+          moved: current.moved || Math.abs(event.clientY - current.startY) > 2,
+          x: event.clientX,
+          y: event.clientY,
+        };
+      });
+    };
+    const stopOpacityDrag = () => setOpacityDrag(undefined);
+
+    window.addEventListener('pointermove', continueOpacityDrag);
+    window.addEventListener('pointerup', stopOpacityDrag);
+    window.addEventListener('pointercancel', stopOpacityDrag);
+    return () => {
+      window.removeEventListener('pointermove', continueOpacityDrag);
+      window.removeEventListener('pointerup', stopOpacityDrag);
+      window.removeEventListener('pointercancel', stopOpacityDrag);
+    };
+  }, [captureHistory, opacityDrag, setOpacity]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -226,14 +284,44 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
     setVisibilityDrag({ visible: visibilityDrag.visible, touched: new Set(visibilityDrag.touched) });
   }
 
-  function openLayerMenu(layerId: string, rect: DOMRect) {
+  function beginOpacityDrag(layer: Layer, event: React.PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    event.preventDefault();
+    setActiveLayer(layer.id);
+    setOpacityDrag({
+      layerId: layer.id,
+      startY: event.clientY,
+      startOpacity: layer.opacity,
+      value: layer.opacity,
+      moved: false,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
+  function openLayerMenuAt(layerId: string, x: number, y: number) {
     const menuWidth = 224;
-    const menuHeight = 300;
+    const menuHeight = Math.min(420, window.innerHeight - 24);
     setMenu({
       layerId,
-      x: Math.min(Math.max(8, rect.right - menuWidth), window.innerWidth - menuWidth - 8),
-      y: Math.min(Math.max(8, rect.bottom + 6), window.innerHeight - menuHeight - 8),
+      x: Math.min(Math.max(8, x), window.innerWidth - menuWidth - 8),
+      y: Math.min(Math.max(8, y), window.innerHeight - menuHeight - 8),
     });
+  }
+
+  function openLayerMenuFromButton(layerId: string, rect: DOMRect) {
+    openLayerMenuAt(layerId, rect.right - 224, rect.bottom + 6);
+  }
+
+  function openLayerMenuFromContext(layer: Layer, event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedLayerIds.includes(layer.id)) {
+      setSelectedLayerIds([layer.id]);
+      setActiveLayer(layer.id);
+      setLastSelectedLayerId(layer.id);
+    }
+    openLayerMenuAt(layer.id, event.clientX, event.clientY);
   }
 
   return (
@@ -260,11 +348,7 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
               beginVisibilityDrag(layer);
             }}
             onVisibilityPointerEnter={() => continueVisibilityDrag(layer.id)}
-            onOpacityClick={(event) => {
-              event.stopPropagation();
-              captureHistory();
-              setOpacity(layer.id, layer.opacity >= 0.99 ? 0.5 : 1);
-            }}
+            onOpacityPointerDown={(event) => beginOpacityDrag(layer, event)}
             onBlendClick={(event) => {
               event.stopPropagation();
               captureHistory();
@@ -276,8 +360,9 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
             }}
             onMenu={(event) => {
               event.stopPropagation();
-              openLayerMenu(layer.id, event.currentTarget.getBoundingClientRect());
+              openLayerMenuFromButton(layer.id, event.currentTarget.getBoundingClientRect());
             }}
+            onContextMenu={(event) => openLayerMenuFromContext(layer, event)}
             onDragStart={() => setDraggingLayerId(layer.id)}
             onDragOver={(event) => {
               event.preventDefault();
@@ -307,6 +392,9 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
             x={menu.x}
             y={menu.y}
             layer={layers.find((layer) => layer.id === menu.layerId)}
+            selectedLayers={layers.filter((layer) =>
+              (selectedLayerIds.includes(menu.layerId) ? selectedLayerIds : [menu.layerId]).includes(layer.id),
+            )}
             onClose={() => setMenu(undefined)}
             onView={() => {
               setActiveLayer(menu.layerId);
@@ -324,6 +412,11 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
               captureHistory();
               duplicateLayer(menu.layerId);
             }}
+            onLocalRepaint={(layer) => onLayerLocalRepaint?.(layer)}
+            onMergeSelectedToUvLayer={(layerIds) => onMergeSelectedToUvLayer?.(layerIds)}
+            onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
+              onMergeIntoSelectedBlankUvLayer?.(layerIds, blankUvLayerId)
+            }
             onDownloadImage={(layer) => {
               void downloadImageAsset(layer.imageUrl, `liclick_layer_${layer.name || layer.id}`);
             }}
@@ -393,6 +486,17 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
           </div>,
           document.body,
         )}
+
+      {opacityDrag &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[96] rounded-md border border-white/16 bg-black/88 px-2.5 py-1.5 text-xs font-semibold text-white shadow-[0_10px_28px_rgba(0,0,0,0.48)]"
+            style={{ left: opacityDrag.x + 12, top: opacityDrag.y - 36 }}
+          >
+            Layer opacity {Math.round(opacityDrag.value * 100)}%
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -400,13 +504,20 @@ export function LayersPanel({ onLayerDoubleClick }: LayersPanelProps = {}) {
 export function LayersPanelActions() {
   const t = useT();
   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
+  const addUvLayer = useLayerStore((state) => state.addUvLayer);
   const importedModel = useSceneStore((state) => state.importedModel);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
   const pushToast = useToastStore((state) => state.pushToast);
 
   function handleAddLayer() {
     captureHistory();
     addEmptyLayer();
+  }
+
+  function handleAddBlankUvLayer() {
+    captureHistory();
+    addUvLayer({ name: t('blankUvLayer'), imageUrl: '', objectId: selectedObjectId });
   }
 
   function handleFitCamera() {
@@ -438,6 +549,9 @@ export function LayersPanelActions() {
       <LayerHeaderButton title={t('addLayer')} onClick={handleAddLayer}>
         <Plus className="h-4 w-4" />
       </LayerHeaderButton>
+      <LayerHeaderButton title={t('createBlankUvLayer')} onClick={handleAddBlankUvLayer}>
+        <Square className="h-4 w-4" />
+      </LayerHeaderButton>
     </div>
   );
 }
@@ -453,10 +567,11 @@ function LayerRow({
   onHoverEnd,
   onVisibilityPointerDown,
   onVisibilityPointerEnter,
-  onOpacityClick,
+  onOpacityPointerDown,
   onBlendClick,
   onAdjustClick,
   onMenu,
+  onContextMenu,
   onDragStart,
   onDragOver,
   onDrop,
@@ -472,10 +587,11 @@ function LayerRow({
   onHoverEnd: () => void;
   onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
   onVisibilityPointerEnter: PointerEventHandler<HTMLButtonElement>;
-  onOpacityClick: MouseEventHandler<HTMLButtonElement>;
+  onOpacityPointerDown: PointerEventHandler<HTMLButtonElement>;
   onBlendClick: MouseEventHandler<HTMLButtonElement>;
   onAdjustClick: MouseEventHandler<HTMLButtonElement>;
   onMenu: MouseEventHandler<HTMLButtonElement>;
+  onContextMenu: MouseEventHandler<HTMLDivElement>;
   onDragStart: () => void;
   onDragOver: DragEventHandler<HTMLDivElement>;
   onDrop: DragEventHandler<HTMLDivElement>;
@@ -484,7 +600,10 @@ function LayerRow({
   const hasAdjustments =
     (layer.adjustments?.hue ?? 0) !== 0 ||
     (layer.adjustments?.saturation ?? 0) !== 0 ||
-    (layer.adjustments?.lightness ?? 0) !== 0;
+    (layer.adjustments?.lightness ?? 0) !== 0 ||
+    (layer.strength ?? 1) !== 1;
+  const modeLabel = layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
+  const opacityLabel = `Layer opacity ${Math.round(layer.opacity * 100)}%. Drag up or down to adjust.`;
 
   return (
     <div
@@ -492,6 +611,7 @@ function LayerRow({
       tabIndex={0}
       draggable
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       onDoubleClick={(event) => {
         event.preventDefault();
         onDoubleClick();
@@ -537,27 +657,22 @@ function LayerRow({
         <div className="truncate text-base font-semibold leading-5 text-white">{layer.name}</div>
         <div className="mt-1 flex items-center gap-3 text-white">
           <SmallLayerToggle
-            active={layer.opacity < 0.99}
-            label="Layer opacity"
-            onClick={onOpacityClick}
-            icon={<Circle className="h-3.5 w-3.5 fill-current" />}
+            active={layer.opacity > 0.01}
+            label={opacityLabel}
+            onPointerDown={onOpacityPointerDown}
+            icon={<LayerOpacityGlyph opacity={layer.opacity} />}
           />
           <SmallLayerToggle
             active={layer.blendMode === 'overlay'}
-            label="Overlay above other layers"
+            label={modeLabel}
             onClick={onBlendClick}
-            icon={
-              <span className="flex items-center">
-                <Circle className="h-3 w-3 fill-current" />
-                <Circle className="-ml-1.5 h-3 w-3 fill-current" />
-              </span>
-            }
+            icon={layer.blendMode === 'overlay' ? <LayerOverlayGlyph /> : <LayerBlendGlyph />}
           />
           <SmallLayerToggle
             active={hasAdjustments}
-            label="Has adjustments"
+            label="Layer projection mask"
             onClick={onAdjustClick}
-            icon={<CircleDot className="h-3.5 w-3.5" />}
+            icon={<LayerMaskGlyph />}
           />
         </div>
       </div>
@@ -573,22 +688,65 @@ function LayerRow({
   );
 }
 
+function LayerOpacityGlyph({ opacity }: { opacity: number }) {
+  const clampedOpacity = Math.max(0, Math.min(1, opacity));
+  if (clampedOpacity <= 0.01) {
+    return <span className="h-3.5 w-3.5 rounded-full border-2 border-current" />;
+  }
+  return (
+    <span
+      className="h-3.5 w-3.5 rounded-full border border-current bg-current"
+      style={{ opacity: 0.32 + clampedOpacity * 0.68 }}
+    />
+  );
+}
+
+function LayerBlendGlyph() {
+  return (
+    <span className="relative h-3.5 w-4">
+      <span className="absolute left-0 top-1 h-2.5 w-2.5 rounded-full border-2 border-current" />
+      <span className="absolute right-0 top-1 h-2.5 w-2.5 rounded-full border-2 border-current bg-black/40" />
+    </span>
+  );
+}
+
+function LayerOverlayGlyph() {
+  return (
+    <span className="relative h-3.5 w-4">
+      <span className="absolute left-0.5 top-1.5 h-2.5 w-2.5 rounded-[2px] border-2 border-current" />
+      <span className="absolute right-0.5 top-0 h-2.5 w-2.5 rounded-[2px] border-2 border-current bg-current/30" />
+    </span>
+  );
+}
+
+function LayerMaskGlyph() {
+  return (
+    <span className="grid h-3.5 w-3.5 place-items-center rounded-[2px] border border-current">
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+    </span>
+  );
+}
+
 function SmallLayerToggle({
   active,
   label,
   icon,
   onClick,
+  onPointerDown,
 }: {
   active: boolean;
   label: string;
   icon: ReactNode;
-  onClick: MouseEventHandler<HTMLButtonElement>;
+  onClick?: MouseEventHandler<HTMLButtonElement>;
+  onPointerDown?: PointerEventHandler<HTMLButtonElement>;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      onPointerDown={onPointerDown}
       title={label}
+      aria-label={label}
       className={cn(
         'grid h-5 w-5 place-items-center rounded-full text-white transition hover:bg-white/18',
         active ? 'bg-white/22 text-white' : 'text-white/95',
@@ -603,11 +761,15 @@ function LayerMenu({
   x,
   y,
   layer,
+  selectedLayers,
   onClose,
   onView,
   onMoveUp,
   onMoveDown,
   onDuplicate,
+  onLocalRepaint,
+  onMergeSelectedToUvLayer,
+  onMergeIntoSelectedBlankUvLayer,
   onDownloadImage,
   onRename,
   onDelete,
@@ -615,17 +777,24 @@ function LayerMenu({
   x: number;
   y: number;
   layer?: Layer;
+  selectedLayers: Layer[];
   onClose: () => void;
   onView: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDuplicate: () => void;
+  onLocalRepaint: (layer: Layer) => void;
+  onMergeSelectedToUvLayer: (layerIds: string[]) => void;
+  onMergeIntoSelectedBlankUvLayer: (layerIds: string[], blankUvLayerId: string) => void;
   onDownloadImage: (layer: Layer) => void;
   onRename: (layer: Layer) => void;
   onDelete: () => void;
 }) {
   const t = useT();
   if (!layer) return null;
+  const selectedProjectedLayers = selectedLayers.filter((item) => item.type === 'projected');
+  const selectedBlankUvLayer = selectedLayers.find((item) => item.type === 'uv' && !item.imageUrl);
+  const isMulti = selectedLayers.length > 1;
 
   function run(action: () => void) {
     action();
@@ -634,30 +803,67 @@ function LayerMenu({
 
   return (
     <div
-      className="fixed z-[90] w-56 rounded-md border border-white/18 bg-[#1f1f20] p-2 text-sm text-white shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
+      className="fixed z-[90] max-h-[min(420px,calc(100vh-24px))] w-56 overflow-y-auto rounded-md border border-white/18 bg-[#1f1f20] p-2 text-sm text-white shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
       style={{ left: x, top: y }}
       onPointerDown={(event) => event.stopPropagation()}
     >
       <div className="px-2 pb-2 text-white/86">{t('thisLayer')}</div>
       <div className="mb-1 h-px bg-white/45" />
-      <MenuButton onClick={() => run(onView)}>
-        {t('view')}
-        <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">SHIFT</span>
-      </MenuButton>
-      <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
-      <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
-      <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
-        {t('duplicate')}
-      </MenuButton>
-      {layer.imageUrl && (
-        <MenuButton onClick={() => run(() => onDownloadImage(layer))} icon={<Download className="h-4 w-4" />}>
-          {t('downloadImage')}
-        </MenuButton>
+      {isMulti ? (
+        <>
+          <MenuButton
+            onClick={() => run(() => onMergeSelectedToUvLayer(selectedProjectedLayers.map((item) => item.id)))}
+            icon={<Scissors className="h-4 w-4" />}
+            disabled={selectedProjectedLayers.length === 0}
+          >
+            {t('mergeSelectedLayersToUvLayer')}
+          </MenuButton>
+          <MenuButton
+            onClick={() =>
+              selectedBlankUvLayer &&
+              run(() =>
+                onMergeIntoSelectedBlankUvLayer(
+                  selectedProjectedLayers.map((item) => item.id),
+                  selectedBlankUvLayer.id,
+                ),
+              )
+            }
+            icon={<Scissors className="h-4 w-4" />}
+            disabled={!selectedBlankUvLayer || selectedProjectedLayers.length === 0}
+          >
+            {t('mergeIntoSelectedBlankUvLayer')}
+          </MenuButton>
+          <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
+            {t('deleteSelectedLayers')}
+          </MenuButton>
+        </>
+      ) : (
+        <>
+          <MenuButton onClick={() => run(onView)}>
+            {t('view')}
+            <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">SHIFT</span>
+          </MenuButton>
+          <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
+          <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
+          {layer.type === 'projected' && (
+            <MenuButton onClick={() => run(() => onLocalRepaint(layer))} icon={<WandSparkles className="h-4 w-4" />}>
+              {t('localRepaintEditLayer')}
+            </MenuButton>
+          )}
+          <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
+            {t('duplicate')}
+          </MenuButton>
+          {layer.imageUrl && (
+            <MenuButton onClick={() => run(() => onDownloadImage(layer))} icon={<Download className="h-4 w-4" />}>
+              {t('downloadImage')}
+            </MenuButton>
+          )}
+          <MenuButton onClick={() => run(() => onRename(layer))}>{t('rename')}</MenuButton>
+          <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
+            {t('delete')}
+          </MenuButton>
+        </>
       )}
-      <MenuButton onClick={() => run(() => onRename(layer))}>{t('rename')}</MenuButton>
-      <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
-        {t('delete')}
-      </MenuButton>
     </div>
   );
 }
@@ -666,16 +872,19 @@ function MenuButton({
   children,
   icon,
   onClick,
+  disabled,
 }: {
   children: ReactNode;
   icon?: ReactNode;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex h-9 w-full items-center gap-2 rounded px-2 text-left font-medium text-white transition hover:bg-white/10"
+      disabled={disabled}
+      className="flex h-9 w-full items-center gap-2 rounded px-2 text-left font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {icon}
       {children}

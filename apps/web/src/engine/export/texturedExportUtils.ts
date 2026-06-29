@@ -134,6 +134,7 @@ function findCurrentBakedTexture(input: ModelExportInput) {
 }
 
 async function bakeCurrentVisibleTextureForExport(input: ModelExportInput) {
+  if (!useSettingsStore.getState().autoUvBakeEnabled) return undefined;
   const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.importedModel.objectId);
   if (visibleLayers.length === 0) return undefined;
 

@@ -8,9 +8,20 @@ const DEFAULT_WIRE_COLOR = '#e9ebe8';
 const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
 const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
 const DISPOSED_MATERIAL_FLAG = 'liclickDisposedMaterial';
-const BACKFACE_DOT_LIMIT = 0.42;
-const VIEW_CONFIDENCE_MIN = 0.06;
-const VIEW_CONFIDENCE_FULL = 0.5;
+const NDV_HARD_REJECT = -0.35;
+const NDV_COVERAGE_START = -0.25;
+const NDV_COVERAGE_END = 0.08;
+const NDV_QUALITY_START = 0.02;
+const NDV_QUALITY_END = 0.25;
+const BASE_ANGLE_GAMMA = 4;
+const MAX_STRENGTH_FOR_ANGLE = 3;
+const BLEND_POWER = 4;
+const RESIDUAL_MIX = 0.05;
+const COVERAGE_THRESHOLD = 0.02;
+const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
+const DEPTH_EPSILON = 0.08;
+const IMAGE_COVERAGE_EDGE_FADE = 0.015;
+const IMAGE_QUALITY_EDGE_FADE = 0.035;
 
 const vertexShader = `
   varying vec3 vWorldPosition;
@@ -36,6 +47,7 @@ const fragmentShader = `
   uniform mat3 objectNormalDelta;
   uniform vec3 projectorPosition;
   uniform float layerOpacity;
+  uniform float layerStrength;
   uniform float useMask;
   uniform float useDepthCheck;
   uniform float enableBackfaceCulling;
@@ -84,6 +96,18 @@ const fragmentShader = `
     return dot(rgbaDepth, bitShift);
   }
 
+  float computeAngleWeight(float ndv, float strength) {
+    float strengthClamped = clamp(strength, 0.25, ${MAX_STRENGTH_FOR_ANGLE.toFixed(1)});
+    float gamma = ${BASE_ANGLE_GAMMA.toFixed(1)} / strengthClamped;
+    float frontFade = smoothstep(${NDV_QUALITY_START.toFixed(2)}, ${NDV_QUALITY_END.toFixed(2)}, ndv);
+    return frontFade * pow(clamp(ndv, 0.0, 1.0), gamma);
+  }
+
+  float computeImageEdgeFade(vec2 uv, float edge) {
+    float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    return smoothstep(0.0, edge, edgeDistance);
+  }
+
   vec3 linearToSrgb(vec3 color) {
     vec3 cutoff = step(color, vec3(0.0031308));
     vec3 lower = color * 12.92;
@@ -105,29 +129,38 @@ const fragmentShader = `
     float hasW = step(0.0001, projected.w);
     float inside = inX * inY * inZ * hasW;
 
-    float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-    float featherAlpha = smoothstep(0.0, max(edgeFeather, 0.0001), edgeDistance);
-
     vec3 normal = captureWorldNormal;
-    vec3 projectorViewDir = normalize(captureWorldPosition.xyz - projectorPosition);
-    float normalViewDot = dot(normal, projectorViewDir);
-    float frontFacing = 1.0 - step(${BACKFACE_DOT_LIMIT.toFixed(2)}, normalViewDot);
+    vec3 projectorViewDir = normalize(projectorPosition - captureWorldPosition.xyz);
+    float ndv = dot(normal, projectorViewDir);
+    float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
     float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
     vec4 maskTexel = texture2D(maskMap, uv);
     float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
-    float maskAlpha = mix(1.0, step(0.08, maskValue), useMask);
+    float maskAlpha = mix(1.0, maskValue, useMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
     float capturedDepth = unpackDepth(texture2D(depthMap, uv));
-    float depthAlpha = mix(1.0, step(projectedDepth - depthBias, capturedDepth + 0.01), useDepthCheck);
+    float depthErr = abs(projectedDepth - capturedDepth);
+    float depthWeight = mix(
+      1.0,
+      0.2 + 0.8 * exp(-pow(depthErr / max(${DEPTH_EPSILON.toFixed(2)}, 0.000001), 2.0)),
+      useDepthCheck
+    );
 
     vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
     float lambert = max(dot(normal, lightDir), 0.0) * 0.2 + 0.8;
     vec4 texel = texture2D(projectedMap, uv);
     texel.rgb = applyHslAdjustments(texel.rgb);
-    float sourceAlpha = step(0.015, texel.a);
-    float projectionAlpha = layerOpacity * inside * featherAlpha * backfaceAlpha * maskAlpha * depthAlpha * sourceAlpha;
+    float sourceAlpha = texel.a * maskAlpha;
+    float alphaCoverage = step(0.01, sourceAlpha);
+    float angleCoverage = smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv);
+    float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
+    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float angleWeight = computeAngleWeight(ndv, layerStrength);
+    float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
+    float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
+    float projectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * step(${COVERAGE_THRESHOLD.toFixed(2)}, coverage);
     vec3 baseTexel = texture2D(baseMap, vUv).rgb;
     vec3 baseSurfaceColor = mix(baseColor, baseTexel, useBaseMap);
     vec3 shadedBase = baseSurfaceColor * lambert;
@@ -147,15 +180,16 @@ function buildStackFragmentShader(layerCount: number) {
   uniform mat3 objectNormalDelta${index};
   uniform vec3 projectorPosition${index};
   uniform float layerOpacity${index};
+  uniform float layerStrength${index};
+  uniform float layerBlendMode${index};
   uniform float useMask${index};
   uniform float useDepthCheck${index};
   uniform float hueShift${index};
   uniform float saturationShift${index};
   uniform float lightnessShift${index};
-  uniform float layerPriority${index};
 `).join('');
 
-  const layerEvaluations = Array.from({ length: layerCount }, (_, index) => `
+  const blendEvaluations = Array.from({ length: layerCount }, (_, index) => `
     {
       vec4 captureWorldPosition = objectMatrixDelta${index} * vec4(vWorldPosition, 1.0);
       vec3 captureWorldNormal = normalize(objectNormalDelta${index} * vWorldNormal);
@@ -170,33 +204,89 @@ function buildStackFragmentShader(layerCount: number) {
       float hasW = step(0.0001, projected.w);
       float inside = inX * inY * inZ * hasW;
 
-      float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-      float featherAlpha = smoothstep(0.0, max(edgeFeather, 0.0001), edgeDistance);
-
       vec3 normal = captureWorldNormal;
-      vec3 projectorViewDir = normalize(captureWorldPosition.xyz - projectorPosition${index});
-      float normalViewDot = dot(normal, projectorViewDir);
-      float frontFacing = 1.0 - step(${BACKFACE_DOT_LIMIT.toFixed(2)}, normalViewDot);
+      vec3 projectorViewDir = normalize(projectorPosition${index} - captureWorldPosition.xyz);
+      float ndv = dot(normal, projectorViewDir);
+      float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
-      float viewConfidence = smoothstep(${VIEW_CONFIDENCE_MIN.toFixed(2)}, ${VIEW_CONFIDENCE_FULL.toFixed(2)}, -normalViewDot);
 
       vec4 maskTexel = texture2D(maskMap${index}, uv);
       float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
-      float maskAlpha = mix(1.0, step(0.08, maskValue), useMask${index});
+      float maskAlpha = mix(1.0, maskValue, useMask${index});
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float capturedDepth = unpackDepth(texture2D(depthMap${index}, uv));
-      float depthAlpha = mix(1.0, step(projectedDepth - depthBias, capturedDepth + 0.01), useDepthCheck${index});
+      float depthErr = abs(projectedDepth - capturedDepth);
+      float depthWeight = mix(
+        1.0,
+        0.2 + 0.8 * exp(-pow(depthErr / max(${DEPTH_EPSILON.toFixed(2)}, 0.000001), 2.0)),
+        useDepthCheck${index}
+      );
 
       vec4 texel = texture2D(projectedMap${index}, uv);
       texel.rgb = applyHslAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
-      float sourceAlpha = step(0.015, texel.a);
-      float validAlpha = layerOpacity${index} * inside * featherAlpha * backfaceAlpha * maskAlpha * depthAlpha * sourceAlpha;
-      float candidateScore = validAlpha * (0.15 + viewConfidence * 0.85) + layerPriority${index};
-      if (validAlpha > 0.02 && candidateScore > bestScore) {
-        bestScore = candidateScore;
-        bestAlpha = validAlpha;
-        bestColor = texel.rgb;
+      float sourceAlpha = texel.a * maskAlpha;
+      float alphaCoverage = step(0.01, sourceAlpha);
+      float angleCoverage = smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv);
+      float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
+      float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+      float angleWeight = computeAngleWeight(ndv, layerStrength${index});
+      float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
+      float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
+      if (layerBlendMode${index} < 0.5 && inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${COVERAGE_THRESHOLD.toFixed(2)}) {
+        insertBlendCandidate(texel.rgb, coverage, quality);
+      }
+    }
+`).join('');
+
+  const overlayEvaluations = Array.from({ length: layerCount }, (_, index) => `
+    {
+      vec4 captureWorldPosition = objectMatrixDelta${index} * vec4(vWorldPosition, 1.0);
+      vec3 captureWorldNormal = normalize(objectNormalDelta${index} * vWorldNormal);
+      vec4 projected = projectorMatrix${index} * captureWorldPosition;
+      vec3 ndc = projected.xyz / projected.w;
+      vec2 uv = ndc.xy * 0.5 + 0.5;
+      uv.y = 1.0 - uv.y;
+
+      float inX = step(-1.0, ndc.x) * step(ndc.x, 1.0);
+      float inY = step(-1.0, ndc.y) * step(ndc.y, 1.0);
+      float inZ = step(-1.0, ndc.z) * step(ndc.z, 1.0);
+      float hasW = step(0.0001, projected.w);
+      float inside = inX * inY * inZ * hasW;
+
+      vec3 normal = captureWorldNormal;
+      vec3 projectorViewDir = normalize(projectorPosition${index} - captureWorldPosition.xyz);
+      float ndv = dot(normal, projectorViewDir);
+      float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
+      float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
+
+      vec4 maskTexel = texture2D(maskMap${index}, uv);
+      float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
+      float maskAlpha = mix(1.0, maskValue, useMask${index});
+
+      float projectedDepth = ndc.z * 0.5 + 0.5;
+      float capturedDepth = unpackDepth(texture2D(depthMap${index}, uv));
+      float depthErr = abs(projectedDepth - capturedDepth);
+      float depthWeight = mix(
+        1.0,
+        0.2 + 0.8 * exp(-pow(depthErr / max(${DEPTH_EPSILON.toFixed(2)}, 0.000001), 2.0)),
+        useDepthCheck${index}
+      );
+
+      vec4 texel = texture2D(projectedMap${index}, uv);
+      texel.rgb = applyHslAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
+      float sourceAlpha = texel.a * maskAlpha;
+      float alphaCoverage = step(0.01, sourceAlpha);
+      float angleCoverage = smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv);
+      float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
+      float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+      float angleWeight = computeAngleWeight(ndv, layerStrength${index});
+      float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
+      float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
+      if (layerBlendMode${index} > 0.5 && inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${COVERAGE_THRESHOLD.toFixed(2)}) {
+        float qualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
+        float overlayAlpha = clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
+        mixedColor = mix(mixedColor, texel.rgb, overlayAlpha);
       }
     }
 `).join('');
@@ -206,6 +296,8 @@ function buildStackFragmentShader(layerCount: number) {
   uniform float enableBackfaceCulling;
   uniform float edgeFeather;
   uniform float depthBias;
+  uniform sampler2D baseMap;
+  uniform float useBaseMap;
   uniform vec3 baseColor;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
@@ -245,6 +337,18 @@ function buildStackFragmentShader(layerCount: number) {
     return dot(rgbaDepth, bitShift);
   }
 
+  float computeAngleWeight(float ndv, float strength) {
+    float strengthClamped = clamp(strength, 0.25, ${MAX_STRENGTH_FOR_ANGLE.toFixed(1)});
+    float gamma = ${BASE_ANGLE_GAMMA.toFixed(1)} / strengthClamped;
+    float frontFade = smoothstep(${NDV_QUALITY_START.toFixed(2)}, ${NDV_QUALITY_END.toFixed(2)}, ndv);
+    return frontFade * pow(clamp(ndv, 0.0, 1.0), gamma);
+  }
+
+  float computeImageEdgeFade(vec2 uv, float edge) {
+    float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    return smoothstep(0.0, edge, edgeDistance);
+  }
+
   vec3 linearToSrgb(vec3 color) {
     vec3 cutoff = step(color, vec3(0.0031308));
     vec3 lower = color * 12.92;
@@ -252,18 +356,85 @@ function buildStackFragmentShader(layerCount: number) {
     return mix(higher, lower, cutoff);
   }
 
+  float topQuality0 = 0.0;
+  float topQuality1 = 0.0;
+  float topQuality2 = 0.0;
+  vec3 topColor0 = vec3(0.0);
+  vec3 topColor1 = vec3(0.0);
+  vec3 topColor2 = vec3(0.0);
+
+  float topCoverage0 = 0.0;
+  float topCoverage1 = 0.0;
+  float topCoverage2 = 0.0;
+
+  void insertBlendCandidate(vec3 color, float coverage, float quality) {
+    float score = max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)});
+    if (score > topQuality0) {
+      topCoverage2 = topCoverage1;
+      topQuality2 = topQuality1;
+      topColor2 = topColor1;
+      topCoverage1 = topCoverage0;
+      topQuality1 = topQuality0;
+      topColor1 = topColor0;
+      topCoverage0 = coverage;
+      topQuality0 = score;
+      topColor0 = color;
+    } else if (score > topQuality1) {
+      topCoverage2 = topCoverage1;
+      topQuality2 = topQuality1;
+      topColor2 = topColor1;
+      topCoverage1 = coverage;
+      topQuality1 = score;
+      topColor1 = color;
+    } else if (score > topQuality2) {
+      topCoverage2 = coverage;
+      topQuality2 = score;
+      topColor2 = color;
+    }
+  }
+
+  vec3 composeBlendBase(vec3 fallbackColor) {
+    float candidateCount =
+      step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage0) +
+      step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage1) +
+      step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage2);
+    if (candidateCount <= 0.5) return fallbackColor;
+    if (candidateCount <= 1.5) return topColor0;
+
+    float sumStrong =
+      pow(max(topQuality0, 0.0), ${BLEND_POWER.toFixed(1)}) +
+      pow(max(topQuality1, 0.0), ${BLEND_POWER.toFixed(1)}) +
+      pow(max(topQuality2, 0.0), ${BLEND_POWER.toFixed(1)});
+    float sumSoft = topCoverage0 + topCoverage1 + topCoverage2;
+    if (sumSoft <= 0.0001) return fallbackColor;
+
+    float w0 = mix(pow(topQuality0, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage0 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    float w1 = mix(pow(topQuality1, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage1 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    float w2 = mix(pow(topQuality2, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage2 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    return topColor0 * w0 + topColor1 * w1 + topColor2 * w2;
+  }
+
   void main() {
     vec3 normal = normalize(vWorldNormal);
     vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
     float lambert = max(dot(normal, lightDir), 0.0) * 0.2 + 0.8;
-    vec3 shadedBase = baseColor * lambert;
-    vec3 bestColor = shadedBase;
-    float bestAlpha = 0.0;
-    float bestScore = 0.0;
+    vec3 baseTexel = texture2D(baseMap, vUv).rgb;
+    vec3 baseSurfaceColor = mix(baseColor, baseTexel, useBaseMap);
+    vec3 shadedBase = baseSurfaceColor * lambert;
+    topCoverage0 = 0.0;
+    topCoverage1 = 0.0;
+    topCoverage2 = 0.0;
+    topQuality0 = 0.0;
+    topQuality1 = 0.0;
+    topQuality2 = 0.0;
+    topColor0 = vec3(0.0);
+    topColor1 = vec3(0.0);
+    topColor2 = vec3(0.0);
 
-    ${layerEvaluations}
+    ${blendEvaluations}
 
-    vec3 mixedColor = mix(shadedBase, bestColor, clamp(bestAlpha, 0.0, 1.0));
+    vec3 mixedColor = composeBlendBase(shadedBase);
+    ${overlayEvaluations}
     gl_FragColor = vec4(linearToSrgb(clamp(mixedColor, 0.0, 1.0)), 1.0);
   }
 `;
@@ -294,7 +465,6 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     input.baseTexture.minFilter = THREE.LinearMipmapLinearFilter;
     input.baseTexture.magFilter = THREE.LinearFilter;
     input.baseTexture.generateMipmaps = true;
-    input.baseTexture.needsUpdate = true;
   }
   maskTexture.flipY = false;
   depthTexture.flipY = false;
@@ -328,6 +498,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       objectNormalDelta: { value: objectNormalDelta },
       projectorPosition: { value: new THREE.Vector3().fromArray(input.camera.position) },
       layerOpacity: { value: input.opacity },
+      layerStrength: { value: input.strength ?? 1 },
       useMask: { value: input.useMask && input.maskUrl ? 1 : 0 },
       useDepthCheck: { value: input.useDepthCheck && input.depthUrl ? 1 : 0 },
       enableBackfaceCulling: { value: input.enableBackfaceCulling === false ? 0 : 1 },
@@ -336,7 +507,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       hueShift: { value: input.hue ?? 0 },
       saturationShift: { value: input.saturation ?? 0 },
       lightnessShift: { value: input.lightness ?? 0 },
-      baseColor: { value: new THREE.Color(DEFAULT_PREVIEW_COLOR) },
+      baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
     },
     toneMapped: false,
@@ -344,15 +515,6 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set([texture, maskTexture, depthTexture])];
   return material;
-}
-
-function stableLayerPriority(layerId: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < layerId.length; index += 1) {
-    hash ^= layerId.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return ((hash >>> 0) % 1000) * 0.00000001;
 }
 
 async function loadProjectedTexture(imageUrl: string, colorSpace: THREE.ColorSpace = THREE.SRGBColorSpace) {
@@ -382,6 +544,8 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
       camera: layer.camera,
       objectMatrixWorld: layer.objectMatrixWorld,
       opacity: layer.opacity,
+      strength: layer.strength,
+      blendMode: layer.blendMode,
       visible: layer.visible,
       hue: layer.hue,
       saturation: layer.saturation,
@@ -400,8 +564,19 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     enableBackfaceCulling: { value: input.enableBackfaceCulling === false ? 0 : 1 },
     edgeFeather: { value: input.edgeFeather ?? 0.004 },
     depthBias: { value: input.depthBias ?? 0.025 },
-    baseColor: { value: new THREE.Color(DEFAULT_PREVIEW_COLOR) },
+    baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
+    baseMap: { value: input.baseTexture ?? neutralTexture },
+    useBaseMap: { value: input.baseTexture ? 1 : 0 },
   };
+  if (input.baseTexture) {
+    input.baseTexture.colorSpace = THREE.SRGBColorSpace;
+    input.baseTexture.flipY = false;
+    input.baseTexture.wrapS = THREE.ClampToEdgeWrapping;
+    input.baseTexture.wrapT = THREE.ClampToEdgeWrapping;
+    input.baseTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    input.baseTexture.magFilter = THREE.LinearFilter;
+    input.baseTexture.generateMipmaps = true;
+  }
   const disposableTextures: THREE.Texture[] = [neutralTexture];
 
   await Promise.all(
@@ -434,12 +609,13 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
       uniforms[`objectNormalDelta${index}`] = { value: objectNormalDelta };
       uniforms[`projectorPosition${index}`] = { value: new THREE.Vector3().fromArray(layer.camera.position) };
       uniforms[`layerOpacity${index}`] = { value: layer.opacity };
+      uniforms[`layerStrength${index}`] = { value: layer.strength ?? 1 };
+      uniforms[`layerBlendMode${index}`] = { value: layer.blendMode === 'overlay' ? 1 : 0 };
       uniforms[`useMask${index}`] = { value: layer.useMask && layer.maskUrl ? 1 : 0 };
       uniforms[`useDepthCheck${index}`] = { value: layer.useDepthCheck && layer.depthUrl ? 1 : 0 };
       uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
       uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
       uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
-      uniforms[`layerPriority${index}`] = { value: stableLayerPriority(layer.layerId) };
       disposableTextures.push(texture, maskTexture, depthTexture);
     }),
   );

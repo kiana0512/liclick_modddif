@@ -21,13 +21,23 @@ const UV_TEXEL_SAMPLE_OFFSETS = [
   [0.25, 0.75],
   [0.75, 0.75],
 ] as const;
-const BACKFACE_DOT_LIMIT = 0.22;
-const VIEW_CONFIDENCE_MIN = 0.06;
-const VIEW_CONFIDENCE_FULL = 0.5;
+const NDV_HARD_REJECT = -0.35;
+const NDV_COVERAGE_START = -0.25;
+const NDV_COVERAGE_END = 0.08;
+const NDV_QUALITY_START = 0.02;
+const NDV_QUALITY_END = 0.25;
+const BASE_ANGLE_GAMMA = 4;
+const MAX_STRENGTH_FOR_ANGLE = 3;
+const DEPTH_EPSILON = 0.08;
+const IMAGE_COVERAGE_EDGE_FADE = 0.015;
+const IMAGE_QUALITY_EDGE_FADE = 0.035;
+const COVERAGE_THRESHOLD = 0.01;
+const SOURCE_ALPHA_REJECT = 0.01;
 
 export type RasterizeOutput = {
   canvas: HTMLCanvasElement;
   coverage: Uint8Array;
+  quality: Float32Array;
   totalTriangles: number;
   processedTriangles: number;
   coveredPixels: number;
@@ -133,17 +143,53 @@ function smoothstep(edge0: number, edge1: number, value: number) {
   return t * t * (3 - 2 * t);
 }
 
-function applyViewConfidence(
+function computeAngleQuality(ndv: number, strength: number) {
+  const strengthClamped = Math.min(MAX_STRENGTH_FOR_ANGLE, Math.max(0.25, strength));
+  const gamma = BASE_ANGLE_GAMMA / strengthClamped;
+  const frontFade = smoothstep(NDV_QUALITY_START, NDV_QUALITY_END, ndv);
+  return frontFade * Math.pow(Math.min(1, Math.max(0, ndv)), gamma);
+}
+
+function computeImageEdgeFade(imageUv: ProjectedImageUv, edge: number) {
+  const edgeDistance = Math.min(imageUv.u, 1 - imageUv.u, imageUv.v, 1 - imageUv.v);
+  return smoothstep(0, edge, edgeDistance);
+}
+
+type ProjectedLayerSample = {
+  color: [number, number, number, number];
+  coverage: number;
+  quality: number;
+};
+
+function applyLooseProjectionWeights(
   color: [number, number, number, number],
-  normalViewDot: number,
-): [number, number, number, number] | undefined {
-  const confidence = smoothstep(VIEW_CONFIDENCE_MIN, VIEW_CONFIDENCE_FULL, -normalViewDot);
-  if (confidence <= 0.01) return undefined;
-  return [color[0], color[1], color[2], Math.round(color[3] * confidence)];
+  imageUv: ProjectedImageUv,
+  ndv: number,
+  strength: number,
+  depthWeight: number,
+): ProjectedLayerSample | undefined {
+  const sourceAlpha = color[3] / 255;
+  if (sourceAlpha < SOURCE_ALPHA_REJECT) return undefined;
+  if (ndv < NDV_HARD_REJECT) return undefined;
+
+  const angleCoverage = smoothstep(NDV_COVERAGE_START, NDV_COVERAGE_END, ndv);
+  const coverageEdge = computeImageEdgeFade(imageUv, IMAGE_COVERAGE_EDGE_FADE);
+  const coverage = Math.min(1, sourceAlpha * angleCoverage * (0.35 + 0.65 * coverageEdge));
+  if (coverage < COVERAGE_THRESHOLD) return undefined;
+
+  const angleQuality = computeAngleQuality(ndv, strength);
+  const qualityEdge = computeImageEdgeFade(imageUv, IMAGE_QUALITY_EDGE_FADE);
+  const quality = Math.min(1, coverage * depthWeight * angleQuality * (0.3 + 0.7 * qualityEdge));
+
+  return {
+    color: [color[0], color[1], color[2], Math.round(coverage * 255)],
+    coverage,
+    quality,
+  };
 }
 
 type SampleResult = {
-  color?: [number, number, number, number];
+  sample?: ProjectedLayerSample;
   inFrustum: boolean;
   maskRejected: boolean;
   depthRejected: boolean;
@@ -219,15 +265,18 @@ function resolveProjectedSample({
     .normalize();
 
   if (input.bakeInput.enableBackfaceCulling) {
-    const cameraToPoint = scratch.cameraToPoint.copy(captureWorldPosition).sub(cameraPosition).normalize();
-    const normalViewDot = worldNormal.dot(cameraToPoint);
-    if (normalViewDot > BACKFACE_DOT_LIMIT) {
+    const cameraToPoint = scratch.cameraToPoint.copy(cameraPosition).sub(captureWorldPosition).normalize();
+    const ndv = worldNormal.dot(cameraToPoint);
+    if (ndv < NDV_HARD_REJECT) {
       return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: true };
     }
   } else {
-    scratch.cameraToPoint.copy(captureWorldPosition).sub(cameraPosition).normalize();
+    scratch.cameraToPoint.copy(cameraPosition).sub(captureWorldPosition).normalize();
   }
-  const normalViewDot = worldNormal.dot(scratch.cameraToPoint);
+  const ndv = worldNormal.dot(scratch.cameraToPoint);
+  if (ndv < NDV_HARD_REJECT) {
+    return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: true };
+  }
 
   if (!projectWorldToImageUv(captureWorldPosition, projectorMatrix, scratch.imageUv)) {
     return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: false };
@@ -242,48 +291,65 @@ function resolveProjectedSample({
     }
   }
 
+  let depthWeight = 1;
   if (input.depthImage) {
     const depthSample = sampleImageNearest(input.depthImage, imageUv.u, imageUv.v);
     const capturedDepth = unpackRgbaDepth(depthSample);
-    if (imageUv.depth - 0.02 > capturedDepth + 0.01) {
-      return { inFrustum: true, maskRejected: false, depthRejected: true, backfaceRejected: false };
-    }
+    const depthErr = Math.abs(imageUv.depth - capturedDepth);
+    depthWeight = 0.2 + 0.8 * Math.exp(-((depthErr / DEPTH_EPSILON) ** 2));
   }
 
-  const sample = applyViewConfidence(
+  const sample = applyLooseProjectionWeights(
     applyLayerAdjustments(sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v), input.layer),
-    normalViewDot,
+    imageUv,
+    ndv,
+    input.layer.strength ?? 1,
+    depthWeight,
   );
   if (!sample) return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
-  if (sample[3] <= 4) {
+  if (sample.coverage <= COVERAGE_THRESHOLD) {
     return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
   }
 
-  return { color: sample, inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
+  return {
+    sample,
+    inFrustum: true,
+    maskRejected: false,
+    depthRejected: depthWeight < 0.45,
+    backfaceRejected: false,
+  };
 }
 
-function compositeSubpixelSamples(samples: [number, number, number, number][]): [number, number, number, number] | undefined {
+function compositeSubpixelSamples(samples: ProjectedLayerSample[]): ProjectedLayerSample | undefined {
   if (samples.length === 0) return undefined;
 
   let red = 0;
   let green = 0;
   let blue = 0;
-  let alpha = 0;
+  let coverage = 0;
+  let quality = 0;
   for (const sample of samples) {
-    const sampleAlpha = sample[3] / 255;
-    red += sample[0] * sampleAlpha;
-    green += sample[1] * sampleAlpha;
-    blue += sample[2] * sampleAlpha;
-    alpha += sampleAlpha;
+    const sampleAlpha = sample.coverage;
+    const color = sample.color;
+    red += color[0] * sampleAlpha;
+    green += color[1] * sampleAlpha;
+    blue += color[2] * sampleAlpha;
+    coverage += sampleAlpha;
+    quality += sample.quality;
   }
 
-  if (alpha <= 0.00001) return undefined;
-  return [
-    Math.round(red / alpha),
-    Math.round(green / alpha),
-    Math.round(blue / alpha),
-    Math.round((alpha / samples.length) * 255),
-  ];
+  if (coverage <= 0.00001) return undefined;
+  const averageCoverage = coverage / samples.length;
+  return {
+    color: [
+      Math.round(red / coverage),
+      Math.round(green / coverage),
+      Math.round(blue / coverage),
+      Math.round(averageCoverage * 255),
+    ],
+    coverage: averageCoverage,
+    quality: quality / samples.length,
+  };
 }
 
 function projectWorldToImageUv(
@@ -299,7 +365,7 @@ function projectWorldToImageUv(
   const projectedY = e[1] * x + e[5] * y + e[9] * z + e[13];
   const projectedZ = e[2] * x + e[6] * y + e[10] * z + e[14];
   const projectedW = e[3] * x + e[7] * y + e[11] * z + e[15];
-  if (projectedW === 0) return false;
+  if (projectedW <= 0) return false;
   const ndcX = projectedX / projectedW;
   const ndcY = projectedY / projectedW;
   const ndcZ = projectedZ / projectedW;
@@ -339,6 +405,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
   const imageData = createBaseImageData(resolution, resolution);
   const coverage = new Uint8Array(resolution * resolution);
+  const quality = new Float32Array(resolution * resolution);
   const projectorMatrix = buildProjectionMatrixBundle(input.layer.camera).projectorMatrix;
   const cameraPosition = new THREE.Vector3().fromArray(input.layer.camera.position);
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
@@ -421,7 +488,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
       for (let y = minY; y <= maxY; y += 1) {
         for (let x = minX; x <= maxX; x += 1) {
-          const acceptedSamples: [number, number, number, number][] = [];
+          const acceptedSamples: ProjectedLayerSample[] = [];
           let touchedTriangle = false;
           let touchedFrustum = false;
           let touchedMaskReject = false;
@@ -453,7 +520,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
             touchedMaskReject = touchedMaskReject || sample.maskRejected;
             touchedDepthReject = touchedDepthReject || sample.depthRejected;
             touchedBackfaceReject = touchedBackfaceReject || sample.backfaceRejected;
-            if (sample.color) acceptedSamples.push(sample.color);
+            if (sample.sample) acceptedSamples.push(sample.sample);
           }
 
           if (!touchedTriangle) continue;
@@ -470,7 +537,8 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
           const coverageIndex = y * resolution + x;
           const offset = coverageIndex * 4;
-          blendPixel(imageData, offset, sampledColor, input.bakeInput.opacity);
+          blendPixel(imageData, offset, sampledColor.color, input.bakeInput.opacity);
+          quality[coverageIndex] = Math.max(quality[coverageIndex], sampledColor.quality * input.bakeInput.opacity);
           coverage[coverageIndex] = 1;
         }
       }
@@ -498,6 +566,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   return {
     canvas,
     coverage,
+    quality,
     totalTriangles,
     processedTriangles,
     coveredPixels,

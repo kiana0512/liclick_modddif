@@ -1,5 +1,6 @@
 import type * as THREE from 'three';
 import type { SerializedCamera } from '@/types/capture';
+import type { BlendMode } from '@/types/layer';
 
 export type ProjectionLayerInput = {
   layerId: string;
@@ -11,7 +12,10 @@ export type ProjectionLayerInput = {
   objectMatrixWorld?: number[];
   currentObjectMatrixWorld?: number[];
   baseTexture?: THREE.Texture;
+  baseColor?: THREE.ColorRepresentation;
   opacity: number;
+  strength?: number;
+  blendMode?: BlendMode;
   visible: boolean;
   depthTest: boolean;
   useMask?: boolean;
@@ -24,8 +28,8 @@ export type ProjectionLayerInput = {
   lightness?: number;
 };
 
-export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'> & {
-  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'>>;
+export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'> & {
+  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'>>;
 };
 
 export type ProjectionMatrixBundle = {

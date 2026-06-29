@@ -16,18 +16,18 @@ const resolutionToSize = {
   '8K': 8192,
 } as const;
 
-const displayOptions: Array<{ value: DisplayMode; label: string }> = [
-  { value: 'pbr', label: 'PBR' },
-  { value: 'flat', label: 'Fla' },
-  { value: 'normal', label: 'Nor' },
-  { value: 'wire', label: 'Wir' },
+const displayOptions: Array<{ value: DisplayMode; labelKey: 'pbr' | 'flatShort' | 'normalShort' | 'wireShort' }> = [
+  { value: 'pbr', labelKey: 'pbr' },
+  { value: 'flat', labelKey: 'flatShort' },
+  { value: 'normal', labelKey: 'normalShort' },
+  { value: 'wire', labelKey: 'wireShort' },
 ];
 
 const environmentOptions = [
-  { value: 'color', label: 'Color' },
-  { value: 'studio', label: 'Studio' },
-  { value: 'soft', label: 'Soft' },
-  { value: 'dark', label: 'Dark' },
+  { value: 'color', labelKey: 'color' },
+  { value: 'studio', labelKey: 'studioEnvironment' },
+  { value: 'soft', labelKey: 'softEnvironment' },
+  { value: 'dark', labelKey: 'darkEnvironment' },
 ] as const;
 
 export function ViewportPanel() {
@@ -99,14 +99,14 @@ export function ViewportPanel() {
 
       <ViewportRow icon={<Monitor className="h-4 w-4" />}>
         <div className="grid flex-1 grid-cols-5 gap-1">
-          <div className="grid h-7 place-items-center text-xs font-semibold text-white/72">MAT</div>
+          <div className="grid h-7 place-items-center text-xs font-semibold text-white/72">{t('materialShort')}</div>
           {displayOptions.map((option) => (
             <CompactButton
               key={option.value}
               active={displayMode === option.value}
               onClick={() => setDisplayMode(option.value)}
             >
-              {option.label}
+              {t(option.labelKey)}
             </CompactButton>
           ))}
         </div>
@@ -124,7 +124,7 @@ export function ViewportPanel() {
                 .filter((option) => option.value !== 'color')
                 .map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {t(option.labelKey)}
                   </option>
                 ))}
             </select>
@@ -159,7 +159,7 @@ export function ViewportPanel() {
             aria-label={t('environment')}
             className="h-7 min-w-0 flex-1 rounded-md border border-white/18 bg-white text-center text-[13px] text-[#181820] outline-none"
           >
-            <option value="color">Color</option>
+            <option value="color">{t('color')}</option>
           </select>
           <button
             type="button"

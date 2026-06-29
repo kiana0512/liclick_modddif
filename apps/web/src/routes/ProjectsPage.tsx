@@ -78,10 +78,21 @@ function sortProjects(projects: Project[], sortMode: SortMode) {
   });
 }
 
-function mergeProjectsWithMock(serverProjects: Project[]) {
+function mergeProjectsWithMock(serverProjects: Project[], currentProjects: Project[] = []) {
   const merged = new Map<string, Project>();
   for (const project of mockProjects) merged.set(project.id, project);
-  for (const project of serverProjects) merged.set(project.id, project);
+  const currentProjectById = new Map(currentProjects.map((project) => [project.id, project]));
+  for (const project of serverProjects) {
+    const currentProject = currentProjectById.get(project.id);
+    const currentThumbnail = currentProject?.thumbnail;
+    merged.set(project.id, {
+      ...project,
+      thumbnail:
+        currentThumbnail && (currentThumbnail.startsWith('data:') || currentThumbnail.startsWith('blob:'))
+          ? currentThumbnail
+          : project.thumbnail,
+    });
+  }
   return [...merged.values()];
 }
 
@@ -277,7 +288,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       setServerState('online');
       const [projectResult, folderResult] = await Promise.all([listProjects(), listFolders()]);
       setFolders(folderResult.folders);
-      setProjects(mergeProjectsWithMock(projectResult.projects.map(projectFromSummary)));
+      setProjects(mergeProjectsWithMock(projectResult.projects.map(projectFromSummary), projects));
       setPageNotice(undefined);
     } catch (error) {
       const isAuthRequired =
@@ -285,7 +296,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       setServerState(isAuthRequired ? 'online' : 'offline');
       if (isAuthRequired) {
         setFolders([]);
-        setProjects(mergeProjectsWithMock([]));
+        setProjects(mergeProjectsWithMock([], projects));
         setPageNotice({
           tone: 'warning',
           title: '需要飞书登录',

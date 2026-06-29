@@ -7,7 +7,7 @@ The API adapter isolates UI and engine code from backend details.
 - Do not hard-code API keys.
 - Keep auth in the server-side Liclick / Atlas gateway session and local secure cookies.
 - Keep request/response contracts typed.
-- Keep mock service available for offline UI development.
+- Keep offline fallbacks explicit and remove frontend mock services once real server routes own the workflow.
 
 ## Current Atlas Gateway Status
 
@@ -108,6 +108,16 @@ For security, remote asset import is HTTPS-only and host allowlisted. The defaul
 
 Inputs: prompt, mask, base image, selected object, and optional references.
 
+Local repaint reuses the same authenticated Atlas/Liclick gateway configuration as normal image generation. The server uploads the current viewport image and mask through `upload_asset`, then submits `generate_image` with the ComfyUI workflow fields:
+
+- backend/model: `comfyui`
+- pipeline: `局部重绘_volcengine`
+- params: `需要重绘的图`, `输入图片蒙版`, `正向提示`, `重绘幅度`, `seed`
+
+The matching poll request uses the existing `get_task_status(task_type=image)` path. There is no separate browser token or API-key setup for local repaint.
+
+For current-view local repaint, the client sends a transparent-background viewport render plus a black/white mask. The mask is clipped to the visible model alpha before submission, so repaint strokes cannot target the editor background. The returned image is composited back only inside the edit mask, while protected/unmasked pixels preserve the original projection relationship.
+
 ## Normal Generation
 
 Inputs: basecolor or prompt/image pair. Output should identify normal coordinate space.
@@ -116,6 +126,6 @@ Inputs: basecolor or prompt/image pair. Output should identify normal coordinate
 
 Inputs: multiple camera snapshots and captures. Output should preserve per-view images and consistency metadata.
 
-## Mock Service
+## Offline Fallbacks
 
-`mockGenerationService.ts` remains useful for offline UI development only. Production and authenticated editor generation use the server-side Atlas adapter. API keys, Atlas tokens, and endpoints must never be committed or passed to frontend code.
+The old frontend `mockGenerationService.ts` has been removed because generation now goes through the authenticated server-side Atlas adapter. The mock project gallery remains as an offline homepage fallback only. API keys, Atlas tokens, and endpoints must never be committed or passed to frontend code.

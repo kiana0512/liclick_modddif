@@ -38,6 +38,11 @@ type BottomToolDockProps = {
     inpaintUnselect: string;
     undo: string;
     redo: string;
+    brushSize: string;
+    brushHardness: string;
+    brushColor: string;
+    resetInpaintRegion: string;
+    invertInpaintRegion: string;
     selectHelp: string;
     moveHelp: string;
     rotateHelp: string;
@@ -144,7 +149,7 @@ export function BottomToolDock({
           <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[300px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
             <label className="grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>Brush Size</span>
+                <span>{labels.brushSize}</span>
                 <input
                   value={paintSettings.brushSize.toFixed(1)}
                   onChange={(event) =>
@@ -167,7 +172,7 @@ export function BottomToolDock({
             </label>
             <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>Brush hardness</span>
+                <span>{labels.brushHardness}</span>
                 <input
                   value={paintSettings.brushHardness.toFixed(1)}
                   onChange={(event) =>
@@ -189,7 +194,7 @@ export function BottomToolDock({
               />
             </label>
             <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-              <span>Color</span>
+              <span>{labels.brushColor}</span>
               <div className="grid grid-cols-[1fr_88px] items-center gap-2">
                 <div className="flex gap-1.5">
                   {paintSwatches.map((swatch) => (
@@ -234,7 +239,7 @@ export function BottomToolDock({
           <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
             <label className="grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>Brush Size</span>
+                <span>{labels.brushSize}</span>
                 <input
                   value={paintSettings.eraserSize.toFixed(1)}
                   onChange={(event) =>
@@ -257,7 +262,7 @@ export function BottomToolDock({
             </label>
             <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>Brush hardness</span>
+                <span>{labels.brushHardness}</span>
                 <input
                   value={paintSettings.eraserHardness.toFixed(1)}
                   onChange={(event) =>
@@ -299,7 +304,7 @@ export function BottomToolDock({
           <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
             <label className="grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>Brush Size</span>
+                <span>{labels.brushSize}</span>
                 <input
                   value={paintMaskSettings.brushSize.toFixed(1)}
                   onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) || 1 })}
@@ -318,7 +323,7 @@ export function BottomToolDock({
             </label>
             <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>Brush hardness</span>
+                <span>{labels.brushHardness}</span>
                 <input
                   value={paintMaskSettings.brushHardness.toFixed(1)}
                   onChange={(event) => setPaintMaskSettings({ brushHardness: Number(event.target.value) || 0 })}
@@ -341,7 +346,7 @@ export function BottomToolDock({
                 className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
                 onClick={clearPaintMask}
               >
-                <span>Reset inpaint region</span>
+                <span>{labels.resetInpaintRegion}</span>
                 <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL D</span>
               </button>
               <button
@@ -349,7 +354,7 @@ export function BottomToolDock({
                 className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
                 onClick={invertPaintMask}
               >
-                <span>Invert inpaint region</span>
+                <span>{labels.invertInpaintRegion}</span>
                 <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL I</span>
               </button>
             </div>

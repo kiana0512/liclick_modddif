@@ -66,7 +66,7 @@ Implemented MVP commands:
 
 - Model import.
 - Capture current view.
-- Mock texture generation.
+- Liclick texture generation through the authenticated local server route.
 - Add projected layer.
 - UV bake active layer.
 - Download basecolor.
@@ -74,20 +74,13 @@ Implemented MVP commands:
 - Local Save / Save As / Load.
 - Object transform controls.
 
-Visible coming-soon commands must use `features/commandRegistry.ts`. Prefer disabled controls with `title` tooltips. Use lightweight deduped toast only when a placeholder must remain clickable:
+Visible coming-soon commands should prefer disabled controls with `title` tooltips or mode-specific placeholder panels. Use lightweight deduped toast only when a placeholder must remain clickable:
 
-- Paint.
-- Eraser.
+- Inpaint API execution.
 - Quick Mask.
 - Segments.
 - Multiview.
 - Normal generation.
-- GLB export.
-- Layer rename.
-- Undo / Redo.
-- Manual Add Layer.
-- New Project / New Folder / folder management.
-- Reference upload.
 - DCC connectors.
 
 ## Normal Preview

@@ -161,7 +161,7 @@ New Folder uses an in-app modal rather than `window.prompt`, so folder creation 
 
 When the local workspace server is offline, the mock starter projects remain visible. This keeps the first-run experience usable and visually rich instead of showing an empty error state.
 
-Project cards use the saved project thumbnail when available. The editor captures a viewport thumbnail during project saves so imported-model projects can be identified visually on the home page.
+Project cards use the saved project thumbnail when available. The editor captures the current WebGL viewport during project saves so imported-model projects can be identified visually on the home page. Thumbnail capture temporarily hides viewport helpers such as the floor grid and paint overlays, then restores them immediately after capture.
 
 Workspace health checks intentionally use a short timeout. When the server is not running, the UI should return to the offline state quickly instead of making the project page feel delayed.
 

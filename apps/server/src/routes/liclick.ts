@@ -6,7 +6,9 @@ import type { AuthUser } from '../auth/authTypes.js';
 import { requireAuth } from '../auth/authMiddleware.js';
 import {
   pollLiclickImageTask,
+  submitLiclickImageEdit,
   submitLiclickImageJob,
+  type EditImageInput,
   type GenerateImageInput,
   type LiclickImageSubmission,
 } from '../services/liclickGenerationService.js';
@@ -283,6 +285,36 @@ async function waitForSubmitted(job: GenerationJob) {
   }
 }
 
+async function remoteImageToDataUrl(url: string) {
+  const imageResponse = await fetch(url);
+  if (!imageResponse.ok) throw new Error(`Could not download Liclick edit result: ${imageResponse.status}`);
+  const contentType = imageResponse.headers.get('content-type') ?? 'image/png';
+  const buffer = Buffer.from(await imageResponse.arrayBuffer());
+  return `data:${contentType};base64,${buffer.toString('base64')}`;
+}
+
+async function runImageEdit(input: EditImageInput, atlasHomeDir?: string) {
+  let submission = await submitLiclickImageEdit(input, { atlasHomeDir });
+  const startedAt = Date.now();
+  while (!submission.resultUrl && submission.taskId && Date.now() - startedAt < 10 * 60 * 1000) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    const result = await pollLiclickImageTask(submission.taskId, { atlasHomeDir });
+    if (result.resultUrl) {
+      submission = {
+        ...submission,
+        status: 'succeeded',
+        resultUrl: result.resultUrl,
+        resultUrls: result.resultUrls,
+        raw: result.raw,
+      };
+      break;
+    }
+    if (result.terminalWithoutResult) throw new Error('莉刻局部重绘任务已结束，但没有返回图片。');
+  }
+  if (!submission.resultUrl) throw new Error('等待莉刻局部重绘超时。');
+  return submission;
+}
+
 export async function handleLiclickRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
   await loadGenerationJobs();
   const segments = getPathSegments(url);
@@ -329,6 +361,43 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
     }
     await cancelGenerationJob(job);
     sendJson(response, 200, getJobResponse(job));
+    return true;
+  }
+
+  if (request.method === 'POST' && isLiclickRoute && segments[2] === 'edit-image') {
+    const atlasIdentity = getAtlasIdentity(user.atlasHomeDir);
+    if (
+      user.email &&
+      atlasIdentity.email &&
+      user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
+    ) {
+      sendJson(response, 403, {
+        error: 'Current Atlas / Liclick account does not match this browser session. Please log in again.',
+        sessionEmail: user.email,
+        atlasEmail: atlasIdentity.email,
+      });
+      return true;
+    }
+    const input = await readJsonBody<EditImageInput>(request);
+    if (!input.image || !input.mask || !input.prompt?.trim()) {
+      sendJson(response, 400, { error: 'Image, mask, and prompt are required for local repaint.' });
+      return true;
+    }
+    try {
+      const edit = await runImageEdit(input, user.atlasHomeDir);
+      sendJson(response, 200, {
+        outputImage: await remoteImageToDataUrl(edit.resultUrl!),
+        raw: edit.raw,
+        taskId: edit.taskId,
+        resultUrl: edit.resultUrl,
+        extraParams: edit.extraParams,
+        uploadedReferences: edit.uploadedReferences,
+      });
+    } catch (error) {
+      sendJson(response, 500, {
+        error: error instanceof Error ? error.message : '莉刻局部重绘失败。',
+      });
+    }
     return true;
   }
 

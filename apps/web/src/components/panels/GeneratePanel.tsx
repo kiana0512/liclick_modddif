@@ -849,6 +849,7 @@ export function GeneratePanel() {
   }
 
   async function autoBakeVisibleProjectedLayers(layer: Layer) {
+    if (!useSettingsStore.getState().autoUvBakeEnabled) throw new Error(t('autoBakeDisabledHelp'));
     const currentImportedModel = useSceneStore.getState().importedModel;
     if (!currentImportedModel) throw new Error(t('importModelFirst'));
     const objectId = layer.objectId ?? selectedObjectId ?? currentImportedModel.objectId;
@@ -936,6 +937,11 @@ export function GeneratePanel() {
   }
 
   function drainAutoBakeQueue() {
+    if (!useSettingsStore.getState().autoUvBakeEnabled) {
+      autoBakeQueueRef.current = [];
+      setAutoBakeProgress(undefined);
+      return;
+    }
     if (autoBakeRunningRef.current) {
       return;
     }

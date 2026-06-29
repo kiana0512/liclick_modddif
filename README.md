@@ -101,17 +101,18 @@ corepack pnpm db:push
 - Imported model metadata records original bounding box, normalization transform, user transform, mesh count, UV status, and import warnings.
 - Move / Rotate / Scale controls work for the selected imported model, with Reset, Center, Ground, and Fit Camera actions.
 - Viewport capture now renders real color, mask, normal, and grayscale depth PNGs from WebGL render targets. Browser captures use registered Blob URLs in memory and local-server saves materialize them as binary assets instead of inflating project JSON with base64.
-- Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. Mock generation remains available only for offline development.
+- Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. The old frontend mock generation service has been removed; the mock project gallery remains only as an offline homepage fallback.
 - Liclick image generation and Texture Map generation keep separate prompts. Liclick image generation can be stopped from the Generate panel so the UI does not stay locked until the remote task finishes.
+- Local repaint opens a focused current-view repair dialog. The brush is continuous, clipped to the visible model silhouette, and submits image + mask through the same authenticated Atlas/Liclick gateway used by normal generation.
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
-- Projected preview now rejects out-of-frustum, backface, masked, and approximate depth-failed fragments instead of spreading the image over the full model.
-- Layer visibility, opacity, delete, and go-to-camera work for projected layer preview.
-- Texture Map projected layers queue a background GPU-first UV bake for the visible projected-layer stack. The bake keeps the selected resolution, falls back to CPU only at that same resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
+- Projected preview now separates loose coverage from strict quality, rejects out-of-frustum, backface, masked, and approximate depth-failed fragments, and falls back to the model/base material for uncovered fragments instead of showing black or white artifacts.
+- Layer visibility, blend/overlay mode, opacity, projection strength, delete, and go-to-camera work for projected layer preview.
+- Texture Map projected layers queue a background GPU-first UV bake for the visible projected-layer stack only when Auto UV bake is enabled. The bake keeps the selected resolution, falls back to CPU only at that same resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
 - Local-server projects persist captures, generated layer images, and baked textures as binary PNG uploads instead of large base64 JSON payloads, reducing main-thread string work and server JSON parsing during 4K/8K workflows.
 - Save Project / Save As / Load Project now target a local workspace folder through the File System Access API when available, writing `project.liclick.json` and asset folders. Unsupported browsers fall back to JSON download/import.
 - Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
 - Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
-- Project thumbnails are captured from the WebGL viewport and shown on the Projects page when saved.
+- Project thumbnails are captured from the real WebGL viewport and shown on the Projects page when saved. Grid lines and paint/helper overlays are hidden during capture so the card shows the textured model, not the editor background.
 - Export now supports Scene GLB / OBJ / STL, selected Object GLB / OBJ / STL, baked BaseColor PNG, normal-map PNG when the model provides one, viewport PNG snapshot, and 5 second WebM turntable recording.
 - Paint, Eraser, Quick Mask, Segments, Multiview, Normal generation, and DCC connectors are either disabled with a tooltip or shown as mode-specific coming-soon panels. Repeated coming-soon toast noise is deduped.
 
@@ -122,7 +123,7 @@ corepack pnpm db:push
 3. Use `Generate Image`; if no capture exists, the app auto-captures first.
 4. Click `Add as Projected Layer` to preview the generated image projected onto the model.
 5. Use the Layers panel to toggle visibility, adjust opacity, delete, or return to the capture camera.
-6. Accept a Texture Map result with `Add as Projected Layer`; the visible projected-layer stack is baked in the background at the selected viewport resolution.
+6. Accept a Texture Map result with `Add as Projected Layer`; if Auto UV bake is enabled, the visible projected-layer stack is baked in the background at the selected viewport resolution. If it is disabled, the app keeps the live projected preview and does not bake.
 7. Use `Download BaseColor` to save `basecolor.png`, or keep the baked texture applied in PBR / Flat preview.
 8. Use `Save Project` / `Save As...` / `Load Project` for `project.liclick.json` workspace persistence. In unsupported browsers, Save downloads JSON.
 
@@ -163,7 +164,7 @@ Phase 6 adds project-system behavior:
 
 ## UV Bake MVP
 
-Phase 3 introduced UV baking. The current automatic bake path composites the visible projected-layer stack into one BaseColor PNG through a GPU-first UV-space render target. The shader reads imported mesh position, UV, normal, and index buffers, projects UV-space fragments back through the saved capture camera, applies frustum/mask/depth/backface gates, samples the generated image, applies opacity, then dilates seams, reports progress, and immediately applies the result as a material map. If GPU allocation or rendering fails, the CPU rasterizer runs at the same selected resolution.
+Phase 3 introduced UV baking. The current automatic bake path composites the visible projected-layer stack into one BaseColor PNG through a GPU-first UV-space render target. The shader reads imported mesh position, UV, normal, and index buffers, projects UV-space fragments back through the saved capture camera, applies frustum/mask/depth/source-alpha/backface gates, samples the generated image, applies opacity and blend/overlay mode, then dilates seams, reports progress, and immediately applies the result as a material map. If GPU allocation or rendering fails, the CPU rasterizer runs at the same selected resolution.
 
 Test flow:
 
@@ -180,8 +181,8 @@ Test flow:
 
 - GLB / glTF are the primary formats. FBX / OBJ are experimental.
 - Texture mode edits one active imported object at a time. Projects can keep multiple imported objects and switch the active object from the Objects panel.
-- Automatic UV bake composites the visible projected-layer stack into one BaseColor texture. Only one automatic bake runs at a time.
-- Projected preview is shader-based and does not yet do depth-aware multi-layer compositing.
+- Automatic UV bake composites the visible projected-layer stack into one BaseColor texture when enabled. Only one automatic bake runs at a time.
+- Projected preview is shader-based and supports blend/overlay stack preview with a live-preview guard for very large unbaked stacks.
 - Depth capture is grayscale viewport depth, not a calibrated linear depth asset.
 - File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
 - UV bake supports one object, one UV channel, and basecolor only.

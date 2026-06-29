@@ -17,11 +17,11 @@ Phase 3 added a browser bake path. The current path supports one imported object
 
 ## Algorithm
 
-The GPU path draws the imported meshes into UV space on an offscreen WebGL render target. Its shader reconstructs world position and normal, projects them through the saved capture camera, applies the same frustum, mask, depth, backface, opacity, and HSL adjustment rules, and blends each visible projected layer into the output texture.
+The GPU path draws the imported meshes into UV space on an offscreen WebGL render target. Its shader reconstructs world position and normal, projects them through the saved capture camera, applies the same frustum, mask, depth, backface, source-alpha, opacity, strength, and HSL adjustment rules, and blends each visible projected layer into the output texture.
 
-The CPU fallback maps mesh UV triangles into the output texture. For every covered texel it computes barycentric coordinates, interpolates world position and normal, projects the world position through the saved capture camera, samples the generated image, and writes the result into a basecolor canvas using layer opacity.
+The CPU fallback maps mesh UV triangles into the output texture. For every covered texel it computes barycentric coordinates, interpolates world position and normal, projects the world position through the saved capture camera, samples the generated image, and writes coverage plus quality into the basecolor composite.
 
-For automatic bake, the Generate panel queues the visible projected layers, renders or rasterizes each layer, composites them in layer order, fills transparent texels with the neutral clay color as opaque BaseColor, encodes a PNG, applies it immediately to the viewport, and persists it to `assets/baked/` for local-server projects.
+For automatic bake, the Generate panel queues the visible projected layers only when the global Auto UV bake setting is enabled. It renders or rasterizes each layer, composites blend layers with order-independent loose coverage plus strict quality, applies overlay layers in stack order, fills remaining transparent texels with the neutral material color for a viewport-ready opaque BaseColor PNG, applies it immediately to the viewport, and persists it to `assets/baked/` for local-server projects.
 
 Phase 8 visibility rules:
 
@@ -30,6 +30,13 @@ Phase 8 visibility rules:
 - reject mask pixels below threshold when a capture mask is stored;
 - reject approximate depth mismatches when a capture depth image is stored;
 - report in-frustum, mask rejected, depth rejected, backface rejected, and written texel counts.
+
+Current compositing rules:
+
+- `blend` layers collect the best projected candidates by quality and mix the top samples with a small coverage floor so single-image coverage is not rejected too aggressively.
+- `overlay` layers are applied after the blend composite in stack order.
+- Layer opacity controls visibility strength; projection strength controls how strongly lighting/projected appearance is applied in the live preview.
+- Rejected or uncovered live-preview fragments fall back to the model's base material instead of showing black edges or accidental white masks.
 
 Phase 4 object transforms are respected through the current mesh `matrixWorld`. If a user moves, rotates, scales, centers, or grounds the model after capture, the active projected layer may need a fresh capture or rebake.
 
@@ -49,7 +56,7 @@ The canvas writes output Y as `1 - uv.y`. The applied texture sets `texture.flip
 
 ## Current Limits
 
-- Visible projected layers are composited into one BaseColor output; shader preview still focuses on one active projected layer.
+- Visible projected layers are composited into one BaseColor output; shader preview supports the visible projected stack with a live-preview guard for very large unbaked stacks.
 - One imported object.
 - One UV channel named `uv`.
 - Basecolor only.
@@ -68,7 +75,7 @@ The canvas writes output Y as `1 - uv.y`. The applied texture sets `texture.flip
 - Local-server projects persist capture, layer, and baked PNGs through a binary blob upload path. Browser-only projects keep data URLs so downloaded project JSON remains self-contained.
 - Render-target captures and generated-image matte outputs now use asynchronous PNG Blob URLs rather than synchronous `toDataURL` in the hot path.
 - The CPU rasterizer reuses sample vectors and computes projector NDC directly from the matrix to reduce garbage collection pressure during fallback 4K/8K bakes.
-- Only one automatic bake runs at a time.
+- Only one automatic bake runs at a time, and both automatic and manual bake entry points respect the global Auto UV bake setting.
 - The next quality-preserving optimization is moving PNG encoding and post-process sharpening off the main thread where browser APIs allow it.
 
 ## Manual Test

@@ -60,11 +60,15 @@ export interface BakeProjectedLayerInput {
 
 export interface BakeVisibleProjectedLayersInput {
   objectId: string;
+  layerIds?: string[];
   resolution: UvBakeResolution;
   enableBackfaceCulling: boolean;
   enableDilation: boolean;
   dilationPixels: number;
   method?: 'auto' | 'gpu' | 'cpu';
+  outputAlpha?: 'opaque-viewport' | 'transparent';
+  commitToProject?: boolean;
+  markSourceLayersBaked?: boolean;
   preferBlobOutput?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 }

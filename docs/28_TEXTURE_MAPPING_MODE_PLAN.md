@@ -85,7 +85,7 @@ The alpha path must be fast and deterministic, but it cannot be geometry-only. T
 
 This avoids depending on the remote API to return a transparent PNG. It will not solve AI silhouette drift perfectly, so silhouette drift must become a warning metric before a user accepts the result.
 
-When no layer is present, the model should render as the white/clay material. When a projected texture exists, surfaces without aligned texture coverage should show a transparent checker/grid-style missing-coverage state so artists can see what has not been textured yet.
+When no layer is present, the model should render through the selected viewport material mode. When a projected texture exists, surfaces without aligned texture coverage should fall back to the model's base/original material in the live viewport. Missing-coverage diagnostics can exist as an explicit debug view, but they must not appear as black edges, white masks, or accidental checker artifacts in the normal editing view.
 
 ## Alignment Strategy
 
@@ -147,7 +147,7 @@ The common structure is not "paste an image on the screen." It is:
 ### Phase C: Coverage Preview
 
 - In projected preview, show accepted projected fragments normally.
-- Show uncovered or rejected fragments as white/clay or checker-grid missing coverage.
+- Show uncovered or rejected fragments through the base/original material in normal editing mode.
 - Track coverage ratio from the projected layer and bake report.
 - Adding a Texture Map result as a projected layer should automatically run UV bake from the saved projector state.
 
@@ -183,8 +183,8 @@ The common structure is not "paste an image on the screen." It is:
 - Mask alpha is never used as mask validity; RGB mask luminance is the validity source.
 - Source pixels with alpha 0 or near-transparent edge residue must never bake.
 - Depth capture and UV bake use the same RGBA-packed depth decoding path.
-- Backfaces, failed depth samples, and pixels outside the generation mask must remain alpha 0 in the baked texture.
-- UV texels for unseen model parts remain transparent/checkerboard in image editors.
+- Backfaces, failed depth samples, and pixels outside the generation mask must not overwrite valid projected samples.
+- UV texels for unseen model parts should remain inspectable without creating black/white viewport artifacts; current viewport-ready BaseColor output fills unprojected texels with a neutral material color after projection coverage has been decided.
 
 ## Future Stronger Path
 

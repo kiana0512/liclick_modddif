@@ -34,7 +34,8 @@ function usesOrderIndependentStack(texture: BakedTexture) {
   if (sourceLayerIds.length <= 1) return true;
   return (
     texture.report?.warnings?.some((warning) =>
-      warning.includes('order-independent CPU compositing'),
+      warning.includes('order-independent loose coverage with strict quality blend') ||
+      warning.includes('order-independent visibility-gated quality blend'),
     ) ?? false
   );
 }

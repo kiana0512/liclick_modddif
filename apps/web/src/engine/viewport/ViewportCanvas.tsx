@@ -747,6 +747,7 @@ export function ViewportCanvas({
   const startFileDrag = useDragInteractionStore((state) => state.startFileDrag);
   const clearDrag = useDragInteractionStore((state) => state.clearDrag);
   const exposure = useSettingsStore((state) => state.exposure);
+  const t = useT();
 
   useEffect(() => () => window.clearTimeout(captureFrameTimerRef.current), []);
 
@@ -810,6 +811,7 @@ export function ViewportCanvas({
         dpr={[1, 1.5]}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}
         gl={{
+          alpha: true,
           preserveDrawingBuffer: false,
           powerPreference: 'high-performance',
           outputColorSpace: THREE.SRGBColorSpace,
@@ -830,7 +832,7 @@ export function ViewportCanvas({
               window.setTimeout(() => setCanvasKey((key) => key + 1), 250);
               return;
             }
-            setViewportIssue('WebGL 渲染上下文已中断。已尝试自动恢复，当前项目数据仍然保留。');
+            setViewportIssue(t('viewportContextLostHelp'));
           };
           const handleContextRestored = () => {
             setViewportIssue(undefined);
@@ -861,7 +863,7 @@ export function ViewportCanvas({
       {viewportIssue && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-[#080914]/86 px-5 text-white backdrop-blur-sm">
           <div className="grid max-w-[420px] gap-3 rounded-lg border border-white/14 bg-black/50 p-4 text-center shadow-2xl">
-            <div className="text-sm font-semibold">视口需要恢复</div>
+            <div className="text-sm font-semibold">{t('viewportNeedsRestore')}</div>
             <div className="text-xs leading-5 text-white/66">{viewportIssue}</div>
             <button
               type="button"
@@ -871,7 +873,7 @@ export function ViewportCanvas({
                 setCanvasKey((key) => key + 1);
               }}
             >
-              重新加载视口
+              {t('reloadViewport')}
             </button>
           </div>
         </div>
@@ -883,7 +885,7 @@ export function ViewportCanvas({
           onClick={onOpenImport}
           className="absolute bottom-4 left-4 rounded-md border border-white/10 bg-black/42 px-3 py-2 text-xs text-white/66 backdrop-blur transition hover:bg-white/10 hover:text-white"
         >
-          Drop GLB here / Import Model
+          {t('dropModelImport')}
         </button>
       )}
       {isDragging && activeDragType === 'model-file' && (

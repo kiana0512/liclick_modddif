@@ -9,7 +9,7 @@ Future Codex sessions must read these docs before modifying core behavior.
 - Keep API keys out of source code.
 - All core data must have TypeScript types.
 - Placeholder features must include TODO comments or explicit stub naming.
-- Visible but unfinished commands must be routed through `features/commandRegistry.ts`. Prefer disabled controls with tooltips or mode-specific placeholder panels. Use a lightweight "Coming soon" toast only when the placeholder must be clickable.
+- Visible but unfinished commands should be disabled with clear `title` tooltips or isolated in mode-specific placeholder panels. If a placeholder must stay clickable, keep the handler local to the owning component and dedupe any "Coming soon" toast.
 - Do not keep disabled placeholder menu items in production panels if they do not help the current workflow.
 - New features must update relevant docs.
 - Prefer existing repo patterns over new abstractions.
@@ -38,7 +38,7 @@ Future Codex sessions must read these docs before modifying core behavior.
 ## API
 
 - Use `services/liclickApiClient.ts` for real calls.
-- Use mock services for local development.
+- Use explicit development fallbacks only when they are still wired into the app. Remove mock services and seed data once they no longer have product callers.
 - Keep request/response contracts typed.
 
 ## Persistence

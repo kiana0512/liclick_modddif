@@ -1,5 +1,6 @@
 import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
+import { dilateImageData } from './dilation';
 import { bakeProjectedLayerStackWithGpu } from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
@@ -23,9 +24,12 @@ const MIN_VALID_COVERAGE_RATIO = 0.001;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5;
 const MAX_CPU_SHARPEN_RESOLUTION = 4096;
-const BEST_VIEW_TIE_EPSILON = 1 / 255;
-const SEAM_BLEND_SCORE_DELTA = 0.14;
-const SEAM_BLEND_AMOUNT = 0.28;
+const TOP_K_BLEND_LAYERS = 3;
+const BLEND_POWER = 4;
+const RESIDUAL_MIX = 0.05;
+const COLOR_CONSISTENCY_SIGMA = 0.22;
+const COVERAGE_THRESHOLD = 0.02;
+const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const GPU_COVERAGE_VALIDATION_RESOLUTION = 512 as UvBakeResolution;
 const MIN_GPU_CPU_COVERAGE_IOU = 0.45;
 const MIN_GPU_CPU_COVERAGE_RATIO = 0.55;
@@ -75,6 +79,11 @@ function fillTransparentTexelsForViewport(imageData: ImageData) {
 
 function clampByte(value: number) {
   return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function smoothstep(edge0: number, edge1: number, value: number) {
+  const t = Math.max(0, Math.min(1, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
 }
 
 function isSharpenTarget(imageData: ImageData, coverage: Uint8Array | undefined, pixelIndex: number) {
@@ -226,123 +235,200 @@ export async function bakeProjectedLayerToTexture(
   };
 }
 
-type BestViewStackComposite = {
-  data: ImageData;
-  score: Float32Array;
+type QualityBlendStackComposite = {
+  colors: Uint8ClampedArray[];
+  coverages: Float32Array[];
+  qualities: Float32Array[];
   coverage: Uint8Array;
   winnerLayerIds: Array<string | undefined>;
 };
 
-function createBestViewStackComposite(resolution: number): BestViewStackComposite {
+type OverlayRaster = {
+  layer: Layer;
+  imageData: ImageData;
+  quality: Float32Array;
+};
+
+function createQualityBlendStackComposite(resolution: number): QualityBlendStackComposite {
   const pixelCount = resolution * resolution;
   return {
-    data: new ImageData(resolution, resolution),
-    score: new Float32Array(pixelCount),
+    colors: Array.from({ length: TOP_K_BLEND_LAYERS }, () => new Uint8ClampedArray(pixelCount * 3)),
+    coverages: Array.from({ length: TOP_K_BLEND_LAYERS }, () => new Float32Array(pixelCount)),
+    qualities: Array.from({ length: TOP_K_BLEND_LAYERS }, () => new Float32Array(pixelCount)),
     coverage: new Uint8Array(pixelCount),
     winnerLayerIds: new Array<string | undefined>(pixelCount),
   };
 }
 
-function shouldReplaceStackPixel(input: {
-  currentScore: number;
-  currentLayerId: string | undefined;
-  candidateScore: number;
-  candidateLayerId: string;
-}) {
-  if (input.candidateScore > input.currentScore + BEST_VIEW_TIE_EPSILON) return true;
-  if (Math.abs(input.candidateScore - input.currentScore) > BEST_VIEW_TIE_EPSILON) return false;
-  return !input.currentLayerId || input.candidateLayerId < input.currentLayerId;
+function insertBlendCandidate(
+  composite: QualityBlendStackComposite,
+  pixelIndex: number,
+  offset: number,
+  coverage: number,
+  quality: number,
+  layerImage: ImageData,
+  layerId: string,
+) {
+  let insertAt = -1;
+  for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
+    if (quality > composite.qualities[slot][pixelIndex]) {
+      insertAt = slot;
+      break;
+    }
+  }
+  if (insertAt < 0) return;
+
+  for (let slot = TOP_K_BLEND_LAYERS - 1; slot > insertAt; slot -= 1) {
+    composite.coverages[slot][pixelIndex] = composite.coverages[slot - 1][pixelIndex];
+    composite.qualities[slot][pixelIndex] = composite.qualities[slot - 1][pixelIndex];
+    const targetColorOffset = pixelIndex * 3;
+    composite.colors[slot][targetColorOffset] = composite.colors[slot - 1][targetColorOffset];
+    composite.colors[slot][targetColorOffset + 1] = composite.colors[slot - 1][targetColorOffset + 1];
+    composite.colors[slot][targetColorOffset + 2] = composite.colors[slot - 1][targetColorOffset + 2];
+  }
+
+  const colorOffset = pixelIndex * 3;
+  composite.coverages[insertAt][pixelIndex] = coverage;
+  composite.qualities[insertAt][pixelIndex] = quality;
+  composite.colors[insertAt][colorOffset] = layerImage.data[offset];
+  composite.colors[insertAt][colorOffset + 1] = layerImage.data[offset + 1];
+  composite.colors[insertAt][colorOffset + 2] = layerImage.data[offset + 2];
+  composite.coverage[pixelIndex] = 1;
+  if (insertAt === 0) composite.winnerLayerIds[pixelIndex] = layerId;
 }
 
-function accumulateBestViewStackLayer(composite: BestViewStackComposite, layer: ImageData, layerId: string) {
+function accumulateQualityBlendLayer(
+  composite: QualityBlendStackComposite,
+  layer: ImageData,
+  qualityMap: Float32Array,
+  layerId: string,
+) {
   for (let pixelIndex = 0, offset = 0; offset < layer.data.length; pixelIndex += 1, offset += 4) {
-    const sourceAlpha = layer.data[offset + 3] / 255;
-    if (sourceAlpha <= 0) continue;
-
-    // Winner-take-best projection merge: a side-view sample cannot tint a texel that
-    // already has a more camera-aligned front-view sample.
-    if (
-      !shouldReplaceStackPixel({
-        currentScore: composite.score[pixelIndex],
-        currentLayerId: composite.winnerLayerIds[pixelIndex],
-        candidateScore: sourceAlpha,
-        candidateLayerId: layerId,
-      })
-    ) {
-      continue;
-    }
-
-    composite.data.data[offset] = layer.data[offset];
-    composite.data.data[offset + 1] = layer.data[offset + 1];
-    composite.data.data[offset + 2] = layer.data[offset + 2];
-    composite.data.data[offset + 3] = layer.data[offset + 3];
-    composite.score[pixelIndex] = sourceAlpha;
-    composite.winnerLayerIds[pixelIndex] = layerId;
-    composite.coverage[pixelIndex] = 1;
+    const coverage = layer.data[offset + 3] / 255;
+    if (coverage <= COVERAGE_THRESHOLD) continue;
+    const quality = Math.max(qualityMap[pixelIndex], coverage * QUALITY_FLOOR_FROM_COVERAGE);
+    insertBlendCandidate(composite, pixelIndex, offset, coverage, quality, layer, layerId);
   }
 }
 
-function writeBestViewStackComposite(composite: BestViewStackComposite, output: ImageData) {
+function srgbByteToLinear(value: number) {
+  const color = value / 255;
+  return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgbByte(value: number) {
+  const color = Math.max(0, Math.min(1, value));
+  const srgb = color <= 0.0031308 ? color * 12.92 : 1.055 * color ** (1 / 2.4) - 0.055;
+  return clampByte(srgb * 255);
+}
+
+function applyColorConsistency(qualities: number[], colors: number[][]) {
+  let totalQuality = 0;
+  const base = [0, 0, 0];
+  for (let index = 0; index < qualities.length; index += 1) {
+    const quality = qualities[index];
+    if (quality <= 0) continue;
+    totalQuality += quality;
+    base[0] += colors[index][0] * quality;
+    base[1] += colors[index][1] * quality;
+    base[2] += colors[index][2] * quality;
+  }
+  if (totalQuality <= 0) return;
+  base[0] /= totalQuality;
+  base[1] /= totalQuality;
+  base[2] /= totalQuality;
+
+  for (let index = 0; index < qualities.length; index += 1) {
+    if (qualities[index] <= 0) continue;
+    const color = colors[index];
+    const diff = Math.hypot(color[0] - base[0], color[1] - base[1], color[2] - base[2]);
+    const consistency = Math.exp(-(diff * diff) / (COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA));
+    qualities[index] *= 0.35 + 0.65 * consistency;
+  }
+}
+
+function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, output: ImageData) {
   let writtenTexels = 0;
-  for (let pixelIndex = 0, offset = 0; pixelIndex < composite.score.length; pixelIndex += 1, offset += 4) {
-    if (composite.score[pixelIndex] <= 0) continue;
-    output.data[offset] = composite.data.data[offset];
-    output.data[offset + 1] = composite.data.data[offset + 1];
-    output.data[offset + 2] = composite.data.data[offset + 2];
-    output.data[offset + 3] = composite.data.data[offset + 3];
+  const colors = Array.from({ length: TOP_K_BLEND_LAYERS }, () => [0, 0, 0]);
+  const coverages = new Array<number>(TOP_K_BLEND_LAYERS).fill(0);
+  const qualities = new Array<number>(TOP_K_BLEND_LAYERS).fill(0);
+
+  for (let pixelIndex = 0, offset = 0; pixelIndex < composite.coverage.length; pixelIndex += 1, offset += 4) {
+    if (!composite.coverage[pixelIndex]) continue;
+    const colorOffset = pixelIndex * 3;
+    let candidateCount = 0;
+    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
+      coverages[slot] = composite.coverages[slot][pixelIndex];
+      qualities[slot] = composite.qualities[slot][pixelIndex];
+      if (coverages[slot] > COVERAGE_THRESHOLD) candidateCount += 1;
+      colors[slot][0] = srgbByteToLinear(composite.colors[slot][colorOffset]);
+      colors[slot][1] = srgbByteToLinear(composite.colors[slot][colorOffset + 1]);
+      colors[slot][2] = srgbByteToLinear(composite.colors[slot][colorOffset + 2]);
+    }
+
+    if (candidateCount === 1) {
+      output.data[offset] = composite.colors[0][colorOffset];
+      output.data[offset + 1] = composite.colors[0][colorOffset + 1];
+      output.data[offset + 2] = composite.colors[0][colorOffset + 2];
+      output.data[offset + 3] = 255;
+      writtenTexels += 1;
+      continue;
+    }
+
+    applyColorConsistency(qualities, colors);
+
+    let sumStrong = 0;
+    let sumSoft = 0;
+    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
+      const effectiveQuality = Math.max(0, qualities[slot]);
+      sumStrong += effectiveQuality ** BLEND_POWER;
+      sumSoft += Math.max(0, coverages[slot]);
+    }
+    if (sumSoft <= 0.000001) continue;
+
+    const final = [0, 0, 0];
+    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
+      const quality = Math.max(0, qualities[slot]);
+      const coverage = Math.max(0, coverages[slot]);
+      if (coverage <= 0) continue;
+      const strongWeight = quality ** BLEND_POWER / Math.max(sumStrong, 0.000001);
+      const softWeight = coverage / sumSoft;
+      const weight = strongWeight * (1 - RESIDUAL_MIX) + softWeight * RESIDUAL_MIX;
+      final[0] += colors[slot][0] * weight;
+      final[1] += colors[slot][1] * weight;
+      final[2] += colors[slot][2] * weight;
+    }
+
+    output.data[offset] = linearToSrgbByte(final[0]);
+    output.data[offset + 1] = linearToSrgbByte(final[1]);
+    output.data[offset + 2] = linearToSrgbByte(final[2]);
+    output.data[offset + 3] = 255;
     writtenTexels += 1;
   }
   return writtenTexels;
 }
 
-function softenBestViewSeams(imageData: ImageData, composite: BestViewStackComposite) {
-  const source = new Uint8ClampedArray(imageData.data);
-  const { width, height, data } = imageData;
-  const neighborOffsets = [
-    { x: -1, y: 0 },
-    { x: 1, y: 0 },
-    { x: 0, y: -1 },
-    { x: 0, y: 1 },
-  ];
+function applyOverlayRasters(base: ImageData, coverage: Uint8Array, overlays: OverlayRaster[]) {
+  for (const { imageData, quality: qualityMap } of overlays) {
+    for (let pixelIndex = 0, offset = 0; offset < imageData.data.length; pixelIndex += 1, offset += 4) {
+      const layerCoverage = imageData.data[offset + 3] / 255;
+      if (layerCoverage <= COVERAGE_THRESHOLD) continue;
+      const qualityFade = smoothstep(0, 0.15, Math.max(qualityMap[pixelIndex], layerCoverage * 0.25));
+      const alpha = Math.max(0, Math.min(1, layerCoverage * (0.75 + 0.25 * qualityFade)));
+      if (alpha <= 0.0001) continue;
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const pixelIndex = y * width + x;
-      const layerId = composite.winnerLayerIds[pixelIndex];
-      const score = composite.score[pixelIndex];
-      if (!layerId || score <= 0) continue;
+      const baseRed = srgbByteToLinear(base.data[offset]);
+      const baseGreen = srgbByteToLinear(base.data[offset + 1]);
+      const baseBlue = srgbByteToLinear(base.data[offset + 2]);
+      const layerRed = srgbByteToLinear(imageData.data[offset]);
+      const layerGreen = srgbByteToLinear(imageData.data[offset + 1]);
+      const layerBlue = srgbByteToLinear(imageData.data[offset + 2]);
 
-      let red = 0;
-      let green = 0;
-      let blue = 0;
-      let totalWeight = 0;
-
-      for (const neighborOffset of neighborOffsets) {
-        const neighborX = x + neighborOffset.x;
-        const neighborY = y + neighborOffset.y;
-        if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
-        const neighborIndex = neighborY * width + neighborX;
-        const neighborLayerId = composite.winnerLayerIds[neighborIndex];
-        const neighborScore = composite.score[neighborIndex];
-        if (!neighborLayerId || neighborLayerId === layerId || neighborScore <= 0) continue;
-        if (Math.abs(score - neighborScore) > SEAM_BLEND_SCORE_DELTA) continue;
-
-        const neighborDataOffset = neighborIndex * 4;
-        const neighborWeight = Math.min(score, neighborScore);
-        red += source[neighborDataOffset] * neighborWeight;
-        green += source[neighborDataOffset + 1] * neighborWeight;
-        blue += source[neighborDataOffset + 2] * neighborWeight;
-        totalWeight += neighborWeight;
-      }
-
-      if (totalWeight <= 0) continue;
-      const offset = pixelIndex * 4;
-      const seamRed = red / totalWeight;
-      const seamGreen = green / totalWeight;
-      const seamBlue = blue / totalWeight;
-      data[offset] = clampByte(source[offset] * (1 - SEAM_BLEND_AMOUNT) + seamRed * SEAM_BLEND_AMOUNT);
-      data[offset + 1] = clampByte(source[offset + 1] * (1 - SEAM_BLEND_AMOUNT) + seamGreen * SEAM_BLEND_AMOUNT);
-      data[offset + 2] = clampByte(source[offset + 2] * (1 - SEAM_BLEND_AMOUNT) + seamBlue * SEAM_BLEND_AMOUNT);
+      base.data[offset] = linearToSrgbByte(baseRed * (1 - alpha) + layerRed * alpha);
+      base.data[offset + 1] = linearToSrgbByte(baseGreen * (1 - alpha) + layerGreen * alpha);
+      base.data[offset + 2] = linearToSrgbByte(baseBlue * (1 - alpha) + layerBlue * alpha);
+      base.data[offset + 3] = 255;
+      coverage[pixelIndex] = 1;
     }
   }
 }
@@ -447,7 +533,20 @@ export async function bakeVisibleProjectedLayersToTexture(
   }
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
 
-  const layers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
+  const requestedLayerIdSet = input.layerIds ? new Set(input.layerIds) : undefined;
+  const layers = requestedLayerIdSet
+    ? useLayerStore
+        .getState()
+        .layers.filter(
+          (layer) =>
+            requestedLayerIdSet.has(layer.id) &&
+            layer.type === 'projected' &&
+            layer.imageUrl &&
+            layer.camera &&
+            (!layer.objectId || layer.objectId === input.objectId),
+        )
+        .sort((a, b) => b.order - a.order)
+    : getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   input.onProgress?.({ phase: 'loading-assets', progress: 0.02, layerIndex: 0, layerCount: layers.length });
@@ -481,12 +580,12 @@ export async function bakeVisibleProjectedLayersToTexture(
         enableBackfaceCulling: input.enableBackfaceCulling,
       });
       input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
-      if (!gpuBake.postProcessedOnGpu || !gpuBake.opaqueBaseColorReady) {
+      if (!gpuBake.postProcessedOnGpu || (!gpuBake.opaqueBaseColorReady && input.outputAlpha !== 'transparent')) {
         const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
         if (!gpuBake.postProcessedOnGpu) {
           sharpenCoveredTexels(gpuImage, gpuBake.coverage);
         }
-        if (!gpuBake.opaqueBaseColorReady) {
+        if (!gpuBake.opaqueBaseColorReady && input.outputAlpha !== 'transparent') {
           fillTransparentTexelsForViewport(gpuImage);
         }
         gpuContext.putImageData(gpuImage, 0, 0);
@@ -528,12 +627,16 @@ export async function bakeVisibleProjectedLayersToTexture(
         report,
       };
 
-      useProjectStore.getState().addBakedTexture(bakedTexture);
-      useLayerStore.getState().markLayersBaked(
-        layers.map((layer) => layer.id),
-        bakedTexture.id,
-        bakedTexture.createdAt,
-      );
+      if (input.commitToProject !== false) {
+        useProjectStore.getState().addBakedTexture(bakedTexture);
+      }
+      if (input.markSourceLayersBaked !== false) {
+        useLayerStore.getState().markLayersBaked(
+          layers.map((layer) => layer.id),
+          bakedTexture.id,
+          bakedTexture.createdAt,
+        );
+      }
       console.info('[Liclick 3D Texture] GPU stacked UV bake report:', report);
 
       return {
@@ -556,7 +659,8 @@ export async function bakeVisibleProjectedLayersToTexture(
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create stacked UV bake canvas.');
   const composite = new ImageData(input.resolution, input.resolution);
-  const bestViewComposite = createBestViewStackComposite(input.resolution);
+  const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
+  const overlayRasters: OverlayRaster[] = [];
 
   let totalTriangles = 0;
   let processedTriangles = 0;
@@ -569,7 +673,9 @@ export async function bakeVisibleProjectedLayersToTexture(
   const warnings: string[] = [...gpuFallbackWarnings];
   if (layers.length > 1) {
     warnings.push(
-      'Multiple projected layers used order-independent CPU compositing with best-view selection so layer order cannot change the baked result.',
+      layers.some((layer) => layer.blendMode === 'overlay')
+        ? 'Multiple projected layers used loose coverage with strict quality blend and order-sensitive overlay layers.'
+        : 'Multiple projected layers used order-independent loose coverage with strict quality blend.',
     );
   }
 
@@ -614,11 +720,12 @@ export async function bakeVisibleProjectedLayersToTexture(
     });
     const layerContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
     if (!layerContext) throw new Error('Could not read layer bake canvas.');
-    accumulateBestViewStackLayer(
-      bestViewComposite,
-      layerContext.getImageData(0, 0, input.resolution, input.resolution),
-      layer.id,
-    );
+    const layerImageData = layerContext.getImageData(0, 0, input.resolution, input.resolution);
+    if (layer.blendMode === 'overlay') {
+      overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
+    } else {
+      accumulateQualityBlendLayer(qualityBlendComposite, layerImageData, rasterized.quality, layer.id);
+    }
     totalTriangles += rasterized.totalTriangles;
     processedTriangles += rasterized.processedTriangles;
     coveredPixels += rasterized.coveredPixels;
@@ -631,10 +738,20 @@ export async function bakeVisibleProjectedLayersToTexture(
   }
 
   input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
-  const writtenTexels = writeBestViewStackComposite(bestViewComposite, composite);
-  if (layers.length > 1) softenBestViewSeams(composite, bestViewComposite);
-  sharpenCoveredTexels(composite, bestViewComposite.coverage);
-  fillTransparentTexelsForViewport(composite);
+  const blendWrittenTexels = writeQualityBlendStackComposite(qualityBlendComposite, composite);
+  applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+  let writtenTexels = 0;
+  for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
+    if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
+  }
+  if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
+  if (input.enableDilation) {
+    dilateImageData(composite, qualityBlendComposite.coverage, input.dilationPixels);
+  }
+  sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+  if (input.outputAlpha !== 'transparent') {
+    fillTransparentTexelsForViewport(composite);
+  }
   context.putImageData(composite, 0, 0);
   input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
   const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
@@ -673,12 +790,16 @@ export async function bakeVisibleProjectedLayersToTexture(
     report,
   };
 
-  useProjectStore.getState().addBakedTexture(bakedTexture);
-  useLayerStore.getState().markLayersBaked(
-    layers.map((layer) => layer.id),
-    bakedTexture.id,
-    bakedTexture.createdAt,
-  );
+  if (input.commitToProject !== false) {
+    useProjectStore.getState().addBakedTexture(bakedTexture);
+  }
+  if (input.markSourceLayersBaked !== false) {
+    useLayerStore.getState().markLayersBaked(
+      layers.map((layer) => layer.id),
+      bakedTexture.id,
+      bakedTexture.createdAt,
+    );
+  }
   console.info('[Liclick 3D Texture] Stacked UV bake report:', report);
 
   return {

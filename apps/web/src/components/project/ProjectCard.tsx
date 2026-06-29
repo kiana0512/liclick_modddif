@@ -23,8 +23,10 @@ export function ProjectCard({ project, onOpen, menuItems = [] }: ProjectCardProp
         {project.thumbnail ? (
           <img src={project.thumbnail} alt="" className="h-full w-full object-cover opacity-95 transition group-hover:scale-105" />
         ) : (
-          <div className="grid h-full place-items-center bg-[#333] text-xs uppercase tracking-[0.16em] text-white/30">
-            Liclick
+          <div className="relative grid h-full place-items-center overflow-hidden bg-[#191b22] text-xs uppercase tracking-[0.16em] text-white/48">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_38%_35%,rgba(149,104,72,0.72),transparent_28%),linear-gradient(135deg,rgba(69,44,33,0.9),rgba(22,23,31,0.96)_58%,rgba(8,9,18,1))]" />
+            <div className="absolute left-[18%] top-[18%] h-[62%] w-[58%] rounded-[38%_28%_32%_36%] border border-white/12 bg-[#7a5139]/70 shadow-[inset_0_18px_34px_rgba(255,255,255,0.12),inset_0_-24px_42px_rgba(0,0,0,0.22)]" />
+            <span className="relative">Liclick</span>
           </div>
         )}
         </button>
