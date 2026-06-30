@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Eraser, Paintbrush, RotateCcw, WandSparkles, X } from 'lucide-react';
+import { Eraser, Paintbrush, RotateCcw, Square, WandSparkles, X } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { useT } from '@/stores/i18nStore';
 import type { MaskBitmap } from '@/types/localRepaint';
@@ -23,8 +23,12 @@ type LocalRepaintDialogProps = {
   targetName: string;
   references: ReferenceImage[];
   onGenerate: (input: LocalRepaintGenerateInput) => Promise<{ previewUrl: string }>;
+  onAbort?: () => void;
   onAccept: (options: { continueEditing: boolean }) => Promise<void> | void;
   onCancel: () => void;
+  status?: 'idle' | 'submitting' | 'preview_ready' | 'cancelled' | 'error';
+  previewUrl?: string;
+  error?: string;
 };
 
 function createMaskBrushPattern(context: CanvasRenderingContext2D) {
@@ -54,8 +58,12 @@ export function LocalRepaintDialog({
   targetName,
   references,
   onGenerate,
+  onAbort,
   onAccept,
   onCancel,
+  status = 'idle',
+  previewUrl,
+  error,
 }: LocalRepaintDialogProps) {
   const t = useT();
   const frameRef = useRef<HTMLDivElement>(null);
@@ -72,11 +80,10 @@ export function LocalRepaintDialog({
   const [limitToBlankAndSelection, setLimitToBlankAndSelection] = useState(true);
   const [preserveUnmaskedArea, setPreserveUnmaskedArea] = useState(true);
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
-  const [previewUrl, setPreviewUrl] = useState<string>();
   const [showAfter, setShowAfter] = useState(true);
-  const [status, setStatus] = useState<'idle' | 'submitting' | 'preview_ready' | 'error'>('idle');
-  const [error, setError] = useState<string>();
+  const [localError, setLocalError] = useState<string>();
   const [paintSurfaceStyle, setPaintSurfaceStyle] = useState<CSSProperties>({ inset: 0 });
+  const isSubmitting = status === 'submitting';
 
   useEffect(() => {
     initialMaskAppliedRef.current = false;
@@ -297,10 +304,9 @@ export function LocalRepaintDialog({
   }
 
   async function handleGenerate() {
-    setStatus('submitting');
-    setError(undefined);
+    setLocalError(undefined);
     try {
-      const result = await onGenerate({
+      await onGenerate({
         prompt,
         userMask: readUserMask(),
         includeBlankArea,
@@ -308,12 +314,9 @@ export function LocalRepaintDialog({
         preserveUnmaskedArea,
         selectedReferenceIds,
       });
-      setPreviewUrl(result.previewUrl);
       setShowAfter(true);
-      setStatus('preview_ready');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t('localRepaintFailed'));
-      setStatus('error');
+      setLocalError(caught instanceof Error ? caught.message : t('localRepaintFailed'));
     }
   }
 
@@ -326,6 +329,7 @@ export function LocalRepaintDialog({
   const modeLabel = mode === 'edit_layer_image' ? t('localRepaintModeLayer') : t('localRepaintModeView');
   const displayUrl = previewUrl && showAfter ? previewUrl : workingImageUrl;
   const viewportRepairZoom = mode === 'repair_current_view' ? 1.65 : 1;
+  const displayError = error ?? localError;
 
   return createPortal(
     <div className="fixed inset-0 z-[120] grid place-items-center bg-black/62 p-4 backdrop-blur-sm">
@@ -346,7 +350,7 @@ export function LocalRepaintDialog({
           {!previewUrl && (
             <canvas
               ref={canvasRef}
-              className="absolute origin-center cursor-crosshair"
+              className={cn('absolute origin-center cursor-crosshair', isSubmitting && 'pointer-events-none opacity-70')}
               style={{ ...paintSurfaceStyle, transform: `scale(${viewportRepairZoom})` }}
               onPointerDown={(event) => {
                 event.currentTarget.setPointerCapture(event.pointerId);
@@ -367,6 +371,11 @@ export function LocalRepaintDialog({
                 lastPointRef.current = undefined;
               }}
             />
+          )}
+          {isSubmitting && (
+            <div className="absolute left-1/2 top-4 -translate-x-1/2 rounded-full border border-white/16 bg-black/72 px-4 py-2 text-sm font-semibold text-white shadow-xl">
+              {t('generating')}
+            </div>
           )}
           {previewUrl && (
             <div className="absolute bottom-3 left-3 flex rounded-md border border-white/16 bg-black/70 p-1 text-xs font-semibold">
@@ -498,19 +507,32 @@ export function LocalRepaintDialog({
                 </div>
               </div>
             )}
-            {error && <div className="rounded-md border border-red-400/30 bg-red-500/10 p-2 text-sm text-red-100">{error}</div>}
+            {displayError && <div className="rounded-md border border-red-400/30 bg-red-500/10 p-2 text-sm text-red-100">{displayError}</div>}
           </div>
           <footer className="grid gap-2 border-t border-white/12 p-4">
             {!previewUrl ? (
-              <button
-                type="button"
-                disabled={status === 'submitting'}
-                className="flex h-10 items-center justify-center gap-2 rounded-md bg-gradient-to-r from-liclick-pink to-liclick-purple text-sm font-semibold disabled:opacity-50"
-                onClick={handleGenerate}
-              >
-                <WandSparkles className="h-4 w-4" />
-                {status === 'submitting' ? t('generating') : t('generate')}
-              </button>
+              <div className={cn('grid gap-2', isSubmitting && onAbort && 'grid-cols-[minmax(0,1fr)_48px]')}>
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-gradient-to-r from-liclick-pink to-liclick-purple text-sm font-semibold disabled:opacity-50"
+                  onClick={handleGenerate}
+                >
+                  <WandSparkles className="h-4 w-4" />
+                  {isSubmitting ? t('generating') : t('generate')}
+                </button>
+                {isSubmitting && onAbort && (
+                  <button
+                    type="button"
+                    className="grid h-10 place-items-center rounded-md border border-red-300/32 bg-red-500/16 text-red-100 hover:bg-red-500/24"
+                    onClick={onAbort}
+                    title="终止局部重绘"
+                    aria-label="终止局部重绘"
+                  >
+                    <Square className="h-4 w-4 fill-current" />
+                  </button>
+                )}
+              </div>
             ) : (
               <div className="grid grid-cols-2 gap-2">
                 <button

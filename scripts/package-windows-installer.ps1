@@ -3,6 +3,7 @@ param(
   [string]$NodeVersion = "22.13.1",
   [string]$NodeZipPath = "",
   [switch]$BundlePortableNode,
+  [switch]$SkipPortableNode,
   [switch]$SkipPrepare,
   [switch]$SkipCompile
 )
@@ -17,6 +18,9 @@ $IconPng = Join-Path $Root "assets\liclick-icon.png"
 $IconIco = Join-Path $StagingRoot "assets\liclick-icon.ico"
 $PreparedMarker = Join-Path $StagingRoot ".liclick-prepared-runtime.json"
 $NodeDir = Join-Path $StagingRoot "node"
+$ElectronSourceDir = Join-Path $Root "node_modules\electron\dist"
+$ElectronDir = Join-Path $StagingRoot "electron"
+$ElectronExe = Join-Path $ElectronDir "Liclick 3D Texture.exe"
 $PackageVersion = (Get-Content -Raw -LiteralPath (Join-Path $Root "package.json") | ConvertFrom-Json).version
 
 function Invoke-Step {
@@ -139,7 +143,7 @@ function Install-PortableNode {
   if (Test-Path (Join-Path $NodeDir "node.exe")) {
     return
   }
-  if (!$BundlePortableNode -and !$NodeZipPath) {
+  if ($SkipPortableNode -and !$BundlePortableNode -and !$NodeZipPath) {
     Write-Host "Portable Node bundling is disabled. The desktop launcher will download Node on first run if needed."
     return
   }
@@ -170,6 +174,17 @@ function Install-PortableNode {
   Remove-Item -LiteralPath $extractRoot -Recurse -Force
 }
 
+function Copy-ElectronRuntime {
+  if (!(Test-Path (Join-Path $ElectronSourceDir "electron.exe"))) {
+    throw "Electron runtime was not found at $ElectronSourceDir. Run corepack pnpm install before packaging."
+  }
+  if (Test-Path $ElectronDir) {
+    Remove-Item -LiteralPath $ElectronDir -Recurse -Force
+  }
+  Copy-Item -LiteralPath $ElectronSourceDir -Destination $ElectronDir -Recurse -Force
+  Move-Item -LiteralPath (Join-Path $ElectronDir "electron.exe") -Destination $ElectronExe -Force
+}
+
 Push-Location $Root
 try {
   if (!$SkipPrepare) {
@@ -198,6 +213,7 @@ try {
   Invoke-Step "Prepare installer staging directory" {
     Copy-RepoToStaging
     New-IcoFromPng -PngPath $IconPng -IcoPath $IconIco
+    Copy-ElectronRuntime
     Install-PortableNode
     @{
       preparedAt = (Get-Date).ToString("o")
@@ -206,6 +222,7 @@ try {
       webPort = 5673
       includesNodeModules = (Test-Path (Join-Path $StagingRoot "node_modules"))
       includesPortableNode = (Test-Path (Join-Path $NodeDir "node.exe"))
+      includesElectronShell = (Test-Path $ElectronExe)
     } | ConvertTo-Json -Depth 3 | Set-Content -Path $PreparedMarker -Encoding UTF8
   }
 

@@ -4,6 +4,7 @@ import { Download } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
+import { ImageLayerEditorDialog } from '@/components/layerEdit/ImageLayerEditorDialog';
 import { LocalRepaintDialog, type LocalRepaintGenerateInput } from '@/components/localRepaint/LocalRepaintDialog';
 import { AutoBakeProgressBar, type AutoBakeProgress } from '@/components/panels/AutoBakeProgressBar';
 import { GeneratePanel } from '@/components/panels/GeneratePanel';
@@ -33,12 +34,10 @@ import {
   applyAlphaFromMask,
   blobToDataUrl,
   compositeUsingMask,
-  cropImage,
   dataUrlToBlob,
   imageDataToBlob,
   inferAlphaObjectMask,
   inferWhiteHoleMask,
-  pasteImage,
   resizeImageData,
   restoreProtectedPixels,
   urlToImageData,
@@ -49,14 +48,15 @@ import {
   computeMaskBoundingBox,
   createEmptyMask,
   createFullMask,
-  cropMask,
   expandRect,
   featherMask,
   maskToBlob,
+  removeSmallMaskComponents,
 } from '@/engine/localRepaint/maskUtils';
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import type { LoadedModel, ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
+import { applySerializedCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
@@ -73,6 +73,7 @@ import {
   WorkspaceApiError,
 } from '@/services/workspaceApiClient';
 import { useGenerationStore } from '@/stores/generationStore';
+import { useLocalRepaintStore } from '@/stores/localRepaintStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
@@ -82,7 +83,7 @@ import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
-import type { MaskBitmap } from '@/types/localRepaint';
+import type { LocalRepaintRuntime, MaskBitmap, Rect } from '@/types/localRepaint';
 import type { SerializedCamera } from '@/types/capture';
 import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
@@ -102,19 +103,198 @@ const resolutionToSize = {
   '8K': 8192,
 } as const;
 
-type LocalRepaintRuntime = {
-  mode: 'edit_layer_image' | 'repair_current_view';
+const LOCAL_REPAINT_CAPTURE_SCALE = 2;
+const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 4096;
+const IMAGE_EDIT_MAPPED_PREVIEW_SIZE = 3072;
+
+type PersistedLocalRepaintRuntime = {
+  version: 1;
+  id: string;
+  projectId: string;
+  mode: LocalRepaintRuntime['mode'];
   targetName: string;
   targetLayerId?: string;
+  cameraState?: SerializedCamera;
   workingImageUrl: string;
-  workingImageData: ImageData;
-  objectMask: MaskBitmap;
-  initialUserMask?: MaskBitmap;
-  holeMask: MaskBitmap;
-  mergedImageData?: ImageData;
+  objectMaskUrl: string;
+  initialUserMaskUrl?: string;
+  holeMaskUrl: string;
+  editMaskUrl?: string;
+  protectMaskUrl?: string;
+  roiRect?: Rect;
+  mergedImageUrl?: string;
   previewUrl?: string;
-  providerRaw?: unknown;
+  editJobId?: string;
+  taskId?: string;
+  status: LocalRepaintRuntime['status'];
+  error?: string;
+  startedAt?: string;
 };
+
+function localRepaintPersistenceKey(projectId: string) {
+  return `liclick-local-repaint-runtime-v1:${projectId}`;
+}
+
+async function maskToDataUrl(mask: MaskBitmap) {
+  return blobToDataUrl(await maskToBlob(mask));
+}
+
+async function dataUrlToMask(url: string): Promise<MaskBitmap> {
+  const imageData = await urlToImageData(url);
+  const data = new Uint8ClampedArray(imageData.width * imageData.height);
+  for (let index = 0; index < data.length; index += 1) {
+    data[index] = imageData.data[index * 4] > 8 ? 255 : 0;
+  }
+  return { width: imageData.width, height: imageData.height, data };
+}
+
+async function imageDataToPersistedDataUrl(imageData: ImageData) {
+  return blobToDataUrl(await imageDataToBlob(imageData));
+}
+
+async function waitForViewportMaterialRefresh() {
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+async function persistLocalRepaintRuntime(runtime: LocalRepaintRuntime) {
+  if (!runtime.projectId || typeof window === 'undefined') return;
+  const payload: PersistedLocalRepaintRuntime = {
+    version: 1,
+    id: runtime.id,
+    projectId: runtime.projectId,
+    mode: runtime.mode,
+    targetName: runtime.targetName,
+    targetLayerId: runtime.targetLayerId,
+    cameraState: runtime.cameraState,
+    workingImageUrl: runtime.workingImageUrl,
+    objectMaskUrl: await maskToDataUrl(runtime.objectMask),
+    initialUserMaskUrl: runtime.initialUserMask ? await maskToDataUrl(runtime.initialUserMask) : undefined,
+    holeMaskUrl: await maskToDataUrl(runtime.holeMask),
+    editMaskUrl: runtime.editMask ? await maskToDataUrl(runtime.editMask) : undefined,
+    protectMaskUrl: runtime.protectMask ? await maskToDataUrl(runtime.protectMask) : undefined,
+    roiRect: runtime.roiRect,
+    mergedImageUrl: runtime.mergedImageData ? await imageDataToPersistedDataUrl(runtime.mergedImageData) : undefined,
+    previewUrl: runtime.previewUrl,
+    editJobId: runtime.editJobId,
+    taskId: runtime.taskId,
+    status: runtime.status,
+    error: runtime.error,
+    startedAt: runtime.startedAt,
+  };
+  try {
+    window.localStorage.setItem(localRepaintPersistenceKey(runtime.projectId), JSON.stringify(payload));
+  } catch (error) {
+    console.warn('[Liclick 3D Texture] Could not persist local repaint runtime.', error);
+  }
+}
+
+function clearPersistedLocalRepaintRuntime(projectId: string) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(localRepaintPersistenceKey(projectId));
+}
+
+function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
+  const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sourceContext) return sourceCanvas;
+  const { width, height } = sourceCanvas;
+  const imageData = sourceContext.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  let left = width;
+  let top = height;
+  let right = -1;
+  let bottom = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const alpha = data[offset + 3];
+      const brightness = data[offset] + data[offset + 1] + data[offset + 2];
+      if (alpha <= 8 || brightness <= 54) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
+    }
+  }
+
+  if (right < left || bottom < top) return sourceCanvas;
+  const margin = Math.round(Math.min(width, height) * 0.06);
+  left = Math.max(0, left - margin);
+  top = Math.max(0, top - margin);
+  right = Math.min(width - 1, right + margin);
+  bottom = Math.min(height - 1, bottom + margin);
+
+  const cropWidth = right - left + 1;
+  const cropHeight = bottom - top + 1;
+  if (cropWidth >= width * 0.88 && cropHeight >= height * 0.88) return sourceCanvas;
+
+  const targetCanvas = document.createElement('canvas');
+  targetCanvas.width = width;
+  targetCanvas.height = height;
+  const targetContext = targetCanvas.getContext('2d');
+  if (!targetContext) return sourceCanvas;
+  targetContext.fillStyle = '#070813';
+  targetContext.fillRect(0, 0, width, height);
+  targetContext.imageSmoothingEnabled = true;
+  targetContext.imageSmoothingQuality = 'high';
+
+  const scale = Math.min(width / cropWidth, height / cropHeight) * 0.92;
+  const drawWidth = cropWidth * scale;
+  const drawHeight = cropHeight * scale;
+  targetContext.drawImage(
+    sourceCanvas,
+    left,
+    top,
+    cropWidth,
+    cropHeight,
+    (width - drawWidth) / 2,
+    (height - drawHeight) / 2,
+    drawWidth,
+    drawHeight,
+  );
+  return targetCanvas;
+}
+
+async function restorePersistedLocalRepaintRuntime(projectId: string): Promise<LocalRepaintRuntime | undefined> {
+  if (typeof window === 'undefined') return undefined;
+  const raw = window.localStorage.getItem(localRepaintPersistenceKey(projectId));
+  if (!raw) return undefined;
+  try {
+    const payload = JSON.parse(raw) as PersistedLocalRepaintRuntime;
+    if (payload.version !== 1 || payload.projectId !== projectId) return undefined;
+    const workingImageData = await urlToImageData(payload.workingImageUrl);
+    const mergedImageUrl = payload.mergedImageUrl ?? (payload.status === 'preview_ready' ? payload.previewUrl : undefined);
+    return {
+      id: payload.id,
+      projectId,
+      mode: payload.mode,
+      targetName: payload.targetName,
+      targetLayerId: payload.targetLayerId,
+      cameraState: payload.cameraState,
+      workingImageUrl: payload.workingImageUrl,
+      workingImageData,
+      objectMask: await dataUrlToMask(payload.objectMaskUrl),
+      initialUserMask: payload.initialUserMaskUrl ? await dataUrlToMask(payload.initialUserMaskUrl) : undefined,
+      holeMask: await dataUrlToMask(payload.holeMaskUrl),
+      editMask: payload.editMaskUrl ? await dataUrlToMask(payload.editMaskUrl) : undefined,
+      protectMask: payload.protectMaskUrl ? await dataUrlToMask(payload.protectMaskUrl) : undefined,
+      roiRect: payload.roiRect,
+      mergedImageData: mergedImageUrl ? await urlToImageData(mergedImageUrl) : undefined,
+      previewUrl: payload.previewUrl,
+      editJobId: payload.editJobId,
+      taskId: payload.taskId,
+      status: payload.status,
+      error: payload.error,
+      startedAt: payload.startedAt,
+    };
+  } catch {
+    clearPersistedLocalRepaintRuntime(projectId);
+    return undefined;
+  }
+}
 
 function transformFromLoadedGroup(group: THREE.Group) {
   return {
@@ -191,7 +371,17 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>('idle');
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>('idle');
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
-  const [localRepaintRuntime, setLocalRepaintRuntime] = useState<LocalRepaintRuntime>();
+  const [imageEditLayerId, setImageEditLayerId] = useState<string>();
+  const [imageEditLayerSnapshot, setImageEditLayerSnapshot] = useState<Layer>();
+  const [imageEditMappedPreviewUrl, setImageEditMappedPreviewUrl] = useState<string>();
+  const localRepaintRuntime = useLocalRepaintStore((state) => state.runtime);
+  const localRepaintVisible = useLocalRepaintStore((state) => state.visible);
+  const openLocalRepaintRuntime = useLocalRepaintStore((state) => state.openRuntime);
+  const showLocalRepaint = useLocalRepaintStore((state) => state.show);
+  const hideLocalRepaint = useLocalRepaintStore((state) => state.hide);
+  const updateLocalRepaintRuntime = useLocalRepaintStore((state) => state.updateRuntime);
+  const clearLocalRepaintRuntime = useLocalRepaintStore((state) => state.clearRuntime);
+  const setLocalRepaintAbortController = useLocalRepaintStore((state) => state.setActiveAbortController);
   const projects = useProjectStore((state) => state.projects);
   const setCurrentProject = useProjectStore((state) => state.setCurrentProject);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
@@ -240,6 +430,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
   const project = projects.find((item) => item.id === projectId);
   const activeLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
+  const imageEditLayer = imageEditLayerSnapshot ?? layers.find((item) => item.id === imageEditLayerId);
   const activeBakedTexture = project?.bakedTextures.find((texture) => texture.id === activeLayer?.bakedTextureId);
   const normalMapTexture = findNormalMapTexture(importedModel);
 
@@ -416,13 +607,36 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     };
   }
 
-  function getViewportThumbnailDataUrl() {
+  function getViewportThumbnailDataUrl(
+    options: { camera?: SerializedCamera; width?: number; height?: number; cropVisibleContent?: boolean } = {},
+  ) {
     const viewportRuntime = useSceneStore.getState().viewport;
     if (!viewportRuntime) return undefined;
     const canvas = viewportRuntime.gl.domElement;
     if (!canvas || canvas.width === 0 || canvas.height === 0) return undefined;
     const hiddenHelpers: Array<{ object: THREE.Object3D; visible: boolean }> = [];
+    const previousCamera = getCurrentCameraSnapshot();
+    const previousTarget = viewportRuntime.controls?.target.clone();
+    let restoreRenderSize: (() => void) | undefined;
     try {
+      if (options.width && options.height) restoreRenderSize = prepareViewportRenderSize(options.width, options.height);
+      if (options.camera) {
+        applySerializedCamera(viewportRuntime.camera, options.camera);
+        if (options.camera.matrixWorld?.length === 16) {
+          viewportRuntime.camera.matrixWorld.fromArray(options.camera.matrixWorld);
+          viewportRuntime.camera.matrixWorld.decompose(
+            viewportRuntime.camera.position,
+            viewportRuntime.camera.quaternion,
+            viewportRuntime.camera.scale,
+          );
+          viewportRuntime.camera.matrixWorldInverse.copy(viewportRuntime.camera.matrixWorld).invert();
+        }
+        if (options.camera.projectionMatrix?.length === 16) {
+          viewportRuntime.camera.projectionMatrix.fromArray(options.camera.projectionMatrix);
+          viewportRuntime.camera.projectionMatrixInverse.copy(viewportRuntime.camera.projectionMatrix).invert();
+        }
+        viewportRuntime.camera.updateMatrixWorld(true);
+      }
       viewportRuntime.scene.traverse((object) => {
         if (!object.userData.liclickViewportHelper && !object.userData.liclickPaintOverlay) return;
         hiddenHelpers.push({ object, visible: object.visible });
@@ -430,8 +644,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
       const thumbnailCanvas = document.createElement('canvas');
-      thumbnailCanvas.width = 640;
-      thumbnailCanvas.height = 420;
+      thumbnailCanvas.width = options.width ?? 640;
+      thumbnailCanvas.height = options.height ?? 420;
       const context = thumbnailCanvas.getContext('2d');
       if (!context) return undefined;
 
@@ -460,13 +674,34 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         thumbnailCanvas.width,
         thumbnailCanvas.height,
       );
-      return thumbnailCanvas.toDataURL('image/png');
+      if (options.camera) {
+        const sample = context.getImageData(0, 0, thumbnailCanvas.width, thumbnailCanvas.height).data;
+        let visibleSamples = 0;
+        const stride = Math.max(4, Math.floor(sample.length / 4000 / 4) * 4);
+        for (let offset = 0; offset < sample.length; offset += stride) {
+          if (sample[offset + 3] > 8 && sample[offset] + sample[offset + 1] + sample[offset + 2] > 45) visibleSamples += 1;
+          if (visibleSamples > 16) break;
+        }
+        if (visibleSamples <= 16) return undefined;
+      }
+      const outputCanvas = options.cropVisibleContent ? cropThumbnailToVisibleContent(thumbnailCanvas) : thumbnailCanvas;
+      return outputCanvas.toDataURL('image/png');
     } catch (error) {
       console.warn('[Liclick 3D Texture] Project thumbnail capture failed:', error);
       return undefined;
     } finally {
       for (const { object, visible } of hiddenHelpers) {
         object.visible = visible;
+      }
+      restoreRenderSize?.();
+      if (previousCamera) {
+        applySerializedCamera(viewportRuntime.camera, previousCamera);
+        if (previousCamera.projectionMatrix?.length === 16) {
+          viewportRuntime.camera.projectionMatrix.fromArray(previousCamera.projectionMatrix);
+          viewportRuntime.camera.projectionMatrixInverse.copy(viewportRuntime.camera.projectionMatrix).invert();
+        }
+        viewportRuntime.controls?.target.copy(previousTarget ?? new THREE.Vector3(...previousCamera.target));
+        viewportRuntime.controls?.update();
       }
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
     }
@@ -499,7 +734,51 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     };
   }
 
-  function getCleanViewportCapture() {
+  const getLocalRepaintCaptureSize = useCallback((canvas: HTMLCanvasElement) => {
+    const maxSide = Math.max(canvas.width, canvas.height);
+    if (maxSide <= 0) return undefined;
+    const scale = Math.max(1, Math.min(LOCAL_REPAINT_CAPTURE_SCALE, LOCAL_REPAINT_CAPTURE_MAX_DIMENSION / maxSide));
+    return {
+      width: Math.max(1, Math.round(canvas.width * scale)),
+      height: Math.max(1, Math.round(canvas.height * scale)),
+    };
+  }, []);
+
+  const prepareViewportRenderSize = useCallback((width: number, height: number) => {
+    const viewportRuntime = useSceneStore.getState().viewport;
+    if (!viewportRuntime) return undefined;
+    const renderer = viewportRuntime.gl;
+    const camera = viewportRuntime.camera;
+    const previousPixelRatio = renderer.getPixelRatio();
+    const previousSize = renderer.getSize(new THREE.Vector2());
+    const previousViewport = renderer.getViewport(new THREE.Vector4());
+    const previousScissor = renderer.getScissor(new THREE.Vector4());
+    const previousScissorTest = renderer.getScissorTest();
+    const previousAspect = camera instanceof THREE.PerspectiveCamera ? camera.aspect : undefined;
+
+    renderer.setPixelRatio(1);
+    renderer.setSize(width, height, false);
+    renderer.setViewport(0, 0, width, height);
+    renderer.setScissorTest(false);
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
+
+    return () => {
+      renderer.setPixelRatio(previousPixelRatio);
+      renderer.setSize(previousSize.x, previousSize.y, false);
+      renderer.setViewport(previousViewport);
+      renderer.setScissor(previousScissor);
+      renderer.setScissorTest(previousScissorTest);
+      if (camera instanceof THREE.PerspectiveCamera && previousAspect !== undefined) {
+        camera.aspect = previousAspect;
+        camera.updateProjectionMatrix();
+      }
+    };
+  }, []);
+
+  const getCleanViewportCapture = useCallback((size?: { width: number; height: number }) => {
     const viewportRuntime = useSceneStore.getState().viewport;
     if (!viewportRuntime) return undefined;
     const canvas = viewportRuntime.gl.domElement;
@@ -508,6 +787,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const previousBackground = viewportRuntime.scene.background;
     const previousClearColor = viewportRuntime.gl.getClearColor(new THREE.Color()).clone();
     const previousClearAlpha = viewportRuntime.gl.getClearAlpha();
+    let restoreRenderSize: (() => void) | undefined;
     try {
       viewportRuntime.scene.traverse((object) => {
         if (!object.userData.liclickViewportHelper && !object.userData.liclickPaintOverlay) return;
@@ -516,6 +796,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
       viewportRuntime.scene.background = null;
       viewportRuntime.gl.setClearColor(0x000000, 0);
+      if (size) restoreRenderSize = prepareViewportRenderSize(size.width, size.height);
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
       const dataUrl = canvas.toDataURL('image/png');
       const readCanvas = document.createElement('canvas');
@@ -532,11 +813,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       for (const { object, visible } of hiddenHelpers) object.visible = visible;
       viewportRuntime.scene.background = previousBackground;
       viewportRuntime.gl.setClearColor(previousClearColor, previousClearAlpha);
+      restoreRenderSize?.();
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
     }
-  }
+  }, [prepareViewportRenderSize]);
 
-  const getViewportInpaintSelectionMask = useCallback(() => {
+  const getViewportInpaintSelectionMask = useCallback((size?: { width: number; height: number }) => {
     const viewportRuntime = useSceneStore.getState().viewport;
     if (!viewportRuntime) return undefined;
     const canvas = viewportRuntime.gl.domElement;
@@ -547,6 +829,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const previousBackground = viewportRuntime.scene.background;
     const previousClearColor = viewportRuntime.gl.getClearColor(new THREE.Color()).clone();
     const previousClearAlpha = viewportRuntime.gl.getClearAlpha();
+    let restoreRenderSize: (() => void) | undefined;
     const invisibleMaterial = new THREE.MeshBasicMaterial({
       color: '#ffffff',
       colorWrite: false,
@@ -593,6 +876,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       if (!hasMaskOverlay) return undefined;
       viewportRuntime.scene.background = null;
       viewportRuntime.gl.setClearColor(0x000000, 0);
+      if (size) restoreRenderSize = prepareViewportRenderSize(size.width, size.height);
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
       const readCanvas = document.createElement('canvas');
       readCanvas.width = canvas.width;
@@ -608,10 +892,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       temporaryMaterials.forEach((material) => material.dispose());
       viewportRuntime.scene.background = previousBackground;
       viewportRuntime.gl.setClearColor(previousClearColor, previousClearAlpha);
+      restoreRenderSize?.();
       invisibleMaterial.dispose();
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
     }
-  }, []);
+  }, [prepareViewportRenderSize]);
 
   async function referenceIdsToBlobs(referenceIds: string[]) {
     const selected = references.filter((reference) => referenceIds.includes(reference.id));
@@ -632,8 +917,34 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return mask.data.some((value) => value > 0);
   }
 
-  function makePatchOnlyImage(imageData: ImageData, mask: MaskBitmap) {
-    return applyAlphaFromMask(imageData, featherMask(mask, 5));
+  function getLocalRepaintFeatherRadius(mask: MaskBitmap) {
+    const bounds = computeMaskBoundingBox(mask);
+    if (!bounds) return 0;
+    const minSide = Math.min(bounds.w, bounds.h);
+    if (minSide <= 48) return 1;
+    if (minSide <= 120) return 2;
+    return 3;
+  }
+
+  function buildLocalRepaintPatchMask(runtime: LocalRepaintRuntime, sourcePatch: ImageData) {
+    const patchMask = createEmptyMask(sourcePatch.width, sourcePatch.height);
+    const editMask = runtime.editMask;
+    for (let index = 0; index < patchMask.data.length; index += 1) {
+      if ((runtime.objectMask.data[index] ?? 0) === 0) continue;
+      if (editMask && (editMask.data[index] ?? 0) === 0) continue;
+      const offset = index * 4;
+      const changed =
+        Math.abs(sourcePatch.data[offset] - runtime.workingImageData.data[offset]) +
+        Math.abs(sourcePatch.data[offset + 1] - runtime.workingImageData.data[offset + 1]) +
+        Math.abs(sourcePatch.data[offset + 2] - runtime.workingImageData.data[offset + 2]);
+      if (changed > 8) patchMask.data[index] = 255;
+    }
+
+    const featheredMask = featherMask(patchMask, getLocalRepaintFeatherRadius(patchMask));
+    for (let index = 0; index < featheredMask.data.length; index += 1) {
+      featheredMask.data[index] = Math.min(featheredMask.data[index] ?? 0, runtime.objectMask.data[index] ?? 0);
+    }
+    return featheredMask;
   }
 
   function scheduleTexturedThumbnailRefresh(delayMs = 900) {
@@ -1027,21 +1338,45 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     downloadBaseColorTexture(activeBakedTexture.imageUrl, project, activeLayer);
   }
 
+  const restoreExistingLocalRepaintSession = useCallback(() => {
+    const runtime = useLocalRepaintStore.getState().runtime;
+    if (!runtime || runtime.projectId !== projectId || runtime.status === 'idle') return false;
+    showLocalRepaint();
+    const isReady = runtime.status === 'preview_ready';
+    const isSubmitting = runtime.status === 'submitting';
+    pushToast({
+      tone: runtime.status === 'error' ? 'warning' : 'info',
+      title: isReady ? '局部重绘结果已返回' : isSubmitting ? '局部重绘正在生成' : '已恢复局部重绘',
+      description: isReady
+        ? '已恢复上一次进入局部重绘时的视角和结果，可以预览或应用。'
+        : isSubmitting
+          ? '当前任务仍在等待莉刻返回，已为你恢复生成界面。'
+          : runtime.error ?? '已恢复上一次局部重绘状态。',
+      dedupeKey: `local-repaint-restore:${runtime.id}:${runtime.status}`,
+    });
+    return true;
+  }, [projectId, pushToast, showLocalRepaint]);
+
   async function openLayerLocalRepaint(layer: Layer) {
+    if (restoreExistingLocalRepaintSession()) return;
     if (layer.type !== 'projected' || !layer.imageUrl) {
       pushToast({ tone: 'warning', title: t('localRepaintUnavailable'), description: t('selectProjectedLayerHelp') });
       return;
     }
     try {
       const workingImageData = await urlToImageData(layer.imageUrl);
-      setLocalRepaintRuntime({
+      openLocalRepaintRuntime({
+        id: createId('local-repaint'),
+        projectId,
         mode: 'edit_layer_image',
         targetName: layer.name,
         targetLayerId: layer.id,
+        cameraState: layer.camera ?? getCurrentCameraSnapshot() ?? undefined,
         workingImageUrl: await imageDataToDataUrl(workingImageData),
         workingImageData,
         objectMask: createFullMask(workingImageData.width, workingImageData.height),
         holeMask: createEmptyMask(workingImageData.width, workingImageData.height),
+        status: 'idle',
       });
     } catch (error) {
       pushToast({
@@ -1051,6 +1386,151 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
     }
   }
+
+  async function persistEditedLayerDataUrl(targetLayer: Layer, dataUrl: string) {
+    if (!project || project.workspaceMode !== 'local-server') return dataUrl;
+    try {
+      const saved = await saveDataUrlAsset({
+        projectId: project.id,
+        category: 'layers',
+        dataUrl,
+        filename: `${targetLayer.id}.png`,
+      });
+      return saved.asset.url;
+    } catch (error) {
+      if (error instanceof WorkspaceApiError && error.status === 401) {
+        pushToast({
+          tone: 'warning',
+          title: '需要飞书登录',
+          description: '编辑结果已临时应用到当前页面，登录前不能保存到服务器项目。',
+          dedupeKey: 'layer-image-edit-auth-required',
+        });
+        return dataUrl;
+      }
+      throw error;
+    }
+  }
+
+  function openLayerImageEdit(layer: Layer) {
+    setImageEditLayerId(layer.id);
+    setImageEditLayerSnapshot({ ...layer });
+    setImageEditMappedPreviewUrl(undefined);
+    window.requestAnimationFrame(() => {
+      void captureLayerMappedPreview(layer).then((preview) => {
+        if (preview) setImageEditMappedPreviewUrl(preview);
+      });
+    });
+  }
+
+  function closeLayerImageEdit() {
+    setImageEditLayerId(undefined);
+    setImageEditLayerSnapshot(undefined);
+    setImageEditMappedPreviewUrl(undefined);
+  }
+
+  function getLayerMappedPreviewCamera(layer: Layer) {
+    if (!layer.camera) return undefined;
+    const targetModel =
+      useSceneStore.getState().importedModels.find((model) => model.objectId === layer.objectId) ??
+      importedModel;
+    if (!layer.objectMatrixWorld || !targetModel) return layer.camera;
+
+    targetModel.group.updateMatrixWorld(true);
+    const captureObjectMatrix = new THREE.Matrix4().fromArray(layer.objectMatrixWorld);
+    const currentObjectMatrix = targetModel.group.matrixWorld.clone();
+    const captureToCurrent = currentObjectMatrix.multiply(captureObjectMatrix.clone().invert());
+    const rotationDelta = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(captureToCurrent));
+    const position = new THREE.Vector3().fromArray(layer.camera.position).applyMatrix4(captureToCurrent);
+    const target = new THREE.Vector3().fromArray(layer.camera.target).applyMatrix4(captureToCurrent);
+    const quaternion = rotationDelta.multiply(new THREE.Quaternion().fromArray(layer.camera.quaternion));
+    const matrixWorld = new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(1, 1, 1));
+
+    return {
+      ...layer.camera,
+      position: position.toArray() as [number, number, number],
+      target: target.toArray() as [number, number, number],
+      quaternion: quaternion.toArray() as [number, number, number, number],
+      matrixWorld: matrixWorld.toArray(),
+      viewMatrix: matrixWorld.clone().invert().toArray(),
+    };
+  }
+
+  async function captureLayerMappedPreview(layer: Layer, imageUrl?: string) {
+    const previousLayers = useLayerStore.getState().layers.map((item) => ({ ...item }));
+    setLayers(
+      previousLayers.map((item) =>
+        item.id === layer.id ? { ...item, imageUrl: imageUrl ?? item.imageUrl, visible: true } : item,
+      ),
+    );
+    await waitForViewportMaterialRefresh();
+    const previewCamera = getLayerMappedPreviewCamera(layer);
+    const preview =
+      getViewportThumbnailDataUrl({
+        camera: previewCamera,
+        width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+        height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+        cropVisibleContent: true,
+      }) ??
+      getViewportThumbnailDataUrl({
+        width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+        height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+        cropVisibleContent: true,
+      });
+    setLayers(previousLayers);
+    await waitForViewportMaterialRefresh();
+    if (preview) setImageEditMappedPreviewUrl(preview);
+    return preview;
+  }
+
+  async function refreshLayerImageMappedPreview(dataUrl: string) {
+    const targetLayerId = imageEditLayerId;
+    if (!targetLayerId) return undefined;
+    const targetLayer = useLayerStore.getState().layers.find((item) => item.id === targetLayerId) ?? imageEditLayerSnapshot;
+    if (!targetLayer) return undefined;
+    return captureLayerMappedPreview(targetLayer, dataUrl);
+  }
+
+  async function applyLayerImageEdit(dataUrl: string) {
+    const targetLayer = imageEditLayer;
+    if (!targetLayer) return;
+    captureHistory();
+    const imageUrl = await persistEditedLayerDataUrl(targetLayer, dataUrl);
+    updateLayerImage(targetLayer.id, imageUrl);
+    setProjectLayers(useLayerStore.getState().layers);
+    closeLayerImageEdit();
+    scheduleTexturedThumbnailRefresh(targetLayer.type === 'uv' ? 250 : 450);
+    pushToast({
+      tone: 'success',
+      title: t('imageEditApplied'),
+      description: targetLayer.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
+    });
+  }
+
+  const completeLocalRepaintRuntime = useCallback(async (runtime: LocalRepaintRuntime, outputImage: Blob, raw?: unknown): Promise<LocalRepaintRuntime> => {
+    if (!runtime.roiRect || !runtime.editMask || !runtime.protectMask) {
+      throw new Error('局部重绘恢复上下文不完整，请重新生成。');
+    }
+    const editedImage = await urlToImageData(await blobToDataUrl(outputImage));
+    const source = runtime.workingImageData;
+    const editedFrame =
+      editedImage.width === source.width && editedImage.height === source.height
+        ? editedImage
+        : resizeImageData(editedImage, source.width, source.height);
+    const editedFull = editedFrame;
+    const featheredMask = featherMask(runtime.editMask, getLocalRepaintFeatherRadius(runtime.editMask));
+    const composited = compositeUsingMask(source, editedFull, featheredMask);
+    const restored = restoreProtectedPixels(source, composited, runtime.protectMask);
+    const previewUrl = await imageDataToDataUrl(restored);
+    return {
+      ...runtime,
+      mergedImageData: restored,
+      previewUrl,
+      providerRaw: raw,
+      status: 'preview_ready',
+      error: undefined,
+      requestId: undefined,
+    };
+  }, []);
 
   async function generateLocalRepaint(input: LocalRepaintGenerateInput) {
     if (!localRepaintRuntime) throw new Error(t('localRepaintUnavailable'));
@@ -1069,8 +1549,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const bbox = computeMaskBoundingBox(editMask);
     if (!bbox) throw new Error(t('localRepaintMaskMissing'));
     const roiRect = expandRect(bbox, 32, { width: source.width, height: source.height });
-    const sourceCrop = cropImage(source, roiRect);
-    const editMaskCrop = cropMask(editMask, roiRect);
     const prompt = buildLocalRepaintPrompt({
       userPrompt: input.prompt,
       mode: localRepaintRuntime.mode,
@@ -1080,69 +1558,103 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       language: 'zh',
     });
     const referencesForEdit = await referenceIdsToBlobs(input.selectedReferenceIds);
-    const providerResponse = await liclickImageEditProvider.editImage({
-      image: await imageDataToBlob(sourceCrop),
-      mask: await maskToBlob(editMaskCrop),
-      prompt,
-      references: referencesForEdit,
-      mode: 'local_repaint',
-      strength: 1,
-      extra: {
-        roi: roiRect,
-        preserve_unmasked: input.preserveUnmaskedArea,
-        include_blank_area: input.includeBlankArea,
-        limit_to_blank_and_selection: input.limitToBlankAndSelection,
-        workflow: localRepaintRuntime.mode,
-      },
-    });
-    const editedCrop = resizeImageData(await urlToImageData(await blobToDataUrl(providerResponse.outputImage)), roiRect.w, roiRect.h);
-    const editedFull = pasteImage(source, editedCrop, roiRect);
-    const featheredMask = featherMask(editMask, 5);
-    const composited = compositeUsingMask(source, editedFull, featheredMask);
-    const restored = restoreProtectedPixels(source, composited, protectMask);
-    const previewUrl = await imageDataToDataUrl(restored);
-    setLocalRepaintRuntime((current) =>
-      current
-        ? {
-            ...current,
-            mergedImageData: restored,
-            previewUrl,
-            providerRaw: providerResponse.raw,
-          }
-        : current,
-    );
-    return { previewUrl };
+    const requestId = createId('local-repaint-request');
+    const abortController = new AbortController();
+    setLocalRepaintAbortController(abortController);
+    const submittingRuntime: LocalRepaintRuntime = {
+      ...localRepaintRuntime,
+      status: 'submitting',
+      error: undefined,
+      previewUrl: undefined,
+      mergedImageData: undefined,
+      editMask,
+      protectMask,
+      roiRect,
+      requestId,
+      startedAt: new Date().toISOString(),
+    };
+    updateLocalRepaintRuntime(submittingRuntime);
+    try {
+      const job = await liclickImageEditProvider.startEditImage({
+        clientEditId: requestId,
+        projectId,
+        image: await imageDataToBlob(source),
+        mask: await maskToBlob(editMask),
+        prompt,
+        references: referencesForEdit,
+        mode: 'local_repaint',
+        strength: 1,
+        signal: abortController.signal,
+        extra: {
+          roi: roiRect,
+          preserve_unmasked: input.preserveUnmaskedArea,
+          include_blank_area: input.includeBlankArea,
+          limit_to_blank_and_selection: input.limitToBlankAndSelection,
+          workflow: localRepaintRuntime.mode,
+        },
+      });
+      if (abortController.signal.aborted) {
+        throw new Error('局部重绘任务已终止。');
+      }
+      const runtimeWithJob: LocalRepaintRuntime = {
+        ...submittingRuntime,
+        editJobId: job.id,
+        taskId: job.taskId,
+      };
+      if (job.status === 'succeeded' && job.outputImage) {
+        const completed = await completeLocalRepaintRuntime(runtimeWithJob, job.outputImage, job.raw);
+        updateLocalRepaintRuntime(completed);
+        await persistLocalRepaintRuntime(completed);
+        return { previewUrl: completed.previewUrl ?? '' };
+      }
+      updateLocalRepaintRuntime(runtimeWithJob);
+      await persistLocalRepaintRuntime(runtimeWithJob);
+      return { previewUrl: '' };
+    } catch (error) {
+      const wasAborted = abortController.signal.aborted;
+      const message = wasAborted ? '已终止当前局部重绘任务。' : error instanceof Error ? error.message : t('localRepaintFailed');
+      const current = useLocalRepaintStore.getState().runtime;
+      if (current?.requestId === requestId) {
+        const failedRuntime: LocalRepaintRuntime = {
+          ...current,
+          status: wasAborted ? 'cancelled' : 'error',
+          error: message,
+          requestId: undefined,
+        };
+        updateLocalRepaintRuntime(failedRuntime);
+        await persistLocalRepaintRuntime(failedRuntime);
+      }
+      throw new Error(message);
+    } finally {
+      if (useLocalRepaintStore.getState().activeAbortController === abortController) {
+        setLocalRepaintAbortController(undefined);
+      }
+    }
   }
 
   async function bakePatchToUvRepairLayer(runtime: LocalRepaintRuntime) {
     if (!project || !importedModel) throw new Error(t('importModelFirst'));
-    const cameraState = getCurrentCameraSnapshot();
+    const cameraState = runtime.cameraState ?? getCurrentCameraSnapshot();
     if (!cameraState) throw new Error(t('viewportUnavailable'));
     const sourcePatch = runtime.mergedImageData ?? runtime.workingImageData;
-    const diffMask = createEmptyMask(sourcePatch.width, sourcePatch.height);
-    for (let index = 0; index < diffMask.data.length; index += 1) {
-      const offset = index * 4;
-      const changed =
-        Math.abs(sourcePatch.data[offset] - runtime.workingImageData.data[offset]) +
-        Math.abs(sourcePatch.data[offset + 1] - runtime.workingImageData.data[offset + 1]) +
-        Math.abs(sourcePatch.data[offset + 2] - runtime.workingImageData.data[offset + 2]);
-      if (changed > 8) diffMask.data[index] = 255;
-    }
-    const patchImage = makePatchOnlyImage(sourcePatch, diffMask);
+    const patchMask = buildLocalRepaintPatchMask(runtime, sourcePatch);
+    const patchImage = applyAlphaFromMask(sourcePatch, patchMask);
     const patchBlob = await imageDataToBlob(patchImage);
     const patchUrl = await blobToDataUrl(patchBlob);
     const objectId = selectedObjectId ?? importedModel.objectId;
+    importedModel.group.updateMatrixWorld(true);
     const tempLayer: Layer = {
       id: createId('local-repaint-patch'),
       name: 'Local repaint UV patch',
       type: 'projected',
       imageUrl: patchUrl,
       objectId,
+      objectMatrixWorld: importedModel.group.matrixWorld.toArray(),
       camera: cameraState,
       visible: true,
       opacity: 1,
       strength: 1,
-      blendMode: 'overlay',
+      blendMode: 'normal',
       adjustments: { hue: 0, saturation: 0, lightness: 0 },
       order: -1,
       createdAt: new Date().toISOString(),
@@ -1208,15 +1720,20 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       }
       if (continueEditing) {
         const nextImageData = runtime.mergedImageData;
-        setLocalRepaintRuntime({
+        if (runtime.projectId) clearPersistedLocalRepaintRuntime(runtime.projectId);
+        updateLocalRepaintRuntime({
           ...runtime,
           workingImageUrl: await imageDataToDataUrl(nextImageData),
           workingImageData: nextImageData,
           mergedImageData: undefined,
           previewUrl: undefined,
+          providerRaw: undefined,
+          status: 'idle',
+          error: undefined,
         });
       } else {
-        setLocalRepaintRuntime(undefined);
+        if (runtime.projectId) clearPersistedLocalRepaintRuntime(runtime.projectId);
+        clearLocalRepaintRuntime();
       }
       scheduleTexturedThumbnailRefresh(450);
     } catch (error) {
@@ -1227,6 +1744,142 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
     }
   }
+
+  function cancelLocalRepaintDialog() {
+    const runtime = useLocalRepaintStore.getState().runtime;
+    if (runtime?.status === 'submitting') {
+      hideLocalRepaint();
+      pushToast({
+        tone: 'info',
+        title: '局部重绘仍在生成',
+        description: '窗口已隐藏，重新打开局部重绘可继续查看当前任务状态。',
+        dedupeKey: `local-repaint-hidden:${runtime.id}`,
+      });
+      return;
+    }
+    if (runtime?.projectId) clearPersistedLocalRepaintRuntime(runtime.projectId);
+    clearLocalRepaintRuntime();
+  }
+
+  function abortLocalRepaint() {
+    const { runtime, activeAbortController } = useLocalRepaintStore.getState();
+    if (!runtime || runtime.status !== 'submitting') return;
+    activeAbortController?.abort();
+    if (runtime.projectId) clearPersistedLocalRepaintRuntime(runtime.projectId);
+    updateLocalRepaintRuntime({
+      status: 'cancelled',
+      error: '已终止当前局部重绘任务。',
+      requestId: undefined,
+    });
+    setLocalRepaintAbortController(undefined);
+    pushToast({
+      tone: 'info',
+      title: '已终止局部重绘',
+      description: '本地已停止等待莉刻返回结果，可以重新生成。',
+      dedupeKey: `local-repaint-aborted:${runtime.id}`,
+    });
+    if (runtime.editJobId || runtime.taskId) {
+      void liclickImageEditProvider.cancelEditImageJob(runtime.editJobId ?? runtime.taskId!).catch((error) => {
+        console.warn('[Liclick 3D Texture] Could not cancel remote local repaint job:', error);
+      });
+    }
+  }
+
+  useEffect(() => {
+    if (localRepaintRuntime?.projectId === projectId) return undefined;
+    let cancelled = false;
+    void restorePersistedLocalRepaintRuntime(projectId).then((runtime) => {
+      if (cancelled || !runtime) return;
+      openLocalRepaintRuntime(runtime);
+      if (runtime.status === 'submitting') {
+        pushToast({
+          tone: 'info',
+          title: '已恢复局部重绘任务',
+          description: '正在继续等待莉刻返回结果。',
+          dedupeKey: `local-repaint-restored:${runtime.id}`,
+        });
+      } else if (runtime.status === 'preview_ready') {
+        pushToast({
+          tone: 'success',
+          title: '已恢复局部重绘结果',
+          description: '上一次莉刻返回的结果已恢复，可以预览并应用。',
+          dedupeKey: `local-repaint-result-restored:${runtime.id}`,
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [localRepaintRuntime?.projectId, openLocalRepaintRuntime, projectId, pushToast]);
+
+  useEffect(() => {
+    const runtime = localRepaintRuntime;
+    if (!runtime || runtime.status !== 'submitting' || !runtime.editJobId) return undefined;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+
+    async function pollLocalRepaintJob() {
+      if (!runtime?.editJobId) return;
+      try {
+        const result = await liclickImageEditProvider.getEditImageJob(runtime.editJobId);
+        if (cancelled) return;
+        if (result.status === 'succeeded' && result.outputImage) {
+          const latest = useLocalRepaintStore.getState().runtime;
+          if (!latest || latest.id !== runtime.id) return;
+          const completed = await completeLocalRepaintRuntime(
+            {
+              ...latest,
+              taskId: result.taskId ?? latest.taskId,
+            },
+            result.outputImage,
+            result.raw,
+          );
+          updateLocalRepaintRuntime(completed);
+          await persistLocalRepaintRuntime(completed);
+          pushToast({
+            tone: 'success',
+            title: '局部重绘完成',
+            description: '莉刻已返回结果，可以预览并应用。',
+            dedupeKey: `local-repaint-completed:${completed.id}`,
+          });
+          return;
+        }
+        if (result.status === 'failed') {
+          const failedRuntime = {
+            ...runtime,
+            status: 'error' as const,
+            taskId: result.taskId ?? runtime.taskId,
+            error: result.error ?? '莉刻局部重绘任务失败。',
+            requestId: undefined,
+          };
+          updateLocalRepaintRuntime(failedRuntime);
+          await persistLocalRepaintRuntime(failedRuntime);
+          return;
+        }
+        const runningRuntime = {
+          ...runtime,
+          taskId: result.taskId ?? runtime.taskId,
+          status: 'submitting' as const,
+        };
+        updateLocalRepaintRuntime(runningRuntime);
+        await persistLocalRepaintRuntime(runningRuntime);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        if (message.includes('Edit image job not found') && runtime.taskId) {
+          const fallbackRuntime = { ...runtime, editJobId: runtime.taskId };
+          updateLocalRepaintRuntime(fallbackRuntime);
+          await persistLocalRepaintRuntime(fallbackRuntime);
+        }
+      }
+      if (!cancelled) timeoutId = window.setTimeout(pollLocalRepaintJob, 3500);
+    }
+
+    void pollLocalRepaintJob();
+    return () => {
+      cancelled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
+  }, [completeLocalRepaintRuntime, localRepaintRuntime, pushToast, updateLocalRepaintRuntime]);
 
   async function mergeLayersToUvLayer(layerIds: string[], blankUvLayerId?: string) {
     const currentImportedModel = useSceneStore.getState().importedModel;
@@ -1376,8 +2029,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
     void (async () => {
-      const capture = getCleanViewportCapture();
-      const initialUserMask = getViewportInpaintSelectionMask();
+      if (restoreExistingLocalRepaintSession()) return;
+      const viewportRuntime = useSceneStore.getState().viewport;
+      const captureSize = viewportRuntime ? getLocalRepaintCaptureSize(viewportRuntime.gl.domElement) : undefined;
+      const capture = getCleanViewportCapture(captureSize);
+      const initialUserMask = getViewportInpaintSelectionMask(captureSize);
       const cameraState = getCurrentCameraSnapshot();
       if (!capture || !cameraState || !importedModel) {
         pushToast({ tone: 'warning', title: t('viewportUnavailable'), description: t('importModelFirst') });
@@ -1385,17 +2041,21 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       }
       const workingImageData = await urlToImageData(capture.dataUrl);
       const objectMask = capture.objectMask;
-      setLocalRepaintRuntime({
+      openLocalRepaintRuntime({
+        id: createId('local-repaint'),
+        projectId,
         mode: 'repair_current_view',
         targetName: importedModel.name,
+        cameraState,
         workingImageUrl: capture.dataUrl,
         workingImageData,
         objectMask,
         initialUserMask,
-        holeMask: inferWhiteHoleMask(workingImageData, objectMask),
+        holeMask: removeSmallMaskComponents(inferWhiteHoleMask(workingImageData, objectMask), 48),
+        status: 'idle',
       });
     })();
-  }, [getViewportInpaintSelectionMask, importedModel, pushToast, t]);
+  }, [getCleanViewportCapture, getLocalRepaintCaptureSize, getViewportInpaintSelectionMask, importedModel, openLocalRepaintRuntime, projectId, pushToast, restoreExistingLocalRepaintSession, t]);
 
   useEffect(() => {
     function isEditingText(target: EventTarget | null) {
@@ -1514,6 +2174,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       actions: <LayersPanelActions />,
       content: (
         <LayersPanel
+          onLayerImageEdit={openLayerImageEdit}
           onLayerLocalRepaint={(layer) => void openLayerLocalRepaint(layer)}
           onMergeSelectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
           onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) => void mergeLayersToUvLayer(layerIds, blankUvLayerId)}
@@ -1727,7 +2388,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         }
         panels={panelDefinitions}
       />
-      {localRepaintRuntime && (
+      {localRepaintRuntime && localRepaintVisible && (
         <LocalRepaintDialog
           mode={localRepaintRuntime.mode}
           workingImageUrl={localRepaintRuntime.workingImageUrl}
@@ -1736,8 +2397,21 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           targetName={localRepaintRuntime.targetName}
           references={references.filter((reference) => !selectedObjectId || !reference.objectId || reference.objectId === selectedObjectId)}
           onGenerate={generateLocalRepaint}
+          onAbort={abortLocalRepaint}
           onAccept={acceptLocalRepaint}
-          onCancel={() => setLocalRepaintRuntime(undefined)}
+          onCancel={cancelLocalRepaintDialog}
+          status={localRepaintRuntime.status}
+          previewUrl={localRepaintRuntime.previewUrl}
+          error={localRepaintRuntime.error}
+        />
+      )}
+      {imageEditLayer && (
+        <ImageLayerEditorDialog
+          layer={imageEditLayer}
+          mappedPreviewUrl={imageEditMappedPreviewUrl}
+          onRefreshMappedPreview={refreshLayerImageMappedPreview}
+          onApply={applyLayerImageEdit}
+          onCancel={closeLayerImageEdit}
         />
       )}
       {manualBakeProgress && createPortal(<AutoBakeProgressBar progress={manualBakeProgress} />, document.body)}

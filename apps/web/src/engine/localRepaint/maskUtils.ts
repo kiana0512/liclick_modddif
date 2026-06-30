@@ -24,6 +24,50 @@ export function buildEditMask(
   return options.dilationRadius > 0 ? dilateMask(editMask, options.dilationRadius) : editMask;
 }
 
+export function removeSmallMaskComponents(mask: MaskBitmap, minPixels: number) {
+  const output = createEmptyMask(mask.width, mask.height);
+  const visited = new Uint8Array(mask.data.length);
+  const queue = new Int32Array(mask.data.length);
+  const component: number[] = [];
+  const minimum = Math.max(1, Math.floor(minPixels));
+
+  for (let index = 0; index < mask.data.length; index += 1) {
+    if (visited[index] || (mask.data[index] ?? 0) === 0) continue;
+    let head = 0;
+    let tail = 0;
+    component.length = 0;
+    queue[tail] = index;
+    tail += 1;
+    visited[index] = 1;
+
+    while (head < tail) {
+      const current = queue[head];
+      head += 1;
+      component.push(current);
+      const x = current % mask.width;
+      const y = Math.floor(current / mask.width);
+      const neighbors = [
+        x > 0 ? current - 1 : -1,
+        x < mask.width - 1 ? current + 1 : -1,
+        y > 0 ? current - mask.width : -1,
+        y < mask.height - 1 ? current + mask.width : -1,
+      ];
+      for (const neighbor of neighbors) {
+        if (neighbor < 0 || visited[neighbor] || (mask.data[neighbor] ?? 0) === 0) continue;
+        visited[neighbor] = 1;
+        queue[tail] = neighbor;
+        tail += 1;
+      }
+    }
+
+    if (component.length >= minimum) {
+      for (const pixel of component) output.data[pixel] = 255;
+    }
+  }
+
+  return output;
+}
+
 export function buildProtectMask(objectMask: MaskBitmap, editMask: MaskBitmap) {
   const protectMask = createEmptyMask(objectMask.width, objectMask.height);
   for (let index = 0; index < protectMask.data.length; index += 1) {

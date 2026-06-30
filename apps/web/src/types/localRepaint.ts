@@ -47,3 +47,29 @@ export interface LocalRepaintSession {
   mergedResult?: ImageBitmapLike;
   status: LocalRepaintStatus;
 }
+
+export type LocalRepaintRuntime = {
+  id: string;
+  projectId?: string;
+  mode: LocalRepaintMode;
+  targetName: string;
+  targetLayerId?: string;
+  cameraState?: SerializedCamera;
+  workingImageUrl: string;
+  workingImageData: ImageData;
+  objectMask: MaskBitmap;
+  initialUserMask?: MaskBitmap;
+  holeMask: MaskBitmap;
+  mergedImageData?: ImageData;
+  previewUrl?: string;
+  providerRaw?: unknown;
+  editJobId?: string;
+  taskId?: string;
+  editMask?: MaskBitmap;
+  protectMask?: MaskBitmap;
+  roiRect?: Rect;
+  status: Extract<LocalRepaintStatus, 'idle' | 'submitting' | 'preview_ready' | 'cancelled' | 'error'>;
+  error?: string;
+  requestId?: string;
+  startedAt?: string;
+};

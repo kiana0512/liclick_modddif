@@ -5,14 +5,18 @@ Only modify the masked region and optional blank untextured regions.
 Preserve all unmasked regions exactly.
 Keep the material, color family, lighting style, and texture continuity consistent with surrounding regions.
 Repair seams, missing texture, black artifacts, and discontinuities.
-Do not change the silhouette, shape, object identity, camera angle, or projection relationship.`;
+Do not change the silhouette, shape, object identity, camera angle, or projection relationship.
+Do not blur, denoise, smooth, upscale, or soften the repaired area.
+Preserve sharp texture grain, fine material details, local contrast, and edge continuity.`;
 
 const chineseConstraint = `保持同一个物体、同一个相机角度、同一个构图和透视关系。
 只修改蒙版区域以及可选的空白未贴图区域。
 未蒙版区域必须完全保持不变。
 保持材质、颜色、光照风格和周围纹理连续一致。
 修复接缝、缺失纹理、黑边、断裂和不连续问题。
-不要改变轮廓、形状、物体身份、相机角度和投影关系。`;
+不要改变轮廓、形状、物体身份、相机角度和投影关系。
+不要模糊、降噪、平滑、放大重采样或软化修复区域。
+保留清晰的纹理颗粒、细节、局部对比度和边缘连续性。`;
 
 export function buildLocalRepaintPrompt(input: {
   userPrompt: string;

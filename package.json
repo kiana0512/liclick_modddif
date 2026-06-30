@@ -9,6 +9,7 @@
     "dev": "node scripts/dev-fixed.mjs",
     "dev:fixed": "node scripts/dev-fixed.mjs",
     "dev:raw": "corepack pnpm --parallel --filter @liclick/server --filter @liclick/web dev",
+    "desktop:shell": "electron apps/desktop/main.mjs",
     "dev:web": "corepack pnpm --filter @liclick/web dev",
     "dev:server": "corepack pnpm --filter @liclick/server dev",
     "serve:server": "corepack pnpm --filter @liclick/server serve",
@@ -30,6 +31,7 @@
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.34.1",
     "@typescript-eslint/parser": "^8.34.1",
+    "electron": "^31.7.7",
     "eslint": "^9.29.0",
     "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-react-hooks": "^5.2.0",

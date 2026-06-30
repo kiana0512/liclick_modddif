@@ -23,6 +23,8 @@ export type GenerateImageInput = {
 };
 
 export type EditImageInput = {
+  clientEditId?: string;
+  projectId?: string;
   image: string;
   mask: string;
   prompt: string;

@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, Plus, Scissors, Square, Trash2, WandSparkles } from 'lucide-react';
+import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, PencilLine, Plus, Scissors, Square, Trash2, WandSparkles } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
@@ -56,6 +56,7 @@ const checkerStyle = {
 
 type LayersPanelProps = {
   onLayerDoubleClick?: (layer: Layer) => void;
+  onLayerImageEdit?: (layer: Layer) => void;
   onLayerLocalRepaint?: (layer: Layer) => void;
   onMergeSelectedToUvLayer?: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer?: (layerIds: string[], blankUvLayerId: string) => void;
@@ -63,6 +64,7 @@ type LayersPanelProps = {
 
 export function LayersPanel({
   onLayerDoubleClick,
+  onLayerImageEdit,
   onLayerLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
@@ -412,6 +414,7 @@ export function LayersPanel({
               captureHistory();
               duplicateLayer(menu.layerId);
             }}
+            onImageEdit={(layer) => onLayerImageEdit?.(layer)}
             onLocalRepaint={(layer) => onLayerLocalRepaint?.(layer)}
             onMergeSelectedToUvLayer={(layerIds) => onMergeSelectedToUvLayer?.(layerIds)}
             onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
@@ -767,6 +770,7 @@ function LayerMenu({
   onMoveUp,
   onMoveDown,
   onDuplicate,
+  onImageEdit,
   onLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
@@ -783,6 +787,7 @@ function LayerMenu({
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDuplicate: () => void;
+  onImageEdit: (layer: Layer) => void;
   onLocalRepaint: (layer: Layer) => void;
   onMergeSelectedToUvLayer: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer: (layerIds: string[], blankUvLayerId: string) => void;
@@ -845,6 +850,15 @@ function LayerMenu({
           </MenuButton>
           <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
           <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
+          {(layer.type === 'projected' || layer.type === 'uv') && (
+            <MenuButton
+              onClick={() => run(() => onImageEdit(layer))}
+              icon={<PencilLine className="h-4 w-4" />}
+              disabled={!layer.imageUrl}
+            >
+              {t('imageEditLayerMenu')}
+            </MenuButton>
+          )}
           {layer.type === 'projected' && (
             <MenuButton onClick={() => run(() => onLocalRepaint(layer))} icon={<WandSparkles className="h-4 w-4" />}>
               {t('localRepaintEditLayer')}

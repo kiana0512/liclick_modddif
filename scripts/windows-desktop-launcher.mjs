@@ -20,6 +20,8 @@ const webPort = process.env.LICLICK_WEB_PORT ?? '5673';
 const workspaceUrl = process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? `http://127.0.0.1:${workspacePort}`;
 const webUrl = process.env.LICLICK_FRONTEND_URL ?? `http://127.0.0.1:${webPort}`;
 const isWindows = process.platform === 'win32';
+const shouldOpenBrowser = process.env.LICLICK_OPEN_BROWSER !== '0';
+const shouldHideChildWindows = process.env.LICLICK_WINDOWS_HIDE === '1';
 const managedChildren = new Set();
 let dependencyInstallAttempted = false;
 
@@ -65,13 +67,18 @@ function resolveCommand(command) {
   return command;
 }
 
+function shouldRunWithShell(command) {
+  return isWindows && /\.(cmd|bat)$/i.test(command);
+}
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveCommand(command), args, {
+    const resolvedCommand = resolveCommand(command);
+    const child = spawn(resolvedCommand, args, {
       cwd: options.cwd ?? runtimeRoot,
       env: options.env ?? launcherEnv(),
-      shell: isWindows,
-      windowsHide: false,
+      shell: shouldRunWithShell(resolvedCommand),
+      windowsHide: shouldHideChildWindows,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -103,11 +110,13 @@ function runCommand(command, args, options = {}) {
 
 function spawnService(name, command, args, logFile) {
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
-  const child = spawn(resolveCommand(command), args, {
+  const resolvedCommand = resolveCommand(command);
+  writeLog(`${name} command: ${resolvedCommand} ${args.join(' ')}`);
+  const child = spawn(resolvedCommand, args, {
     cwd: runtimeRoot,
     env: launcherEnv(),
-    shell: isWindows,
-    windowsHide: false,
+    shell: shouldRunWithShell(resolvedCommand),
+    windowsHide: shouldHideChildWindows,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   managedChildren.add(child);
@@ -198,6 +207,7 @@ function shouldCopyPath(sourcePath, includePreparedArtifacts) {
     '.pnpm-store',
     'dist',
     'dist-installer',
+    'electron',
     'logs',
     'secrets',
     'workspace',
@@ -448,7 +458,7 @@ writeLog('============================================================');
 try {
   await prepareRuntime();
   await startServices();
-  openBrowser();
+  if (shouldOpenBrowser) openBrowser();
   writeLog('Liclick 3D Texture is running. Keep this terminal open while using the app.');
   await new Promise(() => undefined);
 } catch (error) {

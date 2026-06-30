@@ -26,6 +26,8 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 DisableProgramGroupPage=yes
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -40,8 +42,18 @@ Type: filesandordirs; Name: "{app}\*"
 Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\scripts\windows-desktop-launcher.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liclick-icon.ico"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\scripts\windows-desktop-launcher.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liclick-icon.ico"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\electron\Liclick 3D Texture.exe"; Parameters: """{app}\apps\desktop\main.mjs"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\liclick-icon.ico"
+Name: "{group}\{#MyAppName} CLI"; Filename: "{app}\scripts\windows-desktop-launcher.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liclick-icon.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\electron\Liclick 3D Texture.exe"; Parameters: """{app}\apps\desktop\main.mjs"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\liclick-icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\scripts\windows-desktop-launcher.cmd"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{app}\electron\Liclick 3D Texture.exe"; Parameters: """{app}\apps\desktop\main.mjs"""; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent unchecked
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM "Liclick 3D Texture.exe" /T /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := True;
+end;

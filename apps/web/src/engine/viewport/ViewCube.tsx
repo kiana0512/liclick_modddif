@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Vector3 } from 'three';
 import { useSceneStore } from '@/stores/sceneStore';
 
@@ -34,11 +34,47 @@ function faceTransform(face: CubeFace) {
   return transforms[face];
 }
 
+function faceDirection(face: CubeFace) {
+  const directions: Record<CubeFace, Vector3> = {
+    front: new Vector3(0, 0, 1),
+    back: new Vector3(0, 0, -1),
+    left: new Vector3(-1, 0, 0),
+    right: new Vector3(1, 0, 0),
+    top: new Vector3(0, 1, 0),
+    bottom: new Vector3(0, -1, 0),
+  };
+  return directions[face].clone();
+}
+
+function faceUp(face: CubeFace) {
+  if (face === 'top') return new Vector3(0, 0, -1);
+  if (face === 'bottom') return new Vector3(0, 0, 1);
+  return new Vector3(0, 1, 0);
+}
+
 export function ViewCube() {
   const viewport = useSceneStore((state) => state.viewport);
   const [rotation, setRotation] = useState({ pitch: -24, yaw: 38 });
   const [activeFace, setActiveFace] = useState<CubeFace>('front');
   const lastStateRef = useRef({ pitch: -24, yaw: 38, face: 'front' as CubeFace });
+
+  const snapToFace = useCallback((face: CubeFace, event?: MouseEvent) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    if (!viewport) return;
+
+    const target = viewport.controls?.target?.clone() ?? new Vector3(0, 0, 0);
+    const currentPosition = new Vector3();
+    viewport.camera.getWorldPosition(currentPosition);
+    const distance = Math.max(currentPosition.distanceTo(target), 0.8);
+    const direction = faceDirection(face);
+    viewport.camera.position.copy(target).add(direction.multiplyScalar(distance));
+    viewport.camera.up.copy(faceUp(face));
+    viewport.camera.lookAt(target);
+    viewport.controls?.target.copy(target);
+    viewport.controls?.update();
+    viewport.camera.updateMatrixWorld();
+  }, [viewport]);
 
   useEffect(() => {
     let frame = 0;
@@ -74,7 +110,7 @@ export function ViewCube() {
   }, [viewport]);
 
   return (
-    <div className="pointer-events-none absolute right-4 top-4 z-50 grid h-28 w-28 place-items-center rounded-xl border border-white/16 bg-black/50 shadow-[0_16px_42px_rgba(0,0,0,0.42)] backdrop-blur-md">
+    <div className="absolute right-4 top-4 z-50 grid h-28 w-28 place-items-center rounded-xl border border-white/16 bg-black/50 shadow-[0_16px_42px_rgba(0,0,0,0.42)] backdrop-blur-md">
       <div className="absolute top-1.5 rounded bg-white/90 px-1.5 py-0.5 text-[9px] font-black uppercase text-[#14151d]">
         {faceLabels[activeFace]}
       </div>
@@ -84,13 +120,16 @@ export function ViewCube() {
           style={{ transform: `rotateX(${rotation.pitch}deg) rotateY(${rotation.yaw}deg)` }}
         >
           {(Object.keys(faceLabels) as CubeFace[]).map((face) => (
-            <div
+            <button
+              type="button"
               key={face}
-              className="absolute grid h-16 w-16 place-items-center rounded-sm border border-white/35 bg-white text-[10px] font-black uppercase tracking-normal text-[#191a22] shadow-[0_4px_12px_rgba(0,0,0,0.34)]"
+              aria-label={`Snap view to ${faceLabels[face]}`}
+              className="absolute grid h-16 w-16 place-items-center rounded-sm border border-white/35 bg-white text-[10px] font-black uppercase tracking-normal text-[#191a22] shadow-[0_4px_12px_rgba(0,0,0,0.34)] transition-colors hover:bg-liclick-pink hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/80"
               style={{ transform: faceTransform(face), backfaceVisibility: 'hidden' }}
+              onClick={(event) => snapToFace(face, event)}
             >
               {faceLabels[face]}
-            </div>
+            </button>
           ))}
         </div>
       </div>

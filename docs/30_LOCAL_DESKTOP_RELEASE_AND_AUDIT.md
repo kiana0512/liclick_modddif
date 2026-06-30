@@ -2,15 +2,17 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-06-29
+Updated: 2026-06-30
 
 ## Windows Desktop Build
 
-The Windows installer keeps the browser as the main UI and starts the app through a visible terminal.
+The Windows installer now starts a lightweight Electron desktop shell instead of a visible terminal.
 
 - Installer script: `corepack pnpm package:windows`
 - Output: `dist-installer/Liclick 3D Texture Setup.exe`
 - Installer engine: Inno Setup 6
+- Desktop shell: `apps/desktop/main.mjs`
+- Electron runtime: copied from `node_modules/electron/dist` into `{app}\electron`
 - Installed app ports: backend `4617`, frontend `5673`
 - Development ports remain unchanged: backend `4517`, frontend `5173`
 
@@ -25,15 +27,19 @@ Runtime data is kept under:
 
 The installed launcher copies runtime files into `%LocalAppData%` before installing dependencies or building. This avoids writing package dependencies into `Program Files` during daily use.
 
+The Start Menu and desktop shortcuts point to `{app}\electron\Liclick 3D Texture.exe` with `apps\desktop\main.mjs` as the Electron entry. A `Liclick 3D Texture CLI` Start Menu shortcut remains available for support/debug sessions.
+
 ## First Run Behavior
 
-The desktop launcher prints full logs in the visible terminal. On first run it may install dependencies and build the app, then opens:
+The Electron shell starts the existing Node launcher with hidden child windows and keeps the service lifecycle attached to the tray app. On first run it may install dependencies and build the local services, then enables the workspace button for:
 
 ```text
 http://127.0.0.1:5673
 ```
 
-Users should keep the terminal open while using the app. Closing the terminal stops the local backend and frontend services.
+The shell shows frontend/backend health, the runtime/workspace paths, the launcher PID, and a live log view. Closing the window hides the shell to the system tray by default so services keep running. The tray menu exposes a full quit action; quitting completely stops the managed frontend/backend services.
+
+The legacy CLI launcher still supports the old browser-opening behavior. Electron sets `LICLICK_OPEN_BROWSER=0` for the hidden service process and opens the workspace from the shell once frontend/backend health checks both pass.
 
 ## Current Editor UX
 
@@ -59,6 +65,11 @@ Users should keep the terminal open while using the app. Closing the terminal st
 - Project thumbnails are captured from the real WebGL viewport after projection changes. Grid and paint/helper overlays are hidden during the thumbnail capture and restored immediately afterwards.
 - The Projects page and bottom editor tools now use the shared Chinese / English string store instead of fixed English labels.
 - Local repaint now uses a focused current-view dialog. The brush paints continuous strokes instead of separated dabs, the editable mask is clipped to the visible model alpha, and the request reuses the same authenticated Atlas/Liclick gateway as normal image generation.
+- Current-view local repaint captures and submits a full viewport frame plus a full-size mask. The returned image is treated as the same full-frame coordinate space and is not cropped into a small ROI before compositing.
+- Current-view local repaint captures the source frame and selection mask at up to 2x viewport resolution, capped at 4096 px on the long side. This keeps the projected UV repair patch sharper without changing the visible camera framing.
+- Local repaint persists the session id, task id, camera snapshot, full source frame, masks, status, and returned preview in local storage. Closing the dialog or pressing F5 restores an in-flight or completed task instead of losing the state.
+- Local repaint has a stop button while submitting. It aborts the local wait path, asks the local server to stop tracking the edit job when possible, and keeps the UI available for a fresh generation.
+- Local repaint mask export now records the logical white mask separately from the visible pink brush pattern and removes small isolated white specks from the auto-detected blank-area mask.
 - Local repaint first attempts a LiClick-web-like `局部重绘_volcengine` ComfyUI payload through the Atlas JSON-RPC gateway. If the Atlas `generate_image` wrapper rejects that custom workflow, the server falls back to the supported `gpt-image-2` image edit path by uploading the base image and mask through `upload_asset`, passing them as `reference_images`, and protecting unmasked pixels again on the client composite. It does not require a separate browser token or API-key environment variable.
 - Turntable WebM export now resyncs projected-layer object-matrix uniforms every frame while the model rotates, so projected/texture-map layers stay attached in the recorded video.
 - UV preview now separates unbaked `uvOverlayTexture` from the baked/base material path. This prevents a fresh UV overlay from pretending to be the flattened BaseColor texture in the viewport.
@@ -86,12 +97,21 @@ Low-risk cleanup completed in this pass:
 - Removed the Texture Map preview `Add to references` action while keeping the normal Liclick image-generation shortcut.
 - Updated projected-layer preview/export code so WebM turntable captures keep projection alignment during object rotation.
 - Verified the packaging script excludes runtime workspace data, logs, secrets, `.git`, and `node_modules` from staging while keeping built server/web outputs and source files needed by the desktop launcher.
+- Added the Electron desktop shell for Windows: single-instance window, tray menu, service restart, log directory shortcut, live launcher logs, workspace health checks, and close-to-tray versus full-quit confirmation.
+- Updated Windows installer shortcuts to launch the Electron shell while keeping the command-line launcher as a support fallback.
+- Kept the existing Node launcher as the service engine and added `LICLICK_OPEN_BROWSER=0` plus `LICLICK_WINDOWS_HIDE=1` so the GUI shell can start services without opening a console or browser automatically.
+- Audited the local repaint full-frame path after the ROI alignment regression. The current path uploads the complete current-view frame and complete mask, then composites the full returned frame back into the protected source frame before baking a UV repair layer.
+- The ModDiff-style natural-transition algorithm remains under evaluation and is not part of this package. This build keeps the current narrow mask feathering path and does not introduce the hard-replace/cropped-patch approach.
 
 Build checks for this release:
 
 ```text
 corepack pnpm --filter @liclick/web typecheck
 corepack pnpm --filter @liclick/server typecheck
+node --check apps/desktop/main.mjs
+node --check apps/desktop/preload.cjs
+node --check apps/desktop/renderer/renderer.js
+node --check scripts/windows-desktop-launcher.mjs
 corepack pnpm --filter @liclick/web lint
 corepack pnpm --filter @liclick/server lint
 corepack pnpm --filter @liclick/server build
@@ -103,13 +123,15 @@ The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 3,393,018 bytes
-SHA256 D60A1753EE5A5613EE8BEA7827E6A79D5830FE2B7E836F02363E401F1B6A8503
+Size 104,925,470 bytes
+SHA256 A2B9E8CC1DBEAD4E8FEA583FDA8539E0ECD9BBC7DD1F09D4B746F99AEBC08CBC
 ```
 
 Packaging notes for this build:
 
-- `corepack enable` could not write to `C:\Program Files\nodejs\pnpm.ps1` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
+- `corepack enable` could not write to `C:\Program Files\nodejs\pnpm` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
+- Inno Setup 6.7.2 emitted a non-blocking warning that the `x64` architecture identifier is deprecated and substituted with `x64os`. The installer still compiled successfully.
+- Release cleanup removed regenerated output before verification: `.codex-tmp`, `apps/web/dist`, `apps/server/dist`, `apps/web/tsconfig.tsbuildinfo`, old `dist-installer/staging`, and the old installer executable. After packaging, the generated staging directory and regenerated TypeScript build-info file were removed again. The cached portable Node zip was intentionally kept for offline packaging.
 - Vite still reports the known large-chunk warning for the editor bundle. The warning is non-blocking for this installer and remains tracked as a future code-splitting cleanup.
 
 The 2026-06-26 local backend stress pass reached:
@@ -130,3 +152,4 @@ The 2026-06-26 browser runtime stress pass reached:
 - The stop button cancels local tracking immediately. If a Liclick task has already been submitted to Atlas, the remote task may still finish server-side, but the local UI no longer waits for it or applies it.
 - Legacy unscoped references/layers remain visible for compatibility. New project data should always write `objectId`.
 - Large Vite chunk warnings are currently known and non-blocking, but code splitting should be considered after the texture workflow stabilizes.
+- Local repaint transition quality is still an active product tuning area. Do not replace the full-frame mapping path with ROI scaling/cropping; any future transition work should preserve full-frame coordinate alignment first.

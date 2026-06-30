@@ -36,7 +36,28 @@ type GenerationJob = {
   promise?: Promise<void>;
 };
 
+type EditImageJob = {
+  id: string;
+  userId: string;
+  projectId: string;
+  atlasHomeDir?: string;
+  input: EditImageInput;
+  status: 'submitting' | 'running' | 'succeeded' | 'failed';
+  startedAt: string;
+  updatedAt: string;
+  taskId?: string;
+  model?: string;
+  extraParams?: Record<string, unknown>;
+  uploadedReferences?: unknown[];
+  resultUrl?: string;
+  resultUrls?: string[];
+  raw?: unknown;
+  error?: string;
+  promise?: Promise<void>;
+};
+
 const generationJobs = new Map<string, GenerationJob>();
+const editImageJobs = new Map<string, EditImageJob>();
 let jobsLoaded = false;
 let writeQueue = Promise.resolve();
 const transientWriteErrorCodes = new Set(['UNKNOWN', 'EPERM', 'EBUSY', 'EACCES', 'EMFILE', 'ENFILE']);
@@ -137,7 +158,7 @@ async function saveGenerationJobs() {
   return task;
 }
 
-function isActiveJob(job: GenerationJob) {
+function isActiveJob(job: { status: 'submitting' | 'running' | 'succeeded' | 'failed' }) {
   return job.status === 'submitting' || job.status === 'running';
 }
 
@@ -182,6 +203,45 @@ function getJobResponse(job: GenerationJob) {
   };
 }
 
+async function getEditJobResponse(job: EditImageJob) {
+  if (job.status === 'succeeded') {
+    return {
+      id: job.id,
+      status: 'succeeded',
+      outputImage: job.resultUrl ? await remoteImageToDataUrl(job.resultUrl) : undefined,
+      resultUrl: job.resultUrl,
+      resultUrls: job.resultUrls,
+      taskId: job.taskId,
+      model: job.model,
+      extraParams: job.extraParams,
+      uploadedReferences: job.uploadedReferences,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      raw: job.raw,
+    };
+  }
+  if (job.status === 'failed') {
+    return {
+      id: job.id,
+      status: 'failed',
+      error: job.error ?? '莉刻局部重绘任务失败。',
+      taskId: job.taskId,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+    };
+  }
+  return {
+    id: job.id,
+    status: 'running',
+    taskId: job.taskId,
+    model: job.model,
+    extraParams: job.extraParams,
+    uploadedReferences: job.uploadedReferences,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
 async function cancelGenerationJob(job: GenerationJob) {
   if (job.status === 'succeeded' || job.status === 'failed') return;
   job.status = 'failed';
@@ -190,13 +250,30 @@ async function cancelGenerationJob(job: GenerationJob) {
   await saveGenerationJobs();
 }
 
+async function cancelEditImageJob(job: EditImageJob) {
+  if (job.status === 'succeeded' || job.status === 'failed') return;
+  job.status = 'failed';
+  job.error = '用户已终止局部重绘任务。';
+  job.updatedAt = new Date().toISOString();
+}
+
 function findJob(idOrTaskId: string) {
   return generationJobs.get(idOrTaskId) ?? [...generationJobs.values()].find((job) => job.taskId === idOrTaskId);
+}
+
+function findEditImageJob(idOrTaskId: string) {
+  return editImageJobs.get(idOrTaskId) ?? [...editImageJobs.values()].find((job) => job.taskId === idOrTaskId);
 }
 
 function findActiveProjectJob(user: AuthUser, projectId: string, workflow: GenerationJob['workflow']) {
   return [...generationJobs.values()].find(
     (job) => job.userId === user.id && job.projectId === projectId && job.workflow === workflow && isActiveJob(job),
+  );
+}
+
+function findActiveProjectEditJob(user: AuthUser, projectId: string) {
+  return [...editImageJobs.values()].find(
+    (job) => job.userId === user.id && job.projectId === projectId && isActiveJob(job),
   );
 }
 
@@ -217,6 +294,22 @@ async function applySubmission(job: GenerationJob, submission: LiclickImageSubmi
   await saveGenerationJobs();
 }
 
+async function applyEditSubmission(job: EditImageJob, submission: LiclickImageSubmission) {
+  job.taskId = submission.taskId;
+  job.model = submission.model;
+  job.extraParams = submission.extraParams;
+  job.uploadedReferences = submission.uploadedReferences;
+  job.raw = submission.raw;
+  job.updatedAt = new Date().toISOString();
+  if (submission.resultUrl) {
+    job.status = 'succeeded';
+    job.resultUrl = submission.resultUrl;
+    job.resultUrls = submission.resultUrls;
+  } else {
+    job.status = 'running';
+  }
+}
+
 async function pollAndUpdateJob(job: GenerationJob) {
   if (!job.taskId || job.status !== 'running') return job;
   const result = await pollLiclickImageTask(job.taskId, { atlasHomeDir: job.atlasHomeDir });
@@ -231,6 +324,22 @@ async function pollAndUpdateJob(job: GenerationJob) {
     job.error = '莉刻后台任务已结束，但没有返回图片 URL，已停止等待。';
   }
   await saveGenerationJobs();
+  return job;
+}
+
+async function pollAndUpdateEditJob(job: EditImageJob) {
+  if (!job.taskId || job.status !== 'running') return job;
+  const result = await pollLiclickImageTask(job.taskId, { atlasHomeDir: job.atlasHomeDir });
+  job.updatedAt = new Date().toISOString();
+  job.raw = result.raw;
+  if (result.resultUrl) {
+    job.status = 'succeeded';
+    job.resultUrl = result.resultUrl;
+    job.resultUrls = result.resultUrls;
+  } else if (result.terminalWithoutResult) {
+    job.status = 'failed';
+    job.error = '莉刻局部重绘任务已结束，但没有返回图片。';
+  }
   return job;
 }
 
@@ -259,6 +368,35 @@ function startGenerationJob(job: GenerationJob) {
   })();
 }
 
+function startEditImageJob(job: EditImageJob) {
+  if (job.promise || job.status === 'succeeded' || job.status === 'failed') return;
+  job.promise = (async () => {
+    try {
+      if (!job.taskId && job.status === 'submitting') {
+        const submission = await submitLiclickImageEdit(job.input, { atlasHomeDir: job.atlasHomeDir });
+        if (job.status !== 'submitting') return;
+        await applyEditSubmission(job, submission);
+      }
+      const startedPollingAt = Date.now();
+      while (job.status === 'running' && Date.now() - startedPollingAt < 30 * 60 * 1000) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await pollAndUpdateEditJob(job);
+      }
+      if (job.status === 'running') {
+        job.status = 'failed';
+        job.error = '等待莉刻局部重绘超时。';
+        job.updatedAt = new Date().toISOString();
+      }
+    } catch (error) {
+      job.status = 'failed';
+      job.error = error instanceof Error ? error.message : '莉刻局部重绘任务失败。';
+      job.updatedAt = new Date().toISOString();
+    } finally {
+      job.promise = undefined;
+    }
+  })();
+}
+
 function createGenerationJob(jobId: string, user: AuthUser, input: GenerateImageInput): GenerationJob {
   const now = new Date().toISOString();
   const job: GenerationJob = {
@@ -278,6 +416,23 @@ function createGenerationJob(jobId: string, user: AuthUser, input: GenerateImage
   return job;
 }
 
+function createEditImageJob(jobId: string, user: AuthUser, input: EditImageInput): EditImageJob {
+  const now = new Date().toISOString();
+  const job: EditImageJob = {
+    id: jobId,
+    userId: user.id,
+    projectId: input.projectId ?? 'default',
+    atlasHomeDir: user.atlasHomeDir,
+    input,
+    status: 'submitting',
+    startedAt: now,
+    updatedAt: now,
+  };
+  editImageJobs.set(jobId, job);
+  startEditImageJob(job);
+  return job;
+}
+
 async function waitForSubmitted(job: GenerationJob) {
   const startedAt = Date.now();
   while (job.status === 'submitting' && Date.now() - startedAt < 3 * 60 * 1000) {
@@ -291,30 +446,6 @@ async function remoteImageToDataUrl(url: string) {
   const contentType = imageResponse.headers.get('content-type') ?? 'image/png';
   const buffer = Buffer.from(await imageResponse.arrayBuffer());
   return `data:${contentType};base64,${buffer.toString('base64')}`;
-}
-
-async function runImageEdit(input: EditImageInput, atlasHomeDir?: string) {
-  let submission = await submitLiclickImageEdit(input, { atlasHomeDir });
-  const startedAt = Date.now();
-  while (!submission.resultUrl && submission.taskId && Date.now() - startedAt < 10 * 60 * 1000) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    const result = await pollLiclickImageTask(submission.taskId, { atlasHomeDir }).catch((error: unknown) => {
-      throw new Error(`莉刻局部重绘轮询任务失败：${error instanceof Error ? error.message : String(error)}`);
-    });
-    if (result.resultUrl) {
-      submission = {
-        ...submission,
-        status: 'succeeded',
-        resultUrl: result.resultUrl,
-        resultUrls: result.resultUrls,
-        raw: result.raw,
-      };
-      break;
-    }
-    if (result.terminalWithoutResult) throw new Error('莉刻局部重绘任务已结束，但没有返回图片。');
-  }
-  if (!submission.resultUrl) throw new Error('等待莉刻局部重绘超时。');
-  return submission;
 }
 
 export async function handleLiclickRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
@@ -366,6 +497,51 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
     return true;
   }
 
+  if (request.method === 'GET' && isLiclickRoute && segments[2] === 'edit-image' && segments[3]) {
+    const job = findEditImageJob(segments[3]);
+    if (!job || job.userId !== user.id) {
+      try {
+        const result = await pollLiclickImageTask(segments[3], { atlasHomeDir: user.atlasHomeDir });
+        sendJson(response, 200, {
+          id: segments[3],
+          status: result.resultUrl ? 'succeeded' : 'running',
+          outputImage: result.resultUrl ? await remoteImageToDataUrl(result.resultUrl) : undefined,
+          resultUrl: result.resultUrl,
+          resultUrls: result.resultUrls,
+          taskId: segments[3],
+          updatedAt: new Date().toISOString(),
+          raw: result.raw,
+        });
+        return true;
+      } catch {
+        // Fall through to the normal not-found response when the id is not a remote Liclick task id.
+      }
+      sendJson(response, 404, { error: 'Edit image job not found.' });
+      return true;
+    }
+    if (job.status === 'running' && job.taskId) {
+      await pollAndUpdateEditJob(job).catch((error: unknown) => {
+        job.status = 'failed';
+        job.error = error instanceof Error ? error.message : '莉刻局部重绘任务失败。';
+        job.updatedAt = new Date().toISOString();
+      });
+    }
+    startEditImageJob(job);
+    sendJson(response, 200, await getEditJobResponse(job));
+    return true;
+  }
+
+  if (request.method === 'DELETE' && isLiclickRoute && segments[2] === 'edit-image' && segments[3]) {
+    const job = findEditImageJob(segments[3]);
+    if (!job || job.userId !== user.id) {
+      sendJson(response, 404, { error: 'Edit image job not found.' });
+      return true;
+    }
+    await cancelEditImageJob(job);
+    sendJson(response, 200, await getEditJobResponse(job));
+    return true;
+  }
+
   if (request.method === 'POST' && isLiclickRoute && segments[2] === 'edit-image') {
     const atlasIdentity = getAtlasIdentity(user.atlasHomeDir);
     if (
@@ -385,21 +561,24 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
       sendJson(response, 400, { error: 'Image, mask, and prompt are required for local repaint.' });
       return true;
     }
-    try {
-      const edit = await runImageEdit(input, user.atlasHomeDir);
-      sendJson(response, 200, {
-        outputImage: await remoteImageToDataUrl(edit.resultUrl!),
-        raw: edit.raw,
-        taskId: edit.taskId,
-        resultUrl: edit.resultUrl,
-        extraParams: edit.extraParams,
-        uploadedReferences: edit.uploadedReferences,
+    const projectId = input.projectId ?? 'default';
+    const activeJob = findActiveProjectEditJob(user, projectId);
+    if (activeJob) {
+      startEditImageJob(activeJob);
+      sendJson(response, 202, {
+        ...(await getEditJobResponse(activeJob)),
+        activeProjectJob: true,
+        message: 'This project already has a running local repaint task.',
       });
-    } catch (error) {
-      sendJson(response, 500, {
-        error: error instanceof Error ? error.message : '莉刻局部重绘失败。',
-      });
+      return true;
     }
+    const jobId = input.clientEditId || `liclick-edit-${Date.now()}`;
+    const job = createEditImageJob(jobId, user, { ...input, projectId });
+    if (job.userId !== user.id) {
+      sendJson(response, 403, { error: 'Edit image job belongs to another user.' });
+      return true;
+    }
+    sendJson(response, 202, await getEditJobResponse(job));
     return true;
   }
 
