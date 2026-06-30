@@ -72,12 +72,16 @@ type UvPaintLayer = {
   paintTexture: THREE.CanvasTexture;
   maskCanvas: HTMLCanvasElement;
   maskContext: CanvasRenderingContext2D;
+  maskDisplayCanvas: HTMLCanvasElement;
+  maskDisplayContext: CanvasRenderingContext2D;
   maskPattern: CanvasPattern;
   maskTexture: THREE.CanvasTexture;
+  maskDisplayTexture: THREE.CanvasTexture;
   paintMaterial: THREE.MeshBasicMaterial;
-  maskMaterial: THREE.MeshBasicMaterial;
+  maskMaterial: THREE.ShaderMaterial;
   overlayMeshes: THREE.Mesh[];
   overlayTargets: Set<THREE.Mesh>;
+  maskSolidNormalized: boolean;
 };
 
 type UvPaintHit = {
@@ -86,6 +90,13 @@ type UvPaintHit = {
   uv: THREE.Vector2;
   worldRadius: number;
   textureRadius: number;
+};
+
+type UvPaintSample = {
+  meshUuid: string;
+  faceIndex?: number;
+  uv: THREE.Vector2;
+  point: THREE.Vector3;
 };
 
 type PaintDirtyRect = {
@@ -120,23 +131,70 @@ function createPaintCanvas() {
 
 function createInpaintMaskPattern(context: CanvasRenderingContext2D) {
   const patternCanvas = document.createElement('canvas');
-  patternCanvas.width = 18;
-  patternCanvas.height = 18;
+  patternCanvas.width = 24;
+  patternCanvas.height = 24;
   const patternContext = patternCanvas.getContext('2d');
   if (!patternContext) throw new Error('Could not create UV mask pattern.');
-  patternContext.fillStyle = 'rgba(238, 104, 72, 0.72)';
-  patternContext.fillRect(0, 0, patternCanvas.width, patternCanvas.height);
-  patternContext.strokeStyle = 'rgba(24, 20, 18, 0.78)';
-  patternContext.lineWidth = 5;
+  patternContext.clearRect(0, 0, patternCanvas.width, patternCanvas.height);
+  patternContext.strokeStyle = 'rgba(214, 112, 62, 0.64)';
+  patternContext.lineWidth = 6;
+  patternContext.lineCap = 'butt';
   patternContext.beginPath();
-  patternContext.moveTo(-6, 18);
-  patternContext.lineTo(18, -6);
-  patternContext.moveTo(0, 24);
-  patternContext.lineTo(24, 0);
+  for (let offset = -48; offset <= 72; offset += 12) {
+    patternContext.moveTo(offset, -18);
+    patternContext.lineTo(offset + 48, 30);
+  }
   patternContext.stroke();
   const pattern = context.createPattern(patternCanvas, 'repeat');
   if (!pattern) throw new Error('Could not create UV mask brush pattern.');
   return pattern;
+}
+
+function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      maskMap: { value: maskTexture },
+      stripeColor: { value: new THREE.Color('#d6703e') },
+      stripeOpacity: { value: 0.64 },
+      stripePeriod: { value: 14 },
+      stripeWidth: { value: 7 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D maskMap;
+      uniform vec3 stripeColor;
+      uniform float stripeOpacity;
+      uniform float stripePeriod;
+      uniform float stripeWidth;
+      varying vec2 vUv;
+
+      void main() {
+        float maskAlpha = texture2D(maskMap, vUv).a;
+        if (maskAlpha < 0.02) discard;
+
+        float coord = mod(gl_FragCoord.x + gl_FragCoord.y, stripePeriod);
+        float edge = 1.0;
+        float stripe = 1.0 - smoothstep(stripeWidth - edge, stripeWidth + edge, coord);
+        if (stripe <= 0.01) discard;
+
+        gl_FragColor = vec4(stripeColor, stripeOpacity * stripe * maskAlpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -8,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
 }
 
 function configureCanvasTexture(texture: THREE.CanvasTexture, colorSpace: THREE.ColorSpace) {
@@ -155,6 +213,7 @@ function disposeUvPaintLayer(layer?: UvPaintLayer) {
   layer.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
   layer.paintTexture.dispose();
   layer.maskTexture.dispose();
+  layer.maskDisplayTexture.dispose();
   layer.paintMaterial.dispose();
   layer.maskMaterial.dispose();
 }
@@ -194,6 +253,7 @@ function SurfacePaintOverlay() {
   const pointerRef = useRef(new THREE.Vector2());
   const isPaintingRef = useRef(false);
   const lastUvRef = useRef<THREE.Vector2>();
+  const lastSampleRef = useRef<UvPaintSample>();
   const strokeDraftRef = useRef<PaintStrokeDraft>();
   const dirtyTexturesRef = useRef(new Set<THREE.CanvasTexture>());
   const textureUpdateFrameRef = useRef<number>();
@@ -279,32 +339,26 @@ function SurfacePaintOverlay() {
 
     const paint = createPaintCanvas();
     const mask = createPaintCanvas();
-    const maskPattern = createInpaintMaskPattern(mask.context);
+    const maskDisplay = createPaintCanvas();
+    const maskPattern = createInpaintMaskPattern(maskDisplay.context);
     const paintTexture = new THREE.CanvasTexture(paint.canvas);
     const maskTexture = new THREE.CanvasTexture(mask.canvas);
+    const maskDisplayTexture = new THREE.CanvasTexture(maskDisplay.canvas);
     configureCanvasTexture(paintTexture, THREE.SRGBColorSpace);
     configureCanvasTexture(maskTexture, THREE.NoColorSpace);
+    configureCanvasTexture(maskDisplayTexture, THREE.NoColorSpace);
 
     const paintMaterial = new THREE.MeshBasicMaterial({
       map: paintTexture,
       transparent: true,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
       polygonOffset: true,
       polygonOffsetFactor: -6,
       side: THREE.DoubleSide,
       toneMapped: false,
     });
-    const maskMaterial = new THREE.MeshBasicMaterial({
-      map: maskTexture,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -8,
-      side: THREE.DoubleSide,
-      toneMapped: false,
-    });
+    const maskMaterial = createInpaintMaskMaterial(maskTexture);
 
     layerRef.current = {
       objectId: model.objectId,
@@ -313,12 +367,16 @@ function SurfacePaintOverlay() {
       paintTexture,
       maskCanvas: mask.canvas,
       maskContext: mask.context,
+      maskDisplayCanvas: maskDisplay.canvas,
+      maskDisplayContext: maskDisplay.context,
       maskPattern,
       maskTexture,
+      maskDisplayTexture,
       paintMaterial,
       maskMaterial,
       overlayMeshes: [],
       overlayTargets: new Set(),
+      maskSolidNormalized: false,
     };
     return layerRef.current;
   }, []);
@@ -337,6 +395,7 @@ function SurfacePaintOverlay() {
     const maskOverlay = new THREE.Mesh(mesh.geometry, layer.maskMaterial);
     maskOverlay.name = 'Liclick UV Inpaint Mask Overlay';
     maskOverlay.userData.liclickPaintOverlay = true;
+    maskOverlay.userData.liclickInpaintMaskTexture = layer.maskTexture;
     maskOverlay.renderOrder = 31;
     mesh.add(maskOverlay);
     layer.overlayMeshes.push(maskOverlay);
@@ -356,6 +415,42 @@ function SurfacePaintOverlay() {
     });
   }, []);
 
+  const refreshMaskDisplay = useCallback((layer: UvPaintLayer) => {
+    if (!layer.maskSolidNormalized) {
+      const logicalImage = layer.maskContext.getImageData(0, 0, layer.maskCanvas.width, layer.maskCanvas.height);
+      const logicalData = logicalImage.data;
+      let normalized = false;
+      for (let index = 0; index < logicalData.length; index += 4) {
+        if (logicalData[index + 3] === 0) continue;
+        if (
+          logicalData[index] !== 255 ||
+          logicalData[index + 1] !== 255 ||
+          logicalData[index + 2] !== 255 ||
+          logicalData[index + 3] !== 255
+        ) {
+          logicalData[index] = 255;
+          logicalData[index + 1] = 255;
+          logicalData[index + 2] = 255;
+          logicalData[index + 3] = 255;
+          normalized = true;
+        }
+      }
+      if (normalized) {
+        layer.maskContext.putImageData(logicalImage, 0, 0);
+        scheduleTextureUpdate(layer.maskTexture);
+      }
+      layer.maskSolidNormalized = true;
+    }
+    layer.maskDisplayContext.save();
+    layer.maskDisplayContext.clearRect(0, 0, layer.maskDisplayCanvas.width, layer.maskDisplayCanvas.height);
+    layer.maskDisplayContext.fillStyle = layer.maskPattern;
+    layer.maskDisplayContext.fillRect(0, 0, layer.maskDisplayCanvas.width, layer.maskDisplayCanvas.height);
+    layer.maskDisplayContext.globalCompositeOperation = 'destination-in';
+    layer.maskDisplayContext.drawImage(layer.maskCanvas, 0, 0);
+    layer.maskDisplayContext.restore();
+    scheduleTextureUpdate(layer.maskDisplayTexture);
+  }, [scheduleTextureUpdate]);
+
   useEffect(() => () => {
     if (textureUpdateFrameRef.current !== undefined) window.cancelAnimationFrame(textureUpdateFrameRef.current);
   }, []);
@@ -364,10 +459,12 @@ function SurfacePaintOverlay() {
     const layer = layerRef.current;
     if (!layer) return;
     layer.maskContext.clearRect(0, 0, layer.maskCanvas.width, layer.maskCanvas.height);
+    layer.maskSolidNormalized = true;
     scheduleTextureUpdate(layer.maskTexture);
+    refreshMaskDisplay(layer);
     maskDirtyRef.current = false;
     maskHasContentRef.current = false;
-  }, [paintMaskResetRevision, scheduleTextureUpdate]);
+  }, [paintMaskResetRevision, refreshMaskDisplay, scheduleTextureUpdate]);
 
   const getBrushWorldRadius = useCallback((model: SurfacePaintTarget) => {
     const maxDimension = Math.max(model.boundingSize.x, model.boundingSize.y, model.boundingSize.z, 1);
@@ -377,8 +474,11 @@ function SurfacePaintOverlay() {
         : paintTool === 'eraser'
           ? paintToolSettings.eraserSize
           : paintMaskSettings.brushSize;
-    const worldScale = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract' ? 0.3 : 0.45;
-    return THREE.MathUtils.clamp((maxDimension * setting * worldScale) / 700, maxDimension * 0.004, maxDimension * 0.18);
+    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+    const worldScale = isMaskBrush ? 0.075 : 0.45;
+    const minRadius = isMaskBrush ? maxDimension * 0.0008 : maxDimension * 0.004;
+    const maxRadius = isMaskBrush ? maxDimension * 0.045 : maxDimension * 0.18;
+    return THREE.MathUtils.clamp((maxDimension * setting * worldScale) / 700, minRadius, maxRadius);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
   const getBrushTextureRadius = useCallback(() => {
@@ -388,7 +488,10 @@ function SurfacePaintOverlay() {
         : paintTool === 'eraser'
           ? paintToolSettings.eraserSize
           : paintMaskSettings.brushSize;
-    return THREE.MathUtils.clamp(setting * 0.45, 1.5, 96);
+    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+    return isMaskBrush
+      ? THREE.MathUtils.clamp(setting * 0.12, 0.75, 18)
+      : THREE.MathUtils.clamp(setting * 0.45, 1.5, 96);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
   const raycastModel = useCallback((event: globalThis.PointerEvent): UvPaintHit | undefined => {
@@ -506,12 +609,34 @@ function SurfacePaintOverlay() {
     return bounds;
   }, [scheduleTextureUpdate]);
 
+  const getStrokeSourceUv = useCallback((result: UvPaintHit) => {
+    const previous = lastSampleRef.current;
+    if (!previous || !(result.hit.object instanceof THREE.Mesh)) return undefined;
+    if (previous.meshUuid !== result.hit.object.uuid) return undefined;
+
+    const targetUvX = THREE.MathUtils.euclideanModulo(result.uv.x, 1);
+    const targetUvY = THREE.MathUtils.euclideanModulo(result.uv.y, 1);
+    const sourceUvX = THREE.MathUtils.euclideanModulo(previous.uv.x, 1);
+    const sourceUvY = THREE.MathUtils.euclideanModulo(previous.uv.y, 1);
+    const deltaX = Math.min(Math.abs(targetUvX - sourceUvX), 1 - Math.abs(targetUvX - sourceUvX));
+    const deltaY = Math.min(Math.abs(targetUvY - sourceUvY), 1 - Math.abs(targetUvY - sourceUvY));
+    const textureDistance = Math.hypot(deltaX, deltaY) * UV_PAINT_RESOLUTION;
+    const worldDistance = previous.point.distanceTo(result.hit.point);
+    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+    const maxTextureDistance = isMaskBrush
+      ? THREE.MathUtils.clamp(result.textureRadius * 2.2, 3, 36)
+      : THREE.MathUtils.clamp(result.textureRadius * 3, 8, 96);
+    const maxWorldDistance = result.worldRadius * (isMaskBrush ? 2.25 : 3.5);
+    const sameFace = previous.faceIndex !== undefined && previous.faceIndex === result.hit.faceIndex;
+    if (!sameFace && worldDistance > maxWorldDistance) return undefined;
+    if (textureDistance > maxTextureDistance) return undefined;
+    return previous.uv;
+  }, [paintTool]);
+
   const paintAt = useCallback((result: UvPaintHit) => {
     const layer = getUvPaintLayer(result.model);
     if (result.hit.object instanceof THREE.Mesh) ensureOverlayForMesh(layer, result.hit.object);
-    const lastUv = lastUvRef.current;
-    const uvDistance = lastUv?.distanceTo(result.uv) ?? 0;
-    const fromUv = uvDistance > 0.18 ? undefined : lastUv;
+    const fromUv = getStrokeSourceUv(result);
 
     if (paintTool === 'brush') {
       const bounds = drawBrushSegment(
@@ -548,7 +673,7 @@ function SurfacePaintOverlay() {
         fromUv,
         result.uv,
         result.textureRadius,
-        layer.maskPattern,
+        '#ffffff',
         'source-over',
         paintMaskSettings.brushHardness,
       );
@@ -557,6 +682,7 @@ function SurfacePaintOverlay() {
       }
       maskDirtyRef.current = true;
       maskHasContentRef.current = true;
+      refreshMaskDisplay(layer);
     } else if (paintTool === 'inpaint-subtract') {
       const bounds = drawBrushSegment(
         layer.maskContext,
@@ -572,18 +698,30 @@ function SurfacePaintOverlay() {
         strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
       }
       maskDirtyRef.current = true;
+      refreshMaskDisplay(layer);
     }
 
     lastUvRef.current = result.uv.clone();
+    lastSampleRef.current =
+      result.hit.object instanceof THREE.Mesh
+        ? {
+            meshUuid: result.hit.object.uuid,
+            faceIndex: result.hit.faceIndex ?? undefined,
+            uv: result.uv.clone(),
+            point: result.hit.point.clone(),
+          }
+        : undefined;
   }, [
     drawBrushSegment,
     ensureOverlayForMesh,
+    getStrokeSourceUv,
     getUvPaintLayer,
     paintMaskSettings.brushHardness,
     paintTool,
     paintToolSettings.brushHardness,
     paintToolSettings.color,
     paintToolSettings.eraserHardness,
+    refreshMaskDisplay,
   ]);
 
   const commitMaskIfDirty = useCallback(() => {
@@ -625,13 +763,18 @@ function SurfacePaintOverlay() {
           : hasCanvasAlpha(targetCanvas, targetContext)
         : maskHasContentRef.current;
 
-    if (draft.target === 'mask') maskHasContentRef.current = afterMaskHasContent;
+    if (draft.target === 'mask') {
+      draft.layer.maskSolidNormalized = true;
+      maskHasContentRef.current = afterMaskHasContent;
+    }
 
     captureRuntimeHistory({
       undo: () => {
         targetContext.putImageData(beforeImageData, x, y);
         scheduleTextureUpdate(targetTexture);
         if (draft.target === 'mask') {
+          draft.layer.maskSolidNormalized = false;
+          refreshMaskDisplay(draft.layer);
           maskHasContentRef.current = beforeMaskHasContent;
           setPaintMaskDataUrl(undefined, beforeMaskHasContent);
         }
@@ -640,12 +783,14 @@ function SurfacePaintOverlay() {
         targetContext.putImageData(afterImageData, x, y);
         scheduleTextureUpdate(targetTexture);
         if (draft.target === 'mask') {
+          draft.layer.maskSolidNormalized = false;
+          refreshMaskDisplay(draft.layer);
           maskHasContentRef.current = afterMaskHasContent;
           setPaintMaskDataUrl(undefined, afterMaskHasContent);
         }
       },
     });
-  }, [captureRuntimeHistory, paintTool, scheduleTextureUpdate, setPaintMaskDataUrl]);
+  }, [captureRuntimeHistory, paintTool, refreshMaskDisplay, scheduleTextureUpdate, setPaintMaskDataUrl]);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -674,6 +819,7 @@ function SurfacePaintOverlay() {
       event.stopPropagation();
       isPaintingRef.current = true;
       lastUvRef.current = undefined;
+      lastSampleRef.current = undefined;
       beginStrokeHistory(result);
       setOrbitControlsEnabled(false);
       paintAt(result);
@@ -682,6 +828,7 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) return;
       isPaintingRef.current = false;
       lastUvRef.current = undefined;
+      lastSampleRef.current = undefined;
       setOrbitControlsEnabled(true);
       commitStrokeHistory();
       commitMaskIfDirty();

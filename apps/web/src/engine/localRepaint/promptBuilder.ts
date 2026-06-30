@@ -20,6 +20,7 @@ export function buildLocalRepaintPrompt(input: {
   mode: LocalRepaintMode;
   preserveUnmaskedArea: boolean;
   includeBlankArea: boolean;
+  limitToBlankAndSelection: boolean;
   language?: 'zh' | 'en';
 }) {
   const constraint = input.language === 'en' ? englishConstraint : chineseConstraint;
@@ -43,11 +44,17 @@ export function buildLocalRepaintPrompt(input: {
       ? 'Unmasked pixels are protected by the application and must also be visually preserved.'
       : '未蒙版像素会被系统保护，也必须在视觉上保持不变。'
     : '';
+  const scopeHint = input.limitToBlankAndSelection
+    ? input.language === 'en'
+      ? 'Only recognize and repaint blank untextured pixels and the user-painted selected region. Do not reinterpret or recolor already textured regions outside that scope.'
+      : '仅识别并重绘空白未贴图像素和用户涂抹的选中区域。不要重新理解、改色或覆盖这个范围之外已经有材质的区域。'
+    : '';
   return [
     constraint,
     modeHint,
     blankHint,
     preserveHint,
+    scopeHint,
     input.materialDescription ? `Material: ${input.materialDescription}` : '',
     input.userPrompt.trim(),
   ]

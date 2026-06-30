@@ -16,6 +16,15 @@ import {
 
 const assetFolders = ['models', 'references', 'captures', 'generations', 'layers', 'baked'];
 
+export class ProjectSaveConflictError extends Error {
+  statusCode = 409;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProjectSaveConflictError';
+  }
+}
+
 function defaultSettings() {
   return {
     resolution: '2K' as const,
@@ -191,6 +200,16 @@ export async function saveProject(userId: string, projectId: string, inputProjec
   const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
   const projectDir = getProjectDir(userId, slug);
+  const existingProject = await loadRawProjectBySlug(userId, slug);
+  if (existingProject) {
+    const existingHasSceneData = existingProject.objects.length > 0 || existingProject.layers.length > 0;
+    const incomingClearsSceneData = inputProject.objects.length === 0 && inputProject.layers.length === 0;
+    if (existingHasSceneData && incomingClearsSceneData) {
+      throw new ProjectSaveConflictError(
+        'Blocked saving an empty scene over an existing project with model or layer data.',
+      );
+    }
+  }
   const now = new Date().toISOString();
   const project = {
     ...inputProject,

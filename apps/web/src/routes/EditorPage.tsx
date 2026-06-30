@@ -109,6 +109,7 @@ type LocalRepaintRuntime = {
   workingImageUrl: string;
   workingImageData: ImageData;
   objectMask: MaskBitmap;
+  initialUserMask?: MaskBitmap;
   holeMask: MaskBitmap;
   mergedImageData?: ImageData;
   previewUrl?: string;
@@ -372,13 +373,26 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       void saveToWorkspaceServer(snapshot)
         .then(() => setSaveStatus('saved'))
         .catch((error) => {
-          setSaveStatus('offline');
           const authRequired = error instanceof WorkspaceApiError && error.status === 401;
+          const blockedEmptySave = error instanceof WorkspaceApiError && error.status === 409;
+          setSaveStatus(blockedEmptySave ? 'idle' : 'offline');
           pushToast({
-            tone: authRequired ? 'warning' : 'warning',
-            title: authRequired ? '需要飞书登录' : 'Local workspace server is not running.',
-            description: authRequired ? '当前工程的模型、参考图、图层和生成记录需要登录后才能保存到你的用户工作区。' : undefined,
-            dedupeKey: authRequired ? 'workspace-auth-required-editor-save' : 'workspace-server-offline',
+            tone: 'warning',
+            title: authRequired
+              ? '需要飞书登录'
+              : blockedEmptySave
+                ? '已阻止异常空项目保存'
+                : 'Local workspace server is not running.',
+            description: authRequired
+              ? '当前工程的模型、参考图、图层和生成记录需要登录后才能保存到你的用户工作区。'
+              : blockedEmptySave
+                ? '当前页面尝试把已有模型/图层保存为空项目，已被本地服务拦截。请刷新项目重新加载。'
+                : undefined,
+            dedupeKey: authRequired
+              ? 'workspace-auth-required-editor-save'
+              : blockedEmptySave
+                ? 'workspace-empty-scene-save-blocked'
+                : 'workspace-server-offline',
           });
       });
     }, 5000);
@@ -521,6 +535,83 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
     }
   }
+
+  const getViewportInpaintSelectionMask = useCallback(() => {
+    const viewportRuntime = useSceneStore.getState().viewport;
+    if (!viewportRuntime) return undefined;
+    const canvas = viewportRuntime.gl.domElement;
+    if (!canvas || canvas.width === 0 || canvas.height === 0) return undefined;
+    const hiddenObjects: Array<{ object: THREE.Object3D; visible: boolean }> = [];
+    const materialSnapshots: Array<{ mesh: THREE.Mesh; material: THREE.Material | THREE.Material[] }> = [];
+    const temporaryMaterials: THREE.Material[] = [];
+    const previousBackground = viewportRuntime.scene.background;
+    const previousClearColor = viewportRuntime.gl.getClearColor(new THREE.Color()).clone();
+    const previousClearAlpha = viewportRuntime.gl.getClearAlpha();
+    const invisibleMaterial = new THREE.MeshBasicMaterial({
+      color: '#ffffff',
+      colorWrite: false,
+      depthWrite: true,
+      depthTest: true,
+      toneMapped: false,
+    });
+    let hasMaskOverlay = false;
+    try {
+      viewportRuntime.scene.traverse((object) => {
+        if (object instanceof THREE.Mesh && object.name === 'Liclick UV Inpaint Mask Overlay') {
+          hiddenObjects.push({ object, visible: object.visible });
+          object.visible = true;
+          const logicalMaskTexture = object.userData.liclickInpaintMaskTexture;
+          if (logicalMaskTexture instanceof THREE.Texture) {
+            const maskMaterial = new THREE.MeshBasicMaterial({
+              map: logicalMaskTexture,
+              transparent: true,
+              opacity: 1,
+              depthWrite: false,
+              depthTest: true,
+              polygonOffset: true,
+              polygonOffsetFactor: -8,
+              side: THREE.DoubleSide,
+              toneMapped: false,
+            });
+            temporaryMaterials.push(maskMaterial);
+            materialSnapshots.push({ mesh: object, material: object.material });
+            object.material = maskMaterial;
+          }
+          hasMaskOverlay = true;
+          return;
+        }
+        if (object.userData.liclickPaintOverlay || object.userData.liclickViewportHelper) {
+          hiddenObjects.push({ object, visible: object.visible });
+          object.visible = false;
+          return;
+        }
+        if (object instanceof THREE.Mesh) {
+          materialSnapshots.push({ mesh: object, material: object.material });
+          object.material = invisibleMaterial;
+        }
+      });
+      if (!hasMaskOverlay) return undefined;
+      viewportRuntime.scene.background = null;
+      viewportRuntime.gl.setClearColor(0x000000, 0);
+      viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
+      const readCanvas = document.createElement('canvas');
+      readCanvas.width = canvas.width;
+      readCanvas.height = canvas.height;
+      const context = readCanvas.getContext('2d', { willReadFrequently: true });
+      if (!context) return undefined;
+      context.drawImage(canvas, 0, 0);
+      const mask = inferAlphaObjectMask(context.getImageData(0, 0, canvas.width, canvas.height));
+      return ensureMaskContent(mask) ? mask : undefined;
+    } finally {
+      for (const { object, visible } of hiddenObjects) object.visible = visible;
+      for (const { mesh, material } of materialSnapshots) mesh.material = material;
+      temporaryMaterials.forEach((material) => material.dispose());
+      viewportRuntime.scene.background = previousBackground;
+      viewportRuntime.gl.setClearColor(previousClearColor, previousClearAlpha);
+      invisibleMaterial.dispose();
+      viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
+    }
+  }, []);
 
   async function referenceIdsToBlobs(referenceIds: string[]) {
     const selected = references.filter((reference) => referenceIds.includes(reference.id));
@@ -969,7 +1060,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         ? input.userMask
         : buildEditMask(input.userMask, localRepaintRuntime.holeMask, {
             includeBlankArea: input.includeBlankArea,
-            dilationRadius: 8,
+            dilationRadius: input.limitToBlankAndSelection ? 0 : 8,
           });
     if (!ensureMaskContent(editMask)) throw new Error(t('localRepaintMaskMissing'));
     const protectMask = input.preserveUnmaskedArea
@@ -985,6 +1076,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       mode: localRepaintRuntime.mode,
       preserveUnmaskedArea: input.preserveUnmaskedArea,
       includeBlankArea: input.includeBlankArea,
+      limitToBlankAndSelection: input.limitToBlankAndSelection,
       language: 'zh',
     });
     const referencesForEdit = await referenceIdsToBlobs(input.selectedReferenceIds);
@@ -999,6 +1091,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         roi: roiRect,
         preserve_unmasked: input.preserveUnmaskedArea,
         include_blank_area: input.includeBlankArea,
+        limit_to_blank_and_selection: input.limitToBlankAndSelection,
         workflow: localRepaintRuntime.mode,
       },
     });
@@ -1284,6 +1377,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const handleLocalRepaintFromToolbar = useCallback(() => {
     void (async () => {
       const capture = getCleanViewportCapture();
+      const initialUserMask = getViewportInpaintSelectionMask();
       const cameraState = getCurrentCameraSnapshot();
       if (!capture || !cameraState || !importedModel) {
         pushToast({ tone: 'warning', title: t('viewportUnavailable'), description: t('importModelFirst') });
@@ -1297,10 +1391,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         workingImageUrl: capture.dataUrl,
         workingImageData,
         objectMask,
+        initialUserMask,
         holeMask: inferWhiteHoleMask(workingImageData, objectMask),
       });
     })();
-  }, [importedModel, pushToast, t]);
+  }, [getViewportInpaintSelectionMask, importedModel, pushToast, t]);
 
   useEffect(() => {
     function isEditingText(target: EventTarget | null) {
@@ -1637,6 +1732,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           mode={localRepaintRuntime.mode}
           workingImageUrl={localRepaintRuntime.workingImageUrl}
           objectMask={localRepaintRuntime.objectMask}
+          initialUserMask={localRepaintRuntime.initialUserMask}
           targetName={localRepaintRuntime.targetName}
           references={references.filter((reference) => !selectedObjectId || !reference.objectId || reference.objectId === selectedObjectId)}
           onGenerate={generateLocalRepaint}

@@ -8,6 +8,7 @@ import {
   moveProject,
   renameProject,
   saveProject,
+  ProjectSaveConflictError,
 } from '../services/projectFileService.js';
 import type { WorkspaceProject } from '../types/project.js';
 import { requireAuth } from '../auth/authMiddleware.js';
@@ -40,7 +41,16 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
 
   if (request.method === 'PUT' && projectId && segments.length === 3) {
     const body = await readJsonBody<WorkspaceProject>(request);
-    const result = await saveProject(user.id, projectId, body);
+    let result: Awaited<ReturnType<typeof saveProject>>;
+    try {
+      result = await saveProject(user.id, projectId, body);
+    } catch (error) {
+      if (error instanceof ProjectSaveConflictError) {
+        sendJson(response, error.statusCode, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
     if (!result) sendJson(response, 404, { error: 'Project not found.' });
     else sendJson(response, 200, result);
     return true;

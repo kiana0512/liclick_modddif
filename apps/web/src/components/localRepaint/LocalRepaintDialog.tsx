@@ -10,6 +10,7 @@ export type LocalRepaintGenerateInput = {
   prompt: string;
   userMask: MaskBitmap;
   includeBlankArea: boolean;
+  limitToBlankAndSelection: boolean;
   preserveUnmaskedArea: boolean;
   selectedReferenceIds: string[];
 };
@@ -18,6 +19,7 @@ type LocalRepaintDialogProps = {
   mode: 'edit_layer_image' | 'repair_current_view';
   workingImageUrl: string;
   objectMask: MaskBitmap;
+  initialUserMask?: MaskBitmap;
   targetName: string;
   references: ReferenceImage[];
   onGenerate: (input: LocalRepaintGenerateInput) => Promise<{ previewUrl: string }>;
@@ -25,10 +27,30 @@ type LocalRepaintDialogProps = {
   onCancel: () => void;
 };
 
+function createMaskBrushPattern(context: CanvasRenderingContext2D) {
+  const patternCanvas = document.createElement('canvas');
+  patternCanvas.width = 24;
+  patternCanvas.height = 24;
+  const patternContext = patternCanvas.getContext('2d');
+  if (!patternContext) return 'rgba(255, 80, 210, 0.72)';
+  patternContext.clearRect(0, 0, patternCanvas.width, patternCanvas.height);
+  patternContext.strokeStyle = 'rgba(255, 80, 210, 0.64)';
+  patternContext.lineWidth = 6;
+  patternContext.lineCap = 'butt';
+  patternContext.beginPath();
+  for (let offset = -48; offset <= 72; offset += 12) {
+    patternContext.moveTo(offset, -18);
+    patternContext.lineTo(offset + 48, 30);
+  }
+  patternContext.stroke();
+  return context.createPattern(patternCanvas, 'repeat') ?? 'rgba(255, 80, 210, 0.64)';
+}
+
 export function LocalRepaintDialog({
   mode,
   workingImageUrl,
   objectMask,
+  initialUserMask,
   targetName,
   references,
   onGenerate,
@@ -39,12 +61,15 @@ export function LocalRepaintDialog({
   const frameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const logicalMaskCanvasRef = useRef<HTMLCanvasElement>();
   const drawingRef = useRef(false);
   const lastPointRef = useRef<{ x: number; y: number }>();
+  const initialMaskAppliedRef = useRef(false);
   const [tool, setTool] = useState<'brush' | 'erase'>('brush');
   const [brushSize, setBrushSize] = useState(32);
   const [prompt, setPrompt] = useState('');
   const [includeBlankArea, setIncludeBlankArea] = useState(true);
+  const [limitToBlankAndSelection, setLimitToBlankAndSelection] = useState(true);
   const [preserveUnmaskedArea, setPreserveUnmaskedArea] = useState(true);
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
   const [previewUrl, setPreviewUrl] = useState<string>();
@@ -52,6 +77,10 @@ export function LocalRepaintDialog({
   const [status, setStatus] = useState<'idle' | 'submitting' | 'preview_ready' | 'error'>('idle');
   const [error, setError] = useState<string>();
   const [paintSurfaceStyle, setPaintSurfaceStyle] = useState<CSSProperties>({ inset: 0 });
+
+  useEffect(() => {
+    initialMaskAppliedRef.current = false;
+  }, [initialUserMask]);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -93,10 +122,76 @@ export function LocalRepaintDialog({
     const image = imageRef.current;
     const canvas = canvasRef.current;
     if (!image || !canvas || image.naturalWidth === 0 || image.naturalHeight === 0) return;
-    if (canvas.width === image.naturalWidth && canvas.height === image.naturalHeight) return;
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
+    const resized = canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight;
+    if (resized) {
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const logicalCanvas = getLogicalMaskCanvas(canvas.width, canvas.height);
+      logicalCanvas.width = canvas.width;
+      logicalCanvas.height = canvas.height;
+    }
+    if (!initialMaskAppliedRef.current && initialUserMask) {
+      drawInitialMask(canvas, initialUserMask);
+      initialMaskAppliedRef.current = true;
+    }
     updatePaintSurfaceLayout();
+  }
+
+  function getLogicalMaskCanvas(width: number, height: number) {
+    if (!logicalMaskCanvasRef.current) logicalMaskCanvasRef.current = document.createElement('canvas');
+    const canvas = logicalMaskCanvasRef.current;
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    return canvas;
+  }
+
+  function drawInitialMask(canvas: HTMLCanvasElement, mask: MaskBitmap) {
+    const context = canvas.getContext('2d');
+    if (!context || mask.width <= 0 || mask.height <= 0) return;
+    const logicalCanvas = getLogicalMaskCanvas(canvas.width, canvas.height);
+    const logicalContext = logicalCanvas.getContext('2d');
+    context.save();
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    if (logicalContext) logicalContext.clearRect(0, 0, logicalCanvas.width, logicalCanvas.height);
+    context.fillStyle = createMaskBrushPattern(context);
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    if (logicalContext) {
+      logicalContext.fillStyle = '#ffffff';
+      logicalContext.fillRect(0, 0, logicalCanvas.width, logicalCanvas.height);
+    }
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = canvas.width;
+    maskCanvas.height = canvas.height;
+    const maskContext = maskCanvas.getContext('2d');
+    if (!maskContext) {
+      context.restore();
+      return;
+    }
+    const imageData = maskContext.createImageData(canvas.width, canvas.height);
+    for (let y = 0; y < canvas.height; y += 1) {
+      const maskY = Math.min(mask.height - 1, Math.floor((y / canvas.height) * mask.height));
+      for (let x = 0; x < canvas.width; x += 1) {
+        const maskX = Math.min(mask.width - 1, Math.floor((x / canvas.width) * mask.width));
+        const source = mask.data[maskY * mask.width + maskX] ?? 0;
+        const offset = (y * canvas.width + x) * 4;
+        imageData.data[offset] = 255;
+        imageData.data[offset + 1] = 255;
+        imageData.data[offset + 2] = 255;
+        imageData.data[offset + 3] = source > 8 ? 255 : 0;
+      }
+    }
+    maskContext.putImageData(imageData, 0, 0);
+    context.globalCompositeOperation = 'destination-in';
+    context.drawImage(maskCanvas, 0, 0);
+    context.restore();
+    if (logicalContext) {
+      logicalContext.globalCompositeOperation = 'destination-in';
+      logicalContext.drawImage(maskCanvas, 0, 0);
+      logicalContext.globalCompositeOperation = 'source-over';
+    }
+    clipMaskToObject();
   }
 
   function getCanvasPoint(event: PointerEvent<HTMLCanvasElement>) {
@@ -143,25 +238,32 @@ export function LocalRepaintDialog({
     }
     const context = canvas.getContext('2d');
     if (!context) return;
+    const logicalCanvas = getLogicalMaskCanvas(canvas.width, canvas.height);
+    const logicalContext = logicalCanvas.getContext('2d');
     const previousPoint = lastPointRef.current;
-    context.save();
-    context.globalCompositeOperation = tool === 'erase' ? 'destination-out' : 'source-over';
-    context.strokeStyle = 'rgba(255, 80, 210, 0.72)';
-    context.fillStyle = 'rgba(255, 80, 210, 0.72)';
-    context.lineWidth = brushSize;
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
-    if (previousPoint) {
-      context.beginPath();
-      context.moveTo(previousPoint.x, previousPoint.y);
-      context.lineTo(point.x, point.y);
-      context.stroke();
-    } else {
-      context.beginPath();
-      context.arc(point.x, point.y, brushSize / 2, 0, Math.PI * 2);
-      context.fill();
-    }
-    context.restore();
+    const maskBrush = createMaskBrushPattern(context);
+    const drawStroke = (targetContext: CanvasRenderingContext2D, fillStyle: string | CanvasPattern) => {
+      targetContext.save();
+      targetContext.globalCompositeOperation = tool === 'erase' ? 'destination-out' : 'source-over';
+      targetContext.strokeStyle = fillStyle;
+      targetContext.fillStyle = fillStyle;
+      targetContext.lineWidth = brushSize;
+      targetContext.lineCap = 'round';
+      targetContext.lineJoin = 'round';
+      if (previousPoint) {
+        targetContext.beginPath();
+        targetContext.moveTo(previousPoint.x, previousPoint.y);
+        targetContext.lineTo(point.x, point.y);
+        targetContext.stroke();
+      } else {
+        targetContext.beginPath();
+        targetContext.arc(point.x, point.y, brushSize / 2, 0, Math.PI * 2);
+        targetContext.fill();
+      }
+      targetContext.restore();
+    };
+    drawStroke(context, maskBrush);
+    if (logicalContext) drawStroke(logicalContext, '#ffffff');
     lastPointRef.current = point;
     if (tool === 'brush') clipMaskToObject();
   }
@@ -171,12 +273,15 @@ export function LocalRepaintDialog({
     const context = canvas?.getContext('2d');
     if (!canvas || !context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
+    getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
   }
 
   function readUserMask(): MaskBitmap {
     syncCanvasSize();
     const canvas = canvasRef.current;
-    const context = canvas?.getContext('2d');
+    const context = canvas
+      ? getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d')
+      : undefined;
     if (!canvas || !context) throw new Error(t('localRepaintMaskMissing'));
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
     const data = new Uint8ClampedArray(canvas.width * canvas.height);
@@ -199,6 +304,7 @@ export function LocalRepaintDialog({
         prompt,
         userMask: readUserMask(),
         includeBlankArea,
+        limitToBlankAndSelection,
         preserveUnmaskedArea,
         selectedReferenceIds,
       });
@@ -342,6 +448,15 @@ export function LocalRepaintDialog({
                 type="checkbox"
                 checked={includeBlankArea}
                 onChange={(event) => setIncludeBlankArea(event.target.checked)}
+                className="h-4 w-4 accent-[#ff62d2]"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+              <span>{t('limitToBlankAndSelection')}</span>
+              <input
+                type="checkbox"
+                checked={limitToBlankAndSelection}
+                onChange={(event) => setLimitToBlankAndSelection(event.target.checked)}
                 className="h-4 w-4 accent-[#ff62d2]"
               />
             </label>
