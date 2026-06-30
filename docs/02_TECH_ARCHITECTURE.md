@@ -29,20 +29,20 @@ The repository is a pnpm workspace with `apps/web` and reusable packages under `
 3. Send prompt, references, and capture metadata to the Liclick API Adapter.
 4. Receive generated image.
 5. Create a projected layer with camera snapshot and image URL.
-6. Preview via projected material shader.
-7. Bake to UV texture when exporting or flattening.
+6. Preview via the projected-layer stack shader. The shader can combine multiple visible projected layers, sample the baked/base material underneath, and overlay the latest UV texture when the stack has not been flattened.
+7. Bake to UV texture when the user accepts a Texture Map result, manually bakes a layer stack, or exports textured model formats with Auto UV bake enabled.
 
 ## Capture Route
 
-The current phase provides typed stubs. The real implementation should render offscreen passes with deterministic resolution and store URLs or blobs in the project asset store.
+The current implementation renders deterministic offscreen WebGL passes for color, mask, normal, and grayscale-packed depth. Local-server projects persist generated pass images through the workspace binary asset API instead of embedding large base64 payloads in `project.liclick.json`.
 
 ## Bake Route
 
-The MVP bake should support one object, one material, one UV set, and 1024/2048 output. Later versions can support material slot routing, UDIMs, multiple objects, and normal/roughness outputs.
+The current bake path is GPU-first and supports one imported object, one UV channel, and 1K/2K/4K/8K BaseColor output subject to browser and GPU limits. It composites the visible projected-layer stack into UV space, validates coverage, falls back to CPU rasterization when needed, applies seam padding, and persists the baked PNG for local-server projects. Later versions can add material-slot routing, UDIMs, multiple objects, normal/roughness outputs, and worker-side PNG encoding.
 
 ## API Adapter
 
-`services/liclickApiClient.ts` defines the adapter shape. Keys must come from environment variables or secure auth, never from committed code.
+`services/liclickApiClient.ts` defines the browser-to-local-server adapter. The server owns the Atlas/Liclick gateway calls, session checks, polling, asset uploads, and local repaint fallback behavior. Keys and tokens must come from secure server-side auth, never from committed code or browser-visible state.
 
 ## Connector Plan
 

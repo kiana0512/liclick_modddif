@@ -10,7 +10,7 @@ Phase 5 keeps the viewport as the primary workspace surface. Left and right UI m
 
 ## SceneRoot
 
-Owns lights, grid, default primitive model, material mode switching, and selection behavior. Real imported GLB scene roots should be inserted here or through a dedicated scene registry.
+Owns lights, grid, default primitive model, material mode switching, projected/UV overlay preview, and selection behavior. Real imported GLB scene roots should be inserted here or through a dedicated scene registry.
 
 Phase 2 mounts imported models as `THREE.Group` instances stored in `sceneStore.importedModel`. The primitive demo appears only when no real model has been imported. Imported models are assigned `liclickObjectId` metadata and rendered through the same display-mode pipeline.
 
@@ -48,7 +48,7 @@ Transform actions are kept under `engine/scene/transformActions.ts`:
 ## Display Modes
 
 - PBR: MeshStandardMaterial preview with sRGB textures, ACES tone mapping, studio lighting, and fallback material repair for dark or missing materials.
-- Flat: unlit MeshBasicMaterial using baked/base color texture when available.
+- Flat: unlit preview using baked/base color texture when available. If the layer stack is not baked but a UV texture exists, the viewport uses the UV overlay preview material rather than pretending the UV layer is the baked base material.
 - Normal: MeshNormalMaterial.
 - Wire: wireframe material.
 - Segmentation: later material override based on object/segment ids.
@@ -76,13 +76,17 @@ All capture passes restore object visibility and materials after rendering.
 
 ## Projected Layer Material
 
-`ProjectedLayerMaterial.ts` is the shader projection preview path. It projects world-space fragments into the saved capture camera clip space, rejects pixels outside the projector frustum, applies edge feathering, backface rejection, optional mask sampling, and an MVP grayscale depth comparison before blending the generated image by layer opacity.
+`ProjectedLayerMaterial.ts` is the shader projection preview path. It projects world-space fragments into the saved capture camera clip space, rejects pixels outside the projector frustum, applies edge feathering, backface rejection, optional mask sampling, and an MVP grayscale depth comparison before blending generated images by layer opacity.
+
+The current material path supports both single-layer and stacked projected previews. The stack shader separates loose coverage from strict quality, blends order-independent projected candidates, applies overlay layers in stack order, and falls back to the model/base material for uncovered fragments. `uvOverlayTexture` is a separate sampler from `baseTexture`, so an unbaked UV result can be previewed without overwriting the baked/base material.
+
+Projected layer shader materials store per-layer object-matrix snapshot metadata in `material.userData`. Exported turntable WebM uses that metadata to update object matrix delta uniforms during rotation, so projected textures stay attached to the model instead of behaving like a stale screen-space overlay.
 
 `three-projected-material` is installed but not directly coupled to business logic. The current implementation uses the Liclick shader adapter so the projection path remains under local control.
 
 ## UV Bake MVP
 
-The first bake can render visible layers into a UV-space render target for one selected mesh and one UV set. It should support basecolor first.
+The current bake renders visible projected layers into a UV-space render target for one selected imported object and one UV channel. BaseColor is the implemented output. The GPU path is preferred, with CPU rasterization as a same-resolution fallback when coverage validation or GPU allocation fails.
 
 ## Math Notes
 

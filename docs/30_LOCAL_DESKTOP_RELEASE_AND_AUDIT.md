@@ -44,8 +44,9 @@ Users should keep the terminal open while using the app. Closing the terminal st
 - Multiple models can be imported into one project. The editor keeps one active model in texture mode, selected from the Objects panel.
 - Reference images and layers are scoped to the selected object. Older unscoped project data remains visible for compatibility.
 - Liclick image generation and Texture Map generation use separate prompts.
+- Normal Liclick image generation keeps the preview `Add to references` shortcut. Texture Map generation hides that shortcut so generated texture outputs are accepted as projected layers instead of being recycled into the material-reference library.
 - Liclick image generation has a stop button. Stopping marks the local job as cancelled, unlocks the UI, and tells the local server to stop tracking that job.
-- The bottom paint dock separates normal texture painting, texture erasing, inpaint-region add, inpaint-region subtract, and the future inpaint API action.
+- The bottom paint dock separates normal texture painting, texture erasing, inpaint-region add, inpaint-region subtract, and the current local repaint submit action.
 - Normal brush/eraser tools require an active projected layer. The editor warns the user and opens the Layers panel when painting is attempted without a valid target layer.
 - Inpaint add/subtract tools edit only the inpaint selection mask. They do not erase projected-layer pixels.
 - Surface painting works only on model meshes with UVs. Empty viewport space continues to use the normal orbit/camera behavior.
@@ -58,7 +59,9 @@ Users should keep the terminal open while using the app. Closing the terminal st
 - Project thumbnails are captured from the real WebGL viewport after projection changes. Grid and paint/helper overlays are hidden during the thumbnail capture and restored immediately afterwards.
 - The Projects page and bottom editor tools now use the shared Chinese / English string store instead of fixed English labels.
 - Local repaint now uses a focused current-view dialog. The brush paints continuous strokes instead of separated dabs, the editable mask is clipped to the visible model alpha, and the request reuses the same authenticated Atlas/Liclick gateway as normal image generation.
-- Local repaint uploads the clean transparent viewport image and the clipped mask through `upload_asset`, submits the `局部重绘_volcengine` ComfyUI workflow through `generate_image`, and polls with `get_task_status(task_type=image)`. It does not require a separate browser token or API-key environment variable.
+- Local repaint first attempts a LiClick-web-like `局部重绘_volcengine` ComfyUI payload through the Atlas JSON-RPC gateway. If the Atlas `generate_image` wrapper rejects that custom workflow, the server falls back to the supported `gpt-image-2` image edit path by uploading the base image and mask through `upload_asset`, passing them as `reference_images`, and protecting unmasked pixels again on the client composite. It does not require a separate browser token or API-key environment variable.
+- Turntable WebM export now resyncs projected-layer object-matrix uniforms every frame while the model rotates, so projected/texture-map layers stay attached in the recorded video.
+- UV preview now separates unbaked `uvOverlayTexture` from the baked/base material path. This prevents a fresh UV overlay from pretending to be the flattened BaseColor texture in the viewport.
 
 ## Code Audit Summary
 
@@ -78,6 +81,10 @@ Low-risk cleanup completed in this pass:
 - Removed unused projection thumbnail renderer, UV bake stub, dead frontend mock generation service, unused mock layer/reference seed files, and the uncalled command registry/feature flag pair.
 - Updated docs for projected layer blend/overlay behavior, thumbnail capture, global bake gating, and current offline fallback boundaries.
 - Audited the local repaint chain file by file: frontend dialog, viewport capture, local repaint image/mask utilities, image-edit client, Liclick server route, and Liclick generation service. Removed the accidental direct web-token path and restored the existing Atlas/Liclick auth boundary.
+- Added a direct Atlas JSON-RPC helper for large image-edit payloads so local repaint can submit base64 ComfyUI fields without command-line length limits.
+- Added local repaint fallback handling for Atlas `generate_image` 400 responses, with explicit Chinese error reporting during status checks and polling.
+- Removed the Texture Map preview `Add to references` action while keeping the normal Liclick image-generation shortcut.
+- Updated projected-layer preview/export code so WebM turntable captures keep projection alignment during object rotation.
 - Verified the packaging script excludes runtime workspace data, logs, secrets, `.git`, and `node_modules` from staging while keeping built server/web outputs and source files needed by the desktop launcher.
 
 Build checks for this release:
@@ -96,8 +103,8 @@ The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 3,388,729 bytes
-SHA256 97F7429DABF323423B97C90B44A99CB77764B485A67E6209DDDAD8A525D353A8
+Size 3,393,018 bytes
+SHA256 D60A1753EE5A5613EE8BEA7827E6A79D5830FE2B7E836F02363E401F1B6A8503
 ```
 
 Packaging notes for this build:

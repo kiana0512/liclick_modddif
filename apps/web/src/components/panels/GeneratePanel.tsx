@@ -1121,15 +1121,17 @@ export function GeneratePanel() {
           )}
           {previewGeneration?.resultUrl && (
             <div className="absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 bg-black/68 p-1 shadow-xl backdrop-blur-sm">
-              <button
-                type="button"
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
-                title={t('addToReferences')}
-                aria-label={t('addToReferences')}
-                onClick={handleAddGenerationAsReference}
-              >
-                <ImagePlus className="h-4 w-4" />
-              </button>
+              {!isTextureMapTab && !isTextureMapGeneration(previewGeneration) && (
+                <button
+                  type="button"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
+                  title={t('addToReferences')}
+                  aria-label={t('addToReferences')}
+                  onClick={handleAddGenerationAsReference}
+                >
+                  <ImagePlus className="h-4 w-4" />
+                </button>
+              )}
               {isTextureMapGeneration(previewGeneration) && (
                 <button
                   type="button"

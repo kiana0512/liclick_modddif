@@ -12,6 +12,8 @@ Phase 3 added a browser bake path. The current path supports one imported object
 - `apps/web/src/engine/bake/dilation.ts`: simple seam padding.
 - `apps/web/src/engine/bake/applyBakedTexture.ts`: applies basecolor texture to model materials.
 - `apps/web/src/engine/bake/downloadTexture.ts`: downloads `liclick_basecolor_*.png`.
+- `apps/web/src/engine/projection/ProjectedLayerMaterial.ts`: live projected stack preview, UV overlay preview material, and shader-side object matrix delta metadata.
+- `apps/web/src/engine/export/texturedExportUtils.ts`: prepares textured model exports by finding or baking the current visible projected stack, compositing visible UV repair/merged layers over it, and attaching the BaseColor texture to cloned export geometry.
 - `apps/web/src/components/panels/GeneratePanel.tsx`: automatic bake queue and progress UI.
 - `apps/web/src/components/panels/LayerAdjustmentsPanel.tsx`: layer controls and baked-texture state.
 
@@ -48,11 +50,11 @@ The MVP dilation copies colors from neighboring covered pixels into uncovered pi
 
 Automatic bake reports progress phases for asset loading, GPU/CPU UV rasterization, compositing, PNG encoding, applying, and persistence. The top progress bar is intentionally visible because 4K/8K bakes still include texture upload, render target readback, PNG encoding, and workspace persistence.
 
-PBR preview avoids a white-model gap while baked assets are loading. It keeps using the projected preview or the in-memory baked texture until the persisted baked texture is available.
+PBR preview avoids a white-model gap while baked assets are loading. It keeps using the projected preview or the in-memory baked texture until the persisted baked texture is available. Visible UV layers are composited into a transparent UV stack texture and applied over either the baked BaseColor or the original/base material. This keeps the difference between live UV overlay and flattened BaseColor explicit while making local repaint UV repair layers visible immediately.
 
 ## Texture Orientation
 
-The canvas writes output Y as `1 - uv.y`. The applied texture sets `texture.flipY = false` for the current renderer/material path. If a future GLB exporter rewrites image assets, re-test orientation against glTF texture conventions.
+The CPU rasterizer maps output Y as `uv.y`, matching the GPU bake path and the live model shader's `vUv` sampling. The applied texture sets `texture.flipY = false` for the current renderer/material path. If a future GLB/FBX/OBJ exporter rewrites image assets, re-test orientation against both live preview and exported files.
 
 ## Current Limits
 
@@ -66,6 +68,7 @@ The canvas writes output Y as `1 - uv.y`. The applied texture sets `texture.flip
 - No normal/roughness/metallic bake.
 - 4096 and 8192 keep output quality. GPU bake avoids the main CPU raster loop; very large outputs can still be limited by GPU max texture size, readback, PNG encoding, and available browser memory.
 - `project.liclick.json` workspace save materializes registered Blob URLs and data URLs into workspace assets where possible.
+- UV merge/orientation is still a sensitive area. Recent changes separate unbaked UV overlay preview from baked BaseColor preview, but every UV orientation change must be tested against side-view models, saved PNGs, and exported model formats.
 
 ## Performance Notes
 
@@ -89,4 +92,5 @@ The canvas writes output Y as `1 - uv.y`. The applied texture sets `texture.flip
 7. Switch to PBR or Flat.
 8. Confirm baked basecolor remains visible without a white-model gap.
 9. Click `Download BaseColor`.
-10. Switch to Normal mode and confirm the UI says the colors visualize surface normals, not the final texture.
+10. Export GLB/FBX/OBJ and confirm the baked BaseColor is attached or emitted beside the model as expected.
+11. Switch to Normal mode and confirm the UI says the colors visualize surface normals, not the final texture.

@@ -12,6 +12,7 @@ export type ProjectionLayerInput = {
   objectMatrixWorld?: number[];
   currentObjectMatrixWorld?: number[];
   baseTexture?: THREE.Texture;
+  uvOverlayTexture?: THREE.Texture;
   baseColor?: THREE.ColorRepresentation;
   opacity: number;
   strength?: number;

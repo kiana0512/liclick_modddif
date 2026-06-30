@@ -35,6 +35,8 @@ Phase 2 uses a Liclick custom shader:
 
 The projection sticks to model world space when the view rotates. It is not a screen overlay.
 
+Projected layers also store the selected object's world matrix at generation/capture time. During live preview and WebM turntable export, the shader receives an object matrix delta between the saved object transform and the current object transform. This keeps accepted texture-map projections aligned when the user rotates the viewport or the turntable export rotates the model after generation.
+
 Phase 8 tightens visibility:
 
 - fragments must be inside the saved camera frustum;
@@ -78,7 +80,8 @@ Algorithm:
 
 Texture direction:
 
-- The bake writes canvas Y as `1.0 - uv.y`.
+- The CPU fallback maps UV canvas Y as `uv.y`, matching the GPU bake path and the model shader's `texture2D(..., vUv)` sampling.
+- The GPU bake path renders triangles in UV clip space and keeps the applied texture on the Three.js/glTF-oriented `flipY = false` path. Orientation must be tested with both preview and exported assets whenever this mapping changes.
 - The applied Three.js texture uses `flipY = false` to keep the baked canvas aligned with the model UVs in this MVP.
 
 Depth:

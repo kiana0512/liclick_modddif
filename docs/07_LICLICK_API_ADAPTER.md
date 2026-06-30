@@ -52,14 +52,14 @@ type LiclickApiClient = {
 
 The Generate panel exposes two user-facing modes:
 
-- `Liclick`: calls the authenticated Liclick image API and returns a normal generated image. This is the current implemented path.
-- `Texture Map`: planned clean-room texture-transfer mode. It should use material references plus the current model view as a shape and camera reference, then produce an aligned transparent projected layer. This mode is not the same as a generic Liclick image generation request.
+- `Liclick`: calls the authenticated Liclick image API and returns a normal generated image. The preview toolbar keeps the `Add to references` shortcut for this exploratory generation path.
+- `Texture Map`: captures the current model view, combines it with exactly one selected material reference, and submits a strict shape-preserving prompt. The preview toolbar hides `Add to references`; users accept a usable result with `Add as Projected Layer` so the texture output remains layer/source data instead of becoming a material reference.
 
-Liclick mode no longer requires a user-entered prompt at the UI boundary. Texture Map mode also allows an empty user prompt, but the client combines any optional user prompt with an internal shape-preserving material-transfer prompt before submission.
+Liclick mode no longer requires a user-entered prompt at the UI boundary. Texture Map mode also allows an empty user prompt, but the client combines any optional user prompt with an internal shape-preserving material-transfer prompt before submission. Texture Map still requires one material reference; if none is selected the UI warns and does not submit.
 
 ## generateTextureSingleView
 
-Inputs: optional prompt, references, selected object id, capture id, resolution, visible-only flag, and upscale flag.
+Inputs: optional prompt, one material reference, selected object id, capture id, resolution, visible-only flag, and upscale flag.
 
 Output: generation id, status, result image URL, and metadata.
 
@@ -81,7 +81,7 @@ type GenerateTextureInput = {
 };
 ```
 
-`createLiclickApiClient().generateTextureSingleView` calls the authenticated server route. The returned `Generation` stores:
+`GeneratePanel` first captures a clean current-model reference image, stores it as an in-memory reference ahead of the material reference, and then calls `createLiclickApiClient().generateTextureSingleView` through the authenticated server route. The returned `Generation` stores:
 
 - `metadata.provider = "liclick-atlas"`
 - `metadata.taskId`
@@ -89,8 +89,12 @@ type GenerateTextureInput = {
 - `metadata.resultUrls`
 - `metadata.extraParams`
 - `metadata.uploadedReferences`
+- `metadata.workflow = "texture-map"`
+- `metadata.materialReferenceId`
+- `metadata.modelViewReferenceId`
+- `metadata.objectMatrixWorld`
 
-The preview image can be manually added to projected layers or back into the project's reference images. It is not automatically injected as a reference.
+The preview image can be opened fullscreen, downloaded, or manually added as a projected layer. It is not automatically injected as a reference.
 
 ## Account Boundary
 
@@ -106,13 +110,19 @@ For security, remote asset import is HTTPS-only and host allowlisted. The defaul
 
 ## Inpaint
 
-Inputs: prompt, mask, base image, selected object, and optional references.
+Inputs: prompt, mask, base image, and selected object.
 
-Local repaint reuses the same authenticated Atlas/Liclick gateway configuration as normal image generation. The server uploads the current viewport image and mask through `upload_asset`, then submits `generate_image` with the ComfyUI workflow fields:
+Local repaint reuses the same authenticated Atlas/Liclick gateway configuration as normal image generation. The server first attempts `generate_image` with an `extra_params` object that mirrors the LiClick web editor's `/ai-video/image-task/submit` task payload:
 
 - backend/model: `comfyui`
 - pipeline: `局部重绘_volcengine`
+- request type: `single_image`
 - params: `需要重绘的图`, `输入图片蒙版`, `正向提示`, `重绘幅度`, `seed`
+- ext infos: `task_type=edit`, `edit_type=inpaint`
+
+LiClick's web editor uses base64 `{ data, type }` image entries for this workflow, and the adapter sends the same shape through the Atlas JSON-RPC gateway using `callAtlasToolJson`. This direct JSON-RPC helper reads the local Atlas token cache and avoids command-line argument size limits for base64 image payloads. It does not expose Atlas tokens to the browser.
+
+Important boundary: the LiClick web page can call its own `/ai-video/image-task/submit` path directly with a web `id_token`; our desktop app calls the Atlas `generate_image` tool. If the Atlas tool rejects this custom ComfyUI workflow, the adapter falls back to the officially supported `gpt-image-2` image edit path: it uploads the base image and mask through `upload_asset`, passes both as `reference_images`, and adds a strict prompt telling the model to modify only the white mask region. The client still composites the returned image back through the local mask, so unmasked pixels remain protected on our side.
 
 The matching poll request uses the existing `get_task_status(task_type=image)` path. There is no separate browser token or API-key setup for local repaint.
 

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { parseJsonFromOutput, runAtlas } from '../auth/atlasAuthService.js';
+import { callAtlasToolJson, parseJsonFromOutput, runAtlas } from '../auth/atlasAuthService.js';
 
 type ReferenceInput = {
   id?: string;
@@ -42,6 +42,11 @@ type UploadedReference = {
   assetId: string;
 };
 
+type LiclickImageParam = {
+  data: string;
+  type: 'image';
+};
+
 export type LiclickImageTaskResult = {
   status: string;
   resultUrl?: string;
@@ -65,6 +70,10 @@ export type LiclickImageSubmission = {
 
 function trimOutput(text: string) {
   return text.trim().replace(/\s+/g, ' ').slice(0, 1200);
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function findField(value: unknown, keys: string[]): string {
@@ -165,6 +174,13 @@ function dataUrlToBuffer(dataUrl: string) {
   return { buffer, ext };
 }
 
+function dataUrlToBase64(dataUrl: string) {
+  const match = dataUrl.match(/^data:([^;,]+)?(?:;[^,]*)?,(.*)$/);
+  if (!match) throw new Error('Invalid image data URL.');
+  const isBase64 = dataUrl.slice(0, dataUrl.indexOf(',')).includes(';base64');
+  return isBase64 ? match[2] : Buffer.from(decodeURIComponent(match[2]), 'utf8').toString('base64');
+}
+
 function buildExtraParams(input: GenerateImageInput, uploadedReferences: UploadedReference[]) {
   const model = input.model || 'gpt-image-2';
   const aspectRatio = input.aspectRatio ?? 'auto';
@@ -208,6 +224,164 @@ function buildSubmissionPrompt(input: GenerateImageInput, model: string) {
   const materialConstraint =
     '贴图生成约束：输出应强调材质贴图本身的颜色、粗糙度、纹理颗粒和细节，避免明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影。';
   return basePrompt ? `${basePrompt}\n\n${materialConstraint}` : materialConstraint;
+}
+
+function buildImageParam(base64Data: string): LiclickImageParam {
+  return {
+    // LiClick's image edit UI sends these custom ComfyUI fields as base64 { data, type } entries.
+    data: base64Data,
+    type: 'image',
+  };
+}
+
+function buildLocalRepaintTask(input: EditImageInput) {
+  const name = `Inpaint_${input.prompt.trim() || 'Local repaint'}`.slice(0, 48);
+  const repaintStrength = input.strength ?? input.extra?.strength ?? 1;
+  const workspaceId = input.extra?.workspace_id ?? input.extra?.workspaceId;
+  const sourceData = dataUrlToBase64(input.image);
+  const maskData = dataUrlToBase64(input.mask);
+  const params: Record<string, unknown> = {
+    name,
+    n: 1,
+    '需要重绘的图': [buildImageParam(sourceData)],
+    '输入图片蒙版': [buildImageParam(maskData)],
+    '正向提示': input.prompt,
+    '重绘幅度': repaintStrength,
+    seed: typeof input.seed === 'number' ? input.seed : -1,
+  };
+  const task: Record<string, unknown> = {
+    request_type: 'single_image',
+    backend: 'comfyui',
+    pipeline_id: '局部重绘_volcengine',
+    params,
+    ext_infos: {
+      task_type: 'edit',
+      edit_type: 'inpaint',
+    },
+  };
+  if (typeof workspaceId === 'string' && workspaceId.trim()) task.workspace_id = workspaceId.trim();
+  return {
+    task,
+    workspaceId: typeof workspaceId === 'string' && workspaceId.trim() ? workspaceId.trim() : undefined,
+  };
+}
+
+function buildLocalRepaintFallbackPrompt(input: EditImageInput) {
+  const prompt = input.prompt.trim() || '重绘蒙版标记区域。';
+  return [
+    prompt,
+    '',
+    '局部重绘约束：第一张参考图是原图，第二张参考图是黑白蒙版。只修改蒙版白色区域，黑色区域必须保持原图构图、边缘、材质、光照和颜色不变。输出与原图同构图的一张完整图片。',
+  ].join('\n');
+}
+
+function parseImageSubmissionResult(
+  submit: { stdout: string },
+  fallbackMessage: string,
+): Pick<LiclickImageSubmission, 'id' | 'status' | 'resultUrl' | 'resultUrls' | 'taskId' | 'raw'> {
+  const payload = parseAtlasPayload(submit.stdout);
+  const error = findAtlasError(payload);
+  if (error) throw new Error(error);
+  const urls = findUrls(payload);
+  const taskId = findTaskId(payload);
+  if (urls.length === 0 && !taskId) {
+    const message = findField(payload, ['err_msg', 'error', 'message', 'result']) || trimOutput(submit.stdout);
+    throw new Error(message || fallbackMessage);
+  }
+  return {
+    id: taskId || `liclick-edit-${Date.now()}`,
+    status: urls.length > 0 ? 'succeeded' : 'running',
+    resultUrl: urls[0],
+    resultUrls: urls,
+    taskId,
+    raw: payload,
+  };
+}
+
+function findAtlasError(value: unknown): string {
+  if (!value) return '';
+  if (typeof value === 'string') {
+    return /(^|\s)(错误|error|HTTPStatusError|Bad Request|Failed):/i.test(value) || /HTTPStatusError|Bad Request/i.test(value)
+      ? trimOutput(value)
+      : '';
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findAtlasError(item);
+      if (found) return found;
+    }
+    return '';
+  }
+  if (typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  if (record.isError === true) {
+    return findField(value, ['err_msg', 'error', 'message', 'result']) || trimOutput(JSON.stringify(value));
+  }
+  for (const key of ['err_msg', 'error', 'message']) {
+    const child = record[key];
+    if (typeof child === 'string' && /错误|error|HTTPStatusError|Bad Request|failed/i.test(child)) return trimOutput(child);
+  }
+  for (const child of Object.values(record)) {
+    const found = findAtlasError(child);
+    if (found) return found;
+  }
+  return '';
+}
+
+async function submitLocalRepaintFallback(
+  input: EditImageInput,
+  tempDir: string,
+  atlasContext: LiclickAtlasContext,
+  primaryError: string,
+): Promise<LiclickImageSubmission> {
+  let source: UploadedReference;
+  let mask: UploadedReference;
+  try {
+    source = await uploadReference({ id: 'local-repaint-source', url: input.image }, tempDir, atlasContext);
+  } catch (error) {
+    throw new Error(`莉刻局部重绘上传原图失败：${errorMessage(error)}`);
+  }
+  try {
+    mask = await uploadReference({ id: 'local-repaint-mask', url: input.mask }, tempDir, atlasContext);
+  } catch (error) {
+    throw new Error(`莉刻局部重绘上传蒙版失败：${errorMessage(error)}`);
+  }
+
+  const workspaceId = input.extra?.workspace_id ?? input.extra?.workspaceId;
+  const referenceImages = [source, mask].map((reference) => ({
+    asset_id: reference.assetId,
+    type: 'image',
+  }));
+  const extraParams: Record<string, unknown> = {
+    name: `Inpaint_${input.prompt.trim() || 'Local repaint'}`.slice(0, 48),
+    quality: 'high',
+    n: 1,
+    aspect_ratio: 'auto',
+    image_size: 'auto',
+    reference_images: referenceImages,
+    local_repaint_fallback: true,
+    primary_error: primaryError,
+  };
+  const submit = await callAtlasToolJson(
+    'liclick',
+    'generate_image',
+    {
+      prompt: buildLocalRepaintFallbackPrompt(input),
+      model: 'gpt-image-2',
+      extra_params: extraParams,
+      ...(typeof workspaceId === 'string' && workspaceId.trim() ? { workspace_id: workspaceId.trim() } : {}),
+    },
+    4 * 60 * 1000,
+    atlasContext.atlasHomeDir,
+  );
+  const parsed = parseImageSubmissionResult(submit, '莉刻局部重绘 fallback 没有返回任务 ID。');
+  return {
+    ...parsed,
+    workspaceId: typeof workspaceId === 'string' && workspaceId.trim() ? workspaceId.trim() : undefined,
+    model: 'gpt-image-2',
+    extraParams,
+    uploadedReferences: [source, mask],
+  };
 }
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>) {
@@ -335,76 +509,32 @@ export async function submitLiclickImageEdit(
   atlasContext: LiclickAtlasContext = {},
 ): Promise<LiclickImageSubmission> {
   return withTempDir(async (tempDir) => {
-    const source = await uploadReference({ id: 'local-repaint-source', url: input.image }, tempDir, atlasContext);
-    const mask = await uploadReference({ id: 'local-repaint-mask', url: input.mask }, tempDir, atlasContext);
-    const referenceUploads = await Promise.all(
-      (input.references ?? [])
-        .slice(0, 8)
-        .map((url, index) => uploadReference({ id: `local-repaint-reference-${index + 1}`, url }, tempDir, atlasContext)),
-    );
-    const name = `Inpaint_${input.prompt.trim() || 'Local repaint'}`.slice(0, 48);
-    const repaintStrength = input.strength ?? input.extra?.strength ?? 1;
-    const extraParams: Record<string, unknown> = {
-      name,
-      n: 1,
-      backend: 'comfyui',
-      pipeline_id: '局部重绘_volcengine',
-      request_type: 'single_image',
-      '需要重绘的图': [{ asset_id: source.assetId, type: 'image' }],
-      '输入图片蒙版': [{ asset_id: mask.assetId, type: 'image' }],
-      '正向提示': input.prompt,
-      '重绘幅度': repaintStrength,
-      seed: typeof input.seed === 'number' ? input.seed : -1,
-    };
-    if (referenceUploads.length > 0) {
-      extraParams.reference_images = referenceUploads.map((reference) => ({
-        asset_id: reference.assetId,
-        type: 'image',
-      }));
-    }
-    const workspaceId = input.extra?.workspace_id ?? input.extra?.workspaceId;
-    if (typeof workspaceId === 'string' && workspaceId.trim()) extraParams.workspace_id = workspaceId.trim();
-    const submit = await runAtlas(
-      [
-        'gateway',
-        'call-tool',
-        '--service',
+    const { task: extraParams, workspaceId } = buildLocalRepaintTask(input);
+    let submit;
+    try {
+      submit = await callAtlasToolJson(
         'liclick',
-        '--tool',
         'generate_image',
-        '--args',
-        JSON.stringify({
+        {
           prompt: input.prompt,
           model: 'comfyui',
           extra_params: extraParams,
-          ...(typeof workspaceId === 'string' && workspaceId.trim() ? { workspace_id: workspaceId.trim() } : {}),
-        }),
-        '--timeout',
-        '180',
-      ],
-      4 * 60 * 1000,
-      false,
-      atlasContext.atlasHomeDir,
-    );
-    const payload = parseAtlasPayload(submit.stdout);
-    const urls = findUrls(payload);
-    const taskId = findTaskId(payload);
-    if (urls.length === 0 && !taskId) {
-      const message = findField(payload, ['err_msg', 'error', 'message', 'result']) || trimOutput(submit.stdout || submit.stderr);
-      throw new Error(message || '莉刻局部重绘没有返回任务 ID。');
+          ...(workspaceId ? { workspace_id: workspaceId } : {}),
+        },
+        4 * 60 * 1000,
+        atlasContext.atlasHomeDir,
+      );
+      const parsed = parseImageSubmissionResult(submit, '莉刻局部重绘没有返回任务 ID。');
+      return {
+        ...parsed,
+        workspaceId,
+        model: '局部重绘_volcengine',
+        extraParams,
+        uploadedReferences: [],
+      };
+    } catch (error) {
+      return submitLocalRepaintFallback(input, tempDir, atlasContext, errorMessage(error));
     }
-    return {
-      id: taskId || `liclick-edit-${Date.now()}`,
-      status: urls.length > 0 ? 'succeeded' : 'running',
-      resultUrl: urls[0],
-      resultUrls: urls,
-      taskId,
-      workspaceId: typeof workspaceId === 'string' ? workspaceId : undefined,
-      model: '局部重绘_volcengine',
-      extraParams,
-      uploadedReferences: [source, mask, ...referenceUploads],
-      raw: payload,
-    };
   });
 }
 

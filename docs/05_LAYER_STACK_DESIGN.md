@@ -48,9 +48,14 @@ Phase 2 implements go-to-camera for projected layers using the serialized captur
 
 Projected layers now store `generationId`, `captureId`, `objectId`, `imageUrl`, `camera`, `visible`, and `opacity`. The active visible projected layer is applied to the imported model through the projection shader. Visibility and opacity update the preview. Deleting the active layer removes the projected preview and restores the model display material.
 
-## Current Multi-Layer Limit
+## Stacked Preview
 
-The data model supports multiple projected layers, but the viewport preview only guarantees one active visible projected layer at a time. Full stacked projection compositing belongs to the UV bake and multi-layer rendering phases.
+The data model and viewport preview now support multiple visible projected layers for one imported object. `createProjectedLayerStackMaterial` receives the visible layer stack, samples each projected image through its saved camera, rejects invalid samples with frustum/mask/depth/backface gates, and composites:
+
+- `blend` layers by quality, so the strongest candidates can contribute without depending on layer order;
+- `overlay` layers in stack order, matching the user's layer-list mental model.
+
+The viewport still guards extremely large unbaked stacks for performance. The intended fast path for production-sized stacks is to bake the visible stack into one BaseColor texture and preview/export that baked result.
 
 ## Baked Layer State
 
@@ -66,3 +71,5 @@ The Layers panel highlights the active projected layer and shows a BAKED or Re-b
 ## Re-Bake Rule
 
 Changing projected layer opacity after baking does not mutate the previous baked PNG. The UI marks the layer as needing re-bake. Users should click `Bake Active Layer` again to produce a new basecolor.
+
+Texture Map results are accepted through the projected-layer action, not by adding the result back into the reference-image library. Normal Liclick generation keeps its `Add to references` shortcut, while Texture Map hides that shortcut to keep material references separate from generated texture outputs.

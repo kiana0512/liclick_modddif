@@ -1,8 +1,18 @@
-# Texture Map Mode Plan
+# Texture Map Mode Plan And Current State
 
 Texture Map mode is the clean-room path for the Modddif-like workflow: reference images describe the material, while the current MVP viewport model view describes object shape, pose, camera, and visible surface layout.
 
 This mode must not be treated as generic Liclick image generation. The required output is an aligned transparent projected texture layer that can be previewed on the model, adjusted in the layer stack, and baked into UV space.
+
+Current implementation status:
+
+- Texture Map has its own Generate-panel tab and prompt state.
+- The user selects exactly one material reference.
+- The client captures the current model view as the first reference and sends the material reference second.
+- The client builds an internal shape-preserving material-transfer prompt; user text is optional extra guidance.
+- The result appears as a preview generation. `Add to references` is hidden for Texture Map results, while `Add as Projected Layer`, download, and fullscreen preview remain available.
+- Accepting the result creates a projected layer with camera/object matrix metadata. If Auto UV bake is enabled, the visible stack bakes into BaseColor immediately after acceptance.
+- Local foreground matting, alignment scoring, and production multi-view conditioning are still follow-up work.
 
 ## Problem
 
@@ -17,7 +27,7 @@ The current Liclick image path returns a normal RGB image. It can look visually 
 - `Liclick`: prompt and references go to the Liclick API. The result is a normal generated image and can be added manually as a projected layer.
 - `Texture Map`: the app first captures the current model view and uses it as a hard spatial reference. Material references guide the surface appearance. The result should be a view-aligned RGBA projected layer.
 
-Texture Map starts as a single-view workflow: generation returns a preview first, and the user explicitly accepts it with the projected-layer action. Accepting a Texture Map result should immediately create the projected layer and run a UV bake from the saved generation view.
+Texture Map starts as a single-view workflow: generation returns a preview first, and the user explicitly accepts it with the projected-layer action. Accepting a Texture Map result creates the projected layer from the saved generation view; UV bake runs immediately only when the global Auto UV bake setting is enabled.
 
 ## Prompt Rules
 
@@ -54,12 +64,12 @@ The user prompt is therefore optional guidance, not the source of truth for shap
    - trim and feather edges to avoid hard halos;
    - reject pixels outside the projector frustum, failed depth, source alpha, or backfaces during projection.
 
-5. Create and bake a projected layer:
+5. Create and optionally bake a projected layer:
    - store the RGBA image;
    - store the mask/depth/camera snapshot;
    - store the object world matrix snapshot from generation time;
    - preview it through the existing projected-layer shader;
-   - run UV bake from the saved projector state after the user accepts the preview;
+   - run UV bake from the saved projector state after the user accepts the preview when Auto UV bake is enabled;
    - let the layer stack control opacity and visibility.
 
 Projected layer creation must stay user-confirmed. Texture Map generation should put the result in the preview area first. Users click `Add as Projected Layer` only when the result is good enough.
@@ -131,12 +141,16 @@ The common structure is not "paste an image on the screen." It is:
 
 ### Phase A: Liclick-Conditioned Texture Map
 
+Status: implemented as the current single-view Texture Map path.
+
 - Allow Texture Map mode to submit one material reference plus the current model-view capture.
 - Keep user prompt optional.
 - Save the returned result as a preview generation, not an automatic layer.
 - Store generation metadata: `workflow=texture-map`, material reference id, model-view capture id, and alpha mode.
 
 ### Phase B: Guided Foreground Alpha
+
+Status: partially implemented through current matte/cutout utilities, but still not a full production foreground-alpha pipeline.
 
 - Convert the generated RGB output into RGBA with connected-background matting.
 - Intersect the foreground matte with the generation-time capture RGB mask.
@@ -146,10 +160,12 @@ The common structure is not "paste an image on the screen." It is:
 
 ### Phase C: Coverage Preview
 
+Status: mostly implemented. Projected preview and UV bake fall back to the model/base material for uncovered fragments. Automatic bake depends on the global Auto UV bake setting.
+
 - In projected preview, show accepted projected fragments normally.
 - Show uncovered or rejected fragments through the base/original material in normal editing mode.
 - Track coverage ratio from the projected layer and bake report.
-- Adding a Texture Map result as a projected layer should automatically run UV bake from the saved projector state.
+- Adding a Texture Map result as a projected layer should automatically run UV bake from the saved projector state when Auto UV bake is enabled; when it is off, the layer remains a live projection preview.
 
 ### Phase D: Alignment Score
 
@@ -177,7 +193,7 @@ The common structure is not "paste an image on the screen." It is:
 - Texture Map mode submits the model reference first and the single material reference second.
 - Generated preview can be opened fullscreen.
 - The projected-layer action is compact icon UI with hover labels, not a large text button over the preview.
-- Adding a Texture Map result creates the projected layer and immediately bakes it.
+- Adding a Texture Map result creates the projected layer and immediately bakes it only when Auto UV bake is enabled.
 - Rotating the viewport after generation but before adding the layer must not change projection alignment.
 - Transforming the object after generation must still align through the captured object matrix delta.
 - Mask alpha is never used as mask validity; RGB mask luminance is the validity source.

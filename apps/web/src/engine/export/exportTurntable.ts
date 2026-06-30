@@ -1,8 +1,53 @@
+import * as THREE from 'three';
+import {
+  PROJECTED_LAYER_MATERIAL_USER_DATA_KEY,
+  type ProjectedLayerProjectionData,
+} from '@/engine/projection/ProjectedLayerMaterial';
 import type { TurntableExportInput } from './exportTypes';
 import { downloadBlob, getExportFilename } from './exportUtils';
 
 export function canRecordTurntable() {
   return typeof MediaRecorder !== 'undefined' && typeof HTMLCanvasElement !== 'undefined';
+}
+
+function getMaterialList(material: THREE.Material | THREE.Material[]) {
+  return Array.isArray(material) ? material : [material];
+}
+
+function syncProjectedLayerMaterialProjection(root: THREE.Object3D) {
+  root.updateMatrixWorld(true);
+  const currentObjectMatrixInverse = root.matrixWorld.clone().invert();
+
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    for (const material of getMaterialList(object.material)) {
+      const projectionData = material.userData[
+        PROJECTED_LAYER_MATERIAL_USER_DATA_KEY
+      ] as ProjectedLayerProjectionData | undefined;
+      if (!projectionData?.layers?.length) continue;
+      const shaderMaterial = material as THREE.ShaderMaterial;
+      if (!shaderMaterial.uniforms) continue;
+
+      for (const layer of projectionData.layers) {
+        const matrixDelta = layer.objectMatrixWorld
+          ? new THREE.Matrix4().fromArray(layer.objectMatrixWorld).multiply(currentObjectMatrixInverse)
+          : new THREE.Matrix4();
+        const normalDelta = new THREE.Matrix3().getNormalMatrix(matrixDelta);
+        const matrixUniform = shaderMaterial.uniforms[layer.objectMatrixDeltaUniform];
+        const normalUniform = shaderMaterial.uniforms[layer.objectNormalDeltaUniform];
+        if (matrixUniform?.value instanceof THREE.Matrix4) {
+          matrixUniform.value.copy(matrixDelta);
+        } else if (matrixUniform) {
+          matrixUniform.value = matrixDelta;
+        }
+        if (normalUniform?.value instanceof THREE.Matrix3) {
+          normalUniform.value.copy(normalDelta);
+        } else if (normalUniform) {
+          normalUniform.value = normalDelta;
+        }
+      }
+    }
+  });
 }
 
 export async function exportTurntableWebm(input: TurntableExportInput) {
@@ -31,6 +76,7 @@ export async function exportTurntableWebm(input: TurntableExportInput) {
       const progress = Math.min(1, (time - startedAt) / durationMs);
       input.root.rotation.y = originalRotationY + progress * Math.PI * 2;
       input.root.updateMatrixWorld(true);
+      syncProjectedLayerMaterialProjection(input.root);
       input.viewport.gl.render(input.viewport.scene, input.viewport.camera);
       if (progress < 1) {
         requestAnimationFrame(step);
@@ -38,6 +84,7 @@ export async function exportTurntableWebm(input: TurntableExportInput) {
       }
       input.root.rotation.y = originalRotationY;
       input.root.updateMatrixWorld(true);
+      syncProjectedLayerMaterialProjection(input.root);
       input.viewport.gl.render(input.viewport.scene, input.viewport.camera);
       recorder.stop();
       stream.getTracks().forEach((track) => track.stop());

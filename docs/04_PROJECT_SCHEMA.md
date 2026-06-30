@@ -48,19 +48,23 @@ Imported model geometry should not be rewritten during normalization.
 
 References track id, name, url, width, height, and primary state.
 
+Current references can also include `objectId`. New imported references are scoped to the selected object when possible; legacy unscoped references remain valid and visible for compatibility.
+
 ## Captures
 
 Captures store object id, camera snapshot, colorUrl, maskUrl, depthUrl, normalUrl, and createdAt.
 
 ## Generations
 
-Generations store mode, prompt, negative prompt, references, capture id, result URL, status, and metadata.
+Generations store mode, prompt, negative prompt, reference ids, capture id, result URL, status, and metadata.
+
+Current generation metadata is intentionally flexible because Atlas/Liclick responses vary by model and workflow. Normal Liclick image generation stores provider/model/task/result metadata. Texture Map generation also stores `workflow=texture-map`, material reference id, generated model-view reference id, selected object id, object matrix snapshot, resolution, and alpha/cutout state.
 
 ## Layers
 
-Layers store id, name, type, image URL, mask URL, object id, camera snapshot, visibility, opacity, blend mode, order, and createdAt.
+Layers store id, name, type, image URL, mask URL, depth URL, object id, object matrix snapshot, camera snapshot, generation id, capture id, visibility, opacity, projection strength, blend mode, HSL adjustments, order, and createdAt.
 
-Phase 3 projected layers can also store `isBaked`, `bakedTextureId`, `bakedAt`, and `needsRebake`.
+Projected layers can also store `isBaked`, `bakedTextureId`, `bakedAt`, and `needsRebake`.
 
 ## Baked Textures
 
@@ -68,7 +72,17 @@ Baked textures store id, object id, source layer id, image URL, width, height, P
 
 ## Settings
 
-Settings include resolution, display mode, projection mode, and color management.
+Settings include resolution (`1K`, `2K`, `4K`, or `8K`), display mode, projection mode, color management, and image generation settings. Image generation settings separate the normal Liclick prompt from the Texture Map prompt:
+
+- `model`
+- `aspectRatio`
+- `imageSize`
+- `count`
+- `prompt`
+- `liclickPrompt`
+- `textureMapPrompt`
+- `mode`
+- `upscaleStrength`
 
 ## Compatibility
 

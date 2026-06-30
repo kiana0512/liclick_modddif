@@ -19,6 +19,8 @@ For every projected fragment:
 
 `Blend` mode is order-independent for the strongest candidates. It keeps the top projected samples by quality, mixes them with a coverage floor, and is intended for multi-view or overlapping generated layers. `Overlay` mode is order-sensitive and paints over the blended base, matching the layer-stack mental model.
 
+The projected preview also tracks each layer's object matrix at capture/generation time. The shader receives matrix-delta uniforms so projection can be evaluated relative to the current object transform. This is used by normal viewport preview and by Turntable WebM export, where the model rotates during recording and the projected texture must remain attached to the mesh.
+
 ## Bake Rules
 
 UV bake uses the same idea per texel: interpolate world position/normal from UV rasterization, then apply frustum, mask, depth, source-alpha, and backface checks before sampling the generated image. Multi-layer bake uses the same loose coverage / strict quality split as preview: blend layers feed the order-independent quality composite, then overlay layers are applied in stack order. Dilation only expands already-written texel edges.

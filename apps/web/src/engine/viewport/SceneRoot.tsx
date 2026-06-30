@@ -5,6 +5,7 @@ import {
   createDisplayModeMaterial,
   createPbrPreviewMaterial,
   createProjectedLayerStackMaterial,
+  createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
@@ -20,6 +21,7 @@ import { Grid } from './Grid';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { SelectionOutline } from './SelectionOutline';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
+import type { Layer } from '@/types/layer';
 
 const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
 
@@ -99,6 +101,87 @@ function useLoadedBakedTexture(imageUrl?: string) {
   return loadedBakedTexture;
 }
 
+function loadImageElement(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Could not load UV layer image: ${url.slice(0, 80)}`));
+    image.src = url;
+  });
+}
+
+function useCompositedUvTexture(layers: Layer[]) {
+  const [texture, setTexture] = useState<THREE.Texture>();
+  const layerKey = useMemo(
+    () =>
+      layers
+        .map((layer) => `${layer.id}:${layer.imageUrl}:${layer.opacity}:${layer.blendMode}:${layer.order}`)
+        .join('|'),
+    [layers],
+  );
+
+  useEffect(() => {
+    const uvLayers = layers.filter((layer) => layer.visible && layer.imageUrl);
+    if (uvLayers.length === 0) {
+      setTexture(undefined);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let nextTexture: THREE.Texture | undefined;
+    setTexture(undefined);
+
+    void Promise.all(uvLayers.map((layer) => loadImageElement(layer.imageUrl)))
+      .then((images) => {
+        if (cancelled) return;
+        const width = Math.max(1, ...images.map((image) => image.naturalWidth || image.width || 1));
+        const height = Math.max(1, ...images.map((image) => image.naturalHeight || image.height || 1));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Could not create UV layer composite canvas.');
+        context.clearRect(0, 0, width, height);
+
+        uvLayers
+          .map((layer, index) => ({ layer, image: images[index] }))
+          .sort((a, b) => b.layer.order - a.layer.order)
+          .forEach(({ layer, image }) => {
+            context.save();
+            context.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
+            context.globalCompositeOperation = 'source-over';
+            context.drawImage(image, 0, 0, width, height);
+            context.restore();
+          });
+
+        nextTexture = new THREE.CanvasTexture(canvas);
+        nextTexture.colorSpace = THREE.SRGBColorSpace;
+        nextTexture.flipY = false;
+        nextTexture.wrapS = THREE.ClampToEdgeWrapping;
+        nextTexture.wrapT = THREE.ClampToEdgeWrapping;
+        nextTexture.minFilter = THREE.LinearMipmapLinearFilter;
+        nextTexture.magFilter = THREE.LinearFilter;
+        nextTexture.generateMipmaps = true;
+        nextTexture.anisotropy = 8;
+        nextTexture.needsUpdate = true;
+        setTexture(nextTexture);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn('[Liclick 3D Texture] Could not composite UV layer stack:', error);
+        setTexture(undefined);
+      });
+
+    return () => {
+      cancelled = true;
+      nextTexture?.dispose();
+    };
+  }, [layerKey, layers]);
+
+  return texture;
+}
+
 function DemoModel() {
   const displayMode = useSceneStore((state) => state.displayMode);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
@@ -139,7 +222,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     () => (importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []),
     [importedObjectId, layers],
   );
-  const visibleUvLayer = useMemo(
+  const visibleUvLayers = useMemo(
     () =>
       layers
         .filter(
@@ -149,7 +232,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
             layer.imageUrl &&
             (!layer.objectId || layer.objectId === importedObjectId),
         )
-        .sort((a, b) => a.order - b.order)[0],
+        .sort((a, b) => a.order - b.order),
     [importedObjectId, layers],
   );
   const livePreviewProjectedLayers = useMemo(
@@ -161,7 +244,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     return canUseLayerStackCache(visibleProjectedLayers, texture) ? texture : undefined;
   }, [project, visibleProjectedLayers]);
   const loadedBakedTexture = useLoadedBakedTexture(exactBakedTextureRecord?.imageUrl);
-  const loadedUvTexture = useLoadedBakedTexture(visibleUvLayer?.imageUrl);
+  const loadedUvTexture = useCompositedUvTexture(visibleUvLayers);
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
   const bakedTextureIsReady = Boolean(loadedBakedTexture);
   const canPreviewProjectedLayers =
@@ -220,9 +303,21 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
           | THREE.Material[]
           | undefined;
         const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
-        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : loadedUvTexture;
+        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
+        const previewBase = getPreviewMaterialBase(originalMaterial);
+        if (loadedUvTexture && !projectedLayerInput) {
+          child.material = createUvOverlayPreviewMaterial({
+            displayMode,
+            selected,
+            uvOverlayTexture: loadedUvTexture,
+            ...previewBase,
+            ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
+          });
+          disposeGeneratedMaterialTree(previousMaterial);
+          continue;
+        }
         if (displayMode === 'pbr' && !projectedLayerInput) {
           child.material = createPbrPreviewMaterial(originalMaterial, selected, bakedTexture);
           disposeGeneratedMaterialTree(previousMaterial);
@@ -231,8 +326,8 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
         const projectedMaterial = projectedLayerInput
           ? await createProjectedLayerStackMaterial({
               ...projectedLayerInput,
-              ...getPreviewMaterialBase(originalMaterial),
-              ...(loadedUvTexture ? { baseTexture: loadedUvTexture } : {}),
+              ...previewBase,
+              ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
             })
           : undefined;
         if (cancelled) {

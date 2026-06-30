@@ -8,6 +8,14 @@ const DEFAULT_WIRE_COLOR = '#e9ebe8';
 const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
 const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
 const DISPOSED_MATERIAL_FLAG = 'liclickDisposedMaterial';
+export const PROJECTED_LAYER_MATERIAL_USER_DATA_KEY = 'liclickProjectedLayerProjectionData';
+export type ProjectedLayerProjectionData = {
+  layers: Array<{
+    objectMatrixWorld?: number[];
+    objectMatrixDeltaUniform: string;
+    objectNormalDeltaUniform: string;
+  }>;
+};
 const NDV_HARD_REJECT = -0.35;
 const NDV_COVERAGE_START = -0.25;
 const NDV_COVERAGE_END = 0.08;
@@ -40,6 +48,7 @@ const vertexShader = `
 const fragmentShader = `
   uniform sampler2D projectedMap;
   uniform sampler2D baseMap;
+  uniform sampler2D uvOverlayMap;
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
   uniform mat4 projectorMatrix;
@@ -57,6 +66,7 @@ const fragmentShader = `
   uniform float saturationShift;
   uniform float lightnessShift;
   uniform float useBaseMap;
+  uniform float useUvOverlayMap;
   uniform vec3 baseColor;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
@@ -161,10 +171,12 @@ const fragmentShader = `
     float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
     float projectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * step(${COVERAGE_THRESHOLD.toFixed(2)}, coverage);
-    vec3 baseTexel = texture2D(baseMap, vUv).rgb;
-    vec3 baseSurfaceColor = mix(baseColor, baseTexel, useBaseMap);
+    vec4 baseTexel = texture2D(baseMap, vUv);
+    vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
+    vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
     vec3 shadedBase = baseSurfaceColor * lambert;
     vec3 mixedColor = mix(shadedBase, texel.rgb, projectionAlpha);
+    mixedColor = mix(mixedColor, uvOverlayTexel.rgb, uvOverlayTexel.a * useUvOverlayMap);
 
     gl_FragColor = vec4(linearToSrgb(clamp(mixedColor, 0.0, 1.0)), 1.0);
   }
@@ -297,7 +309,9 @@ function buildStackFragmentShader(layerCount: number) {
   uniform float edgeFeather;
   uniform float depthBias;
   uniform sampler2D baseMap;
+  uniform sampler2D uvOverlayMap;
   uniform float useBaseMap;
+  uniform float useUvOverlayMap;
   uniform vec3 baseColor;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
@@ -418,8 +432,9 @@ function buildStackFragmentShader(layerCount: number) {
     vec3 normal = normalize(vWorldNormal);
     vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
     float lambert = max(dot(normal, lightDir), 0.0) * 0.2 + 0.8;
-    vec3 baseTexel = texture2D(baseMap, vUv).rgb;
-    vec3 baseSurfaceColor = mix(baseColor, baseTexel, useBaseMap);
+    vec4 baseTexel = texture2D(baseMap, vUv);
+    vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
+    vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
     vec3 shadedBase = baseSurfaceColor * lambert;
     topCoverage0 = 0.0;
     topCoverage1 = 0.0;
@@ -435,6 +450,7 @@ function buildStackFragmentShader(layerCount: number) {
 
     vec3 mixedColor = composeBlendBase(shadedBase);
     ${overlayEvaluations}
+    mixedColor = mix(mixedColor, uvOverlayTexel.rgb, uvOverlayTexel.a * useUvOverlayMap);
     gl_FragColor = vec4(linearToSrgb(clamp(mixedColor, 0.0, 1.0)), 1.0);
   }
 `;
@@ -457,6 +473,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   const maskTexture = input.maskUrl ? await new THREE.TextureLoader().loadAsync(input.maskUrl) : neutralTexture;
   const depthTexture = input.depthUrl ? await new THREE.TextureLoader().loadAsync(input.depthUrl) : neutralTexture;
   const baseTexture = input.baseTexture ?? neutralTexture;
+  const uvOverlayTexture = input.uvOverlayTexture ?? neutralTexture;
   if (input.baseTexture) {
     input.baseTexture.colorSpace = THREE.SRGBColorSpace;
     input.baseTexture.flipY = false;
@@ -465,6 +482,15 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     input.baseTexture.minFilter = THREE.LinearMipmapLinearFilter;
     input.baseTexture.magFilter = THREE.LinearFilter;
     input.baseTexture.generateMipmaps = true;
+  }
+  if (input.uvOverlayTexture) {
+    input.uvOverlayTexture.colorSpace = THREE.SRGBColorSpace;
+    input.uvOverlayTexture.flipY = false;
+    input.uvOverlayTexture.wrapS = THREE.ClampToEdgeWrapping;
+    input.uvOverlayTexture.wrapT = THREE.ClampToEdgeWrapping;
+    input.uvOverlayTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    input.uvOverlayTexture.magFilter = THREE.LinearFilter;
+    input.uvOverlayTexture.generateMipmaps = true;
   }
   maskTexture.flipY = false;
   depthTexture.flipY = false;
@@ -491,6 +517,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     uniforms: {
       projectedMap: { value: texture },
       baseMap: { value: baseTexture },
+      uvOverlayMap: { value: uvOverlayTexture },
       maskMap: { value: maskTexture },
       depthMap: { value: depthTexture },
       projectorMatrix: { value: buildProjectionMatrixBundle(input.camera).projectorMatrix },
@@ -509,11 +536,21 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       lightnessShift: { value: input.lightness ?? 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
+      useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
     },
     toneMapped: false,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set([texture, maskTexture, depthTexture])];
+  material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
+    layers: [
+      {
+        objectMatrixWorld: input.objectMatrixWorld,
+        objectMatrixDeltaUniform: 'objectMatrixDelta',
+        objectNormalDeltaUniform: 'objectNormalDelta',
+      },
+    ],
+  } satisfies ProjectedLayerProjectionData;
   return material;
 }
 
@@ -566,7 +603,9 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     depthBias: { value: input.depthBias ?? 0.025 },
     baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
     baseMap: { value: input.baseTexture ?? neutralTexture },
+    uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
     useBaseMap: { value: input.baseTexture ? 1 : 0 },
+    useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
   };
   if (input.baseTexture) {
     input.baseTexture.colorSpace = THREE.SRGBColorSpace;
@@ -576,6 +615,15 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     input.baseTexture.minFilter = THREE.LinearMipmapLinearFilter;
     input.baseTexture.magFilter = THREE.LinearFilter;
     input.baseTexture.generateMipmaps = true;
+  }
+  if (input.uvOverlayTexture) {
+    input.uvOverlayTexture.colorSpace = THREE.SRGBColorSpace;
+    input.uvOverlayTexture.flipY = false;
+    input.uvOverlayTexture.wrapS = THREE.ClampToEdgeWrapping;
+    input.uvOverlayTexture.wrapT = THREE.ClampToEdgeWrapping;
+    input.uvOverlayTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    input.uvOverlayTexture.magFilter = THREE.LinearFilter;
+    input.uvOverlayTexture.generateMipmaps = true;
   }
   const disposableTextures: THREE.Texture[] = [neutralTexture];
 
@@ -629,6 +677,13 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
+  material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
+    layers: layers.map((layer, index) => ({
+      objectMatrixWorld: layer.objectMatrixWorld,
+      objectMatrixDeltaUniform: `objectMatrixDelta${index}`,
+      objectNormalDeltaUniform: `objectNormalDelta${index}`,
+    })),
+  } satisfies ProjectedLayerProjectionData;
   return material;
 }
 
@@ -704,6 +759,89 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
     emissiveIntensity: !bakedTexture && selected ? 0.2 : 0,
   }));
   if (bakedTexture) material.map = bakedTexture;
+  return material;
+}
+
+const uvOverlayFragmentShader = `
+  uniform sampler2D baseMap;
+  uniform sampler2D uvOverlayMap;
+  uniform float useBaseMap;
+  uniform float useUvOverlayMap;
+  uniform vec3 baseColor;
+  uniform float flatBoost;
+  varying vec3 vWorldNormal;
+  varying vec2 vUv;
+
+  vec3 linearToSrgb(vec3 color) {
+    vec3 cutoff = step(color, vec3(0.0031308));
+    vec3 lower = color * 12.92;
+    vec3 higher = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(higher, lower, cutoff);
+  }
+
+  void main() {
+    vec3 normal = normalize(vWorldNormal);
+    vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
+    float lambert = mix(max(dot(normal, lightDir), 0.0) * 0.2 + 0.8, 1.0, flatBoost);
+    vec4 baseTexel = texture2D(baseMap, vUv);
+    vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
+    vec3 surfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
+    surfaceColor = mix(surfaceColor, overlayTexel.rgb, overlayTexel.a * useUvOverlayMap);
+    gl_FragColor = vec4(linearToSrgb(clamp(surfaceColor * lambert, 0.0, 1.0)), 1.0);
+  }
+`;
+
+export function createUvOverlayPreviewMaterial(input: {
+  displayMode: string;
+  selected: boolean;
+  uvOverlayTexture: THREE.Texture;
+  baseTexture?: THREE.Texture;
+  baseColor?: THREE.ColorRepresentation;
+}) {
+  if (input.displayMode === 'normal') return markGeneratedMaterial(new THREE.MeshNormalMaterial());
+  if (input.displayMode === 'wire') {
+    return markGeneratedMaterial(new THREE.MeshStandardMaterial({
+      color: DEFAULT_WIRE_COLOR,
+      wireframe: true,
+      roughness: 0.9,
+      metalness: 0,
+    }));
+  }
+
+  const whitePixel = new Uint8Array([255, 255, 255, 255]);
+  const neutralTexture = new THREE.DataTexture(whitePixel, 1, 1, THREE.RGBAFormat);
+  neutralTexture.needsUpdate = true;
+  neutralTexture.flipY = false;
+
+  const prepareExternalTexture = (texture: THREE.Texture) => {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.flipY = false;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = true;
+    texture.needsUpdate = true;
+  };
+  prepareExternalTexture(input.uvOverlayTexture);
+  if (input.baseTexture) prepareExternalTexture(input.baseTexture);
+
+  const material = new THREE.ShaderMaterial({
+    name: 'LiclickUvOverlayPreview',
+    vertexShader,
+    fragmentShader: uvOverlayFragmentShader,
+    uniforms: {
+      baseMap: { value: input.baseTexture ?? neutralTexture },
+      uvOverlayMap: { value: input.uvOverlayTexture },
+      useBaseMap: { value: input.baseTexture ? 1 : 0 },
+      useUvOverlayMap: { value: 1 },
+      baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
+      flatBoost: { value: input.displayMode === 'flat' ? 1 : 0 },
+    },
+    toneMapped: false,
+  });
+  material.userData[GENERATED_MATERIAL_FLAG] = true;
+  material.userData[DISPOSABLE_TEXTURES_KEY] = [neutralTexture];
   return material;
 }
 

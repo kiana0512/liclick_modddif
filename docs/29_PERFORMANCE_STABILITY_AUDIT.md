@@ -1,6 +1,6 @@
 # Performance And Stability Audit
 
-Updated: 2026-06-26
+Updated: 2026-06-29
 
 ## Current Fixes
 
@@ -15,7 +15,9 @@ Updated: 2026-06-26
 - Generation job persistence is bounded. `workspace/generation-jobs.json` is treated as runtime cache and ignored by git. Persisted jobs are trimmed to recent sanitized metadata, without raw image payloads or base64 blobs.
 - Texture Map image API settings are no longer forced to 4K. Reference-image generation can stay on `auto` for speed, while bake resolution is controlled separately by the viewport resolution selector.
 - Texture Map projected previews keep image textures, masks, and depth maps with `flipY=false` so the preview matches the CPU UV bake sampling direction.
-- Texture Map layers automatically start a UV bake after being added as projected layers. The add-layer action returns immediately; the bake runs from an idle/background queue and applies the baked texture when it finishes.
+- Texture Map layers automatically start a UV bake after being added as projected layers only when the global Auto UV bake setting is enabled. The add-layer action returns immediately; the bake runs from an idle/background queue and applies the baked texture when it finishes.
+- Turntable WebM export resyncs projected-layer matrix delta uniforms every frame while rotating the model, preventing view-generated textures from drifting during recording.
+- Local repaint preflights the local workspace health and Atlas/Liclick status before submission, surfaces Chinese errors for auth/network/poll failures, and falls back to a supported image-edit path if the custom ComfyUI workflow is rejected by the Atlas wrapper.
 - Only one automatic bake runs at a time from the Generate panel. This avoids piling up multiple 4K/8K CPU bakes and freezing the viewport.
 - Automatic bake keeps the selected resolution instead of silently reducing quality. The UI now shows a top progress bar for loading, UV sampling, compositing, PNG encoding, applying, and workspace persistence.
 - Automatic visible-layer bake is GPU-first. It renders meshes into UV space on an offscreen WebGL render target, applies projection/mask/depth/backface gates in shader, and falls back to the CPU rasterizer only at the same requested resolution.

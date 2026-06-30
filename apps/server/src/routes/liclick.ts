@@ -298,7 +298,9 @@ async function runImageEdit(input: EditImageInput, atlasHomeDir?: string) {
   const startedAt = Date.now();
   while (!submission.resultUrl && submission.taskId && Date.now() - startedAt < 10 * 60 * 1000) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
-    const result = await pollLiclickImageTask(submission.taskId, { atlasHomeDir });
+    const result = await pollLiclickImageTask(submission.taskId, { atlasHomeDir }).catch((error: unknown) => {
+      throw new Error(`莉刻局部重绘轮询任务失败：${error instanceof Error ? error.message : String(error)}`);
+    });
     if (result.resultUrl) {
       submission = {
         ...submission,

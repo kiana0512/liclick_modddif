@@ -14,6 +14,11 @@ type AtlasCommandResult = {
   stderr: string;
 };
 
+type AtlasToolCallResult = {
+  stdout: string;
+  raw: unknown;
+};
+
 type AtlasStatus = {
   valid?: boolean;
   expires_at?: string;
@@ -244,6 +249,71 @@ function readAtlasTokenCache(homeDir?: string) {
   } catch {
     return {};
   }
+}
+
+function assertValidAtlasToken(cache: AtlasTokenCache, tokenFile: string) {
+  if (!cache.access_token) throw new Error(`Atlas token cache is missing access_token: ${tokenFile}`);
+  if (!cache.gateway_url) throw new Error(`Atlas token cache is missing gateway_url: ${tokenFile}`);
+  if (!cache.expires_at) throw new Error(`Atlas token cache is missing expires_at: ${tokenFile}`);
+  const expiresAt = new Date(cache.expires_at);
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+    throw new Error('Atlas 登录凭证已过期，请重新登录莉刻/Atlas。');
+  }
+}
+
+export async function callAtlasToolJson(
+  service: string,
+  tool: string,
+  toolArguments: Record<string, unknown>,
+  timeoutMs: number,
+  homeDir?: string,
+): Promise<AtlasToolCallResult> {
+  const tokenFile = atlasTokenFile(homeDir);
+  const cache = readAtlasTokenCache(homeDir);
+  assertValidAtlasToken(cache, tokenFile);
+  const gatewayUrl = String(cache.gateway_url).replace(/\/+$/, '');
+  const body = JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'tools/call',
+    id: Date.now(),
+    params: {
+      name: tool,
+      arguments: toolArguments,
+    },
+  });
+  let response: Response;
+  try {
+    response = await fetch(`${gatewayUrl}/mcp-servers/${service}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        authorization: `Bearer ${cache.access_token}`,
+        'user-agent': 'liclick-3d-texture/0.1.0',
+        'x-auth-method': 'idaas-jwt',
+        'x-atlas-cli-domain': 'gateway',
+        'x-atlas-cli-command': 'call-tool',
+      },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new Error(`Atlas gateway network error: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Atlas gateway HTTP ${response.status}: ${trimOutput(text)}`);
+  }
+  const raw = text.trim() ? (JSON.parse(text) as Record<string, unknown>) : {};
+  if (raw.error && typeof raw.error === 'object') {
+    const error = raw.error as Record<string, unknown>;
+    throw new Error(typeof error.message === 'string' ? error.message : JSON.stringify(error));
+  }
+  const result = raw.result ?? raw;
+  return {
+    stdout: JSON.stringify(result),
+    raw,
+  };
 }
 
 function decodeJwtClaims(token?: string) {

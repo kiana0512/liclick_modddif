@@ -66,6 +66,53 @@ async function encodeCanvasPng(canvas: HTMLCanvasElement) {
   });
 }
 
+async function drawBlobToCanvas(context: CanvasRenderingContext2D, blob: Blob, width: number, height: number, opacity = 1) {
+  const bitmap = await createImageBitmap(blob);
+  context.save();
+  context.globalAlpha = opacity;
+  context.globalCompositeOperation = 'source-over';
+  context.drawImage(bitmap, 0, 0, width, height);
+  context.restore();
+  bitmap.close();
+}
+
+function findVisibleUvLayers(input: ModelExportInput) {
+  return useLayerStore
+    .getState()
+    .layers.filter(
+      (layer) =>
+        layer.type === 'uv' &&
+        layer.visible &&
+        layer.imageUrl &&
+        (!layer.objectId || layer.objectId === input.importedModel.objectId),
+    )
+    .sort((a, b) => b.order - a.order);
+}
+
+async function composeUvLayersOverBase(baseBlob: Blob | undefined, uvLayers: ReturnType<typeof findVisibleUvLayers>) {
+  if (!baseBlob && uvLayers.length === 0) return undefined;
+  const layerBlobs = await Promise.all(uvLayers.map((layer) => blobFromUrl(layer.imageUrl)));
+  const probeBlob = baseBlob ?? layerBlobs[0];
+  if (!probeBlob) return undefined;
+  const probeBitmap = await createImageBitmap(probeBlob);
+  const width = Math.max(1, probeBitmap.width);
+  const height = Math.max(1, probeBitmap.height);
+  probeBitmap.close();
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return baseBlob;
+
+  context.clearRect(0, 0, width, height);
+  if (baseBlob) await drawBlobToCanvas(context, baseBlob, width, height);
+  for (let index = 0; index < uvLayers.length; index += 1) {
+    await drawBlobToCanvas(context, layerBlobs[index], width, height, Math.max(0, Math.min(1, uvLayers[index].opacity)));
+  }
+  return encodeCanvasPng(canvas);
+}
+
 export async function makeTransparentBaseColorForExport(blob: Blob) {
   const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
@@ -134,7 +181,6 @@ function findCurrentBakedTexture(input: ModelExportInput) {
 }
 
 async function bakeCurrentVisibleTextureForExport(input: ModelExportInput) {
-  if (!useSettingsStore.getState().autoUvBakeEnabled) return undefined;
   const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.importedModel.objectId);
   if (visibleLayers.length === 0) return undefined;
 
@@ -176,22 +222,26 @@ export async function prepareTexturedModelExport(input: ModelExportInput): Promi
   root.updateMatrixWorld(true);
 
   const bakedTexture = findCurrentBakedTexture(input) ?? await bakeCurrentVisibleTextureForExport(input);
-  if (!bakedTexture?.imageUrl) return { root };
+  const uvLayers = findVisibleUvLayers(input);
+  if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 
-  const sourceBlob = await blobFromUrl(bakedTexture.imageUrl);
-  const textureBlob = await makeTransparentBaseColorForExport(sourceBlob);
+  const sourceBlob = bakedTexture?.imageUrl ? await blobFromUrl(bakedTexture.imageUrl) : undefined;
+  const transparentBaseBlob = sourceBlob ? await makeTransparentBaseColorForExport(sourceBlob) : undefined;
+  const textureBlob = await composeUvLayersOverBase(transparentBaseBlob, uvLayers);
+  if (!textureBlob) return { root };
   const textureUrl = URL.createObjectURL(textureBlob);
   const texture = await loadExportTexture(textureUrl);
   URL.revokeObjectURL(textureUrl);
   const averageColor = await getAverageTextureColor(textureBlob);
   applyTextureMaterial(root, texture);
+  const textureId = bakedTexture?.id ?? (uvLayers.map((layer) => layer.id).join('-') || 'uv-stack');
 
   return {
     root,
     bakedTexture,
     texture,
     textureBlob,
-    textureFilename: `${slugifyExportName(input.project.name)}_basecolor_${bakedTexture.id.replace(/[^a-zA-Z0-9-]+/g, '-')}.png`,
+    textureFilename: `${slugifyExportName(input.project.name)}_basecolor_${textureId.replace(/[^a-zA-Z0-9-]+/g, '-')}.png`,
     averageColor,
   };
 }
