@@ -40,7 +40,7 @@ export function LayerAdjustmentsPanel() {
             type="button"
             className="grid h-7 w-7 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
             onClick={() => {
-              captureHistory();
+              captureHistory(`重置投影强度：${activeLayer.name}`);
               setStrength(activeLayer.id, 1);
             }}
             title={t('reset')}
@@ -55,7 +55,7 @@ export function LayerAdjustmentsPanel() {
           max="300"
           step="1"
           value={Math.round((activeLayer.strength ?? 1) * 100)}
-          onPointerDown={captureHistory}
+          onPointerDown={() => captureHistory(`调整投影强度：${activeLayer.name}`)}
           onChange={(event) => setStrength(activeLayer.id, Number(event.target.value) / 100)}
           className="liclick-range w-full"
           aria-label={t('projectionStrength')}
@@ -74,7 +74,7 @@ export function LayerAdjustmentsPanel() {
                 type="button"
                 className="grid h-7 w-7 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
                 onClick={() => {
-                  captureHistory();
+                  captureHistory(`重置${t(control.labelKey)}：${activeLayer.name}`);
                   setLayerAdjustment(activeLayer.id, control.key, 0);
                 }}
                 title={t('reset')}
@@ -89,7 +89,7 @@ export function LayerAdjustmentsPanel() {
               max="100"
               step="1"
               value={value}
-              onPointerDown={captureHistory}
+              onPointerDown={() => captureHistory(`调整${t(control.labelKey)}：${activeLayer.name}`)}
               onChange={(event) => setLayerAdjustment(activeLayer.id, control.key, Number(event.target.value))}
               className="liclick-range w-full"
               aria-label={t(control.labelKey)}

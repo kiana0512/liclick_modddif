@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -106,6 +107,13 @@ export function LayersPanel({
     return visibleLayers.find((layer) => layer.id === layerId && layer.imageUrl);
   }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, previewLayerId, visibleLayers]);
 
+  const describeLayerSelection = useCallback((ids: string[]) => {
+    const names = ids.map((id) => layers.find((item) => item.id === id)?.name).filter(Boolean);
+    if (names.length === 0) return '图层';
+    if (names.length === 1) return names[0];
+    return `${names[0]} 等 ${names.length} 个图层`;
+  }, [layers]);
+
   useEffect(() => {
     setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
   }, [layerIds]);
@@ -177,7 +185,7 @@ export function LayersPanel({
       setOpacityDrag((current) => {
         if (!current) return current;
         if (!capturedOpacityDragRef.current) {
-          captureHistory();
+          captureHistory(`调整图层不透明度：${describeLayerSelection([current.layerId])}`);
           capturedOpacityDragRef.current = true;
         }
         const delta = current.startY - event.clientY;
@@ -202,7 +210,7 @@ export function LayersPanel({
       window.removeEventListener('pointerup', stopOpacityDrag);
       window.removeEventListener('pointercancel', stopOpacityDrag);
     };
-  }, [captureHistory, opacityDrag, setOpacity]);
+  }, [captureHistory, describeLayerSelection, opacityDrag, setOpacity]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -238,7 +246,7 @@ export function LayersPanel({
       setRenameState(undefined);
       return;
     }
-    captureHistory();
+    captureHistory(`重命名图层：${layer.name} -> ${nextName}`);
     renameLayer(renameState.layerId, nextName);
     setRenameState(undefined);
   }
@@ -274,7 +282,7 @@ export function LayersPanel({
   function beginVisibilityDrag(layer: Layer) {
     const nextVisible = !layer.visible;
     const ids = getAffectedLayerIds(layer.id);
-    captureHistory();
+    captureHistory(`${nextVisible ? '显示' : '隐藏'}图层：${describeLayerSelection(ids)}`);
     setLayerVisibility(ids, nextVisible);
     setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
   }
@@ -353,7 +361,7 @@ export function LayersPanel({
             onOpacityPointerDown={(event) => beginOpacityDrag(layer, event)}
             onBlendClick={(event) => {
               event.stopPropagation();
-              captureHistory();
+              captureHistory(`切换图层混合模式：${layer.name}`);
               setBlendMode(layer.id, layer.blendMode === 'overlay' ? 'normal' : 'overlay');
             }}
             onAdjustClick={(event) => {
@@ -375,7 +383,7 @@ export function LayersPanel({
               if (draggingLayerId) {
                 const rect = event.currentTarget.getBoundingClientRect();
                 const placement = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
-                captureHistory();
+                captureHistory(`移动图层：${describeLayerSelection([draggingLayerId])}`);
                 reorderLayer(draggingLayerId, layer.id, placement);
               }
               setDraggingLayerId(undefined);
@@ -403,15 +411,15 @@ export function LayersPanel({
               setPreviewLayerId(menu.layerId);
             }}
             onMoveUp={() => {
-              captureHistory();
+              captureHistory(`上移图层：${describeLayerSelection([menu.layerId])}`);
               moveLayer(menu.layerId, 'up');
             }}
             onMoveDown={() => {
-              captureHistory();
+              captureHistory(`下移图层：${describeLayerSelection([menu.layerId])}`);
               moveLayer(menu.layerId, 'down');
             }}
             onDuplicate={() => {
-              captureHistory();
+              captureHistory(`复制图层：${describeLayerSelection([menu.layerId])}`);
               duplicateLayer(menu.layerId);
             }}
             onImageEdit={(layer) => onLayerImageEdit?.(layer)}
@@ -425,8 +433,9 @@ export function LayersPanel({
             }}
             onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
             onDelete={() => {
-              captureHistory();
-              deleteLayer(menu.layerId);
+              const ids = selectedLayerIds.includes(menu.layerId) ? selectedLayerIds : [menu.layerId];
+              captureHistory(`删除图层：${describeLayerSelection(ids)}`);
+              ids.forEach((layerId) => deleteLayer(layerId));
             }}
           />,
           document.body,
@@ -514,12 +523,12 @@ export function LayersPanelActions() {
   const pushToast = useToastStore((state) => state.pushToast);
 
   function handleAddLayer() {
-    captureHistory();
+    captureHistory('创建空图层');
     addEmptyLayer();
   }
 
   function handleAddBlankUvLayer() {
-    captureHistory();
+    captureHistory('创建空 UV 图层');
     addUvLayer({ name: t('blankUvLayer'), imageUrl: '', objectId: selectedObjectId });
   }
 

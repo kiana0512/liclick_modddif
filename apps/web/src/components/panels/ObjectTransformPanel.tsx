@@ -7,6 +7,7 @@ import {
   resetImportedModelTransform,
 } from '@/engine/scene/transformActions';
 import { Button } from '@/components/ui/Button';
+import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { Panel } from '@/components/ui/Panel';
 import { useT } from '@/stores/i18nStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -23,18 +24,21 @@ export function ObjectTransformPanel() {
   const importSettings = useSceneStore((state) => state.importSettings);
   const selectObject = useSceneStore((state) => state.selectObject);
   const setImportSettings = useSceneStore((state) => state.setImportSettings);
+  const captureHistory = useEditorHistoryStore((state) => state.capture);
   const pushToast = useToastStore((state) => state.pushToast);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const objectLabel = object?.name ?? importedModel?.name ?? '模型';
 
   useEffect(() => {
     if (!object && importedModel) selectObject(importedModel.objectId);
   }, [importedModel, object, selectObject]);
 
-  function runTransformAction(action: () => void, title: string) {
+  function runTransformAction(action: () => void, title: string, captureLabel?: string) {
     if (!importedModel) {
       pushToast({ tone: 'warning', title: t('importModelFirst') });
       return;
     }
+    if (captureLabel) captureHistory(captureLabel);
     action();
     pushToast({ tone: 'success', title });
   }
@@ -89,21 +93,21 @@ export function ObjectTransformPanel() {
           <Button
             className="w-full"
             icon={<RotateCcw className="h-4 w-4" />}
-            onClick={() => runTransformAction(resetImportedModelTransform, 'Transform reset')}
+            onClick={() => runTransformAction(resetImportedModelTransform, 'Transform reset', `重置对象变换：${objectLabel}`)}
           >
             {t('reset')}
           </Button>
           <Button
             className="w-full"
             icon={<Crosshair className="h-4 w-4" />}
-            onClick={() => runTransformAction(centerImportedModel, 'Object centered')}
+            onClick={() => runTransformAction(centerImportedModel, 'Object centered', `居中对象：${objectLabel}`)}
           >
             {t('center')}
           </Button>
           <Button
             className="w-full"
             icon={<LocateFixed className="h-4 w-4" />}
-            onClick={() => runTransformAction(groundImportedModel, 'Object grounded')}
+            onClick={() => runTransformAction(groundImportedModel, 'Object grounded', `对象落地：${objectLabel}`)}
           >
             {t('ground')}
           </Button>

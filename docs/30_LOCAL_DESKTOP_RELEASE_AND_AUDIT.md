@@ -73,6 +73,13 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Local repaint first attempts a LiClick-web-like `局部重绘_volcengine` ComfyUI payload through the Atlas JSON-RPC gateway. If the Atlas `generate_image` wrapper rejects that custom workflow, the server falls back to the supported `gpt-image-2` image edit path by uploading the base image and mask through `upload_asset`, passing them as `reference_images`, and protecting unmasked pixels again on the client composite. It does not require a separate browser token or API-key environment variable.
 - Turntable WebM export now resyncs projected-layer object-matrix uniforms every frame while the model rotates, so projected/texture-map layers stay attached in the recorded video.
 - UV preview now separates unbaked `uvOverlayTexture` from the baked/base material path. This prevents a fresh UV overlay from pretending to be the flattened BaseColor texture in the viewport.
+- Projected and merged-UV layers now expose an `Edit image` action. The editor opens a compact Photoshop-style pixel workspace with brush, eraser, fill, rectangular selection, eyedropper, move, layer opacity/blend controls, color adjustment, transform actions, and Ctrl+Z/Ctrl+Y history.
+- Projected-layer image editing preserves the original projection metadata. The mapped preview temporarily replaces only the edited layer image, keeps the full visible material/layer stack enabled, moves the viewport camera to the layer's projected MVP direction, and captures a high-resolution model-space preview for checking the real mapped result.
+- Mapped-preview refreshes are treated as temporary render transactions. They are suppressed from project-layer synchronization and restore the layer stack and active layer after capture, so edits only become permanent after `Apply edit`.
+- Merged-UV image editing is treated as UV-space pixel editing. The edited pixels are written back to the UV layer image without changing projection-camera metadata.
+- Global editor undo/redo stores labeled object/layer snapshots per project in `sessionStorage`. Ctrl+Z/Ctrl+Y restores the snapshot, keeps the redo chain consistent, and shows a top-center toast with the action label, for example `删除图层：...` or `应用图像编辑：...`.
+- The current editable object/layer snapshot is persisted after project/model restore finishes, so a browser refresh can recover local object/layer edits instead of relying only on the last server-saved project. Runtime-only canvas history remains in-memory because callback-based steps cannot be serialized safely.
+- Current object/layer snapshot persistence is debounced during rapid UI edits such as slider drags. Undo/redo remains immediate, while continuous adjustment no longer writes the full snapshot on every pointer movement.
 
 ## Code Audit Summary
 
@@ -101,6 +108,13 @@ Low-risk cleanup completed in this pass:
 - Updated Windows installer shortcuts to launch the Electron shell while keeping the command-line launcher as a support fallback.
 - Kept the existing Node launcher as the service engine and added `LICLICK_OPEN_BROWSER=0` plus `LICLICK_WINDOWS_HIDE=1` so the GUI shell can start services without opening a console or browser automatically.
 - Audited the local repaint full-frame path after the ROI alignment regression. The current path uploads the complete current-view frame and complete mask, then composites the full returned frame back into the protected source frame before baking a UV repair layer.
+- Audited the projected-layer image editor path after preview-angle regressions. The current mapped preview no longer hides other visible texture layers, no longer lets OrbitControls reinterpret the saved camera, and captures from the layer's transformed projector MVP rather than the user's incidental current viewport.
+- Fixed a projected-layer image editor commit leak where mapped-preview refreshes could temporarily write edited pixels into the global layer store and be mirrored into project state before `Apply edit`. Preview captures are now serialized, suppressed from project sync, and restored with the previous active layer.
+- Cleaned the image editor default state so new sessions select the top edit layer instead of the locked/base image layer, matching Photoshop's expected "paint on the active editable layer" behavior.
+- Audited editor history persistence after F5/undo regressions. Snapshot history is scoped by project, stores the current scene snapshot, persists object and layer changes, labels common actions, and avoids persisting temporary mapped-preview transactions.
+- Debounced current snapshot persistence from the editor page so rapid layer/object changes are coalesced before writing to browser storage, reducing UI stutter during adjustment-heavy workflows.
+- Fixed multi-select layer deletion from the layer context menu so `删除选中图层` deletes the selected set instead of only the menu anchor layer.
+- Removed safe local garbage after audit: stale `apps/web/tsconfig.tsbuildinfo`, two empty workspace Vite dev logs, and the installer `dist-installer/staging` intermediate directory after the final setup executable was produced. User workspace assets, secrets, logs, and project data were left intact.
 - The ModDiff-style natural-transition algorithm remains under evaluation and is not part of this package. This build keeps the current narrow mask feathering path and does not introduce the hard-replace/cropped-patch approach.
 
 Build checks for this release:
@@ -119,12 +133,34 @@ corepack pnpm --filter @liclick/web build
 corepack pnpm package:windows
 ```
 
+Additional validation after the editor-history persistence patch:
+
+```text
+corepack pnpm --filter @liclick/web typecheck
+corepack pnpm --filter @liclick/web lint
+Browser QA: http://127.0.0.1:5173/projects -> 肉肉 project render smoke
+```
+
+Additional validation before the next installer package:
+
+```text
+node scripts/perf-audit.mjs
+corepack pnpm --filter @liclick/web typecheck
+corepack pnpm --filter @liclick/web lint
+corepack pnpm --filter @liclick/server typecheck
+corepack pnpm --filter @liclick/server lint
+corepack pnpm --filter @liclick/web build
+corepack pnpm --filter @liclick/server build
+LICLICK_STRESS_BASE_URL=http://127.0.0.1:4517 LICLICK_STRESS_USERS=30 LICLICK_STRESS_SECONDS=15 node scripts/perf-audit.mjs --stress
+Stress /api/health: users=30, seconds=15, requests=234755, failed=0, p95=3.1ms, statuses=200
+```
+
 The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 104,925,470 bytes
-SHA256 A2B9E8CC1DBEAD4E8FEA583FDA8539E0ECD9BBC7DD1F09D4B746F99AEBC08CBC
+Size 104,920,688 bytes
+SHA256 F4100ABDCCABA9B9799FD679D0BB6ABBA96713F09906D6E1C18BCE180153DAA9
 ```
 
 Packaging notes for this build:

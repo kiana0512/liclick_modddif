@@ -53,7 +53,8 @@ export function ObjectsPanel() {
   }
 
   function handleToggleVisibility(objectId: string) {
-    captureHistory();
+    const object = objects.find((item) => item.id === objectId);
+    captureHistory(`${object?.visible ? '隐藏' : '显示'}对象：${object?.name ?? '模型'}`);
     toggleObjectVisibility(objectId);
     setProjectObjects(useSceneStore.getState().objects);
   }
@@ -66,14 +67,15 @@ export function ObjectsPanel() {
       setRenameState(undefined);
       return;
     }
-    captureHistory();
+    captureHistory(`重命名对象：${object.name} -> ${name}`);
     renameObject(renameState.objectId, name);
     setProjectObjects(useSceneStore.getState().objects);
     setRenameState(undefined);
   }
 
   function handleDeleteObject(objectId: string) {
-    captureHistory();
+    const object = objects.find((item) => item.id === objectId);
+    captureHistory(`删除对象：${object?.name ?? '模型'}`);
     deleteObject(objectId);
     const scene = useSceneStore.getState();
     updateCurrentProject({ objects: scene.objects, activeObjectId: scene.selectedObjectId });
@@ -212,7 +214,7 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
 
   function handleToggleAllVisibility() {
     if (objects.length === 0) return;
-    captureHistory();
+    captureHistory(allVisible ? '隐藏全部对象' : '显示全部对象');
     setAllObjectsVisible(!allVisible);
     setProjectObjects(useSceneStore.getState().objects);
   }

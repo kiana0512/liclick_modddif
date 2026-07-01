@@ -769,6 +769,7 @@ function SurfacePaintOverlay() {
     }
 
     captureRuntimeHistory({
+      label: draft.target === 'mask' ? '编辑绘制蒙版' : '绘制纹理',
       undo: () => {
         targetContext.putImageData(beforeImageData, x, y);
         scheduleTextureUpdate(targetTexture);

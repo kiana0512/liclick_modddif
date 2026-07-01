@@ -365,6 +365,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const serverLoadedProjectIdRef = useRef<string>();
   const restoredModelKeyRef = useRef<string>();
   const autosaveTimerRef = useRef<number>();
+  const historyPersistTimerRef = useRef<number>();
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
   const thumbnailRefreshTimerRef = useRef<number>();
@@ -374,6 +375,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const [imageEditLayerId, setImageEditLayerId] = useState<string>();
   const [imageEditLayerSnapshot, setImageEditLayerSnapshot] = useState<Layer>();
   const [imageEditMappedPreviewUrl, setImageEditMappedPreviewUrl] = useState<string>();
+  const imageEditPreviewChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const suppressProjectLayerSyncRef = useRef(0);
+  const restoredHistoryProjectIdRef = useRef<string>();
   const localRepaintRuntime = useLocalRepaintStore((state) => state.runtime);
   const localRepaintVisible = useLocalRepaintStore((state) => state.visible);
   const openLocalRepaintRuntime = useLocalRepaintStore((state) => state.openRuntime);
@@ -389,6 +393,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setWorkspaceState = useProjectStore((state) => state.setWorkspaceState);
   const markSaved = useProjectStore((state) => state.markSaved);
   const setObjects = useSceneStore((state) => state.setObjects);
+  const objects = useSceneStore((state) => state.objects);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
   const setActiveImportedModel = useSceneStore((state) => state.setActiveImportedModel);
   const clearImportedModel = useSceneStore((state) => state.clearImportedModel);
@@ -403,6 +408,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayers = useLayerStore((state) => state.setLayers);
+  const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
   const layers = useLayerStore((state) => state.layers);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const updateLayerImage = useLayerStore((state) => state.updateLayerImage);
@@ -426,6 +432,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const undo = useEditorHistoryStore((state) => state.undo);
   const redo = useEditorHistoryStore((state) => state.redo);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
+  const persistCurrentHistorySnapshot = useEditorHistoryStore((state) => state.persistCurrentSnapshot);
+  const restorePersistedHistory = useEditorHistoryStore((state) => state.restorePersisted);
   const canUndo = useEditorHistoryStore((state) => state.past.length > 0);
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
   const project = projects.find((item) => item.id === projectId);
@@ -436,12 +444,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   useEffect(() => {
     setRouteProjectStatus('idle');
+    restoredHistoryProjectIdRef.current = undefined;
   }, [projectId]);
 
   useEffect(
     () => () => {
       window.clearTimeout(manualBakeProgressTimerRef.current);
       window.clearTimeout(thumbnailRefreshTimerRef.current);
+      window.clearTimeout(historyPersistTimerRef.current);
     },
     [],
   );
@@ -461,7 +471,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         setLayers(result.project.layers);
         setGenerations(result.project.generations, result.project.id);
         setReferences(result.project.references);
-        void restoreProjectModel(result.project);
+        void restoreProjectModel(result.project).then(() => {
+          restorePersistedHistory(result.project.id);
+          restoredHistoryProjectIdRef.current = result.project.id;
+        });
         setRouteProjectStatus('idle');
       })
       .catch(() => {
@@ -475,7 +488,19 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
     // restoreProjectModel is intentionally not a dependency; this effect should run once per route project id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, projectId, pushToast, replaceCurrentProject, routeProjectStatus, setGenerations, setLayers, setObjects, setReferences, t]);
+  }, [
+    project,
+    projectId,
+    pushToast,
+    replaceCurrentProject,
+    restorePersistedHistory,
+    routeProjectStatus,
+    setGenerations,
+    setLayers,
+    setObjects,
+    setReferences,
+    t,
+  ]);
 
   useEffect(() => {
     if (!project) return;
@@ -486,10 +511,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     setLayers(project.layers);
     setGenerations(project.generations, project.id);
     setReferences(project.references);
-    void restoreProjectModel(project);
+    void restoreProjectModel(project).then(() => {
+      restorePersistedHistory(project.id);
+      restoredHistoryProjectIdRef.current = project.id;
+    });
     // restoreProjectModel is intentionally not a dependency; this effect should run once per project id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, setCurrentProject, setGenerations, setLayers, setObjects, setReferences]);
+  }, [project, restorePersistedHistory, setCurrentProject, setGenerations, setLayers, setObjects, setReferences]);
 
   useEffect(() => {
     if (!project || project.workspaceMode !== 'local-server') return;
@@ -502,7 +530,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         setLayers(result.project.layers);
         setGenerations(result.project.generations, result.project.id);
         setReferences(result.project.references);
-        void restoreProjectModel(result.project);
+        void restoreProjectModel(result.project).then(() => {
+          restorePersistedHistory(result.project.id);
+          restoredHistoryProjectIdRef.current = result.project.id;
+        });
       })
       .catch(() => {
         setSaveStatus('offline');
@@ -514,11 +545,22 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
     // restoreProjectModel is intentionally not a dependency; this effect should run once per server project id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, pushToast, replaceCurrentProject, setGenerations, setLayers, setObjects, setReferences, t]);
+  }, [project, pushToast, replaceCurrentProject, restorePersistedHistory, setGenerations, setLayers, setObjects, setReferences, t]);
 
   useEffect(() => {
+    if (suppressProjectLayerSyncRef.current > 0) return;
     setProjectLayers(layers);
-  }, [layers, setProjectLayers]);
+    if (project?.id && restoredHistoryProjectIdRef.current === project.id) {
+      window.clearTimeout(historyPersistTimerRef.current);
+      historyPersistTimerRef.current = window.setTimeout(() => persistCurrentHistorySnapshot(project.id), 220);
+    }
+  }, [layers, persistCurrentHistorySnapshot, project?.id, setProjectLayers]);
+
+  useEffect(() => {
+    if (!project?.id || restoredHistoryProjectIdRef.current !== project.id) return;
+    window.clearTimeout(historyPersistTimerRef.current);
+    historyPersistTimerRef.current = window.setTimeout(() => persistCurrentHistorySnapshot(project.id), 220);
+  }, [objects, persistCurrentHistorySnapshot, project?.id]);
 
   useEffect(() => {
     setProjectGenerations(generations);
@@ -1456,30 +1498,44 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }
 
   async function captureLayerMappedPreview(layer: Layer, imageUrl?: string) {
-    const previousLayers = useLayerStore.getState().layers.map((item) => ({ ...item }));
-    setLayers(
-      previousLayers.map((item) =>
-        item.id === layer.id ? { ...item, imageUrl: imageUrl ?? item.imageUrl, visible: true } : item,
-      ),
-    );
-    await waitForViewportMaterialRefresh();
-    const previewCamera = getLayerMappedPreviewCamera(layer);
-    const preview =
-      getViewportThumbnailDataUrl({
-        camera: previewCamera,
-        width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-        height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-        cropVisibleContent: true,
-      }) ??
-      getViewportThumbnailDataUrl({
-        width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-        height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-        cropVisibleContent: true,
-      });
-    setLayers(previousLayers);
-    await waitForViewportMaterialRefresh();
-    if (preview) setImageEditMappedPreviewUrl(preview);
-    return preview;
+    const run = async () => {
+      const previousLayers = useLayerStore.getState().layers.map((item) => ({ ...item }));
+      const previousActiveLayerId = useLayerStore.getState().activeProjectedLayerId;
+      let preview: string | undefined;
+      suppressProjectLayerSyncRef.current += 1;
+      try {
+        setLayers(
+          previousLayers.map((item) =>
+            item.id === layer.id ? { ...item, imageUrl: imageUrl ?? item.imageUrl, visible: true } : item,
+          ),
+        );
+        await waitForViewportMaterialRefresh();
+        const previewCamera = getLayerMappedPreviewCamera(layer);
+        preview =
+          getViewportThumbnailDataUrl({
+            camera: previewCamera,
+            width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+            height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+            cropVisibleContent: true,
+          }) ??
+          getViewportThumbnailDataUrl({
+            width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+            height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
+            cropVisibleContent: true,
+          });
+      } finally {
+        setLayers(previousLayers);
+        if (previousActiveLayerId) setActiveLayer(previousActiveLayerId);
+        await waitForViewportMaterialRefresh();
+        suppressProjectLayerSyncRef.current = Math.max(0, suppressProjectLayerSyncRef.current - 1);
+      }
+      if (preview) setImageEditMappedPreviewUrl(preview);
+      return preview;
+    };
+
+    const chained = imageEditPreviewChainRef.current.catch(() => undefined).then(run);
+    imageEditPreviewChainRef.current = chained.catch(() => undefined);
+    return chained;
   }
 
   async function refreshLayerImageMappedPreview(dataUrl: string) {
@@ -1493,7 +1549,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   async function applyLayerImageEdit(dataUrl: string) {
     const targetLayer = imageEditLayer;
     if (!targetLayer) return;
-    captureHistory();
+    captureHistory(`应用图像编辑：${targetLayer.name}`);
     const imageUrl = await persistEditedLayerDataUrl(targetLayer, dataUrl);
     updateLayerImage(targetLayer.id, imageUrl);
     setProjectLayers(useLayerStore.getState().layers);
@@ -1706,7 +1762,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   async function acceptLocalRepaint({ continueEditing }: { continueEditing: boolean }) {
     const runtime = localRepaintRuntime;
     if (!runtime?.mergedImageData) return;
-    captureHistory();
+    captureHistory(runtime.mode === 'edit_layer_image' ? '应用图层局部重绘' : '应用局部重绘 UV 修复');
     try {
       if (runtime.mode === 'edit_layer_image' && runtime.targetLayerId) {
         const imageUrl = runtime.previewUrl ?? (await imageDataToDataUrl(runtime.mergedImageData));
@@ -1896,7 +1952,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
     }
-    captureHistory();
+    captureHistory(blankUvLayerId ? '合并选中投影图层到空 UV 图层' : '合并选中投影图层为 UV 图层');
     manualBakeRunningRef.current = true;
     setManualBakeProgress({ title: t('mergeSelectedLayersToUvLayer'), detail: t('autoBakePreparing'), progress: 0.02 });
     try {

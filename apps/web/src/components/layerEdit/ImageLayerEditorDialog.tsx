@@ -328,7 +328,7 @@ export function ImageLayerEditorDialog({
             base: true,
           }),
         ]);
-        setActiveLayerId(baseId);
+        setActiveLayerId(editId);
         setSelection(undefined);
         setUndoStack([]);
         setRedoStack([]);
