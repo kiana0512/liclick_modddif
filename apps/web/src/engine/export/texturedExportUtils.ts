@@ -1,9 +1,20 @@
 import * as THREE from 'three';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
-import { findExactLayerStackTexture, getVisibleProjectedLayerStack, canUseLayerStackCache } from '@/engine/bake/layerStackCache';
+import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
+import {
+  findExactLayerStackTexture,
+  getLayerStackBakeInFlight,
+  getProjectedLayerStackSignature,
+  getVisibleProjectedLayerStack,
+  registerLayerStackBakeInFlight,
+  canUseLayerStackCache,
+} from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
+import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { saveBlobAsset, saveDataUrlAsset } from '@/services/workspaceApiClient';
 import type { BakedTexture, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
+import type { BakeProjectedLayerResult } from '@/engine/bake/uvBakeTypes';
 import type { ModelExportInput } from './exportTypes';
 import { getExportRoot, slugifyExportName } from './exportUtils';
 
@@ -15,6 +26,7 @@ const exportResolutionToSize: Record<string, UvBakeResolution> = {
   '4K': 4096,
   '8K': 8192,
 };
+const EXPORT_TRANSPARENT_UV_CACHE_SCOPE = 'export-transparent-uv-v3';
 
 export type PreparedTexturedExport = {
   root: THREE.Object3D;
@@ -25,14 +37,20 @@ export type PreparedTexturedExport = {
   averageColor?: [number, number, number];
 };
 
+function getTexturedExportObjectId(input: ModelExportInput) {
+  return input.selectedObjectId && input.selectedObjectId === input.importedModel.objectId
+    ? input.selectedObjectId
+    : input.importedModel.objectId;
+}
+
 async function blobFromUrl(url: string) {
-  const response = await fetch(url);
+  const response = await fetch(resolveImageAssetUrl(url));
   if (!response.ok) throw new Error(`Could not read baked texture: ${response.statusText}`);
   return response.blob();
 }
 
 async function loadExportTexture(imageUrl: string) {
-  const texture = await new THREE.TextureLoader().loadAsync(imageUrl);
+  const texture = await new THREE.TextureLoader().loadAsync(resolveImageAssetUrl(imageUrl));
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
@@ -76,7 +94,7 @@ async function drawBlobToCanvas(context: CanvasRenderingContext2D, blob: Blob, w
   bitmap.close();
 }
 
-function findVisibleUvLayers(input: ModelExportInput) {
+function findVisibleUvLayers(objectId: string) {
   return useLayerStore
     .getState()
     .layers.filter(
@@ -84,7 +102,7 @@ function findVisibleUvLayers(input: ModelExportInput) {
         layer.type === 'uv' &&
         layer.visible &&
         layer.imageUrl &&
-        (!layer.objectId || layer.objectId === input.importedModel.objectId),
+        (!layer.objectId || layer.objectId === objectId),
     )
     .sort((a, b) => b.order - a.order);
 }
@@ -123,10 +141,7 @@ export async function makeTransparentBaseColorForExport(blob: Blob) {
     bitmap.close();
     return blob;
   }
-  context.translate(0, canvas.height);
-  context.scale(1, -1);
   context.drawImage(bitmap, 0, 0);
-  context.setTransform(1, 0, 0, 1, 0, 0);
   bitmap.close();
 
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -173,28 +188,91 @@ async function getAverageTextureColor(blob: Blob): Promise<[number, number, numb
   return [r / weight, g / weight, b / weight];
 }
 
-function findCurrentBakedTexture(input: ModelExportInput) {
-  const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.importedModel.objectId);
-  const exactTexture = findExactLayerStackTexture(input.project, visibleLayers);
-  if (canUseLayerStackCache(visibleLayers, exactTexture)) return exactTexture;
+function getLatestProject(input: ModelExportInput) {
+  return useProjectStore.getState().getCurrentProject() ?? input.project;
+}
+
+function getLayerStackCacheKey(input: ModelExportInput, objectId: string, resolution: number, visibleLayers: LayerStackLayers) {
+  const project = getLatestProject(input);
+  return getProjectedLayerStackSignature(project.id, objectId, `${EXPORT_TRANSPARENT_UV_CACHE_SCOPE}:${resolution}`, visibleLayers);
+}
+
+type LayerStackLayers = ReturnType<typeof getVisibleProjectedLayerStack>;
+
+function findCurrentBakedTexture(input: ModelExportInput, objectId: string, expectedResolution?: number) {
+  const project = getLatestProject(input);
+  const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
+  const cacheKey = expectedResolution === undefined ? undefined : getLayerStackCacheKey(input, objectId, expectedResolution, visibleLayers);
+  const exactTexture = findExactLayerStackTexture(project, visibleLayers, expectedResolution, objectId, cacheKey);
+  if (canUseLayerStackCache(visibleLayers, exactTexture, expectedResolution, objectId, cacheKey)) return exactTexture;
   return undefined;
 }
 
-async function bakeCurrentVisibleTextureForExport(input: ModelExportInput) {
-  const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.importedModel.objectId);
+async function blobFromBakeResult(result: BakeProjectedLayerResult) {
+  if (result.imageBlob) return result.imageBlob;
+  if (result.imageUrl.startsWith('blob:')) return fetch(result.imageUrl).then((response) => response.blob());
+  return undefined;
+}
+
+async function commitExportBakedTexture(input: ModelExportInput, result: BakeProjectedLayerResult) {
+  const project = getLatestProject(input);
+  let imageUrl = result.imageUrl;
+  if (project.workspaceMode === 'local-server') {
+    const filename = `${result.bakedTexture.id}.png`;
+    const blob = await blobFromBakeResult(result);
+    if (blob) {
+      imageUrl = (await saveBlobAsset({ projectId: project.id, category: 'baked', blob, filename })).asset.relativePath;
+    } else if (result.imageUrl.startsWith('data:')) {
+      imageUrl = (
+        await saveDataUrlAsset({
+          projectId: project.id,
+          category: 'baked',
+          dataUrl: result.imageUrl,
+          filename,
+        })
+      ).asset.relativePath;
+    }
+  }
+  const bakedTexture = { ...result.bakedTexture, imageUrl };
+  useProjectStore.getState().addBakedTexture(bakedTexture);
+  useLayerStore.getState().markLayersBaked(
+    bakedTexture.sourceLayerIds ?? [bakedTexture.sourceLayerId],
+    bakedTexture.id,
+    bakedTexture.createdAt,
+  );
+  return bakedTexture;
+}
+
+async function bakeCurrentVisibleTextureForExport(input: ModelExportInput, objectId: string) {
+  const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
   if (visibleLayers.length === 0) return undefined;
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
-  const result = await bakeVisibleProjectedLayersToTexture({
-    objectId: input.importedModel.objectId,
+  const cachedTexture = findCurrentBakedTexture(input, objectId, resolution);
+  if (cachedTexture) return cachedTexture;
+
+  const stackSignature = getLayerStackCacheKey(input, objectId, resolution, visibleLayers);
+  const inFlightBake = getLayerStackBakeInFlight(stackSignature);
+  if (inFlightBake) {
+    const bakedTexture = await inFlightBake;
+    const latestVisibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
+    if (bakedTexture && canUseLayerStackCache(latestVisibleLayers, bakedTexture, resolution, objectId, stackSignature)) return bakedTexture;
+  }
+
+  const bakePromise = bakeVisibleProjectedLayersToTexture({
+    objectId,
     resolution,
+    cacheKey: stackSignature,
     enableBackfaceCulling: true,
     enableDilation: true,
     dilationPixels: 4,
+    outputAlpha: 'transparent',
     preferBlobOutput: true,
+    commitToProject: false,
+    markSourceLayersBaked: false,
     onProgress: input.onProgress,
-  });
-  return result.bakedTexture;
+  }).then((result) => commitExportBakedTexture(input, result));
+  return registerLayerStackBakeInFlight(stackSignature, bakePromise);
 }
 
 function makeBaseColorMaterial(texture: THREE.Texture) {
@@ -222,13 +300,14 @@ export async function prepareTexturedModelExport(input: ModelExportInput): Promi
   const root = getExportRoot(input).clone(true);
   root.updateMatrixWorld(true);
 
-  const bakedTexture = findCurrentBakedTexture(input) ?? await bakeCurrentVisibleTextureForExport(input);
-  const uvLayers = findVisibleUvLayers(input);
+  const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
+  const objectId = getTexturedExportObjectId(input);
+  const bakedTexture = findCurrentBakedTexture(input, objectId, resolution) ?? await bakeCurrentVisibleTextureForExport(input, objectId);
+  const uvLayers = findVisibleUvLayers(objectId);
   if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 
-  const sourceBlob = bakedTexture?.imageUrl ? await blobFromUrl(bakedTexture.imageUrl) : undefined;
-  const transparentBaseBlob = sourceBlob ? await makeTransparentBaseColorForExport(sourceBlob) : undefined;
-  const textureBlob = await composeUvLayersOverBase(transparentBaseBlob, uvLayers);
+  const textureBaseBlob = bakedTexture?.imageUrl ? await blobFromUrl(bakedTexture.imageUrl) : undefined;
+  const textureBlob = await composeUvLayersOverBase(textureBaseBlob, uvLayers);
   if (!textureBlob) return { root };
   const textureUrl = URL.createObjectURL(textureBlob);
   const texture = await loadExportTexture(textureUrl);

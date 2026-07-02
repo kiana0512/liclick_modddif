@@ -37,6 +37,7 @@ export interface BakedTexture {
   objectId: string;
   sourceLayerId: string;
   sourceLayerIds?: string[];
+  cacheKey?: string;
   imageUrl: string;
   width: number;
   height: number;
@@ -62,6 +63,7 @@ export interface BakeVisibleProjectedLayersInput {
   objectId: string;
   layerIds?: string[];
   resolution: UvBakeResolution;
+  cacheKey?: string;
   enableBackfaceCulling: boolean;
   enableDilation: boolean;
   dilationPixels: number;

@@ -65,10 +65,6 @@ function getObjectMatrixWorld(generation: Generation) {
   return value.every((item) => typeof item === 'number') ? value : undefined;
 }
 
-function usesSourceAlphaMask(generation: Generation) {
-  return generation.metadata.alphaMode === 'solid-background-cutout' || generation.metadata.workflow === 'texture-map';
-}
-
 function isBakeParticipant(layer: Layer) {
   return layer.type === 'projected' && Boolean(layer.imageUrl && layer.camera);
 }
@@ -118,8 +114,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       objectId: objectId ?? capture?.objectId,
       objectMatrixWorld: getObjectMatrixWorld(generation),
       camera: capture?.camera,
-      maskUrl: usesSourceAlphaMask(generation) ? undefined : capture?.maskUrl,
-      depthUrl: usesSourceAlphaMask(generation) ? undefined : capture?.depthUrl,
+      maskUrl: capture?.maskUrl,
+      depthUrl: capture?.depthUrl,
       generationId: generation.id,
       captureId: capture?.id ?? generation.captureId,
       visible: true,

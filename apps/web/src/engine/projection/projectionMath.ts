@@ -21,7 +21,7 @@ export function projectWorldPointToUv(
 ) {
   const point = new THREE.Vector4(worldPoint[0], worldPoint[1], worldPoint[2], 1);
   point.applyMatrix4(bundle.projectorMatrix);
-  if (point.w === 0) return undefined;
+  if (point.w <= 0.0001) return undefined;
 
   const ndcX = point.x / point.w;
   const ndcY = point.y / point.w;

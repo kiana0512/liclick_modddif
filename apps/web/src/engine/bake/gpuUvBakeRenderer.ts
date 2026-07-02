@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { resolveImageAssetUrl } from './imageSampler';
 import type { BakeProgress, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -60,8 +61,13 @@ const vertexShader = `
 
   void main() {
     vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+    mat3 viewToWorldNormal = mat3(
+      viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0],
+      viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1],
+      viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]
+    );
     vWorldPosition = worldPosition.xyz;
-    vWorldNormal = normalize(normalMatrix * normal);
+    vWorldNormal = normalize(viewToWorldNormal * normalMatrix * normal);
     gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0);
   }
 `;
@@ -155,7 +161,7 @@ const fragmentShader = `
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
     vec4 projected = projectorMatrix * captureWorldPosition;
-    if (abs(projected.w) < 0.0001) discard;
+    if (projected.w <= 0.0001) discard;
 
     vec3 ndc = projected.xyz / projected.w;
     if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < -1.0 || ndc.z > 1.0) {
@@ -294,10 +300,6 @@ const sharpenFragmentShader = `
   }
 `;
 
-function usesSourceAlphaMask(layer: Layer) {
-  return typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
-}
-
 function prepareTexture(texture: THREE.Texture, filter: THREE.MinificationTextureFilter & THREE.MagnificationTextureFilter) {
   texture.colorSpace = THREE.NoColorSpace;
   texture.flipY = false;
@@ -317,23 +319,33 @@ function createNeutralTexture() {
 
 async function loadLayerTextures(layer: Layer): Promise<LoadedLayerTextures> {
   const loader = new THREE.TextureLoader();
-  const projectedTexture = prepareTexture(await loader.loadAsync(layer.imageUrl), THREE.LinearFilter);
+  const loadTexture = async (url: string, label: string) => {
+    try {
+      return await loader.loadAsync(resolveImageAssetUrl(url));
+    } catch (error) {
+      throw new Error(
+        `Could not load ${layer.name} ${label} for GPU UV baking. ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  };
+  const projectedTexture = prepareTexture(await loadTexture(layer.imageUrl, 'image'), THREE.LinearFilter);
   const neutralTexture = createNeutralTexture();
-  const shouldUseSourceAlpha = usesSourceAlphaMask(layer);
   const maskTexture =
-    layer.maskUrl && !shouldUseSourceAlpha
-      ? prepareTexture(await loader.loadAsync(layer.maskUrl), THREE.LinearFilter)
+    layer.maskUrl
+      ? prepareTexture(await loadTexture(layer.maskUrl, 'mask'), THREE.LinearFilter)
       : neutralTexture;
   const depthTexture =
-    layer.depthUrl && !shouldUseSourceAlpha
-      ? prepareTexture(await loader.loadAsync(layer.depthUrl), THREE.NearestFilter)
+    layer.depthUrl
+      ? prepareTexture(await loadTexture(layer.depthUrl, 'depth'), THREE.NearestFilter)
       : neutralTexture;
   return {
     projectedTexture,
     maskTexture,
     depthTexture,
-    useMask: Boolean(layer.maskUrl && !shouldUseSourceAlpha),
-    useDepthCheck: Boolean(layer.depthUrl && !shouldUseSourceAlpha),
+    useMask: Boolean(layer.maskUrl),
+    useDepthCheck: Boolean(layer.depthUrl),
     disposableTextures: [...new Set([projectedTexture, maskTexture, depthTexture])],
   };
 }

@@ -2,7 +2,7 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-06-30
+Updated: 2026-07-02
 
 ## Windows Desktop Build
 
@@ -59,6 +59,8 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Surface paint, eraser, and inpaint mask strokes are attached to model UV space and participate in the existing undo/redo flow one stroke at a time.
 - Hidden perf URLs can inject synthetic 100-model and 100-layer editor scenes for repeatable runtime testing.
 - Projected layer preview now separates loose coverage from strict quality. `Blend` chooses the best projected candidates without layer-order dependence; `Overlay` paints over the blended base in stack order.
+- Projected layer preview and bake now reject projector-behind-camera samples before texture lookup, and projection-angle checks use world-space normals after object transforms. This reduces stray projection fragments and wrong-angle blending.
+- Multi-view blend now uses winner-takes-dominant-quality behavior. Soft blending is kept only for near-tie projection candidates, avoiding muddy texture averaging across incompatible view angles.
 - Layer rows expose distinct blend/overlay state, layer opacity, and projection strength. Opacity can be dragged down to 0, where the icon becomes an empty circle.
 - Uncovered projected fragments fall back to the model/base material instead of showing black edges, white masks, or accidental checker diagnostics.
 - The global Auto UV bake setting gates every bake entry point. When it is off, double-click and manual bake actions do not bake; newly accepted projected layers stay as live projection previews.
@@ -114,6 +116,10 @@ Low-risk cleanup completed in this pass:
 - Audited editor history persistence after F5/undo regressions. Snapshot history is scoped by project, stores the current scene snapshot, persists object and layer changes, labels common actions, and avoids persisting temporary mapped-preview transactions.
 - Debounced current snapshot persistence from the editor page so rapid layer/object changes are coalesced before writing to browser storage, reducing UI stutter during adjustment-heavy workflows.
 - Fixed multi-select layer deletion from the layer context menu so `删除选中图层` deletes the selected set instead of only the menu anchor layer.
+- Removed the production CPU coverage parity pass after successful GPU UV bake. The validation path is still available through `localStorage.liclick-debug-gpu-coverage-validation=1`, but normal auto-bake no longer pays for a second CPU rasterization pass.
+- Fixed ordered baked-stack cache reuse so exact layer-order matches are accepted even when the bake is order-sensitive. This lets GPU stack bakes actually become the fast preview/export path.
+- Coalesced Generate-panel auto-bake queue requests to the latest visible stack while a bake is running. Adding several projected layers no longer schedules several redundant full-stack bakes.
+- Tightened projected-layer stack blending in both live shader preview and CPU UV merge so a clearly better camera projection wins instead of being averaged with weaker candidates.
 - Removed safe local garbage after audit: stale `apps/web/tsconfig.tsbuildinfo`, two empty workspace Vite dev logs, and the installer `dist-installer/staging` intermediate directory after the final setup executable was produced. User workspace assets, secrets, logs, and project data were left intact.
 - The ModDiff-style natural-transition algorithm remains under evaluation and is not part of this package. This build keeps the current narrow mask feathering path and does not introduce the hard-replace/cropped-patch approach.
 
@@ -141,6 +147,23 @@ corepack pnpm --filter @liclick/web lint
 Browser QA: http://127.0.0.1:5173/projects -> 肉肉 project render smoke
 ```
 
+Additional validation after the 2026-07-02 projection/bake patch:
+
+```text
+corepack pnpm --filter @liclick/web typecheck
+corepack pnpm --filter @liclick/web lint
+corepack pnpm --filter @liclick/web build
+corepack pnpm --filter @liclick/server typecheck
+corepack pnpm --filter @liclick/server lint
+corepack pnpm --filter @liclick/server build
+node scripts/perf-audit.mjs
+node --check apps/desktop/main.mjs
+node --check apps/desktop/preload.cjs
+node --check apps/desktop/renderer/renderer.js
+corepack pnpm package:windows
+Browser QA: http://127.0.0.1:5173/projects -> 肉肉 project render smoke
+```
+
 Additional validation before the next installer package:
 
 ```text
@@ -159,13 +182,14 @@ The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 104,920,688 bytes
-SHA256 F4100ABDCCABA9B9799FD679D0BB6ABBA96713F09906D6E1C18BCE180153DAA9
+Size 104,952,758 bytes
+SHA256 660D9F9DDA625902B7B606052A784F0C2DB82DAC7BBB718AE7DBC8E21B80F57E
 ```
 
 Packaging notes for this build:
 
 - `corepack enable` could not write to `C:\Program Files\nodejs\pnpm` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
+- `corepack pnpm install --frozen-lockfile` reported a registry metadata fetch warning for pnpm in the managed environment, then continued with the existing workspace package manager and completed successfully.
 - Inno Setup 6.7.2 emitted a non-blocking warning that the `x64` architecture identifier is deprecated and substituted with `x64os`. The installer still compiled successfully.
 - Release cleanup removed regenerated output before verification: `.codex-tmp`, `apps/web/dist`, `apps/server/dist`, `apps/web/tsconfig.tsbuildinfo`, old `dist-installer/staging`, and the old installer executable. After packaging, the generated staging directory and regenerated TypeScript build-info file were removed again. The cached portable Node zip was intentionally kept for offline packaging.
 - Vite still reports the known large-chunk warning for the editor bundle. The warning is non-blocking for this installer and remains tracked as a future code-splitting cleanup.

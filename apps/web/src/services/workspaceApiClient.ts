@@ -115,6 +115,7 @@ export async function saveProject(project: Project) {
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${project.id}`, {
     method: 'PUT',
     body: JSON.stringify({ ...project, workspaceVersion: project.workspaceVersion ?? '0.6.0' }),
+    timeoutMs: 30_000,
   });
 }
 
@@ -154,6 +155,7 @@ export async function saveDataUrlAsset(input: {
     {
       method: 'POST',
       body: JSON.stringify(input),
+      timeoutMs: 60_000,
     },
   );
 }

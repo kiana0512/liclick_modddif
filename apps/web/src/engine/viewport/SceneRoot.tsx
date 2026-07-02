@@ -11,6 +11,7 @@ import {
 import {
   canUseLayerStackCache,
   findExactLayerStackTexture,
+  getProjectedLayerStackSignature,
   getVisibleProjectedLayerStack,
 } from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
@@ -24,19 +25,12 @@ import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { ProjectionPreviewLighting } from '@/engine/projection/projectionTypes';
 import type { Layer } from '@/types/layer';
 
-const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
-const RESERVED_PROJECTED_TEXTURE_UNITS = 2;
 const RESOLUTION_TO_SIZE = {
   '1K': 1024,
   '2K': 2048,
   '4K': 4096,
   '8K': 8192,
 } as const;
-
-function projectedLayerTextureUnitCost(layer: Layer) {
-  const usesSourceAlpha = typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
-  return 1 + (layer.maskUrl && !usesSourceAlpha ? 1 : 0) + (layer.depthUrl && !usesSourceAlpha ? 1 : 0);
-}
 
 function getPreviewLighting(input: {
   displayMode: string;
@@ -254,7 +248,6 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
   const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
-  const viewport = useSceneStore((state) => state.viewport);
   const layers = useLayerStore((state) => state.layers);
   const project = useProjectStore((state) =>
     state.currentProjectId ? state.projects.find((item) => item.id === state.currentProjectId) : undefined,
@@ -278,32 +271,25 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     [importedObjectId, layers],
   );
   const livePreviewLayerLimit = useMemo(() => {
-    const maxTextures = viewport?.gl.capabilities.maxTextures ?? 16;
-    let usedTextureUnits = RESERVED_PROJECTED_TEXTURE_UNITS;
-    let count = 0;
-    for (const layer of visibleProjectedLayers) {
-      const nextUsedTextureUnits = usedTextureUnits + projectedLayerTextureUnitCost(layer);
-      if (count > 0 && nextUsedTextureUnits > maxTextures) break;
-      usedTextureUnits = nextUsedTextureUnits;
-      count += 1;
-      if (count >= MAX_LIVE_PROJECTED_PREVIEW_LAYERS) break;
-    }
-    return Math.max(1, count);
-  }, [viewport, visibleProjectedLayers]);
+    return Math.max(1, visibleProjectedLayers.length);
+  }, [visibleProjectedLayers]);
   const livePreviewProjectedLayers = useMemo(
     () => visibleProjectedLayers.slice(0, livePreviewLayerLimit),
     [livePreviewLayerLimit, visibleProjectedLayers],
   );
   const exactBakedTextureRecord = useMemo(() => {
-    const texture = findExactLayerStackTexture(project, visibleProjectedLayers, RESOLUTION_TO_SIZE[resolution]);
-    return canUseLayerStackCache(visibleProjectedLayers, texture, RESOLUTION_TO_SIZE[resolution]) ? texture : undefined;
-  }, [project, resolution, visibleProjectedLayers]);
+    const expectedResolution = RESOLUTION_TO_SIZE[resolution];
+    const cacheKey = getProjectedLayerStackSignature(project?.id, importedObjectId, expectedResolution, visibleProjectedLayers);
+    const texture = findExactLayerStackTexture(project, visibleProjectedLayers, expectedResolution, importedObjectId, cacheKey);
+    return canUseLayerStackCache(visibleProjectedLayers, texture, expectedResolution, importedObjectId, cacheKey)
+      ? texture
+      : undefined;
+  }, [importedObjectId, project, resolution, visibleProjectedLayers]);
   const loadedBakedTexture = useLoadedBakedTexture(exactBakedTextureRecord?.imageUrl);
   const loadedUvTexture = useCompositedUvTexture(visibleUvLayers);
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
-  const bakedTextureIsReady = Boolean(loadedBakedTexture);
   const canPreviewProjectedLayers =
-    !bakedTextureIsReady && livePreviewProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
+    livePreviewProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
   const previewLighting = useMemo(
     () =>
       getPreviewLighting({
@@ -328,8 +314,6 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
       const projectedLayerInput = canPreviewProjectedLayers
         ? {
             layers: livePreviewProjectedLayers.map((layer) => {
-              const usesSourceAlpha =
-                typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
               return {
                 layerId: layer.id,
                 imageUrl: layer.imageUrl,
@@ -344,8 +328,8 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
                 hue: (layer.adjustments?.hue ?? 0) / 100,
                 saturation: (layer.adjustments?.saturation ?? 0) / 100,
                 lightness: (layer.adjustments?.lightness ?? 0) / 100,
-                useMask: !usesSourceAlpha,
-                useDepthCheck: !usesSourceAlpha,
+                useMask: Boolean(layer.maskUrl),
+                useDepthCheck: Boolean(layer.depthUrl),
               };
             }),
             objectId: model.objectId,
@@ -371,7 +355,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
           | THREE.Material[]
           | undefined;
         const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
-        const bakedTexture = visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : undefined;
+        const bakedTexture = !projectedLayerInput && visibleStackIsBaked ? loadedBakedTexture ?? existingBakedTexture : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
         const previewBase = getPreviewMaterialBase(originalMaterial);

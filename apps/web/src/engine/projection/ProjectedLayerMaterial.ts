@@ -25,6 +25,8 @@ const BASE_ANGLE_GAMMA = 4;
 const MAX_STRENGTH_FOR_ANGLE = 3;
 const BLEND_POWER = 4;
 const RESIDUAL_MIX = 0.05;
+const DOMINANT_QUALITY_RATIO = 1.18;
+const DOMINANT_QUALITY_MARGIN = 0.035;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.08;
@@ -44,8 +46,13 @@ const vertexShader = `
 
   void main() {
     vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+    mat3 viewToWorldNormal = mat3(
+      viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0],
+      viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1],
+      viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]
+    );
     vWorldPosition = worldPosition.xyz;
-    vWorldNormal = normalize(mat3(modelMatrix) * normal);
+    vWorldNormal = normalize(viewToWorldNormal * normalMatrix * normal);
     vUv = uv;
     gl_Position = projectionMatrix * viewMatrix * worldPosition;
   }
@@ -146,7 +153,8 @@ const fragmentShader = `
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
     vec4 projected = projectorMatrix * captureWorldPosition;
-    vec3 ndc = projected.xyz / projected.w;
+    float projectedW = projected.w <= 0.0 ? -max(abs(projected.w), 0.0001) : max(projected.w, 0.0001);
+    vec3 ndc = projected.xyz / projectedW;
     vec2 uv = ndc.xy * 0.5 + 0.5;
     uv.y = 1.0 - uv.y;
 
@@ -223,7 +231,8 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
       vec4 captureWorldPosition = objectMatrixDelta${index} * vec4(vWorldPosition, 1.0);
       vec3 captureWorldNormal = normalize(objectNormalDelta${index} * vWorldNormal);
       vec4 projected = projectorMatrix${index} * captureWorldPosition;
-      vec3 ndc = projected.xyz / projected.w;
+      float projectedW = projected.w <= 0.0 ? -max(abs(projected.w), 0.0001) : max(projected.w, 0.0001);
+      vec3 ndc = projected.xyz / projectedW;
       vec2 uv = ndc.xy * 0.5 + 0.5;
       uv.y = 1.0 - uv.y;
 
@@ -267,7 +276,8 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
       vec4 captureWorldPosition = objectMatrixDelta${index} * vec4(vWorldPosition, 1.0);
       vec3 captureWorldNormal = normalize(objectNormalDelta${index} * vWorldNormal);
       vec4 projected = projectorMatrix${index} * captureWorldPosition;
-      vec3 ndc = projected.xyz / projected.w;
+      float projectedW = projected.w <= 0.0 ? -max(abs(projected.w), 0.0001) : max(projected.w, 0.0001);
+      vec3 ndc = projected.xyz / projectedW;
       vec2 uv = ndc.xy * 0.5 + 0.5;
       uv.y = 1.0 - uv.y;
 
@@ -430,6 +440,12 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
       step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage2);
     if (candidateCount <= 0.5) return fallbackColor;
     if (candidateCount <= 1.5) return topColor0;
+    if (
+      topQuality0 >= topQuality1 * ${DOMINANT_QUALITY_RATIO.toFixed(2)} ||
+      topQuality0 - topQuality1 >= ${DOMINANT_QUALITY_MARGIN.toFixed(3)}
+    ) {
+      return topColor0;
+    }
 
     float sumStrong =
       pow(max(topQuality0, 0.0), ${BLEND_POWER.toFixed(1)}) +
@@ -499,8 +515,18 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   const whitePixel = new Uint8Array([255, 255, 255, 255]);
   const neutralTexture = new THREE.DataTexture(whitePixel, 1, 1, THREE.RGBAFormat);
   neutralTexture.needsUpdate = true;
-  const maskTexture = input.maskUrl ? await new THREE.TextureLoader().loadAsync(input.maskUrl) : neutralTexture;
-  const depthTexture = input.depthUrl ? await new THREE.TextureLoader().loadAsync(input.depthUrl) : neutralTexture;
+  const maskTexture = input.maskUrl
+    ? await new THREE.TextureLoader().loadAsync(input.maskUrl).catch((error) => {
+        console.warn('[Liclick 3D Texture] Could not load projected layer mask; continuing without mask.', error);
+        return neutralTexture;
+      })
+    : neutralTexture;
+  const depthTexture = input.depthUrl
+    ? await new THREE.TextureLoader().loadAsync(input.depthUrl).catch((error) => {
+        console.warn('[Liclick 3D Texture] Could not load projected layer depth; continuing without depth check.', error);
+        return neutralTexture;
+      })
+    : neutralTexture;
   const baseTexture = input.baseTexture ?? neutralTexture;
   const uvOverlayTexture = input.uvOverlayTexture ?? neutralTexture;
   if (input.baseTexture) {
@@ -556,8 +582,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       projectorPosition: { value: new THREE.Vector3().fromArray(input.camera.position) },
       layerOpacity: { value: input.opacity },
       layerStrength: { value: input.strength ?? 1 },
-      useMask: { value: input.useMask && input.maskUrl ? 1 : 0 },
-      useDepthCheck: { value: input.useDepthCheck && input.depthUrl ? 1 : 0 },
+      useMask: { value: input.useMask && input.maskUrl && maskTexture !== neutralTexture ? 1 : 0 },
+      useDepthCheck: { value: input.useDepthCheck && input.depthUrl && depthTexture !== neutralTexture ? 1 : 0 },
       enableBackfaceCulling: { value: input.enableBackfaceCulling === false ? 0 : 1 },
       edgeFeather: { value: input.edgeFeather ?? 0.035 },
       depthBias: { value: input.depthBias ?? 0.025 },
@@ -666,58 +692,78 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   }
   const disposableTextures: THREE.Texture[] = [neutralTexture];
 
-  await Promise.all(
-    layers.map(async (layer, index) => {
-      const texture = await loadProjectedTexture(layer.imageUrl);
-      const shouldUseMask = Boolean(layer.useMask && layer.maskUrl);
-      const shouldUseDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
-      const maskTexture = shouldUseMask ? await loadProjectedTexture(layer.maskUrl!, THREE.NoColorSpace) : neutralTexture;
-      const depthTexture = shouldUseDepth ? await loadProjectedTexture(layer.depthUrl!, THREE.NoColorSpace) : neutralTexture;
-      if (shouldUseMask) {
-        maskTexture.minFilter = THREE.LinearFilter;
-        maskTexture.magFilter = THREE.LinearFilter;
-      }
-      if (shouldUseDepth) {
-        depthTexture.minFilter = THREE.NearestFilter;
-        depthTexture.magFilter = THREE.NearestFilter;
-      }
+  const loadedLayers: typeof layers = [];
+  for (const layer of layers) {
+    const index = loadedLayers.length;
+    let texture: THREE.Texture;
+    try {
+      texture = await loadProjectedTexture(layer.imageUrl);
+    } catch (error) {
+      console.warn('[Liclick 3D Texture] Could not load projected layer image; skipping layer in live preview.', error);
+      continue;
+    }
+    const requestedMask = Boolean(layer.useMask && layer.maskUrl);
+    const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
+    const maskTexture = requestedMask
+      ? await loadProjectedTexture(layer.maskUrl!, THREE.NoColorSpace).catch((error) => {
+          console.warn('[Liclick 3D Texture] Could not load projected layer mask; continuing without mask.', error);
+          return neutralTexture;
+        })
+      : neutralTexture;
+    const depthTexture = requestedDepth
+      ? await loadProjectedTexture(layer.depthUrl!, THREE.NoColorSpace).catch((error) => {
+          console.warn('[Liclick 3D Texture] Could not load projected layer depth; continuing without depth check.', error);
+          return neutralTexture;
+        })
+      : neutralTexture;
+    const shouldUseMask = requestedMask && maskTexture !== neutralTexture;
+    const shouldUseDepth = requestedDepth && depthTexture !== neutralTexture;
+    if (shouldUseMask) {
+      maskTexture.minFilter = THREE.LinearFilter;
+      maskTexture.magFilter = THREE.LinearFilter;
+    }
+    if (shouldUseDepth) {
+      depthTexture.minFilter = THREE.NearestFilter;
+      depthTexture.magFilter = THREE.NearestFilter;
+    }
 
-      const objectMatrixDelta = new THREE.Matrix4();
-      if (layer.objectMatrixWorld && input.currentObjectMatrixWorld) {
-        objectMatrixDelta
-          .fromArray(layer.objectMatrixWorld)
-          .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
-      }
-      const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
+    const objectMatrixDelta = new THREE.Matrix4();
+    if (layer.objectMatrixWorld && input.currentObjectMatrixWorld) {
+      objectMatrixDelta
+        .fromArray(layer.objectMatrixWorld)
+        .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
+    }
+    const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
 
-      uniforms[`projectedMap${index}`] = { value: texture };
-      if (shouldUseMask) uniforms[`maskMap${index}`] = { value: maskTexture };
-      if (shouldUseDepth) uniforms[`depthMap${index}`] = { value: depthTexture };
-      uniforms[`projectorMatrix${index}`] = { value: buildProjectionMatrixBundle(layer.camera).projectorMatrix };
-      uniforms[`objectMatrixDelta${index}`] = { value: objectMatrixDelta };
-      uniforms[`objectNormalDelta${index}`] = { value: objectNormalDelta };
-      uniforms[`projectorPosition${index}`] = { value: new THREE.Vector3().fromArray(layer.camera.position) };
-      uniforms[`layerOpacity${index}`] = { value: layer.opacity };
-      uniforms[`layerStrength${index}`] = { value: layer.strength ?? 1 };
-      uniforms[`layerBlendMode${index}`] = { value: layer.blendMode === 'overlay' ? 1 : 0 };
-      uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
-      uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
-      uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
-      disposableTextures.push(texture, maskTexture, depthTexture);
-    }),
-  );
+    uniforms[`projectedMap${index}`] = { value: texture };
+    if (shouldUseMask) uniforms[`maskMap${index}`] = { value: maskTexture };
+    if (shouldUseDepth) uniforms[`depthMap${index}`] = { value: depthTexture };
+    uniforms[`projectorMatrix${index}`] = { value: buildProjectionMatrixBundle(layer.camera).projectorMatrix };
+    uniforms[`objectMatrixDelta${index}`] = { value: objectMatrixDelta };
+    uniforms[`objectNormalDelta${index}`] = { value: objectNormalDelta };
+    uniforms[`projectorPosition${index}`] = { value: new THREE.Vector3().fromArray(layer.camera.position) };
+    uniforms[`layerOpacity${index}`] = { value: layer.opacity };
+    uniforms[`layerStrength${index}`] = { value: layer.strength ?? 1 };
+    uniforms[`layerBlendMode${index}`] = { value: layer.blendMode === 'overlay' ? 1 : 0 };
+    uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
+    uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
+    uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
+    disposableTextures.push(texture, maskTexture, depthTexture);
+    loadedLayers.push({ ...layer, useMask: shouldUseMask, useDepthCheck: shouldUseDepth });
+  }
+  if (loadedLayers.length === 0) return undefined;
 
   const material = new THREE.ShaderMaterial({
-    name: `LiclickProjectedLayerStack:${layers.map((layer) => layer.layerId).join(',')}`,
+    name: `LiclickProjectedLayerStack:${loadedLayers.map((layer) => layer.layerId).join(',')}`,
     vertexShader,
-    fragmentShader: buildStackFragmentShader(layers),
+    fragmentShader: buildStackFragmentShader(loadedLayers),
     uniforms,
     toneMapped: false,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
   material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
-    layers: layers.map((layer, index) => ({
+    layers: loadedLayers.map((layer, index) => ({
       objectMatrixWorld: layer.objectMatrixWorld,
       objectMatrixDeltaUniform: `objectMatrixDelta${index}`,
       objectNormalDeltaUniform: `objectNormalDelta${index}`,

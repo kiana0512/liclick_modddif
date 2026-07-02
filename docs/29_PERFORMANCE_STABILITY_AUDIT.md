@@ -1,6 +1,6 @@
 # Performance And Stability Audit
 
-Updated: 2026-06-29
+Updated: 2026-07-02
 
 ## Current Fixes
 
@@ -21,8 +21,12 @@ Updated: 2026-06-29
 - Only one automatic bake runs at a time from the Generate panel. This avoids piling up multiple 4K/8K CPU bakes and freezing the viewport.
 - Automatic bake keeps the selected resolution instead of silently reducing quality. The UI now shows a top progress bar for loading, UV sampling, compositing, PNG encoding, applying, and workspace persistence.
 - Automatic visible-layer bake is GPU-first. It renders meshes into UV space on an offscreen WebGL render target, applies projection/mask/depth/backface gates in shader, and falls back to the CPU rasterizer only at the same requested resolution.
-- GPU bake now runs a low-resolution CPU coverage parity check before applying the texture. Obvious GPU/CPU projection divergence is rejected instead of being shown as a baked result.
+- GPU bake coverage parity is now debug opt-in through `localStorage.liclick-debug-gpu-coverage-validation=1`. Production auto-bake no longer re-rasterizes every layer on CPU after a successful GPU bake, which removes a major reason GPU utilization appeared low while the UI was still waiting.
 - GPU bake keeps seam dilation and covered-texel sharpening on WebGL render targets before readback, reducing the largest CPU image-processing loops for 4K/8K bakes.
+- Projected-layer preview and GPU bake now reject points behind the projector camera before sampling, and shader normals are converted back to world space before projection-angle checks. This reduces incorrect backface/angle acceptance after model transforms.
+- Multi-view projected-layer blending is more decisive: when the best candidate has clearly higher projection quality it wins outright, and soft blending is reserved for genuinely comparable candidates. This avoids muddy cross-view texture averaging on high-relief objects.
+- Exact ordered baked stack textures are reusable even when the bake is order-sensitive. The cache only requires order-independent metadata for set-match reuse, preventing successful GPU stack bakes from being ignored by preview/export.
+- Generate-panel auto-bake queue coalesces to the latest requested visible stack while a bake is already running. Adding several projected layers no longer schedules several redundant full-stack bakes.
 - Local-server capture, layer, and baked texture persistence now uploads PNG blobs directly instead of wrapping large images in base64 JSON payloads.
 - Render-target capture and masked projected-image output use asynchronous PNG Blob URLs in the browser hot path. The local-server save path registers those Blob URLs and writes them through the binary asset API.
 - PBR preview avoids the post-bake white-model gap by keeping the projected preview or in-memory baked texture active until the persisted baked texture is loaded.
@@ -128,3 +132,4 @@ Known next step for heavier 4K/8K work:
 - replace browser PNG encoding/readback with a server-side or GPU-adjacent export path for A100 deployments where possible
 - add GPU timing/readback telemetry so slow machines can distinguish shader time, readback time, PNG encoding, and project-save time
 - add a browser-driven 30-layer WebGL scenario that measures frame responsiveness while auto-bake is queued
+- move transparent-output UV merge onto a GPU path or worker path. It still uses CPU rasterization because the current GPU bake path intentionally emits opaque viewport-ready BaseColor textures.

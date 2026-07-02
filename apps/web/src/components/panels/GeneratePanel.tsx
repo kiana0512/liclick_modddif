@@ -4,9 +4,6 @@ import { Download, Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
-import { AutoBakeProgressBar, type AutoBakeProgress } from '@/components/panels/AutoBakeProgressBar';
-import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
-import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { captureCurrentView } from '@/engine/capture/captureCurrentView';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
@@ -69,7 +66,6 @@ const imageModels: { value: LiclickImageModel; label: string }[] = [
 const aspectRatios: LiclickAspectRatio[] = ['auto', '1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16'];
 const imageSizes: LiclickImageSize[] = ['auto', '1K', '2K', '4K'];
 const pendingSubmissionTimeoutMs = 3 * 60 * 1000;
-const autoBakeProgressHideDelayMs = 1600;
 const defaultImageGenerationSettings = {
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
@@ -107,10 +103,6 @@ function buildLiclickPrompt(userPrompt: string, model: LiclickImageModel) {
 
 function isTextureMapGeneration(generation: Generation) {
   return generation.metadata.workflow === 'texture-map';
-}
-
-function formatAutoBakeCompleteDetail(width: number, baseDetail: string) {
-  return `${width}px ${baseDetail}`;
 }
 
 function isRunningGeneration(generation?: Generation) {
@@ -174,7 +166,6 @@ export function GeneratePanel() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [generateNotice, setGenerateNotice] = useState<GenerateNotice | undefined>();
-  const [autoBakeProgress, setAutoBakeProgress] = useState<AutoBakeProgress | undefined>();
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
   );
@@ -216,16 +207,12 @@ export function GeneratePanel() {
     [activeReferenceIds, selectedReferenceIds],
   );
   const resolution = useSettingsStore((state) => state.resolution);
-  const autoUvBakeEnabled = useSettingsStore((state) => state.autoUvBakeEnabled);
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const submitLockRef = useRef(false);
   const cancelledGenerationIdsRef = useRef(new Set<string>());
-  const autoBakeRunningRef = useRef(false);
-  const autoBakeQueueRef = useRef<Layer[]>([]);
-  const autoBakeProgressTimerRef = useRef<number>();
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const tabGenerations = generations.filter((generation) => {
     const projectId = typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
@@ -239,8 +226,6 @@ export function GeneratePanel() {
   const previewCancelled = previewGeneration?.metadata.cancelled === true;
   const canCancelLiclickGeneration =
     Boolean(activeProjectGeneration) && !isTextureMapTab && !isTextureMapGeneration(activeProjectGeneration!);
-
-  useEffect(() => () => window.clearTimeout(autoBakeProgressTimerRef.current), []);
 
   const syncGeneration = useCallback(
     (generation: Generation) => {
@@ -837,173 +822,17 @@ export function GeneratePanel() {
     });
   }
 
-  function queueAutoBakeTask(callback: () => void) {
-    const idleWindow = window as typeof window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
-    };
-    if (idleWindow.requestIdleCallback) {
-      idleWindow.requestIdleCallback(callback, { timeout: 900 });
-      return;
-    }
-    window.setTimeout(callback, 120);
-  }
-
-  async function autoBakeVisibleProjectedLayers(layer: Layer) {
-    if (!useSettingsStore.getState().autoUvBakeEnabled) throw new Error(t('autoBakeDisabledHelp'));
-    const currentImportedModel = useSceneStore.getState().importedModel;
-    if (!currentImportedModel) throw new Error(t('importModelFirst'));
-    const objectId = layer.objectId ?? selectedObjectId ?? currentImportedModel.objectId;
-    window.clearTimeout(autoBakeProgressTimerRef.current);
-    setAutoBakeProgress({
-      title: t('autoBake'),
-      detail: `${layer.name} ${t('autoBakePreparing')}`,
-      progress: 0.02,
-    });
-    const bakeResult = await bakeVisibleProjectedLayersToTexture({
-      objectId,
-      resolution: resolutionToSize[resolution],
-      enableBackfaceCulling: true,
-      enableDilation: true,
-      dilationPixels: 4,
-      preferBlobOutput: currentProject?.workspaceMode === 'local-server',
-      onProgress: (progress) => {
-        const percent = Math.round(progress.progress * 100);
-        const triangleDetail =
-          progress.totalTriangles && progress.processedTriangles !== undefined
-            ? ` · ${progress.processedTriangles}/${progress.totalTriangles} ${t('autoBakeTriangles')}`
-            : '';
-        const layerDetail =
-          progress.layerCount && progress.layerName
-            ? ` · ${progress.layerIndex === undefined ? 1 : progress.layerIndex + 1}/${progress.layerCount} ${progress.layerName}`
-            : progress.layerName
-              ? ` · ${progress.layerName}`
-              : '';
-        const phaseLabel =
-          progress.phase === 'loading-assets'
-            ? t('autoBakeLoadingAssets')
-            : progress.phase === 'rasterizing'
-              ? t('autoBakeRasterizing')
-              : progress.phase === 'compositing'
-                ? t('autoBakeCompositing')
-                : progress.phase === 'encoding'
-                  ? t('autoBakeEncoding')
-                  : progress.phase === 'applying'
-                    ? t('autoBakeApplying')
-                    : t('autoBakePersisting');
-        setAutoBakeProgress({
-          title: t('autoBake'),
-          detail: `${phaseLabel} ${percent}%${layerDetail}${triangleDetail}`,
-          progress: progress.progress,
-        });
-      },
-    });
-    setAutoBakeProgress({
-      title: t('autoBake'),
-      detail: t('autoBakeApplyPbr'),
-      progress: 0.98,
-    });
-    await applyBakedTextureToObject(currentImportedModel.group, bakeResult.imageUrl);
-
-    let bakedTextures = useProjectStore.getState().getCurrentProject()?.bakedTextures ?? currentProject?.bakedTextures ?? [];
-    if (currentProject?.workspaceMode === 'local-server') {
-      setAutoBakeProgress({
-        title: t('autoBake'),
-        detail: t('autoBakePersistWorkspace'),
-        progress: 0.99,
-      });
-      const imageUrl = await persistGeneratedImage(
-        'baked',
-        bakeResult.imageUrl,
-        `${bakeResult.bakedTexture.id}.png`,
-        bakeResult.imageBlob,
-      );
-      if (imageUrl !== bakeResult.imageUrl) {
-        bakedTextures = bakedTextures.map((item) =>
-          item.id === bakeResult.bakedTexture.id ? { ...item, imageUrl } : item,
-        );
-        updateCurrentProject({ bakedTextures });
-      }
-    }
-
-    const bakedLayers = useLayerStore.getState().layers;
-    setProjectLayers(bakedLayers);
-    await saveCriticalProjectState({ layers: bakedLayers });
-    setAutoBakeProgress({
-      title: t('autoBakeComplete'),
-      detail: formatAutoBakeCompleteDetail(bakeResult.bakedTexture.width, t('autoBakeCompleteDetail')),
-      progress: 1,
-    });
-    return bakeResult;
-  }
-
-  function drainAutoBakeQueue() {
-    if (!useSettingsStore.getState().autoUvBakeEnabled) {
-      autoBakeQueueRef.current = [];
-      setAutoBakeProgress(undefined);
-      return;
-    }
-    if (autoBakeRunningRef.current) {
-      return;
-    }
-    const layer = autoBakeQueueRef.current.shift();
-    if (!layer) return;
-    autoBakeRunningRef.current = true;
-
-    queueAutoBakeTask(() => {
-      void (async () => {
-        pushToast({
-          tone: 'info',
-          title: t('autoBakeStart'),
-          description: `${layer.name} ${t('autoBakeStartHelp')}`,
-          dedupeKey: `auto-bake-start:${layer.id}`,
-        });
-        try {
-          const bakeResult = await autoBakeVisibleProjectedLayers(layer);
-          pushToast({
-            tone: 'success',
-            title: t('autoBakeComplete'),
-            description: `${t('autoBakeSuccessHelp')} ${bakeResult.bakedTexture.width}px，${t('coverage')} ${(bakeResult.report.coverageRatio * 100).toFixed(1)}%。`,
-            dedupeKey: `auto-bake-success:${layer.id}`,
-          });
-        } catch (error) {
-          console.error('[Liclick 3D Texture] Auto bake failed:', error);
-          pushToast({
-            tone: 'warning',
-            title: t('autoBakeFailed'),
-            description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
-            dedupeKey: `auto-bake-failed:${layer.id}`,
-          });
-        } finally {
-          autoBakeRunningRef.current = false;
-          autoBakeProgressTimerRef.current = window.setTimeout(() => {
-            setAutoBakeProgress(undefined);
-          }, autoBakeProgressHideDelayMs);
-          drainAutoBakeQueue();
-        }
-      })();
-    });
-  }
-
-  function scheduleAutoBakeVisibleProjectedLayers(layer: Layer) {
-    autoBakeQueueRef.current.push(layer);
-    if (autoBakeRunningRef.current || autoBakeQueueRef.current.length > 1) {
-      pushToast({
-        tone: 'info',
-        title: t('autoBakeQueued'),
-        description: `${autoBakeQueueRef.current.length} ${t('autoBakeQueuedHelp')}`,
-        dedupeKey: 'auto-bake-queued',
-      });
-      return;
-    }
-    drainAutoBakeQueue();
-  }
-
   async function handleAddProjectedLayer() {
     if (!previewGeneration?.resultUrl || !isTextureMapGeneration(previewGeneration)) return;
     const generationCapture =
       lastCapture?.id === previewGeneration.captureId
         ? lastCapture
         : currentProject?.captures.find((capture) => capture.id === previewGeneration.captureId) ?? lastCapture;
+    let persistedGenerationCapture = generationCapture;
+    if (currentProject?.workspaceMode === 'local-server' && generationCapture) {
+      const captures = await persistCaptureAssets(useProjectStore.getState().getCurrentProject()?.captures ?? currentProject.captures);
+      persistedGenerationCapture = captures.find((capture) => capture.id === generationCapture.id) ?? generationCapture;
+    }
     const layerGeneration = {
       ...previewGeneration,
       resultUrl: await createMaskedProjectedImage(
@@ -1014,13 +843,18 @@ export function GeneratePanel() {
         alphaMode: 'solid-background-cutout',
       },
     };
-    let layer = addProjectedLayerFromGeneration(layerGeneration, generationCapture, selectedObjectId);
+    let layer = addProjectedLayerFromGeneration(layerGeneration, persistedGenerationCapture, selectedObjectId);
     let nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
     try {
-      await saveCriticalProjectState({ layers: nextLayers });
       const imageUrl = await persistGeneratedImage('layers', layer.imageUrl, `${layer.id}.png`);
-      layer = { ...layer, imageUrl };
+      const maskUrl = layer.maskUrl
+        ? await persistGeneratedImage('layers', layer.maskUrl, `${layer.id}-mask.png`)
+        : undefined;
+      const depthUrl = layer.depthUrl
+        ? await persistGeneratedImage('layers', layer.depthUrl, `${layer.id}-depth.png`)
+        : undefined;
+      layer = { ...layer, imageUrl, maskUrl, depthUrl };
       nextLayers = nextLayers.map((item) => (item.id === layer.id ? layer : item));
       useLayerStore.getState().setLayers(nextLayers);
       setProjectLayers(nextLayers);
@@ -1038,9 +872,8 @@ export function GeneratePanel() {
     pushToast({
       tone: 'success',
       title: t('autoBakeLayerAdded'),
-      description: `${layer.name} ${autoUvBakeEnabled ? t('autoBakeLayerAddedHelp') : t('projectedLayerPreviewOnlyHelp')}`,
+      description: `${layer.name} ${t('projectedLayerPreviewOnlyHelp')}`,
     });
-    if (autoUvBakeEnabled) scheduleAutoBakeVisibleProjectedLayers(layer);
   }
 
   async function handleAddGenerationAsReference() {
@@ -1342,10 +1175,6 @@ export function GeneratePanel() {
         />
       </button>,
       portalRoot,
-      )}
-      {portalRoot && autoBakeProgress && createPortal(
-        <AutoBakeProgressBar progress={autoBakeProgress} />,
-        portalRoot,
       )}
     {portalRoot && settingsOpen && generateMode === 'visible' && createPortal(
       <div

@@ -15,6 +15,7 @@ import {
 } from './workspaceService.js';
 
 const assetFolders = ['models', 'references', 'captures', 'generations', 'layers', 'baked'];
+const MIN_SAVED_PROJECTED_BAKE_COVERAGE_RATIO = 0.35;
 
 export class ProjectSaveConflictError extends Error {
   statusCode = 409;
@@ -23,6 +24,178 @@ export class ProjectSaveConflictError extends Error {
     super(message);
     this.name = 'ProjectSaveConflictError';
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isProjectedLayerRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && value.type === 'projected';
+}
+
+function readString(value: unknown) {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readStringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
+}
+
+function isBlobUrl(value: unknown) {
+  return typeof value === 'string' && value.startsWith('blob:');
+}
+
+function getBakedTextureCoverageRatio(texture: Record<string, unknown>) {
+  const directCoverageRatio = readNumber(texture.coverageRatio);
+  if (directCoverageRatio !== undefined) return directCoverageRatio;
+  const report = texture.report;
+  return isRecord(report) ? readNumber(report.coverageRatio) : undefined;
+}
+
+function getBakedTextureSourceLayerIds(texture: Record<string, unknown>) {
+  return readStringArray(texture.sourceLayerIds) ?? [readString(texture.sourceLayerId)].filter((id): id is string => Boolean(id));
+}
+
+function sanitizeLowCoverageProjectedBakes(project: WorkspaceProject): WorkspaceProject {
+  const layerIds = new Set(
+    project.layers
+      .filter(isRecord)
+      .map((layer) => readString(layer.id))
+      .filter((id): id is string => Boolean(id)),
+  );
+  const projectedLayerIds = new Set(
+    project.layers
+      .filter(isProjectedLayerRecord)
+      .map((layer) => readString(layer.id))
+      .filter((id): id is string => Boolean(id)),
+  );
+  if (project.bakedTextures.length === 0) return project;
+
+  const removedTextureIds = new Set<string>();
+  const bakedTextures = project.bakedTextures.filter((texture) => {
+    if (!isRecord(texture)) return true;
+    const coverageRatio = getBakedTextureCoverageRatio(texture);
+    if (coverageRatio === undefined || coverageRatio >= MIN_SAVED_PROJECTED_BAKE_COVERAGE_RATIO) return true;
+    const sourceLayerIds = getBakedTextureSourceLayerIds(texture);
+    const allSourcesAreProjectedOrStale = sourceLayerIds.every((id) => projectedLayerIds.has(id) || !layerIds.has(id));
+    if (sourceLayerIds.length > 0 && !allSourcesAreProjectedOrStale) return true;
+    const textureId = readString(texture.id);
+    if (textureId) removedTextureIds.add(textureId);
+    return false;
+  });
+  if (removedTextureIds.size === 0) return project;
+
+  return {
+    ...project,
+    bakedTextures,
+    layers: project.layers.map((layer) => {
+      if (!isRecord(layer)) return layer;
+      const bakedTextureId = readString(layer.bakedTextureId);
+      if (!bakedTextureId || !removedTextureIds.has(bakedTextureId)) return layer;
+      const nextLayer: Record<string, unknown> = { ...layer, isBaked: false, needsRebake: true };
+      delete nextLayer.bakedTextureId;
+      delete nextLayer.bakedAt;
+      return nextLayer;
+    }),
+  };
+}
+
+function sanitizeVolatileLayerAssets(project: WorkspaceProject): WorkspaceProject {
+  const capturesById = new Map(
+    project.captures
+      .filter(isRecord)
+      .map((capture) => [readString(capture.id), capture])
+      .filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry[0])),
+  );
+  let changed = false;
+  const layers = project.layers.map((layer) => {
+    if (!isRecord(layer)) return layer;
+    const capture = capturesById.get(readString(layer.captureId) ?? '');
+    const nextLayer: Record<string, unknown> = { ...layer };
+    if (isBlobUrl(nextLayer.maskUrl)) {
+      nextLayer.maskUrl = isBlobUrl(capture?.maskUrl) ? undefined : capture?.maskUrl;
+      changed = true;
+    }
+    if (isBlobUrl(nextLayer.depthUrl)) {
+      nextLayer.depthUrl = isBlobUrl(capture?.depthUrl) ? undefined : capture?.depthUrl;
+      changed = true;
+    }
+    if (isBlobUrl(nextLayer.imageUrl)) {
+      delete nextLayer.imageUrl;
+      changed = true;
+    }
+    return nextLayer;
+  });
+  return changed ? { ...project, layers } : project;
+}
+
+function workspaceUrlToProjectRelative(userId: string, slug: string, value?: string) {
+  if (!value || value.startsWith('data:') || value.startsWith('blob:')) return value;
+  let pathname = value;
+  try {
+    pathname = new URL(value).pathname;
+  } catch {
+    // Plain relative asset paths are already portable.
+    if (!value.startsWith('/workspace/')) return value;
+  }
+  if (!pathname.startsWith('/workspace/')) return value;
+  const workspaceRelativePath = decodeURIComponent(pathname.slice('/workspace/'.length)).replaceAll('\\', '/');
+  const projectPrefix = `users/${userId}/projects/${slug}/`;
+  return workspaceRelativePath.startsWith(projectPrefix)
+    ? workspaceRelativePath.slice(projectPrefix.length)
+    : value;
+}
+
+function normalizeProjectAssetReferences(userId: string, slug: string, project: WorkspaceProject): WorkspaceProject {
+  const normalizeUrl = (url?: string) => workspaceUrlToProjectRelative(userId, slug, url);
+  const objects = project.objects ?? [];
+  const references = project.references ?? [];
+  const captures = project.captures ?? [];
+  const generations = project.generations ?? [];
+  const layers = project.layers ?? [];
+  const bakedTextures = project.bakedTextures ?? [];
+  return {
+    ...project,
+    thumbnail: normalizeUrl(project.thumbnail) ?? '',
+    objects: objects.map((object) =>
+      isRecord(object) ? { ...object, sourcePath: normalizeUrl(readString(object.sourcePath)) } : object,
+    ),
+    references: references.map((reference) =>
+      isRecord(reference) ? { ...reference, url: normalizeUrl(readString(reference.url)) } : reference,
+    ),
+    captures: captures.map((capture) =>
+      isRecord(capture)
+        ? {
+            ...capture,
+            colorUrl: normalizeUrl(readString(capture.colorUrl)),
+            maskUrl: normalizeUrl(readString(capture.maskUrl)),
+            depthUrl: normalizeUrl(readString(capture.depthUrl)),
+            normalUrl: normalizeUrl(readString(capture.normalUrl)),
+          }
+        : capture,
+    ),
+    generations: generations.map((generation) =>
+      isRecord(generation) ? { ...generation, resultUrl: normalizeUrl(readString(generation.resultUrl)) } : generation,
+    ),
+    layers: layers.map((layer) =>
+      isRecord(layer)
+        ? {
+            ...layer,
+            imageUrl: normalizeUrl(readString(layer.imageUrl)),
+            maskUrl: normalizeUrl(readString(layer.maskUrl)),
+            depthUrl: normalizeUrl(readString(layer.depthUrl)),
+          }
+        : layer,
+    ),
+    bakedTextures: bakedTextures.map((texture) =>
+      isRecord(texture) ? { ...texture, imageUrl: normalizeUrl(readString(texture.imageUrl)) } : texture,
+    ),
+  };
 }
 
 function defaultSettings() {
@@ -128,7 +301,18 @@ function getProjectDir(userId: string, slug: string) {
 }
 
 export function resolveProjectAssetUrl(userId: string, slug: string, relativePath: string) {
-  if (!relativePath || relativePath.startsWith('data:') || relativePath.startsWith('blob:') || relativePath.startsWith('http')) {
+  if (!relativePath || relativePath.startsWith('data:') || relativePath.startsWith('blob:')) {
+    return relativePath;
+  }
+  if (relativePath.startsWith('http')) {
+    try {
+      const url = new URL(relativePath);
+      if (url.pathname.startsWith('/workspace/')) {
+        return toWorkspaceUrl(decodeURIComponent(url.pathname.slice('/workspace/'.length)));
+      }
+    } catch {
+      return relativePath;
+    }
     return relativePath;
   }
   return toWorkspaceUrl(path.join('users', userId, 'projects', slug, relativePath));
@@ -177,6 +361,7 @@ function resolveProjectAssets(userId: string, slug: string, project: WorkspacePr
             ...layer,
             imageUrl: resolveUrl((layer as { imageUrl?: string }).imageUrl),
             maskUrl: resolveUrl((layer as { maskUrl?: string }).maskUrl),
+            depthUrl: resolveUrl((layer as { depthUrl?: string }).depthUrl),
         }
         : layer,
     ),
@@ -211,8 +396,13 @@ export async function saveProject(userId: string, projectId: string, inputProjec
     }
   }
   const now = new Date().toISOString();
+  const sanitizedProject = normalizeProjectAssetReferences(
+    userId,
+    slug,
+    sanitizeLowCoverageProjectedBakes(sanitizeVolatileLayerAssets(inputProject)),
+  );
   const project = {
-    ...inputProject,
+    ...sanitizedProject,
     id: projectId,
     updatedAt: now,
     lastSavedAt: now,

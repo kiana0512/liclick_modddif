@@ -64,7 +64,7 @@ function getAttributeTuple2(attribute: THREE.BufferAttribute | THREE.Interleaved
 function uvToPixel(uv: { x: number; y: number }, resolution: number) {
   return {
     x: uv.x * (resolution - 1),
-    y: uv.y * (resolution - 1),
+    y: (1 - uv.y) * (resolution - 1),
   };
 }
 
