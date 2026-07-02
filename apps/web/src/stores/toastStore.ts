@@ -22,13 +22,10 @@ export const useToastStore = create<ToastStore>((set) => ({
   pushToast: (toast) => {
     const id = createId('toast');
     set((state) => {
-      if (
-        toast.dedupeKey &&
-        state.toasts.some((item) => item.dedupeKey === toast.dedupeKey)
-      ) {
-        return state;
-      }
-      return { toasts: [{ id, ...toast }, ...state.toasts].slice(0, 3) };
+      const existingToasts = toast.dedupeKey
+        ? state.toasts.filter((item) => item.dedupeKey !== toast.dedupeKey)
+        : state.toasts;
+      return { toasts: [{ id, ...toast }, ...existingToasts].slice(0, 3) };
     });
     window.setTimeout(() => {
       set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));

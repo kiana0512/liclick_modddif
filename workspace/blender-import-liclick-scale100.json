@@ -1,0 +1,80 @@
+{
+  "input": "E:\\Liclick 3D Texture\\workspace\\liclick-scale100-simulated.fbx",
+  "exists": true,
+  "mesh_count": 1,
+  "object_count": 1,
+  "objects": [
+    {
+      "name": "Mesh_0",
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "dimensions": [
+        1.3848495483398438,
+        2.25,
+        0.6331155300140381
+      ],
+      "bbox_min": [
+        -0.6924247741699219,
+        -0.31655773520469666,
+        -5.848360018489984e-09
+      ],
+      "bbox_max": [
+        0.6924247741699219,
+        0.31655797362327576,
+        2.25
+      ],
+      "bbox_size": [
+        1.3848495483398438,
+        0.6331157088279724,
+        2.25000000584836
+      ],
+      "materials": [
+        {
+          "name": "Liclick_BaseColor",
+          "blend_method": "HASHED",
+          "alpha": 0.5,
+          "textures": [
+            {
+              "name": "图像纹理",
+              "image": "liclick_image_0.png",
+              "filepath": "E:\\Liclick 3D Texture\\workspace\\liclick_export.fbm\\liclick_image_0_png",
+              "has_data": true,
+              "size": [
+                4096,
+                4096
+              ]
+            },
+            {
+              "name": "图像纹理.001",
+              "image": "liclick_image_0.png.002",
+              "filepath": "E:\\Liclick 3D Texture\\workspace\\liclick_export.fbm\\liclick_image_0_png",
+              "has_data": true,
+              "size": [
+                4096,
+                4096
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "bbox_min": [
+    -0.6924247741699219,
+    -0.31655773520469666,
+    -5.848360018489984e-09
+  ],
+  "bbox_max": [
+    0.6924247741699219,
+    0.31655797362327576,
+    2.25
+  ],
+  "bbox_size": [
+    1.3848495483398438,
+    0.6331157088279724,
+    2.25000000584836
+  ]
+}

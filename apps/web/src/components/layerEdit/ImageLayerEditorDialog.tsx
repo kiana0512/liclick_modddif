@@ -208,7 +208,7 @@ export function ImageLayerEditorDialog({
   const [redoStack, setRedoStack] = useState<EditorSnapshot[]>([]);
   const [editRevision, setEditRevision] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>('split');
-  const [popoverPanel, setPopoverPanel] = useState<PopoverPanel>('tool');
+  const [popoverPanel, setPopoverPanel] = useState<PopoverPanel>();
   const [mappedPreview, setMappedPreview] = useState(mappedPreviewUrl);
   const previewRequestRef = useRef(0);
 
@@ -347,6 +347,15 @@ export function ImageLayerEditorDialog({
   useEffect(() => {
     window.addEventListener('resize', updatePaintSurfaceLayout);
     return () => window.removeEventListener('resize', updatePaintSurfaceLayout);
+  }, [updatePaintSurfaceLayout]);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return undefined;
+    const observer = new ResizeObserver(() => updatePaintSurfaceLayout());
+    observer.observe(frame);
+    updatePaintSurfaceLayout();
+    return () => observer.disconnect();
   }, [updatePaintSurfaceLayout]);
 
   useEffect(() => {

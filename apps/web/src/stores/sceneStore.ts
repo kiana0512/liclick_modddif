@@ -237,7 +237,7 @@ export const useSceneStore = create<SceneStore>()(
       setPaintMaskSettings: (settings) =>
         set((state) => ({
           paintMaskSettings: {
-            brushSize: Math.max(1, Math.min(64, settings.brushSize ?? state.paintMaskSettings.brushSize)),
+            brushSize: Math.max(1, Math.min(180, settings.brushSize ?? state.paintMaskSettings.brushSize)),
             brushHardness: Math.max(0, Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness)),
           },
         })),

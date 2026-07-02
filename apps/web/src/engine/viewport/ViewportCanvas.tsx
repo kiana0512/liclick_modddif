@@ -35,7 +35,7 @@ function RendererSettings() {
 
   useEffect(() => {
     gl.outputColorSpace = THREE.SRGBColorSpace;
-    gl.toneMapping = THREE.ACESFilmicToneMapping;
+    gl.toneMapping = THREE.LinearToneMapping;
     gl.toneMappingExposure = exposure;
   }, [exposure, gl]);
 
@@ -284,6 +284,7 @@ function SurfacePaintOverlay() {
       (!layer.objectId || layer.objectId === selectedObjectId),
   );
   const texturePaintReady = Boolean(activePaintLayer);
+  const canUseSurfacePaint = paintTool === 'eraser' || texturePaintReady;
 
   const getTargetModel = useCallback((): SurfacePaintTarget | undefined => {
     if (importedModel && (!selectedObjectId || selectedObjectId === importedModel.objectId)) {
@@ -477,7 +478,7 @@ function SurfacePaintOverlay() {
     const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
     const worldScale = isMaskBrush ? 0.075 : 0.45;
     const minRadius = isMaskBrush ? maxDimension * 0.0008 : maxDimension * 0.004;
-    const maxRadius = isMaskBrush ? maxDimension * 0.045 : maxDimension * 0.18;
+    const maxRadius = isMaskBrush ? maxDimension * 0.12 : maxDimension * 0.18;
     return THREE.MathUtils.clamp((maxDimension * setting * worldScale) / 700, minRadius, maxRadius);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
@@ -490,7 +491,7 @@ function SurfacePaintOverlay() {
           : paintMaskSettings.brushSize;
     const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
     return isMaskBrush
-      ? THREE.MathUtils.clamp(setting * 0.12, 0.75, 18)
+      ? THREE.MathUtils.clamp(setting * 0.2, 0.75, 48)
       : THREE.MathUtils.clamp(setting * 0.45, 1.5, 96);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
@@ -532,7 +533,7 @@ function SurfacePaintOverlay() {
   }, [isInpaintMode, paintTool, paintToolSettings.color]);
 
   const updateCursor = useCallback((event: globalThis.PointerEvent) => {
-    const canPreviewBrush = enabled && (isInpaintMode || texturePaintReady);
+    const canPreviewBrush = enabled && (isInpaintMode || canUseSurfacePaint);
     const result = canPreviewBrush ? raycastModel(event) : undefined;
     const cursor = cursorRef.current;
     if (!cursor) return result;
@@ -560,7 +561,7 @@ function SurfacePaintOverlay() {
     cursor.visible = true;
     gl.domElement.style.cursor = 'none';
     return result;
-  }, [enabled, getCursorColor, gl.domElement, isInpaintMode, raycastModel, texturePaintReady]);
+  }, [canUseSurfacePaint, enabled, getCursorColor, gl.domElement, isInpaintMode, raycastModel]);
 
   const drawBrushSegment = useCallback((
     context: CanvasRenderingContext2D,
@@ -806,7 +807,7 @@ function SurfacePaintOverlay() {
     };
     const handlePointerDown = (event: globalThis.PointerEvent) => {
       if (!enabled || event.button !== 0) return;
-      if (!isInpaintMode && !texturePaintReady) {
+      if (!isInpaintMode && !canUseSurfacePaint) {
         const result = raycastModel(event);
         if (!result) return;
         event.preventDefault();
@@ -866,7 +867,7 @@ function SurfacePaintOverlay() {
     paintAt,
     raycastModel,
     setOrbitControlsEnabled,
-    texturePaintReady,
+    canUseSurfacePaint,
     updateCursor,
     warnMissingPaintLayer,
   ]);
@@ -963,12 +964,12 @@ export function ViewportCanvas({
           preserveDrawingBuffer: false,
           powerPreference: 'high-performance',
           outputColorSpace: THREE.SRGBColorSpace,
-          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMapping: THREE.LinearToneMapping,
           toneMappingExposure: exposure,
         }}
         onCreated={({ gl }) => {
           gl.outputColorSpace = THREE.SRGBColorSpace;
-          gl.toneMapping = THREE.ACESFilmicToneMapping;
+          gl.toneMapping = THREE.LinearToneMapping;
           gl.toneMappingExposure = exposure;
           setViewportIssue(undefined);
           recoveryAttemptsRef.current = 0;

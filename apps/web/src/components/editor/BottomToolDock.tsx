@@ -314,7 +314,7 @@ export function BottomToolDock({
               <input
                 type="range"
                 min="1"
-                max="64"
+                max="180"
                 step="0.5"
                 value={paintMaskSettings.brushSize}
                 onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) })}

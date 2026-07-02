@@ -23,6 +23,7 @@ type LocalRepaintDialogProps = {
   targetName: string;
   references: ReferenceImage[];
   onGenerate: (input: LocalRepaintGenerateInput) => Promise<{ previewUrl: string }>;
+  onContentAwareFill?: (input: LocalRepaintGenerateInput) => Promise<{ previewUrl: string }>;
   onAbort?: () => void;
   onAccept: (options: { continueEditing: boolean }) => Promise<void> | void;
   onCancel: () => void;
@@ -58,6 +59,7 @@ export function LocalRepaintDialog({
   targetName,
   references,
   onGenerate,
+  onContentAwareFill,
   onAbort,
   onAccept,
   onCancel,
@@ -320,6 +322,24 @@ export function LocalRepaintDialog({
     }
   }
 
+  async function handleContentAwareFill() {
+    if (!onContentAwareFill) return;
+    setLocalError(undefined);
+    try {
+      await onContentAwareFill({
+        prompt,
+        userMask: readUserMask(),
+        includeBlankArea,
+        limitToBlankAndSelection,
+        preserveUnmaskedArea,
+        selectedReferenceIds,
+      });
+      setShowAfter(true);
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : t('localRepaintFailed'));
+    }
+  }
+
   function toggleReference(referenceId: string) {
     setSelectedReferenceIds((ids) =>
       ids.includes(referenceId) ? ids.filter((id) => id !== referenceId) : [...ids, referenceId],
@@ -521,6 +541,16 @@ export function LocalRepaintDialog({
                   <WandSparkles className="h-4 w-4" />
                   {isSubmitting ? t('generating') : t('generate')}
                 </button>
+                {!isSubmitting && onContentAwareFill && (
+                  <button
+                    type="button"
+                    className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-white/16 bg-white text-sm font-semibold text-black hover:bg-white/90"
+                    onClick={handleContentAwareFill}
+                  >
+                    <WandSparkles className="h-4 w-4" />
+                    {t('contentAwareFill')}
+                  </button>
+                )}
                 {isSubmitting && onAbort && (
                   <button
                     type="button"

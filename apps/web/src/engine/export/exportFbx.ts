@@ -1,3 +1,4 @@
+import { zlibSync } from 'fflate';
 import * as THREE from 'three';
 import type { ModelExportInput } from './exportTypes';
 import { downloadBlob, getExportFilename } from './exportUtils';
@@ -12,6 +13,7 @@ type FbxMeshRecord = {
   normals: number[];
   uvs: number[];
   uvIndex: number[];
+  edges: number[];
 };
 
 type FbxValue =
@@ -21,8 +23,8 @@ type FbxValue =
   | { type: 'float64'; value: number }
   | { type: 'string'; value: string }
   | { type: 'bytes'; value: Uint8Array }
-  | { type: 'int32Array'; value: number[] }
-  | { type: 'float64Array'; value: number[] };
+  | { type: 'int32Array'; value: number[]; encodedPayload?: Uint8Array }
+  | { type: 'float64Array'; value: number[]; encodedPayload?: Uint8Array };
 
 type FbxNode = {
   name: string;
@@ -42,12 +44,13 @@ const FBX_END_MAGIC = new Uint8Array([
   0xf8, 0x5a, 0x8c, 0x6a, 0xde, 0xf5, 0xd9, 0x7e, 0xec, 0xe9, 0x0c, 0xe3, 0x75, 0x8f, 0x29, 0x0b,
 ]);
 const BLOCK_SENTINEL_SIZE = 13;
-const TEXTURE_SOCKET_NAME = 'Base Color';
+const TEXTURE_SOCKET_NAME = 'base_color_texture';
 const UV_SET_NAME = 'UVChannel_1';
-const FBX_ENGINE_SIZE_CORRECTION = 0.35;
+const FBX_ENGINE_SIZE_CORRECTION = 100;
 
 function sanitizeName(value: string | undefined, fallback: string) {
-  return (value || fallback).replace(/[^\w\u4e00-\u9fa5.-]+/g, '_');
+  const normalized = (value || fallback).normalize('NFKD').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
+  return normalized || fallback;
 }
 
 function className(name: string, cls: string) {
@@ -94,6 +97,10 @@ function prop(name: string, type: string, label: string, flags: string, values: 
   return node('P', [str(name), str(type), str(label), str(flags), ...values]);
 }
 
+function propertyTemplate(name: string, properties: FbxNode[]) {
+  return node('PropertyTemplate', [str(name)], [node('Properties70', [], properties)]);
+}
+
 function sanitizeNumber(value: number) {
   return Number.isFinite(value) ? value : 0;
 }
@@ -127,6 +134,7 @@ function collectMeshRecords(root: THREE.Object3D) {
       normals: [],
       uvs: [],
       uvIndex: [],
+      edges: [],
     };
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(child.matrixWorld);
     let exportedVertexIndex = 0;
@@ -153,6 +161,7 @@ function collectMeshRecords(root: THREE.Object3D) {
         }
         record.uvIndex.push(exportedVertexIndex);
         record.polygonVertexIndex.push(corner === 2 ? -(exportedVertexIndex + 1) : exportedVertexIndex);
+        record.edges.push(exportedVertexIndex);
         exportedVertexIndex += 1;
       }
     }
@@ -164,9 +173,11 @@ function collectMeshRecords(root: THREE.Object3D) {
 
 function createGeometryNode(record: FbxMeshRecord) {
   return node('Geometry', [int64(record.geometryId), str(className(record.name, 'Geometry')), str('Mesh')], [
+    node('Properties70'),
+    node('GeometryVersion', [int32(124)]),
     node('Vertices', [float64Array(record.vertices)]),
     node('PolygonVertexIndex', [int32Array(record.polygonVertexIndex)]),
-    node('GeometryVersion', [int32(124)]),
+    node('Edges', [int32Array(record.edges)]),
     node('LayerElementNormal', [int32(0)], [
       node('Version', [int32(101)]),
       node('Name', [str('')]),
@@ -205,7 +216,10 @@ function createModelNode(record: FbxMeshRecord) {
       prop('Lcl Translation', 'Lcl Translation', '', 'A', [float64(0), float64(0), float64(0)]),
       prop('Lcl Rotation', 'Lcl Rotation', '', 'A', [float64(0), float64(0), float64(0)]),
       prop('Lcl Scaling', 'Lcl Scaling', '', 'A', [float64(1), float64(1), float64(1)]),
+      prop('InheritType', 'enum', '', '', [int32(1)]),
     ]),
+    node('MultiLayer', [int32(0)]),
+    node('MultiTake', [int32(0)]),
     node('Shading', [bool(true)]),
     node('Culling', [str('CullingOff')]),
   ]);
@@ -235,20 +249,18 @@ function createMaterialNode(materialId: number, averageColor: [number, number, n
   ]);
 }
 
-function createTextureNodes(input: { textureId: number; videoId: number; filename: string; data: Uint8Array }) {
-  const filename = input.filename.replaceAll('\\', '/');
-  return [
-    node('Texture', [int64(input.textureId), str(className(TEXTURE_SOCKET_NAME, 'Texture')), str('')], [
+function createTextureNode(input: { textureId: number; name: string; videoName: string; mediaPath: string }) {
+  return node('Texture', [int64(input.textureId), str(className(input.name, 'Texture')), str('')], [
       node('Type', [str('TextureVideoClip')]),
       node('Version', [int32(202)]),
-      node('TextureName', [str(className(TEXTURE_SOCKET_NAME, 'Texture'))]),
-      node('Media', [str(className(filename, 'Video'))]),
-      node('FileName', [str(filename)]),
-      node('Filename', [str(filename)]),
-      node('RelativeFilename', [str(filename)]),
+    node('TextureName', [str(className(input.name, 'Texture'))]),
+    node('Media', [str(className(input.videoName, 'Video'))]),
+    node('FileName', [str(input.mediaPath)]),
+    node('Filename', [str(input.mediaPath)]),
+    node('RelativeFilename', [str(input.mediaPath)]),
       node('Properties70', [], [
         prop('CurrentTextureBlendMode', 'enum', '', '', [int32(0)]),
-        prop('AlphaSource', 'enum', '', '', [int32(2)]),
+        prop('AlphaSource', 'enum', '', '', [int32(0)]),
         prop('PremultiplyAlpha', 'bool', '', '', [int32(0)]),
         prop('UVSet', 'KString', '', '', [str(UV_SET_NAME)]),
         prop('UseMaterial', 'bool', '', '', [int32(1)]),
@@ -260,14 +272,21 @@ function createTextureNodes(input: { textureId: number; videoId: number; filenam
       node('Cropping', [int32(0), int32(0), int32(0), int32(0)]),
       node('ModelUVTranslation', [float64(0), float64(0)]),
       node('ModelUVScaling', [float64(1), float64(1)]),
-    ]),
-    node('Video', [int64(input.videoId), str(className(filename, 'Video')), str('Clip')], [
+  ]);
+}
+
+function createTextureNodes(input: { textureId: number; videoId: number; data: Uint8Array }) {
+  const mediaName = 'liclick_image_0';
+  const videoName = `${mediaName}.png`;
+  const mediaPath = `liclick_export.fbm/${videoName}`;
+  return [
+    createTextureNode({ textureId: input.textureId, name: TEXTURE_SOCKET_NAME, videoName, mediaPath }),
+    node('Video', [int64(input.videoId), str(className(videoName, 'Video')), str('Clip')], [
       node('Type', [str('Clip')]),
-      node('Properties70', [], [prop('Path', 'KString', 'XRefUrl', '', [str(filename)])]),
+      node('Properties70', [], [prop('Path', 'KString', 'XRefUrl', '', [str(mediaPath)])]),
       node('UseMipMap', [int32(0)]),
-      node('Filename', [str(filename)]),
-      node('FileName', [str(filename)]),
-      node('RelativeFilename', [str(filename)]),
+      node('Filename', [str(mediaPath)]),
+      node('RelativeFilename', [str(mediaPath)]),
       node('Content', [bytes(input.data)]),
     ]),
   ];
@@ -281,15 +300,81 @@ function createDocumentNode() {
 }
 
 function createDefinitionsNode(records: FbxMeshRecord[], hasTexture: boolean) {
-  const objectCount = records.length * 2 + 1 + (hasTexture ? 2 : 0);
+  const textureCount = hasTexture ? 1 : 0;
+  const objectCount = 1 + records.length * 2 + 1 + textureCount + (hasTexture ? 1 : 0);
   return node('Definitions', [], [
     node('Version', [int32(100)]),
     node('Count', [int32(objectCount)]),
-    node('ObjectType', [str('Geometry')], [node('Count', [int32(records.length)])]),
-    node('ObjectType', [str('Model')], [node('Count', [int32(records.length)])]),
-    node('ObjectType', [str('Material')], [node('Count', [int32(1)])]),
-    node('ObjectType', [str('Texture')], [node('Count', [int32(hasTexture ? 1 : 0)])]),
-    node('ObjectType', [str('Video')], [node('Count', [int32(hasTexture ? 1 : 0)])]),
+    node('ObjectType', [str('GlobalSettings')], [node('Count', [int32(1)])]),
+    node('ObjectType', [str('Geometry')], [
+      node('Count', [int32(records.length)]),
+      propertyTemplate('FbxMesh', [
+        prop('Color', 'ColorRGB', 'Color', '', [float64(0.8), float64(0.8), float64(0.8)]),
+        prop('BBoxMin', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('BBoxMax', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('Primary Visibility', 'bool', '', '', [bool(true)]),
+        prop('Casts Shadows', 'bool', '', '', [bool(true)]),
+        prop('Receive Shadows', 'bool', '', '', [bool(true)]),
+      ]),
+    ]),
+    node('ObjectType', [str('Model')], [
+      node('Count', [int32(records.length)]),
+      propertyTemplate('FbxNode', [
+        prop('QuaternionInterpolate', 'enum', '', '', [int32(0)]),
+        prop('RotationOffset', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('RotationPivot', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('ScalingOffset', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('ScalingPivot', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('RotationOrder', 'enum', '', '', [int32(0)]),
+        prop('InheritType', 'enum', '', '', [int32(0)]),
+        prop('GeometricTranslation', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('GeometricRotation', 'Vector3D', 'Vector', '', [float64(0), float64(0), float64(0)]),
+        prop('GeometricScaling', 'Vector3D', 'Vector', '', [float64(1), float64(1), float64(1)]),
+        prop('Show', 'bool', '', '', [bool(true)]),
+        prop('Lcl Translation', 'Lcl Translation', '', 'A', [float64(0), float64(0), float64(0)]),
+        prop('Lcl Rotation', 'Lcl Rotation', '', 'A', [float64(0), float64(0), float64(0)]),
+        prop('Lcl Scaling', 'Lcl Scaling', '', 'A', [float64(1), float64(1), float64(1)]),
+        prop('Visibility', 'Visibility', '', 'A', [float64(1)]),
+        prop('Visibility Inheritance', 'Visibility Inheritance', '', '', [int32(1)]),
+      ]),
+    ]),
+    node('ObjectType', [str('Material')], [
+      node('Count', [int32(1)]),
+      propertyTemplate('FbxSurfacePhong', [
+        prop('ShadingModel', 'KString', '', '', [str('Phong')]),
+        prop('DiffuseColor', 'Color', '', 'A', [float64(0.8), float64(0.8), float64(0.8)]),
+        prop('DiffuseFactor', 'Number', '', 'A', [float64(1)]),
+        prop('TransparencyFactor', 'Number', '', 'A', [float64(0)]),
+        prop('Opacity', 'Number', '', 'A', [float64(1)]),
+        prop('SpecularColor', 'Color', '', 'A', [float64(0.2), float64(0.2), float64(0.2)]),
+        prop('SpecularFactor', 'Number', '', 'A', [float64(0)]),
+        prop('Shininess', 'Number', '', 'A', [float64(20)]),
+      ]),
+    ]),
+    node('ObjectType', [str('Texture')], [
+      node('Count', [int32(textureCount)]),
+      propertyTemplate('FbxFileTexture', [
+        prop('TextureTypeUse', 'enum', '', '', [int32(0)]),
+        prop('AlphaSource', 'enum', '', '', [int32(0)]),
+        prop('Texture alpha', 'double', 'Number', '', [float64(1)]),
+        prop('CurrentTextureBlendMode', 'enum', '', '', [int32(0)]),
+        prop('CurrentMappingType', 'enum', '', '', [int32(0)]),
+        prop('UVSet', 'KString', '', '', [str(UV_SET_NAME)]),
+        prop('WrapModeU', 'enum', '', '', [int32(1)]),
+        prop('WrapModeV', 'enum', '', '', [int32(1)]),
+        prop('UseMaterial', 'bool', '', '', [bool(true)]),
+        prop('UseMipMap', 'bool', '', '', [bool(false)]),
+      ]),
+    ]),
+    node('ObjectType', [str('Video')], [
+      node('Count', [int32(hasTexture ? 1 : 0)]),
+      propertyTemplate('FbxVideo', [
+        prop('Width', 'int', 'Integer', '', [int32(0)]),
+        prop('Height', 'int', 'Integer', '', [int32(0)]),
+        prop('Path', 'KString', 'Url', '', [str('')]),
+        prop('AccessMode', 'enum', '', '', [int32(0)]),
+      ]),
+    ]),
   ]);
 }
 
@@ -303,8 +388,8 @@ function createGlobalSettingsNode() {
       prop('FrontAxisSign', 'int', 'Integer', '', [int32(1)]),
       prop('CoordAxis', 'int', 'Integer', '', [int32(0)]),
       prop('CoordAxisSign', 'int', 'Integer', '', [int32(1)]),
-      prop('UnitScaleFactor', 'double', 'Number', '', [float64(100)]),
-      prop('OriginalUnitScaleFactor', 'double', 'Number', '', [float64(100)]),
+      prop('UnitScaleFactor', 'double', 'Number', '', [float64(1)]),
+      prop('OriginalUnitScaleFactor', 'double', 'Number', '', [float64(1)]),
     ]),
   ]);
 }
@@ -328,7 +413,12 @@ function createHeaderNode() {
   ]);
 }
 
-function createConnectionsNode(records: FbxMeshRecord[], materialId: number, textureId?: number, videoId?: number) {
+function createConnectionsNode(
+  records: FbxMeshRecord[],
+  materialId: number,
+  textureId?: number,
+  videoId?: number,
+) {
   const children = records.flatMap((record) => [
     node('C', [str('OO'), int64(record.geometryId), int64(record.modelId)]),
     node('C', [str('OO'), int64(record.modelId), int64(0)]),
@@ -337,7 +427,6 @@ function createConnectionsNode(records: FbxMeshRecord[], materialId: number, tex
 
   if (textureId && videoId) {
     children.push(node('C', [str('OP'), int64(textureId), int64(materialId), str('DiffuseColor')]));
-    children.push(node('C', [str('OP'), int64(textureId), int64(materialId), str('TransparentColor')]));
     children.push(node('C', [str('OO'), int64(videoId), int64(textureId)]));
   }
 
@@ -363,7 +452,7 @@ function createFbxTree(input: {
   ];
 
   if (textureId && videoId && input.textureFilename && input.textureData) {
-    objectChildren.push(...createTextureNodes({ textureId, videoId, filename: input.textureFilename, data: input.textureData }));
+    objectChildren.push(...createTextureNodes({ textureId, videoId, data: input.textureData }));
   }
 
   return [
@@ -373,6 +462,7 @@ function createFbxTree(input: {
     node('Creator', [str('Liclick 3D Texture')]),
     createGlobalSettingsNode(),
     createDocumentNode(),
+    node('References'),
     createDefinitionsNode(records, Boolean(input.textureData)),
     node('Objects', [], objectChildren),
     createConnectionsNode(records, materialId, textureId, videoId),
@@ -417,28 +507,36 @@ function stringPayload(value: string) {
   return concatBytes([uint32(data.length), data]);
 }
 
-function arrayHeader(length: number, byteLength: number) {
-  return concatBytes([uint32(length), uint32(0), uint32(byteLength)]);
+function arrayHeader(length: number, encoding: number, byteLength: number) {
+  return concatBytes([uint32(length), uint32(encoding), uint32(byteLength)]);
 }
 
-function int32ArrayBytes(values: number[]) {
+function int32ArrayBody(values: number[]) {
   const body = new Uint8Array(values.length * 4);
   const view = new DataView(body.buffer);
   values.forEach((value, index) => view.setInt32(index * 4, value, true));
-  return concatBytes([arrayHeader(values.length, body.byteLength), body]);
+  return body;
 }
 
-function float64ArrayBytes(values: number[]) {
+function float64ArrayBody(values: number[]) {
   const body = new Uint8Array(values.length * 8);
   const view = new DataView(body.buffer);
   values.forEach((value, index) => view.setFloat64(index * 8, sanitizeNumber(value), true));
-  return concatBytes([arrayHeader(values.length, body.byteLength), body]);
+  return body;
+}
+
+function encodedArrayPayload(value: Extract<FbxValue, { type: 'int32Array' | 'float64Array' }>) {
+  if (value.encodedPayload) return value.encodedPayload;
+  const body = value.type === 'int32Array' ? int32ArrayBody(value.value) : float64ArrayBody(value.value);
+  const compressed = zlibSync(body, { level: 6 });
+  value.encodedPayload = concatBytes([arrayHeader(value.value.length, 1, compressed.byteLength), compressed]);
+  return value.encodedPayload;
 }
 
 function valueToBytes(value: FbxValue) {
   switch (value.type) {
     case 'bool':
-      return concatBytes([uint8(0x42), uint8(value.value ? 1 : 0)]);
+      return concatBytes([uint8(0x43), uint8(value.value ? 1 : 0)]);
     case 'int32':
       return concatBytes([uint8(0x49), int32Bytes(value.value)]);
     case 'int64':
@@ -450,9 +548,9 @@ function valueToBytes(value: FbxValue) {
     case 'bytes':
       return concatBytes([uint8(0x52), uint32(value.value.byteLength), value.value]);
     case 'int32Array':
-      return concatBytes([uint8(0x69), int32ArrayBytes(value.value)]);
+      return concatBytes([uint8(0x69), encodedArrayPayload(value)]);
     case 'float64Array':
-      return concatBytes([uint8(0x64), float64ArrayBytes(value.value)]);
+      return concatBytes([uint8(0x64), encodedArrayPayload(value)]);
     default:
       return new Uint8Array();
   }
@@ -472,9 +570,8 @@ function valuePayloadLength(value: FbxValue) {
     case 'bytes':
       return 4 + value.value.byteLength;
     case 'int32Array':
-      return 12 + value.value.length * 4;
     case 'float64Array':
-      return 12 + value.value.length * 8;
+      return encodedArrayPayload(value).byteLength;
     default:
       return 0;
   }
@@ -491,8 +588,6 @@ function calculateEndOffset(fbxNode: FbxNode, startOffset: number, isLast: boole
     children.forEach((child, index) => {
       offset = calculateEndOffset(child, offset, index === children.length - 1);
     });
-    offset += BLOCK_SENTINEL_SIZE;
-  } else if (props.length === 0 && !isLast) {
     offset += BLOCK_SENTINEL_SIZE;
   }
 
@@ -522,7 +617,7 @@ function writeNode(fbxNode: FbxNode, startOffset: number, isLast: boolean): Uint
     childOffset += childBytes.byteLength;
   });
 
-  if (children.length > 0 || (props.length === 0 && !isLast)) {
+  if (children.length > 0) {
     chunks.push(new Uint8Array(BLOCK_SENTINEL_SIZE));
   }
 

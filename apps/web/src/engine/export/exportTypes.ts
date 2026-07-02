@@ -1,4 +1,5 @@
 import type { Object3D } from 'three';
+import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { ViewportRuntime } from '@/stores/sceneStore';
 import type { Project } from '@/types/project';
@@ -11,6 +12,7 @@ export type ModelExportInput = {
   importedModel: ModelLoadResult;
   target: ExportTarget;
   selectedObjectId?: string;
+  onProgress?: (progress: BakeProgress) => void;
 };
 
 export type TextureExportInput = {

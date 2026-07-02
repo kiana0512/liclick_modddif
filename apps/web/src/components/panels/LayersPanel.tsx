@@ -78,7 +78,7 @@ export function LayersPanel({
   const setBlendMode = useLayerStore((state) => state.setBlendMode);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
-  const deleteLayer = useLayerStore((state) => state.deleteLayer);
+  const deleteLayers = useLayerStore((state) => state.deleteLayers);
   const duplicateLayer = useLayerStore((state) => state.duplicateLayer);
   const renameLayer = useLayerStore((state) => state.renameLayer);
   const moveLayer = useLayerStore((state) => state.moveLayer);
@@ -238,6 +238,39 @@ export function LayersPanel({
     };
   }, []);
 
+  const deleteSelectedLayers = useCallback((layerIdsToDelete: string[]) => {
+    const ids = layerIdsToDelete.filter(
+      (id, index) => layerIdsToDelete.indexOf(id) === index && layerIds.includes(id),
+    );
+    if (ids.length === 0) return;
+    captureHistory(`删除图层：${describeLayerSelection(ids)}`);
+    deleteLayers(ids);
+    setMenu(undefined);
+    setSelectedLayerIds([]);
+    setLastSelectedLayerId(undefined);
+  }, [captureHistory, deleteLayers, describeLayerSelection, layerIds]);
+
+  useEffect(() => {
+    const handleDeleteKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      if (selectedLayerIds.length === 0) return;
+      event.preventDefault();
+      deleteSelectedLayers(selectedLayerIds);
+    };
+    window.addEventListener('keydown', handleDeleteKey);
+    return () => window.removeEventListener('keydown', handleDeleteKey);
+  }, [deleteSelectedLayers, selectedLayerIds]);
+
   function commitRename() {
     if (!renameState) return;
     const nextName = renameState.value.trim();
@@ -336,7 +369,7 @@ export function LayersPanel({
 
   return (
     <div className="space-y-0">
-      <div className="max-h-[430px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
+      <div className="max-h-[min(72vh,820px)] min-h-[260px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
         {visibleLayers.map((layer) => (
           <LayerRow
             key={layer.id}
@@ -434,8 +467,7 @@ export function LayersPanel({
             onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
             onDelete={() => {
               const ids = selectedLayerIds.includes(menu.layerId) ? selectedLayerIds : [menu.layerId];
-              captureHistory(`删除图层：${describeLayerSelection(ids)}`);
-              ids.forEach((layerId) => deleteLayer(layerId));
+              deleteSelectedLayers(ids);
             }}
           />,
           document.body,
@@ -513,7 +545,11 @@ export function LayersPanel({
   );
 }
 
-export function LayersPanelActions() {
+type LayersPanelActionsProps = {
+  onContentAwareRepair?: () => void;
+};
+
+export function LayersPanelActions({ onContentAwareRepair }: LayersPanelActionsProps = {}) {
   const t = useT();
   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
   const addUvLayer = useLayerStore((state) => state.addUvLayer);
@@ -541,20 +577,24 @@ export function LayersPanelActions() {
   }
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1.5">
       <LayerHeaderButton title={t('fitCamera')} onClick={handleFitCamera}>
         <Focus className="h-4 w-4" />
       </LayerHeaderButton>
       <LayerHeaderButton
-        title={t('applyColorAdjustments')}
-        onClick={() =>
-          pushToast({
-            tone: 'info',
-            title: t('applyColorAdjustments'),
-            description: t('colorAdjustmentsLive'),
-            dedupeKey: 'layer-adjustments-live',
-          })
-        }
+        title={t('contentAwareRepair')}
+        onClick={() => {
+          if (!onContentAwareRepair) {
+            pushToast({
+              tone: 'info',
+              title: t('localRepaint'),
+              description: t('localRepaintToolHelp'),
+              dedupeKey: 'layer-content-aware-repair',
+            });
+            return;
+          }
+          onContentAwareRepair();
+        }}
       >
         <PaintBucket className="h-4 w-4" />
       </LayerHeaderButton>

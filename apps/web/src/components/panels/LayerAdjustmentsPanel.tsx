@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { RotateCcw } from 'lucide-react';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
@@ -29,16 +30,23 @@ export function LayerAdjustmentsPanel() {
   }
 
   return (
-    <div className="space-y-0 px-1 pb-0.5">
-      <div className="grid h-[64px] grid-rows-[28px_18px] items-center">
+    <div className="space-y-1 px-0.5 pb-0.5">
+      <div className="grid h-[46px] grid-rows-[24px_14px] items-center">
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1 text-[14px] font-semibold text-white/90">{t('projectionStrength')}</div>
-          <div className="w-[82px] rounded-md border border-white/44 bg-black/34 px-2 py-1 text-right text-sm font-semibold tabular-nums text-white">
-            {Math.round((activeLayer.strength ?? 1) * 100)} %
-          </div>
+          <PercentNumberInput
+            value={Math.round((activeLayer.strength ?? 1) * 100)}
+            min={25}
+            max={300}
+            ariaLabel={t('projectionStrength')}
+            onCommit={(value) => {
+              captureHistory(`调整投影强度：${activeLayer.name}`);
+              setStrength(activeLayer.id, value / 100);
+            }}
+          />
           <button
             type="button"
-            className="grid h-7 w-7 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
+            className="grid h-6 w-6 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
             onClick={() => {
               captureHistory(`重置投影强度：${activeLayer.name}`);
               setStrength(activeLayer.id, 1);
@@ -64,15 +72,22 @@ export function LayerAdjustmentsPanel() {
       {adjustmentControls.map((control) => {
         const value = activeAdjustments[control.key];
         return (
-          <div key={control.key} className="grid h-[64px] grid-rows-[28px_18px] items-center">
+          <div key={control.key} className="grid h-[46px] grid-rows-[24px_14px] items-center">
             <div className="flex items-center gap-2">
               <div className="min-w-0 flex-1 text-[14px] font-semibold text-white/90">{t(control.labelKey)}</div>
-              <div className="w-[82px] rounded-md border border-white/44 bg-black/34 px-2 py-1 text-right text-sm font-semibold tabular-nums text-white">
-                {Math.round(value)} %
-              </div>
+              <PercentNumberInput
+                value={Math.round(value)}
+                min={-100}
+                max={100}
+                ariaLabel={t(control.labelKey)}
+                onCommit={(nextValue) => {
+                  captureHistory(`调整${t(control.labelKey)}：${activeLayer.name}`);
+                  setLayerAdjustment(activeLayer.id, control.key, nextValue);
+                }}
+              />
               <button
                 type="button"
-                className="grid h-7 w-7 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
+                className="grid h-6 w-6 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
                 onClick={() => {
                   captureHistory(`重置${t(control.labelKey)}：${activeLayer.name}`);
                   setLayerAdjustment(activeLayer.id, control.key, 0);
@@ -97,6 +112,66 @@ export function LayerAdjustmentsPanel() {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function PercentNumberInput({
+  value,
+  min,
+  max,
+  ariaLabel,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  ariaLabel: string;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  function commit() {
+    const parsed = Number(draft);
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const nextValue = Math.round(clamp(parsed, min, max));
+    setDraft(String(nextValue));
+    if (nextValue !== value) onCommit(nextValue);
+  }
+
+  return (
+    <div className="grid w-[88px] grid-cols-[minmax(0,1fr)_17px] items-center rounded-md border border-white/44 bg-black/34 text-sm font-semibold tabular-nums text-white focus-within:border-liclick-pink">
+      <input
+        type="number"
+        value={draft}
+        min={min}
+        max={max}
+        step={1}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onFocus={(event) => event.currentTarget.select()}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur();
+          if (event.key === 'Escape') {
+            setDraft(String(value));
+            event.currentTarget.blur();
+          }
+        }}
+        aria-label={ariaLabel}
+        className="h-7 min-w-0 bg-transparent pl-2 pr-0 text-right text-sm font-semibold tabular-nums text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+      />
+      <span className="pr-2 text-right text-white/88">%</span>
     </div>
   );
 }

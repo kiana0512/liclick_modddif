@@ -192,6 +192,7 @@ async function bakeCurrentVisibleTextureForExport(input: ModelExportInput) {
     enableDilation: true,
     dilationPixels: 4,
     preferBlobOutput: true,
+    onProgress: input.onProgress,
   });
   return result.bakedTexture;
 }

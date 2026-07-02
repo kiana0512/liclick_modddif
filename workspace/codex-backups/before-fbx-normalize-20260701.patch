@@ -1,0 +1,1234 @@
+diff --git a/apps/web/src/components/editor/BottomToolDock.tsx b/apps/web/src/components/editor/BottomToolDock.tsx
+index 0886d163..9143dc79 100644
+--- a/apps/web/src/components/editor/BottomToolDock.tsx
++++ b/apps/web/src/components/editor/BottomToolDock.tsx
+@@ -314,7 +314,7 @@ export function BottomToolDock({
+               <input
+                 type="range"
+                 min="1"
+-                max="64"
++                max="180"
+                 step="0.5"
+                 value={paintMaskSettings.brushSize}
+                 onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) })}
+diff --git a/apps/web/src/components/layerEdit/ImageLayerEditorDialog.tsx b/apps/web/src/components/layerEdit/ImageLayerEditorDialog.tsx
+index de269910..5c16bf16 100644
+--- a/apps/web/src/components/layerEdit/ImageLayerEditorDialog.tsx
++++ b/apps/web/src/components/layerEdit/ImageLayerEditorDialog.tsx
+@@ -208,7 +208,7 @@ export function ImageLayerEditorDialog({
+   const [redoStack, setRedoStack] = useState<EditorSnapshot[]>([]);
+   const [editRevision, setEditRevision] = useState(0);
+   const [viewMode, setViewMode] = useState<ViewMode>('split');
+-  const [popoverPanel, setPopoverPanel] = useState<PopoverPanel>('tool');
++  const [popoverPanel, setPopoverPanel] = useState<PopoverPanel>();
+   const [mappedPreview, setMappedPreview] = useState(mappedPreviewUrl);
+   const previewRequestRef = useRef(0);
+ 
+@@ -349,6 +349,15 @@ export function ImageLayerEditorDialog({
+     return () => window.removeEventListener('resize', updatePaintSurfaceLayout);
+   }, [updatePaintSurfaceLayout]);
+ 
++  useEffect(() => {
++    const frame = frameRef.current;
++    if (!frame) return undefined;
++    const observer = new ResizeObserver(() => updatePaintSurfaceLayout());
++    observer.observe(frame);
++    updatePaintSurfaceLayout();
++    return () => observer.disconnect();
++  }, [updatePaintSurfaceLayout]);
++
+   useEffect(() => {
+     updatePaintSurfaceLayout();
+   }, [updatePaintSurfaceLayout, viewMode]);
+diff --git a/apps/web/src/components/panels/LayersPanel.tsx b/apps/web/src/components/panels/LayersPanel.tsx
+index c5daf382..cee630f9 100644
+--- a/apps/web/src/components/panels/LayersPanel.tsx
++++ b/apps/web/src/components/panels/LayersPanel.tsx
+@@ -78,7 +78,7 @@ export function LayersPanel({
+   const setBlendMode = useLayerStore((state) => state.setBlendMode);
+   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
+-  const deleteLayer = useLayerStore((state) => state.deleteLayer);
++  const deleteLayers = useLayerStore((state) => state.deleteLayers);
+   const duplicateLayer = useLayerStore((state) => state.duplicateLayer);
+   const renameLayer = useLayerStore((state) => state.renameLayer);
+   const moveLayer = useLayerStore((state) => state.moveLayer);
+@@ -238,6 +238,39 @@ export function LayersPanel({
+     };
+   }, []);
+ 
++  const deleteSelectedLayers = useCallback((layerIdsToDelete: string[]) => {
++    const ids = layerIdsToDelete.filter(
++      (id, index) => layerIdsToDelete.indexOf(id) === index && layerIds.includes(id),
++    );
++    if (ids.length === 0) return;
++    captureHistory(`删除图层：${describeLayerSelection(ids)}`);
++    deleteLayers(ids);
++    setMenu(undefined);
++    setSelectedLayerIds([]);
++    setLastSelectedLayerId(undefined);
++  }, [captureHistory, deleteLayers, describeLayerSelection, layerIds]);
++
++  useEffect(() => {
++    const handleDeleteKey = (event: KeyboardEvent) => {
++      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
++      if (event.ctrlKey || event.metaKey || event.altKey) return;
++      const target = event.target;
++      if (
++        target instanceof HTMLInputElement ||
++        target instanceof HTMLTextAreaElement ||
++        target instanceof HTMLSelectElement ||
++        (target instanceof HTMLElement && target.isContentEditable)
++      ) {
++        return;
++      }
++      if (selectedLayerIds.length === 0) return;
++      event.preventDefault();
++      deleteSelectedLayers(selectedLayerIds);
++    };
++    window.addEventListener('keydown', handleDeleteKey);
++    return () => window.removeEventListener('keydown', handleDeleteKey);
++  }, [deleteSelectedLayers, selectedLayerIds]);
++
+   function commitRename() {
+     if (!renameState) return;
+     const nextName = renameState.value.trim();
+@@ -336,7 +369,7 @@ export function LayersPanel({
+ 
+   return (
+     <div className="space-y-0">
+-      <div className="max-h-[430px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
++      <div className="max-h-[min(70vh,760px)] min-h-[132px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
+         {visibleLayers.map((layer) => (
+           <LayerRow
+             key={layer.id}
+@@ -434,8 +467,7 @@ export function LayersPanel({
+             onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
+             onDelete={() => {
+               const ids = selectedLayerIds.includes(menu.layerId) ? selectedLayerIds : [menu.layerId];
+-              captureHistory(`删除图层：${describeLayerSelection(ids)}`);
+-              ids.forEach((layerId) => deleteLayer(layerId));
++              deleteSelectedLayers(ids);
+             }}
+           />,
+           document.body,
+@@ -513,7 +545,11 @@ export function LayersPanel({
+   );
+ }
+ 
+-export function LayersPanelActions() {
++type LayersPanelActionsProps = {
++  onContentAwareRepair?: () => void;
++};
++
++export function LayersPanelActions({ onContentAwareRepair }: LayersPanelActionsProps = {}) {
+   const t = useT();
+   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
+   const addUvLayer = useLayerStore((state) => state.addUvLayer);
+@@ -546,15 +582,19 @@ export function LayersPanelActions() {
+         <Focus className="h-4 w-4" />
+       </LayerHeaderButton>
+       <LayerHeaderButton
+-        title={t('applyColorAdjustments')}
+-        onClick={() =>
+-          pushToast({
+-            tone: 'info',
+-            title: t('applyColorAdjustments'),
+-            description: t('colorAdjustmentsLive'),
+-            dedupeKey: 'layer-adjustments-live',
+-          })
+-        }
++        title={t('localRepaint')}
++        onClick={() => {
++          if (!onContentAwareRepair) {
++            pushToast({
++              tone: 'info',
++              title: t('localRepaint'),
++              description: t('localRepaintToolHelp'),
++              dedupeKey: 'layer-content-aware-repair',
++            });
++            return;
++          }
++          onContentAwareRepair();
++        }}
+       >
+         <PaintBucket className="h-4 w-4" />
+       </LayerHeaderButton>
+diff --git a/apps/web/src/components/panels/ViewportPanel.tsx b/apps/web/src/components/panels/ViewportPanel.tsx
+index 88842bf4..309f61c5 100644
+--- a/apps/web/src/components/panels/ViewportPanel.tsx
++++ b/apps/web/src/components/panels/ViewportPanel.tsx
+@@ -16,9 +16,8 @@ const resolutionToSize = {
+   '8K': 8192,
+ } as const;
+ 
+-const displayOptions: Array<{ value: DisplayMode; labelKey: 'pbr' | 'flatShort' | 'normalShort' | 'wireShort' }> = [
++const displayOptions: Array<{ value: DisplayMode; labelKey: 'pbr' | 'normalShort' | 'wireShort' }> = [
+   { value: 'pbr', labelKey: 'pbr' },
+-  { value: 'flat', labelKey: 'flatShort' },
+   { value: 'normal', labelKey: 'normalShort' },
+   { value: 'wire', labelKey: 'wireShort' },
+ ];
+@@ -42,9 +41,13 @@ export function ViewportPanel() {
+   const resolution = useSettingsStore((state) => state.resolution);
+   const exposure = useSettingsStore((state) => state.exposure);
+   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
++  const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
++  const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
+   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
+   const setExposure = useSettingsStore((state) => state.setExposure);
+   const setPbrEnvironmentIntensity = useSettingsStore((state) => state.setPbrEnvironmentIntensity);
++  const setPbrKeyLightIntensity = useSettingsStore((state) => state.setPbrKeyLightIntensity);
++  const setPbrLightAzimuth = useSettingsStore((state) => state.setPbrLightAzimuth);
+   const setEnvironmentPreset = useSettingsStore((state) => state.setEnvironmentPreset);
+   const setLastCapture = useGenerationStore((state) => state.setLastCapture);
+   const pushToast = useToastStore((state) => state.pushToast);
+@@ -98,7 +101,7 @@ export function ViewportPanel() {
+       </ViewportRow>
+ 
+       <ViewportRow icon={<Monitor className="h-4 w-4" />}>
+-        <div className="grid flex-1 grid-cols-5 gap-1">
++        <div className="grid flex-1 grid-cols-4 gap-1">
+           <div className="grid h-7 place-items-center text-xs font-semibold text-white/72">{t('materialShort')}</div>
+           {displayOptions.map((option) => (
+             <CompactButton
+@@ -141,12 +144,30 @@ export function ViewportPanel() {
+           <PbrSlider
+             icon={<SlidersHorizontal className="h-4 w-4" />}
+             value={pbrEnvironmentIntensity}
+-            min={0.12}
+-            max={0.72}
++            min={0}
++            max={1.2}
+             step={0.01}
+             label={t('environment')}
+             onChange={setPbrEnvironmentIntensity}
+           />
++          <PbrSlider
++            icon={<SunMedium className="h-4 w-4" />}
++            value={pbrKeyLightIntensity}
++            min={0}
++            max={2.4}
++            step={0.01}
++            label={t('lightIntensity')}
++            onChange={setPbrKeyLightIntensity}
++          />
++          <PbrSlider
++            icon={<SlidersHorizontal className="h-4 w-4" />}
++            value={pbrLightAzimuth}
++            min={-180}
++            max={180}
++            step={1}
++            label={t('lightDirection')}
++            onChange={setPbrLightAzimuth}
++          />
+         </>
+       )}
+ 
+diff --git a/apps/web/src/engine/export/exportFbx.ts b/apps/web/src/engine/export/exportFbx.ts
+index c65e5421..8d903bc4 100644
+--- a/apps/web/src/engine/export/exportFbx.ts
++++ b/apps/web/src/engine/export/exportFbx.ts
+@@ -42,12 +42,16 @@ const FBX_END_MAGIC = new Uint8Array([
+   0xf8, 0x5a, 0x8c, 0x6a, 0xde, 0xf5, 0xd9, 0x7e, 0xec, 0xe9, 0x0c, 0xe3, 0x75, 0x8f, 0x29, 0x0b,
+ ]);
+ const BLOCK_SENTINEL_SIZE = 13;
+-const TEXTURE_SOCKET_NAME = 'Base Color';
++const TEXTURE_SOCKET_NAME = 'base_color_texture';
+ const UV_SET_NAME = 'UVChannel_1';
+-const FBX_ENGINE_SIZE_CORRECTION = 0.35;
++const FBX_TARGET_MAX_DIMENSION = 1;
+ 
+ function sanitizeName(value: string | undefined, fallback: string) {
+-  return (value || fallback).replace(/[^\w\u4e00-\u9fa5.-]+/g, '_');
++  const sanitized = (value || fallback)
++    .normalize('NFKD')
++    .replace(/[^\w.-]+/g, '_')
++    .replace(/^_+|_+$/g, '');
++  return sanitized || fallback;
+ }
+ 
+ function className(name: string, cls: string) {
+@@ -98,12 +102,33 @@ function sanitizeNumber(value: number) {
+   return Number.isFinite(value) ? value : 0;
+ }
+ 
++function calculateExportScale(root: THREE.Object3D) {
++  const box = new THREE.Box3();
++  let hasMesh = false;
++
++  root.updateMatrixWorld(true);
++  root.traverse((child) => {
++    if (!(child instanceof THREE.Mesh) || !(child.geometry instanceof THREE.BufferGeometry)) return;
++    const geometry = child.geometry;
++    if (!geometry.boundingBox) geometry.computeBoundingBox();
++    if (!geometry.boundingBox) return;
++    box.union(geometry.boundingBox.clone().applyMatrix4(child.matrixWorld));
++    hasMesh = true;
++  });
++
++  if (!hasMesh || box.isEmpty()) return 1;
++  const size = box.getSize(new THREE.Vector3());
++  const maxDimension = Math.max(size.x, size.y, size.z);
++  return maxDimension > 0 ? FBX_TARGET_MAX_DIMENSION / maxDimension : 1;
++}
++
+ function collectMeshRecords(root: THREE.Object3D) {
+   const records: FbxMeshRecord[] = [];
+   const position = new THREE.Vector3();
+   const normal = new THREE.Vector3();
+   const uv = new THREE.Vector2();
+   let nextId = 100000;
++  const exportScale = calculateExportScale(root);
+ 
+   root.updateMatrixWorld(true);
+   root.traverse((child) => {
+@@ -135,7 +160,7 @@ function collectMeshRecords(root: THREE.Object3D) {
+       for (let corner = 0; corner < 3; corner += 1) {
+         const sourceIndex = index ? index.getX(triangle * 3 + corner) : triangle * 3 + corner;
+         position.fromBufferAttribute(positions, sourceIndex).applyMatrix4(child.matrixWorld);
+-        position.multiplyScalar(FBX_ENGINE_SIZE_CORRECTION);
++        position.multiplyScalar(exportScale);
+         record.vertices.push(sanitizeNumber(position.x), sanitizeNumber(position.y), sanitizeNumber(position.z));
+ 
+         if (normals) {
+@@ -235,20 +260,21 @@ function createMaterialNode(materialId: number, averageColor: [number, number, n
+   ]);
+ }
+ 
+-function createTextureNodes(input: { textureId: number; videoId: number; filename: string; data: Uint8Array }) {
+-  const filename = input.filename.replaceAll('\\', '/');
++function createTextureNodes(input: { textureId: number; videoId: number; data: Uint8Array }) {
++  const mediaName = 'liclick_image_0';
++  const videoName = `${mediaName}.png`;
++  const mediaPath = `liclick_export.fbm/${mediaName}_png`;
+   return [
+     node('Texture', [int64(input.textureId), str(className(TEXTURE_SOCKET_NAME, 'Texture')), str('')], [
+       node('Type', [str('TextureVideoClip')]),
+       node('Version', [int32(202)]),
+       node('TextureName', [str(className(TEXTURE_SOCKET_NAME, 'Texture'))]),
+-      node('Media', [str(className(filename, 'Video'))]),
+-      node('FileName', [str(filename)]),
+-      node('Filename', [str(filename)]),
+-      node('RelativeFilename', [str(filename)]),
++      node('Media', [str(className(videoName, 'Video'))]),
++      node('FileName', [str(mediaPath)]),
++      node('RelativeFilename', [str(mediaPath)]),
+       node('Properties70', [], [
+         prop('CurrentTextureBlendMode', 'enum', '', '', [int32(0)]),
+-        prop('AlphaSource', 'enum', '', '', [int32(2)]),
++        prop('AlphaSource', 'enum', '', '', [int32(0)]),
+         prop('PremultiplyAlpha', 'bool', '', '', [int32(0)]),
+         prop('UVSet', 'KString', '', '', [str(UV_SET_NAME)]),
+         prop('UseMaterial', 'bool', '', '', [int32(1)]),
+@@ -261,13 +287,12 @@ function createTextureNodes(input: { textureId: number; videoId: number; filenam
+       node('ModelUVTranslation', [float64(0), float64(0)]),
+       node('ModelUVScaling', [float64(1), float64(1)]),
+     ]),
+-    node('Video', [int64(input.videoId), str(className(filename, 'Video')), str('Clip')], [
++    node('Video', [int64(input.videoId), str(className(videoName, 'Video')), str('Clip')], [
+       node('Type', [str('Clip')]),
+-      node('Properties70', [], [prop('Path', 'KString', 'XRefUrl', '', [str(filename)])]),
++      node('Properties70', [], [prop('Path', 'KString', 'XRefUrl', '', [str(mediaPath)])]),
+       node('UseMipMap', [int32(0)]),
+-      node('Filename', [str(filename)]),
+-      node('FileName', [str(filename)]),
+-      node('RelativeFilename', [str(filename)]),
++      node('Filename', [str(mediaPath)]),
++      node('RelativeFilename', [str(mediaPath)]),
+       node('Content', [bytes(input.data)]),
+     ]),
+   ];
+@@ -303,8 +328,8 @@ function createGlobalSettingsNode() {
+       prop('FrontAxisSign', 'int', 'Integer', '', [int32(1)]),
+       prop('CoordAxis', 'int', 'Integer', '', [int32(0)]),
+       prop('CoordAxisSign', 'int', 'Integer', '', [int32(1)]),
+-      prop('UnitScaleFactor', 'double', 'Number', '', [float64(100)]),
+-      prop('OriginalUnitScaleFactor', 'double', 'Number', '', [float64(100)]),
++      prop('UnitScaleFactor', 'double', 'Number', '', [float64(1)]),
++      prop('OriginalUnitScaleFactor', 'double', 'Number', '', [float64(1)]),
+     ]),
+   ]);
+ }
+@@ -337,7 +362,6 @@ function createConnectionsNode(records: FbxMeshRecord[], materialId: number, tex
+ 
+   if (textureId && videoId) {
+     children.push(node('C', [str('OP'), int64(textureId), int64(materialId), str('DiffuseColor')]));
+-    children.push(node('C', [str('OP'), int64(textureId), int64(materialId), str('TransparentColor')]));
+     children.push(node('C', [str('OO'), int64(videoId), int64(textureId)]));
+   }
+ 
+@@ -363,7 +387,7 @@ function createFbxTree(input: {
+   ];
+ 
+   if (textureId && videoId && input.textureFilename && input.textureData) {
+-    objectChildren.push(...createTextureNodes({ textureId, videoId, filename: input.textureFilename, data: input.textureData }));
++    objectChildren.push(...createTextureNodes({ textureId, videoId, data: input.textureData }));
+   }
+ 
+   return [
+@@ -373,6 +397,7 @@ function createFbxTree(input: {
+     node('Creator', [str('Liclick 3D Texture')]),
+     createGlobalSettingsNode(),
+     createDocumentNode(),
++    node('References'),
+     createDefinitionsNode(records, Boolean(input.textureData)),
+     node('Objects', [], objectChildren),
+     createConnectionsNode(records, materialId, textureId, videoId),
+@@ -438,7 +463,7 @@ function float64ArrayBytes(values: number[]) {
+ function valueToBytes(value: FbxValue) {
+   switch (value.type) {
+     case 'bool':
+-      return concatBytes([uint8(0x42), uint8(value.value ? 1 : 0)]);
++      return concatBytes([uint8(0x43), uint8(value.value ? 1 : 0)]);
+     case 'int32':
+       return concatBytes([uint8(0x49), int32Bytes(value.value)]);
+     case 'int64':
+@@ -492,8 +517,6 @@ function calculateEndOffset(fbxNode: FbxNode, startOffset: number, isLast: boole
+       offset = calculateEndOffset(child, offset, index === children.length - 1);
+     });
+     offset += BLOCK_SENTINEL_SIZE;
+-  } else if (props.length === 0 && !isLast) {
+-    offset += BLOCK_SENTINEL_SIZE;
+   }
+ 
+   return offset;
+@@ -522,7 +545,7 @@ function writeNode(fbxNode: FbxNode, startOffset: number, isLast: boolean): Uint
+     childOffset += childBytes.byteLength;
+   });
+ 
+-  if (children.length > 0 || (props.length === 0 && !isLast)) {
++  if (children.length > 0) {
+     chunks.push(new Uint8Array(BLOCK_SENTINEL_SIZE));
+   }
+ 
+@@ -570,7 +593,12 @@ function createFbxBinary(input: {
+ export async function exportModelFbx(input: ModelExportInput) {
+   const { root, textureBlob, textureFilename, averageColor } = await prepareTexturedModelExport(input);
+   const fbxFilename = getExportFilename(input.project.name, input.target, 'fbx');
+-  const textureData = textureBlob ? new Uint8Array(await textureBlob.arrayBuffer()) : undefined;
+-  const fbx = createFbxBinary({ root, textureFilename, textureData, averageColor });
+-  downloadBlob(new Blob([fbx], { type: 'application/octet-stream' }), fbxFilename);
++  const embeddedTextureData = textureBlob ? new Uint8Array(await textureBlob.arrayBuffer()) : undefined;
++  const fbx = createFbxBinary({
++    root,
++    textureFilename: embeddedTextureData ? sanitizeName(textureFilename, 'liclick_basecolor.png') : undefined,
++    textureData: embeddedTextureData,
++    averageColor,
++  });
++  downloadBlob(new Blob([fbx], { type: 'model/fbx' }), fbxFilename);
+ }
+diff --git a/apps/web/src/engine/export/exportTypes.ts b/apps/web/src/engine/export/exportTypes.ts
+index 92fab02a..97b45d12 100644
+--- a/apps/web/src/engine/export/exportTypes.ts
++++ b/apps/web/src/engine/export/exportTypes.ts
+@@ -1,4 +1,5 @@
+ import type { Object3D } from 'three';
++import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
+ import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
+ import type { ViewportRuntime } from '@/stores/sceneStore';
+ import type { Project } from '@/types/project';
+@@ -11,6 +12,7 @@ export type ModelExportInput = {
+   importedModel: ModelLoadResult;
+   target: ExportTarget;
+   selectedObjectId?: string;
++  onProgress?: (progress: BakeProgress) => void;
+ };
+ 
+ export type TextureExportInput = {
+diff --git a/apps/web/src/engine/export/texturedExportUtils.ts b/apps/web/src/engine/export/texturedExportUtils.ts
+index 731ee8ea..9f239c7b 100644
+--- a/apps/web/src/engine/export/texturedExportUtils.ts
++++ b/apps/web/src/engine/export/texturedExportUtils.ts
+@@ -192,6 +192,7 @@ async function bakeCurrentVisibleTextureForExport(input: ModelExportInput) {
+     enableDilation: true,
+     dilationPixels: 4,
+     preferBlobOutput: true,
++    onProgress: input.onProgress,
+   });
+   return result.bakedTexture;
+ }
+diff --git a/apps/web/src/engine/viewport/SceneRoot.tsx b/apps/web/src/engine/viewport/SceneRoot.tsx
+index eabcda2e..2ef4e965 100644
+--- a/apps/web/src/engine/viewport/SceneRoot.tsx
++++ b/apps/web/src/engine/viewport/SceneRoot.tsx
+@@ -375,24 +375,37 @@ export function SceneRoot() {
+   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
+   const exposure = useSettingsStore((state) => state.exposure);
+   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
++  const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
++  const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
+   const effectiveEnvironmentPreset =
+     displayMode === 'pbr' && environmentPreset === 'color' ? 'studio' : environmentPreset;
+ 
+   const displayLightBoost = displayMode === 'flat' ? 1.35 : 1;
+-  const pbrLightScale = (displayMode === 'pbr' ? pbrEnvironmentIntensity / 0.3 : 1) * exposure * displayLightBoost;
++  const pbrLightScale = exposure * displayLightBoost;
++  const pbrEnvironmentScale = displayMode === 'pbr' ? pbrEnvironmentIntensity / 0.42 : 1;
++  const keyLightScale = displayMode === 'pbr' ? pbrKeyLightIntensity : 1;
++  const azimuth = THREE.MathUtils.degToRad(pbrLightAzimuth);
++  const keyLightPosition: [number, number, number] = [
++    Math.sin(azimuth) * 4.5,
++    5.2,
++    Math.cos(azimuth) * 4.5,
++  ];
++  const fillLightPosition: [number, number, number] = [-keyLightPosition[0] * 0.72, 2.2, -keyLightPosition[2] * 0.72];
+   const ambientIntensity =
+     (effectiveEnvironmentPreset === 'dark' ? 0.38 : effectiveEnvironmentPreset === 'soft' ? 0.46 : 0.5) *
+-    pbrLightScale;
++    pbrLightScale *
++    pbrEnvironmentScale;
+   const keyIntensity =
+     (effectiveEnvironmentPreset === 'dark' ? 1.05 : effectiveEnvironmentPreset === 'soft' ? 1.12 : 1.22) *
+-    pbrLightScale;
+-  const fillIntensity = (effectiveEnvironmentPreset === 'dark' ? 0.18 : 0.26) * pbrLightScale;
++    pbrLightScale *
++    keyLightScale;
++  const fillIntensity = (effectiveEnvironmentPreset === 'dark' ? 0.18 : 0.26) * pbrLightScale * pbrEnvironmentScale;
+   return (
+     <group onPointerMissed={() => selectObject(undefined)}>
+       <ambientLight intensity={ambientIntensity} />
+       <hemisphereLight args={['#fff0e8', '#302640', 0.82]} />
+-      <directionalLight position={[3.5, 5.2, 2.8]} intensity={keyIntensity} castShadow />
+-      <directionalLight position={[-4.5, 2.2, -3.5]} intensity={fillIntensity} />
++      <directionalLight position={keyLightPosition} intensity={keyIntensity} castShadow />
++      <directionalLight position={fillLightPosition} intensity={fillIntensity} />
+       <Grid />
+       {importedModels.length > 0 ? (
+         importedModels.map((model) => <ImportedModel key={model.objectId} importedModel={model} />)
+diff --git a/apps/web/src/engine/viewport/ViewCube.tsx b/apps/web/src/engine/viewport/ViewCube.tsx
+index c0774ddf..130a2c5b 100644
+--- a/apps/web/src/engine/viewport/ViewCube.tsx
++++ b/apps/web/src/engine/viewport/ViewCube.tsx
+@@ -1,8 +1,15 @@
+ import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+ import { Vector3 } from 'three';
++import { cn } from '@/components/common/cn';
+ import { useSceneStore } from '@/stores/sceneStore';
+ 
+ type CubeFace = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
++type FaceEdge = 'left' | 'right' | 'top' | 'bottom';
++type SnapTarget = { direction: Vector3; edges: FaceEdge[]; face: CubeFace; label: string };
++
++const cubeSize = 76;
++const cubeHalf = cubeSize / 2;
++const hoverMarkerThickness = 7;
+ 
+ const faceLabels: Record<CubeFace, string> = {
+   front: 'Front',
+@@ -13,52 +20,152 @@ const faceLabels: Record<CubeFace, string> = {
+   bottom: 'Bottom',
+ };
+ 
+-function getDominantFace(direction: Vector3): CubeFace {
++const faceDirections: Record<CubeFace, Vector3> = {
++  front: new Vector3(0, 0, 1),
++  back: new Vector3(0, 0, -1),
++  left: new Vector3(-1, 0, 0),
++  right: new Vector3(1, 0, 0),
++  top: new Vector3(0, 1, 0),
++  bottom: new Vector3(0, -1, 0),
++};
++
++const faceNeighbors: Record<CubeFace, Record<FaceEdge, CubeFace>> = {
++  front: { left: 'left', right: 'right', top: 'top', bottom: 'bottom' },
++  back: { left: 'right', right: 'left', top: 'top', bottom: 'bottom' },
++  left: { left: 'back', right: 'front', top: 'top', bottom: 'bottom' },
++  right: { left: 'front', right: 'back', top: 'top', bottom: 'bottom' },
++  top: { left: 'left', right: 'right', top: 'back', bottom: 'front' },
++  bottom: { left: 'left', right: 'right', top: 'front', bottom: 'back' },
++};
++
++function getViewLabel(direction: Vector3) {
+   const absX = Math.abs(direction.x);
+   const absY = Math.abs(direction.y);
+   const absZ = Math.abs(direction.z);
+-  if (absY >= absX && absY >= absZ) return direction.y >= 0 ? 'top' : 'bottom';
+-  if (absX >= absZ) return direction.x >= 0 ? 'right' : 'left';
+-  return direction.z >= 0 ? 'front' : 'back';
++  const strongest = Math.max(absX, absY, absZ);
++  const threshold = strongest * 0.68;
++  const labels: string[] = [];
++
++  if (absY >= threshold) labels.push(faceLabels[direction.y >= 0 ? 'top' : 'bottom']);
++  if (absZ >= threshold) labels.push(faceLabels[direction.z >= 0 ? 'front' : 'back']);
++  if (absX >= threshold) labels.push(faceLabels[direction.x >= 0 ? 'right' : 'left']);
++
++  return labels.length > 0 ? labels.join('/') : faceLabels.front;
+ }
+ 
+ function faceTransform(face: CubeFace) {
+   const transforms: Record<CubeFace, string> = {
+-    front: 'translateZ(32px)',
+-    back: 'rotateY(180deg) translateZ(32px)',
+-    right: 'rotateY(90deg) translateZ(32px)',
+-    left: 'rotateY(-90deg) translateZ(32px)',
+-    top: 'rotateX(90deg) translateZ(32px)',
+-    bottom: 'rotateX(-90deg) translateZ(32px)',
++    front: `translateZ(${cubeHalf}px)`,
++    back: `rotateY(180deg) translateZ(${cubeHalf}px)`,
++    right: `rotateY(90deg) translateZ(${cubeHalf}px)`,
++    left: `rotateY(-90deg) translateZ(${cubeHalf}px)`,
++    top: `rotateX(90deg) translateZ(${cubeHalf}px)`,
++    bottom: `rotateX(-90deg) translateZ(${cubeHalf}px)`,
+   };
+   return transforms[face];
+ }
+ 
+ function faceDirection(face: CubeFace) {
+-  const directions: Record<CubeFace, Vector3> = {
+-    front: new Vector3(0, 0, 1),
+-    back: new Vector3(0, 0, -1),
+-    left: new Vector3(-1, 0, 0),
+-    right: new Vector3(1, 0, 0),
+-    top: new Vector3(0, 1, 0),
+-    bottom: new Vector3(0, -1, 0),
++  return faceDirections[face].clone();
++}
++
++function axisSign(value: number) {
++  if (Math.abs(value) < 0.001) return 0;
++  return value > 0 ? 1 : -1;
++}
++
++function vertexMarkerStyle(direction: Vector3) {
++  const x = axisSign(direction.x);
++  const y = axisSign(direction.y);
++  const z = axisSign(direction.z);
++  if (!x || !y || !z) return undefined;
++
++  return {
++    left: `calc(50% + ${x * cubeHalf}px)`,
++    top: `calc(50% + ${-y * cubeHalf}px)`,
++    transform: `translate(-50%, -50%) translateZ(${z * cubeHalf}px)`,
+   };
+-  return directions[face].clone();
+ }
+ 
+-function faceUp(face: CubeFace) {
+-  if (face === 'top') return new Vector3(0, 0, -1);
+-  if (face === 'bottom') return new Vector3(0, 0, 1);
+-  return new Vector3(0, 1, 0);
++function edgeMarkerStyle(direction: Vector3) {
++  const x = axisSign(direction.x);
++  const y = axisSign(direction.y);
++  const z = axisSign(direction.z);
++
++  if (!x && y && z) {
++    return {
++      width: `${cubeSize}px`,
++      height: `${hoverMarkerThickness}px`,
++      left: '50%',
++      top: `calc(50% + ${-y * cubeHalf}px)`,
++      transform: `translate(-50%, -50%) translateZ(${z * cubeHalf}px)`,
++    };
++  }
++
++  if (x && !y && z) {
++    return {
++      width: `${hoverMarkerThickness}px`,
++      height: `${cubeSize}px`,
++      left: `calc(50% + ${x * cubeHalf}px)`,
++      top: '50%',
++      transform: `translate(-50%, -50%) translateZ(${z * cubeHalf}px)`,
++    };
++  }
++
++  if (x && y && !z) {
++    return {
++      width: `${cubeSize}px`,
++      height: `${hoverMarkerThickness}px`,
++      left: `calc(50% + ${x * cubeHalf}px)`,
++      top: `calc(50% + ${-y * cubeHalf}px)`,
++      transform: 'translate(-50%, -50%) rotateY(90deg)',
++    };
++  }
++
++  return undefined;
++}
++
++function upForDirection(direction: Vector3) {
++  const horizontalLength = Math.hypot(direction.x, direction.z);
++  if (horizontalLength < 0.001) return direction.y >= 0 ? new Vector3(0, 0, -1) : new Vector3(0, 0, 1);
++
++  const worldUp = new Vector3(0, 1, 0);
++  const up = worldUp.sub(direction.clone().multiplyScalar(worldUp.dot(direction)));
++  return up.lengthSq() > 0.000001 ? up.normalize() : new Vector3(0, 1, 0);
++}
++
++function getSnapTarget(face: CubeFace, event: MouseEvent<HTMLButtonElement>): SnapTarget {
++  const target = event.currentTarget;
++  const width = target.clientWidth;
++  const height = target.clientHeight;
++  const edgeSize = Math.min(width, height) * 0.24;
++  const x = event.nativeEvent.offsetX;
++  const y = event.nativeEvent.offsetY;
++  const direction = faceDirection(face);
++  const edges: FaceEdge[] = [];
++  const neighbors = faceNeighbors[face];
++
++  if (x <= edgeSize) edges.push('left');
++  else if (x >= width - edgeSize) edges.push('right');
++
++  if (y <= edgeSize) edges.push('top');
++  else if (y >= height - edgeSize) edges.push('bottom');
++
++  edges.forEach((edge) => direction.add(faceDirection(neighbors[edge])));
++  direction.normalize();
++
++  return { direction, edges, face, label: getViewLabel(direction) };
+ }
+ 
+ export function ViewCube() {
+   const viewport = useSceneStore((state) => state.viewport);
+   const [rotation, setRotation] = useState({ pitch: -24, yaw: 38 });
+-  const [activeFace, setActiveFace] = useState<CubeFace>('front');
+-  const lastStateRef = useRef({ pitch: -24, yaw: 38, face: 'front' as CubeFace });
++  const [activeLabel, setActiveLabel] = useState(faceLabels.front);
++  const [hoveredTarget, setHoveredTarget] = useState<SnapTarget>();
++  const lastStateRef = useRef({ pitch: -24, yaw: 38, label: faceLabels.front });
++  const lastHoverKeyRef = useRef('');
+ 
+-  const snapToFace = useCallback((face: CubeFace, event?: MouseEvent) => {
++  const snapToDirection = useCallback((direction: Vector3, event?: MouseEvent) => {
+     event?.preventDefault();
+     event?.stopPropagation();
+     if (!viewport) return;
+@@ -67,15 +174,35 @@ export function ViewCube() {
+     const currentPosition = new Vector3();
+     viewport.camera.getWorldPosition(currentPosition);
+     const distance = Math.max(currentPosition.distanceTo(target), 0.8);
+-    const direction = faceDirection(face);
+-    viewport.camera.position.copy(target).add(direction.multiplyScalar(distance));
+-    viewport.camera.up.copy(faceUp(face));
++    const snapDirection = direction.clone().normalize();
++    viewport.camera.position.copy(target).add(snapDirection.multiplyScalar(distance));
++    viewport.camera.up.copy(upForDirection(direction));
+     viewport.camera.lookAt(target);
+     viewport.controls?.target.copy(target);
+     viewport.controls?.update();
+     viewport.camera.updateMatrixWorld();
+   }, [viewport]);
+ 
++  const snapFromFaceClick = useCallback((face: CubeFace, event: MouseEvent<HTMLButtonElement>) => {
++    snapToDirection(getSnapTarget(face, event).direction, event);
++  }, [snapToDirection]);
++
++  const updateHoverTarget = useCallback((face: CubeFace, event: MouseEvent<HTMLButtonElement>) => {
++    const nextTarget = getSnapTarget(face, event);
++    const nextKey = `${nextTarget.face}:${nextTarget.edges.join('-')}`;
++    if (lastHoverKeyRef.current === nextKey) return;
++
++    lastHoverKeyRef.current = nextKey;
++    setHoveredTarget(nextTarget);
++  }, []);
++
++  const clearHoverTarget = useCallback(() => {
++    if (!lastHoverKeyRef.current) return;
++
++    lastHoverKeyRef.current = '';
++    setHoveredTarget(undefined);
++  }, []);
++
+   useEffect(() => {
+     let frame = 0;
+     const cameraPosition = new Vector3();
+@@ -90,16 +217,16 @@ export function ViewCube() {
+         direction.copy(cameraPosition).sub(target).normalize();
+         const yaw = Math.atan2(direction.x, direction.z) * (180 / Math.PI);
+         const pitch = Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * (180 / Math.PI);
+-        const nextState = { pitch: -pitch, yaw, face: getDominantFace(direction) };
++        const nextState = { pitch: -pitch, yaw, label: getViewLabel(direction) };
+         const previous = lastStateRef.current;
+         if (
+           Math.abs(previous.pitch - nextState.pitch) > 0.35 ||
+           Math.abs(previous.yaw - nextState.yaw) > 0.35 ||
+-          previous.face !== nextState.face
++          previous.label !== nextState.label
+         ) {
+           lastStateRef.current = nextState;
+           setRotation({ pitch: nextState.pitch, yaw: nextState.yaw });
+-          setActiveFace(nextState.face);
++          setActiveLabel(nextState.label);
+         }
+       }
+       frame = requestAnimationFrame(update);
+@@ -109,28 +236,66 @@ export function ViewCube() {
+     return () => cancelAnimationFrame(frame);
+   }, [viewport]);
+ 
++  const displayLabel = hoveredTarget?.label ?? activeLabel;
++  const hoveredEdgeStyle = hoveredTarget?.edges.length === 1 ? edgeMarkerStyle(hoveredTarget.direction) : undefined;
++  const hoveredVertexStyle = hoveredTarget?.edges.length === 2 ? vertexMarkerStyle(hoveredTarget.direction) : undefined;
++
+   return (
+-    <div className="absolute right-4 top-4 z-50 grid h-28 w-28 place-items-center rounded-xl border border-white/16 bg-black/50 shadow-[0_16px_42px_rgba(0,0,0,0.42)] backdrop-blur-md">
+-      <div className="absolute top-1.5 rounded bg-white/90 px-1.5 py-0.5 text-[9px] font-black uppercase text-[#14151d]">
+-        {faceLabels[activeFace]}
++    <div className="absolute right-4 top-4 z-50 grid h-32 w-32 place-items-start justify-items-center">
++      <div
++        className={cn(
++          'z-10 max-w-[7.5rem] rounded px-1.5 py-0.5 text-[8px] font-black uppercase tracking-normal shadow-[0_3px_12px_rgba(0,0,0,0.3)] transition-colors',
++          hoveredTarget ? 'bg-liclick-pink text-white' : 'bg-white/90 text-[#14151d]',
++        )}
++        data-testid="view-cube-active-label"
++      >
++        {displayLabel}
+       </div>
+-      <div className="mt-3 h-16 w-16 [perspective:460px]">
++      <div className="mt-2 [perspective:540px]" style={{ width: cubeSize, height: cubeSize }}>
+         <div
+-          className="relative h-16 w-16 [transform-style:preserve-3d] transition-transform duration-75"
+-          style={{ transform: `rotateX(${rotation.pitch}deg) rotateY(${rotation.yaw}deg)` }}
++          className="relative [transform-style:preserve-3d] transition-transform duration-75"
++          style={{ width: cubeSize, height: cubeSize, transform: `rotateX(${rotation.pitch}deg) rotateY(${rotation.yaw}deg)` }}
+         >
+-          {(Object.keys(faceLabels) as CubeFace[]).map((face) => (
+-            <button
+-              type="button"
+-              key={face}
+-              aria-label={`Snap view to ${faceLabels[face]}`}
+-              className="absolute grid h-16 w-16 place-items-center rounded-sm border border-white/35 bg-white text-[10px] font-black uppercase tracking-normal text-[#191a22] shadow-[0_4px_12px_rgba(0,0,0,0.34)] transition-colors hover:bg-liclick-pink hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/80"
+-              style={{ transform: faceTransform(face), backfaceVisibility: 'hidden' }}
+-              onClick={(event) => snapToFace(face, event)}
+-            >
+-              {faceLabels[face]}
+-            </button>
+-          ))}
++          {(Object.keys(faceLabels) as CubeFace[]).map((face) => {
++            const hoverEdges = hoveredTarget?.face === face ? hoveredTarget.edges : [];
++            const centerHovered = hoveredTarget?.face === face && hoverEdges.length === 0;
++
++            return (
++              <button
++                type="button"
++                key={face}
++                data-testid={`view-cube-face-${face}`}
++                aria-label={`Snap view to ${faceLabels[face]}`}
++                className={cn(
++                  'absolute grid place-items-center overflow-hidden rounded-md border text-[11px] font-black uppercase tracking-normal shadow-[0_4px_12px_rgba(0,0,0,0.26)] transition-colors focus:outline-none focus:ring-2 focus:ring-liclick-pink/80',
++                  centerHovered
++                    ? 'border-liclick-pink bg-liclick-pink text-white'
++                    : 'border-[#31333b] bg-white text-[#191a22] hover:border-liclick-pink/70',
++                )}
++                style={{ width: cubeSize, height: cubeSize, transform: faceTransform(face), backfaceVisibility: 'hidden' }}
++                onClick={(event) => snapFromFaceClick(face, event)}
++                onMouseMove={(event) => updateHoverTarget(face, event)}
++                onMouseLeave={clearHoverTarget}
++              >
++                <span className="pointer-events-none absolute inset-[8px] rounded-sm bg-white/70" />
++                <span className="pointer-events-none relative z-10">{faceLabels[face]}</span>
++              </button>
++            );
++          })}
++          {hoveredEdgeStyle && (
++            <span
++              className="pointer-events-none absolute rounded-full bg-liclick-pink shadow-[0_0_12px_rgba(255,98,210,0.92)]"
++              data-testid="view-cube-hover-edge"
++              style={hoveredEdgeStyle}
++            />
++          )}
++          {hoveredVertexStyle && (
++            <span
++              className="pointer-events-none absolute h-4 w-4 rounded-full bg-liclick-pink shadow-[0_0_13px_rgba(255,98,210,0.95)] ring-2 ring-white"
++              data-testid="view-cube-hover-vertex"
++              style={hoveredVertexStyle}
++            />
++          )}
+         </div>
+       </div>
+     </div>
+diff --git a/apps/web/src/engine/viewport/ViewportCanvas.tsx b/apps/web/src/engine/viewport/ViewportCanvas.tsx
+index d87df7e1..e302b9e3 100644
+--- a/apps/web/src/engine/viewport/ViewportCanvas.tsx
++++ b/apps/web/src/engine/viewport/ViewportCanvas.tsx
+@@ -35,7 +35,7 @@ function RendererSettings() {
+ 
+   useEffect(() => {
+     gl.outputColorSpace = THREE.SRGBColorSpace;
+-    gl.toneMapping = THREE.ACESFilmicToneMapping;
++    gl.toneMapping = THREE.LinearToneMapping;
+     gl.toneMappingExposure = exposure;
+   }, [exposure, gl]);
+ 
+@@ -284,6 +284,7 @@ function SurfacePaintOverlay() {
+       (!layer.objectId || layer.objectId === selectedObjectId),
+   );
+   const texturePaintReady = Boolean(activePaintLayer);
++  const canUseSurfacePaint = paintTool === 'eraser' || texturePaintReady;
+ 
+   const getTargetModel = useCallback((): SurfacePaintTarget | undefined => {
+     if (importedModel && (!selectedObjectId || selectedObjectId === importedModel.objectId)) {
+@@ -477,7 +478,7 @@ function SurfacePaintOverlay() {
+     const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+     const worldScale = isMaskBrush ? 0.075 : 0.45;
+     const minRadius = isMaskBrush ? maxDimension * 0.0008 : maxDimension * 0.004;
+-    const maxRadius = isMaskBrush ? maxDimension * 0.045 : maxDimension * 0.18;
++    const maxRadius = isMaskBrush ? maxDimension * 0.12 : maxDimension * 0.18;
+     return THREE.MathUtils.clamp((maxDimension * setting * worldScale) / 700, minRadius, maxRadius);
+   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
+ 
+@@ -490,7 +491,7 @@ function SurfacePaintOverlay() {
+           : paintMaskSettings.brushSize;
+     const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+     return isMaskBrush
+-      ? THREE.MathUtils.clamp(setting * 0.12, 0.75, 18)
++      ? THREE.MathUtils.clamp(setting * 0.2, 0.75, 48)
+       : THREE.MathUtils.clamp(setting * 0.45, 1.5, 96);
+   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
+ 
+@@ -532,7 +533,7 @@ function SurfacePaintOverlay() {
+   }, [isInpaintMode, paintTool, paintToolSettings.color]);
+ 
+   const updateCursor = useCallback((event: globalThis.PointerEvent) => {
+-    const canPreviewBrush = enabled && (isInpaintMode || texturePaintReady);
++    const canPreviewBrush = enabled && (isInpaintMode || canUseSurfacePaint);
+     const result = canPreviewBrush ? raycastModel(event) : undefined;
+     const cursor = cursorRef.current;
+     if (!cursor) return result;
+@@ -560,7 +561,7 @@ function SurfacePaintOverlay() {
+     cursor.visible = true;
+     gl.domElement.style.cursor = 'none';
+     return result;
+-  }, [enabled, getCursorColor, gl.domElement, isInpaintMode, raycastModel, texturePaintReady]);
++  }, [canUseSurfacePaint, enabled, getCursorColor, gl.domElement, isInpaintMode, raycastModel]);
+ 
+   const drawBrushSegment = useCallback((
+     context: CanvasRenderingContext2D,
+@@ -806,7 +807,7 @@ function SurfacePaintOverlay() {
+     };
+     const handlePointerDown = (event: globalThis.PointerEvent) => {
+       if (!enabled || event.button !== 0) return;
+-      if (!isInpaintMode && !texturePaintReady) {
++      if (!isInpaintMode && !canUseSurfacePaint) {
+         const result = raycastModel(event);
+         if (!result) return;
+         event.preventDefault();
+@@ -866,7 +867,7 @@ function SurfacePaintOverlay() {
+     paintAt,
+     raycastModel,
+     setOrbitControlsEnabled,
+-    texturePaintReady,
++    canUseSurfacePaint,
+     updateCursor,
+     warnMissingPaintLayer,
+   ]);
+@@ -963,12 +964,12 @@ export function ViewportCanvas({
+           preserveDrawingBuffer: false,
+           powerPreference: 'high-performance',
+           outputColorSpace: THREE.SRGBColorSpace,
+-          toneMapping: THREE.ACESFilmicToneMapping,
++          toneMapping: THREE.LinearToneMapping,
+           toneMappingExposure: exposure,
+         }}
+         onCreated={({ gl }) => {
+           gl.outputColorSpace = THREE.SRGBColorSpace;
+-          gl.toneMapping = THREE.ACESFilmicToneMapping;
++          gl.toneMapping = THREE.LinearToneMapping;
+           gl.toneMappingExposure = exposure;
+           setViewportIssue(undefined);
+           recoveryAttemptsRef.current = 0;
+diff --git a/apps/web/src/routes/EditorPage.tsx b/apps/web/src/routes/EditorPage.tsx
+index cbfb620f..7bb3efb9 100644
+--- a/apps/web/src/routes/EditorPage.tsx
++++ b/apps/web/src/routes/EditorPage.tsx
+@@ -1201,7 +1201,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
+     return result;
+   }
+ 
+-  function updateManualBakeProgress(progress: BakeProgress) {
++  function getBakeProgressDetail(progress: BakeProgress) {
+     const percent = Math.round(progress.progress * 100);
+     const triangleDetail =
+       progress.totalTriangles && progress.processedTriangles !== undefined
+@@ -1225,9 +1225,21 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
+               : progress.phase === 'applying'
+                 ? t('autoBakeApplying')
+                 : t('autoBakePersisting');
++    return `${phaseLabel} ${percent}%${layerDetail}${triangleDetail}`;
++  }
++
++  function updateManualBakeProgress(progress: BakeProgress) {
+     setManualBakeProgress({
+       title: t('autoBake'),
+-      detail: `${phaseLabel} ${percent}%${layerDetail}${triangleDetail}`,
++      detail: getBakeProgressDetail(progress),
++      progress: progress.progress,
++    });
++  }
++
++  function updateExportBakeProgress(progress: BakeProgress) {
++    setManualBakeProgress({
++      title: t('exportPreparingUvTexture'),
++      detail: getBakeProgressDetail(progress),
+       progress: progress.progress,
+     });
+   }
+@@ -2020,14 +2032,31 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
+         title: t('exportFailed'),
+         description: error instanceof Error ? error.message : t('exportFailedHelp'),
+       });
++    } finally {
++      manualBakeProgressTimerRef.current = window.setTimeout(() => setManualBakeProgress(undefined), 1200);
+     }
+   }
+ 
+   function handleExportAction(actionId: ExportActionId) {
+     if (!project) return;
+     const modelInput = importedModel
+-      ? { project, importedModel, selectedObjectId, target: actionId.startsWith('object') ? 'object' : 'scene' }
++      ? {
++          project,
++          importedModel,
++          selectedObjectId,
++          target: actionId.startsWith('object') ? 'object' : 'scene',
++          onProgress: updateExportBakeProgress,
++        }
+       : undefined;
++    const textureModelExport = actionId.endsWith('-glb') || actionId.endsWith('-fbx') || actionId.endsWith('-obj');
++    if (textureModelExport) {
++      window.clearTimeout(manualBakeProgressTimerRef.current);
++      setManualBakeProgress({
++        title: t('exportPreparingUvTexture'),
++        detail: t('exportUvBakeRequired'),
++        progress: 0.02,
++      });
++    }
+ 
+     const actions: Record<ExportActionId, () => Promise<void> | void> = {
+       'scene-glb': () => {
+@@ -2127,6 +2156,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
+     function handleInpaintShortcuts(event: KeyboardEvent) {
+       if (isEditingText(event.target)) return;
+       const key = event.key.toLowerCase();
++      const isBrushSizeShortcut =
++        event.key === '[' ||
++        event.key === ']' ||
++        event.code === 'BracketLeft' ||
++        event.code === 'BracketRight';
+       if (event.ctrlKey && key === 'd') {
+         event.preventDefault();
+         clearPaintMask();
+@@ -2138,6 +2172,49 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
+         return;
+       }
+       if (event.ctrlKey || event.metaKey || event.altKey) return;
++      if (isBrushSizeShortcut) {
++        event.preventDefault();
++        const direction = event.key === '[' || event.code === 'BracketLeft' ? -1 : 1;
++        const state = useSceneStore.getState();
++        const stepBrushSize = (value: number, min: number, max: number) => {
++          const step = value < 10 ? 1 : value < 60 ? 5 : 10;
++          return Math.max(min, Math.min(max, Number((value + direction * step).toFixed(1))));
++        };
++
++        if (state.paintTool === 'eraser') {
++          const nextSize = stepBrushSize(state.paintToolSettings.eraserSize, 0.5, 256);
++          state.setPaintToolSettings({ eraserSize: nextSize });
++          pushToast({
++            tone: 'info',
++            title: `橡皮大小 ${nextSize.toFixed(nextSize % 1 ? 1 : 0)}px`,
++            description: '[ / ] 调整大小',
++            dedupeKey: 'brush-size-shortcut',
++          });
++          return;
++        }
++
++        if (state.paintTool === 'inpaint-add' || state.paintTool === 'inpaint-subtract') {
++          const nextSize = stepBrushSize(state.paintMaskSettings.brushSize, 1, 180);
++          state.setPaintMaskSettings({ brushSize: nextSize });
++          pushToast({
++            tone: 'info',
++            title: `局部重绘画笔 ${nextSize.toFixed(nextSize % 1 ? 1 : 0)}px`,
++            description: '[ / ] 调整大小',
++            dedupeKey: 'brush-size-shortcut',
++          });
++          return;
++        }
++
++        const nextSize = stepBrushSize(state.paintToolSettings.brushSize, 0.5, 256);
++        state.setPaintToolSettings({ brushSize: nextSize });
++        pushToast({
++          tone: 'info',
++          title: `画笔大小 ${nextSize.toFixed(nextSize % 1 ? 1 : 0)}px`,
++          description: '[ / ] 调整大小',
++          dedupeKey: 'brush-size-shortcut',
++        });
++        return;
++      }
+       if (key === 'k') {
+         setPaintTool(useSceneStore.getState().paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
+         return;
+@@ -2151,7 +2228,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
+ 
+     window.addEventListener('keydown', handleInpaintShortcuts);
+     return () => window.removeEventListener('keydown', handleInpaintShortcuts);
+-  }, [clearPaintMask, handleLocalRepaintFromToolbar, invertPaintMask, setPaintTool]);
++  }, [clearPaintMask, handleLocalRepaintFromToolbar, invertPaintMask, pushToast, setPaintTool]);
+ 
+   const panelDefinitions = ([
+     {
+@@ -2227,7 +2304,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
+       collapsed: workspacePanels.find((panel) => panel.id === 'layers')?.collapsed ?? true,
+       visible: true,
+       mode: 'texture',
+-      actions: <LayersPanelActions />,
++      actions: <LayersPanelActions onContentAwareRepair={handleLocalRepaintFromToolbar} />,
+       content: (
+         <LayersPanel
+           onLayerImageEdit={openLayerImageEdit}
+diff --git a/apps/web/src/stores/i18nStore.ts b/apps/web/src/stores/i18nStore.ts
+index 9f759115..7b9c239e 100644
+--- a/apps/web/src/stores/i18nStore.ts
++++ b/apps/web/src/stores/i18nStore.ts
+@@ -116,6 +116,8 @@ export const translations = {
+     exportFailed: 'Export failed',
+     exportFailedHelp: 'Could not finish this export.',
+     exporting: 'Exporting',
++    exportPreparingUvTexture: 'Preparing UV texture for export',
++    exportUvBakeRequired: 'GLB / FBX / OBJ need projected layers baked into a UV texture first.',
+     browserUnsupported: 'This browser does not support WebM recording.',
+     selectObjectFirst: 'Select an object first.',
+     normalTextureMissing: 'This model has no normal map.',
+@@ -301,6 +303,8 @@ export const translations = {
+     selectLayerAdjustments: 'Select a layer to adjust its settings',
+     exposure: 'Exposure',
+     environment: 'Environment',
++    lightIntensity: 'Light strength',
++    lightDirection: 'Light direction',
+     orthographicColorOnly: 'When using an orthographic camera, you can only use a color as the background',
+     contrast: 'Contrast',
+     roughnessInfluence: 'Roughness Influence',
+@@ -515,6 +519,8 @@ export const translations = {
+     exportFailed: '导出失败',
+     exportFailedHelp: '无法完成本次导出。',
+     exporting: '正在导出',
++    exportPreparingUvTexture: '正在为导出生成 UV 贴图',
++    exportUvBakeRequired: 'GLB / FBX / OBJ 不支持实时投影图层，需要先烘焙成 UV 贴图。',
+     browserUnsupported: '当前浏览器不支持 WebM 录制。',
+     selectObjectFirst: '请先选择对象。',
+     normalTextureMissing: '当前模型没有 normal map。',
+@@ -700,6 +706,8 @@ export const translations = {
+     selectLayerAdjustments: '选择一个图层以调整设置',
+     exposure: '曝光',
+     environment: '环境',
++    lightIntensity: '灯光强度',
++    lightDirection: '灯光方向',
+     orthographicColorOnly: '使用正交相机时，背景只能使用纯色。',
+     contrast: '对比度',
+     roughnessInfluence: '粗糙度影响',
+diff --git a/apps/web/src/stores/layerStore.ts b/apps/web/src/stores/layerStore.ts
+index e1380230..5d015836 100644
+--- a/apps/web/src/stores/layerStore.ts
++++ b/apps/web/src/stores/layerStore.ts
+@@ -36,6 +36,7 @@ type LayerStore = {
+   markLayerBaked: (layerId: string, bakedTextureId: string, bakedAt: string) => void;
+   markLayersBaked: (layerIds: string[], bakedTextureId: string, bakedAt: string) => void;
+   deleteLayer: (layerId: string) => void;
++  deleteLayers: (layerIds: string[]) => void;
+ };
+ 
+ const legacyTransparentImage =
+@@ -391,4 +392,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
+         activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+       };
+     }),
++  deleteLayers: (layerIds) =>
++    set((state) => {
++      const layerIdSet = new Set(layerIds);
++      const layers = state.layers.filter((layer) => !layerIdSet.has(layer.id));
++      return {
++        layers: markVisibleStackNeedsRebake(withOrder(layers)),
++        activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
++      };
++    }),
+ }));
+diff --git a/apps/web/src/stores/sceneStore.ts b/apps/web/src/stores/sceneStore.ts
+index 60260b40..e4c17ed8 100644
+--- a/apps/web/src/stores/sceneStore.ts
++++ b/apps/web/src/stores/sceneStore.ts
+@@ -237,7 +237,7 @@ export const useSceneStore = create<SceneStore>()(
+       setPaintMaskSettings: (settings) =>
+         set((state) => ({
+           paintMaskSettings: {
+-            brushSize: Math.max(1, Math.min(64, settings.brushSize ?? state.paintMaskSettings.brushSize)),
++            brushSize: Math.max(1, Math.min(180, settings.brushSize ?? state.paintMaskSettings.brushSize)),
+             brushHardness: Math.max(0, Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness)),
+           },
+         })),
+diff --git a/apps/web/src/stores/settingsStore.ts b/apps/web/src/stores/settingsStore.ts
+index a9ffc38f..b2a6ccd4 100644
+--- a/apps/web/src/stores/settingsStore.ts
++++ b/apps/web/src/stores/settingsStore.ts
+@@ -8,11 +8,15 @@ type SettingsStore = {
+   resolution: Resolution;
+   exposure: number;
+   pbrEnvironmentIntensity: number;
++  pbrKeyLightIntensity: number;
++  pbrLightAzimuth: number;
+   environmentPreset: EnvironmentPreset;
+   autoUvBakeEnabled: boolean;
+   setResolution: (resolution: Resolution) => void;
+   setExposure: (exposure: number) => void;
+   setPbrEnvironmentIntensity: (pbrEnvironmentIntensity: number) => void;
++  setPbrKeyLightIntensity: (pbrKeyLightIntensity: number) => void;
++  setPbrLightAzimuth: (pbrLightAzimuth: number) => void;
+   setEnvironmentPreset: (environmentPreset: EnvironmentPreset) => void;
+   setAutoUvBakeEnabled: (autoUvBakeEnabled: boolean) => void;
+   resetViewportLighting: () => void;
+@@ -22,16 +26,21 @@ export const useSettingsStore = create<SettingsStore>()(
+   persist(
+     (set) => ({
+       resolution: '2K',
+-      exposure: 1.15,
+-      pbrEnvironmentIntensity: 0.3,
++      exposure: 1,
++      pbrEnvironmentIntensity: 0.42,
++      pbrKeyLightIntensity: 1,
++      pbrLightAzimuth: 38,
+       environmentPreset: 'studio',
+       autoUvBakeEnabled: false,
+       setResolution: (resolution) => set({ resolution }),
+       setExposure: (exposure) => set({ exposure }),
+       setPbrEnvironmentIntensity: (pbrEnvironmentIntensity) => set({ pbrEnvironmentIntensity }),
++      setPbrKeyLightIntensity: (pbrKeyLightIntensity) => set({ pbrKeyLightIntensity }),
++      setPbrLightAzimuth: (pbrLightAzimuth) => set({ pbrLightAzimuth }),
+       setEnvironmentPreset: (environmentPreset) => set({ environmentPreset }),
+       setAutoUvBakeEnabled: (autoUvBakeEnabled) => set({ autoUvBakeEnabled }),
+-      resetViewportLighting: () => set({ exposure: 1.15, pbrEnvironmentIntensity: 0.3, environmentPreset: 'studio' }),
++      resetViewportLighting: () =>
++        set({ exposure: 1, pbrEnvironmentIntensity: 0.42, pbrKeyLightIntensity: 1, pbrLightAzimuth: 38, environmentPreset: 'studio' }),
+     }),
+     {
+       name: 'liclick-render-settings-v1',
+@@ -40,6 +49,8 @@ export const useSettingsStore = create<SettingsStore>()(
+         resolution: state.resolution,
+         exposure: state.exposure,
+         pbrEnvironmentIntensity: state.pbrEnvironmentIntensity,
++        pbrKeyLightIntensity: state.pbrKeyLightIntensity,
++        pbrLightAzimuth: state.pbrLightAzimuth,
+         environmentPreset: state.environmentPreset,
+         autoUvBakeEnabled: state.autoUvBakeEnabled,
+       }),
+diff --git a/apps/web/src/stores/toastStore.ts b/apps/web/src/stores/toastStore.ts
+index ed3e4063..8d3140cb 100644
+--- a/apps/web/src/stores/toastStore.ts
++++ b/apps/web/src/stores/toastStore.ts
+@@ -22,13 +22,10 @@ export const useToastStore = create<ToastStore>((set) => ({
+   pushToast: (toast) => {
+     const id = createId('toast');
+     set((state) => {
+-      if (
+-        toast.dedupeKey &&
+-        state.toasts.some((item) => item.dedupeKey === toast.dedupeKey)
+-      ) {
+-        return state;
+-      }
+-      return { toasts: [{ id, ...toast }, ...state.toasts].slice(0, 3) };
++      const existingToasts = toast.dedupeKey
++        ? state.toasts.filter((item) => item.dedupeKey !== toast.dedupeKey)
++        : state.toasts;
++      return { toasts: [{ id, ...toast }, ...existingToasts].slice(0, 3) };
+     });
+     window.setTimeout(() => {
+       set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));

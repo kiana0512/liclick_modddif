@@ -22,6 +22,7 @@ import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import { canUseLayerStackCache, findExactLayerStackTexture, getVisibleProjectedLayerStack } from '@/engine/bake/layerStackCache';
 import { exportModelGlb } from '@/engine/export/exportGltf';
 import { exportModelFbx } from '@/engine/export/exportFbx';
 import { exportModelObj } from '@/engine/export/exportObj';
@@ -34,6 +35,7 @@ import {
   applyAlphaFromMask,
   blobToDataUrl,
   compositeUsingMask,
+  contentAwareFillMaskedPixels,
   dataUrlToBlob,
   imageDataToBlob,
   inferAlphaObjectMask,
@@ -48,6 +50,7 @@ import {
   computeMaskBoundingBox,
   createEmptyMask,
   createFullMask,
+  dilateMask,
   expandRect,
   featherMask,
   maskToBlob,
@@ -103,6 +106,9 @@ const resolutionToSize = {
   '8K': 8192,
 } as const;
 
+const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
+const RESERVED_PROJECTED_TEXTURE_UNITS = 2;
+const TEXTURE_UNITS_PER_PROJECTED_LAYER = 3;
 const LOCAL_REPAINT_CAPTURE_SCALE = 2;
 const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 4096;
 const IMAGE_EDIT_MAPPED_PREVIEW_SIZE = 3072;
@@ -368,6 +374,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const historyPersistTimerRef = useRef<number>();
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
+  const previewStackBakeRunningRef = useRef(false);
+  const previewStackBakeKeyRef = useRef('');
+  const previewStackBakeTimerRef = useRef<number>();
   const thumbnailRefreshTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>('idle');
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>('idle');
@@ -450,6 +459,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   useEffect(
     () => () => {
       window.clearTimeout(manualBakeProgressTimerRef.current);
+      window.clearTimeout(previewStackBakeTimerRef.current);
       window.clearTimeout(thumbnailRefreshTimerRef.current);
       window.clearTimeout(historyPersistTimerRef.current);
     },
@@ -577,6 +587,109 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     showPanel('layerAdjustments');
     setPanelCollapsed('layerAdjustments', false);
   }, [activeProjectedLayerId, setPanelCollapsed, showPanel]);
+
+  function getLiveProjectedPreviewLimit() {
+    const maxTextures = viewport?.gl.capabilities.maxTextures ?? 16;
+    const samplerLimitedCount = Math.floor(
+      Math.max(1, maxTextures - RESERVED_PROJECTED_TEXTURE_UNITS) / TEXTURE_UNITS_PER_PROJECTED_LAYER,
+    );
+    return Math.max(1, Math.min(MAX_LIVE_PROJECTED_PREVIEW_LAYERS, samplerLimitedCount));
+  }
+
+  function getProjectedLayerStackSignature(objectId: string, stack: Layer[]) {
+    return [
+      objectId,
+      resolution,
+      ...stack.map((layer) =>
+        [
+          layer.id,
+          layer.imageUrl,
+          layer.maskUrl ?? '',
+          layer.depthUrl ?? '',
+          layer.visible ? 1 : 0,
+          layer.opacity,
+          layer.strength ?? 1,
+          layer.blendMode,
+          layer.adjustments?.hue ?? 0,
+          layer.adjustments?.saturation ?? 0,
+          layer.adjustments?.lightness ?? 0,
+          layer.needsRebake ? 1 : 0,
+        ].join(':'),
+      ),
+    ].join('|');
+  }
+
+  useEffect(() => {
+    if (!project || !importedModel || !viewport) return undefined;
+    const objectId = selectedObjectId ?? importedModel.objectId;
+    const visibleStack = getVisibleProjectedLayerStack(layers, objectId);
+    const liveLimit = getLiveProjectedPreviewLimit();
+    if (visibleStack.length <= liveLimit) return undefined;
+    const currentProject = useProjectStore.getState().getCurrentProject() ?? project;
+    const exactTexture = findExactLayerStackTexture(currentProject, visibleStack);
+    if (canUseLayerStackCache(visibleStack, exactTexture)) return undefined;
+
+    const stackSignature = getProjectedLayerStackSignature(objectId, visibleStack);
+    if (previewStackBakeRunningRef.current && previewStackBakeKeyRef.current === stackSignature) return undefined;
+    window.clearTimeout(previewStackBakeTimerRef.current);
+    previewStackBakeTimerRef.current = window.setTimeout(() => {
+      if (previewStackBakeRunningRef.current) return;
+      const latestProject = useProjectStore.getState().getCurrentProject() ?? project;
+      const latestObjectId = useSceneStore.getState().selectedObjectId ?? importedModel.objectId;
+      const latestStack = getVisibleProjectedLayerStack(useLayerStore.getState().layers, latestObjectId);
+      if (latestStack.length <= getLiveProjectedPreviewLimit()) return;
+      const latestExactTexture = findExactLayerStackTexture(latestProject, latestStack);
+      if (canUseLayerStackCache(latestStack, latestExactTexture)) return;
+      const latestSignature = getProjectedLayerStackSignature(latestObjectId, latestStack);
+      previewStackBakeRunningRef.current = true;
+      previewStackBakeKeyRef.current = latestSignature;
+      setManualBakeProgress({
+        title: t('autoBake'),
+        detail: `${t('autoBakeCompositing')} · ${latestStack.length}/${getLiveProjectedPreviewLimit()} live`,
+        progress: 0.03,
+      });
+      void bakeVisibleProjectedLayersToTexture({
+        objectId: latestObjectId,
+        layerIds: latestStack.map((layer) => layer.id),
+        resolution: resolutionToSize[resolution],
+        enableBackfaceCulling: true,
+        enableDilation: true,
+        dilationPixels: 4,
+        method: 'cpu',
+        preferBlobOutput: latestProject.workspaceMode === 'local-server',
+        onProgress: updateManualBakeProgress,
+      })
+        .then(async (bakeResult) => {
+          let imageUrl = bakeResult.imageUrl;
+          if (latestProject.workspaceMode === 'local-server') {
+            imageUrl = await persistManualBakedTexture(bakeResult.bakedTexture.id, bakeResult.imageUrl, bakeResult.imageBlob);
+            if (imageUrl !== bakeResult.imageUrl) {
+              updateCurrentProject({
+                bakedTextures: (useProjectStore.getState().getCurrentProject()?.bakedTextures ?? latestProject.bakedTextures).map((item) =>
+                  item.id === bakeResult.bakedTexture.id ? { ...item, imageUrl } : item,
+                ),
+              });
+            }
+          }
+          scheduleTexturedThumbnailRefresh(350);
+        })
+        .catch((error) => {
+          console.warn('[Liclick 3D Texture] Could not bake projected preview stack:', error);
+          pushToast({
+            tone: 'warning',
+            title: t('autoBakeFailed'),
+            description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
+            dedupeKey: 'projected-stack-preview-bake-failed',
+          });
+        })
+        .finally(() => {
+          previewStackBakeRunningRef.current = false;
+          manualBakeProgressTimerRef.current = window.setTimeout(() => setManualBakeProgress(undefined), 1200);
+        });
+    }, 650);
+
+    return () => window.clearTimeout(previewStackBakeTimerRef.current);
+  }, [importedModel, layers, project, pushToast, resolution, selectedObjectId, t, updateCurrentProject, viewport]);
 
   useEffect(() => {
     function handleUndoRedo(event: KeyboardEvent) {
@@ -968,9 +1081,44 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return 3;
   }
 
+  function constrainMaskToObject(mask: MaskBitmap, objectMask: MaskBitmap) {
+    const output = createEmptyMask(mask.width, mask.height);
+    for (let index = 0; index < output.data.length; index += 1) {
+      output.data[index] = (mask.data[index] ?? 0) > 0 && (objectMask.data[index] ?? 0) > 0 ? 255 : 0;
+    }
+    return output;
+  }
+
+  function buildContentAwareRepairMask(baseMask: MaskBitmap, objectMask: MaskBitmap) {
+    const bounds = computeMaskBoundingBox(baseMask);
+    if (!bounds) return baseMask;
+    const minSide = Math.min(bounds.w, bounds.h);
+    const growRadius = minSide > 180 ? 2 : 1;
+    return constrainMaskToObject(dilateMask(baseMask, growRadius), objectMask);
+  }
+
+  function getLocalRepaintProvider(runtime: LocalRepaintRuntime) {
+    const raw = runtime.providerRaw;
+    if (!raw || typeof raw !== 'object' || !('provider' in raw)) return undefined;
+    const provider = (raw as { provider?: unknown }).provider;
+    return typeof provider === 'string' ? provider : undefined;
+  }
+
+  function isLocalContentAwareRuntime(runtime: LocalRepaintRuntime) {
+    return getLocalRepaintProvider(runtime)?.includes('local-content-aware-fill') ?? false;
+  }
+
   function buildLocalRepaintPatchMask(runtime: LocalRepaintRuntime, sourcePatch: ImageData) {
     const patchMask = createEmptyMask(sourcePatch.width, sourcePatch.height);
     const editMask = runtime.editMask;
+    if (editMask && isLocalContentAwareRuntime(runtime)) {
+      const softMask = featherMask(editMask, 1);
+      for (let index = 0; index < patchMask.data.length; index += 1) {
+        patchMask.data[index] = (runtime.objectMask.data[index] ?? 0) > 0 ? (softMask.data[index] ?? 0) : 0;
+        if ((editMask.data[index] ?? 0) > 0) patchMask.data[index] = 255;
+      }
+      return patchMask;
+    }
     for (let index = 0; index < patchMask.data.length; index += 1) {
       if ((runtime.objectMask.data[index] ?? 0) === 0) continue;
       if (editMask && (editMask.data[index] ?? 0) === 0) continue;
@@ -987,6 +1135,20 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       featheredMask.data[index] = Math.min(featheredMask.data[index] ?? 0, runtime.objectMask.data[index] ?? 0);
     }
     return featheredMask;
+  }
+
+  async function persistLayerImage(imageData: ImageData, filename: string) {
+    const blob = await imageDataToBlob(imageData);
+    if (project?.workspaceMode === 'local-server') {
+      const saved = await saveBlobAsset({
+        projectId: project.id,
+        category: 'layers',
+        blob,
+        filename,
+      });
+      return saved.asset.url;
+    }
+    return blobToDataUrl(blob);
   }
 
   function scheduleTexturedThumbnailRefresh(delayMs = 900) {
@@ -1201,7 +1363,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return result;
   }
 
-  function updateManualBakeProgress(progress: BakeProgress) {
+  function getBakeProgressDetail(progress: BakeProgress) {
     const percent = Math.round(progress.progress * 100);
     const triangleDetail =
       progress.totalTriangles && progress.processedTriangles !== undefined
@@ -1225,9 +1387,21 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               : progress.phase === 'applying'
                 ? t('autoBakeApplying')
                 : t('autoBakePersisting');
+    return `${phaseLabel} ${percent}%${layerDetail}${triangleDetail}`;
+  }
+
+  function updateManualBakeProgress(progress: BakeProgress) {
     setManualBakeProgress({
       title: t('autoBake'),
-      detail: `${phaseLabel} ${percent}%${layerDetail}${triangleDetail}`,
+      detail: getBakeProgressDetail(progress),
+      progress: progress.progress,
+    });
+  }
+
+  function updateExportBakeProgress(progress: BakeProgress) {
+    setManualBakeProgress({
+      title: t('exportPreparingUvTexture'),
+      detail: getBakeProgressDetail(progress),
       progress: progress.progress,
     });
   }
@@ -1688,6 +1862,53 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
+  async function fillLocalRepaintContentAware(input: LocalRepaintGenerateInput) {
+    if (!localRepaintRuntime) throw new Error(t('localRepaintUnavailable'));
+    const source = localRepaintRuntime.workingImageData;
+    const editMask =
+      localRepaintRuntime.mode === 'edit_layer_image'
+        ? input.userMask
+        : buildEditMask(input.userMask, localRepaintRuntime.holeMask, {
+            includeBlankArea: input.includeBlankArea,
+            dilationRadius: input.limitToBlankAndSelection ? 0 : 8,
+          });
+    if (!ensureMaskContent(editMask)) throw new Error(t('localRepaintMaskMissing'));
+    const protectMask = input.preserveUnmaskedArea
+      ? buildProtectMask(localRepaintRuntime.objectMask, editMask)
+      : createEmptyMask(source.width, source.height);
+    const bbox = computeMaskBoundingBox(editMask);
+    if (!bbox) throw new Error(t('localRepaintMaskMissing'));
+    const roiRect = expandRect(bbox, 32, { width: source.width, height: source.height });
+    const filled = contentAwareFillMaskedPixels(source, editMask, localRepaintRuntime.objectMask, {
+      searchRadius: Math.max(16, Math.min(48, Math.ceil(Math.max(roiRect.w, roiRect.h) * 0.2))),
+      iterations: 2,
+    });
+    const composited = compositeUsingMask(source, filled, editMask);
+    const restored = restoreProtectedPixels(source, composited, protectMask);
+    const previewUrl = await imageDataToDataUrl(restored);
+    const completed: LocalRepaintRuntime = {
+      ...localRepaintRuntime,
+      status: 'preview_ready',
+      error: undefined,
+      requestId: undefined,
+      editMask,
+      protectMask,
+      roiRect,
+      mergedImageData: restored,
+      previewUrl,
+      providerRaw: { provider: 'local-content-aware-fill' },
+    };
+    updateLocalRepaintRuntime(completed);
+    await persistLocalRepaintRuntime(completed);
+    pushToast({
+      tone: 'success',
+      title: t('contentAwareFillComplete'),
+      description: t('contentAwareFillCompleteHelp'),
+      dedupeKey: `local-content-aware-fill:${completed.id}`,
+    });
+    return { previewUrl };
+  }
+
   async function bakePatchToUvRepairLayer(runtime: LocalRepaintRuntime) {
     if (!project || !importedModel) throw new Error(t('importModelFirst'));
     const cameraState = runtime.cameraState ?? getCurrentCameraSnapshot();
@@ -1723,8 +1944,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         layerIds: [tempLayer.id],
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        enableDilation: true,
-        dilationPixels: 4,
+        enableDilation: false,
+        dilationPixels: 0,
         method: 'cpu',
         outputAlpha: 'transparent',
         commitToProject: false,
@@ -1757,6 +1978,40 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       setLayers(previousLayers);
       throw error;
     }
+  }
+
+  async function addProjectedRepairLayer(runtime: LocalRepaintRuntime) {
+    if (!project || !importedModel) throw new Error(t('importModelFirst'));
+    const cameraState = runtime.cameraState ?? getCurrentCameraSnapshot();
+    if (!cameraState) throw new Error(t('viewportUnavailable'));
+    const sourcePatch = runtime.mergedImageData ?? runtime.workingImageData;
+    const patchMask = buildLocalRepaintPatchMask(runtime, sourcePatch);
+    const patchImage = applyAlphaFromMask(sourcePatch, patchMask);
+    const layerId = createId('content-aware-projected-repair');
+    const imageUrl = await persistLayerImage(patchImage, `${layerId}.png`);
+    const objectId = selectedObjectId ?? importedModel.objectId;
+    importedModel.group.updateMatrixWorld(true);
+    const layer: Layer = {
+      id: layerId,
+      name: t('contentAwareRepair'),
+      type: 'projected',
+      imageUrl,
+      objectId,
+      objectMatrixWorld: importedModel.group.matrixWorld.toArray(),
+      camera: cameraState,
+      generationId: 'texture-map-content-aware-repair',
+      visible: true,
+      opacity: 1,
+      strength: 1,
+      blendMode: 'normal',
+      adjustments: { hue: 0, saturation: 0, lightness: 0 },
+      order: 0,
+      createdAt: new Date().toISOString(),
+    };
+    setLayers([layer, ...useLayerStore.getState().layers]);
+    setActiveLayer(layer.id);
+    scheduleTexturedThumbnailRefresh(300);
+    return layer;
   }
 
   async function acceptLocalRepaint({ continueEditing }: { continueEditing: boolean }) {
@@ -1961,8 +2216,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         layerIds: projectedLayerIds,
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        enableDilation: true,
-        dilationPixels: 4,
+        enableDilation: false,
+        dilationPixels: 0,
         method: 'cpu',
         outputAlpha: 'transparent',
         commitToProject: false,
@@ -2020,14 +2275,31 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         title: t('exportFailed'),
         description: error instanceof Error ? error.message : t('exportFailedHelp'),
       });
+    } finally {
+      manualBakeProgressTimerRef.current = window.setTimeout(() => setManualBakeProgress(undefined), 1200);
     }
   }
 
   function handleExportAction(actionId: ExportActionId) {
     if (!project) return;
     const modelInput = importedModel
-      ? { project, importedModel, selectedObjectId, target: actionId.startsWith('object') ? 'object' : 'scene' }
+      ? {
+          project,
+          importedModel,
+          selectedObjectId,
+          target: actionId.startsWith('object') ? 'object' : 'scene',
+          onProgress: updateExportBakeProgress,
+        }
       : undefined;
+    const textureModelExport = actionId.endsWith('-glb') || actionId.endsWith('-fbx') || actionId.endsWith('-obj');
+    if (textureModelExport) {
+      window.clearTimeout(manualBakeProgressTimerRef.current);
+      setManualBakeProgress({
+        title: t('exportPreparingUvTexture'),
+        detail: t('exportUvBakeRequired'),
+        progress: 0.02,
+      });
+    }
 
     const actions: Record<ExportActionId, () => Promise<void> | void> = {
       'scene-glb': () => {
@@ -2097,6 +2369,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       }
       const workingImageData = await urlToImageData(capture.dataUrl);
       const objectMask = capture.objectMask;
+      const holeMask = buildContentAwareRepairMask(
+        removeSmallMaskComponents(inferWhiteHoleMask(workingImageData, objectMask), 48),
+        objectMask,
+      );
       openLocalRepaintRuntime({
         id: createId('local-repaint'),
         projectId,
@@ -2107,11 +2383,111 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         workingImageData,
         objectMask,
         initialUserMask,
-        holeMask: removeSmallMaskComponents(inferWhiteHoleMask(workingImageData, objectMask), 48),
+        holeMask,
         status: 'idle',
       });
     })();
   }, [getCleanViewportCapture, getLocalRepaintCaptureSize, getViewportInpaintSelectionMask, importedModel, openLocalRepaintRuntime, projectId, pushToast, restoreExistingLocalRepaintSession, t]);
+
+  const handleContentAwareRepairFromToolbar = useCallback(() => {
+    void (async () => {
+      const viewportRuntime = useSceneStore.getState().viewport;
+      const captureSize = viewportRuntime ? getLocalRepaintCaptureSize(viewportRuntime.gl.domElement) : undefined;
+      const capture = getCleanViewportCapture(captureSize);
+      const cameraState = getCurrentCameraSnapshot();
+      if (!capture || !cameraState || !importedModel) {
+        pushToast({ tone: 'warning', title: t('viewportUnavailable'), description: t('importModelFirst') });
+        return;
+      }
+
+      try {
+        window.clearTimeout(manualBakeProgressTimerRef.current);
+        setManualBakeProgress({
+          title: t('contentAwareRepair'),
+          detail: t('contentAwareRepairScanning'),
+          progress: 0.08,
+        });
+        const workingImageData = await urlToImageData(capture.dataUrl);
+        const objectMask = capture.objectMask;
+        const editMask = buildContentAwareRepairMask(
+          removeSmallMaskComponents(inferWhiteHoleMask(workingImageData, objectMask), 48),
+          objectMask,
+        );
+        if (!ensureMaskContent(editMask)) {
+          setManualBakeProgress(undefined);
+          pushToast({
+            tone: 'info',
+            title: t('contentAwareRepair'),
+            description: t('contentAwareRepairNoBlankArea'),
+            dedupeKey: 'content-aware-no-blank-area',
+          });
+          return;
+        }
+
+        const bbox = computeMaskBoundingBox(editMask);
+        if (!bbox) throw new Error(t('contentAwareRepairNoBlankArea'));
+        const roiRect = expandRect(bbox, 32, { width: workingImageData.width, height: workingImageData.height });
+        captureHistory('内容识别修补白膜未填充区域');
+        setManualBakeProgress({
+          title: t('contentAwareRepair'),
+          detail: t('contentAwareRepairFilling'),
+          progress: 0.24,
+        });
+        const filled = contentAwareFillMaskedPixels(workingImageData, editMask, objectMask, {
+          searchRadius: Math.max(24, Math.min(72, Math.ceil(Math.max(roiRect.w, roiRect.h) * 0.26))),
+          iterations: 5,
+          patchRadius: 4,
+        });
+        const composited = compositeUsingMask(workingImageData, filled, editMask);
+        const protectMask = buildProtectMask(objectMask, editMask);
+        const restored = restoreProtectedPixels(workingImageData, composited, protectMask);
+        const runtime: LocalRepaintRuntime = {
+          id: createId('content-aware-repair'),
+          projectId,
+          mode: 'repair_current_view',
+          targetName: importedModel.name,
+          cameraState,
+          workingImageUrl: capture.dataUrl,
+          workingImageData,
+          objectMask,
+          holeMask: editMask,
+          editMask,
+          protectMask,
+          roiRect,
+          mergedImageData: restored,
+          previewUrl: await imageDataToDataUrl(restored),
+          providerRaw: { provider: 'local-content-aware-fill' },
+          status: 'preview_ready',
+        };
+        const repairLayer = await addProjectedRepairLayer(runtime);
+        setProjectLayers(useLayerStore.getState().layers);
+        pushToast({
+          tone: 'success',
+          title: t('contentAwareFillComplete'),
+          description: `${t('projectedLayerAdded')}: ${repairLayer.name}`,
+          dedupeKey: `content-aware-repair:${repairLayer.id}`,
+        });
+      } catch (error) {
+        setManualBakeProgress(undefined);
+        pushToast({
+          tone: 'error',
+          title: t('localRepaintFailed'),
+          description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
+        });
+      } finally {
+        manualBakeProgressTimerRef.current = window.setTimeout(() => setManualBakeProgress(undefined), 1200);
+      }
+    })();
+  }, [
+    captureHistory,
+    getCleanViewportCapture,
+    getLocalRepaintCaptureSize,
+    importedModel,
+    projectId,
+    pushToast,
+    setProjectLayers,
+    t,
+  ]);
 
   useEffect(() => {
     function isEditingText(target: EventTarget | null) {
@@ -2127,6 +2503,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     function handleInpaintShortcuts(event: KeyboardEvent) {
       if (isEditingText(event.target)) return;
       const key = event.key.toLowerCase();
+      const isBrushSizeShortcut =
+        event.key === '[' ||
+        event.key === ']' ||
+        event.code === 'BracketLeft' ||
+        event.code === 'BracketRight';
       if (event.ctrlKey && key === 'd') {
         event.preventDefault();
         clearPaintMask();
@@ -2138,6 +2519,49 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return;
       }
       if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isBrushSizeShortcut) {
+        event.preventDefault();
+        const direction = event.key === '[' || event.code === 'BracketLeft' ? -1 : 1;
+        const state = useSceneStore.getState();
+        const stepBrushSize = (value: number, min: number, max: number) => {
+          const step = value < 10 ? 1 : value < 60 ? 5 : 10;
+          return Math.max(min, Math.min(max, Number((value + direction * step).toFixed(1))));
+        };
+
+        if (state.paintTool === 'eraser') {
+          const nextSize = stepBrushSize(state.paintToolSettings.eraserSize, 0.5, 256);
+          state.setPaintToolSettings({ eraserSize: nextSize });
+          pushToast({
+            tone: 'info',
+            title: `橡皮大小 ${nextSize.toFixed(nextSize % 1 ? 1 : 0)}px`,
+            description: '[ / ] 调整大小',
+            dedupeKey: 'brush-size-shortcut',
+          });
+          return;
+        }
+
+        if (state.paintTool === 'inpaint-add' || state.paintTool === 'inpaint-subtract') {
+          const nextSize = stepBrushSize(state.paintMaskSettings.brushSize, 1, 180);
+          state.setPaintMaskSettings({ brushSize: nextSize });
+          pushToast({
+            tone: 'info',
+            title: `局部重绘画笔 ${nextSize.toFixed(nextSize % 1 ? 1 : 0)}px`,
+            description: '[ / ] 调整大小',
+            dedupeKey: 'brush-size-shortcut',
+          });
+          return;
+        }
+
+        const nextSize = stepBrushSize(state.paintToolSettings.brushSize, 0.5, 256);
+        state.setPaintToolSettings({ brushSize: nextSize });
+        pushToast({
+          tone: 'info',
+          title: `画笔大小 ${nextSize.toFixed(nextSize % 1 ? 1 : 0)}px`,
+          description: '[ / ] 调整大小',
+          dedupeKey: 'brush-size-shortcut',
+        });
+        return;
+      }
       if (key === 'k') {
         setPaintTool(useSceneStore.getState().paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
         return;
@@ -2151,7 +2575,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
     window.addEventListener('keydown', handleInpaintShortcuts);
     return () => window.removeEventListener('keydown', handleInpaintShortcuts);
-  }, [clearPaintMask, handleLocalRepaintFromToolbar, invertPaintMask, setPaintTool]);
+  }, [clearPaintMask, handleLocalRepaintFromToolbar, invertPaintMask, pushToast, setPaintTool]);
 
   const panelDefinitions = ([
     {
@@ -2227,7 +2651,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       collapsed: workspacePanels.find((panel) => panel.id === 'layers')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
-      actions: <LayersPanelActions />,
+      actions: <LayersPanelActions onContentAwareRepair={handleContentAwareRepairFromToolbar} />,
       content: (
         <LayersPanel
           onLayerImageEdit={openLayerImageEdit}
@@ -2453,6 +2877,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           targetName={localRepaintRuntime.targetName}
           references={references.filter((reference) => !selectedObjectId || !reference.objectId || reference.objectId === selectedObjectId)}
           onGenerate={generateLocalRepaint}
+          onContentAwareFill={fillLocalRepaintContentAware}
           onAbort={abortLocalRepaint}
           onAccept={acceptLocalRepaint}
           onCancel={cancelLocalRepaintDialog}

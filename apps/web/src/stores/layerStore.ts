@@ -36,6 +36,7 @@ type LayerStore = {
   markLayerBaked: (layerId: string, bakedTextureId: string, bakedAt: string) => void;
   markLayersBaked: (layerIds: string[], bakedTextureId: string, bakedAt: string) => void;
   deleteLayer: (layerId: string) => void;
+  deleteLayers: (layerIds: string[]) => void;
 };
 
 const legacyTransparentImage =
@@ -386,6 +387,15 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   deleteLayer: (layerId) =>
     set((state) => {
       const layers = state.layers.filter((layer) => layer.id !== layerId);
+      return {
+        layers: markVisibleStackNeedsRebake(withOrder(layers)),
+        activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+      };
+    }),
+  deleteLayers: (layerIds) =>
+    set((state) => {
+      const layerIdSet = new Set(layerIds);
+      const layers = state.layers.filter((layer) => !layerIdSet.has(layer.id));
       return {
         layers: markVisibleStackNeedsRebake(withOrder(layers)),
         activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,

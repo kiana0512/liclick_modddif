@@ -1,0 +1,116 @@
+{
+  "input": "E:\\Liclick 3D Texture\\workspace\\modddif-reference.fbx",
+  "exists": true,
+  "mesh_count": 2,
+  "object_count": 2,
+  "objects": [
+    {
+      "name": "Mesh_0",
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "dimensions": [
+        0.886793315410614,
+        0.9148393869400024,
+        1.0
+      ],
+      "bbox_min": [
+        0.10660716891288757,
+        -0.45742323994636536,
+        -1.9994295996639266e-08
+      ],
+      "bbox_max": [
+        0.9934004545211792,
+        0.45741620659828186,
+        1.0
+      ],
+      "bbox_size": [
+        0.8867932856082916,
+        0.9148394465446472,
+        1.000000019994296
+      ],
+      "materials": [
+        {
+          "name": "modddif_material_0",
+          "blend_method": "HASHED",
+          "alpha": 0.5,
+          "textures": [
+            {
+              "name": "图像纹理",
+              "image": "modddif_image_0.png",
+              "filepath": "E:\\Liclick 3D Texture\\workspace\\tmp9ri_o_lh.fbm\\modddif_image_0_png",
+              "has_data": true,
+              "size": [
+                4096,
+                4096
+              ]
+            },
+            {
+              "name": "图像纹理.001",
+              "image": "modddif_image_0.png.001",
+              "filepath": "E:\\Liclick 3D Texture\\workspace\\tmp9ri_o_lh.fbm\\modddif_image_0_png",
+              "has_data": true,
+              "size": [
+                4096,
+                4096
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "灯.png",
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "dimensions": [
+        0.7794919013977051,
+        1.0,
+        0.8153658509254456
+      ],
+      "bbox_min": [
+        -0.9397452473640442,
+        -0.5,
+        -2.1855694143368964e-08
+      ],
+      "bbox_max": [
+        -0.1602533459663391,
+        0.5,
+        0.8153658509254456
+      ],
+      "bbox_size": [
+        0.7794919013977051,
+        1.0,
+        0.8153658727811397
+      ],
+      "materials": [
+        {
+          "name": "modddif_material_1",
+          "blend_method": "HASHED",
+          "alpha": 0.5,
+          "textures": []
+        }
+      ]
+    }
+  ],
+  "bbox_min": [
+    -0.9397452473640442,
+    -0.5,
+    -2.1855694143368964e-08
+  ],
+  "bbox_max": [
+    0.9934004545211792,
+    0.5,
+    1.0
+  ],
+  "bbox_size": [
+    1.9331457018852234,
+    1.0,
+    1.0000000218556941
+  ]
+}

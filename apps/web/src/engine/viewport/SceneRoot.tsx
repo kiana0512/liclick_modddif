@@ -21,9 +21,34 @@ import { Grid } from './Grid';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { SelectionOutline } from './SelectionOutline';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
+import type { ProjectionPreviewLighting } from '@/engine/projection/projectionTypes';
 import type { Layer } from '@/types/layer';
 
 const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
+const RESERVED_PROJECTED_TEXTURE_UNITS = 2;
+const TEXTURE_UNITS_PER_PROJECTED_LAYER = 3;
+
+function getPreviewLighting(input: {
+  displayMode: string;
+  environmentPreset: 'color' | 'studio' | 'soft' | 'dark';
+  exposure: number;
+  pbrEnvironmentIntensity: number;
+  pbrKeyLightIntensity: number;
+  pbrLightAzimuth: number;
+}): ProjectionPreviewLighting {
+  const effectivePreset = input.displayMode === 'pbr' && input.environmentPreset === 'color' ? 'studio' : input.environmentPreset;
+  const environmentBase = effectivePreset === 'dark' ? 0.38 : effectivePreset === 'soft' ? 0.46 : 0.5;
+  const keyBase = effectivePreset === 'dark' ? 1.05 : effectivePreset === 'soft' ? 1.12 : 1.22;
+  const environmentScale = input.displayMode === 'pbr' ? input.pbrEnvironmentIntensity / 0.42 : 1;
+  const azimuth = THREE.MathUtils.degToRad(input.pbrLightAzimuth);
+  const direction = new THREE.Vector3(Math.sin(azimuth) * 4.5, 5.2, Math.cos(azimuth) * 4.5).normalize();
+  return {
+    enabled: input.displayMode === 'pbr',
+    ambientIntensity: environmentBase * input.exposure * environmentScale,
+    keyLightIntensity: keyBase * input.exposure * (input.displayMode === 'pbr' ? input.pbrKeyLightIntensity : 1),
+    keyLightDirection: direction.toArray() as [number, number, number],
+  };
+}
 
 function hasUsableTextureImage(texture: THREE.Texture) {
   const image = texture.image as
@@ -213,6 +238,12 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
   const displayMode = useSceneStore((state) => state.displayMode);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const selectObject = useSceneStore((state) => state.selectObject);
+  const environmentPreset = useSettingsStore((state) => state.environmentPreset);
+  const exposure = useSettingsStore((state) => state.exposure);
+  const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
+  const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
+  const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
+  const viewport = useSceneStore((state) => state.viewport);
   const layers = useLayerStore((state) => state.layers);
   const project = useProjectStore((state) =>
     state.currentProjectId ? state.projects.find((item) => item.id === state.currentProjectId) : undefined,
@@ -235,9 +266,16 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
         .sort((a, b) => a.order - b.order),
     [importedObjectId, layers],
   );
+  const livePreviewLayerLimit = useMemo(() => {
+    const maxTextures = viewport?.gl.capabilities.maxTextures ?? 16;
+    const samplerLimitedCount = Math.floor(
+      Math.max(1, maxTextures - RESERVED_PROJECTED_TEXTURE_UNITS) / TEXTURE_UNITS_PER_PROJECTED_LAYER,
+    );
+    return Math.max(1, Math.min(MAX_LIVE_PROJECTED_PREVIEW_LAYERS, samplerLimitedCount));
+  }, [viewport]);
   const livePreviewProjectedLayers = useMemo(
-    () => visibleProjectedLayers.slice(0, MAX_LIVE_PROJECTED_PREVIEW_LAYERS),
-    [visibleProjectedLayers],
+    () => visibleProjectedLayers.slice(0, livePreviewLayerLimit),
+    [livePreviewLayerLimit, visibleProjectedLayers],
   );
   const exactBakedTextureRecord = useMemo(() => {
     const texture = findExactLayerStackTexture(project, visibleProjectedLayers);
@@ -249,6 +287,18 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
   const bakedTextureIsReady = Boolean(loadedBakedTexture);
   const canPreviewProjectedLayers =
     !bakedTextureIsReady && livePreviewProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
+  const previewLighting = useMemo(
+    () =>
+      getPreviewLighting({
+        displayMode,
+        environmentPreset,
+        exposure,
+        pbrEnvironmentIntensity,
+        pbrKeyLightIntensity,
+        pbrLightAzimuth,
+      }),
+    [displayMode, environmentPreset, exposure, pbrEnvironmentIntensity, pbrKeyLightIntensity, pbrLightAzimuth],
+  );
 
   useEffect(() => {
     if (!importedModel) return;
@@ -287,6 +337,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
             enableBackfaceCulling: true,
             edgeFeather: 0.004,
             depthBias: 0.025,
+            previewLighting,
           }
         : undefined;
 
@@ -352,6 +403,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     loadedBakedTexture,
     loadedUvTexture,
     selectedObjectId,
+    previewLighting,
     visibleStackIsBaked,
   ]);
 
@@ -375,24 +427,31 @@ export function SceneRoot() {
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
-  const effectiveEnvironmentPreset =
-    displayMode === 'pbr' && environmentPreset === 'color' ? 'studio' : environmentPreset;
-
-  const displayLightBoost = displayMode === 'flat' ? 1.35 : 1;
-  const pbrLightScale = (displayMode === 'pbr' ? pbrEnvironmentIntensity / 0.3 : 1) * exposure * displayLightBoost;
-  const ambientIntensity =
-    (effectiveEnvironmentPreset === 'dark' ? 0.38 : effectiveEnvironmentPreset === 'soft' ? 0.46 : 0.5) *
-    pbrLightScale;
-  const keyIntensity =
-    (effectiveEnvironmentPreset === 'dark' ? 1.05 : effectiveEnvironmentPreset === 'soft' ? 1.12 : 1.22) *
-    pbrLightScale;
-  const fillIntensity = (effectiveEnvironmentPreset === 'dark' ? 0.18 : 0.26) * pbrLightScale;
+  const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
+  const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
+  const previewLighting = getPreviewLighting({
+    displayMode,
+    environmentPreset,
+    exposure,
+    pbrEnvironmentIntensity,
+    pbrKeyLightIntensity,
+    pbrLightAzimuth,
+  });
+  const keyLightPosition: [number, number, number] = previewLighting.keyLightDirection.map((value) => value * 5.6) as [
+    number,
+    number,
+    number,
+  ];
+  const fillLightPosition: [number, number, number] = [-keyLightPosition[0] * 0.72, 2.2, -keyLightPosition[2] * 0.72];
+  const ambientIntensity = previewLighting.ambientIntensity;
+  const keyIntensity = previewLighting.keyLightIntensity;
+  const fillIntensity = previewLighting.ambientIntensity * 0.52;
   return (
     <group onPointerMissed={() => selectObject(undefined)}>
       <ambientLight intensity={ambientIntensity} />
       <hemisphereLight args={['#fff0e8', '#302640', 0.82]} />
-      <directionalLight position={[3.5, 5.2, 2.8]} intensity={keyIntensity} castShadow />
-      <directionalLight position={[-4.5, 2.2, -3.5]} intensity={fillIntensity} />
+      <directionalLight position={keyLightPosition} intensity={keyIntensity} castShadow />
+      <directionalLight position={fillLightPosition} intensity={fillIntensity} />
       <Grid />
       {importedModels.length > 0 ? (
         importedModels.map((model) => <ImportedModel key={model.objectId} importedModel={model} />)

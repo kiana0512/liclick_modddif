@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { ProjectionLayerInput, ProjectionLayerStackInput } from './projectionTypes';
+import type { ProjectionLayerInput, ProjectionLayerStackInput, ProjectionPreviewLighting } from './projectionTypes';
 import { buildProjectionMatrixBundle } from './projectionMath';
 
 const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
@@ -30,6 +30,12 @@ const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.08;
 const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
+const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
+  enabled: true,
+  ambientIntensity: 0.5,
+  keyLightIntensity: 1.22,
+  keyLightDirection: [0.35, 0.7, 0.45],
+};
 
 const vertexShader = `
   varying vec3 vWorldPosition;
@@ -67,6 +73,10 @@ const fragmentShader = `
   uniform float lightnessShift;
   uniform float useBaseMap;
   uniform float useUvOverlayMap;
+  uniform float previewLightingEnabled;
+  uniform float ambientLightIntensity;
+  uniform float keyLightIntensity;
+  uniform vec3 keyLightDirection;
   uniform vec3 baseColor;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
@@ -125,6 +135,13 @@ const fragmentShader = `
     return mix(higher, lower, cutoff);
   }
 
+  float computePreviewLight(vec3 normal) {
+    vec3 lightDir = normalize(keyLightDirection);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
+    return mix(1.0, lit, previewLightingEnabled);
+  }
+
   void main() {
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
@@ -158,8 +175,7 @@ const fragmentShader = `
       useDepthCheck
     );
 
-    vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
-    float lambert = max(dot(normal, lightDir), 0.0) * 0.2 + 0.8;
+    float lambert = computePreviewLight(normal);
     vec4 texel = texture2D(projectedMap, uv);
     texel.rgb = applyHslAdjustments(texel.rgb);
     float sourceAlpha = texel.a * maskAlpha;
@@ -174,9 +190,9 @@ const fragmentShader = `
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 shadedBase = baseSurfaceColor * lambert;
-    vec3 mixedColor = mix(shadedBase, texel.rgb, projectionAlpha);
+    vec3 mixedColor = mix(baseSurfaceColor, texel.rgb, projectionAlpha);
     mixedColor = mix(mixedColor, uvOverlayTexel.rgb, uvOverlayTexel.a * useUvOverlayMap);
+    mixedColor *= lambert;
 
     gl_FragColor = vec4(linearToSrgb(clamp(mixedColor, 0.0, 1.0)), 1.0);
   }
@@ -312,6 +328,10 @@ function buildStackFragmentShader(layerCount: number) {
   uniform sampler2D uvOverlayMap;
   uniform float useBaseMap;
   uniform float useUvOverlayMap;
+  uniform float previewLightingEnabled;
+  uniform float ambientLightIntensity;
+  uniform float keyLightIntensity;
+  uniform vec3 keyLightDirection;
   uniform vec3 baseColor;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
@@ -368,6 +388,13 @@ function buildStackFragmentShader(layerCount: number) {
     vec3 lower = color * 12.92;
     vec3 higher = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
     return mix(higher, lower, cutoff);
+  }
+
+  float computePreviewLight(vec3 normal) {
+    vec3 lightDir = normalize(keyLightDirection);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
+    return mix(1.0, lit, previewLightingEnabled);
   }
 
   float topQuality0 = 0.0;
@@ -430,12 +457,11 @@ function buildStackFragmentShader(layerCount: number) {
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
-    vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
-    float lambert = max(dot(normal, lightDir), 0.0) * 0.2 + 0.8;
+    float lambert = computePreviewLight(normal);
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 shadedBase = baseSurfaceColor * lambert;
+    vec3 shadedBase = baseSurfaceColor;
     topCoverage0 = 0.0;
     topCoverage1 = 0.0;
     topCoverage2 = 0.0;
@@ -451,9 +477,23 @@ function buildStackFragmentShader(layerCount: number) {
     vec3 mixedColor = composeBlendBase(shadedBase);
     ${overlayEvaluations}
     mixedColor = mix(mixedColor, uvOverlayTexel.rgb, uvOverlayTexel.a * useUvOverlayMap);
+    mixedColor *= lambert;
     gl_FragColor = vec4(linearToSrgb(clamp(mixedColor, 0.0, 1.0)), 1.0);
   }
 `;
+}
+
+function getPreviewLighting(input?: ProjectionPreviewLighting) {
+  const lighting = input ?? DEFAULT_PREVIEW_LIGHTING;
+  const direction = new THREE.Vector3(...lighting.keyLightDirection);
+  if (direction.lengthSq() <= 0.000001) direction.set(...DEFAULT_PREVIEW_LIGHTING.keyLightDirection);
+  direction.normalize();
+  return {
+    enabled: lighting.enabled ? 1 : 0,
+    ambientIntensity: Math.max(0, lighting.ambientIntensity),
+    keyLightIntensity: Math.max(0, lighting.keyLightIntensity),
+    keyLightDirection: direction,
+  };
 }
 
 export async function createProjectedLayerMaterial(input: ProjectionLayerInput) {
@@ -510,6 +550,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
   }
   const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
+  const previewLighting = getPreviewLighting(input.previewLighting);
   const material = new THREE.ShaderMaterial({
     name: `LiclickProjectedLayer:${input.layerId}`,
     vertexShader,
@@ -537,6 +578,10 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+      previewLightingEnabled: { value: previewLighting.enabled },
+      ambientLightIntensity: { value: previewLighting.ambientIntensity },
+      keyLightIntensity: { value: previewLighting.keyLightIntensity },
+      keyLightDirection: { value: previewLighting.keyLightDirection },
     },
     toneMapped: false,
   });
@@ -607,6 +652,11 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     useBaseMap: { value: input.baseTexture ? 1 : 0 },
     useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
   };
+  const previewLighting = getPreviewLighting(input.previewLighting);
+  uniforms.previewLightingEnabled = { value: previewLighting.enabled };
+  uniforms.ambientLightIntensity = { value: previewLighting.ambientIntensity };
+  uniforms.keyLightIntensity = { value: previewLighting.keyLightIntensity };
+  uniforms.keyLightDirection = { value: previewLighting.keyLightDirection };
   if (input.baseTexture) {
     input.baseTexture.colorSpace = THREE.SRGBColorSpace;
     input.baseTexture.flipY = false;

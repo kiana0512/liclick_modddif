@@ -27,6 +27,14 @@ export type ProjectionLayerInput = {
   hue?: number;
   saturation?: number;
   lightness?: number;
+  previewLighting?: ProjectionPreviewLighting;
+};
+
+export type ProjectionPreviewLighting = {
+  enabled: boolean;
+  ambientIntensity: number;
+  keyLightIntensity: number;
+  keyLightDirection: [number, number, number];
 };
 
 export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'> & {

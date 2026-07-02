@@ -553,7 +553,7 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
-  if (input.method !== 'cpu' && renderer && layers.length === 1) {
+  if (input.method !== 'cpu' && renderer && input.outputAlpha !== 'transparent') {
     try {
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,
