@@ -26,7 +26,17 @@ import type { Layer } from '@/types/layer';
 
 const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
 const RESERVED_PROJECTED_TEXTURE_UNITS = 2;
-const TEXTURE_UNITS_PER_PROJECTED_LAYER = 3;
+const RESOLUTION_TO_SIZE = {
+  '1K': 1024,
+  '2K': 2048,
+  '4K': 4096,
+  '8K': 8192,
+} as const;
+
+function projectedLayerTextureUnitCost(layer: Layer) {
+  const usesSourceAlpha = typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
+  return 1 + (layer.maskUrl && !usesSourceAlpha ? 1 : 0) + (layer.depthUrl && !usesSourceAlpha ? 1 : 0);
+}
 
 function getPreviewLighting(input: {
   displayMode: string;
@@ -243,6 +253,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
   const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
+  const resolution = useSettingsStore((state) => state.resolution);
   const viewport = useSceneStore((state) => state.viewport);
   const layers = useLayerStore((state) => state.layers);
   const project = useProjectStore((state) =>
@@ -268,19 +279,25 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
   );
   const livePreviewLayerLimit = useMemo(() => {
     const maxTextures = viewport?.gl.capabilities.maxTextures ?? 16;
-    const samplerLimitedCount = Math.floor(
-      Math.max(1, maxTextures - RESERVED_PROJECTED_TEXTURE_UNITS) / TEXTURE_UNITS_PER_PROJECTED_LAYER,
-    );
-    return Math.max(1, Math.min(MAX_LIVE_PROJECTED_PREVIEW_LAYERS, samplerLimitedCount));
-  }, [viewport]);
+    let usedTextureUnits = RESERVED_PROJECTED_TEXTURE_UNITS;
+    let count = 0;
+    for (const layer of visibleProjectedLayers) {
+      const nextUsedTextureUnits = usedTextureUnits + projectedLayerTextureUnitCost(layer);
+      if (count > 0 && nextUsedTextureUnits > maxTextures) break;
+      usedTextureUnits = nextUsedTextureUnits;
+      count += 1;
+      if (count >= MAX_LIVE_PROJECTED_PREVIEW_LAYERS) break;
+    }
+    return Math.max(1, count);
+  }, [viewport, visibleProjectedLayers]);
   const livePreviewProjectedLayers = useMemo(
     () => visibleProjectedLayers.slice(0, livePreviewLayerLimit),
     [livePreviewLayerLimit, visibleProjectedLayers],
   );
   const exactBakedTextureRecord = useMemo(() => {
-    const texture = findExactLayerStackTexture(project, visibleProjectedLayers);
-    return canUseLayerStackCache(visibleProjectedLayers, texture) ? texture : undefined;
-  }, [project, visibleProjectedLayers]);
+    const texture = findExactLayerStackTexture(project, visibleProjectedLayers, RESOLUTION_TO_SIZE[resolution]);
+    return canUseLayerStackCache(visibleProjectedLayers, texture, RESOLUTION_TO_SIZE[resolution]) ? texture : undefined;
+  }, [project, resolution, visibleProjectedLayers]);
   const loadedBakedTexture = useLoadedBakedTexture(exactBakedTextureRecord?.imageUrl);
   const loadedUvTexture = useCompositedUvTexture(visibleUvLayers);
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
@@ -363,8 +380,20 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
             displayMode,
             selected,
             uvOverlayTexture: loadedUvTexture,
+            previewLighting,
             ...previewBase,
             ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
+          });
+          disposeGeneratedMaterialTree(previousMaterial);
+          continue;
+        }
+        if (bakedTexture && !projectedLayerInput && (displayMode === 'flat' || displayMode === 'pbr')) {
+          child.material = createUvOverlayPreviewMaterial({
+            displayMode,
+            selected,
+            ...previewBase,
+            baseTexture: bakedTexture,
+            previewLighting,
           });
           disposeGeneratedMaterialTree(previousMaterial);
           continue;

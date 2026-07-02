@@ -580,12 +580,12 @@ export async function bakeVisibleProjectedLayersToTexture(
         enableBackfaceCulling: input.enableBackfaceCulling,
       });
       input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
-      if (!gpuBake.postProcessedOnGpu || (!gpuBake.opaqueBaseColorReady && input.outputAlpha !== 'transparent')) {
+      if (!gpuBake.postProcessedOnGpu || !gpuBake.opaqueBaseColorReady) {
         const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
         if (!gpuBake.postProcessedOnGpu) {
           sharpenCoveredTexels(gpuImage, gpuBake.coverage);
         }
-        if (!gpuBake.opaqueBaseColorReady && input.outputAlpha !== 'transparent') {
+        if (!gpuBake.opaqueBaseColorReady) {
           fillTransparentTexelsForViewport(gpuImage);
         }
         gpuContext.putImageData(gpuImage, 0, 0);

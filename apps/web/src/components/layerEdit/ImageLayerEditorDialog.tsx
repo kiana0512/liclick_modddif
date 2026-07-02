@@ -69,7 +69,7 @@ type SelectionRect = {
 type EditorSnapshot = {
   layers: EditorLayer[];
   activeLayerId: string;
-  dataUrls: Record<string, string>;
+  layerPixels: Record<string, ImageData | undefined>;
 };
 
 type ImageLayerEditorDialogProps = {
@@ -93,6 +93,16 @@ function createCanvas(width: number, height: number) {
   canvas.width = width;
   canvas.height = height;
   return canvas;
+}
+
+function ensureCanvasSize(canvas: HTMLCanvasElement, width: number, height: number) {
+  if (canvas.width === width && canvas.height === height) return;
+  canvas.width = width;
+  canvas.height = height;
+}
+
+function cloneImageData(imageData: ImageData) {
+  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
 }
 
 function loadImage(url: string) {
@@ -188,6 +198,8 @@ export function ImageLayerEditorDialog({
   const selectionDraftRef = useRef<{ start: { x: number; y: number } }>();
   const tRef = useRef(t);
   const continuousLayerEditRef = useRef(false);
+  const compositeFrameRef = useRef<number>();
+  const brushStampRef = useRef<{ key: string; canvas: HTMLCanvasElement }>();
   const [canvasSize, setCanvasSize] = useState({ width: 1, height: 1 });
   const [paintSurfaceStyle, setPaintSurfaceStyle] = useState({ left: 0, top: 0, width: 1, height: 1 });
   const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
@@ -261,8 +273,7 @@ export function ImageLayerEditorDialog({
       if (!canvas || canvasSize.width <= 0 || canvasSize.height <= 0) return;
       const context = canvas.getContext('2d');
       if (!context) return;
-      canvas.width = canvasSize.width;
-      canvas.height = canvasSize.height;
+      ensureCanvasSize(canvas, canvasSize.width, canvasSize.height);
       context.clearRect(0, 0, canvas.width, canvas.height);
       if (options.before) {
         if (sourceCanvasRef.current) context.drawImage(sourceCanvasRef.current, 0, 0);
@@ -281,6 +292,29 @@ export function ImageLayerEditorDialog({
       });
     },
     [canvasSize.height, canvasSize.width, editLayers],
+  );
+
+  function scheduleCompositeRender() {
+    if (compositeFrameRef.current !== undefined) return;
+    compositeFrameRef.current = window.requestAnimationFrame(() => {
+      compositeFrameRef.current = undefined;
+      renderComposite(undefined, { before: showBefore });
+    });
+  }
+
+  function flushCompositeRender() {
+    if (compositeFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(compositeFrameRef.current);
+      compositeFrameRef.current = undefined;
+    }
+    renderComposite(undefined, { before: showBefore });
+  }
+
+  useEffect(
+    () => () => {
+      if (compositeFrameRef.current !== undefined) window.cancelAnimationFrame(compositeFrameRef.current);
+    },
+    [],
   );
 
   useEffect(() => {
@@ -386,20 +420,25 @@ export function ImageLayerEditorDialog({
 
   useEffect(() => {
     if (!onRefreshMappedPreview || editLayers.length === 0 || canvasSize.width <= 1 || canvasSize.height <= 1) return undefined;
+    if (viewMode === 'image' || drawingRef.current || movingRef.current) return undefined;
     const timer = window.setTimeout(() => {
       void refreshMappedPreview();
-    }, 420);
+    }, 1200);
     return () => window.clearTimeout(timer);
     // Canvas pixels change outside React state, so editRevision is the explicit invalidation signal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editLayers, editRevision, canvasSize.width, canvasSize.height, onRefreshMappedPreview]);
+  }, [editLayers, editRevision, canvasSize.width, canvasSize.height, onRefreshMappedPreview, viewMode]);
 
   function takeSnapshot(): EditorSnapshot {
     return {
       layers: editLayers.map((item) => ({ ...item })),
       activeLayerId,
-      dataUrls: Object.fromEntries(
-        editLayers.map((item) => [item.id, layerCanvasesRef.current[item.id]?.toDataURL('image/png') ?? '']),
+      layerPixels: Object.fromEntries(
+        editLayers.map((item) => {
+          const canvas = layerCanvasesRef.current[item.id];
+          const context = canvas?.getContext('2d', { willReadFrequently: true });
+          return [item.id, canvas && context ? cloneImageData(context.getImageData(0, 0, canvas.width, canvas.height)) : undefined];
+        }),
       ),
     };
   }
@@ -426,20 +465,15 @@ export function ImageLayerEditorDialog({
     bumpEditRevision();
   }
 
-  async function restoreSnapshot(snapshot: EditorSnapshot) {
+  function restoreSnapshot(snapshot: EditorSnapshot) {
     const restoredCanvases: Record<string, HTMLCanvasElement> = {};
-    await Promise.all(
-      snapshot.layers.map(async (item) => {
-        const canvas = createCanvas(canvasSize.width, canvasSize.height);
-        const context = canvas.getContext('2d');
-        const dataUrl = snapshot.dataUrls[item.id];
-        if (context && dataUrl) {
-          const image = await loadImage(dataUrl);
-          context.drawImage(image, 0, 0);
-        }
-        restoredCanvases[item.id] = canvas;
-      }),
-    );
+    snapshot.layers.forEach((item) => {
+      const pixels = snapshot.layerPixels[item.id];
+      const canvas = createCanvas(pixels?.width ?? canvasSize.width, pixels?.height ?? canvasSize.height);
+      const context = canvas.getContext('2d');
+      if (context && pixels) context.putImageData(cloneImageData(pixels), 0, 0);
+      restoredCanvases[item.id] = canvas;
+    });
     layerCanvasesRef.current = restoredCanvases;
     setEditLayers(snapshot.layers.map((item) => ({ ...item })));
     setActiveLayerId(snapshot.activeLayerId);
@@ -452,7 +486,7 @@ export function ImageLayerEditorDialog({
     const current = takeSnapshot();
     setUndoStack((stack) => stack.slice(0, -1));
     setRedoStack((stack) => [current, ...stack].slice(0, 24));
-    void restoreSnapshot(snapshot);
+    restoreSnapshot(snapshot);
   }
 
   function redo() {
@@ -461,7 +495,7 @@ export function ImageLayerEditorDialog({
     const current = takeSnapshot();
     setRedoStack((stack) => stack.slice(1));
     setUndoStack((stack) => [...stack.slice(-23), current]);
-    void restoreSnapshot(snapshot);
+    restoreSnapshot(snapshot);
   }
 
   function getCanvasPoint(event: PointerEvent<HTMLCanvasElement>) {
@@ -489,18 +523,31 @@ export function ImageLayerEditorDialog({
     const previousPoint = lastPointRef.current;
     const localPoint = getActiveCanvasPoint(point);
     const previousLocal = previousPoint ? getActiveCanvasPoint(previousPoint) : undefined;
-    const stampBrush = (x: number, y: number) => {
-      const radius = brushSize / 2;
-      const hardStop = Math.max(0.05, Math.min(1, brushHardness));
-      const gradient = context.createRadialGradient(x, y, radius * hardStop, x, y, radius);
+    const getBrushStamp = () => {
+      const size = Math.max(1, Math.ceil(brushSize));
+      const key = `${tool}:${size}:${brushHardness.toFixed(3)}:${brushOpacity.toFixed(3)}:${color}`;
+      if (brushStampRef.current?.key === key) return brushStampRef.current.canvas;
+      const stamp = createCanvas(size + 2, size + 2);
+      const stampContext = stamp.getContext('2d');
+      if (!stampContext) return stamp;
+      const center = stamp.width / 2;
+      const radius = size / 2;
+      const hardStop = Math.max(0.05, Math.min(0.995, brushHardness));
+      const gradient = stampContext.createRadialGradient(center, center, radius * hardStop, center, center, radius);
       gradient.addColorStop(0, hexToRgba(color, brushOpacity));
       gradient.addColorStop(1, hexToRgba(color, 0));
+      stampContext.fillStyle = gradient;
+      stampContext.beginPath();
+      stampContext.arc(center, center, radius, 0, Math.PI * 2);
+      stampContext.fill();
+      brushStampRef.current = { key, canvas: stamp };
+      return stamp;
+    };
+    const stampBrush = (x: number, y: number) => {
+      const stamp = getBrushStamp();
       context.save();
       context.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-      context.fillStyle = gradient;
-      context.beginPath();
-      context.arc(x, y, radius, 0, Math.PI * 2);
-      context.fill();
+      context.drawImage(stamp, x - stamp.width / 2, y - stamp.height / 2);
       context.restore();
     };
     if (previousLocal) {
@@ -517,7 +564,7 @@ export function ImageLayerEditorDialog({
       stampBrush(localPoint.x, localPoint.y);
     }
     lastPointRef.current = point;
-    renderComposite();
+    scheduleCompositeRender();
   }
 
   function floodFill(point: { x: number; y: number }) {
@@ -572,7 +619,7 @@ export function ImageLayerEditorDialog({
       stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
     }
     context.putImageData(imageData, 0, 0);
-    renderComposite();
+    flushCompositeRender();
     bumpEditRevision();
   }
 
@@ -613,7 +660,7 @@ export function ImageLayerEditorDialog({
     context.fillStyle = color;
     context.fillRect(rect.x, rect.y, rect.w, rect.h);
     context.restore();
-    renderComposite();
+    flushCompositeRender();
     bumpEditRevision();
   }
 
@@ -626,7 +673,7 @@ export function ImageLayerEditorDialog({
     if (!canvas || !context) return;
     pushUndoSnapshot();
     context.clearRect(rect.x, rect.y, rect.w, rect.h);
-    renderComposite();
+    flushCompositeRender();
     bumpEditRevision();
   }
 
@@ -644,7 +691,7 @@ export function ImageLayerEditorDialog({
     context.rect(rect.x, rect.y, rect.w, rect.h);
     context.fill();
     context.restore();
-    renderComposite();
+    flushCompositeRender();
     bumpEditRevision();
   }
 
@@ -714,7 +761,7 @@ export function ImageLayerEditorDialog({
     pushUndoSnapshot();
     const canvas = layerCanvasesRef.current[activeLayer.id];
     canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
-    renderComposite();
+    flushCompositeRender();
     bumpEditRevision();
   }
 
@@ -746,7 +793,7 @@ export function ImageLayerEditorDialog({
       context.drawImage(temp, 0, 0);
     }
     context.restore();
-    renderComposite();
+    flushCompositeRender();
     bumpEditRevision();
   }
 
@@ -863,7 +910,7 @@ export function ImageLayerEditorDialog({
     selectionDraftRef.current = undefined;
     lastPointRef.current = undefined;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    renderComposite();
+    flushCompositeRender();
     if (changedLayerPixels) bumpEditRevision();
   }
 

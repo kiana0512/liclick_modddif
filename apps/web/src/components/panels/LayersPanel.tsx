@@ -106,7 +106,6 @@ export function LayersPanel({
     const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? lastSelectedLayerId ?? activeProjectedLayerId : undefined);
     return visibleLayers.find((layer) => layer.id === layerId && layer.imageUrl);
   }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, previewLayerId, visibleLayers]);
-
   const describeLayerSelection = useCallback((ids: string[]) => {
     const names = ids.map((id) => layers.find((item) => item.id === id)?.name).filter(Boolean);
     if (names.length === 0) return '图层';
@@ -547,10 +546,12 @@ export function LayersPanel({
 
 type LayersPanelActionsProps = {
   onContentAwareRepair?: () => void;
+  onMergeVisibleProjectedToUvLayer?: (layerIds: string[]) => void;
 };
 
-export function LayersPanelActions({ onContentAwareRepair }: LayersPanelActionsProps = {}) {
+export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProjectedToUvLayer }: LayersPanelActionsProps = {}) {
   const t = useT();
+  const layers = useLayerStore((state) => state.layers);
   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
   const addUvLayer = useLayerStore((state) => state.addUvLayer);
   const importedModel = useSceneStore((state) => state.importedModel);
@@ -575,6 +576,16 @@ export function LayersPanelActions({ onContentAwareRepair }: LayersPanelActionsP
     }
     fitCameraToImportedModel();
   }
+
+  const visibleProjectedLayerIds = layers
+    .filter(
+      (layer) =>
+        layer.type === 'projected' &&
+        layer.visible &&
+        layer.imageUrl &&
+        (!layer.objectId || layer.objectId === selectedObjectId),
+    )
+    .map((layer) => layer.id);
 
   return (
     <div className="flex items-center gap-1.5">
@@ -603,6 +614,13 @@ export function LayersPanelActions({ onContentAwareRepair }: LayersPanelActionsP
       </LayerHeaderButton>
       <LayerHeaderButton title={t('createBlankUvLayer')} onClick={handleAddBlankUvLayer}>
         <Square className="h-4 w-4" />
+      </LayerHeaderButton>
+      <LayerHeaderButton
+        title={t('mergeVisibleProjectedLayersToUvLayer')}
+        disabled={visibleProjectedLayerIds.length < 2 || !onMergeVisibleProjectedToUvLayer}
+        onClick={() => onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds)}
+      >
+        <Scissors className="h-4 w-4" />
       </LayerHeaderButton>
     </div>
   );
@@ -959,18 +977,21 @@ function LayerHeaderButton({
   title,
   children,
   onClick,
+  disabled,
 }: {
   title: string;
   children: ReactNode;
   onClick?: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       title={title}
       aria-label={title}
-      className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14"
+      className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
     >
       {children}
     </button>

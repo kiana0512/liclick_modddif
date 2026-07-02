@@ -198,11 +198,14 @@ const fragmentShader = `
   }
 `;
 
-function buildStackFragmentShader(layerCount: number) {
+function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthCheck?: boolean; maskUrl?: string; depthUrl?: string }>) {
+  const layerCount = layers.length;
+  const layerUsesMask = (index: number) => Boolean(layers[index].useMask && layers[index].maskUrl);
+  const layerUsesDepth = (index: number) => Boolean(layers[index].useDepthCheck && layers[index].depthUrl);
   const uniformDeclarations = Array.from({ length: layerCount }, (_, index) => `
   uniform sampler2D projectedMap${index};
-  uniform sampler2D maskMap${index};
-  uniform sampler2D depthMap${index};
+  ${layerUsesMask(index) ? `uniform sampler2D maskMap${index};` : ''}
+  ${layerUsesDepth(index) ? `uniform sampler2D depthMap${index};` : ''}
   uniform mat4 projectorMatrix${index};
   uniform mat4 objectMatrixDelta${index};
   uniform mat3 objectNormalDelta${index};
@@ -210,8 +213,6 @@ function buildStackFragmentShader(layerCount: number) {
   uniform float layerOpacity${index};
   uniform float layerStrength${index};
   uniform float layerBlendMode${index};
-  uniform float useMask${index};
-  uniform float useDepthCheck${index};
   uniform float hueShift${index};
   uniform float saturationShift${index};
   uniform float lightnessShift${index};
@@ -238,18 +239,12 @@ function buildStackFragmentShader(layerCount: number) {
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
-      vec4 maskTexel = texture2D(maskMap${index}, uv);
-      float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
-      float maskAlpha = mix(1.0, maskValue, useMask${index});
+      float maskAlpha = ${layerUsesMask(index) ? `dot(texture2D(maskMap${index}, uv).rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
-      float capturedDepth = unpackDepth(texture2D(depthMap${index}, uv));
-      float depthErr = abs(projectedDepth - capturedDepth);
-      float depthWeight = mix(
-        1.0,
-        0.2 + 0.8 * exp(-pow(depthErr / max(${DEPTH_EPSILON.toFixed(2)}, 0.000001), 2.0)),
-        useDepthCheck${index}
-      );
+      float depthWeight = ${layerUsesDepth(index)
+        ? `0.2 + 0.8 * exp(-pow(abs(projectedDepth - unpackDepth(texture2D(depthMap${index}, uv))) / max(${DEPTH_EPSILON.toFixed(2)}, 0.000001), 2.0))`
+        : '1.0'};
 
       vec4 texel = texture2D(projectedMap${index}, uv);
       texel.rgb = applyHslAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
@@ -288,18 +283,12 @@ function buildStackFragmentShader(layerCount: number) {
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
-      vec4 maskTexel = texture2D(maskMap${index}, uv);
-      float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
-      float maskAlpha = mix(1.0, maskValue, useMask${index});
+      float maskAlpha = ${layerUsesMask(index) ? `dot(texture2D(maskMap${index}, uv).rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
-      float capturedDepth = unpackDepth(texture2D(depthMap${index}, uv));
-      float depthErr = abs(projectedDepth - capturedDepth);
-      float depthWeight = mix(
-        1.0,
-        0.2 + 0.8 * exp(-pow(depthErr / max(${DEPTH_EPSILON.toFixed(2)}, 0.000001), 2.0)),
-        useDepthCheck${index}
-      );
+      float depthWeight = ${layerUsesDepth(index)
+        ? `0.2 + 0.8 * exp(-pow(abs(projectedDepth - unpackDepth(texture2D(depthMap${index}, uv))) / max(${DEPTH_EPSILON.toFixed(2)}, 0.000001), 2.0))`
+        : '1.0'};
 
       vec4 texel = texture2D(projectedMap${index}, uv);
       texel.rgb = applyHslAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
@@ -680,13 +669,15 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   await Promise.all(
     layers.map(async (layer, index) => {
       const texture = await loadProjectedTexture(layer.imageUrl);
-      const maskTexture = layer.maskUrl ? await loadProjectedTexture(layer.maskUrl, THREE.NoColorSpace) : neutralTexture;
-      const depthTexture = layer.depthUrl ? await loadProjectedTexture(layer.depthUrl, THREE.NoColorSpace) : neutralTexture;
-      if (layer.maskUrl) {
+      const shouldUseMask = Boolean(layer.useMask && layer.maskUrl);
+      const shouldUseDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
+      const maskTexture = shouldUseMask ? await loadProjectedTexture(layer.maskUrl!, THREE.NoColorSpace) : neutralTexture;
+      const depthTexture = shouldUseDepth ? await loadProjectedTexture(layer.depthUrl!, THREE.NoColorSpace) : neutralTexture;
+      if (shouldUseMask) {
         maskTexture.minFilter = THREE.LinearFilter;
         maskTexture.magFilter = THREE.LinearFilter;
       }
-      if (layer.depthUrl) {
+      if (shouldUseDepth) {
         depthTexture.minFilter = THREE.NearestFilter;
         depthTexture.magFilter = THREE.NearestFilter;
       }
@@ -700,8 +691,8 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
       const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
 
       uniforms[`projectedMap${index}`] = { value: texture };
-      uniforms[`maskMap${index}`] = { value: maskTexture };
-      uniforms[`depthMap${index}`] = { value: depthTexture };
+      if (shouldUseMask) uniforms[`maskMap${index}`] = { value: maskTexture };
+      if (shouldUseDepth) uniforms[`depthMap${index}`] = { value: depthTexture };
       uniforms[`projectorMatrix${index}`] = { value: buildProjectionMatrixBundle(layer.camera).projectorMatrix };
       uniforms[`objectMatrixDelta${index}`] = { value: objectMatrixDelta };
       uniforms[`objectNormalDelta${index}`] = { value: objectNormalDelta };
@@ -709,8 +700,6 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
       uniforms[`layerOpacity${index}`] = { value: layer.opacity };
       uniforms[`layerStrength${index}`] = { value: layer.strength ?? 1 };
       uniforms[`layerBlendMode${index}`] = { value: layer.blendMode === 'overlay' ? 1 : 0 };
-      uniforms[`useMask${index}`] = { value: layer.useMask && layer.maskUrl ? 1 : 0 };
-      uniforms[`useDepthCheck${index}`] = { value: layer.useDepthCheck && layer.depthUrl ? 1 : 0 };
       uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
       uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
       uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
@@ -721,7 +710,7 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   const material = new THREE.ShaderMaterial({
     name: `LiclickProjectedLayerStack:${layers.map((layer) => layer.layerId).join(',')}`,
     vertexShader,
-    fragmentShader: buildStackFragmentShader(layers.length),
+    fragmentShader: buildStackFragmentShader(layers),
     uniforms,
     toneMapped: false,
   });
@@ -818,7 +807,10 @@ const uvOverlayFragmentShader = `
   uniform float useBaseMap;
   uniform float useUvOverlayMap;
   uniform vec3 baseColor;
-  uniform float flatBoost;
+  uniform float previewLightingEnabled;
+  uniform float ambientLightIntensity;
+  uniform float keyLightIntensity;
+  uniform vec3 keyLightDirection;
   varying vec3 vWorldNormal;
   varying vec2 vUv;
 
@@ -829,10 +821,16 @@ const uvOverlayFragmentShader = `
     return mix(higher, lower, cutoff);
   }
 
+  float computePreviewLight(vec3 normal) {
+    vec3 lightDir = normalize(keyLightDirection);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
+    return mix(1.0, lit, previewLightingEnabled);
+  }
+
   void main() {
     vec3 normal = normalize(vWorldNormal);
-    vec3 lightDir = normalize(vec3(0.35, 0.7, 0.45));
-    float lambert = mix(max(dot(normal, lightDir), 0.0) * 0.2 + 0.8, 1.0, flatBoost);
+    float lambert = computePreviewLight(normal);
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 surfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
@@ -844,9 +842,10 @@ const uvOverlayFragmentShader = `
 export function createUvOverlayPreviewMaterial(input: {
   displayMode: string;
   selected: boolean;
-  uvOverlayTexture: THREE.Texture;
+  uvOverlayTexture?: THREE.Texture;
   baseTexture?: THREE.Texture;
   baseColor?: THREE.ColorRepresentation;
+  previewLighting?: ProjectionPreviewLighting;
 }) {
   if (input.displayMode === 'normal') return markGeneratedMaterial(new THREE.MeshNormalMaterial());
   if (input.displayMode === 'wire') {
@@ -873,8 +872,9 @@ export function createUvOverlayPreviewMaterial(input: {
     texture.generateMipmaps = true;
     texture.needsUpdate = true;
   };
-  prepareExternalTexture(input.uvOverlayTexture);
+  if (input.uvOverlayTexture) prepareExternalTexture(input.uvOverlayTexture);
   if (input.baseTexture) prepareExternalTexture(input.baseTexture);
+  const previewLighting = getPreviewLighting(input.previewLighting);
 
   const material = new THREE.ShaderMaterial({
     name: 'LiclickUvOverlayPreview',
@@ -882,11 +882,14 @@ export function createUvOverlayPreviewMaterial(input: {
     fragmentShader: uvOverlayFragmentShader,
     uniforms: {
       baseMap: { value: input.baseTexture ?? neutralTexture },
-      uvOverlayMap: { value: input.uvOverlayTexture },
+      uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
-      useUvOverlayMap: { value: 1 },
+      useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
-      flatBoost: { value: input.displayMode === 'flat' ? 1 : 0 },
+      previewLightingEnabled: { value: previewLighting.enabled },
+      ambientLightIntensity: { value: previewLighting.ambientIntensity },
+      keyLightIntensity: { value: previewLighting.keyLightIntensity },
+      keyLightDirection: { value: previewLighting.keyLightDirection },
     },
     toneMapped: false,
   });

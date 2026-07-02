@@ -108,7 +108,11 @@ const resolutionToSize = {
 
 const MAX_LIVE_PROJECTED_PREVIEW_LAYERS = 16;
 const RESERVED_PROJECTED_TEXTURE_UNITS = 2;
-const TEXTURE_UNITS_PER_PROJECTED_LAYER = 3;
+
+function projectedLayerTextureUnitCost(layer: Layer) {
+  const usesSourceAlpha = typeof layer.generationId === 'string' && layer.generationId.startsWith('texture-map');
+  return 1 + (layer.maskUrl && !usesSourceAlpha ? 1 : 0) + (layer.depthUrl && !usesSourceAlpha ? 1 : 0);
+}
 const LOCAL_REPAINT_CAPTURE_SCALE = 2;
 const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 4096;
 const IMAGE_EDIT_MAPPED_PREVIEW_SIZE = 3072;
@@ -377,6 +381,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const previewStackBakeRunningRef = useRef(false);
   const previewStackBakeKeyRef = useRef('');
   const previewStackBakeTimerRef = useRef<number>();
+  const lastViewportInteractionRef = useRef(0);
   const thumbnailRefreshTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>('idle');
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>('idle');
@@ -465,6 +470,20 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     },
     [],
   );
+
+  useEffect(() => {
+    const markInteraction = () => {
+      lastViewportInteractionRef.current = performance.now();
+    };
+    window.addEventListener('pointerdown', markInteraction, true);
+    window.addEventListener('pointermove', markInteraction, true);
+    window.addEventListener('wheel', markInteraction, true);
+    return () => {
+      window.removeEventListener('pointerdown', markInteraction, true);
+      window.removeEventListener('pointermove', markInteraction, true);
+      window.removeEventListener('wheel', markInteraction, true);
+    };
+  }, []);
 
   useEffect(() => {
     if (project) {
@@ -588,12 +607,19 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     setPanelCollapsed('layerAdjustments', false);
   }, [activeProjectedLayerId, setPanelCollapsed, showPanel]);
 
-  function getLiveProjectedPreviewLimit() {
+  function getLiveProjectedPreviewLimit(stack: Layer[] = []) {
     const maxTextures = viewport?.gl.capabilities.maxTextures ?? 16;
-    const samplerLimitedCount = Math.floor(
-      Math.max(1, maxTextures - RESERVED_PROJECTED_TEXTURE_UNITS) / TEXTURE_UNITS_PER_PROJECTED_LAYER,
-    );
-    return Math.max(1, Math.min(MAX_LIVE_PROJECTED_PREVIEW_LAYERS, samplerLimitedCount));
+    if (stack.length === 0) return Math.max(1, Math.min(MAX_LIVE_PROJECTED_PREVIEW_LAYERS, maxTextures - RESERVED_PROJECTED_TEXTURE_UNITS));
+    let usedTextureUnits = RESERVED_PROJECTED_TEXTURE_UNITS;
+    let count = 0;
+    for (const layer of stack) {
+      const nextUsedTextureUnits = usedTextureUnits + projectedLayerTextureUnitCost(layer);
+      if (count > 0 && nextUsedTextureUnits > maxTextures) break;
+      usedTextureUnits = nextUsedTextureUnits;
+      count += 1;
+      if (count >= MAX_LIVE_PROJECTED_PREVIEW_LAYERS) break;
+    }
+    return Math.max(1, count);
   }
 
   function getProjectedLayerStackSignature(objectId: string, stack: Layer[]) {
@@ -623,29 +649,37 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     if (!project || !importedModel || !viewport) return undefined;
     const objectId = selectedObjectId ?? importedModel.objectId;
     const visibleStack = getVisibleProjectedLayerStack(layers, objectId);
-    const liveLimit = getLiveProjectedPreviewLimit();
+    const liveLimit = getLiveProjectedPreviewLimit(visibleStack);
     if (visibleStack.length <= liveLimit) return undefined;
     const currentProject = useProjectStore.getState().getCurrentProject() ?? project;
-    const exactTexture = findExactLayerStackTexture(currentProject, visibleStack);
-    if (canUseLayerStackCache(visibleStack, exactTexture)) return undefined;
+    const expectedResolution = resolutionToSize[resolution];
+    const exactTexture = findExactLayerStackTexture(currentProject, visibleStack, expectedResolution);
+    if (canUseLayerStackCache(visibleStack, exactTexture, expectedResolution)) return undefined;
 
     const stackSignature = getProjectedLayerStackSignature(objectId, visibleStack);
     if (previewStackBakeRunningRef.current && previewStackBakeKeyRef.current === stackSignature) return undefined;
     window.clearTimeout(previewStackBakeTimerRef.current);
-    previewStackBakeTimerRef.current = window.setTimeout(() => {
+    const tryBakeWhenIdle = () => {
       if (previewStackBakeRunningRef.current) return;
+      const idleForMs = performance.now() - lastViewportInteractionRef.current;
+      if (idleForMs < 1400) {
+        previewStackBakeTimerRef.current = window.setTimeout(tryBakeWhenIdle, 1400 - idleForMs + 250);
+        return;
+      }
       const latestProject = useProjectStore.getState().getCurrentProject() ?? project;
       const latestObjectId = useSceneStore.getState().selectedObjectId ?? importedModel.objectId;
       const latestStack = getVisibleProjectedLayerStack(useLayerStore.getState().layers, latestObjectId);
-      if (latestStack.length <= getLiveProjectedPreviewLimit()) return;
-      const latestExactTexture = findExactLayerStackTexture(latestProject, latestStack);
-      if (canUseLayerStackCache(latestStack, latestExactTexture)) return;
+      const latestLiveLimit = getLiveProjectedPreviewLimit(latestStack);
+      if (latestStack.length <= latestLiveLimit) return;
+      const latestExpectedResolution = resolutionToSize[resolution];
+      const latestExactTexture = findExactLayerStackTexture(latestProject, latestStack, latestExpectedResolution);
+      if (canUseLayerStackCache(latestStack, latestExactTexture, latestExpectedResolution)) return;
       const latestSignature = getProjectedLayerStackSignature(latestObjectId, latestStack);
       previewStackBakeRunningRef.current = true;
       previewStackBakeKeyRef.current = latestSignature;
       setManualBakeProgress({
         title: t('autoBake'),
-        detail: `${t('autoBakeCompositing')} · ${latestStack.length}/${getLiveProjectedPreviewLimit()} live`,
+        detail: `${t('autoBakeCompositing')} · ${latestStack.length}/${latestLiveLimit} live`,
         progress: 0.03,
       });
       void bakeVisibleProjectedLayersToTexture({
@@ -655,7 +689,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         enableBackfaceCulling: true,
         enableDilation: true,
         dilationPixels: 4,
-        method: 'cpu',
+        method: 'gpu',
         preferBlobOutput: latestProject.workspaceMode === 'local-server',
         onProgress: updateManualBakeProgress,
       })
@@ -686,7 +720,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           previewStackBakeRunningRef.current = false;
           manualBakeProgressTimerRef.current = window.setTimeout(() => setManualBakeProgress(undefined), 1200);
         });
-    }, 650);
+    };
+    previewStackBakeTimerRef.current = window.setTimeout(tryBakeWhenIdle, 1800);
 
     return () => window.clearTimeout(previewStackBakeTimerRef.current);
   }, [importedModel, layers, project, pushToast, resolution, selectedObjectId, t, updateCurrentProject, viewport]);
@@ -2651,7 +2686,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       collapsed: workspacePanels.find((panel) => panel.id === 'layers')?.collapsed ?? true,
       visible: true,
       mode: 'texture',
-      actions: <LayersPanelActions onContentAwareRepair={handleContentAwareRepairFromToolbar} />,
+      actions: (
+        <LayersPanelActions
+          onContentAwareRepair={handleContentAwareRepairFromToolbar}
+          onMergeVisibleProjectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
+        />
+      ),
       content: (
         <LayersPanel
           onLayerImageEdit={openLayerImageEdit}

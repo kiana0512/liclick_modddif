@@ -45,13 +45,18 @@ function isPrefixStack(sourceLayerIds: string[], visibleLayerIds: string[]) {
   return sourceLayerIds.every((layerId, index) => layerId === visibleLayerIds[index]);
 }
 
-export function findExactLayerStackTexture(project: Project | undefined, visibleLayers: Layer[]) {
+function resolutionMatches(texture: BakedTexture, expectedResolution?: number) {
+  return expectedResolution === undefined || (texture.width === expectedResolution && texture.height === expectedResolution);
+}
+
+export function findExactLayerStackTexture(project: Project | undefined, visibleLayers: Layer[], expectedResolution?: number) {
   if (!project || visibleLayers.length === 0) return undefined;
   const visibleLayerIds = visibleLayers.map((layer) => layer.id);
   return (
-    project.bakedTextures.find((texture) => layerIdsMatch(getBakedTextureLayerIds(texture), visibleLayerIds)) ??
+    project.bakedTextures.find((texture) => resolutionMatches(texture, expectedResolution) && layerIdsMatch(getBakedTextureLayerIds(texture), visibleLayerIds)) ??
     project.bakedTextures.find(
       (texture) =>
+        resolutionMatches(texture, expectedResolution) &&
         usesOrderIndependentStack(texture) && layerIdSetsMatch(getBakedTextureLayerIds(texture), visibleLayerIds),
     )
   );
@@ -76,8 +81,9 @@ export function findBaseLayerStackTexture(project: Project | undefined, visibleL
   return bestTexture;
 }
 
-export function canUseLayerStackCache(visibleLayers: Layer[], texture: BakedTexture | undefined) {
+export function canUseLayerStackCache(visibleLayers: Layer[], texture: BakedTexture | undefined, expectedResolution?: number) {
   if (!texture) return false;
+  if (!resolutionMatches(texture, expectedResolution)) return false;
   const sourceLayerIds = getBakedTextureLayerIds(texture);
   if (sourceLayerIds.length !== visibleLayers.length) return false;
   if (sourceLayerIds.length > 1 && !usesOrderIndependentStack(texture)) return false;

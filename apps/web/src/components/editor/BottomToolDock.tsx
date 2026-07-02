@@ -90,7 +90,6 @@ export function BottomToolDock({
     'border-[#ff8a68]/70 bg-[#8b4a38] text-white shadow-[0_0_0_1px_rgba(255,138,104,0.26)]';
   const divider = <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />;
   const inpaintMenuVisible = activeMenu === 'inpaint-add' || activeMenu === 'inpaint-subtract';
-  const toolbarTooltipDisabled = true;
 
   function toggleMenu(menu: typeof activeMenu) {
     setActiveMenu((current) => (current === menu ? undefined : menu));
@@ -125,7 +124,6 @@ export function BottomToolDock({
           label={labels[labelKey]}
           description={labels[`${labelKey}Help` as keyof typeof labels]}
           shortcut="V"
-          disabled={toolbarTooltipDisabled}
         >
           <button
             type="button"
@@ -220,7 +218,7 @@ export function BottomToolDock({
             </label>
           </div>
         )}
-        <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="P" disabled={toolbarTooltipDisabled}>
+        <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="P">
           <button
             type="button"
             className={cn(baseButton, paintTool === 'brush' && activeMaskButton)}
@@ -285,7 +283,7 @@ export function BottomToolDock({
             </label>
           </div>
         )}
-        <IconTooltip label={labels.eraser} description={labels.eraserHelp} shortcut="E" disabled={toolbarTooltipDisabled}>
+        <IconTooltip label={labels.eraser} description={labels.eraserHelp} shortcut="E">
           <button
             type="button"
             className={cn(baseButton, paintTool === 'eraser' && activeMaskButton)}
@@ -364,7 +362,6 @@ export function BottomToolDock({
           label={labels.inpaintSelect}
           description={labels.inpaintSelectHelp}
           shortcut="K"
-          disabled={toolbarTooltipDisabled}
         >
           <button
             type="button"
@@ -387,7 +384,6 @@ export function BottomToolDock({
         label={labels.inpaintUnselect}
         description={labels.inpaintUnselectHelp}
         shortcut="O"
-        disabled={toolbarTooltipDisabled}
       >
         <button
           type="button"
@@ -423,7 +419,6 @@ export function BottomToolDock({
           label={labels.localRepaint}
           description={labels.localRepaintHelp}
           shortcut="I"
-          disabled={toolbarTooltipDisabled}
         >
           <button
             type="button"
@@ -441,12 +436,12 @@ export function BottomToolDock({
 
       {divider}
 
-      <IconTooltip label={labels.undo} shortcut="Ctrl Z" disabled={toolbarTooltipDisabled}>
+      <IconTooltip label={labels.undo} shortcut="Ctrl Z">
         <button type="button" className={baseButton} disabled={!canUndo} onClick={onUndo} aria-label={labels.undo}>
           <Undo2 className="h-4.5 w-4.5" />
         </button>
       </IconTooltip>
-      <IconTooltip label={labels.redo} shortcut="Ctrl Y" disabled={toolbarTooltipDisabled}>
+      <IconTooltip label={labels.redo} shortcut="Ctrl Y">
         <button type="button" className={baseButton} disabled={!canRedo} onClick={onRedo} aria-label={labels.redo}>
           <Redo2 className="h-4.5 w-4.5" />
         </button>
