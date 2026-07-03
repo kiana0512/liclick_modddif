@@ -131,3 +131,9 @@ Latest local verification covered:
 The web build still emits a Vite large chunk warning because the editor bundles Three.js-heavy code. Treat that as a performance optimization item, not a failing stability check.
 
 Known non-blocking browser warning: Three.js `FBXLoader` reports unsupported embedded FBX image type `fbm/modddif_image_0_png` for one imported model. The model route and editor stay functional, but texture extraction from that FBX package should be handled in a later importer pass if those embedded images are required.
+
+## FBX Export Compatibility Audit
+
+The binary FBX writer has been regression-tested against small white-model FBX exports in Blender and 3ds Max. The accepted profile mirrors Blender's stable FBX IO output for the fields that 3ds Max is strict about: full model/material property templates, deterministic large object ids, Blender-style creator/document metadata, indexed normal and UV layer elements, uncompressed tiny arrays, and `Normal -> UV -> Material` layer ordering.
+
+The editor normalizes imported models to a max dimension of 3 for viewport ergonomics. FBX export applies a `100 / 3` local model scale so exported files reopen near the Modddif/original DCC max dimension of 100 instead of 300. This scale constant should be rechecked if the import normalization target changes.

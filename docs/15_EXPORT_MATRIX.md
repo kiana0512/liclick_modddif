@@ -37,6 +37,8 @@ Texture / Color exports the active baked BaseColor PNG. Texture / Normal is enab
 
 GLB, FBX, and OBJ model exports run through `prepareTexturedModelExport`. That helper finds an exact baked stack texture or, when Auto UV bake is enabled, bakes the current visible projected stack before export. It then composites visible UV repair/merged layers over that base texture, clones the export root, and applies a `Liclick_BaseColor` material. OBJ writes the PNG beside the `.obj/.mtl`; GLB embeds the material through `GLTFExporter`; FBX embeds mesh/material/texture records in the local binary FBX file.
 
+FBX export is written in a 3ds Max-compatible binary FBX 7400 profile. The writer intentionally mirrors Blender's stable FBX IO shape for object ids, node templates, material defaults, layer ordering, and indexed normal/UV tables because 3ds Max rejects the smaller minimal writer shape even when Blender can read it. The exported model uses a `100 / 3` FBX local scale correction so normalized editor models with a max dimension of 3 reopen at the Modddif-style max dimension of 100 in DCC tools.
+
 Turntable WebM records the WebGL canvas stream for 5 seconds while rotating the imported model 360 degrees. Browsers without `MediaRecorder` show the action disabled.
 
 ## Still Unsupported
@@ -47,4 +49,4 @@ Turntable WebM records the WebGL canvas stream for 5 seconds while rotating the 
 
 ## Next Export Work
 
-The next export pass should harden FBX compatibility in more DCCs, add segmentation ColorID export, and add a `.liclick3d` portable package once the project package endpoint is implemented.
+The next export pass should add segmentation ColorID export, broaden FBX regression coverage across DCCs, and add a `.liclick3d` portable package once the project package endpoint is implemented.

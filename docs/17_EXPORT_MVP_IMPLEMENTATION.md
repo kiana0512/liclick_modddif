@@ -47,6 +47,8 @@ Export logic lives under `apps/web/src/engine/export/`:
 
 `three-stdlib` is already part of the project and follows the Three.js ecosystem licensing expectations used by the app.
 
+The local FBX writer now targets the Blender-stable FBX IO shape that 3ds Max accepts: large deterministic object ids, full model/material property templates, `Normal -> UV -> Material` layer order, indexed normal/UV tables, uncompressed tiny arrays such as `Materials [0]`, and a `100 / 3` model scale correction. This preserves the editor's normalized max dimension of 3 while exporting back to a DCC max dimension of 100.
+
 ## Supported Now
 
 - Scene GLB / OBJ / STL.
@@ -62,7 +64,7 @@ Export logic lives under `apps/web/src/engine/export/`:
 - Segments ColorID: disabled until real segmentation data exists.
 - MP4 export: deferred; WebM is the browser-native MVP.
 - Project package zip: server endpoint remains a stub.
-- FBX compatibility should be tested in target DCCs because the writer is local and intentionally minimal.
+- FBX compatibility should continue to be regression-tested in Blender and 3ds Max because the writer is local.
 
 ## Test Checklist
 
@@ -75,3 +77,4 @@ Export logic lives under `apps/web/src/engine/export/`:
 7. Bake a projected layer and export BaseColor PNG.
 8. Export GLB/FBX/OBJ after baking and confirm the BaseColor material/texture is present.
 9. Use Viewport PNG and Turntable WebM from the header Export menu.
+10. Import an exported FBX into Blender and 3ds Max; confirm the mesh opens, the white-model fallback opens without media, UV/normal data is present, and the model max dimension matches the original Modddif-style scale.
