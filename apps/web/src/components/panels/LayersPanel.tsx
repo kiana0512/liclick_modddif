@@ -314,7 +314,6 @@ export function LayersPanel({
   function beginVisibilityDrag(layer: Layer) {
     const nextVisible = !layer.visible;
     const ids = getAffectedLayerIds(layer.id);
-    captureHistory(`${nextVisible ? '显示' : '隐藏'}图层：${describeLayerSelection(ids)}`);
     setLayerVisibility(ids, nextVisible);
     setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
   }

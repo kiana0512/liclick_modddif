@@ -106,9 +106,9 @@ export const useSceneStore = create<SceneStore>()(
         brushHardness: 50,
       },
       paintToolSettings: {
-        brushSize: 1.4,
+        brushSize: 32,
         brushHardness: 50,
-        eraserSize: 10,
+        eraserSize: 42,
         eraserHardness: 50,
         color: '#ffffff',
       },

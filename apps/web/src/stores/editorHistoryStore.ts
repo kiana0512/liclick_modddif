@@ -40,17 +40,6 @@ type EditorHistoryStore = {
 };
 
 const maxHistory = 80;
-const maxPersistedHistory = 32;
-const persistedHistoryVersion = 1;
-
-type PersistedHistoryPayload = {
-  version: typeof persistedHistoryVersion;
-  projectId: string;
-  current?: EditorSnapshot;
-  past: EditorSnapshotStep[];
-  future: EditorSnapshotStep[];
-};
-
 function historyStorageKey(projectId: string) {
   return `liclick-editor-history-v1:${projectId}`;
 }
@@ -95,57 +84,16 @@ function applySnapshot(snapshot: EditorSnapshot) {
   applyObjectRuntime(next.objects);
 }
 
-function cloneSnapshotStep(step: EditorSnapshotStep): EditorSnapshotStep {
-  return {
-    kind: 'snapshot',
-    label: step.label,
-    snapshot: cloneSnapshot(step.snapshot),
-  };
-}
-
-function getPersistableSteps(steps: EditorHistoryStep[]) {
-  return steps.filter((step): step is EditorSnapshotStep => step.kind === 'snapshot').map(cloneSnapshotStep);
-}
-
 function persistHistory(
   projectId: string | undefined,
   past: EditorHistoryStep[],
   future: EditorHistoryStep[],
   current = cloneSnapshot(getSnapshot()),
 ) {
-  if (!projectId || typeof window === 'undefined') return;
-  const payload: PersistedHistoryPayload = {
-    version: persistedHistoryVersion,
-    projectId,
-    current,
-    past: getPersistableSteps(past).slice(-maxPersistedHistory),
-    future: getPersistableSteps(future).slice(0, maxPersistedHistory),
-  };
-  try {
-    window.sessionStorage.setItem(historyStorageKey(projectId), JSON.stringify(payload));
-  } catch (error) {
-    console.warn('[Liclick 3D Texture] Could not persist editor history.', error);
-  }
-}
-
-function readPersistedHistory(
-  projectId: string,
-): (Pick<EditorHistoryStore, 'past' | 'future'> & { current?: EditorSnapshot }) | undefined {
-  if (typeof window === 'undefined') return undefined;
-  const raw = window.sessionStorage.getItem(historyStorageKey(projectId));
-  if (!raw) return undefined;
-  try {
-    const payload = JSON.parse(raw) as PersistedHistoryPayload;
-    if (payload.version !== persistedHistoryVersion || payload.projectId !== projectId) return undefined;
-    return {
-      current: payload.current ? cloneSnapshot(payload.current) : undefined,
-      past: (payload.past ?? []).map(cloneSnapshotStep),
-      future: (payload.future ?? []).map(cloneSnapshotStep),
-    };
-  } catch {
-    window.sessionStorage.removeItem(historyStorageKey(projectId));
-    return undefined;
-  }
+  void projectId;
+  void past;
+  void future;
+  void current;
 }
 
 function describeStep(step: EditorHistoryStep | undefined) {
@@ -194,19 +142,14 @@ export const useEditorHistoryStore = create<EditorHistoryStore>((set, get) => ({
     });
   },
   persistCurrentSnapshot: (projectId = getCurrentProjectId()) => {
-    const state = get();
-    const past = state.projectId === projectId ? state.past : [];
-    const future = state.projectId === projectId ? state.future : [];
-    persistHistory(projectId, past, future);
+    void projectId;
   },
   restorePersisted: (projectId) => {
-    const persisted = readPersistedHistory(projectId);
     set({
       projectId,
-      past: persisted?.past ?? [],
-      future: persisted?.future ?? [],
+      past: [],
+      future: [],
     });
-    if (persisted?.current) applySnapshot(persisted.current);
   },
   undo: () => {
     const state = get();

@@ -2,7 +2,7 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-07-02
+Updated: 2026-07-03
 
 ## Windows Desktop Build
 
@@ -50,6 +50,11 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Multiple models can be imported into one project. The editor keeps one active model in texture mode, selected from the Objects panel.
 - Reference images and layers are scoped to the selected object. Older unscoped project data remains visible for compatibility.
 - Liclick image generation and Texture Map generation use separate prompts.
+- The user avatar menu can switch image generation between the original Liclick backend and a local ComfyUI backend. The ComfyUI switch checks `http://127.0.0.1:8188` before enabling the mode and reports a local-backend offline state when ComfyUI is not running.
+- ComfyUI Texture Map generation keeps the panel prompt as the user material intent. The server adds only projection/albedo guardrails around that user prompt instead of replacing it with a fixed material description.
+- ComfyUI Texture Map generation exports only the runtime controls needed by the workflow: white render, object mask, depth, full view-space normal, and the selected material reference. The material reference remains the primary visual material constraint; depth and normal are geometry/projection constraints.
+- ComfyUI runtime control export uses a square fit-object camera for 4096 x 4096 control images so the white render, mask, depth, normal, preview capture, and projected result share the same MVP framing instead of inheriting a wide browser viewport aspect ratio.
+- Texture Map generation now has the same local stop affordance as normal generation. Stopping opens an in-app Liclick 3D Texture confirmation dialog, immediately unlocks the panel, marks the generation as cancelled, discards any late result, and asks the active backend to cancel or interrupt the job.
 - Normal Liclick image generation keeps the preview `Add to references` shortcut. Texture Map generation hides that shortcut so generated texture outputs are accepted as projected layers instead of being recycled into the material-reference library.
 - Liclick image generation has a stop button. Stopping marks the local job as cancelled, unlocks the UI, and tells the local server to stop tracking that job.
 - The bottom paint dock separates normal texture painting, texture erasing, inpaint-region add, inpaint-region subtract, and the current local repaint submit action.
@@ -104,6 +109,11 @@ Low-risk cleanup completed in this pass:
 - Added a direct Atlas JSON-RPC helper for large image-edit payloads so local repaint can submit base64 ComfyUI fields without command-line length limits.
 - Added local repaint fallback handling for Atlas `generate_image` 400 responses, with explicit Chinese error reporting during status checks and polling.
 - Removed the Texture Map preview `Add to references` action while keeping the normal Liclick image-generation shortcut.
+- Added local ComfyUI Texture Map integration through `/api/comfyui`: status check, control-image upload, workflow patching, prompt queueing, history polling, output download, and project asset persistence.
+- Patched the ComfyUI workflow bridge so UI prompt text, selected material reference, white render, mask, depth, and full normal-view inputs map to the intended workflow nodes. The normal-view control path is enabled as a second control stage after depth.
+- Added ComfyUI cancellation support. The frontend aborts the pending request, marks the local generation as cancelled, and calls `/api/comfyui/cancel`; the server records cancelled job IDs to close the cancel-before-submit race and calls ComfyUI `/interrupt` best-effort.
+- Replaced the browser-native cancel confirmation with an app-styled Liclick 3D Texture modal that explains the local discard semantics and backend interrupt behavior.
+- Audited the ComfyUI cancellation path for late responses and stale confirmation dialogs. Late results are ignored after local cancellation, and a confirmation opened for a task that has already completed no longer marks that completed task as cancelled.
 - Updated projected-layer preview/export code so WebM turntable captures keep projection alignment during object rotation.
 - Verified the packaging script excludes runtime workspace data, logs, secrets, `.git`, and `node_modules` from staging while keeping built server/web outputs and source files needed by the desktop launcher.
 - Added the Electron desktop shell for Windows: single-instance window, tray menu, service restart, log directory shortcut, live launcher logs, workspace health checks, and close-to-tray versus full-quit confirmation.
@@ -178,12 +188,22 @@ LICLICK_STRESS_BASE_URL=http://127.0.0.1:4517 LICLICK_STRESS_USERS=30 LICLICK_ST
 Stress /api/health: users=30, seconds=15, requests=234755, failed=0, p95=3.1ms, statuses=200
 ```
 
+Additional validation after the 2026-07-03 ComfyUI texture-map integration and cancellation pass:
+
+```text
+corepack pnpm --filter @liclick/web typecheck
+corepack pnpm --filter @liclick/server typecheck
+corepack pnpm --filter @liclick/server build
+corepack pnpm --filter @liclick/server lint
+corepack pnpm --filter @liclick/web lint
+```
+
 The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 104,952,758 bytes
-SHA256 660D9F9DDA625902B7B606052A784F0C2DB82DAC7BBB718AE7DBC8E21B80F57E
+Size 104,984,292 bytes
+SHA256 E04EDA374FF7511EDEA5F632392CB7B8DEC8A9C3D4846F598B989CED74DBA429
 ```
 
 Packaging notes for this build:
@@ -191,7 +211,8 @@ Packaging notes for this build:
 - `corepack enable` could not write to `C:\Program Files\nodejs\pnpm` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
 - `corepack pnpm install --frozen-lockfile` reported a registry metadata fetch warning for pnpm in the managed environment, then continued with the existing workspace package manager and completed successfully.
 - Inno Setup 6.7.2 emitted a non-blocking warning that the `x64` architecture identifier is deprecated and substituted with `x64os`. The installer still compiled successfully.
-- Release cleanup removed regenerated output before verification: `.codex-tmp`, `apps/web/dist`, `apps/server/dist`, `apps/web/tsconfig.tsbuildinfo`, old `dist-installer/staging`, and the old installer executable. After packaging, the generated staging directory and regenerated TypeScript build-info file were removed again. The cached portable Node zip was intentionally kept for offline packaging.
+- Release cleanup removed regenerated output before verification: Comfy/model download logs, `apps/web/tsconfig.tsbuildinfo`, package `tsconfig.tsbuildinfo` files, old `dist-installer/staging`, and the old installer executable. After packaging, the generated staging directory and regenerated TypeScript build-info file were removed again. The cached portable Node zip was intentionally kept for offline packaging.
+- Windows packaging now excludes root-level Li3D model-download helper scripts and the debug contact sheet from installer staging, in addition to logs, build info, secrets, workspace data, `.git`, and dependency directories.
 - Vite still reports the known large-chunk warning for the editor bundle. The warning is non-blocking for this installer and remains tracked as a future code-splitting cleanup.
 
 The 2026-06-26 local backend stress pass reached:
@@ -210,6 +231,8 @@ The 2026-06-26 browser runtime stress pass reached:
 - `GeneratePanel` and `EditorPage` are still large orchestration components. Future cleanup should split generation job state, reference import, project restore, and bake orchestration into smaller hooks or services.
 - Projected-layer preview and UV bake remain the most performance-sensitive path. Avoid adding React state updates inside per-frame or per-fragment logic.
 - The stop button cancels local tracking immediately. If a Liclick task has already been submitted to Atlas, the remote task may still finish server-side, but the local UI no longer waits for it or applies it.
+- The ComfyUI stop path sends a best-effort `/interrupt` to the local ComfyUI instance. If ComfyUI is blocked inside a custom node, interruption may not be immediate, but the Liclick UI unlocks immediately and ignores the late result.
+- The ComfyUI workflow file is intentionally patched at submission time. Keep node IDs stable for the current texture workflow: prompt `44`, depth control `46`, normal-view control `47`, sampler `51`, final RGB save `64`.
 - Legacy unscoped references/layers remain visible for compatibility. New project data should always write `objectId`.
 - Large Vite chunk warnings are currently known and non-blocking, but code splitting should be considered after the texture workflow stabilizes.
 - Local repaint transition quality is still an active product tuning area. Do not replace the full-frame mapping path with ROI scaling/cropping; any future transition work should preserve full-frame coordinate alignment first.

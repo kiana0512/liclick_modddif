@@ -4,7 +4,6 @@ import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Tras
 import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
 import { useReferenceStore } from '@/stores/referenceStore';
-import { useSceneStore } from '@/stores/sceneStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
@@ -35,6 +34,7 @@ type ReferenceImagePickerProps = {
   compact?: boolean;
   inputId?: string;
   selectionMode?: 'multiple' | 'single';
+  filterBySelectedObject?: boolean;
 };
 
 type MenuState = {
@@ -43,7 +43,11 @@ type MenuState = {
   y: number;
 };
 
-export function ReferenceImagePicker({ compact = false, inputId, selectionMode = 'multiple' }: ReferenceImagePickerProps) {
+export function ReferenceImagePicker({
+  compact = false,
+  inputId,
+  selectionMode = 'multiple',
+}: ReferenceImagePickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [menu, setMenu] = useState<MenuState | undefined>();
@@ -54,8 +58,7 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
   const t = useT();
   const references = useReferenceStore((state) => state.references);
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
-  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
-  const visibleReferences = references.filter((reference) => !reference.objectId || reference.objectId === selectedObjectId);
+  const visibleReferences = references;
   const visibleReferenceIds = new Set(visibleReferences.map((reference) => reference.id));
   const visibleSelectedReferenceIds = selectedReferenceIds.filter((id) => visibleReferenceIds.has(id));
   const addReferences = useReferenceStore((state) => state.addReferences);
@@ -114,7 +117,6 @@ export function ReferenceImagePicker({ compact = false, inputId, selectionMode =
           width: size.width,
           height: size.height,
           isPrimary: index === 0,
-          objectId: selectedObjectId,
         };
       }),
     );

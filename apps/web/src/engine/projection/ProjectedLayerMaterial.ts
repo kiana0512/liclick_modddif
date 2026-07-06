@@ -8,6 +8,7 @@ const DEFAULT_WIRE_COLOR = '#e9ebe8';
 const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
 const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
 const DISPOSED_MATERIAL_FLAG = 'liclickDisposedMaterial';
+const PROJECTED_LAYER_STACK_STATE_KEY = 'liclickProjectedLayerStackState';
 export const PROJECTED_LAYER_MATERIAL_USER_DATA_KEY = 'liclickProjectedLayerProjectionData';
 export type ProjectedLayerProjectionData = {
   layers: Array<{
@@ -37,6 +38,21 @@ const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
   ambientIntensity: 0.5,
   keyLightIntensity: 1.22,
   keyLightDirection: [0.35, 0.7, 0.45],
+};
+
+type ProjectedLayerUniformBinding = {
+  layerId: string;
+  opacityUniform: string;
+  strengthUniform: string;
+  blendModeUniform?: string;
+  hueUniform: string;
+  saturationUniform: string;
+  lightnessUniform: string;
+};
+
+type ProjectedLayerMaterialState = {
+  signature: string;
+  bindings: ProjectedLayerUniformBinding[];
 };
 
 const vertexShader = `
@@ -501,52 +517,186 @@ function getPreviewLighting(input?: ProjectionPreviewLighting) {
   };
 }
 
-export async function createProjectedLayerMaterial(input: ProjectionLayerInput) {
-  const texture = await new THREE.TextureLoader().loadAsync(input.imageUrl);
+function prepareUvTexture(texture: THREE.Texture) {
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = false;
+  texture.flipY = true;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.generateMipmaps = true;
-  texture.anisotropy = 8;
+  texture.needsUpdate = true;
+}
+
+function prepareExistingBaseTexture(texture: THREE.Texture) {
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+}
+
+function getLayerCameraSignature(camera: ProjectionLayerStackInput['layers'][number]['camera']) {
+  return [
+    camera?.position?.join(',') ?? '',
+    camera?.target?.join(',') ?? '',
+    camera?.viewMatrix?.join(',') ?? '',
+    camera?.projectionMatrix?.join(',') ?? '',
+    camera?.projection ?? '',
+  ].join('/');
+}
+
+function getProjectionLayerStructureSignature(layers: ProjectionLayerStackInput['layers']) {
+  return layers
+    .map((layer) =>
+      [
+        layer.layerId,
+        layer.imageUrl,
+        layer.maskUrl ?? '',
+        layer.depthUrl ?? '',
+        layer.useMask ? 1 : 0,
+        layer.useDepthCheck ? 1 : 0,
+        layer.objectMatrixWorld?.join(',') ?? '',
+        getLayerCameraSignature(layer.camera),
+      ].join('~'),
+    )
+    .join('|');
+}
+
+function updateLayerUniforms(
+  material: THREE.ShaderMaterial,
+  binding: ProjectedLayerUniformBinding,
+  layer: ProjectionLayerStackInput['layers'][number],
+) {
+  const opacityUniform = material.uniforms[binding.opacityUniform];
+  if (opacityUniform) opacityUniform.value = layer.visible ? layer.opacity : 0;
+  const strengthUniform = material.uniforms[binding.strengthUniform];
+  if (strengthUniform) strengthUniform.value = layer.strength ?? 1;
+  const blendModeUniform = binding.blendModeUniform ? material.uniforms[binding.blendModeUniform] : undefined;
+  if (blendModeUniform) blendModeUniform.value = layer.blendMode === 'overlay' ? 1 : 0;
+  const hueUniform = material.uniforms[binding.hueUniform];
+  if (hueUniform) hueUniform.value = layer.hue ?? 0;
+  const saturationUniform = material.uniforms[binding.saturationUniform];
+  if (saturationUniform) saturationUniform.value = layer.saturation ?? 0;
+  const lightnessUniform = material.uniforms[binding.lightnessUniform];
+  if (lightnessUniform) lightnessUniform.value = layer.lightness ?? 0;
+}
+
+function updateSharedPreviewUniforms(material: THREE.ShaderMaterial, input: ProjectionLayerStackInput) {
+  const previewLighting = getPreviewLighting(input.previewLighting);
+  if (material.uniforms.baseMap && input.baseTexture) material.uniforms.baseMap.value = input.baseTexture;
+  if (material.uniforms.uvOverlayMap && input.uvOverlayTexture) material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
+  if (material.uniforms.useBaseMap) material.uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
+  if (material.uniforms.useUvOverlayMap) material.uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  if (material.uniforms.baseColor) material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
+  if (material.uniforms.previewLightingEnabled) material.uniforms.previewLightingEnabled.value = previewLighting.enabled;
+  if (material.uniforms.ambientLightIntensity) material.uniforms.ambientLightIntensity.value = previewLighting.ambientIntensity;
+  if (material.uniforms.keyLightIntensity) material.uniforms.keyLightIntensity.value = previewLighting.keyLightIntensity;
+  if (material.uniforms.keyLightDirection) material.uniforms.keyLightDirection.value = previewLighting.keyLightDirection;
+  if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
+  if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+}
+
+export function updateProjectedLayerStackMaterial(
+  material: THREE.Material | THREE.Material[] | undefined,
+  input: ProjectionLayerStackInput,
+) {
+  if (!(material instanceof THREE.ShaderMaterial)) return false;
+  const state = material.userData[PROJECTED_LAYER_STACK_STATE_KEY] as ProjectedLayerMaterialState | undefined;
+  if (!state) return false;
+  const layers = input.layers.filter((layer) => layer.imageUrl && layer.camera);
+  if (layers.length === 0) return false;
+  if (state.signature !== getProjectionLayerStructureSignature(layers)) return false;
+  updateSharedPreviewUniforms(material, input);
+  for (let index = 0; index < layers.length; index += 1) {
+    const binding = state.bindings[index];
+    const layer = layers[index];
+    if (!binding || binding.layerId !== layer.layerId) return false;
+    updateLayerUniforms(material, binding, layer);
+  }
+  return true;
+}
+
+type ProjectedTextureProfile = 'image' | 'mask' | 'depth';
+
+const projectedTextureCache = new Map<string, Promise<THREE.Texture>>();
+
+function getProjectedTextureCacheKey(imageUrl: string, colorSpace: THREE.ColorSpace, profile: ProjectedTextureProfile) {
+  return `${profile}:${colorSpace}:${imageUrl}`;
+}
+
+async function loadProjectedTexture(
+  imageUrl: string,
+  colorSpace: THREE.ColorSpace = THREE.SRGBColorSpace,
+  profile: ProjectedTextureProfile = 'image',
+) {
+  const cacheKey = getProjectedTextureCacheKey(imageUrl, colorSpace, profile);
+  const cachedTexture = projectedTextureCache.get(cacheKey);
+  if (cachedTexture) return cachedTexture;
+
+  const texturePromise = new THREE.TextureLoader().loadAsync(imageUrl)
+    .then((texture) => {
+      texture.colorSpace = colorSpace;
+      texture.flipY = false;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.minFilter = profile === 'depth' ? THREE.NearestFilter : THREE.LinearMipmapLinearFilter;
+      texture.magFilter = profile === 'depth' ? THREE.NearestFilter : THREE.LinearFilter;
+      texture.generateMipmaps = profile !== 'depth';
+      texture.anisotropy = profile === 'image' ? 8 : 1;
+      texture.needsUpdate = true;
+      return texture;
+    })
+    .catch((error) => {
+      projectedTextureCache.delete(cacheKey);
+      throw error;
+    });
+
+  projectedTextureCache.set(cacheKey, texturePromise);
+  return texturePromise;
+}
+
+export async function createProjectedLayerMaterial(input: ProjectionLayerInput) {
+  const materialLayer = {
+    layerId: input.layerId,
+    imageUrl: input.imageUrl,
+    maskUrl: input.maskUrl,
+    depthUrl: input.depthUrl,
+    camera: input.camera,
+    objectMatrixWorld: input.objectMatrixWorld,
+    opacity: input.opacity,
+    strength: input.strength,
+    blendMode: input.blendMode,
+    visible: input.visible,
+    hue: input.hue,
+    saturation: input.saturation,
+    lightness: input.lightness,
+    useMask: input.useMask,
+    useDepthCheck: input.useDepthCheck,
+  };
+  const texture = await loadProjectedTexture(input.imageUrl);
 
   const whitePixel = new Uint8Array([255, 255, 255, 255]);
   const neutralTexture = new THREE.DataTexture(whitePixel, 1, 1, THREE.RGBAFormat);
   neutralTexture.needsUpdate = true;
   const maskTexture = input.maskUrl
-    ? await new THREE.TextureLoader().loadAsync(input.maskUrl).catch((error) => {
+    ? await loadProjectedTexture(input.maskUrl, THREE.NoColorSpace, 'mask').catch((error) => {
         console.warn('[Liclick 3D Texture] Could not load projected layer mask; continuing without mask.', error);
         return neutralTexture;
       })
     : neutralTexture;
   const depthTexture = input.depthUrl
-    ? await new THREE.TextureLoader().loadAsync(input.depthUrl).catch((error) => {
+    ? await loadProjectedTexture(input.depthUrl, THREE.NoColorSpace, 'depth').catch((error) => {
         console.warn('[Liclick 3D Texture] Could not load projected layer depth; continuing without depth check.', error);
         return neutralTexture;
       })
     : neutralTexture;
   const baseTexture = input.baseTexture ?? neutralTexture;
   const uvOverlayTexture = input.uvOverlayTexture ?? neutralTexture;
-  if (input.baseTexture) {
-    input.baseTexture.colorSpace = THREE.SRGBColorSpace;
-    input.baseTexture.flipY = false;
-    input.baseTexture.wrapS = THREE.ClampToEdgeWrapping;
-    input.baseTexture.wrapT = THREE.ClampToEdgeWrapping;
-    input.baseTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    input.baseTexture.magFilter = THREE.LinearFilter;
-    input.baseTexture.generateMipmaps = true;
-  }
-  if (input.uvOverlayTexture) {
-    input.uvOverlayTexture.colorSpace = THREE.SRGBColorSpace;
-    input.uvOverlayTexture.flipY = false;
-    input.uvOverlayTexture.wrapS = THREE.ClampToEdgeWrapping;
-    input.uvOverlayTexture.wrapT = THREE.ClampToEdgeWrapping;
-    input.uvOverlayTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    input.uvOverlayTexture.magFilter = THREE.LinearFilter;
-    input.uvOverlayTexture.generateMipmaps = true;
-  }
+  if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
+  if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   maskTexture.flipY = false;
   depthTexture.flipY = false;
   maskTexture.wrapS = THREE.ClampToEdgeWrapping;
@@ -580,7 +730,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       objectMatrixDelta: { value: objectMatrixDelta },
       objectNormalDelta: { value: objectNormalDelta },
       projectorPosition: { value: new THREE.Vector3().fromArray(input.camera.position) },
-      layerOpacity: { value: input.opacity },
+      layerOpacity: { value: input.visible ? input.opacity : 0 },
       layerStrength: { value: input.strength ?? 1 },
       useMask: { value: input.useMask && input.maskUrl && maskTexture !== neutralTexture ? 1 : 0 },
       useDepthCheck: { value: input.useDepthCheck && input.depthUrl && depthTexture !== neutralTexture ? 1 : 0 },
@@ -601,7 +751,20 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     toneMapped: false,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
-  material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set([texture, maskTexture, depthTexture])];
+  material.userData[DISPOSABLE_TEXTURES_KEY] = [neutralTexture];
+  material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
+    signature: getProjectionLayerStructureSignature([materialLayer]),
+    bindings: [
+      {
+        layerId: input.layerId,
+        opacityUniform: 'layerOpacity',
+        strengthUniform: 'layerStrength',
+        hueUniform: 'hueShift',
+        saturationUniform: 'saturationShift',
+        lightnessUniform: 'lightnessShift',
+      },
+    ],
+  } satisfies ProjectedLayerMaterialState;
   material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
     layers: [
       {
@@ -614,21 +777,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   return material;
 }
 
-async function loadProjectedTexture(imageUrl: string, colorSpace: THREE.ColorSpace = THREE.SRGBColorSpace) {
-  const texture = await new THREE.TextureLoader().loadAsync(imageUrl);
-  texture.colorSpace = colorSpace;
-  texture.flipY = false;
-  texture.wrapS = THREE.ClampToEdgeWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = true;
-  texture.anisotropy = 8;
-  return texture;
-}
-
 export async function createProjectedLayerStackMaterial(input: ProjectionLayerStackInput) {
-  const layers = input.layers.filter((layer) => layer.visible && layer.imageUrl && layer.camera);
+  const layers = input.layers.filter((layer) => layer.imageUrl && layer.camera);
   if (layers.length === 0) return undefined;
   if (layers.length === 1) {
     const [layer] = layers;
@@ -672,24 +822,8 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   uniforms.ambientLightIntensity = { value: previewLighting.ambientIntensity };
   uniforms.keyLightIntensity = { value: previewLighting.keyLightIntensity };
   uniforms.keyLightDirection = { value: previewLighting.keyLightDirection };
-  if (input.baseTexture) {
-    input.baseTexture.colorSpace = THREE.SRGBColorSpace;
-    input.baseTexture.flipY = false;
-    input.baseTexture.wrapS = THREE.ClampToEdgeWrapping;
-    input.baseTexture.wrapT = THREE.ClampToEdgeWrapping;
-    input.baseTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    input.baseTexture.magFilter = THREE.LinearFilter;
-    input.baseTexture.generateMipmaps = true;
-  }
-  if (input.uvOverlayTexture) {
-    input.uvOverlayTexture.colorSpace = THREE.SRGBColorSpace;
-    input.uvOverlayTexture.flipY = false;
-    input.uvOverlayTexture.wrapS = THREE.ClampToEdgeWrapping;
-    input.uvOverlayTexture.wrapT = THREE.ClampToEdgeWrapping;
-    input.uvOverlayTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    input.uvOverlayTexture.magFilter = THREE.LinearFilter;
-    input.uvOverlayTexture.generateMipmaps = true;
-  }
+  if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
+  if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   const disposableTextures: THREE.Texture[] = [neutralTexture];
 
   const loadedLayers: typeof layers = [];
@@ -705,13 +839,13 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     const requestedMask = Boolean(layer.useMask && layer.maskUrl);
     const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
     const maskTexture = requestedMask
-      ? await loadProjectedTexture(layer.maskUrl!, THREE.NoColorSpace).catch((error) => {
+      ? await loadProjectedTexture(layer.maskUrl!, THREE.NoColorSpace, 'mask').catch((error) => {
           console.warn('[Liclick 3D Texture] Could not load projected layer mask; continuing without mask.', error);
           return neutralTexture;
         })
       : neutralTexture;
     const depthTexture = requestedDepth
-      ? await loadProjectedTexture(layer.depthUrl!, THREE.NoColorSpace).catch((error) => {
+      ? await loadProjectedTexture(layer.depthUrl!, THREE.NoColorSpace, 'depth').catch((error) => {
           console.warn('[Liclick 3D Texture] Could not load projected layer depth; continuing without depth check.', error);
           return neutralTexture;
         })
@@ -742,13 +876,12 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     uniforms[`objectMatrixDelta${index}`] = { value: objectMatrixDelta };
     uniforms[`objectNormalDelta${index}`] = { value: objectNormalDelta };
     uniforms[`projectorPosition${index}`] = { value: new THREE.Vector3().fromArray(layer.camera.position) };
-    uniforms[`layerOpacity${index}`] = { value: layer.opacity };
+    uniforms[`layerOpacity${index}`] = { value: layer.visible ? layer.opacity : 0 };
     uniforms[`layerStrength${index}`] = { value: layer.strength ?? 1 };
     uniforms[`layerBlendMode${index}`] = { value: layer.blendMode === 'overlay' ? 1 : 0 };
     uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
     uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
     uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
-    disposableTextures.push(texture, maskTexture, depthTexture);
     loadedLayers.push({ ...layer, useMask: shouldUseMask, useDepthCheck: shouldUseDepth });
   }
   if (loadedLayers.length === 0) return undefined;
@@ -762,6 +895,18 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
+  material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
+    signature: getProjectionLayerStructureSignature(loadedLayers),
+    bindings: loadedLayers.map((layer, index) => ({
+      layerId: layer.layerId,
+      opacityUniform: `layerOpacity${index}`,
+      strengthUniform: `layerStrength${index}`,
+      blendModeUniform: `layerBlendMode${index}`,
+      hueUniform: `hueShift${index}`,
+      saturationUniform: `saturationShift${index}`,
+      lightnessUniform: `lightnessShift${index}`,
+    })),
+  } satisfies ProjectedLayerMaterialState;
   material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
     layers: loadedLayers.map((layer, index) => ({
       objectMatrixWorld: layer.objectMatrixWorld,
@@ -908,18 +1053,8 @@ export function createUvOverlayPreviewMaterial(input: {
   neutralTexture.needsUpdate = true;
   neutralTexture.flipY = false;
 
-  const prepareExternalTexture = (texture: THREE.Texture) => {
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.flipY = false;
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.generateMipmaps = true;
-    texture.needsUpdate = true;
-  };
-  if (input.uvOverlayTexture) prepareExternalTexture(input.uvOverlayTexture);
-  if (input.baseTexture) prepareExternalTexture(input.baseTexture);
+  if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   const previewLighting = getPreviewLighting(input.previewLighting);
 
   const material = new THREE.ShaderMaterial({

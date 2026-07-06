@@ -5,8 +5,11 @@ import {
   Eraser,
   Minus,
   MousePointer2,
+  Move3D,
   Plus,
   Redo2,
+  Rotate3D,
+  Scaling,
   Sparkles,
   Undo2,
 } from 'lucide-react';
@@ -33,6 +36,8 @@ type BottomToolDockProps = {
     layers: string;
     brush: string;
     eraser: string;
+    eraserSize: string;
+    eraserHardness: string;
     localRepaint: string;
     inpaintSelect: string;
     inpaintUnselect: string;
@@ -56,8 +61,16 @@ type BottomToolDockProps = {
   };
 };
 
-const tools: Array<{ mode: TransformMode; icon: typeof MousePointer2; labelKey: 'select' }> = [
-  { mode: 'select', icon: MousePointer2, labelKey: 'select' },
+const tools: Array<{
+  mode: TransformMode;
+  icon: typeof MousePointer2;
+  labelKey: 'select' | 'move' | 'rotate' | 'scale';
+  shortcut: string;
+}> = [
+  { mode: 'select', icon: MousePointer2, labelKey: 'select', shortcut: 'V' },
+  { mode: 'translate', icon: Move3D, labelKey: 'move', shortcut: 'W' },
+  { mode: 'rotate', icon: Rotate3D, labelKey: 'rotate', shortcut: 'R' },
+  { mode: 'scale', icon: Scaling, labelKey: 'scale', shortcut: 'S' },
 ];
 
 const paintSwatches = ['#ffffff', '#ff6b4a', '#f7c948', '#56d364', '#3dd6ff', '#8b5cf6', '#f35bce', '#111111'];
@@ -118,12 +131,12 @@ export function BottomToolDock({
       ref={dockRef}
       className="mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
     >
-      {tools.map(({ mode, icon: Icon, labelKey }) => (
+      {tools.map(({ mode, icon: Icon, labelKey, shortcut }) => (
         <IconTooltip
           key={mode}
           label={labels[labelKey]}
           description={labels[`${labelKey}Help` as keyof typeof labels]}
-          shortcut="V"
+          shortcut={shortcut}
         >
           <button
             type="button"
@@ -237,7 +250,7 @@ export function BottomToolDock({
           <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
             <label className="grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>{labels.brushSize}</span>
+                <span>{labels.eraserSize}</span>
                 <input
                   value={paintSettings.eraserSize.toFixed(1)}
                   onChange={(event) =>
@@ -260,7 +273,7 @@ export function BottomToolDock({
             </label>
             <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
               <span className="flex items-center justify-between">
-                <span>{labels.brushHardness}</span>
+                <span>{labels.eraserHardness}</span>
                 <input
                   value={paintSettings.eraserHardness.toFixed(1)}
                   onChange={(event) =>

@@ -2,7 +2,7 @@ import { captureColor } from './captureColor';
 import { captureDepth } from './captureDepth';
 import { captureMask } from './captureMask';
 import { captureNormal } from './captureNormal';
-import type { CaptureCurrentViewRequest, CapturePassRequest } from './captureTypes';
+import type { CaptureCurrentViewRequest, CaptureNormalPreview, CapturePassRequest } from './captureTypes';
 import { applyTargetOnlyMaterial, renderSceneToPngUrl } from './renderTargetUtils';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { useProjectStore } from '@/stores/projectStore';
@@ -89,9 +89,12 @@ function createFitObjectCamera(
   aspect: number,
   fillRatio: number,
   controlsTarget?: THREE.Vector3,
+  viewDirection?: THREE.Vector3,
+  viewUp?: THREE.Vector3,
 ) {
-  const direction = getViewDirection(sourceCamera, controlsTarget);
-  const frame = getViewFrame(box, direction, sourceCamera.up);
+  const direction = viewDirection?.clone().normalize() ?? getViewDirection(sourceCamera, controlsTarget);
+  const upSource = viewUp?.clone().normalize() ?? sourceCamera.up;
+  const frame = getViewFrame(box, direction, upSource);
   const center = frame.center;
   const safeFillRatio = THREE.MathUtils.clamp(fillRatio, 0.2, 0.98);
 
@@ -100,7 +103,7 @@ function createFitObjectCamera(
     const halfWidth = halfHeight * aspect;
     const camera = new THREE.OrthographicCamera(-halfWidth, halfWidth, halfHeight, -halfHeight);
     camera.position.copy(center).add(direction.multiplyScalar(frame.halfDepth + halfHeight * 2));
-    camera.up.copy(sourceCamera.up);
+    camera.up.copy(upSource);
     camera.near = 0.01;
     camera.far = Math.max(frame.halfDepth * 8 + halfHeight * 4, 100);
     camera.zoom = 1;
@@ -120,13 +123,43 @@ function createFitObjectCamera(
   ) / safeFillRatio;
   const camera = new THREE.PerspectiveCamera(fov, aspect);
   camera.position.copy(center).add(direction.multiplyScalar(distance));
-  camera.up.copy(sourceCamera.up);
+  camera.up.copy(upSource);
   camera.near = Math.max(0.01, distance - frame.halfDepth * 3);
   camera.far = Math.max(distance + frame.halfDepth * 5, 100);
   camera.lookAt(center);
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld(true);
   return { camera, target: center.clone() };
+}
+
+function vectorFromTuple(tuple?: [number, number, number]) {
+  return tuple ? new THREE.Vector3(tuple[0], tuple[1], tuple[2]) : undefined;
+}
+
+function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number) {
+  const viewport = useSceneStore.getState().viewport;
+  if (!viewport) throw new Error('Viewport is not ready yet.');
+
+  let captureCamera = viewport.camera;
+  let captureTarget = viewport.controls?.target?.clone() ?? new THREE.Vector3();
+
+  if (request.framing === 'fit-object') {
+    const targetBounds = getTargetBounds(viewport.scene, request.objectId);
+    if (!targetBounds) throw new Error('Could not find the selected model for fitted capture.');
+    const fitted = createFitObjectCamera(
+      viewport.camera,
+      targetBounds,
+      aspect,
+      request.fillRatio ?? defaultFillRatio,
+      viewport.controls?.target,
+      vectorFromTuple(request.viewDirection),
+      vectorFromTuple(request.viewUp),
+    );
+    captureCamera = fitted.camera;
+    captureTarget = fitted.target;
+  }
+
+  return { viewport, captureCamera, captureTarget };
 }
 
 async function captureClayTarget(passRequest: CapturePassRequest) {
@@ -155,9 +188,6 @@ async function captureClayTarget(passRequest: CapturePassRequest) {
 }
 
 export async function captureCurrentView(request: CaptureCurrentViewRequest): Promise<Capture> {
-  const viewport = useSceneStore.getState().viewport;
-  if (!viewport) throw new Error('Viewport is not ready yet.');
-
   const size = Math.min(request.resolution, maxCaptureSize);
   const warnings: string[] = [];
   if (request.resolution > maxCaptureSize) {
@@ -165,22 +195,7 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   }
 
   const aspect = 1;
-  let captureCamera = viewport.camera;
-  let captureTarget = viewport.controls?.target?.clone() ?? new THREE.Vector3();
-
-  if (request.framing === 'fit-object') {
-    const targetBounds = getTargetBounds(viewport.scene, request.objectId);
-    if (!targetBounds) throw new Error('Could not find the selected model for fitted capture.');
-    const fitted = createFitObjectCamera(
-      viewport.camera,
-      targetBounds,
-      aspect,
-      request.fillRatio ?? defaultFillRatio,
-      viewport.controls?.target,
-    );
-    captureCamera = fitted.camera;
-    captureTarget = fitted.target;
-  }
+  const { viewport, captureCamera, captureTarget } = resolveCaptureCamera(request, aspect);
 
   const passRequest: CapturePassRequest = {
     gl: viewport.gl,
@@ -213,4 +228,29 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   useProjectStore.getState().addCapture(capture);
   console.info('[Liclick 3D Texture] Capture current view:', capture);
   return capture;
+}
+
+export async function captureCurrentNormalPreview(request: CaptureCurrentViewRequest): Promise<CaptureNormalPreview> {
+  const size = Math.min(request.resolution, 1024);
+  const aspect = 1;
+  const { viewport, captureCamera, captureTarget } = resolveCaptureCamera(request, aspect);
+  const passRequest: CapturePassRequest = {
+    gl: viewport.gl,
+    scene: viewport.scene,
+    camera: captureCamera,
+    objectId: request.objectId,
+    width: size,
+    height: size,
+  };
+  const normal = await captureNormal(passRequest);
+  return {
+    id: createId('normal-preview'),
+    objectId: request.objectId,
+    camera: serializeCamera(captureCamera, aspect, captureTarget),
+    width: size,
+    height: size,
+    normalUrl: normal.url,
+    createdAt: new Date().toISOString(),
+    warnings: normal.warnings,
+  };
 }

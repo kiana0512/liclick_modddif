@@ -4,10 +4,13 @@ import { Download, Image, ImagePlus, Layers, Maximize2, Plus, Settings, Sparkles
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
-import { captureCurrentView } from '@/engine/capture/captureCurrentView';
+import { captureCurrentNormalPreview, captureCurrentView } from '@/engine/capture/captureCurrentView';
+import { createComfyRuntimeControlFiles } from '@/engine/export/comfyControlInputExporter';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
+import { getObjectViewPresetDirection, type ObjectViewPreset } from '@/engine/scene/transformActions';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
 import { devLogin } from '@/services/authApiClient';
+import { createComfyuiApiClient, type ComfyControlFile } from '@/services/comfyuiApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import {
   createLiclickApiClient,
@@ -25,6 +28,7 @@ import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { Capture } from '@/types/capture';
+import type { CaptureNormalPreview, CaptureResolution } from '@/engine/capture/captureTypes';
 import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
@@ -43,6 +47,20 @@ import {
 
 type GenerateTab = 'single' | 'multiview';
 type GenerateMode = 'visible' | 'upscale';
+type TextureMapViewMode = 'single-view' | 'multi-view';
+type CameraViewOption = {
+  value: ObjectViewPreset;
+  labelKey:
+    | 'frontView'
+    | 'frontLeftView'
+    | 'frontRightView'
+    | 'backView'
+    | 'backLeftView'
+    | 'backRightView'
+    | 'leftView'
+    | 'rightView';
+};
+type CameraViewPreviewMap = Partial<Record<ObjectViewPreset, CaptureNormalPreview>>;
 type GenerateNotice = {
   tone: 'info' | 'warning' | 'error';
   message: string;
@@ -61,6 +79,17 @@ const imageModels: { value: LiclickImageModel; label: string }[] = [
   { value: 'gpt-image-1.5', label: 'GPT-Image 1.5' },
   { value: 'doubao-seedream-4-5-251128', label: 'Seedream 4.5' },
   { value: 'midjourney-7', label: 'Midjourney V7' },
+];
+
+const cameraViewOptions: CameraViewOption[] = [
+  { value: 'front-left', labelKey: 'frontLeftView' },
+  { value: 'front', labelKey: 'frontView' },
+  { value: 'front-right', labelKey: 'frontRightView' },
+  { value: 'left', labelKey: 'leftView' },
+  { value: 'right', labelKey: 'rightView' },
+  { value: 'back-left', labelKey: 'backLeftView' },
+  { value: 'back', labelKey: 'backView' },
+  { value: 'back-right', labelKey: 'backRightView' },
 ];
 
 const aspectRatios: LiclickAspectRatio[] = ['auto', '1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16'];
@@ -85,6 +114,24 @@ const checkerBackgroundStyle = {
   backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0',
   backgroundSize: '16px 16px',
 };
+
+function CameraViewThumbnail({ preview, loading }: { preview?: CaptureNormalPreview; loading: boolean }) {
+  const normalUrl = preview?.normalUrl;
+  return (
+    <span className="relative block h-full w-full overflow-hidden rounded-[inherit] bg-[#252528]">
+      {normalUrl ? (
+        <img src={normalUrl} alt="" className="h-full w-full object-contain" />
+      ) : (
+        <span className="absolute inset-0 bg-[radial-gradient(circle_at_45%_34%,rgba(255,255,255,0.16),transparent_30%),linear-gradient(135deg,rgba(82,255,163,0.18),rgba(71,126,255,0.2))]" />
+      )}
+      {loading && (
+        <span className="absolute inset-0 grid place-items-center bg-black/24">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/18 border-t-white/72" />
+        </span>
+      )}
+    </span>
+  );
+}
 
 const textureMapDefaultPrompt =
   '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。';
@@ -153,8 +200,11 @@ function getImageSize(url: string) {
   });
 }
 
-function getImportedModelMatrixWorld() {
-  const model = useSceneStore.getState().importedModel;
+function getImportedModelMatrixWorld(objectId?: string) {
+  const sceneState = useSceneStore.getState();
+  const model = objectId
+    ? sceneState.importedModels.find((item) => item.objectId === objectId)
+    : sceneState.importedModel;
   if (!model) return undefined;
   model.group.updateMatrixWorld(true);
   return model.group.matrixWorld.toArray();
@@ -165,7 +215,12 @@ export function GeneratePanel() {
   const [tab, setTab] = useState<GenerateTab>('single');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
+  const [activeCameraView, setActiveCameraView] = useState<ObjectViewPreset>('front');
+  const [textureMapViewMode, setTextureMapViewMode] = useState<TextureMapViewMode>('single-view');
+  const [cameraViewPreviews, setCameraViewPreviews] = useState<CameraViewPreviewMap>({});
+  const [capturingCameraViews, setCapturingCameraViews] = useState<Set<ObjectViewPreset>>(() => new Set());
   const [generateNotice, setGenerateNotice] = useState<GenerateNotice | undefined>();
+  const [cancelConfirmGeneration, setCancelConfirmGeneration] = useState<Generation | undefined>();
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
   );
@@ -197,22 +252,21 @@ export function GeneratePanel() {
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const objects = useSceneStore((state) => state.objects);
   const importedModel = useSceneStore((state) => state.importedModel);
-  const activeReferences = useMemo(
-    () => references.filter((reference) => !reference.objectId || reference.objectId === selectedObjectId),
-    [references, selectedObjectId],
-  );
-  const activeReferenceIds = useMemo(() => new Set(activeReferences.map((reference) => reference.id)), [activeReferences]);
+  const activeReferences = references;
+  const activeReferenceIds = useMemo(() => new Set(references.map((reference) => reference.id)), [references]);
   const activeSelectedReferenceIds = useMemo(
     () => selectedReferenceIds.filter((id) => activeReferenceIds.has(id)),
     [activeReferenceIds, selectedReferenceIds],
   );
   const resolution = useSettingsStore((state) => state.resolution);
+  const imageGenerationProvider = useSettingsStore((state) => state.imageGenerationProvider);
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const submitLockRef = useRef(false);
   const cancelledGenerationIdsRef = useRef(new Set<string>());
+  const comfyGenerationAbortRef = useRef<AbortController | undefined>();
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const tabGenerations = generations.filter((generation) => {
     const projectId = typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
@@ -224,8 +278,7 @@ export function GeneratePanel() {
   const previewIsGenerating = isRunningGeneration(previewGeneration);
   const previewFailed = previewGeneration?.status === 'failed';
   const previewCancelled = previewGeneration?.metadata.cancelled === true;
-  const canCancelLiclickGeneration =
-    Boolean(activeProjectGeneration) && !isTextureMapTab && !isTextureMapGeneration(activeProjectGeneration!);
+  const canCancelGeneration = Boolean(activeProjectGeneration);
 
   const syncGeneration = useCallback(
     (generation: Generation) => {
@@ -253,6 +306,26 @@ export function GeneratePanel() {
     [finish, pushToast, syncGeneration, t],
   );
 
+  const captureTextureMapCameraView = useCallback(
+    async (view?: ObjectViewPreset, options: { setAsLastCapture?: boolean; resolution?: CaptureResolution } = {}) => {
+      if (!importedModel) throw new Error(t('importModelFirst'));
+      const objectId = selectedObjectId ?? importedModel.objectId;
+      const viewDirection = view ? getObjectViewPresetDirection(view).toArray() as [number, number, number] : undefined;
+      const capture = await captureCurrentView({
+        objectId,
+        resolution: options.resolution ?? resolutionToSize[resolution],
+        framing: 'fit-object',
+        colorMode: 'clay-target',
+        fillRatio: 0.92,
+        viewDirection,
+        viewUp: view === 'top' ? [0, 0, -1] : undefined,
+      });
+      if (options.setAsLastCapture !== false) setLastCapture(capture);
+      return capture;
+    },
+    [importedModel, resolution, selectedObjectId, setLastCapture, t],
+  );
+
   useEffect(() => {
     if (!settingsOpen) return undefined;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -267,6 +340,74 @@ export function GeneratePanel() {
       setSelectedReferences([activeSelectedReferenceIds[0]]);
     }
   }, [activeSelectedReferenceIds, setSelectedReferences, tab]);
+
+  useEffect(() => {
+    setCameraViewPreviews({});
+    setCapturingCameraViews(new Set());
+  }, [importedModel?.objectId, resolution, selectedObjectId]);
+
+  useEffect(() => {
+    if (!isTextureMapTab || textureMapViewMode !== 'multi-view' || !importedModel) return undefined;
+    const currentImportedModel = importedModel;
+    const missingViews = cameraViewOptions
+      .map((view) => view.value)
+      .filter((view) => !cameraViewPreviews[view] && !capturingCameraViews.has(view));
+    if (missingViews.length === 0) return undefined;
+
+    let cancelled = false;
+    setCapturingCameraViews((current) => new Set([...current, ...missingViews]));
+
+    async function captureMissingViews() {
+      try {
+        for (const view of missingViews) {
+          const objectId = selectedObjectId ?? currentImportedModel.objectId;
+          const viewDirection = getObjectViewPresetDirection(view).toArray() as [number, number, number];
+          const preview = await captureCurrentNormalPreview({
+            objectId,
+            resolution: 512,
+            framing: 'fit-object',
+            fillRatio: 0.9,
+            viewDirection,
+          });
+          if (cancelled) return;
+          setCameraViewPreviews((current) => ({ ...current, [view]: preview }));
+          setCapturingCameraViews((current) => {
+            const next = new Set(current);
+            next.delete(view);
+            return next;
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[Liclick 3D Texture] Could not capture multiview normal thumbnails:', error);
+          setGenerateNotice({
+            tone: 'warning',
+            message: error instanceof Error ? error.message : '无法生成多视图法线预览。',
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setCapturingCameraViews((current) => {
+            const next = new Set(current);
+            missingViews.forEach((view) => next.delete(view));
+            return next;
+          });
+        }
+      }
+    }
+
+    void captureMissingViews();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    cameraViewPreviews,
+    capturingCameraViews,
+    importedModel,
+    isTextureMapTab,
+    selectedObjectId,
+    textureMapViewMode,
+  ]);
 
   useEffect(() => {
     if (!previewGeneration || previewGeneration.resultUrl) return undefined;
@@ -383,6 +524,14 @@ export function GeneratePanel() {
     });
   }
 
+  function handleCameraViewPreset(view: ObjectViewPreset) {
+    if (!(selectedObjectId ?? importedModel?.objectId)) {
+      pushToast({ tone: 'warning', title: t('importModelFirst') });
+      return;
+    }
+    setActiveCameraView(view);
+  }
+
   function getGenerationJobId(generation: Generation) {
     const taskId = typeof generation.metadata.taskId === 'string' ? generation.metadata.taskId : undefined;
     const serverJobId =
@@ -394,19 +543,35 @@ export function GeneratePanel() {
     return taskId ?? serverJobId ?? clientGenerationId ?? generation.id;
   }
 
-  function cancelLiclickGeneration() {
+  function isCancelledGeneration(generation: Generation) {
+    const jobId = getGenerationJobId(generation);
+    return cancelledGenerationIdsRef.current.has(generation.id) || cancelledGenerationIdsRef.current.has(jobId);
+  }
+
+  function cancelCurrentGeneration() {
     const generationToCancel = activeProjectGeneration;
-    if (!generationToCancel || isTextureMapGeneration(generationToCancel)) return;
+    if (!generationToCancel) return;
+    setCancelConfirmGeneration(generationToCancel);
+  }
+
+  function confirmCancelCurrentGeneration() {
+    const generationToCancel = cancelConfirmGeneration ?? activeProjectGeneration;
+    if (!generationToCancel) return;
+    setCancelConfirmGeneration(undefined);
+    if (!isRunningGeneration(generationToCancel)) return;
     const jobId = getGenerationJobId(generationToCancel);
+    const isTextureMap = isTextureMapGeneration(generationToCancel);
+    const isComfyGeneration = generationToCancel.metadata.provider === 'comfyui-local';
     cancelledGenerationIdsRef.current.add(generationToCancel.id);
     cancelledGenerationIdsRef.current.add(jobId);
+    if (isComfyGeneration) comfyGenerationAbortRef.current?.abort();
     const cancelledGeneration: Generation = {
       ...generationToCancel,
       status: 'failed',
       metadata: {
         ...generationToCancel.metadata,
         cancelled: true,
-        error: '用户已终止莉刻生图任务。',
+        error: isTextureMap ? '用户已终止纹理贴图生成任务。' : '用户已终止莉刻生图任务。',
         completedAt: new Date().toISOString(),
       },
     };
@@ -415,19 +580,20 @@ export function GeneratePanel() {
     finish();
     setGenerateNotice({
       tone: 'info',
-      message: '已终止当前莉刻生图任务。',
+      message: isTextureMap ? '已终止当前纹理贴图生成任务，并丢弃本次等待结果。' : '已终止当前莉刻生图任务。',
     });
-    void createLiclickApiClient()
-      .cancelGenerationJob(jobId)
-      .catch((error) => {
-        console.warn('[Liclick 3D Texture] Could not cancel remote generation job:', error);
-        pushToast({
-          tone: 'warning',
-          title: '本地已终止',
-          description: error instanceof Error ? error.message : '后端取消请求失败，但本地已停止等待。',
-          dedupeKey: `generation-cancel-warning:${jobId}`,
-        });
+    const cancelRequest = isComfyGeneration
+      ? createComfyuiApiClient().cancelTextureMap(jobId)
+      : createLiclickApiClient().cancelGenerationJob(jobId);
+    void cancelRequest.catch((error) => {
+      console.warn('[Liclick 3D Texture] Could not cancel remote generation job:', error);
+      pushToast({
+        tone: 'warning',
+        title: '本地已终止',
+        description: error instanceof Error ? error.message : '后端取消请求失败，但本地已停止等待。',
+        dedupeKey: `generation-cancel-warning:${jobId}`,
       });
+    });
   }
 
   async function requireAiLogin() {
@@ -484,6 +650,10 @@ export function GeneratePanel() {
   }
 
   async function captureTextureMapReferenceView() {
+    return captureTextureMapCameraView();
+  }
+
+  async function captureComfyTextureMapReferenceView() {
     if (!importedModel) throw new Error(t('importModelFirst'));
     const objectId = selectedObjectId ?? importedModel.objectId;
     const capture = await captureCurrentView({
@@ -495,6 +665,202 @@ export function GeneratePanel() {
     });
     setLastCapture(capture);
     return capture;
+  }
+
+  async function getTextureMapMultiviewCaptures() {
+    const captures: Partial<Record<ObjectViewPreset, Capture>> = {};
+    for (const view of cameraViewOptions.map((option) => option.value)) {
+      if (captures[view]) continue;
+      setCapturingCameraViews((current) => new Set([...current, view]));
+      try {
+        const capture = await captureTextureMapCameraView(view, { setAsLastCapture: false });
+        captures[view] = capture;
+      } finally {
+        setCapturingCameraViews((current) => {
+          const next = new Set(current);
+          next.delete(view);
+          return next;
+        });
+      }
+    }
+    return cameraViewOptions
+      .map((option) => ({ view: option.value, label: t(option.labelKey), capture: captures[option.value] }))
+      .filter((item): item is { view: ObjectViewPreset; label: string; capture: Capture } => Boolean(item.capture));
+  }
+
+  async function handleTextureMapMultiviewGenerate(materialReference: ReferenceImage) {
+    if (!importedModel) throw new Error(t('importModelFirst'));
+    const objectId = selectedObjectId ?? importedModel.objectId;
+    const object = objects.find((item) => item.id === objectId);
+    const texturePrompt = buildTextureMapPrompt(prompt);
+    const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
+    const viewCaptures = await getTextureMapMultiviewCaptures();
+    if (viewCaptures.length === 0) throw new Error('无法捕获多视图模型方向。');
+    if (!(await requireAiLogin())) return;
+
+    setGenerateNotice({
+      tone: 'info',
+      message: `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`,
+    });
+
+    const client = createLiclickApiClient();
+    const pendingGenerations = viewCaptures.map(({ view, label, capture }) => {
+      const generationId = createId(`texture-map-${view}`);
+      const modelViewReference: ReferenceImage = {
+        id: `${capture.id}-model-view-${view}`,
+        name: `Current model view - ${label}`,
+        url: capture.colorUrl,
+        width: capture.width,
+        height: capture.height,
+        objectId: capture.objectId,
+        isPrimary: false,
+      };
+      const pendingGeneration: Generation = {
+        id: generationId,
+        mode: 'multiview',
+        prompt: texturePrompt,
+        referenceIds: [modelViewReference.id, materialReference.id],
+        captureId: capture.id,
+        status: 'running',
+        metadata: {
+          provider: 'liclick-atlas',
+          workflow: 'texture-map',
+          clientGenerationId: generationId,
+          projectId: currentProject?.id,
+          model: imageModel,
+          objectId: object?.id,
+          objectMatrixWorld,
+          materialReferenceId: materialReference.id,
+          modelViewReferenceId: modelViewReference.id,
+          multiview: true,
+          cameraView: view,
+          cameraViewLabel: label,
+          resolution,
+          serverSubmitted: false,
+          startedAt: new Date().toISOString(),
+          alphaMode: 'pending-guided-foreground-matte',
+        },
+      };
+      return { view, label, capture, generationId, modelViewReference, pendingGeneration };
+    });
+
+    pendingGenerations.forEach(({ pendingGeneration }) => {
+      start(pendingGeneration);
+      addProjectGeneration(pendingGeneration);
+    });
+
+    const results = await Promise.allSettled(
+      pendingGenerations.map(({ capture, generationId, modelViewReference }) =>
+        client.generateTextureSingleView({
+          clientGenerationId: generationId,
+          projectId: currentProject?.id,
+          workflow: 'texture-map',
+          mode: 'single',
+          prompt: texturePrompt,
+          referenceIds: [modelViewReference.id, materialReference.id],
+          referenceImages: [modelViewReference, materialReference],
+          capture,
+          object,
+          resolution,
+          textureMode: 'realistic',
+          visibleOnly: true,
+          upscale: false,
+          model: imageModel,
+          aspectRatio: resolveRequestAspectRatio(imageModel, aspectRatio, resolveRequestImageSize(imageSize)),
+          imageSize: resolveRequestImageSize(imageSize),
+          count: 1,
+        }),
+      ),
+    );
+
+    let successCount = 0;
+    results.forEach((result, index) => {
+      const pending = pendingGenerations[index];
+      if (!pending) return;
+      if (result.status === 'fulfilled') {
+        successCount += 1;
+        syncGeneration({
+          ...result.value,
+          mode: 'multiview',
+          metadata: {
+            ...result.value.metadata,
+            workflow: 'texture-map',
+            objectMatrixWorld,
+            materialReferenceId: materialReference.id,
+            modelViewReferenceId: pending.modelViewReference.id,
+            multiview: true,
+            cameraView: pending.view,
+            cameraViewLabel: pending.label,
+            serverSubmitted: true,
+            serverJobId: result.value.metadata.serverJobId ?? result.value.id,
+            alphaMode: 'pending-guided-foreground-matte',
+          },
+        });
+        return;
+      }
+      syncGeneration(
+        createFailedGeneration(
+          pending.pendingGeneration,
+          result.reason instanceof Error ? result.reason.message : `${pending.label} 视角提交失败。`,
+          { cameraView: pending.view, cameraViewLabel: pending.label },
+        ),
+      );
+    });
+
+    setGenerateNotice(undefined);
+    pushToast({
+      tone: successCount > 0 ? 'success' : 'error',
+      title: successCount > 0 ? t('textureMapGenerated') : t('textureMapFailed'),
+      description:
+        successCount > 0
+          ? `已提交 ${successCount}/${pendingGenerations.length} 个多视图纹理贴图任务。`
+          : '多视图纹理贴图任务提交失败。',
+    });
+  }
+
+  async function blobToDataUrl(blob: Blob) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error ?? new Error('Could not read ComfyUI control image.'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function createComfyControlFiles(materialReference: ReferenceImage, materialPrompt: string): Promise<ComfyControlFile[]> {
+    if (!currentProject) throw new Error('请先打开一个项目。');
+    if (!importedModel) throw new Error(t('importModelFirst'));
+    const viewport = useSceneStore.getState().viewport;
+    if (!viewport) throw new Error(t('viewportUnavailable'));
+    const requiredPaths = new Set([
+      'render/01_white_render.png',
+      'masks/01_object_mask.png',
+      'controlnet_ready/control_depth.png',
+      'material/02_material_reference_cropped.png',
+      'geometry/08_normal_view.png',
+    ]);
+    const exportResult = await createComfyRuntimeControlFiles({
+      project: currentProject,
+      viewport,
+      importedModel,
+      selectedObjectId: selectedObjectId ?? importedModel.objectId,
+      references: [materialReference],
+      options: {
+        width: 4096,
+        height: 4096,
+        materialPrompt,
+      },
+    });
+    const files = await Promise.all(
+      exportResult.files
+        .filter((file) => [...requiredPaths].some((requiredPath) => file.path.endsWith(requiredPath)))
+        .map(async (file) => ({
+          path: file.path.slice(exportResult.rootPrefix.length + 1),
+          dataUrl: await blobToDataUrl(file.data instanceof Blob ? file.data : new Blob([file.data])),
+        })),
+    );
+    if (files.length !== requiredPaths.size) throw new Error('ComfyUI 控制图导出不完整，请检查当前模型和参考图。');
+    return files;
   }
 
   async function handleGenerate() {
@@ -521,7 +887,7 @@ export function GeneratePanel() {
       if (!(await requireAiLogin())) return;
       const submittedPrompt = buildLiclickPrompt(prompt, imageModel);
       const generationId = createId('liclick-image');
-      const objectMatrixWorld = getImportedModelMatrixWorld();
+      const objectMatrixWorld = getImportedModelMatrixWorld(selectedObjectId ?? importedModel?.objectId);
       pendingGeneration = {
         id: generationId,
         mode: 'single',
@@ -637,12 +1003,100 @@ export function GeneratePanel() {
         return;
       }
       submitLockRef.current = true;
+      if (textureMapViewMode === 'multi-view') {
+        await handleTextureMapMultiviewGenerate(materialReference);
+        return;
+      }
+      if (imageGenerationProvider === 'comfyui') {
+        const capture = await captureComfyTextureMapReferenceView();
+        const object = objects.find((item) => item.id === capture.objectId);
+        if (authStatus !== 'authenticated' && !(await requireAiLogin())) return;
+        const texturePrompt = prompt.trim();
+        const generationId = createId('texture-map');
+        const objectMatrixWorld = getImportedModelMatrixWorld(capture.objectId);
+        const modelViewReference: ReferenceImage = {
+          id: `${capture.id}-model-view`,
+          name: 'Current model view',
+          url: capture.colorUrl,
+          width: capture.width,
+          height: capture.height,
+          objectId: capture.objectId,
+          isPrimary: false,
+        };
+        pendingGeneration = {
+          id: generationId,
+          mode: 'single',
+          prompt: texturePrompt,
+          referenceIds: [modelViewReference.id, materialReference.id],
+          captureId: capture.id,
+          status: 'running',
+          metadata: {
+            provider: 'comfyui-local',
+            workflow: 'texture-map',
+            clientGenerationId: generationId,
+            projectId: currentProject?.id,
+            objectId: object?.id,
+            objectMatrixWorld,
+            materialReferenceId: materialReference.id,
+            modelViewReferenceId: modelViewReference.id,
+            resolution,
+            serverSubmitted: false,
+            startedAt: new Date().toISOString(),
+            alphaMode: 'pending-guided-foreground-matte',
+          },
+        };
+        start(pendingGeneration);
+        addProjectGeneration(pendingGeneration);
+        setGenerateNotice({
+          tone: 'info',
+          message: t('comfyTextureMapSubmitting'),
+        });
+        const comfyAbortController = new AbortController();
+        comfyGenerationAbortRef.current = comfyAbortController;
+        const files = await createComfyControlFiles(materialReference, texturePrompt);
+        if (isCancelledGeneration(pendingGeneration)) return;
+        const generation = await createComfyuiApiClient().generateTextureMap({
+          clientGenerationId: generationId,
+          projectId: currentProject?.id,
+          prompt: texturePrompt,
+          referenceIds: [modelViewReference.id, materialReference.id],
+          captureId: capture.id,
+          objectId: object?.id,
+          materialReferenceId: materialReference.id,
+          resolution,
+          files,
+        }, {
+          signal: comfyAbortController.signal,
+        });
+        if (isCancelledGeneration(pendingGeneration)) return;
+        const textureMapGeneration: Generation = {
+          ...generation,
+          metadata: {
+            ...generation.metadata,
+            workflow: 'texture-map',
+            objectMatrixWorld,
+            materialReferenceId: materialReference.id,
+            modelViewReferenceId: modelViewReference.id,
+            serverSubmitted: true,
+            serverJobId: generation.metadata.serverJobId ?? generation.id,
+            alphaMode: 'pending-guided-foreground-matte',
+          },
+        };
+        syncGeneration(textureMapGeneration);
+        setGenerateNotice(undefined);
+        pushToast({
+          tone: 'success',
+          title: t('textureMapGenerated'),
+          description: t('textureMapGeneratedHelp'),
+        });
+        return;
+      }
       const capture = await captureTextureMapReferenceView();
       const object = objects.find((item) => item.id === capture.objectId);
       if (!(await requireAiLogin())) return;
       const texturePrompt = buildTextureMapPrompt(prompt);
       const generationId = createId('texture-map');
-      const objectMatrixWorld = getImportedModelMatrixWorld();
+      const objectMatrixWorld = getImportedModelMatrixWorld(capture.objectId);
       const modelViewReference: ReferenceImage = {
         id: `${capture.id}-model-view`,
         name: 'Current model view',
@@ -700,6 +1154,7 @@ export function GeneratePanel() {
         imageSize: resolveRequestImageSize(imageSize),
         count: 1,
       });
+      if (isCancelledGeneration(pendingGeneration)) return;
       const textureMapGeneration: Generation = {
         ...generation,
         metadata: {
@@ -725,6 +1180,10 @@ export function GeneratePanel() {
         setGenerateNotice(undefined);
       }
     } catch (error) {
+      if (pendingGeneration && isCancelledGeneration(pendingGeneration)) {
+        finish();
+        return;
+      }
       console.error('[Liclick 3D Texture] Texture map generation failed:', error);
       setGenerateNotice({
         tone: 'error',
@@ -745,6 +1204,7 @@ export function GeneratePanel() {
         description: error instanceof Error ? error.message : 'Could not generate a texture map image.',
       });
     } finally {
+      comfyGenerationAbortRef.current = undefined;
       submitLockRef.current = false;
     }
   }
@@ -843,7 +1303,7 @@ export function GeneratePanel() {
         alphaMode: 'solid-background-cutout',
       },
     };
-    let layer = addProjectedLayerFromGeneration(layerGeneration, persistedGenerationCapture, selectedObjectId);
+    let layer = addProjectedLayerFromGeneration(layerGeneration, persistedGenerationCapture, persistedGenerationCapture?.objectId);
     let nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
     try {
@@ -887,7 +1347,6 @@ export function GeneratePanel() {
       url: previewGeneration.resultUrl,
       width: size.width,
       height: size.height,
-      objectId: selectedObjectId,
       isPrimary: true,
     };
     addReferences([reference]);
@@ -1009,12 +1468,12 @@ export function GeneratePanel() {
               <div className="grid gap-1">
                 <div className="text-sm font-semibold">{previewCancelled ? '已终止' : '生成失败'}</div>
                 <div className="text-xs text-white/66">
-                  {previewCancelled ? '当前莉刻生图任务已停止等待。' : '请检查提示词、参考图或模型要求后重试。'}
+                  {previewCancelled ? '当前生成任务已停止等待，本次结果已丢弃。' : '请检查提示词、参考图或模型要求后重试。'}
                 </div>
               </div>
             </div>
           )}
-          {generateMode === 'upscale' && (
+          {!isTextureMapTab && generateMode === 'upscale' && (
             <div className="absolute right-2 top-2 flex overflow-hidden rounded-md bg-black/62 text-white shadow-lg">
               <button type="button" className="grid h-8 w-8 place-items-center hover:bg-white/10" title={t('captureCurrentView')}>
                 <Image className="h-4 w-4" />
@@ -1031,39 +1490,113 @@ export function GeneratePanel() {
         </div>
 
         <div className="space-y-3 p-2.5">
-          <div className={`relative grid gap-2 text-xs text-white/72 ${generateMode === 'visible' ? 'grid-cols-[1fr_1fr_32px]' : 'grid-cols-2'}`}>
-            <button
-              type="button"
-              className={`h-9 rounded-md font-medium transition ${
-                generateMode === 'visible' ? 'bg-white text-black' : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
-              }`}
-              onClick={() => updateGenerationSettings({ mode: 'visible' })}
-            >
-              {t('visible')}
-            </button>
-            <button
-              type="button"
-              className={`h-9 rounded-md font-medium transition ${
-                generateMode === 'upscale' ? 'bg-white text-black' : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
-              }`}
-              onClick={() => updateGenerationSettings({ mode: 'upscale' })}
-            >
-              {t('upscale')}
-            </button>
-            {generateMode === 'visible' && (
+          {isTextureMapTab ? (
+            <div className="grid grid-cols-2 gap-2 text-xs text-white/72">
               <button
                 type="button"
-                className="grid h-9 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
-                aria-label={t('settings')}
-                title={t('settings')}
-                onClick={() => setSettingsOpen((open) => !open)}
+                className={`h-9 rounded-md font-medium transition ${
+                  textureMapViewMode === 'single-view'
+                    ? 'bg-white text-black'
+                    : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
+                }`}
+                onClick={() => setTextureMapViewMode('single-view')}
               >
-                <Settings className="h-4 w-4" />
+                {t('singleView')}
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                className={`h-9 rounded-md font-medium transition ${
+                  textureMapViewMode === 'multi-view'
+                    ? 'bg-white text-black'
+                    : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
+                }`}
+                onClick={() => setTextureMapViewMode('multi-view')}
+              >
+                {t('multiView')}
+              </button>
+            </div>
+          ) : (
+            <div className={`relative grid gap-2 text-xs text-white/72 ${generateMode === 'visible' ? 'grid-cols-[1fr_1fr_32px]' : 'grid-cols-2'}`}>
+              <button
+                type="button"
+                className={`h-9 rounded-md font-medium transition ${
+                  generateMode === 'visible' ? 'bg-white text-black' : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
+                }`}
+                onClick={() => updateGenerationSettings({ mode: 'visible' })}
+              >
+                {t('visible')}
+              </button>
+              <button
+                type="button"
+                className={`h-9 rounded-md font-medium transition ${
+                  generateMode === 'upscale' ? 'bg-white text-black' : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
+                }`}
+                onClick={() => updateGenerationSettings({ mode: 'upscale' })}
+              >
+                {t('upscale')}
+              </button>
+              {generateMode === 'visible' && (
+                <button
+                  type="button"
+                  className="grid h-9 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
+                  aria-label={t('settings')}
+                  title={t('settings')}
+                  onClick={() => setSettingsOpen((open) => !open)}
+                >
+                  <Settings className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          )}
 
-          {generateMode === 'visible' ? (
+          {isTextureMapTab && textureMapViewMode === 'multi-view' && (
+            <section className="grid gap-2">
+              <div className="flex items-center justify-between gap-2 text-sm font-semibold text-white/88">
+                <span>{t('cameraViews')}</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="grid h-7 w-7 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
+                    title={t('textureMapViewHint')}
+                    aria-label={t('textureMapViewHint')}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="grid h-7 w-7 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
+                    title={t('addCameraView')}
+                    aria-label={t('addCameraView')}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {cameraViewOptions.map((view) => (
+                  <button
+                    key={view.value}
+                    type="button"
+                    className={`h-[76px] overflow-hidden rounded-md border p-0.5 transition ${
+                      activeCameraView === view.value
+                        ? 'border-[#ff8a68] bg-[#ff8a68]/18 shadow-[0_0_0_2px_rgba(255,138,104,0.28)]'
+                        : 'border-white/10 bg-white/[0.045] hover:border-white/28 hover:bg-white/10'
+                    }`}
+                    onClick={() => handleCameraViewPreset(view.value)}
+                    title={t(view.labelKey)}
+                    aria-label={t(view.labelKey)}
+                  >
+                    <CameraViewThumbnail
+                      preview={cameraViewPreviews[view.value]}
+                      loading={capturingCameraViews.has(view.value)}
+                    />
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {isTextureMapTab || generateMode === 'visible' ? (
             <>
               <label className="grid gap-1.5 text-xs font-semibold text-white/82">
                 <span>{t('prompt')}</span>
@@ -1135,7 +1668,7 @@ export function GeneratePanel() {
             </div>
           )}
 
-          <div className={canCancelLiclickGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : undefined}>
+          <div className={canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : undefined}>
             <Button
               className="h-12 w-full text-base"
               variant="primary"
@@ -1145,13 +1678,13 @@ export function GeneratePanel() {
             >
               {previewIsGenerating ? t('generating') : tab === 'multiview' ? t('generateTextureMap') : t('generateImage')}
             </Button>
-            {canCancelLiclickGeneration && (
+            {canCancelGeneration && (
               <Button
                 className="h-12 w-full px-0"
                 variant="danger"
-                onClick={cancelLiclickGeneration}
-                title="终止莉刻生图"
-                aria-label="终止莉刻生图"
+                onClick={cancelCurrentGeneration}
+                title={isTextureMapTab ? '终止纹理贴图生成' : '终止莉刻生图'}
+                aria-label={isTextureMapTab ? '终止纹理贴图生成' : '终止莉刻生图'}
                 icon={<Square className="h-4 w-4 fill-current" />}
               />
             )}
@@ -1159,6 +1692,44 @@ export function GeneratePanel() {
         </div>
       </div>
     </Panel>
+    {portalRoot && cancelConfirmGeneration && createPortal(
+      <div className="fixed inset-0 z-[140] grid place-items-center bg-black/62 px-4 backdrop-blur-sm">
+        <div className="w-full max-w-[420px] rounded-lg border border-white/16 bg-[#151520] p-4 text-white shadow-2xl">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-liclick-pink">
+                {isTextureMapGeneration(cancelConfirmGeneration) ? '终止纹理贴图生成' : '终止莉刻生图'}
+              </div>
+              <div className="mt-1 text-lg font-bold">丢弃本次等待结果？</div>
+            </div>
+            <button
+              type="button"
+              className="grid h-8 w-8 place-items-center rounded-md text-white/70 transition hover:bg-white/10 hover:text-white"
+              onClick={() => setCancelConfirmGeneration(undefined)}
+              aria-label={t('close')}
+              title={t('close')}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="text-sm leading-6 text-white/72">
+            当前任务会立即从莉刻 3D Texture 面板中停止等待，生成结果不会写回预览、图层或项目。
+            {cancelConfirmGeneration.metadata.provider === 'comfyui-local'
+              ? ' 同时会向本地 ComfyUI 发送中断请求。'
+              : ' 同时会向生图后端发送取消请求。'}
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <Button variant="secondary" className="h-10" onClick={() => setCancelConfirmGeneration(undefined)}>
+              继续等待
+            </Button>
+            <Button variant="danger" className="h-10" onClick={confirmCancelCurrentGeneration} icon={<Square className="h-4 w-4 fill-current" />}>
+              终止并丢弃
+            </Button>
+          </div>
+        </div>
+      </div>,
+      portalRoot,
+    )}
       {portalRoot && previewImageOpen && previewGeneration?.resultUrl && createPortal(
       <button
         type="button"

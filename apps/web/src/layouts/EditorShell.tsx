@@ -4,6 +4,7 @@ import {
   Boxes,
   ChevronDown,
   Download,
+  Globe2,
   Image,
   Palette,
   PanelLeft,
@@ -37,6 +38,7 @@ type EditorShellProps = {
 };
 
 const modeIcons: Record<WorkspaceMode, typeof Palette> = {
+  scene: Globe2,
   texture: Palette,
   normal: ScanLine,
   segments: Boxes,
@@ -117,11 +119,13 @@ export function EditorShell({
 
   function handleModeChange(nextMode: WorkspaceMode) {
     setMode(nextMode);
+    if (nextMode === 'scene') setDisplayMode('pbr');
     if (nextMode === 'normal') setDisplayMode('normal');
     if (nextMode === 'texture') setDisplayMode('pbr');
   }
 
   const modeOptions: Array<{ value: WorkspaceMode; label: string }> = [
+    { value: 'scene', label: t('scene') },
     { value: 'texture', label: t('texture') },
     { value: 'normal', label: t('normal') },
     { value: 'segments', label: t('segments') },

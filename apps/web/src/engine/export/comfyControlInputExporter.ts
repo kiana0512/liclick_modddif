@@ -54,9 +54,15 @@ export type ComfyControlExportResult = {
   zipBlob: Blob;
   filename: string;
   rootPrefix: string;
+  files: ZipFile[];
   manifest: ComfyControlManifest;
   comfyuiInputs: unknown;
   validation: ReturnType<typeof validateComfyControlExportPackage>;
+};
+
+export type ComfyRuntimeControlFilesResult = {
+  rootPrefix: string;
+  files: ZipFile[];
 };
 
 type ZipFile = Parameters<typeof createZipBlob>[0][number];
@@ -104,6 +110,7 @@ type TargetMeshSnapshot = {
 
 const exporterVersion = '0.1.0';
 const textEncoder = new TextEncoder();
+const defaultComfyFillRatio = 0.92;
 
 const expectedFiles = [
   'render/01_white_render.png',
@@ -239,7 +246,9 @@ export async function createComfyControlInputPackage({
   if (targetMeshes.length === 0) throw new Error('No mesh was found for the selected Comfy control export object.');
   const modelStats = inspectModel(importedModel, targetMeshes);
   const bounds = new THREE.Box3().setFromObject(targetRoot);
-  const materialReference = chooseMaterialReference(references, objectId);
+  const fitted = createFittedExportCamera(viewport.camera, bounds, width / height, viewport.controls?.target);
+  const renderViewport: ViewportRuntime = { ...viewport, camera: fitted.camera };
+  const materialReference = chooseMaterialReference(references);
 
   async function addFile(path: string, data: BlobPart | Blob, entry: FileManifestEntry) {
     const blob = data instanceof Blob ? data : new Blob([data], { type: entry.type ?? 'application/octet-stream' });
@@ -267,7 +276,7 @@ export async function createComfyControlInputPackage({
   }
 
   const white = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -278,7 +287,7 @@ export async function createComfyControlInputPackage({
   await addFile('render/01_white_render.png', white.blob, pngEntry(width, height, 'White material render of current MVP view'));
 
   const clay = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -289,7 +298,7 @@ export async function createComfyControlInputPackage({
   await addFile('render/02_clay_render.png', clay.blob, pngEntry(width, height, 'Clay debug render of current MVP view'));
 
   const currentTexture = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -308,7 +317,7 @@ export async function createComfyControlInputPackage({
   );
 
   const albedo = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -340,13 +349,13 @@ export async function createComfyControlInputPackage({
   await addPng('masks/07_selection_mask.png', maskImage, 'Selected object mask fallback', 'masks/01_object_mask.png');
 
   const depthPass = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
     clearColor: '#000000',
     clearAlpha: 1,
-    materialForMesh: () => createDepthMaterial(viewport.camera),
+    materialForMesh: () => createDepthMaterial(renderViewport.camera),
   });
   const depthGray = copyMaskedChannel(depthPass.imageData, hardMask, 0);
   const depthStats = countNonZeroPixels(depthGray);
@@ -401,7 +410,7 @@ export async function createComfyControlInputPackage({
   );
 
   const normalWorld = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -410,7 +419,7 @@ export async function createComfyControlInputPackage({
     materialForMesh: () => createNormalMaterial('world'),
   });
   const normalView = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -419,7 +428,7 @@ export async function createComfyControlInputPackage({
     materialForMesh: () => createNormalMaterial('view'),
   });
   const normalObject = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -435,16 +444,16 @@ export async function createComfyControlInputPackage({
   await addPng('debug/debug_normal_overlay.png', overlayMask(normalView.imageData, hardMask), 'Normal overlay debug');
 
   const viewDirection = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
     clearColor: '#000000',
     clearAlpha: 1,
-    materialForMesh: () => createViewDirectionMaterial(viewport.camera),
+    materialForMesh: () => createViewDirectionMaterial(renderViewport.camera),
   });
   const facingRatio = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -459,7 +468,7 @@ export async function createComfyControlInputPackage({
 
   const uvPreview = modelStats.hasUv
     ? await renderObjectPass({
-        viewport,
+        viewport: renderViewport,
         objectId,
         width,
         height,
@@ -471,7 +480,7 @@ export async function createComfyControlInputPackage({
   if (uvPreview) await addFile('uv/02_uv_preview.png', uvPreview.blob, pngEntry(width, height, 'Visible UV coordinates preview'));
 
   const meshId = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -480,7 +489,7 @@ export async function createComfyControlInputPackage({
     materialForMesh: (mesh, index) => new THREE.MeshBasicMaterial({ color: stableColor(mesh.name || `mesh-${index}`) }),
   });
   const materialId = await renderObjectPass({
-    viewport,
+    viewport: renderViewport,
     objectId,
     width,
     height,
@@ -559,12 +568,12 @@ export async function createComfyControlInputPackage({
   await addPng('visibility/06_grazing_angle_mask.png', thresholdFacing(facingRatio.imageData, hardMask, 64, true), 'Grazing angle mask');
 
   const bbox2d = computeBbox2d(hardMask, width, height);
-  const cameraMetadata = createCameraMetadata(viewId, modelSlug, width, height, viewport.camera, viewport.controls?.target);
-  const matrices = createMatrices(targetRoot, viewport.camera);
-  const viewAxes = createViewAxes(targetRoot, viewport.camera);
+  const cameraMetadata = createCameraMetadata(viewId, modelSlug, width, height, renderViewport.camera, fitted.target);
+  const matrices = createMatrices(targetRoot, renderViewport.camera);
+  const viewAxes = createViewAxes(targetRoot, renderViewport.camera);
   const objectPose = createObjectPose(targetRoot, bounds);
-  const cameraPose = createCameraPose(viewport.camera, viewport.controls?.target);
-  const relativePose = createRelativePose(bounds, viewport.camera);
+  const cameraPose = createCameraPose(renderViewport.camera, fitted.target);
+  const relativePose = createRelativePose(bounds, renderViewport.camera);
   await addJson('camera/camera_metadata.json', cameraMetadata, addFile);
   await addJson('camera/matrices.json', matrices, addFile);
   await addJson('camera/view_axes.json', viewAxes, addFile);
@@ -573,7 +582,7 @@ export async function createComfyControlInputPackage({
   await addJson('pose/03_relative_pose.json', relativePose, addFile);
   await addPng('pose/04_pose_control_map.png', createPoseControlMap(width, height, bbox2d), 'Pose fallback: 2D bbox and axes');
   await addJson('pose/05_bbox_2d.json', bbox2d, addFile);
-  await addJson('pose/06_bbox_3d.json', createBbox3d(bounds, viewport.camera), addFile);
+  await addJson('pose/06_bbox_3d.json', createBbox3d(bounds, renderViewport.camera), addFile);
   await addJson('pose/07_keypoints_2d.json', { available: false, reason: 'No semantic keypoints or skeleton are available.' }, addFile);
   await addJson('pose/08_keypoints_3d.json', { available: false, reason: 'No semantic keypoints or skeleton are available.' }, addFile);
 
@@ -656,8 +665,8 @@ export async function createComfyControlInputPackage({
     },
     files: manifestFiles,
     depth: {
-      near: getCameraNear(viewport.camera),
-      far: getCameraFar(viewport.camera),
+      near: getCameraNear(renderViewport.camera),
+      far: getCameraFar(renderViewport.camera),
       min_visible_depth: null,
       max_visible_depth: null,
       control_depth_encoding: 'uint16_normalized_png_plus_8bit_preview',
@@ -698,9 +707,96 @@ export async function createComfyControlInputPackage({
     zipBlob,
     filename: `${modelSlug}_${viewId}_comfy_control_inputs.zip`,
     rootPrefix,
+    files,
     manifest,
     comfyuiInputs,
     validation,
+  };
+}
+
+export async function createComfyRuntimeControlFiles({
+  project,
+  viewport,
+  importedModel,
+  selectedObjectId,
+  references = [],
+  options,
+}: ComfyControlInputExporterRequest): Promise<ComfyRuntimeControlFilesResult> {
+  const width = clampExportSize(options?.width ?? 4096);
+  const height = clampExportSize(options?.height ?? options?.width ?? 4096);
+  const objectId = options?.modelId ?? selectedObjectId ?? importedModel.objectId;
+  const modelSlug = slugifyExportName(importedModel.name || project.name || objectId);
+  const viewId = slugifyExportName(options?.viewId ?? 'current_mvp_view');
+  const rootPrefix = `exports/comfy_control/${modelSlug}/${viewId}`;
+  const files: ZipFile[] = [];
+
+  viewport.scene.updateMatrixWorld(true);
+  viewport.camera.updateMatrixWorld(true);
+  const targetMeshes = collectTargetMeshes(viewport.scene, objectId);
+  if (targetMeshes.length === 0) throw new Error('No mesh was found for the selected Comfy control export object.');
+  const targetRoot = findTargetRoot(importedModel, objectId);
+  const bounds = new THREE.Box3().setFromObject(targetRoot);
+  const fitted = createFittedExportCamera(viewport.camera, bounds, width / height, viewport.controls?.target);
+  const renderViewport: ViewportRuntime = { ...viewport, camera: fitted.camera };
+  const materialReference = chooseMaterialReference(references);
+  if (!materialReference) throw new Error('ComfyUI 纹理贴图需要一张材质参考图。');
+
+  async function addFile(relativePath: string, data: BlobPart | Blob) {
+    const blob = data instanceof Blob ? data : new Blob([data]);
+    files.push({ path: `${rootPrefix}/${relativePath}`, data: blob });
+    return blob;
+  }
+
+  async function addPng(relativePath: string, imageData: ImageData) {
+    return addFile(relativePath, await imageDataToPngBlob(imageData));
+  }
+
+  const white = await renderObjectPass({
+    viewport: renderViewport,
+    objectId,
+    width,
+    height,
+    clearColor: '#000000',
+    clearAlpha: 1,
+    materialForMesh: () => new THREE.MeshBasicMaterial({ color: '#ffffff' }),
+  });
+  await addFile('render/01_white_render.png', white.blob);
+
+  const hardMask = maskFromWhiteRender(white.imageData);
+  await addPng('masks/01_object_mask.png', grayscaleImageData(width, height, hardMask));
+
+  const depthPass = await renderObjectPass({
+    viewport: renderViewport,
+    objectId,
+    width,
+    height,
+    clearColor: '#000000',
+    clearAlpha: 1,
+    materialForMesh: () => createDepthMaterial(renderViewport.camera),
+  });
+  const depthGray = copyMaskedChannel(depthPass.imageData, hardMask, 0);
+  await addFile('controlnet_ready/control_depth.png', await manifestBlobFromImage(depthGray, width, height));
+
+  const normalView = await renderObjectPass({
+    viewport: renderViewport,
+    objectId,
+    width,
+    height,
+    clearColor: '#000000',
+    clearAlpha: 1,
+    materialForMesh: () => createNormalMaterial('view'),
+  });
+  await addFile('geometry/08_normal_view.png', normalView.blob);
+  const normalEdge = imageGradientEdge(normalView.imageData, hardMask, 42);
+  await addPng('edges/03_normal_edge.png', grayscaleImageData(width, height, normalEdge));
+
+  const referenceImageData = await tryLoadImageData(materialReference.url);
+  if (!referenceImageData) throw new Error('无法读取材质参考图。');
+  await addPng('material/02_material_reference_cropped.png', cropCenterSquare(referenceImageData, width, height));
+
+  return {
+    rootPrefix,
+    files,
   };
 }
 
@@ -772,6 +868,99 @@ function collectTargetMeshes(scene: THREE.Scene, objectId: string) {
   return meshes;
 }
 
+function getBoxCorners(box: THREE.Box3) {
+  return [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+  ];
+}
+
+function getExportViewDirection(camera: THREE.Camera, controlsTarget?: THREE.Vector3) {
+  const direction = new THREE.Vector3();
+  if (controlsTarget) direction.copy(camera.position).sub(controlsTarget);
+  if (direction.lengthSq() < 0.0001) camera.getWorldDirection(direction).multiplyScalar(-1);
+  if (direction.lengthSq() < 0.0001) direction.set(1, 0.65, 1);
+  return direction.normalize();
+}
+
+function getExportViewFrame(box: THREE.Box3, direction: THREE.Vector3, sourceUp: THREE.Vector3) {
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  const viewDirection = direction.clone().normalize();
+  let right = sourceUp.clone().cross(viewDirection);
+  if (right.lengthSq() < 0.0001) right = new THREE.Vector3(1, 0, 0).cross(viewDirection);
+  if (right.lengthSq() < 0.0001) right = new THREE.Vector3(0, 0, 1).cross(viewDirection);
+  right.normalize();
+  const up = viewDirection.clone().cross(right).normalize();
+  let halfWidth = 0;
+  let halfHeight = 0;
+  let halfDepth = 0;
+  for (const corner of getBoxCorners(box)) {
+    const offset = corner.sub(center);
+    halfWidth = Math.max(halfWidth, Math.abs(offset.dot(right)));
+    halfHeight = Math.max(halfHeight, Math.abs(offset.dot(up)));
+    halfDepth = Math.max(halfDepth, Math.abs(offset.dot(viewDirection)));
+  }
+  return {
+    center,
+    direction: viewDirection,
+    halfWidth: Math.max(halfWidth, 0.001),
+    halfHeight: Math.max(halfHeight, 0.001),
+    halfDepth: Math.max(halfDepth, 0.001),
+  };
+}
+
+function createFittedExportCamera(
+  sourceCamera: THREE.Camera,
+  box: THREE.Box3,
+  aspect: number,
+  controlsTarget?: THREE.Vector3,
+) {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const fillRatio = THREE.MathUtils.clamp(defaultComfyFillRatio, 0.2, 0.98);
+  const direction = getExportViewDirection(sourceCamera, controlsTarget);
+  const frame = getExportViewFrame(box, direction, sourceCamera.up);
+  const target = frame.center.clone();
+
+  if (sourceCamera instanceof THREE.OrthographicCamera) {
+    const halfHeight = Math.max(frame.halfHeight, frame.halfWidth / safeAspect) / fillRatio;
+    const halfWidth = halfHeight * safeAspect;
+    const camera = new THREE.OrthographicCamera(-halfWidth, halfWidth, halfHeight, -halfHeight);
+    camera.position.copy(frame.center).add(frame.direction.clone().multiplyScalar(frame.halfDepth + halfHeight * 2));
+    camera.up.copy(sourceCamera.up);
+    camera.near = 0.01;
+    camera.far = Math.max(frame.halfDepth * 8 + halfHeight * 4, 100);
+    camera.zoom = 1;
+    camera.lookAt(target);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    return { camera, target };
+  }
+
+  const fov = sourceCamera instanceof THREE.PerspectiveCamera ? sourceCamera.fov : 35;
+  const fovRad = THREE.MathUtils.degToRad(fov);
+  const horizontalFovRad = 2 * Math.atan(Math.tan(fovRad * 0.5) * safeAspect);
+  const fitDistance =
+    Math.max(frame.halfHeight / Math.tan(fovRad * 0.5), frame.halfWidth / Math.tan(horizontalFovRad * 0.5)) /
+    fillRatio;
+  const distance = fitDistance + frame.halfDepth;
+  const camera = new THREE.PerspectiveCamera(fov, safeAspect);
+  camera.position.copy(frame.center).add(frame.direction.clone().multiplyScalar(distance));
+  camera.up.copy(sourceCamera.up);
+  camera.near = Math.max(0.01, distance - frame.halfDepth * 3);
+  camera.far = Math.max(distance + frame.halfDepth * 5, 100);
+  camera.lookAt(target);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld(true);
+  return { camera, target };
+}
+
 function isolateTarget(
   scene: THREE.Scene,
   objectId: string,
@@ -835,13 +1024,15 @@ async function renderObjectPass(input: {
   const previousClearColor = new THREE.Color();
   input.viewport.gl.getClearColor(previousClearColor);
   const previousClearAlpha = input.viewport.gl.getClearAlpha();
-  const restoreScene = isolateTarget(input.viewport.scene, input.objectId, input.materialForMesh);
+  const renderScene = input.viewport.scene.clone(true);
+  renderScene.updateMatrixWorld(true);
+  const restoreScene = isolateTarget(renderScene, input.objectId, input.materialForMesh);
 
   try {
     input.viewport.gl.setRenderTarget(target);
     input.viewport.gl.setClearColor(input.clearColor, input.clearAlpha);
     input.viewport.gl.clear();
-    input.viewport.gl.render(input.viewport.scene, input.viewport.camera);
+    input.viewport.gl.render(renderScene, input.viewport.camera);
     const pixels = new Uint8Array(input.width * input.height * 4);
     input.viewport.gl.readRenderTargetPixels(target, 0, 0, input.width, input.height, pixels);
     const imageData = pixelsToImageData(pixels, input.width, input.height);
@@ -1308,11 +1499,8 @@ function textureSlot(slot: string, texture: THREE.Texture) {
   };
 }
 
-function chooseMaterialReference(references: ReferenceImage[], objectId: string) {
-  return (
-    references.find((reference) => reference.isPrimary && (!reference.objectId || reference.objectId === objectId)) ??
-    references.find((reference) => !reference.objectId || reference.objectId === objectId)
-  );
+function chooseMaterialReference(references: ReferenceImage[]) {
+  return references.find((reference) => reference.isPrimary) ?? references[0];
 }
 
 async function tryLoadImageData(url: string) {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download } from 'lucide-react';
+import { Download, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -10,8 +10,10 @@ import { AutoBakeProgressBar, type AutoBakeProgress } from '@/components/panels/
 import { GeneratePanel } from '@/components/panels/GeneratePanel';
 import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel';
 import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
+import { ObjectTransformPanel } from '@/components/panels/ObjectTransformPanel';
 import { ObjectsPanel, ObjectsPanelActions } from '@/components/panels/ObjectsPanel';
 import { QuickMaskPanel, QuickMaskPanelActions } from '@/components/panels/QuickMaskPanel';
+import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
 import { SegmentsPanel, SegmentsPanelActions } from '@/components/panels/SegmentsPanel';
 import { ViewportPanel } from '@/components/panels/ViewportPanel';
 import { Button } from '@/components/ui/Button';
@@ -118,10 +120,11 @@ const resolutionToSize = {
 const AUTO_PREVIEW_STACK_BAKE_ENABLED = false;
 const MIN_AUTO_PREVIEW_STACK_BAKE_COVERAGE_RATIO = 0.001;
 const PREVIEW_STACK_BAKE_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
-const LOCAL_REPAINT_CAPTURE_SCALE = 2;
-const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 4096;
+const LOCAL_REPAINT_CAPTURE_SCALE = 0.75;
+const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 1536;
 const IMAGE_EDIT_MAPPED_PREVIEW_SIZE = 3072;
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
+const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
 
 type PersistedLocalRepaintRuntime = {
   version: 1;
@@ -212,6 +215,18 @@ function clearPersistedLocalRepaintRuntime(projectId: string) {
   window.localStorage.removeItem(localRepaintPersistenceKey(projectId));
 }
 
+function composeThumbnailBackground(sourceCanvas: HTMLCanvasElement) {
+  const targetCanvas = document.createElement('canvas');
+  targetCanvas.width = sourceCanvas.width;
+  targetCanvas.height = sourceCanvas.height;
+  const targetContext = targetCanvas.getContext('2d');
+  if (!targetContext) return sourceCanvas;
+  targetContext.fillStyle = PROJECT_THUMBNAIL_BACKGROUND;
+  targetContext.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+  targetContext.drawImage(sourceCanvas, 0, 0);
+  return targetCanvas;
+}
+
 function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
   const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
   if (!sourceContext) return sourceCanvas;
@@ -252,7 +267,7 @@ function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
   targetCanvas.height = height;
   const targetContext = targetCanvas.getContext('2d');
   if (!targetContext) return sourceCanvas;
-  targetContext.fillStyle = '#070813';
+  targetContext.fillStyle = PROJECT_THUMBNAIL_BACKGROUND;
   targetContext.fillRect(0, 0, width, height);
   targetContext.imageSmoothingEnabled = true;
   targetContext.imageSmoothingQuality = 'high';
@@ -381,7 +396,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const serverLoadedProjectIdRef = useRef<string>();
   const restoredModelKeyRef = useRef<string>();
   const autosaveTimerRef = useRef<number>();
-  const historyPersistTimerRef = useRef<number>();
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
   const previewStackBakeRunningRef = useRef(false);
@@ -448,12 +462,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const pushToast = useToastStore((state) => state.pushToast);
   const t = useT();
   const workspacePanels = useWorkspaceLayoutStore((state) => state.panels);
+  const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const setPanelCollapsed = useWorkspaceLayoutStore((state) => state.setPanelCollapsed);
   const showPanel = useWorkspaceLayoutStore((state) => state.showPanel);
   const undo = useEditorHistoryStore((state) => state.undo);
   const redo = useEditorHistoryStore((state) => state.redo);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
-  const persistCurrentHistorySnapshot = useEditorHistoryStore((state) => state.persistCurrentSnapshot);
   const restorePersistedHistory = useEditorHistoryStore((state) => state.restorePersisted);
   const canUndo = useEditorHistoryStore((state) => state.past.length > 0);
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
@@ -473,7 +487,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       window.clearTimeout(manualBakeProgressTimerRef.current);
       window.clearTimeout(previewStackBakeTimerRef.current);
       window.clearTimeout(thumbnailRefreshTimerRef.current);
-      window.clearTimeout(historyPersistTimerRef.current);
     },
     [],
   );
@@ -587,17 +600,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   useEffect(() => {
     if (suppressProjectLayerSyncRef.current > 0) return;
     setProjectLayers(layers);
-    if (project?.id && restoredHistoryProjectIdRef.current === project.id) {
-      window.clearTimeout(historyPersistTimerRef.current);
-      historyPersistTimerRef.current = window.setTimeout(() => persistCurrentHistorySnapshot(project.id), 220);
-    }
-  }, [layers, persistCurrentHistorySnapshot, project?.id, setProjectLayers]);
+  }, [layers, setProjectLayers]);
 
   useEffect(() => {
-    if (!project?.id || restoredHistoryProjectIdRef.current !== project.id) return;
-    window.clearTimeout(historyPersistTimerRef.current);
-    historyPersistTimerRef.current = window.setTimeout(() => persistCurrentHistorySnapshot(project.id), 220);
-  }, [objects, persistCurrentHistorySnapshot, project?.id]);
+    void objects;
+  }, [objects]);
 
   useEffect(() => {
     setProjectGenerations(generations);
@@ -848,6 +855,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const hiddenHelpers: Array<{ object: THREE.Object3D; visible: boolean }> = [];
     const previousCamera = getCurrentCameraSnapshot();
     const previousTarget = viewportRuntime.controls?.target.clone();
+    const previousBackground = viewportRuntime.scene.background;
+    const previousClearColor = new THREE.Color();
+    viewportRuntime.gl.getClearColor(previousClearColor);
+    const previousClearAlpha = viewportRuntime.gl.getClearAlpha();
     let restoreRenderSize: (() => void) | undefined;
     try {
       if (options.width && options.height) restoreRenderSize = prepareViewportRenderSize(options.width, options.height);
@@ -869,10 +880,18 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         viewportRuntime.camera.updateMatrixWorld(true);
       }
       viewportRuntime.scene.traverse((object) => {
-        if (!object.userData.liclickViewportHelper && !object.userData.liclickPaintOverlay) return;
+        if (
+          !object.userData.liclickViewportHelper &&
+          !object.userData.liclickPaintOverlay &&
+          !object.userData.liclickSelectionGlow
+        ) {
+          return;
+        }
         hiddenHelpers.push({ object, visible: object.visible });
         object.visible = false;
       });
+      viewportRuntime.scene.background = null;
+      viewportRuntime.gl.setClearColor(0x000000, 0);
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
       const thumbnailCanvas = document.createElement('canvas');
       thumbnailCanvas.width = options.width ?? 640;
@@ -915,7 +934,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         }
         if (visibleSamples <= 16) return undefined;
       }
-      const outputCanvas = options.cropVisibleContent ? cropThumbnailToVisibleContent(thumbnailCanvas) : thumbnailCanvas;
+      const contentCanvas = options.cropVisibleContent ? cropThumbnailToVisibleContent(thumbnailCanvas) : thumbnailCanvas;
+      const outputCanvas = composeThumbnailBackground(contentCanvas);
       return outputCanvas.toDataURL('image/png');
     } catch (error) {
       console.warn('[Liclick 3D Texture] Project thumbnail capture failed:', error);
@@ -924,6 +944,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       for (const { object, visible } of hiddenHelpers) {
         object.visible = visible;
       }
+      viewportRuntime.scene.background = previousBackground;
+      viewportRuntime.gl.setClearColor(previousClearColor, previousClearAlpha);
       restoreRenderSize?.();
       if (previousCamera) {
         applySerializedCamera(viewportRuntime.camera, previousCamera);
@@ -968,7 +990,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const getLocalRepaintCaptureSize = useCallback((canvas: HTMLCanvasElement) => {
     const maxSide = Math.max(canvas.width, canvas.height);
     if (maxSide <= 0) return undefined;
-    const scale = Math.max(1, Math.min(LOCAL_REPAINT_CAPTURE_SCALE, LOCAL_REPAINT_CAPTURE_MAX_DIMENSION / maxSide));
+    const scale = Math.max(0.5, Math.min(LOCAL_REPAINT_CAPTURE_SCALE, LOCAL_REPAINT_CAPTURE_MAX_DIMENSION / maxSide));
     return {
       width: Math.max(1, Math.round(canvas.width * scale)),
       height: Math.max(1, Math.round(canvas.height * scale)),
@@ -1544,7 +1566,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
             projectId: project.id,
             category: 'models',
             dataUrl: await fileToDataUrl(file),
-            filename: file.name,
+            filename: `${object.id}-${file.name}`,
           });
           object = { ...object, sourcePath: saved.asset.relativePath };
         } catch (saveError) {
@@ -1585,11 +1607,18 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
+  async function handleImportModels(files: File[]) {
+    const modelFiles = files.filter((file) => /\.(glb|gltf|fbx|obj)$/i.test(file.name));
+    if (modelFiles.length === 0) return;
+    for (const file of modelFiles) {
+      await handleImportModel(file);
+    }
+  }
+
   async function handleImportReferenceImages(files: File[]) {
     const imageFiles = files.filter((file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name));
     if (imageFiles.length === 0) return;
     try {
-      const objectId = useSceneStore.getState().selectedObjectId;
       const importedReferences: ReferenceImage[] = [];
       for (const [index, file] of imageFiles.entries()) {
         const url = await fileToDataUrl(file);
@@ -1600,7 +1629,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           url,
           width: size.width,
           height: size.height,
-          objectId,
           isPrimary: true,
         });
       }
@@ -1610,7 +1638,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       pushToast({
         tone: 'success',
         title: '参考图已添加',
-        description: objectId ? '已添加到当前选中的模型。' : undefined,
+        description: '已添加到当前项目。',
       });
     } catch (error) {
       console.error('[Liclick 3D Texture] Import references failed:', error);
@@ -2732,7 +2760,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       order: 10,
       collapsed: workspacePanels.find((panel) => panel.id === 'segments')?.collapsed ?? true,
       visible: true,
-      mode: 'texture',
+      mode: 'segments',
       actions: <SegmentsPanelActions />,
       content: <SegmentsPanel />,
     },
@@ -2743,7 +2771,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       order: 20,
       collapsed: workspacePanels.find((panel) => panel.id === 'quickMask')?.collapsed ?? true,
       visible: true,
-      mode: 'texture',
+      mode: 'segments',
       actions: <QuickMaskPanelActions />,
       content: <QuickMaskPanel />,
     },
@@ -2751,12 +2779,22 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       id: 'objects',
       title: t('objectsPanel'),
       dock: 'left',
-      order: 30,
-      collapsed: workspacePanels.find((panel) => panel.id === 'objects')?.collapsed ?? true,
+      order: 5,
+      collapsed: workspacePanels.find((panel) => panel.id === 'objects')?.collapsed ?? false,
       visible: true,
-      mode: 'texture',
+      mode: 'all',
       actions: <ObjectsPanelActions onImportModelClick={() => modelInputRef.current?.click()} />,
       content: <ObjectsPanel />,
+    },
+    {
+      id: 'objectTransform',
+      title: t('objectTransform'),
+      dock: 'right',
+      order: 5,
+      collapsed: workspacePanels.find((panel) => panel.id === 'objectTransform')?.collapsed ?? false,
+      visible: workspacePanels.find((panel) => panel.id === 'objectTransform')?.visible ?? false,
+      mode: 'scene',
+      content: <ObjectTransformPanel />,
     },
     {
       id: 'generate',
@@ -2787,8 +2825,28 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       order: 20,
       collapsed: workspacePanels.find((panel) => panel.id === 'viewport')?.collapsed ?? true,
       visible: true,
-      mode: 'texture',
+      mode: 'all',
       content: <ViewportPanel />,
+    },
+    {
+      id: 'referenceImages',
+      title: t('referenceImage'),
+      dock: 'right',
+      order: 25,
+      collapsed: workspacePanels.find((panel) => panel.id === 'referenceImages')?.collapsed ?? false,
+      visible: true,
+      mode: 'scene',
+      actions: (
+        <label
+          htmlFor="scene-reference-upload"
+          className="grid h-7 w-7 cursor-pointer place-items-center rounded-md text-white/82 transition hover:bg-white/10 hover:text-white"
+          title={t('uploadReference')}
+          aria-label={t('uploadReference')}
+        >
+          <Plus className="h-4 w-4" />
+        </label>
+      ),
+      content: <ReferenceImagePicker compact inputId="scene-reference-upload" filterBySelectedObject={false} />,
     },
     {
       id: 'layers',
@@ -2932,9 +2990,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         type="file"
         className="hidden"
         accept=".glb,.gltf,.fbx,.obj"
+        multiple
         onChange={(event) => {
-          const file = event.target.files?.item(0);
-          if (file) void handleImportModel(file);
+          const files = event.target.files ? Array.from(event.target.files) : [];
+          if (files.length > 0) void handleImportModels(files);
         }}
       />
       <input
@@ -2995,6 +3054,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               layers: t('layers'),
               brush: t('brush'),
               eraser: t('eraser'),
+              eraserSize: t('eraserSize'),
+              eraserHardness: t('eraserHardness'),
               localRepaint: t('localRepaint'),
               inpaintSelect: t('inpaintSelect'),
               inpaintUnselect: t('inpaintUnselect'),
@@ -3021,7 +3082,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         center={
           <ViewportCanvas
             hasImportedModel={Boolean(importedModel)}
-            onImportModel={(file) => void handleImportModel(file)}
+            onImportModels={(files) => void handleImportModels(files)}
             onImportReferenceImages={(files) => void handleImportReferenceImages(files)}
             onOpenImport={() => modelInputRef.current?.click()}
           />
@@ -3035,7 +3096,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           objectMask={localRepaintRuntime.objectMask}
           initialUserMask={localRepaintRuntime.initialUserMask}
           targetName={localRepaintRuntime.targetName}
-          references={references.filter((reference) => !selectedObjectId || !reference.objectId || reference.objectId === selectedObjectId)}
+          references={references}
           onGenerate={generateLocalRepaint}
           onContentAwareFill={fillLocalRepaintContentAware}
           onAbort={abortLocalRepaint}

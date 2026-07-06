@@ -8,6 +8,12 @@ function withoutLegacyMockReferences(references: ReferenceImage[]) {
   return references.filter((reference) => !legacyMockReferenceIds.has(reference.id));
 }
 
+function asProjectReference(reference: ReferenceImage): ReferenceImage {
+  const projectReference = { ...reference };
+  delete projectReference.objectId;
+  return projectReference;
+}
+
 type ReferenceStore = {
   references: ReferenceImage[];
   selectedReferenceIds: string[];
@@ -25,7 +31,7 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
   selectedReferenceIds: [],
   setReferences: (references) =>
     set(() => {
-      const nextReferences = withoutLegacyMockReferences(references);
+      const nextReferences = withoutLegacyMockReferences(references).map(asProjectReference);
       return {
         references: nextReferences,
         selectedReferenceIds: nextReferences.filter((reference) => reference.isPrimary).map((reference) => reference.id),
@@ -33,12 +39,13 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
     }),
   addReferences: (references) =>
     set((state) => {
+      const projectReferences = references.map(asProjectReference);
       const selectedReferenceIds = [
-        ...references.map((reference) => reference.id),
+        ...projectReferences.map((reference) => reference.id),
         ...state.selectedReferenceIds,
       ];
       return {
-        references: [...references.map((reference) => ({ ...reference, isPrimary: true })), ...state.references],
+        references: [...projectReferences.map((reference) => ({ ...reference, isPrimary: true })), ...state.references],
         selectedReferenceIds,
       };
     }),
@@ -82,8 +89,9 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
     set((state) => {
       const reference = state.references.find((item) => item.id === referenceId);
       if (!reference) return state;
+      const projectReference = asProjectReference(reference);
       const duplicated = {
-        ...reference,
+        ...projectReference,
         id: createId('reference'),
         name: `${reference.name} copy`,
         isPrimary: true,

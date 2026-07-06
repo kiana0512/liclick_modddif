@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { serverConfig } from './config.js';
 import { handleAssetsRoute } from './routes/assets.js';
 import { handleAuthRoute } from './routes/auth.js';
+import { handleComfyuiRoute } from './routes/comfyui.js';
 import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
 import { handleLiclickRoute } from './routes/liclick.js';
@@ -80,6 +81,7 @@ async function handleWorkspaceRequest(
     return;
   }
   if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
   if (
     (url.pathname.startsWith('/api/liclick') || url.pathname === '/api/generate-image') &&
     (await handleLiclickRoute(request, response, url))

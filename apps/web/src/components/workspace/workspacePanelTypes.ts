@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-export type WorkspaceMode = 'texture' | 'normal' | 'segments' | 'export';
+export type WorkspaceMode = 'scene' | 'texture' | 'normal' | 'segments' | 'export';
 
 export type DockSide = 'left' | 'right';
 
@@ -10,6 +10,7 @@ export type PanelId =
   | 'viewport'
   | 'layers'
   | 'layerAdjustments'
+  | 'referenceImages'
   | 'objectTransform'
   | 'quickMask'
   | 'segments'

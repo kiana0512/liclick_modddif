@@ -35,10 +35,39 @@ type ProjectStore = {
   addBakedTexture: (bakedTexture: BakedTexture) => void;
 };
 
+function getReferencedObjectIds(project: Project) {
+  const referenced = new Set<string>();
+  project.references?.forEach((reference) => {
+    if (reference.objectId) referenced.add(reference.objectId);
+  });
+  project.layers?.forEach((layer) => {
+    if (layer.objectId) referenced.add(layer.objectId);
+  });
+  project.captures?.forEach((capture) => {
+    if (capture.objectId) referenced.add(capture.objectId);
+  });
+  project.generations?.forEach((generation) => {
+    const objectId = generation.metadata.objectId;
+    if (typeof objectId === 'string') referenced.add(objectId);
+  });
+  return referenced;
+}
+
+function preserveReferencedObjects(project: Project, patch: Partial<Project>) {
+  if (!patch.objects || patch.objects.length >= project.objects.length) return patch;
+  const nextObjectIds = new Set(patch.objects.map((object) => object.id));
+  const referencedObjectIds = getReferencedObjectIds({ ...project, ...patch });
+  const preservedObjects = project.objects.filter(
+    (object) => !nextObjectIds.has(object.id) && referencedObjectIds.has(object.id),
+  );
+  if (preservedObjects.length === 0) return patch;
+  return { ...patch, objects: [...patch.objects, ...preservedObjects] };
+}
+
 function updateProject(projects: Project[], projectId: string, patch: Partial<Project>) {
   return projects.map((project) =>
     project.id === projectId
-      ? { ...project, ...patch, dirty: patch.dirty ?? true, updatedAt: new Date().toISOString() }
+      ? { ...project, ...preserveReferencedObjects(project, patch), dirty: patch.dirty ?? true, updatedAt: new Date().toISOString() }
       : project,
   );
 }

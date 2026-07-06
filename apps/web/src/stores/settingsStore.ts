@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 type Resolution = '1K' | '2K' | '4K' | '8K';
 export type EnvironmentPreset = 'color' | 'studio' | 'soft' | 'dark';
+export type ImageGenerationProvider = 'liclick' | 'comfyui';
 
 type SettingsStore = {
   resolution: Resolution;
@@ -12,6 +13,7 @@ type SettingsStore = {
   pbrLightAzimuth: number;
   environmentPreset: EnvironmentPreset;
   autoUvBakeEnabled: boolean;
+  imageGenerationProvider: ImageGenerationProvider;
   setResolution: (resolution: Resolution) => void;
   setExposure: (exposure: number) => void;
   setPbrEnvironmentIntensity: (pbrEnvironmentIntensity: number) => void;
@@ -19,6 +21,7 @@ type SettingsStore = {
   setPbrLightAzimuth: (pbrLightAzimuth: number) => void;
   setEnvironmentPreset: (environmentPreset: EnvironmentPreset) => void;
   setAutoUvBakeEnabled: (autoUvBakeEnabled: boolean) => void;
+  setImageGenerationProvider: (imageGenerationProvider: ImageGenerationProvider) => void;
   resetViewportLighting: () => void;
 };
 
@@ -32,6 +35,7 @@ export const useSettingsStore = create<SettingsStore>()(
       pbrLightAzimuth: 38,
       environmentPreset: 'studio',
       autoUvBakeEnabled: false,
+      imageGenerationProvider: 'liclick',
       setResolution: (resolution) => set({ resolution }),
       setExposure: (exposure) => set({ exposure }),
       setPbrEnvironmentIntensity: (pbrEnvironmentIntensity) => set({ pbrEnvironmentIntensity }),
@@ -39,6 +43,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setPbrLightAzimuth: (pbrLightAzimuth) => set({ pbrLightAzimuth }),
       setEnvironmentPreset: (environmentPreset) => set({ environmentPreset }),
       setAutoUvBakeEnabled: (autoUvBakeEnabled) => set({ autoUvBakeEnabled }),
+      setImageGenerationProvider: (imageGenerationProvider) => set({ imageGenerationProvider }),
       resetViewportLighting: () =>
         set({ exposure: 1, pbrEnvironmentIntensity: 0.42, pbrKeyLightIntensity: 1, pbrLightAzimuth: 38, environmentPreset: 'studio' }),
     }),
@@ -53,6 +58,7 @@ export const useSettingsStore = create<SettingsStore>()(
         pbrLightAzimuth: state.pbrLightAzimuth,
         environmentPreset: state.environmentPreset,
         autoUvBakeEnabled: state.autoUvBakeEnabled,
+        imageGenerationProvider: state.imageGenerationProvider,
       }),
     },
   ),

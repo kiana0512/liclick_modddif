@@ -1,5 +1,6 @@
 import { ContactShadows } from '@react-three/drei';
-import { useEffect, useMemo, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
@@ -7,6 +8,7 @@ import {
   createProjectedLayerStackMaterial,
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
+  updateProjectedLayerStackMaterial,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
   canUseLayerStackCache,
@@ -18,9 +20,9 @@ import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { Grid } from './Grid';
 import { ObjectTransformControls } from './ObjectTransformControls';
-import { SelectionOutline } from './SelectionOutline';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { ProjectionPreviewLighting } from '@/engine/projection/projectionTypes';
 import type { Layer } from '@/types/layer';
@@ -106,7 +108,7 @@ function useLoadedBakedTexture(imageUrl?: string) {
         }
         loadedTexture = texture;
         texture.colorSpace = THREE.SRGBColorSpace;
-        texture.flipY = false;
+        texture.flipY = true;
         texture.wrapS = THREE.ClampToEdgeWrapping;
         texture.wrapT = THREE.ClampToEdgeWrapping;
         texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -186,7 +188,7 @@ function useCompositedUvTexture(layers: Layer[]) {
 
         nextTexture = new THREE.CanvasTexture(canvas);
         nextTexture.colorSpace = THREE.SRGBColorSpace;
-        nextTexture.flipY = false;
+        nextTexture.flipY = true;
         nextTexture.wrapS = THREE.ClampToEdgeWrapping;
         nextTexture.wrapT = THREE.ClampToEdgeWrapping;
         nextTexture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -211,36 +213,107 @@ function useCompositedUvTexture(layers: Layer[]) {
   return texture;
 }
 
-function DemoModel() {
-  const displayMode = useSceneStore((state) => state.displayMode);
-  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
-  const selectObject = useSceneStore((state) => state.selectObject);
-  const selected = selectedObjectId === 'object-demo-capsule';
-
-  const material = useMemo(() => createDisplayModeMaterial(displayMode, selected), [displayMode, selected]);
-
-  return (
-    <group
-      userData={{ liclickObjectId: 'object-demo-capsule' }}
-      onClick={(event) => {
-        event.stopPropagation();
-        selectObject('object-demo-capsule');
-      }}
-    >
-      <mesh position={[0, 0.72, 0]} material={material} castShadow receiveShadow>
-        <capsuleGeometry args={[0.65, 1.15, 24, 48]} />
-      </mesh>
-      <mesh position={[0, -0.1, 0]} scale={[1.55, 0.18, 1.55]} material={material} castShadow>
-        <cylinderGeometry args={[0.55, 0.75, 1, 48]} />
-      </mesh>
-      {selected && <SelectionOutline />}
-    </group>
+function SelectionEdgeGlow({ object }: { object: THREE.Object3D }) {
+  const glowGroupRef = useRef<THREE.Group>();
+  const shellMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#ff62d2',
+        transparent: true,
+        opacity: 0.62,
+        side: THREE.BackSide,
+        depthTest: true,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    [],
   );
+  const edgeMaterial = useMemo(
+    () =>
+      new THREE.LineBasicMaterial({
+        color: '#ff62d2',
+        transparent: true,
+        opacity: 1,
+        depthTest: true,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    [],
+  );
+
+  useEffect(
+    () => () => {
+      shellMaterial.dispose();
+      edgeMaterial.dispose();
+    },
+    [edgeMaterial, shellMaterial],
+  );
+
+  useEffect(() => {
+    const glowGroup = new THREE.Group();
+    glowGroup.name = 'Liclick Selection Edge Glow';
+    glowGroup.userData.liclickSelectionGlow = true;
+    glowGroup.renderOrder = 80;
+    const edgeGeometries: THREE.EdgesGeometry[] = [];
+    object.updateMatrixWorld(true);
+    const inverseRoot = object.matrixWorld.clone().invert();
+    object.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      if (child.userData.liclickPaintOverlay || child.userData.liclickSelectionGlow) return;
+      const localMatrix = inverseRoot.clone().multiply(child.matrixWorld);
+      const position = new THREE.Vector3();
+      const quaternion = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      localMatrix.decompose(position, quaternion, scale);
+
+      const glowMesh = new THREE.Mesh(child.geometry, shellMaterial);
+      glowMesh.position.copy(position);
+      glowMesh.quaternion.copy(quaternion);
+      glowMesh.scale.copy(scale.clone().multiplyScalar(1.052));
+      glowMesh.renderOrder = 80;
+      glowMesh.userData.liclickSelectionGlow = true;
+      glowGroup.add(glowMesh);
+
+      const edgeGeometry = new THREE.EdgesGeometry(child.geometry, 32);
+      edgeGeometries.push(edgeGeometry);
+      const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+      edgeLines.position.copy(position);
+      edgeLines.quaternion.copy(quaternion);
+      edgeLines.scale.copy(scale.clone().multiplyScalar(1.012));
+      edgeLines.renderOrder = 82;
+      edgeLines.userData.liclickSelectionGlow = true;
+      glowGroup.add(edgeLines);
+    });
+    object.add(glowGroup);
+    glowGroupRef.current = glowGroup;
+    return () => {
+      glowGroup.removeFromParent();
+      edgeGeometries.forEach((geometry) => geometry.dispose());
+      glowGroupRef.current = undefined;
+    };
+  }, [edgeMaterial, object, shellMaterial]);
+
+  useFrame(({ clock }) => {
+    const pulse = Math.sin(clock.elapsedTime * 4.8);
+    shellMaterial.opacity = 0.5 + pulse * 0.12;
+    edgeMaterial.opacity = 0.9 + pulse * 0.1;
+    glowGroupRef.current?.updateMatrixWorld(true);
+  });
+  return null;
 }
 
-function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
+function ImportedModel({
+  importedModel,
+  showSelectionGlow,
+}: {
+  importedModel: ModelLoadResult;
+  showSelectionGlow: boolean;
+}) {
   const displayMode = useSceneStore((state) => state.displayMode);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const objectVisible = useSceneStore(
+    (state) => state.objects.find((object) => object.id === importedModel.objectId)?.visible ?? true,
+  );
   const selectObject = useSceneStore((state) => state.selectObject);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
@@ -257,6 +330,19 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     () => (importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []),
     [importedObjectId, layers],
   );
+  const previewProjectedLayers = useMemo(
+    () =>
+      layers
+        .filter(
+          (layer) =>
+            layer.type === 'projected' &&
+            layer.imageUrl &&
+            layer.camera &&
+            (!layer.objectId || layer.objectId === importedObjectId),
+        )
+        .sort((a, b) => a.order - b.order),
+    [importedObjectId, layers],
+  );
   const visibleUvLayers = useMemo(
     () =>
       layers
@@ -271,11 +357,11 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     [importedObjectId, layers],
   );
   const livePreviewLayerLimit = useMemo(() => {
-    return Math.max(1, visibleProjectedLayers.length);
-  }, [visibleProjectedLayers]);
+    return Math.max(1, previewProjectedLayers.length);
+  }, [previewProjectedLayers]);
   const livePreviewProjectedLayers = useMemo(
-    () => visibleProjectedLayers.slice(0, livePreviewLayerLimit),
-    [livePreviewLayerLimit, visibleProjectedLayers],
+    () => previewProjectedLayers.slice(0, livePreviewLayerLimit),
+    [livePreviewLayerLimit, previewProjectedLayers],
   );
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];
@@ -309,7 +395,7 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     const model = importedModel;
 
     async function applyMaterials() {
-      const selected = selectedObjectId === model.objectId;
+      const selected = false;
       model.group.updateMatrixWorld(true);
       const projectedLayerInput = canPreviewProjectedLayers
         ? {
@@ -387,6 +473,16 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
+        if (
+          projectedLayerInput &&
+          updateProjectedLayerStackMaterial(previousMaterial, {
+            ...projectedLayerInput,
+            ...previewBase,
+            ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+          })
+        ) {
+          continue;
+        }
         const projectedMaterial = projectedLayerInput
           ? await createProjectedLayerStackMaterial({
               ...projectedLayerInput,
@@ -415,28 +511,37 @@ function ImportedModel({ importedModel }: { importedModel: ModelLoadResult }) {
     livePreviewProjectedLayers,
     loadedBakedTexture,
     loadedUvTexture,
-    selectedObjectId,
     previewLighting,
     visibleStackIsBaked,
   ]);
 
   if (!importedModel) return null;
 
+  if (!objectVisible) return null;
+
   return (
-    <primitive
-      object={importedModel.group}
-      onClick={(event: { stopPropagation: () => void }) => {
-        event.stopPropagation();
-        selectObject(importedModel.objectId);
-      }}
-    />
+    <>
+      <primitive
+        object={importedModel.group}
+        onClick={(event: { stopPropagation: () => void }) => {
+          event.stopPropagation();
+          selectObject(importedModel.objectId);
+        }}
+      />
+      {showSelectionGlow && selectedObjectId === importedModel.objectId && (
+        <SelectionEdgeGlow object={importedModel.group} />
+      )}
+    </>
   );
 }
 
 export function SceneRoot() {
   const importedModels = useSceneStore((state) => state.importedModels);
+  const importedModel = useSceneStore((state) => state.importedModel);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const selectObject = useSceneStore((state) => state.selectObject);
   const displayMode = useSceneStore((state) => state.displayMode);
+  const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
@@ -459,6 +564,13 @@ export function SceneRoot() {
   const ambientIntensity = previewLighting.ambientIntensity;
   const keyIntensity = previewLighting.keyLightIntensity;
   const fillIntensity = previewLighting.ambientIntensity * 0.52;
+  const activeObjectId = selectedObjectId ?? importedModel?.objectId ?? importedModels[0]?.objectId;
+  const renderedModels =
+    workspaceMode === 'scene' || workspaceMode === 'export'
+      ? importedModels
+      : importedModels.filter((model) => model.objectId === activeObjectId);
+  const showSelectionGlow = workspaceMode === 'scene' || workspaceMode === 'export';
+
   return (
     <group onPointerMissed={() => selectObject(undefined)}>
       <ambientLight intensity={ambientIntensity} />
@@ -466,11 +578,9 @@ export function SceneRoot() {
       <directionalLight position={keyLightPosition} intensity={keyIntensity} castShadow />
       <directionalLight position={fillLightPosition} intensity={fillIntensity} />
       <Grid />
-      {importedModels.length > 0 ? (
-        importedModels.map((model) => <ImportedModel key={model.objectId} importedModel={model} />)
-      ) : (
-        <DemoModel />
-      )}
+      {renderedModels.map((model) => (
+        <ImportedModel key={model.objectId} importedModel={model} showSelectionGlow={showSelectionGlow} />
+      ))}
       <ObjectTransformControls />
       <ContactShadows position={[0, -0.02, 0]} opacity={0.22} scale={8} blur={2.4} />
     </group>

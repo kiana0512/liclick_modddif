@@ -116,6 +116,8 @@ function Copy-RepoToStaging {
 
   $xd = @(
     ".git",
+    ".agents",
+    ".codex",
     ".pnpm-store",
     ".turbo",
     ".vite",
@@ -128,7 +130,15 @@ function Copy-RepoToStaging {
     "workspace-auth-smoke-feishu"
   )
   $xdNames = @("node_modules")
-  $xf = @("*.log", "*.tsbuildinfo", "*.local", ".env", "*.atlas-ai-gateway-oauth.json")
+  $xf = @(
+    "*.log",
+    "*.tsbuildinfo",
+    "*.local",
+    ".env",
+    "*.atlas-ai-gateway-oauth.json",
+    "download_li3d*.py",
+    "li3d_input_contact_sheet.png"
+  )
   $args = @($Root, $StagingRoot, "/MIR", "/MT:16", "/R:2", "/W:1", "/NFL", "/NDL", "/NP")
   foreach ($dir in $xd) { $args += @("/XD", (Join-Path $Root $dir)) }
   foreach ($dir in $xdNames) { $args += @("/XD", $dir) }

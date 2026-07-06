@@ -3,9 +3,9 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import type { DockSide, PanelId, WorkspaceMode, WorkspacePanelState } from './workspacePanelTypes';
 
 export const defaultWorkspacePanels: WorkspacePanelState[] = [
-  { id: 'segments', title: 'Segments', dock: 'left', order: 10, collapsed: true, visible: true, mode: 'texture' },
-  { id: 'quickMask', title: 'Quick Mask', dock: 'left', order: 20, collapsed: true, visible: true, mode: 'texture' },
-  { id: 'objects', title: 'Objects', dock: 'left', order: 30, collapsed: true, visible: true, mode: 'texture' },
+  { id: 'objects', title: 'Objects', dock: 'left', order: 5, collapsed: false, visible: true, mode: 'all' },
+  { id: 'segments', title: 'Segments', dock: 'left', order: 10, collapsed: false, visible: true, mode: 'segments' },
+  { id: 'quickMask', title: 'Quick Mask', dock: 'left', order: 20, collapsed: false, visible: true, mode: 'segments' },
   { id: 'generate', title: 'Generate', dock: 'left', order: 40, collapsed: true, visible: true, mode: 'texture' },
   {
     id: 'layerAdjustments',
@@ -16,17 +16,18 @@ export const defaultWorkspacePanels: WorkspacePanelState[] = [
     visible: true,
     mode: 'texture',
   },
-  { id: 'viewport', title: 'Viewport', dock: 'right', order: 20, collapsed: true, visible: true, mode: 'texture' },
-  { id: 'layers', title: 'Layers', dock: 'right', order: 30, collapsed: true, visible: true, mode: 'texture' },
+  { id: 'viewport', title: 'Viewport', dock: 'right', order: 20, collapsed: true, visible: true, mode: 'all' },
+  { id: 'referenceImages', title: 'Reference Images', dock: 'right', order: 30, collapsed: false, visible: true, mode: 'scene' },
   {
     id: 'objectTransform',
     title: 'Object Transform',
     dock: 'right',
-    order: 40,
+    order: 35,
     collapsed: true,
     visible: false,
-    mode: 'texture',
+    mode: 'scene',
   },
+  { id: 'layers', title: 'Layers', dock: 'right', order: 30, collapsed: true, visible: true, mode: 'texture' },
   {
     id: 'normalVisualizer',
     title: 'Normal Visualizer',
@@ -74,7 +75,7 @@ function updatePanel(
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutStore>()(
   persist(
     (set) => ({
-      mode: 'texture',
+      mode: 'scene',
       dockDensity: 'normal',
       panels: defaultWorkspacePanels,
       setDockDensity: (dockDensity) => set({ dockDensity }),
@@ -117,7 +118,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutStore>()(
             ],
           };
         }),
-      resetWorkspaceLayout: () => set({ mode: 'texture', panels: defaultWorkspacePanels }),
+      resetWorkspaceLayout: () => set({ mode: 'scene', panels: defaultWorkspacePanels }),
       setMode: (mode) => set({ mode }),
     }),
     {

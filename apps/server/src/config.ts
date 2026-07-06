@@ -36,6 +36,10 @@ const port = Number(process.env.SERVER_PORT ?? process.env.LICLICK_WORKSPACE_POR
 const host = process.env.SERVER_HOST ?? process.env.LICLICK_WORKSPACE_HOST ?? '127.0.0.1';
 const publicWorkspaceUrl = process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? `http://127.0.0.1:${port}`;
 const frontendUrl = process.env.LICLICK_FRONTEND_URL ?? 'http://localhost:5173';
+const comfyuiBaseUrl = (process.env.COMFYUI_BASE_URL ?? 'http://127.0.0.1:8188').replace(/\/$/, '');
+const comfyuiTextureWorkflowPath =
+  process.env.COMFYUI_TEXTURE_WORKFLOW_PATH ??
+  'C:/Users/rentian/Downloads/li3d_zimage_web3d_fast_1024_to_4k_16gb.json';
 
 function getOrigin(value: string) {
   try {
@@ -171,6 +175,8 @@ export const serverConfig = {
   sessionMaxAgeDays: Number(process.env.SESSION_MAX_AGE_DAYS ?? 14),
   sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === 'true',
   frontendUrl,
+  comfyuiBaseUrl,
+  comfyuiTextureWorkflowPath,
   frontendOrigin: getOrigin(frontendUrl),
   allowedOrigins: [
     getOrigin(frontendUrl),

@@ -151,6 +151,52 @@ function workspaceUrlToProjectRelative(userId: string, slug: string, value?: str
     : value;
 }
 
+function collectReferencedObjectIds(project: WorkspaceProject) {
+  const referenced = new Set<string>();
+  project.references.forEach((reference) => {
+    if (isRecord(reference)) {
+      const objectId = readString(reference.objectId);
+      if (objectId) referenced.add(objectId);
+    }
+  });
+  project.layers.forEach((layer) => {
+    if (isRecord(layer)) {
+      const objectId = readString(layer.objectId);
+      if (objectId) referenced.add(objectId);
+    }
+  });
+  project.captures.forEach((capture) => {
+    if (isRecord(capture)) {
+      const objectId = readString(capture.objectId);
+      if (objectId) referenced.add(objectId);
+    }
+  });
+  project.generations.forEach((generation) => {
+    if (!isRecord(generation) || !isRecord(generation.metadata)) return;
+    const objectId = readString(generation.metadata.objectId);
+    if (objectId) referenced.add(objectId);
+  });
+  return referenced;
+}
+
+function preserveReferencedObjects(existingProject: WorkspaceProject | undefined, inputProject: WorkspaceProject) {
+  if (!existingProject || inputProject.objects.length >= existingProject.objects.length) return inputProject;
+  const incomingObjectIds = new Set(
+    inputProject.objects
+      .filter(isRecord)
+      .map((object) => readString(object.id))
+      .filter((id): id is string => Boolean(id)),
+  );
+  const referencedObjectIds = collectReferencedObjectIds(inputProject);
+  const preservedObjects = existingProject.objects.filter((object) => {
+    if (!isRecord(object)) return false;
+    const objectId = readString(object.id);
+    return Boolean(objectId && !incomingObjectIds.has(objectId) && referencedObjectIds.has(objectId));
+  });
+  if (preservedObjects.length === 0) return inputProject;
+  return { ...inputProject, objects: [...inputProject.objects, ...preservedObjects] };
+}
+
 function normalizeProjectAssetReferences(userId: string, slug: string, project: WorkspaceProject): WorkspaceProject {
   const normalizeUrl = (url?: string) => workspaceUrlToProjectRelative(userId, slug, url);
   const objects = project.objects ?? [];
@@ -396,10 +442,11 @@ export async function saveProject(userId: string, projectId: string, inputProjec
     }
   }
   const now = new Date().toISOString();
+  const objectSafeProject = preserveReferencedObjects(existingProject, inputProject);
   const sanitizedProject = normalizeProjectAssetReferences(
     userId,
     slug,
-    sanitizeLowCoverageProjectedBakes(sanitizeVolatileLayerAssets(inputProject)),
+    sanitizeLowCoverageProjectedBakes(sanitizeVolatileLayerAssets(objectSafeProject)),
   );
   const project = {
     ...sanitizedProject,

@@ -52,7 +52,7 @@ async function blobFromUrl(url: string) {
 async function loadExportTexture(imageUrl: string) {
   const texture = await new THREE.TextureLoader().loadAsync(resolveImageAssetUrl(imageUrl));
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = false;
+  texture.flipY = true;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
