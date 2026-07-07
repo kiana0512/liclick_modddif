@@ -3,7 +3,7 @@ import * as THREE from 'three';
 export async function applyBakedTextureToObject(group: THREE.Group, imageUrl: string) {
   const texture = await new THREE.TextureLoader().loadAsync(imageUrl);
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = true;
+  texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearMipmapLinearFilter;

@@ -55,6 +55,10 @@ type ProjectedLayerMaterialState = {
   bindings: ProjectedLayerUniformBinding[];
 };
 
+const PREPARED_TEXTURE_PROFILE_KEY = 'liclickPreparedTextureProfile';
+const UV_OVERLAY_TEXTURE_PROFILE = 'uv-overlay-v2';
+const BASE_PREVIEW_TEXTURE_PROFILE = 'base-preview-v2';
+
 const vertexShader = `
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
@@ -106,6 +110,9 @@ const fragmentShader = `
   varying vec2 vUv;
 
   vec3 applyHslAdjustments(vec3 color) {
+    if (abs(hueShift) < 0.0001 && abs(saturationShift) < 0.0001 && abs(lightnessShift) < 0.0001) {
+      return color;
+    }
     float angle = hueShift * 6.28318530718;
     float s = sin(angle);
     float c = cos(angle);
@@ -165,6 +172,12 @@ const fragmentShader = `
     return mix(1.0, lit, previewLightingEnabled);
   }
 
+  vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
+    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
+    vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
+    return mix(baseSurfaceColor, hatch, 0.82);
+  }
+
   void main() {
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
@@ -214,7 +227,8 @@ const fragmentShader = `
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 mixedColor = mix(baseSurfaceColor, texel.rgb, projectionAlpha);
+    vec3 previewBaseColor = computeProjectionEmptyPreviewColor(baseSurfaceColor);
+    vec3 mixedColor = mix(previewBaseColor, texel.rgb, projectionAlpha);
     mixedColor = mix(mixedColor, uvOverlayTexel.rgb, uvOverlayTexel.a * useUvOverlayMap);
     mixedColor *= lambert;
 
@@ -353,6 +367,9 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
   varying vec2 vUv;
 
   vec3 applyHslAdjustments(vec3 color, float hueShift, float saturationShift, float lightnessShift) {
+    if (abs(hueShift) < 0.0001 && abs(saturationShift) < 0.0001 && abs(lightnessShift) < 0.0001) {
+      return color;
+    }
     float angle = hueShift * 6.28318530718;
     float s = sin(angle);
     float c = cos(angle);
@@ -410,6 +427,12 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
     float diffuse = max(dot(normal, lightDir), 0.0);
     float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
     return mix(1.0, lit, previewLightingEnabled);
+  }
+
+  vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
+    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
+    vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
+    return mix(baseSurfaceColor, hatch, 0.82);
   }
 
   float topQuality0 = 0.0;
@@ -482,7 +505,7 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 shadedBase = baseSurfaceColor;
+    vec3 shadedBase = computeProjectionEmptyPreviewColor(baseSurfaceColor);
     topCoverage0 = 0.0;
     topCoverage1 = 0.0;
     topCoverage2 = 0.0;
@@ -518,17 +541,20 @@ function getPreviewLighting(input?: ProjectionPreviewLighting) {
 }
 
 function prepareUvTexture(texture: THREE.Texture) {
+  if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === UV_OVERLAY_TEXTURE_PROFILE) return;
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = true;
+  texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.generateMipmaps = true;
   texture.needsUpdate = true;
+  texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = UV_OVERLAY_TEXTURE_PROFILE;
 }
 
 function prepareExistingBaseTexture(texture: THREE.Texture) {
+  if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === BASE_PREVIEW_TEXTURE_PROFILE) return;
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
@@ -536,6 +562,7 @@ function prepareExistingBaseTexture(texture: THREE.Texture) {
   texture.magFilter = THREE.LinearFilter;
   texture.generateMipmaps = true;
   texture.needsUpdate = true;
+  texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = BASE_PREVIEW_TEXTURE_PROFILE;
 }
 
 function getLayerCameraSignature(camera: ProjectionLayerStackInput['layers'][number]['camera']) {
@@ -942,6 +969,7 @@ export function disposeGeneratedMaterialTree(material: THREE.Material | THREE.Ma
 export function createDisplayModeMaterial(displayMode: string, selected: boolean, bakedTexture?: THREE.Texture) {
   if (bakedTexture) {
     bakedTexture.colorSpace = THREE.SRGBColorSpace;
+    bakedTexture.flipY = false;
     bakedTexture.wrapS = THREE.ClampToEdgeWrapping;
     bakedTexture.wrapT = THREE.ClampToEdgeWrapping;
     bakedTexture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -1019,14 +1047,23 @@ const uvOverlayFragmentShader = `
     return mix(1.0, lit, previewLightingEnabled);
   }
 
+  vec3 computeUvEmptyPreviewColor() {
+    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
+    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+  }
+
   void main() {
     vec3 normal = normalize(vWorldNormal);
     float lambert = computePreviewLight(normal);
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
-    vec3 surfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    surfaceColor = mix(surfaceColor, overlayTexel.rgb, overlayTexel.a * useUvOverlayMap);
-    gl_FragColor = vec4(linearToSrgb(clamp(surfaceColor * lambert, 0.0, 1.0)), 1.0);
+    vec3 baseSurface = mix(baseColor, baseTexel.rgb, useBaseMap);
+    vec3 uvPreviewBase = computeUvEmptyPreviewColor();
+    float overlayAlpha = overlayTexel.a * useUvOverlayMap;
+    vec3 surfaceColor = mix(baseSurface, uvPreviewBase, useUvOverlayMap);
+    surfaceColor = mix(surfaceColor, overlayTexel.rgb, overlayAlpha);
+    float lighting = mix(lambert, 1.0, useUvOverlayMap * (1.0 - overlayAlpha) * 0.45);
+    gl_FragColor = vec4(linearToSrgb(clamp(surfaceColor * lighting, 0.0, 1.0)), 1.0);
   }
 `;
 

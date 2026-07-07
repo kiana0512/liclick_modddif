@@ -219,6 +219,8 @@ export function GeneratePanel() {
   const [textureMapViewMode, setTextureMapViewMode] = useState<TextureMapViewMode>('single-view');
   const [cameraViewPreviews, setCameraViewPreviews] = useState<CameraViewPreviewMap>({});
   const [capturingCameraViews, setCapturingCameraViews] = useState<Set<ObjectViewPreset>>(() => new Set());
+  const cameraViewPreviewsRef = useRef<CameraViewPreviewMap>({});
+  const capturingCameraViewsRef = useRef<Set<ObjectViewPreset>>(new Set());
   const [generateNotice, setGenerateNotice] = useState<GenerateNotice | undefined>();
   const [cancelConfirmGeneration, setCancelConfirmGeneration] = useState<Generation | undefined>();
   const currentProject = useProjectStore((state) =>
@@ -342,6 +344,16 @@ export function GeneratePanel() {
   }, [activeSelectedReferenceIds, setSelectedReferences, tab]);
 
   useEffect(() => {
+    cameraViewPreviewsRef.current = cameraViewPreviews;
+  }, [cameraViewPreviews]);
+
+  useEffect(() => {
+    capturingCameraViewsRef.current = capturingCameraViews;
+  }, [capturingCameraViews]);
+
+  useEffect(() => {
+    cameraViewPreviewsRef.current = {};
+    capturingCameraViewsRef.current = new Set();
     setCameraViewPreviews({});
     setCapturingCameraViews(new Set());
   }, [importedModel?.objectId, resolution, selectedObjectId]);
@@ -351,10 +363,11 @@ export function GeneratePanel() {
     const currentImportedModel = importedModel;
     const missingViews = cameraViewOptions
       .map((view) => view.value)
-      .filter((view) => !cameraViewPreviews[view] && !capturingCameraViews.has(view));
+      .filter((view) => !cameraViewPreviewsRef.current[view] && !capturingCameraViewsRef.current.has(view));
     if (missingViews.length === 0) return undefined;
 
     let cancelled = false;
+    capturingCameraViewsRef.current = new Set([...capturingCameraViewsRef.current, ...missingViews]);
     setCapturingCameraViews((current) => new Set([...current, ...missingViews]));
 
     async function captureMissingViews() {
@@ -370,7 +383,9 @@ export function GeneratePanel() {
             viewDirection,
           });
           if (cancelled) return;
+          cameraViewPreviewsRef.current = { ...cameraViewPreviewsRef.current, [view]: preview };
           setCameraViewPreviews((current) => ({ ...current, [view]: preview }));
+          capturingCameraViewsRef.current.delete(view);
           setCapturingCameraViews((current) => {
             const next = new Set(current);
             next.delete(view);
@@ -387,6 +402,7 @@ export function GeneratePanel() {
         }
       } finally {
         if (!cancelled) {
+          missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view));
           setCapturingCameraViews((current) => {
             const next = new Set(current);
             missingViews.forEach((view) => next.delete(view));
@@ -401,8 +417,6 @@ export function GeneratePanel() {
       cancelled = true;
     };
   }, [
-    cameraViewPreviews,
-    capturingCameraViews,
     importedModel,
     isTextureMapTab,
     selectedObjectId,

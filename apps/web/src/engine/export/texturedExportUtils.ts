@@ -26,7 +26,7 @@ const exportResolutionToSize: Record<string, UvBakeResolution> = {
   '4K': 4096,
   '8K': 8192,
 };
-const EXPORT_TRANSPARENT_UV_CACHE_SCOPE = 'export-transparent-uv-v3';
+const EXPORT_BASECOLOR_CACHE_SCOPE = 'export-basecolor-v1';
 
 export type PreparedTexturedExport = {
   root: THREE.Object3D;
@@ -52,7 +52,7 @@ async function blobFromUrl(url: string) {
 async function loadExportTexture(imageUrl: string) {
   const texture = await new THREE.TextureLoader().loadAsync(resolveImageAssetUrl(imageUrl));
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = true;
+  texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -194,7 +194,7 @@ function getLatestProject(input: ModelExportInput) {
 
 function getLayerStackCacheKey(input: ModelExportInput, objectId: string, resolution: number, visibleLayers: LayerStackLayers) {
   const project = getLatestProject(input);
-  return getProjectedLayerStackSignature(project.id, objectId, `${EXPORT_TRANSPARENT_UV_CACHE_SCOPE}:${resolution}`, visibleLayers);
+  return getProjectedLayerStackSignature(project.id, objectId, `${EXPORT_BASECOLOR_CACHE_SCOPE}:${resolution}`, visibleLayers);
 }
 
 type LayerStackLayers = ReturnType<typeof getVisibleProjectedLayerStack>;
@@ -266,7 +266,7 @@ async function bakeCurrentVisibleTextureForExport(input: ModelExportInput, objec
     enableBackfaceCulling: true,
     enableDilation: true,
     dilationPixels: 4,
-    outputAlpha: 'transparent',
+    outputAlpha: 'opaque-viewport',
     preferBlobOutput: true,
     commitToProject: false,
     markSourceLayersBaked: false,

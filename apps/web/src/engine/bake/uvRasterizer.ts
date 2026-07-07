@@ -31,8 +31,8 @@ const MAX_STRENGTH_FOR_ANGLE = 3;
 const DEPTH_EPSILON = 0.08;
 const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
-const COVERAGE_THRESHOLD = 0.01;
-const SOURCE_ALPHA_REJECT = 0.01;
+const COVERAGE_THRESHOLD = 0.025;
+const SOURCE_ALPHA_REJECT = 0.035;
 
 export type RasterizeOutput = {
   canvas: HTMLCanvasElement;

@@ -97,21 +97,32 @@ export function LayersPanel({
   );
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
   const capturedOpacityDragRef = useRef(false);
+  const opacityDragFrameRef = useRef<number>();
+  const pendingOpacityDragRef = useRef<{
+    layerId: string;
+    value: number;
+    moved: boolean;
+    x: number;
+    y: number;
+  }>();
   const visibleLayers = useMemo(
     () => layers.filter((layer) => !layer.objectId || layer.objectId === selectedObjectId),
     [layers, selectedObjectId],
   );
   const layerIds = useMemo(() => visibleLayers.map((layer) => layer.id), [visibleLayers]);
+  const layerIdSet = useMemo(() => new Set(layerIds), [layerIds]);
+  const selectedLayerIdSet = useMemo(() => new Set(selectedLayerIds), [selectedLayerIds]);
+  const layerById = useMemo(() => new Map(layers.map((layer) => [layer.id, layer])), [layers]);
   const previewLayer = useMemo(() => {
     const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? lastSelectedLayerId ?? activeProjectedLayerId : undefined);
     return visibleLayers.find((layer) => layer.id === layerId && layer.imageUrl);
   }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, previewLayerId, visibleLayers]);
   const describeLayerSelection = useCallback((ids: string[]) => {
-    const names = ids.map((id) => layers.find((item) => item.id === id)?.name).filter(Boolean);
+    const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);
     if (names.length === 0) return '图层';
     if (names.length === 1) return names[0];
     return `${names[0]} 等 ${names.length} 个图层`;
-  }, [layers]);
+  }, [layerById]);
 
   useEffect(() => {
     setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
@@ -177,8 +188,32 @@ export function LayersPanel({
   useEffect(() => {
     if (!opacityDrag) {
       capturedOpacityDragRef.current = false;
+      if (opacityDragFrameRef.current) {
+        window.cancelAnimationFrame(opacityDragFrameRef.current);
+        opacityDragFrameRef.current = undefined;
+      }
+      pendingOpacityDragRef.current = undefined;
       return undefined;
     }
+
+    const flushOpacityDrag = () => {
+      const pending = pendingOpacityDragRef.current;
+      pendingOpacityDragRef.current = undefined;
+      opacityDragFrameRef.current = undefined;
+      if (!pending) return;
+      setOpacity(pending.layerId, pending.value);
+      setOpacityDrag((current) =>
+        current && current.layerId === pending.layerId
+          ? {
+              ...current,
+              value: pending.value,
+              moved: current.moved || pending.moved,
+              x: pending.x,
+              y: pending.y,
+            }
+          : current,
+      );
+    };
 
     const continueOpacityDrag = (event: PointerEvent) => {
       setOpacityDrag((current) => {
@@ -189,17 +224,29 @@ export function LayersPanel({
         }
         const delta = current.startY - event.clientY;
         const nextOpacity = Math.max(0, Math.min(1, current.startOpacity + delta / 140));
-        setOpacity(current.layerId, nextOpacity);
-        return {
-          ...current,
+        pendingOpacityDragRef.current = {
+          layerId: current.layerId,
           value: nextOpacity,
-          moved: current.moved || Math.abs(event.clientY - current.startY) > 2,
+          moved: Math.abs(event.clientY - current.startY) > 2,
           x: event.clientX,
           y: event.clientY,
         };
+        if (!opacityDragFrameRef.current) {
+          opacityDragFrameRef.current = window.requestAnimationFrame(flushOpacityDrag);
+        }
+        return current;
       });
     };
-    const stopOpacityDrag = () => setOpacityDrag(undefined);
+    const stopOpacityDrag = () => {
+      if (opacityDragFrameRef.current) {
+        window.cancelAnimationFrame(opacityDragFrameRef.current);
+        opacityDragFrameRef.current = undefined;
+      }
+      const pending = pendingOpacityDragRef.current;
+      pendingOpacityDragRef.current = undefined;
+      if (pending) setOpacity(pending.layerId, pending.value);
+      setOpacityDrag(undefined);
+    };
 
     window.addEventListener('pointermove', continueOpacityDrag);
     window.addEventListener('pointerup', stopOpacityDrag);
@@ -208,6 +255,11 @@ export function LayersPanel({
       window.removeEventListener('pointermove', continueOpacityDrag);
       window.removeEventListener('pointerup', stopOpacityDrag);
       window.removeEventListener('pointercancel', stopOpacityDrag);
+      if (opacityDragFrameRef.current) {
+        window.cancelAnimationFrame(opacityDragFrameRef.current);
+        opacityDragFrameRef.current = undefined;
+      }
+      pendingOpacityDragRef.current = undefined;
     };
   }, [captureHistory, describeLayerSelection, opacityDrag, setOpacity]);
 
@@ -239,7 +291,7 @@ export function LayersPanel({
 
   const deleteSelectedLayers = useCallback((layerIdsToDelete: string[]) => {
     const ids = layerIdsToDelete.filter(
-      (id, index) => layerIdsToDelete.indexOf(id) === index && layerIds.includes(id),
+      (id, index) => layerIdsToDelete.indexOf(id) === index && layerIdSet.has(id),
     );
     if (ids.length === 0) return;
     captureHistory(`删除图层：${describeLayerSelection(ids)}`);
@@ -247,7 +299,7 @@ export function LayersPanel({
     setMenu(undefined);
     setSelectedLayerIds([]);
     setLastSelectedLayerId(undefined);
-  }, [captureHistory, deleteLayers, describeLayerSelection, layerIds]);
+  }, [captureHistory, deleteLayers, describeLayerSelection, layerIdSet]);
 
   useEffect(() => {
     const handleDeleteKey = (event: KeyboardEvent) => {
@@ -308,7 +360,7 @@ export function LayersPanel({
   }
 
   function getAffectedLayerIds(layerId: string) {
-    return selectedLayerIds.includes(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+    return selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
   }
 
   function beginVisibilityDrag(layer: Layer) {
@@ -357,7 +409,7 @@ export function LayersPanel({
   function openLayerMenuFromContext(layer: Layer, event: React.MouseEvent<HTMLDivElement>) {
     event.preventDefault();
     event.stopPropagation();
-    if (!selectedLayerIds.includes(layer.id)) {
+    if (!selectedLayerIdSet.has(layer.id)) {
       setSelectedLayerIds([layer.id]);
       setActiveLayer(layer.id);
       setLastSelectedLayerId(layer.id);
@@ -373,7 +425,7 @@ export function LayersPanel({
             key={layer.id}
             layer={layer}
             active={layer.id === activeProjectedLayerId}
-            selected={selectedLayerIds.includes(layer.id)}
+            selected={selectedLayerIdSet.has(layer.id)}
             dragging={draggingLayerId === layer.id}
             onHover={() => setHoveredLayerId(layer.id)}
             onHoverEnd={() => setHoveredLayerId((current) => (current === layer.id ? undefined : current))}
@@ -432,9 +484,9 @@ export function LayersPanel({
           <LayerMenu
             x={menu.x}
             y={menu.y}
-            layer={layers.find((layer) => layer.id === menu.layerId)}
+            layer={layerById.get(menu.layerId)}
             selectedLayers={layers.filter((layer) =>
-              (selectedLayerIds.includes(menu.layerId) ? selectedLayerIds : [menu.layerId]).includes(layer.id),
+              (selectedLayerIdSet.has(menu.layerId) ? selectedLayerIdSet : new Set([menu.layerId])).has(layer.id),
             )}
             onClose={() => setMenu(undefined)}
             onView={() => {
@@ -616,7 +668,7 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
       </LayerHeaderButton>
       <LayerHeaderButton
         title={t('mergeVisibleProjectedLayersToUvLayer')}
-        disabled={visibleProjectedLayerIds.length < 2 || !onMergeVisibleProjectedToUvLayer}
+        disabled={visibleProjectedLayerIds.length < 1 || !onMergeVisibleProjectedToUvLayer}
         onClick={() => onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds)}
       >
         <Scissors className="h-4 w-4" />

@@ -3,7 +3,10 @@ import { useProjectStore } from '@/stores/projectStore';
 
 export type ImageSample = [number, number, number, number];
 const COLOR_ALPHA_REJECT_THRESHOLD = 3;
+const MAX_CACHED_IMAGE_DATA_BYTES = 192 * 1024 * 1024;
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const imageDataCache = new Map<string, { imageData: ImageData; bytes: number; usedAt: number }>();
+let cachedImageDataBytes = 0;
 
 function getWorkspaceProjectAssetBase() {
   const project = useProjectStore.getState().getCurrentProject();
@@ -49,6 +52,37 @@ export function resolveImageAssetUrl(url: string) {
   return trimmed;
 }
 
+function getImageDataCacheKey(url: string, resolvedUrl: string, maxDimension: number) {
+  return `${url}\n${resolvedUrl}\n${Number.isFinite(maxDimension) ? maxDimension : 'full'}`;
+}
+
+function rememberImageData(cacheKey: string, imageData: ImageData) {
+  const bytes = imageData.data.byteLength;
+  if (bytes > MAX_CACHED_IMAGE_DATA_BYTES / 2) return;
+  const existing = imageDataCache.get(cacheKey);
+  if (existing) {
+    cachedImageDataBytes -= existing.bytes;
+    imageDataCache.delete(cacheKey);
+  }
+  imageDataCache.set(cacheKey, { imageData, bytes, usedAt: performance.now() });
+  cachedImageDataBytes += bytes;
+
+  while (cachedImageDataBytes > MAX_CACHED_IMAGE_DATA_BYTES) {
+    let oldestKey: string | undefined;
+    let oldestUsedAt = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of imageDataCache) {
+      if (entry.usedAt < oldestUsedAt) {
+        oldestUsedAt = entry.usedAt;
+        oldestKey = key;
+      }
+    }
+    if (!oldestKey) break;
+    const oldest = imageDataCache.get(oldestKey);
+    if (oldest) cachedImageDataBytes -= oldest.bytes;
+    imageDataCache.delete(oldestKey);
+  }
+}
+
 function describeUrlKind(url: string) {
   if (!url) return 'empty URL';
   if (url.startsWith('blob:')) return 'temporary blob URL';
@@ -67,6 +101,12 @@ export async function loadImageData(
 ): Promise<ImageData> {
   const resolvedUrl = resolveImageAssetUrl(url);
   if (!resolvedUrl) throw new Error(`Could not load ${label}: image URL is empty.`);
+  const cacheKey = getImageDataCacheKey(url, resolvedUrl, maxDimension);
+  const cached = imageDataCache.get(cacheKey);
+  if (cached) {
+    cached.usedAt = performance.now();
+    return cached.imageData;
+  }
   const image = new Image();
   image.crossOrigin = 'anonymous';
   image.decoding = 'async';
@@ -96,7 +136,9 @@ export async function loadImageData(
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return context.getImageData(0, 0, canvas.width, canvas.height);
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  rememberImageData(cacheKey, imageData);
+  return imageData;
 }
 
 export function sampleImageNearest(image: ImageData, u: number, v: number): ImageSample {
@@ -134,27 +176,29 @@ export function sampleImageBilinear(image: ImageData, u: number, v: number): Ima
   const y1 = Math.max(0, Math.min(image.height - 1, y0 + 1));
   const tx = sourceX - x0;
   const ty = sourceY - y0;
-  const pixels = [
-    { pixel: getPixel(image, x0, y0), weight: (1 - tx) * (1 - ty) },
-    { pixel: getPixel(image, x1, y0), weight: tx * (1 - ty) },
-    { pixel: getPixel(image, x0, y1), weight: (1 - tx) * ty },
-    { pixel: getPixel(image, x1, y1), weight: tx * ty },
-  ];
-
+  const data = image.data;
+  const offset00 = (y0 * image.width + x0) * 4;
+  const offset10 = (y0 * image.width + x1) * 4;
+  const offset01 = (y1 * image.width + x0) * 4;
+  const offset11 = (y1 * image.width + x1) * 4;
+  const weight00 = (1 - tx) * (1 - ty);
+  const weight10 = tx * (1 - ty);
+  const weight01 = (1 - tx) * ty;
+  const weight11 = tx * ty;
+  const alpha00 = (data[offset00 + 3] / 255) * weight00;
+  const alpha10 = (data[offset10 + 3] / 255) * weight10;
+  const alpha01 = (data[offset01 + 3] / 255) * weight01;
+  const alpha11 = (data[offset11 + 3] / 255) * weight11;
   let red = 0;
   let green = 0;
   let blue = 0;
-  let alpha = 0;
-
-  for (const { pixel, weight } of pixels) {
-    const pixelAlpha = (pixel[3] / 255) * weight;
-    red += pixel[0] * pixelAlpha;
-    green += pixel[1] * pixelAlpha;
-    blue += pixel[2] * pixelAlpha;
-    alpha += pixelAlpha;
-  }
+  const alpha = alpha00 + alpha10 + alpha01 + alpha11;
 
   if (alpha <= 0.00001) return [0, 0, 0, 0];
+
+  red += data[offset00] * alpha00 + data[offset10] * alpha10 + data[offset01] * alpha01 + data[offset11] * alpha11;
+  green += data[offset00 + 1] * alpha00 + data[offset10 + 1] * alpha10 + data[offset01 + 1] * alpha01 + data[offset11 + 1] * alpha11;
+  blue += data[offset00 + 2] * alpha00 + data[offset10 + 2] * alpha10 + data[offset01 + 2] * alpha01 + data[offset11 + 2] * alpha11;
 
   return [
     Math.round(red / alpha),
@@ -175,26 +219,48 @@ export function sampleImageBilinearCleanColor(image: ImageData, u: number, v: nu
   const y1 = Math.max(0, Math.min(image.height - 1, y0 + 1));
   const tx = sourceX - x0;
   const ty = sourceY - y0;
-  const pixels = [
-    { pixel: getPixel(image, x0, y0), weight: (1 - tx) * (1 - ty) },
-    { pixel: getPixel(image, x1, y0), weight: tx * (1 - ty) },
-    { pixel: getPixel(image, x0, y1), weight: (1 - tx) * ty },
-    { pixel: getPixel(image, x1, y1), weight: tx * ty },
-  ];
-
+  const data = image.data;
+  const offset00 = (y0 * image.width + x0) * 4;
+  const offset10 = (y0 * image.width + x1) * 4;
+  const offset01 = (y1 * image.width + x0) * 4;
+  const offset11 = (y1 * image.width + x1) * 4;
+  const weight00 = (1 - tx) * (1 - ty);
+  const weight10 = tx * (1 - ty);
+  const weight01 = (1 - tx) * ty;
+  const weight11 = tx * ty;
   let red = 0;
   let green = 0;
   let blue = 0;
   let totalWeight = 0;
   let maxAlpha = 0;
 
-  for (const { pixel, weight } of pixels) {
-    if (weight <= 0 || pixel[3] < COLOR_ALPHA_REJECT_THRESHOLD) continue;
-    red += pixel[0] * weight;
-    green += pixel[1] * weight;
-    blue += pixel[2] * weight;
-    totalWeight += weight;
-    maxAlpha = Math.max(maxAlpha, pixel[3]);
+  if (weight00 > 0 && data[offset00 + 3] >= COLOR_ALPHA_REJECT_THRESHOLD) {
+    red += data[offset00] * weight00;
+    green += data[offset00 + 1] * weight00;
+    blue += data[offset00 + 2] * weight00;
+    totalWeight += weight00;
+    maxAlpha = Math.max(maxAlpha, data[offset00 + 3]);
+  }
+  if (weight10 > 0 && data[offset10 + 3] >= COLOR_ALPHA_REJECT_THRESHOLD) {
+    red += data[offset10] * weight10;
+    green += data[offset10 + 1] * weight10;
+    blue += data[offset10 + 2] * weight10;
+    totalWeight += weight10;
+    maxAlpha = Math.max(maxAlpha, data[offset10 + 3]);
+  }
+  if (weight01 > 0 && data[offset01 + 3] >= COLOR_ALPHA_REJECT_THRESHOLD) {
+    red += data[offset01] * weight01;
+    green += data[offset01 + 1] * weight01;
+    blue += data[offset01 + 2] * weight01;
+    totalWeight += weight01;
+    maxAlpha = Math.max(maxAlpha, data[offset01 + 3]);
+  }
+  if (weight11 > 0 && data[offset11 + 3] >= COLOR_ALPHA_REJECT_THRESHOLD) {
+    red += data[offset11] * weight11;
+    green += data[offset11 + 1] * weight11;
+    blue += data[offset11 + 2] * weight11;
+    totalWeight += weight11;
+    maxAlpha = Math.max(maxAlpha, data[offset11 + 3]);
   }
 
   if (totalWeight <= 0.00001) return [0, 0, 0, 0];

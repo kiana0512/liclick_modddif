@@ -12,6 +12,7 @@ const MAX_STRENGTH_FOR_ANGLE = 3;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5 / 255;
 const MAX_GPU_SHARPEN_RESOLUTION = 4096;
+const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
 
 type GpuLayerStackBakeInput = {
@@ -22,6 +23,7 @@ type GpuLayerStackBakeInput = {
   enableBackfaceCulling: boolean;
   enableDilation: boolean;
   dilationPixels: number;
+  outputAlpha?: 'opaque-viewport' | 'transparent';
   onProgress?: (progress: BakeProgress) => void;
 };
 
@@ -157,6 +159,11 @@ const fragmentShader = `
     return frontFade * pow(clamp(ndv, 0.0, 1.0), gamma);
   }
 
+  float computeImageEdgeFade(vec2 uv, float edge) {
+    float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    return smoothstep(0.0, edge, edgeDistance);
+  }
+
   void main() {
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
@@ -193,10 +200,14 @@ const fragmentShader = `
     texel.rgb = applyHslAdjustments(texel.rgb);
     if (texel.a < 0.01) discard;
     float angleWeight = computeAngleWeight(ndv, layerStrength);
-    float alpha = clamp(texel.a * layerOpacity * angleCoverage, 0.0, 1.0);
-    if (alpha <= 0.016) discard;
+    float coverageEdge = computeImageEdgeFade(imageUv, 0.015);
+    float coverage = clamp(layerOpacity * texel.a * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    if (coverage <= 0.025) discard;
+    float qualityEdge = computeImageEdgeFade(imageUv, 0.035);
+    float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
+    if (quality <= 0.016) discard;
 
-    gl_FragColor = vec4(texel.rgb, max(alpha, alpha * depthWeight * angleWeight));
+    gl_FragColor = vec4(texel.rgb, coverage);
   }
 `;
 
@@ -424,16 +435,21 @@ function createLayerMaterial(input: {
   });
 }
 
-function createBakeScene(meshes: PreparedMesh[], material: THREE.Material) {
+function createBakeScene(meshes: PreparedMesh[]) {
   const scene = new THREE.Scene();
+  const bakeMeshes: THREE.Mesh[] = [];
   for (const mesh of meshes) {
-    const bakeMesh = new THREE.Mesh(mesh.source.geometry, material);
+    const bakeMesh = new THREE.Mesh(mesh.source.geometry);
     bakeMesh.matrixAutoUpdate = false;
     bakeMesh.matrix.copy(mesh.source.matrixWorld);
+    bakeMesh.matrixWorld.copy(mesh.source.matrixWorld);
+    bakeMesh.matrixWorldAutoUpdate = false;
     bakeMesh.frustumCulled = false;
     scene.add(bakeMesh);
+    bakeMeshes.push(bakeMesh);
   }
-  return scene;
+  scene.updateMatrixWorld(true);
+  return { scene, bakeMeshes };
 }
 
 function createPostprocessTarget(resolution: number) {
@@ -542,7 +558,12 @@ function runGpuPostprocess(input: {
   return { target: current, ownedTargets };
 }
 
-function readRenderTargetToImageData(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget, resolution: number) {
+function readRenderTargetToImageData(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  resolution: number,
+  outputAlpha: 'opaque-viewport' | 'transparent' = 'opaque-viewport',
+) {
   const pixels = new Uint8Array(resolution * resolution * 4);
   renderer.readRenderTargetPixels(target, 0, 0, resolution, resolution, pixels);
 
@@ -550,13 +571,20 @@ function readRenderTargetToImageData(renderer: THREE.WebGLRenderer, target: THRE
   const coverage = new Uint8Array(resolution * resolution);
   const rowLength = resolution * 4;
   for (let y = 0; y < resolution; y += 1) {
-    const sourceStart = (resolution - 1 - y) * rowLength;
+    const sourceStart = y * rowLength;
     const targetStart = y * rowLength;
     imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowLength), targetStart);
     for (let x = 0; x < resolution; x += 1) {
       const pixelIndex = y * resolution + x;
       const offset = targetStart + x * 4;
       const alphaByte = imageData.data[offset + 3];
+      if (outputAlpha === 'transparent' && alphaByte <= MIN_TRANSPARENT_OUTPUT_ALPHA) {
+        imageData.data[offset] = 0;
+        imageData.data[offset + 1] = 0;
+        imageData.data[offset + 2] = 0;
+        imageData.data[offset + 3] = 0;
+        continue;
+      }
       if (alphaByte > 0) {
         if (alphaByte < 255) {
           const alpha = alphaByte / 255;
@@ -565,11 +593,16 @@ function readRenderTargetToImageData(renderer: THREE.WebGLRenderer, target: THRE
           imageData.data[offset + 2] = Math.min(255, Math.round(imageData.data[offset + 2] / alpha));
         }
         coverage[pixelIndex] = 1;
-      } else {
+      } else if (outputAlpha === 'opaque-viewport') {
         imageData.data[offset] = CLAY_TEXTURE_FILL[0];
         imageData.data[offset + 1] = CLAY_TEXTURE_FILL[1];
         imageData.data[offset + 2] = CLAY_TEXTURE_FILL[2];
         imageData.data[offset + 3] = 255;
+      } else {
+        imageData.data[offset] = 0;
+        imageData.data[offset + 1] = 0;
+        imageData.data[offset + 2] = 0;
+        imageData.data[offset + 3] = 0;
       }
     }
   }
@@ -596,6 +629,14 @@ function restoreRendererState(
   renderer.setScissorTest(state.scissorTest);
   renderer.autoClear = state.autoClear;
   renderer.xr.enabled = state.xrEnabled;
+}
+
+function setBakeRenderTargetState(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget, resolution: number) {
+  renderer.xr.enabled = false;
+  renderer.autoClear = false;
+  renderer.setRenderTarget(target);
+  renderer.setViewport(0, 0, resolution, resolution);
+  renderer.setScissorTest(false);
 }
 
 export async function bakeProjectedLayerStackWithGpu(
@@ -654,14 +695,11 @@ export async function bakeProjectedLayerStackWithGpu(
   };
 
   try {
-    renderer.xr.enabled = false;
-    renderer.autoClear = false;
-    renderer.setRenderTarget(renderTarget);
-    renderer.setViewport(0, 0, resolution, resolution);
-    renderer.setScissorTest(false);
+    setBakeRenderTargetState(renderer, renderTarget, resolution);
     renderer.setClearColor(0x000000, 0);
     renderer.clear(true, true, true);
 
+    const bakeScene = createBakeScene(meshes);
     for (const [layerIndex, layer] of input.layers.entries()) {
       input.onProgress?.({
         phase: 'loading-assets',
@@ -677,16 +715,19 @@ export async function bakeProjectedLayerStackWithGpu(
         textures,
         enableBackfaceCulling: input.enableBackfaceCulling,
       });
-      const scene = createBakeScene(meshes, material);
+      bakeScene.bakeMeshes.forEach((mesh) => {
+        mesh.material = material;
+      });
       reportProgress(layer, layerIndex, true);
-      renderer.render(scene, camera);
+      setBakeRenderTargetState(renderer, renderTarget, resolution);
+      renderer.render(bakeScene.scene, camera);
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
-      scene.clear();
       material.dispose();
       textures.disposableTextures.forEach((texture) => texture.dispose());
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     }
+    bakeScene.scene.clear();
 
     input.onProgress?.({
       phase: 'compositing',
@@ -701,7 +742,8 @@ export async function bakeProjectedLayerStackWithGpu(
       enableDilation: input.enableDilation,
       dilationPixels: input.dilationPixels,
     });
-    const { imageData, coverage } = readRenderTargetToImageData(renderer, postprocess.target, resolution);
+    const outputAlpha = input.outputAlpha ?? 'opaque-viewport';
+    const { imageData, coverage } = readRenderTargetToImageData(renderer, postprocess.target, resolution, outputAlpha);
     postprocess.ownedTargets.forEach((target) => target.dispose());
 
     let finalCoveredPixels = 0;
@@ -722,7 +764,7 @@ export async function bakeProjectedLayerStackWithGpu(
       canvas,
       coverage,
       postProcessedOnGpu: true,
-      opaqueBaseColorReady: true,
+      opaqueBaseColorReady: outputAlpha === 'opaque-viewport',
       totalTriangles,
       processedTriangles,
       coveredPixels: finalCoveredPixels,

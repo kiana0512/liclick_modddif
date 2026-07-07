@@ -242,7 +242,7 @@ export async function captureCurrentNormalPreview(request: CaptureCurrentViewReq
     width: size,
     height: size,
   };
-  const normal = await captureNormal(passRequest);
+  const normal = await captureNormal(passRequest, { space: 'world' });
   return {
     id: createId('normal-preview'),
     objectId: request.objectId,

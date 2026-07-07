@@ -23,7 +23,8 @@ const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
 const MIN_VALID_COVERAGE_RATIO = 0.001;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5;
-const MAX_CPU_SHARPEN_RESOLUTION = 4096;
+const MAX_CPU_SHARPEN_RESOLUTION = 2048;
+const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const TOP_K_BLEND_LAYERS = 3;
 const BLEND_POWER = 4;
 const RESIDUAL_MIX = 0.05;
@@ -92,6 +93,16 @@ function fillTransparentTexelsForViewport(imageData: ImageData) {
     imageData.data[offset + 1] = CLAY_TEXTURE_FILL[1];
     imageData.data[offset + 2] = CLAY_TEXTURE_FILL[2];
     imageData.data[offset + 3] = 255;
+  }
+}
+
+function clearWeakTransparentTexels(imageData: ImageData) {
+  for (let offset = 0; offset < imageData.data.length; offset += 4) {
+    if (imageData.data[offset + 3] > MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
+    imageData.data[offset] = 0;
+    imageData.data[offset + 1] = 0;
+    imageData.data[offset + 2] = 0;
+    imageData.data[offset + 3] = 0;
   }
 }
 
@@ -576,7 +587,7 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
-  if (input.method !== 'cpu' && renderer && input.outputAlpha !== 'transparent') {
+  if (input.method !== 'cpu' && renderer) {
     try {
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,
@@ -586,14 +597,13 @@ export async function bakeVisibleProjectedLayersToTexture(
         enableBackfaceCulling: input.enableBackfaceCulling,
         enableDilation: input.enableDilation,
         dilationPixels: input.dilationPixels,
+        outputAlpha: input.outputAlpha ?? 'opaque-viewport',
         onProgress: (progress) =>
           input.onProgress?.({
             ...progress,
             progress: 0.04 + clampProgress(progress.progress) * 0.84,
           }),
       });
-      const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
-      if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
       if (shouldValidateGpuBakeCoverage()) {
         await validateGpuBakeCoverage({
           group: importedModel.group,
@@ -605,12 +615,17 @@ export async function bakeVisibleProjectedLayersToTexture(
         });
       }
       input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
-      if (!gpuBake.postProcessedOnGpu || !gpuBake.opaqueBaseColorReady) {
+      const wantsTransparentOutput = input.outputAlpha === 'transparent';
+      const needsCpuSharpen = !gpuBake.postProcessedOnGpu && !wantsTransparentOutput;
+      const needsCpuViewportFill = !gpuBake.opaqueBaseColorReady && !wantsTransparentOutput;
+      if (needsCpuSharpen || needsCpuViewportFill) {
+        const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
+        if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
         const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
-        if (!gpuBake.postProcessedOnGpu) {
+        if (needsCpuSharpen) {
           sharpenCoveredTexels(gpuImage, gpuBake.coverage);
         }
-        if (!gpuBake.opaqueBaseColorReady) {
+        if (needsCpuViewportFill) {
           fillTransparentTexelsForViewport(gpuImage);
         }
         gpuContext.putImageData(gpuImage, 0, 0);
@@ -791,9 +806,13 @@ export async function bakeVisibleProjectedLayersToTexture(
   if (input.enableDilation) {
     dilateImageData(composite, qualityBlendComposite.coverage, input.dilationPixels);
   }
-  sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+  if (input.outputAlpha !== 'transparent') {
+    sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+  }
   if (input.outputAlpha !== 'transparent') {
     fillTransparentTexelsForViewport(composite);
+  } else {
+    clearWeakTransparentTexels(composite);
   }
   context.putImageData(composite, 0, 0);
   input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });

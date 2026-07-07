@@ -168,8 +168,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
         .filter((index) => index >= 0);
       const insertIndex = sourceIndexes.length > 0 ? Math.min(...sourceIndexes) : 0;
       const createdAt = new Date().toISOString();
-      const nextLayers = state.layers.filter(
-        (layer) => !sourceLayerIdSet.has(layer.id) || layer.id === input.targetUvLayerId,
+      const nextLayers = state.layers.map((layer) =>
+        sourceLayerIdSet.has(layer.id) && layer.id !== input.targetUvLayerId
+          ? { ...layer, visible: false, needsRebake: false }
+          : layer,
       );
 
       if (input.targetUvLayerId) {

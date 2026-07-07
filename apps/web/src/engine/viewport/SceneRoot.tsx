@@ -34,6 +34,45 @@ const RESOLUTION_TO_SIZE = {
   '8K': 8192,
 } as const;
 
+const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
+const MAX_IMAGE_ELEMENT_CACHE_SIZE = 32;
+const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
+const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
+
+function trimBakedTextureCache() {
+  while (bakedTextureCache.size > MAX_PREVIEW_TEXTURE_CACHE_SIZE) {
+    const oldestKey = bakedTextureCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    const texturePromise = bakedTextureCache.get(oldestKey);
+    bakedTextureCache.delete(oldestKey);
+    void texturePromise?.then((texture) => texture.dispose()).catch(() => undefined);
+  }
+}
+
+function loadPreviewTexture(imageUrl: string) {
+  const cached = bakedTextureCache.get(imageUrl);
+  if (cached) {
+    bakedTextureCache.delete(imageUrl);
+    bakedTextureCache.set(imageUrl, cached);
+    return cached;
+  }
+  const texturePromise = new THREE.TextureLoader().loadAsync(imageUrl).then((texture) => {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.flipY = false;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = true;
+    texture.anisotropy = 8;
+    texture.needsUpdate = true;
+    return texture;
+  });
+  bakedTextureCache.set(imageUrl, texturePromise);
+  trimBakedTextureCache();
+  return texturePromise;
+}
+
 function getPreviewLighting(input: {
   displayMode: string;
   environmentPreset: 'color' | 'studio' | 'soft' | 'dark';
@@ -96,26 +135,10 @@ function useLoadedBakedTexture(imageUrl?: string) {
       return undefined;
     }
     let cancelled = false;
-    let loadedTexture: THREE.Texture | undefined;
     setLoadedBakedTexture(undefined);
-    const textureLoader = new THREE.TextureLoader();
-    textureLoader
-      .loadAsync(imageUrl)
+    loadPreviewTexture(imageUrl)
       .then((texture) => {
-        if (cancelled) {
-          texture.dispose();
-          return;
-        }
-        loadedTexture = texture;
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.flipY = true;
-        texture.wrapS = THREE.ClampToEdgeWrapping;
-        texture.wrapT = THREE.ClampToEdgeWrapping;
-        texture.minFilter = THREE.LinearMipmapLinearFilter;
-        texture.magFilter = THREE.LinearFilter;
-        texture.generateMipmaps = true;
-        texture.anisotropy = 8;
-        texture.needsUpdate = true;
+        if (cancelled) return;
         setLoadedBakedTexture(texture);
       })
       .catch((error) => {
@@ -125,7 +148,6 @@ function useLoadedBakedTexture(imageUrl?: string) {
       });
     return () => {
       cancelled = true;
-      loadedTexture?.dispose();
     };
   }, [imageUrl]);
 
@@ -133,13 +155,30 @@ function useLoadedBakedTexture(imageUrl?: string) {
 }
 
 function loadImageElement(url: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
+  const cached = imageElementCache.get(url);
+  if (cached) {
+    imageElementCache.delete(url);
+    imageElementCache.set(url, cached);
+    return cached;
+  }
+  const promise = new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.crossOrigin = 'anonymous';
+    image.decoding = 'async';
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`Could not load UV layer image: ${url.slice(0, 80)}`));
+    image.onerror = () => {
+      imageElementCache.delete(url);
+      reject(new Error(`Could not load UV layer image: ${url.slice(0, 80)}`));
+    };
     image.src = url;
   });
+  imageElementCache.set(url, promise);
+  while (imageElementCache.size > MAX_IMAGE_ELEMENT_CACHE_SIZE) {
+    const oldestKey = imageElementCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    imageElementCache.delete(oldestKey);
+  }
+  return promise;
 }
 
 function useCompositedUvTexture(layers: Layer[]) {
@@ -188,7 +227,7 @@ function useCompositedUvTexture(layers: Layer[]) {
 
         nextTexture = new THREE.CanvasTexture(canvas);
         nextTexture.colorSpace = THREE.SRGBColorSpace;
-        nextTexture.flipY = true;
+        nextTexture.flipY = false;
         nextTexture.wrapS = THREE.ClampToEdgeWrapping;
         nextTexture.wrapT = THREE.ClampToEdgeWrapping;
         nextTexture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -375,7 +414,7 @@ function ImportedModel({
   const loadedUvTexture = useCompositedUvTexture(visibleUvLayers);
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
   const canPreviewProjectedLayers =
-    livePreviewProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
+    visibleProjectedLayers.length > 0 && livePreviewProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
   const previewLighting = useMemo(
     () =>
       getPreviewLighting({
