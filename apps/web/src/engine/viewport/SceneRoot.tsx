@@ -58,12 +58,12 @@ function loadPreviewTexture(imageUrl: string) {
   }
   const texturePromise = new THREE.TextureLoader().loadAsync(imageUrl).then((texture) => {
     texture.colorSpace = THREE.SRGBColorSpace;
-    texture.flipY = false;
+    texture.flipY = true;
     texture.wrapS = THREE.ClampToEdgeWrapping;
     texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.minFilter = THREE.LinearFilter;
     texture.magFilter = THREE.LinearFilter;
-    texture.generateMipmaps = true;
+    texture.generateMipmaps = false;
     texture.anisotropy = 8;
     texture.needsUpdate = true;
     return texture;
@@ -227,12 +227,12 @@ function useCompositedUvTexture(layers: Layer[]) {
 
         nextTexture = new THREE.CanvasTexture(canvas);
         nextTexture.colorSpace = THREE.SRGBColorSpace;
-        nextTexture.flipY = false;
+        nextTexture.flipY = true;
         nextTexture.wrapS = THREE.ClampToEdgeWrapping;
         nextTexture.wrapT = THREE.ClampToEdgeWrapping;
-        nextTexture.minFilter = THREE.LinearMipmapLinearFilter;
+        nextTexture.minFilter = THREE.LinearFilter;
         nextTexture.magFilter = THREE.LinearFilter;
-        nextTexture.generateMipmaps = true;
+        nextTexture.generateMipmaps = false;
         nextTexture.anisotropy = 8;
         nextTexture.needsUpdate = true;
         setTexture(nextTexture);

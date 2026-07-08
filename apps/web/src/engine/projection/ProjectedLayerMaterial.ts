@@ -59,7 +59,7 @@ type ProjectedLayerMaterialState = {
 };
 
 const PREPARED_TEXTURE_PROFILE_KEY = 'liclickPreparedTextureProfile';
-const UV_OVERLAY_TEXTURE_PROFILE = 'uv-overlay-v2';
+const UV_OVERLAY_TEXTURE_PROFILE = 'uv-overlay-v3';
 const BASE_PREVIEW_TEXTURE_PROFILE = 'base-preview-v2';
 
 const vertexShader = `
@@ -178,7 +178,7 @@ const fragmentShader = `
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
-    return mix(baseSurfaceColor, hatch, 0.82);
+    return mix(hatch, baseSurfaceColor, 0.08);
   }
 
   void main() {
@@ -230,7 +230,8 @@ const fragmentShader = `
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 mixedColor = mix(baseSurfaceColor, texel.rgb, projectionAlpha);
+    vec3 emptyPreviewColor = computeProjectionEmptyPreviewColor(baseSurfaceColor);
+    vec3 mixedColor = mix(emptyPreviewColor, texel.rgb, projectionAlpha);
     mixedColor = mix(mixedColor, uvOverlayTexel.rgb, uvOverlayTexel.a * useUvOverlayMap);
     mixedColor *= lambert;
 
@@ -434,7 +435,7 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
-    return mix(baseSurfaceColor, hatch, 0.82);
+    return mix(hatch, baseSurfaceColor, 0.08);
   }
 
   float topQuality0 = 0.0;
@@ -507,7 +508,7 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 shadedBase = baseSurfaceColor;
+    vec3 shadedBase = computeProjectionEmptyPreviewColor(baseSurfaceColor);
     topCoverage0 = 0.0;
     topCoverage1 = 0.0;
     topCoverage2 = 0.0;
@@ -545,12 +546,12 @@ function getPreviewLighting(input?: ProjectionPreviewLighting) {
 function prepareUvTexture(texture: THREE.Texture) {
   if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === UV_OVERLAY_TEXTURE_PROFILE) return;
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = false;
+  texture.flipY = true;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = true;
+  texture.generateMipmaps = false;
   texture.needsUpdate = true;
   texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = UV_OVERLAY_TEXTURE_PROFILE;
 }
@@ -994,12 +995,12 @@ export function disposeGeneratedMaterialTree(material: THREE.Material | THREE.Ma
 export function createDisplayModeMaterial(displayMode: string, selected: boolean, bakedTexture?: THREE.Texture) {
   if (bakedTexture) {
     bakedTexture.colorSpace = THREE.SRGBColorSpace;
-    bakedTexture.flipY = false;
+    bakedTexture.flipY = true;
     bakedTexture.wrapS = THREE.ClampToEdgeWrapping;
     bakedTexture.wrapT = THREE.ClampToEdgeWrapping;
-    bakedTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    bakedTexture.minFilter = THREE.LinearFilter;
     bakedTexture.magFilter = THREE.LinearFilter;
-    bakedTexture.generateMipmaps = true;
+    bakedTexture.generateMipmaps = false;
     bakedTexture.anisotropy = 8;
     bakedTexture.needsUpdate = true;
   }

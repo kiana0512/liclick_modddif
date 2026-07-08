@@ -19,7 +19,7 @@ import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 
-const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
+const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 const MIN_VALID_COVERAGE_RATIO = 0.001;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5;
@@ -112,9 +112,9 @@ function clampProgress(progress: number) {
 function fillTransparentTexelsForViewport(imageData: ImageData) {
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
     if (imageData.data[offset + 3] !== 0) continue;
-    imageData.data[offset] = CLAY_TEXTURE_FILL[0];
-    imageData.data[offset + 1] = CLAY_TEXTURE_FILL[1];
-    imageData.data[offset + 2] = CLAY_TEXTURE_FILL[2];
+    imageData.data[offset] = UNPROJECTED_TEXTURE_FILL[0];
+    imageData.data[offset + 1] = UNPROJECTED_TEXTURE_FILL[1];
+    imageData.data[offset + 2] = UNPROJECTED_TEXTURE_FILL[2];
     imageData.data[offset + 3] = 255;
   }
 }
@@ -610,7 +610,7 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
-  if (input.method !== 'cpu' && renderer) {
+  if (input.method === 'gpu' && renderer) {
     try {
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,

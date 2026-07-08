@@ -13,7 +13,7 @@ const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5 / 255;
 const MAX_GPU_SHARPEN_RESOLUTION = 4096;
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
-const CLAY_TEXTURE_FILL: [number, number, number] = [244, 245, 242];
+const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 
 type GpuLayerStackBakeInput = {
   renderer: THREE.WebGLRenderer;
@@ -66,6 +66,14 @@ type LoadedLayerTextures = {
   disposableTextures: THREE.Texture[];
   sourceSizes: GpuLayerSourceSize;
 };
+
+function shouldDebugUvBake() {
+  try {
+    return window.localStorage.getItem('liclick-debug-uv-bake') === '1';
+  } catch {
+    return false;
+  }
+}
 
 const vertexShader = `
   varying vec3 vWorldPosition;
@@ -391,6 +399,16 @@ function createObjectMatrixDelta(group: THREE.Group, layer: Layer) {
   return new THREE.Matrix4().fromArray(layer.objectMatrixWorld).multiply(group.matrixWorld.clone().invert());
 }
 
+function debugObjectMatrixDelta(group: THREE.Group, layer: Layer, delta: THREE.Matrix4) {
+  if (!shouldDebugUvBake()) return;
+  console.info('[Liclick 3D Texture] GPU UV bake object matrix delta:', layer.name);
+  console.table({
+    objectMatrixDelta: delta.elements.join(','),
+    layerObjectMatrixWorld: layer.objectMatrixWorld?.join(',') ?? 'missing',
+    currentGroupMatrixWorld: group.matrixWorld.elements.join(','),
+  });
+}
+
 function getTriangleCount(mesh: THREE.Mesh) {
   const position = mesh.geometry.getAttribute('position');
   const uv = mesh.geometry.getAttribute('uv');
@@ -416,6 +434,18 @@ function collectPreparedMeshes(group: THREE.Group, warnings: string[]) {
     }
     meshes.push({ source: child, triangleCount: getTriangleCount(child) });
   });
+  if (shouldDebugUvBake()) {
+    console.table(
+      meshes.map(({ source }) => ({
+        name: source.name,
+        uuid: source.uuid,
+        visible: source.visible,
+        positionCount: source.geometry.getAttribute('position')?.count,
+        uvCount: source.geometry.getAttribute('uv')?.count,
+        parent: source.parent?.name,
+      })),
+    );
+  }
   return meshes;
 }
 
@@ -427,6 +457,7 @@ function createLayerMaterial(input: {
 }) {
   if (!input.layer.camera) throw new Error('Projected layer has no capture camera.');
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
+  debugObjectMatrixDelta(input.group, input.layer, objectMatrixDelta);
   return new THREE.ShaderMaterial({
     name: `LiclickGpuUvBake:${input.layer.id}`,
     vertexShader,
@@ -595,7 +626,7 @@ function readRenderTargetToImageData(
   const coverage = new Uint8Array(resolution * resolution);
   const rowLength = resolution * 4;
   for (let y = 0; y < resolution; y += 1) {
-    const sourceStart = y * rowLength;
+    const sourceStart = (resolution - 1 - y) * rowLength;
     const targetStart = y * rowLength;
     imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowLength), targetStart);
     for (let x = 0; x < resolution; x += 1) {
@@ -618,9 +649,9 @@ function readRenderTargetToImageData(
         }
         coverage[pixelIndex] = 1;
       } else if (outputAlpha === 'opaque-viewport') {
-        imageData.data[offset] = CLAY_TEXTURE_FILL[0];
-        imageData.data[offset + 1] = CLAY_TEXTURE_FILL[1];
-        imageData.data[offset + 2] = CLAY_TEXTURE_FILL[2];
+        imageData.data[offset] = UNPROJECTED_TEXTURE_FILL[0];
+        imageData.data[offset + 1] = UNPROJECTED_TEXTURE_FILL[1];
+        imageData.data[offset + 2] = UNPROJECTED_TEXTURE_FILL[2];
         imageData.data[offset + 3] = 255;
       } else {
         imageData.data[offset] = 0;

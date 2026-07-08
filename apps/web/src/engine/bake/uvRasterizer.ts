@@ -49,6 +49,14 @@ export type RasterizeOutput = {
   warnings: string[];
 };
 
+function shouldDebugUvBake() {
+  try {
+    return window.localStorage.getItem('liclick-debug-uv-bake') === '1';
+  } catch {
+    return false;
+  }
+}
+
 function createBaseImageData(width: number, height: number) {
   return new ImageData(width, height);
 }
@@ -382,6 +390,16 @@ function createObjectMatrixDelta(group: THREE.Group, layer: Layer) {
   return new THREE.Matrix4().fromArray(layer.objectMatrixWorld).multiply(group.matrixWorld.clone().invert());
 }
 
+function debugObjectMatrixDelta(group: THREE.Group, layer: Layer, delta: THREE.Matrix4) {
+  if (!shouldDebugUvBake()) return;
+  console.info('[Liclick 3D Texture] CPU UV bake object matrix delta:', layer.name);
+  console.table({
+    objectMatrixDelta: delta.elements.join(','),
+    layerObjectMatrixWorld: layer.objectMatrixWorld?.join(',') ?? 'missing',
+    currentGroupMatrixWorld: group.matrixWorld.elements.join(','),
+  });
+}
+
 function getTriangleCount(mesh: THREE.Mesh) {
   const position = mesh.geometry.getAttribute('position');
   const uv = mesh.geometry.getAttribute('uv');
@@ -409,6 +427,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   const projectorMatrix = buildProjectionMatrixBundle(input.layer.camera).projectorMatrix;
   const cameraPosition = new THREE.Vector3().fromArray(input.layer.camera.position);
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
+  debugObjectMatrixDelta(input.group, input.layer, objectMatrixDelta);
   const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
   const sampleScratch = createSampleScratch();
   const warnings: string[] = [];
@@ -425,6 +444,18 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   input.group.traverse((child) => {
     if (child instanceof THREE.Mesh) meshes.push(child);
   });
+  if (shouldDebugUvBake()) {
+    console.table(
+      meshes.map((mesh) => ({
+        name: mesh.name,
+        uuid: mesh.uuid,
+        visible: mesh.visible,
+        positionCount: mesh.geometry.getAttribute('position')?.count,
+        uvCount: mesh.geometry.getAttribute('uv')?.count,
+        parent: mesh.parent?.name,
+      })),
+    );
+  }
   const totalTriangles = meshes.reduce((sum, mesh) => sum + getTriangleCount(mesh), 0);
   let lastProgressAt = 0;
   const reportRasterProgress = (force = false) => {
