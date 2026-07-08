@@ -1646,14 +1646,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
-  async function persistEditedLayerDataUrl(targetLayer: Layer, dataUrl: string) {
+  async function persistEditedLayerDataUrl(targetLayer: Layer, dataUrl: string, filename = `${targetLayer.id}.png`) {
     if (!project || project.workspaceMode !== 'local-server') return dataUrl;
     try {
       const saved = await saveDataUrlAsset({
         projectId: project.id,
         category: 'layers',
         dataUrl,
-        filename: `${targetLayer.id}.png`,
+        filename,
       });
       return saved.asset.url;
     } catch (error) {
@@ -1667,6 +1667,29 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return dataUrl;
       }
       throw error;
+    }
+  }
+
+  async function replaceLayerImage(layer: Layer, file: File) {
+    if (layer.type !== 'projected' && layer.type !== 'uv') return;
+    try {
+      captureHistory(`替换图层图片：${layer.name}`);
+      const dataUrl = await fileToDataUrl(file);
+      const imageUrl = await persistEditedLayerDataUrl(layer, dataUrl, `${layer.id}-${file.name}`);
+      updateLayerImage(layer.id, imageUrl);
+      setProjectLayers(useLayerStore.getState().layers);
+      scheduleTexturedThumbnailRefresh(layer.type === 'uv' ? 250 : 450);
+      pushToast({
+        tone: 'success',
+        title: t('layerImageReplaced'),
+        description: layer.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
+      });
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: t('replaceLayerImageFailed'),
+        description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
+      });
     }
   }
 
@@ -2859,6 +2882,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       content: (
         <LayersPanel
           onLayerImageEdit={openLayerImageEdit}
+          onLayerImageReplace={(layer, file) => void replaceLayerImage(layer, file)}
           onLayerLocalRepaint={(layer) => void openLayerLocalRepaint(layer)}
           onMergeSelectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
           onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) => void mergeLayersToUvLayer(layerIds, blankUvLayerId)}

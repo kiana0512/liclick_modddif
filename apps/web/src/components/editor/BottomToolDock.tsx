@@ -15,7 +15,13 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
-import { useSceneStore, type PaintToolMode, type TransformMode } from '@/stores/sceneStore';
+import {
+  MAX_PAINT_MASK_BRUSH_SIZE,
+  MIN_PAINT_MASK_BRUSH_SIZE,
+  useSceneStore,
+  type PaintToolMode,
+  type TransformMode,
+} from '@/stores/sceneStore';
 import type { WorkspaceMode } from '@/components/workspace/workspacePanelTypes';
 
 type BottomToolDockProps = {
@@ -371,8 +377,8 @@ export function BottomToolDock({
               </span>
               <input
                 type="range"
-                min="1"
-                max="180"
+                min={MIN_PAINT_MASK_BRUSH_SIZE}
+                max={MAX_PAINT_MASK_BRUSH_SIZE}
                 step="0.5"
                 value={paintMaskSettings.brushSize}
                 onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) })}

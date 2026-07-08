@@ -1,7 +1,7 @@
 import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
 import { dilateImageData } from './dilation';
-import { bakeProjectedLayerStackWithGpu } from './gpuUvBakeRenderer';
+import { bakeProjectedLayerStackWithGpu, type GpuLayerSourceSize } from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
@@ -68,6 +68,29 @@ function validateBakeCoverage(coveredPixels: number, resolution: number) {
     throw new Error('UV bake produced almost no valid texels; keeping the projected layer unbaked.');
   }
   return coverageRatio;
+}
+
+type CpuLayerSourceSize = {
+  layerId: string;
+  layerName: string;
+  projectedImage: string;
+  maskImage?: string;
+  depthImage?: string;
+};
+
+function logTransparentBakeSizeDiagnostics(
+  input: BakeVisibleProjectedLayersInput,
+  canvas: HTMLCanvasElement,
+  bakedTexture: BakedTexture,
+  sourceSizes: Array<GpuLayerSourceSize | CpuLayerSourceSize> = [],
+) {
+  if (input.outputAlpha !== 'transparent') return;
+  console.table({
+    requestedBakeResolution: input.resolution,
+    outputCanvas: `${canvas.width}x${canvas.height}`,
+    bakedTextureMeta: `${bakedTexture.width}x${bakedTexture.height}`,
+  });
+  if (sourceSizes.length > 0) console.table(sourceSizes);
 }
 
 async function loadOptionalBakeImage(url: string | undefined, resolution: number, label: string, warnings: string[]) {
@@ -679,6 +702,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         );
       }
       console.info('[Liclick 3D Texture] GPU stacked UV bake report:', report);
+      logTransparentBakeSizeDiagnostics(input, gpuBake.canvas, bakedTexture, gpuBake.sourceSizes);
 
       return {
         bakedTexture,
@@ -703,6 +727,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
   const overlayRasters: OverlayRaster[] = [];
   const readableLayers: Layer[] = [];
+  const sourceSizes: CpuLayerSourceSize[] = [];
 
   let totalTriangles = 0;
   let processedTriangles = 0;
@@ -740,6 +765,13 @@ export async function bakeVisibleProjectedLayersToTexture(
         loadOptionalBakeImage(layer.maskUrl, input.resolution, `${layer.name} mask`, warnings),
         loadOptionalBakeImage(layer.depthUrl, input.resolution, `${layer.name} depth`, warnings),
       ]);
+      sourceSizes.push({
+        layerId: layer.id,
+        layerName: layer.name,
+        projectedImage: `${projectedImage.width}x${projectedImage.height}`,
+        maskImage: maskImage ? `${maskImage.width}x${maskImage.height}` : undefined,
+        depthImage: depthImage ? `${depthImage.width}x${depthImage.height}` : undefined,
+      });
       readableLayers.push(layer);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -864,6 +896,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     );
   }
   console.info('[Liclick 3D Texture] Stacked UV bake report:', report);
+  logTransparentBakeSizeDiagnostics(input, canvas, bakedTexture, sourceSizes);
 
   return {
     bakedTexture,

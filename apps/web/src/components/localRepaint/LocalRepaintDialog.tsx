@@ -37,6 +37,17 @@ type CanvasPoint = {
   y: number;
 };
 
+type CanvasRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 16;
+const MAX_LOCAL_REPAINT_BRUSH_SIZE = 96;
+const STROKE_CLIP_PADDING = 2;
+
 function createMaskBrushPattern(context: CanvasRenderingContext2D) {
   const patternCanvas = document.createElement('canvas');
   patternCanvas.width = 24;
@@ -83,7 +94,7 @@ export function LocalRepaintDialog({
   const lastPointRef = useRef<CanvasPoint>();
   const initialMaskAppliedRef = useRef(false);
   const [tool, setTool] = useState<'brush' | 'erase'>('brush');
-  const [brushSize, setBrushSize] = useState(32);
+  const [brushSize, setBrushSize] = useState(DEFAULT_LOCAL_REPAINT_BRUSH_SIZE);
   const [prompt, setPrompt] = useState('');
   const [includeBlankArea, setIncludeBlankArea] = useState(true);
   const [limitToBlankAndSelection, setLimitToBlankAndSelection] = useState(true);
@@ -266,16 +277,44 @@ export function LocalRepaintDialog({
     return (objectMask.data[maskY * objectMask.width + maskX] ?? 0) > 8;
   }
 
-  function clipMaskToObject() {
+  function clipMaskToObject(bounds?: CanvasRect) {
     const canvas = canvasRef.current;
     const context = canvas?.getContext('2d');
     if (!canvas || !context || objectMask.width <= 0 || objectMask.height <= 0) return;
     const clipCanvas = getObjectClipCanvas(canvas.width, canvas.height);
     if (!clipCanvas) return;
+    const clipBounds = bounds
+      ? {
+          x: Math.max(0, Math.floor(bounds.x)),
+          y: Math.max(0, Math.floor(bounds.y)),
+          w: Math.min(canvas.width, Math.ceil(bounds.x + bounds.w)) - Math.max(0, Math.floor(bounds.x)),
+          h: Math.min(canvas.height, Math.ceil(bounds.y + bounds.h)) - Math.max(0, Math.floor(bounds.y)),
+        }
+      : undefined;
+    if (clipBounds && (clipBounds.w <= 0 || clipBounds.h <= 0)) return;
     context.save();
     context.globalCompositeOperation = 'destination-in';
+    if (clipBounds) {
+      context.beginPath();
+      context.rect(clipBounds.x, clipBounds.y, clipBounds.w, clipBounds.h);
+      context.clip();
+    }
     context.drawImage(clipCanvas, 0, 0);
     context.restore();
+  }
+
+  function getStrokeBounds(point: CanvasPoint, previousPoint: CanvasPoint | undefined, size: number): CanvasRect {
+    const radius = size / 2 + STROKE_CLIP_PADDING;
+    const minX = previousPoint ? Math.min(previousPoint.x, point.x) : point.x;
+    const minY = previousPoint ? Math.min(previousPoint.y, point.y) : point.y;
+    const maxX = previousPoint ? Math.max(previousPoint.x, point.x) : point.x;
+    const maxY = previousPoint ? Math.max(previousPoint.y, point.y) : point.y;
+    return {
+      x: minX - radius,
+      y: minY - radius,
+      w: maxX - minX + radius * 2,
+      h: maxY - minY + radius * 2,
+    };
   }
 
   function paintAt(event: Pick<PointerEvent<HTMLCanvasElement>, 'clientX' | 'clientY'>) {
@@ -291,6 +330,7 @@ export function LocalRepaintDialog({
     const logicalCanvas = getLogicalMaskCanvas(canvas.width, canvas.height);
     const logicalContext = logicalCanvas.getContext('2d');
     const previousPoint = lastPointRef.current;
+    const strokeBounds = getStrokeBounds(point, previousPoint, brushSize);
     const maskBrush = getMaskBrushPattern(context);
     const drawStroke = (targetContext: CanvasRenderingContext2D, fillStyle: string | CanvasPattern) => {
       targetContext.save();
@@ -315,7 +355,7 @@ export function LocalRepaintDialog({
     drawStroke(context, maskBrush);
     if (logicalContext) drawStroke(logicalContext, '#ffffff');
     lastPointRef.current = point;
-    if (tool === 'brush') clipMaskToObject();
+    if (tool === 'brush') clipMaskToObject(strokeBounds);
   }
 
   function clearMask() {
@@ -501,7 +541,7 @@ export function LocalRepaintDialog({
                   <input
                     type="range"
                     min="4"
-                    max="180"
+                    max={MAX_LOCAL_REPAINT_BRUSH_SIZE}
                     value={brushSize}
                     onChange={(event) => setBrushSize(Number(event.target.value))}
                     className="accent-[#ff62d2]"

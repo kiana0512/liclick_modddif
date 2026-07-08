@@ -25,6 +25,10 @@ export type PaintMaskSettings = {
   brushHardness: number;
 };
 
+export const MIN_PAINT_MASK_BRUSH_SIZE = 0.5;
+export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 10;
+export const MAX_PAINT_MASK_BRUSH_SIZE = 64;
+
 export type PaintToolSettings = {
   brushSize: number;
   brushHardness: number;
@@ -117,7 +121,7 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskHasContent: false,
       localRepaintProjectionSource: undefined,
       paintMaskSettings: {
-        brushSize: 42,
+        brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
         brushHardness: 50,
       },
       paintToolSettings: {
@@ -263,7 +267,10 @@ export const useSceneStore = create<SceneStore>()(
       setPaintMaskSettings: (settings) =>
         set((state) => ({
           paintMaskSettings: {
-            brushSize: Math.max(1, Math.min(180, settings.brushSize ?? state.paintMaskSettings.brushSize)),
+            brushSize: Math.max(
+              MIN_PAINT_MASK_BRUSH_SIZE,
+              Math.min(MAX_PAINT_MASK_BRUSH_SIZE, settings.brushSize ?? state.paintMaskSettings.brushSize),
+            ),
             brushHardness: Math.max(0, Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness)),
           },
         })),

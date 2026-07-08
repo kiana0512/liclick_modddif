@@ -74,6 +74,8 @@ function getDragPayload(event: DragEvent<HTMLDivElement>) {
 
 const UV_PAINT_RESOLUTION = 512;
 const PROJECTION_PAINT_MAX_SIZE = 512;
+const INPAINT_BRUSH_WORLD_SCALE = 0.09;
+const INPAINT_BRUSH_TEXTURE_SCALE = 0.35;
 const ERASER_CLAY_COLOR = '#f4f5f2';
 const LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-projection';
 const LEGACY_LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-brush-projection';
@@ -660,7 +662,7 @@ function SurfacePaintOverlay() {
     maskOverlay.renderOrder = 31;
     mesh.add(maskOverlay);
     layer.overlayMeshes.push(maskOverlay);
-  }, []);
+  }, [isInpaintMode]);
 
   useEffect(() => () => disposeUvPaintLayer(layerRef.current), []);
 
@@ -809,9 +811,9 @@ function SurfacePaintOverlay() {
           ? paintToolSettings.eraserSize
           : paintMaskSettings.brushSize;
     const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract' || paintTool === 'inpaint-apply';
-    const worldScale = isMaskBrush ? 0.18 : 0.45;
-    const minRadius = isMaskBrush ? maxDimension * 0.002 : maxDimension * 0.004;
-    const maxRadius = isMaskBrush ? maxDimension * 0.22 : maxDimension * 0.18;
+    const worldScale = isMaskBrush ? INPAINT_BRUSH_WORLD_SCALE : 0.45;
+    const minRadius = isMaskBrush ? maxDimension * 0.001 : maxDimension * 0.004;
+    const maxRadius = isMaskBrush ? maxDimension * 0.12 : maxDimension * 0.18;
     return THREE.MathUtils.clamp((maxDimension * setting * worldScale) / 700, minRadius, maxRadius);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
@@ -824,7 +826,7 @@ function SurfacePaintOverlay() {
           : paintMaskSettings.brushSize;
     const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract' || paintTool === 'inpaint-apply';
     return isMaskBrush
-      ? THREE.MathUtils.clamp(setting * 0.75, 2, 128)
+      ? THREE.MathUtils.clamp(setting * INPAINT_BRUSH_TEXTURE_SCALE, 1, 72)
       : THREE.MathUtils.clamp(setting * 0.45, 1.5, 96);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
@@ -1127,6 +1129,11 @@ function SurfacePaintOverlay() {
     if (result.hit.object instanceof THREE.Mesh) ensureOverlayForMesh(layer, result.hit.object);
     const fromUv = getStrokeSourceUv(result);
     const fromScreenUv = fromUv ? lastSampleRef.current?.screenUv : undefined;
+    if (isInpaintMode) {
+      layer.overlayMeshes.forEach((mesh) => {
+        if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
+      });
+    }
 
     if (paintTool === 'brush') {
       const bounds = drawBrushSegment(
@@ -1294,6 +1301,7 @@ function SurfacePaintOverlay() {
     hasLocalRepaintSourceContent,
     ensureLiveLocalRepaintComposite,
     isInsideLocalRepaintAllowedMask,
+    isInpaintMode,
     localRepaintProjectionSource,
     paintMaskSettings.brushHardness,
     paintTool,

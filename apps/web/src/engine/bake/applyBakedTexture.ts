@@ -6,11 +6,19 @@ export async function applyBakedTextureToObject(group: THREE.Group, imageUrl: st
   texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = true;
+  texture.generateMipmaps = false;
   texture.anisotropy = 8;
   texture.needsUpdate = true;
+
+  console.table({
+    appliedTextureImage: `${texture.image?.width ?? 'unknown'}x${texture.image?.height ?? 'unknown'}`,
+    flipY: texture.flipY,
+    generateMipmaps: texture.generateMipmaps,
+    minFilter: texture.minFilter,
+    magFilter: texture.magFilter,
+  });
 
   const warnings: string[] = [];
   group.traverse((child) => {

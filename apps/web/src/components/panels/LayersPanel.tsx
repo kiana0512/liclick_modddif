@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, PencilLine, Plus, Scissors, Square, Trash2, WandSparkles } from 'lucide-react';
+import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, PencilLine, Plus, Scissors, Square, Trash2, Upload, WandSparkles } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
@@ -58,6 +58,7 @@ const checkerStyle = {
 type LayersPanelProps = {
   onLayerDoubleClick?: (layer: Layer) => void;
   onLayerImageEdit?: (layer: Layer) => void;
+  onLayerImageReplace?: (layer: Layer, file: File) => void;
   onLayerLocalRepaint?: (layer: Layer) => void;
   onMergeSelectedToUvLayer?: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer?: (layerIds: string[], blankUvLayerId: string) => void;
@@ -66,6 +67,7 @@ type LayersPanelProps = {
 export function LayersPanel({
   onLayerDoubleClick,
   onLayerImageEdit,
+  onLayerImageReplace,
   onLayerLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
@@ -97,6 +99,8 @@ export function LayersPanel({
   );
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
   const capturedOpacityDragRef = useRef(false);
+  const replaceImageInputRef = useRef<HTMLInputElement>(null);
+  const replaceImageLayerIdRef = useRef<string>();
   const opacityDragFrameRef = useRef<number>();
   const pendingOpacityDragRef = useRef<{
     layerId: string;
@@ -417,8 +421,28 @@ export function LayersPanel({
     openLayerMenuAt(layer.id, event.clientX, event.clientY);
   }
 
+  function beginReplaceLayerImage(layer: Layer) {
+    replaceImageLayerIdRef.current = layer.id;
+    replaceImageInputRef.current?.click();
+  }
+
   return (
     <div className="space-y-0">
+      <input
+        ref={replaceImageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          const layerId = replaceImageLayerIdRef.current;
+          event.currentTarget.value = '';
+          replaceImageLayerIdRef.current = undefined;
+          if (!file || !layerId) return;
+          const layer = layerById.get(layerId);
+          if (layer) onLayerImageReplace?.(layer, file);
+        }}
+      />
       <div className="max-h-[min(72vh,820px)] min-h-[260px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
         {visibleLayers.map((layer) => (
           <LayerRow
@@ -506,6 +530,7 @@ export function LayersPanel({
               duplicateLayer(menu.layerId);
             }}
             onImageEdit={(layer) => onLayerImageEdit?.(layer)}
+            onImageReplace={beginReplaceLayerImage}
             onLocalRepaint={(layer) => onLayerLocalRepaint?.(layer)}
             onMergeSelectedToUvLayer={(layerIds) => onMergeSelectedToUvLayer?.(layerIds)}
             onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
@@ -889,6 +914,7 @@ function LayerMenu({
   onMoveDown,
   onDuplicate,
   onImageEdit,
+  onImageReplace,
   onLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
@@ -906,6 +932,7 @@ function LayerMenu({
   onMoveDown: () => void;
   onDuplicate: () => void;
   onImageEdit: (layer: Layer) => void;
+  onImageReplace: (layer: Layer) => void;
   onLocalRepaint: (layer: Layer) => void;
   onMergeSelectedToUvLayer: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer: (layerIds: string[], blankUvLayerId: string) => void;
@@ -969,13 +996,22 @@ function LayerMenu({
           <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
           <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
           {(layer.type === 'projected' || layer.type === 'uv') && (
-            <MenuButton
-              onClick={() => run(() => onImageEdit(layer))}
-              icon={<PencilLine className="h-4 w-4" />}
-              disabled={!layer.imageUrl}
-            >
-              {t('imageEditLayerMenu')}
-            </MenuButton>
+            <>
+              <MenuButton
+                onClick={() => run(() => onImageEdit(layer))}
+                icon={<PencilLine className="h-4 w-4" />}
+                disabled={!layer.imageUrl}
+              >
+                {t('imageEditLayerMenu')}
+              </MenuButton>
+              <MenuButton
+                onClick={() => run(() => onImageReplace(layer))}
+                icon={<Upload className="h-4 w-4" />}
+                disabled={!layer.imageUrl}
+              >
+                {t('replaceLayerImage')}
+              </MenuButton>
+            </>
           )}
           {layer.type === 'projected' && (
             <MenuButton onClick={() => run(() => onLocalRepaint(layer))} icon={<WandSparkles className="h-4 w-4" />}>

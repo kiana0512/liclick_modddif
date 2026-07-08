@@ -30,6 +30,7 @@ type GpuLayerStackBakeInput = {
 export type GpuLayerStackBakeOutput = {
   canvas: HTMLCanvasElement;
   coverage: Uint8Array;
+  sourceSizes: GpuLayerSourceSize[];
   postProcessedOnGpu: boolean;
   opaqueBaseColorReady: boolean;
   totalTriangles: number;
@@ -41,6 +42,14 @@ export type GpuLayerStackBakeOutput = {
   depthRejectedPixels: number;
   backfaceRejectedPixels: number;
   warnings: string[];
+};
+
+export type GpuLayerSourceSize = {
+  layerId: string;
+  layerName: string;
+  projectedImage: string;
+  maskImage?: string;
+  depthImage?: string;
 };
 
 type PreparedMesh = {
@@ -55,6 +64,7 @@ type LoadedLayerTextures = {
   useMask: boolean;
   useDepthCheck: boolean;
   disposableTextures: THREE.Texture[];
+  sourceSizes: GpuLayerSourceSize;
 };
 
 const vertexShader = `
@@ -328,6 +338,13 @@ function createNeutralTexture() {
   return prepareTexture(texture, THREE.NearestFilter);
 }
 
+function getTextureImageSize(texture: THREE.Texture) {
+  const image = texture.image as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number } | undefined;
+  const width = image?.naturalWidth ?? image?.width ?? 'unknown';
+  const height = image?.naturalHeight ?? image?.height ?? 'unknown';
+  return `${width}x${height}`;
+}
+
 async function loadLayerTextures(layer: Layer): Promise<LoadedLayerTextures> {
   const loader = new THREE.TextureLoader();
   const loadTexture = async (url: string, label: string) => {
@@ -358,6 +375,13 @@ async function loadLayerTextures(layer: Layer): Promise<LoadedLayerTextures> {
     useMask: Boolean(layer.maskUrl),
     useDepthCheck: Boolean(layer.depthUrl),
     disposableTextures: [...new Set([projectedTexture, maskTexture, depthTexture])],
+    sourceSizes: {
+      layerId: layer.id,
+      layerName: layer.name,
+      projectedImage: getTextureImageSize(projectedTexture),
+      maskImage: layer.maskUrl ? getTextureImageSize(maskTexture) : undefined,
+      depthImage: layer.depthUrl ? getTextureImageSize(depthTexture) : undefined,
+    },
   };
 }
 
@@ -678,6 +702,7 @@ export async function bakeProjectedLayerStackWithGpu(
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
   let processedTriangles = 0;
   let lastProgressAt = 0;
+  const sourceSizes: GpuLayerSourceSize[] = [];
   const reportProgress = (layer: Layer, layerIndex: number, force = false) => {
     if (!input.onProgress) return;
     const now = performance.now();
@@ -709,6 +734,7 @@ export async function bakeProjectedLayerStackWithGpu(
         layerCount: input.layers.length,
       });
       const textures = await loadLayerTextures(layer);
+      sourceSizes.push(textures.sourceSizes);
       const material = createLayerMaterial({
         group: input.group,
         layer,
@@ -763,6 +789,7 @@ export async function bakeProjectedLayerStackWithGpu(
     return {
       canvas,
       coverage,
+      sourceSizes,
       postProcessedOnGpu: true,
       opaqueBaseColorReady: outputAlpha === 'opaque-viewport',
       totalTriangles,
