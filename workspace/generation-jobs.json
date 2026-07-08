@@ -1,5 +1,137 @@
 [
   {
+    "id": "texture-map-6c033cd0-5aac-4794-b2a7-69611d91136b",
+    "userId": "atlas-kianaren@lilith.com",
+    "projectId": "project-a7572003-1c56-4f24-9596-6d1ade13613c",
+    "workflow": "texture-map",
+    "atlasHomeDir": "E:\\Liclick 3D Texture\\workspace\\atlas-homes\\login-216ba192-0024-444e-b70d-4f748d6ee34b",
+    "input": {
+      "clientGenerationId": "texture-map-6c033cd0-5aac-4794-b2a7-69611d91136b",
+      "projectId": "project-a7572003-1c56-4f24-9596-6d1ade13613c",
+      "workflow": "texture-map",
+      "prompt": "第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。\n\n用户补充材质要求：这是模型的侧面纯铁罐不要带橙色的",
+      "model": "gpt-image-2",
+      "aspectRatio": "auto",
+      "imageSize": "auto",
+      "count": 1,
+      "references": [
+        {
+          "id": "capture-59b2295c-21cd-4cec-a276-d88a257f2ab9-model-view",
+          "name": "Current model view",
+          "url": "[data-url:531934]"
+        },
+        {
+          "id": "reference-1ddb934d-64ef-4f81-b548-44583d4e8837",
+          "name": "img_v3_02134_771914c3-47d4-47a1-8c2d-fd974f2de71g.jpg",
+          "url": "[data-url:649783]"
+        }
+      ]
+    },
+    "status": "succeeded",
+    "startedAt": "2026-07-08T06:02:55.740Z",
+    "updatedAt": "2026-07-08T06:04:31.353Z",
+    "taskId": "6d851ac3-a4c2-4bbf-b3e7-39ebbd44fdf3",
+    "model": "gpt-image-2",
+    "extraParams": {
+      "name": "Liclick 3D Texture",
+      "quality": "high",
+      "n": 1,
+      "reference_images": [
+        {
+          "asset_id": "bce57350-4dda-4d4d-ba4a-6a1b6307f117",
+          "type": "image"
+        },
+        {
+          "asset_id": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe",
+          "type": "image"
+        }
+      ],
+      "aspect_ratio": "auto",
+      "image_size": "auto"
+    },
+    "uploadedReferences": [
+      {
+        "referenceId": "capture-59b2295c-21cd-4cec-a276-d88a257f2ab9-model-view",
+        "assetId": "bce57350-4dda-4d4d-ba4a-6a1b6307f117"
+      },
+      {
+        "referenceId": "reference-1ddb934d-64ef-4f81-b548-44583d4e8837",
+        "assetId": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe"
+      }
+    ],
+    "raw": "[omitted]",
+    "resultUrl": "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-07/4d3091c5fbd2a209a385985d1c63b983289aba25f50f19ab9d13776c13daa3ef.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260708T060430Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260708%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=4d6a5bf5ff7ed368f3f47e4f5e4f80f43cc71e31493e7829f3fcc98def42e837",
+    "resultUrls": [
+      "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-07/4d3091c5fbd2a209a385985d1c63b983289aba25f50f19ab9d13776c13daa3ef.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260708T060430Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260708%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=4d6a5bf5ff7ed368f3f47e4f5e4f80f43cc71e31493e7829f3fcc98def42e837"
+    ]
+  },
+  {
+    "id": "texture-map-a7c54712-9ba9-4426-978c-422de424c93d",
+    "userId": "atlas-kianaren@lilith.com",
+    "projectId": "project-a7572003-1c56-4f24-9596-6d1ade13613c",
+    "workflow": "texture-map",
+    "atlasHomeDir": "E:\\Liclick 3D Texture\\workspace\\atlas-homes\\login-216ba192-0024-444e-b70d-4f748d6ee34b",
+    "input": {
+      "clientGenerationId": "texture-map-a7c54712-9ba9-4426-978c-422de424c93d",
+      "projectId": "project-a7572003-1c56-4f24-9596-6d1ade13613c",
+      "workflow": "texture-map",
+      "prompt": "第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。\n\n用户补充材质要求：这是模型的侧面纯铁罐不要带橙色的",
+      "model": "gpt-image-2",
+      "aspectRatio": "auto",
+      "imageSize": "auto",
+      "count": 1,
+      "references": [
+        {
+          "id": "capture-2163cf80-239e-432e-bbcd-c9001e71cdcc-model-view",
+          "name": "Current model view",
+          "url": "[data-url:589830]"
+        },
+        {
+          "id": "reference-1ddb934d-64ef-4f81-b548-44583d4e8837",
+          "name": "img_v3_02134_771914c3-47d4-47a1-8c2d-fd974f2de71g.jpg",
+          "url": "[data-url:649783]"
+        }
+      ]
+    },
+    "status": "succeeded",
+    "startedAt": "2026-07-07T10:54:14.412Z",
+    "updatedAt": "2026-07-07T10:55:12.651Z",
+    "taskId": "4d0266aa-77ff-40aa-8b39-6db62bbaee24",
+    "model": "gpt-image-2",
+    "extraParams": {
+      "name": "Liclick 3D Texture",
+      "quality": "high",
+      "n": 1,
+      "reference_images": [
+        {
+          "asset_id": "e908b591-442e-441c-bfc0-ef4665869d32",
+          "type": "image"
+        },
+        {
+          "asset_id": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe",
+          "type": "image"
+        }
+      ],
+      "aspect_ratio": "auto",
+      "image_size": "auto"
+    },
+    "uploadedReferences": [
+      {
+        "referenceId": "capture-2163cf80-239e-432e-bbcd-c9001e71cdcc-model-view",
+        "assetId": "e908b591-442e-441c-bfc0-ef4665869d32"
+      },
+      {
+        "referenceId": "reference-1ddb934d-64ef-4f81-b548-44583d4e8837",
+        "assetId": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe"
+      }
+    ],
+    "raw": "[omitted]",
+    "resultUrl": "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-07/d4f890eb4a9c51f59c3922b95b5165d2544b8365865957a18dd7f44157fcc678.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260707T105512Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260707%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=0ec2cd58e4360b8064681f2c3eda886755c41df3ebef784e89a636bed5ce6aea",
+    "resultUrls": [
+      "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-07/d4f890eb4a9c51f59c3922b95b5165d2544b8365865957a18dd7f44157fcc678.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260707T105512Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260707%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=0ec2cd58e4360b8064681f2c3eda886755c41df3ebef784e89a636bed5ce6aea"
+    ]
+  },
+  {
     "id": "texture-map-0d122950-1919-4746-a967-ac0efa2a7d2a",
     "userId": "atlas-kianaren@lilith.com",
     "projectId": "project-a7572003-1c56-4f24-9596-6d1ade13613c",
@@ -3514,230 +3646,6 @@
     "resultUrls": [
       "http://prod-liclick-backend.aigc.svc:5000/ai-video/image-task/submit",
       "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400"
-    ]
-  },
-  {
-    "id": "liclick-image-3ca20977-34d8-462d-b9b3-dfadd8b7c947",
-    "userId": "atlas-kianaren@lilith.com",
-    "projectId": "project-455b3d4b-9eee-4bcd-99a3-bd76629e9ac5",
-    "workflow": "liclick",
-    "atlasHomeDir": "E:\\Liclick 3D Texture\\workspace\\atlas-homes\\login-216ba192-0024-444e-b70d-4f748d6ee34b",
-    "input": {
-      "clientGenerationId": "liclick-image-3ca20977-34d8-462d-b9b3-dfadd8b7c947",
-      "projectId": "project-455b3d4b-9eee-4bcd-99a3-bd76629e9ac5",
-      "workflow": "liclick",
-      "prompt": "生成这个铁罐的底视图 \n只给出底视图单图",
-      "model": "gpt-image-2",
-      "aspectRatio": "auto",
-      "imageSize": "auto",
-      "count": 1,
-      "references": [
-        {
-          "id": "reference-58a37433-1fb4-4c72-81e5-f1a80b54b15f",
-          "name": "生成这个铁罐的顶视图 \n只给出顶视图单图",
-          "url": "[data-url:3189106]"
-        },
-        {
-          "id": "reference-45cabf6d-4932-4497-8bcb-5e24be28a21c",
-          "name": "生成这个铁罐的后视图 \n只给出后视图单图 后视图没有这个图标 纯铁罐",
-          "url": "[data-url:2431838]"
-        },
-        {
-          "id": "reference-01e985ec-bdb7-4ffb-bf2a-d05c5f0d8af2",
-          "name": "生成这个铁罐的右视图 \n只给出右视图单图",
-          "url": "[data-url:2477906]"
-        },
-        {
-          "id": "reference-8a3b2890-28a0-414e-9239-759b2ed7d38c",
-          "name": "生成这个铁罐的左视图 \n只给出左视图单图",
-          "url": "[data-url:2866746]"
-        },
-        {
-          "id": "reference-764234a9-c8cb-4eef-b548-76b02630d8ed",
-          "name": "生成这个铁罐的正视图 \n只给出正视图单图",
-          "url": "[data-url:2678902]"
-        },
-        {
-          "id": "reference-425eb1ee-38b1-4bd1-877d-df3fb0d71d98",
-          "name": "img_v3_02134_771914c3-47d4-47a1-8c2d-fd974f2de71g",
-          "url": "[data-url:649783]"
-        }
-      ]
-    },
-    "status": "succeeded",
-    "startedAt": "2026-07-02T07:13:32.512Z",
-    "updatedAt": "2026-07-02T07:13:38.495Z",
-    "taskId": "",
-    "model": "gpt-image-2",
-    "extraParams": {
-      "name": "Liclick 3D Texture",
-      "quality": "high",
-      "n": 1,
-      "reference_images": [
-        {
-          "asset_id": "ed25d652-5501-478a-b870-0e2cb0d0cabf",
-          "type": "image"
-        },
-        {
-          "asset_id": "ebbe5f24-1892-46bb-a0f0-d09cab178570",
-          "type": "image"
-        },
-        {
-          "asset_id": "b0f0817c-d812-414d-8a65-a2eebe86a426",
-          "type": "image"
-        },
-        {
-          "asset_id": "e441be48-493b-4af0-b563-eced3a26e7dc",
-          "type": "image"
-        },
-        {
-          "asset_id": "6da622f2-3cde-4288-b28a-0f2e611a1d93",
-          "type": "image"
-        },
-        {
-          "asset_id": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe",
-          "type": "image"
-        }
-      ],
-      "aspect_ratio": "auto",
-      "image_size": "auto"
-    },
-    "uploadedReferences": [
-      {
-        "referenceId": "reference-58a37433-1fb4-4c72-81e5-f1a80b54b15f",
-        "assetId": "ed25d652-5501-478a-b870-0e2cb0d0cabf"
-      },
-      {
-        "referenceId": "reference-45cabf6d-4932-4497-8bcb-5e24be28a21c",
-        "assetId": "ebbe5f24-1892-46bb-a0f0-d09cab178570"
-      },
-      {
-        "referenceId": "reference-01e985ec-bdb7-4ffb-bf2a-d05c5f0d8af2",
-        "assetId": "b0f0817c-d812-414d-8a65-a2eebe86a426"
-      },
-      {
-        "referenceId": "reference-8a3b2890-28a0-414e-9239-759b2ed7d38c",
-        "assetId": "e441be48-493b-4af0-b563-eced3a26e7dc"
-      },
-      {
-        "referenceId": "reference-764234a9-c8cb-4eef-b548-76b02630d8ed",
-        "assetId": "6da622f2-3cde-4288-b28a-0f2e611a1d93"
-      },
-      {
-        "referenceId": "reference-425eb1ee-38b1-4bd1-877d-df3fb0d71d98",
-        "assetId": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe"
-      }
-    ],
-    "raw": "[omitted]",
-    "resultUrl": "http://prod-liclick-backend.aigc.svc:5000/ai-video/image-task/submit",
-    "resultUrls": [
-      "http://prod-liclick-backend.aigc.svc:5000/ai-video/image-task/submit",
-      "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400"
-    ]
-  },
-  {
-    "id": "liclick-image-c669c9c3-aebe-46b8-a103-ee620f37163e",
-    "userId": "atlas-kianaren@lilith.com",
-    "projectId": "project-455b3d4b-9eee-4bcd-99a3-bd76629e9ac5",
-    "workflow": "liclick",
-    "atlasHomeDir": "E:\\Liclick 3D Texture\\workspace\\atlas-homes\\login-216ba192-0024-444e-b70d-4f748d6ee34b",
-    "input": {
-      "clientGenerationId": "liclick-image-c669c9c3-aebe-46b8-a103-ee620f37163e",
-      "projectId": "project-455b3d4b-9eee-4bcd-99a3-bd76629e9ac5",
-      "workflow": "liclick",
-      "prompt": "生成这个铁罐的顶视图 \n只给出顶视图单图",
-      "model": "gpt-image-2",
-      "aspectRatio": "auto",
-      "imageSize": "auto",
-      "count": 1,
-      "references": [
-        {
-          "id": "reference-45cabf6d-4932-4497-8bcb-5e24be28a21c",
-          "name": "生成这个铁罐的后视图 \n只给出后视图单图 后视图没有这个图标 纯铁罐",
-          "url": "[data-url:2431838]"
-        },
-        {
-          "id": "reference-01e985ec-bdb7-4ffb-bf2a-d05c5f0d8af2",
-          "name": "生成这个铁罐的右视图 \n只给出右视图单图",
-          "url": "[data-url:2477906]"
-        },
-        {
-          "id": "reference-8a3b2890-28a0-414e-9239-759b2ed7d38c",
-          "name": "生成这个铁罐的左视图 \n只给出左视图单图",
-          "url": "[data-url:2866746]"
-        },
-        {
-          "id": "reference-764234a9-c8cb-4eef-b548-76b02630d8ed",
-          "name": "生成这个铁罐的正视图 \n只给出正视图单图",
-          "url": "[data-url:2678902]"
-        },
-        {
-          "id": "reference-425eb1ee-38b1-4bd1-877d-df3fb0d71d98",
-          "name": "img_v3_02134_771914c3-47d4-47a1-8c2d-fd974f2de71g",
-          "url": "[data-url:649783]"
-        }
-      ]
-    },
-    "status": "succeeded",
-    "startedAt": "2026-07-02T07:11:06.076Z",
-    "updatedAt": "2026-07-02T07:12:12.719Z",
-    "taskId": "065131bd-971c-4761-8d3c-d7cbc31e36bb",
-    "model": "gpt-image-2",
-    "extraParams": {
-      "name": "Liclick 3D Texture",
-      "quality": "high",
-      "n": 1,
-      "reference_images": [
-        {
-          "asset_id": "ebbe5f24-1892-46bb-a0f0-d09cab178570",
-          "type": "image"
-        },
-        {
-          "asset_id": "b0f0817c-d812-414d-8a65-a2eebe86a426",
-          "type": "image"
-        },
-        {
-          "asset_id": "e441be48-493b-4af0-b563-eced3a26e7dc",
-          "type": "image"
-        },
-        {
-          "asset_id": "6da622f2-3cde-4288-b28a-0f2e611a1d93",
-          "type": "image"
-        },
-        {
-          "asset_id": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe",
-          "type": "image"
-        }
-      ],
-      "aspect_ratio": "auto",
-      "image_size": "auto"
-    },
-    "uploadedReferences": [
-      {
-        "referenceId": "reference-45cabf6d-4932-4497-8bcb-5e24be28a21c",
-        "assetId": "ebbe5f24-1892-46bb-a0f0-d09cab178570"
-      },
-      {
-        "referenceId": "reference-01e985ec-bdb7-4ffb-bf2a-d05c5f0d8af2",
-        "assetId": "b0f0817c-d812-414d-8a65-a2eebe86a426"
-      },
-      {
-        "referenceId": "reference-8a3b2890-28a0-414e-9239-759b2ed7d38c",
-        "assetId": "e441be48-493b-4af0-b563-eced3a26e7dc"
-      },
-      {
-        "referenceId": "reference-764234a9-c8cb-4eef-b548-76b02630d8ed",
-        "assetId": "6da622f2-3cde-4288-b28a-0f2e611a1d93"
-      },
-      {
-        "referenceId": "reference-425eb1ee-38b1-4bd1-877d-df3fb0d71d98",
-        "assetId": "f278ee8b-17eb-49e8-9bcb-4ebc2719dafe"
-      }
-    ],
-    "raw": "[omitted]",
-    "resultUrl": "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-07/97b6e9f268cda1b6ea06877e1416f7ac7ebc1516c1a355ed22ca8af9a20f6e9e.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260702T071212Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260702%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=bc85853c79587891b073e741c888029002804480f0d16b13968db8b354a313e3",
-    "resultUrls": [
-      "https://ai-assets.lilithgames.com/ai-assets/prod/image/2026-07/97b6e9f268cda1b6ea06877e1416f7ac7ebc1516c1a355ed22ca8af9a20f6e9e.png?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-date=20260702T071212Z&x-oss-expires=86399&x-oss-credential=LTAI5t97DMwhp9N6yuUHDyXJ%2F20260702%2Fcn-shanghai%2Foss%2Faliyun_v4_request&x-oss-signature=bc85853c79587891b073e741c888029002804480f0d16b13968db8b354a313e3"
     ]
   }
 ]

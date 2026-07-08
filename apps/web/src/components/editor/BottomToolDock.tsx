@@ -1,5 +1,4 @@
 import {
-  Bandage,
   Brush,
   ChevronUp,
   Eraser,
@@ -17,8 +16,10 @@ import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
 import { useSceneStore, type PaintToolMode, type TransformMode } from '@/stores/sceneStore';
+import type { WorkspaceMode } from '@/components/workspace/workspacePanelTypes';
 
 type BottomToolDockProps = {
+  mode: WorkspaceMode;
   transformMode: TransformMode;
   paintTool: PaintToolMode;
   onTransformModeChange: (mode: TransformMode) => void;
@@ -72,10 +73,12 @@ const tools: Array<{
   { mode: 'rotate', icon: Rotate3D, labelKey: 'rotate', shortcut: 'R' },
   { mode: 'scale', icon: Scaling, labelKey: 'scale', shortcut: 'S' },
 ];
+const selectTool = tools[0];
 
 const paintSwatches = ['#ffffff', '#ff6b4a', '#f7c948', '#56d364', '#3dd6ff', '#8b5cf6', '#f35bce', '#111111'];
 
 export function BottomToolDock({
+  mode,
   transformMode,
   paintTool,
   onTransformModeChange,
@@ -89,7 +92,7 @@ export function BottomToolDock({
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   const [activeMenu, setActiveMenu] = useState<
-    'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint' | undefined
+    'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
   const paintSettings = useSceneStore((state) => state.paintToolSettings);
   const setPaintSettings = useSceneStore((state) => state.setPaintToolSettings);
@@ -102,7 +105,9 @@ export function BottomToolDock({
   const activeMaskButton =
     'border-[#ff8a68]/70 bg-[#8b4a38] text-white shadow-[0_0_0_1px_rgba(255,138,104,0.26)]';
   const divider = <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />;
-  const inpaintMenuVisible = activeMenu === 'inpaint-add' || activeMenu === 'inpaint-subtract';
+  const isTextureMode = mode === 'texture';
+  const inpaintMenuVisible =
+    activeMenu === 'inpaint-add' || activeMenu === 'inpaint-subtract' || activeMenu === 'inpaint-apply';
 
   function toggleMenu(menu: typeof activeMenu) {
     setActiveMenu((current) => (current === menu ? undefined : menu));
@@ -126,36 +131,78 @@ export function BottomToolDock({
     };
   }, [activeMenu]);
 
+  useEffect(() => {
+    setActiveMenu(undefined);
+  }, [mode]);
+
+  function renderTransformButton({
+    mode: toolMode,
+    icon: Icon,
+    labelKey,
+    shortcut,
+  }: (typeof tools)[number]) {
+    return (
+      <IconTooltip
+        key={toolMode}
+        label={labels[labelKey]}
+        description={labels[`${labelKey}Help` as keyof typeof labels]}
+        shortcut={shortcut}
+      >
+        <button
+          type="button"
+          className={cn(
+            baseButton,
+            transformMode === toolMode &&
+              'border-liclick-pink/60 bg-gradient-to-r from-liclick-pink to-liclick-purple text-white shadow-glow',
+          )}
+          onClick={() => {
+            onTransformModeChange(toolMode);
+            setActiveMenu(undefined);
+          }}
+          aria-label={labels[labelKey]}
+        >
+          <Icon className="h-4.5 w-4.5" />
+        </button>
+      </IconTooltip>
+    );
+  }
+
+  function renderUndoRedo() {
+    return (
+      <>
+        <IconTooltip label={labels.undo} shortcut="Ctrl Z">
+          <button type="button" className={baseButton} disabled={!canUndo} onClick={onUndo} aria-label={labels.undo}>
+            <Undo2 className="h-4.5 w-4.5" />
+          </button>
+        </IconTooltip>
+        <IconTooltip label={labels.redo} shortcut="Ctrl Y">
+          <button type="button" className={baseButton} disabled={!canRedo} onClick={onRedo} aria-label={labels.redo}>
+            <Redo2 className="h-4.5 w-4.5" />
+          </button>
+        </IconTooltip>
+      </>
+    );
+  }
+
   return (
     <div
       ref={dockRef}
       className="mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
     >
-      {tools.map(({ mode, icon: Icon, labelKey, shortcut }) => (
-        <IconTooltip
-          key={mode}
-          label={labels[labelKey]}
-          description={labels[`${labelKey}Help` as keyof typeof labels]}
-          shortcut={shortcut}
-        >
-          <button
-            type="button"
-            className={cn(
-              baseButton,
-              transformMode === mode &&
-                'border-liclick-pink/60 bg-gradient-to-r from-liclick-pink to-liclick-purple text-white shadow-glow',
-            )}
-            onClick={() => onTransformModeChange(mode)}
-            aria-label={labels[labelKey]}
-          >
-            <Icon className="h-4.5 w-4.5" />
-          </button>
-        </IconTooltip>
-      ))}
+      {!isTextureMode && (
+        <>
+          {tools.map((tool) => renderTransformButton(tool))}
+          {divider}
+          {renderUndoRedo()}
+        </>
+      )}
 
-      {divider}
+      {isTextureMode && (
+        <>
+          {selectTool && renderTransformButton(selectTool)}
+          {divider}
 
-      <span className="relative inline-flex">
+          <span className="relative inline-flex">
         {activeMenu === 'brush' && (
           <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[300px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
             <label className="grid gap-1.5 text-[13px] font-semibold">
@@ -244,8 +291,8 @@ export function BottomToolDock({
             <Brush className="h-4.5 w-4.5" />
           </button>
         </IconTooltip>
-      </span>
-      <span className="relative inline-flex">
+          </span>
+          <span className="relative inline-flex">
         {activeMenu === 'eraser' && (
           <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
             <label className="grid gap-1.5 text-[13px] font-semibold">
@@ -309,8 +356,8 @@ export function BottomToolDock({
             <Eraser className="h-4.5 w-4.5" />
           </button>
         </IconTooltip>
-      </span>
-      <span className="relative inline-flex">
+          </span>
+          <span className="relative inline-flex">
         {inpaintMenuVisible && (
           <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
             <label className="grid gap-1.5 text-[13px] font-semibold">
@@ -392,12 +439,12 @@ export function BottomToolDock({
             </span>
           </button>
         </IconTooltip>
-      </span>
-      <IconTooltip
+          </span>
+          <IconTooltip
         label={labels.inpaintUnselect}
         description={labels.inpaintUnselectHelp}
         shortcut="O"
-      >
+          >
         <button
           type="button"
           className={cn(baseButton, paintTool === 'inpaint-subtract' && activeMaskButton)}
@@ -413,21 +460,8 @@ export function BottomToolDock({
             {paintTool === 'inpaint-subtract' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
           </span>
         </button>
-      </IconTooltip>
-      <span className="relative inline-flex">
-        {activeMenu === 'inpaint' && (
-          <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[260px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-            <div className="text-[13px] font-semibold">{labels.localRepaint}</div>
-            <div className="mt-1 text-xs leading-5 text-white/62">{labels.localRepaintHelp}</div>
-            <button
-              type="button"
-              className="mt-2 h-9 w-full rounded-md bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold transition hover:text-[#ffb199]"
-              onClick={onLocalRepaint}
-            >
-              {labels.localRepaint}
-            </button>
-          </div>
-        )}
+          </IconTooltip>
+          <span className="relative inline-flex">
         <IconTooltip
           label={labels.localRepaint}
           description={labels.localRepaintHelp}
@@ -435,30 +469,25 @@ export function BottomToolDock({
         >
           <button
             type="button"
-            className={cn(baseButton, activeMenu === 'inpaint' && activeMaskButton)}
+            className={cn(baseButton, paintTool === 'inpaint-apply' && activeMaskButton)}
             onClick={() => {
               onLocalRepaint();
-              toggleMenu('inpaint');
+              toggleMenu('inpaint-apply');
             }}
             aria-label={labels.localRepaint}
           >
-            <Bandage className="h-4.5 w-4.5" />
+            <span className="relative grid place-items-center">
+              <Sparkles className="h-4.5 w-4.5" />
+              {paintTool === 'inpaint-apply' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
+            </span>
           </button>
         </IconTooltip>
-      </span>
+          </span>
 
-      {divider}
-
-      <IconTooltip label={labels.undo} shortcut="Ctrl Z">
-        <button type="button" className={baseButton} disabled={!canUndo} onClick={onUndo} aria-label={labels.undo}>
-          <Undo2 className="h-4.5 w-4.5" />
-        </button>
-      </IconTooltip>
-      <IconTooltip label={labels.redo} shortcut="Ctrl Y">
-        <button type="button" className={baseButton} disabled={!canRedo} onClick={onRedo} aria-label={labels.redo}>
-          <Redo2 className="h-4.5 w-4.5" />
-        </button>
-      </IconTooltip>
+          {divider}
+          {renderUndoRedo()}
+        </>
+      )}
     </div>
   );
 }

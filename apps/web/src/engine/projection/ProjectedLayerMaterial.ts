@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { ProjectionLayerInput, ProjectionLayerStackInput, ProjectionPreviewLighting } from './projectionTypes';
 import { buildProjectionMatrixBundle } from './projectionMath';
+import { getLiveProjectedCanvasTexture, isLiveProjectedCanvasUrl } from './liveProjectedCanvasTextureRegistry';
 
 const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
 const DEFAULT_FLAT_COLOR = '#f4f5f2';
@@ -42,6 +43,8 @@ const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
 
 type ProjectedLayerUniformBinding = {
   layerId: string;
+  imageUrl: string;
+  projectedMapUniform: string;
   opacityUniform: string;
   strengthUniform: string;
   blendModeUniform?: string;
@@ -227,8 +230,7 @@ const fragmentShader = `
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 previewBaseColor = computeProjectionEmptyPreviewColor(baseSurfaceColor);
-    vec3 mixedColor = mix(previewBaseColor, texel.rgb, projectionAlpha);
+    vec3 mixedColor = mix(baseSurfaceColor, texel.rgb, projectionAlpha);
     mixedColor = mix(mixedColor, uvOverlayTexel.rgb, uvOverlayTexel.a * useUvOverlayMap);
     mixedColor *= lambert;
 
@@ -505,7 +507,7 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
-    vec3 shadedBase = computeProjectionEmptyPreviewColor(baseSurfaceColor);
+    vec3 shadedBase = baseSurfaceColor;
     topCoverage0 = 0.0;
     topCoverage1 = 0.0;
     topCoverage2 = 0.0;
@@ -580,7 +582,6 @@ function getProjectionLayerStructureSignature(layers: ProjectionLayerStackInput[
     .map((layer) =>
       [
         layer.layerId,
-        layer.imageUrl,
         layer.maskUrl ?? '',
         layer.depthUrl ?? '',
         layer.useMask ? 1 : 0,
@@ -597,6 +598,22 @@ function updateLayerUniforms(
   binding: ProjectedLayerUniformBinding,
   layer: ProjectionLayerStackInput['layers'][number],
 ) {
+  if (binding.imageUrl !== layer.imageUrl) {
+    const requestedImageUrl = layer.imageUrl;
+    binding.imageUrl = requestedImageUrl;
+    void loadProjectedTexture(requestedImageUrl)
+      .then((texture) => {
+        if (binding.imageUrl !== requestedImageUrl) return;
+        const projectedMapUniform = material.uniforms[binding.projectedMapUniform];
+        if (!projectedMapUniform) return;
+        projectedMapUniform.value = texture;
+        texture.needsUpdate = true;
+        material.needsUpdate = true;
+      })
+      .catch((error) => {
+        console.warn('[Liclick 3D Texture] Could not update projected layer image; keeping previous texture.', error);
+      });
+  }
   const opacityUniform = material.uniforms[binding.opacityUniform];
   if (opacityUniform) opacityUniform.value = layer.visible ? layer.opacity : 0;
   const strengthUniform = material.uniforms[binding.strengthUniform];
@@ -659,6 +676,10 @@ async function loadProjectedTexture(
   colorSpace: THREE.ColorSpace = THREE.SRGBColorSpace,
   profile: ProjectedTextureProfile = 'image',
 ) {
+  if (isLiveProjectedCanvasUrl(imageUrl)) {
+    const liveTexture = getLiveProjectedCanvasTexture(imageUrl, colorSpace);
+    if (liveTexture) return liveTexture;
+  }
   const cacheKey = getProjectedTextureCacheKey(imageUrl, colorSpace, profile);
   const cachedTexture = projectedTextureCache.get(cacheKey);
   if (cachedTexture) return cachedTexture;
@@ -784,6 +805,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     bindings: [
       {
         layerId: input.layerId,
+        imageUrl: input.imageUrl,
+        projectedMapUniform: 'projectedMap',
         opacityUniform: 'layerOpacity',
         strengthUniform: 'layerStrength',
         hueUniform: 'hueShift',
@@ -926,6 +949,8 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     signature: getProjectionLayerStructureSignature(loadedLayers),
     bindings: loadedLayers.map((layer, index) => ({
       layerId: layer.layerId,
+      imageUrl: layer.imageUrl,
+      projectedMapUniform: `projectedMap${index}`,
       opacityUniform: `layerOpacity${index}`,
       strengthUniform: `layerStrength${index}`,
       blendModeUniform: `layerBlendMode${index}`,

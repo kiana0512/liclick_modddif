@@ -548,7 +548,35 @@ async function imageDataToPngUrl(imageData: ImageData) {
   return createRegisteredObjectUrl(blob);
 }
 
-export async function createMaskedProjectedImage(imageUrl: string) {
+function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
+  const output = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
+  const maskMaxX = Math.max(0, mask.width - 1);
+  const maskMaxY = Math.max(0, mask.height - 1);
+  for (let y = 0; y < image.height; y += 1) {
+    const v = image.height <= 1 ? 0 : y / (image.height - 1);
+    const maskY = Math.min(maskMaxY, Math.max(0, Math.round(v * maskMaxY)));
+    for (let x = 0; x < image.width; x += 1) {
+      const u = image.width <= 1 ? 0 : x / (image.width - 1);
+      const maskX = Math.min(maskMaxX, Math.max(0, Math.round(u * maskMaxX)));
+      const sourceOffset = (y * image.width + x) * 4;
+      const maskOffset = (maskY * mask.width + maskX) * 4;
+      const maskValue = Math.max(mask.data[maskOffset], mask.data[maskOffset + 1], mask.data[maskOffset + 2]) / 255;
+      const nextAlpha = Math.round(output.data[sourceOffset + 3] * maskValue);
+      output.data[sourceOffset + 3] = nextAlpha;
+      if (nextAlpha <= 0) {
+        output.data[sourceOffset] = 0;
+        output.data[sourceOffset + 1] = 0;
+        output.data[sourceOffset + 2] = 0;
+      }
+    }
+  }
+  return output;
+}
+
+export async function createMaskedProjectedImage(imageUrl: string, projectionMaskUrl?: string) {
   const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
-  return imageDataToPngUrl(removeSolidBackground(sourceImage));
+  const cutout = removeSolidBackground(sourceImage);
+  if (!projectionMaskUrl) return imageDataToPngUrl(cutout);
+  const projectionMask = await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask');
+  return imageDataToPngUrl(applyProjectedAlphaMask(cutout, projectionMask));
 }

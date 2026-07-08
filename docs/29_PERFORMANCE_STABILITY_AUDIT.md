@@ -1,6 +1,6 @@
 # Performance And Stability Audit
 
-Updated: 2026-07-02
+Updated: 2026-07-08
 
 ## Current Fixes
 
@@ -11,7 +11,7 @@ Updated: 2026-07-02
 - Inpaint subtract now erases the mask with `destination-out` and updates mask content state from the stroke history path, avoiding duplicate full-canvas alpha scans at mouse-up.
 - Surface paint history is stroke-based: one drag gesture records one undo/redo runtime step with only the dirty rectangle image data needed for that stroke.
 - Ordinary paint/eraser tools are guarded by the active projected layer. If no valid layer is selected, the editor opens the Layers panel and shows a warning instead of painting into an undefined target.
-- Projected-layer live preview is capped to the first 16 visible layers when the full stack has not been baked yet. Full 100-layer stacks should use the baked texture cache; this avoids generating oversized per-layer shaders that can exceed GPU sampler/uniform limits.
+- Projected-layer live preview no longer applies a hard 16-texture budget in app code. Hidden layers are filtered before material creation, but visible projected layers remain visible instead of being silently dropped.
 - Generation job persistence is bounded. `workspace/generation-jobs.json` is treated as runtime cache and ignored by git. Persisted jobs are trimmed to recent sanitized metadata, without raw image payloads or base64 blobs.
 - Texture Map image API settings are no longer forced to 4K. Reference-image generation can stay on `auto` for speed, while bake resolution is controlled separately by the viewport resolution selector.
 - Texture Map projected previews keep image textures, masks, and depth maps with `flipY=false` so the preview matches the CPU UV bake sampling direction.
@@ -34,6 +34,10 @@ Updated: 2026-07-02
 - Autosave skips thumbnail refresh during routine saves and uses a longer debounce, reducing capture work while editing or moving the camera.
 - The WebGL canvas caps DPR at 1.5 and attempts automatic context recovery before showing the manual viewport-recovery overlay.
 - Linux startup scripts can automatically free required ports before launching services. If the port cannot be released, startup fails with the exact kill command to run manually.
+- Local repaint apply mode now keeps one live projected mask layer per generated source and updates the in-memory mask texture in place while brushing. It avoids creating a new projected layer per dab and only encodes the mask to PNG once at stroke commit/save time.
+- Local repaint brush preview participates in the normal brush cursor path, and inpaint overlays use the current tool state when first created. This fixes the delayed "first stroke is invisible until switching tools" behavior.
+- Disabled automatic projected-stack preview bake code was removed from `EditorPage`; the dead path still carried timers, refs, imports, and type-checked code despite being permanently off.
+- Desktop shell Build was updated to `2026.07.08.1508`, and workspace package versions were updated to `0.1.1` for the Windows installer.
 
 ## Runtime Cleanup
 
@@ -96,7 +100,7 @@ The scenarios inject synthetic runtime data only when the `perfScenario` query p
 
 - `100-models`: one project with 100 UV box models.
 - `100-layers`: one model with 100 projected layers and an exact baked stack texture.
-- `100-layers-unbaked`: one model with 100 projected layers, no baked stack, exercising the 16-layer live-preview guard.
+- `100-layers-unbaked`: one model with 100 projected layers, no baked stack, exercising projected-layer shader pressure.
 
 Browser frame-sampling result on 2026-06-26:
 
@@ -133,3 +137,4 @@ Known next step for heavier 4K/8K work:
 - add GPU timing/readback telemetry so slow machines can distinguish shader time, readback time, PNG encoding, and project-save time
 - add a browser-driven 30-layer WebGL scenario that measures frame responsiveness while auto-bake is queued
 - move transparent-output UV merge onto a GPU path or worker path. It still uses CPU rasterization because the current GPU bake path intentionally emits opaque viewport-ready BaseColor textures.
+- replace single-pass projected-layer preview shaders with a batched/composited preview path so all visible layers can remain visible without exceeding `MAX_TEXTURE_IMAGE_UNITS` on WebGL devices. See `docs/31_WEBGL_SHADER_SAMPLER_LIMIT.md`.

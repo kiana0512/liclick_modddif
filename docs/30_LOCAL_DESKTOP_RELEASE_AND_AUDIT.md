@@ -2,7 +2,7 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-07-03
+Updated: 2026-07-08
 
 ## Windows Desktop Build
 
@@ -58,6 +58,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Normal Liclick image generation keeps the preview `Add to references` shortcut. Texture Map generation hides that shortcut so generated texture outputs are accepted as projected layers instead of being recycled into the material-reference library.
 - Liclick image generation has a stop button. Stopping marks the local job as cancelled, unlocks the UI, and tells the local server to stop tracking that job.
 - The bottom paint dock separates normal texture painting, texture erasing, inpaint-region add, inpaint-region subtract, and the current local repaint submit action.
+- The bottom dock is mode-aware: scene mode keeps selection/move/rotate/scale/undo/redo, while texture mode keeps selection/brush/eraser/local-repaint controls/undo/redo.
 - Normal brush/eraser tools require an active projected layer. The editor warns the user and opens the Layers panel when painting is attempted without a valid target layer.
 - Inpaint add/subtract tools edit only the inpaint selection mask. They do not erase projected-layer pixels.
 - Surface painting works only on model meshes with UVs. Empty viewport space continues to use the normal orbit/camera behavior.
@@ -71,7 +72,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - The global Auto UV bake setting gates every bake entry point. When it is off, double-click and manual bake actions do not bake; newly accepted projected layers stay as live projection previews.
 - Project thumbnails are captured from the real WebGL viewport after projection changes. Grid and paint/helper overlays are hidden during the thumbnail capture and restored immediately afterwards.
 - The Projects page and bottom editor tools now use the shared Chinese / English string store instead of fixed English labels.
-- Local repaint now uses a focused current-view dialog. The brush paints continuous strokes instead of separated dabs, the editable mask is clipped to the visible model alpha, and the request reuses the same authenticated Atlas/Liclick gateway as normal image generation.
+- Local repaint now follows the ModDiff-like three-button texture workflow. Button 1 paints the allowed repaint mask, generated texture-map output becomes the source projection, and button 3 brushes where the new generated texture should replace the old visible result.
 - Current-view local repaint captures and submits a full viewport frame plus a full-size mask. The returned image is treated as the same full-frame coordinate space and is not cropped into a small ROI before compositing.
 - Current-view local repaint captures the source frame and selection mask at up to 2x viewport resolution, capped at 4096 px on the long side. This keeps the projected UV repair patch sharper without changing the visible camera framing.
 - Local repaint persists the session id, task id, camera snapshot, full source frame, masks, status, and returned preview in local storage. Closing the dialog or pressing F5 restores an in-flight or completed task instead of losing the state.
@@ -87,6 +88,9 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Global editor undo/redo stores labeled object/layer snapshots per project in `sessionStorage`. Ctrl+Z/Ctrl+Y restores the snapshot, keeps the redo chain consistent, and shows a top-center toast with the action label, for example `删除图层：...` or `应用图像编辑：...`.
 - The current editable object/layer snapshot is persisted after project/model restore finishes, so a browser refresh can recover local object/layer edits instead of relying only on the last server-saved project. Runtime-only canvas history remains in-memory because callback-based steps cannot be serialized safely.
 - Current object/layer snapshot persistence is debounced during rapid UI edits such as slider drags. Undo/redo remains immediate, while continuous adjustment no longer writes the full snapshot on every pointer movement.
+- Local repaint button 3 keeps a single live projected layer per repaint source and updates its mask canvas in place while brushing. It no longer spawns a new projected layer per dab.
+- Projected preview filters hidden layers before shader/material creation, so closing a layer eye actually removes that layer from the live projected stack.
+- App-side live-preview texture-budget clipping was removed. Visible projected layers are no longer silently dropped to satisfy a fixed budget; WebGL sampler overflow remains tracked as an architecture item for a batched/composited projected-preview path.
 
 ## Code Audit Summary
 
@@ -95,7 +99,7 @@ Low-risk cleanup completed in this pass:
 - Cached the paintable mesh list used by surface-paint raycasts so pointer movement no longer traverses the full model hierarchy every frame.
 - Switched surface-paint raycasts to a non-recursive flat mesh list and kept paint overlay meshes out of the raycast/material processing path.
 - Removed duplicate full-canvas mask alpha scans at stroke commit; inpaint add/subtract state now updates from the stroke history path.
-- Capped unbaked projected-layer live preview to 16 visible layers. A baked stack texture remains the intended fast path for full 100-layer projects.
+- Removed the old app-side live-preview layer cap from the projected stack path. The app now keeps visible layers in the live stack and documents WebGL sampler overflow as a separate rendering architecture problem.
 - Added `PerfScenarioLoader` for `100-models`, `100-layers`, and `100-layers-unbaked` browser runtime stress tests.
 - Improved `scripts/perf-audit.mjs` stress output with status-code/error aggregation and first-failure details.
 - Cleaned generated build and packaging output before release: `.codex-tmp`, `apps/web/dist`, `apps/server/dist`, and the old `dist-installer`.
@@ -125,6 +129,10 @@ Low-risk cleanup completed in this pass:
 - Cleaned the image editor default state so new sessions select the top edit layer instead of the locked/base image layer, matching Photoshop's expected "paint on the active editable layer" behavior.
 - Audited editor history persistence after F5/undo regressions. Snapshot history is scoped by project, stores the current scene snapshot, persists object and layer changes, labels common actions, and avoids persisting temporary mapped-preview transactions.
 - Debounced current snapshot persistence from the editor page so rapid layer/object changes are coalesced before writing to browser storage, reducing UI stutter during adjustment-heavy workflows.
+- Removed the disabled automatic projected-stack preview-bake effect from `EditorPage`. The feature flag was permanently off, but the dead path still kept timers, refs, imports, and type-checked code alive.
+- Removed an unused global viewport interaction listener that had remained after the disabled automatic preview-bake path was deleted.
+- Fixed local repaint cursor preview and first-stroke mask overlay visibility by including button 3 in the brush-preview path and creating overlays with the current inpaint tool state.
+- Updated desktop shell Build to `2026.07.08.1508` and package versions to `0.1.1`.
 - Fixed multi-select layer deletion from the layer context menu so `删除选中图层` deletes the selected set instead of only the menu anchor layer.
 - Removed the production CPU coverage parity pass after successful GPU UV bake. The validation path is still available through `localStorage.liclick-debug-gpu-coverage-validation=1`, but normal auto-bake no longer pays for a second CPU rasterization pass.
 - Fixed ordered baked-stack cache reuse so exact layer-order matches are accepted even when the bake is order-sensitive. This lets GPU stack bakes actually become the fast preview/export path.
@@ -202,8 +210,8 @@ The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 104,984,292 bytes
-SHA256 E04EDA374FF7511EDEA5F632392CB7B8DEC8A9C3D4846F598B989CED74DBA429
+Size 105,022,114 bytes
+SHA256 8AD9B7E28DCF6DD1B3181D912FA28F3304A9A2C72BBDE6B0663B97B9556EA986
 ```
 
 Packaging notes for this build:
@@ -224,7 +232,7 @@ The 2026-06-26 browser runtime stress pass reached:
 
 - 100 models: 59.95 FPS average over 240 warm sampled frames, p95 frame time 16.80 ms, `fallbackTicks=0`, no console warnings/errors.
 - 100 projected layers with baked stack cache: 59.95 FPS average over 240 warm sampled frames, p95 frame time 16.80 ms, `fallbackTicks=0`, no console warnings/errors.
-- 100 projected layers without baked stack, using the 16-layer live-preview guard: 59.95 FPS average over 240 warm sampled frames, p95 frame time 16.80 ms, `fallbackTicks=0`, no console warnings/errors.
+- 100 projected layers without baked stack, stressing projected-preview shader pressure: 59.95 FPS average over 240 warm sampled frames, p95 frame time 16.80 ms, `fallbackTicks=0`, no console warnings/errors.
 
 ## Known Risk Areas
 
@@ -236,3 +244,4 @@ The 2026-06-26 browser runtime stress pass reached:
 - Legacy unscoped references/layers remain visible for compatibility. New project data should always write `objectId`.
 - Large Vite chunk warnings are currently known and non-blocking, but code splitting should be considered after the texture workflow stabilizes.
 - Local repaint transition quality is still an active product tuning area. Do not replace the full-frame mapping path with ROI scaling/cropping; any future transition work should preserve full-frame coordinate alignment first.
+- Projected-layer live preview can still exceed WebGL fragment sampler limits when many visible image/mask/depth projected layers are active at once. The detailed incident note and preferred batched/composited solution are documented in `docs/31_WEBGL_SHADER_SAMPLER_LIMIT.md`.

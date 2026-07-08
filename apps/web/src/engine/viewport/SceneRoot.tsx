@@ -375,6 +375,7 @@ function ImportedModel({
         .filter(
           (layer) =>
             layer.type === 'projected' &&
+            layer.visible &&
             layer.imageUrl &&
             layer.camera &&
             (!layer.objectId || layer.objectId === importedObjectId),
@@ -395,12 +396,9 @@ function ImportedModel({
         .sort((a, b) => a.order - b.order),
     [importedObjectId, layers],
   );
-  const livePreviewLayerLimit = useMemo(() => {
-    return Math.max(1, previewProjectedLayers.length);
-  }, [previewProjectedLayers]);
   const livePreviewProjectedLayers = useMemo(
-    () => previewProjectedLayers.slice(0, livePreviewLayerLimit),
-    [livePreviewLayerLimit, previewProjectedLayers],
+    () => previewProjectedLayers,
+    [previewProjectedLayers],
   );
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];

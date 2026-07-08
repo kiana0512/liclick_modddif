@@ -6,7 +6,19 @@ import type { SerializedCamera } from '@/types/capture';
 import type { DisplayMode, ModelBoundingBox, ProjectionMode, SceneObject, Transform } from '@/types/model';
 
 export type TransformMode = 'select' | 'translate' | 'rotate' | 'scale';
-export type PaintToolMode = 'none' | 'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract';
+export type PaintToolMode = 'none' | 'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply';
+
+export type LocalRepaintProjectionSource = {
+  imageUrl: string;
+  allowedMaskUrl: string;
+  depthUrl?: string;
+  objectId?: string;
+  objectMatrixWorld?: number[];
+  camera: SerializedCamera;
+  generationId?: string;
+  captureId?: string;
+  name?: string;
+};
 
 export type PaintMaskSettings = {
   brushSize: number;
@@ -53,6 +65,7 @@ type SceneStore = {
   paintMaskInvertRevision: number;
   paintMaskDataUrl?: string;
   paintMaskHasContent: boolean;
+  localRepaintProjectionSource?: LocalRepaintProjectionSource;
   paintMaskSettings: PaintMaskSettings;
   paintToolSettings: PaintToolSettings;
   importSettings: ImportSettings;
@@ -73,6 +86,7 @@ type SceneStore = {
   setPaintTool: (mode: PaintToolMode) => void;
   markPaintMaskChanged: () => void;
   setPaintMaskDataUrl: (dataUrl?: string, hasContent?: boolean) => void;
+  setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
   setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
   setPaintToolSettings: (settings: Partial<PaintToolSettings>) => void;
   clearPaintMask: () => void;
@@ -101,8 +115,9 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskInvertRevision: 0,
       paintMaskDataUrl: undefined,
       paintMaskHasContent: false,
+      localRepaintProjectionSource: undefined,
       paintMaskSettings: {
-        brushSize: 10,
+        brushSize: 42,
         brushHardness: 50,
       },
       paintToolSettings: {
@@ -225,8 +240,18 @@ export const useSceneStore = create<SceneStore>()(
         }),
       setDisplayMode: (displayMode) => set({ displayMode }),
       setProjectionMode: (projectionMode) => set({ projectionMode }),
-      setTransformMode: (transformMode) => set({ transformMode, paintTool: 'none' }),
-      setPaintTool: (paintTool) => set({ paintTool, transformMode: 'select' }),
+      setTransformMode: (transformMode) =>
+        set((state) =>
+          state.transformMode === transformMode && state.paintTool === 'none'
+            ? state
+            : { transformMode, paintTool: 'none' },
+        ),
+      setPaintTool: (paintTool) =>
+        set((state) =>
+          state.paintTool === paintTool && state.transformMode === 'select'
+            ? state
+            : { paintTool, transformMode: 'select' },
+        ),
       markPaintMaskChanged: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
       setPaintMaskDataUrl: (paintMaskDataUrl, paintMaskHasContent) =>
         set((state) => ({
@@ -234,6 +259,7 @@ export const useSceneStore = create<SceneStore>()(
           paintMaskHasContent: paintMaskHasContent ?? (paintMaskDataUrl ? state.paintMaskHasContent : false),
           paintMaskRevision: state.paintMaskRevision + 1,
         })),
+      setLocalRepaintProjectionSource: (localRepaintProjectionSource) => set({ localRepaintProjectionSource }),
       setPaintMaskSettings: (settings) =>
         set((state) => ({
           paintMaskSettings: {

@@ -24,14 +24,8 @@ import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
-import {
-  canUseLayerStackCache,
-  findExactLayerStackTexture,
-  getLayerStackBakeInFlight,
-  getProjectedLayerStackSignature,
-  getVisibleProjectedLayerStack,
-  registerLayerStackBakeInFlight,
-} from '@/engine/bake/layerStackCache';
+import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
+import { getLiveProjectedCanvasDataUrl, isLiveProjectedCanvasUrl } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { exportModelGlb } from '@/engine/export/exportGltf';
 import { exportModelFbx } from '@/engine/export/exportFbx';
 import { exportModelObj } from '@/engine/export/exportObj';
@@ -99,6 +93,7 @@ import { useToastStore } from '@/stores/toastStore';
 import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
 import type { LocalRepaintRuntime, MaskBitmap, Rect } from '@/types/localRepaint';
 import type { SerializedCamera } from '@/types/capture';
+import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
 import type { Project, ReferenceImage } from '@/types/project';
@@ -117,14 +112,55 @@ const resolutionToSize = {
   '8K': 8192,
 } as const;
 
-const AUTO_PREVIEW_STACK_BAKE_ENABLED = false;
-const MIN_AUTO_PREVIEW_STACK_BAKE_COVERAGE_RATIO = 0.001;
-const PREVIEW_STACK_BAKE_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
 const LOCAL_REPAINT_CAPTURE_SCALE = 0.75;
 const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 1536;
 const IMAGE_EDIT_MAPPED_PREVIEW_SIZE = 3072;
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
+
+function isTextureMapGeneration(generation: Generation) {
+  return generation.metadata.workflow === 'texture-map';
+}
+
+function getGenerationObjectMatrixWorld(generation: Generation) {
+  const value = generation.metadata.objectMatrixWorld;
+  if (!Array.isArray(value) || value.length !== 16) return undefined;
+  return value.every((item) => typeof item === 'number') ? value : undefined;
+}
+
+function isLocalRepaintProjectionLayer(layer: Layer) {
+  return (
+    layer.type === 'projected' &&
+    (layer.id.startsWith('local-repaint-projection') || layer.id.startsWith('local-repaint-brush-projection'))
+  );
+}
+
+function isMatchingLocalRepaintProjectionLayer(
+  layer: Layer,
+  generationId: string | undefined,
+  captureId: string | undefined,
+  objectId: string,
+) {
+  if (!isLocalRepaintProjectionLayer(layer)) return false;
+  if (generationId) return layer.generationId === generationId;
+  if (captureId) return layer.captureId === captureId;
+  return !layer.objectId || layer.objectId === objectId;
+}
+
+function collapseLocalRepaintProjectionLayers(
+  layers: Layer[],
+  generationId: string | undefined,
+  captureId: string | undefined,
+  objectId: string,
+) {
+  let keptLocalRepaintLayer = false;
+  return layers.filter((layer) => {
+    if (!isMatchingLocalRepaintProjectionLayer(layer, generationId, captureId, objectId)) return true;
+    if (keptLocalRepaintLayer) return false;
+    keptLocalRepaintLayer = true;
+    return true;
+  });
+}
 
 type PersistedLocalRepaintRuntime = {
   version: 1;
@@ -398,11 +434,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const autosaveTimerRef = useRef<number>();
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
-  const previewStackBakeRunningRef = useRef(false);
-  const previewStackBakeKeyRef = useRef('');
-  const previewStackBakeFailureRef = useRef(new Map<string, number>());
-  const previewStackBakeTimerRef = useRef<number>();
-  const lastViewportInteractionRef = useRef(0);
+  const localRepaintCutoutCacheRef = useRef(new Map<string, Promise<string>>());
   const thumbnailRefreshTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>('idle');
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>('idle');
@@ -441,6 +473,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
+  const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
+  const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
+  const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
+  const setLocalRepaintProjectionSource = useSceneStore((state) => state.setLocalRepaintProjectionSource);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayers = useLayerStore((state) => state.setLayers);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
@@ -485,25 +521,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   useEffect(
     () => () => {
       window.clearTimeout(manualBakeProgressTimerRef.current);
-      window.clearTimeout(previewStackBakeTimerRef.current);
       window.clearTimeout(thumbnailRefreshTimerRef.current);
     },
     [],
   );
-
-  useEffect(() => {
-    const markInteraction = () => {
-      lastViewportInteractionRef.current = performance.now();
-    };
-    window.addEventListener('pointerdown', markInteraction, true);
-    window.addEventListener('pointermove', markInteraction, true);
-    window.addEventListener('wheel', markInteraction, true);
-    return () => {
-      window.removeEventListener('pointerdown', markInteraction, true);
-      window.removeEventListener('pointermove', markInteraction, true);
-      window.removeEventListener('wheel', markInteraction, true);
-    };
-  }, []);
 
   useEffect(() => {
     if (project) {
@@ -621,124 +642,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     showPanel('layerAdjustments');
     setPanelCollapsed('layerAdjustments', false);
   }, [activeProjectedLayerId, setPanelCollapsed, showPanel]);
-
-  function getLiveProjectedPreviewLimit(stack: Layer[] = []) {
-    return Math.max(1, stack.length);
-  }
-
-  useEffect(() => {
-    if (!project || !importedModel || !viewport) return undefined;
-    if (!AUTO_PREVIEW_STACK_BAKE_ENABLED) return undefined;
-    const objectId = selectedObjectId ?? importedModel.objectId;
-    const visibleStack = getVisibleProjectedLayerStack(layers, objectId);
-    if (visibleStack.length === 0) return undefined;
-    const liveLimit = getLiveProjectedPreviewLimit(visibleStack);
-    if (visibleStack.length <= liveLimit) return undefined;
-    const currentProject = useProjectStore.getState().getCurrentProject() ?? project;
-    const expectedResolution = resolutionToSize[resolution];
-    const stackSignature = getProjectedLayerStackSignature(currentProject.id, objectId, expectedResolution, visibleStack);
-    const exactTexture = findExactLayerStackTexture(currentProject, visibleStack, expectedResolution, objectId, stackSignature);
-    if (canUseLayerStackCache(visibleStack, exactTexture, expectedResolution, objectId, stackSignature)) return undefined;
-
-    if (previewStackBakeRunningRef.current && previewStackBakeKeyRef.current === stackSignature) return undefined;
-    if (getLayerStackBakeInFlight(stackSignature)) return undefined;
-    const previousFailureAt = previewStackBakeFailureRef.current.get(stackSignature) ?? 0;
-    if (Date.now() - previousFailureAt < PREVIEW_STACK_BAKE_FAILURE_COOLDOWN_MS) return undefined;
-    window.clearTimeout(previewStackBakeTimerRef.current);
-    const tryBakeWhenIdle = () => {
-      if (previewStackBakeRunningRef.current) return;
-      const idleForMs = performance.now() - lastViewportInteractionRef.current;
-      if (idleForMs < 1400) {
-        previewStackBakeTimerRef.current = window.setTimeout(tryBakeWhenIdle, 1400 - idleForMs + 250);
-        return;
-      }
-      const latestProject = useProjectStore.getState().getCurrentProject() ?? project;
-      const latestObjectId = useSceneStore.getState().selectedObjectId ?? importedModel.objectId;
-      const latestStack = getVisibleProjectedLayerStack(useLayerStore.getState().layers, latestObjectId);
-      if (latestStack.length === 0) return;
-      const latestLiveLimit = getLiveProjectedPreviewLimit(latestStack);
-      if (latestStack.length <= latestLiveLimit) return;
-      const latestExpectedResolution = resolutionToSize[resolution];
-      const latestSignature = getProjectedLayerStackSignature(latestProject.id, latestObjectId, latestExpectedResolution, latestStack);
-      const latestExactTexture = findExactLayerStackTexture(
-        latestProject,
-        latestStack,
-        latestExpectedResolution,
-        latestObjectId,
-        latestSignature,
-      );
-      if (canUseLayerStackCache(latestStack, latestExactTexture, latestExpectedResolution, latestObjectId, latestSignature)) return;
-      if (getLayerStackBakeInFlight(latestSignature)) return;
-      const latestFailureAt = previewStackBakeFailureRef.current.get(latestSignature) ?? 0;
-      if (Date.now() - latestFailureAt < PREVIEW_STACK_BAKE_FAILURE_COOLDOWN_MS) return;
-      previewStackBakeRunningRef.current = true;
-      previewStackBakeKeyRef.current = latestSignature;
-      setManualBakeProgress({
-        title: t('autoBake'),
-        detail: `${t('autoBakeCompositing')} · ${latestStack.length}/${latestLiveLimit} projected layers`,
-        progress: 0.03,
-      });
-      const bakePromise = bakeVisibleProjectedLayersToTexture({
-        objectId: latestObjectId,
-        layerIds: latestStack.map((layer) => layer.id),
-        resolution: resolutionToSize[resolution],
-        cacheKey: latestSignature,
-        enableBackfaceCulling: true,
-        enableDilation: true,
-        dilationPixels: 4,
-        method: 'gpu',
-        preferBlobOutput: latestProject.workspaceMode === 'local-server',
-        commitToProject: false,
-        markSourceLayersBaked: false,
-        onProgress: updateManualBakeProgress,
-      })
-        .then(async (bakeResult) => {
-          if (bakeResult.report.coverageRatio < MIN_AUTO_PREVIEW_STACK_BAKE_COVERAGE_RATIO) {
-            throw new Error(
-              `UV bake coverage ${(bakeResult.report.coverageRatio * 100).toFixed(1)}% is too low for projected stack cache.`,
-            );
-          }
-          let imageUrl = bakeResult.imageUrl;
-          let bakedTexture = bakeResult.bakedTexture;
-          if (latestProject.workspaceMode === 'local-server') {
-            imageUrl = await persistManualBakedTexture(bakeResult.bakedTexture.id, bakeResult.imageUrl, bakeResult.imageBlob);
-            if (imageUrl !== bakeResult.imageUrl) bakedTexture = { ...bakedTexture, imageUrl };
-          }
-          const currentObjectId = useSceneStore.getState().selectedObjectId ?? importedModel.objectId;
-          const currentStack = getVisibleProjectedLayerStack(useLayerStore.getState().layers, currentObjectId);
-          const currentProject = useProjectStore.getState().getCurrentProject() ?? latestProject;
-          const currentSignature = getProjectedLayerStackSignature(
-            currentProject.id,
-            currentObjectId,
-            latestExpectedResolution,
-            currentStack,
-          );
-          if (currentSignature !== latestSignature) return bakedTexture;
-          useProjectStore.getState().addBakedTexture(bakedTexture);
-          useLayerStore.getState().markLayersBaked(
-            bakedTexture.sourceLayerIds ?? [bakedTexture.sourceLayerId],
-            bakedTexture.id,
-            bakedTexture.createdAt,
-          );
-          previewStackBakeFailureRef.current.delete(latestSignature);
-          scheduleTexturedThumbnailRefresh(350);
-          return bakedTexture;
-        })
-        .catch((error) => {
-          previewStackBakeFailureRef.current.set(latestSignature, Date.now());
-          console.warn('[Liclick 3D Texture] Could not bake projected preview stack:', error);
-          return undefined;
-        })
-        .finally(() => {
-          previewStackBakeRunningRef.current = false;
-          manualBakeProgressTimerRef.current = window.setTimeout(() => setManualBakeProgress(undefined), 1200);
-        });
-      void registerLayerStackBakeInFlight(latestSignature, bakePromise);
-    };
-    previewStackBakeTimerRef.current = window.setTimeout(tryBakeWhenIdle, 1800);
-
-    return () => window.clearTimeout(previewStackBakeTimerRef.current);
-  }, [importedModel, layers, project, pushToast, resolution, selectedObjectId, t, updateCurrentProject, viewport]);
 
   useEffect(() => {
     function handleUndoRedo(event: KeyboardEvent) {
@@ -1454,14 +1357,18 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
     const persistOptionalLayerAsset = async (url: string | undefined, filename: string) => {
       try {
-        return await persistAssetUrl(projectForSave.id, url, 'layers', filename);
+        const resolvedUrl = url && isLiveProjectedCanvasUrl(url) ? getLiveProjectedCanvasDataUrl(url) ?? url : url;
+        return await persistAssetUrl(projectForSave.id, resolvedUrl, 'layers', filename);
       } catch (error) {
         console.warn(`[Liclick 3D Texture] Dropping unsaved optional layer asset ${filename}.`, error);
         return undefined;
       }
     };
     for (const layer of projectForSave.layers) {
-      layer.imageUrl = await persistAssetUrl(projectForSave.id, layer.imageUrl, 'layers', `${layer.id}.png`) ?? layer.imageUrl;
+      const resolvedImageUrl = isLiveProjectedCanvasUrl(layer.imageUrl)
+        ? getLiveProjectedCanvasDataUrl(layer.imageUrl) ?? layer.imageUrl
+        : layer.imageUrl;
+      layer.imageUrl = await persistAssetUrl(projectForSave.id, resolvedImageUrl, 'layers', `${layer.id}.png`) ?? layer.imageUrl;
       layer.maskUrl = await persistOptionalLayerAsset(layer.maskUrl, `${layer.id}-mask.png`);
       layer.depthUrl = await persistOptionalLayerAsset(layer.depthUrl, `${layer.id}-depth.png`);
     }
@@ -2530,39 +2437,122 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     void runExportAction(t('exporting'), actions[actionId]);
   }
 
+  const getLocalRepaintCutoutImage = useCallback((resultUrl: string, maskUrl: string) => {
+    const cacheKey = `${resultUrl}\n${maskUrl}`;
+    const cached = localRepaintCutoutCacheRef.current.get(cacheKey);
+    if (cached) return cached;
+    const promise = (async () => {
+      const sourceImageUrl = resultUrl.startsWith('http') ? await urlToDataUrl(resultUrl) : resultUrl;
+      return createMaskedProjectedImage(sourceImageUrl, maskUrl);
+    })();
+    localRepaintCutoutCacheRef.current.set(cacheKey, promise);
+    promise.catch(() => {
+      if (localRepaintCutoutCacheRef.current.get(cacheKey) === promise) {
+        localRepaintCutoutCacheRef.current.delete(cacheKey);
+      }
+    });
+    return promise;
+  }, []);
+
   const handleLocalRepaintFromToolbar = useCallback(() => {
     void (async () => {
-      if (restoreExistingLocalRepaintSession()) return;
-      const viewportRuntime = useSceneStore.getState().viewport;
-      const captureSize = viewportRuntime ? getLocalRepaintCaptureSize(viewportRuntime.gl.domElement) : undefined;
-      const capture = getCleanViewportCapture(captureSize);
-      const initialUserMask = getViewportInpaintSelectionMask(captureSize);
-      const cameraState = getCurrentCameraSnapshot();
-      if (!capture || !cameraState || !importedModel) {
-        pushToast({ tone: 'warning', title: t('viewportUnavailable'), description: t('importModelFirst') });
+      if (!project || !importedModel) {
+        pushToast({ tone: 'warning', title: t('localRepaintUnavailable'), description: t('importModelFirst') });
         return;
       }
-      const workingImageData = await urlToImageData(capture.dataUrl);
-      const objectMask = capture.objectMask;
-      const holeMask = buildContentAwareRepairMask(
-        removeSmallMaskComponents(inferWhiteHoleMask(workingImageData, objectMask), 48),
-        objectMask,
+      if (!paintMaskHasContent || !paintMaskDataUrl) {
+        pushToast({
+          tone: 'warning',
+          title: t('localRepaintMaskMissing'),
+          description: t('inpaintSelectToolHelp'),
+          dedupeKey: 'local-repaint-mask-missing',
+        });
+        return;
+      }
+      const latestTextureMapGeneration = generations.find(
+        (generation) =>
+          generation.resultUrl &&
+          generation.status === 'succeeded' &&
+          isTextureMapGeneration(generation) &&
+          (!generation.metadata.projectId || generation.metadata.projectId === projectId),
       );
-      openLocalRepaintRuntime({
-        id: createId('local-repaint'),
-        projectId,
-        mode: 'repair_current_view',
-        targetName: importedModel.name,
-        cameraState,
-        workingImageUrl: capture.dataUrl,
-        workingImageData,
-        objectMask,
-        initialUserMask,
-        holeMask,
-        status: 'idle',
+      if (!latestTextureMapGeneration?.resultUrl) {
+        pushToast({
+          tone: 'warning',
+          title: t('textureMapFailed'),
+          description: t('textureMapGeneratedHelp'),
+          dedupeKey: 'local-repaint-texture-map-missing',
+        });
+        return;
+      }
+      const generationCapture =
+        project.captures.find((capture) => capture.id === latestTextureMapGeneration.captureId) ??
+        useProjectStore.getState().getCurrentProject()?.captures.find((capture) => capture.id === latestTextureMapGeneration.captureId);
+      const cameraState = generationCapture?.camera ?? getCurrentCameraSnapshot();
+      if (!cameraState) {
+        pushToast({ tone: 'warning', title: t('viewportUnavailable'), description: t('textureMapSubmitting') });
+        return;
+      }
+      const objectId = selectedObjectId ?? generationCapture?.objectId ?? importedModel.objectId;
+      importedModel.group.updateMatrixWorld(true);
+      const captureId = generationCapture?.id ?? latestTextureMapGeneration.captureId;
+      if (
+        localRepaintProjectionSource?.generationId === latestTextureMapGeneration.id &&
+        localRepaintProjectionSource.allowedMaskUrl === paintMaskDataUrl &&
+        localRepaintProjectionSource.objectId === objectId
+      ) {
+        setPaintTool('inpaint-apply');
+        return;
+      }
+      const cutoutImageUrl = await getLocalRepaintCutoutImage(latestTextureMapGeneration.resultUrl, paintMaskDataUrl);
+      const nameSource = latestTextureMapGeneration.prompt.trim();
+      const currentLayers = useLayerStore.getState().layers;
+      const collapsedLayers = collapseLocalRepaintProjectionLayers(
+        currentLayers,
+        latestTextureMapGeneration.id,
+        captureId,
+        objectId,
+      );
+      if (collapsedLayers.length !== currentLayers.length) {
+        setLayers(collapsedLayers);
+        setProjectLayers(useLayerStore.getState().layers);
+      }
+      setLocalRepaintProjectionSource({
+        imageUrl: cutoutImageUrl,
+        allowedMaskUrl: paintMaskDataUrl,
+        depthUrl: generationCapture?.depthUrl,
+        objectId,
+        objectMatrixWorld: getGenerationObjectMatrixWorld(latestTextureMapGeneration) ?? importedModel.group.matrixWorld.toArray(),
+        camera: cameraState,
+        generationId: latestTextureMapGeneration.id,
+        captureId,
+        name: nameSource ? `${t('localRepaint')}: ${nameSource.slice(0, 20)}` : t('localRepaint'),
+      });
+      setPaintTool('inpaint-apply');
+      pushToast({
+        tone: 'info',
+        title: t('localRepaint'),
+        description: t('localRepaintToolHelp'),
+        dedupeKey: `local-repaint-apply-source:${latestTextureMapGeneration.id}`,
       });
     })();
-  }, [getCleanViewportCapture, getLocalRepaintCaptureSize, getViewportInpaintSelectionMask, importedModel, openLocalRepaintRuntime, projectId, pushToast, restoreExistingLocalRepaintSession, t]);
+  }, [
+    generations,
+    getLocalRepaintCutoutImage,
+    importedModel,
+    localRepaintProjectionSource,
+    paintMaskDataUrl,
+    paintMaskHasContent,
+    project,
+    projectId,
+    pushToast,
+    selectedObjectId,
+    setLocalRepaintProjectionSource,
+    setLayers,
+    setPaintTool,
+    setProjectLayers,
+    t,
+  ]);
 
   const handleContentAwareRepairFromToolbar = useCallback(() => {
     void (async () => {
@@ -2715,7 +2705,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           return;
         }
 
-        if (state.paintTool === 'inpaint-add' || state.paintTool === 'inpaint-subtract') {
+        if (
+          state.paintTool === 'inpaint-add' ||
+          state.paintTool === 'inpaint-subtract' ||
+          state.paintTool === 'inpaint-apply'
+        ) {
           const nextSize = stepBrushSize(state.paintMaskSettings.brushSize, 1, 180);
           state.setPaintMaskSettings({ brushSize: nextSize });
           pushToast({
@@ -3037,6 +3031,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         }
         bottomToolbar={
           <BottomToolDock
+            mode={workspaceMode}
             transformMode={transformMode}
             paintTool={paintTool}
             onTransformModeChange={setTransformMode}

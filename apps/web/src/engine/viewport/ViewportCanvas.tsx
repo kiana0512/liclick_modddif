@@ -2,12 +2,18 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { Suspense, useCallback, useEffect, useRef, useState, type DragEvent, type PointerEvent, type WheelEvent } from 'react';
 import * as THREE from 'three';
 import { useDragInteractionStore } from '@/stores/dragInteractionStore';
+import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
-import { useSceneStore } from '@/stores/sceneStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { useSceneStore, type LocalRepaintProjectionSource } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useT } from '@/stores/i18nStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
+import {
+  markLiveProjectedCanvasTextureUpdated,
+  registerLiveProjectedCanvasTexture,
+} from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { SceneRoot } from './SceneRoot';
 import { CameraController } from './CameraController';
@@ -69,6 +75,8 @@ function getDragPayload(event: DragEvent<HTMLDivElement>) {
 const UV_PAINT_RESOLUTION = 512;
 const PROJECTION_PAINT_MAX_SIZE = 512;
 const ERASER_CLAY_COLOR = '#f4f5f2';
+const LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-projection';
+const LEGACY_LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-brush-projection';
 type UvPaintLayer = {
   objectId: string;
   paintCanvas: HTMLCanvasElement;
@@ -116,8 +124,25 @@ type PaintDirtyRect = {
 
 type PaintStrokeDraft = {
   layer: UvPaintLayer;
-  target: 'paint' | 'mask';
+  target: 'paint' | 'mask' | 'apply-local-repaint';
   bounds?: PaintDirtyRect;
+};
+
+type LocalRepaintCompositeState = {
+  sourceKey: string;
+  layerId: string;
+  maskUrl: string;
+  maskCanvas: HTMLCanvasElement;
+  maskContext: CanvasRenderingContext2D;
+  scratchCanvas: HTMLCanvasElement;
+  scratchContext: CanvasRenderingContext2D;
+};
+
+type LocalRepaintAllowedMaskState = {
+  url: string;
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  data: ImageData;
 };
 
 type PaintableMeshCache = {
@@ -232,6 +257,188 @@ function hasCanvasAlpha(canvas: HTMLCanvasElement, context: CanvasRenderingConte
   return false;
 }
 
+function hasProjectionMaskContent(imageData: ImageData) {
+  const data = imageData.data;
+  for (let index = 0; index < data.length; index += 4) {
+    if (Math.max(data[index], data[index + 1], data[index + 2]) > 24) return true;
+  }
+  return false;
+}
+
+function projectionMaskToDataUrl(source: HTMLCanvasElement) {
+  const canvas = document.createElement('canvas');
+  canvas.width = source.width;
+  canvas.height = source.height;
+  const context = canvas.getContext('2d');
+  if (!context) return source.toDataURL('image/png');
+  context.fillStyle = '#000000';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(source, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+function loadImageElement(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Could not load local repaint mask.'));
+    image.src = url;
+  });
+}
+
+function createLocalRepaintSourceKey(source: LocalRepaintProjectionSource, objectId: string) {
+  return [
+    source.generationId ?? '',
+    source.captureId ?? '',
+    source.objectId ?? objectId,
+    source.imageUrl,
+  ].join('|');
+}
+
+function isLocalRepaintProjectionLayer(layer: Layer) {
+  return (
+    layer.type === 'projected' &&
+    (layer.id.startsWith(LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX) ||
+      layer.id.startsWith(LEGACY_LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX))
+  );
+}
+
+function isMatchingLocalRepaintProjectionLayer(
+  layer: Layer,
+  source: LocalRepaintProjectionSource,
+  objectId: string,
+) {
+  if (!isLocalRepaintProjectionLayer(layer)) return false;
+  if (source.generationId) return layer.generationId === source.generationId;
+  if (source.captureId) return layer.captureId === source.captureId;
+  return !layer.objectId || layer.objectId === (source.objectId ?? objectId);
+}
+
+function createLocalRepaintComposite(
+  sourceKey: string,
+  layerId: string,
+  width: number,
+  height: number,
+): LocalRepaintCompositeState | undefined {
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = width;
+  maskCanvas.height = height;
+  const maskContext = maskCanvas.getContext('2d');
+  const scratchCanvas = document.createElement('canvas');
+  scratchCanvas.width = width;
+  scratchCanvas.height = height;
+  const scratchContext = scratchCanvas.getContext('2d');
+  if (!maskContext || !scratchContext) return undefined;
+  const maskUrl = registerLiveProjectedCanvasTexture(layerId, maskCanvas, THREE.NoColorSpace);
+  return { sourceKey, layerId, maskUrl, maskCanvas, maskContext, scratchCanvas, scratchContext };
+}
+
+function resizeLocalRepaintComposite(composite: LocalRepaintCompositeState, width: number, height: number) {
+  if (composite.maskCanvas.width === width && composite.maskCanvas.height === height) return;
+  composite.maskCanvas.width = width;
+  composite.maskCanvas.height = height;
+  composite.scratchCanvas.width = width;
+  composite.scratchCanvas.height = height;
+  registerLiveProjectedCanvasTexture(composite.layerId, composite.maskCanvas, THREE.NoColorSpace);
+}
+
+function drawLocalRepaintStrokeMaskPatch(
+  composite: LocalRepaintCompositeState,
+  sourceImage: HTMLImageElement,
+  allowedMask: LocalRepaintAllowedMaskState,
+  strokeMask: HTMLCanvasElement,
+  dirtyRect: PaintDirtyRect,
+) {
+  resizeLocalRepaintComposite(composite, strokeMask.width, strokeMask.height);
+  composite.scratchContext.save();
+  composite.scratchContext.globalCompositeOperation = 'source-over';
+  composite.scratchContext.clearRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
+  composite.scratchContext.drawImage(
+    strokeMask,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+  );
+  composite.scratchContext.globalCompositeOperation = 'destination-in';
+  composite.scratchContext.drawImage(
+    sourceImage,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+  );
+  composite.scratchContext.drawImage(
+    allowedMask.canvas,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+  );
+  composite.scratchContext.restore();
+  composite.maskContext.drawImage(
+    composite.scratchCanvas,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+  );
+  allowedMask.context.save();
+  allowedMask.context.globalCompositeOperation = 'destination-out';
+  allowedMask.context.drawImage(
+    composite.scratchCanvas,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+    dirtyRect.x,
+    dirtyRect.y,
+    dirtyRect.width,
+    dirtyRect.height,
+  );
+  allowedMask.context.restore();
+  composite.scratchContext.clearRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
+  markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
+}
+
+function canvasToPngDataUrl(canvas: HTMLCanvasElement) {
+  return new Promise<string>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Could not encode local repaint projection image.'));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error('Could not read local repaint projection image.'));
+      };
+      reader.onerror = () => reject(reader.error ?? new Error('Could not read local repaint projection image.'));
+      reader.readAsDataURL(blob);
+    }, 'image/png');
+  });
+}
+
 function unionDirtyRect(a: PaintDirtyRect | undefined, b: PaintDirtyRect): PaintDirtyRect {
   if (!a) return b;
   const x = Math.min(a.x, b.x);
@@ -269,6 +476,16 @@ function resizeProjectionCanvas(layer: UvPaintLayer, aspect: number) {
   layer.projectionContext.clearRect(0, 0, width, height);
 }
 
+function resizeProjectionCanvasToSize(layer: UvPaintLayer, width: number, height: number) {
+  const safeWidth = Math.max(1, Math.round(width));
+  const safeHeight = Math.max(1, Math.round(height));
+  if (layer.projectionCanvas.width !== safeWidth || layer.projectionCanvas.height !== safeHeight) {
+    layer.projectionCanvas.width = safeWidth;
+    layer.projectionCanvas.height = safeHeight;
+  }
+  layer.projectionContext.clearRect(0, 0, safeWidth, safeHeight);
+}
+
 function getSerializedPaintCamera(camera: THREE.Camera, aspect: number) {
   const viewport = useSceneStore.getState().viewport;
   const target = viewport?.controls?.target?.clone() ?? new THREE.Vector3();
@@ -291,6 +508,10 @@ function SurfacePaintOverlay() {
   const textureUpdateFrameRef = useRef<number>();
   const maskDirtyRef = useRef(false);
   const maskHasContentRef = useRef(false);
+  const localRepaintAllowedMaskRef = useRef<LocalRepaintAllowedMaskState>();
+  const localRepaintSourceImageRef = useRef<{ url: string; image: HTMLImageElement; data?: ImageData }>();
+  const localRepaintCompositeRef = useRef<LocalRepaintCompositeState>();
+  const localRepaintCommitRevisionRef = useRef(0);
   const cursorNormalMatrixRef = useRef(new THREE.Matrix3());
   const cursorWorldNormalRef = useRef(new THREE.Vector3());
   const cursorLocalPointRef = useRef(new THREE.Vector3());
@@ -304,6 +525,7 @@ function SurfacePaintOverlay() {
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
+  const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
   const setPaintMaskDataUrl = useSceneStore((state) => state.setPaintMaskDataUrl);
   const setOrbitControlsEnabled = useSceneStore((state) => state.setOrbitControlsEnabled);
   const importedModel = useSceneStore((state) => state.importedModel);
@@ -314,7 +536,8 @@ function SurfacePaintOverlay() {
   const setPanelCollapsed = useWorkspaceLayoutStore((state) => state.setPanelCollapsed);
   const t = useT();
   const isInpaintMode = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
-  const enabled = paintTool === 'brush' || paintTool === 'eraser' || isInpaintMode;
+  const isLocalRepaintApplyMode = paintTool === 'inpaint-apply';
+  const enabled = paintTool === 'brush' || paintTool === 'eraser' || isInpaintMode || isLocalRepaintApplyMode;
   const texturePaintReady = Boolean(importedModel || selectedObjectId);
   const canUseSurfacePaint = texturePaintReady;
 
@@ -431,7 +654,9 @@ function SurfacePaintOverlay() {
     const maskOverlay = new THREE.Mesh(mesh.geometry, layer.maskMaterial);
     maskOverlay.name = 'Liclick UV Inpaint Mask Overlay';
     maskOverlay.userData.liclickPaintOverlay = true;
+    maskOverlay.userData.liclickInpaintMaskOverlay = true;
     maskOverlay.userData.liclickInpaintMaskTexture = layer.maskTexture;
+    maskOverlay.visible = isInpaintMode;
     maskOverlay.renderOrder = 31;
     mesh.add(maskOverlay);
     layer.overlayMeshes.push(maskOverlay);
@@ -505,18 +730,75 @@ function SurfacePaintOverlay() {
 
   useEffect(() => () => {
     if (textureUpdateFrameRef.current !== undefined) window.cancelAnimationFrame(textureUpdateFrameRef.current);
-  }, []);
+  }, [isInpaintMode]);
+
+  useEffect(() => {
+    const source = localRepaintProjectionSource;
+    if (!source) {
+      localRepaintAllowedMaskRef.current = undefined;
+      localRepaintSourceImageRef.current = undefined;
+      localRepaintCompositeRef.current = undefined;
+      return undefined;
+    }
+    let cancelled = false;
+    void Promise.all([
+      loadImageElement(source.allowedMaskUrl),
+      loadImageElement(source.imageUrl),
+    ]).then(([allowedMaskImage, sourceImage]) => {
+      if (cancelled) return;
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = sourceImage.naturalWidth || sourceImage.width || allowedMaskImage.naturalWidth || allowedMaskImage.width;
+      maskCanvas.height = sourceImage.naturalHeight || sourceImage.height || allowedMaskImage.naturalHeight || allowedMaskImage.height;
+      const maskContext = maskCanvas.getContext('2d', { willReadFrequently: true });
+      if (!maskContext) return;
+      maskContext.drawImage(allowedMaskImage, 0, 0, maskCanvas.width, maskCanvas.height);
+      localRepaintAllowedMaskRef.current = {
+        url: source.allowedMaskUrl,
+        canvas: maskCanvas,
+        context: maskContext,
+        data: maskContext.getImageData(0, 0, maskCanvas.width, maskCanvas.height),
+      };
+      const sourceCanvas = document.createElement('canvas');
+      sourceCanvas.width = maskCanvas.width;
+      sourceCanvas.height = maskCanvas.height;
+      const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
+      sourceContext?.drawImage(sourceImage, 0, 0, sourceCanvas.width, sourceCanvas.height);
+      localRepaintSourceImageRef.current = {
+        url: source.imageUrl,
+        image: sourceImage,
+        data: sourceContext?.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height),
+      };
+      localRepaintCompositeRef.current = undefined;
+    }).catch((error) => {
+      console.warn('[Liclick 3D Texture] Could not prepare local repaint projection source:', error);
+      localRepaintAllowedMaskRef.current = undefined;
+      localRepaintSourceImageRef.current = undefined;
+      localRepaintCompositeRef.current = undefined;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [localRepaintProjectionSource]);
 
   useEffect(() => {
     const layer = layerRef.current;
     if (!layer) return;
     layer.maskContext.clearRect(0, 0, layer.maskCanvas.width, layer.maskCanvas.height);
+    layer.projectionContext.clearRect(0, 0, layer.projectionCanvas.width, layer.projectionCanvas.height);
     layer.maskSolidNormalized = true;
     scheduleTextureUpdate(layer.maskTexture);
     refreshMaskDisplay(layer);
     maskDirtyRef.current = false;
     maskHasContentRef.current = false;
   }, [paintMaskResetRevision, refreshMaskDisplay, scheduleTextureUpdate]);
+
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    layer.overlayMeshes.forEach((mesh) => {
+      if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = isInpaintMode;
+    });
+  }, [isInpaintMode, paintTool]);
 
   const getBrushWorldRadius = useCallback((model: SurfacePaintTarget) => {
     const maxDimension = Math.max(model.boundingSize.x, model.boundingSize.y, model.boundingSize.z, 1);
@@ -526,10 +808,10 @@ function SurfacePaintOverlay() {
         : paintTool === 'eraser'
           ? paintToolSettings.eraserSize
           : paintMaskSettings.brushSize;
-    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
-    const worldScale = isMaskBrush ? 0.075 : 0.45;
-    const minRadius = isMaskBrush ? maxDimension * 0.0008 : maxDimension * 0.004;
-    const maxRadius = isMaskBrush ? maxDimension * 0.12 : maxDimension * 0.18;
+    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract' || paintTool === 'inpaint-apply';
+    const worldScale = isMaskBrush ? 0.18 : 0.45;
+    const minRadius = isMaskBrush ? maxDimension * 0.002 : maxDimension * 0.004;
+    const maxRadius = isMaskBrush ? maxDimension * 0.22 : maxDimension * 0.18;
     return THREE.MathUtils.clamp((maxDimension * setting * worldScale) / 700, minRadius, maxRadius);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
@@ -540,9 +822,9 @@ function SurfacePaintOverlay() {
         : paintTool === 'eraser'
           ? paintToolSettings.eraserSize
           : paintMaskSettings.brushSize;
-    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract' || paintTool === 'inpaint-apply';
     return isMaskBrush
-      ? THREE.MathUtils.clamp(setting * 0.2, 0.75, 48)
+      ? THREE.MathUtils.clamp(setting * 0.75, 2, 128)
       : THREE.MathUtils.clamp(setting * 0.45, 1.5, 96);
   }, [paintMaskSettings.brushSize, paintTool, paintToolSettings.brushSize, paintToolSettings.eraserSize]);
 
@@ -584,7 +866,7 @@ function SurfacePaintOverlay() {
 
   const getCursorColor = useCallback(() => {
     if (paintTool === 'eraser') return '#ffffff';
-    if (isInpaintMode) return '#ff8a68';
+    if (isInpaintMode || isLocalRepaintApplyMode) return '#ff8a68';
     return paintToolSettings.color;
   }, [isInpaintMode, paintTool, paintToolSettings.color]);
 
@@ -623,9 +905,9 @@ function SurfacePaintOverlay() {
   }, [enabled, getCursorColor, gl.domElement]);
 
   const updateCursor = useCallback((event: globalThis.PointerEvent) => {
-    const canPreviewBrush = enabled && (isInpaintMode || canUseSurfacePaint);
+    const canPreviewBrush = enabled && (isInpaintMode || isLocalRepaintApplyMode || canUseSurfacePaint);
     return updateCursorFromHit(canPreviewBrush ? raycastModel(event) : undefined);
-  }, [canUseSurfacePaint, enabled, isInpaintMode, raycastModel, updateCursorFromHit]);
+  }, [canUseSurfacePaint, enabled, isInpaintMode, isLocalRepaintApplyMode, raycastModel, updateCursorFromHit]);
 
   const drawBrushSegment = useCallback((
     context: CanvasRenderingContext2D,
@@ -685,6 +967,7 @@ function SurfacePaintOverlay() {
     radius: number,
     color: string,
     hardness: number,
+    compositeOperation: GlobalCompositeOperation = 'source-over',
   ) => {
     const textureWidth = context.canvas.width;
     const textureHeight = context.canvas.height;
@@ -699,7 +982,7 @@ function SurfacePaintOverlay() {
     const innerRadius = Math.max(1, scaledRadius * (1 - softness * 0.55));
 
     context.save();
-    context.globalCompositeOperation = 'source-over';
+    context.globalCompositeOperation = compositeOperation;
     context.lineCap = 'round';
     context.lineJoin = 'round';
     if (softness > 0.02) {
@@ -735,7 +1018,7 @@ function SurfacePaintOverlay() {
     const deltaY = Math.min(Math.abs(targetUvY - sourceUvY), 1 - Math.abs(targetUvY - sourceUvY));
     const textureDistance = Math.hypot(deltaX, deltaY) * UV_PAINT_RESOLUTION;
     const worldDistance = previous.point.distanceTo(result.hit.point);
-    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+    const isMaskBrush = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract' || paintTool === 'inpaint-apply';
     const maxTextureDistance = isMaskBrush
       ? THREE.MathUtils.clamp(result.textureRadius * 4, 8, 120)
       : THREE.MathUtils.clamp(result.textureRadius * 5, 16, 180);
@@ -745,6 +1028,99 @@ function SurfacePaintOverlay() {
     if (textureDistance > maxTextureDistance) return undefined;
     return previous.uv;
   }, [paintTool]);
+
+  const ensureLiveLocalRepaintComposite = useCallback((model: SurfacePaintTarget) => {
+    const localRepaintSource = localRepaintProjectionSource;
+    const sourceImage = localRepaintSourceImageRef.current?.image;
+    if (!localRepaintSource || !sourceImage) return undefined;
+    const width = sourceImage.naturalWidth || sourceImage.width;
+    const height = sourceImage.naturalHeight || sourceImage.height;
+    if (width <= 0 || height <= 0) return undefined;
+
+    model.group.updateMatrixWorld(true);
+    const sourceKey = createLocalRepaintSourceKey(localRepaintSource, model.objectId);
+    const currentLayers = useLayerStore.getState().layers;
+    const existingLayer = currentLayers.find((item) =>
+      isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
+    );
+    const layerId = existingLayer?.id ?? createId(LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX);
+    let composite = localRepaintCompositeRef.current;
+    if (
+      !composite ||
+      composite.sourceKey !== sourceKey ||
+      composite.layerId !== layerId ||
+      composite.maskCanvas.width !== width ||
+      composite.maskCanvas.height !== height
+    ) {
+      composite = createLocalRepaintComposite(sourceKey, layerId, width, height);
+      localRepaintCompositeRef.current = composite;
+    }
+    if (!composite) return undefined;
+
+    const projectedLayer: Layer = {
+      ...existingLayer,
+      id: layerId,
+      name: localRepaintSource.name ?? 'Local repaint brush',
+      type: 'projected',
+      imageUrl: localRepaintSource.imageUrl,
+      maskUrl: composite.maskUrl,
+      depthUrl: localRepaintSource.depthUrl,
+      objectId: localRepaintSource.objectId ?? model.objectId,
+      objectMatrixWorld: localRepaintSource.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
+      camera: localRepaintSource.camera,
+      generationId: localRepaintSource.generationId,
+      captureId: localRepaintSource.captureId,
+      visible: true,
+      opacity: 1,
+      strength: 1,
+      blendMode: 'normal',
+      adjustments: { hue: 0, saturation: 0, lightness: 0 },
+      order: 0,
+      createdAt: existingLayer?.createdAt ?? new Date().toISOString(),
+    };
+    if (
+      !existingLayer ||
+      existingLayer.imageUrl !== projectedLayer.imageUrl ||
+      existingLayer.maskUrl !== projectedLayer.maskUrl ||
+      existingLayer.camera !== projectedLayer.camera ||
+      existingLayer.objectId !== projectedLayer.objectId
+    ) {
+      useEditorHistoryStore.getState().capture('局部重绘笔刷');
+      const nextLayers = [
+        projectedLayer,
+        ...currentLayers.filter(
+          (item) =>
+            item.id !== projectedLayer.id &&
+            !isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
+        ),
+      ];
+      setLayers(nextLayers);
+      useLayerStore.getState().setActiveLayer(projectedLayer.id);
+    }
+    return composite;
+  }, [localRepaintProjectionSource, setLayers]);
+
+  const isInsideLocalRepaintAllowedMask = useCallback((screenUv: THREE.Vector2) => {
+    const allowedMask = localRepaintAllowedMaskRef.current?.data;
+    if (!allowedMask) return false;
+    const x = THREE.MathUtils.clamp(Math.floor(screenUv.x * allowedMask.width), 0, allowedMask.width - 1);
+    const y = THREE.MathUtils.clamp(Math.floor(screenUv.y * allowedMask.height), 0, allowedMask.height - 1);
+    const offset = (y * allowedMask.width + x) * 4;
+    const value = Math.max(
+      allowedMask.data[offset],
+      allowedMask.data[offset + 1],
+      allowedMask.data[offset + 2],
+    );
+    return value > 24;
+  }, []);
+
+  const hasLocalRepaintSourceContent = useCallback((screenUv: THREE.Vector2) => {
+    const sourceData = localRepaintSourceImageRef.current?.data;
+    if (!sourceData) return true;
+    const x = THREE.MathUtils.clamp(Math.floor(screenUv.x * sourceData.width), 0, sourceData.width - 1);
+    const y = THREE.MathUtils.clamp(Math.floor(screenUv.y * sourceData.height), 0, sourceData.height - 1);
+    return sourceData.data[(y * sourceData.width + x) * 4 + 3] > 8;
+  }, []);
 
   const paintAt = useCallback((result: UvPaintHit) => {
     const layer = getUvPaintLayer(result.model);
@@ -809,8 +1185,17 @@ function SurfacePaintOverlay() {
         'source-over',
         paintMaskSettings.brushHardness,
       );
+      const projectionBounds = drawProjectionBrushSegment(
+        layer.projectionContext,
+        fromScreenUv,
+        result.screenUv,
+        result.textureRadius,
+        '#ffffff',
+        paintMaskSettings.brushHardness,
+      );
       if (strokeDraftRef.current?.target === 'mask') {
         strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
+        strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, projectionBounds);
       }
       maskDirtyRef.current = true;
       maskHasContentRef.current = true;
@@ -826,11 +1211,67 @@ function SurfacePaintOverlay() {
         'destination-out',
         paintMaskSettings.brushHardness,
       );
+      const projectionBounds = drawProjectionBrushSegment(
+        layer.projectionContext,
+        fromScreenUv,
+        result.screenUv,
+        result.textureRadius,
+        '#ffffff',
+        paintMaskSettings.brushHardness,
+        'destination-out',
+      );
       if (strokeDraftRef.current?.target === 'mask') {
         strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
+        strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, projectionBounds);
       }
       maskDirtyRef.current = true;
       refreshMaskDisplay(layer, bounds);
+    } else if (paintTool === 'inpaint-apply') {
+      const allowedMask = localRepaintAllowedMaskRef.current;
+      if (
+        !localRepaintProjectionSource ||
+        !localRepaintSourceImageRef.current ||
+        !allowedMask ||
+        !isInsideLocalRepaintAllowedMask(result.screenUv) ||
+        !hasLocalRepaintSourceContent(result.screenUv)
+      ) {
+        lastUvRef.current = undefined;
+        lastSampleRef.current = undefined;
+        return;
+      }
+      const projectionBounds = drawProjectionBrushSegment(
+        layer.projectionContext,
+        fromScreenUv,
+        result.screenUv,
+        result.textureRadius,
+        '#ffffff',
+        paintMaskSettings.brushHardness,
+      );
+      const remainingMaskBounds = drawBrushSegment(
+        layer.maskContext,
+        layer.maskTexture,
+        fromUv,
+        result.uv,
+        result.textureRadius,
+        '#000000',
+        'destination-out',
+        paintMaskSettings.brushHardness,
+      );
+      if (strokeDraftRef.current?.target === 'apply-local-repaint') {
+        strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, projectionBounds);
+      }
+      const composite = ensureLiveLocalRepaintComposite(result.model);
+      if (composite) {
+        drawLocalRepaintStrokeMaskPatch(
+          composite,
+          localRepaintSourceImageRef.current.image,
+          allowedMask,
+          layer.projectionCanvas,
+          projectionBounds,
+        );
+      }
+      maskDirtyRef.current = true;
+      refreshMaskDisplay(layer, remainingMaskBounds);
     }
 
     lastUvRef.current = result.uv.clone();
@@ -850,6 +1291,10 @@ function SurfacePaintOverlay() {
     ensureOverlayForMesh,
     getStrokeSourceUv,
     getUvPaintLayer,
+    hasLocalRepaintSourceContent,
+    ensureLiveLocalRepaintComposite,
+    isInsideLocalRepaintAllowedMask,
+    localRepaintProjectionSource,
     paintMaskSettings.brushHardness,
     paintTool,
     paintToolSettings.brushHardness,
@@ -860,27 +1305,111 @@ function SurfacePaintOverlay() {
 
   const commitMaskIfDirty = useCallback(() => {
     if (!maskDirtyRef.current) return;
+    const layer = layerRef.current;
     maskDirtyRef.current = false;
-    setPaintMaskDataUrl(undefined, maskHasContentRef.current);
-  }, [setPaintMaskDataUrl]);
+    const allowedMask = localRepaintAllowedMaskRef.current;
+    if (isLocalRepaintApplyMode && allowedMask) {
+      allowedMask.data = allowedMask.context.getImageData(0, 0, allowedMask.canvas.width, allowedMask.canvas.height);
+      const hasContent = hasProjectionMaskContent(allowedMask.data);
+      maskHasContentRef.current = hasContent;
+      setPaintMaskDataUrl(hasContent ? projectionMaskToDataUrl(allowedMask.canvas) : undefined, hasContent);
+      return;
+    }
+    setPaintMaskDataUrl(
+      layer && maskHasContentRef.current ? projectionMaskToDataUrl(layer.projectionCanvas) : undefined,
+      maskHasContentRef.current,
+    );
+  }, [isLocalRepaintApplyMode, setPaintMaskDataUrl]);
 
   const beginStrokeHistory = useCallback((result: UvPaintHit) => {
     const layer = getUvPaintLayer(result.model);
-    const target = isInpaintMode ? 'mask' : 'paint';
+    const target = isInpaintMode ? 'mask' : isLocalRepaintApplyMode ? 'apply-local-repaint' : 'paint';
     if (target === 'paint') {
       const rect = gl.domElement.getBoundingClientRect();
       resizeProjectionCanvas(layer, rect.width / Math.max(rect.height, 1));
       layer.paintContext.clearRect(0, 0, layer.paintCanvas.width, layer.paintCanvas.height);
       scheduleTextureUpdate(layer.paintTexture);
+    } else if (target === 'apply-local-repaint') {
+      const sourceImage = localRepaintSourceImageRef.current?.image;
+      if (sourceImage) {
+        resizeProjectionCanvasToSize(
+          layer,
+          sourceImage.naturalWidth || sourceImage.width,
+          sourceImage.naturalHeight || sourceImage.height,
+        );
+      } else {
+        const rect = gl.domElement.getBoundingClientRect();
+        resizeProjectionCanvas(layer, rect.width / Math.max(rect.height, 1));
+      }
+      layer.projectionContext.clearRect(0, 0, layer.projectionCanvas.width, layer.projectionCanvas.height);
+    } else if (!maskHasContentRef.current) {
+      const rect = gl.domElement.getBoundingClientRect();
+      resizeProjectionCanvas(layer, rect.width / Math.max(rect.height, 1));
     }
     strokeDraftRef.current = { layer, target };
-  }, [getUvPaintLayer, gl.domElement, isInpaintMode, scheduleTextureUpdate]);
+  }, [getUvPaintLayer, gl.domElement, isInpaintMode, isLocalRepaintApplyMode, scheduleTextureUpdate]);
 
   const commitProjectionPaintLayer = useCallback(() => {
     const layer = layerRef.current;
     const draft = strokeDraftRef.current;
+    const localRepaintSource = localRepaintProjectionSource;
     if (!layer || draft?.target !== 'paint' || !draft.bounds) {
-      if (layerRef.current && !isInpaintMode) {
+      if (layer && draft?.target === 'apply-local-repaint' && draft.bounds && localRepaintSource) {
+        const model = getTargetModel();
+        if (!model) return;
+        model.group.updateMatrixWorld(true);
+        const composite = localRepaintCompositeRef.current;
+        if (!composite) return;
+        const commitRevision = localRepaintCommitRevisionRef.current + 1;
+        localRepaintCommitRevisionRef.current = commitRevision;
+        void canvasToPngDataUrl(composite.maskCanvas)
+          .then((maskUrl) => {
+            if (localRepaintCommitRevisionRef.current !== commitRevision) {
+              return;
+            }
+            const currentLayers = useLayerStore.getState().layers;
+            const existingLayer = currentLayers.find((item) =>
+              isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
+            );
+            const projectedLayer: Layer = {
+              ...existingLayer,
+              id: existingLayer?.id ?? composite.layerId,
+              name: localRepaintSource.name ?? 'Local repaint brush',
+              type: 'projected',
+              imageUrl: localRepaintSource.imageUrl,
+              maskUrl,
+              objectId: localRepaintSource.objectId ?? model.objectId,
+              objectMatrixWorld: localRepaintSource.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
+              camera: localRepaintSource.camera,
+              depthUrl: localRepaintSource.depthUrl,
+              generationId: localRepaintSource.generationId,
+              captureId: localRepaintSource.captureId,
+              visible: true,
+              opacity: 1,
+              strength: 1,
+              blendMode: 'normal',
+              adjustments: { hue: 0, saturation: 0, lightness: 0 },
+              order: 0,
+              createdAt: existingLayer?.createdAt ?? new Date().toISOString(),
+            };
+            const nextLayers = [
+              projectedLayer,
+              ...currentLayers.filter(
+                (item) =>
+                  item.id !== projectedLayer.id &&
+                  !isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
+              ),
+            ];
+            setLayers(nextLayers);
+            useLayerStore.getState().setActiveLayer(projectedLayer.id);
+            useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+          })
+          .catch((error) => {
+            console.warn('[Liclick 3D Texture] Could not commit local repaint projection image:', error);
+          });
+        return;
+      }
+      if (layerRef.current && !isInpaintMode && !isLocalRepaintApplyMode) {
         disposeUvPaintLayer(layerRef.current);
         layerRef.current = undefined;
       }
@@ -916,13 +1445,14 @@ function SurfacePaintOverlay() {
     setLayers(nextLayers);
     disposeUvPaintLayer(layerRef.current);
     layerRef.current = undefined;
-  }, [camera, getTargetModel, isInpaintMode, paintTool, setLayers]);
+  }, [camera, getTargetModel, isInpaintMode, isLocalRepaintApplyMode, localRepaintProjectionSource, paintTool, setLayers]);
 
   const commitStrokeHistory = useCallback(() => {
     const draft = strokeDraftRef.current;
     strokeDraftRef.current = undefined;
     if (!draft?.bounds) return;
     if (draft.target === 'paint') return;
+    if (draft.target === 'apply-local-repaint') return;
 
     const targetCanvas = draft.target === 'mask' ? draft.layer.maskCanvas : draft.layer.paintCanvas;
     const targetContext = draft.target === 'mask' ? draft.layer.maskContext : draft.layer.paintContext;
