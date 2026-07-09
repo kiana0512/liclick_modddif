@@ -1,0 +1,24 @@
+{
+  "name": "@liclick/server",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs",
+    "serve": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:generate": "node scripts/prisma.mjs generate",
+    "db:push": "node scripts/prisma.mjs db push",
+    "db:studio": "node scripts/prisma.mjs studio",
+    "db:seed": "node dist/db/seed.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "prisma": "^6.10.1"
+  }
+}

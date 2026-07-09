@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Liclick 3D Texture</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero-panel">
+        <div class="brand-row">
+          <img src="../../../assets/liclick-icon.png" alt="" class="brand-icon" />
+          <div>
+            <h1>Liclick 3D Texture</h1>
+            <p>本地桌面启动器 <span id="buildText"></span></p>
+          </div>
+        </div>
+        <div class="hero-status">
+          <span class="status-dot" id="overallDot"></span>
+          <span id="overallText">正在准备启动器</span>
+        </div>
+        <div class="primary-actions">
+          <button class="button primary" id="openWorkspace">打开工作台</button>
+          <button class="button" id="restartServices">重启服务</button>
+          <button class="icon-button" id="openLogs" title="打开日志目录" aria-label="打开日志目录">日志</button>
+        </div>
+      </section>
+
+      <section class="status-grid">
+        <article class="status-card">
+          <span class="label">后端服务</span>
+          <strong id="workspaceStatus">检查中</strong>
+          <span id="workspaceUrl"></span>
+        </article>
+        <article class="status-card">
+          <span class="label">前端服务</span>
+          <strong id="webStatus">检查中</strong>
+          <span id="webUrl"></span>
+        </article>
+        <article class="status-card">
+          <span class="label">工作目录</span>
+          <strong id="workspaceDir">-</strong>
+          <span>用户项目与本地数据库</span>
+        </article>
+        <article class="status-card">
+          <span class="label">运行模式</span>
+          <strong>后台留存</strong>
+          <span>关闭窗口默认可收到系统托盘</span>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>启动检查</h2>
+            <span id="pidText">PID -</span>
+          </div>
+          <div class="check-list">
+            <div class="check-row">
+              <span class="check-dot" id="runtimeDot"></span>
+              <div>
+                <strong>Runtime 同步</strong>
+                <p>首次启动或版本更新时会准备运行文件。</p>
+              </div>
+            </div>
+            <div class="check-row">
+              <span class="check-dot" id="serverDot"></span>
+              <div>
+                <strong>后端健康检查</strong>
+                <p>监听 4617 端口并提供本地项目与生成服务。</p>
+              </div>
+            </div>
+            <div class="check-row">
+              <span class="check-dot" id="webDot"></span>
+              <div>
+                <strong>工作台服务</strong>
+                <p>监听 5673 端口，浏览器打开后即可使用。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel log-panel">
+          <div class="panel-header">
+            <h2>实时日志</h2>
+            <button class="text-button" id="clearLogs">清空显示</button>
+          </div>
+          <pre id="logOutput" aria-live="polite"></pre>
+        </article>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

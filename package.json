@@ -1,0 +1,43 @@
+{
+  "name": "liclick-3d-texture",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "description": "Liclick 3D Texture - Web AI 3D texture studio foundation.",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "node scripts/dev-fixed.mjs",
+    "dev:fixed": "node scripts/dev-fixed.mjs",
+    "dev:raw": "corepack pnpm --parallel --filter @liclick/server --filter @liclick/web dev",
+    "desktop:shell": "electron apps/desktop/main.mjs",
+    "dev:web": "corepack pnpm --filter @liclick/web dev",
+    "dev:server": "corepack pnpm --filter @liclick/server dev",
+    "serve:server": "corepack pnpm --filter @liclick/server serve",
+    "workspace:up": "powershell -ExecutionPolicy Bypass -File scripts/start-workspace-server.ps1",
+    "perf:audit": "node scripts/perf-audit.mjs",
+    "perf:stress": "node scripts/perf-audit.mjs --stress",
+    "db:generate": "corepack pnpm --filter @liclick/server db:generate",
+    "db:push": "corepack pnpm --filter @liclick/server db:push",
+    "db:studio": "corepack pnpm --filter @liclick/server db:studio",
+    "db:seed": "corepack pnpm --filter @liclick/server db:seed",
+    "load:a100": "node scripts/load-test-a100.mjs",
+    "smoke:auth": "corepack pnpm --filter @liclick/server build && node scripts/smoke-auth-oauth.mjs",
+    "package:windows": "powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1",
+    "build": "corepack pnpm -r build",
+    "lint": "corepack pnpm -r lint",
+    "typecheck": "corepack pnpm -r typecheck",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.34.1",
+    "@typescript-eslint/parser": "^8.34.1",
+    "electron": "^31.7.7",
+    "eslint": "^9.29.0",
+    "eslint-config-prettier": "^10.1.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.20",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.1"
+  }
+}

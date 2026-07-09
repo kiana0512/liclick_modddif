@@ -1,0 +1,36 @@
+import { create } from 'zustand';
+import { createId } from '@/utils/id';
+
+export type ToastTone = 'info' | 'success' | 'warning' | 'error';
+
+export type ToastMessage = {
+  id: string;
+  title: string;
+  description?: string;
+  tone: ToastTone;
+  dedupeKey?: string;
+};
+
+type ToastStore = {
+  toasts: ToastMessage[];
+  pushToast: (toast: Omit<ToastMessage, 'id'>) => void;
+  dismissToast: (id: string) => void;
+};
+
+export const useToastStore = create<ToastStore>((set) => ({
+  toasts: [],
+  pushToast: (toast) => {
+    const id = createId('toast');
+    set((state) => {
+      const existingToasts = toast.dedupeKey
+        ? state.toasts.filter((item) => item.dedupeKey !== toast.dedupeKey)
+        : state.toasts;
+      return { toasts: [{ id, ...toast }, ...existingToasts].slice(0, 3) };
+    });
+    window.setTimeout(() => {
+      set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));
+    }, toast.dedupeKey?.startsWith('coming-soon:') ? 3000 : 4200);
+  },
+  dismissToast: (id) =>
+    set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })),
+}));
