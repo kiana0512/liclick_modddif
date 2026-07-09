@@ -32,17 +32,8 @@ import {
   setDebugUvBakeMethod,
   setDebugUvBakeVerbose,
 } from '@/engine/bake/uvBakeDebugControls';
-import { debugCompareCpuGpuUvBake, debugCompareCpuGpuUvGradient } from '@/engine/bake/uvBakeDebugCompare';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { getLiveProjectedCanvasDataUrl, isLiveProjectedCanvasUrl } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
-import { exportModelGlb } from '@/engine/export/exportGltf';
-import { exportModelFbx } from '@/engine/export/exportFbx';
-import { exportModelObj } from '@/engine/export/exportObj';
-import { exportComfyControlInputs } from '@/engine/export/comfyControlInputExporter';
-import { exportViewportSnapshot } from '@/engine/export/exportSnapshot';
-import { exportModelStl } from '@/engine/export/exportStl';
-import { exportNormalTexture, exportTextureUrl, findNormalMapTexture } from '@/engine/export/exportTexture';
-import { canRecordTurntable, exportTurntableWebm } from '@/engine/export/exportTurntable';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import {
   applyAlphaFromMask,
@@ -125,8 +116,8 @@ declare global {
       setVerbose: (enabled?: boolean) => ReturnType<typeof getDebugUvBakeStatus>;
       setCoverageValidation: (enabled?: boolean) => ReturnType<typeof getDebugUvBakeStatus>;
       setGpuProjectedImageUvFlipY: (enabled?: boolean) => ReturnType<typeof getDebugUvBakeStatus>;
-      compare: typeof debugCompareCpuGpuUvBake;
-      uvGradient: typeof debugCompareCpuGpuUvGradient;
+      compare: (options?: unknown) => Promise<unknown>;
+      uvGradient: (options?: unknown) => Promise<unknown>;
     };
   }
 }
@@ -186,6 +177,91 @@ function collapseLocalRepaintProjectionLayers(
     keptLocalRepaintLayer = true;
     return true;
   });
+}
+
+function findNormalMapTexture(model?: ModelLoadResult) {
+  let normalMap: THREE.Texture | undefined;
+  model?.group.traverse((object) => {
+    if (normalMap || !(object instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of materials) {
+      const candidate = (material as THREE.Material & { normalMap?: THREE.Texture }).normalMap;
+      if (candidate) {
+        normalMap = candidate;
+        return;
+      }
+    }
+  });
+  return normalMap;
+}
+
+function canRecordTurntableInBrowser() {
+  return typeof MediaRecorder !== 'undefined' && typeof HTMLCanvasElement !== 'undefined';
+}
+
+function constrainMaskToObject(mask: MaskBitmap, objectMask: MaskBitmap) {
+  const output = createEmptyMask(mask.width, mask.height);
+  for (let index = 0; index < output.data.length; index += 1) {
+    output.data[index] = (mask.data[index] ?? 0) > 0 && (objectMask.data[index] ?? 0) > 0 ? 255 : 0;
+  }
+  return output;
+}
+
+function buildContentAwareRepairMask(baseMask: MaskBitmap, objectMask: MaskBitmap) {
+  const bounds = computeMaskBoundingBox(baseMask);
+  if (!bounds) return baseMask;
+  const minSide = Math.min(bounds.w, bounds.h);
+  const growRadius = minSide > 180 ? 2 : 1;
+  return constrainMaskToObject(dilateMask(baseMask, growRadius), objectMask);
+}
+
+function getLocalRepaintFeatherRadius(mask: MaskBitmap) {
+  const bounds = computeMaskBoundingBox(mask);
+  if (!bounds) return 0;
+  const minSide = Math.min(bounds.w, bounds.h);
+  if (minSide <= 48) return 1;
+  if (minSide <= 120) return 2;
+  return 3;
+}
+
+function getLocalRepaintProvider(runtime: LocalRepaintRuntime) {
+  const raw = runtime.providerRaw;
+  if (!raw || typeof raw !== 'object' || !('provider' in raw)) return undefined;
+  const provider = (raw as { provider?: unknown }).provider;
+  return typeof provider === 'string' ? provider : undefined;
+}
+
+function isLocalContentAwareRuntime(runtime: LocalRepaintRuntime) {
+  return getLocalRepaintProvider(runtime)?.includes('local-content-aware-fill') ?? false;
+}
+
+function buildLocalRepaintPatchMask(runtime: LocalRepaintRuntime, sourcePatch: ImageData) {
+  const patchMask = createEmptyMask(sourcePatch.width, sourcePatch.height);
+  const editMask = runtime.editMask;
+  if (editMask && isLocalContentAwareRuntime(runtime)) {
+    const softMask = featherMask(editMask, 1);
+    for (let index = 0; index < patchMask.data.length; index += 1) {
+      patchMask.data[index] = (runtime.objectMask.data[index] ?? 0) > 0 ? (softMask.data[index] ?? 0) : 0;
+      if ((editMask.data[index] ?? 0) > 0) patchMask.data[index] = 255;
+    }
+    return patchMask;
+  }
+  for (let index = 0; index < patchMask.data.length; index += 1) {
+    if ((runtime.objectMask.data[index] ?? 0) === 0) continue;
+    if (editMask && (editMask.data[index] ?? 0) === 0) continue;
+    const offset = index * 4;
+    const changed =
+      Math.abs(sourcePatch.data[offset] - runtime.workingImageData.data[offset]) +
+      Math.abs(sourcePatch.data[offset + 1] - runtime.workingImageData.data[offset + 1]) +
+      Math.abs(sourcePatch.data[offset + 2] - runtime.workingImageData.data[offset + 2]);
+    if (changed > 8) patchMask.data[index] = 255;
+  }
+
+  const featheredMask = featherMask(patchMask, getLocalRepaintFeatherRadius(patchMask));
+  for (let index = 0; index < featheredMask.data.length; index += 1) {
+    featheredMask.data[index] = Math.min(featheredMask.data[index] ?? 0, runtime.objectMask.data[index] ?? 0);
+  }
+  return featheredMask;
 }
 
 type PersistedLocalRepaintRuntime = {
@@ -889,7 +965,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
-  function getCurrentCameraSnapshot() {
+  const getCurrentCameraSnapshot = useCallback(() => {
     const viewportRuntime = useSceneStore.getState().viewport;
     if (!viewportRuntime) return undefined;
     const camera = viewportRuntime.camera;
@@ -914,7 +990,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       viewMatrix: camera.matrixWorldInverse.toArray(),
       aspect: camera instanceof THREE.PerspectiveCamera ? camera.aspect : 1,
     };
-  }
+  }, []);
 
   const getLocalRepaintCaptureSize = useCallback((canvas: HTMLCanvasElement) => {
     const maxSide = Math.max(canvas.width, canvas.height);
@@ -1000,86 +1076,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }, [prepareViewportRenderSize]);
 
-  const getViewportInpaintSelectionMask = useCallback((size?: { width: number; height: number }) => {
-    const viewportRuntime = useSceneStore.getState().viewport;
-    if (!viewportRuntime) return undefined;
-    const canvas = viewportRuntime.gl.domElement;
-    if (!canvas || canvas.width === 0 || canvas.height === 0) return undefined;
-    const hiddenObjects: Array<{ object: THREE.Object3D; visible: boolean }> = [];
-    const materialSnapshots: Array<{ mesh: THREE.Mesh; material: THREE.Material | THREE.Material[] }> = [];
-    const temporaryMaterials: THREE.Material[] = [];
-    const previousBackground = viewportRuntime.scene.background;
-    const previousClearColor = viewportRuntime.gl.getClearColor(new THREE.Color()).clone();
-    const previousClearAlpha = viewportRuntime.gl.getClearAlpha();
-    let restoreRenderSize: (() => void) | undefined;
-    const invisibleMaterial = new THREE.MeshBasicMaterial({
-      color: '#ffffff',
-      colorWrite: false,
-      depthWrite: true,
-      depthTest: true,
-      toneMapped: false,
-    });
-    let hasMaskOverlay = false;
-    try {
-      viewportRuntime.scene.traverse((object) => {
-        if (object instanceof THREE.Mesh && object.name === 'Liclick UV Inpaint Mask Overlay') {
-          hiddenObjects.push({ object, visible: object.visible });
-          object.visible = true;
-          const logicalMaskTexture = object.userData.liclickInpaintMaskTexture;
-          if (logicalMaskTexture instanceof THREE.Texture) {
-            const maskMaterial = new THREE.MeshBasicMaterial({
-              map: logicalMaskTexture,
-              transparent: true,
-              opacity: 1,
-              depthWrite: false,
-              depthTest: true,
-              polygonOffset: true,
-              polygonOffsetFactor: -8,
-              side: THREE.DoubleSide,
-              toneMapped: false,
-            });
-            temporaryMaterials.push(maskMaterial);
-            materialSnapshots.push({ mesh: object, material: object.material });
-            object.material = maskMaterial;
-          }
-          hasMaskOverlay = true;
-          return;
-        }
-        if (object.userData.liclickPaintOverlay || object.userData.liclickViewportHelper) {
-          hiddenObjects.push({ object, visible: object.visible });
-          object.visible = false;
-          return;
-        }
-        if (object instanceof THREE.Mesh) {
-          materialSnapshots.push({ mesh: object, material: object.material });
-          object.material = invisibleMaterial;
-        }
-      });
-      if (!hasMaskOverlay) return undefined;
-      viewportRuntime.scene.background = null;
-      viewportRuntime.gl.setClearColor(0x000000, 0);
-      if (size) restoreRenderSize = prepareViewportRenderSize(size.width, size.height);
-      viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
-      const readCanvas = document.createElement('canvas');
-      readCanvas.width = canvas.width;
-      readCanvas.height = canvas.height;
-      const context = readCanvas.getContext('2d', { willReadFrequently: true });
-      if (!context) return undefined;
-      context.drawImage(canvas, 0, 0);
-      const mask = inferAlphaObjectMask(context.getImageData(0, 0, canvas.width, canvas.height));
-      return ensureMaskContent(mask) ? mask : undefined;
-    } finally {
-      for (const { object, visible } of hiddenObjects) object.visible = visible;
-      for (const { mesh, material } of materialSnapshots) mesh.material = material;
-      temporaryMaterials.forEach((material) => material.dispose());
-      viewportRuntime.scene.background = previousBackground;
-      viewportRuntime.gl.setClearColor(previousClearColor, previousClearAlpha);
-      restoreRenderSize?.();
-      invisibleMaterial.dispose();
-      viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
-    }
-  }, [prepareViewportRenderSize]);
-
   async function referenceIdsToBlobs(referenceIds: string[]) {
     const selected = references.filter((reference) => referenceIds.includes(reference.id));
     return Promise.all(
@@ -1099,72 +1095,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return mask.data.some((value) => value > 0);
   }
 
-  function getLocalRepaintFeatherRadius(mask: MaskBitmap) {
-    const bounds = computeMaskBoundingBox(mask);
-    if (!bounds) return 0;
-    const minSide = Math.min(bounds.w, bounds.h);
-    if (minSide <= 48) return 1;
-    if (minSide <= 120) return 2;
-    return 3;
-  }
-
-  function constrainMaskToObject(mask: MaskBitmap, objectMask: MaskBitmap) {
-    const output = createEmptyMask(mask.width, mask.height);
-    for (let index = 0; index < output.data.length; index += 1) {
-      output.data[index] = (mask.data[index] ?? 0) > 0 && (objectMask.data[index] ?? 0) > 0 ? 255 : 0;
-    }
-    return output;
-  }
-
-  function buildContentAwareRepairMask(baseMask: MaskBitmap, objectMask: MaskBitmap) {
-    const bounds = computeMaskBoundingBox(baseMask);
-    if (!bounds) return baseMask;
-    const minSide = Math.min(bounds.w, bounds.h);
-    const growRadius = minSide > 180 ? 2 : 1;
-    return constrainMaskToObject(dilateMask(baseMask, growRadius), objectMask);
-  }
-
-  function getLocalRepaintProvider(runtime: LocalRepaintRuntime) {
-    const raw = runtime.providerRaw;
-    if (!raw || typeof raw !== 'object' || !('provider' in raw)) return undefined;
-    const provider = (raw as { provider?: unknown }).provider;
-    return typeof provider === 'string' ? provider : undefined;
-  }
-
-  function isLocalContentAwareRuntime(runtime: LocalRepaintRuntime) {
-    return getLocalRepaintProvider(runtime)?.includes('local-content-aware-fill') ?? false;
-  }
-
-  function buildLocalRepaintPatchMask(runtime: LocalRepaintRuntime, sourcePatch: ImageData) {
-    const patchMask = createEmptyMask(sourcePatch.width, sourcePatch.height);
-    const editMask = runtime.editMask;
-    if (editMask && isLocalContentAwareRuntime(runtime)) {
-      const softMask = featherMask(editMask, 1);
-      for (let index = 0; index < patchMask.data.length; index += 1) {
-        patchMask.data[index] = (runtime.objectMask.data[index] ?? 0) > 0 ? (softMask.data[index] ?? 0) : 0;
-        if ((editMask.data[index] ?? 0) > 0) patchMask.data[index] = 255;
-      }
-      return patchMask;
-    }
-    for (let index = 0; index < patchMask.data.length; index += 1) {
-      if ((runtime.objectMask.data[index] ?? 0) === 0) continue;
-      if (editMask && (editMask.data[index] ?? 0) === 0) continue;
-      const offset = index * 4;
-      const changed =
-        Math.abs(sourcePatch.data[offset] - runtime.workingImageData.data[offset]) +
-        Math.abs(sourcePatch.data[offset + 1] - runtime.workingImageData.data[offset + 1]) +
-        Math.abs(sourcePatch.data[offset + 2] - runtime.workingImageData.data[offset + 2]);
-      if (changed > 8) patchMask.data[index] = 255;
-    }
-
-    const featheredMask = featherMask(patchMask, getLocalRepaintFeatherRadius(patchMask));
-    for (let index = 0; index < featheredMask.data.length; index += 1) {
-      featheredMask.data[index] = Math.min(featheredMask.data[index] ?? 0, runtime.objectMask.data[index] ?? 0);
-    }
-    return featheredMask;
-  }
-
-  async function persistLayerImage(imageData: ImageData, filename: string) {
+  const persistLayerImage = useCallback(async (imageData: ImageData, filename: string) => {
     const blob = await imageDataToBlob(imageData);
     if (project?.workspaceMode === 'local-server') {
       const saved = await saveBlobAsset({
@@ -1176,15 +1107,17 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       return saved.asset.url;
     }
     return blobToDataUrl(blob);
-  }
+  }, [project]);
 
-  function scheduleTexturedThumbnailRefresh(delayMs = 900) {
+  const scheduleTexturedThumbnailRefresh = useCallback((delayMs = 900) => {
     window.clearTimeout(thumbnailRefreshTimerRef.current);
     thumbnailRefreshTimerRef.current = window.setTimeout(() => {
       const thumbnail = getViewportThumbnailDataUrl();
       if (thumbnail) updateCurrentProject({ thumbnail });
     }, delayMs);
-  }
+    // Thumbnail capture reads the latest viewport/store state when the debounce fires.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateCurrentProject]);
 
   useEffect(() => {
     if (!project || !importedModel || layers.length === 0) return;
@@ -1537,8 +1470,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         console.info('[Liclick UV Debug] GPU projected image/mask/depth UV flipY updated.', status);
         return status;
       },
-      compare: debugCompareCpuGpuUvBake,
-      uvGradient: debugCompareCpuGpuUvGradient,
+      compare: async (options) => {
+        const { debugCompareCpuGpuUvBake } = await import('@/engine/bake/uvBakeDebugCompare');
+        return debugCompareCpuGpuUvBake(options ?? {});
+      },
+      uvGradient: async (options) => {
+        const { debugCompareCpuGpuUvGradient } = await import('@/engine/bake/uvBakeDebugCompare');
+        return debugCompareCpuGpuUvGradient(options ?? {});
+      },
     };
     window.LiclickUvDebug = api;
     console.info('[Liclick UV Debug] Console API ready. Run LiclickUvDebug.help() for commands.');
@@ -2155,7 +2094,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
-  async function addProjectedRepairLayer(runtime: LocalRepaintRuntime) {
+  const addProjectedRepairLayer = useCallback(async (runtime: LocalRepaintRuntime) => {
     if (!project || !importedModel) throw new Error(t('importModelFirst'));
     const cameraState = runtime.cameraState ?? getCurrentCameraSnapshot();
     if (!cameraState) throw new Error(t('viewportUnavailable'));
@@ -2187,7 +2126,17 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     setActiveLayer(layer.id);
     scheduleTexturedThumbnailRefresh(300);
     return layer;
-  }
+  }, [
+    getCurrentCameraSnapshot,
+    importedModel,
+    persistLayerImage,
+    project,
+    scheduleTexturedThumbnailRefresh,
+    selectedObjectId,
+    setActiveLayer,
+    setLayers,
+    t,
+  ]);
 
   async function acceptLocalRepaint({ continueEditing }: { continueEditing: boolean }) {
     const runtime = localRepaintRuntime;
@@ -2478,84 +2427,110 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const actions: Record<ExportActionId, () => Promise<void> | void> = {
       'scene-glb': () => {
         if (!modelInput) throw new Error(t('importModelFirst'));
-        return exportModelGlb({ ...modelInput, target: 'scene' });
+        return import('@/engine/export/exportGltf').then(({ exportModelGlb }) =>
+          exportModelGlb({ ...modelInput, target: 'scene' }),
+        );
       },
       'scene-fbx': () => {
         if (!modelInput) throw new Error(t('importModelFirst'));
-        return exportModelFbx({ ...modelInput, target: 'scene' });
+        return import('@/engine/export/exportFbx').then(({ exportModelFbx }) =>
+          exportModelFbx({ ...modelInput, target: 'scene' }),
+        );
       },
       'scene-obj': () => {
         if (!modelInput) throw new Error(t('importModelFirst'));
-        return exportModelObj({ ...modelInput, target: 'scene' });
+        return import('@/engine/export/exportObj').then(({ exportModelObj }) =>
+          exportModelObj({ ...modelInput, target: 'scene' }),
+        );
       },
       'scene-stl': () => {
         if (!modelInput) throw new Error(t('importModelFirst'));
-        exportModelStl({ ...modelInput, target: 'scene' });
+        return import('@/engine/export/exportStl').then(({ exportModelStl }) =>
+          exportModelStl({ ...modelInput, target: 'scene' }),
+        );
       },
       'object-glb': () => {
         if (!modelInput) throw new Error(t('selectObjectFirst'));
-        return exportModelGlb({ ...modelInput, target: 'object' });
+        return import('@/engine/export/exportGltf').then(({ exportModelGlb }) =>
+          exportModelGlb({ ...modelInput, target: 'object' }),
+        );
       },
       'object-fbx': () => {
         if (!modelInput) throw new Error(t('selectObjectFirst'));
-        return exportModelFbx({ ...modelInput, target: 'object' });
+        return import('@/engine/export/exportFbx').then(({ exportModelFbx }) =>
+          exportModelFbx({ ...modelInput, target: 'object' }),
+        );
       },
       'object-obj': () => {
         if (!modelInput) throw new Error(t('selectObjectFirst'));
-        return exportModelObj({ ...modelInput, target: 'object' });
+        return import('@/engine/export/exportObj').then(({ exportModelObj }) =>
+          exportModelObj({ ...modelInput, target: 'object' }),
+        );
       },
       'object-stl': () => {
         if (!modelInput) throw new Error(t('selectObjectFirst'));
-        exportModelStl({ ...modelInput, target: 'object' });
+        return import('@/engine/export/exportStl').then(({ exportModelStl }) =>
+          exportModelStl({ ...modelInput, target: 'object' }),
+        );
       },
       'texture-color': () => {
         if (!activeBakedTexture) throw new Error(t('bakeBaseColorFirst'));
-        return exportTextureUrl(project, activeBakedTexture.imageUrl, 'basecolor');
+        return import('@/engine/export/exportTexture').then(({ exportTextureUrl }) =>
+          exportTextureUrl(project, activeBakedTexture.imageUrl, 'basecolor'),
+        );
       },
       'texture-normal': () => {
         if (!normalMapTexture) throw new Error(t('normalTextureMissing'));
-        return exportNormalTexture(project, normalMapTexture);
+        return import('@/engine/export/exportTexture').then(({ exportNormalTexture }) =>
+          exportNormalTexture(project, normalMapTexture),
+        );
       },
       'comfy-control-inputs': () => {
         if (!viewport || !importedModel) throw new Error(t('importModelFirst'));
-        return exportComfyControlInputs({
-          project,
-          viewport,
-          importedModel,
-          selectedObjectId,
-          references,
-          options: {
-            modelId: selectedObjectId ?? importedModel.objectId,
-            viewId: 'current_mvp_view',
-            outputRoot: './exports/comfy_control',
-            width: resolutionToSize[resolution],
-            height: resolutionToSize[resolution],
-            exportCurrentViewOnly: true,
-            includeMaterialReference: true,
-            includeCurrentTextureRender: true,
-            includeMissingMask: true,
-            includeDepth: true,
-            includeNormal: true,
-            includePosition: true,
-            includeEdge: true,
-            includeIdBuffers: true,
-            includeUVBuffers: true,
-            includePoseBuffers: true,
-            includeAngleBuffers: true,
-            includeVisibilityBuffers: true,
-            linearDepth: true,
-            savePng16: true,
-            saveDebugPng8: true,
-          },
-        }).then(() => undefined);
+        return import('@/engine/export/comfyControlInputExporter').then(({ exportComfyControlInputs }) =>
+          exportComfyControlInputs({
+            project,
+            viewport,
+            importedModel,
+            selectedObjectId,
+            references,
+            options: {
+              modelId: selectedObjectId ?? importedModel.objectId,
+              viewId: 'current_mvp_view',
+              outputRoot: './exports/comfy_control',
+              width: resolutionToSize[resolution],
+              height: resolutionToSize[resolution],
+              exportCurrentViewOnly: true,
+              includeMaterialReference: true,
+              includeCurrentTextureRender: true,
+              includeMissingMask: true,
+              includeDepth: true,
+              includeNormal: true,
+              includePosition: true,
+              includeEdge: true,
+              includeIdBuffers: true,
+              includeUVBuffers: true,
+              includePoseBuffers: true,
+              includeAngleBuffers: true,
+              includeVisibilityBuffers: true,
+              linearDepth: true,
+              savePng16: true,
+              saveDebugPng8: true,
+            },
+          }).then(() => undefined),
+        );
       },
       'viewport-png': () => {
         if (!viewport) throw new Error(t('viewportUnavailable'));
-        return exportViewportSnapshot({ project, viewport });
+        return import('@/engine/export/exportSnapshot').then(({ exportViewportSnapshot }) =>
+          exportViewportSnapshot({ project, viewport }),
+        );
       },
       'turntable-webm': () => {
         if (!viewport || !importedModel) throw new Error(t('importModelFirst'));
-        return exportTurntableWebm({ project, viewport, root: importedModel.group, durationMs: 5000 });
+        return import('@/engine/export/exportTurntable').then(({ exportTurntableWebm }) =>
+          exportTurntableWebm({ project, viewport, root: importedModel.group, durationMs: 5000 }),
+        );
       },
     };
 
@@ -2663,6 +2638,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     })();
   }, [
     generations,
+    getCurrentCameraSnapshot,
     getLocalRepaintCutoutImage,
     importedModel,
     localRepaintProjectionSource,
@@ -2769,7 +2745,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       }
     })();
   }, [
+    addProjectedRepairLayer,
     captureHistory,
+    getCurrentCameraSnapshot,
     getCleanViewportCapture,
     getLocalRepaintCaptureSize,
     importedModel,
@@ -3136,7 +3114,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
             canExportObject={Boolean(importedModel && selectedObjectId)}
             canExportColor={Boolean(activeLayer && activeBakedTexture)}
             canExportNormal={Boolean(normalMapTexture)}
-            canRecordTurntable={canRecordTurntable()}
+            canRecordTurntable={canRecordTurntableInBrowser()}
             onExport={handleExportAction}
             labels={{
               export: t('export'),

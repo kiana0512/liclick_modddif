@@ -870,7 +870,7 @@ function SurfacePaintOverlay() {
     if (paintTool === 'eraser') return '#ffffff';
     if (isInpaintMode || isLocalRepaintApplyMode) return '#ff8a68';
     return paintToolSettings.color;
-  }, [isInpaintMode, paintTool, paintToolSettings.color]);
+  }, [isInpaintMode, isLocalRepaintApplyMode, paintTool, paintToolSettings.color]);
 
   const updateCursorFromHit = useCallback((result: UvPaintHit | undefined) => {
     const cursor = cursorRef.current;

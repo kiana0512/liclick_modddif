@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { captureCurrentNormalPreview, captureCurrentView } from '@/engine/capture/captureCurrentView';
-import { createComfyRuntimeControlFiles } from '@/engine/export/comfyControlInputExporter';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { getObjectViewPresetDirection, type ObjectViewPreset } from '@/engine/scene/transformActions';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
@@ -853,6 +852,7 @@ export function GeneratePanel() {
       'material/02_material_reference_cropped.png',
       'geometry/08_normal_view.png',
     ]);
+    const { createComfyRuntimeControlFiles } = await import('@/engine/export/comfyControlInputExporter');
     const exportResult = await createComfyRuntimeControlFiles({
       project: currentProject,
       viewport,

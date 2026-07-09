@@ -155,16 +155,6 @@ export function sampleImageNearest(image: ImageData, u: number, v: number): Imag
   ];
 }
 
-function getPixel(image: ImageData, x: number, y: number): ImageSample {
-  const offset = (y * image.width + x) * 4;
-  return [
-    image.data[offset],
-    image.data[offset + 1],
-    image.data[offset + 2],
-    image.data[offset + 3],
-  ];
-}
-
 export function sampleImageBilinear(image: ImageData, u: number, v: number): ImageSample {
   const clampedU = Math.min(1, Math.max(0, u));
   const clampedV = Math.min(1, Math.max(0, v));

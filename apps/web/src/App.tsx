@@ -1,11 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ToastHost } from './components/common/ToastHost';
-import { EditorPage } from './routes/EditorPage';
-import { ProjectsPage } from './routes/ProjectsPage';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { useAuthStore } from './stores/authStore';
 
 type RouteState = { name: 'projects' } | { name: 'editor'; projectId: string };
+
+const ProjectsPage = lazy(() => import('./routes/ProjectsPage').then((module) => ({ default: module.ProjectsPage })));
+const EditorPage = lazy(() => import('./routes/EditorPage').then((module) => ({ default: module.EditorPage })));
+
+function AppRouteFallback() {
+  return (
+    <main className="liclick-surface flex min-h-screen items-center justify-center text-sm text-white/58">
+      Loading Liclick 3D Texture...
+    </main>
+  );
+}
 
 function appBasePath() {
   const normalized = `/${(import.meta.env.BASE_URL ?? '/').split('/').filter(Boolean).join('/')}`;
@@ -80,7 +89,9 @@ export function App() {
   if (route.name === 'editor') {
     return (
       <>
-        <EditorPage projectId={route.projectId} onBack={navigation.openProjects} />
+        <Suspense fallback={<AppRouteFallback />}>
+          <EditorPage projectId={route.projectId} onBack={navigation.openProjects} />
+        </Suspense>
         <ToastHost />
       </>
     );
@@ -88,7 +99,9 @@ export function App() {
 
   return (
     <>
-      <ProjectsPage onOpenProject={navigation.openEditor} onLogout={navigation.openProjects} />
+      <Suspense fallback={<AppRouteFallback />}>
+        <ProjectsPage onOpenProject={navigation.openEditor} onLogout={navigation.openProjects} />
+      </Suspense>
       <ToastHost />
     </>
   );

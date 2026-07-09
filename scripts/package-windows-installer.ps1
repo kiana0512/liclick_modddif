@@ -112,45 +112,105 @@ function New-IcoFromPng {
   }
 }
 
-function Copy-RepoToStaging {
+function Copy-StagingFile {
+  param(
+    [string]$RelativePath,
+    [string]$DestinationRelativePath = $RelativePath
+  )
+  $source = Join-Path $Root $RelativePath
+  if (!(Test-Path -LiteralPath $source)) {
+    throw "Required packaging file was not found: $RelativePath"
+  }
+  $destination = Join-Path $StagingRoot $DestinationRelativePath
+  New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+  Copy-Item -LiteralPath $source -Destination $destination -Force
+}
+
+function Copy-StagingDirectory {
+  param(
+    [string]$RelativePath,
+    [string]$DestinationRelativePath = $RelativePath
+  )
+  $source = Join-Path $Root $RelativePath
+  if (!(Test-Path -LiteralPath $source)) {
+    throw "Required packaging directory was not found: $RelativePath"
+  }
+  $destination = Join-Path $StagingRoot $DestinationRelativePath
+  if (Test-Path -LiteralPath $destination) {
+    Remove-Item -LiteralPath $destination -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+  Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+}
+
+function Copy-SourceFreeRuntimeToStaging {
   New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
   if (Test-Path $StagingRoot) {
     Remove-Item -LiteralPath $StagingRoot -Recurse -Force
   }
   New-Item -ItemType Directory -Force -Path $StagingRoot | Out-Null
 
-  $xd = @(
+  Copy-StagingFile "package.json"
+  Copy-StagingFile "pnpm-lock.yaml"
+  Copy-StagingFile "pnpm-workspace.yaml"
+  Copy-StagingFile "assets\liclick-icon.png"
+  Copy-StagingFile "apps\server\package.json"
+  Copy-StagingFile "apps\web\package.json"
+  Copy-StagingDirectory "apps\server\dist"
+  Copy-StagingDirectory "apps\server\prisma"
+  Copy-StagingFile "apps\server\scripts\prisma.mjs"
+  Copy-StagingDirectory "apps\web\dist"
+  Copy-StagingDirectory "apps\desktop"
+  Copy-StagingFile "scripts\windows-desktop-launcher.mjs"
+  Copy-StagingFile "scripts\windows-desktop-launcher.cmd"
+  Copy-StagingFile "scripts\windows-node-bootstrap.ps1"
+  Copy-StagingFile "scripts\windows-static-web-server.mjs"
+}
+
+function Get-StagingRelativePath {
+  param([string]$FullPath)
+  $rootPath = $StagingRoot.TrimEnd('\') + '\'
+  $rootUri = New-Object System.Uri($rootPath)
+  $fileUri = New-Object System.Uri($FullPath)
+  return [System.Uri]::UnescapeDataString($rootUri.MakeRelativeUri($fileUri).ToString()).Replace('/', '\')
+}
+
+function Assert-SourceFreeStaging {
+  $forbiddenPaths = @(
+    "apps\web\src",
+    "apps\server\src",
+    "packages",
+    "docs",
+    "connectors",
+    "examples",
+    "workspace",
+    "secrets",
     ".git",
     ".agents",
-    ".codex",
-    ".pnpm-store",
-    ".turbo",
-    ".vite",
-    ".codex-tmp",
-    "dist-installer",
-    "logs",
-    "secrets",
-    "workspace",
-    "workspace-auth-smoke",
-    "workspace-auth-smoke-feishu"
+    ".codex"
   )
-  $xdNames = @("node_modules")
-  $xf = @(
-    "*.log",
-    "*.tsbuildinfo",
-    "*.local",
-    ".env",
-    "*.atlas-ai-gateway-oauth.json",
-    "download_li3d*.py",
-    "li3d_input_contact_sheet.png"
-  )
-  $args = @($Root, $StagingRoot, "/MIR", "/MT:16", "/R:2", "/W:1", "/NFL", "/NDL", "/NP")
-  foreach ($dir in $xd) { $args += @("/XD", (Join-Path $Root $dir)) }
-  foreach ($dir in $xdNames) { $args += @("/XD", $dir) }
-  foreach ($file in $xf) { $args += @("/XF", $file) }
-  & robocopy @args
-  if ($LASTEXITCODE -gt 7) {
-    throw "robocopy failed with exit code $LASTEXITCODE"
+  foreach ($relativePath in $forbiddenPaths) {
+    $candidate = Join-Path $StagingRoot $relativePath
+    if (Test-Path -LiteralPath $candidate) {
+      throw "Source-free packaging guard failed: forbidden path exists in staging: $relativePath"
+    }
+  }
+
+  $forbiddenFiles = Get-ChildItem -LiteralPath $StagingRoot -Recurse -Force -File |
+    Where-Object {
+      $relative = Get-StagingRelativePath $_.FullName
+      if ($relative -like "node\*" -or $relative -like "electron\*" -or $relative -like "installers\*") {
+        return $false
+      }
+      return $_.Extension -in @(".ts", ".tsx", ".map") -or
+        $_.Name -in @(".env", ".env.local", "tsconfig.tsbuildinfo") -or
+        $_.Name -like "*.atlas-ai-gateway-oauth.json"
+    }
+  if ($forbiddenFiles.Count -gt 0) {
+    $sample = $forbiddenFiles | Select-Object -First 20 | ForEach-Object {
+      Get-StagingRelativePath $_.FullName
+    }
+    throw "Source-free packaging guard failed. Forbidden source/debug files found:`n$($sample -join "`n")"
   }
 }
 
@@ -242,11 +302,12 @@ try {
   }
 
   Invoke-Step "Prepare installer staging directory" {
-    Copy-RepoToStaging
+    Copy-SourceFreeRuntimeToStaging
     New-IcoFromPng -PngPath $IconPng -IcoPath $IconIco
     Copy-ElectronRuntime
     Install-PortableNode
     Copy-NodeInstallerMsi
+    Assert-SourceFreeStaging
     @{
       preparedAt = (Get-Date).ToString("o")
       packageVersion = $PackageVersion

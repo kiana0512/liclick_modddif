@@ -71,13 +71,35 @@ function shouldRunWithShell(command) {
   return isWindows && /\.(cmd|bat)$/i.test(command);
 }
 
+function quoteCmdArg(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function commandInvocation(command, args) {
+  const resolvedCommand = resolveCommand(command);
+  if (!shouldRunWithShell(resolvedCommand)) {
+    return {
+      command: resolvedCommand,
+      args,
+      display: `${resolvedCommand} ${args.join(' ')}`,
+    };
+  }
+  return {
+    command: process.env.ComSpec ?? 'cmd.exe',
+    args: ['/d', '/c', ['call', quoteCmdArg(resolvedCommand), ...args.map(quoteCmdArg)].join(' ')],
+    display: `${resolvedCommand} ${args.join(' ')}`,
+    windowsVerbatimArguments: true,
+  };
+}
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const resolvedCommand = resolveCommand(command);
-    const child = spawn(resolvedCommand, args, {
+    const invocation = commandInvocation(command, args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd ?? runtimeRoot,
       env: options.env ?? launcherEnv(),
-      shell: shouldRunWithShell(resolvedCommand),
+      shell: false,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
       windowsHide: shouldHideChildWindows,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -110,12 +132,13 @@ function runCommand(command, args, options = {}) {
 
 function spawnService(name, command, args, logFile) {
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
-  const resolvedCommand = resolveCommand(command);
-  writeLog(`${name} command: ${resolvedCommand} ${args.join(' ')}`);
-  const child = spawn(resolvedCommand, args, {
+  const invocation = commandInvocation(command, args);
+  writeLog(`${name} command: ${invocation.display}`);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: runtimeRoot,
     env: launcherEnv(),
-    shell: shouldRunWithShell(resolvedCommand),
+    shell: false,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
     windowsHide: shouldHideChildWindows,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -213,27 +236,51 @@ function shouldCopyPath(sourcePath, includePreparedArtifacts) {
   const relative = path.relative(installRoot, sourcePath);
   if (!relative) return true;
   const parts = relative.split(path.sep);
+  const filename = parts.at(-1) ?? '';
   const excludedRoots = new Set([
+    '.agents',
+    '.codex',
     '.git',
     '.pnpm-store',
     'dist',
     'dist-installer',
+    'docs',
     'electron',
+    'examples',
     'logs',
+    'packages',
     'secrets',
     'workspace',
     'workspace-auth-smoke',
     'workspace-auth-smoke-feishu',
   ]);
   if (excludedRoots.has(parts[0])) return false;
-  if ((parts.includes('node_modules') || parts.includes('dist')) && !includePreparedArtifacts) return false;
-  if (parts.at(-1)?.endsWith('.log')) return false;
-  if (parts.at(-1) === '.env') return false;
+  if (parts.includes('src')) return false;
+  if (parts.includes('node_modules') && !includePreparedArtifacts) return false;
+  if (parts.includes('dist') && !includePreparedArtifacts) return false;
+  if (filename.endsWith('.log')) return false;
+  if (filename.endsWith('.ts') || filename.endsWith('.tsx') || filename.endsWith('.map')) return false;
+  if (filename === '.env' || filename.endsWith('.tsbuildinfo')) return false;
   return true;
 }
 
 async function syncRuntimeSource(includePreparedArtifacts) {
   writeLog(`Syncing runtime files to ${runtimeRoot}`);
+  for (const entry of [
+    'apps',
+    'assets',
+    'connectors',
+    'docs',
+    'examples',
+    'packages',
+    'scripts',
+    'package.json',
+    'pnpm-lock.yaml',
+    'pnpm-workspace.yaml',
+    '.liclick-prepared-runtime.json',
+  ]) {
+    fs.rmSync(path.join(runtimeRoot, entry), { recursive: true, force: true });
+  }
   await fs.promises.cp(installRoot, runtimeRoot, {
     recursive: true,
     force: true,
@@ -244,13 +291,17 @@ async function syncRuntimeSource(includePreparedArtifacts) {
 function runtimeIsReady(signature) {
   const manifest = readJson(manifestPath);
   if (manifest?.sourceSignature !== signature) return false;
-  return runtimeFilesReady();
+  return runtimeFilesReady() && serverDependenciesReady();
 }
 
 function runtimeFilesReady() {
   if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'dist', 'index.js'))) return false;
   if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'web', 'dist', 'index.html'))) return false;
   return true;
+}
+
+function serverDependenciesReady() {
+  return fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'node_modules', '@prisma', 'client'));
 }
 
 async function pushDatabaseIfPossible() {
@@ -262,10 +313,10 @@ async function pushDatabaseIfPossible() {
   await runCommand(prismaBin, ['db', 'push', '--schema', 'apps/server/prisma/schema.prisma']);
 }
 
-async function installAndBuildRuntime(reason) {
+async function installRuntimeDependencies(reason) {
   dependencyInstallAttempted = true;
   writeLog(reason);
-  writeLog('Installing dependencies and building local services. This can take several minutes.');
+  writeLog('Installing runtime dependencies. This can take several minutes.');
   try {
     await runCommand('corepack', ['enable']);
   } catch (error) {
@@ -275,15 +326,13 @@ async function installAndBuildRuntime(reason) {
       }`,
     );
   }
-  await runCommand('corepack', ['pnpm', 'install', '--frozen-lockfile']);
+  await runCommand('corepack', ['pnpm', '--filter', '@liclick/server', 'install', '--frozen-lockfile']);
   await runCommand('corepack', ['pnpm', '--filter', '@liclick/server', 'db:generate']);
-  await runCommand('corepack', ['pnpm', '--filter', '@liclick/server', 'build']);
-  await runCommand('corepack', ['pnpm', '--filter', '@liclick/web', 'build']);
   await runCommand('corepack', ['pnpm', '--filter', '@liclick/server', 'db:push']);
 
   fs.writeFileSync(
     manifestPath,
-    JSON.stringify({ sourceSignature: sourceSignature(), preparedAt: new Date().toISOString(), mode: 'built' }, null, 2),
+    JSON.stringify({ sourceSignature: sourceSignature(), preparedAt: new Date().toISOString(), mode: 'runtime-deps' }, null, 2),
   );
 }
 
@@ -293,12 +342,14 @@ async function prepareRuntime() {
   const includePreparedArtifacts = !readyBeforeCopy && fs.existsSync(preparedInstallMarker);
   await syncRuntimeSource(includePreparedArtifacts);
   if (runtimeIsReady(signature)) {
-    writeLog('Runtime build artifacts are ready; skipping dependency install and build.');
+    writeLog('Runtime artifacts and dependencies are ready; skipping dependency install.');
     return;
   }
-  if (includePreparedArtifacts && runtimeFilesReady()) {
-    writeLog('Packaged runtime artifacts are ready; skipping dependency install and build.');
-    writeLog('If a service cannot start because a dependency is missing, the launcher will install dependencies and retry.');
+  if (runtimeFilesReady()) {
+    if (!serverDependenciesReady()) {
+      await installRuntimeDependencies('Packaged runtime artifacts are ready; installing server runtime dependencies.');
+      return;
+    }
     await pushDatabaseIfPossible();
     fs.writeFileSync(
       manifestPath,
@@ -307,7 +358,9 @@ async function prepareRuntime() {
     return;
   }
 
-  await installAndBuildRuntime('First run or app update detected without packaged build artifacts.');
+  throw new Error(
+    'Packaged runtime artifacts are missing. Reinstall Liclick 3D Texture from a source-free production installer.',
+  );
 }
 
 function requestText(url, timeoutMs = 1000) {
@@ -385,7 +438,7 @@ async function startServices() {
     } catch (error) {
       if (dependencyInstallAttempted) throw error;
       stopManagedChildren();
-      await installAndBuildRuntime(
+      await installRuntimeDependencies(
         `Workspace server did not become ready. Missing runtime dependencies are possible. ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -457,7 +510,7 @@ process.on('exit', cleanup);
 
 writeLog('============================================================');
 writeLog('Liclick 3D Texture local desktop launcher');
-writeLog('首次启动会安装依赖并构建服务，可能需要几分钟。');
+writeLog('首次启动会安装运行依赖并初始化数据库，可能需要几分钟。');
 writeLog('使用软件期间请不要关闭这个终端；关闭终端会停止前后端服务。');
 writeLog(`Install root: ${installRoot}`);
 writeLog(`Runtime: ${runtimeRoot}`);
