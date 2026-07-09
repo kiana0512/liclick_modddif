@@ -76,6 +76,10 @@ function atlasScriptPath() {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
+function atlasNodePath() {
+  return process.env.ATLAS_NODE_PATH || process.execPath || 'node';
+}
+
 function atlasTokenFile(homeDir = os.homedir()) {
   return path.join(homeDir, '.atlas-ai-gateway-oauth.json');
 }
@@ -139,7 +143,7 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
     );
   }
   return new Promise<AtlasCommandResult>((resolve, reject) => {
-    const child = spawn('node', [script, ...args], {
+    const child = spawn(atlasNodePath(), [script, ...args], {
       cwd: process.cwd(),
       env: atlasEnv(homeDir, extraEnv),
       shell: false,

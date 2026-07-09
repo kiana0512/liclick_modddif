@@ -48,10 +48,9 @@ const BLOCK_SENTINEL_SIZE = 13;
 const TEXTURE_SOCKET_NAME = 'base_color_texture';
 const FBX_MEDIA_FOLDER = 'liclick_export.fbm';
 const FBX_MEDIA_ABSOLUTE_FOLDER = `/tmp/${FBX_MEDIA_FOLDER}`;
-const FBX_MEDIA_FILE = 'liclick_image_0.jpg';
+const FBX_MEDIA_FILE = 'liclick_image_0.png';
 const UV_SET_NAME = 'UVMap';
 const FBX_ENGINE_SIZE_CORRECTION = 100 / 3;
-const FBX_JPEG_QUALITY = 0.96;
 const FBX_RAW_ARRAY_BYTE_THRESHOLD = 16;
 const FBX_GEOMETRY_ID_BASE = 496925943;
 const FBX_MODEL_ID_BASE = 192504012;
@@ -869,7 +868,7 @@ function createFbxBinary(input: {
   return concatBytes(chunks);
 }
 
-async function createOpaqueJpegTextureData(blob: Blob, backgroundColor: [number, number, number]) {
+async function createTransparentPngTextureData(blob: Blob) {
   const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
   canvas.width = bitmap.width;
@@ -879,20 +878,20 @@ async function createOpaqueJpegTextureData(blob: Blob, backgroundColor: [number,
     bitmap.close();
     return new Uint8Array(await blob.arrayBuffer());
   }
-  const [red, green, blue] = backgroundColor.map((value) => Math.round(Math.max(0, Math.min(1, value)) * 255));
-  context.fillStyle = `rgb(${red}, ${green}, ${blue})`;
-  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.clearRect(0, 0, canvas.width, canvas.height);
   context.drawImage(bitmap, 0, 0);
   bitmap.close();
-  const jpegBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', FBX_JPEG_QUALITY));
-  return jpegBlob ? new Uint8Array(await jpegBlob.arrayBuffer()) : new Uint8Array(await blob.arrayBuffer());
+  const pngBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  return pngBlob ? new Uint8Array(await pngBlob.arrayBuffer()) : new Uint8Array(await blob.arrayBuffer());
 }
 
 export async function exportModelFbx(input: ModelExportInput) {
-  const { root, textureBlob, textureFilename, averageColor } = await prepareTexturedModelExport(input);
+  const { root, textureBlob, textureFilename, averageColor } = await prepareTexturedModelExport(input, {
+    outputAlpha: 'transparent',
+  });
   const fbxFilename = getExportFilename(input.project.name, input.target, 'fbx');
   if (textureBlob && textureFilename) {
-    const textureData = await createOpaqueJpegTextureData(textureBlob, averageColor ?? [1, 1, 1]);
+    const textureData = await createTransparentPngTextureData(textureBlob);
     const fbx = createFbxBinary({ root, textureData, averageColor });
     downloadBlob(new Blob([fbx], { type: 'application/octet-stream' }), fbxFilename);
     return;

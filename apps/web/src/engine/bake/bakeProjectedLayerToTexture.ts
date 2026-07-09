@@ -36,6 +36,7 @@ const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const GPU_COVERAGE_VALIDATION_RESOLUTION = 512 as UvBakeResolution;
 const MIN_GPU_CPU_COVERAGE_IOU = 0.45;
 const MIN_GPU_CPU_COVERAGE_RATIO = 0.55;
+const MAX_GPU_CPU_COLOR_MEAN_ERROR = 0.18;
 
 function shouldValidateGpuBakeCoverage() {
   try {
@@ -532,11 +533,17 @@ async function validateGpuBakeCoverage(input: {
   group: THREE.Group;
   layers: Layer[];
   objectId: string;
+  gpuCanvas: HTMLCanvasElement;
   gpuCoverage: Uint8Array;
   gpuResolution: UvBakeResolution;
   enableBackfaceCulling: boolean;
+  enableDilation: boolean;
+  dilationPixels: number;
+  outputAlpha: 'opaque-viewport' | 'transparent';
 }) {
-  const referenceCoverage = new Uint8Array(GPU_COVERAGE_VALIDATION_RESOLUTION * GPU_COVERAGE_VALIDATION_RESOLUTION);
+  const referenceComposite = new ImageData(GPU_COVERAGE_VALIDATION_RESOLUTION, GPU_COVERAGE_VALIDATION_RESOLUTION);
+  const qualityBlendComposite = createQualityBlendStackComposite(GPU_COVERAGE_VALIDATION_RESOLUTION);
+  const overlayRasters: OverlayRaster[] = [];
 
   for (const layer of input.layers) {
     const [projectedImage, maskImage, depthImage] = await Promise.all([
@@ -560,9 +567,29 @@ async function validateGpuBakeCoverage(input: {
         dilationPixels: 0,
       },
     });
-    for (let index = 0; index < rasterized.coverage.length; index += 1) {
-      if (rasterized.coverage[index]) referenceCoverage[index] = 1;
+    const layerContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
+    if (!layerContext) throw new Error('Could not read CPU GPU-validation layer canvas.');
+    const layerImageData = layerContext.getImageData(
+      0,
+      0,
+      GPU_COVERAGE_VALIDATION_RESOLUTION,
+      GPU_COVERAGE_VALIDATION_RESOLUTION,
+    );
+    if (layer.blendMode === 'overlay') {
+      overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
+    } else {
+      accumulateQualityBlendLayer(qualityBlendComposite, layerImageData, rasterized.quality, layer.id);
     }
+  }
+  writeQualityBlendStackComposite(qualityBlendComposite, referenceComposite);
+  applyOverlayRasters(referenceComposite, qualityBlendComposite.coverage, overlayRasters);
+  if (input.enableDilation) {
+    dilateImageData(referenceComposite, qualityBlendComposite.coverage, input.dilationPixels);
+  }
+  if (input.outputAlpha !== 'transparent') {
+    fillTransparentTexelsForViewport(referenceComposite);
+  } else {
+    clearWeakTransparentTexels(referenceComposite);
   }
 
   const gpuCoverage = downsampleCoverage(
@@ -570,14 +597,40 @@ async function validateGpuBakeCoverage(input: {
     input.gpuResolution,
     GPU_COVERAGE_VALIDATION_RESOLUTION,
   );
-  const comparison = compareCoverage(gpuCoverage, referenceCoverage);
+  const comparison = compareCoverage(gpuCoverage, qualityBlendComposite.coverage);
   if (comparison.referenceCount === 0) return comparison;
   if (comparison.iou < MIN_GPU_CPU_COVERAGE_IOU || comparison.coverageRatio < MIN_GPU_CPU_COVERAGE_RATIO) {
     throw new Error(
       `GPU bake coverage diverged from CPU validation (IoU ${comparison.iou.toFixed(2)}, coverage ratio ${comparison.coverageRatio.toFixed(2)}).`,
     );
   }
-  return comparison;
+
+  const gpuCanvas = document.createElement('canvas');
+  gpuCanvas.width = GPU_COVERAGE_VALIDATION_RESOLUTION;
+  gpuCanvas.height = GPU_COVERAGE_VALIDATION_RESOLUTION;
+  const gpuContext = gpuCanvas.getContext('2d', { willReadFrequently: true });
+  if (!gpuContext) throw new Error('Could not create GPU validation canvas.');
+  gpuContext.imageSmoothingEnabled = true;
+  gpuContext.imageSmoothingQuality = 'high';
+  gpuContext.drawImage(input.gpuCanvas, 0, 0, GPU_COVERAGE_VALIDATION_RESOLUTION, GPU_COVERAGE_VALIDATION_RESOLUTION);
+  const gpuImage = gpuContext.getImageData(0, 0, GPU_COVERAGE_VALIDATION_RESOLUTION, GPU_COVERAGE_VALIDATION_RESOLUTION);
+
+  let comparedPixels = 0;
+  let totalColorError = 0;
+  for (let offset = 0; offset < referenceComposite.data.length; offset += 4) {
+    if (referenceComposite.data[offset + 3] <= MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
+    if (gpuImage.data[offset + 3] <= MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
+    comparedPixels += 1;
+    totalColorError +=
+      Math.abs(referenceComposite.data[offset] - gpuImage.data[offset]) +
+      Math.abs(referenceComposite.data[offset + 1] - gpuImage.data[offset + 1]) +
+      Math.abs(referenceComposite.data[offset + 2] - gpuImage.data[offset + 2]);
+  }
+  const meanColorError = comparedPixels > 0 ? totalColorError / (comparedPixels * 3 * 255) : 0;
+  if (comparedPixels > 0 && meanColorError > MAX_GPU_CPU_COLOR_MEAN_ERROR) {
+    throw new Error(`GPU bake color diverged from CPU validation (mean RGB error ${meanColorError.toFixed(2)}).`);
+  }
+  return { ...comparison, meanColorError };
 }
 
 export async function bakeVisibleProjectedLayersToTexture(
@@ -610,7 +663,8 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
-  if (input.method === 'gpu' && renderer) {
+  const bakeMethod = input.method ?? 'cpu';
+  if (bakeMethod !== 'cpu' && renderer) {
     try {
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,
@@ -627,16 +681,6 @@ export async function bakeVisibleProjectedLayersToTexture(
             progress: 0.04 + clampProgress(progress.progress) * 0.84,
           }),
       });
-      if (shouldValidateGpuBakeCoverage()) {
-        await validateGpuBakeCoverage({
-          group: importedModel.group,
-          layers,
-          objectId: input.objectId,
-          gpuCoverage: gpuBake.coverage,
-          gpuResolution: input.resolution,
-          enableBackfaceCulling: input.enableBackfaceCulling,
-        });
-      }
       input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
       const wantsTransparentOutput = input.outputAlpha === 'transparent';
       const needsCpuSharpen = !gpuBake.postProcessedOnGpu && !wantsTransparentOutput;
@@ -652,6 +696,20 @@ export async function bakeVisibleProjectedLayersToTexture(
           fillTransparentTexelsForViewport(gpuImage);
         }
         gpuContext.putImageData(gpuImage, 0, 0);
+      }
+      if (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent') {
+        await validateGpuBakeCoverage({
+          group: importedModel.group,
+          layers,
+          objectId: input.objectId,
+          gpuCanvas: gpuBake.canvas,
+          gpuCoverage: gpuBake.coverage,
+          gpuResolution: input.resolution,
+          enableBackfaceCulling: input.enableBackfaceCulling,
+          enableDilation: input.enableDilation,
+          dilationPixels: input.dilationPixels,
+          outputAlpha: input.outputAlpha ?? 'opaque-viewport',
+        });
       }
       input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
       const { imageBlob, imageUrl } = await encodeBakeCanvas(gpuBake.canvas, input.preferBlobOutput);

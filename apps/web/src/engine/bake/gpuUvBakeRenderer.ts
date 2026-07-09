@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { resolveImageAssetUrl } from './imageSampler';
+import { loadImageData } from './imageSampler';
 import type { BakeProgress, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -13,6 +13,7 @@ const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5 / 255;
 const MAX_GPU_SHARPEN_RESOLUTION = 4096;
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
+const DEPTH_EPSILON = 0.08;
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 
 type GpuLayerStackBakeInput = {
@@ -105,7 +106,8 @@ const fragmentShader = `
   uniform float useMask;
   uniform float useDepthCheck;
   uniform float enableBackfaceCulling;
-  uniform float depthBias;
+  uniform float depthEpsilon;
+  uniform vec2 projectedMapSize;
   uniform float hueShift;
   uniform float saturationShift;
   uniform float lightnessShift;
@@ -182,6 +184,57 @@ const fragmentShader = `
     return smoothstep(0.0, edge, edgeDistance);
   }
 
+  vec4 sampleProjectedCleanBilinear(sampler2D map, vec2 uv) {
+    vec2 clampedUv = clamp(uv, vec2(0.0), vec2(1.0));
+    vec2 source = clampedUv * (projectedMapSize - vec2(1.0));
+    vec2 p0 = floor(source);
+    vec2 p1 = min(projectedMapSize - vec2(1.0), p0 + vec2(1.0));
+    vec2 f = source - p0;
+
+    vec2 uv00 = (p0 + vec2(0.5, 0.5)) / projectedMapSize;
+    vec2 uv10 = (vec2(p1.x, p0.y) + vec2(0.5, 0.5)) / projectedMapSize;
+    vec2 uv01 = (vec2(p0.x, p1.y) + vec2(0.5, 0.5)) / projectedMapSize;
+    vec2 uv11 = (p1 + vec2(0.5, 0.5)) / projectedMapSize;
+
+    vec4 c00 = texture2D(map, uv00);
+    vec4 c10 = texture2D(map, uv10);
+    vec4 c01 = texture2D(map, uv01);
+    vec4 c11 = texture2D(map, uv11);
+
+    float w00 = (1.0 - f.x) * (1.0 - f.y);
+    float w10 = f.x * (1.0 - f.y);
+    float w01 = (1.0 - f.x) * f.y;
+    float w11 = f.x * f.y;
+    float threshold = 3.0 / 255.0;
+    vec3 rgb = vec3(0.0);
+    float totalWeight = 0.0;
+    float maxAlpha = 0.0;
+
+    if (w00 > 0.0 && c00.a >= threshold) {
+      rgb += c00.rgb * w00;
+      totalWeight += w00;
+      maxAlpha = max(maxAlpha, c00.a);
+    }
+    if (w10 > 0.0 && c10.a >= threshold) {
+      rgb += c10.rgb * w10;
+      totalWeight += w10;
+      maxAlpha = max(maxAlpha, c10.a);
+    }
+    if (w01 > 0.0 && c01.a >= threshold) {
+      rgb += c01.rgb * w01;
+      totalWeight += w01;
+      maxAlpha = max(maxAlpha, c01.a);
+    }
+    if (w11 > 0.0 && c11.a >= threshold) {
+      rgb += c11.rgb * w11;
+      totalWeight += w11;
+      maxAlpha = max(maxAlpha, c11.a);
+    }
+
+    if (totalWeight <= 0.00001) return vec4(0.0);
+    return vec4(rgb / totalWeight, maxAlpha);
+  }
+
   void main() {
     vec4 captureWorldPosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
     vec3 captureWorldNormal = normalize(objectNormalDelta * vWorldNormal);
@@ -211,10 +264,10 @@ const fragmentShader = `
     float capturedDepth = unpackDepth(texture2D(depthMap, imageUv));
     float depthErr = abs(projectedDepth - capturedDepth);
     float depthWeight = useDepthCheck > 0.5
-      ? mix(0.2, 1.0, exp(-pow(depthErr / max(depthBias + 0.055, 0.000001), 2.0)))
+      ? mix(0.2, 1.0, exp(-pow(depthErr / max(depthEpsilon, 0.000001), 2.0)))
       : 1.0;
 
-    vec4 texel = texture2D(projectedMap, imageUv);
+    vec4 texel = sampleProjectedCleanBilinear(projectedMap, imageUv);
     texel.rgb = applyHslAdjustments(texel.rgb);
     if (texel.a < 0.01) discard;
     float angleWeight = computeAngleWeight(ndv, layerStrength);
@@ -329,13 +382,17 @@ const sharpenFragmentShader = `
   }
 `;
 
-function prepareTexture(texture: THREE.Texture, filter: THREE.MinificationTextureFilter & THREE.MagnificationTextureFilter) {
+function prepareTexture(
+  texture: THREE.Texture,
+  minFilter: THREE.MinificationTextureFilter,
+  magFilter: THREE.MagnificationTextureFilter,
+) {
   texture.colorSpace = THREE.NoColorSpace;
   texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter = filter;
-  texture.magFilter = filter;
+  texture.minFilter = minFilter;
+  texture.magFilter = magFilter;
   texture.generateMipmaps = false;
   texture.needsUpdate = true;
   return texture;
@@ -343,7 +400,7 @@ function prepareTexture(texture: THREE.Texture, filter: THREE.MinificationTextur
 
 function createNeutralTexture() {
   const texture = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat);
-  return prepareTexture(texture, THREE.NearestFilter);
+  return prepareTexture(texture, THREE.NearestFilter, THREE.NearestFilter);
 }
 
 function getTextureImageSize(texture: THREE.Texture) {
@@ -353,28 +410,51 @@ function getTextureImageSize(texture: THREE.Texture) {
   return `${width}x${height}`;
 }
 
-async function loadLayerTextures(layer: Layer): Promise<LoadedLayerTextures> {
-  const loader = new THREE.TextureLoader();
-  const loadTexture = async (url: string, label: string) => {
-    try {
-      return await loader.loadAsync(resolveImageAssetUrl(url));
-    } catch (error) {
-      throw new Error(
-        `Could not load ${layer.name} ${label} for GPU UV baking. ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  };
-  const projectedTexture = prepareTexture(await loadTexture(layer.imageUrl, 'image'), THREE.LinearFilter);
+async function loadLayerTextureFromCpuImageData(input: {
+  url: string;
+  resolution: number;
+  label: string;
+  minFilter: THREE.MinificationTextureFilter;
+  magFilter: THREE.MagnificationTextureFilter;
+}) {
+  const imageData = await loadImageData(input.url, input.resolution, input.label);
+  const canvas = document.createElement('canvas');
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error(`Could not create texture canvas for ${input.label}.`);
+  context.putImageData(imageData, 0, 0);
+  return prepareTexture(new THREE.CanvasTexture(canvas), input.minFilter, input.magFilter);
+}
+
+async function loadLayerTextures(layer: Layer, resolution: UvBakeResolution): Promise<LoadedLayerTextures> {
+  const projectedTexture = await loadLayerTextureFromCpuImageData({
+    url: layer.imageUrl,
+    resolution,
+    label: `${layer.name} image`,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+  });
   const neutralTexture = createNeutralTexture();
   const maskTexture =
     layer.maskUrl
-      ? prepareTexture(await loadTexture(layer.maskUrl, 'mask'), THREE.LinearFilter)
+      ? await loadLayerTextureFromCpuImageData({
+          url: layer.maskUrl,
+          resolution,
+          label: `${layer.name} mask`,
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter,
+        })
       : neutralTexture;
   const depthTexture =
     layer.depthUrl
-      ? prepareTexture(await loadTexture(layer.depthUrl, 'depth'), THREE.NearestFilter)
+      ? await loadLayerTextureFromCpuImageData({
+          url: layer.depthUrl,
+          resolution,
+          label: `${layer.name} depth`,
+          minFilter: THREE.NearestFilter,
+          magFilter: THREE.NearestFilter,
+        })
       : neutralTexture;
   return {
     projectedTexture,
@@ -458,6 +538,7 @@ function createLayerMaterial(input: {
   if (!input.layer.camera) throw new Error('Projected layer has no capture camera.');
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
   debugObjectMatrixDelta(input.group, input.layer, objectMatrixDelta);
+  const projectedImage = input.textures.projectedTexture.image as { width?: number; height?: number };
   return new THREE.ShaderMaterial({
     name: `LiclickGpuUvBake:${input.layer.id}`,
     vertexShader,
@@ -475,7 +556,10 @@ function createLayerMaterial(input: {
       useMask: { value: input.textures.useMask ? 1 : 0 },
       useDepthCheck: { value: input.textures.useDepthCheck ? 1 : 0 },
       enableBackfaceCulling: { value: input.enableBackfaceCulling ? 1 : 0 },
-      depthBias: { value: 0.02 },
+      depthEpsilon: { value: DEPTH_EPSILON },
+      projectedMapSize: {
+        value: new THREE.Vector2(projectedImage.width ?? 1, projectedImage.height ?? 1),
+      },
       hueShift: { value: (input.layer.adjustments?.hue ?? 0) / 100 },
       saturationShift: { value: (input.layer.adjustments?.saturation ?? 0) / 100 },
       lightnessShift: { value: (input.layer.adjustments?.lightness ?? 0) / 100 },
@@ -546,7 +630,12 @@ function runGpuPostprocess(input: {
   resolution: UvBakeResolution;
   enableDilation: boolean;
   dilationPixels: number;
+  enableSharpen: boolean;
 }) {
+  if (!input.enableDilation && !input.enableSharpen) {
+    return { target: input.source, ownedTargets: [] };
+  }
+
   let current = input.source;
   const ownedTargets: THREE.WebGLRenderTarget[] = [];
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
@@ -584,7 +673,7 @@ function runGpuPostprocess(input: {
   }
   dilationMaterial.dispose();
 
-  if (input.resolution <= MAX_GPU_SHARPEN_RESOLUTION) {
+  if (input.enableSharpen && input.resolution <= MAX_GPU_SHARPEN_RESOLUTION) {
     const sharpenMaterial = new THREE.ShaderMaterial({
       vertexShader: fullscreenVertexShader,
       fragmentShader: sharpenFragmentShader,
@@ -626,38 +715,46 @@ function readRenderTargetToImageData(
   const coverage = new Uint8Array(resolution * resolution);
   const rowLength = resolution * 4;
   for (let y = 0; y < resolution; y += 1) {
-    const sourceStart = (resolution - 1 - y) * rowLength;
+    const sourceY = resolution - 1 - y;
+    const sourceStart = sourceY * rowLength;
     const targetStart = y * rowLength;
-    imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowLength), targetStart);
     for (let x = 0; x < resolution; x += 1) {
       const pixelIndex = y * resolution + x;
-      const offset = targetStart + x * 4;
-      const alphaByte = imageData.data[offset + 3];
+      const sourceOffset = sourceStart + x * 4;
+      const targetOffset = targetStart + x * 4;
+      let red = pixels[sourceOffset];
+      let green = pixels[sourceOffset + 1];
+      let blue = pixels[sourceOffset + 2];
+      const alphaByte = pixels[sourceOffset + 3];
       if (outputAlpha === 'transparent' && alphaByte <= MIN_TRANSPARENT_OUTPUT_ALPHA) {
-        imageData.data[offset] = 0;
-        imageData.data[offset + 1] = 0;
-        imageData.data[offset + 2] = 0;
-        imageData.data[offset + 3] = 0;
+        imageData.data[targetOffset] = 0;
+        imageData.data[targetOffset + 1] = 0;
+        imageData.data[targetOffset + 2] = 0;
+        imageData.data[targetOffset + 3] = 0;
         continue;
       }
       if (alphaByte > 0) {
         if (alphaByte < 255) {
           const alpha = alphaByte / 255;
-          imageData.data[offset] = Math.min(255, Math.round(imageData.data[offset] / alpha));
-          imageData.data[offset + 1] = Math.min(255, Math.round(imageData.data[offset + 1] / alpha));
-          imageData.data[offset + 2] = Math.min(255, Math.round(imageData.data[offset + 2] / alpha));
+          red = Math.min(255, Math.round(red / alpha));
+          green = Math.min(255, Math.round(green / alpha));
+          blue = Math.min(255, Math.round(blue / alpha));
         }
+        imageData.data[targetOffset] = red;
+        imageData.data[targetOffset + 1] = green;
+        imageData.data[targetOffset + 2] = blue;
+        imageData.data[targetOffset + 3] = outputAlpha === 'transparent' ? 255 : alphaByte;
         coverage[pixelIndex] = 1;
       } else if (outputAlpha === 'opaque-viewport') {
-        imageData.data[offset] = UNPROJECTED_TEXTURE_FILL[0];
-        imageData.data[offset + 1] = UNPROJECTED_TEXTURE_FILL[1];
-        imageData.data[offset + 2] = UNPROJECTED_TEXTURE_FILL[2];
-        imageData.data[offset + 3] = 255;
+        imageData.data[targetOffset] = UNPROJECTED_TEXTURE_FILL[0];
+        imageData.data[targetOffset + 1] = UNPROJECTED_TEXTURE_FILL[1];
+        imageData.data[targetOffset + 2] = UNPROJECTED_TEXTURE_FILL[2];
+        imageData.data[targetOffset + 3] = 255;
       } else {
-        imageData.data[offset] = 0;
-        imageData.data[offset + 1] = 0;
-        imageData.data[offset + 2] = 0;
-        imageData.data[offset + 3] = 0;
+        imageData.data[targetOffset] = 0;
+        imageData.data[targetOffset + 1] = 0;
+        imageData.data[targetOffset + 2] = 0;
+        imageData.data[targetOffset + 3] = 0;
       }
     }
   }
@@ -764,7 +861,7 @@ export async function bakeProjectedLayerStackWithGpu(
         layerIndex,
         layerCount: input.layers.length,
       });
-      const textures = await loadLayerTextures(layer);
+      const textures = await loadLayerTextures(layer, resolution);
       sourceSizes.push(textures.sourceSizes);
       const material = createLayerMaterial({
         group: input.group,
@@ -792,14 +889,15 @@ export async function bakeProjectedLayerStackWithGpu(
       layerIndex: input.layers.length - 1,
       layerCount: input.layers.length,
     });
+    const outputAlpha = input.outputAlpha ?? 'opaque-viewport';
     const postprocess = runGpuPostprocess({
       renderer,
       source: renderTarget,
       resolution,
       enableDilation: input.enableDilation,
       dilationPixels: input.dilationPixels,
+      enableSharpen: outputAlpha !== 'transparent',
     });
-    const outputAlpha = input.outputAlpha ?? 'opaque-viewport';
     const { imageData, coverage } = readRenderTargetToImageData(renderer, postprocess.target, resolution, outputAlpha);
     postprocess.ownedTargets.forEach((target) => target.dispose());
 

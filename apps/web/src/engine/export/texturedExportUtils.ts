@@ -27,6 +27,11 @@ const exportResolutionToSize: Record<string, UvBakeResolution> = {
   '8K': 8192,
 };
 const EXPORT_BASECOLOR_CACHE_SCOPE = 'export-basecolor-v1';
+type ExportTextureOutputAlpha = 'opaque-viewport' | 'transparent';
+
+type TexturedModelExportOptions = {
+  outputAlpha?: ExportTextureOutputAlpha;
+};
 
 export type PreparedTexturedExport = {
   root: THREE.Object3D;
@@ -192,17 +197,36 @@ function getLatestProject(input: ModelExportInput) {
   return useProjectStore.getState().getCurrentProject() ?? input.project;
 }
 
-function getLayerStackCacheKey(input: ModelExportInput, objectId: string, resolution: number, visibleLayers: LayerStackLayers) {
+function getLayerStackCacheKey(
+  input: ModelExportInput,
+  objectId: string,
+  resolution: number,
+  visibleLayers: LayerStackLayers,
+  options: TexturedModelExportOptions = {},
+) {
   const project = getLatestProject(input);
-  return getProjectedLayerStackSignature(project.id, objectId, `${EXPORT_BASECOLOR_CACHE_SCOPE}:${resolution}`, visibleLayers);
+  const outputAlpha = options.outputAlpha ?? 'opaque-viewport';
+  return getProjectedLayerStackSignature(project.id, objectId, `${EXPORT_BASECOLOR_CACHE_SCOPE}:${resolution}`, visibleLayers, {
+    outputAlpha,
+    enableDilation: true,
+    dilationPixels: 4,
+  });
 }
 
 type LayerStackLayers = ReturnType<typeof getVisibleProjectedLayerStack>;
 
-function findCurrentBakedTexture(input: ModelExportInput, objectId: string, expectedResolution?: number) {
+function findCurrentBakedTexture(
+  input: ModelExportInput,
+  objectId: string,
+  expectedResolution?: number,
+  options: TexturedModelExportOptions = {},
+) {
   const project = getLatestProject(input);
   const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
-  const cacheKey = expectedResolution === undefined ? undefined : getLayerStackCacheKey(input, objectId, expectedResolution, visibleLayers);
+  const cacheKey =
+    expectedResolution === undefined
+      ? undefined
+      : getLayerStackCacheKey(input, objectId, expectedResolution, visibleLayers, options);
   const exactTexture = findExactLayerStackTexture(project, visibleLayers, expectedResolution, objectId, cacheKey);
   if (canUseLayerStackCache(visibleLayers, exactTexture, expectedResolution, objectId, cacheKey)) return exactTexture;
   return undefined;
@@ -243,15 +267,20 @@ async function commitExportBakedTexture(input: ModelExportInput, result: BakePro
   return bakedTexture;
 }
 
-async function bakeCurrentVisibleTextureForExport(input: ModelExportInput, objectId: string) {
+async function bakeCurrentVisibleTextureForExport(
+  input: ModelExportInput,
+  objectId: string,
+  options: TexturedModelExportOptions = {},
+) {
   const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
   if (visibleLayers.length === 0) return undefined;
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
-  const cachedTexture = findCurrentBakedTexture(input, objectId, resolution);
+  const outputAlpha = options.outputAlpha ?? 'opaque-viewport';
+  const cachedTexture = findCurrentBakedTexture(input, objectId, resolution, options);
   if (cachedTexture) return cachedTexture;
 
-  const stackSignature = getLayerStackCacheKey(input, objectId, resolution, visibleLayers);
+  const stackSignature = getLayerStackCacheKey(input, objectId, resolution, visibleLayers, options);
   const inFlightBake = getLayerStackBakeInFlight(stackSignature);
   if (inFlightBake) {
     const bakedTexture = await inFlightBake;
@@ -266,7 +295,7 @@ async function bakeCurrentVisibleTextureForExport(input: ModelExportInput, objec
     enableBackfaceCulling: true,
     enableDilation: true,
     dilationPixels: 4,
-    outputAlpha: 'opaque-viewport',
+    outputAlpha,
     preferBlobOutput: true,
     commitToProject: false,
     markSourceLayersBaked: false,
@@ -296,13 +325,18 @@ function applyTextureMaterial(root: THREE.Object3D, texture: THREE.Texture) {
   });
 }
 
-export async function prepareTexturedModelExport(input: ModelExportInput): Promise<PreparedTexturedExport> {
+export async function prepareTexturedModelExport(
+  input: ModelExportInput,
+  options: TexturedModelExportOptions = {},
+): Promise<PreparedTexturedExport> {
   const root = getExportRoot(input).clone(true);
   root.updateMatrixWorld(true);
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
   const objectId = getTexturedExportObjectId(input);
-  const bakedTexture = findCurrentBakedTexture(input, objectId, resolution) ?? await bakeCurrentVisibleTextureForExport(input, objectId);
+  const bakedTexture =
+    findCurrentBakedTexture(input, objectId, resolution, options) ??
+    await bakeCurrentVisibleTextureForExport(input, objectId, options);
   const uvLayers = findVisibleUvLayers(objectId);
   if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 

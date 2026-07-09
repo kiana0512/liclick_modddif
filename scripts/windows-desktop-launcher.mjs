@@ -145,6 +145,14 @@ function spawnService(name, command, args, logFile) {
 }
 
 function launcherEnv() {
+  const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
+  const userNpmRoot = path.join(appData, 'npm');
+  const atlasSkillhubPath = path.join(userNpmRoot, 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js');
+  const pathEntries = [
+    path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs'),
+    userNpmRoot,
+    process.env.Path ?? process.env.PATH ?? '',
+  ].filter(Boolean);
   const env = {
     ...process.env,
     LICLICK_WORKSPACE_PORT: workspacePort,
@@ -156,8 +164,11 @@ function launcherEnv() {
     LICLICK_ALLOWED_ORIGINS: `${webUrl},${workspaceUrl},http://localhost:${webPort},http://127.0.0.1:${webPort}`,
     DATABASE_URL: process.env.DATABASE_URL ?? `file:${path.join(workspaceDir, 'liclick.db').replaceAll('\\', '/')}`,
     AUTH_MODE: process.env.AUTH_MODE ?? 'feishu-oauth',
+    ATLAS_SKILLHUB_PATH: process.env.ATLAS_SKILLHUB_PATH ?? atlasSkillhubPath,
     CI: process.env.CI ?? 'true',
     COREPACK_ENABLE_DOWNLOAD_PROMPT: process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT ?? '0',
+    Path: pathEntries.join(path.delimiter),
+    PATH: pathEntries.join(path.delimiter),
   };
   return env;
 }

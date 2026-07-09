@@ -3,6 +3,7 @@ import type { Project } from '@/types/project';
 import type { Layer } from '@/types/layer';
 
 const MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO = 0.001;
+const UV_BAKE_PROTOCOL_VERSION = 3;
 const inFlightLayerStackBakes = new Map<string, Promise<BakedTexture | undefined>>();
 
 export function getVisibleProjectedLayerStack(layers: Layer[], objectId: string) {
@@ -147,11 +148,21 @@ export function getProjectedLayerStackSignature(
   objectId: string,
   resolution: string | number,
   stack: Layer[],
+  options: {
+    method?: 'auto' | 'gpu' | 'cpu';
+    outputAlpha?: 'opaque-viewport' | 'transparent';
+    enableDilation?: boolean;
+    dilationPixels?: number;
+  } = {},
 ) {
   return [
     projectId ?? 'no-project',
     objectId,
     resolution,
+    `uv-bake-v${UV_BAKE_PROTOCOL_VERSION}`,
+    `method:${options.method ?? 'cpu'}`,
+    `alpha:${options.outputAlpha ?? 'opaque-viewport'}`,
+    `dilation:${options.enableDilation ? 1 : 0}:${options.dilationPixels ?? 0}`,
     ...stack.map((layer) =>
       [
         layer.id,

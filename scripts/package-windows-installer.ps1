@@ -2,6 +2,9 @@ param(
   [string]$InnoCompiler = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
   [string]$NodeVersion = "22.13.1",
   [string]$NodeZipPath = "",
+  [string]$NodeMsiPath = "",
+  [string]$AtlasSkillhubVersion = "latest",
+  [string]$AtlasSkillhubRegistry = "https://registry-cnpm.lilithgame.com/",
   [switch]$BundlePortableNode,
   [switch]$SkipPortableNode,
   [switch]$SkipPrepare,
@@ -18,6 +21,8 @@ $IconPng = Join-Path $Root "assets\liclick-icon.png"
 $IconIco = Join-Path $StagingRoot "assets\liclick-icon.ico"
 $PreparedMarker = Join-Path $StagingRoot ".liclick-prepared-runtime.json"
 $NodeDir = Join-Path $StagingRoot "node"
+$InstallerPayloadDir = Join-Path $StagingRoot "installers"
+$NodeInstallerMsi = Join-Path $InstallerPayloadDir "node-installer.msi"
 $ElectronSourceDir = Join-Path $Root "node_modules\electron\dist"
 $ElectronDir = Join-Path $StagingRoot "electron"
 $ElectronExe = Join-Path $ElectronDir "Liclick 3D Texture.exe"
@@ -184,6 +189,22 @@ function Install-PortableNode {
   Remove-Item -LiteralPath $extractRoot -Recurse -Force
 }
 
+function Copy-NodeInstallerMsi {
+  New-Item -ItemType Directory -Force -Path $InstallerPayloadDir | Out-Null
+  if ($NodeMsiPath) {
+    Copy-Item -LiteralPath (Resolve-Path $NodeMsiPath).Path -Destination $NodeInstallerMsi -Force
+    return
+  }
+
+  $cachedMsi = Join-Path $DistRoot "node-v$NodeVersion-x64.msi"
+  if (!(Test-Path $cachedMsi)) {
+    $url = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-x64.msi"
+    Write-Host "Downloading Node.js MSI from $url"
+    Invoke-WebRequest -Uri $url -OutFile $cachedMsi
+  }
+  Copy-Item -LiteralPath $cachedMsi -Destination $NodeInstallerMsi -Force
+}
+
 function Copy-ElectronRuntime {
   if (!(Test-Path (Join-Path $ElectronSourceDir "electron.exe"))) {
     throw "Electron runtime was not found at $ElectronSourceDir. Run corepack pnpm install before packaging."
@@ -225,6 +246,7 @@ try {
     New-IcoFromPng -PngPath $IconPng -IcoPath $IconIco
     Copy-ElectronRuntime
     Install-PortableNode
+    Copy-NodeInstallerMsi
     @{
       preparedAt = (Get-Date).ToString("o")
       packageVersion = $PackageVersion
@@ -232,7 +254,10 @@ try {
       webPort = 5673
       includesNodeModules = (Test-Path (Join-Path $StagingRoot "node_modules"))
       includesPortableNode = (Test-Path (Join-Path $NodeDir "node.exe"))
+      includesNodeInstallerMsi = (Test-Path $NodeInstallerMsi)
       includesElectronShell = (Test-Path $ElectronExe)
+      atlasSkillhubVersion = $AtlasSkillhubVersion
+      atlasSkillhubRegistry = $AtlasSkillhubRegistry
     } | ConvertTo-Json -Depth 3 | Set-Content -Path $PreparedMarker -Encoding UTF8
   }
 
@@ -248,7 +273,7 @@ try {
     if (!(Test-Path $InstallerScript)) {
       throw "Installer script not found: $InstallerScript"
     }
-    & $InnoCompiler "/DSourceRoot=$StagingRoot" "/DMyAppVersion=$PackageVersion" $InstallerScript
+    & $InnoCompiler "/DSourceRoot=$StagingRoot" "/DMyAppVersion=$PackageVersion" "/DAtlasSkillhubVersion=$AtlasSkillhubVersion" "/DAtlasSkillhubRegistry=$AtlasSkillhubRegistry" $InstallerScript
     if ($LASTEXITCODE -ne 0) {
       throw "Inno Setup failed with exit code $LASTEXITCODE"
     }
