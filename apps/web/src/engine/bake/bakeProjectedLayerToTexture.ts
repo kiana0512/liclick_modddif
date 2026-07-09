@@ -1,9 +1,14 @@
 import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
 import { dilateImageData } from './dilation';
-import { bakeProjectedLayerStackWithGpu, type GpuLayerSourceSize } from './gpuUvBakeRenderer';
+import {
+  bakeProjectedLayerRastersWithGpu,
+  bakeProjectedLayerStackWithGpu,
+  type GpuLayerSourceSize,
+} from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
+import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod } from './uvBakeDebugControls';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
 import type {
   BakeProjectedLayerInput,
@@ -644,7 +649,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
 
   const requestedLayerIdSet = input.layerIds ? new Set(input.layerIds) : undefined;
-  const layers = requestedLayerIdSet
+  const sourceLayers = requestedLayerIdSet
     ? useLayerStore
         .getState()
         .layers.filter(
@@ -657,15 +662,151 @@ export async function bakeVisibleProjectedLayersToTexture(
         )
         .sort((a, b) => b.order - a.order)
     : getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
+  const layers = sourceLayers.map((layer) => ({
+    ...layer,
+    maskUrl: input.debugIgnoreMask ? undefined : layer.maskUrl,
+    depthUrl: input.debugIgnoreDepth ? undefined : layer.depthUrl,
+  }));
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   input.onProgress?.({ phase: 'loading-assets', progress: 0.02, layerIndex: 0, layerCount: layers.length });
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
-  const bakeMethod = input.method ?? 'cpu';
+  const bakeMethod = input.method ?? getDebugUvBakeMethod('gpu');
   if (bakeMethod !== 'cpu' && renderer) {
     try {
+      const gpuCompositeMode = input.gpuCompositeMode ?? 'cpu-parity';
+      const gpuProjectedImageUvFlipY = input.gpuProjectedImageUvFlipY ?? getDebugGpuProjectedImageUvFlipY(true);
+      if (gpuCompositeMode === 'cpu-parity') {
+        const gpuBake = await bakeProjectedLayerRastersWithGpu({
+          renderer,
+          group: importedModel.group,
+          layers,
+          resolution: input.resolution,
+          enableBackfaceCulling: input.enableBackfaceCulling,
+          enableDilation: input.enableDilation,
+          dilationPixels: input.dilationPixels,
+          outputAlpha: input.outputAlpha ?? 'opaque-viewport',
+          inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
+          projectedImageUvFlipY: gpuProjectedImageUvFlipY,
+          compositeMode: gpuCompositeMode,
+          onProgress: (progress) =>
+            input.onProgress?.({
+              ...progress,
+              progress: 0.04 + clampProgress(progress.progress) * 0.84,
+            }),
+        });
+
+        input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
+        const canvas = document.createElement('canvas');
+        canvas.width = input.resolution;
+        canvas.height = input.resolution;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (!context) throw new Error('Could not create GPU parity UV bake canvas.');
+        const composite = new ImageData(input.resolution, input.resolution);
+        const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
+        const overlayRasters: OverlayRaster[] = [];
+        const warnings = [...gpuBake.warnings];
+        if (layers.length > 1) {
+          warnings.push(
+            layers.some((layer) => layer.blendMode === 'overlay')
+              ? 'GPU sampled layers used CPU parity loose coverage with strict quality blend and order-sensitive overlay layers.'
+              : 'GPU sampled layers used CPU parity order-independent loose coverage with strict quality blend.',
+          );
+        }
+
+        let writtenTexels = 0;
+        for (const raster of gpuBake.rasters) {
+          const layerImageData = raster.imageData;
+          const layerCoverage = new Uint8Array(raster.coverage);
+          if (input.enableDilation) {
+            dilateImageData(layerImageData, layerCoverage, input.dilationPixels);
+          }
+          if (raster.layer.blendMode === 'overlay') {
+            overlayRasters.push({ layer: raster.layer, imageData: layerImageData, quality: raster.quality });
+          } else {
+            accumulateQualityBlendLayer(qualityBlendComposite, layerImageData, raster.quality, raster.layer.id);
+          }
+        }
+
+        const blendWrittenTexels = writeQualityBlendStackComposite(qualityBlendComposite, composite);
+        applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+        for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
+          if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
+        }
+        if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
+        if (input.enableDilation) {
+          dilateImageData(composite, qualityBlendComposite.coverage, input.dilationPixels);
+        }
+        if (input.outputAlpha !== 'transparent') {
+          sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+          fillTransparentTexelsForViewport(composite);
+        } else {
+          clearWeakTransparentTexels(composite);
+        }
+        context.putImageData(composite, 0, 0);
+
+        input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
+        const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
+        const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
+        const report = createBakeReport({
+          startedAt,
+          objectId: input.objectId,
+          layerId: layers[0].id,
+          width: input.resolution,
+          height: input.resolution,
+          totalTriangles: gpuBake.totalTriangles,
+          processedTriangles: gpuBake.processedTriangles,
+          coveredPixels: gpuBake.coveredPixels,
+          skippedPixels: gpuBake.skippedPixels,
+          totalTexels: input.resolution * input.resolution,
+          inFrustumTexels: gpuBake.coveredPixels,
+          maskRejectedTexels: 0,
+          depthRejectedTexels: 0,
+          backfaceRejectedTexels: 0,
+          writtenTexels,
+          coverageRatio,
+          warnings,
+        });
+
+        const bakedTexture: BakedTexture = {
+          id: createId('baked-texture'),
+          objectId: input.objectId,
+          sourceLayerId: layers[0].id,
+          sourceLayerIds: layers.map((layer) => layer.id),
+          cacheKey: input.cacheKey,
+          imageUrl,
+          width: input.resolution,
+          height: input.resolution,
+          format: 'png',
+          createdAt: new Date().toISOString(),
+          coverageRatio,
+          report,
+        };
+
+        if (input.commitToProject !== false) {
+          useProjectStore.getState().addBakedTexture(bakedTexture);
+        }
+        if (input.markSourceLayersBaked !== false) {
+          useLayerStore.getState().markLayersBaked(
+            layers.map((layer) => layer.id),
+            bakedTexture.id,
+            bakedTexture.createdAt,
+          );
+        }
+        console.info('[Liclick 3D Texture] GPU CPU-parity UV bake report:', report);
+        logTransparentBakeSizeDiagnostics(input, canvas, bakedTexture, gpuBake.sourceSizes);
+
+        return {
+          bakedTexture,
+          canvas,
+          imageBlob,
+          imageUrl,
+          report,
+        };
+      }
+
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,
         group: importedModel.group,
@@ -675,6 +816,9 @@ export async function bakeVisibleProjectedLayersToTexture(
         enableDilation: input.enableDilation,
         dilationPixels: input.dilationPixels,
         outputAlpha: input.outputAlpha ?? 'opaque-viewport',
+        inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
+        projectedImageUvFlipY: gpuProjectedImageUvFlipY,
+        compositeMode: gpuCompositeMode,
         onProgress: (progress) =>
           input.onProgress?.({
             ...progress,
@@ -697,7 +841,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         }
         gpuContext.putImageData(gpuImage, 0, 0);
       }
-      if (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent') {
+      if (!input.skipGpuValidation && (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent')) {
         await validateGpuBakeCoverage({
           group: importedModel.group,
           layers,
@@ -771,6 +915,9 @@ export async function bakeVisibleProjectedLayersToTexture(
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (input.disableGpuFallback) {
+        throw new Error(`GPU bake failed with debug fallback disabled. ${message}`);
+      }
       gpuFallbackWarnings.push(`GPU bake failed; used CPU fallback at the same resolution. ${message}`);
       console.warn('[Liclick 3D Texture] GPU UV bake failed; falling back to CPU bake.', error);
     }

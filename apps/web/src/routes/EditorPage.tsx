@@ -24,6 +24,15 @@ import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import {
+  clearDebugUvBakeMethod,
+  getDebugUvBakeStatus,
+  setDebugGpuCoverageValidation,
+  setDebugGpuProjectedImageUvFlipY,
+  setDebugUvBakeMethod,
+  setDebugUvBakeVerbose,
+} from '@/engine/bake/uvBakeDebugControls';
+import { debugCompareCpuGpuUvBake, debugCompareCpuGpuUvGradient } from '@/engine/bake/uvBakeDebugCompare';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { getLiveProjectedCanvasDataUrl, isLiveProjectedCanvasUrl } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { exportModelGlb } from '@/engine/export/exportGltf';
@@ -104,6 +113,23 @@ type EditorPageProps = {
   projectId: string;
   onBack: () => void;
 };
+
+declare global {
+  interface Window {
+    LiclickUvDebug?: {
+      help: () => string[];
+      status: typeof getDebugUvBakeStatus;
+      useDefault: () => ReturnType<typeof getDebugUvBakeStatus>;
+      useCpu: (options?: { ttlMs?: number }) => ReturnType<typeof getDebugUvBakeStatus>;
+      useGpu: (options?: { ttlMs?: number }) => ReturnType<typeof getDebugUvBakeStatus>;
+      setVerbose: (enabled?: boolean) => ReturnType<typeof getDebugUvBakeStatus>;
+      setCoverageValidation: (enabled?: boolean) => ReturnType<typeof getDebugUvBakeStatus>;
+      setGpuProjectedImageUvFlipY: (enabled?: boolean) => ReturnType<typeof getDebugUvBakeStatus>;
+      compare: typeof debugCompareCpuGpuUvBake;
+      uvGradient: typeof debugCompareCpuGpuUvGradient;
+    };
+  }
+}
 
 const resolutionToSize = {
   '1K': 1024,
@@ -1443,6 +1469,84 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     });
   }
 
+  useEffect(() => {
+    const api: NonNullable<Window['LiclickUvDebug']> = {
+      help: () => [
+        'LiclickUvDebug.status()',
+        'LiclickUvDebug.useDefault() // production default: GPU UV bake + CPU fallback',
+        'LiclickUvDebug.useGpu() // force GPU UV bake for 10 minutes',
+        'LiclickUvDebug.useGpu({ ttlMs: 60000 }) // force GPU for 60 seconds',
+        'LiclickUvDebug.useCpu() // force CPU golden path for 10 minutes',
+        'LiclickUvDebug.useCpu({ ttlMs: 60000 }) // force CPU golden path for 60 seconds',
+        'LiclickUvDebug.setVerbose(true) // print CPU/GPU mesh and matrix diagnostics',
+        'LiclickUvDebug.setCoverageValidation(true) // enable normal runtime CPU/GPU coverage validation',
+        'LiclickUvDebug.setGpuProjectedImageUvFlipY(true) // GPU default: flip projected image/mask/depth sampling Y',
+        'LiclickUvDebug.setGpuProjectedImageUvFlipY(false) // debug only: reproduce the old unflipped GPU input sampling',
+        'await LiclickUvDebug.compare({ resolution: 512, download: true }) // CPU/GPU/diff PNG + metrics for top visible projected layer',
+        'await LiclickUvDebug.compare({ resolution: 1024, allVisible: true, logProgress: true }) // compare the full visible projected stack',
+        'await LiclickUvDebug.compare({ resolution: 1024, allVisible: true, eachLayer: true, download: true }) // isolate every projected layer',
+        "await LiclickUvDebug.compare({ resolution: 1024, gpuCompositeMode: 'cpu-parity', download: true }) // production default: GPU sampling + CPU golden composition",
+        "await LiclickUvDebug.compare({ resolution: 1024, gpuCompositeMode: 'quality-depth', download: true }) // debug legacy GPU max-quality winner mode",
+        "await LiclickUvDebug.compare({ resolution: 1024, gpuCompositeMode: 'quality-alpha', download: true }) // test quality as alpha, still order-blended",
+        "await LiclickUvDebug.compare({ resolution: 1024, gpuCompositeMode: 'coverage-alpha', download: true }) // reproduce the old GPU coverage/order blend",
+        'await LiclickUvDebug.compare({ resolution: 1024, gpuProjectedImageUvFlipY: false, download: true }) // debug only: reproduce old unflipped GPU input sampling',
+        'await LiclickUvDebug.compare({ resolution: 1024, gpuInputTextureFlipY: false, download: true }) // reproduce the old bottom-left anchored crop/scale input orientation',
+        'await LiclickUvDebug.compare({ resolution: 1024, ignoreMask: true, ignoreDepth: true, enableBackfaceCulling: false, download: true }) // isolate UV/projector math from rejection gates',
+        'await LiclickUvDebug.uvGradient({ resolution: 1024, download: true }) // verify UV-space render target scale/crop without projected images',
+      ],
+      status: getDebugUvBakeStatus,
+      useDefault: () => {
+        clearDebugUvBakeMethod();
+        setDebugUvBakeVerbose(false);
+        setDebugGpuCoverageValidation(false);
+        setDebugGpuProjectedImageUvFlipY(true);
+        const status = getDebugUvBakeStatus();
+        console.info('[Liclick UV Debug] Production GPU bake defaults restored.', status);
+        return status;
+      },
+      useCpu: (options = {}) => {
+        setDebugUvBakeMethod('cpu', { ttlMs: options.ttlMs ?? 10 * 60 * 1000 });
+        setDebugUvBakeVerbose(true);
+        const status = getDebugUvBakeStatus();
+        console.info('[Liclick UV Debug] CPU golden path override enabled.', status);
+        return status;
+      },
+      useGpu: (options = {}) => {
+        setDebugUvBakeMethod('gpu', { ttlMs: options.ttlMs ?? 10 * 60 * 1000 });
+        setDebugUvBakeVerbose(true);
+        setDebugGpuProjectedImageUvFlipY(true);
+        const status = getDebugUvBakeStatus();
+        console.info('[Liclick UV Debug] GPU UV bake override enabled.', status);
+        return status;
+      },
+      setVerbose: (enabled = true) => {
+        setDebugUvBakeVerbose(enabled);
+        const status = getDebugUvBakeStatus();
+        console.info('[Liclick UV Debug] Verbose UV bake logs updated.', status);
+        return status;
+      },
+      setCoverageValidation: (enabled = true) => {
+        setDebugGpuCoverageValidation(enabled);
+        const status = getDebugUvBakeStatus();
+        console.info('[Liclick UV Debug] Runtime GPU coverage validation updated.', status);
+        return status;
+      },
+      setGpuProjectedImageUvFlipY: (enabled = true) => {
+        setDebugGpuProjectedImageUvFlipY(enabled);
+        const status = getDebugUvBakeStatus();
+        console.info('[Liclick UV Debug] GPU projected image/mask/depth UV flipY updated.', status);
+        return status;
+      },
+      compare: debugCompareCpuGpuUvBake,
+      uvGradient: debugCompareCpuGpuUvGradient,
+    };
+    window.LiclickUvDebug = api;
+    console.info('[Liclick UV Debug] Console API ready. Run LiclickUvDebug.help() for commands.');
+    return () => {
+      if (window.LiclickUvDebug === api) delete window.LiclickUvDebug;
+    };
+  }, []);
+
   async function persistManualBakedTexture(textureId: string, imageUrl: string, imageBlob?: Blob) {
     if (!project || project.workspaceMode !== 'local-server') return imageUrl;
     const filename = `${textureId}.png`;
@@ -2016,7 +2120,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         enableBackfaceCulling: true,
         enableDilation: true,
         dilationPixels: 4,
-        method: 'cpu',
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,
@@ -2290,7 +2393,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         enableBackfaceCulling: true,
         enableDilation: true,
         dilationPixels: 4,
-        method: 'cpu',
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,

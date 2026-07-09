@@ -1,4 +1,5 @@
-export type UvBakeResolution = 1024 | 2048 | 4096 | 8192;
+export type UvBakeResolution = 512 | 1024 | 2048 | 4096 | 8192;
+export type GpuUvCompositeMode = 'cpu-parity' | 'quality-depth' | 'quality-alpha' | 'coverage-alpha';
 export type BakeProgressPhase = 'loading-assets' | 'rasterizing' | 'compositing' | 'encoding' | 'applying' | 'persisting';
 
 export interface BakeProgress {
@@ -69,6 +70,13 @@ export interface BakeVisibleProjectedLayersInput {
   dilationPixels: number;
   method?: 'auto' | 'gpu' | 'cpu';
   outputAlpha?: 'opaque-viewport' | 'transparent';
+  disableGpuFallback?: boolean;
+  skipGpuValidation?: boolean;
+  gpuInputTextureFlipY?: boolean;
+  gpuProjectedImageUvFlipY?: boolean;
+  gpuCompositeMode?: GpuUvCompositeMode;
+  debugIgnoreMask?: boolean;
+  debugIgnoreDepth?: boolean;
   commitToProject?: boolean;
   markSourceLayersBaked?: boolean;
   preferBlobOutput?: boolean;

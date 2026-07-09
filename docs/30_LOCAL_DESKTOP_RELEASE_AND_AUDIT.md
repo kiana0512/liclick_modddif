@@ -2,7 +2,7 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-07-08
+Updated: 2026-07-09
 
 ## Windows Desktop Build
 
@@ -96,6 +96,14 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 
 Low-risk cleanup completed in this pass:
 
+- Updated package versions to `0.1.2` for the Windows installer release.
+- Switched UV baking to a GPU-first production path with CPU fallback. CPU rasterization remains the golden reference for diagnostics.
+- Fixed GPU projected input sampling so projected color, mask, and depth images all use the Y-flipped sampling convention required to match CPU `ImageData`.
+- Added the GPU `cpu-parity` bake mode. GPU now performs per-layer projected UV sampling, then reuses the CPU golden quality-blend compositor for candidate selection, soft blending, overlays, dilation, sharpening, and viewport fill.
+- Kept legacy GPU `quality-depth`, `quality-alpha`, and `coverage-alpha` modes as debug-only comparison paths through `LiclickUvDebug.compare`.
+- Added the browser console `LiclickUvDebug` API for temporary CPU/GPU overrides, GPU input flip diagnostics, CPU/GPU PNG comparison, and UV gradient render-target diagnostics.
+- Bumped the UV bake cache protocol to v4 so old CPU/GPU bake cache entries are not reused after the GPU sampling/composition correction.
+- Documented the GPU UV bake default and debug commands in `docs/32_GPU_UV_BAKE_DEFAULT.md`.
 - Cached the paintable mesh list used by surface-paint raycasts so pointer movement no longer traverses the full model hierarchy every frame.
 - Switched surface-paint raycasts to a non-recursive flat mesh list and kept paint overlay meshes out of the raycast/material processing path.
 - Removed duplicate full-canvas mask alpha scans at stroke commit; inpaint add/subtract state now updates from the stroke history path.
@@ -133,6 +141,7 @@ Low-risk cleanup completed in this pass:
 - Removed an unused global viewport interaction listener that had remained after the disabled automatic preview-bake path was deleted.
 - Fixed local repaint cursor preview and first-stroke mask overlay visibility by including button 3 in the brush-preview path and creating overlays with the current inpaint tool state.
 - Updated desktop shell Build to `2026.07.08.1508` and package versions to `0.1.1`.
+- Updated package versions to `0.1.2` for the GPU-first UV bake Windows installer.
 - Fixed multi-select layer deletion from the layer context menu so `删除选中图层` deletes the selected set instead of only the menu anchor layer.
 - Removed the production CPU coverage parity pass after successful GPU UV bake. The validation path is still available through `localStorage.liclick-debug-gpu-coverage-validation=1`, but normal auto-bake no longer pays for a second CPU rasterization pass.
 - Fixed ordered baked-stack cache reuse so exact layer-order matches are accepted even when the bake is order-sensitive. This lets GPU stack bakes actually become the fast preview/export path.
@@ -210,16 +219,16 @@ The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 105,022,114 bytes
-SHA256 8AD9B7E28DCF6DD1B3181D912FA28F3304A9A2C72BBDE6B0663B97B9556EA986
+Size 134,343,596 bytes
+SHA256 CB072366C39B274765F07792F37F5F0AF10D4C908A0B55D90D5DC88004CEDDB8
 ```
 
 Packaging notes for this build:
 
-- `corepack enable` could not write to `C:\Program Files\nodejs\pnpm` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
-- `corepack pnpm install --frozen-lockfile` reported a registry metadata fetch warning for pnpm in the managed environment, then continued with the existing workspace package manager and completed successfully.
+- `corepack enable` could not write to `C:\Program Files\nodejs\yarnpkg` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
+- `corepack pnpm install --frozen-lockfile` reused the current workspace dependency state and completed successfully after the package-manager prompt.
 - Inno Setup 6.7.2 emitted a non-blocking warning that the `x64` architecture identifier is deprecated and substituted with `x64os`. The installer still compiled successfully.
-- Release cleanup removed regenerated output before verification: Comfy/model download logs, `apps/web/tsconfig.tsbuildinfo`, package `tsconfig.tsbuildinfo` files, old `dist-installer/staging`, and the old installer executable. After packaging, the generated staging directory and regenerated TypeScript build-info file were removed again. The cached portable Node zip was intentionally kept for offline packaging.
+- Release cleanup removed old `dist-installer/staging`, the previous installer executable, regenerated `apps/web/tsconfig.tsbuildinfo`, package `tsconfig.tsbuildinfo` files, and the post-package staging directory. The cached portable Node zip and Node MSI were intentionally kept for offline packaging.
 - Windows packaging now excludes root-level Li3D model-download helper scripts and the debug contact sheet from installer staging, in addition to logs, build info, secrets, workspace data, `.git`, and dependency directories.
 - Vite still reports the known large-chunk warning for the editor bundle. The warning is non-blocking for this installer and remains tracked as a future code-splitting cleanup.
 

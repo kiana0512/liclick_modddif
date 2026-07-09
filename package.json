@@ -1,7 +1,7 @@
 {
   "name": "liclick-3d-texture",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Liclick 3D Texture - Web AI 3D texture studio foundation.",
   "packageManager": "pnpm@9.15.4",
