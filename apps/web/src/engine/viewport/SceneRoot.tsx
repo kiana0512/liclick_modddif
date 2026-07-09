@@ -39,6 +39,63 @@ const MAX_IMAGE_ELEMENT_CACHE_SIZE = 32;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
 
+function stableNumberListSignature(values?: number[]) {
+  if (!values?.length) return '';
+  return values.map((value) => (Number.isFinite(value) ? value.toFixed(5) : '0')).join(',');
+}
+
+function cameraSignature(layer: Layer) {
+  const camera = layer.camera;
+  if (!camera) return '';
+  return [
+    stableNumberListSignature(camera.position),
+    stableNumberListSignature(camera.target),
+    stableNumberListSignature(camera.quaternion),
+    stableNumberListSignature(camera.viewMatrix),
+    stableNumberListSignature(camera.projectionMatrix),
+    camera.projection,
+    camera.type,
+    camera.fov ?? '',
+    camera.zoom,
+    camera.near ?? '',
+    camera.far ?? '',
+    camera.aspect ?? '',
+  ].join('/');
+}
+
+function layerPreviewSignature(layer: Layer) {
+  return [
+    layer.id,
+    layer.type,
+    layer.imageUrl ?? '',
+    layer.maskUrl ?? '',
+    layer.depthUrl ?? '',
+    layer.visible ? 1 : 0,
+    layer.order,
+    layer.opacity,
+    layer.strength ?? 1,
+    layer.blendMode,
+    layer.adjustments?.hue ?? 0,
+    layer.adjustments?.saturation ?? 0,
+    layer.adjustments?.lightness ?? 0,
+    layer.needsRebake ? 1 : 0,
+    stableNumberListSignature(layer.objectMatrixWorld),
+    cameraSignature(layer),
+  ].join(':');
+}
+
+function layerStackPreviewSignature(layers: Layer[]) {
+  return layers.map(layerPreviewSignature).join('|');
+}
+
+function useStableValueBySignature<T>(value: T, signature: string) {
+  const stableRef = useRef<{ signature: string; value: T }>();
+  if (!stableRef.current || stableRef.current.signature !== signature) {
+    stableRef.current = { signature, value };
+  }
+  return stableRef.current.value;
+}
+
 function trimBakedTextureCache() {
   while (bakedTextureCache.size > MAX_PREVIEW_TEXTURE_CACHE_SIZE) {
     const oldestKey = bakedTextureCache.keys().next().value as string | undefined;
@@ -369,6 +426,11 @@ function ImportedModel({
     () => (importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []),
     [importedObjectId, layers],
   );
+  const visibleProjectedLayerSignature = useMemo(
+    () => layerStackPreviewSignature(visibleProjectedLayers),
+    [visibleProjectedLayers],
+  );
+  const stableVisibleProjectedLayers = useStableValueBySignature(visibleProjectedLayers, visibleProjectedLayerSignature);
   const previewProjectedLayers = useMemo(
     () =>
       layers
@@ -383,6 +445,11 @@ function ImportedModel({
         .sort((a, b) => a.order - b.order),
     [importedObjectId, layers],
   );
+  const previewProjectedLayerSignature = useMemo(
+    () => layerStackPreviewSignature(previewProjectedLayers),
+    [previewProjectedLayers],
+  );
+  const stablePreviewProjectedLayers = useStableValueBySignature(previewProjectedLayers, previewProjectedLayerSignature);
   const visibleUvLayers = useMemo(
     () =>
       layers
@@ -396,23 +463,26 @@ function ImportedModel({
         .sort((a, b) => a.order - b.order),
     [importedObjectId, layers],
   );
-  const livePreviewProjectedLayers = useMemo(
-    () => previewProjectedLayers,
-    [previewProjectedLayers],
+  const visibleUvLayerSignature = useMemo(
+    () => layerStackPreviewSignature(visibleUvLayers),
+    [visibleUvLayers],
   );
+  const stableVisibleUvLayers = useStableValueBySignature(visibleUvLayers, visibleUvLayerSignature);
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];
-    const cacheKey = getProjectedLayerStackSignature(project?.id, importedObjectId, expectedResolution, visibleProjectedLayers);
-    const texture = findExactLayerStackTexture(project, visibleProjectedLayers, expectedResolution, importedObjectId, cacheKey);
-    return canUseLayerStackCache(visibleProjectedLayers, texture, expectedResolution, importedObjectId, cacheKey)
+    const cacheKey = getProjectedLayerStackSignature(project?.id, importedObjectId, expectedResolution, stableVisibleProjectedLayers);
+    const texture = findExactLayerStackTexture(project, stableVisibleProjectedLayers, expectedResolution, importedObjectId, cacheKey);
+    return canUseLayerStackCache(stableVisibleProjectedLayers, texture, expectedResolution, importedObjectId, cacheKey)
       ? texture
       : undefined;
-  }, [importedObjectId, project, resolution, visibleProjectedLayers]);
+  }, [importedObjectId, project, resolution, stableVisibleProjectedLayers]);
   const loadedBakedTexture = useLoadedBakedTexture(exactBakedTextureRecord?.imageUrl);
-  const loadedUvTexture = useCompositedUvTexture(visibleUvLayers);
+  const loadedUvTexture = useCompositedUvTexture(stableVisibleUvLayers);
   const visibleStackIsBaked = Boolean(exactBakedTextureRecord);
   const canPreviewProjectedLayers =
-    visibleProjectedLayers.length > 0 && livePreviewProjectedLayers.length > 0 && (displayMode === 'flat' || displayMode === 'pbr');
+    stableVisibleProjectedLayers.length > 0 &&
+    stablePreviewProjectedLayers.length > 0 &&
+    (displayMode === 'flat' || displayMode === 'pbr');
   const previewLighting = useMemo(
     () =>
       getPreviewLighting({
@@ -436,7 +506,7 @@ function ImportedModel({
       model.group.updateMatrixWorld(true);
       const projectedLayerInput = canPreviewProjectedLayers
         ? {
-            layers: livePreviewProjectedLayers.map((layer) => {
+            layers: stablePreviewProjectedLayers.map((layer) => {
               return {
                 layerId: layer.id,
                 imageUrl: layer.imageUrl,
@@ -545,10 +615,10 @@ function ImportedModel({
     canPreviewProjectedLayers,
     displayMode,
     importedModel,
-    livePreviewProjectedLayers,
     loadedBakedTexture,
     loadedUvTexture,
     previewLighting,
+    stablePreviewProjectedLayers,
     visibleStackIsBaked,
   ]);
 
