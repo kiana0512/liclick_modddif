@@ -13,7 +13,10 @@ function parseEnvLine(line: string) {
   if (separatorIndex <= 0) return undefined;
   const key = trimmed.slice(0, separatorIndex).trim();
   let value = trimmed.slice(separatorIndex + 1).trim();
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
     value = value.slice(1, -1);
   }
   return { key, value };
@@ -40,6 +43,11 @@ const comfyuiBaseUrl = (process.env.COMFYUI_BASE_URL ?? 'http://127.0.0.1:8188')
 const comfyuiTextureWorkflowPath =
   process.env.COMFYUI_TEXTURE_WORKFLOW_PATH ??
   'C:/Users/rentian/Downloads/li3d_zimage_web3d_fast_1024_to_4k_16gb.json';
+const comfyuiInpaintBaseUrl = (
+  process.env.COMFYUI_INPAINT_BASE_URL ?? 'http://10.3.34.4:8188'
+).replace(/\/$/, '');
+const comfyuiInpaintWorkflowName =
+  process.env.COMFYUI_INPAINT_WORKFLOW_NAME ?? 'flux_fill_inpaint.json';
 
 function getOrigin(value: string) {
   try {
@@ -100,27 +108,35 @@ function isLoopbackUrl(value?: string) {
 
 const feishuWebOAuth = {
   clientId: process.env.FEISHU_OAUTH_CLIENT_ID ?? process.env.IDAAS_OAUTH_CLIENT_ID ?? '',
-  clientSecret: process.env.FEISHU_OAUTH_CLIENT_SECRET ?? process.env.IDAAS_OAUTH_CLIENT_SECRET ?? '',
-  authorizeUrl: process.env.FEISHU_OAUTH_AUTHORIZE_URL ?? process.env.IDAAS_OAUTH_AUTHORIZE_URL ?? '',
+  clientSecret:
+    process.env.FEISHU_OAUTH_CLIENT_SECRET ?? process.env.IDAAS_OAUTH_CLIENT_SECRET ?? '',
+  authorizeUrl:
+    process.env.FEISHU_OAUTH_AUTHORIZE_URL ?? process.env.IDAAS_OAUTH_AUTHORIZE_URL ?? '',
   tokenUrl: process.env.FEISHU_OAUTH_TOKEN_URL ?? process.env.IDAAS_OAUTH_TOKEN_URL ?? '',
   userInfoUrl: process.env.FEISHU_OAUTH_USERINFO_URL ?? process.env.IDAAS_OAUTH_USERINFO_URL ?? '',
   redirectUrl: process.env.FEISHU_OAUTH_REDIRECT_URL ?? process.env.IDAAS_OAUTH_REDIRECT_URL ?? '',
   scope: process.env.FEISHU_OAUTH_SCOPE ?? process.env.IDAAS_OAUTH_SCOPE ?? 'openid profile email',
   tokenAuthMethod:
-    process.env.FEISHU_OAUTH_TOKEN_AUTH_METHOD ?? process.env.IDAAS_OAUTH_TOKEN_AUTH_METHOD ?? 'client_secret_post',
+    process.env.FEISHU_OAUTH_TOKEN_AUTH_METHOD ??
+    process.env.IDAAS_OAUTH_TOKEN_AUTH_METHOD ??
+    'client_secret_post',
   extraAuthorizeParams: parseKeyValueList(
-    process.env.FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS ?? process.env.IDAAS_OAUTH_EXTRA_AUTHORIZE_PARAMS,
+    process.env.FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS ??
+      process.env.IDAAS_OAUTH_EXTRA_AUTHORIZE_PARAMS,
   ),
 };
 
 const idaasJwtSso = {
   enabled: process.env.IDAAS_JWT_SSO_ENABLED === 'true',
-  url: process.env.IDAAS_JWT_SSO_URL ?? 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62',
+  url:
+    process.env.IDAAS_JWT_SSO_URL ?? 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62',
   enterpriseId: process.env.IDAAS_ENTERPRISE_ID ?? 'lilith',
   serviceUrl: process.env.IDAAS_SP_SERVICE_URL ?? process.env.IDAAS_JWT_SERVICE_URL ?? '',
 };
 const idaasJwtSsoEffectiveServiceUrl =
-  idaasJwtSso.serviceUrl || feishuWebOAuth.redirectUrl || `${publicWorkspaceUrl.replace(/\/$/, '')}/api/auth/feishu/callback`;
+  idaasJwtSso.serviceUrl ||
+  feishuWebOAuth.redirectUrl ||
+  `${publicWorkspaceUrl.replace(/\/$/, '')}/api/auth/feishu/callback`;
 
 const feishuWebOAuthMissingConfigKeys = [
   ['FEISHU_OAUTH_CLIENT_ID or IDAAS_OAUTH_CLIENT_ID', feishuWebOAuth.clientId],
@@ -137,19 +153,23 @@ const feishuWebOAuthLoopbackProvider = [
   feishuWebOAuth.tokenUrl,
   feishuWebOAuth.userInfoUrl,
 ].some(isLoopbackUrl);
-const feishuWebOAuthAllowLoopbackProvider = process.env.FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER === 'true';
+const feishuWebOAuthAllowLoopbackProvider =
+  process.env.FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER === 'true';
 const feishuWebOAuthBlockedReason =
   feishuWebOAuthConfigured && feishuWebOAuthLoopbackProvider && !feishuWebOAuthAllowLoopbackProvider
     ? 'OAuth provider points to a loopback/mock URL. Set FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER=true only for automated smoke tests, or configure the real IDaaS/Feishu authorize/token URLs.'
     : '';
-const feishuWebOAuthEnabled = Boolean(
-  feishuWebOAuthConfigured && !feishuWebOAuthBlockedReason,
-);
+const feishuWebOAuthEnabled = Boolean(feishuWebOAuthConfigured && !feishuWebOAuthBlockedReason);
 const idaasJwtSsoBlockedReason =
-  idaasJwtSso.enabled && idaasJwtSso.url && isLoopbackUrl(idaasJwtSsoEffectiveServiceUrl) && !idaasJwtSso.serviceUrl
+  idaasJwtSso.enabled &&
+  idaasJwtSso.url &&
+  isLoopbackUrl(idaasJwtSsoEffectiveServiceUrl) &&
+  !idaasJwtSso.serviceUrl
     ? `IDaaS SP Service URL points to ${idaasJwtSsoEffectiveServiceUrl}. Configure IDAAS_SP_SERVICE_URL with an IDaaS-registered Liclick callback URL; loopback URLs are rejected unless explicitly registered in IDaaS.`
     : '';
-const idaasJwtSsoEnabled = Boolean(idaasJwtSso.enabled && idaasJwtSso.url && !idaasJwtSsoBlockedReason);
+const idaasJwtSsoEnabled = Boolean(
+  idaasJwtSso.enabled && idaasJwtSso.url && !idaasJwtSsoBlockedReason,
+);
 const atlasLocalLoginEnabled = process.env.LICLICK_ENABLE_ATLAS_LOCAL_LOGIN !== 'false';
 
 export const serverConfig = {
@@ -177,6 +197,8 @@ export const serverConfig = {
   frontendUrl,
   comfyuiBaseUrl,
   comfyuiTextureWorkflowPath,
+  comfyuiInpaintBaseUrl,
+  comfyuiInpaintWorkflowName,
   frontendOrigin: getOrigin(frontendUrl),
   allowedOrigins: [
     getOrigin(frontendUrl),

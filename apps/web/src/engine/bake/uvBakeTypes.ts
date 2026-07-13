@@ -1,6 +1,18 @@
+import type { Layer } from '@/types/layer';
+
 export type UvBakeResolution = 512 | 1024 | 2048 | 4096 | 8192;
-export type GpuUvCompositeMode = 'cpu-parity' | 'quality-depth' | 'quality-alpha' | 'coverage-alpha';
-export type BakeProgressPhase = 'loading-assets' | 'rasterizing' | 'compositing' | 'encoding' | 'applying' | 'persisting';
+export type GpuUvCompositeMode =
+  | 'cpu-parity'
+  | 'quality-depth'
+  | 'quality-alpha'
+  | 'coverage-alpha';
+export type BakeProgressPhase =
+  | 'loading-assets'
+  | 'rasterizing'
+  | 'compositing'
+  | 'encoding'
+  | 'applying'
+  | 'persisting';
 
 export interface BakeProgress {
   phase: BakeProgressPhase;
@@ -63,6 +75,7 @@ export interface BakeProjectedLayerInput {
 export interface BakeVisibleProjectedLayersInput {
   objectId: string;
   layerIds?: string[];
+  transientLayers?: Layer[];
   resolution: UvBakeResolution;
   cacheKey?: string;
   enableBackfaceCulling: boolean;

@@ -25,16 +25,26 @@ type GenerationStore = {
 
 function isPendingGeneration(generation: Generation, projectId?: string) {
   const sameProject = !projectId || generation.metadata.projectId === projectId;
-  return sameProject && (generation.status === 'queued' || generation.status === 'running') && !generation.resultUrl;
+  return (
+    sameProject &&
+    (generation.status === 'queued' || generation.status === 'running') &&
+    !generation.resultUrl
+  );
 }
 
 function isActiveGenerationRunning(generation?: Generation) {
-  return Boolean(generation && (generation.status === 'queued' || generation.status === 'running') && !generation.resultUrl);
+  return Boolean(
+    generation &&
+    (generation.status === 'queued' || generation.status === 'running') &&
+    !generation.resultUrl,
+  );
 }
 
 function upsertGeneration(generations: Generation[], generation: Generation) {
   const exists = generations.some((item) => item.id === generation.id);
-  return exists ? generations.map((item) => (item.id === generation.id ? generation : item)) : [generation, ...generations];
+  return exists
+    ? generations.map((item) => (item.id === generation.id ? generation : item))
+    : [generation, ...generations];
 }
 
 export const useGenerationStore = create<GenerationStore>()(
@@ -46,7 +56,9 @@ export const useGenerationStore = create<GenerationStore>()(
       isGenerating: false,
       start: (generation) =>
         set((state) => {
-          const generations = generation ? upsertGeneration(state.generations, generation) : state.generations;
+          const generations = generation
+            ? upsertGeneration(state.generations, generation)
+            : state.generations;
           return {
             generations,
             currentGeneration: generation ?? state.currentGeneration,
@@ -60,14 +72,16 @@ export const useGenerationStore = create<GenerationStore>()(
           return {
             generations,
             currentGeneration: generation,
-            isGenerating: isActiveGenerationRunning(generation),
+            isGenerating: generations.some((item) => isActiveGenerationRunning(item)),
           };
         }),
       setLastCapture: (lastCapture) => set({ lastCapture }),
       setGenerations: (generations, projectId) =>
         set((state) => {
-          const pending = state.generations.filter((generation) =>
-            isPendingGeneration(generation, projectId) && !generations.some((item) => item.id === generation.id),
+          const pending = state.generations.filter(
+            (generation) =>
+              isPendingGeneration(generation, projectId) &&
+              !generations.some((item) => item.id === generation.id),
           );
           const nextGenerations = [...pending, ...generations];
           return {
@@ -80,9 +94,13 @@ export const useGenerationStore = create<GenerationStore>()(
     {
       name: generationStorageKeyV2,
       partialize: (state) => ({
-        generations: state.generations.filter((generation) => generation.status === 'queued' || generation.status === 'running'),
+        generations: state.generations.filter(
+          (generation) => generation.status === 'queued' || generation.status === 'running',
+        ),
         currentGeneration:
-          state.currentGeneration && (state.currentGeneration.status === 'queued' || state.currentGeneration.status === 'running')
+          state.currentGeneration &&
+          (state.currentGeneration.status === 'queued' ||
+            state.currentGeneration.status === 'running')
             ? state.currentGeneration
             : undefined,
         lastCapture: undefined,

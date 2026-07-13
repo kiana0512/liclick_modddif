@@ -23,6 +23,7 @@ export type Layer = {
   camera?: SerializedCamera;
   generationId?: string;
   captureId?: string;
+  replacementTargetLayerId?: string;
   visible: boolean;
   opacity: number;
   strength?: number;

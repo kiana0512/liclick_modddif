@@ -1,5 +1,6 @@
 import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
 import { useProjectStore } from '@/stores/projectStore';
+import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 export type ImageSample = [number, number, number, number];
 const COLOR_ALPHA_REJECT_THRESHOLD = 3;
@@ -16,7 +17,12 @@ function getWorkspaceProjectAssetBase() {
     project.thumbnail,
     ...project.objects.map((object) => object.sourcePath),
     ...project.references.map((reference) => reference.url),
-    ...project.captures.flatMap((capture) => [capture.colorUrl, capture.maskUrl, capture.depthUrl, capture.normalUrl]),
+    ...project.captures.flatMap((capture) => [
+      capture.colorUrl,
+      capture.maskUrl,
+      capture.depthUrl,
+      capture.normalUrl,
+    ]),
     ...project.generations.map((generation) => generation.resultUrl),
     ...project.layers.flatMap((layer) => [layer.imageUrl, layer.maskUrl, layer.depthUrl]),
     ...project.bakedTextures.map((texture) => texture.imageUrl),
@@ -88,7 +94,12 @@ function describeUrlKind(url: string) {
   if (url.startsWith('blob:')) return 'temporary blob URL';
   if (url.startsWith('data:')) return 'embedded data URL';
   if (url.startsWith('http')) return 'HTTP URL';
-  if (url.startsWith('/workspace/') || url.startsWith('workspace/') || url.startsWith('users/') || url.startsWith('assets/')) {
+  if (
+    url.startsWith('/workspace/') ||
+    url.startsWith('workspace/') ||
+    url.startsWith('users/') ||
+    url.startsWith('assets/')
+  ) {
     return 'workspace asset URL';
   }
   return 'relative URL';
@@ -99,7 +110,10 @@ export async function loadImageData(
   maxDimension = Number.POSITIVE_INFINITY,
   label = 'projected layer image',
 ): Promise<ImageData> {
-  const resolvedUrl = resolveImageAssetUrl(url);
+  const liveCanvasState = getLiveProjectedCanvasState(url);
+  const resolvedUrl = liveCanvasState
+    ? `${url}#${liveCanvasState.revision}`
+    : resolveImageAssetUrl(url);
   if (!resolvedUrl) throw new Error(`Could not load ${label}: image URL is empty.`);
   const cacheKey = getImageDataCacheKey(url, resolvedUrl, maxDimension);
   const cached = imageDataCache.get(cacheKey);
@@ -107,26 +121,34 @@ export async function loadImageData(
     cached.usedAt = performance.now();
     return cached.imageData;
   }
-  const image = new Image();
-  image.crossOrigin = 'anonymous';
-  image.decoding = 'async';
-  image.src = resolvedUrl;
-
-  await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
-    image.onerror = () =>
-      reject(
-        new Error(
-          `Could not load ${label} for baking (${describeUrlKind(url)}). ` +
-            (url.startsWith('blob:')
-              ? 'The temporary blob URL is no longer available; regenerate or re-add this layer.'
-              : 'Check that the workspace asset exists and the workspace server is running.'),
-        ),
-      );
-  });
-
-  const sourceWidth = image.naturalWidth || image.width;
-  const sourceHeight = image.naturalHeight || image.height;
+  let source: CanvasImageSource;
+  let sourceWidth: number;
+  let sourceHeight: number;
+  if (liveCanvasState) {
+    source = liveCanvasState.canvas;
+    sourceWidth = liveCanvasState.canvas.width;
+    sourceHeight = liveCanvasState.canvas.height;
+  } else {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.decoding = 'async';
+    image.src = resolvedUrl;
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () =>
+        reject(
+          new Error(
+            `Could not load ${label} for baking (${describeUrlKind(url)}). ` +
+              (url.startsWith('blob:')
+                ? 'The temporary blob URL is no longer available; regenerate or re-add this layer.'
+                : 'Check that the workspace asset exists and the workspace server is running.'),
+          ),
+        );
+    });
+    source = image;
+    sourceWidth = image.naturalWidth || image.width;
+    sourceHeight = image.naturalHeight || image.height;
+  }
   const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(sourceWidth * scale));
@@ -135,7 +157,7 @@ export async function loadImageData(
   if (!context) throw new Error('Could not create image sampling canvas.');
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
   rememberImageData(cacheKey, imageData);
   return imageData;
@@ -186,9 +208,21 @@ export function sampleImageBilinear(image: ImageData, u: number, v: number): Ima
 
   if (alpha <= 0.00001) return [0, 0, 0, 0];
 
-  red += data[offset00] * alpha00 + data[offset10] * alpha10 + data[offset01] * alpha01 + data[offset11] * alpha11;
-  green += data[offset00 + 1] * alpha00 + data[offset10 + 1] * alpha10 + data[offset01 + 1] * alpha01 + data[offset11 + 1] * alpha11;
-  blue += data[offset00 + 2] * alpha00 + data[offset10 + 2] * alpha10 + data[offset01 + 2] * alpha01 + data[offset11 + 2] * alpha11;
+  red +=
+    data[offset00] * alpha00 +
+    data[offset10] * alpha10 +
+    data[offset01] * alpha01 +
+    data[offset11] * alpha11;
+  green +=
+    data[offset00 + 1] * alpha00 +
+    data[offset10 + 1] * alpha10 +
+    data[offset01 + 1] * alpha01 +
+    data[offset11 + 1] * alpha11;
+  blue +=
+    data[offset00 + 2] * alpha00 +
+    data[offset10 + 2] * alpha10 +
+    data[offset01 + 2] * alpha01 +
+    data[offset11 + 2] * alpha11;
 
   return [
     Math.round(red / alpha),

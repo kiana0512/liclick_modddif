@@ -5,7 +5,7 @@ import type { ReferenceImage } from './project';
 export type GenerationMode = 'single' | 'multiview' | 'inpaint' | 'normal';
 export type GenerationStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed';
 export type TextureGenerationStyle = 'realistic' | 'albedo';
-export type GenerationWorkflow = 'liclick' | 'texture-map';
+export type GenerationWorkflow = 'liclick' | 'texture-map' | 'local-repaint';
 
 export type Generation = {
   id: string;

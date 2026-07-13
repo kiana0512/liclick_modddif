@@ -38,6 +38,7 @@ export type ProjectSettings = {
     prompt?: string;
     liclickPrompt?: string;
     textureMapPrompt?: string;
+    localRepaintPrompt?: string;
     mode?: 'visible' | 'upscale';
     upscaleStrength?: number;
   };

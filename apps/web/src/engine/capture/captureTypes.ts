@@ -22,8 +22,9 @@ export type CapturePassOutput = {
 export type CaptureCurrentViewRequest = {
   objectId: string;
   resolution: CaptureResolution;
+  aspect?: number;
   framing?: 'current' | 'fit-object';
-  colorMode?: 'viewport' | 'clay-target';
+  colorMode?: 'viewport' | 'clay-target' | 'target-only';
   fillRatio?: number;
   viewDirection?: [number, number, number];
   viewUp?: [number, number, number];

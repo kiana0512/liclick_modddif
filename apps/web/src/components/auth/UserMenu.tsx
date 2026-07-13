@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Cpu, Languages, Layers, LogIn, LogOut } from 'lucide-react';
+import { Activity, Check, Cpu, Languages, Layers, LogIn, LogOut } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
@@ -17,6 +17,8 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
   const setLanguage = useI18nStore((state) => state.setLanguage);
   const autoUvBakeEnabled = useSettingsStore((state) => state.autoUvBakeEnabled);
   const setAutoUvBakeEnabled = useSettingsStore((state) => state.setAutoUvBakeEnabled);
+  const performanceTestModeEnabled = useSettingsStore((state) => state.performanceTestModeEnabled);
+  const setPerformanceTestModeEnabled = useSettingsStore((state) => state.setPerformanceTestModeEnabled);
   const imageGenerationProvider = useSettingsStore((state) => state.imageGenerationProvider);
   const setImageGenerationProvider = useSettingsStore((state) => state.setImageGenerationProvider);
   const user = useAuthStore((state) => state.user);
@@ -179,6 +181,24 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
             <span
               className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${
                 autoUvBakeEnabled ? 'border-liclick-pink bg-liclick-pink text-white' : 'border-white/24 text-transparent'
+              }`}
+            >
+              <Check className="h-3.5 w-3.5" />
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setPerformanceTestModeEnabled(!performanceTestModeEnabled)}
+            className="mt-1 flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
+            title={t('performanceTestModeHelp')}
+          >
+            <span className="inline-flex min-w-0 items-center gap-2">
+              <Activity className="h-4 w-4 shrink-0" />
+              <span className="truncate">{t('performanceTestMode')}</span>
+            </span>
+            <span
+              className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${
+                performanceTestModeEnabled ? 'border-liclick-pink bg-liclick-pink text-white' : 'border-white/24 text-transparent'
               }`}
             >
               <Check className="h-3.5 w-3.5" />

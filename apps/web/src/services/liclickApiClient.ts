@@ -80,22 +80,40 @@ async function prepareReferences(references: ReferenceImage[] = []) {
   );
 }
 
-async function requestJson<T>(baseUrl: string, path: string, init: RequestInit & { timeoutMs?: number }) {
+async function requestJson<T>(
+  baseUrl: string,
+  path: string,
+  init: RequestInit & { timeoutMs?: number },
+) {
   const { timeoutMs = 8 * 60 * 1000, headers, ...fetchInit } = init;
   const requestHeaders = new Headers(headers);
-  if (fetchInit.body && !requestHeaders.has('content-type')) requestHeaders.set('content-type', 'application/json');
+  if (fetchInit.body && !requestHeaders.has('content-type'))
+    requestHeaders.set('content-type', 'application/json');
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...fetchInit,
-    signal: controller.signal,
-    credentials: 'include',
-    headers: requestHeaders,
-  }).finally(() => window.clearTimeout(timeout));
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      ...fetchInit,
+      signal: controller.signal,
+      credentials: 'include',
+      headers: requestHeaders,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('莉刻生图服务响应超时，请稍后重试。');
+    }
+    throw new Error(`无法连接莉刻生图服务（${baseUrl}），请确认本地工作区服务已启动。`);
+  } finally {
+    window.clearTimeout(timeout);
+  }
   const payload = await response.json().catch(() => undefined);
   if (!response.ok) {
     const message =
-      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+      payload &&
+      typeof payload === 'object' &&
+      'error' in payload &&
+      typeof payload.error === 'string'
         ? payload.error
         : `Liclick request failed: ${response.status}`;
     throw new Error(message);
@@ -164,16 +182,24 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
       };
     },
     async getGenerationJob(jobId) {
-      return requestJson<GenerationJobResult>(baseUrl, `/api/liclick/generate-image/${encodeURIComponent(jobId)}`, {
-        method: 'GET',
-        timeoutMs: 30_000,
-      });
+      return requestJson<GenerationJobResult>(
+        baseUrl,
+        `/api/liclick/generate-image/${encodeURIComponent(jobId)}`,
+        {
+          method: 'GET',
+          timeoutMs: 30_000,
+        },
+      );
     },
     async cancelGenerationJob(jobId) {
-      return requestJson<GenerationJobResult>(baseUrl, `/api/liclick/generate-image/${encodeURIComponent(jobId)}`, {
-        method: 'DELETE',
-        timeoutMs: 30_000,
-      });
+      return requestJson<GenerationJobResult>(
+        baseUrl,
+        `/api/liclick/generate-image/${encodeURIComponent(jobId)}`,
+        {
+          method: 'DELETE',
+          timeoutMs: 30_000,
+        },
+      );
     },
     async inpaint() {
       throw new Error('Liclick inpaint is not wired yet.');

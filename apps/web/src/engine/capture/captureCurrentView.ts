@@ -2,7 +2,11 @@ import { captureColor } from './captureColor';
 import { captureDepth } from './captureDepth';
 import { captureMask } from './captureMask';
 import { captureNormal } from './captureNormal';
-import type { CaptureCurrentViewRequest, CaptureNormalPreview, CapturePassRequest } from './captureTypes';
+import type {
+  CaptureCurrentViewRequest,
+  CaptureNormalPreview,
+  CapturePassRequest,
+} from './captureTypes';
 import { applyTargetOnlyMaterial, renderSceneToPngUrl } from './renderTargetUtils';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { useProjectStore } from '@/stores/projectStore';
@@ -92,7 +96,8 @@ function createFitObjectCamera(
   viewDirection?: THREE.Vector3,
   viewUp?: THREE.Vector3,
 ) {
-  const direction = viewDirection?.clone().normalize() ?? getViewDirection(sourceCamera, controlsTarget);
+  const direction =
+    viewDirection?.clone().normalize() ?? getViewDirection(sourceCamera, controlsTarget);
   const upSource = viewUp?.clone().normalize() ?? sourceCamera.up;
   const frame = getViewFrame(box, direction, upSource);
   const center = frame.center;
@@ -113,14 +118,16 @@ function createFitObjectCamera(
     return { camera, target: center.clone() };
   }
 
-  const sourcePerspective = sourceCamera instanceof THREE.PerspectiveCamera ? sourceCamera : undefined;
+  const sourcePerspective =
+    sourceCamera instanceof THREE.PerspectiveCamera ? sourceCamera : undefined;
   const fov = sourcePerspective?.fov ?? 35;
   const fovRad = THREE.MathUtils.degToRad(fov);
   const horizontalFovRad = 2 * Math.atan(Math.tan(fovRad * 0.5) * aspect);
-  const distance = Math.max(
-    frame.halfHeight / Math.tan(fovRad * 0.5),
-    frame.halfWidth / Math.tan(horizontalFovRad * 0.5),
-  ) / safeFillRatio;
+  const distance =
+    Math.max(
+      frame.halfHeight / Math.tan(fovRad * 0.5),
+      frame.halfWidth / Math.tan(horizontalFovRad * 0.5),
+    ) / safeFillRatio;
   const camera = new THREE.PerspectiveCamera(fov, aspect);
   camera.position.copy(center).add(direction.multiplyScalar(distance));
   camera.up.copy(upSource);
@@ -187,14 +194,34 @@ async function captureClayTarget(passRequest: CapturePassRequest) {
   }
 }
 
+async function captureTargetOnly(passRequest: CapturePassRequest) {
+  const restore = applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId);
+  try {
+    return {
+      url: await renderSceneToPngUrl({
+        ...passRequest,
+        clearColor: '#eeeeec',
+        clearAlpha: 1,
+      }),
+      warnings: [],
+    };
+  } finally {
+    restore();
+  }
+}
+
 export async function captureCurrentView(request: CaptureCurrentViewRequest): Promise<Capture> {
   const size = Math.min(request.resolution, maxCaptureSize);
   const warnings: string[] = [];
   if (request.resolution > maxCaptureSize) {
-    warnings.push('Large reference capture was limited to 2048px in this browser MVP to avoid freezing the viewport.');
+    warnings.push(
+      'Large reference capture was limited to 2048px in this browser MVP to avoid freezing the viewport.',
+    );
   }
 
-  const aspect = 1;
+  const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
+  const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
+  const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
   const { viewport, captureCamera, captureTarget } = resolveCaptureCamera(request, aspect);
 
   const passRequest: CapturePassRequest = {
@@ -202,11 +229,16 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
     scene: viewport.scene,
     camera: captureCamera,
     objectId: request.objectId,
-    width: size,
-    height: size,
+    width,
+    height,
   };
 
-  const color = request.colorMode === 'clay-target' ? await captureClayTarget(passRequest) : await captureColor(passRequest);
+  const color =
+    request.colorMode === 'clay-target'
+      ? await captureClayTarget(passRequest)
+      : request.colorMode === 'target-only'
+        ? await captureTargetOnly(passRequest)
+        : await captureColor(passRequest);
   const mask = await captureMask(passRequest);
   const normal = await captureNormal(passRequest);
   const depth = await captureDepth(passRequest);
@@ -215,14 +247,20 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
     id: createId('capture'),
     objectId: request.objectId,
     camera: serializeCamera(captureCamera, aspect, captureTarget),
-    width: size,
-    height: size,
+    width,
+    height,
     colorUrl: color.url,
     maskUrl: mask.url,
     normalUrl: normal.url,
     depthUrl: depth.url,
     createdAt: new Date().toISOString(),
-    warnings: [...warnings, ...color.warnings, ...mask.warnings, ...normal.warnings, ...depth.warnings],
+    warnings: [
+      ...warnings,
+      ...color.warnings,
+      ...mask.warnings,
+      ...normal.warnings,
+      ...depth.warnings,
+    ],
   };
 
   useProjectStore.getState().addCapture(capture);
@@ -230,25 +268,29 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   return capture;
 }
 
-export async function captureCurrentNormalPreview(request: CaptureCurrentViewRequest): Promise<CaptureNormalPreview> {
+export async function captureCurrentNormalPreview(
+  request: CaptureCurrentViewRequest,
+): Promise<CaptureNormalPreview> {
   const size = Math.min(request.resolution, 1024);
-  const aspect = 1;
+  const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
+  const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
+  const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
   const { viewport, captureCamera, captureTarget } = resolveCaptureCamera(request, aspect);
   const passRequest: CapturePassRequest = {
     gl: viewport.gl,
     scene: viewport.scene,
     camera: captureCamera,
     objectId: request.objectId,
-    width: size,
-    height: size,
+    width,
+    height,
   };
   const normal = await captureNormal(passRequest, { space: 'world' });
   return {
     id: createId('normal-preview'),
     objectId: request.objectId,
     camera: serializeCamera(captureCamera, aspect, captureTarget),
-    width: size,
-    height: size,
+    width,
+    height,
     normalUrl: normal.url,
     createdAt: new Date().toISOString(),
     warnings: normal.warnings,

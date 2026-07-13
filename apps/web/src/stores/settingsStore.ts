@@ -13,6 +13,7 @@ type SettingsStore = {
   pbrLightAzimuth: number;
   environmentPreset: EnvironmentPreset;
   autoUvBakeEnabled: boolean;
+  performanceTestModeEnabled: boolean;
   imageGenerationProvider: ImageGenerationProvider;
   setResolution: (resolution: Resolution) => void;
   setExposure: (exposure: number) => void;
@@ -21,6 +22,7 @@ type SettingsStore = {
   setPbrLightAzimuth: (pbrLightAzimuth: number) => void;
   setEnvironmentPreset: (environmentPreset: EnvironmentPreset) => void;
   setAutoUvBakeEnabled: (autoUvBakeEnabled: boolean) => void;
+  setPerformanceTestModeEnabled: (performanceTestModeEnabled: boolean) => void;
   setImageGenerationProvider: (imageGenerationProvider: ImageGenerationProvider) => void;
   resetViewportLighting: () => void;
 };
@@ -35,6 +37,7 @@ export const useSettingsStore = create<SettingsStore>()(
       pbrLightAzimuth: 38,
       environmentPreset: 'studio',
       autoUvBakeEnabled: false,
+      performanceTestModeEnabled: false,
       imageGenerationProvider: 'liclick',
       setResolution: (resolution) => set({ resolution }),
       setExposure: (exposure) => set({ exposure }),
@@ -43,6 +46,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setPbrLightAzimuth: (pbrLightAzimuth) => set({ pbrLightAzimuth }),
       setEnvironmentPreset: (environmentPreset) => set({ environmentPreset }),
       setAutoUvBakeEnabled: (autoUvBakeEnabled) => set({ autoUvBakeEnabled }),
+      setPerformanceTestModeEnabled: (performanceTestModeEnabled) => set({ performanceTestModeEnabled }),
       setImageGenerationProvider: (imageGenerationProvider) => set({ imageGenerationProvider }),
       resetViewportLighting: () =>
         set({ exposure: 1, pbrEnvironmentIntensity: 0.42, pbrKeyLightIntensity: 1, pbrLightAzimuth: 38, environmentPreset: 'studio' }),
@@ -58,6 +62,7 @@ export const useSettingsStore = create<SettingsStore>()(
         pbrLightAzimuth: state.pbrLightAzimuth,
         environmentPreset: state.environmentPreset,
         autoUvBakeEnabled: state.autoUvBakeEnabled,
+        performanceTestModeEnabled: state.performanceTestModeEnabled,
         imageGenerationProvider: state.imageGenerationProvider,
       }),
     },

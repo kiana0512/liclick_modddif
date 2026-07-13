@@ -51,6 +51,45 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
   return <img src={layer.imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />;
 }
 
+function LayerPreviewImage({ layer }: { layer: Layer }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const liveCanvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
+  const maxPreviewDimension = 1600;
+  const scale = liveCanvas
+    ? Math.min(1, maxPreviewDimension / Math.max(liveCanvas.width, liveCanvas.height, 1))
+    : 1;
+  const width = liveCanvas ? Math.max(1, Math.round(liveCanvas.width * scale)) : 1;
+  const height = liveCanvas ? Math.max(1, Math.round(liveCanvas.height * scale)) : 1;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !liveCanvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(liveCanvas, 0, 0, canvas.width, canvas.height);
+  }, [height, layer.contentRevision, liveCanvas, width]);
+
+  if (liveCanvas) {
+    return (
+      <canvas
+        ref={canvasRef}
+        width={width}
+        height={height}
+        className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+      />
+    );
+  }
+  return (
+    <img
+      src={layer.imageUrl}
+      alt=""
+      className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+      draggable={false}
+    />
+  );
+}
+
 type VisibilityDrag = {
   visible: boolean;
   touched: Set<string>;
@@ -589,12 +628,7 @@ export function LayersPanel({
             onClick={() => setPreviewLayerId(undefined)}
             aria-label={t('view')}
           >
-            <img
-              src={previewLayer.imageUrl}
-              alt=""
-              className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
-              draggable={false}
-            />
+            <LayerPreviewImage layer={previewLayer} />
           </button>,
           document.body,
         )}

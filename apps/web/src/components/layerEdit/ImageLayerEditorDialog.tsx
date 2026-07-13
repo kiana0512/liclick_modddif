@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
+import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { useT } from '@/stores/i18nStore';
 import type { Layer } from '@/types/layer';
 
@@ -319,11 +320,15 @@ export function ImageLayerEditorDialog({
 
   useEffect(() => {
     let cancelled = false;
-    void loadImage(layer.imageUrl)
+    const liveCanvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
+    const sourcePromise: Promise<HTMLImageElement | HTMLCanvasElement> = liveCanvas
+      ? Promise.resolve(liveCanvas)
+      : loadImage(layer.imageUrl);
+    void sourcePromise
       .then((image) => {
         if (cancelled) return;
-        const width = image.naturalWidth || image.width || 1;
-        const height = image.naturalHeight || image.height || 1;
+        const width = image instanceof HTMLImageElement ? image.naturalWidth || image.width || 1 : image.width || 1;
+        const height = image instanceof HTMLImageElement ? image.naturalHeight || image.height || 1 : image.height || 1;
         const sourceCanvas = createCanvas(width, height);
         const sourceContext = sourceCanvas.getContext('2d');
         if (!sourceContext) throw new Error('Could not create source canvas.');
@@ -372,7 +377,7 @@ export function ImageLayerEditorDialog({
     return () => {
       cancelled = true;
     };
-  }, [layer.imageUrl]);
+  }, [layer.contentRevision, layer.imageUrl]);
 
   useEffect(() => {
     renderComposite(undefined, { before: showBefore });

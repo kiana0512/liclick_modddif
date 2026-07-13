@@ -17,6 +17,14 @@ export type ComfyTextureMapInput = {
   seed?: number;
 };
 
+export type ComfyInpaintInput = {
+  clientGenerationId?: string;
+  projectId?: string;
+  prompt: string;
+  image: ComfyControlFile;
+  seed?: number;
+};
+
 type UiNodeInput = {
   name: string;
   type?: string;
@@ -56,6 +64,7 @@ type ComfyImageOutput = {
 type ActiveComfyJob = {
   cancelled: boolean;
   promptId?: string;
+  baseUrl?: string;
 };
 
 const activeComfyJobs = new Map<string, ActiveComfyJob>();
@@ -76,6 +85,15 @@ const comfyNodeIds = {
   finalRgbSave: 64,
 };
 
+const comfyInpaintNodeIds = {
+  inputImage: 111,
+  positivePrompt: 53,
+  automaticPrompt: 110,
+  automaticPromptDisplay: 95,
+  sampler: 57,
+  finalSave: 9,
+};
+
 const requiredInputPaths = {
   [comfyNodeIds.whiteRender]: 'render/01_white_render.png',
   [comfyNodeIds.objectMask]: 'masks/01_object_mask.png',
@@ -92,7 +110,9 @@ function dataUrlToBuffer(dataUrl: string) {
   const payload = match[3] ?? '';
   return {
     mime,
-    buffer: isBase64 ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf8'),
+    buffer: isBase64
+      ? Buffer.from(payload, 'base64')
+      : Buffer.from(decodeURIComponent(payload), 'utf8'),
   };
 }
 
@@ -107,41 +127,57 @@ function safeFilename(value: string) {
   return `${base}${ext}`;
 }
 
-function comfyUrl(pathname: string, params?: Record<string, string>) {
-  const url = new URL(pathname, `${serverConfig.comfyuiBaseUrl}/`);
+function comfyUrl(
+  pathname: string,
+  params?: Record<string, string>,
+  baseUrl = serverConfig.comfyuiBaseUrl,
+) {
+  const url = new URL(pathname, `${baseUrl}/`);
   if (params) {
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   }
   return url;
 }
 
-async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = 30_000) {
+async function comfyFetch(
+  pathname: string,
+  init?: RequestInit,
+  timeoutMs = 30_000,
+  baseUrl = serverConfig.comfyuiBaseUrl,
+) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(comfyUrl(pathname), { ...init, signal: controller.signal });
+    return await fetch(comfyUrl(pathname, undefined, baseUrl), {
+      ...init,
+      signal: controller.signal,
+    });
   } catch (error) {
     throw new Error(
-      `ComfyUI 后端未启动或无法连接：${serverConfig.comfyuiBaseUrl}。请先启动 8188 端口的 ComfyUI。${error instanceof Error ? ` (${error.message})` : ''}`,
+      `ComfyUI 后端未启动或无法连接：${baseUrl}。请先启动 8188 端口的 ComfyUI。${error instanceof Error ? ` (${error.message})` : ''}`,
     );
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export async function checkComfyuiStatus() {
-  const response = await comfyFetch('/system_stats', { method: 'GET' }, 3000);
+export async function checkComfyuiStatus(baseUrl = serverConfig.comfyuiBaseUrl) {
+  const response = await comfyFetch('/system_stats', { method: 'GET' }, 3000, baseUrl);
   if (!response.ok) throw new Error(`ComfyUI status failed: ${response.status}`);
   return response.json() as Promise<unknown>;
 }
 
-async function getObjectInfo() {
-  const response = await comfyFetch('/object_info', { method: 'GET' }, 30_000);
+async function getObjectInfo(baseUrl = serverConfig.comfyuiBaseUrl) {
+  const response = await comfyFetch('/object_info', { method: 'GET' }, 30_000, baseUrl);
   if (!response.ok) throw new Error(`ComfyUI object_info failed: ${response.status}`);
   return response.json() as Promise<ObjectInfo>;
 }
 
-async function uploadImage(file: ComfyControlFile, subfolder: string) {
+async function uploadImage(
+  file: ComfyControlFile,
+  subfolder: string,
+  baseUrl = serverConfig.comfyuiBaseUrl,
+) {
   const { mime, buffer } = dataUrlToBuffer(file.dataUrl);
   const filename = safeFilename(file.path);
   const form = new FormData();
@@ -149,11 +185,19 @@ async function uploadImage(file: ComfyControlFile, subfolder: string) {
   form.append('type', 'input');
   form.append('subfolder', subfolder);
   form.append('overwrite', 'true');
-  const response = await comfyFetch('/upload/image', { method: 'POST', body: form }, 2 * 60 * 1000);
+  const response = await comfyFetch(
+    '/upload/image',
+    { method: 'POST', body: form },
+    2 * 60 * 1000,
+    baseUrl,
+  );
   const payload = await response.json().catch(() => undefined);
   if (!response.ok) {
     const message =
-      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+      payload &&
+      typeof payload === 'object' &&
+      'error' in payload &&
+      typeof payload.error === 'string'
         ? payload.error
         : `ComfyUI upload failed: ${response.status}`;
     throw new Error(message);
@@ -192,12 +236,30 @@ function assertComfyJobActive(jobId: string) {
 }
 
 async function loadWorkflowTemplate() {
-  const content = await fs.readFile(serverConfig.comfyuiTextureWorkflowPath, 'utf8').catch((error: unknown) => {
-    throw new Error(
-      `无法读取 ComfyUI workflow：${serverConfig.comfyuiTextureWorkflowPath}。${error instanceof Error ? error.message : ''}`,
-    );
-  });
+  const content = await fs
+    .readFile(serverConfig.comfyuiTextureWorkflowPath, 'utf8')
+    .catch((error: unknown) => {
+      throw new Error(
+        `无法读取 ComfyUI workflow：${serverConfig.comfyuiTextureWorkflowPath}。${error instanceof Error ? error.message : ''}`,
+      );
+    });
   return JSON.parse(content) as UiWorkflow;
+}
+
+async function loadInpaintWorkflowTemplate() {
+  const workflowPath = encodeURIComponent(`workflows/${serverConfig.comfyuiInpaintWorkflowName}`);
+  const response = await comfyFetch(
+    `/api/userdata/${workflowPath}`,
+    { method: 'GET' },
+    30_000,
+    serverConfig.comfyuiInpaintBaseUrl,
+  );
+  if (!response.ok) {
+    throw new Error(
+      `无法从 ComfyUI 读取局部重绘 workflow：${serverConfig.comfyuiInpaintWorkflowName} (${response.status})。`,
+    );
+  }
+  return response.json() as Promise<UiWorkflow>;
 }
 
 function composeComfyPositivePrompt(userPrompt: string) {
@@ -227,7 +289,12 @@ function enableNormalControl(workflow: UiWorkflow, nodes: Map<number, UiNode>) {
   workflow.links = workflow.links.filter((link) => link[0] !== 34);
 }
 
-function patchWorkflow(workflow: UiWorkflow, input: ComfyTextureMapInput, uploadedImages: Map<number, string>, jobId: string) {
+function patchWorkflow(
+  workflow: UiWorkflow,
+  input: ComfyTextureMapInput,
+  uploadedImages: Map<number, string>,
+  jobId: string,
+) {
   const nodes = new Map(workflow.nodes.map((node) => [node.id, node]));
   for (const [nodeId, imagePath] of uploadedImages) {
     const node = nodes.get(nodeId);
@@ -239,7 +306,9 @@ function patchWorkflow(workflow: UiWorkflow, input: ComfyTextureMapInput, upload
   if (promptNode) promptNode.widgets_values = [composeComfyPositivePrompt(input.prompt)];
   const samplerNode = nodes.get(comfyNodeIds.sampler);
   if (samplerNode?.widgets_values?.length) {
-    const seed = Number.isFinite(input.seed) ? Math.floor(input.seed ?? 0) : Math.floor(Math.random() * 1_000_000_000);
+    const seed = Number.isFinite(input.seed)
+      ? Math.floor(input.seed ?? 0)
+      : Math.floor(Math.random() * 1_000_000_000);
     samplerNode.widgets_values = [
       seed,
       samplerNode.widgets_values[1] ?? 'fixed',
@@ -252,8 +321,127 @@ function patchWorkflow(workflow: UiWorkflow, input: ComfyTextureMapInput, upload
   }
   for (const nodeId of [comfyNodeIds.finalRgbSave, comfyNodeIds.finalAlphaSave]) {
     const node = nodes.get(nodeId);
-    if (node) node.widgets_values = [`li3d_zimage/web3d_${jobId}/${nodeId === comfyNodeIds.finalRgbSave ? 'final_rgb_4096' : 'final_alpha_4096'}`];
+    if (node)
+      node.widgets_values = [
+        `li3d_zimage/web3d_${jobId}/${nodeId === comfyNodeIds.finalRgbSave ? 'final_rgb_4096' : 'final_alpha_4096'}`,
+      ];
   }
+}
+
+function keepOnlyOutputAncestors(
+  workflow: UiWorkflow,
+  outputNodeId: number,
+  additionalOutputNodeIds: number[] = [],
+) {
+  const requiredNodeIds = new Set<number>([outputNodeId, ...additionalOutputNodeIds]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const link of workflow.links) {
+      if (!requiredNodeIds.has(link[3]) || requiredNodeIds.has(link[1])) continue;
+      requiredNodeIds.add(link[1]);
+      changed = true;
+    }
+  }
+  workflow.nodes.forEach((node) => {
+    if (!requiredNodeIds.has(node.id)) node.mode = 4;
+  });
+}
+
+function patchInpaintWorkflow(
+  workflow: UiWorkflow,
+  input: ComfyInpaintInput,
+  uploadedImage: string,
+  jobId: string,
+) {
+  const nodes = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const imageNode = nodes.get(comfyInpaintNodeIds.inputImage);
+  if (!imageNode)
+    throw new Error(
+      `ComfyUI 局部重绘 workflow 缺少 LoadImage 节点：${comfyInpaintNodeIds.inputImage}`,
+    );
+  imageNode.widgets_values = [uploadedImage, 'image'];
+
+  const automaticPromptNode = nodes.get(comfyInpaintNodeIds.automaticPrompt);
+  if (!automaticPromptNode) {
+    throw new Error(
+      `ComfyUI 局部重绘 workflow 缺少 Qwen3 VL Plus 节点：${comfyInpaintNodeIds.automaticPrompt}`,
+    );
+  }
+  automaticPromptNode.mode = 0;
+  const originalAutomaticPrompt =
+    typeof automaticPromptNode.widgets_values?.[0] === 'string'
+      ? automaticPromptNode.widgets_values[0].trim()
+      : '';
+  const userPrompt = input.prompt.trim();
+  automaticPromptNode.widgets_values = [
+    [
+      originalAutomaticPrompt,
+      userPrompt ? `用户对局部重绘结果的补充要求：${userPrompt}` : '',
+      '请综合图片内容与用户要求，只输出可直接用于图像修复的英文提示词。',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    ...(automaticPromptNode.widgets_values?.slice(1) ?? []),
+  ];
+  const positivePromptNode = nodes.get(comfyInpaintNodeIds.positivePrompt);
+  if (!positivePromptNode) {
+    throw new Error(
+      `ComfyUI 局部重绘 workflow 缺少提示词节点：${comfyInpaintNodeIds.positivePrompt}`,
+    );
+  }
+  const promptInputIndex =
+    positivePromptNode.inputs?.findIndex((nodeInput) => nodeInput.name === 'text') ?? -1;
+  const automaticPromptLink = workflow.links.find(
+    (link) =>
+      link[1] === comfyInpaintNodeIds.automaticPrompt &&
+      link[3] === comfyInpaintNodeIds.positivePrompt &&
+      link[4] === promptInputIndex,
+  );
+  if (promptInputIndex < 0 || !automaticPromptLink) {
+    throw new Error(
+      `ComfyUI 局部重绘 workflow 缺少 Qwen3 VL Plus → Prompt 连线：${comfyInpaintNodeIds.automaticPrompt} → ${comfyInpaintNodeIds.positivePrompt}`,
+    );
+  }
+  positivePromptNode.inputs![promptInputIndex].link = automaticPromptLink[0];
+  const automaticPromptDisplayNode = nodes.get(comfyInpaintNodeIds.automaticPromptDisplay);
+  const automaticPromptDisplayLink = workflow.links.find(
+    (link) =>
+      link[1] === comfyInpaintNodeIds.automaticPrompt &&
+      link[3] === comfyInpaintNodeIds.automaticPromptDisplay,
+  );
+  if (!automaticPromptDisplayNode || !automaticPromptDisplayLink) {
+    throw new Error(
+      `ComfyUI 局部重绘 workflow 缺少 Qwen3 VL Plus → 展示任何连线：${comfyInpaintNodeIds.automaticPrompt} → ${comfyInpaintNodeIds.automaticPromptDisplay}`,
+    );
+  }
+  automaticPromptDisplayNode.mode = 0;
+
+  const samplerNode = nodes.get(comfyInpaintNodeIds.sampler);
+  if (samplerNode?.widgets_values?.length) {
+    const seed = Number.isFinite(input.seed)
+      ? Math.floor(input.seed ?? 0)
+      : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    samplerNode.widgets_values = [
+      seed,
+      samplerNode.widgets_values[1] ?? 'randomize',
+      samplerNode.widgets_values[2] ?? 10,
+      samplerNode.widgets_values[3] ?? 1,
+      samplerNode.widgets_values[4] ?? 'euler',
+      samplerNode.widgets_values[5] ?? 'normal',
+      samplerNode.widgets_values[6] ?? 1,
+    ];
+  }
+
+  const saveNode = nodes.get(comfyInpaintNodeIds.finalSave);
+  if (!saveNode)
+    throw new Error(
+      `ComfyUI 局部重绘 workflow 缺少 SaveImage 节点：${comfyInpaintNodeIds.finalSave}`,
+    );
+  saveNode.widgets_values = [`li3d_inpaint/${jobId}/final`];
+  keepOnlyOutputAncestors(workflow, comfyInpaintNodeIds.finalSave, [
+    comfyInpaintNodeIds.automaticPromptDisplay,
+  ]);
 }
 
 function isBypassed(node: UiNode) {
@@ -294,7 +482,10 @@ function convertWorkflowToApiPrompt(workflow: UiWorkflow, objectInfo: ObjectInfo
     if (!activeNodeIds.has(link[1]) || !activeNodeIds.has(link[3])) continue;
     linksByTarget.set(`${link[3]}:${link[4]}`, link);
   }
-  const prompt: Record<string, { class_type: string; inputs: Record<string, unknown>; _meta?: Record<string, unknown> }> = {};
+  const prompt: Record<
+    string,
+    { class_type: string; inputs: Record<string, unknown>; _meta?: Record<string, unknown> }
+  > = {};
 
   for (const node of activeNodes) {
     const info = objectInfo[node.type];
@@ -330,7 +521,11 @@ function convertWorkflowToApiPrompt(workflow: UiWorkflow, objectInfo: ObjectInfo
   return prompt;
 }
 
-async function queuePrompt(prompt: Record<string, unknown>, clientId: string) {
+async function queuePrompt(
+  prompt: Record<string, unknown>,
+  clientId: string,
+  baseUrl = serverConfig.comfyuiBaseUrl,
+) {
   const response = await comfyFetch(
     '/prompt',
     {
@@ -339,13 +534,17 @@ async function queuePrompt(prompt: Record<string, unknown>, clientId: string) {
       body: JSON.stringify({ client_id: clientId, prompt }),
     },
     60_000,
+    baseUrl,
   );
   const payload = await response.json().catch(() => undefined);
   if (!response.ok) {
     const message = formatComfyPromptError(payload, response.status);
     throw new Error(message);
   }
-  const promptId = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).prompt_id : undefined;
+  const promptId =
+    payload && typeof payload === 'object'
+      ? (payload as Record<string, unknown>).prompt_id
+      : undefined;
   if (typeof promptId !== 'string') throw new Error('ComfyUI 没有返回 prompt_id。');
   return promptId;
 }
@@ -372,20 +571,29 @@ function formatComfyPromptError(payload: unknown, status: number) {
   return parts.filter(Boolean).join('\n') || JSON.stringify(payload);
 }
 
-async function getHistory(promptId: string) {
-  const response = await comfyFetch(`/history/${encodeURIComponent(promptId)}`, { method: 'GET' }, 30_000);
+async function getHistory(promptId: string, baseUrl = serverConfig.comfyuiBaseUrl) {
+  const response = await comfyFetch(
+    `/history/${encodeURIComponent(promptId)}`,
+    { method: 'GET' },
+    30_000,
+    baseUrl,
+  );
   if (!response.ok) throw new Error(`ComfyUI history failed: ${response.status}`);
   return response.json() as Promise<Record<string, unknown>>;
 }
 
-function extractImageOutput(history: Record<string, unknown>, promptId: string) {
+function extractImageOutput(
+  history: Record<string, unknown>,
+  promptId: string,
+  preferredNodeIds: number[] = [comfyNodeIds.finalRgbSave, comfyNodeIds.finalAlphaSave],
+) {
   const item = history[promptId];
   if (!item || typeof item !== 'object') return undefined;
   const outputs = (item as Record<string, unknown>).outputs;
   if (!outputs || typeof outputs !== 'object') return undefined;
   const byNode = outputs as Record<string, unknown>;
-  const preferred = byNode[String(comfyNodeIds.finalRgbSave)] ?? byNode[String(comfyNodeIds.finalAlphaSave)];
-  const candidates = [preferred, ...Object.values(byNode)];
+  const preferred = preferredNodeIds.map((nodeId) => byNode[String(nodeId)]).filter(Boolean);
+  const candidates = [...preferred, ...Object.values(byNode)];
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== 'object') continue;
     const images = (candidate as Record<string, unknown>).images;
@@ -396,25 +604,33 @@ function extractImageOutput(history: Record<string, unknown>, promptId: string) 
   return undefined;
 }
 
-async function waitForOutput(promptId: string, jobId: string) {
+async function waitForOutput(
+  promptId: string,
+  jobId: string,
+  options: { baseUrl?: string; preferredNodeIds?: number[] } = {},
+) {
   const startedAt = Date.now();
   let lastHistory: Record<string, unknown> | undefined;
   while (Date.now() - startedAt < 30 * 60 * 1000) {
     assertComfyJobActive(jobId);
-    lastHistory = await getHistory(promptId);
-    const image = extractImageOutput(lastHistory, promptId);
+    lastHistory = await getHistory(promptId, options.baseUrl);
+    const image = extractImageOutput(lastHistory, promptId, options.preferredNodeIds);
     if (image) return { image, history: lastHistory };
     await new Promise((resolve) => setTimeout(resolve, 2500));
   }
   throw new Error('等待 ComfyUI 生成超时。');
 }
 
-async function downloadComfyImage(image: ComfyImageOutput) {
-  const url = comfyUrl('/view', {
-    filename: image.filename,
-    subfolder: image.subfolder ?? '',
-    type: image.type ?? 'output',
-  });
+async function downloadComfyImage(image: ComfyImageOutput, baseUrl = serverConfig.comfyuiBaseUrl) {
+  const url = comfyUrl(
+    '/view',
+    {
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    },
+    baseUrl,
+  );
   const response = await fetch(url);
   if (!response.ok) throw new Error(`无法读取 ComfyUI 输出图片：${response.status}`);
   const contentType = response.headers.get('content-type')?.split(';')[0] ?? 'image/png';
@@ -423,13 +639,16 @@ async function downloadComfyImage(image: ComfyImageOutput) {
 }
 
 export async function cancelComfyTextureMap(jobId?: string) {
+  const baseUrl = jobId ? activeComfyJobs.get(jobId)?.baseUrl : undefined;
   if (jobId) {
     cancelledComfyJobIds.add(jobId);
     getActiveComfyJob(jobId).cancelled = true;
   }
-  const interrupt = await comfyFetch('/interrupt', { method: 'POST' }, 10_000).catch((error: unknown) => {
-    throw new Error(error instanceof Error ? error.message : 'ComfyUI interrupt failed.');
-  });
+  const interrupt = await comfyFetch('/interrupt', { method: 'POST' }, 10_000, baseUrl).catch(
+    (error: unknown) => {
+      throw new Error(error instanceof Error ? error.message : 'ComfyUI interrupt failed.');
+    },
+  );
   if (!interrupt.ok) throw new Error(`ComfyUI interrupt failed: ${interrupt.status}`);
   return { ok: true, cancelledJobId: jobId };
 }
@@ -439,7 +658,10 @@ export async function generateComfyTextureMap(input: ComfyTextureMapInput, userI
   if (!projectId) throw new Error('ComfyUI 生图需要当前项目 ID。');
   await checkComfyuiStatus();
   const jobId = input.clientGenerationId || `comfy-${randomUUID()}`;
-  activeComfyJobs.set(jobId, { cancelled: cancelledComfyJobIds.has(jobId) });
+  activeComfyJobs.set(jobId, {
+    cancelled: cancelledComfyJobIds.has(jobId),
+    baseUrl: serverConfig.comfyuiBaseUrl,
+  });
   try {
     assertComfyJobActive(jobId);
     const [workflow, objectInfo] = await Promise.all([loadWorkflowTemplate(), getObjectInfo()]);
@@ -463,6 +685,56 @@ export async function generateComfyTextureMap(input: ComfyTextureMapInput, userI
       filename: `${jobId}-comfy-final-rgb.png`,
     });
     if (!saved) throw new Error('当前项目不存在，无法保存 ComfyUI 输出。');
+    return {
+      id: jobId,
+      resultUrl: saved.url,
+      resultUrls: [saved.url],
+      promptId,
+      output: output.image,
+    };
+  } finally {
+    activeComfyJobs.delete(jobId);
+    cancelledComfyJobIds.delete(jobId);
+  }
+}
+
+export async function generateComfyInpaint(input: ComfyInpaintInput, userId: string) {
+  const projectId = input.projectId;
+  if (!projectId) throw new Error('ComfyUI 局部重绘需要当前项目 ID。');
+  if (!input.image?.dataUrl) throw new Error('ComfyUI 局部重绘输入图不能为空。');
+  const baseUrl = serverConfig.comfyuiInpaintBaseUrl;
+  await checkComfyuiStatus(baseUrl);
+  const jobId = input.clientGenerationId || `comfy-inpaint-${randomUUID()}`;
+  activeComfyJobs.set(jobId, { cancelled: cancelledComfyJobIds.has(jobId), baseUrl });
+  try {
+    assertComfyJobActive(jobId);
+    const [workflow, objectInfo] = await Promise.all([
+      loadInpaintWorkflowTemplate(),
+      getObjectInfo(baseUrl),
+    ]);
+    assertComfyJobActive(jobId);
+    const uploadedImage = await uploadImage(input.image, `li3d_inpaint/${jobId}`, baseUrl);
+    assertComfyJobActive(jobId);
+    patchInpaintWorkflow(workflow, input, uploadedImage, jobId);
+    const prompt = convertWorkflowToApiPrompt(workflow, objectInfo);
+    const promptId = await queuePrompt(prompt, `liclick-inpaint-${jobId}`, baseUrl);
+    getActiveComfyJob(jobId).promptId = promptId;
+    const output = await waitForOutput(promptId, jobId, {
+      baseUrl,
+      preferredNodeIds: [comfyInpaintNodeIds.finalSave],
+    });
+    assertComfyJobActive(jobId);
+    const image = await downloadComfyImage(output.image, baseUrl);
+    assertComfyJobActive(jobId);
+    const saved = await saveBinaryAsset({
+      userId,
+      projectId,
+      category: 'generations',
+      mime: image.contentType,
+      buffer: image.buffer,
+      filename: `${jobId}-comfy-inpaint.png`,
+    });
+    if (!saved) throw new Error('当前项目不存在，无法保存 ComfyUI 局部重绘输出。');
     return {
       id: jobId,
       resultUrl: saved.url,

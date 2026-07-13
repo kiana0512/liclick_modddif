@@ -14,7 +14,8 @@ export type ObjectViewPreset =
   | 'back-right'
   | 'left'
   | 'right'
-  | 'top';
+  | 'top'
+  | 'bottom';
 
 export function transformFromObject(object: THREE.Object3D): Transform {
   return {
@@ -92,6 +93,7 @@ export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
   if (preset === 'left') return new THREE.Vector3(-1, 0, 0);
   if (preset === 'right') return new THREE.Vector3(1, 0, 0);
   if (preset === 'top') return new THREE.Vector3(0, 1, 0);
+  if (preset === 'bottom') return new THREE.Vector3(0, -1, 0);
   return new THREE.Vector3(0, 0, 1);
 }
 
@@ -115,6 +117,7 @@ export function setCameraToObjectView(objectId: string | undefined, preset: Obje
   runtime.camera.position.copy(center).add(direction.multiplyScalar(distance));
   runtime.camera.up.set(0, 1, 0);
   if (preset === 'top') runtime.camera.up.set(0, 0, -1);
+  if (preset === 'bottom') runtime.camera.up.set(0, 0, 1);
   runtime.camera.lookAt(center);
 
   if (runtime.camera instanceof THREE.PerspectiveCamera) {
