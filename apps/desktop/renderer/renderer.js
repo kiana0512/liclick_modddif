@@ -3,14 +3,24 @@ const api = window.liclickLauncher;
 const elements = {
   overallDot: document.querySelector('#overallDot'),
   overallText: document.querySelector('#overallText'),
+  primaryLaunch: document.querySelector('#primaryLaunch'),
+  primaryLaunchText: document.querySelector('#primaryLaunch span'),
   openWorkspace: document.querySelector('#openWorkspace'),
+  quickOpenWorkspace: document.querySelector('#quickOpenWorkspace'),
   restartServices: document.querySelector('#restartServices'),
+  stopServices: document.querySelector('#stopServices'),
   openLogs: document.querySelector('#openLogs'),
+  settingsOpenLogs: document.querySelector('#settingsOpenLogs'),
+  openWorkspaceDir: document.querySelector('#openWorkspaceDir'),
+  settingsOpenWorkspaceDir: document.querySelector('#settingsOpenWorkspaceDir'),
+  quitLauncher: document.querySelector('#quitLauncher'),
   workspaceStatus: document.querySelector('#workspaceStatus'),
   webStatus: document.querySelector('#webStatus'),
+  runtimeStatus: document.querySelector('#runtimeStatus'),
   workspaceUrl: document.querySelector('#workspaceUrl'),
   webUrl: document.querySelector('#webUrl'),
   workspaceDir: document.querySelector('#workspaceDir'),
+  settingsWorkspaceDir: document.querySelector('#settingsWorkspaceDir'),
   pidText: document.querySelector('#pidText'),
   runtimeDot: document.querySelector('#runtimeDot'),
   serverDot: document.querySelector('#serverDot'),
@@ -18,6 +28,7 @@ const elements = {
   logOutput: document.querySelector('#logOutput'),
   clearLogs: document.querySelector('#clearLogs'),
   buildText: document.querySelector('#buildText'),
+  sidebarBuild: document.querySelector('#sidebarBuild'),
 };
 
 const statusText = {
@@ -28,19 +39,23 @@ const statusText = {
 };
 
 const emptyLogText = '等待启动日志...';
-
-if (!api) {
-  elements.overallText.textContent = '启动壳通信失败，请重新安装或查看日志。';
-  setTone(elements.overallDot, 'error');
-  elements.logOutput.textContent =
-    '启动壳通信失败：window.liclickLauncher 不存在。\n' +
-    '这通常表示 Electron preload 没有加载成功，按钮和托盘命令将无法工作。\n';
-  elements.logOutput.dataset.empty = 'false';
-  throw new Error('Liclick launcher preload bridge is unavailable.');
-}
+let currentState = {
+  phase: 'idle',
+  message: '启动器已就绪。',
+  workspace: 'unknown',
+  web: 'unknown',
+  workspaceUrl: 'http://127.0.0.1:4617',
+  webUrl: 'http://127.0.0.1:5673',
+  workspaceDir: '-',
+  logs: [],
+};
 
 function setTone(element, tone) {
+  if (!element) return;
   element.dataset.tone = tone;
+  document.querySelectorAll(`[data-mirror="${element.id}"]`).forEach((mirror) => {
+    mirror.dataset.tone = tone;
+  });
 }
 
 function appendLog(line) {
@@ -53,28 +68,38 @@ function appendLog(line) {
 }
 
 function renderState(state) {
-  const running = state.phase === 'running';
-  const starting = state.phase === 'starting';
-  const error = state.phase === 'error';
+  currentState = { ...currentState, ...state };
+  const running = currentState.phase === 'running';
+  const starting = currentState.phase === 'starting';
+  const error = currentState.phase === 'error';
+  const runtimeReady = running || currentState.workspace === 'online' || currentState.web === 'online';
 
-  elements.overallText.textContent = state.message;
+  elements.overallText.textContent = currentState.message;
   setTone(elements.overallDot, running ? 'online' : error ? 'error' : starting ? 'starting' : 'offline');
-  elements.openWorkspace.disabled = state.web !== 'online';
-  elements.workspaceStatus.textContent = statusText[state.workspace] ?? state.workspace;
-  elements.webStatus.textContent = statusText[state.web] ?? state.web;
-  elements.workspaceUrl.textContent = state.workspaceUrl;
-  elements.webUrl.textContent = state.webUrl;
-  elements.workspaceDir.textContent = state.workspaceDir;
-  elements.pidText.textContent = state.launcherPid ? `PID ${state.launcherPid}` : 'PID -';
-  elements.buildText.textContent = state.shellBuild ? `Build ${state.shellBuild}` : '';
+  elements.openWorkspace.disabled = currentState.web !== 'online';
+  elements.workspaceStatus.textContent = statusText[currentState.workspace] ?? currentState.workspace;
+  elements.webStatus.textContent = statusText[currentState.web] ?? currentState.web;
+  elements.runtimeStatus.textContent = error ? '准备失败' : starting && !runtimeReady ? '正在同步' : runtimeReady ? '准备就绪' : '等待启动';
+  elements.workspaceUrl.textContent = currentState.workspaceUrl;
+  elements.webUrl.textContent = currentState.webUrl;
+  elements.workspaceDir.textContent = currentState.workspaceDir;
+  elements.workspaceDir.title = currentState.workspaceDir;
+  elements.settingsWorkspaceDir.textContent = currentState.workspaceDir;
+  elements.settingsWorkspaceDir.title = currentState.workspaceDir;
+  elements.pidText.textContent = currentState.launcherPid ? `PID ${currentState.launcherPid}` : '本地服务';
+  elements.buildText.textContent = currentState.shellBuild ? `/ Build ${currentState.shellBuild}` : '';
+  elements.sidebarBuild.textContent = currentState.shellBuild ? `Build ${currentState.shellBuild}` : 'Launcher';
 
-  setTone(elements.runtimeDot, starting || running ? 'online' : error ? 'error' : 'offline');
-  setTone(elements.serverDot, state.workspace === 'online' ? 'online' : starting ? 'starting' : 'offline');
-  setTone(elements.webDot, state.web === 'online' ? 'online' : starting ? 'starting' : 'offline');
+  setTone(elements.runtimeDot, runtimeReady ? 'online' : error ? 'error' : starting ? 'starting' : 'offline');
+  setTone(elements.serverDot, currentState.workspace === 'online' ? 'online' : starting ? 'starting' : 'offline');
+  setTone(elements.webDot, currentState.web === 'online' ? 'online' : starting ? 'starting' : 'offline');
 
-  if (Array.isArray(state.logs) && (!elements.logOutput.textContent || elements.logOutput.dataset.empty === 'true')) {
-    if (state.logs.length > 0) {
-      elements.logOutput.textContent = `${state.logs.join('\n')}\n`;
+  elements.primaryLaunch.disabled = starting;
+  elements.primaryLaunchText.textContent = starting ? '正在启动...' : running ? '打开工作台' : '一键启动';
+
+  if (Array.isArray(currentState.logs) && (!elements.logOutput.textContent || elements.logOutput.dataset.empty === 'true')) {
+    if (currentState.logs.length > 0) {
+      elements.logOutput.textContent = `${currentState.logs.join('\n')}\n`;
       elements.logOutput.dataset.empty = 'false';
     } else {
       elements.logOutput.textContent = emptyLogText;
@@ -84,20 +109,74 @@ function renderState(state) {
   }
 }
 
-elements.openWorkspace.addEventListener('click', () => api.openWorkspace());
-elements.restartServices.addEventListener('click', () => api.restart());
-elements.openLogs.addEventListener('click', () => api.openLogs());
+function showView(viewName) {
+  document.querySelectorAll('[data-view-target]').forEach((button) => {
+    const active = button.dataset.viewTarget === viewName;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('[data-view]').forEach((view) => {
+    view.classList.toggle('is-active', view.dataset.view === viewName);
+  });
+}
+
+async function safeCall(action, failureMessage) {
+  if (!api) {
+    appendLog(`[launcher] ${failureMessage}：当前不是 Electron 启动器环境。`);
+    return;
+  }
+  try {
+    await action();
+  } catch (error) {
+    appendLog(`[launcher] ${failureMessage}：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+document.querySelectorAll('[data-view-target]').forEach((button) => {
+  button.addEventListener('click', () => showView(button.dataset.viewTarget));
+});
+
+elements.primaryLaunch.addEventListener('click', () => {
+  if (currentState.phase === 'running' || currentState.web === 'online') {
+    void safeCall(() => api.openWorkspace(), '无法打开工作台');
+    return;
+  }
+  void safeCall(() => api.start(), '无法启动服务');
+});
+
+elements.openWorkspace.addEventListener('click', () => void safeCall(() => api.openWorkspace(), '无法打开工作台'));
+elements.quickOpenWorkspace.addEventListener('click', () => {
+  if (currentState.web === 'online') void safeCall(() => api.openWorkspace(), '无法打开工作台');
+  else void safeCall(() => api.start(), '无法启动服务');
+});
+elements.restartServices.addEventListener('click', () => void safeCall(() => api.restart(), '无法重启服务'));
+elements.stopServices.addEventListener('click', () => void safeCall(() => api.stop(), '无法停止服务'));
+elements.openLogs.addEventListener('click', () => void safeCall(() => api.openLogs(), '无法打开日志目录'));
+elements.settingsOpenLogs.addEventListener('click', () => void safeCall(() => api.openLogs(), '无法打开日志目录'));
+elements.openWorkspaceDir.addEventListener('click', () => void safeCall(() => api.openWorkspaceDir(), '无法打开工作目录'));
+elements.settingsOpenWorkspaceDir.addEventListener('click', () => void safeCall(() => api.openWorkspaceDir(), '无法打开工作目录'));
+elements.quitLauncher.addEventListener('click', () => {
+  if (!window.confirm('确定要停止本地服务并彻底退出 LI3D 启动器吗？')) return;
+  void safeCall(() => api.quit(), '无法退出启动器');
+});
 elements.clearLogs.addEventListener('click', () => {
   elements.logOutput.textContent = emptyLogText;
   elements.logOutput.dataset.empty = 'true';
 });
 
-api.onState(renderState);
-api.onLog(appendLog);
-api.getState().then((state) => {
-  renderState(state);
-  if (!elements.logOutput.textContent) {
-    elements.logOutput.textContent = emptyLogText;
-    elements.logOutput.dataset.empty = 'true';
-  }
-});
+if (api) {
+  api.onState(renderState);
+  api.onLog(appendLog);
+  api.getState().then(renderState).catch((error) => {
+    renderState({ phase: 'error', message: '无法读取启动器状态。' });
+    appendLog(`[launcher] 无法读取状态：${error instanceof Error ? error.message : String(error)}`);
+  });
+} else {
+  renderState({
+    phase: 'error',
+    message: '启动壳通信不可用，请通过 EXE 启动器打开。',
+    workspaceDir: 'C:\\Users\\User\\AppData\\Local\\LIclick 3D Texture\\workspace',
+  });
+  elements.logOutput.textContent = '浏览器预览模式：Electron preload 未连接。\n通过 LIclick 3D Texture.exe 启动后，这里会显示实时服务日志。\n';
+  elements.logOutput.dataset.empty = 'false';
+}

@@ -11,7 +11,7 @@ const EditorPage = lazy(() => import('./routes/EditorPage').then((module) => ({ 
 function AppRouteFallback() {
   return (
     <main className="liclick-surface flex min-h-screen items-center justify-center text-sm text-white/58">
-      Loading Liclick 3D Texture...
+      Loading LIclick 3D Texture...
     </main>
   );
 }

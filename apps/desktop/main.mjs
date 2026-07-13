@@ -153,6 +153,10 @@ async function checkHealth() {
       ? '前后端服务已就绪，可以打开工作台。'
       : phase === 'starting'
         ? '正在检查并启动本地服务。'
+        : workspace === 'online'
+          ? '后端已就绪，前端工作台尚未启动。'
+          : web === 'online'
+            ? '前端已响应，正在等待后端服务。'
         : '服务未运行。';
   setState({ workspace, web, phase, message });
 }
@@ -304,6 +308,11 @@ function openWorkspace() {
   shell.openExternal(webUrl);
 }
 
+function openWorkspaceDir() {
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  shell.openPath(workspaceDir);
+}
+
 function autoOpenWorkspace() {
   if (hasAutoOpenedWorkspace) return;
   hasAutoOpenedWorkspace = true;
@@ -324,13 +333,13 @@ function showWindow() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 980,
-    height: 680,
-    minWidth: 520,
-    minHeight: 420,
-    title: 'Liclick 3D Texture',
+    width: 1240,
+    height: 780,
+    minWidth: 760,
+    minHeight: 560,
+    title: 'LIclick 3D Texture',
     icon: iconPath,
-    backgroundColor: '#f4f2ec',
+    backgroundColor: '#0b0b12',
     show: false,
     webPreferences: {
       preload: path.join(appRoot, 'apps', 'desktop', 'preload.cjs'),
@@ -352,7 +361,7 @@ function createWindow() {
     if (!hasShownTrayHint) {
       hasShownTrayHint = true;
       tray?.displayBalloon?.({
-        title: 'Liclick 3D Texture 正在后台运行',
+        title: 'LIclick 3D Texture 正在后台运行',
         content: '启动器已收回到系统托盘。需要彻底关闭时，请右键托盘图标选择“彻底关闭”。',
       });
     }
@@ -362,7 +371,7 @@ function createWindow() {
 function updateTrayMenu() {
   if (!tray) return;
   const status = state.phase === 'running' ? '服务运行中' : state.phase === 'starting' ? '正在启动' : '服务未运行';
-  tray.setToolTip(`Liclick 3D Texture - ${status}`);
+  tray.setToolTip(`LIclick 3D Texture - ${status}`);
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: status, enabled: false },
@@ -397,7 +406,7 @@ if (!gotLock) {
 } else {
   app.on('second-instance', showWindow);
   app.whenReady().then(() => {
-    app.setName('Liclick 3D Texture');
+    app.setName('LIclick 3D Texture');
     Menu.setApplicationMenu(null);
     createWindow();
     createTray();
@@ -423,6 +432,7 @@ ipcMain.handle('launcher:start', () => startServices());
 ipcMain.handle('launcher:restart', () => restartServices());
 ipcMain.handle('launcher:stop', () => stopServices());
 ipcMain.handle('launcher:open-workspace', () => openWorkspace());
+ipcMain.handle('launcher:open-workspace-dir', () => openWorkspaceDir());
 ipcMain.handle('launcher:open-logs', () => openLogsDir());
 ipcMain.handle('launcher:show-window', () => showWindow());
 ipcMain.handle('launcher:quit', () => {

@@ -153,6 +153,7 @@ function Copy-SourceFreeRuntimeToStaging {
   Copy-StagingFile "package.json"
   Copy-StagingFile "pnpm-lock.yaml"
   Copy-StagingFile "pnpm-workspace.yaml"
+  Copy-StagingFile "assets\li3d-brand-mark.png"
   Copy-StagingFile "assets\liclick-icon.png"
   Copy-StagingFile "apps\server\package.json"
   Copy-StagingFile "apps\web\package.json"

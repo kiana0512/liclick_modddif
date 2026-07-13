@@ -1,4 +1,4 @@
-export const APP_NAME = 'Liclick 3D Texture';
+export const APP_NAME = 'LIclick 3D Texture';
 export const INTERNAL_CODE_NAME = 'liclick_modddif';
 export const PROJECT_SCHEMA_VERSION = '0.1.0';
 

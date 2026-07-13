@@ -38,6 +38,7 @@ function serveWorkspaceFile(response: ServerResponse, url: URL) {
   response.writeHead(200, {
     'content-type': mimeTypes[path.extname(absolute).toLowerCase()] ?? 'application/octet-stream',
     'access-control-allow-origin': '*',
+    'cache-control': 'no-cache, no-store, must-revalidate',
   });
   fs.createReadStream(absolute).pipe(response);
   return true;
