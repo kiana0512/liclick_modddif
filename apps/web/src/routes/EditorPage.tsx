@@ -427,6 +427,40 @@ function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
   return targetCanvas;
 }
 
+function matchCameraProjectionToRenderAspect(
+  camera: THREE.Camera,
+  aspect: number,
+  sourceProjectionMatrix?: number[],
+) {
+  if (!Number.isFinite(aspect) || aspect <= 0) return;
+
+  if (camera instanceof THREE.PerspectiveCamera) {
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+    return;
+  }
+
+  if (!(camera instanceof THREE.OrthographicCamera)) return;
+
+  const source = sourceProjectionMatrix?.length === 16 ? sourceProjectionMatrix : camera.projectionMatrix.toArray();
+  const scaleX = source[0];
+  const scaleY = source[5];
+  const hasUsableProjection = Math.abs(scaleX) > Number.EPSILON && Math.abs(scaleY) > Number.EPSILON;
+  const effectiveHalfHeight = hasUsableProjection
+    ? 1 / Math.abs(scaleY)
+    : Math.abs(camera.top - camera.bottom) / Math.max(2 * camera.zoom, Number.EPSILON);
+  const centerX = hasUsableProjection ? -source[12] / scaleX : (camera.left + camera.right) / 2;
+  const centerY = hasUsableProjection ? -source[13] / scaleY : (camera.top + camera.bottom) / 2;
+  const baseHalfHeight = effectiveHalfHeight * camera.zoom;
+  const baseHalfWidth = baseHalfHeight * aspect;
+
+  camera.left = centerX - baseHalfWidth;
+  camera.right = centerX + baseHalfWidth;
+  camera.top = centerY + baseHalfHeight;
+  camera.bottom = centerY - baseHalfHeight;
+  camera.updateProjectionMatrix();
+}
+
 async function restorePersistedLocalRepaintRuntime(projectId: string): Promise<LocalRepaintRuntime | undefined> {
   if (typeof window === 'undefined') return undefined;
   const raw = window.localStorage.getItem(localRepaintPersistenceKey(projectId));
@@ -722,8 +756,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   useEffect(() => {
     if (suppressProjectLayerSyncRef.current > 0) return;
+    const storedProject = useProjectStore.getState().projects.find((item) => item.id === projectId);
+    if (import.meta.hot && layers.length === 0 && (storedProject?.layers.length ?? 0) > 0) {
+      setLayers(storedProject!.layers);
+      return;
+    }
     setProjectLayers(layers);
-  }, [layers, setProjectLayers]);
+  }, [layers, projectId, setLayers, setProjectLayers]);
 
   useEffect(() => {
     void objects;
@@ -851,7 +890,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }
 
   function getViewportThumbnailDataUrl(
-    options: { camera?: SerializedCamera; width?: number; height?: number; cropVisibleContent?: boolean } = {},
+    options: {
+      camera?: SerializedCamera;
+      width?: number;
+      height?: number;
+      cropVisibleContent?: boolean;
+      matchCameraToRenderAspect?: boolean;
+    } = {},
   ) {
     const viewportRuntime = useSceneStore.getState().viewport;
     if (!viewportRuntime) return undefined;
@@ -864,25 +909,44 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const previousClearColor = new THREE.Color();
     viewportRuntime.gl.getClearColor(previousClearColor);
     const previousClearAlpha = viewportRuntime.gl.getClearAlpha();
+    const renderCamera = options.matchCameraToRenderAspect
+      ? options.camera?.type === 'perspective'
+        ? new THREE.PerspectiveCamera(
+            options.camera.fov ?? 45,
+            options.width && options.height ? options.width / options.height : options.camera.aspect,
+            options.camera.near,
+            options.camera.far,
+          )
+        : options.camera?.type === 'orthographic' && !(viewportRuntime.camera instanceof THREE.OrthographicCamera)
+          ? new THREE.OrthographicCamera(-1, 1, 1, -1, options.camera.near, options.camera.far)
+          : viewportRuntime.camera.clone()
+      : viewportRuntime.camera;
     let restoreRenderSize: (() => void) | undefined;
     try {
       if (options.width && options.height) restoreRenderSize = prepareViewportRenderSize(options.width, options.height);
       if (options.camera) {
-        applySerializedCamera(viewportRuntime.camera, options.camera);
+        applySerializedCamera(renderCamera, options.camera);
         if (options.camera.matrixWorld?.length === 16) {
-          viewportRuntime.camera.matrixWorld.fromArray(options.camera.matrixWorld);
-          viewportRuntime.camera.matrixWorld.decompose(
-            viewportRuntime.camera.position,
-            viewportRuntime.camera.quaternion,
-            viewportRuntime.camera.scale,
+          renderCamera.matrixWorld.fromArray(options.camera.matrixWorld);
+          renderCamera.matrixWorld.decompose(
+            renderCamera.position,
+            renderCamera.quaternion,
+            renderCamera.scale,
           );
-          viewportRuntime.camera.matrixWorldInverse.copy(viewportRuntime.camera.matrixWorld).invert();
+          renderCamera.matrixWorldInverse.copy(renderCamera.matrixWorld).invert();
         }
-        if (options.camera.projectionMatrix?.length === 16) {
-          viewportRuntime.camera.projectionMatrix.fromArray(options.camera.projectionMatrix);
-          viewportRuntime.camera.projectionMatrixInverse.copy(viewportRuntime.camera.projectionMatrix).invert();
+        if (options.camera.projectionMatrix?.length === 16 && !options.matchCameraToRenderAspect) {
+          renderCamera.projectionMatrix.fromArray(options.camera.projectionMatrix);
+          renderCamera.projectionMatrixInverse.copy(renderCamera.projectionMatrix).invert();
         }
-        viewportRuntime.camera.updateMatrixWorld(true);
+        renderCamera.updateMatrixWorld(true);
+      }
+      if (options.matchCameraToRenderAspect && options.width && options.height) {
+        matchCameraProjectionToRenderAspect(
+          renderCamera,
+          options.width / options.height,
+          options.camera?.projectionMatrix ?? previousCamera?.projectionMatrix,
+        );
       }
       viewportRuntime.scene.traverse((object) => {
         if (
@@ -897,7 +961,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
       viewportRuntime.scene.background = null;
       viewportRuntime.gl.setClearColor(0x000000, 0);
-      viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
+      viewportRuntime.gl.render(viewportRuntime.scene, renderCamera);
       const thumbnailCanvas = document.createElement('canvas');
       thumbnailCanvas.width = options.width ?? 640;
       thumbnailCanvas.height = options.height ?? 420;
@@ -1800,11 +1864,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
             width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
             height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
             cropVisibleContent: true,
+            matchCameraToRenderAspect: true,
           }) ??
           getViewportThumbnailDataUrl({
             width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
             height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
             cropVisibleContent: true,
+            matchCameraToRenderAspect: true,
           });
       } finally {
         setLayers(previousLayers);

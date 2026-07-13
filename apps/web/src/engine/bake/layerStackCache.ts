@@ -3,7 +3,7 @@ import type { Project } from '@/types/project';
 import type { Layer } from '@/types/layer';
 
 const MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO = 0.001;
-const UV_BAKE_PROTOCOL_VERSION = 4;
+const UV_BAKE_PROTOCOL_VERSION = 5;
 const inFlightLayerStackBakes = new Map<string, Promise<BakedTexture | undefined>>();
 
 export function getVisibleProjectedLayerStack(layers: Layer[], objectId: string) {
@@ -102,6 +102,25 @@ export function findExactLayerStackTexture(
   );
 }
 
+export function findLatestLayerStackPreviewTexture(
+  project: Project | undefined,
+  visibleLayers: Layer[],
+  expectedResolution?: number,
+  objectId?: string,
+) {
+  if (!project || visibleLayers.length === 0) return undefined;
+  const visibleLayerIds = visibleLayers.map((layer) => layer.id);
+  return [...project.bakedTextures]
+    .filter(
+      (texture) =>
+        objectMatches(texture, objectId) &&
+        hasReusableCoverage(texture) &&
+        resolutionMatches(texture, expectedResolution) &&
+        layerIdSetsMatch(getBakedTextureLayerIds(texture), visibleLayerIds),
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
 export function findBaseLayerStackTexture(project: Project | undefined, visibleLayers: Layer[], objectId?: string) {
   if (!project || visibleLayers.length < 2) return undefined;
   const visibleLayerIds = visibleLayers.map((layer) => layer.id);
@@ -168,6 +187,8 @@ export function getProjectedLayerStackSignature(
         layer.id,
         getStableLayerAssetKey(layer.imageUrl),
         getStableLayerAssetKey(layer.maskUrl),
+        layer.maskSpace ?? 'projection',
+        layer.contentRevision ?? 0,
         getStableLayerAssetKey(layer.depthUrl),
         layer.visible ? 1 : 0,
         layer.opacity,

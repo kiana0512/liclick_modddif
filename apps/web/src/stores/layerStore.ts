@@ -79,14 +79,14 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   setLayers: (layers) =>
     set({
       layers: withOrder(layers.map(normalizeLayer)),
-      activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+      activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
     }),
   addEmptyLayer: () => {
     const objectId = useSceneStore.getState().selectedObjectId;
     const layer: Layer = {
       id: uuid(),
       name: 'New layer',
-      type: 'projected',
+      type: 'uv',
       imageUrl: '',
       objectId,
       visible: true,
@@ -155,7 +155,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     };
     set((state) => ({
       layers: withOrder([layer, ...state.layers]),
-      activeProjectedLayerId: state.activeProjectedLayerId,
+      activeProjectedLayerId: layer.id,
     }));
     return layer;
   },
@@ -216,7 +216,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
 
       return {
         layers: withOrder(nextLayers),
-        activeProjectedLayerId: nextLayers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+        activeProjectedLayerId: nextLayers.find((layer) => layer.visible)?.id,
       };
     });
     return mergedLayer!;
@@ -231,8 +231,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       return {
         layers,
         activeProjectedLayerId:
-          layers.find((layer) => layer.id === layerId && layer.visible && layer.type === 'projected')?.id ??
-          layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+          layers.find((layer) => layer.id === layerId && layer.visible)?.id ??
+          layers.find((layer) => layer.visible)?.id,
       };
     }),
   setLayerVisibility: (layerIds, visible) =>
@@ -240,13 +240,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layerIdSet = new Set(layerIds);
       const layers = state.layers.map((layer) => (layerIdSet.has(layer.id) ? { ...layer, visible } : layer));
       const activeStillVisible = layers.some(
-        (layer) => layer.id === state.activeProjectedLayerId && layer.visible && layer.type === 'projected',
+        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
       );
       return {
         layers,
         activeProjectedLayerId: activeStillVisible
           ? state.activeProjectedLayerId
-          : layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+          : layers.find((layer) => layer.visible)?.id,
       };
     }),
   setOpacity: (layerId, opacity) =>
@@ -304,9 +304,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     })),
   setActiveLayer: (layerId) =>
     set((state) => ({
-      activeProjectedLayerId:
-        state.layers.find((layer) => layer.id === layerId && layer.type === 'projected')?.id ??
-        state.activeProjectedLayerId,
+      activeProjectedLayerId: state.layers.find((layer) => layer.id === layerId)?.id ?? state.activeProjectedLayerId,
     })),
   renameLayer: (layerId, name) =>
     set((state) => ({
@@ -387,7 +385,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = state.layers.filter((layer) => layer.id !== layerId);
       return {
         layers: markVisibleStackNeedsRebake(withOrder(layers)),
-        activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+        activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),
   deleteLayers: (layerIds) =>
@@ -396,7 +394,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = state.layers.filter((layer) => !layerIdSet.has(layer.id));
       return {
         layers: markVisibleStackNeedsRebake(withOrder(layers)),
-        activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+        activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),
 }));

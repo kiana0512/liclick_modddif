@@ -10,7 +10,7 @@ import type { Layer } from '@/types/layer';
 import type { ModelBoundingBox, SceneObject, Transform } from '@/types/model';
 import type { Project } from '@/types/project';
 
-type PerfScenario = '100-models' | '100-layers' | '100-layers-unbaked';
+type PerfScenario = '100-models' | '100-layers' | '100-layers-unbaked' | 'paint-layer';
 
 type PerfMetrics = {
   scenario: PerfScenario;
@@ -45,7 +45,9 @@ const boundingBox: ModelBoundingBox = {
 
 function getScenario(): PerfScenario | undefined {
   const value = new URLSearchParams(window.location.search).get('perfScenario');
-  return value === '100-models' || value === '100-layers' || value === '100-layers-unbaked' ? value : undefined;
+  return value === '100-models' || value === '100-layers' || value === '100-layers-unbaked' || value === 'paint-layer'
+    ? value
+    : undefined;
 }
 
 function createImageDataUrl(index: number) {
@@ -298,7 +300,7 @@ export function PerfScenarioLoader() {
       const synthetic = Array.from({ length: modelCount }, (_, index) => createSyntheticModel(index, modelCount));
       const objects = synthetic.map((item) => item.object);
       const models = synthetic.map((item) => item.model);
-      const layers = scenario === '100-models' ? [] : createLayers(objects[0].id, 100);
+      const layers = scenario === '100-models' ? [] : createLayers(objects[0].id, scenario === 'paint-layer' ? 1 : 100);
       const bakedTextures = scenario === '100-layers' ? [createBakedTexture(objects[0].id, layers)] : [];
       const project = createProject(scenario, objects, layers, bakedTextures);
 

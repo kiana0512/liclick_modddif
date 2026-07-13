@@ -2,6 +2,7 @@ import type { SerializedCamera } from './capture';
 
 export type LayerType = 'uv' | 'projected' | 'patch' | 'normal';
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';
+export type LayerMaskSpace = 'projection' | 'uv';
 
 export type LayerAdjustments = {
   hue: number;
@@ -15,6 +16,7 @@ export type Layer = {
   type: LayerType;
   imageUrl: string;
   maskUrl?: string;
+  maskSpace?: LayerMaskSpace;
   depthUrl?: string;
   objectId?: string;
   objectMatrixWorld?: number[];
@@ -31,5 +33,6 @@ export type Layer = {
   bakedAt?: string;
   isBaked?: boolean;
   needsRebake?: boolean;
+  contentRevision?: number;
   createdAt: string;
 };

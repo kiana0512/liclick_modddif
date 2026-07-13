@@ -94,6 +94,7 @@ const fragmentShader = `
   uniform float layerOpacity;
   uniform float layerStrength;
   uniform float useMask;
+  uniform float maskUsesUv;
   uniform float useDepthCheck;
   uniform float enableBackfaceCulling;
   uniform float edgeFeather;
@@ -202,7 +203,8 @@ const fragmentShader = `
     float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
     float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
-    vec4 maskTexel = texture2D(maskMap, uv);
+    vec2 maskUv = mix(uv, vec2(vUv.x, 1.0 - vUv.y), maskUsesUv);
+    vec4 maskTexel = texture2D(maskMap, maskUv);
     float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
     float maskAlpha = mix(1.0, maskValue, useMask);
 
@@ -239,7 +241,7 @@ const fragmentShader = `
   }
 `;
 
-function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthCheck?: boolean; maskUrl?: string; depthUrl?: string }>) {
+function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthCheck?: boolean; maskUrl?: string; maskSpace?: 'projection' | 'uv'; depthUrl?: string }>) {
   const layerCount = layers.length;
   const layerUsesMask = (index: number) => Boolean(layers[index].useMask && layers[index].maskUrl);
   const layerUsesDepth = (index: number) => Boolean(layers[index].useDepthCheck && layers[index].depthUrl);
@@ -281,7 +283,7 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
-      float maskAlpha = ${layerUsesMask(index) ? `dot(texture2D(maskMap${index}, uv).rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
+      float maskAlpha = ${layerUsesMask(index) ? `dot(texture2D(maskMap${index}, ${layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv'}).rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float depthWeight = ${layerUsesDepth(index)
@@ -326,7 +328,7 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
-      float maskAlpha = ${layerUsesMask(index) ? `dot(texture2D(maskMap${index}, uv).rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
+      float maskAlpha = ${layerUsesMask(index) ? `dot(texture2D(maskMap${index}, ${layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv'}).rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float depthWeight = ${layerUsesDepth(index)
@@ -586,6 +588,7 @@ function getProjectionLayerStructureSignature(layers: ProjectionLayerStackInput[
         layer.maskUrl ?? '',
         layer.depthUrl ?? '',
         layer.useMask ? 1 : 0,
+        layer.maskSpace ?? 'projection',
         layer.useDepthCheck ? 1 : 0,
         layer.objectMatrixWorld?.join(',') ?? '',
         getLayerCameraSignature(layer.camera),
@@ -782,6 +785,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       layerOpacity: { value: input.visible ? input.opacity : 0 },
       layerStrength: { value: input.strength ?? 1 },
       useMask: { value: input.useMask && input.maskUrl && maskTexture !== neutralTexture ? 1 : 0 },
+      maskUsesUv: { value: input.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: input.useDepthCheck && input.depthUrl && depthTexture !== neutralTexture ? 1 : 0 },
       enableBackfaceCulling: { value: input.enableBackfaceCulling === false ? 0 : 1 },
       edgeFeather: { value: input.edgeFeather ?? 0.035 },
@@ -838,6 +842,7 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
       layerId: layer.layerId,
       imageUrl: layer.imageUrl,
       maskUrl: layer.maskUrl,
+      maskSpace: layer.maskSpace,
       depthUrl: layer.depthUrl,
       camera: layer.camera,
       objectMatrixWorld: layer.objectMatrixWorld,
@@ -1049,8 +1054,14 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
 const uvOverlayFragmentShader = `
   uniform sampler2D baseMap;
   uniform sampler2D uvOverlayMap;
+  uniform sampler2D liveUvOverlayMap;
+  uniform sampler2D surfaceMaskMap;
   uniform float useBaseMap;
   uniform float useUvOverlayMap;
+  uniform float useLiveUvOverlayMap;
+  uniform float liveUvOverlayOpacity;
+  uniform float useSurfaceMaskMap;
+  uniform float showEmptyUvChecker;
   uniform vec3 baseColor;
   uniform float previewLightingEnabled;
   uniform float ambientLightIntensity;
@@ -1083,12 +1094,20 @@ const uvOverlayFragmentShader = `
     float lambert = computePreviewLight(normal);
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
+    vec4 liveOverlayTexel = texture2D(liveUvOverlayMap, vUv);
+    vec4 surfaceMaskTexel = texture2D(surfaceMaskMap, vec2(vUv.x, 1.0 - vUv.y));
     vec3 baseSurface = mix(baseColor, baseTexel.rgb, useBaseMap);
+    float surfaceMask = mix(1.0, max(surfaceMaskTexel.r, max(surfaceMaskTexel.g, surfaceMaskTexel.b)), useSurfaceMaskMap);
+    baseSurface = mix(baseColor, baseSurface, surfaceMask);
     vec3 uvPreviewBase = computeUvEmptyPreviewColor();
     float overlayAlpha = overlayTexel.a * useUvOverlayMap;
-    vec3 surfaceColor = mix(baseSurface, uvPreviewBase, useUvOverlayMap);
+    float liveOverlayAlpha = liveOverlayTexel.a * useLiveUvOverlayMap * liveUvOverlayOpacity;
+    float hasUvOverlay = max(useUvOverlayMap, useLiveUvOverlayMap);
+    vec3 surfaceColor = mix(baseSurface, uvPreviewBase, hasUvOverlay * showEmptyUvChecker);
     surfaceColor = mix(surfaceColor, overlayTexel.rgb, overlayAlpha);
-    float lighting = mix(lambert, 1.0, useUvOverlayMap * (1.0 - overlayAlpha) * 0.45);
+    surfaceColor = mix(surfaceColor, liveOverlayTexel.rgb, liveOverlayAlpha);
+    float remainingTransparency = (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
+    float lighting = mix(lambert, 1.0, hasUvOverlay * showEmptyUvChecker * remainingTransparency * 0.45);
     gl_FragColor = vec4(linearToSrgb(clamp(surfaceColor * lighting, 0.0, 1.0)), 1.0);
   }
 `;
@@ -1097,9 +1116,13 @@ export function createUvOverlayPreviewMaterial(input: {
   displayMode: string;
   selected: boolean;
   uvOverlayTexture?: THREE.Texture;
+  liveUvOverlayTexture?: THREE.Texture;
+  liveUvOverlayOpacity?: number;
+  surfaceMaskTexture?: THREE.Texture;
   baseTexture?: THREE.Texture;
   baseColor?: THREE.ColorRepresentation;
   previewLighting?: ProjectionPreviewLighting;
+  showEmptyUvChecker?: boolean;
 }) {
   if (input.displayMode === 'normal') return markGeneratedMaterial(new THREE.MeshNormalMaterial());
   if (input.displayMode === 'wire') {
@@ -1117,6 +1140,7 @@ export function createUvOverlayPreviewMaterial(input: {
   neutralTexture.flipY = false;
 
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.liveUvOverlayTexture) prepareUvTexture(input.liveUvOverlayTexture);
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   const previewLighting = getPreviewLighting(input.previewLighting);
 
@@ -1127,8 +1151,14 @@ export function createUvOverlayPreviewMaterial(input: {
     uniforms: {
       baseMap: { value: input.baseTexture ?? neutralTexture },
       uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
+      liveUvOverlayMap: { value: input.liveUvOverlayTexture ?? neutralTexture },
+      surfaceMaskMap: { value: input.surfaceMaskTexture ?? neutralTexture },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+      useLiveUvOverlayMap: { value: input.liveUvOverlayTexture ? 1 : 0 },
+      liveUvOverlayOpacity: { value: THREE.MathUtils.clamp(input.liveUvOverlayOpacity ?? 1, 0, 1) },
+      useSurfaceMaskMap: { value: input.surfaceMaskTexture ? 1 : 0 },
+      showEmptyUvChecker: { value: input.showEmptyUvChecker === false ? 0 : 1 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       previewLightingEnabled: { value: previewLighting.enabled },
       ambientLightIntensity: { value: previewLighting.ambientIntensity },

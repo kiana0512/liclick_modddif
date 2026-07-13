@@ -10,9 +10,10 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, PencilLine, Plus, Scissors, Square, Trash2, Upload, WandSparkles } from 'lucide-react';
+import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, PencilLine, Plus, Scissors, Trash2, Upload, WandSparkles } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
+import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -31,6 +32,24 @@ type RenameState = {
   layerId: string;
   value: string;
 };
+
+function LayerThumbnail({ layer }: { layer: Layer }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const liveCanvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !liveCanvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(liveCanvas, 0, 0, canvas.width, canvas.height);
+  }, [layer.contentRevision, liveCanvas]);
+
+  if (liveCanvas) return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
+  if (!layer.imageUrl) return null;
+  return <img src={layer.imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />;
+}
 
 type VisibilityDrag = {
   visible: boolean;
@@ -83,6 +102,7 @@ export function LayersPanel({
   const deleteLayers = useLayerStore((state) => state.deleteLayers);
   const duplicateLayer = useLayerStore((state) => state.duplicateLayer);
   const renameLayer = useLayerStore((state) => state.renameLayer);
+  const updateLayer = useLayerStore((state) => state.updateLayer);
   const moveLayer = useLayerStore((state) => state.moveLayer);
   const reorderLayer = useLayerStore((state) => state.reorderLayer);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
@@ -529,6 +549,16 @@ export function LayersPanel({
               captureHistory(`复制图层：${describeLayerSelection([menu.layerId])}`);
               duplicateLayer(menu.layerId);
             }}
+            onClearMask={(layer) => {
+              captureHistory(`清空图层蒙版：${layer.name}`);
+              updateLayer(layer.id, {
+                maskUrl: undefined,
+                maskSpace: undefined,
+                contentRevision: (layer.contentRevision ?? 0) + 1,
+                isBaked: false,
+                needsRebake: layer.type === 'projected',
+              });
+            }}
             onImageEdit={(layer) => onLayerImageEdit?.(layer)}
             onImageReplace={beginReplaceLayerImage}
             onLocalRepaint={(layer) => onLayerLocalRepaint?.(layer)}
@@ -629,7 +659,6 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
   const t = useT();
   const layers = useLayerStore((state) => state.layers);
   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
-  const addUvLayer = useLayerStore((state) => state.addUvLayer);
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
@@ -638,11 +667,6 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
   function handleAddLayer() {
     captureHistory('创建空图层');
     addEmptyLayer();
-  }
-
-  function handleAddBlankUvLayer() {
-    captureHistory('创建空 UV 图层');
-    addUvLayer({ name: t('blankUvLayer'), imageUrl: '', objectId: selectedObjectId });
   }
 
   function handleFitCamera() {
@@ -687,9 +711,6 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
       </LayerHeaderButton>
       <LayerHeaderButton title={t('addLayer')} onClick={handleAddLayer}>
         <Plus className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton title={t('createBlankUvLayer')} onClick={handleAddBlankUvLayer}>
-        <Square className="h-4 w-4" />
       </LayerHeaderButton>
       <LayerHeaderButton
         title={t('mergeVisibleProjectedLayersToUvLayer')}
@@ -743,11 +764,7 @@ function LayerRow({
   onDrop: DragEventHandler<HTMLDivElement>;
   onDragEnd: () => void;
 }) {
-  const hasAdjustments =
-    (layer.adjustments?.hue ?? 0) !== 0 ||
-    (layer.adjustments?.saturation ?? 0) !== 0 ||
-    (layer.adjustments?.lightness ?? 0) !== 0 ||
-    (layer.strength ?? 1) !== 1;
+  const hasMask = Boolean(layer.maskUrl);
   const modeLabel = layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
   const opacityLabel = `Layer opacity ${Math.round(layer.opacity * 100)}%. Drag up or down to adjust.`;
 
@@ -797,7 +814,7 @@ function LayerRow({
         {layer.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-white/45" />}
       </button>
       <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-sm" style={checkerStyle}>
-        {layer.imageUrl && <img src={layer.imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />}
+        <LayerThumbnail layer={layer} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-base font-semibold leading-5 text-white">{layer.name}</div>
@@ -814,12 +831,14 @@ function LayerRow({
             onClick={onBlendClick}
             icon={layer.blendMode === 'overlay' ? <LayerOverlayGlyph /> : <LayerBlendGlyph />}
           />
-          <SmallLayerToggle
-            active={hasAdjustments}
-            label="Layer projection mask"
-            onClick={onAdjustClick}
-            icon={<LayerMaskGlyph />}
-          />
+          {hasMask ? (
+            <SmallLayerToggle
+              active
+              label="Has mask"
+              onClick={onAdjustClick}
+              icon={<LayerMaskGlyph />}
+            />
+          ) : null}
         </div>
       </div>
       <button
@@ -913,6 +932,7 @@ function LayerMenu({
   onMoveUp,
   onMoveDown,
   onDuplicate,
+  onClearMask,
   onImageEdit,
   onImageReplace,
   onLocalRepaint,
@@ -931,6 +951,7 @@ function LayerMenu({
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDuplicate: () => void;
+  onClearMask: (layer: Layer) => void;
   onImageEdit: (layer: Layer) => void;
   onImageReplace: (layer: Layer) => void;
   onLocalRepaint: (layer: Layer) => void;
@@ -995,6 +1016,9 @@ function LayerMenu({
           </MenuButton>
           <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
           <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
+          {layer.maskUrl ? (
+            <MenuButton onClick={() => run(() => onClearMask(layer))}>{t('clearMask')}</MenuButton>
+          ) : null}
           {(layer.type === 'projected' || layer.type === 'uv') && (
             <>
               <MenuButton

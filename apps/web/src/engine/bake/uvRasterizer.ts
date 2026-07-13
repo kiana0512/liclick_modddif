@@ -230,6 +230,7 @@ function createSampleScratch(): SampleScratch {
 
 function resolveProjectedSample({
   barycentric,
+  textureUv,
   input,
   w0,
   w1,
@@ -244,6 +245,7 @@ function resolveProjectedSample({
   scratch,
 }: {
   barycentric: { a: number; b: number; c: number };
+  textureUv: { u: number; v: number };
   input: RasterizeInput;
   w0: THREE.Vector3;
   w1: THREE.Vector3;
@@ -292,7 +294,8 @@ function resolveProjectedSample({
   const imageUv = scratch.imageUv;
 
   if (input.maskImage) {
-    const maskSample = sampleImageBilinear(input.maskImage, imageUv.u, imageUv.v);
+    const maskUv = input.layer.maskSpace === 'uv' ? textureUv : imageUv;
+    const maskSample = sampleImageBilinear(input.maskImage, maskUv.u, maskUv.v);
     const maskValue = Math.max(maskSample[0], maskSample[1], maskSample[2]);
     if (maskValue < 24) {
       return { inFrustum: true, maskRejected: true, depthRejected: false, backfaceRejected: false };
@@ -533,6 +536,10 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
             const sample = resolveProjectedSample({
               barycentric,
+              textureUv: {
+                u: uv0.x * barycentric.a + uv1.x * barycentric.b + uv2.x * barycentric.c,
+                v: 1 - (uv0.y * barycentric.a + uv1.y * barycentric.b + uv2.y * barycentric.c),
+              },
               input,
               w0,
               w1,

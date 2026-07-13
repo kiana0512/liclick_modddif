@@ -101,6 +101,7 @@ function shouldDebugUvBake() {
 const vertexShader = `
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
+  varying vec2 vTextureUv;
 
   void main() {
     vec4 worldPosition = modelMatrix * vec4(position, 1.0);
@@ -111,6 +112,7 @@ const vertexShader = `
     );
     vWorldPosition = worldPosition.xyz;
     vWorldNormal = normalize(viewToWorldNormal * normalMatrix * normal);
+    vTextureUv = uv;
     gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0);
   }
 `;
@@ -126,6 +128,7 @@ const fragmentShader = `
   uniform float layerOpacity;
   uniform float layerStrength;
   uniform float useMask;
+  uniform float maskUsesUv;
   uniform float useDepthCheck;
   uniform float enableBackfaceCulling;
   uniform float useCoverageAlpha;
@@ -138,6 +141,7 @@ const fragmentShader = `
   uniform float lightnessShift;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
+  varying vec2 vTextureUv;
 
   float hueToRgb(float p, float q, float t) {
     if (t < 0.0) t += 1.0;
@@ -282,7 +286,8 @@ const fragmentShader = `
     float angleCoverage = smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv);
     if (angleCoverage <= 0.0001) discard;
 
-    vec4 maskTexel = texture2D(maskMap, projectedSampleUv);
+    vec2 maskSampleUv = mix(projectedSampleUv, vTextureUv, maskUsesUv);
+    vec4 maskTexel = texture2D(maskMap, maskSampleUv);
     float maskValue = max(maskTexel.r, max(maskTexel.g, maskTexel.b));
     if (useMask > 0.5 && maskValue < 0.094) discard;
 
@@ -598,6 +603,7 @@ function createLayerMaterial(input: {
       layerOpacity: { value: input.layer.opacity },
       layerStrength: { value: input.layer.strength ?? 1 },
       useMask: { value: input.textures.useMask ? 1 : 0 },
+      maskUsesUv: { value: input.layer.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: input.textures.useDepthCheck ? 1 : 0 },
       enableBackfaceCulling: { value: input.enableBackfaceCulling ? 1 : 0 },
       useCoverageAlpha: { value: input.compositeMode === 'coverage-alpha' ? 1 : 0 },
@@ -863,20 +869,33 @@ function readRenderTargetAlphaToFloat(renderer: THREE.WebGLRenderer, target: THR
   return quality;
 }
 
-function restoreRendererState(
-  renderer: THREE.WebGLRenderer,
-  state: {
-    target: THREE.WebGLRenderTarget | null;
-    clearColor: THREE.Color;
-    clearAlpha: number;
-    viewport: THREE.Vector4;
-    scissor: THREE.Vector4;
-    scissorTest: boolean;
-    autoClear: boolean;
-    xrEnabled: boolean;
-    pixelRatio: number;
-  },
-) {
+type RendererStateSnapshot = {
+  target: THREE.WebGLRenderTarget | null;
+  clearColor: THREE.Color;
+  clearAlpha: number;
+  viewport: THREE.Vector4;
+  scissor: THREE.Vector4;
+  scissorTest: boolean;
+  autoClear: boolean;
+  xrEnabled: boolean;
+  pixelRatio: number;
+};
+
+function captureRendererState(renderer: THREE.WebGLRenderer): RendererStateSnapshot {
+  return {
+    target: renderer.getRenderTarget(),
+    clearColor: renderer.getClearColor(new THREE.Color()),
+    clearAlpha: renderer.getClearAlpha(),
+    viewport: renderer.getViewport(new THREE.Vector4()),
+    scissor: renderer.getScissor(new THREE.Vector4()),
+    scissorTest: renderer.getScissorTest(),
+    autoClear: renderer.autoClear,
+    xrEnabled: renderer.xr.enabled,
+    pixelRatio: renderer.getPixelRatio(),
+  };
+}
+
+function restoreRendererState(renderer: THREE.WebGLRenderer, state: RendererStateSnapshot) {
   renderer.setPixelRatio(state.pixelRatio);
   renderer.setRenderTarget(state.target);
   renderer.setClearColor(state.clearColor, state.clearAlpha);
@@ -912,17 +931,7 @@ export async function bakeProjectedLayerRastersWithGpu(
 
   const colorTarget = createPostprocessTarget(resolution);
   const qualityTarget = createPostprocessTarget(resolution);
-  const previousState = {
-    target: renderer.getRenderTarget(),
-    clearColor: renderer.getClearColor(new THREE.Color()),
-    clearAlpha: renderer.getClearAlpha(),
-    viewport: renderer.getViewport(new THREE.Vector4()),
-    scissor: renderer.getScissor(new THREE.Vector4()),
-    scissorTest: renderer.getScissorTest(),
-    autoClear: renderer.autoClear,
-    xrEnabled: renderer.xr.enabled,
-    pixelRatio: renderer.getPixelRatio(),
-  };
+  let previousState = captureRendererState(renderer);
 
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
   const sourceSizes: GpuLayerSourceSize[] = [];
@@ -1009,7 +1018,11 @@ export async function bakeProjectedLayerRastersWithGpu(
       coveredPixels += layerRaster.coveredPixels;
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
+      // React Three Fiber owns this renderer. Never yield to its animation frame
+      // while the shared renderer still points at the square UV bake target.
+      restoreRendererState(renderer, previousState);
       await new Promise((resolve) => window.setTimeout(resolve, 0));
+      previousState = captureRendererState(renderer);
     }
     bakeScene.scene.clear();
 
@@ -1055,17 +1068,7 @@ export async function bakeProjectedLayerStackWithGpu(
   });
   renderTarget.texture.colorSpace = THREE.NoColorSpace;
 
-  const previousState = {
-    target: renderer.getRenderTarget(),
-    clearColor: renderer.getClearColor(new THREE.Color()),
-    clearAlpha: renderer.getClearAlpha(),
-    viewport: renderer.getViewport(new THREE.Vector4()),
-    scissor: renderer.getScissor(new THREE.Vector4()),
-    scissorTest: renderer.getScissorTest(),
-    autoClear: renderer.autoClear,
-    xrEnabled: renderer.xr.enabled,
-    pixelRatio: renderer.getPixelRatio(),
-  };
+  let previousState = captureRendererState(renderer);
 
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
   let processedTriangles = 0;
@@ -1123,7 +1126,11 @@ export async function bakeProjectedLayerStackWithGpu(
       reportProgress(layer, layerIndex, true);
       material.dispose();
       textures.disposableTextures.forEach((texture) => texture.dispose());
+      // The editor render loop can run at this await. Restore the onscreen target
+      // and viewport first so UV baking can never leak into the main viewport.
+      restoreRendererState(renderer, previousState);
       await new Promise((resolve) => window.setTimeout(resolve, 0));
+      previousState = captureRendererState(renderer);
     }
     bakeScene.scene.clear();
 
