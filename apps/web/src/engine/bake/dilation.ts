@@ -9,25 +9,19 @@ export function dilateImageData(imageData: ImageData, coverage: Uint8Array, iter
     let changed = false;
 
     for (let y = 0; y < height; y += 1) {
+      const rowOffset = y * width;
       for (let x = 0; x < width; x += 1) {
-        const index = y * width + x;
+        const index = rowOffset + x;
         if (currentCoverage[index]) continue;
 
-        const neighbors = [
-          [x - 1, y],
-          [x + 1, y],
-          [x, y - 1],
-          [x, y + 1],
-        ];
+        let sourceIndex = -1;
+        if (x > 0 && currentCoverage[index - 1] > 0) sourceIndex = index - 1;
+        else if (x < width - 1 && currentCoverage[index + 1] > 0) sourceIndex = index + 1;
+        else if (y > 0 && currentCoverage[index - width] > 0) sourceIndex = index - width;
+        else if (y < height - 1 && currentCoverage[index + width] > 0) sourceIndex = index + width;
+        if (sourceIndex < 0) continue;
 
-        const source = neighbors.find(([nx, ny]) => {
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) return false;
-          return currentCoverage[ny * width + nx] > 0;
-        });
-
-        if (!source) continue;
-        const [sx, sy] = source;
-        const sourceOffset = (sy * width + sx) * 4;
+        const sourceOffset = sourceIndex * 4;
         const targetOffset = index * 4;
         nextData[targetOffset] = currentData[sourceOffset];
         nextData[targetOffset + 1] = currentData[sourceOffset + 1];

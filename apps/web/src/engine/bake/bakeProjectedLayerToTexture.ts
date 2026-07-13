@@ -42,6 +42,21 @@ const GPU_COVERAGE_VALIDATION_RESOLUTION = 512 as UvBakeResolution;
 const MIN_GPU_CPU_COVERAGE_IOU = 0.45;
 const MIN_GPU_CPU_COVERAGE_RATIO = 0.55;
 const MAX_GPU_CPU_COLOR_MEAN_ERROR = 0.18;
+const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
+  const color = value / 255;
+  return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
+});
+const SHARPEN_KERNEL = [
+  { x: -1, y: -1, weight: 1 },
+  { x: 0, y: -1, weight: 2 },
+  { x: 1, y: -1, weight: 1 },
+  { x: -1, y: 0, weight: 2 },
+  { x: 0, y: 0, weight: 4 },
+  { x: 1, y: 0, weight: 2 },
+  { x: -1, y: 1, weight: 1 },
+  { x: 0, y: 1, weight: 2 },
+  { x: 1, y: 1, weight: 1 },
+];
 
 function shouldValidateGpuBakeCoverage() {
   try {
@@ -155,17 +170,6 @@ function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
 
   const { width, height, data } = imageData;
   const source = new Uint8ClampedArray(data);
-  const kernel = [
-    { x: -1, y: -1, weight: 1 },
-    { x: 0, y: -1, weight: 2 },
-    { x: 1, y: -1, weight: 1 },
-    { x: -1, y: 0, weight: 2 },
-    { x: 0, y: 0, weight: 4 },
-    { x: 1, y: 0, weight: 2 },
-    { x: -1, y: 1, weight: 1 },
-    { x: 0, y: 1, weight: 2 },
-    { x: 1, y: 1, weight: 1 },
-  ];
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -177,7 +181,7 @@ function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
         let weightedSum = 0;
         let totalWeight = 0;
 
-        for (const sample of kernel) {
+        for (const sample of SHARPEN_KERNEL) {
           const sampleX = Math.max(0, Math.min(width - 1, x + sample.x));
           const sampleY = Math.max(0, Math.min(height - 1, y + sample.y));
           const sampleIndex = sampleY * width + sampleX;
@@ -337,16 +341,15 @@ function insertBlendCandidate(
   }
   if (insertAt < 0) return;
 
+  const colorOffset = pixelIndex * 3;
   for (let slot = TOP_K_BLEND_LAYERS - 1; slot > insertAt; slot -= 1) {
     composite.coverages[slot][pixelIndex] = composite.coverages[slot - 1][pixelIndex];
     composite.qualities[slot][pixelIndex] = composite.qualities[slot - 1][pixelIndex];
-    const targetColorOffset = pixelIndex * 3;
-    composite.colors[slot][targetColorOffset] = composite.colors[slot - 1][targetColorOffset];
-    composite.colors[slot][targetColorOffset + 1] = composite.colors[slot - 1][targetColorOffset + 1];
-    composite.colors[slot][targetColorOffset + 2] = composite.colors[slot - 1][targetColorOffset + 2];
+    composite.colors[slot][colorOffset] = composite.colors[slot - 1][colorOffset];
+    composite.colors[slot][colorOffset + 1] = composite.colors[slot - 1][colorOffset + 1];
+    composite.colors[slot][colorOffset + 2] = composite.colors[slot - 1][colorOffset + 2];
   }
 
-  const colorOffset = pixelIndex * 3;
   composite.coverages[insertAt][pixelIndex] = coverage;
   composite.qualities[insertAt][pixelIndex] = quality;
   composite.colors[insertAt][colorOffset] = layerImage.data[offset];
@@ -371,8 +374,7 @@ function accumulateQualityBlendLayer(
 }
 
 function srgbByteToLinear(value: number) {
-  const color = value / 255;
-  return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
+  return SRGB_BYTE_TO_LINEAR[value] ?? 0;
 }
 
 function linearToSrgbByte(value: number) {
@@ -383,24 +385,26 @@ function linearToSrgbByte(value: number) {
 
 function applyColorConsistency(qualities: number[], colors: number[][]) {
   let totalQuality = 0;
-  const base = [0, 0, 0];
+  let baseRed = 0;
+  let baseGreen = 0;
+  let baseBlue = 0;
   for (let index = 0; index < qualities.length; index += 1) {
     const quality = qualities[index];
     if (quality <= 0) continue;
     totalQuality += quality;
-    base[0] += colors[index][0] * quality;
-    base[1] += colors[index][1] * quality;
-    base[2] += colors[index][2] * quality;
+    baseRed += colors[index][0] * quality;
+    baseGreen += colors[index][1] * quality;
+    baseBlue += colors[index][2] * quality;
   }
   if (totalQuality <= 0) return;
-  base[0] /= totalQuality;
-  base[1] /= totalQuality;
-  base[2] /= totalQuality;
+  baseRed /= totalQuality;
+  baseGreen /= totalQuality;
+  baseBlue /= totalQuality;
 
   for (let index = 0; index < qualities.length; index += 1) {
     if (qualities[index] <= 0) continue;
     const color = colors[index];
-    const diff = Math.hypot(color[0] - base[0], color[1] - base[1], color[2] - base[2]);
+    const diff = Math.hypot(color[0] - baseRed, color[1] - baseGreen, color[2] - baseBlue);
     const consistency = Math.exp(-(diff * diff) / (COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA));
     qualities[index] *= 0.35 + 0.65 * consistency;
   }
@@ -420,9 +424,6 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       coverages[slot] = composite.coverages[slot][pixelIndex];
       qualities[slot] = composite.qualities[slot][pixelIndex];
       if (coverages[slot] > COVERAGE_THRESHOLD) candidateCount += 1;
-      colors[slot][0] = srgbByteToLinear(composite.colors[slot][colorOffset]);
-      colors[slot][1] = srgbByteToLinear(composite.colors[slot][colorOffset + 1]);
-      colors[slot][2] = srgbByteToLinear(composite.colors[slot][colorOffset + 2]);
     }
 
     if (candidateCount === 1) {
@@ -432,6 +433,12 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       output.data[offset + 3] = 255;
       writtenTexels += 1;
       continue;
+    }
+
+    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
+      colors[slot][0] = srgbByteToLinear(composite.colors[slot][colorOffset]);
+      colors[slot][1] = srgbByteToLinear(composite.colors[slot][colorOffset + 1]);
+      colors[slot][2] = srgbByteToLinear(composite.colors[slot][colorOffset + 2]);
     }
 
     applyColorConsistency(qualities, colors);
@@ -453,7 +460,9 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
     }
     if (sumSoft <= 0.000001) continue;
 
-    const final = [0, 0, 0];
+    let finalRed = 0;
+    let finalGreen = 0;
+    let finalBlue = 0;
     for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
       const quality = Math.max(0, qualities[slot]);
       const coverage = Math.max(0, coverages[slot]);
@@ -461,14 +470,14 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       const strongWeight = quality ** BLEND_POWER / Math.max(sumStrong, 0.000001);
       const softWeight = coverage / sumSoft;
       const weight = strongWeight * (1 - RESIDUAL_MIX) + softWeight * RESIDUAL_MIX;
-      final[0] += colors[slot][0] * weight;
-      final[1] += colors[slot][1] * weight;
-      final[2] += colors[slot][2] * weight;
+      finalRed += colors[slot][0] * weight;
+      finalGreen += colors[slot][1] * weight;
+      finalBlue += colors[slot][2] * weight;
     }
 
-    output.data[offset] = linearToSrgbByte(final[0]);
-    output.data[offset + 1] = linearToSrgbByte(final[1]);
-    output.data[offset + 2] = linearToSrgbByte(final[2]);
+    output.data[offset] = linearToSrgbByte(finalRed);
+    output.data[offset + 1] = linearToSrgbByte(finalGreen);
+    output.data[offset + 2] = linearToSrgbByte(finalBlue);
     output.data[offset + 3] = 255;
     writtenTexels += 1;
   }
@@ -502,12 +511,16 @@ function applyOverlayRasters(base: ImageData, coverage: Uint8Array, overlays: Ov
 
 function downsampleCoverage(coverage: Uint8Array, sourceResolution: number, targetResolution: number) {
   const downsampled = new Uint8Array(targetResolution * targetResolution);
+  const targetBySource = new Int32Array(sourceResolution);
+  for (let index = 0; index < sourceResolution; index += 1) {
+    targetBySource[index] = Math.min(targetResolution - 1, Math.floor((index / sourceResolution) * targetResolution));
+  }
   for (let y = 0; y < sourceResolution; y += 1) {
+    const sourceRowOffset = y * sourceResolution;
+    const targetRowOffset = targetBySource[y] * targetResolution;
     for (let x = 0; x < sourceResolution; x += 1) {
-      if (!coverage[y * sourceResolution + x]) continue;
-      const targetX = Math.min(targetResolution - 1, Math.floor((x / sourceResolution) * targetResolution));
-      const targetY = Math.min(targetResolution - 1, Math.floor((y / sourceResolution) * targetResolution));
-      downsampled[targetY * targetResolution + targetX] = 1;
+      if (!coverage[sourceRowOffset + x]) continue;
+      downsampled[targetRowOffset + targetBySource[x]] = 1;
     }
   }
   return downsampled;

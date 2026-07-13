@@ -48,6 +48,15 @@ const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 16;
 const MAX_LOCAL_REPAINT_BRUSH_SIZE = 96;
 const STROKE_CLIP_PADDING = 2;
 
+function createScaledIndexMap(sourceSize: number, targetSize: number) {
+  const map = new Int32Array(targetSize);
+  const maxSourceIndex = Math.max(0, sourceSize - 1);
+  for (let index = 0; index < targetSize; index += 1) {
+    map[index] = Math.min(maxSourceIndex, Math.floor((index / targetSize) * sourceSize));
+  }
+  return map;
+}
+
 function createMaskBrushPattern(context: CanvasRenderingContext2D) {
   const patternCanvas = document.createElement('canvas');
   patternCanvas.width = 24;
@@ -196,15 +205,17 @@ export function LocalRepaintDialog({
     const imageData = clipContext.createImageData(width, height);
     const output = imageData.data;
     const source = objectMask.data;
+    const sourceXByTargetX = createScaledIndexMap(objectMask.width, width);
+    const sourceYByTargetY = createScaledIndexMap(objectMask.height, height);
     for (let y = 0; y < height; y += 1) {
-      const maskY = Math.min(objectMask.height - 1, Math.floor((y / height) * objectMask.height));
+      const maskRowOffset = sourceYByTargetY[y] * objectMask.width;
+      const targetRowOffset = y * width * 4;
       for (let x = 0; x < width; x += 1) {
-        const maskX = Math.min(objectMask.width - 1, Math.floor((x / width) * objectMask.width));
-        const offset = (y * width + x) * 4;
+        const offset = targetRowOffset + x * 4;
         output[offset] = 255;
         output[offset + 1] = 255;
         output[offset + 2] = 255;
-        output[offset + 3] = (source[maskY * objectMask.width + maskX] ?? 0) > 8 ? 255 : 0;
+        output[offset + 3] = (source[maskRowOffset + sourceXByTargetX[x]] ?? 0) > 8 ? 255 : 0;
       }
     }
     clipContext.putImageData(imageData, 0, 0);
@@ -235,12 +246,14 @@ export function LocalRepaintDialog({
       return;
     }
     const imageData = maskContext.createImageData(canvas.width, canvas.height);
+    const sourceXByTargetX = createScaledIndexMap(mask.width, canvas.width);
+    const sourceYByTargetY = createScaledIndexMap(mask.height, canvas.height);
     for (let y = 0; y < canvas.height; y += 1) {
-      const maskY = Math.min(mask.height - 1, Math.floor((y / canvas.height) * mask.height));
+      const maskRowOffset = sourceYByTargetY[y] * mask.width;
+      const targetRowOffset = y * canvas.width * 4;
       for (let x = 0; x < canvas.width; x += 1) {
-        const maskX = Math.min(mask.width - 1, Math.floor((x / canvas.width) * mask.width));
-        const source = mask.data[maskY * mask.width + maskX] ?? 0;
-        const offset = (y * canvas.width + x) * 4;
+        const source = mask.data[maskRowOffset + sourceXByTargetX[x]] ?? 0;
+        const offset = targetRowOffset + x * 4;
         imageData.data[offset] = 255;
         imageData.data[offset + 1] = 255;
         imageData.data[offset + 2] = 255;
@@ -375,13 +388,17 @@ export function LocalRepaintDialog({
     if (!canvas || !context) throw new Error(t('localRepaintMaskMissing'));
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
     const data = new Uint8ClampedArray(canvas.width * canvas.height);
-    for (let index = 0; index < data.length; index += 1) {
-      const x = index % canvas.width;
-      const y = Math.floor(index / canvas.width);
-      const maskX = Math.min(objectMask.width - 1, Math.floor((x / canvas.width) * objectMask.width));
-      const maskY = Math.min(objectMask.height - 1, Math.floor((y / canvas.height) * objectMask.height));
-      const objectAlpha = objectMask.data[maskY * objectMask.width + maskX] ?? 0;
-      data[index] = imageData.data[index * 4 + 3] > 8 && objectAlpha > 8 ? 255 : 0;
+    const sourceXByTargetX = createScaledIndexMap(objectMask.width, canvas.width);
+    const sourceYByTargetY = createScaledIndexMap(objectMask.height, canvas.height);
+    for (let y = 0; y < canvas.height; y += 1) {
+      const maskRowOffset = sourceYByTargetY[y] * objectMask.width;
+      const dataRowOffset = y * canvas.width;
+      const imageRowOffset = dataRowOffset * 4;
+      for (let x = 0; x < canvas.width; x += 1) {
+        const index = dataRowOffset + x;
+        const objectAlpha = objectMask.data[maskRowOffset + sourceXByTargetX[x]] ?? 0;
+        data[index] = imageData.data[imageRowOffset + x * 4 + 3] > 8 && objectAlpha > 8 ? 255 : 0;
+      }
     }
     return { width: canvas.width, height: canvas.height, data };
   }

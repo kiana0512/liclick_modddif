@@ -1,5 +1,21 @@
 import type { MaskBitmap, Rect } from '@/types/localRepaint';
 
+const diskOffsetCache = new Map<number, Array<[number, number]>>();
+
+function getDiskOffsets(radius: number) {
+  const r = Math.max(0, Math.floor(radius));
+  const cached = diskOffsetCache.get(r);
+  if (cached) return cached;
+  const offsets: Array<[number, number]> = [];
+  for (let oy = -r; oy <= r; oy += 1) {
+    for (let ox = -r; ox <= r; ox += 1) {
+      if (ox * ox + oy * oy <= r * r) offsets.push([ox, oy]);
+    }
+  }
+  diskOffsetCache.set(r, offsets);
+  return offsets;
+}
+
 export function createEmptyMask(width: number, height: number, value = 0): MaskBitmap {
   return { width, height, data: new Uint8ClampedArray(width * height).fill(value) };
 }
@@ -46,17 +62,37 @@ export function removeSmallMaskComponents(mask: MaskBitmap, minPixels: number) {
       component.push(current);
       const x = current % mask.width;
       const y = Math.floor(current / mask.width);
-      const neighbors = [
-        x > 0 ? current - 1 : -1,
-        x < mask.width - 1 ? current + 1 : -1,
-        y > 0 ? current - mask.width : -1,
-        y < mask.height - 1 ? current + mask.width : -1,
-      ];
-      for (const neighbor of neighbors) {
-        if (neighbor < 0 || visited[neighbor] || (mask.data[neighbor] ?? 0) === 0) continue;
-        visited[neighbor] = 1;
-        queue[tail] = neighbor;
-        tail += 1;
+      if (x > 0) {
+        const neighbor = current - 1;
+        if (!visited[neighbor] && (mask.data[neighbor] ?? 0) > 0) {
+          visited[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
+      if (x < mask.width - 1) {
+        const neighbor = current + 1;
+        if (!visited[neighbor] && (mask.data[neighbor] ?? 0) > 0) {
+          visited[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
+      if (y > 0) {
+        const neighbor = current - mask.width;
+        if (!visited[neighbor] && (mask.data[neighbor] ?? 0) > 0) {
+          visited[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
+      if (y < mask.height - 1) {
+        const neighbor = current + mask.width;
+        if (!visited[neighbor] && (mask.data[neighbor] ?? 0) > 0) {
+          visited[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
       }
     }
 
@@ -78,24 +114,18 @@ export function buildProtectMask(objectMask: MaskBitmap, editMask: MaskBitmap) {
 
 export function dilateMask(mask: MaskBitmap, radius: number) {
   const output = createEmptyMask(mask.width, mask.height);
-  const r = Math.max(0, Math.floor(radius));
+  const offsets = getDiskOffsets(radius);
   for (let y = 0; y < mask.height; y += 1) {
+    const rowOffset = y * mask.width;
     for (let x = 0; x < mask.width; x += 1) {
-      let value = 0;
-      for (let oy = -r; oy <= r && value === 0; oy += 1) {
+      if (mask.data[rowOffset + x] <= 0) continue;
+      for (let offsetIndex = 0; offsetIndex < offsets.length; offsetIndex += 1) {
+        const [ox, oy] = offsets[offsetIndex];
+        const sx = x + ox;
         const sy = y + oy;
-        if (sy < 0 || sy >= mask.height) continue;
-        for (let ox = -r; ox <= r; ox += 1) {
-          if (ox * ox + oy * oy > r * r) continue;
-          const sx = x + ox;
-          if (sx < 0 || sx >= mask.width) continue;
-          if (mask.data[sy * mask.width + sx] > 0) {
-            value = 255;
-            break;
-          }
-        }
+        if (sx < 0 || sy < 0 || sx >= mask.width || sy >= mask.height) continue;
+        output.data[sy * mask.width + sx] = 255;
       }
-      output.data[y * mask.width + x] = value;
     }
   }
   return output;
