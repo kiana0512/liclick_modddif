@@ -723,7 +723,7 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
 
   return (
     <div className="flex items-center gap-1.5">
-      <LayerHeaderButton title={t('fitCamera')} onClick={handleFitCamera}>
+      <LayerHeaderButton title={`${t('fitCamera')} (F)`} onClick={handleFitCamera}>
         <Focus className="h-4 w-4" />
       </LayerHeaderButton>
       <LayerHeaderButton
@@ -743,7 +743,7 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
       >
         <PaintBucket className="h-4 w-4" />
       </LayerHeaderButton>
-      <LayerHeaderButton title={t('addLayer')} onClick={handleAddLayer}>
+      <LayerHeaderButton title={`${t('addLayer')} (Ctrl+Shift+N)`} onClick={handleAddLayer}>
         <Plus className="h-4 w-4" />
       </LayerHeaderButton>
       <LayerHeaderButton
@@ -1078,6 +1078,7 @@ function LayerMenu({
           )}
           <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
             {t('duplicate')}
+            <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">CTRL D</span>
           </MenuButton>
           {layer.imageUrl && (
             <MenuButton onClick={() => run(() => onDownloadImage(layer))} icon={<Download className="h-4 w-4" />}>

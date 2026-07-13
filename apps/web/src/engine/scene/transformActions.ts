@@ -84,6 +84,34 @@ export function fitCameraToObjectId(objectId?: string) {
   fitCameraToObject(sceneState.viewport, model.group);
 }
 
+/**
+ * Move only the orbit pivot (and translate the camera by the same delta) so the
+ * current framing, distance and viewing direction stay intact. This is the DCC
+ * style "frame/focus selected" behavior needed after an object has moved.
+ */
+export function focusCameraOrbitOnObjectId(objectId?: string) {
+  const sceneState = useSceneStore.getState();
+  const runtime = sceneState.viewport;
+  if (!runtime) return undefined;
+  const model = objectId
+    ? sceneState.importedModels.find((item) => item.objectId === objectId)
+    : sceneState.importedModel;
+  if (!model) return undefined;
+
+  model.group.updateMatrixWorld(true);
+  const boundingBox = getBoundingBoxForObject(model.group);
+  const center = new THREE.Vector3().fromArray(boundingBox.center);
+  const currentTarget = runtime.controls?.target.clone() ?? new THREE.Vector3();
+  const delta = center.clone().sub(currentTarget);
+
+  runtime.camera.position.add(delta);
+  runtime.camera.lookAt(center);
+  runtime.camera.updateMatrixWorld(true);
+  runtime.controls?.target.copy(center);
+  runtime.controls?.update();
+  return model.name;
+}
+
 export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
   if (preset === 'back') return new THREE.Vector3(0, 0, -1);
   if (preset === 'back-left') return new THREE.Vector3(-1, 0, -1).normalize();

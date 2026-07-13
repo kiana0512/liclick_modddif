@@ -72,6 +72,10 @@ import {
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import type { LoadedModel, ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
+import {
+  focusCameraOrbitOnObjectId,
+  setCameraToObjectView,
+} from '@/engine/scene/transformActions';
 import { applySerializedCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { EditorShell } from '@/layouts/EditorShell';
@@ -648,8 +652,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setTransformMode = useSceneStore((state) => state.setTransformMode);
   const paintTool = useSceneStore((state) => state.paintTool);
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
-  const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
-  const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
   const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
   const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
@@ -692,6 +694,16 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     imageEditLayerSnapshot ?? layers.find((item) => item.id === imageEditLayerId);
   const activeBakedTexture = project?.bakedTextures.find(
     (texture) => texture.id === activeLayer?.bakedTextureId,
+  );
+  const activeColorTextureUrl =
+    activeLayer?.type === 'uv' && activeLayer.imageUrl
+      ? activeLayer.imageUrl
+      : activeBakedTexture?.imageUrl;
+  const normalLayer = layers.find(
+    (layer) =>
+      layer.type === 'normal' &&
+      Boolean(layer.imageUrl) &&
+      (!selectedObjectId || !layer.objectId || layer.objectId === selectedObjectId),
   );
   const normalMapTexture = findNormalMapTexture(importedModel);
 
@@ -1897,8 +1909,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }
 
   function handleExportBaseColorDownload() {
-    if (!project || !activeLayer || !activeBakedTexture) return;
-    downloadBaseColorTexture(activeBakedTexture.imageUrl, project, activeLayer);
+    if (!project || !activeLayer || !activeColorTextureUrl) return;
+    downloadBaseColorTexture(activeColorTextureUrl, project, activeLayer);
   }
 
   const restoreExistingLocalRepaintSession = useCallback(() => {
@@ -2813,51 +2825,20 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         );
       },
       'texture-color': () => {
-        if (!activeBakedTexture) throw new Error(t('bakeBaseColorFirst'));
+        if (!activeColorTextureUrl) throw new Error(t('bakeBaseColorFirst'));
         return import('@/engine/export/exportTexture').then(({ exportTextureUrl }) =>
-          exportTextureUrl(project, activeBakedTexture.imageUrl, 'basecolor'),
+          exportTextureUrl(project, activeColorTextureUrl, 'basecolor'),
         );
       },
       'texture-normal': () => {
+        if (normalLayer?.imageUrl) {
+          return import('@/engine/export/exportTexture').then(({ exportTextureUrl }) =>
+            exportTextureUrl(project, normalLayer.imageUrl, 'normal'),
+          );
+        }
         if (!normalMapTexture) throw new Error(t('normalTextureMissing'));
         return import('@/engine/export/exportTexture').then(({ exportNormalTexture }) =>
           exportNormalTexture(project, normalMapTexture),
-        );
-      },
-      'comfy-control-inputs': () => {
-        if (!viewport || !importedModel) throw new Error(t('importModelFirst'));
-        return import('@/engine/export/comfyControlInputExporter').then(
-          ({ exportComfyControlInputs }) =>
-            exportComfyControlInputs({
-              project,
-              viewport,
-              importedModel,
-              selectedObjectId,
-              references,
-              options: {
-                modelId: selectedObjectId ?? importedModel.objectId,
-                viewId: 'current_mvp_view',
-                outputRoot: './exports/comfy_control',
-                width: resolutionToSize[resolution],
-                height: resolutionToSize[resolution],
-                exportCurrentViewOnly: true,
-                includeMaterialReference: true,
-                includeCurrentTextureRender: true,
-                includeMissingMask: true,
-                includeDepth: true,
-                includeNormal: true,
-                includePosition: true,
-                includeEdge: true,
-                includeIdBuffers: true,
-                includeUVBuffers: true,
-                includePoseBuffers: true,
-                includeAngleBuffers: true,
-                includeVisibilityBuffers: true,
-                linearDepth: true,
-                savePng16: true,
-                saveDebugPng8: true,
-              },
-            }).then(() => undefined),
         );
       },
       'viewport-png': () => {
@@ -3166,29 +3147,157 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       );
     }
 
-    function handleInpaintShortcuts(event: KeyboardEvent) {
+    function handleEditorShortcuts(event: KeyboardEvent) {
       if (isEditingText(event.target)) return;
       const key = event.key.toLowerCase();
+      const isPrimaryModifier = event.ctrlKey || event.metaKey;
+      const currentWorkspaceMode = useWorkspaceLayoutStore.getState().mode;
+      const sceneState = useSceneStore.getState();
+      const layerState = useLayerStore.getState();
       const isBrushSizeShortcut =
         event.key === '[' ||
         event.key === ']' ||
         event.code === 'BracketLeft' ||
         event.code === 'BracketRight';
-      if (event.ctrlKey && key === 'd') {
+
+      // Blender view conventions: numpad views, Ctrl for the opposite side.
+      if (event.code === 'Numpad1' || event.code === 'Numpad3' || event.code === 'Numpad7') {
         event.preventDefault();
-        clearPaintMask();
+        const preset =
+          event.code === 'Numpad1'
+            ? event.ctrlKey
+              ? 'back'
+              : 'front'
+            : event.code === 'Numpad3'
+              ? event.ctrlKey
+                ? 'left'
+                : 'right'
+              : event.ctrlKey
+                ? 'bottom'
+                : 'top';
+        setCameraToObjectView(sceneState.selectedObjectId, preset);
         return;
       }
-      if (event.ctrlKey && key === 'i') {
+      if (event.code === 'Numpad5' && !isPrimaryModifier && !event.altKey) {
         event.preventDefault();
-        invertPaintMask();
+        sceneState.setProjectionMode(
+          sceneState.projectionMode === 'perspective' ? 'orthographic' : 'perspective',
+        );
         return;
       }
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      // F / Numpad . keeps the current view but relocates the orbit pivot to the model.
+      if ((key === 'f' || event.code === 'NumpadDecimal') && !isPrimaryModifier && !event.altKey) {
+        event.preventDefault();
+        const modelName = focusCameraOrbitOnObjectId(sceneState.selectedObjectId);
+        pushToast({
+          tone: modelName ? 'success' : 'warning',
+          title: modelName ? '已聚焦当前模型' : t('importModelFirst'),
+          description: modelName ? `旋转中心已定位到 ${modelName}` : undefined,
+          dedupeKey: 'focus-current-model-shortcut',
+        });
+        return;
+      }
+
+      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && event.shiftKey && key === 'd') {
+        event.preventDefault();
+        sceneState.clearPaintMask();
+        return;
+      }
+      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && !event.shiftKey && key === 'd') {
+        event.preventDefault();
+        const activeLayer = layerState.layers.find(
+          (layer) => layer.id === layerState.activeProjectedLayerId,
+        );
+        if (!activeLayer) {
+          pushToast({ tone: 'warning', title: '请先选择要复制的图层' });
+          return;
+        }
+        captureHistory(`复制图层：${activeLayer.name}`);
+        layerState.duplicateLayer(activeLayer.id);
+        return;
+      }
+      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && key === 'i') {
+        event.preventDefault();
+        sceneState.invertPaintMask();
+        return;
+      }
+      if (
+        currentWorkspaceMode === 'texture' &&
+        isPrimaryModifier &&
+        event.shiftKey &&
+        key === 'n'
+      ) {
+        event.preventDefault();
+        captureHistory('创建空图层');
+        layerState.addEmptyLayer();
+        return;
+      }
+      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && isBrushSizeShortcut) {
+        event.preventDefault();
+        const activeLayer = layerState.layers.find(
+          (layer) => layer.id === layerState.activeProjectedLayerId,
+        );
+        if (!activeLayer) return;
+        captureHistory(`${event.code === 'BracketLeft' ? '上移' : '下移'}图层：${activeLayer.name}`);
+        layerState.moveLayer(
+          activeLayer.id,
+          event.key === '[' || event.code === 'BracketLeft' ? 'up' : 'down',
+        );
+        return;
+      }
+      if (currentWorkspaceMode === 'texture' && event.altKey && key === 'h') {
+        event.preventDefault();
+        captureHistory('显示全部图层');
+        layerState.setLayerVisibility(
+          layerState.layers.map((layer) => layer.id),
+          true,
+        );
+        return;
+      }
+      if (isPrimaryModifier || event.altKey) return;
+
+      if (currentWorkspaceMode !== 'texture') {
+        const transformShortcut = {
+          q: 'select',
+          w: 'translate',
+          e: 'rotate',
+          r: 'scale',
+        } as const;
+        const nextTransformMode = transformShortcut[key as keyof typeof transformShortcut];
+        if (nextTransformMode) {
+          event.preventDefault();
+          sceneState.setTransformMode(nextTransformMode);
+        }
+        return;
+      }
+
+      if (key === 'h') {
+        event.preventDefault();
+        const activeLayer = layerState.layers.find(
+          (layer) => layer.id === layerState.activeProjectedLayerId,
+        );
+        if (!activeLayer) return;
+        captureHistory(`切换图层显隐：${activeLayer.name}`);
+        layerState.toggleLayer(activeLayer.id);
+        return;
+      }
+      if (key === 'q') {
+        event.preventDefault();
+        sceneState.setPaintTool('none');
+        sceneState.setTransformMode('select');
+        return;
+      }
+      if (key === 'b' || key === 'e') {
+        event.preventDefault();
+        const nextPaintTool = key === 'b' ? 'brush' : 'eraser';
+        sceneState.setPaintTool(sceneState.paintTool === nextPaintTool ? 'none' : nextPaintTool);
+        return;
+      }
       if (isBrushSizeShortcut) {
         event.preventDefault();
         const direction = event.key === '[' || event.code === 'BracketLeft' ? -1 : 1;
-        const state = useSceneStore.getState();
+        const state = sceneState;
         const stepBrushSize = (value: number, min: number, max: number) => {
           const step = value < 10 ? 1 : value < 60 ? 5 : 10;
           return Math.max(min, Math.min(max, Number((value + direction * step).toFixed(1))));
@@ -3233,21 +3342,21 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return;
       }
       if (key === 'k') {
-        setPaintTool(useSceneStore.getState().paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
+        sceneState.setPaintTool(sceneState.paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
         return;
       }
       if (key === 'o') {
-        setPaintTool(
-          useSceneStore.getState().paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract',
+        sceneState.setPaintTool(
+          sceneState.paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract',
         );
         return;
       }
       if (key === 'i') handleLocalRepaintFromToolbar();
     }
 
-    window.addEventListener('keydown', handleInpaintShortcuts);
-    return () => window.removeEventListener('keydown', handleInpaintShortcuts);
-  }, [clearPaintMask, handleLocalRepaintFromToolbar, invertPaintMask, pushToast, setPaintTool]);
+    window.addEventListener('keydown', handleEditorShortcuts);
+    return () => window.removeEventListener('keydown', handleEditorShortcuts);
+  }, [captureHistory, handleLocalRepaintFromToolbar, pushToast, t]);
 
   const panelDefinitions = (
     [
@@ -3436,14 +3545,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               <Button
                 className="w-full"
                 disabled={!importedModel || !viewport}
-                onClick={() => handleExportAction('comfy-control-inputs')}
-                title={!importedModel ? t('importModelFirst') : undefined}
-              >
-                Comfy Control Inputs
-              </Button>
-              <Button
-                className="w-full"
-                disabled={!importedModel || !viewport}
                 onClick={() => handleExportAction('viewport-png')}
                 title={!importedModel ? t('importModelFirst') : undefined}
               >
@@ -3451,10 +3552,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               </Button>
               <Button
                 className="w-full"
-                disabled={!activeBakedTexture || !activeLayer}
+                disabled={!activeColorTextureUrl || !activeLayer}
                 onClick={handleExportBaseColorDownload}
                 icon={<Download className="h-4 w-4" />}
-                title={!activeBakedTexture ? t('bakeBaseColorFirst') : undefined}
+                title={!activeColorTextureUrl ? t('bakeBaseColorFirst') : undefined}
               >
                 {t('downloadBaseColor')}
               </Button>
@@ -3523,8 +3624,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           <ExportMenu
             canExportScene={Boolean(importedModel && viewport)}
             canExportObject={Boolean(importedModel && selectedObjectId)}
-            canExportColor={Boolean(activeLayer && activeBakedTexture)}
-            canExportNormal={Boolean(normalMapTexture)}
+            canExportColor={Boolean(activeLayer && activeColorTextureUrl)}
+            canExportNormal={Boolean(normalMapTexture || normalLayer?.imageUrl)}
             canRecordTurntable={canRecordTurntableInBrowser()}
             onExport={handleExportAction}
             labels={{
@@ -3540,6 +3641,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               bakeFirst: t('bakeBaseColorFirst'),
               importModelFirst: t('importModelFirst'),
               selectObjectFirst: t('selectObjectFirst'),
+              normalTextureMissing: t('normalTextureMissing'),
               browserUnsupported: t('browserUnsupported'),
             }}
           />

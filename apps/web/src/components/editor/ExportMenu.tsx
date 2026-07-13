@@ -10,7 +10,6 @@ type ExportActionId =
   | `object-${ExportFormat}`
   | 'texture-color'
   | 'texture-normal'
-  | 'comfy-control-inputs'
   | 'viewport-png'
   | 'turntable-webm';
 
@@ -34,6 +33,7 @@ type ExportMenuProps = {
     bakeFirst: string;
     importModelFirst: string;
     selectObjectFirst: string;
+    normalTextureMissing: string;
     browserUnsupported: string;
   };
 };
@@ -83,9 +83,8 @@ export function ExportMenu({
       label: labels.texture,
       icon: Camera,
       rows: [
-        { id: 'comfy-control-inputs', label: 'Comfy Control Inputs', disabled: !canExportObject, disabledReason: labels.selectObjectFirst },
         { id: 'texture-color', label: labels.color, disabled: !canExportColor, disabledReason: labels.bakeFirst },
-        { id: 'texture-normal', label: labels.normal, disabled: !canExportNormal, disabledReason: labels.importModelFirst },
+        { id: 'texture-normal', label: labels.normal, disabled: !canExportNormal, disabledReason: labels.normalTextureMissing },
       ],
     },
     {

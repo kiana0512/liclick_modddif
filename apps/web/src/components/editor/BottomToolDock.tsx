@@ -74,10 +74,10 @@ const tools: Array<{
   labelKey: 'select' | 'move' | 'rotate' | 'scale';
   shortcut: string;
 }> = [
-  { mode: 'select', icon: MousePointer2, labelKey: 'select', shortcut: 'V' },
+  { mode: 'select', icon: MousePointer2, labelKey: 'select', shortcut: 'Q' },
   { mode: 'translate', icon: Move3D, labelKey: 'move', shortcut: 'W' },
-  { mode: 'rotate', icon: Rotate3D, labelKey: 'rotate', shortcut: 'R' },
-  { mode: 'scale', icon: Scaling, labelKey: 'scale', shortcut: 'S' },
+  { mode: 'rotate', icon: Rotate3D, labelKey: 'rotate', shortcut: 'E' },
+  { mode: 'scale', icon: Scaling, labelKey: 'scale', shortcut: 'R' },
 ];
 const selectTool = tools[0];
 
@@ -284,7 +284,7 @@ export function BottomToolDock({
             </label>
           </div>
         )}
-        <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="P">
+        <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="B">
           <button
             type="button"
             className={cn(baseButton, paintTool === 'brush' && activeMaskButton)}
@@ -411,7 +411,7 @@ export function BottomToolDock({
                 onClick={clearPaintMask}
               >
                 <span>{labels.resetInpaintRegion}</span>
-                <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL D</span>
+                <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL SHIFT D</span>
               </button>
               <button
                 type="button"
