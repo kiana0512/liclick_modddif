@@ -233,9 +233,10 @@ const fragmentShader = `
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
-    return mix(hatch, baseSurfaceColor, 0.08);
+    // Projection coverage is an overlay. Pixels that receive no useful
+    // projection must reveal the underlying white/base surface instead of a
+    // black diagnostic hatch.
+    return baseSurfaceColor;
   }
 
   void main() {
@@ -528,9 +529,9 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
-    return mix(hatch, baseSurfaceColor, 0.08);
+    // Keep uncovered areas in the material's base-surface state. A visible
+    // layer with no coverage is equivalent to having no useful texture there.
+    return baseSurfaceColor;
   }
 
   float topQuality0 = 0.0;
@@ -1347,7 +1348,7 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
       liveUvOverlaySaturationShift: { value: input.liveUvOverlaySaturation ?? 0 },
       liveUvOverlayLightnessShift: { value: input.liveUvOverlayLightness ?? 0 },
       useSurfaceMaskMap: { value: input.surfaceMaskTexture ? 1 : 0 },
-      showEmptyUvChecker: { value: input.showEmptyUvChecker === false ? 0 : 1 },
+      showEmptyUvChecker: { value: input.showEmptyUvChecker === true ? 1 : 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       previewLightingEnabled: { value: previewLighting.enabled },
       ambientLightIntensity: { value: previewLighting.ambientIntensity },
@@ -1392,7 +1393,7 @@ export function updateUvOverlayPreviewMaterial(
   uniforms.liveUvOverlaySaturationShift.value = input.liveUvOverlaySaturation ?? 0;
   uniforms.liveUvOverlayLightnessShift.value = input.liveUvOverlayLightness ?? 0;
   uniforms.useSurfaceMaskMap.value = input.surfaceMaskTexture ? 1 : 0;
-  uniforms.showEmptyUvChecker.value = input.showEmptyUvChecker === false ? 0 : 1;
+  uniforms.showEmptyUvChecker.value = input.showEmptyUvChecker === true ? 1 : 0;
   uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   uniforms.previewLightingEnabled.value = previewLighting.enabled;
   uniforms.ambientLightIntensity.value = previewLighting.ambientIntensity;

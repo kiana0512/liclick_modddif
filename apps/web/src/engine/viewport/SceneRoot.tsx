@@ -169,26 +169,6 @@ function getPreviewLighting(input: {
   };
 }
 
-function getPreviewMaterialBase(material: THREE.Material | THREE.Material[] | undefined) {
-  const sourceMaterial = Array.isArray(material)
-    ? material.find(
-        (item) => 'map' in item && item.map instanceof THREE.Texture,
-      ) ?? material[0]
-    : material;
-  if (!sourceMaterial) return {};
-
-  const baseTexture =
-    'map' in sourceMaterial && sourceMaterial.map instanceof THREE.Texture
-      ? sourceMaterial.map
-      : undefined;
-  const baseColor =
-    'color' in sourceMaterial && sourceMaterial.color instanceof THREE.Color
-      ? sourceMaterial.color.clone()
-      : undefined;
-
-  return { baseTexture, baseColor };
-}
-
 function useLoadedPreviewTexture(imageUrl?: string) {
   const [loadedTexture, setLoadedTexture] = useState<THREE.Texture>();
 
@@ -587,15 +567,6 @@ function ImportedModel({
         .sort((a, b) => a.order - b.order),
     [importedObjectId, layers],
   );
-  const managedBaseColorLayer = useMemo(
-    () =>
-      layers.find(
-        (layer) =>
-          layer.role === 'base-color' &&
-          (!layer.objectId || layer.objectId === importedObjectId),
-      ),
-    [importedObjectId, layers],
-  );
   const visibleUvLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleUvLayers),
     [visibleUvLayers],
@@ -742,19 +713,15 @@ function ImportedModel({
       });
 
       for (const child of meshes) {
-        const originalMaterial = (child.userData.sourceMaterial ?? child.userData.originalMaterial) as
-          | THREE.Material
-          | THREE.Material[]
-          | undefined;
-        // Once an imported Base Color has been promoted into the layer stack,
-        // the layer owns its visibility. Keeping the same map on the underlying
-        // material would make the eye toggle appear broken.
-        const previewSourceMaterial = managedBaseColorLayer ? undefined : originalMaterial;
+        // Color in the texture workspace is owned exclusively by the layer
+        // stack. Imported Base Color maps are promoted to ordinary, toggleable
+        // UV layers during import. When none of those layers contributes, the
+        // model must be the neutral white membrane even if the FBX material
+        // itself carries a black diffuse color.
         const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
         const bakedTexture = !projectedLayerInput && visibleStackHasBakedPreview ? loadedBakedTexture ?? existingBakedTexture : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
-        const previewBase = getPreviewMaterialBase(previewSourceMaterial);
         if ((loadedUvTexture || liveTopUvTexture) && !projectedLayerInput) {
           const uvMaterialInput = {
             displayMode,
@@ -781,7 +748,6 @@ function ImportedModel({
               : {}),
             previewLighting,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
-            ...previewBase,
             ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
           };
           if (updateUvOverlayPreviewMaterial(previousMaterial, uvMaterialInput)) continue;
@@ -793,7 +759,6 @@ function ImportedModel({
           child.material = createUvOverlayPreviewMaterial({
             displayMode,
             selected,
-            ...previewBase,
             baseTexture: bakedTexture,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
             previewLighting,
@@ -802,12 +767,12 @@ function ImportedModel({
           continue;
         }
         if (displayMode === 'pbr' && !projectedLayerInput) {
-          child.material = createPbrPreviewMaterial(previewSourceMaterial, selected, bakedTexture);
+          child.material = createPbrPreviewMaterial(undefined, selected, bakedTexture);
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
         if (displayMode === 'flat' && !projectedLayerInput) {
-          child.material = createFlatPreviewMaterial(previewSourceMaterial, selected, bakedTexture);
+          child.material = createFlatPreviewMaterial(undefined, selected, bakedTexture);
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
@@ -815,7 +780,6 @@ function ImportedModel({
           projectedLayerInput &&
           updateProjectedLayerStackMaterial(previousMaterial, {
             ...projectedLayerInput,
-            ...previewBase,
             ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
           })
         ) {
@@ -824,7 +788,6 @@ function ImportedModel({
         const projectedMaterial = projectedLayerInput
           ? await createProjectedLayerStackMaterial({
               ...projectedLayerInput,
-              ...previewBase,
               ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
             })
           : undefined;
@@ -855,7 +818,6 @@ function ImportedModel({
     importedModel,
     loadedBakedTexture,
     loadedUvTexture,
-    managedBaseColorLayer,
     liveTopUvLayer,
     liveTopUvTexture,
     liveSurfaceMaskTexture,
