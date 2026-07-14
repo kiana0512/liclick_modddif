@@ -35,6 +35,7 @@ type LocalRepaintDialogProps = {
 type CanvasPoint = {
   x: number;
   y: number;
+  pressure: number;
 };
 
 type CanvasRect = {
@@ -47,6 +48,12 @@ type CanvasRect = {
 const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 16;
 const MAX_LOCAL_REPAINT_BRUSH_SIZE = 96;
 const STROKE_CLIP_PADDING = 2;
+
+function getPointerPressure(event: Pick<globalThis.PointerEvent, 'pointerType' | 'pressure'>) {
+  if (event.pointerType !== 'pen') return 1;
+  const pressure = Number.isFinite(event.pressure) ? event.pressure : 0.5;
+  return Math.max(0.02, Math.min(1, pressure || 0.02));
+}
 
 function createScaledIndexMap(sourceSize: number, targetSize: number) {
   const map = new Int32Array(targetSize);
@@ -100,7 +107,9 @@ export function LocalRepaintDialog({
   const objectClipCanvasRef = useRef<HTMLCanvasElement>();
   const maskBrushPatternRef = useRef<string | CanvasPattern>();
   const drawingRef = useRef(false);
+  const activePointerIdRef = useRef<number>();
   const lastPointRef = useRef<CanvasPoint>();
+  const strokeToolRef = useRef<'brush' | 'erase'>();
   const initialMaskAppliedRef = useRef(false);
   const [tool, setTool] = useState<'brush' | 'erase'>('brush');
   const [brushSize, setBrushSize] = useState(DEFAULT_LOCAL_REPAINT_BRUSH_SIZE);
@@ -124,7 +133,20 @@ export function LocalRepaintDialog({
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) return;
       if (event.key === 'Escape') onCancel();
+      else if (event.key.toLowerCase() === 'b') setTool('brush');
+      else if (event.key.toLowerCase() === 'e') setTool('erase');
+      else if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
+        event.preventDefault();
+        const direction = event.code === 'BracketLeft' ? -1 : 1;
+        setBrushSize((value) => Math.max(2, Math.min(MAX_LOCAL_REPAINT_BRUSH_SIZE, value + direction * 2)));
+      }
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
@@ -330,11 +352,15 @@ export function LocalRepaintDialog({
     };
   }
 
-  function paintAt(event: Pick<PointerEvent<HTMLCanvasElement>, 'clientX' | 'clientY'>) {
+  function paintAt(
+    event: Pick<globalThis.PointerEvent, 'clientX' | 'clientY' | 'pointerType' | 'pressure'>,
+    strokeTool: 'brush' | 'erase',
+  ) {
     const canvas = canvasRef.current;
-    const point = getCanvasPoint(event);
+    const canvasPoint = getCanvasPoint(event);
+    const point = canvasPoint ? { ...canvasPoint, pressure: getPointerPressure(event) } : undefined;
     if (!canvas || !point) return;
-    if (tool === 'brush' && !isPointOnObject(point)) {
+    if (strokeTool === 'brush' && !isPointOnObject(point)) {
       lastPointRef.current = undefined;
       return;
     }
@@ -343,24 +369,34 @@ export function LocalRepaintDialog({
     const logicalCanvas = getLogicalMaskCanvas(canvas.width, canvas.height);
     const logicalContext = logicalCanvas.getContext('2d');
     const previousPoint = lastPointRef.current;
-    const strokeBounds = getStrokeBounds(point, previousPoint, brushSize);
+    const pressureSize = (pressure: number) => brushSize * (0.1 + Math.pow(pressure, 0.72) * 0.9);
+    const strokeSize = Math.max(pressureSize(point.pressure), pressureSize(previousPoint?.pressure ?? point.pressure));
+    const strokeBounds = getStrokeBounds(point, previousPoint, strokeSize);
     const maskBrush = getMaskBrushPattern(context);
     const drawStroke = (targetContext: CanvasRenderingContext2D, fillStyle: string | CanvasPattern) => {
       targetContext.save();
-      targetContext.globalCompositeOperation = tool === 'erase' ? 'destination-out' : 'source-over';
-      targetContext.strokeStyle = fillStyle;
+      targetContext.globalCompositeOperation = strokeTool === 'erase' ? 'destination-out' : 'source-over';
       targetContext.fillStyle = fillStyle;
-      targetContext.lineWidth = brushSize;
-      targetContext.lineCap = 'round';
-      targetContext.lineJoin = 'round';
       if (previousPoint) {
-        targetContext.beginPath();
-        targetContext.moveTo(previousPoint.x, previousPoint.y);
-        targetContext.lineTo(point.x, point.y);
-        targetContext.stroke();
+        const distance = Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y);
+        const spacing = Math.max(0.75, Math.min(pressureSize(previousPoint.pressure), pressureSize(point.pressure)) * 0.2);
+        const steps = Math.max(1, Math.ceil(distance / spacing));
+        for (let index = 0; index <= steps; index += 1) {
+          const ratio = index / steps;
+          const pressure = previousPoint.pressure + (point.pressure - previousPoint.pressure) * ratio;
+          targetContext.beginPath();
+          targetContext.arc(
+            previousPoint.x + (point.x - previousPoint.x) * ratio,
+            previousPoint.y + (point.y - previousPoint.y) * ratio,
+            pressureSize(pressure) / 2,
+            0,
+            Math.PI * 2,
+          );
+          targetContext.fill();
+        }
       } else {
         targetContext.beginPath();
-        targetContext.arc(point.x, point.y, brushSize / 2, 0, Math.PI * 2);
+        targetContext.arc(point.x, point.y, pressureSize(point.pressure) / 2, 0, Math.PI * 2);
         targetContext.fill();
       }
       targetContext.restore();
@@ -368,7 +404,7 @@ export function LocalRepaintDialog({
     drawStroke(context, maskBrush);
     if (logicalContext) drawStroke(logicalContext, '#ffffff');
     lastPointRef.current = point;
-    if (tool === 'brush') clipMaskToObject(strokeBounds);
+    if (strokeTool === 'brush') clipMaskToObject(strokeBounds);
   }
 
   function clearMask() {
@@ -446,7 +482,15 @@ export function LocalRepaintDialog({
 
   function paintPointerEventBatch(event: PointerEvent<HTMLCanvasElement>) {
     const nativeEvents = event.nativeEvent.getCoalescedEvents?.() ?? [event.nativeEvent];
-    nativeEvents.forEach((nativeEvent) => paintAt(nativeEvent));
+    const events = [...nativeEvents];
+    const finalEvent = events[events.length - 1];
+    if (
+      !finalEvent ||
+      finalEvent.clientX !== event.nativeEvent.clientX ||
+      finalEvent.clientY !== event.nativeEvent.clientY
+    ) events.push(event.nativeEvent);
+    const strokeTool = strokeToolRef.current ?? tool;
+    events.forEach((nativeEvent) => paintAt(nativeEvent, strokeTool));
   }
 
   const modeLabel = mode === 'edit_layer_image' ? t('localRepaintModeLayer') : t('localRepaintModeView');
@@ -473,25 +517,52 @@ export function LocalRepaintDialog({
           {!previewUrl && (
             <canvas
               ref={canvasRef}
-              className={cn('absolute origin-center cursor-crosshair', isSubmitting && 'pointer-events-none opacity-70')}
+              className={cn('absolute touch-none select-none origin-center cursor-crosshair', isSubmitting && 'pointer-events-none opacity-70')}
               style={{ ...paintSurfaceStyle, transform: `scale(${viewportRepairZoom})` }}
               onPointerDown={(event) => {
+                if (event.pointerType === 'touch' || activePointerIdRef.current !== undefined) return;
+                event.preventDefault();
                 event.currentTarget.setPointerCapture(event.pointerId);
+                activePointerIdRef.current = event.pointerId;
                 drawingRef.current = true;
                 lastPointRef.current = undefined;
+                strokeToolRef.current =
+                  event.pointerType === 'pen' && (event.button === 2 || event.button === 5)
+                    ? 'erase'
+                    : tool;
                 paintPointerEventBatch(event);
               }}
               onPointerMove={(event) => {
-                if (drawingRef.current) paintPointerEventBatch(event);
+                if (activePointerIdRef.current !== event.pointerId) return;
+                if (drawingRef.current) {
+                  event.preventDefault();
+                  paintPointerEventBatch(event);
+                }
               }}
               onPointerUp={(event) => {
+                if (activePointerIdRef.current !== event.pointerId) return;
+                if (drawingRef.current) paintPointerEventBatch(event);
                 drawingRef.current = false;
                 lastPointRef.current = undefined;
-                event.currentTarget.releasePointerCapture(event.pointerId);
+                strokeToolRef.current = undefined;
+                activePointerIdRef.current = undefined;
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
               }}
-              onPointerCancel={() => {
+              onPointerCancel={(event) => {
+                if (activePointerIdRef.current !== event.pointerId) return;
                 drawingRef.current = false;
                 lastPointRef.current = undefined;
+                strokeToolRef.current = undefined;
+                activePointerIdRef.current = undefined;
+              }}
+              onLostPointerCapture={(event) => {
+                if (activePointerIdRef.current !== event.pointerId) return;
+                drawingRef.current = false;
+                lastPointRef.current = undefined;
+                strokeToolRef.current = undefined;
+                activePointerIdRef.current = undefined;
               }}
             />
           )}

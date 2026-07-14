@@ -137,6 +137,7 @@ type ViewportTelemetrySnapshot = {
 
 type StrokeTelemetrySnapshot = {
   endReason: 'pointerup' | 'pointercancel' | 'effect-cleanup';
+  pointerType: string;
   durationMs: number;
   pointerEvents: number;
   coalescedEvents: number;
@@ -145,6 +146,8 @@ type StrokeTelemetrySnapshot = {
   misses: number;
   continuityBreaks: number;
   maxPointerGapPx: number;
+  minPressure: number;
+  maxPressure: number;
 };
 
 let lastStrokeTelemetry: StrokeTelemetrySnapshot | undefined;
@@ -790,7 +793,24 @@ type PaintStrokeDraft = {
   localRepaintSource?: LocalRepaintProjectionSource;
 };
 
-type ClientPoint = { x: number; y: number };
+type ClientPoint = { x: number; y: number; pressure: number };
+
+function getPointerPressure(event: Pick<globalThis.PointerEvent, 'pointerType' | 'pressure'>) {
+  if (event.pointerType !== 'pen') return 1;
+  const pressure = Number.isFinite(event.pressure) ? event.pressure : 0.5;
+  return Math.max(0.02, Math.min(1, pressure || 0.02));
+}
+
+function getPressureSizeScale(pressure: number) {
+  return 0.1 + Math.pow(THREE.MathUtils.clamp(pressure, 0.02, 1), 0.72) * 0.9;
+}
+
+function scaleBrushTransform(brush: BrushStampTransform, scale: number): BrushStampTransform {
+  return {
+    axisX: brush.axisX.clone().multiplyScalar(scale),
+    axisY: brush.axisY.clone().multiplyScalar(scale),
+  };
+}
 
 function resampleClientPath(
   start: ClientPoint | undefined,
@@ -843,6 +863,11 @@ function resampleClientPath(
     samples.push({
       x: THREE.MathUtils.lerp(points[segmentIndex].x, points[segmentIndex + 1].x, ratio),
       y: THREE.MathUtils.lerp(points[segmentIndex].y, points[segmentIndex + 1].y, ratio),
+      pressure: THREE.MathUtils.lerp(
+        points[segmentIndex].pressure,
+        points[segmentIndex + 1].pressure,
+        ratio,
+      ),
     });
   }
   return { samples, maxGapPx };
@@ -1286,7 +1311,8 @@ function SurfacePaintOverlay() {
   const isPaintingRef = useRef(false);
   const lastUvRef = useRef<THREE.Vector2>();
   const lastSampleRef = useRef<UvPaintSample>();
-  const lastPointerClientRef = useRef<{ x: number; y: number }>();
+  const lastPointerClientRef = useRef<ClientPoint>();
+  const strokePaintToolRef = useRef<'brush' | 'eraser'>();
   const pendingPaintTargetsRef = useRef<ClientPoint[]>([]);
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
@@ -2293,7 +2319,22 @@ function SurfacePaintOverlay() {
   }, []);
 
   const paintAt = useCallback(
-    (result: UvPaintHit) => {
+    (result: UvPaintHit, pressure = 1, strokePaintTool = paintTool) => {
+      const pressureSizeScale = getPressureSizeScale(pressure);
+      const textureRadius = result.textureRadius * pressureSizeScale;
+      // Ordinary texture paint only needs the scalar radius. Avoid allocating
+      // Vector2 clones for its high-frequency path; transformed footprints are
+      // reserved for the surface-aware mask tools that actually consume them.
+      const usesSurfaceBrush =
+        strokePaintTool === 'inpaint-add' ||
+        strokePaintTool === 'inpaint-subtract' ||
+        strokePaintTool === 'inpaint-apply';
+      const uvBrush = usesSurfaceBrush
+        ? scaleBrushTransform(result.uvBrush, pressureSizeScale)
+        : result.uvBrush;
+      const screenBrush = usesSurfaceBrush
+        ? scaleBrushTransform(result.screenBrush, pressureSizeScale)
+        : result.screenBrush;
       const layer = getUvPaintLayer(result.model);
       if (isInpaintMode && result.hit.object instanceof THREE.Mesh) {
         ensureOverlayForMesh(layer, result.hit.object);
@@ -2310,7 +2351,7 @@ function SurfacePaintOverlay() {
         });
       }
 
-      if (paintTool === 'brush') {
+      if (strokePaintTool === 'brush') {
         if (result.hit.object instanceof THREE.Mesh)
           ensurePaintPreviewOverlayForMesh(layer, result.hit.object);
         const bounds = drawBrushSegment(
@@ -2318,7 +2359,7 @@ function SurfacePaintOverlay() {
           layer.paintPreviewTexture,
           fromUv,
           result.uv,
-          result.textureRadius,
+          textureRadius,
           paintToolSettings.color,
           'source-over',
           100,
@@ -2326,13 +2367,13 @@ function SurfacePaintOverlay() {
         if (strokeDraftRef.current?.target === 'paint') {
           strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
         }
-      } else if (paintTool === 'eraser') {
+      } else if (strokePaintTool === 'eraser') {
         const bounds = drawBrushSegment(
           layer.paintPreviewContext,
           layer.paintPreviewTexture,
           fromUv,
           result.uv,
-          result.textureRadius,
+          textureRadius,
           '#ffffff',
           'source-over',
           paintToolSettings.eraserHardness,
@@ -2341,13 +2382,13 @@ function SurfacePaintOverlay() {
         if (strokeDraftRef.current?.target === 'paint') {
           strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
         }
-      } else if (paintTool === 'inpaint-add') {
+      } else if (strokePaintTool === 'inpaint-add') {
         const bounds = drawSurfaceBrushSegment(
           layer.maskContext,
           layer.maskTexture,
           fromUv,
           result.uv,
-          result.uvBrush,
+          uvBrush,
           '#ffffff',
           'source-over',
           'uv',
@@ -2357,7 +2398,7 @@ function SurfacePaintOverlay() {
           undefined,
           fromScreenUv,
           result.screenUv,
-          result.screenBrush,
+          screenBrush,
           '#ffffff',
           'source-over',
           'screen',
@@ -2371,13 +2412,13 @@ function SurfacePaintOverlay() {
         }
         maskDirtyRef.current = true;
         maskHasContentRef.current = true;
-      } else if (paintTool === 'inpaint-subtract') {
+      } else if (strokePaintTool === 'inpaint-subtract') {
         const bounds = drawSurfaceBrushSegment(
           layer.maskContext,
           layer.maskTexture,
           fromUv,
           result.uv,
-          result.uvBrush,
+          uvBrush,
           '#000000',
           'destination-out',
           'uv',
@@ -2387,7 +2428,7 @@ function SurfacePaintOverlay() {
           undefined,
           fromScreenUv,
           result.screenUv,
-          result.screenBrush,
+          screenBrush,
           '#ffffff',
           'destination-out',
           'screen',
@@ -2400,7 +2441,7 @@ function SurfacePaintOverlay() {
           );
         }
         maskDirtyRef.current = true;
-      } else if (paintTool === 'inpaint-apply') {
+      } else if (strokePaintTool === 'inpaint-apply') {
         const allowedMask = localRepaintAllowedMaskRef.current;
         if (
           !localRepaintProjectionSource ||
@@ -2418,7 +2459,7 @@ function SurfacePaintOverlay() {
           undefined,
           fromScreenUv,
           result.screenUv,
-          result.screenBrush,
+          screenBrush,
           '#ffffff',
           'source-over',
           'screen',
@@ -2440,7 +2481,7 @@ function SurfacePaintOverlay() {
               uv: result.uv.clone(),
               screenUv: result.screenUv.clone(),
               point: result.hit.point.clone(),
-              screenBrushRadiusPx: result.screenBrushRadiusPx,
+              screenBrushRadiusPx: result.screenBrushRadiusPx * pressureSizeScale,
             }
           : undefined;
     },
@@ -2487,7 +2528,7 @@ function SurfacePaintOverlay() {
   }, [isLocalRepaintApplyMode, setPaintMaskDataUrl]);
 
   const beginStrokeHistory = useCallback(
-    (result: UvPaintHit) => {
+    (result: UvPaintHit, strokePaintTool = paintTool) => {
       const layer = getUvPaintLayer(result.model);
       const target = isInpaintMode
         ? 'mask'
@@ -2538,7 +2579,7 @@ function SurfacePaintOverlay() {
         layer,
         target,
         paintOperation:
-          target === 'paint' && paintTool === 'eraser'
+          target === 'paint' && strokePaintTool === 'eraser'
             ? 'eraser'
             : target === 'paint'
               ? 'brush'
@@ -2968,7 +3009,7 @@ function SurfacePaintOverlay() {
           continue;
         }
         if (telemetry) telemetry.hits += 1;
-        paintAt(result);
+        paintAt(result, point.pressure, strokePaintToolRef.current ?? paintTool);
         latestResult = result;
       }
       const finalTarget = targets[targets.length - 1];
@@ -2980,6 +3021,7 @@ function SurfacePaintOverlay() {
       if (!telemetry) return;
       const snapshot: StrokeTelemetrySnapshot = {
         endReason,
+        pointerType: telemetry.pointerType,
         durationMs: performance.now() - telemetry.startedAt,
         pointerEvents: telemetry.pointerEvents,
         coalescedEvents: telemetry.coalescedEvents,
@@ -2988,6 +3030,8 @@ function SurfacePaintOverlay() {
         misses: telemetry.misses,
         continuityBreaks: telemetry.continuityBreaks,
         maxPointerGapPx: telemetry.maxPointerGapPx,
+        minPressure: telemetry.minPressure,
+        maxPressure: telemetry.maxPressure,
       };
       lastStrokeTelemetry = snapshot;
       strokeTelemetryRef.current = undefined;
@@ -3025,15 +3069,24 @@ function SurfacePaintOverlay() {
         const targets = events.map((sampledEvent) => ({
           x: sampledEvent.clientX,
           y: sampledEvent.clientY,
+          pressure: getPointerPressure(sampledEvent),
         }));
         const finalTarget = targets[targets.length - 1];
         if (!finalTarget || finalTarget.x !== event.clientX || finalTarget.y !== event.clientY) {
-          targets.push({ x: event.clientX, y: event.clientY });
+          targets.push({
+            x: event.clientX,
+            y: event.clientY,
+            pressure: getPointerPressure(event),
+          });
         }
         const telemetry = strokeTelemetryRef.current;
         if (telemetry) {
           telemetry.pointerEvents += 1;
           telemetry.coalescedEvents += events.length;
+          for (const target of targets) {
+            telemetry.minPressure = Math.min(telemetry.minPressure, target.pressure);
+            telemetry.maxPressure = Math.max(telemetry.maxPressure, target.pressure);
+          }
         }
         pendingPaintTargetsRef.current.push(...targets);
         if (pendingPaintTargetsRef.current.length > 512) {
@@ -3045,7 +3098,12 @@ function SurfacePaintOverlay() {
       updateCursor(event);
     };
     const handlePointerDown = (event: globalThis.PointerEvent) => {
-      if (!enabled || event.button !== 0) return;
+      if (event.pointerType === 'touch' || isPaintingRef.current) return;
+      const penEraserContact =
+        event.pointerType === 'pen' &&
+        (event.button === 2 || event.button === 5) &&
+        event.pressure > 0;
+      if (!enabled || (event.button !== 0 && !penEraserContact)) return;
       if (!isInpaintMode && !canUseSurfacePaint) {
         const result = raycastModel(event);
         if (!result) return;
@@ -3070,9 +3128,17 @@ function SurfacePaintOverlay() {
       canvas.setPointerCapture(event.pointerId);
       lastUvRef.current = undefined;
       lastSampleRef.current = undefined;
-      lastPointerClientRef.current = { x: event.clientX, y: event.clientY };
+      const pressure = getPointerPressure(event);
+      const strokePaintTool =
+        penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
+          ? 'eraser'
+          : paintTool;
+      strokePaintToolRef.current =
+        strokePaintTool === 'brush' || strokePaintTool === 'eraser' ? strokePaintTool : undefined;
+      lastPointerClientRef.current = { x: event.clientX, y: event.clientY, pressure };
       strokeTelemetryRef.current = {
         endReason: 'pointerup',
+        pointerType: event.pointerType,
         startedAt: paintStartedAt,
         durationMs: 0,
         pointerEvents: 1,
@@ -3082,22 +3148,34 @@ function SurfacePaintOverlay() {
         misses: 0,
         continuityBreaks: 0,
         maxPointerGapPx: 0,
+        minPressure: pressure,
+        maxPressure: pressure,
       };
-      beginStrokeHistory(result);
+      beginStrokeHistory(result, strokePaintTool);
       setOrbitControlsEnabled(false);
-      paintAt(result);
+      paintAt(result, pressure, strokePaintTool);
       recordSurfacePaintPerf(performance.now() - paintStartedAt);
     };
     const handlePointerUp = (event: globalThis.PointerEvent) => {
       if (!isPaintingRef.current) return;
+      if (activePointerIdRef.current !== undefined && event.pointerId !== activePointerIdRef.current) return;
       const previousClient = lastPointerClientRef.current;
       if (previousClient) {
         const telemetry = strokeTelemetryRef.current;
         if (telemetry) {
+          const finalPressure = getPointerPressure(event);
           telemetry.pointerEvents += 1;
           telemetry.coalescedEvents += 1;
+          telemetry.minPressure = Math.min(telemetry.minPressure, finalPressure);
+          telemetry.maxPressure = Math.max(telemetry.maxPressure, finalPressure);
         }
-        flushPendingPaintTargets([{ x: event.clientX, y: event.clientY }]);
+        flushPendingPaintTargets([
+          {
+            x: event.clientX,
+            y: event.clientY,
+            pressure: getPointerPressure(event),
+          },
+        ]);
       }
       isPaintingRef.current = false;
       lastPaintActivityAtRef.current = performance.now();
@@ -3106,6 +3184,7 @@ function SurfacePaintOverlay() {
       lastUvRef.current = undefined;
       lastSampleRef.current = undefined;
       lastPointerClientRef.current = undefined;
+      strokePaintToolRef.current = undefined;
       setOrbitControlsEnabled(true);
       commitPaintStroke();
       commitStrokeHistory();
@@ -3149,6 +3228,7 @@ function SurfacePaintOverlay() {
         canvas.releasePointerCapture(activePointerId);
       }
       activePointerIdRef.current = undefined;
+      strokePaintToolRef.current = undefined;
       gl.domElement.style.cursor = '';
     };
   }, [
