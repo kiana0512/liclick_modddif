@@ -1084,8 +1084,7 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
   if (displayMode === 'wire') {
     return markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: DEFAULT_WIRE_COLOR,
-      wireframe: true,
-      roughness: 0.9,
+      roughness: 0.94,
       metalness: 0,
     }));
   }
@@ -1262,8 +1261,7 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
   if (input.displayMode === 'wire') {
     return markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: DEFAULT_WIRE_COLOR,
-      wireframe: true,
-      roughness: 0.9,
+      roughness: 0.94,
       metalness: 0,
     }));
   }

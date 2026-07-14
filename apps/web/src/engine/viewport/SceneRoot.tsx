@@ -465,6 +465,70 @@ function SelectionEdgeGlow({ object }: { object: THREE.Object3D }) {
   return null;
 }
 
+function TopologyWireframeOverlay({ object }: { object: THREE.Object3D }) {
+  const overlay = useMemo(() => {
+    const group = new THREE.Group();
+    group.name = 'Liclick Topology Wireframe Overlay';
+    group.userData.liclickViewportHelper = true;
+    group.userData.liclickWireframeOverlay = true;
+    group.matrixAutoUpdate = false;
+    group.renderOrder = 40;
+
+    const material = new THREE.MeshBasicMaterial({
+      color: '#24252a',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.82,
+      depthTest: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+      toneMapped: false,
+    });
+
+    object.updateMatrixWorld(true);
+    const inverseRoot = object.matrixWorld.clone().invert();
+    object.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      if (
+        child.userData.liclickPaintOverlay ||
+        child.userData.liclickSelectionGlow ||
+        child.userData.liclickWireframeOverlay
+      ) return;
+
+      const localMatrix = inverseRoot.clone().multiply(child.matrixWorld);
+      const wireMesh = new THREE.Mesh(child.geometry, material);
+      wireMesh.name = `Liclick Topology Wireframe - ${child.name || child.uuid}`;
+      wireMesh.matrix.copy(localMatrix);
+      wireMesh.matrixAutoUpdate = false;
+      wireMesh.renderOrder = 40;
+      wireMesh.frustumCulled = child.frustumCulled;
+      wireMesh.userData.liclickViewportHelper = true;
+      wireMesh.userData.liclickWireframeOverlay = true;
+      wireMesh.raycast = () => undefined;
+      group.add(wireMesh);
+    });
+
+    return { group, material };
+  }, [object]);
+
+  useFrame(() => {
+    overlay.group.matrix.compose(object.position, object.quaternion, object.scale);
+    overlay.group.matrixWorldNeedsUpdate = true;
+  });
+
+  useEffect(
+    () => () => {
+      overlay.group.removeFromParent();
+      overlay.material.dispose();
+    },
+    [overlay],
+  );
+
+  return <primitive object={overlay.group} />;
+}
+
 function ImportedModel({
   importedModel,
   showSelectionGlow,
@@ -780,6 +844,7 @@ function ImportedModel({
           selectObject(importedModel.objectId);
         }}
       />
+      {displayMode === 'wire' && <TopologyWireframeOverlay object={importedModel.group} />}
       {showSelectionGlow && selectedObjectId === importedModel.objectId && (
         <SelectionEdgeGlow object={importedModel.group} />
       )}
