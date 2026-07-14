@@ -9,6 +9,7 @@ import {
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
   updateProjectedLayerStackMaterial,
+  updateUvOverlayPreviewMaterial,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
   getLiveProjectedCanvasState,
@@ -197,32 +198,32 @@ function getPreviewMaterialBase(material: THREE.Material | THREE.Material[] | un
   return { baseTexture, baseColor };
 }
 
-function useLoadedBakedTexture(imageUrl?: string) {
-  const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
+function useLoadedPreviewTexture(imageUrl?: string) {
+  const [loadedTexture, setLoadedTexture] = useState<THREE.Texture>();
 
   useEffect(() => {
     if (!imageUrl) {
-      setLoadedBakedTexture(undefined);
+      setLoadedTexture(undefined);
       return undefined;
     }
     let cancelled = false;
-    setLoadedBakedTexture(undefined);
+    setLoadedTexture(undefined);
     loadPreviewTexture(imageUrl)
       .then((texture) => {
         if (cancelled) return;
-        setLoadedBakedTexture(texture);
+        setLoadedTexture(texture);
       })
       .catch((error) => {
         if (cancelled) return;
-        console.warn('[Liclick 3D Texture] Could not load baked texture for PBR preview:', error);
-        setLoadedBakedTexture(undefined);
+        console.warn('[Liclick 3D Texture] Could not load texture for viewport preview:', error);
+        setLoadedTexture(undefined);
       });
     return () => {
       cancelled = true;
     };
   }, [imageUrl]);
 
-  return loadedBakedTexture;
+  return loadedTexture;
 }
 
 function loadImageElement(url: string) {
@@ -266,6 +267,7 @@ function useCompositedUvTexture(layers: Layer[]) {
         .join('|'),
     [layers],
   );
+  const stableLayers = useStableValueBySignature(layers, layerKey);
 
   useFrame(() => {
     const runtime = runtimeRef.current;
@@ -283,7 +285,7 @@ function useCompositedUvTexture(layers: Layer[]) {
   });
 
   useEffect(() => {
-    const uvLayers = layers.filter((layer) => layer.visible && layer.imageUrl);
+    const uvLayers = stableLayers.filter((layer) => layer.visible && layer.imageUrl);
     if (uvLayers.length === 0) {
       setTexture(undefined);
       return undefined;
@@ -369,7 +371,7 @@ function useCompositedUvTexture(layers: Layer[]) {
       if (runtimeRef.current?.texture === nextTexture) runtimeRef.current = undefined;
       nextTexture?.dispose();
     };
-  }, [layerKey, layers]);
+  }, [layerKey, stableLayers]);
 
   return texture;
 }
@@ -553,7 +555,7 @@ function ImportedModel({
       ),
     [exactBakedTextureRecord, importedObjectId, project, stableVisibleProjectedLayers],
   );
-  const loadedBakedTexture = useLoadedBakedTexture(previewBakedTextureRecord?.imageUrl);
+  const loadedBakedTexture = useLoadedPreviewTexture(previewBakedTextureRecord?.imageUrl);
   const liveTopUvLayer = useMemo(() => {
     const topLayer = stableVisibleUvLayers[0];
     if (!topLayer || !getLiveProjectedCanvasState(topLayer.imageUrl)) return undefined;
@@ -563,13 +565,19 @@ function ImportedModel({
     if (!previewBakedTextureRecord && stableVisibleProjectedLayers.length > 0) return undefined;
     return topLayer;
   }, [previewBakedTextureRecord, stableVisibleProjectedLayers.length, stableVisibleUvLayers]);
-  const compositedUvLayers = useMemo(
+  const nonLiveUvLayers = useMemo(
     () => liveTopUvLayer
       ? stableVisibleUvLayers.filter((layer) => layer.id !== liveTopUvLayer.id)
       : stableVisibleUvLayers,
     [liveTopUvLayer, stableVisibleUvLayers],
   );
-  const loadedUvTexture = useCompositedUvTexture(compositedUvLayers);
+  // A single UV layer is already a finished UV-space texture. Sample it directly
+  // and adjust it with shader uniforms instead of rebuilding a full-resolution canvas.
+  const directUvLayer = nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] : undefined;
+  const compositedUvLayers = directUvLayer ? [] : nonLiveUvLayers;
+  const compositedUvTexture = useCompositedUvTexture(compositedUvLayers);
+  const directUvTexture = useLoadedPreviewTexture(directUvLayer?.imageUrl);
+  const loadedUvTexture = directUvTexture ?? compositedUvTexture;
   const liveTopUvTexture = useMemo(
     () => liveTopUvLayer
       ? getLiveProjectedCanvasTexture(liveTopUvLayer.imageUrl, THREE.SRGBColorSpace, { flipY: true })
@@ -634,6 +642,9 @@ function ImportedModel({
             }),
             objectId: model.objectId,
             currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
+            uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
+            uvOverlaySaturation: directUvLayer ? (directUvLayer.adjustments?.saturation ?? 0) / 100 : 0,
+            uvOverlayLightness: directUvLayer ? (directUvLayer.adjustments?.lightness ?? 0) / 100 : 0,
             depthTest: true,
             enableBackfaceCulling: true,
             edgeFeather: 0.004,
@@ -660,10 +671,17 @@ function ImportedModel({
         const previousMaterial = child.material;
         const previewBase = getPreviewMaterialBase(originalMaterial);
         if ((loadedUvTexture || liveTopUvTexture) && !projectedLayerInput) {
-          child.material = createUvOverlayPreviewMaterial({
+          const uvMaterialInput = {
             displayMode,
             selected,
-            ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+            ...(loadedUvTexture
+              ? {
+                  uvOverlayTexture: loadedUvTexture,
+                  uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
+                  uvOverlaySaturation: directUvLayer ? (directUvLayer.adjustments?.saturation ?? 0) / 100 : 0,
+                  uvOverlayLightness: directUvLayer ? (directUvLayer.adjustments?.lightness ?? 0) / 100 : 0,
+                }
+              : {}),
             ...(liveTopUvTexture
               ? {
                   liveUvOverlayTexture: liveTopUvTexture,
@@ -671,13 +689,18 @@ function ImportedModel({
                   liveUvOverlayRenderedColor: liveTopUvLayer
                     ? isRenderedLocalRepaintLayer(liveTopUvLayer)
                     : false,
+                  liveUvOverlayHue: (liveTopUvLayer?.adjustments?.hue ?? 0) / 100,
+                  liveUvOverlaySaturation: (liveTopUvLayer?.adjustments?.saturation ?? 0) / 100,
+                  liveUvOverlayLightness: (liveTopUvLayer?.adjustments?.lightness ?? 0) / 100,
                 }
               : {}),
             previewLighting,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
             ...previewBase,
             ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
-          });
+          };
+          if (updateUvOverlayPreviewMaterial(previousMaterial, uvMaterialInput)) continue;
+          child.material = createUvOverlayPreviewMaterial(uvMaterialInput);
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
@@ -732,6 +755,7 @@ function ImportedModel({
   }, [
     canPreviewProjectedLayers,
     displayMode,
+    directUvLayer,
     importedModel,
     loadedBakedTexture,
     loadedUvTexture,

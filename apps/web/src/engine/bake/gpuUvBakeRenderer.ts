@@ -143,52 +143,29 @@ const fragmentShader = `
   varying vec3 vWorldNormal;
   varying vec2 vTextureUv;
 
-  float hueToRgb(float p, float q, float t) {
-    if (t < 0.0) t += 1.0;
-    if (t > 1.0) t -= 1.0;
-    if (t < 1.0 / 6.0) return p + (q - p) * 6.0 * t;
-    if (t < 1.0 / 2.0) return q;
-    if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
-    return p;
+  vec3 rgbToHsv(vec3 color) {
+    vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(color.bg, k.wz), vec4(color.gb, k.xy), step(color.b, color.g));
+    vec4 q = mix(vec4(p.xyw, color.r), vec4(color.r, p.yzx), step(p.x, color.r));
+    float delta = q.x - min(q.w, q.y);
+    float epsilon = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * delta + epsilon)), delta / (q.x + epsilon), q.x);
   }
 
-  vec3 rgbToHsl(vec3 color) {
-    float maxChannel = max(color.r, max(color.g, color.b));
-    float minChannel = min(color.r, min(color.g, color.b));
-    float lightness = (maxChannel + minChannel) * 0.5;
-    if (maxChannel == minChannel) return vec3(0.0, 0.0, lightness);
-
-    float delta = maxChannel - minChannel;
-    float saturation = lightness > 0.5
-      ? delta / (2.0 - maxChannel - minChannel)
-      : delta / (maxChannel + minChannel);
-    float hue = 0.0;
-    if (maxChannel == color.r) hue = (color.g - color.b) / delta + (color.g < color.b ? 6.0 : 0.0);
-    if (maxChannel == color.g) hue = (color.b - color.r) / delta + 2.0;
-    if (maxChannel == color.b) hue = (color.r - color.g) / delta + 4.0;
-    return vec3(hue / 6.0, saturation, lightness);
+  vec3 hsvToRgb(vec3 hsv) {
+    vec3 channels = abs(fract(hsv.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return hsv.z * mix(vec3(1.0), clamp(channels - 1.0, 0.0, 1.0), hsv.y);
   }
 
-  vec3 hslToRgb(vec3 hsl) {
-    if (hsl.y == 0.0) return vec3(hsl.z);
-    float q = hsl.z < 0.5 ? hsl.z * (1.0 + hsl.y) : hsl.z + hsl.y - hsl.z * hsl.y;
-    float p = 2.0 * hsl.z - q;
-    return vec3(
-      hueToRgb(p, q, hsl.x + 1.0 / 3.0),
-      hueToRgb(p, q, hsl.x),
-      hueToRgb(p, q, hsl.x - 1.0 / 3.0)
-    );
-  }
-
-  vec3 applyHslAdjustments(vec3 color) {
+  vec3 applyHsvAdjustments(vec3 color) {
     if (abs(hueShift) < 0.0001 && abs(saturationShift) < 0.0001 && abs(lightnessShift) < 0.0001) {
       return color;
     }
-    vec3 hsl = rgbToHsl(color);
-    hsl.x = mod(hsl.x + hueShift + 1.0, 1.0);
-    hsl.y = clamp(hsl.y + saturationShift, 0.0, 1.0);
-    hsl.z = clamp(hsl.z + lightnessShift, 0.0, 1.0);
-    return hslToRgb(hsl);
+    vec3 hsv = rgbToHsv(color);
+    hsv.x = mod(hsv.x + hueShift + 1.0, 1.0);
+    hsv.y = clamp(hsv.y + saturationShift, 0.0, 1.0);
+    hsv.z = clamp(hsv.z + lightnessShift, 0.0, 1.0);
+    return hsvToRgb(hsv);
   }
 
   float unpackDepth(vec4 rgbaDepth) {
@@ -299,7 +276,7 @@ const fragmentShader = `
       : 1.0;
 
     vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
-    texel.rgb = applyHslAdjustments(texel.rgb);
+    texel.rgb = applyHsvAdjustments(texel.rgb);
     if (texel.a < 0.01) discard;
     float angleWeight = computeAngleWeight(ndv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
