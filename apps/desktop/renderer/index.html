@@ -3,37 +3,81 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>LIclick 3D Texture</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <header class="window-titlebar" aria-label="LIclick 3D Texture 窗口标题栏">
+      <img src="./liclick-icon.png" alt="" />
+      <span>LIclick 3D Texture</span>
+    </header>
     <main class="launcher-shell">
       <aside class="sidebar" aria-label="启动器导航">
         <div class="sidebar-brand" title="LIclick 3D Texture">
-          <img src="./liclick-icon.png" alt="LI3D" />
+          <img src="./liclick-icon.png" alt="LIclick 3D Texture" />
         </div>
 
         <nav class="nav-list">
-          <button class="nav-button is-active" type="button" data-view-target="home" aria-selected="true">
+          <button
+            class="nav-button is-active"
+            type="button"
+            data-view-target="home"
+            aria-selected="true"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>
             <span>启动</span>
           </button>
-          <button class="nav-button" type="button" data-view-target="services" aria-selected="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /><circle cx="8" cy="7" r="1" /><circle cx="16" cy="12" r="1" /><circle cx="10" cy="17" r="1" /></svg>
+          <button
+            class="nav-button"
+            type="button"
+            data-view-target="services"
+            aria-selected="false"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 7h14M5 12h14M5 17h14" />
+              <circle cx="8" cy="7" r="1" />
+              <circle cx="16" cy="12" r="1" />
+              <circle cx="10" cy="17" r="1" />
+            </svg>
             <span>服务</span>
           </button>
+          <button
+            class="nav-button"
+            type="button"
+            data-view-target="diagnostics"
+            aria-selected="false"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 13h4l2-7 4 12 2-5h4" />
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <span>诊断</span>
+          </button>
           <button class="nav-button" type="button" data-view-target="logs" aria-selected="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h8M8 13h8M8 17h5" /></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" />
+            </svg>
             <span>日志</span>
           </button>
-          <button class="nav-button" type="button" data-view-target="settings" aria-selected="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14.2 3h-4.4l-.3 2.7a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 2 1.2l.3 2.7h4.4l.3-2.7a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z" /></svg>
+          <button
+            class="nav-button"
+            type="button"
+            data-view-target="settings"
+            aria-selected="false"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14.2 3h-4.4l-.3 2.7a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 2 1.2l.3 2.7h4.4l.3-2.7a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z"
+              />
+            </svg>
             <span>设置</span>
           </button>
         </nav>
 
         <div class="sidebar-meta">
-          <span>LI3D</span>
+          <strong>LI3D</strong>
           <small id="sidebarBuild">Launcher</small>
         </div>
       </aside>
@@ -47,7 +91,7 @@
               <span>LI3D Launcher <b id="buildText"></b></span>
             </div>
           </div>
-          <div class="overall-status">
+          <div class="overall-status" role="status">
             <span class="status-dot" id="overallDot"></span>
             <span id="overallText">正在准备启动器</span>
           </div>
@@ -59,56 +103,85 @@
               <div class="home-main">
                 <section class="hero-panel">
                   <div class="hero-copy">
-                    <span class="hero-kicker">LI3D / LOCAL WORKSPACE</span>
                     <h1>让 3D 贴图工作流<br />从这里开始</h1>
                     <p>启动本地服务、管理项目目录，并进入 LIclick 3D Texture 工作台。</p>
                   </div>
-                  <div class="hero-mark-frame" aria-hidden="true">
-                    <img src="./liclick-icon.png" alt="" class="hero-mark" />
-                  </div>
                 </section>
 
-                <section class="section-block">
+                <section class="workspace-section">
                   <div class="section-heading">
-                    <div>
-                      <h2>快捷入口</h2>
-                      <p>常用目录与本地服务</p>
-                    </div>
-                    <span id="pidText">PID -</span>
+                    <h2>工作区</h2>
+                    <span id="pidText">本地服务</span>
                   </div>
                   <div class="shortcut-grid">
                     <button class="shortcut-card" type="button" id="openWorkspaceDir">
-                      <span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3V7Z" /></svg></span>
-                      <span><strong>工作目录</strong><small id="workspaceDir">-</small></span>
+                      <span class="shortcut-icon"
+                        ><svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M3 7h7l2 2h9v10H3V7Z" /></svg
+                      ></span>
+                      <span
+                        ><strong>工作目录</strong
+                        ><small id="workspaceDir">用户项目与本地数据库</small></span
+                      >
+                      <b>›</b>
+                    </button>
+                    <button class="shortcut-card" type="button" id="openProjectResources">
+                      <span class="shortcut-icon"
+                        ><svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" />
+                          <path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></svg
+                      ></span>
+                      <span><strong>项目资源</strong><small>模型、贴图与导出文件</small></span>
                       <b>›</b>
                     </button>
                     <button class="shortcut-card" type="button" id="openLogs">
-                      <span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h8M8 13h8M8 17h5" /></svg></span>
-                      <span><strong>日志目录</strong><small>查看完整启动与服务日志</small></span>
+                      <span class="shortcut-icon"
+                        ><svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" /></svg
+                      ></span>
+                      <span><strong>日志目录</strong><small>完整启动与服务日志</small></span>
                       <b>›</b>
                     </button>
-                    <article class="shortcut-card is-static">
-                      <span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14v10H5zM8 10h8M8 14h5" /></svg></span>
-                      <span><strong>后端服务</strong><small id="workspaceUrl">-</small></span>
-                    </article>
                     <button class="shortcut-card" type="button" id="quickOpenWorkspace">
-                      <span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c2 2 3 5 3 8s-1 6-3 8c-2-2-3-5-3-8s1-6 3-8Z" /></svg></span>
-                      <span><strong>工作台地址</strong><small id="webUrl">-</small></span>
+                      <span class="shortcut-icon"
+                        ><svg viewBox="0 0 24 24" aria-hidden="true">
+                          <circle cx="12" cy="12" r="8" />
+                          <path d="M4 12h16M12 4c2 2 3 5 3 8s-1 6-3 8c-2-2-3-5-3-8s1-6 3-8Z" /></svg
+                      ></span>
+                      <span
+                        ><strong>工作台地址</strong
+                        ><small id="webUrl">http://127.0.0.1:5673</small></span
+                      >
                       <b>›</b>
                     </button>
                   </div>
                 </section>
+
+                <footer class="runtime-meta" aria-label="启动器信息">
+                  <dl>
+                    <dt>启动器版本</dt>
+                    <dd id="footerBuild">Build 2026.07.14.1518</dd>
+                  </dl>
+                  <dl>
+                    <dt>后端服务</dt>
+                    <dd id="workspaceUrl">http://127.0.0.1:4617</dd>
+                  </dl>
+                  <dl>
+                    <dt>运行方式</dt>
+                    <dd>本地后台留存</dd>
+                  </dl>
+                </footer>
               </div>
 
               <aside class="status-rail">
                 <div class="rail-heading">
-                  <span>运行状态</span>
+                  <strong>运行状态</strong>
                   <small>实时检查</small>
                 </div>
                 <div class="service-summary">
                   <article>
                     <span class="check-dot" id="runtimeDot"></span>
-                    <div><small>Runtime</small><strong id="runtimeStatus">准备就绪</strong></div>
+                    <div><small>Runtime</small><strong id="runtimeStatus">检查中</strong></div>
                   </article>
                   <article>
                     <span class="check-dot" id="serverDot"></span>
@@ -120,8 +193,8 @@
                   </article>
                 </div>
                 <div class="rail-note">
-                  <strong>后台留存</strong>
-                  <span>关闭窗口后，服务会继续在系统托盘中运行。</span>
+                  <strong id="connectionTitle">正在连接本地工作区</strong>
+                  <span id="connectionCopy">启动器正在检查本地服务，请稍候。</span>
                 </div>
                 <button class="launch-button" type="button" id="primaryLaunch">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>
@@ -132,31 +205,185 @@
           </section>
 
           <section class="view" data-view="services">
-            <div class="page-heading"><div><span>LOCAL SERVICES</span><h1>服务管理</h1><p>查看启动检查结果并控制本地 LI3D 服务。</p></div></div>
-            <div class="service-grid">
-              <article class="service-card"><span class="check-dot" data-mirror="runtimeDot"></span><small>01 / Runtime 同步</small><h2>运行文件</h2><p>首次启动或版本更新时准备本地运行环境。</p></article>
-              <article class="service-card"><span class="check-dot" data-mirror="serverDot"></span><small>02 / Backend</small><h2>后端健康检查</h2><p>监听 4617 端口，提供项目、数据库与生成服务。</p></article>
-              <article class="service-card"><span class="check-dot" data-mirror="webDot"></span><small>03 / Web</small><h2>工作台服务</h2><p>监听 5673 端口，承载浏览器中的 3D 贴图工作台。</p></article>
+            <div class="page-toolbar">
+              <div>
+                <h1>服务管理</h1>
+                <p>查看本地运行组件，并控制 LI3D 服务。</p>
+              </div>
+              <div class="toolbar-actions">
+                <button class="button" id="restartServices">重启服务</button>
+                <button class="button primary" id="openWorkspace">打开工作台</button>
+              </div>
             </div>
-            <div class="action-bar">
-              <button class="button primary" id="openWorkspace">打开工作台</button>
-              <button class="button" id="restartServices">重启服务</button>
-              <button class="button danger" id="stopServices">停止服务</button>
+            <div class="service-list">
+              <article class="service-row">
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24">
+                    <path d="M7 4h10v4h3v8h-3v4H7v-4H4V8h3V4ZM9 9h6v6H9z" /></svg
+                ></span>
+                <div>
+                  <strong>Runtime 运行环境</strong>
+                  <p>首次启动与版本更新时自动准备运行文件。</p>
+                </div>
+                <span class="row-state"
+                  ><i class="check-dot" data-mirror="runtimeDot"></i
+                  ><b id="serviceRuntimeText">检查中</b></span
+                >
+              </article>
+              <article class="service-row">
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24">
+                    <path d="M4 5h16v5H4zM4 14h16v5H4zM8 8h.01M8 17h.01" /></svg
+                ></span>
+                <div>
+                  <strong>后端服务</strong>
+                  <p>提供项目、数据库和生成服务，默认监听 4617 端口。</p>
+                </div>
+                <span class="row-state"
+                  ><i class="check-dot" data-mirror="serverDot"></i
+                  ><b id="serviceWorkspaceText">检查中</b></span
+                >
+              </article>
+              <article class="service-row">
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="8" />
+                    <path d="M4 12h16M12 4c2 2 3 5 3 8s-1 6-3 8c-2-2-3-5-3-8s1-6 3-8Z" /></svg
+                ></span>
+                <div>
+                  <strong>前端工作台</strong>
+                  <p>承载浏览器中的 3D 贴图工作台，默认监听 5673 端口。</p>
+                </div>
+                <span class="row-state"
+                  ><i class="check-dot" data-mirror="webDot"></i
+                  ><b id="serviceWebText">检查中</b></span
+                >
+              </article>
+              <article class="service-row">
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3V7Z" /></svg
+                ></span>
+                <div>
+                  <strong>本地工作目录</strong>
+                  <p id="settingsWorkspaceDir">-</p>
+                </div>
+                <button class="button" id="settingsOpenWorkspaceDir">打开目录</button>
+              </article>
+            </div>
+            <div class="danger-bar">
+              <span>停止服务后，浏览器中的本地工作台将不可用。</span
+              ><button class="button danger" id="stopServices">停止服务</button>
+            </div>
+          </section>
+
+          <section class="view" data-view="diagnostics">
+            <div class="page-toolbar">
+              <div>
+                <h1>启动诊断</h1>
+                <p>按启动顺序检查运行环境、后端与工作台响应。</p>
+              </div>
+              <div class="toolbar-actions">
+                <button class="button" id="diagOpenLogs">打开日志</button
+                ><button class="button primary" id="diagRestartServices">重新检查</button>
+              </div>
+            </div>
+            <div class="diagnostic-list">
+              <article>
+                <span class="diagnostic-index">01</span
+                ><i class="check-dot" data-mirror="runtimeDot"></i>
+                <div>
+                  <strong>Runtime 准备</strong>
+                  <p>确认本地 Node 运行时与打包文件可用。</p>
+                </div>
+                <b id="diagRuntimeText">检查中</b>
+              </article>
+              <article>
+                <span class="diagnostic-index">02</span
+                ><i class="check-dot" data-mirror="serverDot"></i>
+                <div>
+                  <strong>后端健康检查</strong>
+                  <p>检查项目服务与本地数据库接口。</p>
+                </div>
+                <b id="diagWorkspaceText">检查中</b>
+              </article>
+              <article>
+                <span class="diagnostic-index">03</span
+                ><i class="check-dot" data-mirror="webDot"></i>
+                <div>
+                  <strong>工作台响应</strong>
+                  <p>确认浏览器工作台可正常载入。</p>
+                </div>
+                <b id="diagWebText">检查中</b>
+              </article>
+            </div>
+            <div class="diagnostic-help">
+              <strong>仍然无法进入工作台？</strong>
+              <p>先点击“重新检查”。如果状态仍未恢复，打开日志目录并查看最新启动日志。</p>
             </div>
           </section>
 
           <section class="view" data-view="logs">
-            <div class="page-heading inline"><div><span>ACTIVITY</span><h1>实时日志</h1><p>启动器、后端与工作台服务的最新输出。</p></div><button class="button" id="clearLogs">清空显示</button></div>
+            <div class="page-toolbar">
+              <div>
+                <h1>实时日志</h1>
+                <p>启动器、后端与工作台服务的最新输出。</p>
+              </div>
+              <div class="toolbar-actions">
+                <button class="button" id="openLogsFromView">打开目录</button
+                ><button class="button" id="clearLogs">清空显示</button>
+              </div>
+            </div>
             <pre id="logOutput" aria-live="polite"></pre>
           </section>
 
           <section class="view" data-view="settings">
-            <div class="page-heading"><div><span>PREFERENCES</span><h1>启动器设置</h1><p>本地运行目录、窗口行为与维护操作。</p></div></div>
+            <div class="page-toolbar">
+              <div>
+                <h1>启动器设置</h1>
+                <p>Windows 窗口行为、本地目录与维护操作。</p>
+              </div>
+            </div>
             <div class="settings-list">
-              <article><div><strong>关闭窗口后继续运行</strong><p>启动器会收回到系统托盘，前后端服务保持可用。</p></div><span class="setting-value">已启用</span></article>
-              <article><div><strong>本地工作目录</strong><p id="settingsWorkspaceDir">-</p></div><button class="button" id="settingsOpenWorkspaceDir">打开目录</button></article>
-              <article><div><strong>日志与故障排查</strong><p>打开完整日志目录，便于定位启动和端口问题。</p></div><button class="button" id="settingsOpenLogs">打开日志</button></article>
-              <article class="danger-row"><div><strong>彻底关闭启动器</strong><p>同时停止由启动器管理的本地服务。</p></div><button class="button danger" id="quitLauncher">停止并退出</button></article>
+              <article>
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16" /></svg
+                ></span>
+                <div>
+                  <strong>Windows 兼容模式</strong>
+                  <p>使用系统标题栏、系统字体和原生窗口缩放，兼容 Windows 10 / 11。</p>
+                </div>
+                <span class="setting-value">已启用</span>
+              </article>
+              <article>
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24"><path d="M8 5h8v3h3v8h-3v3H8v-3H5V8h3V5Z" /></svg
+                ></span>
+                <div>
+                  <strong>关闭窗口后继续运行</strong>
+                  <p>启动器会收回到系统托盘，前后端服务保持可用。</p>
+                </div>
+                <span class="setting-value">已启用</span>
+              </article>
+              <article>
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" /></svg
+                ></span>
+                <div>
+                  <strong>日志与故障排查</strong>
+                  <p>打开完整日志目录，定位启动、端口与运行时问题。</p>
+                </div>
+                <button class="button" id="settingsOpenLogs">打开日志</button>
+              </article>
+              <article class="danger-row">
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9" /></svg
+                ></span>
+                <div>
+                  <strong>彻底关闭启动器</strong>
+                  <p>同时停止由启动器管理的所有本地服务。</p>
+                </div>
+                <button class="button danger" id="quitLauncher">停止并退出</button>
+              </article>
             </div>
           </section>
         </div>
