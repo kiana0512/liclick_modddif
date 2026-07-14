@@ -23,7 +23,6 @@ const isWindows = process.platform === 'win32';
 const shouldOpenBrowser = process.env.LICLICK_OPEN_BROWSER !== '0';
 const shouldHideChildWindows = process.env.LICLICK_WINDOWS_HIDE === '1';
 const managedChildren = new Set();
-let dependencyInstallAttempted = false;
 
 fs.mkdirSync(logsDir, { recursive: true });
 fs.mkdirSync(workspaceDir, { recursive: true });
@@ -291,49 +290,13 @@ async function syncRuntimeSource(includePreparedArtifacts) {
 function runtimeIsReady(signature) {
   const manifest = readJson(manifestPath);
   if (manifest?.sourceSignature !== signature) return false;
-  return runtimeFilesReady() && serverDependenciesReady();
+  return runtimeFilesReady();
 }
 
 function runtimeFilesReady() {
   if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'dist', 'index.js'))) return false;
   if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'web', 'dist', 'index.html'))) return false;
   return true;
-}
-
-function serverDependenciesReady() {
-  return fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'node_modules', '@prisma', 'client'));
-}
-
-async function pushDatabaseIfPossible() {
-  const prismaBin = path.join(runtimeRoot, 'apps', 'server', 'node_modules', '.bin', isWindows ? 'prisma.cmd' : 'prisma');
-  if (!fs.existsSync(prismaBin)) {
-    writeLog('Prisma CLI was not found in packaged dependencies; skipping db push.');
-    return;
-  }
-  await runCommand(prismaBin, ['db', 'push', '--schema', 'apps/server/prisma/schema.prisma']);
-}
-
-async function installRuntimeDependencies(reason) {
-  dependencyInstallAttempted = true;
-  writeLog(reason);
-  writeLog('Installing runtime dependencies. This can take several minutes.');
-  try {
-    await runCommand('corepack', ['enable']);
-  } catch (error) {
-    writeLog(
-      `corepack enable failed; continuing with corepack pnpm. ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-  await runCommand('corepack', ['pnpm', '--filter', '@liclick/server', 'install', '--frozen-lockfile']);
-  await runCommand('corepack', ['pnpm', '--filter', '@liclick/server', 'db:generate']);
-  await runCommand('corepack', ['pnpm', '--filter', '@liclick/server', 'db:push']);
-
-  fs.writeFileSync(
-    manifestPath,
-    JSON.stringify({ sourceSignature: sourceSignature(), preparedAt: new Date().toISOString(), mode: 'runtime-deps' }, null, 2),
-  );
 }
 
 async function prepareRuntime() {
@@ -346,15 +309,11 @@ async function prepareRuntime() {
     return;
   }
   if (runtimeFilesReady()) {
-    if (!serverDependenciesReady()) {
-      await installRuntimeDependencies('Packaged runtime artifacts are ready; installing server runtime dependencies.');
-      return;
-    }
-    await pushDatabaseIfPossible();
     fs.writeFileSync(
       manifestPath,
-      JSON.stringify({ sourceSignature: signature, preparedAt: new Date().toISOString(), mode: 'packaged' }, null, 2),
+      JSON.stringify({ sourceSignature: signature, preparedAt: new Date().toISOString(), mode: 'self-contained' }, null, 2),
     );
+    writeLog('Self-contained runtime artifacts are ready; no package-manager setup is required.');
     return;
   }
 
@@ -433,19 +392,7 @@ async function startServices() {
       );
     }
     spawnService('workspace server', 'node', ['apps/server/dist/index.js'], serverLog);
-    try {
-      await waitFor(workspaceHealthy, 'Workspace server');
-    } catch (error) {
-      if (dependencyInstallAttempted) throw error;
-      stopManagedChildren();
-      await installRuntimeDependencies(
-        `Workspace server did not become ready. Missing runtime dependencies are possible. ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      spawnService('workspace server', 'node', ['apps/server/dist/index.js'], serverLog);
-      await waitFor(workspaceHealthy, 'Workspace server');
-    }
+    await waitFor(workspaceHealthy, 'Workspace server');
   }
 
   if (await webHealthy()) {
@@ -510,7 +457,7 @@ process.on('exit', cleanup);
 
 writeLog('============================================================');
 writeLog('Liclick 3D Texture local desktop launcher');
-writeLog('首次启动会安装运行依赖并初始化数据库，可能需要几分钟。');
+writeLog('正在准备自包含本地运行环境，无需下载 pnpm 或安装服务依赖。');
 writeLog('使用软件期间请不要关闭这个终端；关闭终端会停止前后端服务。');
 writeLog(`Install root: ${installRoot}`);
 writeLog(`Runtime: ${runtimeRoot}`);
