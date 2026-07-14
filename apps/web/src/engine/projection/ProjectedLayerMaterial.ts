@@ -19,6 +19,52 @@ export type ProjectedLayerProjectionData = {
     objectNormalDeltaUniform: string;
   }>;
 };
+
+/**
+ * Keeps capture-space projection coordinates attached to the model while its
+ * root transform changes. The shader evaluates the current world position, so
+ * it must first be mapped back into the world space used when the layer was
+ * captured: captureObjectMatrix * inverse(currentObjectMatrix).
+ */
+export function syncProjectedLayerMaterialProjection(root: THREE.Object3D) {
+  root.updateMatrixWorld(true);
+  const currentObjectMatrixInverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const matrixDelta = new THREE.Matrix4();
+  const normalDelta = new THREE.Matrix3();
+
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of materials) {
+      const projectionData = material.userData[
+        PROJECTED_LAYER_MATERIAL_USER_DATA_KEY
+      ] as ProjectedLayerProjectionData | undefined;
+      if (!projectionData?.layers?.length || !(material instanceof THREE.ShaderMaterial)) continue;
+
+      for (const layer of projectionData.layers) {
+        if (layer.objectMatrixWorld) {
+          matrixDelta.fromArray(layer.objectMatrixWorld).multiply(currentObjectMatrixInverse);
+        } else {
+          matrixDelta.identity();
+        }
+        normalDelta.getNormalMatrix(matrixDelta);
+
+        const matrixUniform = material.uniforms[layer.objectMatrixDeltaUniform];
+        const normalUniform = material.uniforms[layer.objectNormalDeltaUniform];
+        if (matrixUniform?.value instanceof THREE.Matrix4) {
+          matrixUniform.value.copy(matrixDelta);
+        } else if (matrixUniform) {
+          matrixUniform.value = matrixDelta.clone();
+        }
+        if (normalUniform?.value instanceof THREE.Matrix3) {
+          normalUniform.value.copy(normalDelta);
+        } else if (normalUniform) {
+          normalUniform.value = normalDelta.clone();
+        }
+      }
+    }
+  });
+}
 const NDV_HARD_REJECT = -0.35;
 const NDV_COVERAGE_START = -0.25;
 const NDV_COVERAGE_END = 0.08;
@@ -823,10 +869,11 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   depthTexture.minFilter = THREE.NearestFilter;
   depthTexture.magFilter = THREE.NearestFilter;
 
+  const captureObjectMatrixWorld = input.objectMatrixWorld ?? input.currentObjectMatrixWorld;
   const objectMatrixDelta = new THREE.Matrix4();
-  if (input.objectMatrixWorld && input.currentObjectMatrixWorld) {
+  if (captureObjectMatrixWorld && input.currentObjectMatrixWorld) {
     objectMatrixDelta
-      .fromArray(input.objectMatrixWorld)
+      .fromArray(captureObjectMatrixWorld)
       .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
   }
   const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
@@ -890,7 +937,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
     layers: [
       {
-        objectMatrixWorld: input.objectMatrixWorld,
+        objectMatrixWorld: captureObjectMatrixWorld,
         objectMatrixDeltaUniform: 'objectMatrixDelta',
         objectNormalDeltaUniform: 'objectNormalDelta',
       },
@@ -952,6 +999,7 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   const disposableTextures: THREE.Texture[] = [neutralTexture];
+  const captureObjectMatrices: Array<number[] | undefined> = [];
 
   const loadedLayers: typeof layers = [];
   for (const layer of layers) {
@@ -988,10 +1036,11 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
       depthTexture.magFilter = THREE.NearestFilter;
     }
 
+    const captureObjectMatrixWorld = layer.objectMatrixWorld ?? input.currentObjectMatrixWorld;
     const objectMatrixDelta = new THREE.Matrix4();
-    if (layer.objectMatrixWorld && input.currentObjectMatrixWorld) {
+    if (captureObjectMatrixWorld && input.currentObjectMatrixWorld) {
       objectMatrixDelta
-        .fromArray(layer.objectMatrixWorld)
+        .fromArray(captureObjectMatrixWorld)
         .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
     }
     const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
@@ -1009,6 +1058,7 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
     uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
     uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
+    captureObjectMatrices.push(captureObjectMatrixWorld);
     loadedLayers.push({ ...layer, useMask: shouldUseMask, useDepthCheck: shouldUseDepth });
   }
   if (loadedLayers.length === 0) return undefined;
@@ -1037,8 +1087,8 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     })),
   } satisfies ProjectedLayerMaterialState;
   material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
-    layers: loadedLayers.map((layer, index) => ({
-      objectMatrixWorld: layer.objectMatrixWorld,
+    layers: loadedLayers.map((_layer, index) => ({
+      objectMatrixWorld: captureObjectMatrices[index],
       objectMatrixDeltaUniform: `objectMatrixDelta${index}`,
       objectNormalDeltaUniform: `objectNormalDelta${index}`,
     })),

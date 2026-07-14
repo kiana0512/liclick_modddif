@@ -8,6 +8,7 @@ import {
   createProjectedLayerStackMaterial,
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
+  syncProjectedLayerMaterialProjection,
   updateProjectedLayerStackMaterial,
   updateUvOverlayPreviewMaterial,
 } from '@/engine/projection/ProjectedLayerMaterial';
@@ -563,6 +564,7 @@ function ImportedModel({
     [visibleProjectedLayers],
   );
   const stableVisibleProjectedLayers = useStableValueBySignature(visibleProjectedLayers, visibleProjectedLayerSignature);
+  const lastProjectedTransformRef = useRef<THREE.Matrix4>();
   const previewProjectedLayers = useMemo(
     () =>
       layers
@@ -672,6 +674,22 @@ function ImportedModel({
       }),
     [displayMode, environmentPreset, exposure, pbrEnvironmentIntensity, pbrKeyLightIntensity, pbrLightAzimuth],
   );
+
+  useFrame(() => {
+    if (stableVisibleProjectedLayers.length === 0) {
+      lastProjectedTransformRef.current = undefined;
+      return;
+    }
+    importedModel.group.updateMatrixWorld(true);
+    const currentMatrix = importedModel.group.matrixWorld;
+    if (lastProjectedTransformRef.current?.equals(currentMatrix)) return;
+    syncProjectedLayerMaterialProjection(importedModel.group);
+    if (lastProjectedTransformRef.current) {
+      lastProjectedTransformRef.current.copy(currentMatrix);
+    } else {
+      lastProjectedTransformRef.current = currentMatrix.clone();
+    }
+  });
 
   useEffect(() => {
     if (!importedModel) return;
@@ -808,6 +826,12 @@ function ImportedModel({
         }
         child.material = projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
         if (previousMaterial !== child.material) disposeGeneratedMaterialTree(previousMaterial);
+      }
+      syncProjectedLayerMaterialProjection(model.group);
+      if (lastProjectedTransformRef.current) {
+        lastProjectedTransformRef.current.copy(model.group.matrixWorld);
+      } else {
+        lastProjectedTransformRef.current = model.group.matrixWorld.clone();
       }
     }
 
