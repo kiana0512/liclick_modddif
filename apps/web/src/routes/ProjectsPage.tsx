@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Folder, FolderPlus, HardDrive, Plus, RefreshCw } from 'lucide-react';
+import { Check, ChevronDown, Folder, FolderPlus, Plus } from 'lucide-react';
 import { UserMenu } from '@/components/auth/UserMenu';
+import { BrandMark } from '@/components/common/BrandMark';
 import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
 import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
@@ -78,11 +79,19 @@ function sortProjects(projects: Project[], sortMode: SortMode) {
   });
 }
 
-function mergeProjectsWithMock(serverProjects: Project[], currentProjects: Project[] = []) {
+function mergeProjectsWithMock(
+  serverProjects: Project[],
+  currentProjects: Project[] = [],
+  serverProjectsAuthoritative = true,
+) {
+  const formalProjects = serverProjectsAuthoritative
+    ? serverProjects
+    : currentProjects.filter((project) => project.workspaceMode === 'local-server');
+  if (formalProjects.length === 0) return mockProjects;
+
   const merged = new Map<string, Project>();
-  for (const project of mockProjects) merged.set(project.id, project);
   const currentProjectById = new Map(currentProjects.map((project) => [project.id, project]));
-  for (const project of serverProjects) {
+  for (const project of formalProjects) {
     const currentProject = currentProjectById.get(project.id);
     const currentThumbnail = currentProject?.thumbnail;
     merged.set(project.id, {
@@ -112,7 +121,7 @@ function SortDropdown({ value, onChange }: { value: SortMode; onChange: (value: 
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="inline-flex h-9 min-w-48 items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.075] px-3 text-sm font-medium text-white transition hover:bg-white/[0.12]"
+        className="inline-flex h-9 min-w-44 items-center justify-between gap-3 rounded-md border border-white/12 bg-[#262731] px-3 text-[13px] font-medium text-white/86 transition hover:border-white/20 hover:bg-[#30313b] hover:text-white"
       >
         <span>{selected.label}</span>
         <ChevronDown className="h-4 w-4 text-white/52" />
@@ -296,7 +305,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       setServerState(isAuthRequired ? 'online' : 'offline');
       if (isAuthRequired) {
         setFolders([]);
-        setProjects(mergeProjectsWithMock([], projects));
+        setProjects(mergeProjectsWithMock([], projects, false));
         setPageNotice({
           tone: 'warning',
           title: '需要飞书登录',
@@ -432,7 +441,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         : t('workspaceOffline');
 
   return (
-    <main className="liclick-surface min-h-screen text-white">
+    <main className="li3d-home-surface min-h-screen text-white">
       {nameDialog?.type === 'new-folder' && (
         <NameDialog
           title={t('createFolder')}
@@ -510,27 +519,14 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         />
       )}
 
-      <section className="mx-auto w-full max-w-[1240px] px-6 py-12 sm:px-8 lg:py-16">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-medium tracking-normal text-white">{t('projects')}</h1>
-            <div className="mt-2 flex items-center gap-2 text-xs text-white/42">
-              <HardDrive className="h-3.5 w-3.5" />
-              <span>{statusText}</span>
-              <button
-                type="button"
-                onClick={() => void refreshWorkspace(true)}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-white/56 transition hover:bg-white/10 hover:text-white"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                {t('retry')}
-              </button>
-            </div>
-          </div>
+      <header className="flex h-16 items-center px-4 sm:px-6">
+        <BrandMark />
+      </header>
 
-          <div className="flex flex-wrap items-center gap-2">
+      <section className="mx-auto w-full max-w-[1240px] px-4 pb-16 pt-1 sm:px-7 lg:px-8">
+        <div className="flex items-center justify-end gap-2">
             <Button
-              className="h-10 border-white/18 bg-black/18 px-4"
+              className="h-10 border-white/16 bg-transparent px-4 hover:border-white/28 hover:bg-white/8"
               icon={<FolderPlus className="h-4 w-4" />}
               onClick={() => setNameDialog({ type: 'new-folder' })}
             >
@@ -539,8 +535,15 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             <Button className="h-10 px-4" icon={<Plus className="h-4 w-4" />} variant="primary" onClick={() => void handleNewProject()}>
               {t('newProject')}
             </Button>
-            <UserMenu onLogout={onLogout} />
-          </div>
+            <UserMenu
+              onLogout={onLogout}
+              workspaceStatus={{
+                label: statusText,
+                state: serverState,
+                retryLabel: t('retry'),
+                onRetry: () => void refreshWorkspace(true),
+              }}
+            />
         </div>
 
         {pageNotice && (
@@ -558,16 +561,16 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
           </div>
         )}
 
-        <section className="mt-9">
-          <h2 className="mb-4 text-xl font-medium tracking-normal text-white/90">{t('folders')}</h2>
+        <section className="mt-5 sm:mt-6">
+          <h1 className="mb-4 text-[19px] font-medium tracking-[-0.01em] text-white/88">{t('folders')}</h1>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <button
               type="button"
               onClick={() => setActiveFolderId(undefined)}
-              className={`flex h-14 items-center gap-3 rounded-md border px-4 text-left text-sm font-semibold transition ${
+              className={`flex h-[54px] items-center gap-3 rounded-md border px-4 text-left text-sm font-semibold transition ${
                 activeFolderId === undefined
-                  ? 'border-white/32 bg-[#6f6f6f] text-white'
-                  : 'border-white/10 bg-[#303030] text-white/82 hover:border-white/20 hover:bg-[#383838]'
+                  ? 'border-violet-200/28 bg-[#686970] text-white shadow-[0_8px_22px_rgba(0,0,0,0.14)]'
+                  : 'border-white/[0.075] bg-[#303136] text-white/82 hover:border-white/18 hover:bg-[#383941]'
               }`}
             >
               <Folder className="h-5 w-5 shrink-0 text-white/68" />
@@ -576,10 +579,10 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             {folders.map((folder) => (
               <div
                 key={folder.id}
-                className={`flex h-14 items-center rounded-md border text-sm font-semibold transition ${
+                className={`flex h-[54px] items-center rounded-md border text-sm font-semibold transition ${
                   activeFolderId === folder.id
-                    ? 'border-white/32 bg-[#6f6f6f] text-white'
-                    : 'border-white/10 bg-[#303030] text-white/82 hover:border-white/20 hover:bg-[#383838]'
+                    ? 'border-violet-200/28 bg-[#686970] text-white shadow-[0_8px_22px_rgba(0,0,0,0.14)]'
+                    : 'border-white/[0.075] bg-[#303136] text-white/82 hover:border-white/18 hover:bg-[#383941]'
                 }`}
               >
                 <button
@@ -602,9 +605,9 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
           </div>
         </section>
 
-        <section className="mt-10">
+        <section className="mt-11">
           <div className="mb-4 flex items-center justify-between gap-4">
-            <h2 className="text-xl font-medium tracking-normal text-white/90">{t('projects')}</h2>
+            <h2 className="text-[19px] font-medium tracking-[-0.01em] text-white/88">{t('projects')}</h2>
             <SortDropdown value={sortMode} onChange={setSortMode} />
           </div>
           {visibleProjects.length === 0 ? (

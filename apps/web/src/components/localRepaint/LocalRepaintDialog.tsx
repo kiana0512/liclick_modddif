@@ -383,7 +383,7 @@ export function LocalRepaintDialog({
     syncCanvasSize();
     const canvas = canvasRef.current;
     const context = canvas
-      ? getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d')
+      ? getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d', { willReadFrequently: true })
       : undefined;
     if (!canvas || !context) throw new Error(t('localRepaintMaskMissing'));
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);

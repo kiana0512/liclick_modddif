@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Activity, Check, Cpu, Languages, Layers, LogIn, LogOut } from 'lucide-react';
+import { Activity, Check, Cpu, HardDrive, Languages, Layers, LogIn, LogOut, RefreshCw } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
@@ -8,7 +8,17 @@ import { useI18nStore, useT } from '@/stores/i18nStore';
 import { type ImageGenerationProvider, useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 
-export function UserMenu({ onLogout }: { onLogout: () => void }) {
+type UserMenuProps = {
+  onLogout: () => void;
+  workspaceStatus?: {
+    label: string;
+    state: 'checking' | 'online' | 'offline';
+    retryLabel: string;
+    onRetry: () => void;
+  };
+};
+
+export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loginStatus, setLoginStatus] = useState('');
@@ -154,6 +164,24 @@ export function UserMenu({ onLogout }: { onLogout: () => void }) {
               <div className="truncate text-xs text-white/46">{user.email ?? user.authSource}</div>
             </div>
           </div>
+          {workspaceStatus && (
+            <div className="mx-1 mb-1 flex items-center justify-between gap-3 rounded border border-white/8 bg-white/[0.035] px-3 py-2.5">
+              <span className="inline-flex min-w-0 items-center gap-2 text-xs text-white/68">
+                <HardDrive
+                  className={`h-4 w-4 shrink-0 ${workspaceStatus.state === 'offline' ? 'text-amber-300/82' : 'text-white/64'}`}
+                />
+                <span className="truncate">{workspaceStatus.label}</span>
+              </span>
+              <button
+                type="button"
+                onClick={workspaceStatus.onRetry}
+                className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-white/58 transition hover:bg-white/10 hover:text-white"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${workspaceStatus.state === 'checking' ? 'animate-spin' : ''}`} />
+                {workspaceStatus.retryLabel}
+              </button>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setLanguage(language === 'zh' ? 'en' : 'zh')}

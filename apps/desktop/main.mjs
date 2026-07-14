@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeTheme, shell } from 'electron';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
@@ -13,11 +13,12 @@ const logsDir = path.join(appDataRoot, 'logs');
 const workspaceDir = process.env.LICLICK_WORKSPACE_DIR ?? path.join(appDataRoot, 'workspace');
 const workspacePort = process.env.LICLICK_WORKSPACE_PORT ?? '4617';
 const webPort = process.env.LICLICK_WEB_PORT ?? '5673';
-const workspaceUrl = process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? `http://127.0.0.1:${workspacePort}`;
+const workspaceUrl =
+  process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? `http://127.0.0.1:${workspacePort}`;
 const webUrl = process.env.LICLICK_FRONTEND_URL ?? `http://127.0.0.1:${webPort}`;
 const rendererUrl = new URL('./renderer/index.html', import.meta.url);
 const iconPath = path.join(appRoot, 'assets', 'liclick-icon.png');
-const shellBuild = '2026.07.08.1508';
+const shellBuild = '2026.07.14.1518';
 
 const state = {
   launcherPid: undefined,
@@ -141,7 +142,8 @@ async function checkHealth() {
       workspace = 'starting';
     }
   }
-  const web = webResult.ok && /Liclick|3D Texture|root/i.test(webResult.body) ? 'online' : 'offline';
+  const web =
+    webResult.ok && /Liclick|3D Texture|root/i.test(webResult.body) ? 'online' : 'offline';
   const phase =
     workspace === 'online' && web === 'online'
       ? 'running'
@@ -153,7 +155,11 @@ async function checkHealth() {
       ? '前后端服务已就绪，可以打开工作台。'
       : phase === 'starting'
         ? '正在检查并启动本地服务。'
-        : '服务未运行。';
+        : workspace === 'online'
+          ? '后端已就绪，前端工作台尚未启动。'
+          : web === 'online'
+            ? '前端已响应，正在等待后端服务。'
+            : '服务未运行。';
   setState({ workspace, web, phase, message });
 }
 
@@ -198,7 +204,13 @@ async function resolveNodeExe() {
   }
   setState({ phase: 'starting', message: '首次启动正在准备本地 Node 运行时，窗口仍可正常操作。' });
   emitLog('[desktop] Node.js was not found. Installing local runtime asynchronously...');
-  const result = await streamProcess('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', bootstrap]);
+  const result = await streamProcess('powershell', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    bootstrap,
+  ]);
   if (result.status !== 0) return undefined;
   return fs.existsSync(localNode) ? localNode : undefined;
 }
@@ -214,7 +226,11 @@ async function startServices() {
   }
 
   isStarting = true;
-  setState({ phase: 'starting', message: '正在准备 Liclick 本地服务。', startedAt: new Date().toISOString() });
+  setState({
+    phase: 'starting',
+    message: '正在准备 Liclick 本地服务。',
+    startedAt: new Date().toISOString(),
+  });
   emitLog('[desktop] starting Liclick desktop service flow...');
   emitLog(`[desktop] install root: ${appRoot}`);
   emitLog(`[desktop] logs: ${logsDir}`);
@@ -237,22 +253,26 @@ async function startServices() {
     setState({ phase: 'starting', message: '正在启动 Liclick 本地服务。' });
     emitLog(`[desktop] launching services with ${nodeExe}`);
 
-    launcherProcess = spawn(nodeExe, [path.join(appRoot, 'scripts', 'windows-desktop-launcher.mjs')], {
-      cwd: appRoot,
-      env: {
-        ...process.env,
-        LICLICK_OPEN_BROWSER: '0',
-        LICLICK_WINDOWS_HIDE: '1',
-        LICLICK_WORKSPACE_PORT: workspacePort,
-        LICLICK_WEB_PORT: webPort,
-        LICLICK_PUBLIC_WORKSPACE_URL: workspaceUrl,
-        VITE_LICLICK_WORKSPACE_API: workspaceUrl,
-        LICLICK_FRONTEND_URL: webUrl,
-        LICLICK_WORKSPACE_DIR: workspaceDir,
+    launcherProcess = spawn(
+      nodeExe,
+      [path.join(appRoot, 'scripts', 'windows-desktop-launcher.mjs')],
+      {
+        cwd: appRoot,
+        env: {
+          ...process.env,
+          LICLICK_OPEN_BROWSER: '0',
+          LICLICK_WINDOWS_HIDE: '1',
+          LICLICK_WORKSPACE_PORT: workspacePort,
+          LICLICK_WEB_PORT: webPort,
+          LICLICK_PUBLIC_WORKSPACE_URL: workspaceUrl,
+          VITE_LICLICK_WORKSPACE_API: workspaceUrl,
+          LICLICK_FRONTEND_URL: webUrl,
+          LICLICK_WORKSPACE_DIR: workspaceDir,
+        },
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
       },
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    );
 
     setState({ launcherPid: launcherProcess.pid });
     emitLog(`[desktop] launcher PID: ${launcherProcess.pid}`);
@@ -264,7 +284,9 @@ async function startServices() {
       setState({ launcherPid: undefined, phase: 'error', message: error.message });
     });
     launcherProcess.on('exit', (code, signal) => {
-      emitLog(`[desktop] launcher stopped (${signal ? `signal ${signal}` : `exit code ${code ?? 0}`}).`);
+      emitLog(
+        `[desktop] launcher stopped (${signal ? `signal ${signal}` : `exit code ${code ?? 0}`}).`,
+      );
       launcherProcess = undefined;
       setState({
         launcherPid: undefined,
@@ -282,14 +304,26 @@ async function startServices() {
 function stopServices() {
   if (bootstrapProcess?.pid) {
     emitLog('[desktop] stopping runtime preparation...');
-    spawnSync('taskkill', ['/PID', String(bootstrapProcess.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    spawnSync('taskkill', ['/PID', String(bootstrapProcess.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
     bootstrapProcess = undefined;
   }
   if (!launcherProcess?.pid) return;
   emitLog('[desktop] stopping Liclick services...');
-  spawnSync('taskkill', ['/PID', String(launcherProcess.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  spawnSync('taskkill', ['/PID', String(launcherProcess.pid), '/T', '/F'], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
   launcherProcess = undefined;
-  setState({ launcherPid: undefined, phase: 'stopped', message: '服务已关闭。', workspace: 'offline', web: 'offline' });
+  setState({
+    launcherPid: undefined,
+    phase: 'stopped',
+    message: '服务已关闭。',
+    workspace: 'offline',
+    web: 'offline',
+  });
 }
 
 function restartServices() {
@@ -304,11 +338,18 @@ function openWorkspace() {
   shell.openExternal(webUrl);
 }
 
+function openWorkspaceDir() {
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  shell.openPath(workspaceDir);
+}
+
 function autoOpenWorkspace() {
   if (hasAutoOpenedWorkspace) return;
   hasAutoOpenedWorkspace = true;
   emitLog(`[desktop] opening workspace in browser: ${webUrl}`);
-  shell.openExternal(webUrl).catch((error) => emitLog(`[desktop] failed to open workspace: ${error.message}`));
+  shell
+    .openExternal(webUrl)
+    .catch((error) => emitLog(`[desktop] failed to open workspace: ${error.message}`));
 }
 
 function openLogsDir() {
@@ -324,13 +365,19 @@ function showWindow() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 980,
-    height: 680,
-    minWidth: 520,
-    minHeight: 420,
-    title: 'Liclick 3D Texture',
+    width: 1360,
+    height: 860,
+    minWidth: 1024,
+    minHeight: 680,
+    title: 'LIclick 3D Texture',
     icon: iconPath,
-    backgroundColor: '#f4f2ec',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#101014',
+      symbolColor: '#f4f4f6',
+      height: 40,
+    },
+    backgroundColor: '#0d0d10',
     show: false,
     webPreferences: {
       preload: path.join(appRoot, 'apps', 'desktop', 'preload.cjs'),
@@ -352,7 +399,7 @@ function createWindow() {
     if (!hasShownTrayHint) {
       hasShownTrayHint = true;
       tray?.displayBalloon?.({
-        title: 'Liclick 3D Texture 正在后台运行',
+        title: 'LIclick 3D Texture 正在后台运行',
         content: '启动器已收回到系统托盘。需要彻底关闭时，请右键托盘图标选择“彻底关闭”。',
       });
     }
@@ -361,14 +408,23 @@ function createWindow() {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const status = state.phase === 'running' ? '服务运行中' : state.phase === 'starting' ? '正在启动' : '服务未运行';
-  tray.setToolTip(`Liclick 3D Texture - ${status}`);
+  const status =
+    state.phase === 'running'
+      ? '服务运行中'
+      : state.phase === 'starting'
+        ? '正在启动'
+        : '服务未运行';
+  tray.setToolTip(`LIclick 3D Texture - ${status}`);
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: status, enabled: false },
       { type: 'separator' },
       { label: '打开启动器', click: showWindow },
-      { label: '隐藏启动器', click: () => mainWindow?.hide(), enabled: Boolean(mainWindow?.isVisible()) },
+      {
+        label: '隐藏启动器',
+        click: () => mainWindow?.hide(),
+        enabled: Boolean(mainWindow?.isVisible()),
+      },
       { label: '打开工作台', click: openWorkspace, enabled: state.web === 'online' },
       { label: '打开日志目录', click: openLogsDir },
       { type: 'separator' },
@@ -397,7 +453,8 @@ if (!gotLock) {
 } else {
   app.on('second-instance', showWindow);
   app.whenReady().then(() => {
-    app.setName('Liclick 3D Texture');
+    app.setName('LIclick 3D Texture');
+    nativeTheme.themeSource = 'dark';
     Menu.setApplicationMenu(null);
     createWindow();
     createTray();
@@ -423,6 +480,7 @@ ipcMain.handle('launcher:start', () => startServices());
 ipcMain.handle('launcher:restart', () => restartServices());
 ipcMain.handle('launcher:stop', () => stopServices());
 ipcMain.handle('launcher:open-workspace', () => openWorkspace());
+ipcMain.handle('launcher:open-workspace-dir', () => openWorkspaceDir());
 ipcMain.handle('launcher:open-logs', () => openLogsDir());
 ipcMain.handle('launcher:show-window', () => showWindow());
 ipcMain.handle('launcher:quit', () => {

@@ -76,7 +76,7 @@ import {
   focusCameraOrbitOnObjectId,
   setCameraToObjectView,
 } from '@/engine/scene/transformActions';
-import { applySerializedCamera } from '@/engine/projection/ProjectionCamera';
+import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
@@ -151,6 +151,7 @@ const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 1536;
 const IMAGE_EDIT_MAPPED_PREVIEW_SIZE = 3072;
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
+const PROJECT_THUMBNAIL_SIZE = 2048;
 
 function isLocalRepaintGeneration(generation: Generation) {
   return generation.metadata.workflow === 'local-repaint';
@@ -395,7 +396,7 @@ function composeThumbnailBackground(sourceCanvas: HTMLCanvasElement) {
   return targetCanvas;
 }
 
-function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
+function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement, fillRatio = 0.8) {
   const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
   if (!sourceContext) return sourceCanvas;
   const { width, height } = sourceCanvas;
@@ -410,8 +411,7 @@ function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
     for (let x = 0; x < width; x += 1) {
       const offset = (y * width + x) * 4;
       const alpha = data[offset + 3];
-      const brightness = data[offset] + data[offset + 1] + data[offset + 2];
-      if (alpha <= 8 || brightness <= 54) continue;
+      if (alpha <= 8) continue;
       left = Math.min(left, x);
       top = Math.min(top, y);
       right = Math.max(right, x);
@@ -428,7 +428,6 @@ function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
 
   const cropWidth = right - left + 1;
   const cropHeight = bottom - top + 1;
-  if (cropWidth >= width * 0.88 && cropHeight >= height * 0.88) return sourceCanvas;
 
   const targetCanvas = document.createElement('canvas');
   targetCanvas.width = width;
@@ -440,7 +439,7 @@ function cropThumbnailToVisibleContent(sourceCanvas: HTMLCanvasElement) {
   targetContext.imageSmoothingEnabled = true;
   targetContext.imageSmoothingQuality = 'high';
 
-  const scale = Math.min(width / cropWidth, height / cropHeight) * 0.92;
+  const scale = Math.min(width / cropWidth, height / cropHeight) * fillRatio;
   const drawWidth = cropWidth * scale;
   const drawHeight = cropHeight * scale;
   targetContext.drawImage(
@@ -611,9 +610,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const serverLoadedProjectIdRef = useRef<string>();
   const restoredModelKeyRef = useRef<string>();
   const autosaveTimerRef = useRef<number>();
+  const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
   const localRepaintCutoutCacheRef = useRef(new Map<string, Promise<string>>());
+  const standardProjectThumbnailCaptureRef = useRef<() => string | undefined>(() => undefined);
   const thumbnailRefreshTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
@@ -961,7 +962,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       thumbnail:
         options.refreshThumbnail === false
           ? project.thumbnail
-          : (getViewportThumbnailDataUrl() ?? project.thumbnail),
+          : (getStandardProjectThumbnailDataUrl() ?? project.thumbnail),
       objects: useSceneStore.getState().objects,
       layers: useLayerStore.getState().layers,
       generations: useGenerationStore.getState().generations,
@@ -979,6 +980,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       width?: number;
       height?: number;
       cropVisibleContent?: boolean;
+      visibleContentFill?: number;
       matchCameraToRenderAspect?: boolean;
     } = {},
   ) {
@@ -1053,7 +1055,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       const thumbnailCanvas = document.createElement('canvas');
       thumbnailCanvas.width = options.width ?? 640;
       thumbnailCanvas.height = options.height ?? 420;
-      const context = thumbnailCanvas.getContext('2d');
+      const context = thumbnailCanvas.getContext('2d', { willReadFrequently: true });
       if (!context) return undefined;
 
       const sourceAspect = canvas.width / canvas.height;
@@ -1091,17 +1093,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         let visibleSamples = 0;
         const stride = Math.max(4, Math.floor(sample.length / 4000 / 4) * 4);
         for (let offset = 0; offset < sample.length; offset += stride) {
-          if (
-            sample[offset + 3] > 8 &&
-            sample[offset] + sample[offset + 1] + sample[offset + 2] > 45
-          )
-            visibleSamples += 1;
+          if (sample[offset + 3] > 8) visibleSamples += 1;
           if (visibleSamples > 16) break;
         }
         if (visibleSamples <= 16) return undefined;
       }
       const contentCanvas = options.cropVisibleContent
-        ? cropThumbnailToVisibleContent(thumbnailCanvas)
+        ? cropThumbnailToVisibleContent(thumbnailCanvas, options.visibleContentFill)
         : thumbnailCanvas;
       const outputCanvas = composeThumbnailBackground(contentCanvas);
       return outputCanvas.toDataURL('image/png');
@@ -1131,6 +1129,139 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
     }
   }
+
+  function getStandardProjectThumbnailDataUrl() {
+    const sceneState = useSceneStore.getState();
+    const models = sceneState.importedModels;
+    if (models.length === 0) return getViewportThumbnailDataUrl();
+    const viewportRuntime = sceneState.viewport;
+
+    const originalModelStates = models.map((model) => ({
+      group: model.group,
+      parent: model.group.parent,
+      siblingIndex: model.group.parent?.children.indexOf(model.group) ?? -1,
+      position: model.group.position.clone(),
+      quaternion: model.group.quaternion.clone(),
+      scale: model.group.scale.clone(),
+      visible: model.group.visible,
+    }));
+
+    try {
+      if (viewportRuntime) {
+        for (const model of models) {
+          if (!viewportRuntime.scene.getObjectById(model.group.id)) {
+            viewportRuntime.scene.attach(model.group);
+            model.group.updateMatrixWorld(true);
+          }
+        }
+      }
+
+      if (models.length > 1) {
+        const modelExtent = 1.82;
+        const modelGap = 0.24;
+        const packedWidths: number[] = [];
+
+        models.forEach((model) => {
+          const { group } = model;
+          group.visible = true;
+          group.updateMatrixWorld(true);
+          const initialBounds = new THREE.Box3().setFromObject(group);
+          const initialSize = initialBounds.getSize(new THREE.Vector3());
+          const maxDimension = Math.max(initialSize.x, initialSize.y, initialSize.z);
+          if (maxDimension > Number.EPSILON) {
+            group.scale.multiplyScalar(modelExtent / maxDimension);
+            group.updateMatrixWorld(true);
+          }
+
+          const packedBounds = new THREE.Box3().setFromObject(group);
+          const packedSize = packedBounds.getSize(new THREE.Vector3());
+          packedWidths.push(Math.max(packedSize.x, modelExtent * 0.18));
+        });
+
+        const packedRowWidth =
+          packedWidths.reduce((sum, width) => sum + width, 0) +
+          modelGap * Math.max(models.length - 1, 0);
+        let cursorX = -packedRowWidth / 2;
+
+        models.forEach((model, index) => {
+          const { group } = model;
+          const width = packedWidths[index];
+          const targetCenter = new THREE.Vector3(cursorX + width / 2, 0, 0);
+          const packedBounds = new THREE.Box3().setFromObject(group);
+          const packedCenter = packedBounds.getCenter(new THREE.Vector3());
+          group.position.add(targetCenter.sub(packedCenter));
+          group.updateMatrixWorld(true);
+          cursorX += width + modelGap;
+        });
+      } else {
+        models[0].group.visible = true;
+        models[0].group.updateMatrixWorld(true);
+      }
+
+      const bounds = new THREE.Box3();
+      for (const model of models) {
+        model.group.updateMatrixWorld(true);
+        bounds.union(new THREE.Box3().setFromObject(model.group));
+      }
+      if (bounds.isEmpty()) return getViewportThumbnailDataUrl();
+
+      const center = bounds.getCenter(new THREE.Vector3());
+      const size = bounds.getSize(new THREE.Vector3());
+      const aspect = 1;
+      const fov = 35;
+      const halfFov = THREE.MathUtils.degToRad(fov / 2);
+      const distanceForHeight = size.y / 2 / Math.tan(halfFov);
+      const distanceForWidth = size.x / 2 / (Math.tan(halfFov) * aspect);
+      const distance = Math.max(distanceForHeight, distanceForWidth, 0.5) + size.z * 0.4;
+      const camera = new THREE.PerspectiveCamera(
+        fov,
+        aspect,
+        0.01,
+        Math.max(distance + Math.max(size.x, size.y, size.z) * 8, 100),
+      );
+      camera.position.set(center.x, center.y, center.z + distance);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(center);
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld(true);
+
+      return getViewportThumbnailDataUrl({
+        camera: serializeCamera(camera, aspect, center),
+        width: PROJECT_THUMBNAIL_SIZE,
+        height: PROJECT_THUMBNAIL_SIZE,
+        cropVisibleContent: true,
+        visibleContentFill: models.length > 1 ? 0.9 : 0.8,
+        matchCameraToRenderAspect: true,
+      });
+    } finally {
+      for (const state of originalModelStates) {
+        if (state.group.parent !== state.parent) {
+          state.group.removeFromParent();
+          if (state.parent) {
+            state.parent.add(state.group);
+            if (state.siblingIndex >= 0) {
+              const currentIndex = state.parent.children.indexOf(state.group);
+              state.parent.children.splice(currentIndex, 1);
+              state.parent.children.splice(
+                Math.min(state.siblingIndex, state.parent.children.length),
+                0,
+                state.group,
+              );
+            }
+          }
+        }
+        state.group.position.copy(state.position);
+        state.group.quaternion.copy(state.quaternion);
+        state.group.scale.copy(state.scale);
+        state.group.visible = state.visible;
+        state.group.updateMatrixWorld(true);
+      }
+      if (viewportRuntime) {
+        viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
+      }
+    }
+  }
+  standardProjectThumbnailCaptureRef.current = getStandardProjectThumbnailDataUrl;
 
   const getCurrentCameraSnapshot = useCallback(() => {
     const viewportRuntime = useSceneStore.getState().viewport;
@@ -1300,11 +1431,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     (delayMs = 900) => {
       window.clearTimeout(thumbnailRefreshTimerRef.current);
       thumbnailRefreshTimerRef.current = window.setTimeout(() => {
-        const thumbnail = getViewportThumbnailDataUrl();
+        const thumbnail = standardProjectThumbnailCaptureRef.current();
         if (thumbnail) updateCurrentProject({ thumbnail });
       }, delayMs);
-      // Thumbnail capture reads the latest viewport/store state when the debounce fires.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [updateCurrentProject],
   );
@@ -1616,6 +1745,46 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return result;
   }
 
+  async function handleBackToProjects() {
+    if (backNavigationPendingRef.current) return;
+    const currentProject = useProjectStore.getState().getCurrentProject();
+    if (!currentProject || currentProject.workspaceMode !== 'local-server') {
+      onBack();
+      return;
+    }
+
+    backNavigationPendingRef.current = true;
+    window.clearTimeout(autosaveTimerRef.current);
+    window.clearTimeout(thumbnailRefreshTimerRef.current);
+    const thumbnail = getStandardProjectThumbnailDataUrl();
+    if (thumbnail) updateCurrentProject({ thumbnail });
+    const snapshot = getProjectSnapshot();
+    if (!snapshot) {
+      backNavigationPendingRef.current = false;
+      onBack();
+      return;
+    }
+
+    setSaveStatus('saving');
+    try {
+      await saveToWorkspaceServer({
+        ...snapshot,
+        thumbnail: thumbnail ?? snapshot.thumbnail,
+      });
+      setSaveStatus('saved');
+      onBack();
+    } catch (error) {
+      backNavigationPendingRef.current = false;
+      setSaveStatus('failed');
+      pushToast({
+        tone: 'error',
+        title: '返回项目前保存失败',
+        description: error instanceof Error ? error.message : '项目缩略图未能写入本地工作区。',
+        dedupeKey: 'workspace-save-before-back-failed',
+      });
+    }
+  }
+
   function getBakeProgressDetail(progress: BakeProgress) {
     const percent = Math.round(progress.progress * 100);
     const triangleDetail =
@@ -1803,7 +1972,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         activeObjectId: object.id,
       });
       window.setTimeout(() => {
-        const thumbnail = getViewportThumbnailDataUrl();
+        const thumbnail = getStandardProjectThumbnailDataUrl();
         if (thumbnail) updateCurrentProject({ thumbnail });
       }, 300);
       pushToast({
@@ -3203,6 +3372,24 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return;
       }
 
+      if (isPrimaryModifier && event.shiftKey && key === 'a' && !event.altKey) {
+        event.preventDefault();
+        if (sceneState.importedModels.length === 0) {
+          pushToast({ tone: 'warning', title: t('importModelFirst') });
+          return;
+        }
+        captureHistory(t('arrangeModels'));
+        sceneState.arrangeImportedModels();
+        updateCurrentProject({ objects: useSceneStore.getState().objects });
+        pushToast({
+          tone: 'success',
+          title: t('modelsArranged'),
+          description: 'Ctrl+Shift+A',
+          dedupeKey: 'models-arranged',
+        });
+        return;
+      }
+
       if (currentWorkspaceMode === 'texture' && isPrimaryModifier && event.shiftKey && key === 'd') {
         event.preventDefault();
         sceneState.clearPaintMask();
@@ -3364,7 +3551,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
     window.addEventListener('keydown', handleEditorShortcuts);
     return () => window.removeEventListener('keydown', handleEditorShortcuts);
-  }, [captureHistory, handleLocalRepaintFromToolbar, pushToast, t]);
+  }, [captureHistory, handleLocalRepaintFromToolbar, pushToast, t, updateCurrentProject]);
 
   const panelDefinitions = (
     [
@@ -3627,7 +3814,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       <EditorShell
         projectName={project?.name ?? 'Untitled Project'}
         workspaceLabel={getWorkspaceLabel()}
-        onBack={onBack}
+        onBack={handleBackToProjects}
         exportMenu={
           <ExportMenu
             canExportScene={Boolean(importedModel && viewport)}

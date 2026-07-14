@@ -52,6 +52,19 @@ button {
     linear-gradient(135deg, rgba(139, 92, 246, 0.2), transparent 42rem), #0e1020;
 }
 
+.li3d-home-surface {
+  background:
+    radial-gradient(circle at 0 10%, rgba(103, 62, 158, 0.28), transparent 30rem),
+    linear-gradient(115deg, rgba(69, 40, 103, 0.28), transparent 36rem),
+    #090a17;
+}
+
+@media (max-width: 430px) {
+  .li3d-brand-copy {
+    display: none;
+  }
+}
+
 .scrollbar-none {
   scrollbar-width: none;
   -ms-overflow-style: none;

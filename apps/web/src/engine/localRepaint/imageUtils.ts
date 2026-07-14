@@ -29,7 +29,7 @@ export async function urlToImageData(url: string, width?: number, height?: numbe
   const canvas = document.createElement('canvas');
   canvas.width = width ?? (image.naturalWidth || image.width);
   canvas.height = height ?? (image.naturalHeight || image.height);
-  const context = canvas.getContext('2d');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create image canvas.');
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   return context.getImageData(0, 0, canvas.width, canvas.height);
@@ -57,7 +57,7 @@ export function cropImage(image: ImageData, rect: Rect) {
   const output = document.createElement('canvas');
   output.width = rect.w;
   output.height = rect.h;
-  const outputContext = output.getContext('2d');
+  const outputContext = output.getContext('2d', { willReadFrequently: true });
   if (!outputContext) throw new Error('Could not create output crop canvas.');
   outputContext.drawImage(canvas, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
   return outputContext.getImageData(0, 0, rect.w, rect.h);
@@ -124,7 +124,7 @@ export function resizeImageData(imageData: ImageData, width: number, height: num
   const output = document.createElement('canvas');
   output.width = width;
   output.height = height;
-  const outputContext = output.getContext('2d');
+  const outputContext = output.getContext('2d', { willReadFrequently: true });
   if (!outputContext) throw new Error('Could not resize image.');
   outputContext.drawImage(canvas, 0, 0, width, height);
   return outputContext.getImageData(0, 0, width, height);
