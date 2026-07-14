@@ -5,9 +5,11 @@
 :root {
   color-scheme: dark;
   font-family:
-    "Inter var", Inter, "SF Pro Text", "SF Pro Display", "Segoe UI Variable",
-    "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    "Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "Inter var", Inter,
+    "SF Pro Text", "SF Pro Display", "Segoe UI Variable", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", Arial,
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-synthesis: none;
   background: #0e1020;
   color: #f7f4ff;
 }

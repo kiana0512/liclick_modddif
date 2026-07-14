@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Eraser, Paintbrush, RotateCcw, Square, WandSparkles, X } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { useT } from '@/stores/i18nStore';
+import { shortcutMatches } from '@/stores/shortcutStore';
 import type { MaskBitmap } from '@/types/localRepaint';
 import type { ReferenceImage } from '@/types/project';
 
@@ -140,11 +141,14 @@ export function LocalRepaintDialog({
         (target instanceof HTMLElement && target.isContentEditable)
       ) return;
       if (event.key === 'Escape') onCancel();
-      else if (event.key.toLowerCase() === 'b') setTool('brush');
-      else if (event.key.toLowerCase() === 'e') setTool('erase');
-      else if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
+      else if (shortcutMatches(event, 'repaint.brush')) setTool('brush');
+      else if (shortcutMatches(event, 'repaint.eraser')) setTool('erase');
+      else if (
+        shortcutMatches(event, 'repaint.brushSmaller') ||
+        shortcutMatches(event, 'repaint.brushLarger')
+      ) {
         event.preventDefault();
-        const direction = event.code === 'BracketLeft' ? -1 : 1;
+        const direction = shortcutMatches(event, 'repaint.brushSmaller') ? -1 : 1;
         setBrushSize((value) => Math.max(2, Math.min(MAX_LOCAL_REPAINT_BRUSH_SIZE, value + direction * 2)));
       }
     };
@@ -499,7 +503,7 @@ export function LocalRepaintDialog({
   const displayError = error ?? localError;
 
   return createPortal(
-    <div className="fixed inset-0 z-[120] grid place-items-center bg-black/62 p-4 backdrop-blur-sm">
+    <div data-editor-shortcut-scope="repaint" className="fixed inset-0 z-[120] grid place-items-center bg-black/62 p-4 backdrop-blur-sm">
       <section className="grid max-h-[94vh] w-full max-w-[min(92vw,1480px)] grid-cols-[minmax(0,1fr)_320px] overflow-hidden rounded-lg border border-white/16 bg-[#11121c] text-white shadow-[0_30px_90px_rgba(0,0,0,0.58)]">
         <div ref={frameRef} className="relative min-h-[min(760px,88vh)] overflow-hidden bg-[#070811]">
           <img

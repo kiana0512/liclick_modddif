@@ -26,7 +26,7 @@ import {
 } from '@/engine/scene/transformActions';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
 import { devLogin } from '@/services/authApiClient';
-import { createComfyuiApiClient, type ComfyControlFile } from '@/services/comfyuiApiClient';
+import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import {
   createLiclickApiClient,
@@ -440,7 +440,6 @@ export function GeneratePanel() {
     [activeReferenceIds, selectedReferenceIds],
   );
   const resolution = useSettingsStore((state) => state.resolution);
-  const imageGenerationProvider = useSettingsStore((state) => state.imageGenerationProvider);
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
   const providerStatus = useAuthStore((state) => state.providerStatus);
@@ -959,20 +958,6 @@ export function GeneratePanel() {
     return captureTextureMapCameraView();
   }
 
-  async function captureComfyTextureMapReferenceView() {
-    if (!importedModel) throw new Error(t('importModelFirst'));
-    const objectId = selectedObjectId ?? importedModel.objectId;
-    const capture = await captureCurrentView({
-      objectId,
-      resolution: resolutionToSize[resolution],
-      framing: 'fit-object',
-      colorMode: 'clay-target',
-      fillRatio: 0.92,
-    });
-    setLastCapture(capture);
-    return capture;
-  }
-
   async function getTextureMapMultiviewCaptures(views: CameraViewItem[]) {
     const captures: Partial<Record<string, Capture>> = {};
     for (const view of views) {
@@ -1269,62 +1254,6 @@ export function GeneratePanel() {
     }
   }
 
-  async function blobToDataUrl(blob: Blob) {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () =>
-        reject(reader.error ?? new Error('Could not read ComfyUI control image.'));
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  async function createComfyControlFiles(
-    materialReference: ReferenceImage,
-    materialPrompt: string,
-  ): Promise<ComfyControlFile[]> {
-    if (!currentProject) throw new Error('请先打开一个项目。');
-    if (!importedModel) throw new Error(t('importModelFirst'));
-    const viewport = useSceneStore.getState().viewport;
-    if (!viewport) throw new Error(t('viewportUnavailable'));
-    const requiredPaths = new Set([
-      'render/01_white_render.png',
-      'masks/01_object_mask.png',
-      'controlnet_ready/control_depth.png',
-      'material/02_material_reference_cropped.png',
-      'geometry/08_normal_view.png',
-    ]);
-    const { createComfyRuntimeControlFiles } =
-      await import('@/engine/export/comfyControlInputExporter');
-    const exportResult = await createComfyRuntimeControlFiles({
-      project: currentProject,
-      viewport,
-      importedModel,
-      selectedObjectId: selectedObjectId ?? importedModel.objectId,
-      references: [materialReference],
-      options: {
-        width: 4096,
-        height: 4096,
-        materialPrompt,
-      },
-    });
-    const files = await Promise.all(
-      exportResult.files
-        .filter((file) =>
-          [...requiredPaths].some((requiredPath) => file.path.endsWith(requiredPath)),
-        )
-        .map(async (file) => ({
-          path: file.path.slice(exportResult.rootPrefix.length + 1),
-          dataUrl: await blobToDataUrl(
-            file.data instanceof Blob ? file.data : new Blob([file.data]),
-          ),
-        })),
-    );
-    if (files.length !== requiredPaths.size)
-      throw new Error('ComfyUI 控制图导出不完整，请检查当前模型和参考图。');
-    return files;
-  }
-
   async function handleLocalRepaintGenerate() {
     let pendingGeneration: Generation | undefined;
     try {
@@ -1595,93 +1524,6 @@ export function GeneratePanel() {
       submitLockRef.current = true;
       if (textureMapViewMode === 'multi-view') {
         await handleTextureMapMultiviewGenerate(materialReference);
-        return;
-      }
-      if (imageGenerationProvider === 'comfyui') {
-        const capture = await captureComfyTextureMapReferenceView();
-        const object = objects.find((item) => item.id === capture.objectId);
-        if (authStatus !== 'authenticated' && !(await requireAiLogin())) return;
-        const texturePrompt = prompt.trim();
-        const generationId = createId('texture-map');
-        const objectMatrixWorld = getImportedModelMatrixWorld(capture.objectId);
-        const modelViewReference: ReferenceImage = {
-          id: `${capture.id}-model-view`,
-          name: 'Current model view',
-          url: capture.colorUrl,
-          width: capture.width,
-          height: capture.height,
-          objectId: capture.objectId,
-          isPrimary: false,
-        };
-        pendingGeneration = {
-          id: generationId,
-          mode: 'single',
-          prompt: texturePrompt,
-          referenceIds: [modelViewReference.id, materialReference.id],
-          captureId: capture.id,
-          status: 'running',
-          metadata: {
-            provider: 'comfyui-local',
-            workflow: 'texture-map',
-            clientGenerationId: generationId,
-            projectId: currentProject?.id,
-            objectId: object?.id,
-            objectMatrixWorld,
-            materialReferenceId: materialReference.id,
-            modelViewReferenceId: modelViewReference.id,
-            resolution,
-            serverSubmitted: false,
-            startedAt: new Date().toISOString(),
-            alphaMode: 'pending-guided-foreground-matte',
-          },
-        };
-        start(pendingGeneration);
-        addProjectGeneration(pendingGeneration);
-        setGenerateNotice({
-          tone: 'info',
-          message: t('comfyTextureMapSubmitting'),
-        });
-        const comfyAbortController = new AbortController();
-        comfyGenerationAbortRef.current = comfyAbortController;
-        const files = await createComfyControlFiles(materialReference, texturePrompt);
-        if (isCancelledGeneration(pendingGeneration)) return;
-        const generation = await createComfyuiApiClient().generateTextureMap(
-          {
-            clientGenerationId: generationId,
-            projectId: currentProject?.id,
-            prompt: texturePrompt,
-            referenceIds: [modelViewReference.id, materialReference.id],
-            captureId: capture.id,
-            objectId: object?.id,
-            materialReferenceId: materialReference.id,
-            resolution,
-            files,
-          },
-          {
-            signal: comfyAbortController.signal,
-          },
-        );
-        if (isCancelledGeneration(pendingGeneration)) return;
-        const textureMapGeneration: Generation = {
-          ...generation,
-          metadata: {
-            ...generation.metadata,
-            workflow: 'texture-map',
-            objectMatrixWorld,
-            materialReferenceId: materialReference.id,
-            modelViewReferenceId: modelViewReference.id,
-            serverSubmitted: true,
-            serverJobId: generation.metadata.serverJobId ?? generation.id,
-            alphaMode: 'pending-guided-foreground-matte',
-          },
-        };
-        syncGeneration(textureMapGeneration);
-        setGenerateNotice(undefined);
-        pushToast({
-          tone: 'success',
-          title: t('textureMapGenerated'),
-          description: t('textureMapGeneratedHelp'),
-        });
         return;
       }
       const capture = await captureTextureMapReferenceView();

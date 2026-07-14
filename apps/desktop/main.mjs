@@ -18,7 +18,7 @@ const workspaceUrl =
 const webUrl = process.env.LICLICK_FRONTEND_URL ?? `http://127.0.0.1:${webPort}`;
 const rendererUrl = new URL('./renderer/index.html', import.meta.url);
 const iconPath = path.join(appRoot, 'assets', 'liclick-icon.png');
-const shellBuild = '2026.07.14.1518';
+const shellBuild = '2026.07.14.1858';
 
 const state = {
   launcherPid: undefined,

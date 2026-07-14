@@ -38,6 +38,7 @@ import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
 import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { useT } from '@/stores/i18nStore';
+import { getShortcutBindings, shortcutMatches } from '@/stores/shortcutStore';
 import type { Layer } from '@/types/layer';
 
 type Tool = 'move' | 'select' | 'brush' | 'eraser' | 'fill' | 'picker';
@@ -431,8 +432,7 @@ export function ImageLayerEditorDialog({
       ) {
         return;
       }
-      const key = event.key.toLowerCase();
-      if (event.code === 'Space') {
+      if (shortcutMatches(event, 'image.pan')) {
         event.preventDefault();
         spacePanRef.current = true;
         return;
@@ -441,39 +441,58 @@ export function ImageLayerEditorDialog({
         onCancel();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && key === 'z') {
+      if (shortcutMatches(event, 'history.undo')) {
         event.preventDefault();
-        if (event.shiftKey) redo();
-        else undo();
+        undo();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && key === 'y') {
+      if (shortcutMatches(event, 'history.redo')) {
         event.preventDefault();
         redo();
         return;
       }
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (key === 'b') setTool('brush');
-      else if (key === 'e') setTool('eraser');
-      else if (key === 'i') setTool('picker');
-      else if (key === 'v') setTool('move');
-      else if (key === 'm') setTool('select');
-      else if (key === 'g') setTool('fill');
-      else if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
+      const nextTool = (
+        [
+          ['image.brush', 'brush'],
+          ['image.eraser', 'eraser'],
+          ['image.picker', 'picker'],
+          ['image.move', 'move'],
+          ['image.select', 'select'],
+          ['image.fill', 'fill'],
+        ] as const
+      ).find(([actionId]) => shortcutMatches(event, actionId));
+      if (nextTool) {
         event.preventDefault();
-        const direction = event.code === 'BracketLeft' ? -1 : 1;
-        if (event.shiftKey) {
-          setBrushHardness((value) => Math.max(0.05, Math.min(1, value + direction * 0.05)));
-        } else {
-          setBrushSize((value) => {
-            const step = value < 10 ? 1 : value < 60 ? 5 : 10;
-            return Math.max(1, Math.min(512, value + direction * step));
-          });
-        }
+        setTool(nextTool[1]);
+        return;
+      }
+      const hardnessDirection = shortcutMatches(event, 'image.hardnessSofter')
+        ? -1
+        : shortcutMatches(event, 'image.hardnessHarder')
+          ? 1
+          : 0;
+      if (hardnessDirection !== 0) {
+        event.preventDefault();
+        setBrushHardness((value) => Math.max(0.05, Math.min(1, value + hardnessDirection * 0.05)));
+        return;
+      }
+      const sizeDirection = shortcutMatches(event, 'image.brushSmaller')
+        ? -1
+        : shortcutMatches(event, 'image.brushLarger')
+          ? 1
+          : 0;
+      if (sizeDirection !== 0) {
+        event.preventDefault();
+        setBrushSize((value) => {
+          const step = value < 10 ? 1 : value < 60 ? 5 : 10;
+          return Math.max(1, Math.min(512, value + sizeDirection * step));
+        });
       }
     };
     const releaseTemporaryKeys = (event?: KeyboardEvent) => {
-      if (!event || event.code === 'Space') spacePanRef.current = false;
+      if (!event || getShortcutBindings('image.pan').some((binding) => binding.code === event.code)) {
+        spacePanRef.current = false;
+      }
     };
     const releaseOnBlur = () => releaseTemporaryKeys();
     window.addEventListener('keydown', closeOnEscape);
@@ -1071,7 +1090,7 @@ export function ImageLayerEditorDialog({
     : undefined;
 
   return createPortal(
-    <div className="fixed inset-0 z-[121] grid place-items-center bg-black/62 p-4 text-white backdrop-blur-sm">
+    <div data-editor-shortcut-scope="image" className="fixed inset-0 z-[121] grid place-items-center bg-black/62 p-4 text-white backdrop-blur-sm">
       <section className="relative grid h-[94vh] w-full max-w-[min(96vw,1880px)] grid-cols-[52px_minmax(0,1fr)_320px] overflow-hidden rounded-lg border border-white/16 bg-[#10111a] shadow-[0_30px_90px_rgba(0,0,0,0.58)]">
         <nav className="flex flex-col items-center gap-1.5 border-r border-white/12 bg-[#14151f] p-2">
           <ToolButton active={tool === 'move'} label={t('imageEditMoveTool')} onClick={() => selectTool('move')}>

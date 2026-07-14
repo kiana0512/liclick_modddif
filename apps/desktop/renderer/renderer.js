@@ -60,7 +60,7 @@ let currentState = {
   workspaceUrl: 'http://127.0.0.1:4617',
   webUrl: 'http://127.0.0.1:5673',
   workspaceDir: '-',
-  shellBuild: '2026.07.14.1518',
+  shellBuild: '2026.07.14.1858',
   logs: [],
 };
 
