@@ -22,6 +22,7 @@ export type ProjectionLayerInput = {
   depthTest: boolean;
   useMask?: boolean;
   useDepthCheck?: boolean;
+  renderedColor?: boolean;
   enableBackfaceCulling?: boolean;
   edgeFeather?: number;
   depthBias?: number;
@@ -38,8 +39,8 @@ export type ProjectionPreviewLighting = {
   keyLightDirection: [number, number, number];
 };
 
-export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'> & {
-  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'>>;
+export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck' | 'renderedColor'> & {
+  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck' | 'renderedColor'>>;
 };
 
 export type ProjectionMatrixBundle = {

@@ -100,7 +100,11 @@ import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
-import { useSceneStore } from '@/stores/sceneStore';
+import {
+  MAX_PAINT_MASK_BRUSH_SIZE,
+  MIN_PAINT_MASK_BRUSH_SIZE,
+  useSceneStore,
+} from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
@@ -3299,7 +3303,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         const direction = event.key === '[' || event.code === 'BracketLeft' ? -1 : 1;
         const state = sceneState;
         const stepBrushSize = (value: number, min: number, max: number) => {
-          const step = value < 10 ? 1 : value < 60 ? 5 : 10;
+          const step = value < 1 ? 0.1 : value < 10 ? 1 : value < 60 ? 5 : 10;
           return Math.max(min, Math.min(max, Number((value + direction * step).toFixed(1))));
         };
 
@@ -3320,7 +3324,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           state.paintTool === 'inpaint-subtract' ||
           state.paintTool === 'inpaint-apply'
         ) {
-          const nextSize = stepBrushSize(state.paintMaskSettings.brushSize, 1, 180);
+          const nextSize = stepBrushSize(
+            state.paintMaskSettings.brushSize,
+            MIN_PAINT_MASK_BRUSH_SIZE,
+            MAX_PAINT_MASK_BRUSH_SIZE,
+          );
           state.setPaintMaskSettings({ brushSize: nextSize });
           pushToast({
             tone: 'info',

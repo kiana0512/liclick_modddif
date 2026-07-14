@@ -1,6 +1,18 @@
 import * as THREE from 'three';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { CapturePassRequest, SceneMaterialSnapshot } from './captureTypes';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
+
+type RenderSceneToPngOptions = {
+  applyDisplayTransform?: boolean;
+};
+
+let displayOutputPass: OutputPass | undefined;
+
+function getDisplayOutputPass() {
+  displayOutputPass ??= new OutputPass();
+  return displayOutputPass;
+}
 
 function canvasToPngBlob(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => {
@@ -11,27 +23,54 @@ function canvasToPngBlob(canvas: HTMLCanvasElement) {
   });
 }
 
-export async function renderSceneToPngUrl(request: CapturePassRequest) {
-  const target = new THREE.WebGLRenderTarget(request.width, request.height, {
+export async function renderSceneToPngUrl(
+  request: CapturePassRequest,
+  options: RenderSceneToPngOptions = {},
+) {
+  // Three.js intentionally skips renderer tone mapping for ordinary render
+  // targets. Color captures therefore need a linear intermediate followed by
+  // the same display transform used by the on-screen viewport.
+  const sceneTarget = new THREE.WebGLRenderTarget(request.width, request.height, {
     samples: request.width > 1024 || request.height > 1024 ? 0 : 2,
-    colorSpace: THREE.SRGBColorSpace,
+    ...(options.applyDisplayTransform
+      ? { type: THREE.HalfFloatType, colorSpace: THREE.LinearSRGBColorSpace }
+      : { colorSpace: THREE.SRGBColorSpace }),
   });
+  const outputTarget = options.applyDisplayTransform
+    ? new THREE.WebGLRenderTarget(request.width, request.height, {
+        colorSpace: THREE.NoColorSpace,
+      })
+    : undefined;
+  const readTarget = outputTarget ?? sceneTarget;
   const previousTarget = request.gl.getRenderTarget();
   const previousClearColor = new THREE.Color();
   request.gl.getClearColor(previousClearColor);
   const previousClearAlpha = request.gl.getClearAlpha();
-
-  request.gl.setRenderTarget(target);
-  request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
-  request.gl.clear();
-  request.gl.render(request.scene, request.camera);
-
   const pixels = new Uint8Array(request.width * request.height * 4);
-  request.gl.readRenderTargetPixels(target, 0, 0, request.width, request.height, pixels);
+  try {
+    request.gl.setRenderTarget(sceneTarget);
+    request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
+    request.gl.clear();
+    request.gl.render(request.scene, request.camera);
 
-  request.gl.setRenderTarget(previousTarget);
-  request.gl.setClearColor(previousClearColor, previousClearAlpha);
-  target.dispose();
+    if (outputTarget) {
+      getDisplayOutputPass().render(request.gl, outputTarget, sceneTarget, 0, false);
+    }
+
+    request.gl.readRenderTargetPixels(
+      readTarget,
+      0,
+      0,
+      request.width,
+      request.height,
+      pixels,
+    );
+  } finally {
+    request.gl.setRenderTarget(previousTarget);
+    request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    sceneTarget.dispose();
+    outputTarget?.dispose();
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = request.width;

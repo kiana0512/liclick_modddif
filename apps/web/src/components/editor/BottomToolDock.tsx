@@ -235,29 +235,6 @@ export function BottomToolDock({
               />
             </label>
             <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.brushHardness}</span>
-                <input
-                  value={paintSettings.brushHardness.toFixed(1)}
-                  onChange={(event) =>
-                    setPaintSettings({ brushHardness: Number(event.target.value) || 0 })
-                  }
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="0.5"
-                value={paintSettings.brushHardness}
-                onChange={(event) =>
-                  setPaintSettings({ brushHardness: Number(event.target.value) })
-                }
-                className="w-full accent-[#ff8a68]"
-              />
-            </label>
-            <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
               <span>{labels.brushColor}</span>
               <div className="grid grid-cols-[1fr_88px] items-center gap-2">
                 <div className="flex gap-1.5">
@@ -379,28 +356,9 @@ export function BottomToolDock({
                 type="range"
                 min={MIN_PAINT_MASK_BRUSH_SIZE}
                 max={MAX_PAINT_MASK_BRUSH_SIZE}
-                step="0.5"
+                step="0.1"
                 value={paintMaskSettings.brushSize}
                 onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) })}
-                className="w-full accent-[#ff8a68]"
-              />
-            </label>
-            <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.brushHardness}</span>
-                <input
-                  value={paintMaskSettings.brushHardness.toFixed(1)}
-                  onChange={(event) => setPaintMaskSettings({ brushHardness: Number(event.target.value) || 0 })}
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="0.5"
-                value={paintMaskSettings.brushHardness}
-                onChange={(event) => setPaintMaskSettings({ brushHardness: Number(event.target.value) })}
                 className="w-full accent-[#ff8a68]"
               />
             </label>

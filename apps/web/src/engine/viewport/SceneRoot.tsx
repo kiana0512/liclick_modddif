@@ -83,10 +83,19 @@ function layerPreviewSignature(layer: Layer) {
     layer.adjustments?.hue ?? 0,
     layer.adjustments?.saturation ?? 0,
     layer.adjustments?.lightness ?? 0,
+    layer.renderedColor ? 1 : 0,
     layer.needsRebake ? 1 : 0,
     stableNumberListSignature(layer.objectMatrixWorld),
     cameraSignature(layer),
   ].join(':');
+}
+
+function isRenderedLocalRepaintLayer(layer: Layer) {
+  return Boolean(
+    layer.renderedColor ||
+      layer.id.startsWith('local-repaint-') ||
+      layer.imageUrl.includes('surface-edit:local-repaint'),
+  );
 }
 
 function layerStackPreviewSignature(layers: Layer[]) {
@@ -620,6 +629,7 @@ function ImportedModel({
                 lightness: (layer.adjustments?.lightness ?? 0) / 100,
                 useMask: Boolean(layer.maskUrl),
                 useDepthCheck: Boolean(layer.depthUrl),
+                renderedColor: isRenderedLocalRepaintLayer(layer),
               };
             }),
             objectId: model.objectId,
@@ -658,6 +668,9 @@ function ImportedModel({
               ? {
                   liveUvOverlayTexture: liveTopUvTexture,
                   liveUvOverlayOpacity: liveTopUvLayer?.opacity ?? 1,
+                  liveUvOverlayRenderedColor: liveTopUvLayer
+                    ? isRenderedLocalRepaintLayer(liveTopUvLayer)
+                    : false,
                 }
               : {}),
             previewLighting,

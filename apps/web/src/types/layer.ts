@@ -24,6 +24,7 @@ export type Layer = {
   generationId?: string;
   captureId?: string;
   replacementTargetLayerId?: string;
+  renderedColor?: boolean;
   visible: boolean;
   opacity: number;
   strength?: number;

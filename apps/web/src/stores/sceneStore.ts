@@ -40,9 +40,9 @@ export type PaintMaskSettings = {
   brushHardness: number;
 };
 
-export const MIN_PAINT_MASK_BRUSH_SIZE = 0.5;
+export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
 export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 10;
-export const MAX_PAINT_MASK_BRUSH_SIZE = 64;
+export const MAX_PAINT_MASK_BRUSH_SIZE = 60;
 
 export type PaintToolSettings = {
   brushSize: number;
