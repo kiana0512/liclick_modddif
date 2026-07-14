@@ -1426,14 +1426,22 @@ function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: T
     previewMaterial.needsUpdate = true;
     return markGeneratedMaterial(previewMaterial);
   }
-  if (material instanceof THREE.MeshBasicMaterial && material.map) {
-    material.map.colorSpace = THREE.SRGBColorSpace;
-    material.map.needsUpdate = true;
+  const sourceMap = 'map' in material && material.map instanceof THREE.Texture ? material.map : undefined;
+  const sourceColor = 'color' in material && material.color instanceof THREE.Color
+    ? material.color
+    : new THREE.Color('#ffffff');
+  if (sourceMap) {
+    sourceMap.colorSpace = THREE.SRGBColorSpace;
+    sourceMap.needsUpdate = true;
     return markGeneratedMaterial(new THREE.MeshStandardMaterial({
-      color: '#ffffff',
-      map: material.map,
-      roughness: 0.58,
+      color: sourceColor,
+      map: sourceMap,
+      roughness: 0.68,
       metalness: 0,
+      transparent: material.transparent,
+      opacity: material.opacity,
+      alphaTest: material.alphaTest,
+      side: material.side,
     }));
   }
   return markGeneratedMaterial(new THREE.MeshStandardMaterial({
@@ -1441,6 +1449,40 @@ function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: T
     roughness: 0.58,
     metalness: 0,
   }));
+}
+
+function prepareSingleFlatMaterial(material: THREE.Material, bakedTexture?: THREE.Texture) {
+  const map = bakedTexture ?? (
+    'map' in material && material.map instanceof THREE.Texture ? material.map : undefined
+  );
+  if (!map) return createDisplayModeMaterial('flat', false);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.needsUpdate = true;
+  const color = bakedTexture
+    ? new THREE.Color('#ffffff')
+    : 'color' in material && material.color instanceof THREE.Color
+      ? material.color
+      : new THREE.Color('#ffffff');
+  return markGeneratedMaterial(new THREE.MeshBasicMaterial({
+    color,
+    map,
+    transparent: material.transparent,
+    opacity: material.opacity,
+    alphaTest: material.alphaTest,
+    side: material.side,
+    toneMapped: true,
+  }));
+}
+
+export function createFlatPreviewMaterial(
+  originalMaterial: THREE.Material | THREE.Material[] | undefined,
+  selected: boolean,
+  bakedTexture?: THREE.Texture,
+) {
+  if (!originalMaterial) return createDisplayModeMaterial('flat', selected, bakedTexture);
+  return Array.isArray(originalMaterial)
+    ? originalMaterial.map((material) => prepareSingleFlatMaterial(material, bakedTexture))
+    : prepareSingleFlatMaterial(originalMaterial, bakedTexture);
 }
 
 export function createPbrPreviewMaterial(

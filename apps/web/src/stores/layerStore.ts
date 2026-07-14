@@ -15,6 +15,7 @@ type LayerStore = {
     imageUrl: string;
     objectId?: string;
     bakedTextureId?: string;
+    role?: Layer['role'];
   }) => Layer;
   mergeLayersIntoUvLayer: (input: {
     sourceLayerIds: string[];
@@ -182,6 +183,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       id: uuid(),
       name: input.name ?? 'UV Repair Layer',
       type: 'uv',
+      role: input.role,
       imageUrl: input.imageUrl,
       objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
       visible: true,

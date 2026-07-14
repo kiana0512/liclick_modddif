@@ -44,6 +44,7 @@ import {
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
+import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
 import {
   applyAlphaFromMask,
   blobToDataUrl,
@@ -1933,17 +1934,18 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return result.asset.url;
   }
 
-  async function handleImportModel(file: File) {
+  async function handleImportModel(file: File, resourceFiles: File[] = []) {
     try {
       const loaded = arrangeImportedModelForComparison(
         await loadModelFromFile(file, {
           normalize: importSettings.normalizeOnImport,
           ground: importSettings.groundOnImport,
           targetMaxDimension: 3,
-        }),
+        }, resourceFiles),
         useSceneStore.getState().importedModels,
       );
       let object = loaded.object;
+      const importedBaseColorUrl = await getImportedBaseColorTextureUrl(loaded.result.group);
       if (project?.workspaceMode === 'local-server') {
         try {
           const saved = await saveDataUrlAsset({
@@ -1967,6 +1969,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         }
       }
       setImportedModel(loaded.result, object);
+      if (importedBaseColorUrl) {
+        addUvLayer({
+          name: 'Base texture',
+          imageUrl: importedBaseColorUrl,
+          objectId: object.id,
+          role: 'base-color',
+        });
+      }
       updateCurrentProject({
         objects: useSceneStore.getState().objects,
         activeObjectId: object.id,
@@ -1996,9 +2006,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   async function handleImportModels(files: File[]) {
     const modelFiles = files.filter((file) => /\.(glb|gltf|fbx|obj)$/i.test(file.name));
+    const resourceFiles = files.filter((file) => !modelFiles.includes(file));
     if (modelFiles.length === 0) return;
     for (const file of modelFiles) {
-      await handleImportModel(file);
+      await handleImportModel(file, resourceFiles);
     }
   }
 
@@ -3794,7 +3805,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         ref={modelInputRef}
         type="file"
         className="hidden"
-        accept=".glb,.gltf,.fbx,.obj"
+        accept=".glb,.gltf,.fbx,.obj,.png,.jpg,.jpeg,.webp,.bmp,.tga"
         multiple
         onChange={(event) => {
           const files = event.target.files ? Array.from(event.target.files) : [];

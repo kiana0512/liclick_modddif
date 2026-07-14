@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
+  createFlatPreviewMaterial,
   createPbrPreviewMaterial,
   createProjectedLayerStackMaterial,
   createUvOverlayPreviewMaterial,
@@ -168,27 +169,16 @@ function getPreviewLighting(input: {
   };
 }
 
-function hasUsableTextureImage(texture: THREE.Texture) {
-  const image = texture.image as
-    | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number; data?: unknown }
-    | undefined;
-  if (!image) return false;
-  if (image.data) return true;
-  const width = image.naturalWidth ?? image.width ?? 0;
-  const height = image.naturalHeight ?? image.height ?? 0;
-  return width > 0 && height > 0;
-}
-
 function getPreviewMaterialBase(material: THREE.Material | THREE.Material[] | undefined) {
   const sourceMaterial = Array.isArray(material)
     ? material.find(
-        (item) => 'map' in item && item.map instanceof THREE.Texture && hasUsableTextureImage(item.map),
+        (item) => 'map' in item && item.map instanceof THREE.Texture,
       ) ?? material[0]
     : material;
   if (!sourceMaterial) return {};
 
   const baseTexture =
-    'map' in sourceMaterial && sourceMaterial.map instanceof THREE.Texture && hasUsableTextureImage(sourceMaterial.map)
+    'map' in sourceMaterial && sourceMaterial.map instanceof THREE.Texture
       ? sourceMaterial.map
       : undefined;
   const baseColor =
@@ -597,6 +587,15 @@ function ImportedModel({
         .sort((a, b) => a.order - b.order),
     [importedObjectId, layers],
   );
+  const managedBaseColorLayer = useMemo(
+    () =>
+      layers.find(
+        (layer) =>
+          layer.role === 'base-color' &&
+          (!layer.objectId || layer.objectId === importedObjectId),
+      ),
+    [importedObjectId, layers],
+  );
   const visibleUvLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleUvLayers),
     [visibleUvLayers],
@@ -747,11 +746,15 @@ function ImportedModel({
           | THREE.Material
           | THREE.Material[]
           | undefined;
+        // Once an imported Base Color has been promoted into the layer stack,
+        // the layer owns its visibility. Keeping the same map on the underlying
+        // material would make the eye toggle appear broken.
+        const previewSourceMaterial = managedBaseColorLayer ? undefined : originalMaterial;
         const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
         const bakedTexture = !projectedLayerInput && visibleStackHasBakedPreview ? loadedBakedTexture ?? existingBakedTexture : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
-        const previewBase = getPreviewMaterialBase(originalMaterial);
+        const previewBase = getPreviewMaterialBase(previewSourceMaterial);
         if ((loadedUvTexture || liveTopUvTexture) && !projectedLayerInput) {
           const uvMaterialInput = {
             displayMode,
@@ -799,7 +802,12 @@ function ImportedModel({
           continue;
         }
         if (displayMode === 'pbr' && !projectedLayerInput) {
-          child.material = createPbrPreviewMaterial(originalMaterial, selected, bakedTexture);
+          child.material = createPbrPreviewMaterial(previewSourceMaterial, selected, bakedTexture);
+          disposeGeneratedMaterialTree(previousMaterial);
+          continue;
+        }
+        if (displayMode === 'flat' && !projectedLayerInput) {
+          child.material = createFlatPreviewMaterial(previewSourceMaterial, selected, bakedTexture);
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
@@ -847,6 +855,7 @@ function ImportedModel({
     importedModel,
     loadedBakedTexture,
     loadedUvTexture,
+    managedBaseColorLayer,
     liveTopUvLayer,
     liveTopUvTexture,
     liveSurfaceMaskTexture,
