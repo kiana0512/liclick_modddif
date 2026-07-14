@@ -51,6 +51,7 @@ import type { ReferenceImage } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
+import { encodeRgbaPngDataUrl } from '@/utils/encodeRgbaPng';
 import {
   isWorkspaceAssetUrl,
   saveBlobAsset,
@@ -319,23 +320,43 @@ async function createComfyInpaintInputImage(
   maskCanvas.height = height;
   const maskContext = maskCanvas.getContext('2d', { willReadFrequently: true });
   if (!maskContext) throw new Error('无法读取局部重绘蒙版。');
+  maskContext.imageSmoothingEnabled = true;
+  maskContext.imageSmoothingQuality = 'high';
   maskContext.drawImage(maskImage, 0, 0, width, height);
-  const mask = maskContext.getImageData(0, 0, width, height).data;
-  for (let offset = 0; offset < source.data.length; offset += 4) {
-    const selected =
-      Math.max(mask[offset], mask[offset + 1], mask[offset + 2]) * (mask[offset + 3] / 255);
-    if (selected > 8) {
-      source.data[offset] = 160;
-      source.data[offset + 1] = 160;
-      source.data[offset + 2] = 160;
+
+  // The selection canvas is smaller than the 2048px ComfyUI input. Smooth only
+  // the enlarged contour, then keep a very narrow sub-pixel coverage band. A hard
+  // 0/255 threshold turns every source pixel into a multi-pixel stair step again.
+  const sourceWidth = Math.max(1, maskImage.naturalWidth || maskImage.width);
+  const sourceHeight = Math.max(1, maskImage.naturalHeight || maskImage.height);
+  const upscale = Math.max(width / sourceWidth, height / sourceHeight);
+  let sampledMaskContext = maskContext;
+  if (upscale > 1.05) {
+    const contourCanvas = document.createElement('canvas');
+    contourCanvas.width = width;
+    contourCanvas.height = height;
+    const contourContext = contourCanvas.getContext('2d', { willReadFrequently: true });
+    if (contourContext) {
+      contourContext.filter = `blur(${Math.min(3, Math.max(0.75, upscale * 0.65))}px)`;
+      contourContext.drawImage(maskCanvas, 0, 0);
+      contourContext.filter = 'none';
+      sampledMaskContext = contourContext;
     }
-    // ComfyUI derives the inpaint mask from this image's alpha channel. Keep a
-    // nearly-transparent neutral pixel instead of alpha=0 so PNG encoders retain
-    // the gray RGB values instead of turning the masked area black in previews.
-    source.data[offset + 3] = selected > 8 ? Math.max(1, 255 - Math.round(selected)) : 255;
   }
-  context.putImageData(source, 0, 0);
-  return canvas.toDataURL('image/png');
+  const mask = sampledMaskContext.getImageData(0, 0, width, height).data;
+  for (let offset = 0; offset < source.data.length; offset += 4) {
+    const coverage =
+      Math.max(mask[offset], mask[offset + 1], mask[offset + 2]) *
+      (mask[offset + 3] / 255) /
+      255;
+    const edgeCoverage = Math.max(0, Math.min(1, (coverage - 0.42) / 0.16));
+    const antialiasedCoverage = edgeCoverage * edgeCoverage * (3 - 2 * edgeCoverage);
+    // ComfyUI derives its MASK from alpha. The custom straight-RGBA encoder keeps
+    // the original RGB below transparent pixels, so this one-pixel coverage edge
+    // smooths the mask without adding a light/black outline to the IMAGE output.
+    source.data[offset + 3] = Math.round((1 - antialiasedCoverage) * 255);
+  }
+  return encodeRgbaPngDataUrl(width, height, source.data);
 }
 
 function getImportedModelMatrixWorld(objectId?: string) {

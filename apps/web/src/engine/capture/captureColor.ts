@@ -3,7 +3,7 @@ import type { CapturePassRequest, CapturePassOutput } from './captureTypes';
 
 export async function captureColor(request: CapturePassRequest): Promise<CapturePassOutput> {
   return {
-    url: await renderSceneToPngUrl(request),
+    url: await renderSceneToPngUrl(request, { applyDisplayTransform: true }),
     warnings: [],
   };
 }

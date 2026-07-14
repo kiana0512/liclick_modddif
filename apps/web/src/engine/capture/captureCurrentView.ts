@@ -182,11 +182,14 @@ async function captureClayTarget(passRequest: CapturePassRequest) {
   );
   try {
     return {
-      url: await renderSceneToPngUrl({
-        ...passRequest,
-        clearColor: '#f7f7f3',
-        clearAlpha: 1,
-      }),
+      url: await renderSceneToPngUrl(
+        {
+          ...passRequest,
+          clearColor: '#f7f7f3',
+          clearAlpha: 1,
+        },
+        { applyDisplayTransform: true },
+      ),
       warnings: [],
     };
   } finally {
@@ -198,11 +201,14 @@ async function captureTargetOnly(passRequest: CapturePassRequest) {
   const restore = applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId);
   try {
     return {
-      url: await renderSceneToPngUrl({
-        ...passRequest,
-        clearColor: '#eeeeec',
-        clearAlpha: 1,
-      }),
+      url: await renderSceneToPngUrl(
+        {
+          ...passRequest,
+          clearColor: '#eeeeec',
+          clearAlpha: 1,
+        },
+        { applyDisplayTransform: true },
+      ),
       warnings: [],
     };
   } finally {
