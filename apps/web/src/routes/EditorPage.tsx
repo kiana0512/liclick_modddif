@@ -72,10 +72,7 @@ import {
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import type { LoadedModel, ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
-import {
-  focusCameraOrbitOnObjectId,
-  setCameraToObjectView,
-} from '@/engine/scene/transformActions';
+import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { EditorShell } from '@/layouts/EditorShell';
@@ -3390,12 +3387,22 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return;
       }
 
-      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && event.shiftKey && key === 'd') {
+      if (
+        currentWorkspaceMode === 'texture' &&
+        isPrimaryModifier &&
+        event.shiftKey &&
+        key === 'd'
+      ) {
         event.preventDefault();
         sceneState.clearPaintMask();
         return;
       }
-      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && !event.shiftKey && key === 'd') {
+      if (
+        currentWorkspaceMode === 'texture' &&
+        isPrimaryModifier &&
+        !event.shiftKey &&
+        key === 'd'
+      ) {
         event.preventDefault();
         const activeLayer = layerState.layers.find(
           (layer) => layer.id === layerState.activeProjectedLayerId,
@@ -3430,7 +3437,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           (layer) => layer.id === layerState.activeProjectedLayerId,
         );
         if (!activeLayer) return;
-        captureHistory(`${event.code === 'BracketLeft' ? '上移' : '下移'}图层：${activeLayer.name}`);
+        captureHistory(
+          `${event.code === 'BracketLeft' ? '上移' : '下移'}图层：${activeLayer.name}`,
+        );
         layerState.moveLayer(
           activeLayer.id,
           event.key === '[' || event.code === 'BracketLeft' ? 'up' : 'down',
@@ -3869,7 +3878,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               undo: t('undo'),
               redo: t('redo'),
               brushSize: t('brushSize'),
-              brushHardness: t('brushHardness'),
+              brushOpacity: t('imageEditBrushOpacity'),
               brushColor: t('brushColor'),
               resetInpaintRegion: t('resetInpaintRegion'),
               invertInpaintRegion: t('invertInpaintRegion'),

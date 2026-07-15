@@ -34,6 +34,7 @@ export type ProjectionLayerInput = {
 
 export type ProjectionPreviewLighting = {
   enabled: boolean;
+  exposure: number;
   ambientIntensity: number;
   keyLightIntensity: number;
   keyLightDirection: [number, number, number];

@@ -85,6 +85,7 @@ export interface BakeVisibleProjectedLayersInput {
   outputAlpha?: 'opaque-viewport' | 'transparent';
   disableGpuFallback?: boolean;
   skipGpuValidation?: boolean;
+  minimumCoverageRatio?: number;
   gpuInputTextureFlipY?: boolean;
   gpuProjectedImageUvFlipY?: boolean;
   gpuCompositeMode?: GpuUvCompositeMode;

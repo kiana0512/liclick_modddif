@@ -51,7 +51,7 @@ type BottomToolDockProps = {
     undo: string;
     redo: string;
     brushSize: string;
-    brushHardness: string;
+    brushOpacity: string;
     brushColor: string;
     resetInpaintRegion: string;
     invertInpaintRegion: string;
@@ -81,7 +81,16 @@ const tools: Array<{
 ];
 const selectTool = tools[0];
 
-const paintSwatches = ['#ffffff', '#ff6b4a', '#f7c948', '#56d364', '#3dd6ff', '#8b5cf6', '#f35bce', '#111111'];
+const paintSwatches = [
+  '#ffffff',
+  '#ff6b4a',
+  '#f7c948',
+  '#56d364',
+  '#3dd6ff',
+  '#8b5cf6',
+  '#f35bce',
+  '#111111',
+];
 
 export function BottomToolDock({
   mode,
@@ -113,7 +122,9 @@ export function BottomToolDock({
   const divider = <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />;
   const isTextureMode = mode === 'texture';
   const inpaintMenuVisible =
-    activeMenu === 'inpaint-add' || activeMenu === 'inpaint-subtract' || activeMenu === 'inpaint-apply';
+    activeMenu === 'inpaint-add' ||
+    activeMenu === 'inpaint-subtract' ||
+    activeMenu === 'inpaint-apply';
 
   function toggleMenu(menu: typeof activeMenu) {
     setActiveMenu((current) => (current === menu ? undefined : menu));
@@ -177,12 +188,24 @@ export function BottomToolDock({
     return (
       <>
         <IconTooltip label={labels.undo} shortcut="Ctrl Z">
-          <button type="button" className={baseButton} disabled={!canUndo} onClick={onUndo} aria-label={labels.undo}>
+          <button
+            type="button"
+            className={baseButton}
+            disabled={!canUndo}
+            onClick={onUndo}
+            aria-label={labels.undo}
+          >
             <Undo2 className="h-4.5 w-4.5" />
           </button>
         </IconTooltip>
         <IconTooltip label={labels.redo} shortcut="Ctrl Y">
-          <button type="button" className={baseButton} disabled={!canRedo} onClick={onRedo} aria-label={labels.redo}>
+          <button
+            type="button"
+            className={baseButton}
+            disabled={!canRedo}
+            onClick={onRedo}
+            aria-label={labels.redo}
+          >
             <Redo2 className="h-4.5 w-4.5" />
           </button>
         </IconTooltip>
@@ -209,243 +232,291 @@ export function BottomToolDock({
           {divider}
 
           <span className="relative inline-flex">
-        {activeMenu === 'brush' && (
-          <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[300px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-            <label className="grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.brushSize}</span>
-                <input
-                  value={paintSettings.brushSize.toFixed(1)}
-                  onChange={(event) =>
-                    setPaintSettings({ brushSize: Number(event.target.value) || 1 })
-                  }
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </span>
-              <input
-                type="range"
-                min="0.5"
-                max="80"
-                step="0.1"
-                value={paintSettings.brushSize}
-                onChange={(event) =>
-                  setPaintSettings({ brushSize: Number(event.target.value) })
-                }
-                className="w-full accent-[#ff8a68]"
-              />
-            </label>
-            <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-              <span>{labels.brushColor}</span>
-              <div className="grid grid-cols-[1fr_88px] items-center gap-2">
-                <div className="flex gap-1.5">
-                  {paintSwatches.map((swatch) => (
-                    <button
-                      key={swatch}
-                      type="button"
-                      className={cn(
-                        'h-6 w-6 rounded-full border border-white/24 shadow-[0_0_0_1px_rgba(0,0,0,0.36)] transition hover:scale-105',
-                        paintSettings.color.toLowerCase() === swatch && 'ring-2 ring-white',
-                      )}
-                      style={{ backgroundColor: swatch }}
-                      onClick={() => setPaintSettings({ color: swatch })}
-                      aria-label={swatch}
+            {activeMenu === 'brush' && (
+              <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[300px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+                <label className="grid gap-1.5 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.brushSize}</span>
+                    <input
+                      value={paintSettings.brushSize.toFixed(1)}
+                      onChange={(event) =>
+                        setPaintSettings({ brushSize: Number(event.target.value) || 1 })
+                      }
+                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
                     />
-                  ))}
-                </div>
-                <input
-                  value={paintSettings.color}
-                  onChange={(event) => setPaintSettings({ color: event.target.value })}
-                  className="h-8 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
+                  </span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="80"
+                    step="0.1"
+                    value={paintSettings.brushSize}
+                    onChange={(event) =>
+                      setPaintSettings({ brushSize: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#ff8a68]"
+                  />
+                </label>
+                <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
+                  <span>{labels.brushColor}</span>
+                  <div className="grid grid-cols-[1fr_88px] items-center gap-2">
+                    <div className="flex gap-1.5">
+                      {paintSwatches.map((swatch) => (
+                        <button
+                          key={swatch}
+                          type="button"
+                          className={cn(
+                            'h-6 w-6 rounded-full border border-white/24 shadow-[0_0_0_1px_rgba(0,0,0,0.36)] transition hover:scale-105',
+                            paintSettings.color.toLowerCase() === swatch && 'ring-2 ring-white',
+                          )}
+                          style={{ backgroundColor: swatch }}
+                          onClick={() => setPaintSettings({ color: swatch })}
+                          aria-label={swatch}
+                        />
+                      ))}
+                    </div>
+                    <input
+                      value={paintSettings.color}
+                      onChange={(event) => setPaintSettings({ color: event.target.value })}
+                      className="h-8 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                    />
+                  </div>
+                </label>
               </div>
-            </label>
-          </div>
-        )}
-        <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="B">
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'brush' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'brush' ? 'none' : 'brush');
-              toggleMenu('brush');
-            }}
-            aria-label={labels.brush}
-          >
-            <Brush className="h-4.5 w-4.5" />
-          </button>
-        </IconTooltip>
-          </span>
-          <span className="relative inline-flex">
-        {activeMenu === 'eraser' && (
-          <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-            <label className="grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.eraserSize}</span>
-                <input
-                  value={paintSettings.eraserSize.toFixed(1)}
-                  onChange={(event) =>
-                    setPaintSettings({ eraserSize: Number(event.target.value) || 1 })
-                  }
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </span>
-              <input
-                type="range"
-                min="0.5"
-                max="120"
-                step="0.5"
-                value={paintSettings.eraserSize}
-                onChange={(event) =>
-                  setPaintSettings({ eraserSize: Number(event.target.value) })
-                }
-                className="w-full accent-[#ff8a68]"
-              />
-            </label>
-            <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.eraserHardness}</span>
-                <input
-                  value={paintSettings.eraserHardness.toFixed(1)}
-                  onChange={(event) =>
-                    setPaintSettings({ eraserHardness: Number(event.target.value) || 0 })
-                  }
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="0.5"
-                value={paintSettings.eraserHardness}
-                onChange={(event) =>
-                  setPaintSettings({ eraserHardness: Number(event.target.value) })
-                }
-                className="w-full accent-[#ff8a68]"
-              />
-            </label>
-          </div>
-        )}
-        <IconTooltip label={labels.eraser} description={labels.eraserHelp} shortcut="E">
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'eraser' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'eraser' ? 'none' : 'eraser');
-              toggleMenu('eraser');
-            }}
-            aria-label={labels.eraser}
-          >
-            <Eraser className="h-4.5 w-4.5" />
-          </button>
-        </IconTooltip>
-          </span>
-          <span className="relative inline-flex">
-        {inpaintMenuVisible && (
-          <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-            <label className="grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.brushSize}</span>
-                <input
-                  value={paintMaskSettings.brushSize.toFixed(1)}
-                  onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) || 1 })}
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </span>
-              <input
-                type="range"
-                min={MIN_PAINT_MASK_BRUSH_SIZE}
-                max={MAX_PAINT_MASK_BRUSH_SIZE}
-                step="0.1"
-                value={paintMaskSettings.brushSize}
-                onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) })}
-                className="w-full accent-[#ff8a68]"
-              />
-            </label>
-            <div className="mt-2 grid gap-1.5 border-t border-white/16 pt-2">
+            )}
+            <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="B">
               <button
                 type="button"
-                className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
-                onClick={clearPaintMask}
+                className={cn(baseButton, paintTool === 'brush' && activeMaskButton)}
+                onClick={() => {
+                  onPaintToolChange(paintTool === 'brush' ? 'none' : 'brush');
+                  toggleMenu('brush');
+                }}
+                aria-label={labels.brush}
               >
-                <span>{labels.resetInpaintRegion}</span>
-                <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL SHIFT D</span>
+                <Brush className="h-4.5 w-4.5" />
               </button>
+            </IconTooltip>
+          </span>
+          <span className="relative inline-flex">
+            {activeMenu === 'eraser' && (
+              <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+                <label className="grid gap-1.5 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.eraserSize}</span>
+                    <input
+                      value={paintSettings.eraserSize.toFixed(1)}
+                      onChange={(event) =>
+                        setPaintSettings({ eraserSize: Number(event.target.value) || 1 })
+                      }
+                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                    />
+                  </span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="120"
+                    step="0.5"
+                    value={paintSettings.eraserSize}
+                    onChange={(event) =>
+                      setPaintSettings({ eraserSize: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#ff8a68]"
+                  />
+                </label>
+                <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.eraserHardness}</span>
+                    <input
+                      value={paintSettings.eraserHardness.toFixed(1)}
+                      onChange={(event) =>
+                        setPaintSettings({ eraserHardness: Number(event.target.value) || 0 })
+                      }
+                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                    />
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="0.5"
+                    value={paintSettings.eraserHardness}
+                    onChange={(event) =>
+                      setPaintSettings({ eraserHardness: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#ff8a68]"
+                  />
+                </label>
+              </div>
+            )}
+            <IconTooltip label={labels.eraser} description={labels.eraserHelp} shortcut="E">
               <button
                 type="button"
-                className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
-                onClick={invertPaintMask}
+                className={cn(baseButton, paintTool === 'eraser' && activeMaskButton)}
+                onClick={() => {
+                  onPaintToolChange(paintTool === 'eraser' ? 'none' : 'eraser');
+                  toggleMenu('eraser');
+                }}
+                aria-label={labels.eraser}
               >
-                <span>{labels.invertInpaintRegion}</span>
-                <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL I</span>
+                <Eraser className="h-4.5 w-4.5" />
               </button>
-            </div>
-          </div>
-        )}
-        <IconTooltip
-          label={labels.inpaintSelect}
-          description={labels.inpaintSelectHelp}
-          shortcut="K"
-        >
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'inpaint-add' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
-              toggleMenu('inpaint-add');
-            }}
-            aria-label={labels.inpaintSelect}
-          >
-            <span className="relative grid place-items-center">
-              <Sparkles className="h-4.5 w-4.5" />
-              <Plus className="absolute -left-2 -top-2 h-3.5 w-3.5 stroke-[3]" />
-              {paintTool === 'inpaint-add' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
-            </span>
-          </button>
-        </IconTooltip>
+            </IconTooltip>
+          </span>
+          <span className="relative inline-flex">
+            {inpaintMenuVisible && (
+              <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+                <label className="grid gap-1.5 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.brushSize}</span>
+                    <input
+                      value={paintMaskSettings.brushSize.toFixed(1)}
+                      onChange={(event) =>
+                        setPaintMaskSettings({ brushSize: Number(event.target.value) || 1 })
+                      }
+                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                    />
+                  </span>
+                  <input
+                    type="range"
+                    min={MIN_PAINT_MASK_BRUSH_SIZE}
+                    max={MAX_PAINT_MASK_BRUSH_SIZE}
+                    step="0.1"
+                    value={paintMaskSettings.brushSize}
+                    onChange={(event) =>
+                      setPaintMaskSettings({ brushSize: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#ff8a68]"
+                  />
+                </label>
+                {activeMenu === 'inpaint-apply' && (
+                  <div className="mt-2 grid gap-2 border-t border-white/16 pt-2">
+                    <label className="grid gap-1.5 text-[13px] font-semibold">
+                      <span className="flex items-center justify-between">
+                        <span>{labels.brushOpacity}</span>
+                        <span className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value={Math.round(paintMaskSettings.brushOpacity)}
+                            onChange={(event) =>
+                              setPaintMaskSettings({ brushOpacity: Number(event.target.value) })
+                            }
+                            className="h-8 w-20 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                          />
+                          <span className="text-xs text-white/60">%</span>
+                        </span>
+                      </span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={paintMaskSettings.brushOpacity}
+                        onChange={(event) =>
+                          setPaintMaskSettings({ brushOpacity: Number(event.target.value) })
+                        }
+                        className="w-full accent-[#ff8a68]"
+                      />
+                    </label>
+                  </div>
+                )}
+                <div className="mt-2 grid gap-1.5 border-t border-white/16 pt-2">
+                  <button
+                    type="button"
+                    className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
+                    onClick={clearPaintMask}
+                  >
+                    <span>{labels.resetInpaintRegion}</span>
+                    <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
+                      CTRL SHIFT D
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
+                    onClick={invertPaintMask}
+                  >
+                    <span>{labels.invertInpaintRegion}</span>
+                    <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
+                      CTRL I
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
+            <IconTooltip
+              label={labels.inpaintSelect}
+              description={labels.inpaintSelectHelp}
+              shortcut="K"
+            >
+              <button
+                type="button"
+                className={cn(baseButton, paintTool === 'inpaint-add' && activeMaskButton)}
+                onClick={() => {
+                  onPaintToolChange(paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
+                  toggleMenu('inpaint-add');
+                }}
+                aria-label={labels.inpaintSelect}
+              >
+                <span className="relative grid place-items-center">
+                  <Sparkles className="h-4.5 w-4.5" />
+                  <Plus className="absolute -left-2 -top-2 h-3.5 w-3.5 stroke-[3]" />
+                  {paintTool === 'inpaint-add' && (
+                    <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
+                  )}
+                </span>
+              </button>
+            </IconTooltip>
           </span>
           <IconTooltip
-        label={labels.inpaintUnselect}
-        description={labels.inpaintUnselectHelp}
-        shortcut="O"
+            label={labels.inpaintUnselect}
+            description={labels.inpaintUnselectHelp}
+            shortcut="O"
           >
-        <button
-          type="button"
-          className={cn(baseButton, paintTool === 'inpaint-subtract' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract');
-            toggleMenu('inpaint-subtract');
-          }}
-          aria-label={labels.inpaintUnselect}
-        >
-          <span className="relative grid place-items-center">
-            <Sparkles className="h-4.5 w-4.5" />
-            <Minus className="absolute -left-2 -top-2 h-3.5 w-3.5 stroke-[3]" />
-            {paintTool === 'inpaint-subtract' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
-          </span>
-        </button>
+            <button
+              type="button"
+              className={cn(baseButton, paintTool === 'inpaint-subtract' && activeMaskButton)}
+              onClick={() => {
+                onPaintToolChange(paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract');
+                toggleMenu('inpaint-subtract');
+              }}
+              aria-label={labels.inpaintUnselect}
+            >
+              <span className="relative grid place-items-center">
+                <Sparkles className="h-4.5 w-4.5" />
+                <Minus className="absolute -left-2 -top-2 h-3.5 w-3.5 stroke-[3]" />
+                {paintTool === 'inpaint-subtract' && (
+                  <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
+                )}
+              </span>
+            </button>
           </IconTooltip>
           <span className="relative inline-flex">
-        <IconTooltip
-          label={labels.localRepaint}
-          description={labels.localRepaintHelp}
-          shortcut="I"
-        >
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'inpaint-apply' && activeMaskButton)}
-            onClick={() => {
-              onLocalRepaint();
-              toggleMenu('inpaint-apply');
-            }}
-            aria-label={labels.localRepaint}
-          >
-            <span className="relative grid place-items-center">
-              <Sparkles className="h-4.5 w-4.5" />
-              {paintTool === 'inpaint-apply' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
-            </span>
-          </button>
-        </IconTooltip>
+            <IconTooltip
+              label={labels.localRepaint}
+              description={labels.localRepaintHelp}
+              shortcut="I"
+            >
+              <button
+                type="button"
+                className={cn(baseButton, paintTool === 'inpaint-apply' && activeMaskButton)}
+                onClick={() => {
+                  onLocalRepaint();
+                  toggleMenu('inpaint-apply');
+                }}
+                aria-label={labels.localRepaint}
+              >
+                <span className="relative grid place-items-center">
+                  <Sparkles className="h-4.5 w-4.5" />
+                  {paintTool === 'inpaint-apply' && (
+                    <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
+                  )}
+                </span>
+              </button>
+            </IconTooltip>
           </span>
 
           {divider}

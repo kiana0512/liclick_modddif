@@ -84,6 +84,7 @@ function layerPreviewSignature(layer: Layer) {
     layer.adjustments?.saturation ?? 0,
     layer.adjustments?.lightness ?? 0,
     layer.renderedColor ? 1 : 0,
+    layer.contentRevision ?? 0,
     layer.needsRebake ? 1 : 0,
     stableNumberListSignature(layer.objectMatrixWorld),
     cameraSignature(layer),
@@ -93,8 +94,8 @@ function layerPreviewSignature(layer: Layer) {
 function isRenderedLocalRepaintLayer(layer: Layer) {
   return Boolean(
     layer.renderedColor ||
-      layer.id.startsWith('local-repaint-') ||
-      layer.imageUrl.includes('surface-edit:local-repaint'),
+    layer.id.startsWith('local-repaint-') ||
+    layer.imageUrl.includes('surface-edit:local-repaint'),
   );
 }
 
@@ -152,23 +153,39 @@ function getPreviewLighting(input: {
   pbrKeyLightIntensity: number;
   pbrLightAzimuth: number;
 }): ProjectionPreviewLighting {
-  const effectivePreset = input.displayMode === 'pbr' && input.environmentPreset === 'color' ? 'studio' : input.environmentPreset;
-  const environmentBase = effectivePreset === 'dark' ? 0.38 : effectivePreset === 'soft' ? 0.46 : 0.5;
+  const effectivePreset =
+    input.displayMode === 'pbr' && input.environmentPreset === 'color'
+      ? 'studio'
+      : input.environmentPreset;
+  const environmentBase =
+    effectivePreset === 'dark' ? 0.38 : effectivePreset === 'soft' ? 0.46 : 0.5;
   const keyBase = effectivePreset === 'dark' ? 1.05 : effectivePreset === 'soft' ? 1.12 : 1.22;
   const environmentScale = input.displayMode === 'pbr' ? input.pbrEnvironmentIntensity / 0.42 : 1;
   const azimuth = THREE.MathUtils.degToRad(input.pbrLightAzimuth);
-  const direction = new THREE.Vector3(Math.sin(azimuth) * 4.5, 5.2, Math.cos(azimuth) * 4.5).normalize();
+  const direction = new THREE.Vector3(
+    Math.sin(azimuth) * 4.5,
+    5.2,
+    Math.cos(azimuth) * 4.5,
+  ).normalize();
   return {
     enabled: input.displayMode === 'pbr',
+    exposure: input.exposure,
     ambientIntensity: environmentBase * input.exposure * environmentScale,
-    keyLightIntensity: keyBase * input.exposure * (input.displayMode === 'pbr' ? input.pbrKeyLightIntensity : 1),
+    keyLightIntensity:
+      keyBase * input.exposure * (input.displayMode === 'pbr' ? input.pbrKeyLightIntensity : 1),
     keyLightDirection: direction.toArray() as [number, number, number],
   };
 }
 
 function hasUsableTextureImage(texture: THREE.Texture) {
   const image = texture.image as
-    | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number; data?: unknown }
+    | {
+        width?: number;
+        height?: number;
+        naturalWidth?: number;
+        naturalHeight?: number;
+        data?: unknown;
+      }
     | undefined;
   if (!image) return false;
   if (image.data) return true;
@@ -179,14 +196,17 @@ function hasUsableTextureImage(texture: THREE.Texture) {
 
 function getPreviewMaterialBase(material: THREE.Material | THREE.Material[] | undefined) {
   const sourceMaterial = Array.isArray(material)
-    ? material.find(
-        (item) => 'map' in item && item.map instanceof THREE.Texture && hasUsableTextureImage(item.map),
-      ) ?? material[0]
+    ? (material.find(
+        (item) =>
+          'map' in item && item.map instanceof THREE.Texture && hasUsableTextureImage(item.map),
+      ) ?? material[0])
     : material;
   if (!sourceMaterial) return {};
 
   const baseTexture =
-    'map' in sourceMaterial && sourceMaterial.map instanceof THREE.Texture && hasUsableTextureImage(sourceMaterial.map)
+    'map' in sourceMaterial &&
+    sourceMaterial.map instanceof THREE.Texture &&
+    hasUsableTextureImage(sourceMaterial.map)
       ? sourceMaterial.map
       : undefined;
   const baseColor =
@@ -262,7 +282,10 @@ function useCompositedUvTexture(layers: Layer[]) {
   const layerKey = useMemo(
     () =>
       layers
-        .map((layer) => `${layer.id}:${layer.imageUrl}:${layer.opacity}:${layer.blendMode}:${layer.order}`)
+        .map(
+          (layer) =>
+            `${layer.id}:${layer.imageUrl}:${layer.opacity}:${layer.blendMode}:${layer.order}`,
+        )
         .join('|'),
     [layers],
   );
@@ -308,11 +331,18 @@ function useCompositedUvTexture(layers: Layer[]) {
         if (cancelled) return;
         const sourceWidth = Math.max(
           1,
-          ...sources.map(({ source }) => ('naturalWidth' in source ? source.naturalWidth || source.width : source.width) || 1),
+          ...sources.map(
+            ({ source }) =>
+              ('naturalWidth' in source ? source.naturalWidth || source.width : source.width) || 1,
+          ),
         );
         const sourceHeight = Math.max(
           1,
-          ...sources.map(({ source }) => ('naturalHeight' in source ? source.naturalHeight || source.height : source.height) || 1),
+          ...sources.map(
+            ({ source }) =>
+              ('naturalHeight' in source ? source.naturalHeight || source.height : source.height) ||
+              1,
+          ),
         );
         // Keep the composited material at the source UV resolution. Interactive paint and
         // eraser work must never trade the user's texture resolution for viewport speed.
@@ -473,7 +503,8 @@ function ImportedModel({
   const displayMode = useSceneStore((state) => state.displayMode);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const objectVisible = useSceneStore(
-    (state) => state.objects.find((object) => object.id === importedModel.objectId)?.visible ?? true,
+    (state) =>
+      state.objects.find((object) => object.id === importedModel.objectId)?.visible ?? true,
   );
   const selectObject = useSceneStore((state) => state.selectObject);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
@@ -485,7 +516,9 @@ function ImportedModel({
   const layers = useLayerStore((state) => state.layers);
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
-    state.currentProjectId ? state.projects.find((item) => item.id === state.currentProjectId) : undefined,
+    state.currentProjectId
+      ? state.projects.find((item) => item.id === state.currentProjectId)
+      : undefined,
   );
   const importedObjectId = importedModel?.objectId;
   const visibleProjectedLayers = useMemo(
@@ -496,7 +529,10 @@ function ImportedModel({
     () => layerStackPreviewSignature(visibleProjectedLayers),
     [visibleProjectedLayers],
   );
-  const stableVisibleProjectedLayers = useStableValueBySignature(visibleProjectedLayers, visibleProjectedLayerSignature);
+  const stableVisibleProjectedLayers = useStableValueBySignature(
+    visibleProjectedLayers,
+    visibleProjectedLayerSignature,
+  );
   const previewProjectedLayers = useMemo(
     () =>
       layers
@@ -515,7 +551,10 @@ function ImportedModel({
     () => layerStackPreviewSignature(previewProjectedLayers),
     [previewProjectedLayers],
   );
-  const stablePreviewProjectedLayers = useStableValueBySignature(previewProjectedLayers, previewProjectedLayerSignature);
+  const stablePreviewProjectedLayers = useStableValueBySignature(
+    previewProjectedLayers,
+    previewProjectedLayerSignature,
+  );
   const visibleUvLayers = useMemo(
     () =>
       layers
@@ -536,9 +575,26 @@ function ImportedModel({
   const stableVisibleUvLayers = useStableValueBySignature(visibleUvLayers, visibleUvLayerSignature);
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];
-    const cacheKey = getProjectedLayerStackSignature(project?.id, importedObjectId, expectedResolution, stableVisibleProjectedLayers);
-    const texture = findExactLayerStackTexture(project, stableVisibleProjectedLayers, expectedResolution, importedObjectId, cacheKey);
-    return canUseLayerStackCache(stableVisibleProjectedLayers, texture, expectedResolution, importedObjectId, cacheKey)
+    const cacheKey = getProjectedLayerStackSignature(
+      project?.id,
+      importedObjectId,
+      expectedResolution,
+      stableVisibleProjectedLayers,
+    );
+    const texture = findExactLayerStackTexture(
+      project,
+      stableVisibleProjectedLayers,
+      expectedResolution,
+      importedObjectId,
+      cacheKey,
+    );
+    return canUseLayerStackCache(
+      stableVisibleProjectedLayers,
+      texture,
+      expectedResolution,
+      importedObjectId,
+      cacheKey,
+    )
       ? texture
       : undefined;
   }, [importedObjectId, project, resolution, stableVisibleProjectedLayers]);
@@ -564,16 +620,20 @@ function ImportedModel({
     return topLayer;
   }, [previewBakedTextureRecord, stableVisibleProjectedLayers.length, stableVisibleUvLayers]);
   const compositedUvLayers = useMemo(
-    () => liveTopUvLayer
-      ? stableVisibleUvLayers.filter((layer) => layer.id !== liveTopUvLayer.id)
-      : stableVisibleUvLayers,
+    () =>
+      liveTopUvLayer
+        ? stableVisibleUvLayers.filter((layer) => layer.id !== liveTopUvLayer.id)
+        : stableVisibleUvLayers,
     [liveTopUvLayer, stableVisibleUvLayers],
   );
   const loadedUvTexture = useCompositedUvTexture(compositedUvLayers);
   const liveTopUvTexture = useMemo(
-    () => liveTopUvLayer
-      ? getLiveProjectedCanvasTexture(liveTopUvLayer.imageUrl, THREE.SRGBColorSpace, { flipY: true })
-      : undefined,
+    () =>
+      liveTopUvLayer
+        ? getLiveProjectedCanvasTexture(liveTopUvLayer.imageUrl, THREE.SRGBColorSpace, {
+            flipY: true,
+          })
+        : undefined,
     [liveTopUvLayer],
   );
   const liveSurfaceMaskTexture = useMemo(() => {
@@ -582,7 +642,25 @@ function ImportedModel({
     if (layer?.type !== 'projected' || layer.maskSpace !== 'uv' || !layer.maskUrl) return undefined;
     return getLiveProjectedCanvasTexture(layer.maskUrl, THREE.NoColorSpace, { flipY: false });
   }, [activeLayerId, exactBakedTextureRecord, layers]);
-  const visibleStackHasBakedPreview = Boolean(previewBakedTextureRecord);
+  const hasLiveProjectedPreview = useMemo(
+    () =>
+      stableVisibleProjectedLayers.some(
+        (layer) =>
+          Boolean(getLiveProjectedCanvasState(layer.imageUrl)) ||
+          Boolean(layer.maskUrl && getLiveProjectedCanvasState(layer.maskUrl)),
+      ),
+    [stableVisibleProjectedLayers],
+  );
+  const hasLocalRepaintPreview = stableVisibleProjectedLayers.some(isRenderedLocalRepaintLayer);
+  const visibleStackNeedsLivePreview =
+    hasLiveProjectedPreview ||
+    hasLocalRepaintPreview ||
+    stableVisibleProjectedLayers.some((layer) => layer.needsRebake);
+  // A same-layer cache may still describe the previous mask revision. Prefer the
+  // projected material while a live canvas is attached or the layer is dirty;
+  // otherwise the layer row updates but the model keeps showing the stale bake.
+  const visibleStackHasBakedPreview =
+    Boolean(previewBakedTextureRecord) && !visibleStackNeedsLivePreview;
   const canPreviewProjectedLayers =
     !visibleStackHasBakedPreview &&
     stableVisibleProjectedLayers.length > 0 &&
@@ -598,7 +676,14 @@ function ImportedModel({
         pbrKeyLightIntensity,
         pbrLightAzimuth,
       }),
-    [displayMode, environmentPreset, exposure, pbrEnvironmentIntensity, pbrKeyLightIntensity, pbrLightAzimuth],
+    [
+      displayMode,
+      environmentPreset,
+      exposure,
+      pbrEnvironmentIntensity,
+      pbrKeyLightIntensity,
+      pbrLightAzimuth,
+    ],
   );
 
   useEffect(() => {
@@ -622,7 +707,10 @@ function ImportedModel({
                 objectMatrixWorld: layer.objectMatrixWorld,
                 opacity: layer.opacity,
                 strength: layer.strength ?? 1,
-                blendMode: layer.blendMode,
+                // A local repaint is a patch over the already visible projection,
+                // not another competing base projection. Treat legacy saved layers
+                // the same way so their boundary cannot reveal the dark empty base.
+                blendMode: isRenderedLocalRepaintLayer(layer) ? 'overlay' : layer.blendMode,
                 visible: layer.visible,
                 hue: (layer.adjustments?.hue ?? 0) / 100,
                 saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -650,12 +738,16 @@ function ImportedModel({
       });
 
       for (const child of meshes) {
-        const originalMaterial = (child.userData.sourceMaterial ?? child.userData.originalMaterial) as
-          | THREE.Material
-          | THREE.Material[]
-          | undefined;
-        const existingBakedTexture = child.userData.bakedTexture instanceof THREE.Texture ? child.userData.bakedTexture : undefined;
-        const bakedTexture = !projectedLayerInput && visibleStackHasBakedPreview ? loadedBakedTexture ?? existingBakedTexture : undefined;
+        const originalMaterial = (child.userData.sourceMaterial ??
+          child.userData.originalMaterial) as THREE.Material | THREE.Material[] | undefined;
+        const existingBakedTexture =
+          child.userData.bakedTexture instanceof THREE.Texture
+            ? child.userData.bakedTexture
+            : undefined;
+        const bakedTexture =
+          !projectedLayerInput && visibleStackHasBakedPreview
+            ? (loadedBakedTexture ?? existingBakedTexture)
+            : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
         const previewBase = getPreviewMaterialBase(originalMaterial);
@@ -681,7 +773,11 @@ function ImportedModel({
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
-        if (bakedTexture && !projectedLayerInput && (displayMode === 'flat' || displayMode === 'pbr')) {
+        if (
+          bakedTexture &&
+          !projectedLayerInput &&
+          (displayMode === 'flat' || displayMode === 'pbr')
+        ) {
           child.material = createUvOverlayPreviewMaterial({
             displayMode,
             selected,
@@ -719,7 +815,8 @@ function ImportedModel({
           disposeGeneratedMaterialTree(projectedMaterial);
           return;
         }
-        child.material = projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
+        child.material =
+          projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
         if (previousMaterial !== child.material) disposeGeneratedMaterialTree(previousMaterial);
       }
     }
@@ -783,12 +880,14 @@ export function SceneRoot() {
     pbrKeyLightIntensity,
     pbrLightAzimuth,
   });
-  const keyLightPosition: [number, number, number] = previewLighting.keyLightDirection.map((value) => value * 5.6) as [
-    number,
-    number,
-    number,
+  const keyLightPosition: [number, number, number] = previewLighting.keyLightDirection.map(
+    (value) => value * 5.6,
+  ) as [number, number, number];
+  const fillLightPosition: [number, number, number] = [
+    -keyLightPosition[0] * 0.72,
+    2.2,
+    -keyLightPosition[2] * 0.72,
   ];
-  const fillLightPosition: [number, number, number] = [-keyLightPosition[0] * 0.72, 2.2, -keyLightPosition[2] * 0.72];
   const ambientIntensity = previewLighting.ambientIntensity;
   const keyIntensity = previewLighting.keyLightIntensity;
   const fillIntensity = previewLighting.ambientIntensity * 0.52;
@@ -807,7 +906,11 @@ export function SceneRoot() {
       <directionalLight position={fillLightPosition} intensity={fillIntensity} />
       <Grid />
       {renderedModels.map((model) => (
-        <ImportedModel key={model.objectId} importedModel={model} showSelectionGlow={showSelectionGlow} />
+        <ImportedModel
+          key={model.objectId}
+          importedModel={model}
+          showSelectionGlow={showSelectionGlow}
+        />
       ))}
       <ObjectTransformControls />
       <ContactShadows position={[0, -0.02, 0]} opacity={0.22} scale={8} blur={2.4} />

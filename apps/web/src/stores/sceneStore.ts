@@ -38,7 +38,7 @@ export type LocalRepaintProjectionSource = {
 
 export type PaintMaskSettings = {
   brushSize: number;
-  brushHardness: number;
+  brushOpacity: number;
 };
 
 export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
@@ -128,9 +128,11 @@ function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObj
     const boundingBox = getBoundingBoxForObject(model.group);
     return Math.max(boundingBox.size[0], 0.01);
   });
-  const modelGaps = modelWidths.slice(0, -1).map((width, index) =>
-    Math.max(0.45, Math.min(1.2, Math.max(width, modelWidths[index + 1]) * 0.18)),
-  );
+  const modelGaps = modelWidths
+    .slice(0, -1)
+    .map((width, index) =>
+      Math.max(0.45, Math.min(1.2, Math.max(width, modelWidths[index + 1]) * 0.18)),
+    );
   const rowWidth =
     modelWidths.reduce((total, width) => total + width, 0) +
     modelGaps.reduce((total, gap) => total + gap, 0);
@@ -150,11 +152,11 @@ function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObj
       boundingBox,
       importNormalizationTransform: {
         ...model.importNormalizationTransform,
-        position: [
-          model.group.position.x,
-          model.group.position.y,
-          model.group.position.z,
-        ] as [number, number, number],
+        position: [model.group.position.x, model.group.position.y, model.group.position.z] as [
+          number,
+          number,
+          number,
+        ],
       },
     };
   });
@@ -168,11 +170,11 @@ function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObj
         ...object,
         transform: {
           ...object.transform,
-          position: [
-            model.group.position.x,
-            model.group.position.y,
-            model.group.position.z,
-          ] as [number, number, number],
+          position: [model.group.position.x, model.group.position.y, model.group.position.z] as [
+            number,
+            number,
+            number,
+          ],
         },
         boundingBox: model.boundingBox,
         importNormalizationTransform: model.importNormalizationTransform,
@@ -201,7 +203,7 @@ export const useSceneStore = create<SceneStore>()(
       localRepaintProjectionSource: undefined,
       paintMaskSettings: {
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
-        brushHardness: 50,
+        brushOpacity: 100,
       },
       paintToolSettings: {
         brushSize: 32,
@@ -394,9 +396,9 @@ export const useSceneStore = create<SceneStore>()(
                 settings.brushSize ?? state.paintMaskSettings.brushSize,
               ),
             ),
-            brushHardness: Math.max(
+            brushOpacity: Math.max(
               0,
-              Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness),
+              Math.min(100, settings.brushOpacity ?? state.paintMaskSettings.brushOpacity),
             ),
           },
         })),
