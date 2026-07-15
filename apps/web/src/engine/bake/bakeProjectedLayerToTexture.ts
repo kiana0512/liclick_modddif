@@ -84,9 +84,13 @@ async function encodeBakeCanvas(canvas: HTMLCanvasElement, preferBlobOutput?: bo
   };
 }
 
-function validateBakeCoverage(coveredPixels: number, resolution: number) {
+function validateBakeCoverage(
+  coveredPixels: number,
+  resolution: number,
+  minimumCoverageRatio = MIN_VALID_COVERAGE_RATIO,
+) {
   const coverageRatio = coveredPixels / (resolution * resolution);
-  if (coverageRatio < MIN_VALID_COVERAGE_RATIO) {
+  if (coverageRatio < minimumCoverageRatio) {
     throw new Error(
       'UV bake produced almost no valid texels; keeping the projected layer unbaked.',
     );
@@ -565,6 +569,9 @@ function applyOverlayRasters(base: ImageData, coverage: Uint8Array, overlays: Ov
       const alpha = Math.max(0, Math.min(1, layerCoverage * (0.75 + 0.25 * qualityFade)));
       if (alpha <= 0.0001) continue;
 
+      const baseAlpha = base.data[offset + 3] / 255;
+      const outputAlpha = alpha + baseAlpha * (1 - alpha);
+      if (outputAlpha <= 0.0001) continue;
       const baseRed = srgbByteToLinear(base.data[offset]);
       const baseGreen = srgbByteToLinear(base.data[offset + 1]);
       const baseBlue = srgbByteToLinear(base.data[offset + 2]);
@@ -572,10 +579,20 @@ function applyOverlayRasters(base: ImageData, coverage: Uint8Array, overlays: Ov
       const layerGreen = srgbByteToLinear(imageData.data[offset + 1]);
       const layerBlue = srgbByteToLinear(imageData.data[offset + 2]);
 
-      base.data[offset] = linearToSrgbByte(baseRed * (1 - alpha) + layerRed * alpha);
-      base.data[offset + 1] = linearToSrgbByte(baseGreen * (1 - alpha) + layerGreen * alpha);
-      base.data[offset + 2] = linearToSrgbByte(baseBlue * (1 - alpha) + layerBlue * alpha);
-      base.data[offset + 3] = 255;
+      // Keep straight-alpha RGB when an overlay is baked onto a transparent UV
+      // target. Blending the edge against transparent black and then forcing it
+      // opaque produced the thin dark outline around local repaint patches.
+      const retainedBaseAlpha = baseAlpha * (1 - alpha);
+      base.data[offset] = linearToSrgbByte(
+        (baseRed * retainedBaseAlpha + layerRed * alpha) / outputAlpha,
+      );
+      base.data[offset + 1] = linearToSrgbByte(
+        (baseGreen * retainedBaseAlpha + layerGreen * alpha) / outputAlpha,
+      );
+      base.data[offset + 2] = linearToSrgbByte(
+        (baseBlue * retainedBaseAlpha + layerBlue * alpha) / outputAlpha,
+      );
+      base.data[offset + 3] = Math.round(outputAlpha * 255);
       coverage[pixelIndex] = 1;
     }
   }
@@ -913,7 +930,11 @@ export async function bakeVisibleProjectedLayersToTexture(
           layerCount: layers.length,
         });
         const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
-        const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
+        const coverageRatio = validateBakeCoverage(
+          writtenTexels,
+          input.resolution,
+          input.minimumCoverageRatio,
+        );
         const report = createBakeReport({
           startedAt,
           objectId: input.objectId,
@@ -1039,7 +1060,11 @@ export async function bakeVisibleProjectedLayersToTexture(
         gpuBake.canvas,
         input.preferBlobOutput,
       );
-      const coverageRatio = validateBakeCoverage(gpuBake.coveredPixels, input.resolution);
+      const coverageRatio = validateBakeCoverage(
+        gpuBake.coveredPixels,
+        input.resolution,
+        input.minimumCoverageRatio,
+      );
       const report = createBakeReport({
         startedAt,
         objectId: input.objectId,
@@ -1267,7 +1292,11 @@ export async function bakeVisibleProjectedLayersToTexture(
     layerCount: layers.length,
   });
   const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
-  const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
+  const coverageRatio = validateBakeCoverage(
+    writtenTexels,
+    input.resolution,
+    input.minimumCoverageRatio,
+  );
   const report = createBakeReport({
     startedAt,
     objectId: input.objectId,

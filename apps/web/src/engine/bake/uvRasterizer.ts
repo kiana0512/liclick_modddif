@@ -294,7 +294,8 @@ function resolveProjectedSample({
   if (input.maskImage) {
     const maskUv = input.layer.maskSpace === 'uv' ? textureUv : imageUv;
     const maskSample = sampleImageBilinear(input.maskImage, maskUv.u, maskUv.v);
-    const maskValue = Math.max(maskSample[0], maskSample[1], maskSample[2]);
+    const maskValue =
+      (Math.max(maskSample[0], maskSample[1], maskSample[2]) * maskSample[3]) / 255;
     if (maskValue < 24) {
       return { inFrustum: true, maskRejected: true, depthRejected: false, backfaceRejected: false };
     }

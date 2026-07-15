@@ -91,6 +91,7 @@ const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
 const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
   enabled: true,
+  exposure: 1,
   ambientIntensity: 0.5,
   keyLightIntensity: 1.22,
   keyLightDirection: [0.35, 0.7, 0.45],
@@ -255,6 +256,7 @@ const fragmentShader = `
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
   uniform float previewLightingEnabled;
+  uniform float previewExposure;
   uniform float ambientLightIntensity;
   uniform float keyLightIntensity;
   uniform vec3 keyLightDirection;
@@ -361,7 +363,7 @@ const fragmentShader = `
 
     vec2 maskUv = mix(uv, vec2(vUv.x, 1.0 - vUv.y), maskUsesUv);
     vec4 maskTexel = texture2D(maskMap, maskUv);
-    float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114));
+    float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
     float maskAlpha = mix(1.0, maskValue, useMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
@@ -399,10 +401,10 @@ const fragmentShader = `
     );
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap * baseTexel.a);
     // Local repaint images are captured display colors: they already contain the
-    // viewport exposure. LinearToneMapping applies toneMappingExposure once more
+    // viewport exposure. LinearToneMapping applies the renderer exposure once more
     // at the end of this shader, so cancel that second exposure for rendered
     // colors while ordinary texture layers still receive preview lighting.
-    float renderedColorExposureCompensation = 1.0 / max(toneMappingExposure, 0.0001);
+    float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 emptyPreviewColor = mix(
       computeProjectionEmptyPreviewColor(baseColor),
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
@@ -518,7 +520,8 @@ function buildStackFragmentShader(
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
-      float maskAlpha = ${layerUsesMask(index) ? `dot(${maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv')}.rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
+      vec4 maskTexel = ${layerUsesMask(index) ? maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv') : 'vec4(1.0)'};
+      float maskAlpha = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float depthWeight = ${
@@ -531,7 +534,7 @@ function buildStackFragmentShader(
       texel.rgb = applyHsvAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
       texel.rgb *= mix(
         lambert,
-        1.0 / max(toneMappingExposure, 0.0001),
+        1.0 / max(previewExposure, 0.0001),
         ${layers[index].renderedColor ? '1.0' : '0.0'}
       );
       float sourceAlpha = texel.a * maskAlpha;
@@ -574,7 +577,8 @@ function buildStackFragmentShader(
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = mix(1.0, frontFacing, enableBackfaceCulling);
 
-      float maskAlpha = ${layerUsesMask(index) ? `dot(${maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv')}.rgb, vec3(0.299, 0.587, 0.114))` : '1.0'};
+      vec4 maskTexel = ${layerUsesMask(index) ? maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv') : 'vec4(1.0)'};
+      float maskAlpha = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float depthWeight = ${
@@ -587,7 +591,7 @@ function buildStackFragmentShader(
       texel.rgb = applyHsvAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
       texel.rgb *= mix(
         lambert,
-        1.0 / max(toneMappingExposure, 0.0001),
+        1.0 / max(previewExposure, 0.0001),
         ${layers[index].renderedColor ? '1.0' : '0.0'}
       );
       float sourceAlpha = texel.a * maskAlpha;
@@ -622,6 +626,7 @@ function buildStackFragmentShader(
   ${features.useUvOverlayMap ? 'uniform float uvOverlaySaturationShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayLightnessShift;' : ''}
   uniform float previewLightingEnabled;
+  uniform float previewExposure;
   uniform float ambientLightIntensity;
   uniform float keyLightIntensity;
   uniform vec3 keyLightDirection;
@@ -784,7 +789,7 @@ function buildStackFragmentShader(
     );`
         : ''
     }
-    float renderedColorExposureCompensation = 1.0 / max(toneMappingExposure, 0.0001);
+    float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 shadedBase = ${
       features.useBaseMap
         ? `mix(
@@ -832,6 +837,7 @@ function getPreviewLighting(input?: ProjectionPreviewLighting) {
   direction.normalize();
   return {
     enabled: lighting.enabled ? 1 : 0,
+    exposure: Math.max(0.0001, lighting.exposure),
     ambientIntensity: Math.max(0, lighting.ambientIntensity),
     keyLightIntensity: Math.max(0, lighting.keyLightIntensity),
     keyLightDirection: direction,
@@ -970,6 +976,8 @@ function updateSharedPreviewUniforms(
     material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   if (material.uniforms.previewLightingEnabled)
     material.uniforms.previewLightingEnabled.value = previewLighting.enabled;
+  if (material.uniforms.previewExposure)
+    material.uniforms.previewExposure.value = previewLighting.exposure;
   if (material.uniforms.ambientLightIntensity)
     material.uniforms.ambientLightIntensity.value = previewLighting.ambientIntensity;
   if (material.uniforms.keyLightIntensity)
@@ -1281,6 +1289,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
       previewLightingEnabled: { value: previewLighting.enabled },
+      previewExposure: { value: previewLighting.exposure },
       ambientLightIntensity: { value: previewLighting.ambientIntensity },
       keyLightIntensity: { value: previewLighting.keyLightIntensity },
       keyLightDirection: { value: previewLighting.keyLightDirection },
@@ -1401,6 +1410,7 @@ export async function createProjectedLayerStackMaterial(
   };
   const previewLighting = getPreviewLighting(input.previewLighting);
   uniforms.previewLightingEnabled = { value: previewLighting.enabled };
+  uniforms.previewExposure = { value: previewLighting.exposure };
   uniforms.ambientLightIntensity = { value: previewLighting.ambientIntensity };
   uniforms.keyLightIntensity = { value: previewLighting.keyLightIntensity };
   uniforms.keyLightDirection = { value: previewLighting.keyLightDirection };
@@ -1730,6 +1740,7 @@ const uvOverlayFragmentShader = `
   uniform float showEmptyUvChecker;
   uniform vec3 baseColor;
   uniform float previewLightingEnabled;
+  uniform float previewExposure;
   uniform float ambientLightIntensity;
   uniform float keyLightIntensity;
   uniform vec3 keyLightDirection;
@@ -1816,10 +1827,10 @@ const uvOverlayFragmentShader = `
     float lighting = mix(lambert, 1.0, hasUvOverlay * showEmptyUvChecker * remainingTransparency * 0.45);
     vec3 liveOverlayDisplayColor = liveOverlayTexel.rgb * mix(
       lighting,
-      1.0 / max(toneMappingExposure, 0.0001),
+      1.0 / max(previewExposure, 0.0001),
       liveUvOverlayRenderedColor
     );
-    float renderedColorExposureCompensation = 1.0 / max(toneMappingExposure, 0.0001);
+    float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 litBaseSurface = mix(
       baseColor * lighting,
       baseTexel.rgb * mix(lighting, renderedColorExposureCompensation, baseRenderedColor),
@@ -1903,6 +1914,7 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
       showEmptyUvChecker: { value: input.showEmptyUvChecker === true ? 1 : 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       previewLightingEnabled: { value: previewLighting.enabled },
+      previewExposure: { value: previewLighting.exposure },
       ambientLightIntensity: { value: previewLighting.ambientIntensity },
       keyLightIntensity: { value: previewLighting.keyLightIntensity },
       keyLightDirection: { value: previewLighting.keyLightDirection },
@@ -1956,6 +1968,7 @@ export function updateUvOverlayPreviewMaterial(
   uniforms.showEmptyUvChecker.value = input.showEmptyUvChecker === true ? 1 : 0;
   uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   uniforms.previewLightingEnabled.value = previewLighting.enabled;
+  uniforms.previewExposure.value = previewLighting.exposure;
   uniforms.ambientLightIntensity.value = previewLighting.ambientIntensity;
   uniforms.keyLightIntensity.value = previewLighting.keyLightIntensity;
   uniforms.keyLightDirection.value.copy(previewLighting.keyLightDirection);

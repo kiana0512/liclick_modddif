@@ -73,10 +73,7 @@ import {
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import type { LoadedModel, ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
-import {
-  focusCameraOrbitOnObjectId,
-  setCameraToObjectView,
-} from '@/engine/scene/transformActions';
+import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { EditorShell } from '@/layouts/EditorShell';
@@ -3881,7 +3878,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               undo: t('undo'),
               redo: t('redo'),
               brushSize: t('brushSize'),
-              brushHardness: t('brushHardness'),
+              brushOpacity: t('imageEditBrushOpacity'),
               brushColor: t('brushColor'),
               resetInpaintRegion: t('resetInpaintRegion'),
               invertInpaintRegion: t('invertInpaintRegion'),

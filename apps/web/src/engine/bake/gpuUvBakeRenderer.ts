@@ -265,7 +265,7 @@ const fragmentShader = `
 
     vec2 maskSampleUv = mix(projectedSampleUv, vTextureUv, maskUsesUv);
     vec4 maskTexel = texture2D(maskMap, maskSampleUv);
-    float maskValue = max(maskTexel.r, max(maskTexel.g, maskTexel.b));
+    float maskValue = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
     if (useMask > 0.5 && maskValue < 0.094) discard;
 
     float projectedDepth = ndc.z * 0.5 + 0.5;

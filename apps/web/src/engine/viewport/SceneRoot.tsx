@@ -172,6 +172,7 @@ function layerPreviewSignature(layer: Layer) {
     layer.adjustments?.saturation ?? 0,
     layer.adjustments?.lightness ?? 0,
     layer.renderedColor ? 1 : 0,
+    layer.contentRevision ?? 0,
     layer.needsRebake ? 1 : 0,
     stableNumberListSignature(layer.objectMatrixWorld),
     cameraSignature(layer),
@@ -256,6 +257,7 @@ function getPreviewLighting(input: {
   ).normalize();
   return {
     enabled: input.displayMode === 'pbr',
+    exposure: input.exposure,
     ambientIntensity: environmentBase * input.exposure * environmentScale,
     keyLightIntensity:
       keyBase * input.exposure * (input.displayMode === 'pbr' ? input.pbrKeyLightIntensity : 1),
@@ -687,7 +689,9 @@ function ImportedModel({
         objectMatrixWorld: layer.objectMatrixWorld,
         opacity: layer.opacity,
         strength: layer.strength ?? 1,
-        blendMode: layer.blendMode,
+        // Local repaint layers patch the visible projection rather than competing
+        // as another base projection, including legacy saved repaint layers.
+        blendMode: isRenderedLocalRepaintLayer(layer) ? 'overlay' : layer.blendMode,
         visible: layer.visible,
         hue: (layer.adjustments?.hue ?? 0) / 100,
         saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -731,7 +735,7 @@ function ImportedModel({
         objectMatrixWorld: layer.objectMatrixWorld,
         opacity: layer.opacity,
         strength: layer.strength ?? 1,
-        blendMode: layer.blendMode,
+        blendMode: isRenderedLocalRepaintLayer(layer) ? 'overlay' : layer.blendMode,
         visible: layer.visible,
         hue: (layer.adjustments?.hue ?? 0) / 100,
         saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -1051,7 +1055,25 @@ function ImportedModel({
     if (layer?.type !== 'projected' || layer.maskSpace !== 'uv' || !layer.maskUrl) return undefined;
     return getLiveProjectedCanvasTexture(layer.maskUrl, THREE.NoColorSpace, { flipY: false });
   }, [activeLayerId, exactBakedTextureRecord, layers]);
-  const visibleStackHasBakedPreview = Boolean(previewBakedTextureRecord);
+  const hasLiveProjectedPreview = useMemo(
+    () =>
+      stableVisibleProjectedLayers.some(
+        (layer) =>
+          Boolean(getLiveProjectedCanvasState(layer.imageUrl)) ||
+          Boolean(layer.maskUrl && getLiveProjectedCanvasState(layer.maskUrl)),
+      ),
+    [stableVisibleProjectedLayers],
+  );
+  const hasLocalRepaintPreview = stableVisibleProjectedLayers.some(isRenderedLocalRepaintLayer);
+  const visibleStackNeedsLivePreview =
+    hasLiveProjectedPreview ||
+    hasLocalRepaintPreview ||
+    stableVisibleProjectedLayers.some((layer) => layer.needsRebake);
+  // A same-layer cache may still describe the previous mask revision. Prefer the
+  // projected material while a live canvas is attached or the layer is dirty;
+  // otherwise the layer row updates but the model keeps showing the stale bake.
+  const visibleStackHasBakedPreview =
+    Boolean(previewBakedTextureRecord) && !visibleStackNeedsLivePreview;
   const canPreviewProjectedLayers =
     !visibleStackHasBakedPreview &&
     stableVisibleProjectedLayers.length > 0 &&
@@ -1255,8 +1277,10 @@ function ImportedModel({
                     ? isRenderedLocalRepaintLayer(liveTopUvLayer)
                     : false,
                   liveUvOverlayHue: (liveTopUvLayer?.adjustments?.hue ?? 0) / 100,
-                  liveUvOverlaySaturation: (liveTopUvLayer?.adjustments?.saturation ?? 0) / 100,
-                  liveUvOverlayLightness: (liveTopUvLayer?.adjustments?.lightness ?? 0) / 100,
+                  liveUvOverlaySaturation:
+                    (liveTopUvLayer?.adjustments?.saturation ?? 0) / 100,
+                  liveUvOverlayLightness:
+                    (liveTopUvLayer?.adjustments?.lightness ?? 0) / 100,
                 }
               : {}),
             previewLighting,
