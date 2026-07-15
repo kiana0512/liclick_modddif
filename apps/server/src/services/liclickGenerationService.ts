@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { callAtlasToolJson, parseJsonFromOutput, runAtlas } from '../auth/atlasAuthService.js';
 
 type ReferenceInput = {
@@ -48,6 +48,9 @@ type LiclickImageParam = {
   data: string;
   type: 'image';
 };
+
+const uploadedImageAssetCache = new Map<string, Promise<string>>();
+const maxUploadedImageAssetCacheEntries = 128;
 
 export type LiclickImageTaskResult = {
   status: string;
@@ -401,19 +404,49 @@ async function uploadReference(
   atlasContext: LiclickAtlasContext = {},
 ): Promise<UploadedReference> {
   const args = ['gateway', 'call-tool', '--service', 'liclick', '--tool', 'upload_asset', 'asset_type=image'];
+  let cacheKey: string;
   if (reference.url.startsWith('data:')) {
     const { buffer, ext } = dataUrlToBuffer(reference.url);
+    const digest = createHash('sha256').update(buffer).digest('hex');
+    cacheKey = `${atlasContext.atlasHomeDir ?? 'default'}:image:${digest}`;
     const filePath = path.join(tempDir, `${reference.id ?? randomUUID()}.${ext}`);
     await fs.promises.writeFile(filePath, buffer);
     args.push('--file', `file_path=${filePath}`);
   } else {
+    cacheKey = `${atlasContext.atlasHomeDir ?? 'default'}:image-url:${reference.url}`;
     args.push(`url=${reference.url}`);
   }
   args.push('--timeout', '600');
-  const upload = await runAtlas(args, 10 * 60 * 1000, false, atlasContext.atlasHomeDir);
-  const parsed = parseJsonFromOutput(upload.stdout);
-  const assetId = findField(parsed, ['asset_id', 'assetId']) || findField(upload.stdout, ['asset_id', 'assetId']);
-  if (!assetId) throw new Error(`参考图上传完成但没有返回 asset_id：${trimOutput(upload.stdout || upload.stderr)}`);
+
+  let uploadPromise = uploadedImageAssetCache.get(cacheKey);
+  if (!uploadPromise) {
+    uploadPromise = (async () => {
+      const upload = await runAtlas(args, 10 * 60 * 1000, false, atlasContext.atlasHomeDir);
+      const parsed = parseJsonFromOutput(upload.stdout);
+      const assetId =
+        findField(parsed, ['asset_id', 'assetId']) || findField(upload.stdout, ['asset_id', 'assetId']);
+      if (!assetId) {
+        throw new Error(`参考图上传完成但没有返回 asset_id：${trimOutput(upload.stdout || upload.stderr)}`);
+      }
+      return assetId;
+    })();
+    uploadedImageAssetCache.set(cacheKey, uploadPromise);
+    while (uploadedImageAssetCache.size > maxUploadedImageAssetCacheEntries) {
+      const oldestKey = uploadedImageAssetCache.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      uploadedImageAssetCache.delete(oldestKey);
+    }
+  }
+
+  let assetId: string;
+  try {
+    assetId = await uploadPromise;
+  } catch (error) {
+    if (uploadedImageAssetCache.get(cacheKey) === uploadPromise) {
+      uploadedImageAssetCache.delete(cacheKey);
+    }
+    throw error;
+  }
   return { referenceId: reference.id, assetId };
 }
 

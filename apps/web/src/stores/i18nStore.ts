@@ -50,10 +50,10 @@ export const translations = {
     projectedPreviewReadyHelp: 'All {count} visible projected layers are now displayed.',
     projectedTextureArrayPreparing: 'Projected-layer capacity expanded automatically',
     projectedTextureArrayPreparingHelp:
-      'The direct sampler limit would be exceeded. Packing {count} projected layers on the GPU at source resolution; painting and viewport interaction remain available.',
+      'The direct sampler limit would be exceeded. Preparing {count} projected layers at a GPU-safe viewport resolution; source images and export quality remain unchanged.',
     projectedTextureArrayReady: 'High-capacity projected-layer preview is ready',
     projectedTextureArrayReadyHelp:
-      '{count} projected layers are available for instant visibility toggles without UV flattening.',
+      'All {count} projected layers are available for instant visibility toggles without UV flattening.',
     projectSubtitle:
       'Manage local Liclick texture studios, imported models, captures, baked textures, and exports.',
     sortUpdatedDesc: 'Updated New to Old',
@@ -564,10 +564,10 @@ export const translations = {
     projectedPreviewReadyHelp: '已完整显示 {count} 个可见投影图层。',
     projectedTextureArrayPreparing: '已自动切换大容量投影预览',
     projectedTextureArrayPreparingHelp:
-      '检测到直接采样将超出显卡上限，正在按原始分辨率将 {count} 个投影图层整理到 GPU；画笔和视口操作仍可继续。',
+      '检测到直接采样将超出显卡上限，正在按显卡可承受的视口分辨率准备 {count} 个投影图层；源图和导出质量不会降低。',
     projectedTextureArrayReady: '大容量投影图层预览已就绪',
     projectedTextureArrayReadyHelp:
-      '已准备 {count} 个投影图层，眼睛开关可即时生效，并且没有转成 UV 合成。',
+      '已准备全部 {count} 个投影图层，眼睛开关可即时生效，并且没有丢弃任何图层。',
     projectSubtitle: '管理本地 Liclick 贴图项目、导入模型、捕获、烘焙贴图和导出内容。',
     sortUpdatedDesc: '最近更新优先',
     sortCreatedDesc: '最新创建优先',

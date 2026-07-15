@@ -34,6 +34,8 @@ import {
   type LiclickImageModel,
   type LiclickImageSize,
 } from '@/services/liclickApiClient';
+import { getUserFacingGenerationError } from '@/services/generationErrorMessage';
+import type { ReferencePreprocessingResult } from '@/services/referenceImagePreprocessor';
 import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
@@ -252,12 +254,13 @@ function createFailedGeneration(
   message: string,
   extraMetadata: Record<string, unknown> = {},
 ) {
+  const userMessage = getUserFacingGenerationError(message);
   return {
     ...generation,
     status: 'failed' as const,
     metadata: {
       ...generation.metadata,
-      error: message,
+      error: userMessage,
       completedAt: new Date().toISOString(),
       ...extraMetadata,
     },
@@ -427,7 +430,16 @@ export function GeneratePanel() {
   );
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const objects = useSceneStore((state) => state.objects);
+  const importedModels = useSceneStore((state) => state.importedModels);
   const importedModel = useSceneStore((state) => state.importedModel);
+  const captureModel = useMemo(
+    () =>
+      (selectedObjectId
+        ? importedModels.find((model) => model.objectId === selectedObjectId)
+        : undefined) ?? importedModel,
+    [importedModel, importedModels, selectedObjectId],
+  );
+  const captureObjectId = captureModel?.objectId;
   const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
   const activeReferences = references;
@@ -463,6 +475,20 @@ export function GeneratePanel() {
   const previewCancelled = previewGeneration?.metadata.cancelled === true;
   const canCancelGeneration = Boolean(activeProjectGeneration);
 
+  const notifyReferencePreprocessed = useCallback(
+    (result: ReferencePreprocessingResult) => {
+      const originalMiB = (result.originalBytes / 1024 / 1024).toFixed(1);
+      const processedMiB = (result.processedBytes / 1024 / 1024).toFixed(1);
+      pushToast({
+        tone: 'warning',
+        title: '参考图超限，已自动处理',
+        description: `${result.name} 已从 ${originalMiB} MB 优化为 ${processedMiB} MB，将按原构图继续生成。`,
+        dedupeKey: `atlas-reference-preprocessed:${result.id}`,
+      });
+    },
+    [pushToast],
+  );
+
   const syncGeneration = useCallback(
     (generation: Generation) => {
       addGeneration(generation);
@@ -473,16 +499,17 @@ export function GeneratePanel() {
 
   const markGenerationFailed = useCallback(
     (generationToFail: Generation, message: string) => {
-      syncGeneration(createFailedGeneration(generationToFail, message));
+      const userMessage = getUserFacingGenerationError(message);
+      syncGeneration(createFailedGeneration(generationToFail, userMessage));
       finish();
       setGenerateNotice({
         tone: 'error',
-        message,
+        message: userMessage,
       });
       pushToast({
         tone: 'error',
-        title: isTextureMapGeneration(generationToFail) ? t('textureMapFailed') : 'Generate failed',
-        description: message,
+        title: isTextureMapGeneration(generationToFail) ? t('textureMapFailed') : '图片生成失败',
+        description: userMessage,
         dedupeKey: `generation-failed:${generationToFail.id}`,
       });
     },
@@ -494,10 +521,9 @@ export function GeneratePanel() {
       view?: CameraViewItem,
       options: { setAsLastCapture?: boolean; resolution?: CaptureResolution } = {},
     ) => {
-      if (!importedModel) throw new Error(t('importModelFirst'));
-      const objectId = selectedObjectId ?? importedModel.objectId;
+      if (!captureObjectId) throw new Error(t('importModelFirst'));
       const capture = await captureCurrentView({
-        objectId,
+        objectId: captureObjectId,
         resolution: options.resolution ?? resolutionToSize[resolution],
         framing: 'fit-object',
         colorMode: 'clay-target',
@@ -508,7 +534,7 @@ export function GeneratePanel() {
       if (options.setAsLastCapture !== false) setLastCapture(capture);
       return capture;
     },
-    [importedModel, resolution, selectedObjectId, setLastCapture, t],
+    [captureObjectId, resolution, setLastCapture, t],
   );
 
   useEffect(() => {
@@ -549,11 +575,12 @@ export function GeneratePanel() {
     capturingCameraViewsRef.current = new Set();
     setCameraViewPreviews({});
     setCapturingCameraViews(new Set());
-  }, [importedModel?.objectId, resolution, selectedObjectId]);
+  }, [captureObjectId, resolution]);
 
   useEffect(() => {
-    if (!isTextureMapTab || textureMapViewMode !== 'multi-view' || !importedModel) return undefined;
-    const currentImportedModel = importedModel;
+    if (!isTextureMapTab || textureMapViewMode !== 'multi-view' || !captureObjectId)
+      return undefined;
+    const currentCaptureObjectId = captureObjectId;
     const missingViews = cameraViews.filter(
       (view) =>
         !cameraViewPreviewsRef.current[view.id] && !capturingCameraViewsRef.current.has(view.id),
@@ -572,9 +599,8 @@ export function GeneratePanel() {
     async function captureMissingViews() {
       try {
         for (const view of missingViews) {
-          const objectId = selectedObjectId ?? currentImportedModel.objectId;
           const preview = await captureCurrentNormalPreview({
-            objectId,
+            objectId: currentCaptureObjectId,
             resolution: 512,
             framing: 'fit-object',
             fillRatio: 0.9,
@@ -629,10 +655,9 @@ export function GeneratePanel() {
     };
   }, [
     cameraViews,
-    importedModel,
+    captureObjectId,
     isTextureMapTab,
     pushToast,
-    selectedObjectId,
     textureMapViewMode,
   ]);
 
@@ -720,20 +745,7 @@ export function GeneratePanel() {
           syncGeneration(generation);
         }
         if (result.status === 'failed') {
-          const generation = createFailedGeneration(
-            generationToPoll,
-            result.error ?? '莉刻图片生成任务失败。',
-            {
-              completedAt: result.updatedAt ?? new Date().toISOString(),
-            },
-          );
-          syncGeneration(generation);
-          pushToast({
-            tone: 'error',
-            title: 'Generate failed',
-            description: result.error ?? '莉刻图片生成任务失败。',
-            dedupeKey: `generation-failed:${generation.id}`,
-          });
+          markGenerationFailed(generationToPoll, result.error ?? '莉刻图片生成任务失败。');
           return;
         }
       } catch (error) {
@@ -771,7 +783,7 @@ export function GeneratePanel() {
   }
 
   function handleCameraViewSelect(view: CameraViewItem) {
-    if (!(selectedObjectId ?? importedModel?.objectId)) {
+    if (!captureObjectId) {
       pushToast({ tone: 'warning', title: t('importModelFirst') });
       return;
     }
@@ -792,7 +804,7 @@ export function GeneratePanel() {
   }
 
   function handleAddCurrentCameraView() {
-    if (!(selectedObjectId ?? importedModel?.objectId)) {
+    if (!captureObjectId) {
       pushToast({ tone: 'warning', title: t('importModelFirst') });
       return;
     }
@@ -1001,7 +1013,9 @@ export function GeneratePanel() {
     while (Date.now() - startedAt < 30 * 60 * 1000) {
       if (isCancelledGeneration(generation)) throw new Error('用户已终止纹理贴图生成任务。');
       const result = await client.getGenerationJob(jobId);
-      if (result.status === 'failed') throw new Error(result.error ?? '纹理贴图生成失败。');
+      if (result.status === 'failed') {
+        throw new Error(getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'));
+      }
       if (result.status === 'succeeded' && result.resultUrl) {
         return {
           ...generation,
@@ -1024,9 +1038,9 @@ export function GeneratePanel() {
     materialReference: ReferenceImage,
     requestedViews: CameraViewItem[] = cameraViews,
   ) {
-    if (!importedModel) throw new Error(t('importModelFirst'));
+    if (!captureObjectId) throw new Error(t('importModelFirst'));
     if (requestedViews.length === 0) throw new Error('请先添加至少一个模型视角。');
-    const objectId = selectedObjectId ?? importedModel.objectId;
+    const objectId = captureObjectId;
     const object = objects.find((item) => item.id === objectId);
     const texturePrompt = buildTextureMapPrompt(prompt);
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
@@ -1040,7 +1054,7 @@ export function GeneratePanel() {
       message: `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`,
     });
 
-    const client = createLiclickApiClient();
+    const client = createLiclickApiClient({ onReferencePreprocessed: notifyReferencePreprocessed });
     const pendingGenerations = viewCaptures.map(({ viewId, cameraView, label, capture }) => {
       const generationId = createId(`texture-map-${viewId}`);
       const modelViewReference: ReferenceImage = {
@@ -1241,7 +1255,7 @@ export function GeneratePanel() {
     try {
       await handleTextureMapMultiviewGenerate(materialReference, cubeViews);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI 一键生成贴图失败。';
+      const message = getUserFacingGenerationError(error, 'AI 一键生成贴图失败，请稍后重试。');
       pushToast({
         tone: 'error',
         title: 'AI 一键生成贴图失败',
@@ -1265,7 +1279,7 @@ export function GeneratePanel() {
         pushToast({ tone: 'warning', title: '当前已有生图任务在运行，请完成后再试。' });
         return;
       }
-      if (!currentProject || !importedModel) throw new Error(t('importModelFirst'));
+      if (!currentProject || !captureObjectId) throw new Error(t('importModelFirst'));
       if (!paintMaskHasContent || !paintMaskDataUrl) {
         setGenerateNotice({ tone: 'warning', message: t('localRepaintMaskMissing') });
         pushToast({
@@ -1278,7 +1292,7 @@ export function GeneratePanel() {
       }
       submitLockRef.current = true;
       if (authStatus !== 'authenticated' && !(await requireAiLogin())) return;
-      const objectId = selectedObjectId ?? importedModel.objectId;
+      const objectId = captureObjectId;
       const maskSize = await getImageSize(paintMaskDataUrl);
       if (!maskSize.width || !maskSize.height) throw new Error('无法读取当前局部重绘蒙版尺寸。');
       const capture = await captureCurrentView({
@@ -1353,7 +1367,7 @@ export function GeneratePanel() {
       });
     } catch (error) {
       if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return;
-      const message = error instanceof Error ? error.message : '局部重绘生成失败。';
+      const message = getUserFacingGenerationError(error, '局部重绘生成失败，请稍后重试。');
       if (pendingGeneration) syncGeneration(createFailedGeneration(pendingGeneration, message));
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: t('localRepaintFailed'), description: message });
@@ -1392,9 +1406,7 @@ export function GeneratePanel() {
       if (!(await requireAiLogin())) return;
       const submittedPrompt = buildLiclickPrompt(prompt, imageModel);
       const generationId = createId('liclick-image');
-      const objectMatrixWorld = getImportedModelMatrixWorld(
-        selectedObjectId ?? importedModel?.objectId,
-      );
+      const objectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
       pendingGeneration = {
         id: generationId,
         mode: 'single',
@@ -1419,7 +1431,9 @@ export function GeneratePanel() {
         tone: 'info',
         message: '正在提交莉刻生图任务，请等待。',
       });
-      const generation = await createLiclickApiClient().generateTextureSingleView({
+      const generation = await createLiclickApiClient({
+        onReferencePreprocessed: notifyReferencePreprocessed,
+      }).generateTextureSingleView({
         clientGenerationId: generationId,
         projectId: currentProject?.id,
         workflow: 'liclick',
@@ -1471,23 +1485,19 @@ export function GeneratePanel() {
       }
     } catch (error) {
       console.error('[Liclick 3D Texture] Generate failed:', error);
+      const message = getUserFacingGenerationError(error);
       setGenerateNotice({
         tone: 'error',
-        message: error instanceof Error ? error.message : 'Could not generate a texture image.',
+        message,
       });
       if (pendingGeneration) {
-        syncGeneration(
-          createFailedGeneration(
-            pendingGeneration,
-            error instanceof Error ? error.message : 'Could not generate a texture image.',
-          ),
-        );
+        syncGeneration(createFailedGeneration(pendingGeneration, message));
       }
       finish();
       pushToast({
         tone: 'error',
-        title: 'Generate failed',
-        description: error instanceof Error ? error.message : 'Could not generate a texture image.',
+        title: '图片生成失败',
+        description: message,
       });
     } finally {
       submitLockRef.current = false;
@@ -1570,7 +1580,9 @@ export function GeneratePanel() {
         tone: 'info',
         message: t('textureMapSubmitting'),
       });
-      const generation = await createLiclickApiClient().generateTextureSingleView({
+      const generation = await createLiclickApiClient({
+        onReferencePreprocessed: notifyReferencePreprocessed,
+      }).generateTextureSingleView({
         clientGenerationId: generationId,
         projectId: currentProject?.id,
         workflow: 'texture-map',
@@ -1624,24 +1636,19 @@ export function GeneratePanel() {
         return;
       }
       console.error('[Liclick 3D Texture] Texture map generation failed:', error);
+      const message = getUserFacingGenerationError(error, '纹理贴图生成失败，请稍后重试。');
       setGenerateNotice({
         tone: 'error',
-        message: error instanceof Error ? error.message : 'Could not generate a texture map image.',
+        message,
       });
       if (pendingGeneration) {
-        syncGeneration(
-          createFailedGeneration(
-            pendingGeneration,
-            error instanceof Error ? error.message : 'Could not generate a texture map image.',
-          ),
-        );
+        syncGeneration(createFailedGeneration(pendingGeneration, message));
       }
       finish();
       pushToast({
         tone: 'error',
         title: t('textureMapFailed'),
-        description:
-          error instanceof Error ? error.message : 'Could not generate a texture map image.',
+        description: message,
       });
     } finally {
       comfyGenerationAbortRef.current = undefined;

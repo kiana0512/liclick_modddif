@@ -54,6 +54,7 @@ const MAX_IMAGE_ELEMENT_CACHE_SIZE = 32;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
 const PROJECTED_PREVIEW_LIMIT_TOAST_KEY = 'projected-preview:sampler-limit';
+const PROJECTED_PREVIEW_FAILURE_TOAST_KEY = 'projected-preview:failure';
 const PROJECTED_TEXTURE_ARRAY_TOAST_KEY = 'projected-preview:texture-array';
 
 function projectionPreviewCopy() {
@@ -95,18 +96,15 @@ function notifyProjectedPreviewReady(layerCount: number) {
   });
 }
 
-function notifyProjectedPreviewFailure(error: unknown) {
+function notifyProjectedPreviewFailure(_error: unknown) {
   const copy = projectionPreviewCopy();
-  const reason = error instanceof Error ? error.message : String(error);
   const toastStore = useToastStore.getState();
   toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_LIMIT_TOAST_KEY);
   toastStore.pushToast({
     tone: 'error',
     title: copy.projectedPreviewFailed,
-    description: reason
-      ? `${copy.projectedPreviewFailedHelp} ${reason}`
-      : copy.projectedPreviewFailedHelp,
-    dedupeKey: 'projected-preview:failure',
+    description: copy.projectedPreviewFailedHelp,
+    dedupeKey: PROJECTED_PREVIEW_FAILURE_TOAST_KEY,
   });
 }
 
@@ -123,6 +121,7 @@ function notifyProjectedTextureArrayPreparing(layerCount: number) {
 function notifyProjectedTextureArrayReady(layerCount: number) {
   const copy = projectionPreviewCopy();
   const toastStore = useToastStore.getState();
+  toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_FAILURE_TOAST_KEY);
   toastStore.dismissToastByDedupeKey(PROJECTED_TEXTURE_ARRAY_TOAST_KEY);
   toastStore.pushToast({
     tone: 'success',
@@ -655,6 +654,8 @@ function ImportedModel({
   const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   const [progressiveProjectedPreview, setProgressiveProjectedPreview] =
     useState<ProjectedPreviewComposite>();
+  const [failedProjectedTextureArraySignature, setFailedProjectedTextureArraySignature] =
+    useState('');
   const previewProjectedLayers = useMemo(
     () =>
       layers
@@ -702,6 +703,9 @@ function ImportedModel({
       })),
     [stablePreviewProjectedLayers],
   );
+  // Keep the complete projected stack resident in the high-capacity material.
+  // Visibility then becomes a uniform-only update, so eye toggles are immediate
+  // and do not rebuild or re-upload the texture arrays.
   const allPreviewProjectedLayers = useMemo(
     () =>
       layers
@@ -781,6 +785,7 @@ function ImportedModel({
   );
   const useProjectedTextureArrays = Boolean(
     gl.capabilities.isWebGL2 &&
+    previewProjectionInputs.length > 0 &&
     allProjectionInputs.length > 1 &&
     !allProjectedDirectSamplerBudget.withinBudget &&
     projectedTextureArraySamplerBudget.withinBudget,
@@ -808,10 +813,27 @@ function ImportedModel({
   const projectedSamplerBudget = useProjectedTextureArrays
     ? projectedTextureArraySamplerBudget
     : directProjectedSamplerBudget;
-  // A flattened UV fallback is only exact for models whose importer has explicitly
-  // proved that their UV charts do not overlap. Most imported production models do
-  // not carry that guarantee, so the direct projection/texture-array path stays primary.
-  const canUseProgressiveUvFallback = importedModel?.group.userData.liclickUvCompositeSafe === true;
+  const textureArrayCompositionFallbackRequired = Boolean(
+    useProjectedTextureArrays &&
+    projectedTextureArrayStructureSignature &&
+    failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature,
+  );
+  const canUseDirectVisibleStackAfterArrayFailure = Boolean(
+    textureArrayCompositionFallbackRequired && directProjectedSamplerBudget.withinBudget,
+  );
+  // Prefer an exact projected material. If the device still rejects a downscaled
+  // array, preserve every visible layer through the tiled compositor rather than
+  // dropping layers. UV-safe imports may use this path proactively as before.
+  const canUseProgressiveUvFallback = Boolean(
+    importedModel?.group.userData.liclickUvCompositeSafe === true ||
+    (textureArrayCompositionFallbackRequired &&
+      !canUseDirectVisibleStackAfterArrayFailure),
+  );
+  const projectedPreviewNeedsComposition = Boolean(
+    !projectedSamplerBudget.withinBudget ||
+    (textureArrayCompositionFallbackRequired &&
+      !canUseDirectVisibleStackAfterArrayFailure),
+  );
   const activeProjectedPreviewInput = useMemo(
     () => previewProjectionInputs.find((layer) => layer.layerId === activeLayerId),
     [activeLayerId, previewProjectionInputs],
@@ -855,7 +877,7 @@ function ImportedModel({
   );
   const progressiveProjectedPreviewReady =
     canUseProgressiveUvFallback &&
-    !projectedSamplerBudget.withinBudget &&
+    projectedPreviewNeedsComposition &&
     progressiveProjectedPreview?.signature === progressiveBackgroundSignature;
   const progressivePreviewScopeMatches = Boolean(
     progressiveProjectedPreview &&
@@ -886,7 +908,7 @@ function ImportedModel({
   );
   const progressiveIncrementalPreviewReady = Boolean(
     canUseProgressiveUvFallback &&
-    !projectedSamplerBudget.withinBudget &&
+    projectedPreviewNeedsComposition &&
     !progressiveProjectedPreviewReady &&
     progressiveBaseLayersStillVisible &&
     progressiveIncrementalInputs.length > 0 &&
@@ -901,7 +923,7 @@ function ImportedModel({
 
   useEffect(() => {
     if (
-      projectedSamplerBudget.withinBudget ||
+      !projectedPreviewNeedsComposition ||
       !canUseProgressiveUvFallback ||
       progressiveBackgroundInputs.length === 0 ||
       !importedModel
@@ -934,7 +956,7 @@ function ImportedModel({
     importedModel,
     progressiveBackgroundInputs,
     progressiveBackgroundSignature,
-    projectedSamplerBudget.withinBudget,
+    projectedPreviewNeedsComposition,
     previewProjectionInputs.length,
     resolution,
   ]);
@@ -1130,16 +1152,18 @@ function ImportedModel({
       const progressiveActiveInputs = activeProjectedPreviewInput
         ? [activeProjectedPreviewInput]
         : [];
+      const useProjectedTextureArrayMaterial =
+        useProjectedTextureArrays && !textureArrayCompositionFallbackRequired;
       const materialProjectionInputs = progressiveProjectedPreviewReady
         ? progressiveActiveInputs
         : progressiveIncrementalPreviewReady
           ? progressiveIncrementalInputs
-          : useProjectedTextureArrays
+          : useProjectedTextureArrayMaterial
             ? allProjectionInputs
             : previewProjectionInputs;
       const shouldAnnounceTextureArray = Boolean(
         canPreviewProjectedLayers &&
-        useProjectedTextureArrays &&
+        useProjectedTextureArrayMaterial &&
         projectedTextureArrayStructureSignature &&
         lastProjectedTextureArrayNoticeRef.current !== projectedTextureArrayStructureSignature,
       );
@@ -1175,7 +1199,7 @@ function ImportedModel({
           : undefined;
       const projectedPreviewOverBudget = Boolean(
         canPreviewProjectedLayers &&
-        !projectedSamplerBudget.withinBudget &&
+        projectedPreviewNeedsComposition &&
         !canUseProgressivePreviewBase,
       );
       const progressiveBaseOnly =
@@ -1183,7 +1207,7 @@ function ImportedModel({
       const previewStatus = {
         mode: projectedPreviewOverBudget
           ? 'gpu-composing'
-          : useProjectedTextureArrays
+          : useProjectedTextureArrayMaterial
             ? 'texture-array'
             : progressiveProjectedPreviewReady
               ? 'gpu-composite'
@@ -1334,17 +1358,33 @@ function ImportedModel({
         }
         if (projectedLayerInput && !sharedProjectedMaterialRequested) {
           sharedProjectedMaterialRequested = true;
-          sharedProjectedMaterial = await createProjectedLayerStackMaterial(
-            {
-              ...projectedLayerInput,
-              ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
-            },
-            {
-              maxTextureImageUnits: gl.capabilities.maxTextures,
-              renderer: gl,
-              isCancelled: () => cancelled,
-            },
-          );
+          const projectedMaterialInput = {
+            ...projectedLayerInput,
+            ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+          };
+          try {
+            sharedProjectedMaterial = await createProjectedLayerStackMaterial(
+              projectedMaterialInput,
+              {
+                maxTextureImageUnits: gl.capabilities.maxTextures,
+                renderer: gl,
+                isCancelled: () => cancelled,
+              },
+            );
+          } catch (error) {
+            if (!useProjectedTextureArrayMaterial || cancelled) throw error;
+            console.warn(
+              '[Liclick 3D Texture] Projected texture arrays are unavailable; switching the complete visible stack to a bounded fallback.',
+              error,
+            );
+            useToastStore
+              .getState()
+              .dismissToastByDedupeKey(PROJECTED_TEXTURE_ARRAY_TOAST_KEY);
+            setFailedProjectedTextureArraySignature(
+              projectedTextureArrayStructureSignature,
+            );
+            return;
+          }
         }
         const projectedMaterial = projectedLayerInput ? sharedProjectedMaterial : undefined;
         if (cancelled) {
@@ -1362,6 +1402,9 @@ function ImportedModel({
         }
       }
       syncProjectedLayerMaterialProjection(model.group);
+      useToastStore
+        .getState()
+        .dismissToastByDedupeKey(PROJECTED_PREVIEW_FAILURE_TOAST_KEY);
       if (shouldAnnounceTextureArray && !cancelled) {
         notifyProjectedTextureArrayReady(allProjectionInputs.length);
       }
@@ -1408,7 +1451,9 @@ function ImportedModel({
     canUseProgressivePreviewBase,
     progressivePreviewBase,
     projectedSamplerBudget,
+    projectedPreviewNeedsComposition,
     projectedTextureArrayStructureSignature,
+    textureArrayCompositionFallbackRequired,
     useProjectedTextureArrays,
     activeProjectedPreviewInput,
     stablePreviewProjectedLayers,

@@ -1073,6 +1073,9 @@ type ProjectedTextureArrayBundle = {
   uvScales: THREE.Vector2[];
 };
 
+const PROJECTED_ARRAY_PREVIEW_MEMORY_BUDGET = 192 * 1024 * 1024;
+const PROJECTED_ARRAY_MIN_PREVIEW_SIDE = 256;
+
 function getTexturePixelSize(texture: THREE.Texture) {
   const image = texture.image as
     | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }
@@ -1092,11 +1095,28 @@ function yieldProjectedArrayUploadFrame() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+function clearWebGlErrors(context: WebGL2RenderingContext) {
+  while (context.getError() !== context.NO_ERROR) {
+    // Clear stale renderer errors so allocation/upload checks only observe this operation.
+  }
+}
+
+function assertNoProjectedArrayWebGlError(
+  context: WebGL2RenderingContext,
+  operation: 'allocation' | 'upload',
+) {
+  const error = context.getError();
+  if (error !== context.NO_ERROR) {
+    throw new Error(`Projected texture array ${operation} failed (WebGL ${error}).`);
+  }
+}
+
 async function createProjectedTextureArray(
   renderer: THREE.WebGLRenderer,
   sources: Array<THREE.Texture | undefined>,
   profile: ProjectedTextureProfile,
   isCancelled?: () => boolean,
+  maxPreviewSide = renderer.capabilities.maxTextureSize,
 ): Promise<ProjectedTextureArrayBundle> {
   if (!renderer.capabilities.isWebGL2) {
     throw new Error('High-capacity projected preview requires WebGL 2 texture arrays.');
@@ -1109,8 +1129,23 @@ async function createProjectedTextureArray(
     );
   }
   const sourceSizes = sources.map((source) => (source ? getTexturePixelSize(source) : undefined));
-  const width = Math.max(1, ...sourceSizes.map((size) => size?.width ?? 1));
-  const height = Math.max(1, ...sourceSizes.map((size) => size?.height ?? 1));
+  const sourceWidth = Math.max(1, ...sourceSizes.map((size) => size?.width ?? 1));
+  const sourceHeight = Math.max(1, ...sourceSizes.map((size) => size?.height ?? 1));
+  const previewScale = Math.min(
+    1,
+    maxPreviewSide / sourceWidth,
+    maxPreviewSide / sourceHeight,
+  );
+  const width = Math.max(1, Math.floor(sourceWidth * previewScale));
+  const height = Math.max(1, Math.floor(sourceHeight * previewScale));
+  const previewSizes = sourceSizes.map((size) =>
+    size
+      ? {
+          width: Math.max(1, Math.floor(size.width * previewScale)),
+          height: Math.max(1, Math.floor(size.height * previewScale)),
+        }
+      : undefined,
+  );
   if (
     width > renderer.capabilities.maxTextureSize ||
     height > renderer.capabilities.maxTextureSize
@@ -1121,68 +1156,123 @@ async function createProjectedTextureArray(
   }
 
   const texture = new THREE.DataArrayTexture(null, width, height, sources.length);
-  const useMipmaps = profile !== 'depth';
   texture.name = `LiclickProjected${profile[0].toUpperCase()}${profile.slice(1)}Array`;
   texture.colorSpace = profile === 'image' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   texture.flipY = false;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter = useMipmaps
-    ? THREE.LinearMipmapLinearFilter
-    : profile === 'depth'
-      ? THREE.NearestFilter
-      : THREE.LinearFilter;
+  texture.minFilter = profile === 'depth' ? THREE.NearestFilter : THREE.LinearFilter;
   texture.magFilter = profile === 'depth' ? THREE.NearestFilter : THREE.LinearFilter;
-  texture.generateMipmaps = useMipmaps;
-  texture.anisotropy =
-    profile === 'image' ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 1;
+  // Array previews are memory-bound. Avoid a 33% mip-chain surcharge; the source
+  // images remain untouched and export/bake paths still use their full resolution.
+  texture.generateMipmaps = false;
+  texture.anisotropy = 1;
+  // DataArrayTexture starts at version 0. Without this flag WebGLRenderer only
+  // binds an undefined texture and never allocates TEXTURE_2D_ARRAY storage.
+  texture.needsUpdate = true;
+
+  let uploadTexture: THREE.CanvasTexture | undefined;
 
   try {
-    // Allocate every mip level once, upload each source image without resizing,
-    // then generate the array mip chain a single time after all layers arrive.
+    clearWebGlErrors(context);
     renderer.initTexture(texture);
-    texture.generateMipmaps = false;
+    assertNoProjectedArrayWebGlError(context, 'allocation');
+    const textureProperties = renderer.properties.get(texture) as {
+      __webglTexture?: WebGLTexture;
+    };
+    if (!textureProperties.__webglTexture) {
+      throw new Error('Could not allocate projected texture array storage.');
+    }
+
+    let uploadCanvas: HTMLCanvasElement | undefined;
+    let uploadContext: CanvasRenderingContext2D | undefined;
+    if (previewScale < 1) {
+      uploadCanvas = document.createElement('canvas');
+      uploadCanvas.width = width;
+      uploadCanvas.height = height;
+      uploadContext = uploadCanvas.getContext('2d', { alpha: true }) ?? undefined;
+      if (!uploadContext) throw new Error('Could not prepare projected preview resizing.');
+      uploadContext.imageSmoothingEnabled = profile !== 'depth';
+      uploadContext.imageSmoothingQuality = 'high';
+      uploadTexture = new THREE.CanvasTexture(uploadCanvas);
+      uploadTexture.colorSpace =
+        profile === 'image' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      uploadTexture.flipY = false;
+      uploadTexture.generateMipmaps = false;
+      uploadTexture.minFilter =
+        profile === 'depth' ? THREE.NearestFilter : THREE.LinearFilter;
+      uploadTexture.magFilter =
+        profile === 'depth' ? THREE.NearestFilter : THREE.LinearFilter;
+    }
+
     let uploadedPixelsThisFrame = 0;
     for (let index = 0; index < sources.length; index += 1) {
       if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
       const source = sources[index];
       const size = sourceSizes[index];
-      if (!source || !size) continue;
+      const previewSize = previewSizes[index];
+      if (!source || !size || !previewSize) continue;
+      let uploadSource: THREE.Texture = source;
+      let uploadWidth = size.width;
+      let uploadHeight = size.height;
+      if (uploadCanvas && uploadContext && uploadTexture) {
+        uploadContext.clearRect(0, 0, width, height);
+        uploadContext.drawImage(
+          source.image as CanvasImageSource,
+          0,
+          0,
+          size.width,
+          size.height,
+          0,
+          0,
+          previewSize.width,
+          previewSize.height,
+        );
+        uploadTexture.needsUpdate = true;
+        uploadSource = uploadTexture;
+        uploadWidth = width;
+        uploadHeight = height;
+      }
       renderer.copyTextureToTexture(
-        source,
+        uploadSource,
         texture,
-        new THREE.Box2(new THREE.Vector2(0, 0), new THREE.Vector2(size.width, size.height)),
+        new THREE.Box2(new THREE.Vector2(0, 0), new THREE.Vector2(uploadWidth, uploadHeight)),
         new THREE.Vector3(0, 0, index),
       );
-      uploadedPixelsThisFrame += size.width * size.height;
+      uploadedPixelsThisFrame += previewSize.width * previewSize.height;
       if (uploadedPixelsThisFrame >= 4_194_304 && index < sources.length - 1) {
         uploadedPixelsThisFrame = 0;
         await yieldProjectedArrayUploadFrame();
         if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
       }
     }
-    if (useMipmaps) {
-      const textureProperties = renderer.properties.get(texture) as {
-        __webglTexture?: WebGLTexture;
-      };
-      const webglTexture = textureProperties.__webglTexture;
-      if (!webglTexture) throw new Error('Could not allocate projected texture array storage.');
-      context.bindTexture(context.TEXTURE_2D_ARRAY, webglTexture);
-      context.generateMipmap(context.TEXTURE_2D_ARRAY);
-      context.bindTexture(context.TEXTURE_2D_ARRAY, null);
-      renderer.resetState();
-    }
+    assertNoProjectedArrayWebGlError(context, 'upload');
   } catch (error) {
     texture.dispose();
     throw error;
+  } finally {
+    uploadTexture?.dispose();
   }
 
   return {
     texture,
-    uvScales: sourceSizes.map(
+    uvScales: previewSizes.map(
       (size) => new THREE.Vector2((size?.width ?? 1) / width, (size?.height ?? 1) / height),
     ),
   };
+}
+
+function getProjectedArrayPreviewSide(
+  renderer: THREE.WebGLRenderer,
+  totalSlices: number,
+) {
+  const budgetSide = Math.floor(
+    Math.sqrt(PROJECTED_ARRAY_PREVIEW_MEMORY_BUDGET / (4 * Math.max(1, totalSlices))),
+  );
+  return Math.max(
+    PROJECTED_ARRAY_MIN_PREVIEW_SIDE,
+    Math.min(renderer.capabilities.maxTextureSize, budgetSide),
+  );
 }
 
 export async function createProjectedLayerMaterial(input: ProjectionLayerInput) {
@@ -1530,6 +1620,10 @@ export async function createProjectedLayerStackMaterial(
   if (useTextureArrays) {
     const renderer = options.renderer;
     if (!renderer) throw new Error('Projected texture array renderer is unavailable.');
+    const arrayPreviewSide = getProjectedArrayPreviewSide(
+      renderer,
+      projectedTextures.length + maskTextures.length + depthTextures.length,
+    );
     try {
       const projectedArray =
         projectedTextures.length > 0
@@ -1538,17 +1632,30 @@ export async function createProjectedLayerStackMaterial(
               projectedTextures,
               'image',
               options.isCancelled,
+              arrayPreviewSide,
             )
           : undefined;
       if (projectedArray) disposableTextures.push(projectedArray.texture);
       const hasMasks = maskTextures.length > 0;
       const hasDepths = depthTextures.length > 0;
       const maskArray = hasMasks
-        ? await createProjectedTextureArray(renderer, maskTextures, 'mask', options.isCancelled)
+        ? await createProjectedTextureArray(
+            renderer,
+            maskTextures,
+            'mask',
+            options.isCancelled,
+            arrayPreviewSide,
+          )
         : undefined;
       if (maskArray) disposableTextures.push(maskArray.texture);
       const depthArray = hasDepths
-        ? await createProjectedTextureArray(renderer, depthTextures, 'depth', options.isCancelled)
+        ? await createProjectedTextureArray(
+            renderer,
+            depthTextures,
+            'depth',
+            options.isCancelled,
+            arrayPreviewSide,
+          )
         : undefined;
       if (depthArray) disposableTextures.push(depthArray.texture);
       if (projectedArray) uniforms.projectedMaps = { value: projectedArray.texture };
