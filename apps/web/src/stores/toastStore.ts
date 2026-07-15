@@ -15,6 +15,7 @@ type ToastStore = {
   toasts: ToastMessage[];
   pushToast: (toast: Omit<ToastMessage, 'id'>) => void;
   dismissToast: (id: string) => void;
+  dismissToastByDedupeKey: (dedupeKey: string) => void;
 };
 
 export const useToastStore = create<ToastStore>((set) => ({
@@ -27,10 +28,16 @@ export const useToastStore = create<ToastStore>((set) => ({
         : state.toasts;
       return { toasts: [{ id, ...toast }, ...existingToasts].slice(0, 3) };
     });
-    window.setTimeout(() => {
-      set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));
-    }, toast.dedupeKey?.startsWith('coming-soon:') ? 3000 : 4200);
+    window.setTimeout(
+      () => {
+        set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));
+      },
+      toast.dedupeKey?.startsWith('coming-soon:') ? 3000 : 4200,
+    );
   },
-  dismissToast: (id) =>
-    set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })),
+  dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })),
+  dismissToastByDedupeKey: (dedupeKey) =>
+    set((state) => ({
+      toasts: state.toasts.filter((item) => item.dedupeKey !== dedupeKey),
+    })),
 }));
