@@ -2,7 +2,7 @@
 #define SourceRoot "..\..\dist-installer\staging"
 #endif
 
-#define MyAppName "Liclick 3D Texture"
+#define MyAppName "LIclick 3D Texture"
 #ifndef MyAppVersion
 #define MyAppVersion "0.1.0"
 #endif

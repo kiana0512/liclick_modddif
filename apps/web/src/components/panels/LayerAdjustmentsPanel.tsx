@@ -31,44 +31,46 @@ export function LayerAdjustmentsPanel() {
 
   return (
     <div className="space-y-1 px-0.5 pb-0.5">
-      <div className="grid h-[46px] grid-rows-[24px_14px] items-center">
-        <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1 text-[14px] font-semibold text-white/90">{t('projectionStrength')}</div>
-          <PercentNumberInput
+      {activeLayer.type === 'projected' && (
+        <div className="grid h-[46px] grid-rows-[24px_14px] items-center">
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1 text-[14px] font-semibold text-white/90">{t('projectionStrength')}</div>
+            <PercentNumberInput
+              value={Math.round((activeLayer.strength ?? 1) * 100)}
+              min={25}
+              max={300}
+              ariaLabel={t('projectionStrength')}
+              onCommit={(value) => {
+                captureHistory(`调整投影强度：${activeLayer.name}`);
+                setStrength(activeLayer.id, value / 100);
+              }}
+            />
+            <button
+              type="button"
+              className="grid h-6 w-6 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
+              onClick={() => {
+                captureHistory(`重置投影强度：${activeLayer.name}`);
+                setStrength(activeLayer.id, 1);
+              }}
+              title={t('reset')}
+              aria-label={t('reset')}
+            >
+              <RotateCcw className="h-4 w-4" />
+            </button>
+          </div>
+          <input
+            type="range"
+            min="25"
+            max="300"
+            step="1"
             value={Math.round((activeLayer.strength ?? 1) * 100)}
-            min={25}
-            max={300}
-            ariaLabel={t('projectionStrength')}
-            onCommit={(value) => {
-              captureHistory(`调整投影强度：${activeLayer.name}`);
-              setStrength(activeLayer.id, value / 100);
-            }}
+            onPointerDown={() => captureHistory(`调整投影强度：${activeLayer.name}`)}
+            onChange={(event) => setStrength(activeLayer.id, Number(event.target.value) / 100)}
+            className="liclick-range w-full"
+            aria-label={t('projectionStrength')}
           />
-          <button
-            type="button"
-            className="grid h-6 w-6 place-items-center rounded text-white/82 transition hover:bg-liclick-pink/16 hover:text-liclick-pink"
-            onClick={() => {
-              captureHistory(`重置投影强度：${activeLayer.name}`);
-              setStrength(activeLayer.id, 1);
-            }}
-            title={t('reset')}
-            aria-label={t('reset')}
-          >
-            <RotateCcw className="h-4 w-4" />
-          </button>
         </div>
-        <input
-          type="range"
-          min="25"
-          max="300"
-          step="1"
-          value={Math.round((activeLayer.strength ?? 1) * 100)}
-          onPointerDown={() => captureHistory(`调整投影强度：${activeLayer.name}`)}
-          onChange={(event) => setStrength(activeLayer.id, Number(event.target.value) / 100)}
-          className="liclick-range w-full"
-          aria-label={t('projectionStrength')}
-        />
-      </div>
+      )}
       {adjustmentControls.map((control) => {
         const value = activeAdjustments[control.key];
         return (

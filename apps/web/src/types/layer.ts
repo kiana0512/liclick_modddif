@@ -1,7 +1,9 @@
 import type { SerializedCamera } from './capture';
 
 export type LayerType = 'uv' | 'projected' | 'patch' | 'normal';
+export type LayerRole = 'base-color';
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';
+export type LayerMaskSpace = 'projection' | 'uv';
 
 export type LayerAdjustments = {
   hue: number;
@@ -13,14 +15,18 @@ export type Layer = {
   id: string;
   name: string;
   type: LayerType;
+  role?: LayerRole;
   imageUrl: string;
   maskUrl?: string;
+  maskSpace?: LayerMaskSpace;
   depthUrl?: string;
   objectId?: string;
   objectMatrixWorld?: number[];
   camera?: SerializedCamera;
   generationId?: string;
   captureId?: string;
+  replacementTargetLayerId?: string;
+  renderedColor?: boolean;
   visible: boolean;
   opacity: number;
   strength?: number;
@@ -31,5 +37,6 @@ export type Layer = {
   bakedAt?: string;
   isBaked?: boolean;
   needsRebake?: boolean;
+  contentRevision?: number;
   createdAt: string;
 };

@@ -4,6 +4,23 @@ const config: Config = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      fontFamily: {
+        sans: [
+          'Noto Sans SC Variable',
+          'Noto Sans SC',
+          'Noto Sans CJK SC',
+          'Source Han Sans SC',
+          'Inter var',
+          'Inter',
+          'SF Pro Text',
+          'Segoe UI Variable',
+          'Segoe UI',
+          'PingFang SC',
+          'Microsoft YaHei UI',
+          'Arial',
+          'sans-serif',
+        ],
+      },
       colors: {
         ink: '#0e1020',
         panel: '#151729',

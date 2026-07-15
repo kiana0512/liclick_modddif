@@ -44,7 +44,16 @@ export function CameraController() {
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const orbitTargetKeyRef = useRef<string>();
-  const { gl, scene, camera } = useThree();
+  const { gl, scene, camera, size } = useThree();
+
+  useEffect(() => {
+    if (!(camera instanceof THREE.OrthographicCamera)) return;
+    camera.left = size.width / -2;
+    camera.right = size.width / 2;
+    camera.top = size.height / 2;
+    camera.bottom = size.height / -2;
+    camera.updateProjectionMatrix();
+  }, [camera, size.height, size.width]);
 
   useEffect(() => {
     setViewportRuntime({

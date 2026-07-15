@@ -3,7 +3,6 @@ import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
 type LabColor = [number, number, number];
 type RgbColor = [number, number, number];
-type HsvColor = [number, number, number];
 type CutoutOptions = {
   borderFrac: number;
   closePx: number;
@@ -22,6 +21,7 @@ const defaultOptions: CutoutOptions = {
   minAreaFrac: 0.00002,
 };
 const maxCutoutDimension = 4096;
+const diskOffsetCache = new Map<number, Array<[number, number]>>();
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -84,17 +84,6 @@ function labToRgb(lab: LabColor): RgbColor {
   return [encode(linearRed), encode(linearGreen), encode(linearBlue)];
 }
 
-function rgbToHsv(red: number, green: number, blue: number): HsvColor {
-  const r = red / 255;
-  const g = green / 255;
-  const b = blue / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const delta = max - min;
-  const saturation = max === 0 ? 0 : delta / max;
-  return [0, saturation * 255, max * 255];
-}
-
 function labDistance(a: LabColor, b: LabColor) {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
@@ -103,32 +92,32 @@ function getPixelOffset(width: number, x: number, y: number) {
   return (y * width + x) * 4;
 }
 
-function getBorderCoordinates(width: number, height: number, borderWidth: number) {
+function getBorderCoordinateCount(width: number, height: number, borderWidth: number) {
+  const innerWidth = Math.max(0, width - borderWidth * 2);
+  const innerHeight = Math.max(0, height - borderWidth * 2);
+  return width * height - innerWidth * innerHeight;
+}
+
+function getSampledBorderCoordinates(width: number, height: number, borderWidth: number, maxSamples = 60000) {
+  const totalCoordinates = getBorderCoordinateCount(width, height, borderWidth);
+  const stride = totalCoordinates > maxSamples ? Math.ceil(totalCoordinates / maxSamples) : 1;
   const coordinates: Array<[number, number]> = [];
+  let coordinateIndex = 0;
   for (let y = 0; y < height; y += 1) {
     const inTop = y < borderWidth;
     const inBottom = y >= height - borderWidth;
     for (let x = 0; x < width; x += 1) {
-      if (inTop || inBottom || x < borderWidth || x >= width - borderWidth) coordinates.push([x, y]);
+      if (!(inTop || inBottom || x < borderWidth || x >= width - borderWidth)) continue;
+      if (coordinateIndex % stride === 0) coordinates.push([x, y]);
+      coordinateIndex += 1;
     }
   }
   return coordinates;
 }
 
-function getSampledCoordinates(coordinates: Array<[number, number]>, maxSamples = 60000) {
-  if (coordinates.length <= maxSamples) return coordinates;
-  const stride = Math.ceil(coordinates.length / maxSamples);
-  return coordinates.filter((_, index) => index % stride === 0);
-}
-
 function getLabAt(image: ImageData, x: number, y: number): LabColor {
   const offset = getPixelOffset(image.width, x, y);
   return rgbToLab(image.data[offset], image.data[offset + 1], image.data[offset + 2]);
-}
-
-function getRgbAt(image: ImageData, x: number, y: number): RgbColor {
-  const offset = getPixelOffset(image.width, x, y);
-  return [image.data[offset], image.data[offset + 1], image.data[offset + 2]];
 }
 
 function medianLab(samples: LabColor[]): LabColor {
@@ -137,7 +126,7 @@ function medianLab(samples: LabColor[]): LabColor {
 
 function estimateBackground(image: ImageData, options: CutoutOptions) {
   const borderWidth = Math.max(4, Math.round(Math.min(image.width, image.height) * options.borderFrac));
-  const borderCoordinates = getSampledCoordinates(getBorderCoordinates(image.width, image.height, borderWidth));
+  const borderCoordinates = getSampledBorderCoordinates(image.width, image.height, borderWidth);
   const labs = borderCoordinates.map(([x, y]) => getLabAt(image, x, y));
   const sortedLabs = [...labs].sort((a, b) => a[0] - b[0]);
   let centers = [
@@ -221,15 +210,20 @@ function createBackgroundCandidateMask(image: ImageData, options: CutoutOptions)
         : clamp(borderBase * 1.9 + 7, 10, 32);
 
   for (let y = 0; y < image.height; y += 1) {
+    const rowOffset = y * image.width;
     for (let x = 0; x < image.width; x += 1) {
-      const pixelIndex = y * image.width + x;
+      const pixelIndex = rowOffset + x;
       const offset = pixelIndex * 4;
-      const rgb = getRgbAt(image, x, y);
-      const lab = rgbToLab(rgb[0], rgb[1], rgb[2]);
-      const hsv = rgbToHsv(rgb[0], rgb[1], rgb[2]);
+      const red = image.data[offset];
+      const green = image.data[offset + 1];
+      const blue = image.data[offset + 2];
+      const lab = rgbToLab(red, green, blue);
+      const value = Math.max(red, green, blue);
+      const min = Math.min(red, green, blue);
+      const saturation = value === 0 ? 0 : ((value - min) / value) * 255;
       const distance = labDistance(lab, bgLab);
-      const isWhiteBackground = bgLuma > 180 && hsv[2] > 242 && hsv[1] < 20;
-      const isDarkBackground = bgLuma < 70 && hsv[2] < 22 && hsv[1] < 55;
+      const isWhiteBackground = bgLuma > 180 && value > 242 && saturation < 20;
+      const isDarkBackground = bgLuma < 70 && value < 22 && saturation < 55;
       const isCloseToBackground = distance < threshold;
       const sourceTransparent = image.data[offset + 3] < 128;
       maybeBackground[pixelIndex] =
@@ -319,13 +313,16 @@ function removeSmallForegroundComponents(foreground: Uint8Array, width: number, 
 }
 
 function createDiskOffsets(radius: number) {
-  const offsets: Array<[number, number]> = [];
   const safeRadius = Math.max(1, Math.round(radius));
+  const cached = diskOffsetCache.get(safeRadius);
+  if (cached) return cached;
+  const offsets: Array<[number, number]> = [];
   for (let y = -safeRadius; y <= safeRadius; y += 1) {
     for (let x = -safeRadius; x <= safeRadius; x += 1) {
       if (x * x + y * y <= safeRadius * safeRadius) offsets.push([x, y]);
     }
   }
+  diskOffsetCache.set(safeRadius, offsets);
   return offsets;
 }
 
@@ -333,10 +330,12 @@ function dilate(mask: Uint8Array, width: number, height: number, radius: number)
   const output = new Uint8Array(mask.length);
   const offsets = createDiskOffsets(radius);
   for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
     for (let x = 0; x < width; x += 1) {
-      const pixelIndex = y * width + x;
+      const pixelIndex = rowOffset + x;
       if (!mask[pixelIndex]) continue;
-      for (const [ox, oy] of offsets) {
+      for (let offsetIndex = 0; offsetIndex < offsets.length; offsetIndex += 1) {
+        const [ox, oy] = offsets[offsetIndex];
         const nx = x + ox;
         const ny = y + oy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
@@ -351,9 +350,11 @@ function erode(mask: Uint8Array, width: number, height: number, radius: number) 
   const output = new Uint8Array(mask.length);
   const offsets = createDiskOffsets(radius);
   for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
     for (let x = 0; x < width; x += 1) {
       let keep = 1;
-      for (const [ox, oy] of offsets) {
+      for (let offsetIndex = 0; offsetIndex < offsets.length; offsetIndex += 1) {
+        const [ox, oy] = offsets[offsetIndex];
         const nx = x + ox;
         const ny = y + oy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height || !mask[ny * width + nx]) {
@@ -361,7 +362,7 @@ function erode(mask: Uint8Array, width: number, height: number, radius: number) 
           break;
         }
       }
-      output[y * width + x] = keep;
+      output[rowOffset + x] = keep;
     }
   }
   return output;
@@ -444,7 +445,7 @@ function growForegroundBleed(image: ImageData, radius: number) {
   const total = width * height;
   const visited = new Uint8Array(total);
   let frontier: number[] = [];
-  const neighborOffsets = [
+  const neighborOffsets: Array<[number, number]> = [
     [-1, -1],
     [0, -1],
     [1, -1],
@@ -456,17 +457,22 @@ function growForegroundBleed(image: ImageData, radius: number) {
   ];
 
   for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
     for (let x = 0; x < width; x += 1) {
-      const pixelIndex = y * width + x;
+      const pixelIndex = rowOffset + x;
       const alpha = data[pixelIndex * 4 + 3];
       if (alpha < 220) continue;
       visited[pixelIndex] = 1;
-      const isBoundary = neighborOffsets.some(([ox, oy]) => {
+      let isBoundary = false;
+      for (let offsetIndex = 0; offsetIndex < neighborOffsets.length; offsetIndex += 1) {
+        const [ox, oy] = neighborOffsets[offsetIndex];
         const nx = x + ox;
         const ny = y + oy;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) return true;
-        return data[(ny * width + nx) * 4 + 3] < 220;
-      });
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height || data[(ny * width + nx) * 4 + 3] < 220) {
+          isBoundary = true;
+          break;
+        }
+      }
       if (isBoundary) frontier.push(pixelIndex);
     }
   }
@@ -477,7 +483,8 @@ function growForegroundBleed(image: ImageData, radius: number) {
       const x = pixelIndex % width;
       const y = Math.floor(pixelIndex / width);
       const sourceOffset = pixelIndex * 4;
-      for (const [ox, oy] of neighborOffsets) {
+      for (let offsetIndex = 0; offsetIndex < neighborOffsets.length; offsetIndex += 1) {
+        const [ox, oy] = neighborOffsets[offsetIndex];
         const nx = x + ox;
         const ny = y + oy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;

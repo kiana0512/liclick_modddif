@@ -2,11 +2,24 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type * as THREE from 'three';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
+import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import type { SerializedCamera } from '@/types/capture';
-import type { DisplayMode, ModelBoundingBox, ProjectionMode, SceneObject, Transform } from '@/types/model';
+import type {
+  DisplayMode,
+  ModelBoundingBox,
+  ProjectionMode,
+  SceneObject,
+  Transform,
+} from '@/types/model';
 
 export type TransformMode = 'select' | 'translate' | 'rotate' | 'scale';
-export type PaintToolMode = 'none' | 'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply';
+export type PaintToolMode =
+  | 'none'
+  | 'brush'
+  | 'eraser'
+  | 'inpaint-add'
+  | 'inpaint-subtract'
+  | 'inpaint-apply';
 
 export type LocalRepaintProjectionSource = {
   imageUrl: string;
@@ -18,6 +31,9 @@ export type LocalRepaintProjectionSource = {
   generationId?: string;
   captureId?: string;
   name?: string;
+  targetLayerId?: string;
+  targetLayerType?: 'projected' | 'uv';
+  targetLayerName?: string;
 };
 
 export type PaintMaskSettings = {
@@ -25,9 +41,9 @@ export type PaintMaskSettings = {
   brushHardness: number;
 };
 
-export const MIN_PAINT_MASK_BRUSH_SIZE = 0.5;
+export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
 export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 10;
-export const MAX_PAINT_MASK_BRUSH_SIZE = 64;
+export const MAX_PAINT_MASK_BRUSH_SIZE = 60;
 
 export type PaintToolSettings = {
   brushSize: number;
@@ -81,6 +97,7 @@ type SceneStore = {
   clearImportedModel: () => void;
   renameObject: (objectId: string, name: string) => void;
   deleteObject: (objectId: string) => void;
+  arrangeImportedModels: () => void;
   setAllObjectsVisible: (visible: boolean) => void;
   setViewportRuntime: (runtime: ViewportRuntime) => void;
   selectObject: (objectId?: string) => void;
@@ -97,10 +114,72 @@ type SceneStore = {
   invertPaintMask: () => void;
   setImportSettings: (settings: Partial<ImportSettings>) => void;
   setOrbitControlsEnabled: (enabled: boolean) => void;
-  updateObjectTransform: (objectId: string, transform: Transform, boundingBox?: ModelBoundingBox) => void;
+  updateObjectTransform: (
+    objectId: string,
+    transform: Transform,
+    boundingBox?: ModelBoundingBox,
+  ) => void;
   toggleObjectVisibility: (objectId: string) => void;
   requestCameraRestore: (camera: SerializedCamera) => void;
 };
+
+function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObject[]) {
+  const modelWidths = models.map((model) => {
+    const boundingBox = getBoundingBoxForObject(model.group);
+    return Math.max(boundingBox.size[0], 0.01);
+  });
+  const modelGaps = modelWidths.slice(0, -1).map((width, index) =>
+    Math.max(0.45, Math.min(1.2, Math.max(width, modelWidths[index + 1]) * 0.18)),
+  );
+  const rowWidth =
+    modelWidths.reduce((total, width) => total + width, 0) +
+    modelGaps.reduce((total, gap) => total + gap, 0);
+  let cursorX = -rowWidth / 2;
+  const importedModels = models.map((model, index) => {
+    const currentBoundingBox = getBoundingBoxForObject(model.group);
+    const width = modelWidths[index];
+    const targetCenterX = cursorX + width / 2;
+    model.group.position.x += targetCenterX - currentBoundingBox.center[0];
+    model.group.position.y -= currentBoundingBox.min[1];
+    model.group.position.z -= currentBoundingBox.center[2];
+    model.group.updateMatrixWorld(true);
+    cursorX += width + (modelGaps[index] ?? 0);
+    const boundingBox = getBoundingBoxForObject(model.group);
+    return {
+      ...model,
+      boundingBox,
+      importNormalizationTransform: {
+        ...model.importNormalizationTransform,
+        position: [
+          model.group.position.x,
+          model.group.position.y,
+          model.group.position.z,
+        ] as [number, number, number],
+      },
+    };
+  });
+  const modelByObjectId = new Map(importedModels.map((model) => [model.objectId, model]));
+  return {
+    importedModels,
+    objects: objects.map((object) => {
+      const model = modelByObjectId.get(object.id);
+      if (!model) return object;
+      return {
+        ...object,
+        transform: {
+          ...object.transform,
+          position: [
+            model.group.position.x,
+            model.group.position.y,
+            model.group.position.z,
+          ] as [number, number, number],
+        },
+        boundingBox: model.boundingBox,
+        importNormalizationTransform: model.importNormalizationTransform,
+      };
+    }),
+  };
+}
 
 export const useSceneStore = create<SceneStore>()(
   persist(
@@ -141,7 +220,9 @@ export const useSceneStore = create<SceneStore>()(
       setObjects: (objects) =>
         set((state) => {
           const objectIds = new Set(objects.map((object) => object.id));
-          const importedModels = state.importedModels.filter((model) => objectIds.has(model.objectId));
+          const importedModels = state.importedModels.filter((model) =>
+            objectIds.has(model.objectId),
+          );
           const selectedObjectId = objects.find((object) => object.selected)?.id ?? objects[0]?.id;
           return {
             objects,
@@ -152,18 +233,20 @@ export const useSceneStore = create<SceneStore>()(
         }),
       setImportedModel: (model, object) =>
         set((state) => {
-          const existingModelIndex = state.importedModels.findIndex((item) => item.objectId === object.id);
+          const existingModelIndex = state.importedModels.findIndex(
+            (item) => item.objectId === object.id,
+          );
           const importedModels =
             existingModelIndex >= 0
               ? state.importedModels.map((item) => (item.objectId === object.id ? model : item))
               : [...state.importedModels, model];
           const nextObject = { ...object, selected: true, visible: object.visible ?? true };
           const hasExistingObject = state.objects.some((item) => item.id === object.id);
-          const objects = (
-            hasExistingObject
-              ? state.objects.map((item) => (item.id === object.id ? nextObject : { ...item, selected: false }))
-              : [...state.objects.map((item) => ({ ...item, selected: false })), nextObject]
-          );
+          const objects = hasExistingObject
+            ? state.objects.map((item) =>
+                item.id === object.id ? nextObject : { ...item, selected: false },
+              )
+            : [...state.objects.map((item) => ({ ...item, selected: false })), nextObject];
           return {
             importedModels,
             importedModel: model,
@@ -174,11 +257,16 @@ export const useSceneStore = create<SceneStore>()(
         }),
       setActiveImportedModel: (objectId) =>
         set((state) => {
-          const importedModel = state.importedModels.find((model) => model.objectId === objectId) ?? state.importedModel;
+          const importedModel =
+            state.importedModels.find((model) => model.objectId === objectId) ??
+            state.importedModel;
           return {
             importedModel,
             selectedObjectId: objectId,
-            objects: state.objects.map((object) => ({ ...object, selected: object.id === objectId })),
+            objects: state.objects.map((object) => ({
+              ...object,
+              selected: object.id === objectId,
+            })),
             importWarnings: importedModel?.warnings ?? [],
           };
         }),
@@ -192,31 +280,56 @@ export const useSceneStore = create<SceneStore>()(
         }),
       renameObject: (objectId, name) =>
         set((state) => ({
-          objects: state.objects.map((object) => (object.id === objectId ? { ...object, name } : object)),
+          objects: state.objects.map((object) =>
+            object.id === objectId ? { ...object, name } : object,
+          ),
           importedModels: state.importedModels.map((model) =>
             model.objectId === objectId ? { ...model, name } : model,
           ),
           importedModel:
-            state.importedModel?.objectId === objectId ? { ...state.importedModel, name } : state.importedModel,
+            state.importedModel?.objectId === objectId
+              ? { ...state.importedModel, name }
+              : state.importedModel,
         })),
       deleteObject: (objectId) =>
         set((state) => {
-          state.importedModels.find((model) => model.objectId === objectId)?.group.removeFromParent();
+          state.importedModels
+            .find((model) => model.objectId === objectId)
+            ?.group.removeFromParent();
           const objectsWithoutDeleted = state.objects.filter((object) => object.id !== objectId);
           const selectedObjectId =
             state.selectedObjectId && state.selectedObjectId !== objectId
               ? state.selectedObjectId
               : objectsWithoutDeleted[0]?.id;
-          const importedModels = state.importedModels.filter((model) => model.objectId !== objectId);
+          const remainingModels = state.importedModels.filter(
+            (model) => model.objectId !== objectId,
+          );
+          const arranged = arrangeModelsInCenteredRow(remainingModels, objectsWithoutDeleted);
+          const importedModels = arranged.importedModels;
           const importedModel = selectedObjectId
             ? importedModels.find((model) => model.objectId === selectedObjectId)
             : undefined;
 
           return {
-            objects: objectsWithoutDeleted.map((object) => ({ ...object, selected: object.id === selectedObjectId })),
+            objects: arranged.objects.map((object) => ({
+              ...object,
+              selected: object.id === selectedObjectId,
+            })),
             importedModels,
             importedModel,
             selectedObjectId,
+            importWarnings: importedModel?.warnings ?? [],
+          };
+        }),
+      arrangeImportedModels: () =>
+        set((state) => {
+          const arranged = arrangeModelsInCenteredRow(state.importedModels, state.objects);
+          const importedModel = state.selectedObjectId
+            ? arranged.importedModels.find((model) => model.objectId === state.selectedObjectId)
+            : arranged.importedModels[0];
+          return {
+            ...arranged,
+            importedModel,
             importWarnings: importedModel?.warnings ?? [],
           };
         }),
@@ -233,12 +346,16 @@ export const useSceneStore = create<SceneStore>()(
       selectObject: (objectId) =>
         set((state) => {
           const importedModel = objectId
-            ? state.importedModels.find((model) => model.objectId === objectId) ?? state.importedModel
+            ? (state.importedModels.find((model) => model.objectId === objectId) ??
+              state.importedModel)
             : state.importedModel;
           return {
             importedModel,
             selectedObjectId: objectId,
-            objects: state.objects.map((object) => ({ ...object, selected: object.id === objectId })),
+            objects: state.objects.map((object) => ({
+              ...object,
+              selected: object.id === objectId,
+            })),
             importWarnings: importedModel?.warnings ?? state.importWarnings,
           };
         }),
@@ -256,31 +373,52 @@ export const useSceneStore = create<SceneStore>()(
             ? state
             : { paintTool, transformMode: 'select' },
         ),
-      markPaintMaskChanged: () => set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
+      markPaintMaskChanged: () =>
+        set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
       setPaintMaskDataUrl: (paintMaskDataUrl, paintMaskHasContent) =>
         set((state) => ({
           paintMaskDataUrl,
-          paintMaskHasContent: paintMaskHasContent ?? (paintMaskDataUrl ? state.paintMaskHasContent : false),
+          paintMaskHasContent:
+            paintMaskHasContent ?? (paintMaskDataUrl ? state.paintMaskHasContent : false),
           paintMaskRevision: state.paintMaskRevision + 1,
         })),
-      setLocalRepaintProjectionSource: (localRepaintProjectionSource) => set({ localRepaintProjectionSource }),
+      setLocalRepaintProjectionSource: (localRepaintProjectionSource) =>
+        set({ localRepaintProjectionSource }),
       setPaintMaskSettings: (settings) =>
         set((state) => ({
           paintMaskSettings: {
             brushSize: Math.max(
               MIN_PAINT_MASK_BRUSH_SIZE,
-              Math.min(MAX_PAINT_MASK_BRUSH_SIZE, settings.brushSize ?? state.paintMaskSettings.brushSize),
+              Math.min(
+                MAX_PAINT_MASK_BRUSH_SIZE,
+                settings.brushSize ?? state.paintMaskSettings.brushSize,
+              ),
             ),
-            brushHardness: Math.max(0, Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness)),
+            brushHardness: Math.max(
+              0,
+              Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness),
+            ),
           },
         })),
       setPaintToolSettings: (settings) =>
         set((state) => ({
           paintToolSettings: {
-            brushSize: Math.max(0.5, Math.min(256, settings.brushSize ?? state.paintToolSettings.brushSize)),
-            brushHardness: Math.max(0, Math.min(100, settings.brushHardness ?? state.paintToolSettings.brushHardness)),
-            eraserSize: Math.max(0.5, Math.min(256, settings.eraserSize ?? state.paintToolSettings.eraserSize)),
-            eraserHardness: Math.max(0, Math.min(100, settings.eraserHardness ?? state.paintToolSettings.eraserHardness)),
+            brushSize: Math.max(
+              0.5,
+              Math.min(256, settings.brushSize ?? state.paintToolSettings.brushSize),
+            ),
+            brushHardness: Math.max(
+              0,
+              Math.min(100, settings.brushHardness ?? state.paintToolSettings.brushHardness),
+            ),
+            eraserSize: Math.max(
+              0.5,
+              Math.min(256, settings.eraserSize ?? state.paintToolSettings.eraserSize),
+            ),
+            eraserHardness: Math.max(
+              0,
+              Math.min(100, settings.eraserHardness ?? state.paintToolSettings.eraserHardness),
+            ),
             color: settings.color ?? state.paintToolSettings.color,
           },
         })),
@@ -327,7 +465,9 @@ export const useSceneStore = create<SceneStore>()(
           return { objects };
         }),
       requestCameraRestore: (camera) =>
-        set({ restoreCameraRequest: { camera, nonce: (get().restoreCameraRequest?.nonce ?? 0) + 1 } }),
+        set({
+          restoreCameraRequest: { camera, nonce: (get().restoreCameraRequest?.nonce ?? 0) + 1 },
+        }),
     }),
     {
       name: 'liclick-viewport-preferences-v1',

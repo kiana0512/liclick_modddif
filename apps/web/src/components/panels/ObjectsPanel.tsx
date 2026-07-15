@@ -19,6 +19,7 @@ import {
 import * as THREE from 'three';
 import { GLTFExporter } from 'three-stdlib';
 import { cn } from '@/components/common/cn';
+import { Button } from '@/components/ui/Button';
 import { downloadBlob, getExportFilename } from '@/engine/export/exportUtils';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { fitCameraToObjectId, transformFromObject } from '@/engine/scene/transformActions';
@@ -150,6 +151,7 @@ export function ObjectsPanel() {
   const [menu, setMenu] = useState<ObjectMenuState>();
   const [renameState, setRenameState] = useState<RenameState>();
   const [dialog, setDialog] = useState<ObjectDialogState>();
+  const [deleteCandidateId, setDeleteCandidateId] = useState<string>();
 
   useEffect(() => {
     if (!menu) return undefined;
@@ -195,12 +197,11 @@ export function ObjectsPanel() {
   function handleDeleteObject(objectId: string) {
     const object = objects.find((item) => item.id === objectId);
     if (!object) return;
-    const confirmed = window.confirm(t('objectDeleteConfirm').replace('{name}', object.name));
-    if (!confirmed) return;
     captureHistory(`${t('objectDeleteHistory')}：${object?.name ?? t('model')}`);
     deleteObject(objectId);
     const scene = useSceneStore.getState();
     updateCurrentProject({ objects: scene.objects, activeObjectId: scene.selectedObjectId });
+    setDeleteCandidateId(undefined);
   }
 
   function handleDuplicateObject(objectId: string) {
@@ -330,7 +331,7 @@ export function ObjectsPanel() {
             onDuplicate={() => handleDuplicateObject(menu.objectId)}
             onFocus={() => handleSelectObject(menu.objectId)}
             onDialog={(type) => setDialog({ type, objectId: menu.objectId })}
-            onDelete={() => handleDeleteObject(menu.objectId)}
+            onDelete={() => setDeleteCandidateId(menu.objectId)}
           />,
           document.body,
         )}
@@ -382,6 +383,69 @@ export function ObjectsPanel() {
           </div>,
           document.body,
         )}
+      {deleteCandidateId &&
+        createPortal(
+          <DeleteObjectConfirmDialog
+            object={objects.find((object) => object.id === deleteCandidateId)}
+            onClose={() => setDeleteCandidateId(undefined)}
+            onConfirm={() => handleDeleteObject(deleteCandidateId)}
+          />,
+          document.body,
+        )}
+    </div>
+  );
+}
+
+function DeleteObjectConfirmDialog({
+  object,
+  onClose,
+  onConfirm,
+}: {
+  object?: SceneObject;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const t = useT();
+  if (!object) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[98] grid place-items-center bg-black/58 px-4 backdrop-blur-sm"
+      onPointerDown={onClose}
+    >
+      <section
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-object-title"
+        aria-describedby="delete-object-description"
+        className="w-full max-w-md overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.62)]"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 border-b border-white/12 px-4 py-4">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-rose-300/20 bg-rose-500/12 text-rose-200">
+            <Trash2 className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <h2 id="delete-object-title" className="text-base font-semibold text-white">
+              {t('objectDeleteHistory')}
+            </h2>
+            <div className="truncate text-xs text-white/48">{object.name}</div>
+          </div>
+        </div>
+        <div className="px-4 py-4">
+          <p id="delete-object-description" className="text-sm leading-6 text-white/64">
+            {t('objectDeleteConfirm').replace('{name}', object.name)}
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              {t('cancel')}
+            </Button>
+            <Button type="button" variant="danger" onClick={onConfirm} autoFocus>
+              {t('delete')}
+            </Button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -390,8 +454,10 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
   const t = useT();
   const objects = useSceneStore((state) => state.objects);
   const setAllObjectsVisible = useSceneStore((state) => state.setAllObjectsVisible);
+  const arrangeImportedModels = useSceneStore((state) => state.arrangeImportedModels);
   const setProjectObjects = useProjectStore((state) => state.setProjectObjects);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
+  const pushToast = useToastStore((state) => state.pushToast);
   const allVisible = objects.length > 0 && objects.every((object) => object.visible);
 
   function handleToggleAllVisibility() {
@@ -399,6 +465,19 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
     captureHistory(allVisible ? '隐藏全部对象' : '显示全部对象');
     setAllObjectsVisible(!allVisible);
     setProjectObjects(useSceneStore.getState().objects);
+  }
+
+  function handleArrangeModels() {
+    if (objects.length === 0) return;
+    captureHistory(t('arrangeModels'));
+    arrangeImportedModels();
+    setProjectObjects(useSceneStore.getState().objects);
+    pushToast({
+      tone: 'success',
+      title: t('modelsArranged'),
+      description: 'Ctrl+Shift+A',
+      dedupeKey: 'models-arranged',
+    });
   }
 
   return (
@@ -412,6 +491,16 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
         aria-label={t('toggleVisibility')}
       >
         {allVisible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-white/55" />}
+      </button>
+      <button
+        type="button"
+        onClick={handleArrangeModels}
+        disabled={objects.length === 0}
+        className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink disabled:cursor-not-allowed disabled:opacity-35"
+        title={`${t('arrangeModels')} (Ctrl+Shift+A)`}
+        aria-label={`${t('arrangeModels')} (Ctrl+Shift+A)`}
+      >
+        <UnfoldHorizontal className="h-4 w-4" />
       </button>
       <button
         type="button"

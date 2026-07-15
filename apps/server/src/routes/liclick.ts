@@ -60,7 +60,14 @@ const generationJobs = new Map<string, GenerationJob>();
 const editImageJobs = new Map<string, EditImageJob>();
 let jobsLoaded = false;
 let writeQueue = Promise.resolve();
-const transientWriteErrorCodes = new Set(['UNKNOWN', 'EPERM', 'EBUSY', 'EACCES', 'EMFILE', 'ENFILE']);
+const transientWriteErrorCodes = new Set([
+  'UNKNOWN',
+  'EPERM',
+  'EBUSY',
+  'EACCES',
+  'EMFILE',
+  'ENFILE',
+]);
 const maxPersistedJobs = 50;
 const maxPersistedStringLength = 2000;
 
@@ -107,7 +114,8 @@ function sanitizeForPersistence(value: unknown, depth = 0): unknown {
   if (depth > 5) return '[max-depth]';
   if (typeof value === 'string') return trimPersistedString(value);
   if (typeof value !== 'object' || value === null) return value;
-  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeForPersistence(item, depth + 1));
+  if (Array.isArray(value))
+    return value.slice(0, 20).map((item) => sanitizeForPersistence(item, depth + 1));
   const record = value as Record<string, unknown>;
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(record)) {
@@ -258,16 +266,30 @@ async function cancelEditImageJob(job: EditImageJob) {
 }
 
 function findJob(idOrTaskId: string) {
-  return generationJobs.get(idOrTaskId) ?? [...generationJobs.values()].find((job) => job.taskId === idOrTaskId);
+  return (
+    generationJobs.get(idOrTaskId) ??
+    [...generationJobs.values()].find((job) => job.taskId === idOrTaskId)
+  );
 }
 
 function findEditImageJob(idOrTaskId: string) {
-  return editImageJobs.get(idOrTaskId) ?? [...editImageJobs.values()].find((job) => job.taskId === idOrTaskId);
+  return (
+    editImageJobs.get(idOrTaskId) ??
+    [...editImageJobs.values()].find((job) => job.taskId === idOrTaskId)
+  );
 }
 
-function findActiveProjectJob(user: AuthUser, projectId: string, workflow: GenerationJob['workflow']) {
+function findActiveProjectJob(
+  user: AuthUser,
+  projectId: string,
+  workflow: GenerationJob['workflow'],
+) {
   return [...generationJobs.values()].find(
-    (job) => job.userId === user.id && job.projectId === projectId && job.workflow === workflow && isActiveJob(job),
+    (job) =>
+      job.userId === user.id &&
+      job.projectId === projectId &&
+      job.workflow === workflow &&
+      isActiveJob(job),
   );
 }
 
@@ -348,7 +370,9 @@ function startGenerationJob(job: GenerationJob) {
   job.promise = (async () => {
     try {
       if (!job.taskId && job.status === 'submitting') {
-        const submission = await submitLiclickImageJob(job.input, { atlasHomeDir: job.atlasHomeDir });
+        const submission = await submitLiclickImageJob(job.input, {
+          atlasHomeDir: job.atlasHomeDir,
+        });
         if (job.status !== 'submitting') return;
         await applySubmission(job, submission);
       }
@@ -373,7 +397,9 @@ function startEditImageJob(job: EditImageJob) {
   job.promise = (async () => {
     try {
       if (!job.taskId && job.status === 'submitting') {
-        const submission = await submitLiclickImageEdit(job.input, { atlasHomeDir: job.atlasHomeDir });
+        const submission = await submitLiclickImageEdit(job.input, {
+          atlasHomeDir: job.atlasHomeDir,
+        });
         if (job.status !== 'submitting') return;
         await applyEditSubmission(job, submission);
       }
@@ -397,7 +423,11 @@ function startEditImageJob(job: EditImageJob) {
   })();
 }
 
-function createGenerationJob(jobId: string, user: AuthUser, input: GenerateImageInput): GenerationJob {
+function createGenerationJob(
+  jobId: string,
+  user: AuthUser,
+  input: GenerateImageInput,
+): GenerationJob {
   const now = new Date().toISOString();
   const job: GenerationJob = {
     id: jobId,
@@ -442,13 +472,18 @@ async function waitForSubmitted(job: GenerationJob) {
 
 async function remoteImageToDataUrl(url: string) {
   const imageResponse = await fetch(url);
-  if (!imageResponse.ok) throw new Error(`Could not download Liclick edit result: ${imageResponse.status}`);
+  if (!imageResponse.ok)
+    throw new Error(`Could not download Liclick edit result: ${imageResponse.status}`);
   const contentType = imageResponse.headers.get('content-type') ?? 'image/png';
   const buffer = Buffer.from(await imageResponse.arrayBuffer());
   return `data:${contentType};base64,${buffer.toString('base64')}`;
 }
 
-export async function handleLiclickRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
+export async function handleLiclickRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+) {
   await loadGenerationJobs();
   const segments = getPathSegments(url);
   const isLiclickRoute = segments[0] === 'api' && segments[1] === 'liclick';
@@ -465,9 +500,15 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
 
   const isGenerateImageRoute =
     isLegacyGenerateRoute ||
-    (isLiclickRoute && ['generate-image', 'generate', 'generate_image'].includes(segments[2] ?? ''));
+    (isLiclickRoute &&
+      ['generate-image', 'generate', 'generate_image'].includes(segments[2] ?? ''));
 
-  if (request.method === 'GET' && isLiclickRoute && segments[2] === 'generate-image' && segments[3]) {
+  if (
+    request.method === 'GET' &&
+    isLiclickRoute &&
+    segments[2] === 'generate-image' &&
+    segments[3]
+  ) {
     const job = findJob(segments[3]);
     if (!job || job.userId !== user.id) {
       sendJson(response, 404, { error: 'Generation job not found.' });
@@ -486,7 +527,12 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
     return true;
   }
 
-  if (request.method === 'DELETE' && isLiclickRoute && segments[2] === 'generate-image' && segments[3]) {
+  if (
+    request.method === 'DELETE' &&
+    isLiclickRoute &&
+    segments[2] === 'generate-image' &&
+    segments[3]
+  ) {
     const job = findJob(segments[3]);
     if (!job || job.userId !== user.id) {
       sendJson(response, 404, { error: 'Generation job not found.' });
@@ -531,7 +577,12 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
     return true;
   }
 
-  if (request.method === 'DELETE' && isLiclickRoute && segments[2] === 'edit-image' && segments[3]) {
+  if (
+    request.method === 'DELETE' &&
+    isLiclickRoute &&
+    segments[2] === 'edit-image' &&
+    segments[3]
+  ) {
     const job = findEditImageJob(segments[3]);
     if (!job || job.userId !== user.id) {
       sendJson(response, 404, { error: 'Edit image job not found.' });
@@ -550,7 +601,8 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
       user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
     ) {
       sendJson(response, 403, {
-        error: 'Current Atlas / Liclick account does not match this browser session. Please log in again.',
+        error:
+          'Current Atlas / Liclick account does not match this browser session. Please log in again.',
         sessionEmail: user.email,
         atlasEmail: atlasIdentity.email,
       });
@@ -590,7 +642,8 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
       user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
     ) {
       sendJson(response, 403, {
-        error: 'Current Atlas / Liclick account does not match this browser session. Please log in again.',
+        error:
+          'Current Atlas / Liclick account does not match this browser session. Please log in again.',
         sessionEmail: user.email,
         atlasEmail: atlasIdentity.email,
       });
@@ -599,7 +652,11 @@ export async function handleLiclickRoute(request: IncomingMessage, response: Ser
     const input = await readJsonBody<GenerateImageInput>(request);
     const projectId = input.projectId ?? 'default';
     const workflow = input.workflow === 'texture-map' ? 'texture-map' : 'liclick';
-    const activeJob = findActiveProjectJob(user, projectId, workflow);
+    // Texture-map multiview generation intentionally creates one independently
+    // tracked job per camera. The frontend submission lock still prevents duplicate
+    // clicks, while Comfy/LiClick can queue these jobs without collapsing their IDs.
+    const activeJob =
+      workflow === 'texture-map' ? undefined : findActiveProjectJob(user, projectId, workflow);
     if (activeJob) {
       startGenerationJob(activeJob);
       sendJson(response, 202, {

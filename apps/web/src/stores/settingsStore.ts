@@ -3,7 +3,6 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 type Resolution = '1K' | '2K' | '4K' | '8K';
 export type EnvironmentPreset = 'color' | 'studio' | 'soft' | 'dark';
-export type ImageGenerationProvider = 'liclick' | 'comfyui';
 
 type SettingsStore = {
   resolution: Resolution;
@@ -12,16 +11,14 @@ type SettingsStore = {
   pbrKeyLightIntensity: number;
   pbrLightAzimuth: number;
   environmentPreset: EnvironmentPreset;
-  autoUvBakeEnabled: boolean;
-  imageGenerationProvider: ImageGenerationProvider;
+  performanceTestModeEnabled: boolean;
   setResolution: (resolution: Resolution) => void;
   setExposure: (exposure: number) => void;
   setPbrEnvironmentIntensity: (pbrEnvironmentIntensity: number) => void;
   setPbrKeyLightIntensity: (pbrKeyLightIntensity: number) => void;
   setPbrLightAzimuth: (pbrLightAzimuth: number) => void;
   setEnvironmentPreset: (environmentPreset: EnvironmentPreset) => void;
-  setAutoUvBakeEnabled: (autoUvBakeEnabled: boolean) => void;
-  setImageGenerationProvider: (imageGenerationProvider: ImageGenerationProvider) => void;
+  setPerformanceTestModeEnabled: (performanceTestModeEnabled: boolean) => void;
   resetViewportLighting: () => void;
 };
 
@@ -34,16 +31,14 @@ export const useSettingsStore = create<SettingsStore>()(
       pbrKeyLightIntensity: 1,
       pbrLightAzimuth: 38,
       environmentPreset: 'studio',
-      autoUvBakeEnabled: false,
-      imageGenerationProvider: 'liclick',
+      performanceTestModeEnabled: false,
       setResolution: (resolution) => set({ resolution }),
       setExposure: (exposure) => set({ exposure }),
       setPbrEnvironmentIntensity: (pbrEnvironmentIntensity) => set({ pbrEnvironmentIntensity }),
       setPbrKeyLightIntensity: (pbrKeyLightIntensity) => set({ pbrKeyLightIntensity }),
       setPbrLightAzimuth: (pbrLightAzimuth) => set({ pbrLightAzimuth }),
       setEnvironmentPreset: (environmentPreset) => set({ environmentPreset }),
-      setAutoUvBakeEnabled: (autoUvBakeEnabled) => set({ autoUvBakeEnabled }),
-      setImageGenerationProvider: (imageGenerationProvider) => set({ imageGenerationProvider }),
+      setPerformanceTestModeEnabled: (performanceTestModeEnabled) => set({ performanceTestModeEnabled }),
       resetViewportLighting: () =>
         set({ exposure: 1, pbrEnvironmentIntensity: 0.42, pbrKeyLightIntensity: 1, pbrLightAzimuth: 38, environmentPreset: 'studio' }),
     }),
@@ -57,8 +52,7 @@ export const useSettingsStore = create<SettingsStore>()(
         pbrKeyLightIntensity: state.pbrKeyLightIntensity,
         pbrLightAzimuth: state.pbrLightAzimuth,
         environmentPreset: state.environmentPreset,
-        autoUvBakeEnabled: state.autoUvBakeEnabled,
-        imageGenerationProvider: state.imageGenerationProvider,
+        performanceTestModeEnabled: state.performanceTestModeEnabled,
       }),
     },
   ),

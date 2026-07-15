@@ -2,7 +2,9 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-07-08
+Updated: 2026-07-15
+
+The current comprehensive test and security report is `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md`. This file keeps the accumulated desktop/editor release history.
 
 ## Windows Desktop Build
 
@@ -15,6 +17,9 @@ The Windows installer now starts a lightweight Electron desktop shell instead of
 - Electron runtime: copied from `node_modules/electron/dist` into `{app}\electron`
 - Installed app ports: backend `4617`, frontend `5673`
 - Development ports remain unchanged: backend `4517`, frontend `5173`
+- Current desktop shell build: `2026.07.15.1104`
+
+The launcher now uses the same bundled Noto Sans SC family as the web workspace for consistent Chinese/English rendering. Its home view scales continuously between compact, short-wide, tall-narrow, and large windows; the former height breakpoint that caused layout jumps and unused bottom space has been removed. Only the native title-bar app icon remains, avoiding duplicated branding in the sidebar/content header.
 
 Runtime data is kept under:
 
@@ -50,7 +55,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Multiple models can be imported into one project. The editor keeps one active model in texture mode, selected from the Objects panel.
 - Reference images and layers are scoped to the selected object. Older unscoped project data remains visible for compatibility.
 - Liclick image generation and Texture Map generation use separate prompts.
-- The user avatar menu can switch image generation between the original Liclick backend and a local ComfyUI backend. The ComfyUI switch checks `http://127.0.0.1:8188` before enabling the mode and reports a local-backend offline state when ComfyUI is not running.
+- The obsolete image-generation mode switches were removed from the user avatar menu. Normal texture generation uses Liclick, while the defined local-repaint workflow uses the configured ComfyUI path.
 - ComfyUI Texture Map generation keeps the panel prompt as the user material intent. The server adds only projection/albedo guardrails around that user prompt instead of replacing it with a fixed material description.
 - ComfyUI Texture Map generation exports only the runtime controls needed by the workflow: white render, object mask, depth, full view-space normal, and the selected material reference. The material reference remains the primary visual material constraint; depth and normal are geometry/projection constraints.
 - ComfyUI runtime control export uses a square fit-object camera for 4096 x 4096 control images so the white render, mask, depth, normal, preview capture, and projected result share the same MVP framing instead of inheriting a wide browser viewport aspect ratio.
@@ -69,7 +74,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Multi-view blend now uses winner-takes-dominant-quality behavior. Soft blending is kept only for near-tie projection candidates, avoiding muddy texture averaging across incompatible view angles.
 - Layer rows expose distinct blend/overlay state, layer opacity, and projection strength. Opacity can be dragged down to 0, where the icon becomes an empty circle.
 - Uncovered projected fragments fall back to the model/base material instead of showing black edges, white masks, or accidental checker diagnostics.
-- The global Auto UV bake setting gates every bake entry point. When it is off, double-click and manual bake actions do not bake; newly accepted projected layers stay as live projection previews.
+- The obsolete user-facing Auto UV bake switch was removed. The current projected-layer workflow keeps live projection available and uses the defined background/manual bake entry points without exposing a global mode toggle.
 - Project thumbnails are captured from the real WebGL viewport after projection changes. Grid and paint/helper overlays are hidden during the thumbnail capture and restored immediately afterwards.
 - The Projects page and bottom editor tools now use the shared Chinese / English string store instead of fixed English labels.
 - Local repaint now follows the ModDiff-like three-button texture workflow. Button 1 paints the allowed repaint mask, generated texture-map output becomes the source projection, and button 3 brushes where the new generated texture should replace the old visible result.
@@ -96,6 +101,14 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 
 Low-risk cleanup completed in this pass:
 
+- Updated package versions to `0.1.2` for the Windows installer release.
+- Switched UV baking to a GPU-first production path with CPU fallback. CPU rasterization remains the golden reference for diagnostics.
+- Fixed GPU projected input sampling so projected color, mask, and depth images all use the Y-flipped sampling convention required to match CPU `ImageData`.
+- Added the GPU `cpu-parity` bake mode. GPU now performs per-layer projected UV sampling, then reuses the CPU golden quality-blend compositor for candidate selection, soft blending, overlays, dilation, sharpening, and viewport fill.
+- Kept legacy GPU `quality-depth`, `quality-alpha`, and `coverage-alpha` modes as debug-only comparison paths through `LiclickUvDebug.compare`.
+- Added the browser console `LiclickUvDebug` API for temporary CPU/GPU overrides, GPU input flip diagnostics, CPU/GPU PNG comparison, and UV gradient render-target diagnostics.
+- Bumped the UV bake cache protocol to v4 so old CPU/GPU bake cache entries are not reused after the GPU sampling/composition correction.
+- Documented the GPU UV bake default and debug commands in `docs/32_GPU_UV_BAKE_DEFAULT.md`.
 - Cached the paintable mesh list used by surface-paint raycasts so pointer movement no longer traverses the full model hierarchy every frame.
 - Switched surface-paint raycasts to a non-recursive flat mesh list and kept paint overlay meshes out of the raycast/material processing path.
 - Removed duplicate full-canvas mask alpha scans at stroke commit; inpaint add/subtract state now updates from the stroke history path.
@@ -133,6 +146,7 @@ Low-risk cleanup completed in this pass:
 - Removed an unused global viewport interaction listener that had remained after the disabled automatic preview-bake path was deleted.
 - Fixed local repaint cursor preview and first-stroke mask overlay visibility by including button 3 in the brush-preview path and creating overlays with the current inpaint tool state.
 - Updated desktop shell Build to `2026.07.08.1508` and package versions to `0.1.1`.
+- Updated package versions to `0.1.2` for the GPU-first UV bake Windows installer.
 - Fixed multi-select layer deletion from the layer context menu so `删除选中图层` deletes the selected set instead of only the menu anchor layer.
 - Removed the production CPU coverage parity pass after successful GPU UV bake. The validation path is still available through `localStorage.liclick-debug-gpu-coverage-validation=1`, but normal auto-bake no longer pays for a second CPU rasterization pass.
 - Fixed ordered baked-stack cache reuse so exact layer-order matches are accepted even when the bake is order-sensitive. This lets GPU stack bakes actually become the fast preview/export path.
@@ -210,16 +224,16 @@ The latest Windows installer produced by this pass is:
 
 ```text
 dist-installer/Liclick 3D Texture Setup.exe
-Size 105,022,114 bytes
-SHA256 8AD9B7E28DCF6DD1B3181D912FA28F3304A9A2C72BBDE6B0663B97B9556EA986
+Size 134,343,596 bytes
+SHA256 CB072366C39B274765F07792F37F5F0AF10D4C908A0B55D90D5DC88004CEDDB8
 ```
 
 Packaging notes for this build:
 
-- `corepack enable` could not write to `C:\Program Files\nodejs\pnpm` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
-- `corepack pnpm install --frozen-lockfile` reported a registry metadata fetch warning for pnpm in the managed environment, then continued with the existing workspace package manager and completed successfully.
+- `corepack enable` could not write to `C:\Program Files\nodejs\yarnpkg` under the current user permission, but the script continued with `corepack pnpm` and completed successfully.
+- `corepack pnpm install --frozen-lockfile` reused the current workspace dependency state and completed successfully after the package-manager prompt.
 - Inno Setup 6.7.2 emitted a non-blocking warning that the `x64` architecture identifier is deprecated and substituted with `x64os`. The installer still compiled successfully.
-- Release cleanup removed regenerated output before verification: Comfy/model download logs, `apps/web/tsconfig.tsbuildinfo`, package `tsconfig.tsbuildinfo` files, old `dist-installer/staging`, and the old installer executable. After packaging, the generated staging directory and regenerated TypeScript build-info file were removed again. The cached portable Node zip was intentionally kept for offline packaging.
+- Release cleanup removed old `dist-installer/staging`, the previous installer executable, regenerated `apps/web/tsconfig.tsbuildinfo`, package `tsconfig.tsbuildinfo` files, and the post-package staging directory. The cached portable Node zip and Node MSI were intentionally kept for offline packaging.
 - Windows packaging now excludes root-level Li3D model-download helper scripts and the debug contact sheet from installer staging, in addition to logs, build info, secrets, workspace data, `.git`, and dependency directories.
 - Vite still reports the known large-chunk warning for the editor bundle. The warning is non-blocking for this installer and remains tracked as a future code-splitting cleanup.
 

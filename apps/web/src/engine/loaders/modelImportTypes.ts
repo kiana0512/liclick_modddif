@@ -35,6 +35,8 @@ export type ModelImportOptions = {
   sourceUrl: string;
   fileName: string;
   normalizeOptions?: NormalizeImportedModelOptions;
+  sourceBuffer?: ArrayBuffer;
+  resourceFiles?: File[];
 };
 
 export type SupportedImportFormat = ModelLoadResult['format'];

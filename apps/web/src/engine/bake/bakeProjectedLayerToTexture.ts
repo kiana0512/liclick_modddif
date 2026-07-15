@@ -1,10 +1,16 @@
 import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
-import { dilateImageData } from './dilation';
-import { bakeProjectedLayerStackWithGpu, type GpuLayerSourceSize } from './gpuUvBakeRenderer';
+import { dilateImageData, getUvDilationPixels } from './dilation';
+import {
+  bakeProjectedLayerRastersWithGpu,
+  bakeProjectedLayerStackWithGpu,
+  type GpuLayerSourceSize,
+} from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
+import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod } from './uvBakeDebugControls';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
+import { reconcileUvSeams } from './uvSeamReconciliation';
 import type {
   BakeProjectedLayerInput,
   BakeProjectedLayerResult,
@@ -37,6 +43,21 @@ const GPU_COVERAGE_VALIDATION_RESOLUTION = 512 as UvBakeResolution;
 const MIN_GPU_CPU_COVERAGE_IOU = 0.45;
 const MIN_GPU_CPU_COVERAGE_RATIO = 0.55;
 const MAX_GPU_CPU_COLOR_MEAN_ERROR = 0.18;
+const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
+  const color = value / 255;
+  return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
+});
+const SHARPEN_KERNEL = [
+  { x: -1, y: -1, weight: 1 },
+  { x: 0, y: -1, weight: 2 },
+  { x: 1, y: -1, weight: 1 },
+  { x: -1, y: 0, weight: 2 },
+  { x: 0, y: 0, weight: 4 },
+  { x: 1, y: 0, weight: 2 },
+  { x: -1, y: 1, weight: 1 },
+  { x: 0, y: 1, weight: 2 },
+  { x: 1, y: 1, weight: 1 },
+];
 
 function shouldValidateGpuBakeCoverage() {
   try {
@@ -66,7 +87,9 @@ async function encodeBakeCanvas(canvas: HTMLCanvasElement, preferBlobOutput?: bo
 function validateBakeCoverage(coveredPixels: number, resolution: number) {
   const coverageRatio = coveredPixels / (resolution * resolution);
   if (coverageRatio < MIN_VALID_COVERAGE_RATIO) {
-    throw new Error('UV bake produced almost no valid texels; keeping the projected layer unbaked.');
+    throw new Error(
+      'UV bake produced almost no valid texels; keeping the projected layer unbaked.',
+    );
   }
   return coverageRatio;
 }
@@ -94,7 +117,12 @@ function logTransparentBakeSizeDiagnostics(
   if (sourceSizes.length > 0) console.table(sourceSizes);
 }
 
-async function loadOptionalBakeImage(url: string | undefined, resolution: number, label: string, warnings: string[]) {
+async function loadOptionalBakeImage(
+  url: string | undefined,
+  resolution: number,
+  label: string,
+  warnings: string[],
+) {
   if (!url) return undefined;
   try {
     return await loadImageData(url, resolution, label);
@@ -139,28 +167,22 @@ function smoothstep(edge0: number, edge1: number, value: number) {
   return t * t * (3 - 2 * t);
 }
 
-function isSharpenTarget(imageData: ImageData, coverage: Uint8Array | undefined, pixelIndex: number) {
+function isSharpenTarget(
+  imageData: ImageData,
+  coverage: Uint8Array | undefined,
+  pixelIndex: number,
+) {
   const alpha = imageData.data[pixelIndex * 4 + 3];
   if (alpha === 0) return false;
   return coverage ? coverage[pixelIndex] === 1 : true;
 }
 
 function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
-  if (imageData.width > MAX_CPU_SHARPEN_RESOLUTION || imageData.height > MAX_CPU_SHARPEN_RESOLUTION) return;
+  if (imageData.width > MAX_CPU_SHARPEN_RESOLUTION || imageData.height > MAX_CPU_SHARPEN_RESOLUTION)
+    return;
 
   const { width, height, data } = imageData;
   const source = new Uint8ClampedArray(data);
-  const kernel = [
-    { x: -1, y: -1, weight: 1 },
-    { x: 0, y: -1, weight: 2 },
-    { x: 1, y: -1, weight: 1 },
-    { x: -1, y: 0, weight: 2 },
-    { x: 0, y: 0, weight: 4 },
-    { x: 1, y: 0, weight: 2 },
-    { x: -1, y: 1, weight: 1 },
-    { x: 0, y: 1, weight: 2 },
-    { x: 1, y: 1, weight: 1 },
-  ];
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -172,7 +194,7 @@ function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
         let weightedSum = 0;
         let totalWeight = 0;
 
-        for (const sample of kernel) {
+        for (const sample of SHARPEN_KERNEL) {
           const sampleX = Math.max(0, Math.min(width - 1, x + sample.x));
           const sampleY = Math.max(0, Math.min(height - 1, y + sample.y));
           const sampleIndex = sampleY * width + sampleX;
@@ -186,7 +208,9 @@ function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
         const blurred = totalWeight > 0 ? weightedSum / totalWeight : original;
         const detail = original - blurred;
         data[offset + channel] =
-          Math.abs(detail) < SHARPEN_DETAIL_THRESHOLD ? original : clampByte(original + detail * SHARPEN_AMOUNT);
+          Math.abs(detail) < SHARPEN_DETAIL_THRESHOLD
+            ? original
+            : clampByte(original + detail * SHARPEN_AMOUNT);
       }
     }
   }
@@ -203,16 +227,33 @@ export async function bakeProjectedLayerToTexture(
 
   const layer = useLayerStore.getState().layers.find((item) => item.id === input.layerId);
   if (!layer) throw new Error('Please add a projected layer first.');
-  if (layer.type !== 'projected') throw new Error('Only projected layers can be baked in this MVP.');
+  if (layer.type !== 'projected')
+    throw new Error('Only projected layers can be baked in this MVP.');
   if (!layer.camera) throw new Error('Projected layer has no capture camera.');
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
+  const dilationPixels = getUvDilationPixels(input.resolution, input.dilationPixels);
 
-  input.onProgress?.({ phase: 'loading-assets', progress: 0.04, layerName: layer.name, layerIndex: 0, layerCount: 1 });
+  input.onProgress?.({
+    phase: 'loading-assets',
+    progress: 0.04,
+    layerName: layer.name,
+    layerIndex: 0,
+    layerCount: 1,
+  });
   const optionalWarnings: string[] = [];
-  const projectedImage = await loadImageData(layer.imageUrl, input.resolution, `${layer.name} image`);
+  const projectedImage = await loadImageData(
+    layer.imageUrl,
+    input.resolution,
+    `${layer.name} image`,
+  );
   const [maskImage, depthImage] = await Promise.all([
     loadOptionalBakeImage(layer.maskUrl, input.resolution, `${layer.name} mask`, optionalWarnings),
-    loadOptionalBakeImage(layer.depthUrl, input.resolution, `${layer.name} depth`, optionalWarnings),
+    loadOptionalBakeImage(
+      layer.depthUrl,
+      input.resolution,
+      `${layer.name} depth`,
+      optionalWarnings,
+    ),
   ]);
   const rasterized = await rasterizeProjectedLayerToUv({
     group: importedModel.group,
@@ -222,6 +263,8 @@ export async function bakeProjectedLayerToTexture(
     depthImage,
     bakeInput: {
       ...input,
+      enableDilation: false,
+      dilationPixels: 0,
       onProgress: (progress) =>
         input.onProgress?.({
           ...progress,
@@ -236,10 +279,31 @@ export async function bakeProjectedLayerToTexture(
   if (!rasterContext) throw new Error('Could not read UV bake canvas.');
   const rasterImage = rasterContext.getImageData(0, 0, input.resolution, input.resolution);
   sharpenCoveredTexels(rasterImage, rasterized.coverage);
-  input.onProgress?.({ phase: 'compositing', progress: 0.9, layerName: layer.name, layerIndex: 0, layerCount: 1 });
+  const seamResult = reconcileUvSeams(rasterImage, importedModel.group, rasterized.coverage);
+  if (input.enableDilation) {
+    dilateImageData(rasterImage, rasterized.coverage, dilationPixels);
+  }
+  if (seamResult.adjustedPixels > 0) {
+    optionalWarnings.push(
+      `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+    );
+  }
+  input.onProgress?.({
+    phase: 'compositing',
+    progress: 0.9,
+    layerName: layer.name,
+    layerIndex: 0,
+    layerCount: 1,
+  });
   fillTransparentTexelsForViewport(rasterImage);
   rasterContext.putImageData(rasterImage, 0, 0);
-  input.onProgress?.({ phase: 'encoding', progress: 0.96, layerName: layer.name, layerIndex: 0, layerCount: 1 });
+  input.onProgress?.({
+    phase: 'encoding',
+    progress: 0.96,
+    layerName: layer.name,
+    layerIndex: 0,
+    layerCount: 1,
+  });
   const { imageBlob, imageUrl } = await encodeBakeCanvas(rasterized.canvas, input.preferBlobOutput);
   const coverageRatio = validateBakeCoverage(rasterized.coveredPixels, input.resolution);
   const report = createBakeReport({
@@ -332,16 +396,15 @@ function insertBlendCandidate(
   }
   if (insertAt < 0) return;
 
+  const colorOffset = pixelIndex * 3;
   for (let slot = TOP_K_BLEND_LAYERS - 1; slot > insertAt; slot -= 1) {
     composite.coverages[slot][pixelIndex] = composite.coverages[slot - 1][pixelIndex];
     composite.qualities[slot][pixelIndex] = composite.qualities[slot - 1][pixelIndex];
-    const targetColorOffset = pixelIndex * 3;
-    composite.colors[slot][targetColorOffset] = composite.colors[slot - 1][targetColorOffset];
-    composite.colors[slot][targetColorOffset + 1] = composite.colors[slot - 1][targetColorOffset + 1];
-    composite.colors[slot][targetColorOffset + 2] = composite.colors[slot - 1][targetColorOffset + 2];
+    composite.colors[slot][colorOffset] = composite.colors[slot - 1][colorOffset];
+    composite.colors[slot][colorOffset + 1] = composite.colors[slot - 1][colorOffset + 1];
+    composite.colors[slot][colorOffset + 2] = composite.colors[slot - 1][colorOffset + 2];
   }
 
-  const colorOffset = pixelIndex * 3;
   composite.coverages[insertAt][pixelIndex] = coverage;
   composite.qualities[insertAt][pixelIndex] = quality;
   composite.colors[insertAt][colorOffset] = layerImage.data[offset];
@@ -366,8 +429,7 @@ function accumulateQualityBlendLayer(
 }
 
 function srgbByteToLinear(value: number) {
-  const color = value / 255;
-  return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
+  return SRGB_BYTE_TO_LINEAR[value] ?? 0;
 }
 
 function linearToSrgbByte(value: number) {
@@ -378,25 +440,29 @@ function linearToSrgbByte(value: number) {
 
 function applyColorConsistency(qualities: number[], colors: number[][]) {
   let totalQuality = 0;
-  const base = [0, 0, 0];
+  let baseRed = 0;
+  let baseGreen = 0;
+  let baseBlue = 0;
   for (let index = 0; index < qualities.length; index += 1) {
     const quality = qualities[index];
     if (quality <= 0) continue;
     totalQuality += quality;
-    base[0] += colors[index][0] * quality;
-    base[1] += colors[index][1] * quality;
-    base[2] += colors[index][2] * quality;
+    baseRed += colors[index][0] * quality;
+    baseGreen += colors[index][1] * quality;
+    baseBlue += colors[index][2] * quality;
   }
   if (totalQuality <= 0) return;
-  base[0] /= totalQuality;
-  base[1] /= totalQuality;
-  base[2] /= totalQuality;
+  baseRed /= totalQuality;
+  baseGreen /= totalQuality;
+  baseBlue /= totalQuality;
 
   for (let index = 0; index < qualities.length; index += 1) {
     if (qualities[index] <= 0) continue;
     const color = colors[index];
-    const diff = Math.hypot(color[0] - base[0], color[1] - base[1], color[2] - base[2]);
-    const consistency = Math.exp(-(diff * diff) / (COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA));
+    const diff = Math.hypot(color[0] - baseRed, color[1] - baseGreen, color[2] - baseBlue);
+    const consistency = Math.exp(
+      -(diff * diff) / (COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA),
+    );
     qualities[index] *= 0.35 + 0.65 * consistency;
   }
 }
@@ -407,7 +473,11 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
   const coverages = new Array<number>(TOP_K_BLEND_LAYERS).fill(0);
   const qualities = new Array<number>(TOP_K_BLEND_LAYERS).fill(0);
 
-  for (let pixelIndex = 0, offset = 0; pixelIndex < composite.coverage.length; pixelIndex += 1, offset += 4) {
+  for (
+    let pixelIndex = 0, offset = 0;
+    pixelIndex < composite.coverage.length;
+    pixelIndex += 1, offset += 4
+  ) {
     if (!composite.coverage[pixelIndex]) continue;
     const colorOffset = pixelIndex * 3;
     let candidateCount = 0;
@@ -415,9 +485,6 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       coverages[slot] = composite.coverages[slot][pixelIndex];
       qualities[slot] = composite.qualities[slot][pixelIndex];
       if (coverages[slot] > COVERAGE_THRESHOLD) candidateCount += 1;
-      colors[slot][0] = srgbByteToLinear(composite.colors[slot][colorOffset]);
-      colors[slot][1] = srgbByteToLinear(composite.colors[slot][colorOffset + 1]);
-      colors[slot][2] = srgbByteToLinear(composite.colors[slot][colorOffset + 2]);
     }
 
     if (candidateCount === 1) {
@@ -429,8 +496,17 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       continue;
     }
 
+    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
+      colors[slot][0] = srgbByteToLinear(composite.colors[slot][colorOffset]);
+      colors[slot][1] = srgbByteToLinear(composite.colors[slot][colorOffset + 1]);
+      colors[slot][2] = srgbByteToLinear(composite.colors[slot][colorOffset + 2]);
+    }
+
     applyColorConsistency(qualities, colors);
-    if (qualities[0] >= qualities[1] * DOMINANT_QUALITY_RATIO || qualities[0] - qualities[1] >= DOMINANT_QUALITY_MARGIN) {
+    if (
+      qualities[0] >= qualities[1] * DOMINANT_QUALITY_RATIO ||
+      qualities[0] - qualities[1] >= DOMINANT_QUALITY_MARGIN
+    ) {
       output.data[offset] = composite.colors[0][colorOffset];
       output.data[offset + 1] = composite.colors[0][colorOffset + 1];
       output.data[offset + 2] = composite.colors[0][colorOffset + 2];
@@ -448,7 +524,9 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
     }
     if (sumSoft <= 0.000001) continue;
 
-    const final = [0, 0, 0];
+    let finalRed = 0;
+    let finalGreen = 0;
+    let finalBlue = 0;
     for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
       const quality = Math.max(0, qualities[slot]);
       const coverage = Math.max(0, coverages[slot]);
@@ -456,14 +534,14 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       const strongWeight = quality ** BLEND_POWER / Math.max(sumStrong, 0.000001);
       const softWeight = coverage / sumSoft;
       const weight = strongWeight * (1 - RESIDUAL_MIX) + softWeight * RESIDUAL_MIX;
-      final[0] += colors[slot][0] * weight;
-      final[1] += colors[slot][1] * weight;
-      final[2] += colors[slot][2] * weight;
+      finalRed += colors[slot][0] * weight;
+      finalGreen += colors[slot][1] * weight;
+      finalBlue += colors[slot][2] * weight;
     }
 
-    output.data[offset] = linearToSrgbByte(final[0]);
-    output.data[offset + 1] = linearToSrgbByte(final[1]);
-    output.data[offset + 2] = linearToSrgbByte(final[2]);
+    output.data[offset] = linearToSrgbByte(finalRed);
+    output.data[offset + 1] = linearToSrgbByte(finalGreen);
+    output.data[offset + 2] = linearToSrgbByte(finalBlue);
     output.data[offset + 3] = 255;
     writtenTexels += 1;
   }
@@ -472,10 +550,18 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
 
 function applyOverlayRasters(base: ImageData, coverage: Uint8Array, overlays: OverlayRaster[]) {
   for (const { imageData, quality: qualityMap } of overlays) {
-    for (let pixelIndex = 0, offset = 0; offset < imageData.data.length; pixelIndex += 1, offset += 4) {
+    for (
+      let pixelIndex = 0, offset = 0;
+      offset < imageData.data.length;
+      pixelIndex += 1, offset += 4
+    ) {
       const layerCoverage = imageData.data[offset + 3] / 255;
       if (layerCoverage <= COVERAGE_THRESHOLD) continue;
-      const qualityFade = smoothstep(0, 0.15, Math.max(qualityMap[pixelIndex], layerCoverage * 0.25));
+      const qualityFade = smoothstep(
+        0,
+        0.15,
+        Math.max(qualityMap[pixelIndex], layerCoverage * 0.25),
+      );
       const alpha = Math.max(0, Math.min(1, layerCoverage * (0.75 + 0.25 * qualityFade)));
       if (alpha <= 0.0001) continue;
 
@@ -495,14 +581,25 @@ function applyOverlayRasters(base: ImageData, coverage: Uint8Array, overlays: Ov
   }
 }
 
-function downsampleCoverage(coverage: Uint8Array, sourceResolution: number, targetResolution: number) {
+function downsampleCoverage(
+  coverage: Uint8Array,
+  sourceResolution: number,
+  targetResolution: number,
+) {
   const downsampled = new Uint8Array(targetResolution * targetResolution);
+  const targetBySource = new Int32Array(sourceResolution);
+  for (let index = 0; index < sourceResolution; index += 1) {
+    targetBySource[index] = Math.min(
+      targetResolution - 1,
+      Math.floor((index / sourceResolution) * targetResolution),
+    );
+  }
   for (let y = 0; y < sourceResolution; y += 1) {
+    const sourceRowOffset = y * sourceResolution;
+    const targetRowOffset = targetBySource[y] * targetResolution;
     for (let x = 0; x < sourceResolution; x += 1) {
-      if (!coverage[y * sourceResolution + x]) continue;
-      const targetX = Math.min(targetResolution - 1, Math.floor((x / sourceResolution) * targetResolution));
-      const targetY = Math.min(targetResolution - 1, Math.floor((y / sourceResolution) * targetResolution));
-      downsampled[targetY * targetResolution + targetX] = 1;
+      if (!coverage[sourceRowOffset + x]) continue;
+      downsampled[targetRowOffset + targetBySource[x]] = 1;
     }
   }
   return downsampled;
@@ -541,15 +638,24 @@ async function validateGpuBakeCoverage(input: {
   dilationPixels: number;
   outputAlpha: 'opaque-viewport' | 'transparent';
 }) {
-  const referenceComposite = new ImageData(GPU_COVERAGE_VALIDATION_RESOLUTION, GPU_COVERAGE_VALIDATION_RESOLUTION);
-  const qualityBlendComposite = createQualityBlendStackComposite(GPU_COVERAGE_VALIDATION_RESOLUTION);
+  const referenceComposite = new ImageData(
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+  );
+  const qualityBlendComposite = createQualityBlendStackComposite(
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+  );
   const overlayRasters: OverlayRaster[] = [];
 
   for (const layer of input.layers) {
     const [projectedImage, maskImage, depthImage] = await Promise.all([
       loadImageData(layer.imageUrl, GPU_COVERAGE_VALIDATION_RESOLUTION, `${layer.name} image`),
-      layer.maskUrl ? loadImageData(layer.maskUrl, GPU_COVERAGE_VALIDATION_RESOLUTION, `${layer.name} mask`) : Promise.resolve(undefined),
-      layer.depthUrl ? loadImageData(layer.depthUrl, GPU_COVERAGE_VALIDATION_RESOLUTION, `${layer.name} depth`) : Promise.resolve(undefined),
+      layer.maskUrl
+        ? loadImageData(layer.maskUrl, GPU_COVERAGE_VALIDATION_RESOLUTION, `${layer.name} mask`)
+        : Promise.resolve(undefined),
+      layer.depthUrl
+        ? loadImageData(layer.depthUrl, GPU_COVERAGE_VALIDATION_RESOLUTION, `${layer.name} depth`)
+        : Promise.resolve(undefined),
     ]);
     const rasterized = await rasterizeProjectedLayerToUv({
       group: input.group,
@@ -578,7 +684,12 @@ async function validateGpuBakeCoverage(input: {
     if (layer.blendMode === 'overlay') {
       overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
     } else {
-      accumulateQualityBlendLayer(qualityBlendComposite, layerImageData, rasterized.quality, layer.id);
+      accumulateQualityBlendLayer(
+        qualityBlendComposite,
+        layerImageData,
+        rasterized.quality,
+        layer.id,
+      );
     }
   }
   writeQualityBlendStackComposite(qualityBlendComposite, referenceComposite);
@@ -599,7 +710,10 @@ async function validateGpuBakeCoverage(input: {
   );
   const comparison = compareCoverage(gpuCoverage, qualityBlendComposite.coverage);
   if (comparison.referenceCount === 0) return comparison;
-  if (comparison.iou < MIN_GPU_CPU_COVERAGE_IOU || comparison.coverageRatio < MIN_GPU_CPU_COVERAGE_RATIO) {
+  if (
+    comparison.iou < MIN_GPU_CPU_COVERAGE_IOU ||
+    comparison.coverageRatio < MIN_GPU_CPU_COVERAGE_RATIO
+  ) {
     throw new Error(
       `GPU bake coverage diverged from CPU validation (IoU ${comparison.iou.toFixed(2)}, coverage ratio ${comparison.coverageRatio.toFixed(2)}).`,
     );
@@ -612,8 +726,19 @@ async function validateGpuBakeCoverage(input: {
   if (!gpuContext) throw new Error('Could not create GPU validation canvas.');
   gpuContext.imageSmoothingEnabled = true;
   gpuContext.imageSmoothingQuality = 'high';
-  gpuContext.drawImage(input.gpuCanvas, 0, 0, GPU_COVERAGE_VALIDATION_RESOLUTION, GPU_COVERAGE_VALIDATION_RESOLUTION);
-  const gpuImage = gpuContext.getImageData(0, 0, GPU_COVERAGE_VALIDATION_RESOLUTION, GPU_COVERAGE_VALIDATION_RESOLUTION);
+  gpuContext.drawImage(
+    input.gpuCanvas,
+    0,
+    0,
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+  );
+  const gpuImage = gpuContext.getImageData(
+    0,
+    0,
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+    GPU_COVERAGE_VALIDATION_RESOLUTION,
+  );
 
   let comparedPixels = 0;
   let totalColorError = 0;
@@ -628,7 +753,9 @@ async function validateGpuBakeCoverage(input: {
   }
   const meanColorError = comparedPixels > 0 ? totalColorError / (comparedPixels * 3 * 255) : 0;
   if (comparedPixels > 0 && meanColorError > MAX_GPU_CPU_COLOR_MEAN_ERROR) {
-    throw new Error(`GPU bake color diverged from CPU validation (mean RGB error ${meanColorError.toFixed(2)}).`);
+    throw new Error(
+      `GPU bake color diverged from CPU validation (mean RGB error ${meanColorError.toFixed(2)}).`,
+    );
   }
   return { ...comparison, meanColorError };
 }
@@ -644,60 +771,251 @@ export async function bakeVisibleProjectedLayersToTexture(
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
 
   const requestedLayerIdSet = input.layerIds ? new Set(input.layerIds) : undefined;
-  const layers = requestedLayerIdSet
-    ? useLayerStore
-        .getState()
-        .layers.filter(
-          (layer) =>
-            requestedLayerIdSet.has(layer.id) &&
-            layer.type === 'projected' &&
-            layer.imageUrl &&
-            layer.camera &&
-            (!layer.objectId || layer.objectId === input.objectId),
-        )
-        .sort((a, b) => b.order - a.order)
-    : getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
+  const sourceLayers = input.transientLayers
+    ? input.transientLayers.filter(
+        (layer) =>
+          layer.type === 'projected' &&
+          layer.imageUrl &&
+          layer.camera &&
+          (!layer.objectId || layer.objectId === input.objectId),
+      )
+    : requestedLayerIdSet
+      ? useLayerStore
+          .getState()
+          .layers.filter(
+            (layer) =>
+              requestedLayerIdSet.has(layer.id) &&
+              layer.type === 'projected' &&
+              layer.imageUrl &&
+              layer.camera &&
+              (!layer.objectId || layer.objectId === input.objectId),
+          )
+          .sort((a, b) => b.order - a.order)
+      : getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
+  const layers = sourceLayers.map((layer) => ({
+    ...layer,
+    maskUrl: input.debugIgnoreMask ? undefined : layer.maskUrl,
+    depthUrl: input.debugIgnoreDepth ? undefined : layer.depthUrl,
+  }));
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
-  input.onProgress?.({ phase: 'loading-assets', progress: 0.02, layerIndex: 0, layerCount: layers.length });
+  const dilationPixels = getUvDilationPixels(input.resolution, input.dilationPixels);
+  input.onProgress?.({
+    phase: 'loading-assets',
+    progress: 0.02,
+    layerIndex: 0,
+    layerCount: layers.length,
+  });
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
-  const bakeMethod = input.method ?? 'cpu';
+  const bakeMethod = input.method ?? getDebugUvBakeMethod('gpu');
   if (bakeMethod !== 'cpu' && renderer) {
     try {
+      const gpuCompositeMode = input.gpuCompositeMode ?? 'cpu-parity';
+      const gpuProjectedImageUvFlipY =
+        input.gpuProjectedImageUvFlipY ?? getDebugGpuProjectedImageUvFlipY(true);
+      if (gpuCompositeMode === 'cpu-parity') {
+        const gpuBake = await bakeProjectedLayerRastersWithGpu({
+          renderer,
+          group: importedModel.group,
+          layers,
+          resolution: input.resolution,
+          enableBackfaceCulling: input.enableBackfaceCulling,
+          enableDilation: false,
+          dilationPixels: 0,
+          outputAlpha: input.outputAlpha ?? 'opaque-viewport',
+          inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
+          projectedImageUvFlipY: gpuProjectedImageUvFlipY,
+          compositeMode: gpuCompositeMode,
+          onProgress: (progress) =>
+            input.onProgress?.({
+              ...progress,
+              progress: 0.04 + clampProgress(progress.progress) * 0.84,
+            }),
+        });
+
+        input.onProgress?.({
+          phase: 'compositing',
+          progress: 0.9,
+          layerIndex: layers.length - 1,
+          layerCount: layers.length,
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = input.resolution;
+        canvas.height = input.resolution;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (!context) throw new Error('Could not create GPU parity UV bake canvas.');
+        const composite = new ImageData(input.resolution, input.resolution);
+        const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
+        const overlayRasters: OverlayRaster[] = [];
+        const warnings = [...gpuBake.warnings];
+        if (layers.length > 1) {
+          warnings.push(
+            layers.some((layer) => layer.blendMode === 'overlay')
+              ? 'GPU sampled layers used CPU parity loose coverage with strict quality blend and order-sensitive overlay layers.'
+              : 'GPU sampled layers used CPU parity order-independent loose coverage with strict quality blend.',
+          );
+        }
+
+        let writtenTexels = 0;
+        for (const raster of gpuBake.rasters) {
+          const layerImageData = raster.imageData;
+          if (raster.layer.blendMode === 'overlay') {
+            overlayRasters.push({
+              layer: raster.layer,
+              imageData: layerImageData,
+              quality: raster.quality,
+            });
+          } else {
+            accumulateQualityBlendLayer(
+              qualityBlendComposite,
+              layerImageData,
+              raster.quality,
+              raster.layer.id,
+            );
+          }
+        }
+
+        const blendWrittenTexels = writeQualityBlendStackComposite(
+          qualityBlendComposite,
+          composite,
+        );
+        applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+        for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
+          if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
+        }
+        if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
+        if (input.outputAlpha !== 'transparent') {
+          sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+        }
+        const seamResult = reconcileUvSeams(
+          composite,
+          importedModel.group,
+          qualityBlendComposite.coverage,
+        );
+        if (seamResult.adjustedPixels > 0) {
+          warnings.push(
+            `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+          );
+        }
+        if (input.enableDilation) {
+          dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
+        }
+        if (input.outputAlpha !== 'transparent') fillTransparentTexelsForViewport(composite);
+        else clearWeakTransparentTexels(composite);
+        context.putImageData(composite, 0, 0);
+
+        input.onProgress?.({
+          phase: 'encoding',
+          progress: 0.96,
+          layerIndex: layers.length - 1,
+          layerCount: layers.length,
+        });
+        const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
+        const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
+        const report = createBakeReport({
+          startedAt,
+          objectId: input.objectId,
+          layerId: layers[0].id,
+          width: input.resolution,
+          height: input.resolution,
+          totalTriangles: gpuBake.totalTriangles,
+          processedTriangles: gpuBake.processedTriangles,
+          coveredPixels: gpuBake.coveredPixels,
+          skippedPixels: gpuBake.skippedPixels,
+          totalTexels: input.resolution * input.resolution,
+          inFrustumTexels: gpuBake.coveredPixels,
+          maskRejectedTexels: 0,
+          depthRejectedTexels: 0,
+          backfaceRejectedTexels: 0,
+          writtenTexels,
+          coverageRatio,
+          warnings,
+        });
+
+        const bakedTexture: BakedTexture = {
+          id: createId('baked-texture'),
+          objectId: input.objectId,
+          sourceLayerId: layers[0].id,
+          sourceLayerIds: layers.map((layer) => layer.id),
+          cacheKey: input.cacheKey,
+          imageUrl,
+          width: input.resolution,
+          height: input.resolution,
+          format: 'png',
+          createdAt: new Date().toISOString(),
+          coverageRatio,
+          report,
+        };
+
+        if (input.commitToProject !== false) {
+          useProjectStore.getState().addBakedTexture(bakedTexture);
+        }
+        if (input.markSourceLayersBaked !== false) {
+          useLayerStore.getState().markLayersBaked(
+            layers.map((layer) => layer.id),
+            bakedTexture.id,
+            bakedTexture.createdAt,
+          );
+        }
+        console.info('[Liclick 3D Texture] GPU CPU-parity UV bake report:', report);
+        logTransparentBakeSizeDiagnostics(input, canvas, bakedTexture, gpuBake.sourceSizes);
+
+        return {
+          bakedTexture,
+          canvas,
+          imageBlob,
+          imageUrl,
+          report,
+        };
+      }
+
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,
         group: importedModel.group,
         layers,
         resolution: input.resolution,
         enableBackfaceCulling: input.enableBackfaceCulling,
-        enableDilation: input.enableDilation,
-        dilationPixels: input.dilationPixels,
+        enableDilation: false,
+        dilationPixels: 0,
         outputAlpha: input.outputAlpha ?? 'opaque-viewport',
+        inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
+        projectedImageUvFlipY: gpuProjectedImageUvFlipY,
+        compositeMode: gpuCompositeMode,
         onProgress: (progress) =>
           input.onProgress?.({
             ...progress,
             progress: 0.04 + clampProgress(progress.progress) * 0.84,
           }),
       });
-      input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
+      input.onProgress?.({
+        phase: 'compositing',
+        progress: 0.9,
+        layerIndex: layers.length - 1,
+        layerCount: layers.length,
+      });
       const wantsTransparentOutput = input.outputAlpha === 'transparent';
       const needsCpuSharpen = !gpuBake.postProcessedOnGpu && !wantsTransparentOutput;
       const needsCpuViewportFill = !gpuBake.opaqueBaseColorReady && !wantsTransparentOutput;
-      if (needsCpuSharpen || needsCpuViewportFill) {
-        const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
-        if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
-        const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
-        if (needsCpuSharpen) {
-          sharpenCoveredTexels(gpuImage, gpuBake.coverage);
-        }
-        if (needsCpuViewportFill) {
-          fillTransparentTexelsForViewport(gpuImage);
-        }
-        gpuContext.putImageData(gpuImage, 0, 0);
+      const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
+      if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
+      const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
+      if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
+      const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
+      if (seamResult.adjustedPixels > 0) {
+        gpuBake.warnings.push(
+          `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+        );
       }
-      if (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent') {
+      if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
+      if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
+      else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
+      gpuContext.putImageData(gpuImage, 0, 0);
+      if (
+        !input.skipGpuValidation &&
+        (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent')
+      ) {
         await validateGpuBakeCoverage({
           group: importedModel.group,
           layers,
@@ -707,12 +1025,20 @@ export async function bakeVisibleProjectedLayersToTexture(
           gpuResolution: input.resolution,
           enableBackfaceCulling: input.enableBackfaceCulling,
           enableDilation: input.enableDilation,
-          dilationPixels: input.dilationPixels,
+          dilationPixels,
           outputAlpha: input.outputAlpha ?? 'opaque-viewport',
         });
       }
-      input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
-      const { imageBlob, imageUrl } = await encodeBakeCanvas(gpuBake.canvas, input.preferBlobOutput);
+      input.onProgress?.({
+        phase: 'encoding',
+        progress: 0.96,
+        layerIndex: layers.length - 1,
+        layerCount: layers.length,
+      });
+      const { imageBlob, imageUrl } = await encodeBakeCanvas(
+        gpuBake.canvas,
+        input.preferBlobOutput,
+      );
       const coverageRatio = validateBakeCoverage(gpuBake.coveredPixels, input.resolution);
       const report = createBakeReport({
         startedAt,
@@ -771,7 +1097,12 @@ export async function bakeVisibleProjectedLayersToTexture(
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      gpuFallbackWarnings.push(`GPU bake failed; used CPU fallback at the same resolution. ${message}`);
+      if (input.disableGpuFallback) {
+        throw new Error(`GPU bake failed with debug fallback disabled. ${message}`);
+      }
+      gpuFallbackWarnings.push(
+        `GPU bake failed; used CPU fallback at the same resolution. ${message}`,
+      );
       console.warn('[Liclick 3D Texture] GPU UV bake failed; falling back to CPU bake.', error);
     }
   }
@@ -834,7 +1165,11 @@ export async function bakeVisibleProjectedLayersToTexture(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       warnings.push(`${layer.name}: skipped unreadable projected layer. ${message}`);
-      console.warn('[Liclick 3D Texture] Skipping unreadable projected layer during UV bake:', layer, error);
+      console.warn(
+        '[Liclick 3D Texture] Skipping unreadable projected layer during UV bake:',
+        layer,
+        error,
+      );
       continue;
     }
     const rasterized = await rasterizeProjectedLayerToUv({
@@ -849,8 +1184,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         resolution: input.resolution,
         opacity: layer.opacity,
         enableBackfaceCulling: input.enableBackfaceCulling,
-        enableDilation: input.enableDilation,
-        dilationPixels: input.dilationPixels,
+        enableDilation: false,
+        dilationPixels: 0,
         onProgress: (progress) =>
           input.onProgress?.({
             ...progress,
@@ -867,7 +1202,12 @@ export async function bakeVisibleProjectedLayersToTexture(
     if (layer.blendMode === 'overlay') {
       overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
     } else {
-      accumulateQualityBlendLayer(qualityBlendComposite, layerImageData, rasterized.quality, layer.id);
+      accumulateQualityBlendLayer(
+        qualityBlendComposite,
+        layerImageData,
+        rasterized.quality,
+        layer.id,
+      );
     }
     totalTriangles += rasterized.totalTriangles;
     processedTriangles += rasterized.processedTriangles;
@@ -880,7 +1220,12 @@ export async function bakeVisibleProjectedLayersToTexture(
     warnings.push(...rasterized.warnings.map((warning) => `${layer.name}: ${warning}`));
   }
 
-  input.onProgress?.({ phase: 'compositing', progress: 0.9, layerIndex: layers.length - 1, layerCount: layers.length });
+  input.onProgress?.({
+    phase: 'compositing',
+    progress: 0.9,
+    layerIndex: layers.length - 1,
+    layerCount: layers.length,
+  });
   if (readableLayers.length === 0) {
     throw new Error(
       'No readable projected layers could be baked. Regenerate or re-add the projected layers whose images are missing.',
@@ -893,11 +1238,21 @@ export async function bakeVisibleProjectedLayersToTexture(
     if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
   }
   if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
-  if (input.enableDilation) {
-    dilateImageData(composite, qualityBlendComposite.coverage, input.dilationPixels);
-  }
   if (input.outputAlpha !== 'transparent') {
     sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+  }
+  const seamResult = reconcileUvSeams(
+    composite,
+    importedModel.group,
+    qualityBlendComposite.coverage,
+  );
+  if (seamResult.adjustedPixels > 0) {
+    warnings.push(
+      `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+    );
+  }
+  if (input.enableDilation) {
+    dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
   }
   if (input.outputAlpha !== 'transparent') {
     fillTransparentTexelsForViewport(composite);
@@ -905,7 +1260,12 @@ export async function bakeVisibleProjectedLayersToTexture(
     clearWeakTransparentTexels(composite);
   }
   context.putImageData(composite, 0, 0);
-  input.onProgress?.({ phase: 'encoding', progress: 0.96, layerIndex: layers.length - 1, layerCount: layers.length });
+  input.onProgress?.({
+    phase: 'encoding',
+    progress: 0.96,
+    layerIndex: layers.length - 1,
+    layerCount: layers.length,
+  });
   const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
   const coverageRatio = validateBakeCoverage(writtenTexels, input.resolution);
   const report = createBakeReport({

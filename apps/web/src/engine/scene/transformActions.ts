@@ -14,7 +14,8 @@ export type ObjectViewPreset =
   | 'back-right'
   | 'left'
   | 'right'
-  | 'top';
+  | 'top'
+  | 'bottom';
 
 export function transformFromObject(object: THREE.Object3D): Transform {
   return {
@@ -83,6 +84,34 @@ export function fitCameraToObjectId(objectId?: string) {
   fitCameraToObject(sceneState.viewport, model.group);
 }
 
+/**
+ * Move only the orbit pivot (and translate the camera by the same delta) so the
+ * current framing, distance and viewing direction stay intact. This is the DCC
+ * style "frame/focus selected" behavior needed after an object has moved.
+ */
+export function focusCameraOrbitOnObjectId(objectId?: string) {
+  const sceneState = useSceneStore.getState();
+  const runtime = sceneState.viewport;
+  if (!runtime) return undefined;
+  const model = objectId
+    ? sceneState.importedModels.find((item) => item.objectId === objectId)
+    : sceneState.importedModel;
+  if (!model) return undefined;
+
+  model.group.updateMatrixWorld(true);
+  const boundingBox = getBoundingBoxForObject(model.group);
+  const center = new THREE.Vector3().fromArray(boundingBox.center);
+  const currentTarget = runtime.controls?.target.clone() ?? new THREE.Vector3();
+  const delta = center.clone().sub(currentTarget);
+
+  runtime.camera.position.add(delta);
+  runtime.camera.lookAt(center);
+  runtime.camera.updateMatrixWorld(true);
+  runtime.controls?.target.copy(center);
+  runtime.controls?.update();
+  return model.name;
+}
+
 export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
   if (preset === 'back') return new THREE.Vector3(0, 0, -1);
   if (preset === 'back-left') return new THREE.Vector3(-1, 0, -1).normalize();
@@ -92,6 +121,7 @@ export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
   if (preset === 'left') return new THREE.Vector3(-1, 0, 0);
   if (preset === 'right') return new THREE.Vector3(1, 0, 0);
   if (preset === 'top') return new THREE.Vector3(0, 1, 0);
+  if (preset === 'bottom') return new THREE.Vector3(0, -1, 0);
   return new THREE.Vector3(0, 0, 1);
 }
 
@@ -115,6 +145,7 @@ export function setCameraToObjectView(objectId: string | undefined, preset: Obje
   runtime.camera.position.copy(center).add(direction.multiplyScalar(distance));
   runtime.camera.up.set(0, 1, 0);
   if (preset === 'top') runtime.camera.up.set(0, 0, -1);
+  if (preset === 'bottom') runtime.camera.up.set(0, 0, 1);
   runtime.camera.lookAt(center);
 
   if (runtime.camera instanceof THREE.PerspectiveCamera) {

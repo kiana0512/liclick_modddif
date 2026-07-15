@@ -4,12 +4,18 @@ import { serverConfig } from '../config.js';
 import {
   cancelComfyTextureMap,
   checkComfyuiStatus,
+  generateComfyInpaint,
   generateComfyTextureMap,
+  type ComfyInpaintInput,
   type ComfyTextureMapInput,
 } from '../services/comfyuiGenerationService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
-export async function handleComfyuiRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
+export async function handleComfyuiRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+) {
   const segments = getPathSegments(url);
   if (segments[0] !== 'api' || segments[1] !== 'comfyui') return false;
 
@@ -30,6 +36,25 @@ export async function handleComfyuiRoute(request: IncomingMessage, response: Ser
     return true;
   }
 
+  if (request.method === 'GET' && segments[2] === 'inpaint-status') {
+    try {
+      await checkComfyuiStatus(serverConfig.comfyuiInpaintBaseUrl);
+      sendJson(response, 200, {
+        ok: true,
+        baseUrl: serverConfig.comfyuiInpaintBaseUrl,
+        workflow: serverConfig.comfyuiInpaintWorkflowName,
+      });
+    } catch (error) {
+      sendJson(response, 503, {
+        ok: false,
+        baseUrl: serverConfig.comfyuiInpaintBaseUrl,
+        workflow: serverConfig.comfyuiInpaintWorkflowName,
+        error: error instanceof Error ? error.message : 'ComfyUI 局部重绘后端未启动。',
+      });
+    }
+    return true;
+  }
+
   if (request.method === 'POST' && segments[2] === 'generate-texture-map') {
     const input = await readJsonBody<ComfyTextureMapInput>(request);
     if (!input.prompt?.trim()) {
@@ -41,6 +66,21 @@ export async function handleComfyuiRoute(request: IncomingMessage, response: Ser
       return true;
     }
     const result = await generateComfyTextureMap(input, user.id);
+    sendJson(response, 200, result);
+    return true;
+  }
+
+  if (request.method === 'POST' && segments[2] === 'generate-inpaint') {
+    const input = await readJsonBody<ComfyInpaintInput>(request);
+    if (!input.prompt?.trim()) {
+      sendJson(response, 400, { error: 'Prompt is required for ComfyUI local repaint.' });
+      return true;
+    }
+    if (!input.image?.dataUrl) {
+      sendJson(response, 400, { error: 'ComfyUI 局部重绘输入图不能为空。' });
+      return true;
+    }
+    const result = await generateComfyInpaint(input, user.id);
     sendJson(response, 200, result);
     return true;
   }

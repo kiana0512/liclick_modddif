@@ -18,6 +18,7 @@ export function getModelFormatFromFileName(fileName: string): SupportedImportFor
 export async function loadModelFromFile(
   file: File,
   normalizeOptions?: NormalizeImportedModelOptions,
+  resourceFiles: File[] = [],
 ): Promise<LoadedModel> {
   const format = getModelFormatFromFileName(file.name);
   if (!format) {
@@ -25,7 +26,13 @@ export async function loadModelFromFile(
   }
 
   const sourceUrl = URL.createObjectURL(file);
-  const options = { sourceUrl, fileName: file.name, normalizeOptions };
+  const options = {
+    sourceUrl,
+    fileName: file.name,
+    normalizeOptions,
+    resourceFiles,
+    ...(format === 'fbx' ? { sourceBuffer: await file.arrayBuffer() } : {}),
+  };
 
   if (format === 'glb' || format === 'gltf') return loadGltfModel(options);
   if (format === 'fbx') return loadFbxModel(options);

@@ -1,11 +1,12 @@
 import type * as THREE from 'three';
 import type { SerializedCamera } from '@/types/capture';
-import type { BlendMode } from '@/types/layer';
+import type { BlendMode, LayerMaskSpace } from '@/types/layer';
 
 export type ProjectionLayerInput = {
   layerId: string;
   imageUrl: string;
   maskUrl?: string;
+  maskSpace?: LayerMaskSpace;
   depthUrl?: string;
   camera: SerializedCamera;
   objectId: string;
@@ -13,6 +14,9 @@ export type ProjectionLayerInput = {
   currentObjectMatrixWorld?: number[];
   baseTexture?: THREE.Texture;
   uvOverlayTexture?: THREE.Texture;
+  uvOverlayHue?: number;
+  uvOverlaySaturation?: number;
+  uvOverlayLightness?: number;
   baseColor?: THREE.ColorRepresentation;
   opacity: number;
   strength?: number;
@@ -21,6 +25,7 @@ export type ProjectionLayerInput = {
   depthTest: boolean;
   useMask?: boolean;
   useDepthCheck?: boolean;
+  renderedColor?: boolean;
   enableBackfaceCulling?: boolean;
   edgeFeather?: number;
   depthBias?: number;
@@ -37,8 +42,8 @@ export type ProjectionPreviewLighting = {
   keyLightDirection: [number, number, number];
 };
 
-export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'> & {
-  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck'>>;
+export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck' | 'renderedColor'> & {
+  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck' | 'renderedColor'>>;
 };
 
 export type ProjectionMatrixBundle = {

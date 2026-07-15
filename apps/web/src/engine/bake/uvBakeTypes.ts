@@ -1,5 +1,18 @@
-export type UvBakeResolution = 1024 | 2048 | 4096 | 8192;
-export type BakeProgressPhase = 'loading-assets' | 'rasterizing' | 'compositing' | 'encoding' | 'applying' | 'persisting';
+import type { Layer } from '@/types/layer';
+
+export type UvBakeResolution = 512 | 1024 | 2048 | 4096 | 8192;
+export type GpuUvCompositeMode =
+  | 'cpu-parity'
+  | 'quality-depth'
+  | 'quality-alpha'
+  | 'coverage-alpha';
+export type BakeProgressPhase =
+  | 'loading-assets'
+  | 'rasterizing'
+  | 'compositing'
+  | 'encoding'
+  | 'applying'
+  | 'persisting';
 
 export interface BakeProgress {
   phase: BakeProgressPhase;
@@ -62,6 +75,7 @@ export interface BakeProjectedLayerInput {
 export interface BakeVisibleProjectedLayersInput {
   objectId: string;
   layerIds?: string[];
+  transientLayers?: Layer[];
   resolution: UvBakeResolution;
   cacheKey?: string;
   enableBackfaceCulling: boolean;
@@ -69,6 +83,13 @@ export interface BakeVisibleProjectedLayersInput {
   dilationPixels: number;
   method?: 'auto' | 'gpu' | 'cpu';
   outputAlpha?: 'opaque-viewport' | 'transparent';
+  disableGpuFallback?: boolean;
+  skipGpuValidation?: boolean;
+  gpuInputTextureFlipY?: boolean;
+  gpuProjectedImageUvFlipY?: boolean;
+  gpuCompositeMode?: GpuUvCompositeMode;
+  debugIgnoreMask?: boolean;
+  debugIgnoreDepth?: boolean;
   commitToProject?: boolean;
   markSourceLayersBaked?: boolean;
   preferBlobOutput?: boolean;

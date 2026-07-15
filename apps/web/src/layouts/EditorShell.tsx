@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { BrandMark } from '@/components/common/BrandMark';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
 import { WorkspaceDock } from '@/components/workspace/WorkspaceDock';
@@ -136,8 +137,9 @@ export function EditorShell({
       <header className="pointer-events-none absolute left-3 right-32 top-3 z-30 flex flex-wrap items-start justify-start gap-2">
         <div className="pointer-events-auto flex min-w-0 items-center gap-2 rounded-lg border border-white/10 bg-black/42 px-2 py-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
           <Button variant="ghost" className="h-8 w-8 px-0" icon={<ArrowLeft className="h-4 w-4" />} onClick={onBack} />
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">Liclick 3D Texture / {projectName}</div>
+          <BrandMark compact className="hidden sm:flex" />
+          <div className="min-w-0 border-l border-white/12 pl-2 sm:pl-3">
+            <div className="truncate text-sm font-semibold">{projectName}</div>
             <div className="text-[11px] text-white/42">{workspaceLabel ?? 'No workspace'}</div>
           </div>
         </div>

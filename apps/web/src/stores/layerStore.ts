@@ -10,7 +10,13 @@ type LayerStore = {
   activeProjectedLayerId?: string;
   setLayers: (layers: Layer[]) => void;
   addEmptyLayer: () => Layer;
-  addUvLayer: (input: { name?: string; imageUrl: string; objectId?: string; bakedTextureId?: string }) => Layer;
+  addUvLayer: (input: {
+    name?: string;
+    imageUrl: string;
+    objectId?: string;
+    bakedTextureId?: string;
+    role?: Layer['role'];
+  }) => Layer;
   mergeLayersIntoUvLayer: (input: {
     sourceLayerIds: string[];
     imageUrl: string;
@@ -18,7 +24,11 @@ type LayerStore = {
     targetUvLayerId?: string;
     name?: string;
   }) => Layer;
-  addProjectedLayerFromGeneration: (generation: Generation, capture?: Capture, objectId?: string) => Layer;
+  addProjectedLayerFromGeneration: (
+    generation: Generation,
+    capture?: Capture,
+    objectId?: string,
+  ) => Layer;
   toggleLayer: (layerId: string) => void;
   setLayerVisibility: (layerIds: string[], visible: boolean) => void;
   setOpacity: (layerId: string, opacity: number) => void;
@@ -46,9 +56,33 @@ function withOrder(layers: Layer[]) {
   return layers.map((layer, index) => ({ ...layer, order: index }));
 }
 
+function getProjectedCameraViewLabel(layer: Layer) {
+  const camera = layer.camera;
+  if (!camera) return undefined;
+  const x = camera.position[0] - camera.target[0];
+  const y = camera.position[1] - camera.target[1];
+  const z = camera.position[2] - camera.target[2];
+  const absoluteX = Math.abs(x);
+  const absoluteY = Math.abs(y);
+  const absoluteZ = Math.abs(z);
+  if (absoluteY > Math.max(absoluteX, absoluteZ) * 1.15) return y >= 0 ? '顶' : '底';
+  if (Math.min(absoluteX, absoluteZ) > Math.max(absoluteX, absoluteZ) * 0.55) {
+    return `${x < 0 ? '左' : '右'}${z >= 0 ? '前' : '后'}`;
+  }
+  if (absoluteX > absoluteZ) return x < 0 ? '左' : '右';
+  return z >= 0 ? '前' : '后';
+}
+
+function normalizeProjectedLayerName(layer: Layer) {
+  if (layer.type !== 'projected' || !/^Projected(?::| Layer)/.test(layer.name)) return layer.name;
+  const label = getProjectedCameraViewLabel(layer);
+  return label ? `投射贴图 · ${label}` : layer.name;
+}
+
 function normalizeLayer(layer: Layer) {
   return {
     ...layer,
+    name: normalizeProjectedLayerName(layer),
     imageUrl: layer.imageUrl === legacyTransparentImage ? '' : layer.imageUrl,
     adjustments: {
       hue: layer.adjustments?.hue ?? 0,
@@ -70,7 +104,9 @@ function isBakeParticipant(layer: Layer) {
 }
 
 function markVisibleStackNeedsRebake(layers: Layer[]) {
-  return layers.map((layer) => (isBakeParticipant(layer) && layer.isBaked ? { ...layer, needsRebake: true } : layer));
+  return layers.map((layer) =>
+    isBakeParticipant(layer) && layer.isBaked ? { ...layer, needsRebake: true } : layer,
+  );
 }
 
 export const useLayerStore = create<LayerStore>((set, get) => ({
@@ -79,14 +115,14 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   setLayers: (layers) =>
     set({
       layers: withOrder(layers.map(normalizeLayer)),
-      activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+      activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
     }),
   addEmptyLayer: () => {
     const objectId = useSceneStore.getState().selectedObjectId;
     const layer: Layer = {
       id: uuid(),
       name: 'New layer',
-      type: 'projected',
+      type: 'uv',
       imageUrl: '',
       objectId,
       visible: true,
@@ -106,9 +142,17 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     return layer;
   },
   addProjectedLayerFromGeneration: (generation, capture, objectId) => {
+    const cameraViewLabel =
+      typeof generation.metadata.cameraViewLabel === 'string'
+        ? generation.metadata.cameraViewLabel.trim()
+        : '';
     const layer: Layer = {
       id: uuid(),
-      name: generation.prompt ? `Projected: ${generation.prompt.slice(0, 24)}` : 'Projected Layer',
+      name: cameraViewLabel
+        ? `投射贴图 · ${cameraViewLabel}`
+        : generation.prompt
+          ? `Projected: ${generation.prompt.slice(0, 24)}`
+          : 'Projected Layer',
       type: 'projected',
       imageUrl: generation.resultUrl ?? '',
       objectId: objectId ?? capture?.objectId,
@@ -139,6 +183,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       id: uuid(),
       name: input.name ?? 'UV Repair Layer',
       type: 'uv',
+      role: input.role,
       imageUrl: input.imageUrl,
       objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
       visible: true,
@@ -155,7 +200,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     };
     set((state) => ({
       layers: withOrder([layer, ...state.layers]),
-      activeProjectedLayerId: state.activeProjectedLayerId,
+      activeProjectedLayerId: layer.id,
     }));
     return layer;
   },
@@ -216,7 +261,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
 
       return {
         layers: withOrder(nextLayers),
-        activeProjectedLayerId: nextLayers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+        activeProjectedLayerId: nextLayers.find((layer) => layer.visible)?.id,
       };
     });
     return mergedLayer!;
@@ -231,22 +276,24 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       return {
         layers,
         activeProjectedLayerId:
-          layers.find((layer) => layer.id === layerId && layer.visible && layer.type === 'projected')?.id ??
-          layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+          layers.find((layer) => layer.id === layerId && layer.visible)?.id ??
+          layers.find((layer) => layer.visible)?.id,
       };
     }),
   setLayerVisibility: (layerIds, visible) =>
     set((state) => {
       const layerIdSet = new Set(layerIds);
-      const layers = state.layers.map((layer) => (layerIdSet.has(layer.id) ? { ...layer, visible } : layer));
+      const layers = state.layers.map((layer) =>
+        layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
+      );
       const activeStillVisible = layers.some(
-        (layer) => layer.id === state.activeProjectedLayerId && layer.visible && layer.type === 'projected',
+        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
       );
       return {
         layers,
         activeProjectedLayerId: activeStillVisible
           ? state.activeProjectedLayerId
-          : layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+          : layers.find((layer) => layer.visible)?.id,
       };
     }),
   setOpacity: (layerId, opacity) =>
@@ -305,8 +352,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   setActiveLayer: (layerId) =>
     set((state) => ({
       activeProjectedLayerId:
-        state.layers.find((layer) => layer.id === layerId && layer.type === 'projected')?.id ??
-        state.activeProjectedLayerId,
+        state.layers.find((layer) => layer.id === layerId)?.id ?? state.activeProjectedLayerId,
     })),
   renameLayer: (layerId, name) =>
     set((state) => ({
@@ -315,7 +361,9 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   updateLayerImage: (layerId, imageUrl) =>
     set((state) => ({
       layers: state.layers.map((layer) =>
-        layer.id === layerId ? { ...layer, imageUrl, needsRebake: layer.isBaked ? true : layer.needsRebake } : layer,
+        layer.id === layerId
+          ? { ...layer, imageUrl, needsRebake: layer.isBaked ? true : layer.needsRebake }
+          : layer,
       ),
     })),
   updateLayer: (layerId, patch) =>
@@ -387,7 +435,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = state.layers.filter((layer) => layer.id !== layerId);
       return {
         layers: markVisibleStackNeedsRebake(withOrder(layers)),
-        activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+        activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),
   deleteLayers: (layerIds) =>
@@ -396,7 +444,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = state.layers.filter((layer) => !layerIdSet.has(layer.id));
       return {
         layers: markVisibleStackNeedsRebake(withOrder(layers)),
-        activeProjectedLayerId: layers.find((layer) => layer.type === 'projected' && layer.visible)?.id,
+        activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),
 }));

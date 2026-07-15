@@ -346,8 +346,8 @@ function createTextureNodes(input: {
   data: Uint8Array;
 }) {
   const baseVideoName = FBX_MEDIA_FILE;
-  const baseRelativeFileName = `${FBX_MEDIA_FOLDER}/${FBX_MEDIA_FILE.replace('.', '_')}`;
-  const baseFileName = `${FBX_MEDIA_ABSOLUTE_FOLDER}/${FBX_MEDIA_FILE.replace('.', '_')}`;
+  const baseRelativeFileName = `${FBX_MEDIA_FOLDER}/${FBX_MEDIA_FILE}`;
+  const baseFileName = `${FBX_MEDIA_ABSOLUTE_FOLDER}/${FBX_MEDIA_FILE}`;
   return [
     createTextureNode({
       textureId: input.textureId,

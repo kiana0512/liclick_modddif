@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('liclickLauncher', {
   restart: () => ipcRenderer.invoke('launcher:restart'),
   stop: () => ipcRenderer.invoke('launcher:stop'),
   openWorkspace: () => ipcRenderer.invoke('launcher:open-workspace'),
+  openWorkspaceDir: () => ipcRenderer.invoke('launcher:open-workspace-dir'),
   openLogs: () => ipcRenderer.invoke('launcher:open-logs'),
   quit: () => ipcRenderer.invoke('launcher:quit'),
   onState: (callback) => {

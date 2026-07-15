@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Eraser, Paintbrush, RotateCcw, Square, WandSparkles, X } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { useT } from '@/stores/i18nStore';
+import { shortcutMatches } from '@/stores/shortcutStore';
 import type { MaskBitmap } from '@/types/localRepaint';
 import type { ReferenceImage } from '@/types/project';
 
@@ -35,6 +36,7 @@ type LocalRepaintDialogProps = {
 type CanvasPoint = {
   x: number;
   y: number;
+  pressure: number;
 };
 
 type CanvasRect = {
@@ -47,6 +49,21 @@ type CanvasRect = {
 const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 16;
 const MAX_LOCAL_REPAINT_BRUSH_SIZE = 96;
 const STROKE_CLIP_PADDING = 2;
+
+function getPointerPressure(event: Pick<globalThis.PointerEvent, 'pointerType' | 'pressure'>) {
+  if (event.pointerType !== 'pen') return 1;
+  const pressure = Number.isFinite(event.pressure) ? event.pressure : 0.5;
+  return Math.max(0.02, Math.min(1, pressure || 0.02));
+}
+
+function createScaledIndexMap(sourceSize: number, targetSize: number) {
+  const map = new Int32Array(targetSize);
+  const maxSourceIndex = Math.max(0, sourceSize - 1);
+  for (let index = 0; index < targetSize; index += 1) {
+    map[index] = Math.min(maxSourceIndex, Math.floor((index / targetSize) * sourceSize));
+  }
+  return map;
+}
 
 function createMaskBrushPattern(context: CanvasRenderingContext2D) {
   const patternCanvas = document.createElement('canvas');
@@ -91,7 +108,9 @@ export function LocalRepaintDialog({
   const objectClipCanvasRef = useRef<HTMLCanvasElement>();
   const maskBrushPatternRef = useRef<string | CanvasPattern>();
   const drawingRef = useRef(false);
+  const activePointerIdRef = useRef<number>();
   const lastPointRef = useRef<CanvasPoint>();
+  const strokeToolRef = useRef<'brush' | 'erase'>();
   const initialMaskAppliedRef = useRef(false);
   const [tool, setTool] = useState<'brush' | 'erase'>('brush');
   const [brushSize, setBrushSize] = useState(DEFAULT_LOCAL_REPAINT_BRUSH_SIZE);
@@ -115,7 +134,23 @@ export function LocalRepaintDialog({
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) return;
       if (event.key === 'Escape') onCancel();
+      else if (shortcutMatches(event, 'repaint.brush')) setTool('brush');
+      else if (shortcutMatches(event, 'repaint.eraser')) setTool('erase');
+      else if (
+        shortcutMatches(event, 'repaint.brushSmaller') ||
+        shortcutMatches(event, 'repaint.brushLarger')
+      ) {
+        event.preventDefault();
+        const direction = shortcutMatches(event, 'repaint.brushSmaller') ? -1 : 1;
+        setBrushSize((value) => Math.max(2, Math.min(MAX_LOCAL_REPAINT_BRUSH_SIZE, value + direction * 2)));
+      }
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
@@ -196,15 +231,17 @@ export function LocalRepaintDialog({
     const imageData = clipContext.createImageData(width, height);
     const output = imageData.data;
     const source = objectMask.data;
+    const sourceXByTargetX = createScaledIndexMap(objectMask.width, width);
+    const sourceYByTargetY = createScaledIndexMap(objectMask.height, height);
     for (let y = 0; y < height; y += 1) {
-      const maskY = Math.min(objectMask.height - 1, Math.floor((y / height) * objectMask.height));
+      const maskRowOffset = sourceYByTargetY[y] * objectMask.width;
+      const targetRowOffset = y * width * 4;
       for (let x = 0; x < width; x += 1) {
-        const maskX = Math.min(objectMask.width - 1, Math.floor((x / width) * objectMask.width));
-        const offset = (y * width + x) * 4;
+        const offset = targetRowOffset + x * 4;
         output[offset] = 255;
         output[offset + 1] = 255;
         output[offset + 2] = 255;
-        output[offset + 3] = (source[maskY * objectMask.width + maskX] ?? 0) > 8 ? 255 : 0;
+        output[offset + 3] = (source[maskRowOffset + sourceXByTargetX[x]] ?? 0) > 8 ? 255 : 0;
       }
     }
     clipContext.putImageData(imageData, 0, 0);
@@ -235,12 +272,14 @@ export function LocalRepaintDialog({
       return;
     }
     const imageData = maskContext.createImageData(canvas.width, canvas.height);
+    const sourceXByTargetX = createScaledIndexMap(mask.width, canvas.width);
+    const sourceYByTargetY = createScaledIndexMap(mask.height, canvas.height);
     for (let y = 0; y < canvas.height; y += 1) {
-      const maskY = Math.min(mask.height - 1, Math.floor((y / canvas.height) * mask.height));
+      const maskRowOffset = sourceYByTargetY[y] * mask.width;
+      const targetRowOffset = y * canvas.width * 4;
       for (let x = 0; x < canvas.width; x += 1) {
-        const maskX = Math.min(mask.width - 1, Math.floor((x / canvas.width) * mask.width));
-        const source = mask.data[maskY * mask.width + maskX] ?? 0;
-        const offset = (y * canvas.width + x) * 4;
+        const source = mask.data[maskRowOffset + sourceXByTargetX[x]] ?? 0;
+        const offset = targetRowOffset + x * 4;
         imageData.data[offset] = 255;
         imageData.data[offset + 1] = 255;
         imageData.data[offset + 2] = 255;
@@ -317,11 +356,15 @@ export function LocalRepaintDialog({
     };
   }
 
-  function paintAt(event: Pick<PointerEvent<HTMLCanvasElement>, 'clientX' | 'clientY'>) {
+  function paintAt(
+    event: Pick<globalThis.PointerEvent, 'clientX' | 'clientY' | 'pointerType' | 'pressure'>,
+    strokeTool: 'brush' | 'erase',
+  ) {
     const canvas = canvasRef.current;
-    const point = getCanvasPoint(event);
+    const canvasPoint = getCanvasPoint(event);
+    const point = canvasPoint ? { ...canvasPoint, pressure: getPointerPressure(event) } : undefined;
     if (!canvas || !point) return;
-    if (tool === 'brush' && !isPointOnObject(point)) {
+    if (strokeTool === 'brush' && !isPointOnObject(point)) {
       lastPointRef.current = undefined;
       return;
     }
@@ -330,24 +373,34 @@ export function LocalRepaintDialog({
     const logicalCanvas = getLogicalMaskCanvas(canvas.width, canvas.height);
     const logicalContext = logicalCanvas.getContext('2d');
     const previousPoint = lastPointRef.current;
-    const strokeBounds = getStrokeBounds(point, previousPoint, brushSize);
+    const pressureSize = (pressure: number) => brushSize * (0.1 + Math.pow(pressure, 0.72) * 0.9);
+    const strokeSize = Math.max(pressureSize(point.pressure), pressureSize(previousPoint?.pressure ?? point.pressure));
+    const strokeBounds = getStrokeBounds(point, previousPoint, strokeSize);
     const maskBrush = getMaskBrushPattern(context);
     const drawStroke = (targetContext: CanvasRenderingContext2D, fillStyle: string | CanvasPattern) => {
       targetContext.save();
-      targetContext.globalCompositeOperation = tool === 'erase' ? 'destination-out' : 'source-over';
-      targetContext.strokeStyle = fillStyle;
+      targetContext.globalCompositeOperation = strokeTool === 'erase' ? 'destination-out' : 'source-over';
       targetContext.fillStyle = fillStyle;
-      targetContext.lineWidth = brushSize;
-      targetContext.lineCap = 'round';
-      targetContext.lineJoin = 'round';
       if (previousPoint) {
-        targetContext.beginPath();
-        targetContext.moveTo(previousPoint.x, previousPoint.y);
-        targetContext.lineTo(point.x, point.y);
-        targetContext.stroke();
+        const distance = Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y);
+        const spacing = Math.max(0.75, Math.min(pressureSize(previousPoint.pressure), pressureSize(point.pressure)) * 0.2);
+        const steps = Math.max(1, Math.ceil(distance / spacing));
+        for (let index = 0; index <= steps; index += 1) {
+          const ratio = index / steps;
+          const pressure = previousPoint.pressure + (point.pressure - previousPoint.pressure) * ratio;
+          targetContext.beginPath();
+          targetContext.arc(
+            previousPoint.x + (point.x - previousPoint.x) * ratio,
+            previousPoint.y + (point.y - previousPoint.y) * ratio,
+            pressureSize(pressure) / 2,
+            0,
+            Math.PI * 2,
+          );
+          targetContext.fill();
+        }
       } else {
         targetContext.beginPath();
-        targetContext.arc(point.x, point.y, brushSize / 2, 0, Math.PI * 2);
+        targetContext.arc(point.x, point.y, pressureSize(point.pressure) / 2, 0, Math.PI * 2);
         targetContext.fill();
       }
       targetContext.restore();
@@ -355,7 +408,7 @@ export function LocalRepaintDialog({
     drawStroke(context, maskBrush);
     if (logicalContext) drawStroke(logicalContext, '#ffffff');
     lastPointRef.current = point;
-    if (tool === 'brush') clipMaskToObject(strokeBounds);
+    if (strokeTool === 'brush') clipMaskToObject(strokeBounds);
   }
 
   function clearMask() {
@@ -370,18 +423,22 @@ export function LocalRepaintDialog({
     syncCanvasSize();
     const canvas = canvasRef.current;
     const context = canvas
-      ? getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d')
+      ? getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d', { willReadFrequently: true })
       : undefined;
     if (!canvas || !context) throw new Error(t('localRepaintMaskMissing'));
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
     const data = new Uint8ClampedArray(canvas.width * canvas.height);
-    for (let index = 0; index < data.length; index += 1) {
-      const x = index % canvas.width;
-      const y = Math.floor(index / canvas.width);
-      const maskX = Math.min(objectMask.width - 1, Math.floor((x / canvas.width) * objectMask.width));
-      const maskY = Math.min(objectMask.height - 1, Math.floor((y / canvas.height) * objectMask.height));
-      const objectAlpha = objectMask.data[maskY * objectMask.width + maskX] ?? 0;
-      data[index] = imageData.data[index * 4 + 3] > 8 && objectAlpha > 8 ? 255 : 0;
+    const sourceXByTargetX = createScaledIndexMap(objectMask.width, canvas.width);
+    const sourceYByTargetY = createScaledIndexMap(objectMask.height, canvas.height);
+    for (let y = 0; y < canvas.height; y += 1) {
+      const maskRowOffset = sourceYByTargetY[y] * objectMask.width;
+      const dataRowOffset = y * canvas.width;
+      const imageRowOffset = dataRowOffset * 4;
+      for (let x = 0; x < canvas.width; x += 1) {
+        const index = dataRowOffset + x;
+        const objectAlpha = objectMask.data[maskRowOffset + sourceXByTargetX[x]] ?? 0;
+        data[index] = imageData.data[imageRowOffset + x * 4 + 3] > 8 && objectAlpha > 8 ? 255 : 0;
+      }
     }
     return { width: canvas.width, height: canvas.height, data };
   }
@@ -429,7 +486,15 @@ export function LocalRepaintDialog({
 
   function paintPointerEventBatch(event: PointerEvent<HTMLCanvasElement>) {
     const nativeEvents = event.nativeEvent.getCoalescedEvents?.() ?? [event.nativeEvent];
-    nativeEvents.forEach((nativeEvent) => paintAt(nativeEvent));
+    const events = [...nativeEvents];
+    const finalEvent = events[events.length - 1];
+    if (
+      !finalEvent ||
+      finalEvent.clientX !== event.nativeEvent.clientX ||
+      finalEvent.clientY !== event.nativeEvent.clientY
+    ) events.push(event.nativeEvent);
+    const strokeTool = strokeToolRef.current ?? tool;
+    events.forEach((nativeEvent) => paintAt(nativeEvent, strokeTool));
   }
 
   const modeLabel = mode === 'edit_layer_image' ? t('localRepaintModeLayer') : t('localRepaintModeView');
@@ -438,7 +503,7 @@ export function LocalRepaintDialog({
   const displayError = error ?? localError;
 
   return createPortal(
-    <div className="fixed inset-0 z-[120] grid place-items-center bg-black/62 p-4 backdrop-blur-sm">
+    <div data-editor-shortcut-scope="repaint" className="fixed inset-0 z-[120] grid place-items-center bg-black/62 p-4 backdrop-blur-sm">
       <section className="grid max-h-[94vh] w-full max-w-[min(92vw,1480px)] grid-cols-[minmax(0,1fr)_320px] overflow-hidden rounded-lg border border-white/16 bg-[#11121c] text-white shadow-[0_30px_90px_rgba(0,0,0,0.58)]">
         <div ref={frameRef} className="relative min-h-[min(760px,88vh)] overflow-hidden bg-[#070811]">
           <img
@@ -456,25 +521,52 @@ export function LocalRepaintDialog({
           {!previewUrl && (
             <canvas
               ref={canvasRef}
-              className={cn('absolute origin-center cursor-crosshair', isSubmitting && 'pointer-events-none opacity-70')}
+              className={cn('absolute touch-none select-none origin-center cursor-crosshair', isSubmitting && 'pointer-events-none opacity-70')}
               style={{ ...paintSurfaceStyle, transform: `scale(${viewportRepairZoom})` }}
               onPointerDown={(event) => {
+                if (event.pointerType === 'touch' || activePointerIdRef.current !== undefined) return;
+                event.preventDefault();
                 event.currentTarget.setPointerCapture(event.pointerId);
+                activePointerIdRef.current = event.pointerId;
                 drawingRef.current = true;
                 lastPointRef.current = undefined;
+                strokeToolRef.current =
+                  event.pointerType === 'pen' && (event.button === 2 || event.button === 5)
+                    ? 'erase'
+                    : tool;
                 paintPointerEventBatch(event);
               }}
               onPointerMove={(event) => {
-                if (drawingRef.current) paintPointerEventBatch(event);
+                if (activePointerIdRef.current !== event.pointerId) return;
+                if (drawingRef.current) {
+                  event.preventDefault();
+                  paintPointerEventBatch(event);
+                }
               }}
               onPointerUp={(event) => {
+                if (activePointerIdRef.current !== event.pointerId) return;
+                if (drawingRef.current) paintPointerEventBatch(event);
                 drawingRef.current = false;
                 lastPointRef.current = undefined;
-                event.currentTarget.releasePointerCapture(event.pointerId);
+                strokeToolRef.current = undefined;
+                activePointerIdRef.current = undefined;
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
               }}
-              onPointerCancel={() => {
+              onPointerCancel={(event) => {
+                if (activePointerIdRef.current !== event.pointerId) return;
                 drawingRef.current = false;
                 lastPointRef.current = undefined;
+                strokeToolRef.current = undefined;
+                activePointerIdRef.current = undefined;
+              }}
+              onLostPointerCapture={(event) => {
+                if (activePointerIdRef.current !== event.pointerId) return;
+                drawingRef.current = false;
+                lastPointRef.current = undefined;
+                strokeToolRef.current = undefined;
+                activePointerIdRef.current = undefined;
               }}
             />
           )}
