@@ -29,7 +29,7 @@ For Linux, Docker, or long-running A100 deployment, build first and run the comp
 
 ## Windows Desktop Installer
 
-The Windows desktop build keeps the browser UI but starts the local backend and frontend through a visible terminal, similar to local creative tools that need a running service process.
+The Windows desktop build uses a lightweight Electron launcher. It starts the local backend and frontend with hidden child windows, shows their health in the launcher, and keeps them available from the system tray.
 
 ```bash
 corepack pnpm package:windows
@@ -107,7 +107,7 @@ corepack pnpm db:push
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
 - Projected preview now separates loose coverage from strict quality, rejects out-of-frustum, backface, masked, and approximate depth-failed fragments, and falls back to the model/base material for uncovered fragments instead of showing black or white artifacts.
 - Layer visibility, blend/overlay mode, opacity, projection strength, delete, and go-to-camera work for projected layer preview.
-- Texture Map projected layers queue a background GPU-first UV bake for the visible projected-layer stack only when Auto UV bake is enabled. The bake keeps the selected resolution, falls back to CPU only at that same resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
+- Texture Map projected layers queue the current background GPU-first UV bake workflow for the visible projected-layer stack. The user-facing Auto UV bake toggle has been removed. The bake keeps the selected resolution, falls back to CPU only at that same resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
 - Local-server projects persist captures, generated layer images, and baked textures as binary PNG uploads instead of large base64 JSON payloads, reducing main-thread string work and server JSON parsing during 4K/8K workflows.
 - Save Project / Save As / Load Project now target a local workspace folder through the File System Access API when available, writing `project.liclick.json` and asset folders. Unsupported browsers fall back to JSON download/import.
 - Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
@@ -123,7 +123,7 @@ corepack pnpm db:push
 3. Use `Generate Image`; if no capture exists, the app auto-captures first.
 4. Click `Add as Projected Layer` to preview the generated image projected onto the model.
 5. Use the Layers panel to toggle visibility, adjust opacity, delete, or return to the capture camera.
-6. Accept a Texture Map result with `Add as Projected Layer`; if Auto UV bake is enabled, the visible projected-layer stack is baked in the background at the selected viewport resolution. If it is disabled, the app keeps the live projected preview and does not bake.
+6. Accept a Texture Map result with `Add as Projected Layer`; the current workflow keeps the live projected preview and queues the visible projected-layer stack for background bake at the selected viewport resolution.
 7. Use `Download BaseColor` to save `basecolor.png`, or keep the baked texture applied in PBR / Flat preview.
 8. Use `Save Project` / `Save As...` / `Load Project` for `project.liclick.json` workspace persistence. In unsupported browsers, Save downloads JSON.
 
@@ -181,7 +181,7 @@ Test flow:
 
 - GLB / glTF are the primary formats. FBX / OBJ are experimental.
 - Texture mode edits one active imported object at a time. Projects can keep multiple imported objects and switch the active object from the Objects panel.
-- Automatic UV bake composites the visible projected-layer stack into one BaseColor texture when enabled. Only one automatic bake runs at a time.
+- Background UV bake composites the visible projected-layer stack into one BaseColor texture. Only one bake runs at a time and newer requests are coalesced.
 - Projected preview is shader-based and supports blend/overlay stack preview with a live-preview guard for very large unbaked stacks.
 - Depth capture is grayscale viewport depth, not a calibrated linear depth asset.
 - File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
@@ -190,7 +190,7 @@ Test flow:
 - 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, browser PNG encoding, workspace persistence, the low-resolution CPU coverage validation pass, and same-resolution CPU fallback on unsupported hardware.
 - Segments ColorID, MP4, and portable project package zip are still coming soon.
 
-See `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for the latest desktop release notes, editor UX details, and audit summary.
+See `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for desktop release notes and `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md` for the latest test, security, and residual-risk audit.
 
 ## Development Rules
 

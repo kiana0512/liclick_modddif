@@ -1,8 +1,6 @@
 const api = window.liclickLauncher;
 
 const elements = {
-  overallDot: document.querySelector('#overallDot'),
-  overallText: document.querySelector('#overallText'),
   primaryLaunch: document.querySelector('#primaryLaunch'),
   primaryLaunchText: document.querySelector('#primaryLaunch span'),
   openWorkspace: document.querySelector('#openWorkspace'),
@@ -31,7 +29,6 @@ const elements = {
   webDot: document.querySelector('#webDot'),
   logOutput: document.querySelector('#logOutput'),
   clearLogs: document.querySelector('#clearLogs'),
-  buildText: document.querySelector('#buildText'),
   footerBuild: document.querySelector('#footerBuild'),
   sidebarBuild: document.querySelector('#sidebarBuild'),
   connectionTitle: document.querySelector('#connectionTitle'),
@@ -60,7 +57,7 @@ let currentState = {
   workspaceUrl: 'http://127.0.0.1:4617',
   webUrl: 'http://127.0.0.1:5673',
   workspaceDir: '-',
-  shellBuild: '2026.07.14.1858',
+  shellBuild: '2026.07.15.1104',
   logs: [],
 };
 
@@ -89,11 +86,6 @@ function renderState(state) {
   const runtimeReady =
     running || currentState.workspace === 'online' || currentState.web === 'online';
 
-  elements.overallText.textContent = currentState.message;
-  setTone(
-    elements.overallDot,
-    running ? 'online' : error ? 'error' : starting ? 'starting' : 'offline',
-  );
   elements.openWorkspace.disabled = currentState.web !== 'online';
   elements.workspaceStatus.textContent =
     statusText[currentState.workspace] ?? currentState.workspace;
@@ -114,9 +106,6 @@ function renderState(state) {
   elements.pidText.textContent = currentState.launcherPid
     ? `PID ${currentState.launcherPid}`
     : '本地服务';
-  elements.buildText.textContent = currentState.shellBuild
-    ? `/ Build ${currentState.shellBuild}`
-    : '';
   elements.footerBuild.textContent = currentState.shellBuild
     ? `Build ${currentState.shellBuild}`
     : 'Launcher';

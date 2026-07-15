@@ -69,16 +69,16 @@ The generated setup file is:
 dist-installer/Liclick 3D Texture Setup.exe
 ```
 
-The desktop shortcut opens a visible terminal. That terminal:
+The desktop shortcut opens the Electron launcher. Its hidden managed service process:
 
 - prepares `%LocalAppData%\Liclick 3D Texture\runtime`
 - installs missing dependencies when needed
 - starts the local workspace server
 - starts the local web UI
-- opens the default browser
-- keeps full stdout/stderr visible and mirrored to logs
+- exposes the workspace through the launcher's `打开工作台` action
+- mirrors stdout/stderr into the launcher log view and log files
 
-Closing the terminal stops the local services. Updating the installer replaces program files but keeps `%LocalAppData%\Liclick 3D Texture\workspace` so user projects survive upgrades.
+Closing the window hides the launcher to the tray by default; using the tray's full quit action stops the local services. Updating the installer replaces program files but keeps `%LocalAppData%\Liclick 3D Texture\workspace` so user projects survive upgrades.
 
 ## Workspace Layout
 
