@@ -1191,6 +1191,12 @@ const uvOverlayFragmentShader = `
   uniform float useLiveUvOverlayMap;
   uniform float liveUvOverlayOpacity;
   uniform float liveUvOverlayRenderedColor;
+  uniform float uvOverlayHueShift;
+  uniform float uvOverlaySaturationShift;
+  uniform float uvOverlayLightnessShift;
+  uniform float liveUvOverlayHueShift;
+  uniform float liveUvOverlaySaturationShift;
+  uniform float liveUvOverlayLightnessShift;
   uniform float useSurfaceMaskMap;
   uniform float showEmptyUvChecker;
   uniform vec3 baseColor;
@@ -1201,6 +1207,41 @@ const uvOverlayFragmentShader = `
   uniform vec3 keyLightDirection;
   varying vec3 vWorldNormal;
   varying vec2 vUv;
+
+  vec3 linearToSrgb(vec3 color) {
+    vec3 low = color * 12.92;
+    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(low, high, step(vec3(0.0031308), color));
+  }
+
+  vec3 srgbToLinear(vec3 color) {
+    vec3 low = color / 12.92;
+    vec3 high = pow(max((color + 0.055) / 1.055, vec3(0.0)), vec3(2.4));
+    return mix(low, high, step(vec3(0.04045), color));
+  }
+
+  vec3 rgbToHsv(vec3 color) {
+    vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(color.bg, k.wz), vec4(color.gb, k.xy), step(color.b, color.g));
+    vec4 q = mix(vec4(p.xyw, color.r), vec4(color.r, p.yzx), step(p.x, color.r));
+    float delta = q.x - min(q.w, q.y);
+    float epsilon = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * delta + epsilon)), delta / (q.x + epsilon), q.x);
+  }
+
+  vec3 hsvToRgb(vec3 hsv) {
+    vec3 channels = abs(fract(hsv.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return hsv.z * mix(vec3(1.0), clamp(channels - 1.0, 0.0, 1.0), hsv.y);
+  }
+
+  vec3 applyHsvAdjustments(vec3 color, float hue, float saturation, float lightness) {
+    if (abs(hue) < 0.0001 && abs(saturation) < 0.0001 && abs(lightness) < 0.0001) return color;
+    vec3 hsv = rgbToHsv(linearToSrgb(clamp(color, 0.0, 1.0)));
+    hsv.x = mod(hsv.x + hue + 1.0, 1.0);
+    hsv.y = clamp(hsv.y + saturation, 0.0, 1.0);
+    hsv.z = clamp(hsv.z + lightness, 0.0, 1.0);
+    return srgbToLinear(hsvToRgb(hsv));
+  }
 
   float computePreviewLight(vec3 normal) {
     vec3 lightDir = normalize(keyLightDirection);
