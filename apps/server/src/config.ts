@@ -171,6 +171,12 @@ const idaasJwtSsoEnabled = Boolean(
   idaasJwtSso.enabled && idaasJwtSso.url && !idaasJwtSsoBlockedReason,
 );
 const atlasLocalLoginEnabled = process.env.LICLICK_ENABLE_ATLAS_LOCAL_LOGIN !== 'false';
+const sessionSecret = process.env.SESSION_SECRET ?? 'dev-only-change-me';
+const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+
+if (!loopbackHosts.has(host) && sessionSecret === 'dev-only-change-me') {
+  throw new Error('SESSION_SECRET must be set to a strong unique value before the server listens on a non-loopback host.');
+}
 
 export const serverConfig = {
   port,
@@ -191,7 +197,7 @@ export const serverConfig = {
   idaasJwtSsoEnabled,
   atlasLocalLoginEnabled,
   sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'liclick_3d_session',
-  sessionSecret: process.env.SESSION_SECRET ?? 'dev-only-change-me',
+  sessionSecret,
   sessionMaxAgeDays: Number(process.env.SESSION_MAX_AGE_DAYS ?? 14),
   sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === 'true',
   frontendUrl,

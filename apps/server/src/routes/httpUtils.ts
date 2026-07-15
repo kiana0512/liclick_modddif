@@ -3,6 +3,23 @@ import { serverConfig } from '../config.js';
 
 const allowedOrigins = new Set(serverConfig.allowedOrigins);
 
+export function isAllowedRequestOrigin(request: IncomingMessage) {
+  const origin = request.headers.origin;
+  return !origin || allowedOrigins.has(origin);
+}
+
+export function corsHeaders(response: ServerResponse) {
+  const requestOrigin = response.req.headers.origin;
+  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendOrigin;
+  return {
+    'access-control-allow-origin': allowOrigin,
+    'access-control-allow-credentials': 'true',
+    'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    vary: 'Origin',
+  };
+}
+
 export async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -25,27 +42,15 @@ export async function readBinaryBody(request: IncomingMessage, maxBytes: number)
 }
 
 export function sendJson(response: ServerResponse, statusCode: number, data: unknown) {
-  const requestOrigin = response.req.headers.origin;
-  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendOrigin;
   response.writeHead(statusCode, {
     'content-type': 'application/json; charset=utf-8',
-    'access-control-allow-origin': allowOrigin,
-    'access-control-allow-credentials': 'true',
-    'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    'access-control-allow-headers': 'content-type',
+    ...corsHeaders(response),
   });
   response.end(JSON.stringify(data));
 }
 
 export function sendNoContent(response: ServerResponse) {
-  const requestOrigin = response.req.headers.origin;
-  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendOrigin;
-  response.writeHead(204, {
-    'access-control-allow-origin': allowOrigin,
-    'access-control-allow-credentials': 'true',
-    'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    'access-control-allow-headers': 'content-type',
-  });
+  response.writeHead(204, corsHeaders(response));
   response.end();
 }
 

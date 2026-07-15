@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { Activity, Check, Cpu, HardDrive, Languages, Layers, LogIn, LogOut, RefreshCw } from 'lucide-react';
+import { Activity, Check, HardDrive, Keyboard, Languages, LogIn, LogOut, RefreshCw } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
-import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
+import { ShortcutSettingsDialog } from '@/components/settings/ShortcutSettingsDialog';
 import { useAuthStore } from '@/stores/authStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
-import { type ImageGenerationProvider, useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 
 type UserMenuProps = {
@@ -22,15 +22,12 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loginStatus, setLoginStatus] = useState('');
+  const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false);
   const t = useT();
   const language = useI18nStore((state) => state.language);
   const setLanguage = useI18nStore((state) => state.setLanguage);
-  const autoUvBakeEnabled = useSettingsStore((state) => state.autoUvBakeEnabled);
-  const setAutoUvBakeEnabled = useSettingsStore((state) => state.setAutoUvBakeEnabled);
   const performanceTestModeEnabled = useSettingsStore((state) => state.performanceTestModeEnabled);
   const setPerformanceTestModeEnabled = useSettingsStore((state) => state.setPerformanceTestModeEnabled);
-  const imageGenerationProvider = useSettingsStore((state) => state.imageGenerationProvider);
-  const setImageGenerationProvider = useSettingsStore((state) => state.setImageGenerationProvider);
   const user = useAuthStore((state) => state.user);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
@@ -89,36 +86,6 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
     onLogout();
   }
 
-  async function switchImageGenerationProvider(nextProvider: ImageGenerationProvider) {
-    if (busy || nextProvider === imageGenerationProvider) return;
-    if (nextProvider === 'liclick') {
-      setImageGenerationProvider('liclick');
-      return;
-    }
-    setBusy(true);
-    try {
-      const status = await createComfyuiApiClient().getStatus();
-      if (!status.ok) throw new Error(status.error || t('comfyuiBackendOfflineHelp'));
-      setImageGenerationProvider('comfyui');
-      pushToast({
-        tone: 'success',
-        title: t('comfyuiBackendReady'),
-        description: status.baseUrl,
-        dedupeKey: 'comfyui-provider-ready',
-      });
-    } catch (error) {
-      setImageGenerationProvider('liclick');
-      pushToast({
-        tone: 'error',
-        title: t('comfyuiBackendOffline'),
-        description: error instanceof Error ? error.message : t('comfyuiBackendOfflineHelp'),
-        dedupeKey: 'comfyui-provider-offline',
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
-
   if (!user) {
     return (
       <div className="relative">
@@ -138,6 +105,7 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
   }
 
   return (
+    <>
     <div className="relative">
       <button type="button" onClick={() => setOpen((current) => !current)} className="flex items-center gap-2 rounded-md px-2 py-1.5 transition hover:bg-white/10">
         {user.avatarUrl ? (
@@ -198,21 +166,14 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
           </button>
           <button
             type="button"
-            onClick={() => setAutoUvBakeEnabled(!autoUvBakeEnabled)}
-            className="mt-1 flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
-            title={t('autoUvBakeHelp')}
+            onClick={() => {
+              setOpen(false);
+              setShortcutSettingsOpen(true);
+            }}
+            className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
           >
-            <span className="inline-flex min-w-0 items-center gap-2">
-              <Layers className="h-4 w-4 shrink-0" />
-              <span className="truncate">{t('autoUvBake')}</span>
-            </span>
-            <span
-              className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${
-                autoUvBakeEnabled ? 'border-liclick-pink bg-liclick-pink text-white' : 'border-white/24 text-transparent'
-              }`}
-            >
-              <Check className="h-3.5 w-3.5" />
-            </span>
+            <Keyboard className="h-4 w-4 shrink-0" />
+            <span className="truncate">{language === 'zh' ? '自定义快捷键' : 'Keyboard shortcuts'}</span>
           </button>
           <button
             type="button"
@@ -232,35 +193,6 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
               <Check className="h-3.5 w-3.5" />
             </span>
           </button>
-          <div className="mt-1 rounded border border-white/8 bg-white/[0.035] p-1">
-            <div className="px-2 py-1 text-xs font-semibold text-white/42">{t('imageGenerationProvider')}</div>
-            {(['liclick', 'comfyui'] as const).map((provider) => (
-              <button
-                key={provider}
-                type="button"
-                onClick={() => void switchImageGenerationProvider(provider)}
-                disabled={busy}
-                className="mt-1 flex w-full items-center justify-between gap-3 rounded px-2 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-70"
-                title={provider === 'comfyui' ? t('comfyuiBackendOfflineHelp') : t('liclickGenerationProvider')}
-              >
-                <span className="inline-flex min-w-0 items-center gap-2">
-                  <Cpu className="h-4 w-4 shrink-0" />
-                  <span className="truncate">
-                    {provider === 'comfyui' ? t('comfyuiGenerationProvider') : t('liclickGenerationProvider')}
-                  </span>
-                </span>
-                <span
-                  className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${
-                    imageGenerationProvider === provider
-                      ? 'border-liclick-pink bg-liclick-pink text-white'
-                      : 'border-white/24 text-transparent'
-                  }`}
-                >
-                  <Check className="h-3.5 w-3.5" />
-                </span>
-              </button>
-            ))}
-          </div>
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />
             {t('logout')}
@@ -268,5 +200,7 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
         </div>
       )}
     </div>
+    {shortcutSettingsOpen && <ShortcutSettingsDialog onClose={() => setShortcutSettingsOpen(false)} />}
+    </>
   );
 }

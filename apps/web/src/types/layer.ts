@@ -1,6 +1,7 @@
 import type { SerializedCamera } from './capture';
 
 export type LayerType = 'uv' | 'projected' | 'patch' | 'normal';
+export type LayerRole = 'base-color';
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';
 export type LayerMaskSpace = 'projection' | 'uv';
 
@@ -14,6 +15,7 @@ export type Layer = {
   id: string;
   name: string;
   type: LayerType;
+  role?: LayerRole;
   imageUrl: string;
   maskUrl?: string;
   maskSpace?: LayerMaskSpace;

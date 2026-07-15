@@ -278,6 +278,8 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
   const projects = useProjectStore((state) => state.projects);
   const setProjects = useProjectStore((state) => state.setProjects);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
+  const authStatus = useAuthStore((state) => state.status);
+  const authenticatedUserId = useAuthStore((state) => state.user?.id);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const pushToast = useToastStore((state) => state.pushToast);
@@ -297,7 +299,12 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       setServerState('online');
       const [projectResult, folderResult] = await Promise.all([listProjects(), listFolders()]);
       setFolders(folderResult.folders);
-      setProjects(mergeProjectsWithMock(projectResult.projects.map(projectFromSummary), projects));
+      setProjects(
+        mergeProjectsWithMock(
+          projectResult.projects.map(projectFromSummary),
+          useProjectStore.getState().projects,
+        ),
+      );
       setPageNotice(undefined);
     } catch (error) {
       const isAuthRequired =
@@ -305,7 +312,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       setServerState(isAuthRequired ? 'online' : 'offline');
       if (isAuthRequired) {
         setFolders([]);
-        setProjects(mergeProjectsWithMock([], projects, false));
+        setProjects(mergeProjectsWithMock([], useProjectStore.getState().projects, false));
         setPageNotice({
           tone: 'warning',
           title: '需要飞书登录',
@@ -336,9 +343,12 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
   }
 
   useEffect(() => {
+    if (authStatus === 'checking') return;
     void refreshWorkspace(true);
+    // Authentication changes are a data boundary: immediately replace the
+    // anonymous/mock list with the signed-in user's folders and projects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authStatus, authenticatedUserId]);
 
   async function runWorkspaceAction(action: () => Promise<void>) {
     try {

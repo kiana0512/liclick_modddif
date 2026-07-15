@@ -97,6 +97,10 @@ function createSyntheticModel(index: number, total: number): { object: SceneObje
     metalness: 0.02,
   });
   const mesh = new THREE.Mesh(geometry, material);
+  // Match the metadata written by the real model import pipeline so viewport
+  // regressions exercise the same source-material fallback path as FBX/GLTF.
+  mesh.userData.sourceMaterial = material;
+  mesh.userData.originalMaterial = material;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   group.add(mesh);

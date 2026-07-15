@@ -1,6 +1,6 @@
 import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
-import { dilateImageData } from './dilation';
+import { dilateImageData, getUvDilationPixels } from './dilation';
 import {
   bakeProjectedLayerRastersWithGpu,
   bakeProjectedLayerStackWithGpu,
@@ -10,6 +10,7 @@ import { loadImageData } from './imageSampler';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
 import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod } from './uvBakeDebugControls';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
+import { reconcileUvSeams } from './uvSeamReconciliation';
 import type {
   BakeProjectedLayerInput,
   BakeProjectedLayerResult,
@@ -234,6 +235,7 @@ export async function bakeProjectedLayerToTexture(
     throw new Error('Only projected layers can be baked in this MVP.');
   if (!layer.camera) throw new Error('Projected layer has no capture camera.');
   if (!importedModel.uvSets.includes('UV0')) throw new Error('This model has no UVs.');
+  const dilationPixels = getUvDilationPixels(input.resolution, input.dilationPixels);
 
   input.onProgress?.({
     phase: 'loading-assets',
@@ -265,6 +267,8 @@ export async function bakeProjectedLayerToTexture(
     depthImage,
     bakeInput: {
       ...input,
+      enableDilation: false,
+      dilationPixels: 0,
       onProgress: (progress) =>
         input.onProgress?.({
           ...progress,
@@ -279,6 +283,15 @@ export async function bakeProjectedLayerToTexture(
   if (!rasterContext) throw new Error('Could not read UV bake canvas.');
   const rasterImage = rasterContext.getImageData(0, 0, input.resolution, input.resolution);
   sharpenCoveredTexels(rasterImage, rasterized.coverage);
+  const seamResult = reconcileUvSeams(rasterImage, importedModel.group, rasterized.coverage);
+  if (input.enableDilation) {
+    dilateImageData(rasterImage, rasterized.coverage, dilationPixels);
+  }
+  if (seamResult.adjustedPixels > 0) {
+    optionalWarnings.push(
+      `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+    );
+  }
   input.onProgress?.({
     phase: 'compositing',
     progress: 0.9,
@@ -803,6 +816,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   }));
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
+  const dilationPixels = getUvDilationPixels(input.resolution, input.dilationPixels);
   input.onProgress?.({
     phase: 'loading-assets',
     progress: 0.02,
@@ -825,8 +839,8 @@ export async function bakeVisibleProjectedLayersToTexture(
           layers,
           resolution: input.resolution,
           enableBackfaceCulling: input.enableBackfaceCulling,
-          enableDilation: input.enableDilation,
-          dilationPixels: input.dilationPixels,
+          enableDilation: false,
+          dilationPixels: 0,
           outputAlpha: input.outputAlpha ?? 'opaque-viewport',
           inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
           projectedImageUvFlipY: gpuProjectedImageUvFlipY,
@@ -864,10 +878,6 @@ export async function bakeVisibleProjectedLayersToTexture(
         let writtenTexels = 0;
         for (const raster of gpuBake.rasters) {
           const layerImageData = raster.imageData;
-          const layerCoverage = new Uint8Array(raster.coverage);
-          if (input.enableDilation) {
-            dilateImageData(layerImageData, layerCoverage, input.dilationPixels);
-          }
           if (raster.layer.blendMode === 'overlay') {
             overlayRasters.push({
               layer: raster.layer,
@@ -893,15 +903,24 @@ export async function bakeVisibleProjectedLayersToTexture(
           if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
         }
         if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
-        if (input.enableDilation) {
-          dilateImageData(composite, qualityBlendComposite.coverage, input.dilationPixels);
-        }
         if (input.outputAlpha !== 'transparent') {
           sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
-          fillTransparentTexelsForViewport(composite);
-        } else {
-          clearWeakTransparentTexels(composite);
         }
+        const seamResult = reconcileUvSeams(
+          composite,
+          importedModel.group,
+          qualityBlendComposite.coverage,
+        );
+        if (seamResult.adjustedPixels > 0) {
+          warnings.push(
+            `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+          );
+        }
+        if (input.enableDilation) {
+          dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
+        }
+        if (input.outputAlpha !== 'transparent') fillTransparentTexelsForViewport(composite);
+        else clearWeakTransparentTexels(composite);
         context.putImageData(composite, 0, 0);
 
         input.onProgress?.({
@@ -979,8 +998,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         layers,
         resolution: input.resolution,
         enableBackfaceCulling: input.enableBackfaceCulling,
-        enableDilation: input.enableDilation,
-        dilationPixels: input.dilationPixels,
+        enableDilation: false,
+        dilationPixels: 0,
         outputAlpha: input.outputAlpha ?? 'opaque-viewport',
         inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
         projectedImageUvFlipY: gpuProjectedImageUvFlipY,
@@ -1000,18 +1019,20 @@ export async function bakeVisibleProjectedLayersToTexture(
       const wantsTransparentOutput = input.outputAlpha === 'transparent';
       const needsCpuSharpen = !gpuBake.postProcessedOnGpu && !wantsTransparentOutput;
       const needsCpuViewportFill = !gpuBake.opaqueBaseColorReady && !wantsTransparentOutput;
-      if (needsCpuSharpen || needsCpuViewportFill) {
-        const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
-        if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
-        const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
-        if (needsCpuSharpen) {
-          sharpenCoveredTexels(gpuImage, gpuBake.coverage);
-        }
-        if (needsCpuViewportFill) {
-          fillTransparentTexelsForViewport(gpuImage);
-        }
-        gpuContext.putImageData(gpuImage, 0, 0);
+      const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
+      if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
+      const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
+      if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
+      const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
+      if (seamResult.adjustedPixels > 0) {
+        gpuBake.warnings.push(
+          `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+        );
       }
+      if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
+      if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
+      else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
+      gpuContext.putImageData(gpuImage, 0, 0);
       if (
         !input.skipGpuValidation &&
         (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent')
@@ -1025,7 +1046,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           gpuResolution: input.resolution,
           enableBackfaceCulling: input.enableBackfaceCulling,
           enableDilation: input.enableDilation,
-          dilationPixels: input.dilationPixels,
+          dilationPixels,
           outputAlpha: input.outputAlpha ?? 'opaque-viewport',
         });
       }
@@ -1188,8 +1209,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         resolution: input.resolution,
         opacity: layer.opacity,
         enableBackfaceCulling: input.enableBackfaceCulling,
-        enableDilation: input.enableDilation,
-        dilationPixels: input.dilationPixels,
+        enableDilation: false,
+        dilationPixels: 0,
         onProgress: (progress) =>
           input.onProgress?.({
             ...progress,
@@ -1242,11 +1263,21 @@ export async function bakeVisibleProjectedLayersToTexture(
     if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
   }
   if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
-  if (input.enableDilation) {
-    dilateImageData(composite, qualityBlendComposite.coverage, input.dilationPixels);
-  }
   if (input.outputAlpha !== 'transparent') {
     sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+  }
+  const seamResult = reconcileUvSeams(
+    composite,
+    importedModel.group,
+    qualityBlendComposite.coverage,
+  );
+  if (seamResult.adjustedPixels > 0) {
+    warnings.push(
+      `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+    );
+  }
+  if (input.enableDilation) {
+    dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
   }
   if (input.outputAlpha !== 'transparent') {
     fillTransparentTexelsForViewport(composite);

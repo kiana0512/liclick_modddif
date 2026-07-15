@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    />
     <title>LIclick 3D Texture</title>
+    <link rel="stylesheet" href="./noto-sans-sc.css" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -14,10 +19,6 @@
     </header>
     <main class="launcher-shell">
       <aside class="sidebar" aria-label="启动器导航">
-        <div class="sidebar-brand" title="LIclick 3D Texture">
-          <img src="./liclick-icon.png" alt="LIclick 3D Texture" />
-        </div>
-
         <nav class="nav-list">
           <button
             class="nav-button is-active"
@@ -83,20 +84,6 @@
       </aside>
 
       <section class="app-stage">
-        <header class="topbar">
-          <div class="topbar-brand">
-            <img src="./liclick-icon.png" alt="" />
-            <div>
-              <strong>LIclick 3D Texture</strong>
-              <span>LI3D Launcher <b id="buildText"></b></span>
-            </div>
-          </div>
-          <div class="overall-status" role="status">
-            <span class="status-dot" id="overallDot"></span>
-            <span id="overallText">正在准备启动器</span>
-          </div>
-        </header>
-
         <div class="view-stack">
           <section class="view is-active" data-view="home">
             <div class="home-layout">
@@ -160,7 +147,7 @@
                 <footer class="runtime-meta" aria-label="启动器信息">
                   <dl>
                     <dt>启动器版本</dt>
-                    <dd id="footerBuild">Build 2026.07.14.1518</dd>
+                    <dd id="footerBuild">Build 2026.07.15.1104</dd>
                   </dl>
                   <dl>
                     <dt>后端服务</dt>

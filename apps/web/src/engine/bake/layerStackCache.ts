@@ -3,7 +3,7 @@ import type { Project } from '@/types/project';
 import type { Layer } from '@/types/layer';
 
 const MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO = 0.001;
-const UV_BAKE_PROTOCOL_VERSION = 5;
+const UV_BAKE_PROTOCOL_VERSION = 6;
 const inFlightLayerStackBakes = new Map<string, Promise<BakedTexture | undefined>>();
 
 export function getVisibleProjectedLayerStack(layers: Layer[], objectId: string) {

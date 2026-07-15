@@ -4,11 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
+  createFlatPreviewMaterial,
   createPbrPreviewMaterial,
   createProjectedLayerStackMaterial,
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
+  syncProjectedLayerMaterialProjection,
   updateProjectedLayerStackMaterial,
+  updateUvOverlayPreviewMaterial,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
   getLiveProjectedCanvasState,
@@ -177,72 +180,32 @@ function getPreviewLighting(input: {
   };
 }
 
-function hasUsableTextureImage(texture: THREE.Texture) {
-  const image = texture.image as
-    | {
-        width?: number;
-        height?: number;
-        naturalWidth?: number;
-        naturalHeight?: number;
-        data?: unknown;
-      }
-    | undefined;
-  if (!image) return false;
-  if (image.data) return true;
-  const width = image.naturalWidth ?? image.width ?? 0;
-  const height = image.naturalHeight ?? image.height ?? 0;
-  return width > 0 && height > 0;
-}
-
-function getPreviewMaterialBase(material: THREE.Material | THREE.Material[] | undefined) {
-  const sourceMaterial = Array.isArray(material)
-    ? (material.find(
-        (item) =>
-          'map' in item && item.map instanceof THREE.Texture && hasUsableTextureImage(item.map),
-      ) ?? material[0])
-    : material;
-  if (!sourceMaterial) return {};
-
-  const baseTexture =
-    'map' in sourceMaterial &&
-    sourceMaterial.map instanceof THREE.Texture &&
-    hasUsableTextureImage(sourceMaterial.map)
-      ? sourceMaterial.map
-      : undefined;
-  const baseColor =
-    'color' in sourceMaterial && sourceMaterial.color instanceof THREE.Color
-      ? sourceMaterial.color.clone()
-      : undefined;
-
-  return { baseTexture, baseColor };
-}
-
-function useLoadedBakedTexture(imageUrl?: string) {
-  const [loadedBakedTexture, setLoadedBakedTexture] = useState<THREE.Texture>();
+function useLoadedPreviewTexture(imageUrl?: string) {
+  const [loadedTexture, setLoadedTexture] = useState<THREE.Texture>();
 
   useEffect(() => {
     if (!imageUrl) {
-      setLoadedBakedTexture(undefined);
+      setLoadedTexture(undefined);
       return undefined;
     }
     let cancelled = false;
-    setLoadedBakedTexture(undefined);
+    setLoadedTexture(undefined);
     loadPreviewTexture(imageUrl)
       .then((texture) => {
         if (cancelled) return;
-        setLoadedBakedTexture(texture);
+        setLoadedTexture(texture);
       })
       .catch((error) => {
         if (cancelled) return;
-        console.warn('[Liclick 3D Texture] Could not load baked texture for PBR preview:', error);
-        setLoadedBakedTexture(undefined);
+        console.warn('[Liclick 3D Texture] Could not load texture for viewport preview:', error);
+        setLoadedTexture(undefined);
       });
     return () => {
       cancelled = true;
     };
   }, [imageUrl]);
 
-  return loadedBakedTexture;
+  return loadedTexture;
 }
 
 function loadImageElement(url: string) {
@@ -289,6 +252,7 @@ function useCompositedUvTexture(layers: Layer[]) {
         .join('|'),
     [layers],
   );
+  const stableLayers = useStableValueBySignature(layers, layerKey);
 
   useFrame(() => {
     const runtime = runtimeRef.current;
@@ -306,7 +270,7 @@ function useCompositedUvTexture(layers: Layer[]) {
   });
 
   useEffect(() => {
-    const uvLayers = layers.filter((layer) => layer.visible && layer.imageUrl);
+    const uvLayers = stableLayers.filter((layer) => layer.visible && layer.imageUrl);
     if (uvLayers.length === 0) {
       setTexture(undefined);
       return undefined;
@@ -399,7 +363,7 @@ function useCompositedUvTexture(layers: Layer[]) {
       if (runtimeRef.current?.texture === nextTexture) runtimeRef.current = undefined;
       nextTexture?.dispose();
     };
-  }, [layerKey, layers]);
+  }, [layerKey, stableLayers]);
 
   return texture;
 }
@@ -493,6 +457,70 @@ function SelectionEdgeGlow({ object }: { object: THREE.Object3D }) {
   return null;
 }
 
+function TopologyWireframeOverlay({ object }: { object: THREE.Object3D }) {
+  const overlay = useMemo(() => {
+    const group = new THREE.Group();
+    group.name = 'Liclick Topology Wireframe Overlay';
+    group.userData.liclickViewportHelper = true;
+    group.userData.liclickWireframeOverlay = true;
+    group.matrixAutoUpdate = false;
+    group.renderOrder = 40;
+
+    const material = new THREE.MeshBasicMaterial({
+      color: '#24252a',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.82,
+      depthTest: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+      toneMapped: false,
+    });
+
+    object.updateMatrixWorld(true);
+    const inverseRoot = object.matrixWorld.clone().invert();
+    object.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      if (
+        child.userData.liclickPaintOverlay ||
+        child.userData.liclickSelectionGlow ||
+        child.userData.liclickWireframeOverlay
+      ) return;
+
+      const localMatrix = inverseRoot.clone().multiply(child.matrixWorld);
+      const wireMesh = new THREE.Mesh(child.geometry, material);
+      wireMesh.name = `Liclick Topology Wireframe - ${child.name || child.uuid}`;
+      wireMesh.matrix.copy(localMatrix);
+      wireMesh.matrixAutoUpdate = false;
+      wireMesh.renderOrder = 40;
+      wireMesh.frustumCulled = child.frustumCulled;
+      wireMesh.userData.liclickViewportHelper = true;
+      wireMesh.userData.liclickWireframeOverlay = true;
+      wireMesh.raycast = () => undefined;
+      group.add(wireMesh);
+    });
+
+    return { group, material };
+  }, [object]);
+
+  useFrame(() => {
+    overlay.group.matrix.compose(object.position, object.quaternion, object.scale);
+    overlay.group.matrixWorldNeedsUpdate = true;
+  });
+
+  useEffect(
+    () => () => {
+      overlay.group.removeFromParent();
+      overlay.material.dispose();
+    },
+    [overlay],
+  );
+
+  return <primitive object={overlay.group} />;
+}
+
 function ImportedModel({
   importedModel,
   showSelectionGlow,
@@ -533,6 +561,7 @@ function ImportedModel({
     visibleProjectedLayers,
     visibleProjectedLayerSignature,
   );
+  const lastProjectedTransformRef = useRef<THREE.Matrix4>();
   const previewProjectedLayers = useMemo(
     () =>
       layers
@@ -609,7 +638,7 @@ function ImportedModel({
       ),
     [exactBakedTextureRecord, importedObjectId, project, stableVisibleProjectedLayers],
   );
-  const loadedBakedTexture = useLoadedBakedTexture(previewBakedTextureRecord?.imageUrl);
+  const loadedBakedTexture = useLoadedPreviewTexture(previewBakedTextureRecord?.imageUrl);
   const liveTopUvLayer = useMemo(() => {
     const topLayer = stableVisibleUvLayers[0];
     if (!topLayer || !getLiveProjectedCanvasState(topLayer.imageUrl)) return undefined;
@@ -619,14 +648,20 @@ function ImportedModel({
     if (!previewBakedTextureRecord && stableVisibleProjectedLayers.length > 0) return undefined;
     return topLayer;
   }, [previewBakedTextureRecord, stableVisibleProjectedLayers.length, stableVisibleUvLayers]);
-  const compositedUvLayers = useMemo(
+  const nonLiveUvLayers = useMemo(
     () =>
       liveTopUvLayer
         ? stableVisibleUvLayers.filter((layer) => layer.id !== liveTopUvLayer.id)
         : stableVisibleUvLayers,
     [liveTopUvLayer, stableVisibleUvLayers],
   );
-  const loadedUvTexture = useCompositedUvTexture(compositedUvLayers);
+  // A single UV layer is already a finished UV-space texture. Sample it directly
+  // and adjust it with shader uniforms instead of rebuilding a full-resolution canvas.
+  const directUvLayer = nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] : undefined;
+  const compositedUvLayers = directUvLayer ? [] : nonLiveUvLayers;
+  const compositedUvTexture = useCompositedUvTexture(compositedUvLayers);
+  const directUvTexture = useLoadedPreviewTexture(directUvLayer?.imageUrl);
+  const loadedUvTexture = directUvTexture ?? compositedUvTexture;
   const liveTopUvTexture = useMemo(
     () =>
       liveTopUvLayer
@@ -686,6 +721,22 @@ function ImportedModel({
     ],
   );
 
+  useFrame(() => {
+    if (stableVisibleProjectedLayers.length === 0) {
+      lastProjectedTransformRef.current = undefined;
+      return;
+    }
+    importedModel.group.updateMatrixWorld(true);
+    const currentMatrix = importedModel.group.matrixWorld;
+    if (lastProjectedTransformRef.current?.equals(currentMatrix)) return;
+    syncProjectedLayerMaterialProjection(importedModel.group);
+    if (lastProjectedTransformRef.current) {
+      lastProjectedTransformRef.current.copy(currentMatrix);
+    } else {
+      lastProjectedTransformRef.current = currentMatrix.clone();
+    }
+  });
+
   useEffect(() => {
     if (!importedModel) return;
     let cancelled = false;
@@ -722,6 +773,9 @@ function ImportedModel({
             }),
             objectId: model.objectId,
             currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
+            uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
+            uvOverlaySaturation: directUvLayer ? (directUvLayer.adjustments?.saturation ?? 0) / 100 : 0,
+            uvOverlayLightness: directUvLayer ? (directUvLayer.adjustments?.lightness ?? 0) / 100 : 0,
             depthTest: true,
             enableBackfaceCulling: true,
             edgeFeather: 0.004,
@@ -738,8 +792,6 @@ function ImportedModel({
       });
 
       for (const child of meshes) {
-        const originalMaterial = (child.userData.sourceMaterial ??
-          child.userData.originalMaterial) as THREE.Material | THREE.Material[] | undefined;
         const existingBakedTexture =
           child.userData.bakedTexture instanceof THREE.Texture
             ? child.userData.bakedTexture
@@ -750,12 +802,18 @@ function ImportedModel({
             : undefined;
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
-        const previewBase = getPreviewMaterialBase(originalMaterial);
         if ((loadedUvTexture || liveTopUvTexture) && !projectedLayerInput) {
-          child.material = createUvOverlayPreviewMaterial({
+          const uvMaterialInput = {
             displayMode,
             selected,
-            ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+            ...(loadedUvTexture
+              ? {
+                  uvOverlayTexture: loadedUvTexture,
+                  uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
+                  uvOverlaySaturation: directUvLayer ? (directUvLayer.adjustments?.saturation ?? 0) / 100 : 0,
+                  uvOverlayLightness: directUvLayer ? (directUvLayer.adjustments?.lightness ?? 0) / 100 : 0,
+                }
+              : {}),
             ...(liveTopUvTexture
               ? {
                   liveUvOverlayTexture: liveTopUvTexture,
@@ -767,9 +825,10 @@ function ImportedModel({
               : {}),
             previewLighting,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
-            ...previewBase,
             ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
-          });
+          };
+          if (updateUvOverlayPreviewMaterial(previousMaterial, uvMaterialInput)) continue;
+          child.material = createUvOverlayPreviewMaterial(uvMaterialInput);
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
@@ -781,7 +840,6 @@ function ImportedModel({
           child.material = createUvOverlayPreviewMaterial({
             displayMode,
             selected,
-            ...previewBase,
             baseTexture: bakedTexture,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
             previewLighting,
@@ -790,7 +848,12 @@ function ImportedModel({
           continue;
         }
         if (displayMode === 'pbr' && !projectedLayerInput) {
-          child.material = createPbrPreviewMaterial(originalMaterial, selected, bakedTexture);
+          child.material = createPbrPreviewMaterial(undefined, selected, bakedTexture);
+          disposeGeneratedMaterialTree(previousMaterial);
+          continue;
+        }
+        if (displayMode === 'flat' && !projectedLayerInput) {
+          child.material = createFlatPreviewMaterial(undefined, selected, bakedTexture);
           disposeGeneratedMaterialTree(previousMaterial);
           continue;
         }
@@ -798,7 +861,6 @@ function ImportedModel({
           projectedLayerInput &&
           updateProjectedLayerStackMaterial(previousMaterial, {
             ...projectedLayerInput,
-            ...previewBase,
             ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
           })
         ) {
@@ -807,7 +869,6 @@ function ImportedModel({
         const projectedMaterial = projectedLayerInput
           ? await createProjectedLayerStackMaterial({
               ...projectedLayerInput,
-              ...previewBase,
               ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
             })
           : undefined;
@@ -819,6 +880,12 @@ function ImportedModel({
           projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
         if (previousMaterial !== child.material) disposeGeneratedMaterialTree(previousMaterial);
       }
+      syncProjectedLayerMaterialProjection(model.group);
+      if (lastProjectedTransformRef.current) {
+        lastProjectedTransformRef.current.copy(model.group.matrixWorld);
+      } else {
+        lastProjectedTransformRef.current = model.group.matrixWorld.clone();
+      }
     }
 
     void applyMaterials();
@@ -829,6 +896,7 @@ function ImportedModel({
   }, [
     canPreviewProjectedLayers,
     displayMode,
+    directUvLayer,
     importedModel,
     loadedBakedTexture,
     loadedUvTexture,
@@ -853,6 +921,7 @@ function ImportedModel({
           selectObject(importedModel.objectId);
         }}
       />
+      {displayMode === 'wire' && <TopologyWireframeOverlay object={importedModel.group} />}
       {showSelectionGlow && selectedObjectId === importedModel.objectId && (
         <SelectionEdgeGlow object={importedModel.group} />
       )}

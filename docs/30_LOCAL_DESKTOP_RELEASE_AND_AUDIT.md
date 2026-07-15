@@ -2,7 +2,9 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-07-09
+Updated: 2026-07-15
+
+The current comprehensive test and security report is `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md`. This file keeps the accumulated desktop/editor release history.
 
 ## Windows Desktop Build
 
@@ -15,6 +17,9 @@ The Windows installer now starts a lightweight Electron desktop shell instead of
 - Electron runtime: copied from `node_modules/electron/dist` into `{app}\electron`
 - Installed app ports: backend `4617`, frontend `5673`
 - Development ports remain unchanged: backend `4517`, frontend `5173`
+- Current desktop shell build: `2026.07.15.1104`
+
+The launcher now uses the same bundled Noto Sans SC family as the web workspace for consistent Chinese/English rendering. Its home view scales continuously between compact, short-wide, tall-narrow, and large windows; the former height breakpoint that caused layout jumps and unused bottom space has been removed. Only the native title-bar app icon remains, avoiding duplicated branding in the sidebar/content header.
 
 Runtime data is kept under:
 
@@ -50,7 +55,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Multiple models can be imported into one project. The editor keeps one active model in texture mode, selected from the Objects panel.
 - Reference images and layers are scoped to the selected object. Older unscoped project data remains visible for compatibility.
 - Liclick image generation and Texture Map generation use separate prompts.
-- The user avatar menu can switch image generation between the original Liclick backend and a local ComfyUI backend. The ComfyUI switch checks `http://127.0.0.1:8188` before enabling the mode and reports a local-backend offline state when ComfyUI is not running.
+- The obsolete image-generation mode switches were removed from the user avatar menu. Normal texture generation uses Liclick, while the defined local-repaint workflow uses the configured ComfyUI path.
 - ComfyUI Texture Map generation keeps the panel prompt as the user material intent. The server adds only projection/albedo guardrails around that user prompt instead of replacing it with a fixed material description.
 - ComfyUI Texture Map generation exports only the runtime controls needed by the workflow: white render, object mask, depth, full view-space normal, and the selected material reference. The material reference remains the primary visual material constraint; depth and normal are geometry/projection constraints.
 - ComfyUI runtime control export uses a square fit-object camera for 4096 x 4096 control images so the white render, mask, depth, normal, preview capture, and projected result share the same MVP framing instead of inheriting a wide browser viewport aspect ratio.
@@ -69,7 +74,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Multi-view blend now uses winner-takes-dominant-quality behavior. Soft blending is kept only for near-tie projection candidates, avoiding muddy texture averaging across incompatible view angles.
 - Layer rows expose distinct blend/overlay state, layer opacity, and projection strength. Opacity can be dragged down to 0, where the icon becomes an empty circle.
 - Uncovered projected fragments fall back to the model/base material instead of showing black edges, white masks, or accidental checker diagnostics.
-- The global Auto UV bake setting gates every bake entry point. When it is off, double-click and manual bake actions do not bake; newly accepted projected layers stay as live projection previews.
+- The obsolete user-facing Auto UV bake switch was removed. The current projected-layer workflow keeps live projection available and uses the defined background/manual bake entry points without exposing a global mode toggle.
 - Project thumbnails are captured from the real WebGL viewport after projection changes. Grid and paint/helper overlays are hidden during the thumbnail capture and restored immediately afterwards.
 - The Projects page and bottom editor tools now use the shared Chinese / English string store instead of fixed English labels.
 - Local repaint now follows the ModDiff-like three-button texture workflow. Button 1 paints the allowed repaint mask, generated texture-map output becomes the source projection, and button 3 brushes where the new generated texture should replace the old visible result.

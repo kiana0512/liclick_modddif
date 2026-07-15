@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { AuthMode, AuthUser, ProviderStatus } from '@/services/authApiClient';
+import { useShortcutStore } from '@/stores/shortcutStore';
 
 type AuthStore = {
   status: 'checking' | 'authenticated' | 'anonymous';
@@ -15,8 +16,12 @@ export const useAuthStore = create<AuthStore>((set) => ({
   status: 'checking',
   authMode: 'dev-mock',
   setChecking: () => set({ status: 'checking' }),
-  setAnonymous: (authMode = 'dev-mock', providerStatus) =>
-    set({ status: 'anonymous', authMode, providerStatus, user: undefined }),
-  setAuthenticated: (user, authMode, providerStatus) =>
-    set({ status: 'authenticated', authMode, providerStatus, user }),
+  setAnonymous: (authMode = 'dev-mock', providerStatus) => {
+    useShortcutStore.getState().setActiveUser('anonymous');
+    set({ status: 'anonymous', authMode, providerStatus, user: undefined });
+  },
+  setAuthenticated: (user, authMode, providerStatus) => {
+    useShortcutStore.getState().setActiveUser(user.id);
+    set({ status: 'authenticated', authMode, providerStatus, user });
+  },
 }));

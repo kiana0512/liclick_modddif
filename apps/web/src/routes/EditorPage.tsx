@@ -44,6 +44,7 @@ import {
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
+import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
 import {
   applyAlphaFromMask,
   blobToDataUrl,
@@ -103,6 +104,7 @@ import {
   useSceneStore,
 } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { shortcutMatches } from '@/stores/shortcutStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
 import type { LocalRepaintRuntime, MaskBitmap, Rect } from '@/types/localRepaint';
@@ -864,13 +866,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   useEffect(() => {
     function handleUndoRedo(event: KeyboardEvent) {
-      if (!(event.ctrlKey || event.metaKey)) return;
-      const key = event.key.toLowerCase();
-      if (key === 'z' && !event.shiftKey) {
+      if (document.querySelector('[data-shortcut-dialog]')) return;
+      if (document.querySelector('[data-editor-shortcut-scope]')) return;
+      if (shortcutMatches(event, 'history.undo')) {
         event.preventDefault();
         undo();
-      }
-      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+      } else if (shortcutMatches(event, 'history.redo')) {
         event.preventDefault();
         redo();
       }
@@ -1930,17 +1931,18 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return result.asset.url;
   }
 
-  async function handleImportModel(file: File) {
+  async function handleImportModel(file: File, resourceFiles: File[] = []) {
     try {
       const loaded = arrangeImportedModelForComparison(
         await loadModelFromFile(file, {
           normalize: importSettings.normalizeOnImport,
           ground: importSettings.groundOnImport,
           targetMaxDimension: 3,
-        }),
+        }, resourceFiles),
         useSceneStore.getState().importedModels,
       );
       let object = loaded.object;
+      const importedBaseColorUrl = await getImportedBaseColorTextureUrl(loaded.result.group);
       if (project?.workspaceMode === 'local-server') {
         try {
           const saved = await saveDataUrlAsset({
@@ -1964,6 +1966,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         }
       }
       setImportedModel(loaded.result, object);
+      if (importedBaseColorUrl) {
+        addUvLayer({
+          name: 'Base texture',
+          imageUrl: importedBaseColorUrl,
+          objectId: object.id,
+          role: 'base-color',
+        });
+      }
       updateCurrentProject({
         objects: useSceneStore.getState().objects,
         activeObjectId: object.id,
@@ -1993,9 +2003,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
   async function handleImportModels(files: File[]) {
     const modelFiles = files.filter((file) => /\.(glb|gltf|fbx|obj)$/i.test(file.name));
+    const resourceFiles = files.filter((file) => !modelFiles.includes(file));
     if (modelFiles.length === 0) return;
     for (const file of modelFiles) {
-      await handleImportModel(file);
+      await handleImportModel(file, resourceFiles);
     }
   }
 
@@ -3319,36 +3330,29 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
 
     function handleEditorShortcuts(event: KeyboardEvent) {
       if (isEditingText(event.target)) return;
-      const key = event.key.toLowerCase();
-      const isPrimaryModifier = event.ctrlKey || event.metaKey;
+      if (document.querySelector('[data-shortcut-dialog]')) return;
+      if (document.querySelector('[data-editor-shortcut-scope]')) return;
       const currentWorkspaceMode = useWorkspaceLayoutStore.getState().mode;
       const sceneState = useSceneStore.getState();
       const layerState = useLayerStore.getState();
-      const isBrushSizeShortcut =
-        event.key === '[' ||
-        event.key === ']' ||
-        event.code === 'BracketLeft' ||
-        event.code === 'BracketRight';
 
       // Blender view conventions: numpad views, Ctrl for the opposite side.
-      if (event.code === 'Numpad1' || event.code === 'Numpad3' || event.code === 'Numpad7') {
+      const viewPreset = (
+        [
+          ['view.front', 'front'],
+          ['view.back', 'back'],
+          ['view.right', 'right'],
+          ['view.left', 'left'],
+          ['view.top', 'top'],
+          ['view.bottom', 'bottom'],
+        ] as const
+      ).find(([actionId]) => shortcutMatches(event, actionId));
+      if (viewPreset) {
         event.preventDefault();
-        const preset =
-          event.code === 'Numpad1'
-            ? event.ctrlKey
-              ? 'back'
-              : 'front'
-            : event.code === 'Numpad3'
-              ? event.ctrlKey
-                ? 'left'
-                : 'right'
-              : event.ctrlKey
-                ? 'bottom'
-                : 'top';
-        setCameraToObjectView(sceneState.selectedObjectId, preset);
+        setCameraToObjectView(sceneState.selectedObjectId, viewPreset[1]);
         return;
       }
-      if (event.code === 'Numpad5' && !isPrimaryModifier && !event.altKey) {
+      if (shortcutMatches(event, 'view.toggleProjection')) {
         event.preventDefault();
         sceneState.setProjectionMode(
           sceneState.projectionMode === 'perspective' ? 'orthographic' : 'perspective',
@@ -3357,7 +3361,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       }
 
       // F / Numpad . keeps the current view but relocates the orbit pivot to the model.
-      if ((key === 'f' || event.code === 'NumpadDecimal') && !isPrimaryModifier && !event.altKey) {
+      if (shortcutMatches(event, 'view.focus')) {
         event.preventDefault();
         const modelName = focusCameraOrbitOnObjectId(sceneState.selectedObjectId);
         pushToast({
@@ -3369,7 +3373,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return;
       }
 
-      if (isPrimaryModifier && event.shiftKey && key === 'a' && !event.altKey) {
+      if (shortcutMatches(event, 'scene.arrange')) {
         event.preventDefault();
         if (sceneState.importedModels.length === 0) {
           pushToast({ tone: 'warning', title: t('importModelFirst') });
@@ -3387,22 +3391,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return;
       }
 
-      if (
-        currentWorkspaceMode === 'texture' &&
-        isPrimaryModifier &&
-        event.shiftKey &&
-        key === 'd'
-      ) {
+      if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.clearMask')) {
         event.preventDefault();
         sceneState.clearPaintMask();
         return;
       }
-      if (
-        currentWorkspaceMode === 'texture' &&
-        isPrimaryModifier &&
-        !event.shiftKey &&
-        key === 'd'
-      ) {
+      if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.duplicateLayer')) {
         event.preventDefault();
         const activeLayer = layerState.layers.find(
           (layer) => layer.id === layerState.activeProjectedLayerId,
@@ -3415,38 +3409,36 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         layerState.duplicateLayer(activeLayer.id);
         return;
       }
-      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && key === 'i') {
+      if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.invertMask')) {
         event.preventDefault();
         sceneState.invertPaintMask();
         return;
       }
       if (
         currentWorkspaceMode === 'texture' &&
-        isPrimaryModifier &&
-        event.shiftKey &&
-        key === 'n'
+        shortcutMatches(event, 'texture.newLayer')
       ) {
         event.preventDefault();
         captureHistory('创建空图层');
         layerState.addEmptyLayer();
         return;
       }
-      if (currentWorkspaceMode === 'texture' && isPrimaryModifier && isBrushSizeShortcut) {
+      const moveLayerDirection = shortcutMatches(event, 'texture.moveLayerUp')
+        ? 'up'
+        : shortcutMatches(event, 'texture.moveLayerDown')
+          ? 'down'
+          : undefined;
+      if (currentWorkspaceMode === 'texture' && moveLayerDirection) {
         event.preventDefault();
         const activeLayer = layerState.layers.find(
           (layer) => layer.id === layerState.activeProjectedLayerId,
         );
         if (!activeLayer) return;
-        captureHistory(
-          `${event.code === 'BracketLeft' ? '上移' : '下移'}图层：${activeLayer.name}`,
-        );
-        layerState.moveLayer(
-          activeLayer.id,
-          event.key === '[' || event.code === 'BracketLeft' ? 'up' : 'down',
-        );
+        captureHistory(`${moveLayerDirection === 'up' ? '上移' : '下移'}图层：${activeLayer.name}`);
+        layerState.moveLayer(activeLayer.id, moveLayerDirection);
         return;
       }
-      if (currentWorkspaceMode === 'texture' && event.altKey && key === 'h') {
+      if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.showAllLayers')) {
         event.preventDefault();
         captureHistory('显示全部图层');
         layerState.setLayerVisibility(
@@ -3455,24 +3447,23 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         );
         return;
       }
-      if (isPrimaryModifier || event.altKey) return;
-
       if (currentWorkspaceMode !== 'texture') {
-        const transformShortcut = {
-          q: 'select',
-          w: 'translate',
-          e: 'rotate',
-          r: 'scale',
-        } as const;
-        const nextTransformMode = transformShortcut[key as keyof typeof transformShortcut];
-        if (nextTransformMode) {
+        const transformShortcut = (
+          [
+            ['scene.select', 'select'],
+            ['scene.translate', 'translate'],
+            ['scene.rotate', 'rotate'],
+            ['scene.scale', 'scale'],
+          ] as const
+        ).find(([actionId]) => shortcutMatches(event, actionId));
+        if (transformShortcut) {
           event.preventDefault();
-          sceneState.setTransformMode(nextTransformMode);
+          sceneState.setTransformMode(transformShortcut[1]);
         }
         return;
       }
 
-      if (key === 'h') {
+      if (shortcutMatches(event, 'texture.toggleLayer')) {
         event.preventDefault();
         const activeLayer = layerState.layers.find(
           (layer) => layer.id === layerState.activeProjectedLayerId,
@@ -3482,21 +3473,30 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         layerState.toggleLayer(activeLayer.id);
         return;
       }
-      if (key === 'q') {
+      if (shortcutMatches(event, 'texture.select')) {
         event.preventDefault();
         sceneState.setPaintTool('none');
         sceneState.setTransformMode('select');
         return;
       }
-      if (key === 'b' || key === 'e') {
+      const nextPaintTool = shortcutMatches(event, 'texture.brush')
+        ? 'brush'
+        : shortcutMatches(event, 'texture.eraser')
+          ? 'eraser'
+          : undefined;
+      if (nextPaintTool) {
         event.preventDefault();
-        const nextPaintTool = key === 'b' ? 'brush' : 'eraser';
         sceneState.setPaintTool(sceneState.paintTool === nextPaintTool ? 'none' : nextPaintTool);
         return;
       }
-      if (isBrushSizeShortcut) {
+      const brushSizeDirection = shortcutMatches(event, 'texture.brushSmaller')
+        ? -1
+        : shortcutMatches(event, 'texture.brushLarger')
+          ? 1
+          : 0;
+      if (brushSizeDirection !== 0) {
         event.preventDefault();
-        const direction = event.key === '[' || event.code === 'BracketLeft' ? -1 : 1;
+        const direction = brushSizeDirection;
         const state = sceneState;
         const stepBrushSize = (value: number, min: number, max: number) => {
           const step = value < 1 ? 0.1 : value < 10 ? 1 : value < 60 ? 5 : 10;
@@ -3545,17 +3545,17 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         });
         return;
       }
-      if (key === 'k') {
+      if (shortcutMatches(event, 'texture.maskAdd')) {
         sceneState.setPaintTool(sceneState.paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
         return;
       }
-      if (key === 'o') {
+      if (shortcutMatches(event, 'texture.maskSubtract')) {
         sceneState.setPaintTool(
           sceneState.paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract',
         );
         return;
       }
-      if (key === 'i') handleLocalRepaintFromToolbar();
+      if (shortcutMatches(event, 'texture.localRepaint')) handleLocalRepaintFromToolbar();
     }
 
     window.addEventListener('keydown', handleEditorShortcuts);
@@ -3803,7 +3803,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         ref={modelInputRef}
         type="file"
         className="hidden"
-        accept=".glb,.gltf,.fbx,.obj"
+        accept=".glb,.gltf,.fbx,.obj,.png,.jpg,.jpeg,.webp,.bmp,.tga"
         multiple
         onChange={(event) => {
           const files = event.target.files ? Array.from(event.target.files) : [];

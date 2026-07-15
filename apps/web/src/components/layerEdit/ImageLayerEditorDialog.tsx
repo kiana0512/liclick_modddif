@@ -38,6 +38,7 @@ import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
 import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { useT } from '@/stores/i18nStore';
+import { getShortcutBindings, shortcutMatches } from '@/stores/shortcutStore';
 import type { Layer } from '@/types/layer';
 
 type Tool = 'move' | 'select' | 'brush' | 'eraser' | 'fill' | 'picker';
@@ -66,6 +67,14 @@ type SelectionRect = {
   w: number;
   h: number;
 };
+
+type StrokePoint = {
+  x: number;
+  y: number;
+  pressure: number;
+};
+
+type PointerSample = Pick<globalThis.PointerEvent, 'clientX' | 'clientY' | 'pointerType' | 'pressure'>;
 
 type EditorSnapshot = {
   layers: EditorLayer[];
@@ -171,6 +180,14 @@ function rgbaToHex(red: number, green: number, blue: number) {
     .join('')}`;
 }
 
+function getPointerPressure(event: Pick<globalThis.PointerEvent, 'pointerType' | 'pressure'>) {
+  if (event.pointerType !== 'pen') return 1;
+  const pressure = Number.isFinite(event.pressure) ? event.pressure : 0.5;
+  // Some Windows tablet drivers briefly report 0 on contact transitions. Keep a
+  // tiny footprint so those transition samples cannot create a visible gap.
+  return Math.max(0.02, Math.min(1, pressure || 0.02));
+}
+
 function imageDataMatches(data: Uint8ClampedArray, offset: number, target: [number, number, number, number], tolerance: number) {
   return (
     Math.abs(data[offset] - target[0]) <= tolerance &&
@@ -193,7 +210,10 @@ export function ImageLayerEditorDialog({
   const sourceCanvasRef = useRef<HTMLCanvasElement>();
   const layerCanvasesRef = useRef<Record<string, HTMLCanvasElement>>({});
   const drawingRef = useRef(false);
-  const lastPointRef = useRef<{ x: number; y: number }>();
+  const activePointerIdRef = useRef<number>();
+  const lastPointRef = useRef<StrokePoint>();
+  const strokeToolRef = useRef<'brush' | 'eraser'>();
+  const spacePanRef = useRef(false);
   const movingRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number }>();
   const panDragRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number }>();
   const selectionDraftRef = useRef<{ start: { x: number; y: number } }>();
@@ -403,24 +423,86 @@ export function ImageLayerEditorDialog({
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      const key = event.key.toLowerCase();
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      if (shortcutMatches(event, 'image.pan')) {
+        event.preventDefault();
+        spacePanRef.current = true;
+        return;
+      }
       if (event.key === 'Escape') {
         onCancel();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && key === 'z') {
+      if (shortcutMatches(event, 'history.undo')) {
         event.preventDefault();
-        if (event.shiftKey) redo();
-        else undo();
+        undo();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && key === 'y') {
+      if (shortcutMatches(event, 'history.redo')) {
         event.preventDefault();
         redo();
+        return;
+      }
+      const nextTool = (
+        [
+          ['image.brush', 'brush'],
+          ['image.eraser', 'eraser'],
+          ['image.picker', 'picker'],
+          ['image.move', 'move'],
+          ['image.select', 'select'],
+          ['image.fill', 'fill'],
+        ] as const
+      ).find(([actionId]) => shortcutMatches(event, actionId));
+      if (nextTool) {
+        event.preventDefault();
+        setTool(nextTool[1]);
+        return;
+      }
+      const hardnessDirection = shortcutMatches(event, 'image.hardnessSofter')
+        ? -1
+        : shortcutMatches(event, 'image.hardnessHarder')
+          ? 1
+          : 0;
+      if (hardnessDirection !== 0) {
+        event.preventDefault();
+        setBrushHardness((value) => Math.max(0.05, Math.min(1, value + hardnessDirection * 0.05)));
+        return;
+      }
+      const sizeDirection = shortcutMatches(event, 'image.brushSmaller')
+        ? -1
+        : shortcutMatches(event, 'image.brushLarger')
+          ? 1
+          : 0;
+      if (sizeDirection !== 0) {
+        event.preventDefault();
+        setBrushSize((value) => {
+          const step = value < 10 ? 1 : value < 60 ? 5 : 10;
+          return Math.max(1, Math.min(512, value + sizeDirection * step));
+        });
       }
     };
+    const releaseTemporaryKeys = (event?: KeyboardEvent) => {
+      if (!event || getShortcutBindings('image.pan').some((binding) => binding.code === event.code)) {
+        spacePanRef.current = false;
+      }
+    };
+    const releaseOnBlur = () => releaseTemporaryKeys();
     window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
+    window.addEventListener('keyup', releaseTemporaryKeys);
+    window.addEventListener('blur', releaseOnBlur);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('keyup', releaseTemporaryKeys);
+      window.removeEventListener('blur', releaseOnBlur);
+    };
   });
 
   useEffect(() => {
@@ -503,7 +585,7 @@ export function ImageLayerEditorDialog({
     restoreSnapshot(snapshot);
   }
 
-  function getCanvasPoint(event: PointerEvent<HTMLCanvasElement>) {
+  function getCanvasPoint(event: Pick<PointerSample, 'clientX' | 'clientY'>) {
     const canvas = displayCanvasRef.current;
     if (!canvas) return undefined;
     const rect = canvas.getBoundingClientRect();
@@ -520,7 +602,7 @@ export function ImageLayerEditorDialog({
     };
   }
 
-  function drawAt(point: { x: number; y: number }) {
+  function drawAt(point: StrokePoint, strokeTool: 'brush' | 'eraser') {
     if (!activeLayer) return;
     const canvas = layerCanvasesRef.current[activeLayer.id];
     const context = canvas?.getContext('2d');
@@ -530,7 +612,7 @@ export function ImageLayerEditorDialog({
     const previousLocal = previousPoint ? getActiveCanvasPoint(previousPoint) : undefined;
     const getBrushStamp = () => {
       const size = Math.max(1, Math.ceil(brushSize));
-      const key = `${tool}:${size}:${brushHardness.toFixed(3)}:${brushOpacity.toFixed(3)}:${color}`;
+      const key = `${strokeTool}:${size}:${brushHardness.toFixed(3)}:${color}`;
       if (brushStampRef.current?.key === key) return brushStampRef.current.canvas;
       const stamp = createCanvas(size + 2, size + 2);
       const stampContext = stamp.getContext('2d');
@@ -539,7 +621,7 @@ export function ImageLayerEditorDialog({
       const radius = size / 2;
       const hardStop = Math.max(0.05, Math.min(0.995, brushHardness));
       const gradient = stampContext.createRadialGradient(center, center, radius * hardStop, center, center, radius);
-      gradient.addColorStop(0, hexToRgba(color, brushOpacity));
+      gradient.addColorStop(0, hexToRgba(color, 1));
       gradient.addColorStop(1, hexToRgba(color, 0));
       stampContext.fillStyle = gradient;
       stampContext.beginPath();
@@ -548,25 +630,34 @@ export function ImageLayerEditorDialog({
       brushStampRef.current = { key, canvas: stamp };
       return stamp;
     };
-    const stampBrush = (x: number, y: number) => {
+    const stampBrush = (x: number, y: number, pressure: number) => {
       const stamp = getBrushStamp();
+      const pressureCurve = Math.pow(Math.max(0.02, pressure), 0.72);
+      const sizeScale = 0.1 + pressureCurve * 0.9;
+      const renderedWidth = Math.max(1, stamp.width * sizeScale);
+      const renderedHeight = Math.max(1, stamp.height * sizeScale);
       context.save();
-      context.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-      context.drawImage(stamp, x - stamp.width / 2, y - stamp.height / 2);
+      context.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
+      context.globalAlpha = brushOpacity * (0.16 + pressureCurve * 0.84);
+      context.drawImage(stamp, x - renderedWidth / 2, y - renderedHeight / 2, renderedWidth, renderedHeight);
       context.restore();
     };
     if (previousLocal) {
       const distance = Math.hypot(localPoint.x - previousLocal.x, localPoint.y - previousLocal.y);
-      const steps = Math.max(1, Math.ceil(distance / Math.max(1, brushSize * 0.25)));
+      const minimumPressure = Math.min(previousPoint?.pressure ?? point.pressure, point.pressure);
+      const pressureSpacing = 0.1 + Math.pow(minimumPressure, 0.72) * 0.9;
+      const steps = Math.max(1, Math.ceil(distance / Math.max(0.75, brushSize * pressureSpacing * 0.2)));
       for (let step = 0; step <= steps; step += 1) {
         const ratio = step / steps;
         stampBrush(
           previousLocal.x + (localPoint.x - previousLocal.x) * ratio,
           previousLocal.y + (localPoint.y - previousLocal.y) * ratio,
+          (previousPoint?.pressure ?? point.pressure) +
+            (point.pressure - (previousPoint?.pressure ?? point.pressure)) * ratio,
         );
       }
     } else {
-      stampBrush(localPoint.x, localPoint.y);
+      stampBrush(localPoint.x, localPoint.y, point.pressure);
     }
     lastPointRef.current = point;
     scheduleCompositeRender();
@@ -846,12 +937,18 @@ export function ImageLayerEditorDialog({
 
   function handlePointerDown(event: PointerEvent<HTMLCanvasElement>) {
     if (showBefore || !activeLayer) return;
+    if (activePointerIdRef.current !== undefined) return;
+    event.preventDefault();
     const point = getCanvasPoint(event);
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    if (event.button === 1 || event.altKey) {
-      event.preventDefault();
+    activePointerIdRef.current = event.pointerId;
+    if (event.pointerType === 'touch' || event.button === 1 || spacePanRef.current) {
       panDragRef.current = { x: event.clientX, y: event.clientY, offsetX: viewOffset.x, offsetY: viewOffset.y };
+      return;
+    }
+    if (event.altKey && (tool === 'brush' || tool === 'eraser')) {
+      sampleColor(point);
       return;
     }
     if (tool === 'picker') {
@@ -878,12 +975,21 @@ export function ImageLayerEditorDialog({
     }
     drawingRef.current = true;
     lastPointRef.current = undefined;
-    drawAt(point);
+    const strokeTool =
+      event.pointerType === 'pen' && (event.button === 2 || event.button === 5)
+        ? 'eraser'
+        : tool === 'eraser'
+          ? 'eraser'
+          : 'brush';
+    strokeToolRef.current = strokeTool;
+    drawAt({ ...point, pressure: getPointerPressure(event.nativeEvent) }, strokeTool);
   }
 
   function handlePointerMove(event: PointerEvent<HTMLCanvasElement>) {
     if (showBefore || !activeLayer) return;
+    if (activePointerIdRef.current !== undefined && activePointerIdRef.current !== event.pointerId) return;
     if (panDragRef.current) {
+      event.preventDefault();
       const origin = panDragRef.current;
       setViewOffset({
         x: origin.offsetX + event.clientX - origin.x,
@@ -904,16 +1010,55 @@ export function ImageLayerEditorDialog({
       setSelection(normalizeRect(selectionDraftRef.current.start, point, canvasSize));
       return;
     }
-    if (drawingRef.current && (tool === 'brush' || tool === 'eraser')) drawAt(point);
+    if (drawingRef.current && strokeToolRef.current) {
+      event.preventDefault();
+      const nativeEvent = event.nativeEvent;
+      const coalesced = nativeEvent.getCoalescedEvents?.() ?? [nativeEvent];
+      const samples = [...coalesced];
+      const finalSample = samples[samples.length - 1];
+      if (
+        !finalSample ||
+        finalSample.clientX !== nativeEvent.clientX ||
+        finalSample.clientY !== nativeEvent.clientY
+      ) {
+        samples.push(nativeEvent);
+      }
+      for (const sample of samples) {
+        const samplePoint = getCanvasPoint(sample);
+        if (!samplePoint) continue;
+        drawAt(
+          { ...samplePoint, pressure: getPointerPressure(sample) },
+          strokeToolRef.current,
+        );
+      }
+    }
   }
 
   function handlePointerEnd(event: PointerEvent<HTMLCanvasElement>) {
+    if (activePointerIdRef.current !== undefined && activePointerIdRef.current !== event.pointerId) return;
     const changedLayerPixels = drawingRef.current || Boolean(movingRef.current);
+    if (drawingRef.current && strokeToolRef.current) {
+      const point = getCanvasPoint(event);
+      if (point) {
+        drawAt(
+          {
+            ...point,
+            pressure:
+              event.pointerType === 'pen' && event.pressure === 0
+                ? (lastPointRef.current?.pressure ?? 0.02)
+                : getPointerPressure(event.nativeEvent),
+          },
+          strokeToolRef.current,
+        );
+      }
+    }
     drawingRef.current = false;
+    strokeToolRef.current = undefined;
     movingRef.current = undefined;
     panDragRef.current = undefined;
     selectionDraftRef.current = undefined;
     lastPointRef.current = undefined;
+    activePointerIdRef.current = undefined;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     flushCompositeRender();
     if (changedLayerPixels) bumpEditRevision();
@@ -945,7 +1090,7 @@ export function ImageLayerEditorDialog({
     : undefined;
 
   return createPortal(
-    <div className="fixed inset-0 z-[121] grid place-items-center bg-black/62 p-4 text-white backdrop-blur-sm">
+    <div data-editor-shortcut-scope="image" className="fixed inset-0 z-[121] grid place-items-center bg-black/62 p-4 text-white backdrop-blur-sm">
       <section className="relative grid h-[94vh] w-full max-w-[min(96vw,1880px)] grid-cols-[52px_minmax(0,1fr)_320px] overflow-hidden rounded-lg border border-white/16 bg-[#10111a] shadow-[0_30px_90px_rgba(0,0,0,0.58)]">
         <nav className="flex flex-col items-center gap-1.5 border-r border-white/12 bg-[#14151f] p-2">
           <ToolButton active={tool === 'move'} label={t('imageEditMoveTool')} onClick={() => selectTool('move')}>
@@ -1177,7 +1322,7 @@ export function ImageLayerEditorDialog({
                 <canvas
                   ref={displayCanvasRef}
                   className={cn(
-                    'absolute cursor-crosshair',
+                    'absolute touch-none select-none cursor-crosshair',
                     tool === 'move' && 'cursor-move',
                     tool === 'select' && 'cursor-cell',
                     showBefore && 'cursor-default',
@@ -1187,6 +1332,7 @@ export function ImageLayerEditorDialog({
                   onPointerMove={handlePointerMove}
                   onPointerUp={handlePointerEnd}
                   onPointerCancel={handlePointerEnd}
+                  onLostPointerCapture={handlePointerEnd}
                 />
                 {selectionStyle && !showBefore && (
                   <div

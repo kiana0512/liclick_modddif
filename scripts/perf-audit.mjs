@@ -8,7 +8,7 @@ const largeFileLimitMb = Number(process.env.LICLICK_LARGE_FILE_MB ?? 50);
 const concurrency = Number(process.env.LICLICK_STRESS_USERS ?? 30);
 const baseUrl = process.env.LICLICK_STRESS_BASE_URL;
 const stressDurationSeconds = Number(process.env.LICLICK_STRESS_SECONDS ?? 15);
-const ignoredDirs = new Set(['.git', 'node_modules', '.pnpm-store', 'dist', '.vite']);
+const ignoredDirs = new Set(['.git', 'node_modules', '.pnpm-store', 'dist', 'dist-installer', '.vite']);
 
 function bytesToMb(bytes) {
   return bytes / 1024 / 1024;

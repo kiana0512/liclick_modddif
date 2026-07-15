@@ -8,7 +8,7 @@ import { handleComfyuiRoute } from './routes/comfyui.js';
 import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
 import { handleLiclickRoute } from './routes/liclick.js';
-import { sendJson, sendNoContent } from './routes/httpUtils.js';
+import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
 
@@ -24,10 +24,40 @@ const mimeTypes: Record<string, string> = {
   '.obj': 'text/plain',
 };
 
-function serveWorkspaceFile(response: ServerResponse, url: URL) {
-  const relative = decodeURIComponent(url.pathname.replace(/^\/workspace\/?/, ''));
-  const absolute = path.resolve(serverConfig.workspaceDir, relative);
-  if (!absolute.startsWith(serverConfig.workspaceDir)) {
+const publicWorkspaceFilePattern = /^((?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports))\/(.+)$/;
+
+function isWithinDirectory(root: string, candidate: string) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function serveWorkspaceFile(request: IncomingMessage, response: ServerResponse, url: URL) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    sendJson(response, 405, { error: 'Method not allowed.' });
+    return true;
+  }
+  if (!isAllowedRequestOrigin(request)) {
+    sendJson(response, 403, { error: 'Origin is not allowed.' });
+    return true;
+  }
+
+  let relative: string;
+  try {
+    relative = decodeURIComponent(url.pathname.replace(/^\/workspace\/?/, '')).replaceAll('\\', '/');
+  } catch {
+    sendJson(response, 400, { error: 'Invalid workspace path.' });
+    return true;
+  }
+  const publicPathMatch = publicWorkspaceFilePattern.exec(relative);
+  if (!publicPathMatch) {
+    sendJson(response, 403, { error: 'Workspace file is not public.' });
+    return true;
+  }
+
+  const workspaceRoot = path.resolve(serverConfig.workspaceDir);
+  const publicRoot = path.resolve(workspaceRoot, publicPathMatch[1]);
+  const absolute = path.resolve(publicRoot, publicPathMatch[2]);
+  if (!isWithinDirectory(workspaceRoot, publicRoot) || !isWithinDirectory(publicRoot, absolute)) {
     sendJson(response, 403, { error: 'Forbidden.' });
     return true;
   }
@@ -35,12 +65,21 @@ function serveWorkspaceFile(response: ServerResponse, url: URL) {
     sendJson(response, 404, { error: 'File not found.' });
     return true;
   }
+  const realWorkspaceRoot = fs.realpathSync(workspaceRoot);
+  const realPublicRoot = fs.realpathSync(publicRoot);
+  const realAbsolute = fs.realpathSync(absolute);
+  if (!isWithinDirectory(realWorkspaceRoot, realPublicRoot) || !isWithinDirectory(realPublicRoot, realAbsolute)) {
+    sendJson(response, 403, { error: 'Forbidden.' });
+    return true;
+  }
   response.writeHead(200, {
     'content-type': mimeTypes[path.extname(absolute).toLowerCase()] ?? 'application/octet-stream',
-    'access-control-allow-origin': '*',
+    ...corsHeaders(response),
     'cache-control': 'no-cache, no-store, must-revalidate',
+    'x-content-type-options': 'nosniff',
   });
-  fs.createReadStream(absolute).pipe(response);
+  if (request.method === 'HEAD') response.end();
+  else fs.createReadStream(realAbsolute).pipe(response);
   return true;
 }
 
@@ -58,6 +97,10 @@ async function handleWorkspaceRequest(
 ) {
   const rawUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
   const url = stripPublicPath(rawUrl);
+  if (!isAllowedRequestOrigin(request)) {
+    sendJson(response, 403, { error: 'Origin is not allowed.' });
+    return;
+  }
   if (request.method === 'OPTIONS') {
     sendNoContent(response);
     return;
@@ -78,7 +121,7 @@ async function handleWorkspaceRequest(
     return;
   }
   if (url.pathname.startsWith('/workspace/')) {
-    serveWorkspaceFile(response, url);
+    serveWorkspaceFile(request, response, url);
     return;
   }
   if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;

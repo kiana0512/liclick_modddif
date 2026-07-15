@@ -10,6 +10,7 @@ const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
 const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
 const DISPOSED_MATERIAL_FLAG = 'liclickDisposedMaterial';
 const PROJECTED_LAYER_STACK_STATE_KEY = 'liclickProjectedLayerStackState';
+const UV_OVERLAY_PREVIEW_MATERIAL_FLAG = 'liclickUvOverlayPreviewMaterial';
 export const PROJECTED_LAYER_MATERIAL_USER_DATA_KEY = 'liclickProjectedLayerProjectionData';
 export type ProjectedLayerProjectionData = {
   layers: Array<{
@@ -18,6 +19,52 @@ export type ProjectedLayerProjectionData = {
     objectNormalDeltaUniform: string;
   }>;
 };
+
+/**
+ * Keeps capture-space projection coordinates attached to the model while its
+ * root transform changes. The shader evaluates the current world position, so
+ * it must first be mapped back into the world space used when the layer was
+ * captured: captureObjectMatrix * inverse(currentObjectMatrix).
+ */
+export function syncProjectedLayerMaterialProjection(root: THREE.Object3D) {
+  root.updateMatrixWorld(true);
+  const currentObjectMatrixInverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const matrixDelta = new THREE.Matrix4();
+  const normalDelta = new THREE.Matrix3();
+
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of materials) {
+      const projectionData = material.userData[
+        PROJECTED_LAYER_MATERIAL_USER_DATA_KEY
+      ] as ProjectedLayerProjectionData | undefined;
+      if (!projectionData?.layers?.length || !(material instanceof THREE.ShaderMaterial)) continue;
+
+      for (const layer of projectionData.layers) {
+        if (layer.objectMatrixWorld) {
+          matrixDelta.fromArray(layer.objectMatrixWorld).multiply(currentObjectMatrixInverse);
+        } else {
+          matrixDelta.identity();
+        }
+        normalDelta.getNormalMatrix(matrixDelta);
+
+        const matrixUniform = material.uniforms[layer.objectMatrixDeltaUniform];
+        const normalUniform = material.uniforms[layer.objectNormalDeltaUniform];
+        if (matrixUniform?.value instanceof THREE.Matrix4) {
+          matrixUniform.value.copy(matrixDelta);
+        } else if (matrixUniform) {
+          matrixUniform.value = matrixDelta.clone();
+        }
+        if (normalUniform?.value instanceof THREE.Matrix3) {
+          normalUniform.value.copy(normalDelta);
+        } else if (normalUniform) {
+          normalUniform.value = normalDelta.clone();
+        }
+      }
+    }
+  });
+}
 const NDV_HARD_REJECT = -0.35;
 const NDV_COVERAGE_START = -0.25;
 const NDV_COVERAGE_END = 0.08;
@@ -104,6 +151,9 @@ const fragmentShader = `
   uniform float hueShift;
   uniform float saturationShift;
   uniform float lightnessShift;
+  uniform float uvOverlayHueShift;
+  uniform float uvOverlaySaturationShift;
+  uniform float uvOverlayLightnessShift;
   uniform float useBaseMap;
   uniform float useUvOverlayMap;
   uniform float previewLightingEnabled;
@@ -116,31 +166,43 @@ const fragmentShader = `
   varying vec3 vWorldNormal;
   varying vec2 vUv;
 
-  vec3 applyHslAdjustments(vec3 color) {
-    if (abs(hueShift) < 0.0001 && abs(saturationShift) < 0.0001 && abs(lightnessShift) < 0.0001) {
+  vec3 linearToSrgb(vec3 color) {
+    vec3 low = color * 12.92;
+    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(low, high, step(vec3(0.0031308), color));
+  }
+
+  vec3 srgbToLinear(vec3 color) {
+    vec3 low = color / 12.92;
+    vec3 high = pow(max((color + 0.055) / 1.055, vec3(0.0)), vec3(2.4));
+    return mix(low, high, step(vec3(0.04045), color));
+  }
+
+  vec3 rgbToHsv(vec3 color) {
+    vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(color.bg, k.wz), vec4(color.gb, k.xy), step(color.b, color.g));
+    vec4 q = mix(vec4(p.xyw, color.r), vec4(color.r, p.yzx), step(p.x, color.r));
+    float delta = q.x - min(q.w, q.y);
+    float epsilon = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * delta + epsilon)), delta / (q.x + epsilon), q.x);
+  }
+
+  vec3 hsvToRgb(vec3 hsv) {
+    vec3 channels = abs(fract(hsv.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return hsv.z * mix(vec3(1.0), clamp(channels - 1.0, 0.0, 1.0), hsv.y);
+  }
+
+  vec3 applyHsvAdjustments(vec3 color, float hue, float saturation, float lightness) {
+    if (abs(hue) < 0.0001 && abs(saturation) < 0.0001 && abs(lightness) < 0.0001) {
       return color;
     }
-    float angle = hueShift * 6.28318530718;
-    float s = sin(angle);
-    float c = cos(angle);
-    mat3 yiqToRgb = mat3(
-      1.0, 1.0, 1.0,
-      0.956, -0.272, -1.106,
-      0.621, -0.647, 1.703
-    );
-    mat3 rgbToYiq = mat3(
-      0.299, 0.587, 0.114,
-      0.596, -0.274, -0.322,
-      0.211, -0.523, 0.312
-    );
-    vec3 yiq = rgbToYiq * color;
-    float i = yiq.y * c - yiq.z * s;
-    float q = yiq.y * s + yiq.z * c;
-    vec3 shifted = yiqToRgb * vec3(yiq.x, i, q);
-    float luma = dot(shifted, vec3(0.299, 0.587, 0.114));
-    shifted = mix(vec3(luma), shifted, max(0.0, 1.0 + saturationShift));
-    shifted += lightnessShift;
-    return clamp(shifted, 0.0, 1.0);
+    vec3 hsv = rgbToHsv(linearToSrgb(clamp(color, 0.0, 1.0)));
+    hsv.x = mod(hsv.x + hue + 1.0, 1.0);
+    hsv.y = clamp(hsv.y + saturation, 0.0, 1.0);
+    // This uniform keeps its legacy name for saved-project compatibility, but
+    // the UI control is HSV Value and must preserve hue and saturation.
+    hsv.z = clamp(hsv.z + lightness, 0.0, 1.0);
+    return srgbToLinear(hsvToRgb(hsv));
   }
 
   float unpackDepth(vec4 rgbaDepth) {
@@ -173,9 +235,10 @@ const fragmentShader = `
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
-    return mix(hatch, baseSurfaceColor, 0.08);
+    // Projection coverage is an overlay. Pixels that receive no useful
+    // projection must reveal the underlying white/base surface instead of a
+    // black diagnostic hatch.
+    return baseSurfaceColor;
   }
 
   void main() {
@@ -215,7 +278,7 @@ const fragmentShader = `
 
     float lambert = computePreviewLight(normal);
     vec4 texel = texture2D(projectedMap, uv);
-    texel.rgb = applyHslAdjustments(texel.rgb);
+    texel.rgb = applyHsvAdjustments(texel.rgb, hueShift, saturationShift, lightnessShift);
     float sourceAlpha = texel.a * maskAlpha;
     float alphaCoverage = step(0.01, sourceAlpha);
     float angleCoverage = smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv);
@@ -227,6 +290,12 @@ const fragmentShader = `
     float projectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * step(${COVERAGE_THRESHOLD.toFixed(2)}, coverage);
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
+    uvOverlayTexel.rgb = applyHsvAdjustments(
+      uvOverlayTexel.rgb,
+      uvOverlayHueShift,
+      uvOverlaySaturationShift,
+      uvOverlayLightnessShift
+    );
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
     vec3 emptyPreviewColor = computeProjectionEmptyPreviewColor(baseSurfaceColor);
     // Local repaint images are captured display colors: they already contain the
@@ -385,6 +454,9 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
   uniform sampler2D uvOverlayMap;
   uniform float useBaseMap;
   uniform float useUvOverlayMap;
+  uniform float uvOverlayHueShift;
+  uniform float uvOverlaySaturationShift;
+  uniform float uvOverlayLightnessShift;
   uniform float previewLightingEnabled;
   uniform float previewExposure;
   uniform float ambientLightIntensity;
@@ -395,31 +467,41 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
   varying vec3 vWorldNormal;
   varying vec2 vUv;
 
-  vec3 applyHslAdjustments(vec3 color, float hueShift, float saturationShift, float lightnessShift) {
+  vec3 linearToSrgb(vec3 color) {
+    vec3 low = color * 12.92;
+    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(low, high, step(vec3(0.0031308), color));
+  }
+
+  vec3 srgbToLinear(vec3 color) {
+    vec3 low = color / 12.92;
+    vec3 high = pow(max((color + 0.055) / 1.055, vec3(0.0)), vec3(2.4));
+    return mix(low, high, step(vec3(0.04045), color));
+  }
+
+  vec3 rgbToHsv(vec3 color) {
+    vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(color.bg, k.wz), vec4(color.gb, k.xy), step(color.b, color.g));
+    vec4 q = mix(vec4(p.xyw, color.r), vec4(color.r, p.yzx), step(p.x, color.r));
+    float delta = q.x - min(q.w, q.y);
+    float epsilon = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * delta + epsilon)), delta / (q.x + epsilon), q.x);
+  }
+
+  vec3 hsvToRgb(vec3 hsv) {
+    vec3 channels = abs(fract(hsv.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return hsv.z * mix(vec3(1.0), clamp(channels - 1.0, 0.0, 1.0), hsv.y);
+  }
+
+  vec3 applyHsvAdjustments(vec3 color, float hueShift, float saturationShift, float lightnessShift) {
     if (abs(hueShift) < 0.0001 && abs(saturationShift) < 0.0001 && abs(lightnessShift) < 0.0001) {
       return color;
     }
-    float angle = hueShift * 6.28318530718;
-    float s = sin(angle);
-    float c = cos(angle);
-    mat3 yiqToRgb = mat3(
-      1.0, 1.0, 1.0,
-      0.956, -0.272, -1.106,
-      0.621, -0.647, 1.703
-    );
-    mat3 rgbToYiq = mat3(
-      0.299, 0.587, 0.114,
-      0.596, -0.274, -0.322,
-      0.211, -0.523, 0.312
-    );
-    vec3 yiq = rgbToYiq * color;
-    float i = yiq.y * c - yiq.z * s;
-    float q = yiq.y * s + yiq.z * c;
-    vec3 shifted = yiqToRgb * vec3(yiq.x, i, q);
-    float luma = dot(shifted, vec3(0.299, 0.587, 0.114));
-    shifted = mix(vec3(luma), shifted, max(0.0, 1.0 + saturationShift));
-    shifted += lightnessShift;
-    return clamp(shifted, 0.0, 1.0);
+    vec3 hsv = rgbToHsv(linearToSrgb(clamp(color, 0.0, 1.0)));
+    hsv.x = mod(hsv.x + hueShift + 1.0, 1.0);
+    hsv.y = clamp(hsv.y + saturationShift, 0.0, 1.0);
+    hsv.z = clamp(hsv.z + lightnessShift, 0.0, 1.0);
+    return srgbToLinear(hsvToRgb(hsv));
   }
 
   float unpackDepth(vec4 rgbaDepth) {
@@ -452,9 +534,9 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    vec3 hatch = mix(vec3(0.015), vec3(0.105), stripe * 0.62);
-    return mix(hatch, baseSurfaceColor, 0.08);
+    // Keep uncovered areas in the material's base-surface state. A visible
+    // layer with no coverage is equivalent to having no useful texture there.
+    return baseSurfaceColor;
   }
 
   float topQuality0 = 0.0;
@@ -526,6 +608,12 @@ function buildStackFragmentShader(layers: Array<{ useMask?: boolean; useDepthChe
     float lambert = computePreviewLight(normal);
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
+    uvOverlayTexel.rgb = applyHsvAdjustments(
+      uvOverlayTexel.rgb,
+      uvOverlayHueShift,
+      uvOverlaySaturationShift,
+      uvOverlayLightnessShift
+    );
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap);
     vec3 shadedBase = computeProjectionEmptyPreviewColor(baseSurfaceColor) * lambert;
     topCoverage0 = 0.0;
@@ -662,6 +750,9 @@ function updateSharedPreviewUniforms(material: THREE.ShaderMaterial, input: Proj
   if (material.uniforms.uvOverlayMap && input.uvOverlayTexture) material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
   if (material.uniforms.useBaseMap) material.uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
   if (material.uniforms.useUvOverlayMap) material.uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  if (material.uniforms.uvOverlayHueShift) material.uniforms.uvOverlayHueShift.value = input.uvOverlayHue ?? 0;
+  if (material.uniforms.uvOverlaySaturationShift) material.uniforms.uvOverlaySaturationShift.value = input.uvOverlaySaturation ?? 0;
+  if (material.uniforms.uvOverlayLightnessShift) material.uniforms.uvOverlayLightnessShift.value = input.uvOverlayLightness ?? 0;
   if (material.uniforms.baseColor) material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   if (material.uniforms.previewLightingEnabled) material.uniforms.previewLightingEnabled.value = previewLighting.enabled;
   if (material.uniforms.previewExposure) material.uniforms.previewExposure.value = previewLighting.exposure;
@@ -786,10 +877,11 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   depthTexture.minFilter = THREE.NearestFilter;
   depthTexture.magFilter = THREE.NearestFilter;
 
+  const captureObjectMatrixWorld = input.objectMatrixWorld ?? input.currentObjectMatrixWorld;
   const objectMatrixDelta = new THREE.Matrix4();
-  if (input.objectMatrixWorld && input.currentObjectMatrixWorld) {
+  if (captureObjectMatrixWorld && input.currentObjectMatrixWorld) {
     objectMatrixDelta
-      .fromArray(input.objectMatrixWorld)
+      .fromArray(captureObjectMatrixWorld)
       .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
   }
   const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
@@ -820,6 +912,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       hueShift: { value: input.hue ?? 0 },
       saturationShift: { value: input.saturation ?? 0 },
       lightnessShift: { value: input.lightness ?? 0 },
+      uvOverlayHueShift: { value: input.uvOverlayHue ?? 0 },
+      uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
+      uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
@@ -851,7 +946,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
     layers: [
       {
-        objectMatrixWorld: input.objectMatrixWorld,
+        objectMatrixWorld: captureObjectMatrixWorld,
         objectMatrixDeltaUniform: 'objectMatrixDelta',
         objectNormalDeltaUniform: 'objectNormalDelta',
       },
@@ -901,6 +996,9 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
     useBaseMap: { value: input.baseTexture ? 1 : 0 },
     useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+    uvOverlayHueShift: { value: input.uvOverlayHue ?? 0 },
+    uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
+    uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
   };
   const previewLighting = getPreviewLighting(input.previewLighting);
   uniforms.previewLightingEnabled = { value: previewLighting.enabled };
@@ -911,6 +1009,7 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   const disposableTextures: THREE.Texture[] = [neutralTexture];
+  const captureObjectMatrices: Array<number[] | undefined> = [];
 
   const loadedLayers: typeof layers = [];
   for (const layer of layers) {
@@ -947,10 +1046,11 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
       depthTexture.magFilter = THREE.NearestFilter;
     }
 
+    const captureObjectMatrixWorld = layer.objectMatrixWorld ?? input.currentObjectMatrixWorld;
     const objectMatrixDelta = new THREE.Matrix4();
-    if (layer.objectMatrixWorld && input.currentObjectMatrixWorld) {
+    if (captureObjectMatrixWorld && input.currentObjectMatrixWorld) {
       objectMatrixDelta
-        .fromArray(layer.objectMatrixWorld)
+        .fromArray(captureObjectMatrixWorld)
         .multiply(new THREE.Matrix4().fromArray(input.currentObjectMatrixWorld).invert());
     }
     const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
@@ -968,6 +1068,7 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
     uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
     uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
+    captureObjectMatrices.push(captureObjectMatrixWorld);
     loadedLayers.push({ ...layer, useMask: shouldUseMask, useDepthCheck: shouldUseDepth });
   }
   if (loadedLayers.length === 0) return undefined;
@@ -996,8 +1097,8 @@ export async function createProjectedLayerStackMaterial(input: ProjectionLayerSt
     })),
   } satisfies ProjectedLayerMaterialState;
   material.userData[PROJECTED_LAYER_MATERIAL_USER_DATA_KEY] = {
-    layers: loadedLayers.map((layer, index) => ({
-      objectMatrixWorld: layer.objectMatrixWorld,
+    layers: loadedLayers.map((_layer, index) => ({
+      objectMatrixWorld: captureObjectMatrices[index],
       objectMatrixDeltaUniform: `objectMatrixDelta${index}`,
       objectNormalDeltaUniform: `objectNormalDelta${index}`,
     })),
@@ -1043,8 +1144,7 @@ export function createDisplayModeMaterial(displayMode: string, selected: boolean
   if (displayMode === 'wire') {
     return markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: DEFAULT_WIRE_COLOR,
-      wireframe: true,
-      roughness: 0.9,
+      roughness: 0.94,
       metalness: 0,
     }));
   }
@@ -1120,6 +1220,18 @@ const uvOverlayFragmentShader = `
     vec4 baseTexel = texture2D(baseMap, vUv);
     vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
     vec4 liveOverlayTexel = texture2D(liveUvOverlayMap, vUv);
+    overlayTexel.rgb = applyHsvAdjustments(
+      overlayTexel.rgb,
+      uvOverlayHueShift,
+      uvOverlaySaturationShift,
+      uvOverlayLightnessShift
+    );
+    liveOverlayTexel.rgb = applyHsvAdjustments(
+      liveOverlayTexel.rgb,
+      liveUvOverlayHueShift,
+      liveUvOverlaySaturationShift,
+      liveUvOverlayLightnessShift
+    );
     vec4 surfaceMaskTexel = texture2D(surfaceMaskMap, vec2(vUv.x, 1.0 - vUv.y));
     vec3 baseSurface = mix(baseColor, baseTexel.rgb, useBaseMap);
     float surfaceMask = mix(1.0, max(surfaceMaskTexel.r, max(surfaceMaskTexel.g, surfaceMaskTexel.b)), useSurfaceMaskMap);
@@ -1144,25 +1256,32 @@ const uvOverlayFragmentShader = `
   }
 `;
 
-export function createUvOverlayPreviewMaterial(input: {
+export type UvOverlayPreviewMaterialInput = {
   displayMode: string;
   selected: boolean;
   uvOverlayTexture?: THREE.Texture;
+  uvOverlayHue?: number;
+  uvOverlaySaturation?: number;
+  uvOverlayLightness?: number;
   liveUvOverlayTexture?: THREE.Texture;
   liveUvOverlayOpacity?: number;
   liveUvOverlayRenderedColor?: boolean;
+  liveUvOverlayHue?: number;
+  liveUvOverlaySaturation?: number;
+  liveUvOverlayLightness?: number;
   surfaceMaskTexture?: THREE.Texture;
   baseTexture?: THREE.Texture;
   baseColor?: THREE.ColorRepresentation;
   previewLighting?: ProjectionPreviewLighting;
   showEmptyUvChecker?: boolean;
-}) {
+};
+
+export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialInput) {
   if (input.displayMode === 'normal') return markGeneratedMaterial(new THREE.MeshNormalMaterial());
   if (input.displayMode === 'wire') {
     return markGeneratedMaterial(new THREE.MeshStandardMaterial({
       color: DEFAULT_WIRE_COLOR,
-      wireframe: true,
-      roughness: 0.9,
+      roughness: 0.94,
       metalness: 0,
     }));
   }
@@ -1191,8 +1310,14 @@ export function createUvOverlayPreviewMaterial(input: {
       useLiveUvOverlayMap: { value: input.liveUvOverlayTexture ? 1 : 0 },
       liveUvOverlayOpacity: { value: THREE.MathUtils.clamp(input.liveUvOverlayOpacity ?? 1, 0, 1) },
       liveUvOverlayRenderedColor: { value: input.liveUvOverlayRenderedColor ? 1 : 0 },
+      uvOverlayHueShift: { value: input.uvOverlayHue ?? 0 },
+      uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
+      uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
+      liveUvOverlayHueShift: { value: input.liveUvOverlayHue ?? 0 },
+      liveUvOverlaySaturationShift: { value: input.liveUvOverlaySaturation ?? 0 },
+      liveUvOverlayLightnessShift: { value: input.liveUvOverlayLightness ?? 0 },
       useSurfaceMaskMap: { value: input.surfaceMaskTexture ? 1 : 0 },
-      showEmptyUvChecker: { value: input.showEmptyUvChecker === false ? 0 : 1 },
+      showEmptyUvChecker: { value: input.showEmptyUvChecker === true ? 1 : 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       previewLightingEnabled: { value: previewLighting.enabled },
       previewExposure: { value: previewLighting.exposure },
@@ -1203,8 +1328,49 @@ export function createUvOverlayPreviewMaterial(input: {
     toneMapped: true,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
+  material.userData[UV_OVERLAY_PREVIEW_MATERIAL_FLAG] = true;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [neutralTexture];
   return material;
+}
+
+export function updateUvOverlayPreviewMaterial(
+  material: THREE.Material | THREE.Material[] | undefined,
+  input: UvOverlayPreviewMaterialInput,
+) {
+  if (!(material instanceof THREE.ShaderMaterial)) return false;
+  if (!material.userData[UV_OVERLAY_PREVIEW_MATERIAL_FLAG]) return false;
+  if (input.displayMode === 'normal' || input.displayMode === 'wire') return false;
+  const neutralTexture = (material.userData[DISPOSABLE_TEXTURES_KEY] as THREE.Texture[] | undefined)?.[0];
+  if (!neutralTexture) return false;
+  if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.liveUvOverlayTexture) prepareUvTexture(input.liveUvOverlayTexture);
+  if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
+  const previewLighting = getPreviewLighting(input.previewLighting);
+  const uniforms = material.uniforms;
+  uniforms.baseMap.value = input.baseTexture ?? neutralTexture;
+  uniforms.uvOverlayMap.value = input.uvOverlayTexture ?? neutralTexture;
+  uniforms.liveUvOverlayMap.value = input.liveUvOverlayTexture ?? neutralTexture;
+  uniforms.surfaceMaskMap.value = input.surfaceMaskTexture ?? neutralTexture;
+  uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
+  uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  uniforms.useLiveUvOverlayMap.value = input.liveUvOverlayTexture ? 1 : 0;
+  uniforms.liveUvOverlayOpacity.value = THREE.MathUtils.clamp(input.liveUvOverlayOpacity ?? 1, 0, 1);
+  uniforms.liveUvOverlayRenderedColor.value = input.liveUvOverlayRenderedColor ? 1 : 0;
+  uniforms.uvOverlayHueShift.value = input.uvOverlayHue ?? 0;
+  uniforms.uvOverlaySaturationShift.value = input.uvOverlaySaturation ?? 0;
+  uniforms.uvOverlayLightnessShift.value = input.uvOverlayLightness ?? 0;
+  uniforms.liveUvOverlayHueShift.value = input.liveUvOverlayHue ?? 0;
+  uniforms.liveUvOverlaySaturationShift.value = input.liveUvOverlaySaturation ?? 0;
+  uniforms.liveUvOverlayLightnessShift.value = input.liveUvOverlayLightness ?? 0;
+  uniforms.useSurfaceMaskMap.value = input.surfaceMaskTexture ? 1 : 0;
+  uniforms.showEmptyUvChecker.value = input.showEmptyUvChecker === true ? 1 : 0;
+  uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
+  uniforms.previewLightingEnabled.value = previewLighting.enabled;
+  uniforms.previewExposure.value = previewLighting.exposure;
+  uniforms.ambientLightIntensity.value = previewLighting.ambientIntensity;
+  uniforms.keyLightIntensity.value = previewLighting.keyLightIntensity;
+  uniforms.keyLightDirection.value.copy(previewLighting.keyLightDirection);
+  return true;
 }
 
 function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: THREE.Texture) {
@@ -1232,14 +1398,22 @@ function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: T
     previewMaterial.needsUpdate = true;
     return markGeneratedMaterial(previewMaterial);
   }
-  if (material instanceof THREE.MeshBasicMaterial && material.map) {
-    material.map.colorSpace = THREE.SRGBColorSpace;
-    material.map.needsUpdate = true;
+  const sourceMap = 'map' in material && material.map instanceof THREE.Texture ? material.map : undefined;
+  const sourceColor = 'color' in material && material.color instanceof THREE.Color
+    ? material.color
+    : new THREE.Color('#ffffff');
+  if (sourceMap) {
+    sourceMap.colorSpace = THREE.SRGBColorSpace;
+    sourceMap.needsUpdate = true;
     return markGeneratedMaterial(new THREE.MeshStandardMaterial({
-      color: '#ffffff',
-      map: material.map,
-      roughness: 0.58,
+      color: sourceColor,
+      map: sourceMap,
+      roughness: 0.68,
       metalness: 0,
+      transparent: material.transparent,
+      opacity: material.opacity,
+      alphaTest: material.alphaTest,
+      side: material.side,
     }));
   }
   return markGeneratedMaterial(new THREE.MeshStandardMaterial({
@@ -1247,6 +1421,40 @@ function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: T
     roughness: 0.58,
     metalness: 0,
   }));
+}
+
+function prepareSingleFlatMaterial(material: THREE.Material, bakedTexture?: THREE.Texture) {
+  const map = bakedTexture ?? (
+    'map' in material && material.map instanceof THREE.Texture ? material.map : undefined
+  );
+  if (!map) return createDisplayModeMaterial('flat', false);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.needsUpdate = true;
+  const color = bakedTexture
+    ? new THREE.Color('#ffffff')
+    : 'color' in material && material.color instanceof THREE.Color
+      ? material.color
+      : new THREE.Color('#ffffff');
+  return markGeneratedMaterial(new THREE.MeshBasicMaterial({
+    color,
+    map,
+    transparent: material.transparent,
+    opacity: material.opacity,
+    alphaTest: material.alphaTest,
+    side: material.side,
+    toneMapped: true,
+  }));
+}
+
+export function createFlatPreviewMaterial(
+  originalMaterial: THREE.Material | THREE.Material[] | undefined,
+  selected: boolean,
+  bakedTexture?: THREE.Texture,
+) {
+  if (!originalMaterial) return createDisplayModeMaterial('flat', selected, bakedTexture);
+  return Array.isArray(originalMaterial)
+    ? originalMaterial.map((material) => prepareSingleFlatMaterial(material, bakedTexture))
+    : prepareSingleFlatMaterial(originalMaterial, bakedTexture);
 }
 
 export function createPbrPreviewMaterial(

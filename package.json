@@ -1,7 +1,7 @@
 {
   "name": "liclick-3d-texture",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Liclick 3D Texture - Web AI 3D texture studio foundation.",
   "packageManager": "pnpm@9.15.4",
@@ -22,6 +22,7 @@
     "db:seed": "corepack pnpm --filter @liclick/server db:seed",
     "load:a100": "node scripts/load-test-a100.mjs",
     "smoke:auth": "corepack pnpm --filter @liclick/server build && node scripts/smoke-auth-oauth.mjs",
+    "smoke:local": "corepack pnpm --filter @liclick/server build && node scripts/smoke-local-server.mjs",
     "package:windows": "powershell -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1",
     "build": "corepack pnpm -r build",
     "lint": "corepack pnpm -r lint",
