@@ -14,10 +14,15 @@ export function ToastHost() {
   const dismissToast = useToastStore((state) => state.dismissToast);
 
   return (
-    <div className="pointer-events-none fixed left-1/2 top-4 z-[120] flex w-[min(420px,calc(100vw-32px))] -translate-x-1/2 flex-col gap-2">
+    <div
+      className="pointer-events-none fixed left-1/2 top-4 z-[120] flex w-[min(420px,calc(100vw-32px))] -translate-x-1/2 flex-col gap-2"
+      aria-live="polite"
+      aria-relevant="additions text"
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}
+          role={toast.tone === 'error' ? 'alert' : 'status'}
           className={cn('pointer-events-auto rounded-md border p-3 shadow-[0_18px_58px_rgba(0,0,0,0.42)]', tones[toast.tone])}
         >
           <div className="flex items-start gap-3">

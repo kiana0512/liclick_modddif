@@ -44,12 +44,22 @@ async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: n
   }
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
-  const response = await fetch(`${workspaceApiBase}${path}`, {
-    ...fetchInit,
-    signal: controller.signal,
-    headers: requestHeaders,
-    credentials: 'include',
-  }).finally(() => window.clearTimeout(timeout));
+  let response: Response;
+  try {
+    response = await fetch(`${workspaceApiBase}${path}`, {
+      ...fetchInit,
+      signal: controller.signal,
+      headers: requestHeaders,
+      credentials: 'include',
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new WorkspaceApiError(408, '本地工作区响应超时，请稍后重试。');
+    }
+    throw new WorkspaceApiError(0, '无法连接本地工作区服务，请确认应用服务已启动。');
+  } finally {
+    window.clearTimeout(timeout);
+  }
   if (!response.ok) {
     const payload = await response.json().catch(() => undefined);
     const message =
@@ -173,15 +183,25 @@ export async function saveBlobAsset(input: {
     category: input.category,
     filename: input.filename,
   });
-  const response = await fetch(`${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`, {
-    method: 'POST',
-    body: input.blob,
-    headers: {
-      'content-type': input.blob.type || 'application/octet-stream',
-    },
-    signal: controller.signal,
-    credentials: 'include',
-  }).finally(() => window.clearTimeout(timeout));
+  let response: Response;
+  try {
+    response = await fetch(`${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`, {
+      method: 'POST',
+      body: input.blob,
+      headers: {
+        'content-type': input.blob.type || 'application/octet-stream',
+      },
+      signal: controller.signal,
+      credentials: 'include',
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new WorkspaceApiError(408, '项目资源上传超时，请稍后重试。');
+    }
+    throw new WorkspaceApiError(0, '无法连接本地工作区服务，项目资源尚未上传。');
+  } finally {
+    window.clearTimeout(timeout);
+  }
   if (!response.ok) {
     const payload = await response.json().catch(() => undefined);
     const message =
@@ -228,6 +248,7 @@ export async function fileToDataUrl(file: File) {
 export async function urlToDataUrl(url: string) {
   if (url.startsWith('data:')) return url;
   const response = await fetch(url);
+  if (!response.ok) throw new Error(`无法读取资源（${response.status}），请稍后重试。`);
   const blob = await response.blob();
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();

@@ -115,6 +115,7 @@ import type { SceneObject } from '@/types/model';
 import type { Project, ReferenceImage } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
+import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
 type EditorPageProps = {
   projectId: string;
@@ -609,6 +610,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const serverLoadedProjectIdRef = useRef<string>();
   const restoredModelKeyRef = useRef<string>();
   const autosaveTimerRef = useRef<number>();
+  const manualSaveHandlerRef = useRef<() => void>(() => undefined);
+  const manualSaveRunningRef = useRef(false);
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
@@ -618,6 +621,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
+  const [autosaveRetryToken, setAutosaveRetryToken] = useState(0);
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>(
     'idle',
   );
@@ -638,7 +642,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setLocalRepaintAbortController = useLocalRepaintStore(
     (state) => state.setActiveAbortController,
   );
-  const projects = useProjectStore((state) => state.projects);
+  const project = useProjectStore((state) =>
+    state.projects.find((item) => item.id === projectId),
+  );
   const setCurrentProject = useProjectStore((state) => state.setCurrentProject);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
@@ -681,6 +687,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const addReferences = useReferenceStore((state) => state.addReferences);
   const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
+  const dismissToastByDedupeKey = useToastStore((state) => state.dismissToastByDedupeKey);
   const t = useT();
   const workspacePanels = useWorkspaceLayoutStore((state) => state.panels);
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
@@ -692,7 +699,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const restorePersistedHistory = useEditorHistoryStore((state) => state.restorePersisted);
   const canUndo = useEditorHistoryStore((state) => state.past.length > 0);
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
-  const project = projects.find((item) => item.id === projectId);
   const activeLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
   const imageEditLayer =
     imageEditLayerSnapshot ?? layers.find((item) => item.id === imageEditLayerId);
@@ -865,6 +871,17 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }, [activeProjectedLayerId, setPanelCollapsed, showPanel]);
 
   useEffect(() => {
+    function handleManualSaveShortcut(event: KeyboardEvent) {
+      if (document.querySelector('[data-shortcut-dialog]')) return;
+      if (!shortcutMatches(event, 'project.save')) return;
+      event.preventDefault();
+      manualSaveHandlerRef.current();
+    }
+    window.addEventListener('keydown', handleManualSaveShortcut);
+    return () => window.removeEventListener('keydown', handleManualSaveShortcut);
+  }, []);
+
+  useEffect(() => {
     function handleUndoRedo(event: KeyboardEvent) {
       if (document.querySelector('[data-shortcut-dialog]')) return;
       if (document.querySelector('[data-editor-shortcut-scope]')) return;
@@ -893,7 +910,16 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       if (!snapshot) return;
       setSaveStatus('saving');
       void saveToWorkspaceServer(snapshot)
-        .then(() => setSaveStatus('saved'))
+        .then((result) => {
+          if (result.savedLatestSnapshot) {
+            setSaveStatus('saved');
+            return;
+          }
+          // Edits made while assets were uploading must remain dirty and get a
+          // follow-up save instead of being incorrectly marked as persisted.
+          setSaveStatus('idle');
+          setAutosaveRetryToken((token) => token + 1);
+        })
         .catch(async (error) => {
           const authRequired = error instanceof WorkspaceApiError && error.status === 401;
           const blockedEmptySave = error instanceof WorkspaceApiError && error.status === 409;
@@ -937,21 +963,41 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     return () => window.clearTimeout(autosaveTimerRef.current);
     // Autosave is intentionally keyed to project dirty/id/mode. The save helpers read the latest stores.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.dirty, project?.id, project?.workspaceMode, pushToast]);
+  }, [autosaveRetryToken, project?.dirty, project?.id, project?.workspaceMode, pushToast]);
 
+  const offlineRetryProjectId = project?.id;
+  const offlineRetryProjectDirty = project?.dirty;
+  const offlineRetryWorkspaceMode = project?.workspaceMode;
   useEffect(() => {
-    if (!project || project.workspaceMode !== 'local-server' || saveStatus !== 'offline') return;
+    if (
+      !offlineRetryProjectId ||
+      offlineRetryWorkspaceMode !== 'local-server' ||
+      saveStatus !== 'offline'
+    )
+      return;
     let cancelled = false;
-    void getWorkspaceHealth().then(
-      () => {
-        if (!cancelled) setSaveStatus(project.dirty ? 'idle' : 'saved');
-      },
-      () => undefined,
-    );
+    let retryTimer: number | undefined;
+    const checkWorkspace = async () => {
+      try {
+        await getWorkspaceHealth();
+        if (cancelled) return;
+        setSaveStatus(offlineRetryProjectDirty ? 'idle' : 'saved');
+        if (offlineRetryProjectDirty) setAutosaveRetryToken((token) => token + 1);
+      } catch {
+        if (!cancelled) retryTimer = window.setTimeout(checkWorkspace, 10_000);
+      }
+    };
+    void checkWorkspace();
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [project, saveStatus]);
+  }, [
+    offlineRetryProjectDirty,
+    offlineRetryProjectId,
+    offlineRetryWorkspaceMode,
+    saveStatus,
+  ]);
 
   function getProjectSnapshot(options: { refreshThumbnail?: boolean } = {}): Project | undefined {
     if (!project) return undefined;
@@ -1630,58 +1676,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       workspaceMode: 'local-server',
     });
 
-    for (const object of projectForSave.objects) {
-      object.sourcePath = await persistAssetUrl(
-        projectForSave.id,
-        object.sourcePath,
-        'models',
-        object.name,
-      );
-    }
-    for (const reference of projectForSave.references) {
-      reference.url =
-        (await persistAssetUrl(projectForSave.id, reference.url, 'references', reference.name)) ??
-        reference.url;
-    }
-    for (const capture of projectForSave.captures) {
-      capture.colorUrl =
-        (await persistAssetUrl(
-          projectForSave.id,
-          capture.colorUrl,
-          'captures',
-          `${capture.id}-color.png`,
-        )) ?? capture.colorUrl;
-      capture.maskUrl =
-        (await persistAssetUrl(
-          projectForSave.id,
-          capture.maskUrl,
-          'captures',
-          `${capture.id}-mask.png`,
-        )) ?? capture.maskUrl;
-      capture.depthUrl =
-        (await persistAssetUrl(
-          projectForSave.id,
-          capture.depthUrl,
-          'captures',
-          `${capture.id}-depth.png`,
-        )) ?? capture.depthUrl;
-      capture.normalUrl =
-        (await persistAssetUrl(
-          projectForSave.id,
-          capture.normalUrl,
-          'captures',
-          `${capture.id}-normal.png`,
-        )) ?? capture.normalUrl;
-    }
-    for (const generation of projectForSave.generations) {
-      generation.resultUrl =
-        (await persistAssetUrl(
-          projectForSave.id,
-          generation.resultUrl,
-          'generations',
-          `${generation.id}.png`,
-        )) ?? generation.resultUrl;
-    }
     const persistOptionalLayerAsset = async (url: string | undefined, filename: string) => {
       try {
         const resolvedUrl =
@@ -1695,55 +1689,220 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         return undefined;
       }
     };
+    const persistenceTasks: Array<() => Promise<void>> = [];
+    for (const object of projectForSave.objects) {
+      persistenceTasks.push(async () => {
+        object.sourcePath = await persistAssetUrl(
+          projectForSave.id,
+          object.sourcePath,
+          'models',
+          object.name,
+        );
+      });
+    }
+    for (const reference of projectForSave.references) {
+      persistenceTasks.push(async () => {
+        reference.url =
+          (await persistAssetUrl(projectForSave.id, reference.url, 'references', reference.name)) ??
+          reference.url;
+      });
+    }
+    for (const capture of projectForSave.captures) {
+      persistenceTasks.push(async () => {
+        capture.colorUrl =
+          (await persistAssetUrl(
+            projectForSave.id,
+            capture.colorUrl,
+            'captures',
+            `${capture.id}-color.png`,
+          )) ?? capture.colorUrl;
+      });
+      persistenceTasks.push(async () => {
+        capture.maskUrl =
+          (await persistAssetUrl(
+            projectForSave.id,
+            capture.maskUrl,
+            'captures',
+            `${capture.id}-mask.png`,
+          )) ?? capture.maskUrl;
+      });
+      persistenceTasks.push(async () => {
+        capture.depthUrl = await persistAssetUrl(
+          projectForSave.id,
+          capture.depthUrl,
+          'captures',
+          `${capture.id}-depth.png`,
+        );
+      });
+      persistenceTasks.push(async () => {
+        capture.normalUrl = await persistAssetUrl(
+          projectForSave.id,
+          capture.normalUrl,
+          'captures',
+          `${capture.id}-normal.png`,
+        );
+      });
+    }
+    for (const generation of projectForSave.generations) {
+      persistenceTasks.push(async () => {
+        generation.resultUrl =
+          (await persistAssetUrl(
+            projectForSave.id,
+            generation.resultUrl,
+            'generations',
+            `${generation.id}.png`,
+          )) ?? generation.resultUrl;
+      });
+    }
     for (const layer of projectForSave.layers) {
-      const resolvedImageUrl = isLiveProjectedCanvasUrl(layer.imageUrl)
-        ? (getLiveProjectedCanvasDataUrl(layer.imageUrl) ?? layer.imageUrl)
-        : layer.imageUrl;
-      layer.imageUrl =
-        (await persistAssetUrl(projectForSave.id, resolvedImageUrl, 'layers', `${layer.id}.png`)) ??
-        layer.imageUrl;
-      layer.maskUrl = await persistOptionalLayerAsset(layer.maskUrl, `${layer.id}-mask.png`);
-      layer.depthUrl = await persistOptionalLayerAsset(layer.depthUrl, `${layer.id}-depth.png`);
+      persistenceTasks.push(async () => {
+        const resolvedImageUrl = isLiveProjectedCanvasUrl(layer.imageUrl)
+          ? (getLiveProjectedCanvasDataUrl(layer.imageUrl) ?? layer.imageUrl)
+          : layer.imageUrl;
+        layer.imageUrl =
+          (await persistAssetUrl(
+            projectForSave.id,
+            resolvedImageUrl,
+            'layers',
+            `${layer.id}.png`,
+          )) ?? layer.imageUrl;
+      });
+      persistenceTasks.push(async () => {
+        layer.maskUrl = await persistOptionalLayerAsset(layer.maskUrl, `${layer.id}-mask.png`);
+      });
+      persistenceTasks.push(async () => {
+        layer.depthUrl = await persistOptionalLayerAsset(layer.depthUrl, `${layer.id}-depth.png`);
+      });
     }
     for (const bakedTexture of projectForSave.bakedTextures) {
-      bakedTexture.imageUrl =
+      persistenceTasks.push(async () => {
+        bakedTexture.imageUrl =
+          (await persistAssetUrl(
+            projectForSave.id,
+            bakedTexture.imageUrl,
+            'baked',
+            `${bakedTexture.id}.png`,
+          )) ?? bakedTexture.imageUrl;
+      });
+    }
+    persistenceTasks.push(async () => {
+      projectForSave.thumbnail =
         (await persistAssetUrl(
           projectForSave.id,
-          bakedTexture.imageUrl,
-          'baked',
-          `${bakedTexture.id}.png`,
-        )) ?? bakedTexture.imageUrl;
-    }
-    projectForSave.thumbnail =
-      (await persistAssetUrl(
-        projectForSave.id,
-        projectForSave.thumbnail,
-        'captures',
-        'project-thumbnail.png',
-      )) ?? projectForSave.thumbnail;
+          projectForSave.thumbnail,
+          'captures',
+          'project-thumbnail.png',
+        )) ?? projectForSave.thumbnail;
+    });
+
+    // Asset contents and filenames are unchanged; only independent I/O is
+    // bounded-parallel so a project with many images does not save serially.
+    await mapWithConcurrency(persistenceTasks, 3, (task) => task());
 
     return projectForSave;
   }
 
   async function saveToWorkspaceServer(snapshot: Project) {
-    const projectForSave = await prepareProjectForWorkspaceSave(snapshot);
-    const result = await saveWorkspaceProject(projectForSave).catch((error) => {
-      throw new Error(
-        `保存项目 JSON 失败: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    const slowSaveToastKey = `workspace-save-progress:${snapshot.id}`;
+    const slowSaveTimer = window.setTimeout(() => {
+      pushToast({
+        tone: 'info',
+        title: '正在保存项目资源',
+        description: '图片或模型较多时需要一点时间；可以继续操作，新的修改会自动追加保存。',
+        dedupeKey: slowSaveToastKey,
+        persistent: true,
+      });
+    }, 1500);
+    try {
+      const projectForSave = await prepareProjectForWorkspaceSave(snapshot);
+      const result = await saveWorkspaceProject(projectForSave).catch((error) => {
+        throw new Error(
+          `保存项目 JSON 失败: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        );
+      });
+      const latestProject = useProjectStore.getState().getCurrentProject();
+      const snapshotUpdatedAt = Date.parse(snapshot.updatedAt);
+      const latestUpdatedAt = Date.parse(latestProject?.updatedAt ?? '');
+      const savedLatestSnapshot = Boolean(
+        latestProject?.id === snapshot.id &&
+          Number.isFinite(snapshotUpdatedAt) &&
+          Number.isFinite(latestUpdatedAt) &&
+          latestUpdatedAt <= snapshotUpdatedAt,
       );
-    });
-    markSaved(result.project.lastSavedAt ?? new Date().toISOString(), result.project.assetManifest);
-    setWorkspaceState({
-      workspaceMode: 'local-server',
-      workspaceName: result.slug,
-      lastSavedAt: result.project.lastSavedAt,
-      dirty: false,
-      assetManifest: result.project.assetManifest,
-    });
-    return result;
+      if (savedLatestSnapshot) {
+        markSaved(
+          result.project.lastSavedAt ?? new Date().toISOString(),
+          result.project.assetManifest,
+        );
+      }
+      setWorkspaceState({
+        workspaceMode: 'local-server',
+        workspaceName: result.slug,
+        lastSavedAt: result.project.lastSavedAt,
+        dirty: !savedLatestSnapshot,
+        assetManifest: result.project.assetManifest,
+      });
+      return { ...result, savedLatestSnapshot };
+    } finally {
+      window.clearTimeout(slowSaveTimer);
+      dismissToastByDedupeKey(slowSaveToastKey);
+    }
   }
 
-  async function handleBackToProjects() {
+  async function handleManualSave() {
+    if (manualSaveRunningRef.current || backNavigationPendingRef.current) return;
+    const currentProject = useProjectStore.getState().getCurrentProject();
+    if (!currentProject || currentProject.workspaceMode !== 'local-server') {
+      pushToast({
+        tone: 'warning',
+        title: '当前项目没有连接本地工作区',
+        description: '请先从项目主页创建或打开本地项目。',
+        dedupeKey: 'manual-save-workspace-unavailable',
+      });
+      return;
+    }
+    const snapshot = getProjectSnapshot();
+    if (!snapshot) return;
+
+    manualSaveRunningRef.current = true;
+    window.clearTimeout(autosaveTimerRef.current);
+    setSaveStatus('saving');
+    try {
+      let result = await saveToWorkspaceServer(snapshot);
+      if (!result.savedLatestSnapshot) {
+        const latestSnapshot = getProjectSnapshot({ refreshThumbnail: false });
+        if (latestSnapshot) result = await saveToWorkspaceServer(latestSnapshot);
+      }
+      if (result.savedLatestSnapshot) {
+        setSaveStatus('saved');
+        pushToast({
+          tone: 'success',
+          title: '项目已保存',
+          description: 'Ctrl+S',
+          dedupeKey: 'manual-project-save-success',
+        });
+      } else {
+        setSaveStatus('idle');
+        setAutosaveRetryToken((token) => token + 1);
+      }
+    } catch (error) {
+      setSaveStatus('failed');
+      pushToast({
+        tone: 'error',
+        title: '项目保存失败',
+        description: error instanceof Error ? error.message : '项目未能写入本地工作区。',
+        dedupeKey: 'manual-project-save-failed',
+      });
+    } finally {
+      manualSaveRunningRef.current = false;
+    }
+  }
+
+  manualSaveHandlerRef.current = () => {
+    void handleManualSave();
+  };
+
+  function handleBackToProjects() {
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
@@ -1764,23 +1923,34 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
 
     setSaveStatus('saving');
-    try {
-      await saveToWorkspaceServer({
-        ...snapshot,
-        thumbnail: thumbnail ?? snapshot.thumbnail,
-      });
-      setSaveStatus('saved');
-      onBack();
-    } catch (error) {
-      backNavigationPendingRef.current = false;
-      setSaveStatus('failed');
-      pushToast({
-        tone: 'error',
-        title: '返回项目前保存失败',
-        description: error instanceof Error ? error.message : '项目缩略图未能写入本地工作区。',
-        dedupeKey: 'workspace-save-before-back-failed',
-      });
-    }
+
+    // Navigation must never wait for asset uploads. The request keeps running
+    // after this screen unmounts, and a second pass captures any state that
+    // changed while the first snapshot was being persisted.
+    onBack();
+    void (async () => {
+      try {
+        let result = await saveToWorkspaceServer({
+          ...snapshot,
+          thumbnail: thumbnail ?? snapshot.thumbnail,
+        });
+        if (!result.savedLatestSnapshot) {
+          const latestSnapshot = getProjectSnapshot();
+          if (latestSnapshot) result = await saveToWorkspaceServer(latestSnapshot);
+        }
+        setSaveStatus(result.savedLatestSnapshot ? 'saved' : 'idle');
+      } catch (error) {
+        setSaveStatus('failed');
+        pushToast({
+          tone: 'error',
+          title: '项目后台保存失败',
+          description: error instanceof Error ? error.message : '项目未能写入本地工作区。',
+          dedupeKey: 'workspace-background-save-failed',
+        });
+      } finally {
+        backNavigationPendingRef.current = false;
+      }
+    })();
   }
 
   function getBakeProgressDetail(progress: BakeProgress) {

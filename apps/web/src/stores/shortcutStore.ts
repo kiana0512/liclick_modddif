@@ -3,6 +3,7 @@ import { create } from 'zustand';
 export type ShortcutScope = 'global' | 'scene' | 'texture' | 'image' | 'repaint';
 
 export type ShortcutActionId =
+  | 'project.save'
   | 'history.undo'
   | 'history.redo'
   | 'view.front'
@@ -73,6 +74,7 @@ const binding = (
 ): ShortcutBinding => ({ code, ...modifiers });
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
+  { id: 'project.save', scope: 'global', categoryZh: '通用', categoryEn: 'General', labelZh: '保存项目', labelEn: 'Save project', defaults: [binding('KeyS', { primary: true })] },
   { id: 'history.undo', scope: 'global', categoryZh: '通用', categoryEn: 'General', labelZh: '撤销', labelEn: 'Undo', defaults: [binding('KeyZ', { primary: true })] },
   { id: 'history.redo', scope: 'global', categoryZh: '通用', categoryEn: 'General', labelZh: '重做', labelEn: 'Redo', defaults: [binding('KeyY', { primary: true }), binding('KeyZ', { primary: true, shift: true })] },
   { id: 'view.front', scope: 'global', categoryZh: '视口', categoryEn: 'Viewport', labelZh: '前视图', labelEn: 'Front view', defaults: [binding('Numpad1')] },
