@@ -20,6 +20,7 @@ import {
   captureCurrentView,
 } from '@/engine/capture/captureCurrentView';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
+import { createSubjectFilledPreview } from '@/engine/localRepaint/resultPreviewUtils';
 import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
@@ -206,7 +207,13 @@ function CameraViewThumbnail({
   );
 }
 
-function GenerationProgressStatus({ generation, title }: { generation: Generation; title: string }) {
+function GenerationProgressStatus({
+  generation,
+  title,
+}: {
+  generation: Generation;
+  title: string;
+}) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -226,7 +233,9 @@ function GenerationProgressStatus({ generation, title }: { generation: Generatio
       <div className="text-sm font-semibold">{title}</div>
       <div className="text-xs leading-5 text-white/68">
         {submitted ? '后台正在处理，完成后会自动返回' : '正在检查参考图并提交任务'}
-        <span className="ml-1.5 tabular-nums">{minutes}:{seconds}</span>
+        <span className="ml-1.5 tabular-nums">
+          {minutes}:{seconds}
+        </span>
       </div>
     </div>
   );
@@ -380,9 +389,7 @@ async function createComfyInpaintInputImage(
   const mask = sampledMaskContext.getImageData(0, 0, width, height).data;
   for (let offset = 0; offset < source.data.length; offset += 4) {
     const coverage =
-      Math.max(mask[offset], mask[offset + 1], mask[offset + 2]) *
-      (mask[offset + 3] / 255) /
-      255;
+      (Math.max(mask[offset], mask[offset + 1], mask[offset + 2]) * (mask[offset + 3] / 255)) / 255;
     const edgeCoverage = Math.max(0, Math.min(1, (coverage - 0.42) / 0.16));
     const antialiasedCoverage = edgeCoverage * edgeCoverage * (3 - 2 * edgeCoverage);
     // ComfyUI derives its MASK from alpha. The custom straight-RGBA encoder keeps
@@ -408,6 +415,10 @@ export function GeneratePanel() {
   const [tab, setTab] = useState<GenerateTab>('single');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
+  const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
+    sourceUrl: string;
+    previewUrl: string;
+  }>();
   const [cameraViews, setCameraViews] = useState<CameraViewItem[]>(() =>
     cameraViewOptions.map((option) => createPresetCameraViewItem(option, t(option.labelKey))),
   );
@@ -511,6 +522,38 @@ export function GeneratePanel() {
   const previewFailed = previewGeneration?.status === 'failed';
   const previewCancelled = previewGeneration?.metadata.cancelled === true;
   const canCancelGeneration = Boolean(activeProjectGeneration);
+  const previewRawResultUrl = previewGeneration?.resultUrl;
+  const previewNeedsSubjectFill = Boolean(
+    previewGeneration &&
+    (isLocalRepaintGeneration(previewGeneration) || isTextureMapGeneration(previewGeneration)),
+  );
+  const previewResultUrl =
+    previewRawResultUrl &&
+    previewNeedsSubjectFill &&
+    subjectFilledPreview?.sourceUrl === previewRawResultUrl
+      ? subjectFilledPreview.previewUrl
+      : previewRawResultUrl;
+
+  useEffect(() => {
+    const sourceUrl = previewRawResultUrl;
+    if (!sourceUrl || !previewNeedsSubjectFill) {
+      setSubjectFilledPreview(undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    void createSubjectFilledPreview(sourceUrl)
+      .then((previewUrl) => {
+        if (!cancelled) setSubjectFilledPreview({ sourceUrl, previewUrl });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn('[Liclick 3D Texture] Could not prepare generated image preview.', error);
+        setSubjectFilledPreview({ sourceUrl, previewUrl: sourceUrl });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewNeedsSubjectFill, previewRawResultUrl]);
 
   const notifyReferencePreprocessed = useCallback(
     (result: ReferencePreprocessingResult) => {
@@ -697,13 +740,7 @@ export function GeneratePanel() {
     return () => {
       cancelled = true;
     };
-  }, [
-    cameraViews,
-    captureObjectId,
-    isTextureMapTab,
-    pushToast,
-    textureMapViewMode,
-  ]);
+  }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, textureMapViewMode]);
 
   useEffect(() => {
     if (!previewGeneration || previewGeneration.resultUrl) return undefined;
@@ -806,8 +843,7 @@ export function GeneratePanel() {
             nextTaskId !== generationToPoll.metadata.taskId ||
             nextModel !== generationToPoll.metadata.model ||
             (!generationToPoll.metadata.extraParams && Boolean(result.extraParams)) ||
-            (!generationToPoll.metadata.uploadedReferences &&
-              Boolean(result.uploadedReferences));
+            (!generationToPoll.metadata.uploadedReferences && Boolean(result.uploadedReferences));
           // Do not write a new generation object for an unchanged "running"
           // response. Updating on every poll restarts this effect immediately,
           // turning the intended interval into a request/render loop.
@@ -862,13 +898,7 @@ export function GeneratePanel() {
       cancelled = true;
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [
-    dismissToastByDedupeKey,
-    markGenerationFailed,
-    previewGeneration,
-    pushToast,
-    syncGeneration,
-  ]);
+  }, [dismissToastByDedupeKey, markGenerationFailed, previewGeneration, pushToast, syncGeneration]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
     if (!currentProject) return;
@@ -1115,7 +1145,9 @@ export function GeneratePanel() {
       if (isCancelledGeneration(generation)) throw new Error('用户已终止纹理贴图生成任务。');
       const result = await client.getGenerationJob(jobId);
       if (result.status === 'failed') {
-        throw new Error(getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'));
+        throw new Error(
+          getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'),
+        );
       }
       if (result.status === 'succeeded' && result.resultUrl) {
         return {
@@ -2011,7 +2043,10 @@ export function GeneratePanel() {
   function handleDownloadGenerationImage() {
     if (!previewGeneration?.resultUrl) return;
     const kind = isTextureMapGeneration(previewGeneration) ? 'texture_map' : 'liclick_generation';
-    void downloadImageAsset(previewGeneration.resultUrl, `liclick_${kind}_${previewGeneration.id}`);
+    void downloadImageAsset(
+      previewResultUrl ?? previewGeneration.resultUrl,
+      `liclick_${kind}_${previewGeneration.id}`,
+    );
   }
 
   return (
@@ -2039,7 +2074,7 @@ export function GeneratePanel() {
                 style={checkerBackgroundStyle}
               >
                 <img
-                  src={previewGeneration.resultUrl}
+                  src={previewResultUrl ?? previewGeneration.resultUrl}
                   alt=""
                   className="h-full w-full object-contain"
                 />
@@ -2487,7 +2522,7 @@ export function GeneratePanel() {
             aria-label={t('close')}
           >
             <img
-              src={previewGeneration.resultUrl}
+              src={previewResultUrl ?? previewGeneration.resultUrl}
               alt=""
               className="max-h-[92vh] max-w-[94vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
               style={checkerBackgroundStyle}

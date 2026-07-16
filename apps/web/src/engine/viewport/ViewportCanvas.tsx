@@ -2892,10 +2892,10 @@ function SurfacePaintOverlay() {
           order: 0,
           createdAt: new Date().toISOString(),
         };
-        // The automatic layer is an interactive preview asset. 1K avoids the
-        // full-frame readback and seam pass becoming a visible pause after every
-        // stroke; the final layer stack still composites at the base UV size.
-        const bakeResolution = 1024 as const;
+        // The UV result is a real layer, not a disposable preview. Bake at the
+        // active texture resolution so converting a projection never degrades
+        // the source into a 1K layer that is later stretched over a 4K texture.
+        const bakeResolution = UV_TEXTURE_RESOLUTION[textureResolutionSetting];
         const { bakeVisibleProjectedLayersToTexture } =
           await import('@/engine/bake/bakeProjectedLayerToTexture');
         const bakeResult = await bakeVisibleProjectedLayersToTexture({
@@ -2903,8 +2903,8 @@ function SurfacePaintOverlay() {
           transientLayers: [transientLayer],
           resolution: bakeResolution,
           enableBackfaceCulling: true,
-          enableDilation: false,
-          dilationPixels: 0,
+          enableDilation: true,
+          dilationPixels: 4,
           outputAlpha: 'transparent',
           gpuCompositeMode: 'coverage-alpha',
           skipGpuValidation: true,
@@ -2912,9 +2912,6 @@ function SurfacePaintOverlay() {
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
-          // Direct GPU output already has straight-alpha transparent pixels.
-          // Avoid a second full 1K ImageData read/write on every brush release.
-          skipCpuPostprocess: true,
         });
 
         // If another stroke started while the GPU was baking, keep its live
@@ -2937,7 +2934,9 @@ function SurfacePaintOverlay() {
           ? getLiveProjectedCanvasState(existingMergeLayer.imageUrl)?.canvas
           : undefined;
         const canReuseLiveMergeCanvas =
-          existingMergeLayers.length === 1 && Boolean(existingLiveCanvas);
+          existingMergeLayers.length === 1 &&
+          existingLiveCanvas?.width === bakeResult.canvas.width &&
+          existingLiveCanvas.height === bakeResult.canvas.height;
         const existingSources =
           existingMergeLayers.length === 0 || canReuseLiveMergeCanvas
             ? []
@@ -3069,7 +3068,7 @@ function SurfacePaintOverlay() {
         });
       });
     },
-    [pushToast, waitForPaintCommitIdle],
+    [pushToast, textureResolutionSetting, waitForPaintCommitIdle],
   );
 
   const commitPaintStroke = useCallback(() => {

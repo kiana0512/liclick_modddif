@@ -929,6 +929,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
                 )
               : false;
           setSaveStatus(blockedEmptySave ? 'idle' : workspaceOnline ? 'failed' : 'offline');
+          if (workspaceOnline && !authRequired && !blockedEmptySave) {
+            console.error('[Liclick 3D Texture] Workspace autosave failed.', error);
+            return;
+          }
           pushToast({
             tone: 'warning',
             title: authRequired
@@ -1880,12 +1884,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       }
     } catch (error) {
       setSaveStatus('failed');
-      pushToast({
-        tone: 'error',
-        title: '项目保存失败',
-        description: error instanceof Error ? error.message : '项目未能写入本地工作区。',
-        dedupeKey: 'manual-project-save-failed',
-      });
+      console.error('[Liclick 3D Texture] Manual workspace save failed.', error);
     } finally {
       manualSaveRunningRef.current = false;
     }
@@ -1934,12 +1933,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         setSaveStatus(result.savedLatestSnapshot ? 'saved' : 'idle');
       } catch (error) {
         setSaveStatus('failed');
-        pushToast({
-          tone: 'error',
-          title: '项目后台保存失败',
-          description: error instanceof Error ? error.message : '项目未能写入本地工作区。',
-          dedupeKey: 'workspace-background-save-failed',
-        });
+        console.error('[Liclick 3D Texture] Background workspace save failed.', error);
       } finally {
         backNavigationPendingRef.current = false;
       }
@@ -2724,11 +2718,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         layerIds: [tempLayer.id],
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        // This result is a transparent overlay. Opaque UV dilation expands the
-        // painted alpha beyond the live brush boundary and creates a visible
-        // outline/stripe when the patch is placed over the existing UV layer.
-        enableDilation: false,
-        dilationPixels: 0,
+        // This becomes a persistent UV repair layer. Run the same seam padding
+        // as every other production UV bake so UV-island boundaries cannot show
+        // transparent cracks after the projected preview is removed.
+        enableDilation: true,
+        dilationPixels: 4,
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,
@@ -3053,12 +3047,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         transientLayers: layersToBake,
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        // Preserve the exact alpha footprint shown by projected preview. UV
-        // dilation writes opaque pixels around a transparent overlay, which is
-        // useful for a standalone base texture but wrong when merging a patch
-        // over an existing UV layer.
-        enableDilation: false,
-        dilationPixels: 0,
+        // Projection sampling leaves sub-texel gaps along UV boundaries. Restore
+        // the production seam padding so the UV layer matches the continuous
+        // projected preview instead of exposing the layer underneath.
+        enableDilation: true,
+        dilationPixels: 4,
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,
