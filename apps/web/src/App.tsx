@@ -43,6 +43,7 @@ export function App() {
   const setChecking = useAuthStore((state) => state.setChecking);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
+  const refreshLocalSettings = useAuthStore((state) => state.refreshLocalSettings);
 
   const navigation = useMemo(
     () => ({
@@ -71,6 +72,18 @@ export function App() {
     void refreshAuth().catch(() => setAnonymous());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const refresh = () => void refreshLocalSettings().catch(() => undefined);
+    const timer = window.setInterval(refresh, 3_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [refreshLocalSettings]);
 
   useEffect(() => {
     const normalizedPath = pathFromRoute(route);

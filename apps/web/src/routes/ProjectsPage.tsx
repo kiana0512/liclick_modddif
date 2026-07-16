@@ -443,13 +443,6 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
     onOpenProject(projectId);
   }
 
-  const statusText =
-    serverState === 'online'
-      ? t('workspaceConnected')
-      : serverState === 'checking'
-        ? t('workspaceChecking')
-        : t('workspaceOffline');
-
   return (
     <main className="li3d-home-surface min-h-screen text-white">
       {nameDialog?.type === 'new-folder' && (
@@ -545,15 +538,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             <Button className="h-10 px-4" icon={<Plus className="h-4 w-4" />} variant="primary" onClick={() => void handleNewProject()}>
               {t('newProject')}
             </Button>
-            <UserMenu
-              onLogout={onLogout}
-              workspaceStatus={{
-                label: statusText,
-                state: serverState,
-                retryLabel: t('retry'),
-                onRetry: () => void refreshWorkspace(true),
-              }}
-            />
+            <UserMenu onLogout={onLogout} />
         </div>
 
         {pageNotice && (

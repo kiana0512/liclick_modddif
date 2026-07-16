@@ -1,34 +1,24 @@
 import { useState } from 'react';
-import { Activity, Check, HardDrive, Keyboard, Languages, LogIn, LogOut, RefreshCw } from 'lucide-react';
+import { Languages, LogIn, LogOut } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
-import { ShortcutSettingsDialog } from '@/components/settings/ShortcutSettingsDialog';
 import { useAuthStore } from '@/stores/authStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
-import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 
 type UserMenuProps = {
   onLogout: () => void;
-  workspaceStatus?: {
-    label: string;
-    state: 'checking' | 'online' | 'offline';
-    retryLabel: string;
-    onRetry: () => void;
-  };
 };
 
-export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
+export function UserMenu({ onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loginStatus, setLoginStatus] = useState('');
-  const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false);
   const t = useT();
   const language = useI18nStore((state) => state.language);
   const setLanguage = useI18nStore((state) => state.setLanguage);
-  const performanceTestModeEnabled = useSettingsStore((state) => state.performanceTestModeEnabled);
-  const setPerformanceTestModeEnabled = useSettingsStore((state) => state.setPerformanceTestModeEnabled);
   const user = useAuthStore((state) => state.user);
+  const localProfile = useAuthStore((state) => state.localProfile);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
@@ -104,12 +94,13 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
     );
   }
 
+  const visibleAvatarUrl = localProfile.avatarDataUrl ?? user.avatarUrl;
+
   return (
-    <>
     <div className="relative">
       <button type="button" onClick={() => setOpen((current) => !current)} className="flex items-center gap-2 rounded-md px-2 py-1.5 transition hover:bg-white/10">
-        {user.avatarUrl ? (
-          <img src={user.avatarUrl} alt="" className="h-8 w-8 rounded-full object-cover" />
+        {visibleAvatarUrl ? (
+          <img src={visibleAvatarUrl} alt="" className="h-8 w-8 rounded-full object-cover" />
         ) : (
           <div className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-liclick-pink to-liclick-purple text-sm font-semibold">
             {user.displayName.slice(0, 1).toUpperCase()}
@@ -120,8 +111,8 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
       {open && (
         <div className="absolute right-0 top-11 z-30 w-64 rounded-md border border-white/10 bg-[#1d1d1d] p-2 shadow-[0_18px_45px_rgba(0,0,0,0.48)]">
           <div className="flex gap-3 p-2">
-            {user.avatarUrl ? (
-              <img src={user.avatarUrl} alt="" className="h-11 w-11 rounded-full object-cover" />
+            {visibleAvatarUrl ? (
+              <img src={visibleAvatarUrl} alt="" className="h-11 w-11 rounded-full object-cover" />
             ) : (
               <div className="grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-liclick-pink to-liclick-purple text-base font-semibold">
                 {user.displayName.slice(0, 1).toUpperCase()}
@@ -129,27 +120,12 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
             )}
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-white">{user.displayName}</div>
+              {localProfile.customId && (
+                <div className="truncate text-xs font-medium text-liclick-pink">@{localProfile.customId}</div>
+              )}
               <div className="truncate text-xs text-white/46">{user.email ?? user.authSource}</div>
             </div>
           </div>
-          {workspaceStatus && (
-            <div className="mx-1 mb-1 flex items-center justify-between gap-3 rounded border border-white/8 bg-white/[0.035] px-3 py-2.5">
-              <span className="inline-flex min-w-0 items-center gap-2 text-xs text-white/68">
-                <HardDrive
-                  className={`h-4 w-4 shrink-0 ${workspaceStatus.state === 'offline' ? 'text-amber-300/82' : 'text-white/64'}`}
-                />
-                <span className="truncate">{workspaceStatus.label}</span>
-              </span>
-              <button
-                type="button"
-                onClick={workspaceStatus.onRetry}
-                className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-white/58 transition hover:bg-white/10 hover:text-white"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${workspaceStatus.state === 'checking' ? 'animate-spin' : ''}`} />
-                {workspaceStatus.retryLabel}
-              </button>
-            </div>
-          )}
           <button
             type="button"
             onClick={() => setLanguage(language === 'zh' ? 'en' : 'zh')}
@@ -164,35 +140,6 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
               {language === 'zh' ? t('switchToEnglish') : t('switchToChinese')}
             </span>
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              setShortcutSettingsOpen(true);
-            }}
-            className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
-          >
-            <Keyboard className="h-4 w-4 shrink-0" />
-            <span className="truncate">{language === 'zh' ? '自定义快捷键' : 'Keyboard shortcuts'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setPerformanceTestModeEnabled(!performanceTestModeEnabled)}
-            className="mt-1 flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
-            title={t('performanceTestModeHelp')}
-          >
-            <span className="inline-flex min-w-0 items-center gap-2">
-              <Activity className="h-4 w-4 shrink-0" />
-              <span className="truncate">{t('performanceTestMode')}</span>
-            </span>
-            <span
-              className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${
-                performanceTestModeEnabled ? 'border-liclick-pink bg-liclick-pink text-white' : 'border-white/24 text-transparent'
-              }`}
-            >
-              <Check className="h-3.5 w-3.5" />
-            </span>
-          </button>
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />
             {t('logout')}
@@ -200,7 +147,5 @@ export function UserMenu({ onLogout, workspaceStatus }: UserMenuProps) {
         </div>
       )}
     </div>
-    {shortcutSettingsOpen && <ShortcutSettingsDialog onClose={() => setShortcutSettingsOpen(false)} />}
-    </>
   );
 }

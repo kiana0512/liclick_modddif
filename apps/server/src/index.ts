@@ -8,6 +8,7 @@ import { handleComfyuiRoute } from './routes/comfyui.js';
 import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
 import { handleLiclickRoute } from './routes/liclick.js';
+import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
@@ -125,6 +126,7 @@ async function handleWorkspaceRequest(
     return;
   }
   if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;
+  if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
   if (
     (url.pathname.startsWith('/api/liclick') || url.pathname === '/api/generate-image') &&

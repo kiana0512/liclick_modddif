@@ -26,5 +26,6 @@ workspace/trash/
 workspace/folders.json
 workspace/recent-projects.json
 workspace/settings.json
+workspace/config/
 workspace-auth-smoke/
 workspace-auth-smoke-feishu/

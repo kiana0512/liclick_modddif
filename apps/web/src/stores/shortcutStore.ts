@@ -132,6 +132,7 @@ type ShortcutStore = {
   overrides: ShortcutOverrides;
   setActiveUser: (userId?: string) => void;
   setBindings: (actionId: ShortcutActionId, bindings: ShortcutBinding[]) => void;
+  replaceOverrides: (overrides: ShortcutOverrides) => void;
   resetAll: () => void;
 };
 
@@ -173,6 +174,15 @@ export const useShortcutStore = create<ShortcutStore>((set, get) => ({
   },
   setBindings: (actionId, bindings) => {
     const nextOverrides = { ...get().overrides, [actionId]: bindings };
+    saveOverrides(get().activeUserId, nextOverrides);
+    set({ overrides: nextOverrides });
+  },
+  replaceOverrides: (overrides) => {
+    const nextOverrides = Object.fromEntries(
+      Object.entries(overrides).filter(([actionId, bindings]) =>
+        definitionById.has(actionId as ShortcutActionId) && Array.isArray(bindings),
+      ),
+    ) as ShortcutOverrides;
     saveOverrides(get().activeUserId, nextOverrides);
     set({ overrides: nextOverrides });
   },
