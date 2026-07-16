@@ -1,14 +1,14 @@
-import { OrbitControls, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
+import { OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { applySerializedCamera } from '@/engine/projection/ProjectionCamera';
 import { fitCameraToBoundingBox } from '@/engine/scene/fitCameraToObject';
 import { tupleFromVector } from '@/engine/scene/boundingBoxUtils';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import type { ModelBoundingBox } from '@/types/model';
+import { BlenderOrbitControls } from './BlenderOrbitControls';
 
 function getCombinedBoundingBox(objects: THREE.Object3D[]): ModelBoundingBox | undefined {
   const box = new THREE.Box3();
@@ -42,9 +42,19 @@ export function CameraController() {
   const restoreCameraRequest = useSceneStore((state) => state.restoreCameraRequest);
   const setViewportRuntime = useSceneStore((state) => state.setViewportRuntime);
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
-  const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  const controlsRef = useRef<BlenderOrbitControls | null>(null);
   const orbitTargetKeyRef = useRef<string>();
   const { gl, scene, camera, size } = useThree();
+
+  useEffect(() => {
+    if (!(camera instanceof THREE.PerspectiveCamera || camera instanceof THREE.OrthographicCamera)) return;
+    const controls = new BlenderOrbitControls(camera, gl.domElement);
+    controlsRef.current = controls;
+    return () => {
+      controls.dispose();
+      if (controlsRef.current === controls) controlsRef.current = null;
+    };
+  }, [camera, gl.domElement]);
 
   useEffect(() => {
     if (!(camera instanceof THREE.OrthographicCamera)) return;
@@ -137,14 +147,6 @@ export function CameraController() {
       ) : (
         <OrthographicCamera makeDefault position={[3.2, 2.4, 4]} zoom={90} />
       )}
-      <OrbitControls
-        ref={controlsRef}
-        makeDefault
-        enableDamping
-        dampingFactor={0.08}
-        minDistance={0.3}
-        maxDistance={40}
-      />
     </>
   );
 }

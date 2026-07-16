@@ -56,6 +56,7 @@ type CompositeJob = {
   revision: number;
   request: ProjectedPreviewCompositeRequest;
   normalLayers: PreparedLayer[];
+  underlayLayers: PreparedLayer[];
   overlayLayers: PreparedLayer[];
   bakeScene: THREE.Scene;
   bakeMeshes: THREE.Mesh[];
@@ -67,12 +68,13 @@ type CompositeJob = {
   hasRenderedColor: boolean;
   rankMaterial: THREE.ShaderMaterial;
   composeMaterial: THREE.ShaderMaterial;
+  underlayMaterial: THREE.ShaderMaterial;
   overlayMaterial: THREE.ShaderMaterial;
   fullscreenScene: THREE.Scene;
   fullscreenMesh: THREE.Mesh;
   tileIndex: number;
   layerIndex: number;
-  phase: 'begin-tile' | 'rank' | 'compose' | 'overlay' | 'copy';
+  phase: 'begin-tile' | 'rank' | 'compose' | 'underlay' | 'overlay' | 'copy';
   rankReadIndex: 0 | 1;
   tileReadIndex: 0 | 1;
   startedAt: number;
@@ -293,7 +295,7 @@ const composeFragmentShader = `
       color = r0.rgb * weights.x + r1.rgb * weights.y + r2.rgb * weights.z;
       renderedMix = dot(rendered, weights);
     }
-    composedColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+    composedColor = vec4(linearToSrgb(clamp(color, 0.0, 1.0)), 1.0);
     composedRenderedMask = vec4(renderedMix, 0.0, 0.0, 1.0);
   }
 `;
@@ -317,8 +319,55 @@ const overlayFragmentShader = `
     vec2 candidateInfo = texture(candidateInfoMap, uv).rg;
     float qualityFade = smoothstep(0.0, 0.15, max(candidate.a, candidateInfo.x * 0.25));
     float alpha = clamp(candidateInfo.x * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
-    composedColor = vec4(mix(base.rgb, candidate.rgb, alpha), max(base.a, step(0.0001, alpha)));
+    vec3 color = mix(base.rgb, candidate.rgb, alpha);
+    composedColor = vec4(linearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, step(0.0001, alpha)));
     composedRenderedMask = vec4(mix(baseRendered, candidateInfo.y, alpha), 0.0, 0.0, 1.0);
+  }
+`;
+
+const underlayFragmentShader = `
+  precision highp float;
+  uniform sampler2D baseMap;
+  uniform sampler2D baseRenderedMaskMap;
+  uniform sampler2D candidateMap;
+  uniform sampler2D candidateInfoMap;
+  uniform vec2 tileUvScale;
+  in vec2 vUv;
+  layout(location = 0) out vec4 composedColor;
+  layout(location = 1) out vec4 composedRenderedMask;
+
+  vec3 linearToSrgb(vec3 color) {
+    return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
+  }
+
+  vec3 linearToSrgb(vec3 color) {
+    return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
+  }
+
+  vec3 linearToSrgb(vec3 color) {
+    return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
+  }
+
+  void main() {
+    vec2 uv = vUv * tileUvScale;
+    vec4 base = texture(baseMap, uv);
+    float baseRendered = texture(baseRenderedMaskMap, uv).r;
+    vec4 candidate = texture(candidateMap, uv);
+    vec2 candidateInfo = texture(candidateInfoMap, uv).rg;
+    float basePresent = step(0.5, base.a);
+    float candidatePresent = step(${COVERAGE_THRESHOLD.toFixed(2)}, candidateInfo.x);
+    // Existing projections win completely. The repair candidate is used only
+    // where normal projection composition produced no texel, and is accepted
+    // as an opaque fallback to avoid a dark half-alpha boundary.
+    float useCandidate = (1.0 - basePresent) * candidatePresent;
+    vec3 color = mix(base.rgb, candidate.rgb, useCandidate);
+    composedColor = vec4(linearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, useCandidate));
+    composedRenderedMask = vec4(
+      mix(baseRendered, candidateInfo.y, useCandidate),
+      0.0,
+      0.0,
+      1.0
+    );
   }
 `;
 
@@ -460,7 +509,7 @@ function bindRankTextures(material: THREE.ShaderMaterial, target: THREE.WebGLRen
 }
 
 function disposeJob(job: CompositeJob) {
-  for (const layer of [...job.normalLayers, ...job.overlayLayers]) {
+  for (const layer of [...job.normalLayers, ...job.underlayLayers, ...job.overlayLayers]) {
     const neutral = layer.material.userData.liclickNeutralTexture as THREE.Texture | undefined;
     neutral?.dispose();
     layer.material.dispose();
@@ -471,6 +520,7 @@ function disposeJob(job: CompositeJob) {
   job.outputTarget.dispose();
   job.rankMaterial.dispose();
   job.composeMaterial.dispose();
+  job.underlayMaterial.dispose();
   job.overlayMaterial.dispose();
   job.fullscreenMesh.geometry.dispose();
   job.bakeScene.clear();
@@ -591,8 +641,17 @@ export class ProjectedLayerPreviewCompositor {
     this.job = {
       revision,
       request,
-      normalLayers: prepared.filter(({ input }) => input.blendMode !== 'overlay'),
-      overlayLayers: prepared.filter(({ input }) => input.blendMode === 'overlay'),
+      normalLayers: prepared.filter(
+        ({ input }) =>
+          (input.compositeRole ?? (input.blendMode === 'overlay' ? 'overlay' : 'normal')) ===
+          'normal',
+      ),
+      underlayLayers: prepared.filter(({ input }) => input.compositeRole === 'underlay'),
+      overlayLayers: prepared.filter(
+        ({ input }) =>
+          (input.compositeRole ?? (input.blendMode === 'overlay' ? 'overlay' : 'normal')) ===
+          'overlay',
+      ),
       bakeScene,
       bakeMeshes,
       camera: new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1),
@@ -603,6 +662,13 @@ export class ProjectedLayerPreviewCompositor {
       hasRenderedColor,
       rankMaterial,
       composeMaterial,
+      underlayMaterial: createFullscreenMaterial(underlayFragmentShader, {
+        baseMap: tileTargets[0].textures[0],
+        baseRenderedMaskMap: tileTargets[0].textures[1],
+        candidateMap: candidateTarget.textures[0],
+        candidateInfoMap: candidateTarget.textures[1],
+        tileUvScale: new THREE.Vector2(1, 1),
+      }),
       overlayMaterial,
       fullscreenScene,
       fullscreenMesh,
@@ -648,7 +714,8 @@ export class ProjectedLayerPreviewCompositor {
     job.lastProgressAt = now;
     const resolution = job.request.resolution;
     const tileCount = Math.ceil(resolution / TILE_SIZE) ** 2;
-    const operationsPerTile = job.normalLayers.length + job.overlayLayers.length + 3;
+    const operationsPerTile =
+      job.normalLayers.length + job.underlayLayers.length + job.overlayLayers.length + 3;
     const phaseOffset =
       job.phase === 'begin-tile'
         ? 0
@@ -656,8 +723,10 @@ export class ProjectedLayerPreviewCompositor {
           ? 1 + job.layerIndex
           : job.phase === 'compose'
             ? 1 + job.normalLayers.length
-            : job.phase === 'overlay'
+            : job.phase === 'underlay'
               ? 2 + job.normalLayers.length + job.layerIndex
+            : job.phase === 'overlay'
+              ? 2 + job.normalLayers.length + job.underlayLayers.length + job.layerIndex
               : operationsPerTile - 1;
     const completedOperations = Math.min(
       tileCount * operationsPerTile,
@@ -745,7 +814,45 @@ export class ProjectedLayerPreviewCompositor {
         renderer.clear(true, true, true);
         renderer.render(job.fullscreenScene, job.camera);
         job.tileReadIndex = 0;
-        job.phase = job.overlayLayers.length > 0 ? 'overlay' : 'copy';
+        job.layerIndex = 0;
+        job.phase =
+          job.underlayLayers.length > 0
+            ? 'underlay'
+            : job.overlayLayers.length > 0
+              ? 'overlay'
+              : 'copy';
+        return;
+      }
+
+      if (job.phase === 'underlay') {
+        const layer = job.underlayLayers[job.layerIndex];
+        job.bakeMeshes.forEach((mesh) => {
+          mesh.material = layer.material;
+        });
+        renderer.setRenderTarget(job.candidateTarget);
+        renderer.setViewport(-tileX, -tileY, job.request.resolution, job.request.resolution);
+        renderer.setScissor(0, 0, tileWidth, tileHeight);
+        renderer.setScissorTest(true);
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, true, true);
+        renderer.render(job.bakeScene, job.camera);
+
+        const tileRead = job.tileTargets[job.tileReadIndex];
+        const tileWriteIndex = job.tileReadIndex === 0 ? 1 : 0;
+        job.underlayMaterial.uniforms.baseMap.value = tileRead.textures[0];
+        job.underlayMaterial.uniforms.baseRenderedMaskMap.value = tileRead.textures[1];
+        job.underlayMaterial.uniforms.tileUvScale.value.copy(uvScale);
+        job.fullscreenMesh.material = job.underlayMaterial;
+        renderer.setRenderTarget(job.tileTargets[tileWriteIndex]);
+        renderer.setViewport(0, 0, tileWidth, tileHeight);
+        renderer.setScissorTest(false);
+        renderer.render(job.fullscreenScene, job.camera);
+        job.tileReadIndex = tileWriteIndex;
+        job.layerIndex += 1;
+        if (job.layerIndex >= job.underlayLayers.length) {
+          job.layerIndex = 0;
+          job.phase = job.overlayLayers.length > 0 ? 'overlay' : 'copy';
+        }
         return;
       }
 

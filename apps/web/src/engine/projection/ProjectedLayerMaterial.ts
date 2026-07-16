@@ -247,6 +247,7 @@ const fragmentShader = `
   uniform float layerStrength;
   uniform float projectedIsRenderedColor;
   uniform float projectedBlendModeOverlay;
+  uniform float projectedCompositeUnderlay;
   uniform float useMask;
   uniform float maskUsesUv;
   uniform float useDepthCheck;
@@ -404,6 +405,14 @@ const fragmentShader = `
     float overlayQualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
     float overlayProjectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * mix(0.75, 1.0, overlayQualityFade) * step(${COVERAGE_THRESHOLD.toFixed(2)}, coverage);
     projectionAlpha = mix(projectionAlpha, overlayProjectionAlpha, projectedBlendModeOverlay);
+    // A repair underlay is a fallback texel, not a translucent decal. Hardening
+    // its accepted coverage prevents the mask edge from blending with the
+    // diagnostic black empty-preview color.
+    projectionAlpha = mix(
+      projectionAlpha,
+      step(${COVERAGE_THRESHOLD.toFixed(2)}, projectionAlpha),
+      projectedCompositeUnderlay
+    );
     vec4 baseTexel = texture2D(baseMap, vUv);
     float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
@@ -470,6 +479,7 @@ function buildStackFragmentShader(
     depthUrl?: string;
     renderedColor?: boolean;
     blendMode?: ProjectionLayerStackInput['layers'][number]['blendMode'];
+    compositeRole?: ProjectionLayerStackInput['layers'][number]['compositeRole'];
   }>,
   requestedFeatures: ProjectedLayerSamplerFeatures = {},
 ) {
@@ -527,8 +537,9 @@ function buildStackFragmentShader(
 `,
   ).join('');
 
-  const blendEvaluations = Array.from({ length: layerCount }, (_, index) =>
-    layers[index].blendMode === 'overlay'
+  const buildCandidateEvaluations = (role: 'normal' | 'underlay') =>
+    Array.from({ length: layerCount }, (_, index) =>
+    (layers[index].compositeRole ?? (layers[index].blendMode === 'overlay' ? 'overlay' : 'normal')) !== role
       ? ''
       : `
     if (layerOpacity${index} > 0.0001) {
@@ -583,6 +594,8 @@ function buildStackFragmentShader(
     }
 `,
   ).join('');
+  const underlayEvaluations = buildCandidateEvaluations('underlay');
+  const blendEvaluations = buildCandidateEvaluations('normal');
 
   const overlayEvaluations = Array.from({ length: layerCount }, (_, index) =>
     layers[index].blendMode !== 'overlay'
@@ -859,9 +872,22 @@ function buildStackFragmentShader(
     topColor1 = vec3(0.0);
     topColor2 = vec3(0.0);
 
+    ${underlayEvaluations}
+
+    vec3 underlayColor = composeBlendBase(shadedBase);
+    topCoverage0 = 0.0;
+    topCoverage1 = 0.0;
+    topCoverage2 = 0.0;
+    topQuality0 = 0.0;
+    topQuality1 = 0.0;
+    topQuality2 = 0.0;
+    topColor0 = vec3(0.0);
+    topColor1 = vec3(0.0);
+    topColor2 = vec3(0.0);
+
     ${blendEvaluations}
 
-    vec3 mixedColor = composeBlendBase(shadedBase);
+    vec3 mixedColor = composeBlendBase(underlayColor);
     ${overlayEvaluations}
     ${
       features.useUvOverlayMap
@@ -971,6 +997,7 @@ function getProjectionLayerStructureSignature(
           layer.useDepthCheck ? 1 : 0,
           layer.renderedColor ? 1 : 0,
           layer.blendMode ?? 'normal',
+          layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
           getLayerCameraSignature(layer.camera),
         ].join('~'),
@@ -1385,6 +1412,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     opacity: input.opacity,
     strength: input.strength,
     blendMode: input.blendMode,
+    compositeRole: input.compositeRole,
     visible: input.visible,
     hue: input.hue,
     saturation: input.saturation,
@@ -1462,6 +1490,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       layerStrength: { value: input.strength ?? 1 },
       projectedIsRenderedColor: { value: input.renderedColor ? 1 : 0 },
       projectedBlendModeOverlay: { value: input.blendMode === 'overlay' ? 1 : 0 },
+      projectedCompositeUnderlay: { value: input.compositeRole === 'underlay' ? 1 : 0 },
       useMask: { value: input.useMask && input.maskUrl && maskTexture !== neutralTexture ? 1 : 0 },
       maskUsesUv: { value: input.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: {

@@ -53,7 +53,7 @@ import {
   dataUrlToBlob,
   imageDataToBlob,
   inferAlphaObjectMask,
-  inferWhiteHoleMask,
+  inferProjectionGapMask,
   resizeImageData,
   restoreProtectedPixels,
   urlToImageData,
@@ -170,6 +170,19 @@ function isLocalRepaintProjectionLayer(layer: Layer) {
   );
 }
 
+function isLocalRepaintLayer(layer: Layer) {
+  return (
+    layer.id.startsWith('local-repaint-') ||
+    layer.imageUrl.includes('surface-edit:local-repaint')
+  );
+}
+
+function waitForViewportComposition() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+  });
+}
+
 function isMatchingLocalRepaintProjectionLayer(
   layer: Layer,
   generationId: string | undefined,
@@ -227,11 +240,28 @@ function constrainMaskToObject(mask: MaskBitmap, objectMask: MaskBitmap) {
 }
 
 function buildContentAwareRepairMask(baseMask: MaskBitmap, objectMask: MaskBitmap) {
-  const bounds = computeMaskBoundingBox(baseMask);
-  if (!bounds) return baseMask;
-  const minSide = Math.min(bounds.w, bounds.h);
-  const growRadius = minSide > 180 ? 2 : 1;
-  return constrainMaskToObject(dilateMask(baseMask, growRadius), objectMask);
+  // Never grow into an already covered projection. The repair layer may only
+  // write pixels explicitly identified as the zero-coverage hatch.
+  return constrainMaskToObject(baseMask, objectMask);
+}
+
+function buildContentAwareSamplingMask(editMask: MaskBitmap, objectMask: MaskBitmap) {
+  // Keep the output mask strict, but move the color-sampling frontier past the
+  // antialiased black hatch. Otherwise those dark fringe pixels become valid
+  // seeds and are propagated back into the repaired gap as a visible seam.
+  const maxDimension = Math.max(editMask.width, editMask.height);
+  const samplingPadding = Math.max(4, Math.min(10, Math.round(maxDimension / 256)));
+  return constrainMaskToObject(dilateMask(editMask, samplingPadding), objectMask);
+}
+
+function buildContentAwareUnderlapMask(editMask: MaskBitmap, objectMask: MaskBitmap) {
+  // Push the repair fallback safely beneath valid projection coverage. The
+  // renderer treats this layer as a true underlay, so this padding cannot
+  // overwrite authored color; it only guarantees that no sub-pixel gap remains
+  // between the two coverage masks.
+  const maxDimension = Math.max(editMask.width, editMask.height);
+  const underlapRadius = Math.max(8, Math.min(16, Math.round(maxDimension / 128)));
+  return constrainMaskToObject(dilateMask(editMask, underlapRadius), objectMask);
 }
 
 function getLocalRepaintFeatherRadius(mask: MaskBitmap) {
@@ -258,11 +288,11 @@ function buildLocalRepaintPatchMask(runtime: LocalRepaintRuntime, sourcePatch: I
   const patchMask = createEmptyMask(sourcePatch.width, sourcePatch.height);
   const editMask = runtime.editMask;
   if (editMask && isLocalContentAwareRuntime(runtime)) {
-    const softMask = featherMask(editMask, 1);
     for (let index = 0; index < patchMask.data.length; index += 1) {
       patchMask.data[index] =
-        (runtime.objectMask.data[index] ?? 0) > 0 ? (softMask.data[index] ?? 0) : 0;
-      if ((editMask.data[index] ?? 0) > 0) patchMask.data[index] = 255;
+        (runtime.objectMask.data[index] ?? 0) > 0 && (editMask.data[index] ?? 0) > 0
+          ? 255
+          : 0;
     }
     return patchMask;
   }
@@ -613,6 +643,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
   const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
+  const localRepaintToolRequestRevisionRef = useRef(0);
   const standardProjectThumbnailCaptureRef = useRef<() => string | undefined>(() => undefined);
   const thumbnailRefreshTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
@@ -1387,6 +1418,41 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       }
     },
     [prepareViewportRenderSize],
+  );
+
+  const getContentAwareBaseCapture = useCallback(
+    async (size?: { width: number; height: number }) => {
+      const layerState = useLayerStore.getState();
+      const sceneState = useSceneStore.getState();
+      const originalLayers = layerState.layers;
+      const originalActiveLayerId = layerState.activeProjectedLayerId;
+      const originalPreviewLayer = sceneState.localRepaintPreviewLayer;
+      const baseLayers = originalLayers.filter((layer) => !isLocalRepaintLayer(layer));
+      const needsFilteredCapture =
+        baseLayers.length !== originalLayers.length || Boolean(originalPreviewLayer);
+      if (!needsFilteredCapture) return getCleanViewportCapture(size);
+
+      // Content-aware repair should inspect the underlying texture stack, not a
+      // local-repaint patch that already sits on top of it. Suppress persistence
+      // while React renders the temporary filtered stack for the capture.
+      suppressProjectLayerSyncRef.current += 1;
+      try {
+        layerState.setLayers(baseLayers);
+        sceneState.setLocalRepaintPreviewLayer(undefined);
+        await waitForViewportComposition();
+        return getCleanViewportCapture(size);
+      } finally {
+        layerState.setLayers(originalLayers);
+        if (originalActiveLayerId) layerState.setActiveLayer(originalActiveLayerId);
+        sceneState.setLocalRepaintPreviewLayer(originalPreviewLayer);
+        await waitForViewportComposition();
+        suppressProjectLayerSyncRef.current = Math.max(
+          0,
+          suppressProjectLayerSyncRef.current - 1,
+        );
+      }
+    },
+    [getCleanViewportCapture],
   );
 
   async function referenceIdsToBlobs(referenceIds: string[]) {
@@ -2524,12 +2590,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     if (!cameraState) throw new Error(t('viewportUnavailable'));
     const sourcePatch = runtime.mergedImageData ?? runtime.workingImageData;
     const patchMask = buildLocalRepaintPatchMask(runtime, sourcePatch);
-    const patchImage = applyAlphaFromMask(sourcePatch, patchMask);
+    const patchImage = applyAlphaFromMask(sourcePatch, patchMask, 12);
     const patchBlob = await imageDataToBlob(patchImage);
     const patchUrl = await blobToDataUrl(patchBlob);
     const objectId = selectedObjectId ?? importedModel.objectId;
     importedModel.group.updateMatrixWorld(true);
-    const tempLayer: Layer = {
+      const tempLayer: Layer = {
       id: createId('local-repaint-patch'),
       name: 'Local repaint UV patch',
       type: 'projected',
@@ -2537,6 +2603,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       objectId,
       objectMatrixWorld: importedModel.group.matrixWorld.toArray(),
       camera: cameraState,
+      renderedColor: true,
       visible: true,
       opacity: 1,
       strength: 1,
@@ -2610,7 +2677,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       if (!cameraState) throw new Error(t('viewportUnavailable'));
       const sourcePatch = runtime.mergedImageData ?? runtime.workingImageData;
       const patchMask = buildLocalRepaintPatchMask(runtime, sourcePatch);
-      const patchImage = applyAlphaFromMask(sourcePatch, patchMask);
+      // Pad transparent RGB around the patch. The alpha/edit mask stays exact,
+      // but bilinear and mipmap sampling can no longer pull the black gap color
+      // back into the visible edge.
+      const patchImage = applyAlphaFromMask(sourcePatch, patchMask, 12);
       const layerId = createId('content-aware-projected-repair');
       const imageUrl = await persistLayerImage(patchImage, `${layerId}.png`);
       const objectId = selectedObjectId ?? importedModel.objectId;
@@ -2624,6 +2694,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         objectMatrixWorld: importedModel.group.matrixWorld.toArray(),
         camera: cameraState,
         generationId: 'texture-map-content-aware-repair',
+        // The patch is sampled from a fully rendered viewport capture. Mark it
+        // as display color so projection preview does not apply lighting and
+        // exposure a second time.
+        renderedColor: true,
         visible: true,
         opacity: 1,
         strength: 1,
@@ -2632,7 +2706,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         order: 0,
         createdAt: new Date().toISOString(),
       };
-      setLayers([layer, ...useLayerStore.getState().layers]);
+      // Content-aware repair is a foundation/fill layer. Keep every authored
+      // projection, UV paint and local-repaint patch above it in panel order.
+      setLayers([...useLayerStore.getState().layers, layer]);
       setActiveLayer(layer.id);
       scheduleTexturedThumbnailRefresh(300);
       return layer;
@@ -3090,6 +3166,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }, []);
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
+    const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
+    localRepaintToolRequestRevisionRef.current = requestRevision;
     void (async () => {
       if (!project || !importedModel) {
         pushToast({
@@ -3160,9 +3238,19 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
           ? latestLocalRepaintGeneration.metadata.maskUrl
           : paintMaskDataUrl;
+      // Reflect the selected tool immediately. More importantly, this gives us
+      // an intent boundary: if the user switches to mask painting while the
+      // repaint image is still being decoded, the completed async work must not
+      // switch the tool back underneath them.
+      setPaintTool('inpaint-apply');
       const projectionImageUrl = await getLocalRepaintProjectionImage(
         latestLocalRepaintGeneration.resultUrl,
       );
+      if (
+        localRepaintToolRequestRevisionRef.current !== requestRevision ||
+        useSceneStore.getState().paintTool !== 'inpaint-apply'
+      )
+        return;
       if (
         localRepaintProjectionSource?.generationId === latestLocalRepaintGeneration.id &&
         localRepaintProjectionSource.allowedMaskUrl === generationMaskUrl &&
@@ -3170,7 +3258,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         localRepaintProjectionSource.objectId === objectId &&
         localRepaintProjectionSource.targetLayerId === targetLayer.id
       ) {
-        setPaintTool('inpaint-apply');
         return;
       }
       const nameSource = latestLocalRepaintGeneration.prompt.trim();
@@ -3201,7 +3288,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         targetLayerType: targetLayer.type,
         targetLayerName: targetLayer.name,
       });
-      setPaintTool('inpaint-apply');
       pushToast({
         tone: 'info',
         title: t('localRepaint'),
@@ -3237,9 +3323,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       const captureSize = viewportRuntime
         ? getLocalRepaintCaptureSize(viewportRuntime.gl.domElement)
         : undefined;
-      const capture = getCleanViewportCapture(captureSize);
       const cameraState = getCurrentCameraSnapshot();
-      if (!capture || !cameraState || !importedModel) {
+      if (!viewportRuntime || !cameraState || !importedModel) {
         pushToast({
           tone: 'warning',
           title: t('viewportUnavailable'),
@@ -3255,13 +3340,17 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           detail: t('contentAwareRepairScanning'),
           progress: 0.08,
         });
+        const capture = await getContentAwareBaseCapture(captureSize);
+        if (!capture) throw new Error(t('viewportUnavailable'));
         const workingImageData = await urlToImageData(capture.dataUrl);
         const objectMask = capture.objectMask;
-        const editMask = buildContentAwareRepairMask(
-          removeSmallMaskComponents(inferWhiteHoleMask(workingImageData, objectMask), 48),
-          objectMask,
+        const exposure = useSettingsStore.getState().exposure;
+        const projectionGapMask = removeSmallMaskComponents(
+          inferProjectionGapMask(workingImageData, objectMask, exposure),
+          4,
         );
-        if (!ensureMaskContent(editMask)) {
+        const detectedGapMask = buildContentAwareRepairMask(projectionGapMask, objectMask);
+        if (!ensureMaskContent(detectedGapMask)) {
           setManualBakeProgress(undefined);
           pushToast({
             tone: 'info',
@@ -3272,7 +3361,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           return;
         }
 
-        const bbox = computeMaskBoundingBox(editMask);
+        const repairMask = buildContentAwareUnderlapMask(detectedGapMask, objectMask);
+        const bbox = computeMaskBoundingBox(repairMask);
         if (!bbox) throw new Error(t('contentAwareRepairNoBlankArea'));
         const roiRect = expandRect(bbox, 32, {
           width: workingImageData.width,
@@ -3284,7 +3374,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           detail: t('contentAwareRepairFilling'),
           progress: 0.24,
         });
-        const filled = contentAwareFillMaskedPixels(workingImageData, editMask, objectMask, {
+        const samplingMask = buildContentAwareSamplingMask(repairMask, objectMask);
+        const filled = contentAwareFillMaskedPixels(workingImageData, samplingMask, objectMask, {
           searchRadius: Math.max(
             24,
             Math.min(72, Math.ceil(Math.max(roiRect.w, roiRect.h) * 0.26)),
@@ -3292,8 +3383,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           iterations: 5,
           patchRadius: 4,
         });
-        const composited = compositeUsingMask(workingImageData, filled, editMask);
-        const protectMask = buildProtectMask(objectMask, editMask);
+        const composited = compositeUsingMask(workingImageData, filled, repairMask);
+        const protectMask = buildProtectMask(objectMask, repairMask);
         const restored = restoreProtectedPixels(workingImageData, composited, protectMask);
         const runtime: LocalRepaintRuntime = {
           id: createId('content-aware-repair'),
@@ -3304,8 +3395,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           workingImageUrl: capture.dataUrl,
           workingImageData,
           objectMask,
-          holeMask: editMask,
-          editMask,
+          holeMask: detectedGapMask,
+          editMask: repairMask,
           protectMask,
           roiRect,
           mergedImageData: restored,
@@ -3339,7 +3430,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     addProjectedRepairLayer,
     captureHistory,
     getCurrentCameraSnapshot,
-    getCleanViewportCapture,
+    getContentAwareBaseCapture,
     getLocalRepaintCaptureSize,
     importedModel,
     projectId,
