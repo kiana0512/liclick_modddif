@@ -650,6 +650,7 @@ function ImportedModel({
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
   const layers = useLayerStore((state) => state.layers);
+  const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
     state.currentProjectId
@@ -658,8 +659,24 @@ function ImportedModel({
   );
   const importedObjectId = importedModel?.objectId;
   const visibleProjectedLayers = useMemo(
-    () => (importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []),
-    [importedObjectId, layers],
+    () => {
+      const storedLayers = importedObjectId
+        ? getVisibleProjectedLayerStack(layers, importedObjectId)
+        : [];
+      if (
+        !localRepaintPreviewLayer?.visible ||
+        !localRepaintPreviewLayer.imageUrl ||
+        !localRepaintPreviewLayer.camera ||
+        (localRepaintPreviewLayer.objectId &&
+          localRepaintPreviewLayer.objectId !== importedObjectId)
+      )
+        return storedLayers;
+      return [
+        localRepaintPreviewLayer,
+        ...storedLayers.filter((layer) => layer.id !== localRepaintPreviewLayer.id),
+      ];
+    },
+    [importedObjectId, layers, localRepaintPreviewLayer],
   );
   const visibleProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleProjectedLayers),
@@ -679,8 +696,8 @@ function ImportedModel({
   const [failedProjectedTextureArraySignature, setFailedProjectedTextureArraySignature] =
     useState('');
   const previewProjectedLayers = useMemo(
-    () =>
-      layers
+    () => {
+      const storedLayers = layers
         .filter(
           (layer) =>
             layer.type === 'projected' &&
@@ -689,8 +706,23 @@ function ImportedModel({
             layer.camera &&
             (!layer.objectId || layer.objectId === importedObjectId),
         )
-        .sort((a, b) => a.order - b.order),
-    [importedObjectId, layers],
+        // Layer order 0 is the top row in the panel. Feed the shader bottom-up
+        // so later overlay evaluations preserve that visible stacking order.
+        .sort((a, b) => b.order - a.order);
+      if (
+        !localRepaintPreviewLayer?.visible ||
+        !localRepaintPreviewLayer.imageUrl ||
+        !localRepaintPreviewLayer.camera ||
+        (localRepaintPreviewLayer.objectId &&
+          localRepaintPreviewLayer.objectId !== importedObjectId)
+      )
+        return storedLayers;
+      return [
+        ...storedLayers.filter((layer) => layer.id !== localRepaintPreviewLayer.id),
+        localRepaintPreviewLayer,
+      ];
+    },
+    [importedObjectId, layers, localRepaintPreviewLayer],
   );
   const previewProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(previewProjectedLayers),
@@ -1063,13 +1095,32 @@ function ImportedModel({
   const loadedBakedTexture = useLoadedPreviewTexture(previewBakedTextureRecord?.imageUrl);
   const liveTopUvLayer = useMemo(() => {
     const topLayer = stableVisibleUvLayers[0];
-    if (!topLayer || !getLiveProjectedCanvasState(topLayer.imageUrl)) return undefined;
-    // A live top layer can be sampled directly by the material when projected content
-    // already has a baked base (or is absent). This avoids a full-resolution CPU stack
-    // composite on every brush sample.
-    if (!previewBakedTextureRecord && stableVisibleProjectedLayers.length > 0) return undefined;
+    if (
+      !topLayer ||
+      (!getLiveProjectedCanvasState(topLayer.imageUrl) &&
+        !isRenderedLocalRepaintLayer(topLayer))
+    )
+      return undefined;
+    // The live projected stroke is the newest visual edit and must stay above
+    // the already-committed UV patch until this stroke is baked into that patch.
+    if (
+      localRepaintPreviewLayer?.visible &&
+      stableVisibleProjectedLayers.some((layer) => layer.id === localRepaintPreviewLayer.id)
+    )
+      return undefined;
+    // Keep a live or rendered-color top layer separate from the albedo UV stack.
+    // Besides avoiding full-resolution recomposites during painting, this lets a
+    // baked local-repaint patch retain the same exposure semantics as its live
+    // projected preview instead of receiving viewport lighting a second time.
+    // A smaller order is a higher row in the layer panel. Only composite the UV
+    // patch last when it is actually above every projected layer.
+    const topProjectedOrder = stableVisibleProjectedLayers.reduce(
+      (topOrder, layer) => Math.min(topOrder, layer.order),
+      Number.POSITIVE_INFINITY,
+    );
+    if (topLayer.order >= topProjectedOrder) return undefined;
     return topLayer;
-  }, [previewBakedTextureRecord, stableVisibleProjectedLayers.length, stableVisibleUvLayers]);
+  }, [localRepaintPreviewLayer, stableVisibleProjectedLayers, stableVisibleUvLayers]);
   const nonLiveUvLayers = useMemo(
     () =>
       liveTopUvLayer
@@ -1084,14 +1135,33 @@ function ImportedModel({
   const compositedUvTexture = useCompositedUvTexture(compositedUvLayers);
   const directUvTexture = useLoadedPreviewTexture(directUvLayer?.imageUrl);
   const loadedUvTexture = directUvTexture ?? compositedUvTexture;
+  const loadedStaticTopUvTexture = useLoadedPreviewTexture(
+    liveTopUvLayer && !getLiveProjectedCanvasState(liveTopUvLayer.imageUrl)
+      ? liveTopUvLayer.imageUrl
+      : undefined,
+  );
   const liveTopUvTexture = useMemo(
     () =>
       liveTopUvLayer
-        ? getLiveProjectedCanvasTexture(liveTopUvLayer.imageUrl, THREE.SRGBColorSpace, {
+        ? (getLiveProjectedCanvasTexture(liveTopUvLayer.imageUrl, THREE.SRGBColorSpace, {
             flipY: true,
-          })
+          }) ?? loadedStaticTopUvTexture)
         : undefined,
-    [liveTopUvLayer],
+    [liveTopUvLayer, loadedStaticTopUvTexture],
+  );
+  const topUvProjectedOverlayInput = useMemo(
+    () =>
+      liveTopUvTexture && liveTopUvLayer
+        ? {
+            topUvOverlayTexture: liveTopUvTexture,
+            topUvOverlayOpacity: liveTopUvLayer.opacity,
+            topUvOverlayRenderedColor: isRenderedLocalRepaintLayer(liveTopUvLayer),
+            topUvOverlayHue: (liveTopUvLayer.adjustments?.hue ?? 0) / 100,
+            topUvOverlaySaturation: (liveTopUvLayer.adjustments?.saturation ?? 0) / 100,
+            topUvOverlayLightness: (liveTopUvLayer.adjustments?.lightness ?? 0) / 100,
+          }
+        : undefined,
+    [liveTopUvLayer, liveTopUvTexture],
   );
   const liveSurfaceMaskTexture = useMemo(() => {
     if (exactBakedTextureRecord) return undefined;
@@ -1374,6 +1444,7 @@ function ImportedModel({
           updateProjectedLayerStackMaterial(previousMaterial, {
             ...projectedLayerInput,
             ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+            ...topUvProjectedOverlayInput,
           })
         ) {
           continue;
@@ -1383,6 +1454,7 @@ function ImportedModel({
           const projectedMaterialInput = {
             ...projectedLayerInput,
             ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+            ...topUvProjectedOverlayInput,
           };
           try {
             sharedProjectedMaterial = await createProjectedLayerStackMaterial(
@@ -1479,6 +1551,7 @@ function ImportedModel({
     useProjectedTextureArrays,
     activeProjectedPreviewInput,
     stablePreviewProjectedLayers,
+    topUvProjectedOverlayInput,
     visibleStackHasBakedPreview,
   ]);
 

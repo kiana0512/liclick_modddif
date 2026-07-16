@@ -2,7 +2,6 @@ function getRawMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return typeof error === 'string' ? error : '';
 }
-
 export function getUserFacingGenerationError(
   error: unknown,
   fallback = '生成服务暂时无法完成请求，请稍后重试。',
@@ -14,10 +13,18 @@ export function getUserFacingGenerationError(
   if (/billing[_\s-]*(hard[_\s-]*)?limit|计费.*上限|账单.*限额|额度.*用完/.test(normalized)) {
     return '当前账号的生图额度已用完，请检查莉刻账户额度后重试。';
   }
-  if (/413|payload too large|request body is too large|文件过大|图片过大|参考图.*过大/.test(normalized)) {
+  if (
+    /413|payload too large|request body is too large|文件过大|图片过大|参考图.*过大/.test(
+      normalized,
+    )
+  ) {
     return '参考图超过生成服务限制，自动处理后仍未能上传，请裁剪图片或降低分辨率后重试。';
   }
-  if (/401|403|unauthorized|forbidden|账号.*不一致|account does not match|登录.*过期|token.*expired/.test(normalized)) {
+  if (
+    /401|403|unauthorized|forbidden|账号.*不一致|account does not match|登录.*过期|token.*expired/.test(
+      normalized,
+    )
+  ) {
     return '登录状态已失效或账号不一致，请重新登录莉刻后重试。';
   }
   if (/429|too many requests|rate.?limit|请求.*频繁/.test(normalized)) {
@@ -34,7 +41,11 @@ export function getUserFacingGenerationError(
   if (/400|bad request|invalid.*parameter|invalid.*argument/.test(normalized)) {
     return '生成参数不符合服务要求，请检查提示词和参考图后重试。';
   }
-  if (/5\d\d|internal server|bad gateway|service unavailable|assertion failed|uv_handle/.test(normalized)) {
+  if (
+    /5\d\d|internal server|bad gateway|service unavailable|assertion failed|uv_handle/.test(
+      normalized,
+    )
+  ) {
     return '生成服务暂时异常，请稍后重试。';
   }
 
@@ -43,4 +54,3 @@ export function getUserFacingGenerationError(
   if (message && !containsTechnicalDetail && /[\u3400-\u9fff]/.test(message)) return message;
   return fallback;
 }
-

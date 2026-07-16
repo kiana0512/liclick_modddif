@@ -23,6 +23,7 @@ type LayerStore = {
     objectId?: string;
     targetUvLayerId?: string;
     name?: string;
+    renderedColor?: boolean;
   }) => Layer;
   addProjectedLayerFromGeneration: (
     generation: Generation,
@@ -240,6 +241,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
             name: layer.name || input.name || 'Merged UV Layer',
             imageUrl: input.imageUrl,
             objectId: input.objectId ?? layer.objectId,
+            renderedColor: input.renderedColor,
             visible: true,
             opacity: 1,
             strength: 1,
@@ -258,6 +260,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           type: 'uv',
           imageUrl: input.imageUrl,
           objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
+          renderedColor: input.renderedColor,
           visible: true,
           opacity: 1,
           strength: 1,

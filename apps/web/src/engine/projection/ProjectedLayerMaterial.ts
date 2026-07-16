@@ -124,12 +124,13 @@ export type ProjectedLayerSamplerBudget = {
   withinBudget: boolean;
 };
 
-const SINGLE_LAYER_FIXED_SAMPLERS = 6;
+const SINGLE_LAYER_FIXED_SAMPLERS = 7;
 
 type ProjectedLayerSamplerFeatures = {
   useBaseMap?: boolean;
   useBaseRenderedColorMaskMap?: boolean;
   useUvOverlayMap?: boolean;
+  useTopUvOverlayMap?: boolean;
   useTextureArrays?: boolean;
 };
 
@@ -139,6 +140,7 @@ function normalizeSamplerFeatures(features: ProjectedLayerSamplerFeatures = {}) 
     useBaseMap,
     useBaseRenderedColorMaskMap: useBaseMap && features.useBaseRenderedColorMaskMap === true,
     useUvOverlayMap: features.useUvOverlayMap === true,
+    useTopUvOverlayMap: features.useTopUvOverlayMap === true,
     useTextureArrays: features.useTextureArrays === true,
   };
 }
@@ -156,9 +158,14 @@ export function getProjectedLayerSamplerBudget(
   const stackFixed =
     Number(normalizedFeatures.useBaseMap) +
     Number(normalizedFeatures.useBaseRenderedColorMaskMap) +
-    Number(normalizedFeatures.useUvOverlayMap);
+    Number(normalizedFeatures.useUvOverlayMap) +
+    Number(normalizedFeatures.useTopUvOverlayMap);
   const fixed =
-    projected === 0 ? 0 : projected === 1 ? SINGLE_LAYER_FIXED_SAMPLERS - 1 : stackFixed;
+    projected === 0
+      ? 0
+      : projected === 1
+        ? SINGLE_LAYER_FIXED_SAMPLERS - 1
+        : stackFixed;
   const masks =
     projected === 1
       ? 0
@@ -229,6 +236,7 @@ const fragmentShader = `
   uniform sampler2D projectedMap;
   uniform sampler2D baseMap;
   uniform sampler2D uvOverlayMap;
+  uniform sampler2D topUvOverlayMap;
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
   uniform mat4 projectorMatrix;
@@ -255,6 +263,12 @@ const fragmentShader = `
   uniform sampler2D baseRenderedColorMaskMap;
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
+  uniform float useTopUvOverlayMap;
+  uniform float topUvOverlayOpacity;
+  uniform float topUvOverlayRenderedColor;
+  uniform float topUvOverlayHueShift;
+  uniform float topUvOverlaySaturationShift;
+  uniform float topUvOverlayLightnessShift;
   uniform float previewLightingEnabled;
   uniform float previewExposure;
   uniform float ambientLightIntensity;
@@ -421,6 +435,24 @@ const fragmentShader = `
       uvOverlayTexel.rgb * lambert,
       uvOverlayTexel.a * useUvOverlayMap
     );
+    vec4 topUvOverlayTexel = texture2D(topUvOverlayMap, vUv);
+    topUvOverlayTexel.rgb = applyHsvAdjustments(
+      topUvOverlayTexel.rgb,
+      topUvOverlayHueShift,
+      topUvOverlaySaturationShift,
+      topUvOverlayLightnessShift
+    );
+    float topUvOverlayAlpha = clamp(
+      topUvOverlayTexel.a * useTopUvOverlayMap * topUvOverlayOpacity,
+      0.0,
+      1.0
+    );
+    vec3 topUvOverlayDisplayColor = topUvOverlayTexel.rgb * mix(
+      lambert,
+      renderedColorExposureCompensation,
+      topUvOverlayRenderedColor
+    );
+    mixedColor = mix(mixedColor, topUvOverlayDisplayColor, topUvOverlayAlpha);
 
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
@@ -625,6 +657,12 @@ function buildStackFragmentShader(
   ${features.useUvOverlayMap ? 'uniform float uvOverlayHueShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlaySaturationShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayLightnessShift;' : ''}
+  ${features.useTopUvOverlayMap ? 'uniform sampler2D topUvOverlayMap;' : ''}
+  ${features.useTopUvOverlayMap ? 'uniform float topUvOverlayOpacity;' : ''}
+  ${features.useTopUvOverlayMap ? 'uniform float topUvOverlayRenderedColor;' : ''}
+  ${features.useTopUvOverlayMap ? 'uniform float topUvOverlayHueShift;' : ''}
+  ${features.useTopUvOverlayMap ? 'uniform float topUvOverlaySaturationShift;' : ''}
+  ${features.useTopUvOverlayMap ? 'uniform float topUvOverlayLightnessShift;' : ''}
   uniform float previewLightingEnabled;
   uniform float previewExposure;
   uniform float ambientLightIntensity;
@@ -789,6 +827,18 @@ function buildStackFragmentShader(
     );`
         : ''
     }
+    ${
+      features.useTopUvOverlayMap
+        ? `
+    vec4 topUvOverlayTexel = texture2D(topUvOverlayMap, vUv);
+    topUvOverlayTexel.rgb = applyHsvAdjustments(
+      topUvOverlayTexel.rgb,
+      topUvOverlayHueShift,
+      topUvOverlaySaturationShift,
+      topUvOverlayLightnessShift
+    );`
+        : ''
+    }
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 shadedBase = ${
       features.useBaseMap
@@ -820,6 +870,21 @@ function buildStackFragmentShader(
       uvOverlayTexel.rgb * lambert,
       uvOverlayTexel.a
     );`
+        : ''
+    }
+    ${
+      features.useTopUvOverlayMap
+        ? `float topUvOverlayAlpha = clamp(
+      topUvOverlayTexel.a * topUvOverlayOpacity,
+      0.0,
+      1.0
+    );
+    vec3 topUvOverlayDisplayColor = topUvOverlayTexel.rgb * mix(
+      lambert,
+      renderedColorExposureCompensation,
+      topUvOverlayRenderedColor
+    );
+    mixedColor = mix(mixedColor, topUvOverlayDisplayColor, topUvOverlayAlpha);`
         : ''
     }
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
@@ -890,6 +955,8 @@ function getProjectionLayerStructureSignature(
     `${Number(normalizedFeatures.useBaseMap)}${Number(
       normalizedFeatures.useBaseRenderedColorMaskMap,
     )}${Number(normalizedFeatures.useUvOverlayMap)}${Number(
+      normalizedFeatures.useTopUvOverlayMap,
+    )}${Number(
       normalizedFeatures.useTextureArrays,
     )}:` +
     layers
@@ -959,6 +1026,8 @@ function updateSharedPreviewUniforms(
     material.uniforms.baseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture;
   if (material.uniforms.uvOverlayMap && input.uvOverlayTexture)
     material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
+  if (material.uniforms.topUvOverlayMap && input.topUvOverlayTexture)
+    material.uniforms.topUvOverlayMap.value = input.topUvOverlayTexture;
   if (material.uniforms.useBaseMap) material.uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
   if (material.uniforms.useBaseRenderedColorMaskMap)
     material.uniforms.useBaseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture
@@ -966,6 +1035,18 @@ function updateSharedPreviewUniforms(
       : 0;
   if (material.uniforms.useUvOverlayMap)
     material.uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  if (material.uniforms.useTopUvOverlayMap)
+    material.uniforms.useTopUvOverlayMap.value = input.topUvOverlayTexture ? 1 : 0;
+  if (material.uniforms.topUvOverlayOpacity)
+    material.uniforms.topUvOverlayOpacity.value = input.topUvOverlayOpacity ?? 1;
+  if (material.uniforms.topUvOverlayRenderedColor)
+    material.uniforms.topUvOverlayRenderedColor.value = input.topUvOverlayRenderedColor ? 1 : 0;
+  if (material.uniforms.topUvOverlayHueShift)
+    material.uniforms.topUvOverlayHueShift.value = input.topUvOverlayHue ?? 0;
+  if (material.uniforms.topUvOverlaySaturationShift)
+    material.uniforms.topUvOverlaySaturationShift.value = input.topUvOverlaySaturation ?? 0;
+  if (material.uniforms.topUvOverlayLightnessShift)
+    material.uniforms.topUvOverlayLightnessShift.value = input.topUvOverlayLightness ?? 0;
   if (material.uniforms.uvOverlayHueShift)
     material.uniforms.uvOverlayHueShift.value = input.uvOverlayHue ?? 0;
   if (material.uniforms.uvOverlaySaturationShift)
@@ -986,6 +1067,7 @@ function updateSharedPreviewUniforms(
     material.uniforms.keyLightDirection.value = previewLighting.keyLightDirection;
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
 }
 
 export function updateProjectedLayerStackMaterial(
@@ -1005,6 +1087,7 @@ export function updateProjectedLayerStackMaterial(
       useBaseMap: Boolean(input.baseTexture),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays: state.usesTextureArrays,
     })
   )
@@ -1029,6 +1112,22 @@ function getProjectedTextureCacheKey(
   profile: ProjectedTextureProfile,
 ) {
   return `${profile}:${colorSpace}:${imageUrl}`;
+}
+
+export function primeProjectedImageTexture(imageUrl: string, image: HTMLImageElement) {
+  const cacheKey = getProjectedTextureCacheKey(imageUrl, THREE.SRGBColorSpace, 'image');
+  if (projectedTextureCache.has(cacheKey)) return;
+  const texture = new THREE.Texture(image);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = true;
+  texture.anisotropy = 8;
+  texture.needsUpdate = true;
+  projectedTextureCache.set(cacheKey, Promise.resolve(texture));
 }
 
 export async function loadProjectedTexture(
@@ -1319,8 +1418,10 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     : neutralTexture;
   const baseTexture = input.baseTexture ?? neutralTexture;
   const uvOverlayTexture = input.uvOverlayTexture ?? neutralTexture;
+  const topUvOverlayTexture = input.topUvOverlayTexture ?? neutralTexture;
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
   maskTexture.flipY = false;
   depthTexture.flipY = false;
   maskTexture.wrapS = THREE.ClampToEdgeWrapping;
@@ -1350,6 +1451,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       baseMap: { value: baseTexture },
       baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
       uvOverlayMap: { value: uvOverlayTexture },
+      topUvOverlayMap: { value: topUvOverlayTexture },
       maskMap: { value: maskTexture },
       depthMap: { value: depthTexture },
       projectorMatrix: { value: buildProjectionMatrixBundle(input.camera).projectorMatrix },
@@ -1378,6 +1480,12 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+      useTopUvOverlayMap: { value: input.topUvOverlayTexture ? 1 : 0 },
+      topUvOverlayOpacity: { value: input.topUvOverlayOpacity ?? 1 },
+      topUvOverlayRenderedColor: { value: input.topUvOverlayRenderedColor ? 1 : 0 },
+      topUvOverlayHueShift: { value: input.topUvOverlayHue ?? 0 },
+      topUvOverlaySaturationShift: { value: input.topUvOverlaySaturation ?? 0 },
+      topUvOverlayLightnessShift: { value: input.topUvOverlayLightness ?? 0 },
       previewLightingEnabled: { value: previewLighting.enabled },
       previewExposure: { value: previewLighting.exposure },
       ambientLightIntensity: { value: previewLighting.ambientIntensity },
@@ -1393,6 +1501,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       useBaseMap: Boolean(input.baseTexture),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
     }),
     bindings: [
       {
@@ -1435,6 +1544,7 @@ export async function createProjectedLayerStackMaterial(
     useBaseMap: Boolean(input.baseTexture),
     useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
     useUvOverlayMap: Boolean(input.uvOverlayTexture),
+    useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
   };
   const directSamplerBudget = getProjectedLayerSamplerBudget(
     layers,
@@ -1491,9 +1601,16 @@ export async function createProjectedLayerStackMaterial(
     baseMap: { value: input.baseTexture ?? neutralTexture },
     baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
     uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
+    topUvOverlayMap: { value: input.topUvOverlayTexture ?? neutralTexture },
     useBaseMap: { value: input.baseTexture ? 1 : 0 },
     useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
     useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+    useTopUvOverlayMap: { value: input.topUvOverlayTexture ? 1 : 0 },
+    topUvOverlayOpacity: { value: input.topUvOverlayOpacity ?? 1 },
+    topUvOverlayRenderedColor: { value: input.topUvOverlayRenderedColor ? 1 : 0 },
+    topUvOverlayHueShift: { value: input.topUvOverlayHue ?? 0 },
+    topUvOverlaySaturationShift: { value: input.topUvOverlaySaturation ?? 0 },
+    topUvOverlayLightnessShift: { value: input.topUvOverlayLightness ?? 0 },
     uvOverlayHueShift: { value: input.uvOverlayHue ?? 0 },
     uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
     uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
@@ -1506,6 +1623,7 @@ export async function createProjectedLayerStackMaterial(
   uniforms.keyLightDirection = { value: previewLighting.keyLightDirection };
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
   const disposableTextures: THREE.Texture[] = [neutralTexture];
   const captureObjectMatrices: Array<number[] | undefined> = [];
   const projectedTextures: THREE.Texture[] = [];
@@ -1695,6 +1813,7 @@ export async function createProjectedLayerStackMaterial(
       useBaseMap: Boolean(input.baseTexture),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays,
     }),
     ...(useTextureArrays ? { glslVersion: THREE.GLSL3 } : {}),
@@ -1709,6 +1828,7 @@ export async function createProjectedLayerStackMaterial(
       useBaseMap: Boolean(input.baseTexture),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays,
     }),
     bindings: loadedLayers.map((layer, index) => ({

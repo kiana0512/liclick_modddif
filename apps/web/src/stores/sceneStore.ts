@@ -4,6 +4,7 @@ import type * as THREE from 'three';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import type { SerializedCamera } from '@/types/capture';
+import type { Layer } from '@/types/layer';
 import type {
   DisplayMode,
   ModelBoundingBox,
@@ -86,6 +87,7 @@ type SceneStore = {
   paintMaskDataUrl?: string;
   paintMaskHasContent: boolean;
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
+  localRepaintPreviewLayer?: Layer;
   paintMaskSettings: PaintMaskSettings;
   paintToolSettings: PaintToolSettings;
   importSettings: ImportSettings;
@@ -108,6 +110,7 @@ type SceneStore = {
   markPaintMaskChanged: () => void;
   setPaintMaskDataUrl: (dataUrl?: string, hasContent?: boolean) => void;
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
+  setLocalRepaintPreviewLayer: (layer?: Layer) => void;
   setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
   setPaintToolSettings: (settings: Partial<PaintToolSettings>) => void;
   clearPaintMask: () => void;
@@ -201,6 +204,7 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskDataUrl: undefined,
       paintMaskHasContent: false,
       localRepaintProjectionSource: undefined,
+      localRepaintPreviewLayer: undefined,
       paintMaskSettings: {
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
         brushOpacity: 100,
@@ -386,6 +390,8 @@ export const useSceneStore = create<SceneStore>()(
         })),
       setLocalRepaintProjectionSource: (localRepaintProjectionSource) =>
         set({ localRepaintProjectionSource }),
+      setLocalRepaintPreviewLayer: (localRepaintPreviewLayer) =>
+        set({ localRepaintPreviewLayer }),
       setPaintMaskSettings: (settings) =>
         set((state) => ({
           paintMaskSettings: {
