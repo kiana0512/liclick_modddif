@@ -1,6 +1,11 @@
 import type { GenerateTextureInput, Generation } from '@/types/generation';
 import type { ReferenceImage } from '@/types/project';
 import { getWorkspaceApiBase } from './workspaceApiBase';
+import { getUserFacingGenerationError } from './generationErrorMessage';
+import {
+  prepareReferenceForAtlas,
+  type ReferencePreprocessingResult,
+} from './referenceImagePreprocessor';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
@@ -18,6 +23,7 @@ export type LiclickImageSize = 'auto' | '1K' | '2K' | '4K';
 export type LiclickApiConfig = {
   baseUrl?: string;
   getAccessToken?: () => Promise<string | undefined>;
+  onReferencePreprocessed?: (result: ReferencePreprocessingResult) => void;
 };
 
 export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
@@ -57,27 +63,15 @@ export type GenerationJobResult = {
   updatedAt?: string;
 };
 
-async function urlToDataUrl(url: string) {
-  if (url.startsWith('data:')) return url;
-  const response = await fetch(url, { credentials: 'omit' });
-  if (!response.ok) throw new Error(`Could not read reference image: ${response.status}`);
-  const blob = await response.blob();
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read reference image.'));
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function prepareReferences(references: ReferenceImage[] = []) {
-  return Promise.all(
-    references.map(async (reference) => ({
-      id: reference.id,
-      name: reference.name,
-      url: await urlToDataUrl(reference.url),
-    })),
-  );
+async function prepareReferences(
+  references: ReferenceImage[] = [],
+  onReferencePreprocessed?: (result: ReferencePreprocessingResult) => void,
+) {
+  const prepared = await Promise.all(references.map(prepareReferenceForAtlas));
+  for (const reference of prepared) {
+    if (reference.preprocessing) onReferencePreprocessed?.(reference.preprocessing);
+  }
+  return prepared;
 }
 
 async function requestJson<T>(
@@ -109,14 +103,14 @@ async function requestJson<T>(
   }
   const payload = await response.json().catch(() => undefined);
   if (!response.ok) {
-    const message =
+    const rawMessage =
       payload &&
       typeof payload === 'object' &&
       'error' in payload &&
       typeof payload.error === 'string'
         ? payload.error
         : `Liclick request failed: ${response.status}`;
-    throw new Error(message);
+    throw new Error(getUserFacingGenerationError(rawMessage));
   }
   return payload as T;
 }
@@ -126,6 +120,10 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
 
   return {
     async generateTextureSingleView(input) {
+      const preparedReferences = await prepareReferences(
+        input.referenceImages,
+        config.onReferencePreprocessed,
+      );
       const result = await requestJson<{
         id: string;
         taskId?: string;
@@ -149,7 +147,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           aspectRatio: input.aspectRatio,
           imageSize: input.imageSize,
           count: input.count,
-          references: await prepareReferences(input.referenceImages),
+          references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),
       });
       const generationId = input.clientGenerationId ?? result.id;
@@ -174,6 +172,9 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           uploadedReferences: result.uploadedReferences,
           activeProjectJob: result.activeProjectJob,
           serverMessage: result.message,
+          referencePreprocessing: preparedReferences
+            .map((reference) => reference.preprocessing)
+            .filter((reference): reference is ReferencePreprocessingResult => Boolean(reference)),
           visibleOnly: input.visibleOnly,
           upscale: input.upscale,
           objectId: input.object?.id,

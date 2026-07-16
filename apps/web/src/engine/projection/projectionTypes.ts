@@ -13,6 +13,7 @@ export type ProjectionLayerInput = {
   objectMatrixWorld?: number[];
   currentObjectMatrixWorld?: number[];
   baseTexture?: THREE.Texture;
+  baseRenderedColorMaskTexture?: THREE.Texture;
   uvOverlayTexture?: THREE.Texture;
   uvOverlayHue?: number;
   uvOverlaySaturation?: number;
@@ -50,8 +51,48 @@ export type ProjectionPreviewLighting = {
   keyLightDirection: [number, number, number];
 };
 
-export type ProjectionLayerStackInput = Omit<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck' | 'renderedColor'> & {
-  layers: Array<Pick<ProjectionLayerInput, 'layerId' | 'imageUrl' | 'maskUrl' | 'maskSpace' | 'depthUrl' | 'camera' | 'objectMatrixWorld' | 'opacity' | 'strength' | 'blendMode' | 'visible' | 'hue' | 'saturation' | 'lightness' | 'useMask' | 'useDepthCheck' | 'renderedColor'>>;
+export type ProjectionLayerStackInput = Omit<
+  ProjectionLayerInput,
+  | 'layerId'
+  | 'imageUrl'
+  | 'maskUrl'
+  | 'maskSpace'
+  | 'depthUrl'
+  | 'camera'
+  | 'objectMatrixWorld'
+  | 'opacity'
+  | 'strength'
+  | 'blendMode'
+  | 'visible'
+  | 'hue'
+  | 'saturation'
+  | 'lightness'
+  | 'useMask'
+  | 'useDepthCheck'
+  | 'renderedColor'
+> & {
+  layers: Array<
+    Pick<
+      ProjectionLayerInput,
+      | 'layerId'
+      | 'imageUrl'
+      | 'maskUrl'
+      | 'maskSpace'
+      | 'depthUrl'
+      | 'camera'
+      | 'objectMatrixWorld'
+      | 'opacity'
+      | 'strength'
+      | 'blendMode'
+      | 'visible'
+      | 'hue'
+      | 'saturation'
+      | 'lightness'
+      | 'useMask'
+      | 'useDepthCheck'
+      | 'renderedColor'
+    >
+  >;
 };
 
 export type ProjectionMatrixBundle = {

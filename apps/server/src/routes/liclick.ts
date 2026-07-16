@@ -12,6 +12,7 @@ import {
   type GenerateImageInput,
   type LiclickImageSubmission,
 } from '../services/liclickGenerationService.js';
+import { getLiclickUserErrorMessage } from '../services/liclickErrorMessage.js';
 import { serverConfig } from '../config.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
@@ -191,7 +192,7 @@ function getJobResponse(job: GenerationJob) {
     return {
       id: job.id,
       status: 'failed',
-      error: job.error ?? '莉刻图片生成任务失败。',
+      error: getLiclickUserErrorMessage(job.error, '莉刻图片生成任务失败，请稍后重试。'),
       taskId: job.taskId,
       workflow: job.workflow,
       startedAt: job.startedAt,
@@ -232,7 +233,7 @@ async function getEditJobResponse(job: EditImageJob) {
     return {
       id: job.id,
       status: 'failed',
-      error: job.error ?? '莉刻局部重绘任务失败。',
+      error: getLiclickUserErrorMessage(job.error, '莉刻局部重绘任务失败，请稍后重试。'),
       taskId: job.taskId,
       startedAt: job.startedAt,
       updatedAt: job.updatedAt,
@@ -382,8 +383,9 @@ function startGenerationJob(job: GenerationJob) {
         await pollAndUpdateJob(job);
       }
     } catch (error) {
+      console.error('[Liclick Generation] Background generation failed.', error);
       job.status = 'failed';
-      job.error = error instanceof Error ? error.message : '莉刻图片生成任务失败。';
+      job.error = getLiclickUserErrorMessage(error, '莉刻图片生成任务失败，请稍后重试。');
       job.updatedAt = new Date().toISOString();
       await saveGenerationJobs();
     } finally {
@@ -414,8 +416,9 @@ function startEditImageJob(job: EditImageJob) {
         job.updatedAt = new Date().toISOString();
       }
     } catch (error) {
+      console.error('[Liclick Generation] Background repaint failed.', error);
       job.status = 'failed';
-      job.error = error instanceof Error ? error.message : '莉刻局部重绘任务失败。';
+      job.error = getLiclickUserErrorMessage(error, '莉刻局部重绘任务失败，请稍后重试。');
       job.updatedAt = new Date().toISOString();
     } finally {
       job.promise = undefined;
@@ -516,8 +519,9 @@ export async function handleLiclickRoute(
     }
     if (job.status === 'running' && job.taskId) {
       await pollAndUpdateJob(job).catch((error: unknown) => {
+        console.error('[Liclick Generation] Generation polling failed.', error);
         job.status = 'failed';
-        job.error = error instanceof Error ? error.message : '莉刻图片生成任务失败。';
+        job.error = getLiclickUserErrorMessage(error, '莉刻图片生成任务失败，请稍后重试。');
         job.updatedAt = new Date().toISOString();
         void saveGenerationJobs();
       });
@@ -567,8 +571,9 @@ export async function handleLiclickRoute(
     }
     if (job.status === 'running' && job.taskId) {
       await pollAndUpdateEditJob(job).catch((error: unknown) => {
+        console.error('[Liclick Generation] Repaint polling failed.', error);
         job.status = 'failed';
-        job.error = error instanceof Error ? error.message : '莉刻局部重绘任务失败。';
+        job.error = getLiclickUserErrorMessage(error, '莉刻局部重绘任务失败，请稍后重试。');
         job.updatedAt = new Date().toISOString();
       });
     }

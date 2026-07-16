@@ -73,6 +73,25 @@ function getTargetBounds(scene: THREE.Scene, objectId: string) {
   return box;
 }
 
+function waitForViewportFrame() {
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+async function getTargetBoundsWhenReady(scene: THREE.Scene, objectId: string) {
+  // Switching objects updates the Zustand selection before React Three Fiber has
+  // necessarily attached the new model group to the viewport scene. Wait through
+  // the short reconciliation window instead of capturing with the previous ID.
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const targetBounds = getTargetBounds(scene, objectId);
+    if (targetBounds) return targetBounds;
+    await waitForViewportFrame();
+  }
+  throw new Error('当前选中的模型尚未进入视口，请切换模型后稍等片刻再试。');
+}
+
 function getViewDirection(camera: THREE.Camera, target?: THREE.Vector3) {
   const direction = new THREE.Vector3();
   if (target) {
@@ -143,16 +162,15 @@ function vectorFromTuple(tuple?: [number, number, number]) {
   return tuple ? new THREE.Vector3(tuple[0], tuple[1], tuple[2]) : undefined;
 }
 
-function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number) {
+async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number) {
   const viewport = useSceneStore.getState().viewport;
-  if (!viewport) throw new Error('Viewport is not ready yet.');
+  if (!viewport) throw new Error('视口尚未准备完成，请稍后重试。');
 
   let captureCamera = viewport.camera;
   let captureTarget = viewport.controls?.target?.clone() ?? new THREE.Vector3();
 
   if (request.framing === 'fit-object') {
-    const targetBounds = getTargetBounds(viewport.scene, request.objectId);
-    if (!targetBounds) throw new Error('Could not find the selected model for fitted capture.');
+    const targetBounds = await getTargetBoundsWhenReady(viewport.scene, request.objectId);
     const fitted = createFitObjectCamera(
       viewport.camera,
       targetBounds,
@@ -228,7 +246,7 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
   const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
   const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
-  const { viewport, captureCamera, captureTarget } = resolveCaptureCamera(request, aspect);
+  const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect);
 
   const passRequest: CapturePassRequest = {
     gl: viewport.gl,
@@ -281,7 +299,7 @@ export async function captureCurrentNormalPreview(
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
   const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
   const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
-  const { viewport, captureCamera, captureTarget } = resolveCaptureCamera(request, aspect);
+  const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect);
   const passRequest: CapturePassRequest = {
     gl: viewport.gl,
     scene: viewport.scene,

@@ -37,9 +37,10 @@ function usesOrderIndependentStack(texture: BakedTexture) {
   const sourceLayerIds = getBakedTextureLayerIds(texture);
   if (sourceLayerIds.length <= 1) return true;
   return (
-    texture.report?.warnings?.some((warning) =>
-      warning.includes('order-independent loose coverage with strict quality blend') ||
-      warning.includes('order-independent visibility-gated quality blend'),
+    texture.report?.warnings?.some(
+      (warning) =>
+        warning.includes('order-independent loose coverage with strict quality blend') ||
+        warning.includes('order-independent visibility-gated quality blend'),
     ) ?? false
   );
 }
@@ -58,11 +59,17 @@ function cacheKeyMatches(texture: BakedTexture, cacheKey?: string) {
 }
 
 function resolutionMatches(texture: BakedTexture, expectedResolution?: number) {
-  return expectedResolution === undefined || (texture.width === expectedResolution && texture.height === expectedResolution);
+  return (
+    expectedResolution === undefined ||
+    (texture.width === expectedResolution && texture.height === expectedResolution)
+  );
 }
 
 function hasReusableCoverage(texture: BakedTexture) {
-  return (texture.coverageRatio ?? texture.report?.coverageRatio ?? 0) >= MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO;
+  return (
+    (texture.coverageRatio ?? texture.report?.coverageRatio ?? 0) >=
+    MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO
+  );
 }
 
 function getStableLayerAssetKey(url: string | undefined) {
@@ -97,7 +104,8 @@ export function findExactLayerStackTexture(
         cacheKeyMatches(texture, cacheKey) &&
         hasReusableCoverage(texture) &&
         resolutionMatches(texture, expectedResolution) &&
-        usesOrderIndependentStack(texture) && layerIdSetsMatch(getBakedTextureLayerIds(texture), visibleLayerIds),
+        usesOrderIndependentStack(texture) &&
+        layerIdSetsMatch(getBakedTextureLayerIds(texture), visibleLayerIds),
     )
   );
 }
@@ -121,10 +129,16 @@ export function findLatestLayerStackPreviewTexture(
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
 
-export function findBaseLayerStackTexture(project: Project | undefined, visibleLayers: Layer[], objectId?: string) {
+export function findBaseLayerStackTexture(
+  project: Project | undefined,
+  visibleLayers: Layer[],
+  objectId?: string,
+) {
   if (!project || visibleLayers.length < 2) return undefined;
   const visibleLayerIds = visibleLayers.map((layer) => layer.id);
-  const rebakeLayerIds = new Set(visibleLayers.filter((layer) => layer.needsRebake).map((layer) => layer.id));
+  const rebakeLayerIds = new Set(
+    visibleLayers.filter((layer) => layer.needsRebake).map((layer) => layer.id),
+  );
 
   let bestTexture: BakedTexture | undefined;
   let bestLayerCount = 0;
@@ -197,6 +211,13 @@ export function getProjectedLayerStackSignature(
         layer.adjustments?.hue ?? 0,
         layer.adjustments?.saturation ?? 0,
         layer.adjustments?.lightness ?? 0,
+        layer.renderedColor ? 1 : 0,
+        layer.objectMatrixWorld?.join(',') ?? '',
+        layer.camera?.position?.join(',') ?? '',
+        layer.camera?.target?.join(',') ?? '',
+        layer.camera?.viewMatrix?.join(',') ?? '',
+        layer.camera?.projectionMatrix?.join(',') ?? '',
+        layer.camera?.projection ?? '',
       ].join(':'),
     ),
   ].join('|');
@@ -206,7 +227,10 @@ export function getLayerStackBakeInFlight(signature: string) {
   return inFlightLayerStackBakes.get(signature);
 }
 
-export function registerLayerStackBakeInFlight(signature: string, promise: Promise<BakedTexture | undefined>) {
+export function registerLayerStackBakeInFlight(
+  signature: string,
+  promise: Promise<BakedTexture | undefined>,
+) {
   inFlightLayerStackBakes.set(signature, promise);
   void promise.finally(() => {
     if (inFlightLayerStackBakes.get(signature) === promise) {
