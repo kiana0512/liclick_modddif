@@ -34,6 +34,9 @@ type GenerationJob = {
   resultUrls?: string[];
   raw?: unknown;
   error?: string;
+  message?: string;
+  pollFailureCount?: number;
+  pollPromise?: Promise<GenerationJob>;
   promise?: Promise<void>;
 };
 
@@ -54,6 +57,9 @@ type EditImageJob = {
   resultUrls?: string[];
   raw?: unknown;
   error?: string;
+  message?: string;
+  pollFailureCount?: number;
+  pollPromise?: Promise<EditImageJob>;
   promise?: Promise<void>;
 };
 
@@ -132,7 +138,17 @@ function sanitizeForPersistence(value: unknown, depth = 0): unknown {
 function getPersistableJob(job: GenerationJob) {
   const persisted: Partial<GenerationJob> = { ...job };
   delete persisted.promise;
+  delete persisted.pollPromise;
+  delete persisted.pollFailureCount;
+  delete persisted.message;
   return sanitizeForPersistence(persisted) as Omit<GenerationJob, 'promise'>;
+}
+
+function isTransientPollingError(error: unknown) {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return /timeout|timed out|network|fetch failed|econn|enotfound|socket|429|rate.?limit|5\d\d|bad gateway|service unavailable/.test(
+    message,
+  );
 }
 
 async function loadGenerationJobs() {
@@ -209,6 +225,7 @@ function getJobResponse(job: GenerationJob) {
     uploadedReferences: job.uploadedReferences,
     startedAt: job.startedAt,
     updatedAt: job.updatedAt,
+    message: job.message,
   };
 }
 
@@ -248,6 +265,7 @@ async function getEditJobResponse(job: EditImageJob) {
     uploadedReferences: job.uploadedReferences,
     startedAt: job.startedAt,
     updatedAt: job.updatedAt,
+    message: job.message,
   };
 }
 
@@ -335,35 +353,87 @@ async function applyEditSubmission(job: EditImageJob, submission: LiclickImageSu
 
 async function pollAndUpdateJob(job: GenerationJob) {
   if (!job.taskId || job.status !== 'running') return job;
-  const result = await pollLiclickImageTask(job.taskId, { atlasHomeDir: job.atlasHomeDir });
-  job.updatedAt = new Date().toISOString();
-  job.raw = result.raw;
-  if (result.resultUrl) {
-    job.status = 'succeeded';
-    job.resultUrl = result.resultUrl;
-    job.resultUrls = result.resultUrls;
-  } else if (result.terminalWithoutResult) {
-    job.status = 'failed';
-    job.error = '莉刻后台任务已结束，但没有返回图片 URL，已停止等待。';
-  }
-  await saveGenerationJobs();
-  return job;
+  if (job.pollPromise) return job.pollPromise;
+  const pollPromise = (async () => {
+    try {
+      const result = await pollLiclickImageTask(job.taskId!, { atlasHomeDir: job.atlasHomeDir });
+      job.pollFailureCount = 0;
+      job.message = undefined;
+      if (result.resultUrl) {
+        job.updatedAt = new Date().toISOString();
+        job.raw = result.raw;
+        job.status = 'succeeded';
+        job.resultUrl = result.resultUrl;
+        job.resultUrls = result.resultUrls;
+        await saveGenerationJobs();
+      } else if (result.terminalWithoutResult) {
+        job.updatedAt = new Date().toISOString();
+        job.raw = result.raw;
+        job.status = 'failed';
+        job.error = '莉刻后台任务已结束，但没有返回图片 URL，已停止等待。';
+        await saveGenerationJobs();
+      }
+      return job;
+    } catch (error) {
+      const failureCount = (job.pollFailureCount ?? 0) + 1;
+      job.pollFailureCount = failureCount;
+      if (isTransientPollingError(error) && failureCount < 5) {
+        job.message = `生成服务连接波动，正在自动重试（${failureCount}/5）。`;
+        return job;
+      }
+      job.status = 'failed';
+      job.error = getLiclickUserErrorMessage(error, '莉刻图片生成任务失败，请稍后重试。');
+      job.message = undefined;
+      job.updatedAt = new Date().toISOString();
+      await saveGenerationJobs();
+      return job;
+    }
+  })().finally(() => {
+    job.pollPromise = undefined;
+  });
+  job.pollPromise = pollPromise;
+  return pollPromise;
 }
 
 async function pollAndUpdateEditJob(job: EditImageJob) {
   if (!job.taskId || job.status !== 'running') return job;
-  const result = await pollLiclickImageTask(job.taskId, { atlasHomeDir: job.atlasHomeDir });
-  job.updatedAt = new Date().toISOString();
-  job.raw = result.raw;
-  if (result.resultUrl) {
-    job.status = 'succeeded';
-    job.resultUrl = result.resultUrl;
-    job.resultUrls = result.resultUrls;
-  } else if (result.terminalWithoutResult) {
-    job.status = 'failed';
-    job.error = '莉刻局部重绘任务已结束，但没有返回图片。';
-  }
-  return job;
+  if (job.pollPromise) return job.pollPromise;
+  const pollPromise = (async () => {
+    try {
+      const result = await pollLiclickImageTask(job.taskId!, { atlasHomeDir: job.atlasHomeDir });
+      job.pollFailureCount = 0;
+      job.message = undefined;
+      if (result.resultUrl) {
+        job.updatedAt = new Date().toISOString();
+        job.raw = result.raw;
+        job.status = 'succeeded';
+        job.resultUrl = result.resultUrl;
+        job.resultUrls = result.resultUrls;
+      } else if (result.terminalWithoutResult) {
+        job.updatedAt = new Date().toISOString();
+        job.raw = result.raw;
+        job.status = 'failed';
+        job.error = '莉刻局部重绘任务已结束，但没有返回图片。';
+      }
+      return job;
+    } catch (error) {
+      const failureCount = (job.pollFailureCount ?? 0) + 1;
+      job.pollFailureCount = failureCount;
+      if (isTransientPollingError(error) && failureCount < 5) {
+        job.message = `局部重绘服务连接波动，正在自动重试（${failureCount}/5）。`;
+        return job;
+      }
+      job.status = 'failed';
+      job.error = getLiclickUserErrorMessage(error, '莉刻局部重绘任务失败，请稍后重试。');
+      job.message = undefined;
+      job.updatedAt = new Date().toISOString();
+      return job;
+    }
+  })().finally(() => {
+    job.pollPromise = undefined;
+  });
+  job.pollPromise = pollPromise;
+  return pollPromise;
 }
 
 function startGenerationJob(job: GenerationJob) {
@@ -381,6 +451,12 @@ function startGenerationJob(job: GenerationJob) {
       while (job.status === 'running' && Date.now() - startedPollingAt < 30 * 60 * 1000) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
         await pollAndUpdateJob(job);
+      }
+      if (job.status === 'running') {
+        job.status = 'failed';
+        job.error = '等待莉刻图片生成超时，请重新生成。';
+        job.updatedAt = new Date().toISOString();
+        await saveGenerationJobs();
       }
     } catch (error) {
       console.error('[Liclick Generation] Background generation failed.', error);

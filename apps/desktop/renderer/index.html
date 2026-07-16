@@ -73,7 +73,7 @@
                 d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14.2 3h-4.4l-.3 2.7a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 2 1.2l.3 2.7h4.4l.3-2.7a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z"
               />
             </svg>
-            <span>设置</span>
+            <span>高级选项</span>
           </button>
         </nav>
 
@@ -326,11 +326,50 @@
           <section class="view" data-view="settings">
             <div class="page-toolbar">
               <div>
-                <h1>启动器设置</h1>
-                <p>Windows 窗口行为、本地目录与维护操作。</p>
+                <h1>高级选项</h1>
+                <p>管理工作台快捷键、性能测试和本地个人资料。</p>
               </div>
             </div>
             <div class="settings-list">
+              <article class="profile-setting-row">
+                <span class="local-avatar" id="localAvatarPreview"><span>LI</span></span>
+                <div>
+                  <strong>本地个人资料</strong>
+                  <p>头像和自定义 ID 仅保存在此设备，不影响登录账号。</p>
+                  <div class="inline-setting-controls">
+                    <input id="localProfileId" class="setting-input" maxlength="24" placeholder="自定义 ID" />
+                    <input id="localAvatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                    <button class="button" type="button" id="chooseLocalAvatar">更换头像</button>
+                    <button class="button primary" type="button" id="saveLocalProfile">保存资料</button>
+                    <button class="button" type="button" id="resetLocalProfile">恢复默认</button>
+                  </div>
+                </div>
+                <span class="setting-value" id="profileSaveStatus">本地保存</span>
+              </article>
+              <article>
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24"><path d="M5 7h14v10H5zM8 10h1M11 10h1M14 10h1M8 13h8" /></svg
+                ></span>
+                <div>
+                  <strong>自定义快捷键</strong>
+                  <p>在启动器中统一配置工作台快捷键，并自动同步到网页工作台。</p>
+                </div>
+                <button class="button" type="button" id="openShortcutSettings">配置快捷键</button>
+              </article>
+              <article>
+                <span class="row-icon"
+                  ><svg viewBox="0 0 24 24"><path d="M4 13h4l2-7 4 12 2-5h4" /><circle cx="12" cy="12" r="9" /></svg
+                ></span>
+                <div>
+                  <strong>性能测试模式</strong>
+                  <p>在网页工作台显示帧率、渲染耗时与调试信息。</p>
+                </div>
+                <label class="setting-switch">
+                  <input id="performanceModeToggle" type="checkbox" />
+                  <span aria-hidden="true"></span>
+                  <b id="performanceModeLabel">已关闭</b>
+                </label>
+              </article>
               <article>
                 <span class="row-icon"
                   ><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16" /></svg
@@ -376,6 +415,24 @@
         </div>
       </section>
     </main>
+    <div class="shortcut-modal" id="shortcutModal" hidden>
+      <section role="dialog" aria-modal="true" aria-labelledby="shortcutModalTitle">
+        <header>
+          <div>
+            <h2 id="shortcutModalTitle">自定义快捷键</h2>
+            <p>点击按键组合后直接按下新快捷键，Delete 可清除。</p>
+          </div>
+          <button class="icon-button" type="button" id="closeShortcutSettings" aria-label="关闭">×</button>
+        </header>
+        <div class="shortcut-toolbar">
+          <input id="shortcutSearch" class="setting-input" placeholder="搜索快捷键" />
+          <button class="button" type="button" id="resetAllShortcuts">恢复全部默认值</button>
+        </div>
+        <div class="shortcut-list" id="shortcutList"></div>
+        <footer><span id="shortcutMessage">同一作用域内不允许重复快捷键。</span></footer>
+      </section>
+    </div>
+    <script src="./shortcut-definitions.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

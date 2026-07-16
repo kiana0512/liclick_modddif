@@ -39,6 +39,22 @@ const elements = {
   diagRuntimeText: document.querySelector('#diagRuntimeText'),
   diagWorkspaceText: document.querySelector('#diagWorkspaceText'),
   diagWebText: document.querySelector('#diagWebText'),
+  localAvatarPreview: document.querySelector('#localAvatarPreview'),
+  localProfileId: document.querySelector('#localProfileId'),
+  localAvatarFile: document.querySelector('#localAvatarFile'),
+  chooseLocalAvatar: document.querySelector('#chooseLocalAvatar'),
+  saveLocalProfile: document.querySelector('#saveLocalProfile'),
+  resetLocalProfile: document.querySelector('#resetLocalProfile'),
+  profileSaveStatus: document.querySelector('#profileSaveStatus'),
+  performanceModeToggle: document.querySelector('#performanceModeToggle'),
+  performanceModeLabel: document.querySelector('#performanceModeLabel'),
+  openShortcutSettings: document.querySelector('#openShortcutSettings'),
+  shortcutModal: document.querySelector('#shortcutModal'),
+  closeShortcutSettings: document.querySelector('#closeShortcutSettings'),
+  shortcutSearch: document.querySelector('#shortcutSearch'),
+  shortcutList: document.querySelector('#shortcutList'),
+  shortcutMessage: document.querySelector('#shortcutMessage'),
+  resetAllShortcuts: document.querySelector('#resetAllShortcuts'),
 };
 
 const statusText = {
@@ -60,6 +76,140 @@ let currentState = {
   shellBuild: '2026.07.15.1104',
   logs: [],
 };
+let currentLocalSettings = {
+  activeUserId: 'anonymous',
+  performanceTestModeEnabled: false,
+  profile: { customId: '' },
+  shortcutOverrides: {},
+};
+let pendingAvatarDataUrl;
+let recordingShortcutId;
+
+const shortcutDefinitions = Array.isArray(window.LICLICK_SHORTCUT_DEFINITIONS)
+  ? window.LICLICK_SHORTCUT_DEFINITIONS
+  : [];
+
+function bindingKey(binding) {
+  return [binding.primary ? 'primary' : '', binding.shift ? 'shift' : '', binding.alt ? 'alt' : '', binding.code]
+    .filter(Boolean)
+    .join('+');
+}
+
+function formatBinding(binding) {
+  const keyLabels = {
+    Space: 'Space',
+    BracketLeft: '[',
+    BracketRight: ']',
+    NumpadDecimal: 'Num .',
+  };
+  const codeLabel =
+    keyLabels[binding.code] ??
+    (binding.code.startsWith('Key')
+      ? binding.code.slice(3)
+      : binding.code.replace('Numpad', 'Num '));
+  return [binding.primary ? 'Ctrl' : '', binding.shift ? 'Shift' : '', binding.alt ? 'Alt' : '', codeLabel]
+    .filter(Boolean)
+    .join(' + ');
+}
+
+function bindingsFor(definition) {
+  return currentLocalSettings.shortcutOverrides[definition.id] ?? definition.defaults;
+}
+
+function renderLocalProfile() {
+  const profile = currentLocalSettings.profile ?? { customId: '' };
+  elements.localProfileId.value = profile.customId ?? '';
+  pendingAvatarDataUrl = profile.avatarDataUrl;
+  elements.localAvatarPreview.replaceChildren();
+  if (profile.avatarDataUrl) {
+    const image = document.createElement('img');
+    image.src = profile.avatarDataUrl;
+    image.alt = '';
+    elements.localAvatarPreview.append(image);
+  } else {
+    const fallback = document.createElement('span');
+    fallback.textContent = 'LI';
+    elements.localAvatarPreview.append(fallback);
+  }
+}
+
+function renderLocalSettings(settings) {
+  currentLocalSettings = {
+    ...currentLocalSettings,
+    ...settings,
+    profile: settings?.profile ?? currentLocalSettings.profile,
+    shortcutOverrides: settings?.shortcutOverrides ?? currentLocalSettings.shortcutOverrides,
+  };
+  renderLocalProfile();
+  elements.performanceModeToggle.checked = currentLocalSettings.performanceTestModeEnabled;
+  elements.performanceModeLabel.textContent = currentLocalSettings.performanceTestModeEnabled
+    ? '已启用'
+    : '已关闭';
+  if (!elements.shortcutModal.hidden) renderShortcutList();
+}
+
+async function updateSharedSettings(patch) {
+  if (!api?.updateLocalSettings) {
+    renderLocalSettings({ ...currentLocalSettings, ...patch });
+    return currentLocalSettings;
+  }
+  const result = await api.updateLocalSettings({
+    userId: currentLocalSettings.activeUserId,
+    ...patch,
+  });
+  renderLocalSettings(result);
+  return result;
+}
+
+function renderShortcutList() {
+  const query = elements.shortcutSearch.value.trim().toLowerCase();
+  const visibleDefinitions = shortcutDefinitions.filter((definition) =>
+    `${definition.category} ${definition.label} ${definition.id}`.toLowerCase().includes(query),
+  );
+  elements.shortcutList.replaceChildren();
+  let previousCategory = '';
+  for (const definition of visibleDefinitions) {
+    if (definition.category !== previousCategory) {
+      previousCategory = definition.category;
+      const heading = document.createElement('div');
+      heading.className = 'shortcut-group-title';
+      heading.textContent = definition.category;
+      elements.shortcutList.append(heading);
+    }
+    const row = document.createElement('div');
+    row.className = 'shortcut-row';
+    const label = document.createElement('span');
+    label.textContent = definition.label;
+    const bindingButton = document.createElement('button');
+    bindingButton.type = 'button';
+    bindingButton.className = `shortcut-binding${recordingShortcutId === definition.id ? ' is-recording' : ''}`;
+    const bindings = bindingsFor(definition);
+    bindingButton.textContent =
+      recordingShortcutId === definition.id
+        ? '请按新快捷键…'
+        : bindings.length > 0
+          ? bindings.map(formatBinding).join(' / ')
+          : '未设置';
+    bindingButton.addEventListener('click', () => {
+      recordingShortcutId = definition.id;
+      elements.shortcutMessage.textContent = '请直接按下新的快捷键组合，Esc 取消，Delete 清除。';
+      renderShortcutList();
+    });
+    const clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.className = 'shortcut-clear';
+    clearButton.textContent = '×';
+    clearButton.title = '清除快捷键';
+    clearButton.addEventListener('click', () => {
+      const nextOverrides = { ...currentLocalSettings.shortcutOverrides, [definition.id]: [] };
+      void updateSharedSettings({ shortcutOverrides: nextOverrides });
+      recordingShortcutId = undefined;
+      renderShortcutList();
+    });
+    row.append(label, bindingButton, clearButton);
+    elements.shortcutList.append(row);
+  }
+}
 
 function setTone(element, tone) {
   if (!element) return;
@@ -204,7 +354,12 @@ async function safeCall(action, failureMessage) {
 }
 
 document.querySelectorAll('[data-view-target]').forEach((button) => {
-  button.addEventListener('click', () => showView(button.dataset.viewTarget));
+  button.addEventListener('click', () => {
+    showView(button.dataset.viewTarget);
+    if (button.dataset.viewTarget === 'settings' && api?.getLocalSettings) {
+      void api.getLocalSettings().then(renderLocalSettings).catch(() => undefined);
+    }
+  });
 });
 
 elements.primaryLaunch.addEventListener('click', () => {
@@ -272,9 +427,165 @@ elements.clearLogs.addEventListener('click', () => {
   elements.logOutput.dataset.empty = 'true';
 });
 
+elements.chooseLocalAvatar.addEventListener('click', () => elements.localAvatarFile.click());
+elements.localAvatarFile.addEventListener('change', () => {
+  const file = elements.localAvatarFile.files?.[0];
+  if (!file) return;
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    window.alert('请选择 PNG、JPG 或 WebP 图片。');
+    elements.localAvatarFile.value = '';
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    window.alert('头像文件不能超过 2 MB。');
+    elements.localAvatarFile.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.addEventListener('load', () => {
+    if (typeof reader.result !== 'string') return;
+    pendingAvatarDataUrl = reader.result;
+    elements.localAvatarPreview.replaceChildren();
+    const image = document.createElement('img');
+    image.src = reader.result;
+    image.alt = '';
+    elements.localAvatarPreview.append(image);
+    elements.profileSaveStatus.textContent = '等待保存';
+  });
+  reader.readAsDataURL(file);
+});
+
+elements.localProfileId.addEventListener('input', () => {
+  elements.profileSaveStatus.textContent = '等待保存';
+});
+
+elements.saveLocalProfile.addEventListener('click', async () => {
+  const customId = elements.localProfileId.value.trim().replace(/^@+/, '');
+  if (customId && !/^[\p{L}\p{N}_-]{2,24}$/u.test(customId)) {
+    window.alert('自定义 ID 需为 2–24 个中文、英文、数字、下划线或短横线。');
+    return;
+  }
+  elements.saveLocalProfile.disabled = true;
+  elements.profileSaveStatus.textContent = '保存中';
+  try {
+    await updateSharedSettings({
+      profile: {
+        customId,
+        ...(pendingAvatarDataUrl ? { avatarDataUrl: pendingAvatarDataUrl } : {}),
+      },
+    });
+    elements.profileSaveStatus.textContent = '已保存';
+  } catch (error) {
+    elements.profileSaveStatus.textContent = '保存失败';
+    appendLog(`[launcher] 无法保存本地资料：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    elements.saveLocalProfile.disabled = false;
+  }
+});
+
+elements.resetLocalProfile.addEventListener('click', async () => {
+  pendingAvatarDataUrl = undefined;
+  try {
+    await updateSharedSettings({ profile: { customId: '' } });
+    elements.localAvatarFile.value = '';
+    elements.profileSaveStatus.textContent = '已恢复默认';
+  } catch (error) {
+    appendLog(`[launcher] 无法恢复本地资料：${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+
+elements.performanceModeToggle.addEventListener('change', async () => {
+  const enabled = elements.performanceModeToggle.checked;
+  elements.performanceModeLabel.textContent = enabled ? '已启用' : '已关闭';
+  try {
+    await updateSharedSettings({ performanceTestModeEnabled: enabled });
+  } catch (error) {
+    renderLocalSettings(currentLocalSettings);
+    appendLog(`[launcher] 无法保存性能测试模式：${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+
+elements.openShortcutSettings.addEventListener('click', () => {
+  recordingShortcutId = undefined;
+  elements.shortcutSearch.value = '';
+  elements.shortcutMessage.textContent = '同一作用域内不允许重复快捷键。';
+  elements.shortcutModal.hidden = false;
+  renderShortcutList();
+  elements.shortcutSearch.focus();
+});
+
+function closeShortcutModal() {
+  recordingShortcutId = undefined;
+  elements.shortcutModal.hidden = true;
+}
+
+elements.closeShortcutSettings.addEventListener('click', closeShortcutModal);
+elements.shortcutModal.addEventListener('mousedown', (event) => {
+  if (event.target === elements.shortcutModal) closeShortcutModal();
+});
+elements.shortcutSearch.addEventListener('input', renderShortcutList);
+elements.resetAllShortcuts.addEventListener('click', async () => {
+  recordingShortcutId = undefined;
+  await updateSharedSettings({ shortcutOverrides: {} });
+  elements.shortcutMessage.textContent = '全部快捷键已恢复默认值。';
+  renderShortcutList();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (elements.shortcutModal.hidden) return;
+  if (!recordingShortcutId) {
+    if (event.key === 'Escape') closeShortcutModal();
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const definition = shortcutDefinitions.find((item) => item.id === recordingShortcutId);
+  if (!definition) return;
+  if (event.key === 'Escape') {
+    recordingShortcutId = undefined;
+    elements.shortcutMessage.textContent = '已取消录制。';
+    renderShortcutList();
+    return;
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    const nextOverrides = { ...currentLocalSettings.shortcutOverrides, [definition.id]: [] };
+    recordingShortcutId = undefined;
+    void updateSharedSettings({ shortcutOverrides: nextOverrides });
+    renderShortcutList();
+    return;
+  }
+  if (
+    ['ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight'].includes(
+      event.code,
+    )
+  ) return;
+  const nextBinding = {
+    code: event.code,
+    ...(event.ctrlKey || event.metaKey ? { primary: true } : {}),
+    ...(event.shiftKey ? { shift: true } : {}),
+    ...(event.altKey ? { alt: true } : {}),
+  };
+  const conflict = shortcutDefinitions.find((item) => {
+    if (item.id === definition.id) return false;
+    const sharesScope =
+      item.scope === definition.scope || item.scope === 'global' || definition.scope === 'global';
+    return sharesScope && bindingsFor(item).some((binding) => bindingKey(binding) === bindingKey(nextBinding));
+  });
+  if (conflict) {
+    elements.shortcutMessage.textContent = `该快捷键已用于“${conflict.label}”，请换一个组合。`;
+    return;
+  }
+  const nextOverrides = { ...currentLocalSettings.shortcutOverrides, [definition.id]: [nextBinding] };
+  recordingShortcutId = undefined;
+  void updateSharedSettings({ shortcutOverrides: nextOverrides });
+  elements.shortcutMessage.textContent = `已更新“${definition.label}”。`;
+  renderShortcutList();
+});
+
 if (api) {
   api.onState(renderState);
   api.onLog(appendLog);
+  api.onLocalSettings?.(renderLocalSettings);
   api
     .getState()
     .then(renderState)
@@ -282,6 +593,14 @@ if (api) {
       renderState({ phase: 'error', message: '无法读取启动器状态。' });
       appendLog(
         `[launcher] 无法读取状态：${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  api
+    .getLocalSettings()
+    .then(renderLocalSettings)
+    .catch((error) => {
+      appendLog(
+        `[launcher] 无法读取本地设置：${error instanceof Error ? error.message : String(error)}`,
       );
     });
 } else {
@@ -293,4 +612,5 @@ if (api) {
   elements.logOutput.textContent =
     '浏览器预览模式：Electron preload 未连接。\n通过 LIclick 3D Texture.exe 启动后，这里会显示实时服务日志。\n';
   elements.logOutput.dataset.empty = 'false';
+  renderLocalSettings(currentLocalSettings);
 }

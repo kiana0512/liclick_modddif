@@ -1,0 +1,245 @@
+import { blobToDataUrl, imageDataToBlob, urlToImageData } from './imageUtils';
+
+const previewCache = new Map<string, Promise<string>>();
+const MAX_PREVIEW_CACHE_ENTRIES = 12;
+const SUBJECT_PADDING_RATIO = 0.02;
+
+function getTone(data: Uint8ClampedArray, offset: number) {
+  const red = data[offset];
+  const green = data[offset + 1];
+  const blue = data[offset + 2];
+  const alpha = data[offset + 3];
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const chroma = max - min;
+  const luma = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+  return { alpha, max, min, chroma, luma };
+}
+
+function isBackgroundSeed(data: Uint8ClampedArray, offset: number) {
+  const { alpha, max, min, chroma, luma } = getTone(data, offset);
+  if (alpha <= 32) return true;
+  const black = luma <= 28 && max <= 42 && chroma <= 24;
+  const white = luma >= 238 && min >= 224 && chroma <= 30;
+  return black || white;
+}
+
+function isBackgroundCandidate(data: Uint8ClampedArray, offset: number) {
+  const { alpha, max, min, chroma, luma } = getTone(data, offset);
+  if (alpha <= 64) return true;
+  const black = luma <= 58 && max <= 82 && chroma <= 36;
+  const white = luma >= 208 && min >= 190 && chroma <= 52;
+  return black || white;
+}
+
+function removeEdgeConnectedNeutralBackground(imageData: ImageData) {
+  const { width, height } = imageData;
+  const output = new ImageData(new Uint8ClampedArray(imageData.data), width, height);
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0;
+  let tail = 0;
+  let removedOpaquePixels = 0;
+  let hadTransparency = false;
+  for (let offset = 3; offset < output.data.length; offset += 4) {
+    if (output.data[offset] < 250) {
+      hadTransparency = true;
+      break;
+    }
+  }
+
+  const enqueueSeed = (index: number) => {
+    if (visited[index] || !isBackgroundSeed(output.data, index * 4)) return;
+    visited[index] = 1;
+    queue[tail] = index;
+    tail += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    enqueueSeed(x);
+    enqueueSeed((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    enqueueSeed(y * width);
+    enqueueSeed(y * width + width - 1);
+  }
+
+  while (head < tail) {
+    const current = queue[head];
+    head += 1;
+    if (output.data[current * 4 + 3] > 64) removedOpaquePixels += 1;
+    output.data[current * 4 + 3] = 0;
+    const x = current % width;
+    const y = Math.floor(current / width);
+    const neighbors = [
+      x > 0 ? current - 1 : -1,
+      x < width - 1 ? current + 1 : -1,
+      y > 0 ? current - width : -1,
+      y < height - 1 ? current + width : -1,
+    ];
+    for (const neighbor of neighbors) {
+      if (neighbor < 0 || visited[neighbor] || !isBackgroundCandidate(output.data, neighbor * 4))
+        continue;
+      visited[neighbor] = 1;
+      queue[tail] = neighbor;
+      tail += 1;
+    }
+  }
+
+  // Closed silhouettes (for example a ring-shaped texture result) can trap the
+  // same black/white backdrop inside the subject. Remove only large detached
+  // neutral regions so small dark or light material details remain intact.
+  const minimumDetachedRegionSize = Math.max(64, Math.floor(width * height * 0.0025));
+  for (let index = 0; index < width * height; index += 1) {
+    if (visited[index] || !isBackgroundSeed(output.data, index * 4)) continue;
+    head = 0;
+    tail = 0;
+    visited[index] = 1;
+    queue[tail] = index;
+    tail += 1;
+    while (head < tail) {
+      const current = queue[head];
+      head += 1;
+      const x = current % width;
+      const y = Math.floor(current / width);
+      const neighbors = [
+        x > 0 ? current - 1 : -1,
+        x < width - 1 ? current + 1 : -1,
+        y > 0 ? current - width : -1,
+        y < height - 1 ? current + width : -1,
+      ];
+      for (const neighbor of neighbors) {
+        if (neighbor < 0 || visited[neighbor] || !isBackgroundCandidate(output.data, neighbor * 4))
+          continue;
+        visited[neighbor] = 1;
+        queue[tail] = neighbor;
+        tail += 1;
+      }
+    }
+    if (tail < minimumDetachedRegionSize) continue;
+    for (let queueIndex = 0; queueIndex < tail; queueIndex += 1) {
+      const pixel = queue[queueIndex];
+      if (output.data[pixel * 4 + 3] > 64) removedOpaquePixels += 1;
+      output.data[pixel * 4 + 3] = 0;
+    }
+  }
+  return { imageData: output, removedOpaquePixels, hadTransparency };
+}
+
+function getAlphaContentBounds(imageData: ImageData) {
+  const { width, height, data } = imageData;
+  const columns = new Uint32Array(width);
+  const rows = new Uint32Array(height);
+  let total = 0;
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
+    for (let x = 0; x < width; x += 1) {
+      if (data[(rowOffset + x) * 4 + 3] <= 24) continue;
+      columns[x] += 1;
+      rows[y] += 1;
+      total += 1;
+    }
+  }
+  if (total === 0) return undefined;
+  const trim = Math.floor(total * 0.0025);
+  const findStart = (counts: Uint32Array) => {
+    let accumulated = 0;
+    for (let index = 0; index < counts.length; index += 1) {
+      accumulated += counts[index];
+      if (accumulated > trim) return index;
+    }
+    return 0;
+  };
+  const findEnd = (counts: Uint32Array) => {
+    let accumulated = 0;
+    for (let index = counts.length - 1; index >= 0; index -= 1) {
+      accumulated += counts[index];
+      if (accumulated > trim) return index;
+    }
+    return counts.length - 1;
+  };
+  const left = findStart(columns);
+  const right = findEnd(columns);
+  const top = findStart(rows);
+  const bottom = findEnd(rows);
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left + 1),
+    height: Math.max(1, bottom - top + 1),
+  };
+}
+
+async function createPreviewUncached(sourceUrl: string) {
+  const source = await urlToImageData(sourceUrl);
+  const backgroundResult = removeEdgeConnectedNeutralBackground(source);
+  const transparent = backgroundResult.imageData;
+  const bounds = getAlphaContentBounds(transparent);
+  if (!bounds) return sourceUrl;
+
+  const padding = Math.max(
+    2,
+    Math.round(Math.max(bounds.width, bounds.height) * SUBJECT_PADDING_RATIO),
+  );
+  const cropX = Math.max(0, bounds.x - padding);
+  const cropY = Math.max(0, bounds.y - padding);
+  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
+  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
+  const cropWidth = Math.max(1, cropRight - cropX);
+  const cropHeight = Math.max(1, cropBottom - cropY);
+
+  // Avoid a needless PNG re-encode when the returned image is already opaque and tightly framed.
+  if (
+    backgroundResult.removedOpaquePixels === 0 &&
+    !backgroundResult.hadTransparency &&
+    cropWidth >= source.width * 0.9 &&
+    cropHeight >= source.height * 0.9
+  )
+    return sourceUrl;
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = source.width;
+  sourceCanvas.height = source.height;
+  const sourceContext = sourceCanvas.getContext('2d');
+  if (!sourceContext) return sourceUrl;
+  sourceContext.putImageData(transparent, 0, 0);
+
+  const outputCanvas = document.createElement('canvas');
+  // The processed image is preview-only. Tight output dimensions let object-contain
+  // fill the panel even when ComfyUI returned a wide frame around a tall subject.
+  outputCanvas.width = cropWidth;
+  outputCanvas.height = cropHeight;
+  const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
+  if (!outputContext) return sourceUrl;
+  outputContext.imageSmoothingEnabled = true;
+  outputContext.imageSmoothingQuality = 'high';
+  outputContext.clearRect(0, 0, cropWidth, cropHeight);
+  outputContext.drawImage(
+    sourceCanvas,
+    cropX,
+    cropY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight,
+  );
+  const output = outputContext.getImageData(0, 0, cropWidth, cropHeight);
+  return blobToDataUrl(await imageDataToBlob(output));
+}
+
+export function createSubjectFilledPreview(sourceUrl: string) {
+  const cached = previewCache.get(sourceUrl);
+  if (cached) return cached;
+  const promise = createPreviewUncached(sourceUrl).catch((error) => {
+    if (previewCache.get(sourceUrl) === promise) previewCache.delete(sourceUrl);
+    throw error;
+  });
+  previewCache.set(sourceUrl, promise);
+  while (previewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
+    const oldestKey = previewCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    previewCache.delete(oldestKey);
+  }
+  return promise;
+}

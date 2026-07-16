@@ -37,11 +37,24 @@ export type ProviderStatus = {
 async function requestJson<T>(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
-  const response = await fetch(`${workspaceApiBase}${path}`, {
-    ...init,
-    headers,
-    credentials: 'include',
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 30_000);
+  let response: Response;
+  try {
+    response = await fetch(`${workspaceApiBase}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers,
+      credentials: 'include',
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('登录服务响应超时，请稍后重试。');
+    }
+    throw new Error('无法连接登录服务，请确认本地工作区服务已启动。');
+  } finally {
+    window.clearTimeout(timeout);
+  }
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => ({}));
     const error = payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;

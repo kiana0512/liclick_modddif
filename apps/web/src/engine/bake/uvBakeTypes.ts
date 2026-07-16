@@ -95,8 +95,6 @@ export interface BakeVisibleProjectedLayersInput {
   markSourceLayersBaked?: boolean;
   preferBlobOutput?: boolean;
   skipImageEncoding?: boolean;
-  /** Internal fast path for transient transparent previews that need no seam or fill pass. */
-  skipCpuPostprocess?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 }
 

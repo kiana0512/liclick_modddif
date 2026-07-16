@@ -182,6 +182,10 @@ export const serverConfig = {
   port,
   host,
   workspaceDir: path.resolve(process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace')),
+  localSettingsPath: path.resolve(
+    process.env.LICLICK_LOCAL_SETTINGS_PATH ??
+      path.join(process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'), 'config', 'local-settings.json'),
+  ),
   publicWorkspaceUrl,
   publicPath: normalizePublicPath(process.env.LICLICK_PUBLIC_PATH),
   repoRoot,

@@ -20,6 +20,7 @@ import {
   captureCurrentView,
 } from '@/engine/capture/captureCurrentView';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
+import { createSubjectFilledPreview } from '@/engine/localRepaint/resultPreviewUtils';
 import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
@@ -156,6 +157,11 @@ const aspectRatios: LiclickAspectRatio[] = [
 ];
 const imageSizes: LiclickImageSize[] = ['auto', '1K', '2K', '4K'];
 const pendingSubmissionTimeoutMs = 3 * 60 * 1000;
+const generationPollIntervalMs = 5000;
+
+function generationPollToastKey(jobId: string) {
+  return `generation-poll-retrying:${jobId}`;
+}
 const defaultImageGenerationSettings = {
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
@@ -198,6 +204,40 @@ function CameraViewThumbnail({
         </span>
       )}
     </span>
+  );
+}
+
+function GenerationProgressStatus({
+  generation,
+  title,
+}: {
+  generation: Generation;
+  title: string;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const startedAt = getGenerationStartedAt(generation);
+  const elapsedSeconds = Number.isFinite(startedAt)
+    ? Math.max(0, Math.floor((now - startedAt) / 1000))
+    : 0;
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = String(elapsedSeconds % 60).padStart(2, '0');
+  const submitted = isGenerationSubmittedToServer(generation);
+
+  return (
+    <div className="grid justify-items-center gap-2 text-center" role="status" aria-live="polite">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/22 border-t-liclick-pink" />
+      <div className="text-sm font-semibold">{title}</div>
+      <div className="text-xs leading-5 text-white/68">
+        {submitted ? '后台正在处理，完成后会自动返回' : '正在检查参考图并提交任务'}
+        <span className="ml-1.5 tabular-nums">
+          {minutes}:{seconds}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -349,9 +389,7 @@ async function createComfyInpaintInputImage(
   const mask = sampledMaskContext.getImageData(0, 0, width, height).data;
   for (let offset = 0; offset < source.data.length; offset += 4) {
     const coverage =
-      Math.max(mask[offset], mask[offset + 1], mask[offset + 2]) *
-      (mask[offset + 3] / 255) /
-      255;
+      (Math.max(mask[offset], mask[offset + 1], mask[offset + 2]) * (mask[offset + 3] / 255)) / 255;
     const edgeCoverage = Math.max(0, Math.min(1, (coverage - 0.42) / 0.16));
     const antialiasedCoverage = edgeCoverage * edgeCoverage * (3 - 2 * edgeCoverage);
     // ComfyUI derives its MASK from alpha. The custom straight-RGBA encoder keeps
@@ -377,6 +415,10 @@ export function GeneratePanel() {
   const [tab, setTab] = useState<GenerateTab>('single');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
+  const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
+    sourceUrl: string;
+    previewUrl: string;
+  }>();
   const [cameraViews, setCameraViews] = useState<CameraViewItem[]>(() =>
     cameraViewOptions.map((option) => createPresetCameraViewItem(option, t(option.labelKey))),
   );
@@ -419,8 +461,12 @@ export function GeneratePanel() {
   const references = useReferenceStore((state) => state.references);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const addReferences = useReferenceStore((state) => state.addReferences);
-  const { generations, lastCapture, start, finish, addGeneration, setLastCapture } =
-    useGenerationStore();
+  const generations = useGenerationStore((state) => state.generations);
+  const lastCapture = useGenerationStore((state) => state.lastCapture);
+  const start = useGenerationStore((state) => state.start);
+  const finish = useGenerationStore((state) => state.finish);
+  const addGeneration = useGenerationStore((state) => state.addGeneration);
+  const setLastCapture = useGenerationStore((state) => state.setLastCapture);
   const addProjectGeneration = useProjectStore((state) => state.addGeneration);
   const addProjectCapture = useProjectStore((state) => state.addCapture);
   const setProjectLayers = useProjectStore((state) => state.setProjectLayers);
@@ -453,11 +499,13 @@ export function GeneratePanel() {
   );
   const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
+  const dismissToastByDedupeKey = useToastStore((state) => state.dismissToastByDedupeKey);
   const authStatus = useAuthStore((state) => state.status);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const submitLockRef = useRef(false);
   const cancelledGenerationIdsRef = useRef(new Set<string>());
+  const generationPollFailureCountsRef = useRef(new Map<string, number>());
   const comfyGenerationAbortRef = useRef<AbortController | undefined>();
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const tabGenerations = generations.filter((generation) => {
@@ -474,15 +522,54 @@ export function GeneratePanel() {
   const previewFailed = previewGeneration?.status === 'failed';
   const previewCancelled = previewGeneration?.metadata.cancelled === true;
   const canCancelGeneration = Boolean(activeProjectGeneration);
+  const previewRawResultUrl = previewGeneration?.resultUrl;
+  const previewNeedsSubjectFill = Boolean(
+    previewGeneration &&
+    (isLocalRepaintGeneration(previewGeneration) || isTextureMapGeneration(previewGeneration)),
+  );
+  const previewResultUrl =
+    previewRawResultUrl &&
+    previewNeedsSubjectFill &&
+    subjectFilledPreview?.sourceUrl === previewRawResultUrl
+      ? subjectFilledPreview.previewUrl
+      : previewRawResultUrl;
+
+  useEffect(() => {
+    const sourceUrl = previewRawResultUrl;
+    if (!sourceUrl || !previewNeedsSubjectFill) {
+      setSubjectFilledPreview(undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    void createSubjectFilledPreview(sourceUrl)
+      .then((previewUrl) => {
+        if (!cancelled) setSubjectFilledPreview({ sourceUrl, previewUrl });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn('[Liclick 3D Texture] Could not prepare generated image preview.', error);
+        setSubjectFilledPreview({ sourceUrl, previewUrl: sourceUrl });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewNeedsSubjectFill, previewRawResultUrl]);
 
   const notifyReferencePreprocessed = useCallback(
     (result: ReferencePreprocessingResult) => {
       const originalMiB = (result.originalBytes / 1024 / 1024).toFixed(1);
       const processedMiB = (result.processedBytes / 1024 / 1024).toFixed(1);
+      const keptOriginalResolution =
+        result.originalWidth === result.processedWidth &&
+        result.originalHeight === result.processedHeight;
+      const resolutionDescription = keptOriginalResolution
+        ? `保留原始 ${result.processedWidth}×${result.processedHeight} 分辨率`
+        : `分辨率由 ${result.originalWidth}×${result.originalHeight} 调整为 ${result.processedWidth}×${result.processedHeight}`;
+      const qualityPercent = Math.round(result.outputQuality * 100);
       pushToast({
         tone: 'warning',
         title: '参考图超限，已自动处理',
-        description: `${result.name} 已从 ${originalMiB} MB 优化为 ${processedMiB} MB，将按原构图继续生成。`,
+        description: `${result.name} 已从 ${originalMiB} MB 优化为 ${processedMiB} MB；${resolutionDescription}，WebP 编码质量 ${qualityPercent}%，将按原构图继续生成。`,
         dedupeKey: `atlas-reference-preprocessed:${result.id}`,
       });
     },
@@ -653,13 +740,7 @@ export function GeneratePanel() {
     return () => {
       cancelled = true;
     };
-  }, [
-    cameraViews,
-    captureObjectId,
-    isTextureMapTab,
-    pushToast,
-    textureMapViewMode,
-  ]);
+  }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, textureMapViewMode]);
 
   useEffect(() => {
     if (!previewGeneration || previewGeneration.resultUrl) return undefined;
@@ -691,11 +772,38 @@ export function GeneratePanel() {
     let cancelled = false;
     let timeoutId: number | undefined;
     const client = createLiclickApiClient();
+    const pollToastKey = generationPollToastKey(jobId);
+
+    function clearPollRetryFeedback(showRecovered = false) {
+      const failureCount = generationPollFailureCountsRef.current.get(jobId) ?? 0;
+      generationPollFailureCountsRef.current.delete(jobId);
+      dismissToastByDedupeKey(pollToastKey);
+      if (showRecovered && failureCount >= 2) {
+        pushToast({
+          tone: 'success',
+          title: '生成任务连接已恢复',
+          description: '后台任务仍在正常运行，结果完成后会自动回到预览区。',
+          dedupeKey: pollToastKey,
+        });
+      }
+    }
 
     async function pollJob() {
       try {
         const result = await client.getGenerationJob(jobId);
         if (cancelled) return;
+        if (result.message) {
+          generationPollFailureCountsRef.current.set(jobId, 2);
+          setGenerateNotice({ tone: 'warning', message: result.message });
+          pushToast({
+            tone: 'warning',
+            title: '生成服务正在自动重试',
+            description: result.message,
+            dedupeKey: pollToastKey,
+          });
+        } else {
+          clearPollRetryFeedback(true);
+        }
         if (result.status === 'succeeded' && result.resultUrl) {
           const generation: Generation = {
             ...generationToPoll,
@@ -728,21 +836,31 @@ export function GeneratePanel() {
           return;
         }
         if (result.status === 'running' || result.status === 'queued') {
-          const generation: Generation = {
-            ...generationToPoll,
-            id: result.id || generationToPoll.id,
-            status: 'running',
-            metadata: {
-              ...generationToPoll.metadata,
-              taskId: result.taskId ?? generationToPoll.metadata.taskId,
-              model: result.model ?? generationToPoll.metadata.model,
-              extraParams: result.extraParams ?? generationToPoll.metadata.extraParams,
-              uploadedReferences:
-                result.uploadedReferences ?? generationToPoll.metadata.uploadedReferences,
-              lastPolledAt: result.updatedAt ?? new Date().toISOString(),
-            },
-          };
-          syncGeneration(generation);
+          const nextTaskId = result.taskId ?? generationToPoll.metadata.taskId;
+          const nextModel = result.model ?? generationToPoll.metadata.model;
+          const metadataChanged =
+            generationToPoll.status !== 'running' ||
+            nextTaskId !== generationToPoll.metadata.taskId ||
+            nextModel !== generationToPoll.metadata.model ||
+            (!generationToPoll.metadata.extraParams && Boolean(result.extraParams)) ||
+            (!generationToPoll.metadata.uploadedReferences && Boolean(result.uploadedReferences));
+          // Do not write a new generation object for an unchanged "running"
+          // response. Updating on every poll restarts this effect immediately,
+          // turning the intended interval into a request/render loop.
+          if (metadataChanged) {
+            syncGeneration({
+              ...generationToPoll,
+              status: 'running',
+              metadata: {
+                ...generationToPoll.metadata,
+                taskId: nextTaskId,
+                model: nextModel,
+                extraParams: result.extraParams ?? generationToPoll.metadata.extraParams,
+                uploadedReferences:
+                  result.uploadedReferences ?? generationToPoll.metadata.uploadedReferences,
+              },
+            });
+          }
         }
         if (result.status === 'failed') {
           markGenerationFailed(generationToPoll, result.error ?? '莉刻图片生成任务失败。');
@@ -750,7 +868,8 @@ export function GeneratePanel() {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : '';
-        if (message.includes('Generation job not found')) {
+        if (/Generation job not found|生成任务已失效|没有找到.*任务/i.test(message)) {
+          clearPollRetryFeedback();
           if (!cancelled)
             markGenerationFailed(
               generationToPoll,
@@ -758,8 +877,20 @@ export function GeneratePanel() {
             );
           return;
         }
+        const failureCount = (generationPollFailureCountsRef.current.get(jobId) ?? 0) + 1;
+        generationPollFailureCountsRef.current.set(jobId, failureCount);
+        if (failureCount >= 2) {
+          const retryMessage = '与本地生成服务的连接暂时不稳定，后台任务没有丢失，正在自动重试。';
+          setGenerateNotice({ tone: 'warning', message: retryMessage });
+          pushToast({
+            tone: 'warning',
+            title: '生成任务正在自动重连',
+            description: retryMessage,
+            dedupeKey: pollToastKey,
+          });
+        }
       }
-      if (!cancelled) timeoutId = window.setTimeout(pollJob, 5000);
+      if (!cancelled) timeoutId = window.setTimeout(pollJob, generationPollIntervalMs);
     }
 
     void pollJob();
@@ -767,7 +898,7 @@ export function GeneratePanel() {
       cancelled = true;
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [markGenerationFailed, previewGeneration, pushToast, syncGeneration]);
+  }, [dismissToastByDedupeKey, markGenerationFailed, previewGeneration, pushToast, syncGeneration]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
     if (!currentProject) return;
@@ -1014,7 +1145,9 @@ export function GeneratePanel() {
       if (isCancelledGeneration(generation)) throw new Error('用户已终止纹理贴图生成任务。');
       const result = await client.getGenerationJob(jobId);
       if (result.status === 'failed') {
-        throw new Error(getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'));
+        throw new Error(
+          getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'),
+        );
       }
       if (result.status === 'succeeded' && result.resultUrl) {
         return {
@@ -1910,7 +2043,10 @@ export function GeneratePanel() {
   function handleDownloadGenerationImage() {
     if (!previewGeneration?.resultUrl) return;
     const kind = isTextureMapGeneration(previewGeneration) ? 'texture_map' : 'liclick_generation';
-    void downloadImageAsset(previewGeneration.resultUrl, `liclick_${kind}_${previewGeneration.id}`);
+    void downloadImageAsset(
+      previewResultUrl ?? previewGeneration.resultUrl,
+      `liclick_${kind}_${previewGeneration.id}`,
+    );
   }
 
   return (
@@ -1938,7 +2074,7 @@ export function GeneratePanel() {
                 style={checkerBackgroundStyle}
               >
                 <img
-                  src={previewGeneration.resultUrl}
+                  src={previewResultUrl ?? previewGeneration.resultUrl}
                   alt=""
                   className="h-full w-full object-contain"
                 />
@@ -1992,12 +2128,9 @@ export function GeneratePanel() {
                 </button>
               </div>
             )}
-            {previewIsGenerating && (
+            {previewIsGenerating && previewGeneration && (
               <div className="absolute inset-0 grid place-items-center bg-black/62 text-white backdrop-blur-[2px]">
-                <div className="grid justify-items-center gap-3">
-                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/22 border-t-liclick-pink" />
-                  <div className="text-sm font-semibold">{t('generating')}</div>
-                </div>
+                <GenerationProgressStatus generation={previewGeneration} title={t('generating')} />
               </div>
             )}
             {previewFailed && !previewIsGenerating && (
@@ -2225,8 +2358,18 @@ export function GeneratePanel() {
               </label>
             )}
 
-            {generateNotice && generateNotice.tone === 'info' && !isLocalRepaintTab && (
-              <div className="rounded-md border border-sky-300/28 bg-sky-400/12 px-2.5 py-2 text-xs leading-5 text-sky-50">
+            {generateNotice && (
+              <div
+                role={generateNotice.tone === 'error' ? 'alert' : 'status'}
+                aria-live="polite"
+                className={`rounded-md border px-2.5 py-2 text-xs leading-5 ${
+                  generateNotice.tone === 'error'
+                    ? 'border-rose-300/32 bg-rose-400/12 text-rose-50'
+                    : generateNotice.tone === 'warning'
+                      ? 'border-amber-300/32 bg-amber-400/12 text-amber-50'
+                      : 'border-sky-300/28 bg-sky-400/12 text-sky-50'
+                }`}
+              >
                 {generateNotice.message}
               </div>
             )}
@@ -2379,7 +2522,7 @@ export function GeneratePanel() {
             aria-label={t('close')}
           >
             <img
-              src={previewGeneration.resultUrl}
+              src={previewResultUrl ?? previewGeneration.resultUrl}
               alt=""
               className="max-h-[92vh] max-w-[94vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
               style={checkerBackgroundStyle}

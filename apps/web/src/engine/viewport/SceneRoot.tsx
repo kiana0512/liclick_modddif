@@ -56,12 +56,21 @@ const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
 const PROJECTED_PREVIEW_LIMIT_TOAST_KEY = 'projected-preview:sampler-limit';
 const PROJECTED_PREVIEW_FAILURE_TOAST_KEY = 'projected-preview:failure';
 const PROJECTED_TEXTURE_ARRAY_TOAST_KEY = 'projected-preview:texture-array';
+const PROJECTED_PREVIEW_PROGRESS_INTERVAL_MS = 250;
+let lastProjectedPreviewProgressAt = 0;
+let lastProjectedPreviewPercent = 0;
+
+function resetProjectedPreviewProgressNotice() {
+  lastProjectedPreviewProgressAt = 0;
+  lastProjectedPreviewPercent = 0;
+}
 
 function projectionPreviewCopy() {
   return translations[useI18nStore.getState().language];
 }
 
 function notifyProjectedPreviewLimit(required: number, available: number) {
+  resetProjectedPreviewProgressNotice();
   const copy = projectionPreviewCopy();
   useToastStore.getState().pushToast({
     tone: 'warning',
@@ -76,15 +85,27 @@ function notifyProjectedPreviewLimit(required: number, available: number) {
 function notifyProjectedPreviewProgress(progress: ProjectedPreviewCompositeProgress) {
   const copy = projectionPreviewCopy();
   const percent = Math.max(1, Math.min(99, Math.round(progress.progress * 100)));
+  const now = performance.now();
+  if (
+    percent === lastProjectedPreviewPercent ||
+    (now - lastProjectedPreviewProgressAt < PROJECTED_PREVIEW_PROGRESS_INTERVAL_MS &&
+      percent - lastProjectedPreviewPercent < 2)
+  ) {
+    return;
+  }
+  lastProjectedPreviewProgressAt = now;
+  lastProjectedPreviewPercent = percent;
   useToastStore.getState().pushToast({
     tone: 'info',
     title: copy.projectedPreviewComposing,
     description: copy.projectedPreviewComposingHelp.replace('{progress}', String(percent)),
     dedupeKey: PROJECTED_PREVIEW_LIMIT_TOAST_KEY,
+    persistent: true,
   });
 }
 
 function notifyProjectedPreviewReady(layerCount: number) {
+  resetProjectedPreviewProgressNotice();
   const copy = projectionPreviewCopy();
   const toastStore = useToastStore.getState();
   toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_LIMIT_TOAST_KEY);
@@ -97,6 +118,7 @@ function notifyProjectedPreviewReady(layerCount: number) {
 }
 
 function notifyProjectedPreviewFailure(_error: unknown) {
+  resetProjectedPreviewProgressNotice();
   const copy = projectionPreviewCopy();
   const toastStore = useToastStore.getState();
   toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_LIMIT_TOAST_KEY);

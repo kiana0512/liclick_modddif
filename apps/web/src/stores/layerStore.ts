@@ -53,6 +53,32 @@ type LayerStore = {
 const legacyTransparentImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
 
+function createEmptyLayer(objectId = useSceneStore.getState().selectedObjectId): Layer {
+  return {
+    id: uuid(),
+    name: 'New layer',
+    type: 'uv',
+    imageUrl: '',
+    objectId,
+    visible: true,
+    opacity: 1,
+    strength: 1,
+    blendMode: 'normal',
+    adjustments: { hue: 0, saturation: 0, lightness: 0 },
+    order: 0,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function ensureSelectedObjectHasLayer(layers: Layer[]) {
+  const selectedObjectId = useSceneStore.getState().selectedObjectId;
+  const hasLayerForSelectedObject = layers.some(
+    (layer) => !layer.objectId || layer.objectId === selectedObjectId,
+  );
+  if (hasLayerForSelectedObject) return layers;
+  return [createEmptyLayer(selectedObjectId), ...layers];
+}
+
 function withOrder(layers: Layer[]) {
   return layers.map((layer, index) => ({ ...layer, order: index }));
 }
@@ -119,21 +145,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
     }),
   addEmptyLayer: () => {
-    const objectId = useSceneStore.getState().selectedObjectId;
-    const layer: Layer = {
-      id: uuid(),
-      name: 'New layer',
-      type: 'uv',
-      imageUrl: '',
-      objectId,
-      visible: true,
-      opacity: 1,
-      strength: 1,
-      blendMode: 'normal',
-      adjustments: { hue: 0, saturation: 0, lightness: 0 },
-      order: 0,
-      createdAt: new Date().toISOString(),
-    };
+    const layer = createEmptyLayer();
 
     set((state) => ({
       layers: withOrder([layer, ...state.layers]),
@@ -435,7 +447,9 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     }),
   deleteLayer: (layerId) =>
     set((state) => {
-      const layers = state.layers.filter((layer) => layer.id !== layerId);
+      const layers = ensureSelectedObjectHasLayer(
+        state.layers.filter((layer) => layer.id !== layerId),
+      );
       return {
         layers: markVisibleStackNeedsRebake(withOrder(layers)),
         activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
@@ -444,7 +458,9 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   deleteLayers: (layerIds) =>
     set((state) => {
       const layerIdSet = new Set(layerIds);
-      const layers = state.layers.filter((layer) => !layerIdSet.has(layer.id));
+      const layers = ensureSelectedObjectHasLayer(
+        state.layers.filter((layer) => !layerIdSet.has(layer.id)),
+      );
       return {
         layers: markVisibleStackNeedsRebake(withOrder(layers)),
         activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,

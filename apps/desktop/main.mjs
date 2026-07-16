@@ -10,6 +10,7 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..',
 const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
 const appDataRoot = path.join(localAppData, 'Liclick 3D Texture');
 const logsDir = path.join(appDataRoot, 'logs');
+const localSettingsPath = path.join(appDataRoot, 'config', 'local-settings.json');
 const workspaceDir = process.env.LICLICK_WORKSPACE_DIR ?? path.join(appDataRoot, 'workspace');
 const workspacePort = process.env.LICLICK_WORKSPACE_PORT ?? '4617';
 const webPort = process.env.LICLICK_WEB_PORT ?? '5673';
@@ -46,6 +47,139 @@ let isQuitting = false;
 let hasShownTrayHint = false;
 let hasAutoOpenedWorkspace = false;
 let lastLogLines = [];
+
+const defaultLocalSettings = {
+  version: 1,
+  activeUserId: 'anonymous',
+  performanceTestModeEnabled: false,
+  performanceTestModeConfigured: false,
+  profiles: {},
+  shortcutsByUser: {},
+  shortcutsConfiguredByUser: {},
+};
+
+function normalizeLocalUserId(value) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed && trimmed.length <= 200 ? trimmed : 'anonymous';
+}
+
+function normalizeLocalProfile(value) {
+  if (!value || typeof value !== 'object') return { customId: '' };
+  const customId = typeof value.customId === 'string' ? value.customId.trim().slice(0, 24) : '';
+  const avatarDataUrl =
+    typeof value.avatarDataUrl === 'string' &&
+    /^data:image\/(?:png|jpeg|webp);base64,/i.test(value.avatarDataUrl) &&
+    value.avatarDataUrl.length <= 3_000_000
+      ? value.avatarDataUrl
+      : undefined;
+  return { customId, ...(avatarDataUrl ? { avatarDataUrl } : {}) };
+}
+
+function normalizeLocalShortcuts(value) {
+  if (!value || typeof value !== 'object') return {};
+  const result = {};
+  for (const [actionId, bindings] of Object.entries(value)) {
+    if (!/^[a-z]+(?:\.[A-Za-z]+)+$/.test(actionId) || !Array.isArray(bindings)) continue;
+    result[actionId] = bindings
+      .flatMap((binding) => {
+        if (!binding || typeof binding !== 'object' || typeof binding.code !== 'string') return [];
+        return [{
+          code: binding.code.slice(0, 80),
+          ...(binding.primary === true ? { primary: true } : {}),
+          ...(binding.shift === true ? { shift: true } : {}),
+          ...(binding.alt === true ? { alt: true } : {}),
+        }];
+      })
+      .slice(0, 4);
+  }
+  return result;
+}
+
+function normalizeLocalSettings(value) {
+  if (!value || typeof value !== 'object') return structuredClone(defaultLocalSettings);
+  const activeUserId = normalizeLocalUserId(value.activeUserId);
+  const profiles = Object.fromEntries(
+    Object.entries(value.profiles && typeof value.profiles === 'object' ? value.profiles : {})
+      .slice(0, 50)
+      .map(([userId, profile]) => [normalizeLocalUserId(userId), normalizeLocalProfile(profile)]),
+  );
+  const shortcutsByUser = Object.fromEntries(
+    Object.entries(
+      value.shortcutsByUser && typeof value.shortcutsByUser === 'object'
+        ? value.shortcutsByUser
+        : {},
+    )
+      .slice(0, 50)
+      .map(([userId, shortcuts]) => [normalizeLocalUserId(userId), normalizeLocalShortcuts(shortcuts)]),
+  );
+  const shortcutsConfiguredByUser = Object.fromEntries(
+    Object.entries(
+      value.shortcutsConfiguredByUser && typeof value.shortcutsConfiguredByUser === 'object'
+        ? value.shortcutsConfiguredByUser
+        : {},
+    )
+      .slice(0, 50)
+      .map(([userId, configured]) => [normalizeLocalUserId(userId), configured === true]),
+  );
+  return {
+    version: 1,
+    activeUserId,
+    performanceTestModeEnabled: value.performanceTestModeEnabled === true,
+    performanceTestModeConfigured: value.performanceTestModeConfigured === true,
+    profiles,
+    shortcutsByUser,
+    shortcutsConfiguredByUser,
+  };
+}
+
+function readLocalSettingsDocument() {
+  try {
+    return normalizeLocalSettings(JSON.parse(fs.readFileSync(localSettingsPath, 'utf8')));
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) {
+      emitLog(`[desktop] failed to read local settings: ${error.message}`);
+    }
+    return structuredClone(defaultLocalSettings);
+  }
+}
+
+function localSettingsView(document, requestedUserId) {
+  const userId = normalizeLocalUserId(requestedUserId ?? document.activeUserId);
+  return {
+    version: 1,
+    activeUserId: userId,
+    performanceTestModeEnabled: document.performanceTestModeEnabled,
+    performanceTestModeConfigured: document.performanceTestModeConfigured,
+    profile: document.profiles[userId] ?? { customId: '' },
+    shortcutOverrides: document.shortcutsByUser[userId] ?? {},
+    shortcutOverridesConfigured: document.shortcutsConfiguredByUser[userId] === true,
+  };
+}
+
+function getLocalSettings() {
+  const document = readLocalSettingsDocument();
+  return localSettingsView(document);
+}
+
+function updateLocalSettings(input = {}) {
+  const document = readLocalSettingsDocument();
+  const userId = normalizeLocalUserId(input.userId ?? document.activeUserId);
+  if (input.activate === true) document.activeUserId = userId;
+  if (typeof input.performanceTestModeEnabled === 'boolean') {
+    document.performanceTestModeEnabled = input.performanceTestModeEnabled;
+    document.performanceTestModeConfigured = true;
+  }
+  if (input.profile !== undefined) document.profiles[userId] = normalizeLocalProfile(input.profile);
+  if (input.shortcutOverrides !== undefined) {
+    document.shortcutsByUser[userId] = normalizeLocalShortcuts(input.shortcutOverrides);
+    document.shortcutsConfiguredByUser[userId] = true;
+  }
+  fs.mkdirSync(path.dirname(localSettingsPath), { recursive: true });
+  fs.writeFileSync(localSettingsPath, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
+  const view = localSettingsView(document, userId);
+  mainWindow?.webContents.send('launcher:local-settings', view);
+  return view;
+}
 
 function emitLog(line) {
   const text = String(line).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -268,6 +402,7 @@ async function startServices() {
           VITE_LICLICK_WORKSPACE_API: workspaceUrl,
           LICLICK_FRONTEND_URL: webUrl,
           LICLICK_WORKSPACE_DIR: workspaceDir,
+          LICLICK_LOCAL_SETTINGS_PATH: localSettingsPath,
         },
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -486,6 +621,8 @@ ipcMain.handle('launcher:stop', () => stopServices());
 ipcMain.handle('launcher:open-workspace', () => openWorkspace());
 ipcMain.handle('launcher:open-workspace-dir', () => openWorkspaceDir());
 ipcMain.handle('launcher:open-logs', () => openLogsDir());
+ipcMain.handle('launcher:get-local-settings', () => getLocalSettings());
+ipcMain.handle('launcher:update-local-settings', (_event, input) => updateLocalSettings(input));
 ipcMain.handle('launcher:show-window', () => showWindow());
 ipcMain.handle('launcher:quit', () => {
   isQuitting = true;

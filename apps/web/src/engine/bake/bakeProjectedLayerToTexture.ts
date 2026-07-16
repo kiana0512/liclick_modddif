@@ -1027,28 +1027,20 @@ export async function bakeVisibleProjectedLayersToTexture(
       const wantsTransparentOutput = input.outputAlpha === 'transparent';
       const needsCpuSharpen = !gpuBake.postProcessedOnGpu && !wantsTransparentOutput;
       const needsCpuViewportFill = !gpuBake.opaqueBaseColorReady && !wantsTransparentOutput;
-      const canSkipCpuPostprocess =
-        input.skipCpuPostprocess &&
-        wantsTransparentOutput &&
-        !needsCpuSharpen &&
-        !needsCpuViewportFill &&
-        !input.enableDilation;
-      if (!canSkipCpuPostprocess) {
-        const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
-        if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
-        const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
-        if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
-        const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
-        if (seamResult.adjustedPixels > 0) {
-          gpuBake.warnings.push(
-            `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
-          );
-        }
-        if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
-        if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
-        else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
-        gpuContext.putImageData(gpuImage, 0, 0);
+      const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
+      if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
+      const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
+      if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
+      const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
+      if (seamResult.adjustedPixels > 0) {
+        gpuBake.warnings.push(
+          `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+        );
       }
+      if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
+      if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
+      else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
+      gpuContext.putImageData(gpuImage, 0, 0);
       if (
         !input.skipGpuValidation &&
         (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent')

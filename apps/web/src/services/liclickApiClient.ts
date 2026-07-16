@@ -6,6 +6,7 @@ import {
   prepareReferenceForAtlas,
   type ReferencePreprocessingResult,
 } from './referenceImagePreprocessor';
+import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
@@ -67,7 +68,10 @@ async function prepareReferences(
   references: ReferenceImage[] = [],
   onReferencePreprocessed?: (result: ReferencePreprocessingResult) => void,
 ) {
-  const prepared = await Promise.all(references.map(prepareReferenceForAtlas));
+  // Large references are decoded into full RGBA bitmaps. Limiting preparation
+  // concurrency prevents several 4K images from freezing or exhausting the UI
+  // process while preserving the same reference order and output.
+  const prepared = await mapWithConcurrency(references, 2, prepareReferenceForAtlas);
   for (const reference of prepared) {
     if (reference.preprocessing) onReferencePreprocessed?.(reference.preprocessing);
   }
