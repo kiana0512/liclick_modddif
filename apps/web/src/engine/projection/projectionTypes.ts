@@ -17,6 +17,13 @@ export type ProjectionLayerInput = {
   uvOverlayHue?: number;
   uvOverlaySaturation?: number;
   uvOverlayLightness?: number;
+  /** UV patch that is ordered above the projected stack and composites last. */
+  topUvOverlayTexture?: THREE.Texture;
+  topUvOverlayOpacity?: number;
+  topUvOverlayRenderedColor?: boolean;
+  topUvOverlayHue?: number;
+  topUvOverlaySaturation?: number;
+  topUvOverlayLightness?: number;
   baseColor?: THREE.ColorRepresentation;
   opacity: number;
   strength?: number;

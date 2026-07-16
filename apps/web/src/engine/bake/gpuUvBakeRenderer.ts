@@ -265,8 +265,11 @@ const fragmentShader = `
 
     vec2 maskSampleUv = mix(projectedSampleUv, vTextureUv, maskUsesUv);
     vec4 maskTexel = texture2D(maskMap, maskSampleUv);
-    float maskValue = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
-    if (useMask > 0.5 && maskValue < 0.094) discard;
+    // Match the live projected material: the mask is continuous coverage, not a
+    // binary acceptance test. Turning every accepted feather texel fully opaque
+    // made a soft local-repaint stroke become a solid stripe after UV baking.
+    float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
+    float maskCoverage = mix(1.0, maskValue, useMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
     float capturedDepth = unpackDepth(texture2D(depthMap, projectedSampleUv));
@@ -277,10 +280,11 @@ const fragmentShader = `
 
     vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
     texel.rgb = applyHsvAdjustments(texel.rgb);
-    if (texel.a < 0.01) discard;
+    float sourceAlpha = texel.a * maskCoverage;
+    if (sourceAlpha < 0.01) discard;
     float angleWeight = computeAngleWeight(ndv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
-    float coverage = clamp(layerOpacity * texel.a * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
     if (coverage <= 0.025) discard;
     float qualityEdge = computeImageEdgeFade(projectedSampleUv, 0.035);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
@@ -774,7 +778,10 @@ function readRenderTargetToImageData(
         imageData.data[targetOffset] = red;
         imageData.data[targetOffset + 1] = green;
         imageData.data[targetOffset + 2] = blue;
-        imageData.data[targetOffset + 3] = outputAlpha === 'transparent' ? 255 : alphaByte;
+        // Transparent bake output must retain the projected coverage. Forcing
+        // every surviving sample opaque turns a small feathered patch into a
+        // solid UV island when this direct GPU path is selected.
+        imageData.data[targetOffset + 3] = alphaByte;
         coverage[pixelIndex] = 1;
       } else if (outputAlpha === 'opaque-viewport') {
         imageData.data[targetOffset] = UNPROJECTED_TEXTURE_FILL[0];

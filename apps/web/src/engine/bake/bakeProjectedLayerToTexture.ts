@@ -84,6 +84,14 @@ async function encodeBakeCanvas(canvas: HTMLCanvasElement, preferBlobOutput?: bo
   };
 }
 
+function encodeVisibleBakeCanvas(
+  canvas: HTMLCanvasElement,
+  input: BakeVisibleProjectedLayersInput,
+): Promise<{ imageUrl: string; imageBlob?: Blob }> {
+  if (input.skipImageEncoding) return Promise.resolve({ imageUrl: '', imageBlob: undefined });
+  return encodeBakeCanvas(canvas, input.preferBlobOutput);
+}
+
 function validateBakeCoverage(
   coveredPixels: number,
   resolution: number,
@@ -929,7 +937,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           layerIndex: layers.length - 1,
           layerCount: layers.length,
         });
-        const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
+        const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(canvas, input);
         const coverageRatio = validateBakeCoverage(
           writtenTexels,
           input.resolution,
@@ -1019,20 +1027,28 @@ export async function bakeVisibleProjectedLayersToTexture(
       const wantsTransparentOutput = input.outputAlpha === 'transparent';
       const needsCpuSharpen = !gpuBake.postProcessedOnGpu && !wantsTransparentOutput;
       const needsCpuViewportFill = !gpuBake.opaqueBaseColorReady && !wantsTransparentOutput;
-      const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
-      if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
-      const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
-      if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
-      const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
-      if (seamResult.adjustedPixels > 0) {
-        gpuBake.warnings.push(
-          `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
-        );
+      const canSkipCpuPostprocess =
+        input.skipCpuPostprocess &&
+        wantsTransparentOutput &&
+        !needsCpuSharpen &&
+        !needsCpuViewportFill &&
+        !input.enableDilation;
+      if (!canSkipCpuPostprocess) {
+        const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
+        if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
+        const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
+        if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
+        const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
+        if (seamResult.adjustedPixels > 0) {
+          gpuBake.warnings.push(
+            `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+          );
+        }
+        if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
+        if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
+        else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
+        gpuContext.putImageData(gpuImage, 0, 0);
       }
-      if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
-      if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
-      else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
-      gpuContext.putImageData(gpuImage, 0, 0);
       if (
         !input.skipGpuValidation &&
         (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent')
@@ -1056,10 +1072,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         layerIndex: layers.length - 1,
         layerCount: layers.length,
       });
-      const { imageBlob, imageUrl } = await encodeBakeCanvas(
-        gpuBake.canvas,
-        input.preferBlobOutput,
-      );
+      const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(gpuBake.canvas, input);
       const coverageRatio = validateBakeCoverage(
         gpuBake.coveredPixels,
         input.resolution,
@@ -1291,7 +1304,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     layerIndex: layers.length - 1,
     layerCount: layers.length,
   });
-  const { imageBlob, imageUrl } = await encodeBakeCanvas(canvas, input.preferBlobOutput);
+  const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(canvas, input);
   const coverageRatio = validateBakeCoverage(
     writtenTexels,
     input.resolution,

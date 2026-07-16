@@ -1,4 +1,4 @@
-import { loadImageData } from '@/engine/bake/imageSampler';
+import { loadImageData, sampleImageBilinear } from '@/engine/bake/imageSampler';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
 type LabColor = [number, number, number];
@@ -557,18 +557,16 @@ async function imageDataToPngUrl(imageData: ImageData) {
 
 function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
   const output = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
-  const maskMaxX = Math.max(0, mask.width - 1);
-  const maskMaxY = Math.max(0, mask.height - 1);
   for (let y = 0; y < image.height; y += 1) {
     const v = image.height <= 1 ? 0 : y / (image.height - 1);
-    const maskY = Math.min(maskMaxY, Math.max(0, Math.round(v * maskMaxY)));
     for (let x = 0; x < image.width; x += 1) {
       const u = image.width <= 1 ? 0 : x / (image.width - 1);
-      const maskX = Math.min(maskMaxX, Math.max(0, Math.round(u * maskMaxX)));
       const sourceOffset = (y * image.width + x) * 4;
-      const maskOffset = (maskY * mask.width + maskX) * 4;
-      const maskValue = Math.max(mask.data[maskOffset], mask.data[maskOffset + 1], mask.data[maskOffset + 2]) / 255;
-      const nextAlpha = Math.round(output.data[sourceOffset + 3] * maskValue);
+      const maskSample = sampleImageBilinear(mask, u, v);
+      const maskLuminance =
+        maskSample[0] * 0.299 + maskSample[1] * 0.587 + maskSample[2] * 0.114;
+      const maskCoverage = (maskLuminance / 255) * (maskSample[3] / 255);
+      const nextAlpha = Math.round(output.data[sourceOffset + 3] * maskCoverage);
       output.data[sourceOffset + 3] = nextAlpha;
       if (nextAlpha <= 0) {
         output.data[sourceOffset] = 0;
@@ -586,4 +584,19 @@ export async function createMaskedProjectedImage(imageUrl: string, projectionMas
   if (!projectionMaskUrl) return imageDataToPngUrl(cutout);
   const projectionMask = await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask');
   return imageDataToPngUrl(applyProjectedAlphaMask(cutout, projectionMask));
+}
+
+/**
+ * Flattens a projection-space mask into the source alpha before UV baking.
+ * This is deliberately separate from createMaskedProjectedImage: a local
+ * repaint result is a complete rendered frame and must not run through the
+ * solid-background cutout heuristic. Baking the mask into alpha also makes the
+ * merge robust if an optional mask texture cannot be loaded by the GPU path.
+ */
+export async function createProjectionMaskedImage(imageUrl: string, projectionMaskUrl: string) {
+  const [sourceImage, projectionMask] = await Promise.all([
+    loadImageData(imageUrl, maxCutoutDimension),
+    loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
+  ]);
+  return imageDataToPngUrl(applyProjectedAlphaMask(sourceImage, projectionMask));
 }

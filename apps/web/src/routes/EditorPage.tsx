@@ -38,11 +38,11 @@ import {
   setDebugUvBakeMethod,
   setDebugUvBakeVerbose,
 } from '@/engine/bake/uvBakeDebugControls';
-import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import {
   getLiveProjectedCanvasDataUrl,
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { createProjectionMaskedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
 import {
@@ -612,7 +612,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
-  const localRepaintCutoutCacheRef = useRef(new Map<string, Promise<string>>());
+  const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
   const standardProjectThumbnailCaptureRef = useRef<() => string | undefined>(() => undefined);
   const thumbnailRefreshTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
@@ -2557,8 +2557,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         layerIds: [tempLayer.id],
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        enableDilation: true,
-        dilationPixels: 4,
+        // This result is a transparent overlay. Opaque UV dilation expands the
+        // painted alpha beyond the live brush boundary and creates a visible
+        // outline/stripe when the patch is placed over the existing UV layer.
+        enableDilation: false,
+        dilationPixels: 0,
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,
@@ -2844,10 +2847,14 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       return;
     }
     const objectId = selectedObjectId ?? currentImportedModel.objectId;
-    const projectedLayerIds = layerIds.filter((layerId) => {
-      const layer = useLayerStore.getState().layers.find((item) => item.id === layerId);
-      return layer?.type === 'projected' && layer.imageUrl && layer.camera;
-    });
+    const currentLayers = useLayerStore.getState().layers;
+    const projectedLayers = layerIds
+      .map((layerId) => currentLayers.find((item) => item.id === layerId))
+      .filter(
+        (layer): layer is Layer =>
+          Boolean(layer?.type === 'projected' && layer.imageUrl && layer.camera),
+      );
+    const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     if (projectedLayerIds.length === 0) {
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
@@ -2860,13 +2867,32 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       progress: 0.02,
     });
     try {
+      // Local repaint masks are editable in-memory canvases. Flatten them into
+      // source alpha before UV rasterization so the baked result cannot silently
+      // fall back to projecting the complete ComfyUI frame when a mask texture
+      // is unavailable. Other projected layers keep their normal mask path.
+      const layersToBake = await Promise.all(
+        projectedLayers.map(async (layer) =>
+          isLocalRepaintProjectionLayer(layer) && layer.maskUrl
+            ? {
+                ...layer,
+                imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
+                maskUrl: undefined,
+              }
+            : layer,
+        ),
+      );
       const bakeResult = await bakeVisibleProjectedLayersToTexture({
         objectId,
-        layerIds: projectedLayerIds,
+        transientLayers: layersToBake,
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        enableDilation: true,
-        dilationPixels: 4,
+        // Preserve the exact alpha footprint shown by projected preview. UV
+        // dilation writes opaque pixels around a transparent overlay, which is
+        // useful for a standalone base texture but wrong when merging a patch
+        // over an existing UV layer.
+        enableDilation: false,
+        dilationPixels: 0,
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,
@@ -2891,6 +2917,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         imageUrl,
         objectId,
         name: t('mergedUvLayer'),
+        // A local repaint source is a viewport-rendered ComfyUI frame. Preserve
+        // that color meaning on its UV patch so preview lighting is not applied
+        // a second time after the projected layer is replaced.
+        renderedColor: projectedLayers.every(
+          (layer) => layer.renderedColor || isLocalRepaintProjectionLayer(layer),
+        ),
       });
       setProjectLayers(useLayerStore.getState().layers);
       scheduleTexturedThumbnailRefresh(350);
@@ -3039,20 +3071,19 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     void runExportAction(t('exporting'), actions[actionId]);
   }
 
-  const getLocalRepaintCutoutImage = useCallback((resultUrl: string, maskUrl: string) => {
-    const cacheKey = `${resultUrl}\n${maskUrl}`;
-    const cached = localRepaintCutoutCacheRef.current.get(cacheKey);
+  const getLocalRepaintProjectionImage = useCallback((resultUrl: string) => {
+    const cached = localRepaintProjectionImageCacheRef.current.get(resultUrl);
     if (cached) return cached;
-    const promise = (async () => {
-      const sourceImageUrl = resultUrl.startsWith('http')
-        ? await urlToDataUrl(resultUrl)
-        : resultUrl;
-      return createMaskedProjectedImage(sourceImageUrl, maskUrl);
-    })();
-    localRepaintCutoutCacheRef.current.set(cacheKey, promise);
+    // Keep the complete ComfyUI frame available to the apply brush. The
+    // generation mask describes what was sent to inpaint, but must not discard
+    // valid returned pixels that the user may want to paint elsewhere in view.
+    const promise = resultUrl.startsWith('http')
+      ? urlToDataUrl(resultUrl)
+      : Promise.resolve(resultUrl);
+    localRepaintProjectionImageCacheRef.current.set(resultUrl, promise);
     promise.catch(() => {
-      if (localRepaintCutoutCacheRef.current.get(cacheKey) === promise) {
-        localRepaintCutoutCacheRef.current.delete(cacheKey);
+      if (localRepaintProjectionImageCacheRef.current.get(resultUrl) === promise) {
+        localRepaintProjectionImageCacheRef.current.delete(resultUrl);
       }
     });
     return promise;
@@ -3129,19 +3160,19 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
           ? latestLocalRepaintGeneration.metadata.maskUrl
           : paintMaskDataUrl;
+      const projectionImageUrl = await getLocalRepaintProjectionImage(
+        latestLocalRepaintGeneration.resultUrl,
+      );
       if (
         localRepaintProjectionSource?.generationId === latestLocalRepaintGeneration.id &&
         localRepaintProjectionSource.allowedMaskUrl === generationMaskUrl &&
+        localRepaintProjectionSource.imageUrl === projectionImageUrl &&
         localRepaintProjectionSource.objectId === objectId &&
         localRepaintProjectionSource.targetLayerId === targetLayer.id
       ) {
         setPaintTool('inpaint-apply');
         return;
       }
-      const cutoutImageUrl = await getLocalRepaintCutoutImage(
-        latestLocalRepaintGeneration.resultUrl,
-        generationMaskUrl,
-      );
       const nameSource = latestLocalRepaintGeneration.prompt.trim();
       const currentLayers = useLayerStore.getState().layers;
       const collapsedLayers = collapseLocalRepaintProjectionLayers(
@@ -3155,7 +3186,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         setProjectLayers(useLayerStore.getState().layers);
       }
       setLocalRepaintProjectionSource({
-        imageUrl: cutoutImageUrl,
+        imageUrl: projectionImageUrl,
         allowedMaskUrl: generationMaskUrl,
         depthUrl: generationCapture?.depthUrl,
         objectId,
@@ -3184,7 +3215,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   }, [
     generations,
     getCurrentCameraSnapshot,
-    getLocalRepaintCutoutImage,
+    getLocalRepaintProjectionImage,
     importedModel,
     localRepaintProjectionSource,
     paintMaskDataUrl,

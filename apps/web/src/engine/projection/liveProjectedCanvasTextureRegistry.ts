@@ -43,7 +43,14 @@ export function registerLiveProjectedCanvasTexture(
   const texture = new THREE.CanvasTexture(canvas);
   const flipY = options.flipY ?? false;
   configureTexture(texture, colorSpace, flipY);
-  liveCanvasTextures.set(url, { canvas, texture, revision: 0, flipY });
+  // Preserve a monotonic revision when a stable runtime URL swaps canvases.
+  // Consumers can then detect the replacement without forcing a new layer URL.
+  liveCanvasTextures.set(url, {
+    canvas,
+    texture,
+    revision: (existing?.revision ?? -1) + 1,
+    flipY,
+  });
   return url;
 }
 
