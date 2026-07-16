@@ -642,9 +642,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const setLocalRepaintAbortController = useLocalRepaintStore(
     (state) => state.setActiveAbortController,
   );
-  const project = useProjectStore((state) =>
-    state.projects.find((item) => item.id === projectId),
-  );
+  const project = useProjectStore((state) => state.projects.find((item) => item.id === projectId));
   const setCurrentProject = useProjectStore((state) => state.setCurrentProject);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
@@ -992,12 +990,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       cancelled = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [
-    offlineRetryProjectDirty,
-    offlineRetryProjectId,
-    offlineRetryWorkspaceMode,
-    saveStatus,
-  ]);
+  }, [offlineRetryProjectDirty, offlineRetryProjectId, offlineRetryWorkspaceMode, saveStatus]);
 
   function getProjectSnapshot(options: { refreshThumbnail?: boolean } = {}): Project | undefined {
     if (!project) return undefined;
@@ -1825,9 +1818,9 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       const latestUpdatedAt = Date.parse(latestProject?.updatedAt ?? '');
       const savedLatestSnapshot = Boolean(
         latestProject?.id === snapshot.id &&
-          Number.isFinite(snapshotUpdatedAt) &&
-          Number.isFinite(latestUpdatedAt) &&
-          latestUpdatedAt <= snapshotUpdatedAt,
+        Number.isFinite(snapshotUpdatedAt) &&
+        Number.isFinite(latestUpdatedAt) &&
+        latestUpdatedAt <= snapshotUpdatedAt,
       );
       if (savedLatestSnapshot) {
         markSaved(
@@ -2104,11 +2097,15 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   async function handleImportModel(file: File, resourceFiles: File[] = []) {
     try {
       const loaded = arrangeImportedModelForComparison(
-        await loadModelFromFile(file, {
-          normalize: importSettings.normalizeOnImport,
-          ground: importSettings.groundOnImport,
-          targetMaxDimension: 3,
-        }, resourceFiles),
+        await loadModelFromFile(
+          file,
+          {
+            normalize: importSettings.normalizeOnImport,
+            ground: importSettings.groundOnImport,
+            targetMaxDimension: 3,
+          },
+          resourceFiles,
+        ),
         useSceneStore.getState().importedModels,
       );
       let object = loaded.object;
@@ -3020,9 +3017,8 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const currentLayers = useLayerStore.getState().layers;
     const projectedLayers = layerIds
       .map((layerId) => currentLayers.find((item) => item.id === layerId))
-      .filter(
-        (layer): layer is Layer =>
-          Boolean(layer?.type === 'projected' && layer.imageUrl && layer.camera),
+      .filter((layer): layer is Layer =>
+        Boolean(layer?.type === 'projected' && layer.imageUrl && layer.camera),
       );
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     if (projectedLayerIds.length === 0) {
@@ -3615,10 +3611,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         sceneState.invertPaintMask();
         return;
       }
-      if (
-        currentWorkspaceMode === 'texture' &&
-        shortcutMatches(event, 'texture.newLayer')
-      ) {
+      if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.newLayer')) {
         event.preventDefault();
         captureHistory('创建空图层');
         layerState.addEmptyLayer();
@@ -4079,6 +4072,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
               undo: t('undo'),
               redo: t('redo'),
               brushSize: t('brushSize'),
+              brushHardness: t('brushHardness'),
               brushOpacity: t('imageEditBrushOpacity'),
               brushColor: t('brushColor'),
               resetInpaintRegion: t('resetInpaintRegion'),

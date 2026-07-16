@@ -51,6 +51,7 @@ type BottomToolDockProps = {
     undo: string;
     redo: string;
     brushSize: string;
+    brushHardness: string;
     brushOpacity: string;
     brushColor: string;
     resetInpaintRegion: string;
@@ -253,6 +254,29 @@ export function BottomToolDock({
                     value={paintSettings.brushSize}
                     onChange={(event) =>
                       setPaintSettings({ brushSize: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#ff8a68]"
+                  />
+                </label>
+                <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.brushHardness}</span>
+                    <input
+                      value={paintSettings.brushHardness.toFixed(1)}
+                      onChange={(event) =>
+                        setPaintSettings({ brushHardness: Number(event.target.value) || 0 })
+                      }
+                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                    />
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="0.5"
+                    value={paintSettings.brushHardness}
+                    onChange={(event) =>
+                      setPaintSettings({ brushHardness: Number(event.target.value) })
                     }
                     className="w-full accent-[#ff8a68]"
                   />

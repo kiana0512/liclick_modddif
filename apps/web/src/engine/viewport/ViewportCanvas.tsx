@@ -114,6 +114,7 @@ const LOCAL_REPAINT_UV_MERGE_LAYER_NAME = '局部重绘合并层';
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
 const automaticFadeBrushStampCache = new Map<number, HTMLCanvasElement>();
+const paintBrushStampCache = new Map<string, HTMLCanvasElement>();
 let surfacePaintPerfFrame: number | undefined;
 let surfacePaintPerfLastPublishAt = 0;
 
@@ -137,6 +138,31 @@ function getAutomaticFadeBrushStamp(value: number) {
   context.fillStyle = gradient;
   context.fillRect(0, 0, canvas.width, canvas.height);
   automaticFadeBrushStampCache.set(key, canvas);
+  return canvas;
+}
+
+function getPaintBrushStamp(color: string, hardness: number) {
+  const normalizedHardness = Math.round(THREE.MathUtils.clamp(hardness, 0, 100));
+  const key = `${color}:${normalizedHardness}`;
+  const cached = paintBrushStampCache.get(key);
+  if (cached) return cached;
+  const canvas = document.createElement('canvas');
+  canvas.width = 96;
+  canvas.height = 96;
+  const context = canvas.getContext('2d');
+  if (!context) return undefined;
+  const center = canvas.width / 2;
+  const gradient = context.createRadialGradient(center, center, 0, center, center, center);
+  const hardStop = (normalizedHardness / 100) * 0.94;
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+  if (hardStop > 0.001) gradient.addColorStop(hardStop, 'rgba(255, 255, 255, 1)');
+  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.globalCompositeOperation = 'source-in';
+  context.fillStyle = color;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  paintBrushStampCache.set(key, canvas);
   return canvas;
 }
 
@@ -638,7 +664,107 @@ const surfaceBrushScratch = {
   projected: new THREE.Vector3(),
   screenCenter: new THREE.Vector2(),
   projectedUv: new THREE.Vector2(),
+  uv0: new THREE.Vector2(),
+  uv1: new THREE.Vector2(),
+  uv2: new THREE.Vector2(),
+  uvEdge1: new THREE.Vector2(),
+  uvEdge2: new THREE.Vector2(),
+  uvAxisX: new THREE.Vector2(),
+  uvAxisY: new THREE.Vector2(),
 };
+
+function computeUvBrushTransform(
+  mesh: THREE.Mesh,
+  face: THREE.Face,
+  worldRadius: number,
+  fallbackRadius: number,
+) {
+  const position = mesh.geometry.getAttribute('position');
+  const uv = mesh.geometry.getAttribute('uv');
+  if (!(position instanceof THREE.BufferAttribute) || !(uv instanceof THREE.BufferAttribute)) {
+    return createCircularBrushTransform(fallbackRadius);
+  }
+
+  const {
+    p0,
+    p1,
+    p2,
+    edge1,
+    edge2,
+    dpdu,
+    dpdv,
+    tangentX,
+    tangentY,
+    normal,
+    uv0,
+    uv1,
+    uv2,
+    uvEdge1,
+    uvEdge2,
+    uvAxisX,
+    uvAxisY,
+  } = surfaceBrushScratch;
+  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
+  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
+  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
+  uv0.fromBufferAttribute(uv, face.a);
+  uv1.fromBufferAttribute(uv, face.b);
+  uv2.fromBufferAttribute(uv, face.c);
+  edge1.copy(p1).sub(p0);
+  edge2.copy(p2).sub(p0);
+  uvEdge1.copy(uv1).sub(uv0);
+  uvEdge2.copy(uv2).sub(uv0);
+  const determinant = uvEdge1.x * uvEdge2.y - uvEdge1.y * uvEdge2.x;
+  if (Math.abs(determinant) < 1e-12 || edge1.lengthSq() < 1e-16 || edge2.lengthSq() < 1e-16) {
+    return createCircularBrushTransform(fallbackRadius);
+  }
+
+  const inverseDeterminant = 1 / determinant;
+  dpdu
+    .copy(edge1)
+    .multiplyScalar(uvEdge2.y)
+    .addScaledVector(edge2, -uvEdge1.y)
+    .multiplyScalar(inverseDeterminant);
+  dpdv
+    .copy(edge2)
+    .multiplyScalar(uvEdge1.x)
+    .addScaledVector(edge1, -uvEdge2.x)
+    .multiplyScalar(inverseDeterminant);
+  const metric00 = dpdu.dot(dpdu);
+  const metric01 = dpdu.dot(dpdv);
+  const metric11 = dpdv.dot(dpdv);
+  const metricDeterminant = metric00 * metric11 - metric01 * metric01;
+  if (!Number.isFinite(metricDeterminant) || metricDeterminant < 1e-18) {
+    return createCircularBrushTransform(fallbackRadius);
+  }
+
+  tangentX.copy(edge1).normalize();
+  normal.crossVectors(edge1, edge2).normalize();
+  if (normal.lengthSq() < 0.5) return createCircularBrushTransform(fallbackRadius);
+  tangentY.crossVectors(normal, tangentX).normalize();
+  const inverseMetric00 = metric11 / metricDeterminant;
+  const inverseMetric01 = -metric01 / metricDeterminant;
+  const inverseMetric11 = metric00 / metricDeterminant;
+  const solveUvAxis = (worldAxis: THREE.Vector3, target: THREE.Vector2) => {
+    const rhs0 = dpdu.dot(worldAxis) * worldRadius;
+    const rhs1 = dpdv.dot(worldAxis) * worldRadius;
+    return target.set(
+      inverseMetric00 * rhs0 + inverseMetric01 * rhs1,
+      inverseMetric01 * rhs0 + inverseMetric11 * rhs1,
+    );
+  };
+  solveUvAxis(tangentX, uvAxisX);
+  solveUvAxis(tangentY, uvAxisY);
+  if (
+    !Number.isFinite(uvAxisX.lengthSq()) ||
+    !Number.isFinite(uvAxisY.lengthSq()) ||
+    uvAxisX.lengthSq() < 1e-20 ||
+    uvAxisY.lengthSq() < 1e-20
+  ) {
+    return createCircularBrushTransform(fallbackRadius);
+  }
+  return { axisX: uvAxisX.clone(), axisY: uvAxisY.clone() };
+}
 
 function computeScreenBrushTransform(
   mesh: THREE.Mesh,
@@ -711,6 +837,13 @@ type PaintStrokeDraft = {
   target: 'paint' | 'mask' | 'apply-local-repaint';
   bounds?: PaintDirtyRect;
   paintOperation?: 'brush' | 'eraser';
+  paintSegments?: Array<{
+    fromUv?: THREE.Vector2;
+    toUv: THREE.Vector2;
+    brush: BrushStampTransform;
+    color: string;
+    hardness: number;
+  }>;
   localRepaintSource?: LocalRepaintProjectionSource;
   localRepaintComposite?: LocalRepaintCompositeState;
 };
@@ -841,16 +974,6 @@ function copyCanvasRect(source: HTMLCanvasElement, bounds: PaintDirtyRect) {
     bounds.height,
   );
   return copy;
-}
-
-function thresholdCanvasAlpha(canvas: HTMLCanvasElement, threshold = 128) {
-  const context = canvas.getContext('2d');
-  if (!context) return;
-  const image = context.getImageData(0, 0, canvas.width, canvas.height);
-  for (let index = 3; index < image.data.length; index += 4) {
-    image.data[index] = image.data[index] >= threshold ? 255 : 0;
-  }
-  context.putImageData(image, 0, 0);
 }
 
 function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
@@ -1112,7 +1235,8 @@ function computeLocalRepaintBrushTransform(
   fallbackRadius: number,
 ) {
   const position = mesh.geometry.getAttribute('position');
-  if (!(position instanceof THREE.BufferAttribute)) return createCircularBrushTransform(fallbackRadius);
+  if (!(position instanceof THREE.BufferAttribute))
+    return createCircularBrushTransform(fallbackRadius);
   const { p0, p1, p2, edge1, edge2, tangentX, tangentY, normal, delta } = surfaceBrushScratch;
   p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
   p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
@@ -1328,6 +1452,7 @@ function SurfacePaintOverlay() {
   const pendingPaintTargetsRef = useRef<ClientPoint[]>([]);
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
+  const pointerCancelRecoveryTimerRef = useRef<number>();
   const strokePaintToolRef = useRef<'brush' | 'eraser'>();
   const lastPaintActivityAtRef = useRef(0);
   const strokeTelemetryRef = useRef<StrokeTelemetrySnapshot & { startedAt: number }>();
@@ -1351,6 +1476,7 @@ function SurfacePaintOverlay() {
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
+  const textureResolutionSetting = useSettingsStore((state) => state.resolution);
   const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
   const setPaintMaskDataUrl = useSceneStore((state) => state.setPaintMaskDataUrl);
   const setOrbitControlsEnabled = useSceneStore((state) => state.setOrbitControlsEnabled);
@@ -1486,10 +1612,17 @@ function SurfacePaintOverlay() {
             ? 'uv-image'
             : 'inpaint-mask';
       const layerId = selectedLayer?.id ?? `inpaint:${model.objectId}`;
+      const paintResolution =
+        target === 'uv-image'
+          ? UV_TEXTURE_RESOLUTION[textureResolutionSetting]
+          : target === 'projected-mask'
+            ? UV_MASK_PAINT_RESOLUTION
+            : UV_PAINT_RESOLUTION;
       if (
         layerRef.current?.objectId === model.objectId &&
         layerRef.current.layerId === layerId &&
-        layerRef.current.target === target
+        layerRef.current.target === target &&
+        layerRef.current.paintDefaultResolution === paintResolution
       )
         return layerRef.current;
       disposeUvPaintLayer(layerRef.current);
@@ -1503,12 +1636,6 @@ function SurfacePaintOverlay() {
       const existingLiveCanvas = existingAssetUrl
         ? getLiveProjectedCanvasState(existingAssetUrl)?.canvas
         : undefined;
-      const paintResolution =
-        target === 'uv-image'
-          ? UV_TEXTURE_RESOLUTION[useSettingsStore.getState().resolution]
-          : target === 'projected-mask'
-            ? UV_MASK_PAINT_RESOLUTION
-            : UV_PAINT_RESOLUTION;
       const paint = existingLiveCanvas
         ? {
             canvas: existingLiveCanvas,
@@ -1541,7 +1668,6 @@ function SurfacePaintOverlay() {
       const paintPreviewMaterial = new THREE.MeshBasicMaterial({
         map: paintPreviewTexture,
         transparent: true,
-        alphaTest: 0.5,
         depthTest: true,
         depthWrite: false,
         polygonOffset: true,
@@ -1600,8 +1726,14 @@ function SurfacePaintOverlay() {
       layerRef.current = paintLayer;
       return paintLayer;
     },
-    [paintTool],
+    [paintTool, textureResolutionSetting],
   );
+
+  useEffect(() => {
+    if ((paintTool !== 'brush' && paintTool !== 'eraser') || !canUseSurfacePaint) return;
+    const model = getTargetModel();
+    if (model) getUvPaintLayer(model);
+  }, [canUseSurfacePaint, getTargetModel, getUvPaintLayer, paintTool]);
 
   const ensureOverlayForMesh = useCallback(
     (layer: UvPaintLayer, mesh: THREE.Mesh) => {
@@ -1653,8 +1785,7 @@ function SurfacePaintOverlay() {
     (texture: THREE.CanvasTexture, immediate = false) => {
       const now = performance.now();
       const minimumIntervalMs = 1000 / 30;
-      const remainingMs =
-        minimumIntervalMs - (now - projectionTextureLastUpdateAtRef.current);
+      const remainingMs = minimumIntervalMs - (now - projectionTextureLastUpdateAtRef.current);
 
       if (immediate || remainingMs <= 0) {
         if (projectionTextureUpdateTimerRef.current !== undefined) {
@@ -1831,7 +1962,12 @@ function SurfacePaintOverlay() {
   }, [isInpaintMode, paintTool]);
 
   const getBrushWorldRadius = useCallback(
-    (model: SurfacePaintTarget) => {
+    (
+      model: SurfacePaintTarget,
+      hitPoint?: THREE.Vector3,
+      viewportHeight = 1,
+      screenRadiusPx = 1,
+    ) => {
       const maxDimension = Math.max(
         model.boundingSize.x,
         model.boundingSize.y,
@@ -1859,13 +1995,35 @@ function SurfacePaintOverlay() {
           )
         );
       }
+      if (hitPoint && camera instanceof THREE.PerspectiveCamera) {
+        camera.updateMatrixWorld(true);
+        const viewDepth = Math.abs(
+          surfaceBrushScratch.projected.copy(hitPoint).applyMatrix4(camera.matrixWorldInverse).z,
+        );
+        const visibleWorldHeight =
+          2 * Math.max(viewDepth, camera.near) * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+        return THREE.MathUtils.clamp(
+          (visibleWorldHeight * screenRadiusPx) / Math.max(viewportHeight, 1),
+          maxDimension * 0.00005,
+          maxDimension * 0.24,
+        );
+      }
+      if (camera instanceof THREE.OrthographicCamera) {
+        const visibleWorldHeight = (camera.top - camera.bottom) / Math.max(camera.zoom, 0.0001);
+        return THREE.MathUtils.clamp(
+          (visibleWorldHeight * screenRadiusPx) / Math.max(viewportHeight, 1),
+          maxDimension * 0.00005,
+          maxDimension * 0.24,
+        );
+      }
       return THREE.MathUtils.clamp(
-        (maxDimension * setting * 0.45) / 700,
-        maxDimension * 0.004,
-        maxDimension * 0.18,
+        (maxDimension * setting * 0.5) / 700,
+        maxDimension * 0.00005,
+        maxDimension * 0.24,
       );
     },
     [
+      camera,
       paintMaskSettings.brushSize,
       paintTool,
       paintToolSettings.brushSize,
@@ -1891,7 +2049,7 @@ function SurfacePaintOverlay() {
         normalizePaintMaskBrushSize(setting),
       );
     }
-    return THREE.MathUtils.clamp(setting * 0.45, 1.5, 96);
+    return THREE.MathUtils.clamp(setting * 0.5, 0.5, 128);
   }, [
     paintMaskSettings.brushSize,
     paintTool,
@@ -1915,24 +2073,34 @@ function SurfacePaintOverlay() {
       raycasterRef.current.setFromCamera(pointerRef.current, camera);
       const hit = raycasterRef.current.intersectObjects(getPaintableMeshes(model), false)[0];
       if (!hit || !(hit.object instanceof THREE.Mesh) || !hit.face || !hit.uv) return undefined;
-      const worldRadius = getBrushWorldRadius(model);
-      const textureRadius = getBrushTextureRadius();
-      const brushTransforms = isInpaintMode || isLocalRepaintApplyMode
-          ? {
-              uvBrush: createCircularBrushTransform(textureRadius),
-              screenBrush: computeScreenBrushTransform(
-                hit.object,
-                hit.face,
-                hit.point,
-                camera,
-                worldRadius,
-                textureRadius,
-              ),
-            }
-          : {
-              uvBrush: createCircularBrushTransform(textureRadius),
-              screenBrush: createCircularBrushTransform(textureRadius),
-            };
+      const fallbackTextureRadius = getBrushTextureRadius();
+      const isSurfaceMaskBrush = isInpaintMode || isLocalRepaintApplyMode;
+      const requestedScreenRadiusPx = isSurfaceMaskBrush
+        ? fallbackTextureRadius
+        : THREE.MathUtils.clamp(fallbackTextureRadius, 0.5, 128);
+      const worldRadius = getBrushWorldRadius(
+        model,
+        hit.point,
+        rect.height,
+        requestedScreenRadiusPx,
+      );
+      const brushTransforms = {
+        uvBrush: isSurfaceMaskBrush
+          ? createCircularBrushTransform(fallbackTextureRadius)
+          : computeUvBrushTransform(hit.object, hit.face, worldRadius, fallbackTextureRadius),
+        screenBrush: computeScreenBrushTransform(
+          hit.object,
+          hit.face,
+          hit.point,
+          camera,
+          worldRadius,
+          fallbackTextureRadius,
+        ),
+      };
+      const textureRadius = isSurfaceMaskBrush
+        ? fallbackTextureRadius
+        : Math.max(brushTransforms.uvBrush.axisX.length(), brushTransforms.uvBrush.axisY.length()) *
+          UV_PAINT_RESOLUTION;
       const screenAxisXRadius = Math.hypot(
         brushTransforms.screenBrush.axisX.x * rect.width,
         brushTransforms.screenBrush.axisX.y * rect.height,
@@ -2024,69 +2192,6 @@ function SurfacePaintOverlay() {
     ],
   );
 
-  const drawBrushSegment = useCallback(
-    (
-      context: CanvasRenderingContext2D,
-      texture: THREE.CanvasTexture,
-      fromUv: THREE.Vector2 | undefined,
-      toUv: THREE.Vector2,
-      radius: number,
-      color: string | CanvasPattern,
-      compositeOperation: GlobalCompositeOperation,
-      hardness: number,
-      updateTexture = true,
-    ) => {
-      const targetUvX = THREE.MathUtils.euclideanModulo(toUv.x, 1);
-      const targetUvY = THREE.MathUtils.euclideanModulo(toUv.y, 1);
-      const sourceUvX = fromUv ? THREE.MathUtils.euclideanModulo(fromUv.x, 1) : targetUvX;
-      const sourceUvY = fromUv ? THREE.MathUtils.euclideanModulo(fromUv.y, 1) : targetUvY;
-      const textureWidth = context.canvas.width;
-      const textureHeight = context.canvas.height;
-      const radiusScale = Math.max(textureWidth, textureHeight) / UV_PAINT_RESOLUTION;
-      const scaledRadius = Math.max(1, radius * radiusScale);
-      const toX = targetUvX * textureWidth;
-      const toY = (1 - targetUvY) * textureHeight;
-      const fromX = sourceUvX * textureWidth;
-      const fromY = (1 - sourceUvY) * textureHeight;
-      const bounds = createDirtyRect(
-        fromX,
-        fromY,
-        toX,
-        toY,
-        scaledRadius,
-        textureWidth,
-        textureHeight,
-      );
-      const softness = 1 - THREE.MathUtils.clamp(hardness / 100, 0, 1);
-      const innerRadius = Math.max(1, scaledRadius * (1 - softness * 0.55));
-
-      context.save();
-      context.globalCompositeOperation = compositeOperation;
-      context.lineCap = 'round';
-      context.lineJoin = 'round';
-      if (softness > 0.02) {
-        context.globalAlpha = Math.max(0.18, 1 - softness * 0.68);
-        context.strokeStyle = color;
-        context.lineWidth = scaledRadius * 2;
-        context.beginPath();
-        context.moveTo(fromX, fromY);
-        context.lineTo(toX, toY);
-        context.stroke();
-      }
-      context.globalAlpha = 1;
-      context.strokeStyle = color;
-      context.lineWidth = innerRadius * 2;
-      context.beginPath();
-      context.moveTo(fromX, fromY);
-      context.lineTo(toX, toY);
-      context.stroke();
-      context.restore();
-      if (updateTexture) scheduleTextureUpdate(texture);
-      return bounds;
-    },
-    [scheduleTextureUpdate],
-  );
-
   const drawSurfaceBrushSegment = useCallback(
     (
       context: CanvasRenderingContext2D,
@@ -2098,6 +2203,7 @@ function SurfacePaintOverlay() {
       compositeOperation: GlobalCompositeOperation,
       coordinateSpace: 'uv' | 'screen',
       automaticFadeValue?: number,
+      paintHardness?: number,
     ) => {
       const width = context.canvas.width;
       const height = context.canvas.height;
@@ -2124,8 +2230,8 @@ function SurfacePaintOverlay() {
       if (
         !Number.isFinite(axisXRadius) ||
         !Number.isFinite(axisYRadius) ||
-        axisXRadius < 0.25 ||
-        axisYRadius < 0.25
+        axisXRadius < 0.05 ||
+        axisYRadius < 0.05
       ) {
         return createDirtyRect(fromX, fromY, toX, toY, 1, width, height);
       }
@@ -2139,6 +2245,11 @@ function SurfacePaintOverlay() {
         automaticFadeValue === undefined
           ? undefined
           : getAutomaticFadeBrushStamp(automaticFadeValue);
+      const paintStamp =
+        automaticFadeStamp || paintHardness === undefined
+          ? undefined
+          : getPaintBrushStamp(color, paintHardness);
+      const brushStamp = automaticFadeStamp ?? paintStamp;
 
       context.save();
       context.globalCompositeOperation = compositeOperation;
@@ -2148,8 +2259,8 @@ function SurfacePaintOverlay() {
         const centerX = THREE.MathUtils.lerp(fromX, toX, ratio);
         const centerY = THREE.MathUtils.lerp(fromY, toY, ratio);
         context.setTransform(transformA, transformB, transformC, transformD, centerX, centerY);
-        if (automaticFadeStamp) {
-          context.drawImage(automaticFadeStamp, -1, -1, 2, 2);
+        if (brushStamp) {
+          context.drawImage(brushStamp, -1, -1, 2, 2);
         } else {
           context.beginPath();
           context.arc(0, 0, 1, 0, Math.PI * 2);
@@ -2388,10 +2499,8 @@ function SurfacePaintOverlay() {
   const paintAt = useCallback(
     (result: UvPaintHit, pressure = 1, strokePaintTool = paintTool) => {
       const pressureSizeScale = getPressureSizeScale(pressure);
-      const textureRadius = result.textureRadius * pressureSizeScale;
-      // Ordinary texture paint only needs the scalar radius. Avoid allocating
-      // Vector2 clones for its high-frequency path; transformed footprints are
-      // reserved for the surface-aware mask tools that actually consume them.
+      // Surface masks consume the projected footprint; ordinary paint consumes
+      // the UV-density-aware footprint computed for the current triangle.
       const usesSurfaceBrush =
         strokePaintTool === 'inpaint-add' ||
         strokePaintTool === 'inpaint-subtract' ||
@@ -2399,11 +2508,13 @@ function SurfacePaintOverlay() {
       const screenBrush = usesSurfaceBrush
         ? scaleBrushTransform(result.screenBrush, pressureSizeScale)
         : result.screenBrush;
+      const uvBrush = usesSurfaceBrush
+        ? result.uvBrush
+        : scaleBrushTransform(result.uvBrush, pressureSizeScale);
       // Local repaint owns its dedicated 320px live mask and does not need the
       // ordinary UV/mask painting resource bundle. Avoid even looking that
       // bundle up on the high-frequency path.
-      const layer =
-        strokePaintTool === 'inpaint-apply' ? undefined : getUvPaintLayer(result.model);
+      const layer = strokePaintTool === 'inpaint-apply' ? undefined : getUvPaintLayer(result.model);
       const previousSample = lastSampleRef.current;
       const usesProjectionStroke = isInpaintMode || isLocalRepaintApplyMode;
       const fromUv = usesProjectionStroke ? undefined : getStrokeSourceUv(result);
@@ -2413,49 +2524,73 @@ function SurfacePaintOverlay() {
       // Selection masks use the current viewport, while local repaint is
       // rasterized below in the generated image's capture-camera coordinates.
       const previousScreenUv = lastSampleRef.current?.screenUv;
-      const fromScreenUv = isInpaintMode
-        ? previousScreenUv
-        : fromUv
-          ? previousScreenUv
-          : undefined;
+      const fromScreenUv = isInpaintMode ? previousScreenUv : fromUv ? previousScreenUv : undefined;
       let localRepaintUv: THREE.Vector2 | undefined;
       if (strokePaintTool === 'brush') {
         if (!layer) return;
         if (result.hit.object instanceof THREE.Mesh)
           ensurePaintPreviewOverlayForMesh(layer, result.hit.object);
-        const bounds = drawBrushSegment(
+        const bounds = drawSurfaceBrushSegment(
           layer.paintPreviewContext,
-          layer.paintPreviewTexture,
+          undefined,
           fromUv,
           result.uv,
-          textureRadius,
+          uvBrush,
           paintToolSettings.color,
           'source-over',
-          100,
+          'uv',
+          undefined,
+          paintToolSettings.brushHardness,
         );
+        layer.paintPreviewTexture.needsUpdate = true;
+        if (strokeDraftRef.current?.target === 'paint') {
+          strokeDraftRef.current.paintSegments?.push({
+            fromUv: fromUv?.clone(),
+            toUv: result.uv.clone(),
+            brush: {
+              axisX: uvBrush.axisX.clone(),
+              axisY: uvBrush.axisY.clone(),
+            },
+            color: paintToolSettings.color,
+            hardness: paintToolSettings.brushHardness,
+          });
+        }
         if (strokeDraftRef.current?.target === 'paint') {
           strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
         }
       } else if (strokePaintTool === 'eraser') {
         if (!layer) return;
-        const bounds = drawBrushSegment(
+        const bounds = drawSurfaceBrushSegment(
           layer.paintPreviewContext,
-          layer.paintPreviewTexture,
+          undefined,
           fromUv,
           result.uv,
-          textureRadius,
+          uvBrush,
           '#ffffff',
           'source-over',
+          'uv',
+          undefined,
           paintToolSettings.eraserHardness,
-          false,
         );
+        layer.paintPreviewTexture.needsUpdate = true;
+        if (strokeDraftRef.current?.target === 'paint') {
+          strokeDraftRef.current.paintSegments?.push({
+            fromUv: fromUv?.clone(),
+            toUv: result.uv.clone(),
+            brush: {
+              axisX: uvBrush.axisX.clone(),
+              axisY: uvBrush.axisY.clone(),
+            },
+            color: '#ffffff',
+            hardness: paintToolSettings.eraserHardness,
+          });
+        }
         if (strokeDraftRef.current?.target === 'paint') {
           strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
         }
       } else if (paintTool === 'inpaint-add') {
         if (!layer) return;
-        if (result.hit.object instanceof THREE.Mesh)
-          ensureOverlayForMesh(layer, result.hit.object);
+        if (result.hit.object instanceof THREE.Mesh) ensureOverlayForMesh(layer, result.hit.object);
         const projectionBounds = drawSurfaceBrushSegment(
           layer.projectionContext,
           undefined,
@@ -2469,14 +2604,16 @@ function SurfacePaintOverlay() {
         );
         scheduleProjectionTextureUpdate(layer.projectionTexture);
         if (strokeDraftRef.current?.target === 'mask') {
-          strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, projectionBounds);
+          strokeDraftRef.current.bounds = unionDirtyRect(
+            strokeDraftRef.current.bounds,
+            projectionBounds,
+          );
         }
         maskDirtyRef.current = true;
         maskHasContentRef.current = true;
       } else if (paintTool === 'inpaint-subtract') {
         if (!layer) return;
-        if (result.hit.object instanceof THREE.Mesh)
-          ensureOverlayForMesh(layer, result.hit.object);
+        if (result.hit.object instanceof THREE.Mesh) ensureOverlayForMesh(layer, result.hit.object);
         const projectionBounds = drawSurfaceBrushSegment(
           layer.projectionContext,
           undefined,
@@ -2490,7 +2627,10 @@ function SurfacePaintOverlay() {
         );
         scheduleProjectionTextureUpdate(layer.projectionTexture);
         if (strokeDraftRef.current?.target === 'mask') {
-          strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, projectionBounds);
+          strokeDraftRef.current.bounds = unionDirtyRect(
+            strokeDraftRef.current.bounds,
+            projectionBounds,
+          );
         }
         maskDirtyRef.current = true;
       } else if (paintTool === 'inpaint-apply') {
@@ -2586,7 +2726,6 @@ function SurfacePaintOverlay() {
     },
     [
       canConnectLocalRepaintStroke,
-      drawBrushSegment,
       drawSurfaceBrushSegment,
       ensureOverlayForMesh,
       ensurePaintPreviewOverlayForMesh,
@@ -2597,6 +2736,7 @@ function SurfacePaintOverlay() {
       isLocalRepaintApplyMode,
       paintTool,
       paintMaskSettings.brushOpacity,
+      paintToolSettings.brushHardness,
       paintToolSettings.color,
       paintToolSettings.eraserHardness,
       scheduleProjectionTextureUpdate,
@@ -2637,9 +2777,7 @@ function SurfacePaintOverlay() {
           : 'paint';
       const layer = target === 'apply-local-repaint' ? undefined : getUvPaintLayer(result.model);
       const localRepaintSource =
-        target === 'apply-local-repaint'
-          ? resolveLocalRepaintStrokeSource()
-          : undefined;
+        target === 'apply-local-repaint' ? resolveLocalRepaintStrokeSource() : undefined;
       const localRepaintComposite =
         target === 'apply-local-repaint' && localRepaintSource
           ? ensureLiveLocalRepaintComposite(result.model, localRepaintSource)
@@ -2649,21 +2787,13 @@ function SurfacePaintOverlay() {
         // A full-model overlay duplicates every draw call as soon as the first
         // stroke starts. Add overlays lazily for only the meshes the brush
         // actually reaches; paintAt expands this set when a stroke crosses parts.
-        if (result.hit.object instanceof THREE.Mesh)
-          ensureOverlayForMesh(layer, result.hit.object);
+        if (result.hit.object instanceof THREE.Mesh) ensureOverlayForMesh(layer, result.hit.object);
         layer.overlayMeshes.forEach((mesh) => {
           if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
         });
       }
       if (target === 'paint') {
         if (!layer) return;
-        layer.paintPreviewContext.clearRect(
-          0,
-          0,
-          layer.paintPreviewCanvas.width,
-          layer.paintPreviewCanvas.height,
-        );
-        scheduleTextureUpdate(layer.paintPreviewTexture);
         layer.paintPreviewOverlays.forEach((overlay) => {
           overlay.visible = true;
         });
@@ -2682,6 +2812,7 @@ function SurfacePaintOverlay() {
             : target === 'paint'
               ? 'brush'
               : undefined,
+        paintSegments: target === 'paint' ? [] : undefined,
         localRepaintSource,
         localRepaintComposite,
       };
@@ -2848,19 +2979,13 @@ function SurfacePaintOverlay() {
           nextCanvas = existingLiveCanvas;
           const liveContext = nextCanvas.getContext('2d');
           if (!liveContext) throw new Error('Could not update local repaint UV merge canvas.');
-          liveContext.drawImage(
-            bakeResult.canvas,
-            0,
-            0,
-            nextCanvas.width,
-            nextCanvas.height,
-          );
+          liveContext.drawImage(bakeResult.canvas, 0, 0, nextCanvas.width, nextCanvas.height);
         } else {
           nextCanvas = document.createElement('canvas');
           nextCanvas.width = width;
           nextCanvas.height = height;
           const nextContext = nextCanvas.getContext('2d');
-        if (!nextContext) throw new Error('无法创建局部重绘 UV 合并画布。');
+          if (!nextContext) throw new Error('无法创建局部重绘 UV 合并画布。');
           existingSources
             .sort((a, b) => b.layer.order - a.layer.order)
             .forEach(({ source: image }) => nextContext.drawImage(image, 0, 0, width, height));
@@ -2958,20 +3083,14 @@ function SurfacePaintOverlay() {
       // The live stroke owns a small screen-responsive canvas, exactly like local
       // repaint. Detach it now so another stroke can start while the source UV
       // image is still decoding in the background.
-      const strokeCanvas = copyCanvasRect(layer.paintPreviewCanvas, {
-        x: 0,
-        y: 0,
-        width: layer.paintPreviewCanvas.width,
-        height: layer.paintPreviewCanvas.height,
-      });
-      if (draft.paintOperation === 'brush') thresholdCanvasAlpha(strokeCanvas);
+      const previewBounds = draft.bounds;
       layer.paintPreviewContext.clearRect(
-        0,
-        0,
-        layer.paintPreviewCanvas.width,
-        layer.paintPreviewCanvas.height,
+        previewBounds.x,
+        previewBounds.y,
+        previewBounds.width,
+        previewBounds.height,
       );
-      scheduleTextureUpdate(layer.paintPreviewTexture);
+      layer.paintPreviewTexture.needsUpdate = true;
       layer.paintPreviewOverlays.forEach((overlay) => {
         overlay.visible = false;
       });
@@ -2992,22 +3111,22 @@ function SurfacePaintOverlay() {
           .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds))
           .map((bounds) => ({ bounds, before: copyCanvasRect(layer.paintCanvas, bounds) }));
 
-        layer.paintContext.save();
-        layer.paintContext.globalCompositeOperation =
+        const compositeOperation =
           draft.paintOperation === 'eraser' ? 'destination-out' : 'source-over';
-        if (draft.paintOperation === 'brush') layer.paintContext.imageSmoothingEnabled = false;
-        layer.paintContext.drawImage(
-          strokeCanvas,
-          0,
-          0,
-          strokeCanvas.width,
-          strokeCanvas.height,
-          0,
-          0,
-          layer.paintCanvas.width,
-          layer.paintCanvas.height,
-        );
-        layer.paintContext.restore();
+        draft.paintSegments?.forEach((segment) => {
+          drawSurfaceBrushSegment(
+            layer.paintContext,
+            undefined,
+            segment.fromUv,
+            segment.toUv,
+            segment.brush,
+            segment.color,
+            compositeOperation,
+            'uv',
+            undefined,
+            segment.hardness,
+          );
+        });
 
         const historyTiles = beforeTiles.map(({ bounds, before }) => ({
           bounds,
@@ -3072,10 +3191,7 @@ function SurfacePaintOverlay() {
         }
       };
 
-      const queuedCommit = layer.paintCommitChain
-        .then(() => layer.ready)
-        .then(waitForPaintCommitIdle)
-        .then(finalizePaintStroke);
+      const queuedCommit = layer.paintCommitChain.then(() => layer.ready).then(finalizePaintStroke);
       layer.paintCommitChain = queuedCommit.catch((error) => {
         console.warn('[Liclick 3D Texture] Could not commit UV paint stroke:', error);
       });
@@ -3095,12 +3211,11 @@ function SurfacePaintOverlay() {
       queueLocalRepaintUvCommit(model, localRepaintSource, composite);
     }
   }, [
+    drawSurfaceBrushSegment,
     ensureLiveLocalRepaintComposite,
     getTargetModel,
     localRepaintProjectionSource,
     queueLocalRepaintUvCommit,
-    scheduleTextureUpdate,
-    waitForPaintCommitIdle,
   ]);
 
   const commitStrokeHistory = useCallback(() => {
@@ -3247,8 +3362,112 @@ function SurfacePaintOverlay() {
         flushPendingPaintTargets();
       });
     };
+    const clearPointerCancelRecovery = () => {
+      if (pointerCancelRecoveryTimerRef.current === undefined) return;
+      window.clearTimeout(pointerCancelRecoveryTimerRef.current);
+      pointerCancelRecoveryTimerRef.current = undefined;
+    };
+    const isPointerContactActive = (event: globalThis.PointerEvent) =>
+      event.pointerType === 'pen'
+        ? event.pressure > 0 || (event.buttons & 1) !== 0
+        : (event.buttons & 1) !== 0;
+    const finishPaintStroke = (
+      event: globalThis.PointerEvent | undefined,
+      endReason: StrokeTelemetrySnapshot['endReason'],
+    ) => {
+      if (!isPaintingRef.current) return;
+      if (
+        event &&
+        activePointerIdRef.current !== undefined &&
+        event.pointerId !== activePointerIdRef.current
+      )
+        return;
+      clearPointerCancelRecovery();
+      const previousClient = lastPointerClientRef.current;
+      if (event && endReason === 'pointerup' && previousClient) {
+        const telemetry = strokeTelemetryRef.current;
+        if (telemetry) {
+          const finalPressure = getPointerPressure(event);
+          telemetry.pointerEvents += 1;
+          telemetry.coalescedEvents += 1;
+          telemetry.minPressure = Math.min(telemetry.minPressure, finalPressure);
+          telemetry.maxPressure = Math.max(telemetry.maxPressure, finalPressure);
+        }
+        flushPendingPaintTargets([
+          {
+            x: event.clientX,
+            y: event.clientY,
+            pressure: getPointerPressure(event),
+          },
+        ]);
+      } else {
+        flushPendingPaintTargets();
+      }
+      const localRepaintComposite = localRepaintCompositeRef.current;
+      if (isLocalRepaintApplyMode && localRepaintComposite) {
+        scheduleProjectionTextureUpdate(localRepaintComposite.maskTexture, true);
+      }
+      isPaintingRef.current = false;
+      lastPaintActivityAtRef.current = performance.now();
+      const capturedPointerId = activePointerIdRef.current ?? event?.pointerId;
+      if (capturedPointerId !== undefined && canvas.hasPointerCapture(capturedPointerId)) {
+        canvas.releasePointerCapture(capturedPointerId);
+      }
+      activePointerIdRef.current = undefined;
+      lastUvRef.current = undefined;
+      lastSampleRef.current = undefined;
+      lastPointerClientRef.current = undefined;
+      strokePaintToolRef.current = undefined;
+      setOrbitControlsEnabled(true);
+      if (isInpaintMode && layerRef.current)
+        scheduleProjectionTextureUpdate(layerRef.current.projectionTexture, true);
+      commitPaintStroke();
+      commitStrokeHistory();
+      commitMaskIfDirty();
+      finishStrokeTelemetry(endReason);
+    };
+    const schedulePointerCancelRecovery = (event: globalThis.PointerEvent) => {
+      if (!isPaintingRef.current) return;
+      const activePointerId = activePointerIdRef.current;
+      if (activePointerId === undefined && pointerCancelRecoveryTimerRef.current !== undefined)
+        return;
+      if (activePointerId !== undefined && event.pointerId !== activePointerId) return;
+      flushPendingPaintTargets();
+      activePointerIdRef.current = undefined;
+      if (activePointerId !== undefined && canvas.hasPointerCapture(activePointerId)) {
+        canvas.releasePointerCapture(activePointerId);
+      }
+      clearPointerCancelRecovery();
+      // Windows Ink and some tablet drivers can briefly cancel capture while the
+      // pen is still physically down. Keep the draft alive long enough for the
+      // next contact event to rebind it instead of splitting one gesture in two.
+      pointerCancelRecoveryTimerRef.current = window.setTimeout(() => {
+        pointerCancelRecoveryTimerRef.current = undefined;
+        finishPaintStroke(undefined, 'pointercancel');
+      }, 650);
+    };
+    const tryResumeInterruptedStroke = (event: globalThis.PointerEvent) => {
+      if (
+        !isPaintingRef.current ||
+        activePointerIdRef.current !== undefined ||
+        pointerCancelRecoveryTimerRef.current === undefined ||
+        !isPointerContactActive(event)
+      )
+        return false;
+      clearPointerCancelRecovery();
+      activePointerIdRef.current = event.pointerId;
+      try {
+        canvas.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture can race with the driver's replacement pointer stream. The
+        // window-level pointerup listener still closes the recovered stroke.
+      }
+      return true;
+    };
     const handlePointerMove = (event: globalThis.PointerEvent) => {
       if (isPaintingRef.current) {
+        if (activePointerIdRef.current === undefined && !tryResumeInterruptedStroke(event)) return;
+        if (activePointerIdRef.current !== event.pointerId) return;
         event.preventDefault();
         // The brush and OrbitControls listen on the same canvas. Fully consume
         // an active stroke so the camera cannot receive a parallel drag.
@@ -3292,7 +3511,11 @@ function SurfacePaintOverlay() {
       updateCursor(event);
     };
     const handlePointerDown = (event: globalThis.PointerEvent) => {
-      if (event.pointerType === 'touch' || isPaintingRef.current) return;
+      if (event.pointerType === 'touch') return;
+      if (isPaintingRef.current) {
+        if (tryResumeInterruptedStroke(event)) handlePointerMove(event);
+        return;
+      }
       if (!enabled) return;
       const penEraserContact =
         event.pointerType === 'pen' &&
@@ -3332,11 +3555,7 @@ function SurfacePaintOverlay() {
               localRepaintProjectionScratch.projectedUv,
             )
           : undefined;
-        if (
-          !projectedUv ||
-          !hasLocalRepaintSourceContent(projectedUv)
-        )
-          return;
+        if (!projectedUv || !hasLocalRepaintSourceContent(projectedUv)) return;
       }
       isPaintingRef.current = true;
       pendingPaintTargetsRef.current = [];
@@ -3376,49 +3595,12 @@ function SurfacePaintOverlay() {
       paintAt(result, pressure, strokePaintTool);
       recordSurfacePaintPerf(performance.now() - paintStartedAt);
     };
-    const handlePointerUp = (event: globalThis.PointerEvent) => {
-      if (!isPaintingRef.current) return;
-      if (activePointerIdRef.current !== undefined && event.pointerId !== activePointerIdRef.current) return;
-      const previousClient = lastPointerClientRef.current;
-      if (previousClient) {
-        const telemetry = strokeTelemetryRef.current;
-        if (telemetry) {
-          const finalPressure = getPointerPressure(event);
-          telemetry.pointerEvents += 1;
-          telemetry.coalescedEvents += 1;
-          telemetry.minPressure = Math.min(telemetry.minPressure, finalPressure);
-          telemetry.maxPressure = Math.max(telemetry.maxPressure, finalPressure);
-        }
-        flushPendingPaintTargets([
-          {
-            x: event.clientX,
-            y: event.clientY,
-            pressure: getPointerPressure(event),
-          },
-        ]);
-      }
-      const localRepaintComposite = localRepaintCompositeRef.current;
-      if (isLocalRepaintApplyMode && localRepaintComposite) {
-        // Flush the final mask upload now. A pending 30 fps throttle must not
-        // postpone the visible result after the pointer has already been lifted.
-        scheduleProjectionTextureUpdate(localRepaintComposite.maskTexture, true);
-      }
-      isPaintingRef.current = false;
-      lastPaintActivityAtRef.current = performance.now();
-      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-      activePointerIdRef.current = undefined;
-      lastUvRef.current = undefined;
-      lastSampleRef.current = undefined;
-      lastPointerClientRef.current = undefined;
-      strokePaintToolRef.current = undefined;
-      setOrbitControlsEnabled(true);
-      if (isInpaintMode && layerRef.current)
-        scheduleProjectionTextureUpdate(layerRef.current.projectionTexture, true);
-      commitPaintStroke();
-      commitStrokeHistory();
-      commitMaskIfDirty();
-      finishStrokeTelemetry(event.type === 'pointercancel' ? 'pointercancel' : 'pointerup');
-    };
+    const handlePointerUp = (event: globalThis.PointerEvent) =>
+      finishPaintStroke(event, 'pointerup');
+    const handlePointerCancel = (event: globalThis.PointerEvent) =>
+      schedulePointerCancelRecovery(event);
+    const handleLostPointerCapture = (event: globalThis.PointerEvent) =>
+      schedulePointerCancelRecovery(event);
     const handlePointerLeave = () => {
       cursorCircleRef.current?.setAttribute('visibility', 'hidden');
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
@@ -3426,13 +3608,15 @@ function SurfacePaintOverlay() {
     canvas.addEventListener('pointermove', handlePointerMove, true);
     canvas.addEventListener('pointerdown', handlePointerDown, true);
     window.addEventListener('pointerup', handlePointerUp, true);
-    window.addEventListener('pointercancel', handlePointerUp, true);
+    window.addEventListener('pointercancel', handlePointerCancel, true);
+    canvas.addEventListener('lostpointercapture', handleLostPointerCapture);
     canvas.addEventListener('pointerleave', handlePointerLeave);
     return () => {
       canvas.removeEventListener('pointermove', handlePointerMove, true);
       canvas.removeEventListener('pointerdown', handlePointerDown, true);
       window.removeEventListener('pointerup', handlePointerUp, true);
-      window.removeEventListener('pointercancel', handlePointerUp, true);
+      window.removeEventListener('pointercancel', handlePointerCancel, true);
+      canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);
       canvas.removeEventListener('pointerleave', handlePointerLeave);
       if (isPaintingRef.current) flushPendingPaintTargets();
       pendingPaintTargetsRef.current = [];
@@ -3440,6 +3624,7 @@ function SurfacePaintOverlay() {
         window.cancelAnimationFrame(paintInputFrameRef.current);
         paintInputFrameRef.current = undefined;
       }
+      clearPointerCancelRecovery();
       canvas.style.touchAction = previousTouchAction;
       cursorCircleRef.current?.setAttribute('visibility', 'hidden');
       if (isPaintingRef.current) {
