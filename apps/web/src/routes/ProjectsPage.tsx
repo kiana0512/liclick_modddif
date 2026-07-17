@@ -260,6 +260,7 @@ function MoveDialog({
 export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>('updated-desc');
+  const [, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
   const [pageNotice, setPageNotice] = useState<PageNotice | undefined>();
   const [activeFolderId, setActiveFolderId] = useState<FolderFilter>(undefined);
   const [nameDialog, setNameDialog] = useState<

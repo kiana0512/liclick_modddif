@@ -102,7 +102,7 @@ const UV_TEXTURE_RESOLUTION = {
 } as const;
 const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
-const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 320;
+const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 256;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -1841,9 +1841,9 @@ function SurfacePaintOverlay() {
   }, []);
 
   const scheduleProjectionTextureUpdate = useCallback(
-    (texture: THREE.CanvasTexture, immediate = false) => {
+    (texture: THREE.CanvasTexture, immediate = false, maxFps = 30) => {
       const now = performance.now();
-      const minimumIntervalMs = 1000 / 30;
+      const minimumIntervalMs = 1000 / Math.max(1, maxFps);
       const remainingMs = minimumIntervalMs - (now - projectionTextureLastUpdateAtRef.current);
 
       if (immediate || remainingMs <= 0) {
@@ -2816,7 +2816,7 @@ function SurfacePaintOverlay() {
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
           mergeLocalRepaintScratchPatch(composite, projectionBounds);
-          scheduleProjectionTextureUpdate(composite.maskTexture);
+          scheduleProjectionTextureUpdate(composite.maskTexture, false, 24);
         }
       }
 
@@ -3034,10 +3034,11 @@ function SurfacePaintOverlay() {
           order: 0,
           createdAt: new Date().toISOString(),
         };
-        // The UV result is a real layer, not a disposable preview. Bake at the
-        // active texture resolution so converting a projection never degrades
-        // the source into a 1K layer that is later stretched over a 4K texture.
-        const bakeResolution = UV_TEXTURE_RESOLUTION[textureResolutionSetting];
+        // This is an interactive handoff rather than a final export. A 512 UV
+        // overlay cuts render-target allocation and GPU readback to one quarter
+        // of the previous 1K cost; existing higher-resolution merge canvases are
+        // still reused and receive this stroke through the normal draw path.
+        const bakeResolution = 512 as const;
         const { bakeVisibleProjectedLayersToTexture } =
           await import('@/engine/bake/bakeProjectedLayerToTexture');
         const bakeResult = await bakeVisibleProjectedLayersToTexture({
@@ -3045,20 +3046,40 @@ function SurfacePaintOverlay() {
           transientLayers: [transientLayer],
           resolution: bakeResolution,
           enableBackfaceCulling: true,
+          // Fill small uncovered texels inside UV islands and pad their edges
+          // using the GPU postprocess. skipCpuPostprocess keeps this off the
+          // blocking full-canvas CPU seam path.
           enableDilation: true,
-          dilationPixels: 4,
+          dilationPixels: 1,
           outputAlpha: 'transparent',
           gpuCompositeMode: 'coverage-alpha',
+          // Reject occluded surfaces and weak feather fragments before they can
+          // become seeds for UV padding. Normal projection-layer merging keeps
+          // its existing thresholds.
+          // Depth captures from older projects are not calibrated consistently
+          // enough for a hard reject. Keep the coverage guard, but leave depth
+          // as the existing soft quality weight so valid strokes cannot vanish.
+          strictDepthCheck: false,
+          maximumDepthError: 0.12,
+          minimumOutputCoverage: 0.025,
+          constrainDilationToInteriorHoles: true,
           skipGpuValidation: true,
           minimumCoverageRatio: 0,
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
+          // GPU output already includes hole fill/padding and has straight-alpha
+          // transparent pixels. Avoid a second full-canvas CPU read/write.
+          skipCpuPostprocess: true,
         });
+        if (bakeResult.report.coveredPixels <= 0) {
+          throw new Error('局部重绘没有生成有效 UV 像素，已保留实时预览，请重新绘制。');
+        }
 
         // If another stroke started while the GPU was baking, keep its live
         // projected preview and let the newest queued snapshot replace this one.
-        await waitForPaintCommitIdle();
+        // The initial idle gate already protected interaction; waiting for a
+        // second idle callback here only delayed the projection-to-UV handoff.
         if (
           localRepaintUvCommitRevisionRef.current !== commitRevision ||
           localRepaintCompositeRef.current?.sourceKey !== sourceKey
@@ -3076,9 +3097,7 @@ function SurfacePaintOverlay() {
           ? getLiveProjectedCanvasState(existingMergeLayer.imageUrl)?.canvas
           : undefined;
         const canReuseLiveMergeCanvas =
-          existingMergeLayers.length === 1 &&
-          existingLiveCanvas?.width === bakeResult.canvas.width &&
-          existingLiveCanvas.height === bakeResult.canvas.height;
+          existingMergeLayers.length === 1 && Boolean(existingLiveCanvas);
         const existingSources =
           existingMergeLayers.length === 0 || canReuseLiveMergeCanvas
             ? []
@@ -3120,7 +3139,13 @@ function SurfacePaintOverlay() {
           nextCanvas = existingLiveCanvas;
           const liveContext = nextCanvas.getContext('2d');
           if (!liveContext) throw new Error('Could not update local repaint UV merge canvas.');
-          liveContext.drawImage(bakeResult.canvas, 0, 0, nextCanvas.width, nextCanvas.height);
+          liveContext.drawImage(
+            bakeResult.canvas,
+            0,
+            0,
+            nextCanvas.width,
+            nextCanvas.height,
+          );
         } else {
           nextCanvas = document.createElement('canvas');
           nextCanvas.width = width;
@@ -3210,7 +3235,7 @@ function SurfacePaintOverlay() {
         });
       });
     },
-    [pushToast, textureResolutionSetting, waitForPaintCommitIdle],
+    [pushToast, waitForPaintCommitIdle],
   );
 
   const commitPaintStroke = useCallback(() => {
