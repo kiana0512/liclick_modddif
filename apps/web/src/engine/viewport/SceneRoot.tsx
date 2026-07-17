@@ -204,8 +204,30 @@ function isRenderedLocalRepaintLayer(layer: Layer) {
   return Boolean(
     layer.renderedColor ||
     layer.id.startsWith('local-repaint-') ||
+    layer.id.startsWith('content-aware-projected-repair') ||
+    layer.generationId === 'texture-map-content-aware-repair' ||
     layer.imageUrl.includes('surface-edit:local-repaint'),
   );
+}
+
+function isOverlayProjectionPatch(layer: Layer) {
+  return Boolean(
+    layer.id.startsWith('local-repaint-') ||
+    layer.imageUrl.includes('surface-edit:local-repaint'),
+  );
+}
+
+function isUnderlayProjectionPatch(layer: Layer) {
+  return Boolean(
+    layer.id.startsWith('content-aware-projected-repair') ||
+    layer.generationId === 'texture-map-content-aware-repair'
+  );
+}
+
+function getProjectionCompositeRole(layer: Layer): 'normal' | 'overlay' | 'underlay' {
+  if (isUnderlayProjectionPatch(layer)) return 'underlay';
+  if (isOverlayProjectionPatch(layer)) return 'overlay';
+  return 'normal';
 }
 
 function layerStackPreviewSignature(layers: Layer[]) {
@@ -746,7 +768,8 @@ function ImportedModel({
         strength: layer.strength ?? 1,
         // Local repaint layers patch the visible projection rather than competing
         // as another base projection, including legacy saved repaint layers.
-        blendMode: isRenderedLocalRepaintLayer(layer) ? 'overlay' : layer.blendMode,
+        blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
+        compositeRole: getProjectionCompositeRole(layer),
         visible: layer.visible,
         hue: (layer.adjustments?.hue ?? 0) / 100,
         saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -770,7 +793,10 @@ function ImportedModel({
             layer.camera &&
             (!layer.objectId || layer.objectId === importedObjectId),
         )
-        .sort((a, b) => a.order - b.order),
+        // Keep the high-capacity texture-array path consistent with the direct
+        // and progressive paths: panel order 0 is visually topmost, so feed
+        // layers to the shader bottom-up and let top rows composite last.
+        .sort((a, b) => b.order - a.order),
     [importedObjectId, layers],
   );
   const allPreviewProjectedLayerSignature = useMemo(
@@ -793,7 +819,8 @@ function ImportedModel({
         objectMatrixWorld: layer.objectMatrixWorld,
         opacity: layer.opacity,
         strength: layer.strength ?? 1,
-        blendMode: isRenderedLocalRepaintLayer(layer) ? 'overlay' : layer.blendMode,
+        blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
+        compositeRole: getProjectionCompositeRole(layer),
         visible: layer.visible,
         hue: (layer.adjustments?.hue ?? 0) / 100,
         saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -1101,13 +1128,14 @@ function ImportedModel({
         !isRenderedLocalRepaintLayer(topLayer))
     )
       return undefined;
-    // The live projected stroke is the newest visual edit and must stay above
-    // the already-committed UV patch until this stroke is baked into that patch.
-    if (
+    const hasLiveLocalRepaintStroke = Boolean(
       localRepaintPreviewLayer?.visible &&
-      stableVisibleProjectedLayers.some((layer) => layer.id === localRepaintPreviewLayer.id)
-    )
-      return undefined;
+        stableVisibleProjectedLayers.some((layer) => layer.id === localRepaintPreviewLayer.id),
+    );
+    // Keep the accumulated local-repaint UV canvas resident while the next
+    // projected stroke is being drawn. Moving it back into the ordinary UV
+    // compositor clears the old GPU texture while an asynchronous composite is
+    // prepared, which makes all previous strokes temporarily disappear.
     // Keep a live or rendered-color top layer separate from the albedo UV stack.
     // Besides avoiding full-resolution recomposites during painting, this lets a
     // baked local-repaint patch retain the same exposure semantics as its live
@@ -1118,7 +1146,7 @@ function ImportedModel({
       (topOrder, layer) => Math.min(topOrder, layer.order),
       Number.POSITIVE_INFINITY,
     );
-    if (topLayer.order >= topProjectedOrder) return undefined;
+    if (!hasLiveLocalRepaintStroke && topLayer.order >= topProjectedOrder) return undefined;
     return topLayer;
   }, [localRepaintPreviewLayer, stableVisibleProjectedLayers, stableVisibleUvLayers]);
   const nonLiveUvLayers = useMemo(

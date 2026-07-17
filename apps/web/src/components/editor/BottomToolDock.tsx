@@ -528,7 +528,8 @@ export function BottomToolDock({
                 type="button"
                 className={cn(baseButton, paintTool === 'inpaint-apply' && activeMaskButton)}
                 onClick={() => {
-                  onLocalRepaint();
+                  if (paintTool === 'inpaint-apply') onPaintToolChange('inpaint-add');
+                  else onLocalRepaint();
                   toggleMenu('inpaint-apply');
                 }}
                 aria-label={labels.localRepaint}

@@ -89,12 +89,21 @@ export interface BakeVisibleProjectedLayersInput {
   gpuInputTextureFlipY?: boolean;
   gpuProjectedImageUvFlipY?: boolean;
   gpuCompositeMode?: GpuUvCompositeMode;
+  /** Reject GPU projection fragments whose captured depth differs by more than maximumDepthError. */
+  strictDepthCheck?: boolean;
+  maximumDepthError?: number;
+  /** Reject weak projected fragments before they can seed dilation. */
+  minimumOutputCoverage?: number;
+  /** Keep dilation only where it closes an interior pinhole or narrow crack. */
+  constrainDilationToInteriorHoles?: boolean;
   debugIgnoreMask?: boolean;
   debugIgnoreDepth?: boolean;
   commitToProject?: boolean;
   markSourceLayersBaked?: boolean;
   preferBlobOutput?: boolean;
   skipImageEncoding?: boolean;
+  /** Skip CPU seam/dilation passes when a transparent GPU overlay is already final. */
+  skipCpuPostprocess?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 }
 

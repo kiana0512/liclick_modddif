@@ -29,6 +29,10 @@ type GpuLayerStackBakeInput = {
   inputTextureFlipY?: boolean;
   projectedImageUvFlipY?: boolean;
   compositeMode?: GpuUvCompositeMode;
+  strictDepthCheck?: boolean;
+  maximumDepthError?: number;
+  minimumOutputCoverage?: number;
+  constrainDilationToInteriorHoles?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 };
 
@@ -130,6 +134,9 @@ const fragmentShader = `
   uniform float useMask;
   uniform float maskUsesUv;
   uniform float useDepthCheck;
+  uniform float strictDepthCheck;
+  uniform float maximumDepthError;
+  uniform float minimumOutputCoverage;
   uniform float enableBackfaceCulling;
   uniform float useCoverageAlpha;
   uniform float useQualityDepth;
@@ -274,6 +281,7 @@ const fragmentShader = `
     float projectedDepth = ndc.z * 0.5 + 0.5;
     float capturedDepth = unpackDepth(texture2D(depthMap, projectedSampleUv));
     float depthErr = abs(projectedDepth - capturedDepth);
+    if (strictDepthCheck > 0.5 && useDepthCheck > 0.5 && depthErr > maximumDepthError) discard;
     float depthWeight = useDepthCheck > 0.5
       ? mix(0.2, 1.0, exp(-pow(depthErr / max(depthEpsilon, 0.000001), 2.0)))
       : 1.0;
@@ -285,7 +293,7 @@ const fragmentShader = `
     float angleWeight = computeAngleWeight(ndv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
     float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
-    if (coverage <= 0.025) discard;
+    if (coverage <= max(0.025, minimumOutputCoverage)) discard;
     float qualityEdge = computeImageEdgeFade(projectedSampleUv, 0.035);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
     float qualityAlpha = clamp(max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)}), 0.0, 1.0);
@@ -320,6 +328,12 @@ const dilationFragmentShader = `
     return vec4(color.rgb / color.a, color.a);
   }
 
+  void accumulateNeighbor(vec4 color, float weight, inout vec3 colorSum, inout float weightSum) {
+    if (color.a <= 0.0001) return;
+    colorSum += unpremultiply(color).rgb * weight;
+    weightSum += weight;
+  }
+
   void main() {
     vec4 center = texture2D(sourceMap, vUv);
     if (center.a > 0.0001) {
@@ -327,31 +341,55 @@ const dilationFragmentShader = `
       return;
     }
 
-    vec4 left = texture2D(sourceMap, vUv + vec2(-texelSize.x, 0.0));
-    if (left.a > 0.0001) {
-      gl_FragColor = vec4(unpremultiply(left).rgb, 1.0);
+    vec3 colorSum = vec3(0.0);
+    float weightSum = 0.0;
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, 0.0)), 1.0, colorSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, 0.0)), 1.0, colorSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(0.0, texelSize.y)), 1.0, colorSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(0.0, -texelSize.y)), 1.0, colorSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, -texelSize.y)), 0.7071, colorSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, -texelSize.y)), 0.7071, colorSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, texelSize.y)), 0.7071, colorSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, texelSize.y)), 0.7071, colorSum, weightSum);
+    gl_FragColor = weightSum > 0.0 ? vec4(colorSum / weightSum, 1.0) : vec4(0.0);
+  }
+`;
+
+const interiorHoleConstraintFragmentShader = `
+  uniform sampler2D sourceMap;
+  uniform sampler2D originalMap;
+  uniform vec2 texelSize;
+  varying vec2 vUv;
+
+  float covered(vec2 offset) {
+    return step(0.0001, texture2D(originalMap, vUv + offset * texelSize).a);
+  }
+
+  void main() {
+    vec4 original = texture2D(originalMap, vUv);
+    float neighborCount = 0.0;
+    neighborCount += covered(vec2(-1.0, -1.0));
+    neighborCount += covered(vec2(0.0, -1.0));
+    neighborCount += covered(vec2(1.0, -1.0));
+    neighborCount += covered(vec2(-1.0, 0.0));
+    neighborCount += covered(vec2(1.0, 0.0));
+    neighborCount += covered(vec2(-1.0, 1.0));
+    neighborCount += covered(vec2(0.0, 1.0));
+    neighborCount += covered(vec2(1.0, 1.0));
+
+    if (original.a > 0.0001) {
+      vec4 source = texture2D(sourceMap, vUv);
+      // Preserve fully surrounded texels, but smoothly fade the one-texel outer
+      // contour. Scaling premultiplied RGB with alpha avoids a dark color fringe.
+      float edgeFactor = smoothstep(0.0, 8.0, neighborCount);
+      gl_FragColor = vec4(source.rgb * edgeFactor, source.a * edgeFactor);
       return;
     }
 
-    vec4 right = texture2D(sourceMap, vUv + vec2(texelSize.x, 0.0));
-    if (right.a > 0.0001) {
-      gl_FragColor = vec4(unpremultiply(right).rgb, 1.0);
-      return;
-    }
-
-    vec4 up = texture2D(sourceMap, vUv + vec2(0.0, texelSize.y));
-    if (up.a > 0.0001) {
-      gl_FragColor = vec4(unpremultiply(up).rgb, 1.0);
-      return;
-    }
-
-    vec4 down = texture2D(sourceMap, vUv + vec2(0.0, -texelSize.y));
-    if (down.a > 0.0001) {
-      gl_FragColor = vec4(unpremultiply(down).rgb, 1.0);
-      return;
-    }
-
-    gl_FragColor = vec4(0.0);
+    // Six surrounding samples identify an enclosed pinhole or a one-texel
+    // crack. An exterior boundary has neighbors on only one side and is reset
+    // to transparent, so hole filling cannot create a visible outline.
+    gl_FragColor = neighborCount >= 6.0 ? texture2D(sourceMap, vUv) : vec4(0.0);
   }
 `;
 
@@ -564,6 +602,9 @@ function createLayerMaterial(input: {
   enableBackfaceCulling: boolean;
   compositeMode: GpuUvCompositeMode;
   projectedImageUvFlipY: boolean;
+  strictDepthCheck?: boolean;
+  maximumDepthError?: number;
+  minimumOutputCoverage?: number;
 }) {
   if (!input.layer.camera) throw new Error('Projected layer has no capture camera.');
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
@@ -586,6 +627,13 @@ function createLayerMaterial(input: {
       useMask: { value: input.textures.useMask ? 1 : 0 },
       maskUsesUv: { value: input.layer.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: input.textures.useDepthCheck ? 1 : 0 },
+      strictDepthCheck: { value: input.strictDepthCheck ? 1 : 0 },
+      maximumDepthError: {
+        value: THREE.MathUtils.clamp(input.maximumDepthError ?? DEPTH_EPSILON, 0.001, 1),
+      },
+      minimumOutputCoverage: {
+        value: THREE.MathUtils.clamp(input.minimumOutputCoverage ?? 0, 0, 0.99),
+      },
       enableBackfaceCulling: { value: input.enableBackfaceCulling ? 1 : 0 },
       useCoverageAlpha: { value: input.compositeMode === 'coverage-alpha' ? 1 : 0 },
       useQualityDepth: { value: input.compositeMode === 'quality-depth' ? 1 : 0 },
@@ -666,6 +714,7 @@ function runGpuPostprocess(input: {
   enableDilation: boolean;
   dilationPixels: number;
   enableSharpen: boolean;
+  constrainDilationToInteriorHoles?: boolean;
 }) {
   if (!input.enableDilation && !input.enableSharpen) {
     return { target: input.source, ownedTargets: [] };
@@ -707,6 +756,32 @@ function runGpuPostprocess(input: {
     }
   }
   dilationMaterial.dispose();
+
+  if (input.enableDilation && input.constrainDilationToInteriorHoles) {
+    const constraintMaterial = new THREE.ShaderMaterial({
+      vertexShader: fullscreenVertexShader,
+      fragmentShader: interiorHoleConstraintFragmentShader,
+      uniforms: {
+        sourceMap: { value: current.texture },
+        originalMap: { value: input.source.texture },
+        texelSize: { value: texelSize },
+      },
+      blending: THREE.NoBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    renderFullscreenPass({
+      renderer: input.renderer,
+      source: current,
+      target: next,
+      material: constraintMaterial,
+      camera,
+    });
+    current = next;
+    next = next === ping ? pong : ping;
+    constraintMaterial.dispose();
+  }
 
   if (input.enableSharpen && input.resolution <= MAX_GPU_SHARPEN_RESOLUTION) {
     const sharpenMaterial = new THREE.ShaderMaterial({
@@ -961,6 +1036,9 @@ export async function bakeProjectedLayerRastersWithGpu(
         enableBackfaceCulling: input.enableBackfaceCulling,
         compositeMode: 'coverage-alpha',
         projectedImageUvFlipY: input.projectedImageUvFlipY ?? false,
+        strictDepthCheck: input.strictDepthCheck,
+        maximumDepthError: input.maximumDepthError,
+        minimumOutputCoverage: input.minimumOutputCoverage,
       });
       bakeScene.bakeMeshes.forEach((mesh) => {
         mesh.material = coverageMaterial;
@@ -980,6 +1058,9 @@ export async function bakeProjectedLayerRastersWithGpu(
         enableBackfaceCulling: input.enableBackfaceCulling,
         compositeMode: 'quality-alpha',
         projectedImageUvFlipY: input.projectedImageUvFlipY ?? false,
+        strictDepthCheck: input.strictDepthCheck,
+        maximumDepthError: input.maximumDepthError,
+        minimumOutputCoverage: input.minimumOutputCoverage,
       });
       bakeScene.bakeMeshes.forEach((mesh) => {
         mesh.material = qualityMaterial;
@@ -1099,6 +1180,9 @@ export async function bakeProjectedLayerStackWithGpu(
         enableBackfaceCulling: input.enableBackfaceCulling,
         compositeMode: input.compositeMode ?? 'quality-depth',
         projectedImageUvFlipY: input.projectedImageUvFlipY ?? false,
+        strictDepthCheck: input.strictDepthCheck,
+        maximumDepthError: input.maximumDepthError,
+        minimumOutputCoverage: input.minimumOutputCoverage,
       });
       bakeScene.bakeMeshes.forEach((mesh) => {
         mesh.material = material;
@@ -1132,6 +1216,7 @@ export async function bakeProjectedLayerStackWithGpu(
       enableDilation: input.enableDilation,
       dilationPixels: input.dilationPixels,
       enableSharpen: outputAlpha !== 'transparent',
+      constrainDilationToInteriorHoles: input.constrainDilationToInteriorHoles,
     });
     const { imageData, coverage } = readRenderTargetToImageData(renderer, postprocess.target, resolution, outputAlpha);
     postprocess.ownedTargets.forEach((target) => target.dispose());

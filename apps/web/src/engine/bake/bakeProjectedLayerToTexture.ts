@@ -853,6 +853,10 @@ export async function bakeVisibleProjectedLayersToTexture(
           inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
           projectedImageUvFlipY: gpuProjectedImageUvFlipY,
           compositeMode: gpuCompositeMode,
+          strictDepthCheck: input.strictDepthCheck,
+          maximumDepthError: input.maximumDepthError,
+          minimumOutputCoverage: input.minimumOutputCoverage,
+          constrainDilationToInteriorHoles: input.constrainDilationToInteriorHoles,
           onProgress: (progress) =>
             input.onProgress?.({
               ...progress,
@@ -1000,18 +1004,27 @@ export async function bakeVisibleProjectedLayersToTexture(
         };
       }
 
+      // Interactive transparent overlays can run the same hole-fill/padding
+      // passes entirely on the GPU, then skip the expensive full-canvas CPU
+      // seam scan. This keeps local repaint responsive while still closing the
+      // small uncovered texels that appear inside UV islands.
+      const useGpuDilation = Boolean(input.skipCpuPostprocess && input.enableDilation);
       const gpuBake = await bakeProjectedLayerStackWithGpu({
         renderer,
         group: importedModel.group,
         layers,
         resolution: input.resolution,
         enableBackfaceCulling: input.enableBackfaceCulling,
-        enableDilation: false,
-        dilationPixels: 0,
+        enableDilation: useGpuDilation,
+        dilationPixels: useGpuDilation ? dilationPixels : 0,
         outputAlpha: input.outputAlpha ?? 'opaque-viewport',
         inputTextureFlipY: input.gpuInputTextureFlipY ?? true,
         projectedImageUvFlipY: gpuProjectedImageUvFlipY,
         compositeMode: gpuCompositeMode,
+        strictDepthCheck: input.strictDepthCheck,
+        maximumDepthError: input.maximumDepthError,
+        minimumOutputCoverage: input.minimumOutputCoverage,
+        constrainDilationToInteriorHoles: input.constrainDilationToInteriorHoles,
         onProgress: (progress) =>
           input.onProgress?.({
             ...progress,
@@ -1027,20 +1040,28 @@ export async function bakeVisibleProjectedLayersToTexture(
       const wantsTransparentOutput = input.outputAlpha === 'transparent';
       const needsCpuSharpen = !gpuBake.postProcessedOnGpu && !wantsTransparentOutput;
       const needsCpuViewportFill = !gpuBake.opaqueBaseColorReady && !wantsTransparentOutput;
-      const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
-      if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
-      const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
-      if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
-      const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
-      if (seamResult.adjustedPixels > 0) {
-        gpuBake.warnings.push(
-          `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
-        );
+      const canSkipCpuPostprocess =
+        input.skipCpuPostprocess &&
+        wantsTransparentOutput &&
+        !needsCpuSharpen &&
+        !needsCpuViewportFill &&
+        (!input.enableDilation || useGpuDilation);
+      if (!canSkipCpuPostprocess) {
+        const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
+        if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
+        const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
+        if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
+        const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
+        if (seamResult.adjustedPixels > 0) {
+          gpuBake.warnings.push(
+            `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+          );
+        }
+        if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
+        if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
+        else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
+        gpuContext.putImageData(gpuImage, 0, 0);
       }
-      if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
-      if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
-      else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
-      gpuContext.putImageData(gpuImage, 0, 0);
       if (
         !input.skipGpuValidation &&
         (shouldValidateGpuBakeCoverage() || input.outputAlpha === 'transparent')

@@ -29,6 +29,8 @@ export type ProjectionLayerInput = {
   opacity: number;
   strength?: number;
   blendMode?: BlendMode;
+  /** Internal preview ordering independent from the user-facing blend mode. */
+  compositeRole?: 'normal' | 'overlay' | 'underlay';
   visible: boolean;
   depthTest: boolean;
   useMask?: boolean;
@@ -84,6 +86,7 @@ export type ProjectionLayerStackInput = Omit<
       | 'opacity'
       | 'strength'
       | 'blendMode'
+      | 'compositeRole'
       | 'visible'
       | 'hue'
       | 'saturation'
