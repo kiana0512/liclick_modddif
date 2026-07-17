@@ -39,21 +39,10 @@ export const translations = {
     workspaceOfflineHelp: 'Keep the Liclick launcher terminal open, then retry.',
     projectedPreviewLimit: 'Projected-layer preview limit reached',
     projectedPreviewLimitHelp:
-      'The current direct stack needs {required} texture units, but this GPU exposes {available}. This update was not applied to prevent a black or incorrect preview.',
+      'Opening this projected layer would need {required} texture units, but this GPU exposes {available}. The layer stays hidden. Close another projected layer or merge the visible projections into a UV layer first.',
     projectedPreviewFailed: 'Projected-layer preview failed',
     projectedPreviewFailedHelp:
       'The failed result was not applied, preventing a black or incorrect model preview.',
-    projectedPreviewComposing: 'Compositing projected layers',
-    projectedPreviewComposingHelp:
-      '{progress}% · The active layer remains interactive while the background stack is composited.',
-    projectedPreviewReady: 'Projected-layer preview is ready',
-    projectedPreviewReadyHelp: 'All {count} visible projected layers are now displayed.',
-    projectedTextureArrayPreparing: 'Projected-layer capacity expanded automatically',
-    projectedTextureArrayPreparingHelp:
-      'The direct sampler limit would be exceeded. Preparing {count} projected layers at a GPU-safe viewport resolution; source images and export quality remain unchanged.',
-    projectedTextureArrayReady: 'High-capacity projected-layer preview is ready',
-    projectedTextureArrayReadyHelp:
-      'All {count} projected layers are available for instant visibility toggles without UV flattening.',
     projectSubtitle:
       'Manage local Liclick texture studios, imported models, captures, baked textures, and exports.',
     sortUpdatedDesc: 'Updated New to Old',
@@ -530,19 +519,9 @@ export const translations = {
     workspaceOfflineHelp: '请保持 Liclick 启动终端开启，然后重试。',
     projectedPreviewLimit: '投影图层预览已达到设备上限',
     projectedPreviewLimitHelp:
-      '当前直接投影需要 {required} 个纹理单元，但此显卡仅提供 {available} 个。为避免模型黑屏或错误合成，本次更新未应用。',
+      '打开该投影层需要 {required} 个纹理单元，但此显卡仅提供 {available} 个。该图层将保持关闭；请先关闭其他投影层，或把当前可见投影合并成 UV 图层后再打开。',
     projectedPreviewFailed: '投影图层预览发生错误',
     projectedPreviewFailedHelp: '失败结果未应用，避免模型出现黑屏或错误贴图。',
-    projectedPreviewComposing: '正在快速合成投影图层',
-    projectedPreviewComposingHelp: '已完成 {progress}% · 活动图层和画笔保持实时响应。',
-    projectedPreviewReady: '投影图层预览已就绪',
-    projectedPreviewReadyHelp: '已完整显示 {count} 个可见投影图层。',
-    projectedTextureArrayPreparing: '已自动切换大容量投影预览',
-    projectedTextureArrayPreparingHelp:
-      '检测到直接采样将超出显卡上限，正在按显卡可承受的视口分辨率准备 {count} 个投影图层；源图和导出质量不会降低。',
-    projectedTextureArrayReady: '大容量投影图层预览已就绪',
-    projectedTextureArrayReadyHelp:
-      '已准备全部 {count} 个投影图层，眼睛开关可即时生效，并且没有丢弃任何图层。',
     projectSubtitle: '管理本地 Liclick 贴图项目、导入模型、捕获、烘焙贴图和导出内容。',
     sortUpdatedDesc: '最近更新优先',
     sortCreatedDesc: '最新创建优先',

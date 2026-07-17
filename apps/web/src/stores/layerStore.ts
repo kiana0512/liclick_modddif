@@ -50,6 +50,21 @@ type LayerStore = {
   deleteLayers: (layerIds: string[]) => void;
 };
 
+type ProjectedLayerVisibilityGuard = (nextLayers: Layer[]) => boolean;
+
+let projectedLayerVisibilityGuard: ProjectedLayerVisibilityGuard | undefined;
+
+export function setProjectedLayerVisibilityGuard(guard?: ProjectedLayerVisibilityGuard) {
+  projectedLayerVisibilityGuard = guard;
+  return () => {
+    if (projectedLayerVisibilityGuard === guard) projectedLayerVisibilityGuard = undefined;
+  };
+}
+
+function canApplyProjectedVisibility(nextLayers: Layer[]) {
+  return projectedLayerVisibilityGuard?.(nextLayers) ?? true;
+}
+
 const legacyTransparentImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
 
@@ -184,12 +199,21 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
-    set((state) => ({
-      layers: withOrder([layer, ...state.layers]),
-      activeProjectedLayerId: layer.id,
-    }));
+    let createdLayer = layer;
+    set((state) => {
+      const candidateLayers = withOrder([layer, ...state.layers]);
+      if (canApplyProjectedVisibility(candidateLayers)) {
+        return { layers: candidateLayers, activeProjectedLayerId: layer.id };
+      }
+      const hiddenLayer = { ...layer, visible: false };
+      createdLayer = hiddenLayer;
+      return {
+        layers: withOrder([hiddenLayer, ...state.layers]),
+        activeProjectedLayerId: state.activeProjectedLayerId,
+      };
+    });
 
-    return layer;
+    return createdLayer;
   },
   addUvLayer: (input) => {
     const layer: Layer = {
@@ -288,6 +312,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = state.layers.map((layer) =>
         layer.id === layerId ? { ...layer, visible: nextVisible } : layer,
       );
+      if (nextVisible && !canApplyProjectedVisibility(layers)) return state;
       return {
         layers,
         activeProjectedLayerId:
@@ -301,6 +326,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = state.layers.map((layer) =>
         layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
       );
+      if (visible && !canApplyProjectedVisibility(layers)) return state;
       const activeStillVisible = layers.some(
         (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
       );

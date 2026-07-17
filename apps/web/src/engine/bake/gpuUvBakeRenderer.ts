@@ -32,6 +32,8 @@ type GpuLayerStackBakeInput = {
   strictDepthCheck?: boolean;
   maximumDepthError?: number;
   minimumOutputCoverage?: number;
+  minimumDilationSourceAlpha?: number;
+  dilationOpacityScale?: number;
   constrainDilationToInteriorHoles?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 };
@@ -321,6 +323,8 @@ const fullscreenVertexShader = `
 const dilationFragmentShader = `
   uniform sampler2D sourceMap;
   uniform vec2 texelSize;
+  uniform float minimumSourceAlpha;
+  uniform float dilationOpacityScale;
   varying vec2 vUv;
 
   vec4 unpremultiply(vec4 color) {
@@ -328,8 +332,16 @@ const dilationFragmentShader = `
     return vec4(color.rgb / color.a, color.a);
   }
 
-  void accumulateNeighbor(vec4 color, float weight, inout vec3 colorSum, inout float weightSum) {
-    if (color.a <= 0.0001) return;
+  void accumulateNeighbor(
+    vec4 color,
+    float weight,
+    inout vec3 colorSum,
+    inout float weightSum
+  ) {
+    // Very weak feather texels are stored in an 8-bit premultiplied target.
+    // Unpremultiplying those values magnifies byte quantization into rainbow
+    // colors, so they must never become opaque UV padding seeds.
+    if (color.a < minimumSourceAlpha) return;
     colorSum += unpremultiply(color).rgb * weight;
     weightSum += weight;
   }
@@ -351,7 +363,17 @@ const dilationFragmentShader = `
     accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, -texelSize.y)), 0.7071, colorSum, weightSum);
     accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, texelSize.y)), 0.7071, colorSum, weightSum);
     accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, texelSize.y)), 0.7071, colorSum, weightSum);
-    gl_FragColor = weightSum > 0.0 ? vec4(colorSum / weightSum, 1.0) : vec4(0.0);
+    if (weightSum <= 0.0) {
+      gl_FragColor = vec4(0.0);
+      return;
+    }
+    vec3 straightColor = colorSum / weightSum;
+    // A value of 1 preserves the historical opaque padding used by ordinary
+    // UV baking. Local repaint opts into a lower value for visual feathering.
+    float outputAlpha = dilationOpacityScale;
+    // The render target stores premultiplied RGB. Keep that invariant so the
+    // readback unpremultiply step cannot brighten or tint the feathered edge.
+    gl_FragColor = vec4(straightColor * outputAlpha, outputAlpha);
   }
 `;
 
@@ -714,6 +736,8 @@ function runGpuPostprocess(input: {
   enableDilation: boolean;
   dilationPixels: number;
   enableSharpen: boolean;
+  minimumDilationSourceAlpha?: number;
+  dilationOpacityScale?: number;
   constrainDilationToInteriorHoles?: boolean;
 }) {
   if (!input.enableDilation && !input.enableSharpen) {
@@ -735,6 +759,8 @@ function runGpuPostprocess(input: {
     uniforms: {
       sourceMap: { value: current.texture },
       texelSize: { value: texelSize },
+      minimumSourceAlpha: { value: Math.max(0.0001, input.minimumDilationSourceAlpha ?? 0.0001) },
+      dilationOpacityScale: { value: THREE.MathUtils.clamp(input.dilationOpacityScale ?? 1, 0, 1) },
     },
     blending: THREE.NoBlending,
     depthTest: false,
@@ -1216,6 +1242,8 @@ export async function bakeProjectedLayerStackWithGpu(
       enableDilation: input.enableDilation,
       dilationPixels: input.dilationPixels,
       enableSharpen: outputAlpha !== 'transparent',
+      minimumDilationSourceAlpha: input.minimumDilationSourceAlpha,
+      dilationOpacityScale: input.dilationOpacityScale,
       constrainDilationToInteriorHoles: input.constrainDilationToInteriorHoles,
     });
     const { imageData, coverage } = readRenderTargetToImageData(renderer, postprocess.target, resolution, outputAlpha);

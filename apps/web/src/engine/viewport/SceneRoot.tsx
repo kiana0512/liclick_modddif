@@ -15,11 +15,6 @@ import {
   updateUvOverlayPreviewMaterial,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
-  ProjectedLayerPreviewCompositor,
-  type ProjectedPreviewComposite,
-  type ProjectedPreviewCompositeProgress,
-} from '@/engine/projection/ProjectedLayerPreviewCompositor';
-import {
   getLiveProjectedCanvasState,
   getLiveProjectedCanvasTexture,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
@@ -29,7 +24,7 @@ import {
   getProjectedLayerStackSignature,
   getVisibleProjectedLayerStack,
 } from '@/engine/bake/layerStackCache';
-import { useLayerStore } from '@/stores/layerStore';
+import { setProjectedLayerVisibilityGuard, useLayerStore } from '@/stores/layerStore';
 import { translations, useI18nStore } from '@/stores/i18nStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -55,22 +50,12 @@ const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
 const PROJECTED_PREVIEW_LIMIT_TOAST_KEY = 'projected-preview:sampler-limit';
 const PROJECTED_PREVIEW_FAILURE_TOAST_KEY = 'projected-preview:failure';
-const PROJECTED_TEXTURE_ARRAY_TOAST_KEY = 'projected-preview:texture-array';
-const PROJECTED_PREVIEW_PROGRESS_INTERVAL_MS = 250;
-let lastProjectedPreviewProgressAt = 0;
-let lastProjectedPreviewPercent = 0;
-
-function resetProjectedPreviewProgressNotice() {
-  lastProjectedPreviewProgressAt = 0;
-  lastProjectedPreviewPercent = 0;
-}
 
 function projectionPreviewCopy() {
   return translations[useI18nStore.getState().language];
 }
 
 function notifyProjectedPreviewLimit(required: number, available: number) {
-  resetProjectedPreviewProgressNotice();
   const copy = projectionPreviewCopy();
   useToastStore.getState().pushToast({
     tone: 'warning',
@@ -82,43 +67,7 @@ function notifyProjectedPreviewLimit(required: number, available: number) {
   });
 }
 
-function notifyProjectedPreviewProgress(progress: ProjectedPreviewCompositeProgress) {
-  const copy = projectionPreviewCopy();
-  const percent = Math.max(1, Math.min(99, Math.round(progress.progress * 100)));
-  const now = performance.now();
-  if (
-    percent === lastProjectedPreviewPercent ||
-    (now - lastProjectedPreviewProgressAt < PROJECTED_PREVIEW_PROGRESS_INTERVAL_MS &&
-      percent - lastProjectedPreviewPercent < 2)
-  ) {
-    return;
-  }
-  lastProjectedPreviewProgressAt = now;
-  lastProjectedPreviewPercent = percent;
-  useToastStore.getState().pushToast({
-    tone: 'info',
-    title: copy.projectedPreviewComposing,
-    description: copy.projectedPreviewComposingHelp.replace('{progress}', String(percent)),
-    dedupeKey: PROJECTED_PREVIEW_LIMIT_TOAST_KEY,
-    persistent: true,
-  });
-}
-
-function notifyProjectedPreviewReady(layerCount: number) {
-  resetProjectedPreviewProgressNotice();
-  const copy = projectionPreviewCopy();
-  const toastStore = useToastStore.getState();
-  toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_LIMIT_TOAST_KEY);
-  toastStore.pushToast({
-    tone: 'success',
-    title: copy.projectedPreviewReady,
-    description: copy.projectedPreviewReadyHelp.replace('{count}', String(layerCount)),
-    dedupeKey: PROJECTED_PREVIEW_LIMIT_TOAST_KEY,
-  });
-}
-
 function notifyProjectedPreviewFailure(_error: unknown) {
-  resetProjectedPreviewProgressNotice();
   const copy = projectionPreviewCopy();
   const toastStore = useToastStore.getState();
   toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_LIMIT_TOAST_KEY);
@@ -127,29 +76,6 @@ function notifyProjectedPreviewFailure(_error: unknown) {
     title: copy.projectedPreviewFailed,
     description: copy.projectedPreviewFailedHelp,
     dedupeKey: PROJECTED_PREVIEW_FAILURE_TOAST_KEY,
-  });
-}
-
-function notifyProjectedTextureArrayPreparing(layerCount: number) {
-  const copy = projectionPreviewCopy();
-  useToastStore.getState().pushToast({
-    tone: 'info',
-    title: copy.projectedTextureArrayPreparing,
-    description: copy.projectedTextureArrayPreparingHelp.replace('{count}', String(layerCount)),
-    dedupeKey: PROJECTED_TEXTURE_ARRAY_TOAST_KEY,
-  });
-}
-
-function notifyProjectedTextureArrayReady(layerCount: number) {
-  const copy = projectionPreviewCopy();
-  const toastStore = useToastStore.getState();
-  toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_FAILURE_TOAST_KEY);
-  toastStore.dismissToastByDedupeKey(PROJECTED_TEXTURE_ARRAY_TOAST_KEY);
-  toastStore.pushToast({
-    tone: 'success',
-    title: copy.projectedTextureArrayReady,
-    description: copy.projectedTextureArrayReadyHelp.replace('{count}', String(layerCount)),
-    dedupeKey: PROJECTED_TEXTURE_ARRAY_TOAST_KEY,
   });
 }
 
@@ -201,6 +127,10 @@ function layerPreviewSignature(layer: Layer) {
 }
 
 function isRenderedLocalRepaintLayer(layer: Layer) {
+  // A projected repaint is a screen-space preview and keeps its captured display
+  // color. Once committed as a UV layer it must follow ordinary surface lighting;
+  // otherwise the baked patch stays flat and looks like a pale veil on the model.
+  if (layer.type === 'uv') return layer.renderedColor === true;
   return Boolean(
     layer.renderedColor ||
     layer.id.startsWith('local-repaint-') ||
@@ -710,13 +640,6 @@ function ImportedModel({
   );
   const lastProjectedTransformRef = useRef<THREE.Matrix4>();
   const lastProjectedSamplerWarningRef = useRef('');
-  const lastProjectedTextureArrayNoticeRef = useRef('');
-  const projectedPreviewCompositorRef = useRef<ProjectedLayerPreviewCompositor>();
-  const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
-  const [progressiveProjectedPreview, setProgressiveProjectedPreview] =
-    useState<ProjectedPreviewComposite>();
-  const [failedProjectedTextureArraySignature, setFailedProjectedTextureArraySignature] =
-    useState('');
   const previewProjectedLayers = useMemo(
     () => {
       const storedLayers = layers
@@ -780,301 +703,97 @@ function ImportedModel({
       })),
     [stablePreviewProjectedLayers],
   );
-  // Keep the complete projected stack resident in the high-capacity material.
-  // Visibility then becomes a uniform-only update, so eye toggles are immediate
-  // and do not rebuild or re-upload the texture arrays.
-  const allPreviewProjectedLayers = useMemo(
+  const visibleUvOverlayCount = useMemo(
     () =>
-      layers
-        .filter(
-          (layer) =>
-            layer.type === 'projected' &&
-            layer.imageUrl &&
-            layer.camera &&
-            (!layer.objectId || layer.objectId === importedObjectId),
-        )
-        // Keep the high-capacity texture-array path consistent with the direct
-        // and progressive paths: panel order 0 is visually topmost, so feed
-        // layers to the shader bottom-up and let top rows composite last.
-        .sort((a, b) => b.order - a.order),
-    [importedObjectId, layers],
-  );
-  const allPreviewProjectedLayerSignature = useMemo(
-    () => layerStackPreviewSignature(allPreviewProjectedLayers),
-    [allPreviewProjectedLayers],
-  );
-  const stableAllPreviewProjectedLayers = useStableValueBySignature(
-    allPreviewProjectedLayers,
-    allPreviewProjectedLayerSignature,
-  );
-  const allProjectionInputs = useMemo(
-    () =>
-      stableAllPreviewProjectedLayers.map((layer) => ({
-        layerId: layer.id,
-        imageUrl: layer.imageUrl,
-        maskUrl: layer.maskUrl,
-        maskSpace: layer.maskSpace,
-        depthUrl: layer.depthUrl,
-        camera: layer.camera!,
-        objectMatrixWorld: layer.objectMatrixWorld,
-        opacity: layer.opacity,
-        strength: layer.strength ?? 1,
-        blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
-        compositeRole: getProjectionCompositeRole(layer),
-        visible: layer.visible,
-        hue: (layer.adjustments?.hue ?? 0) / 100,
-        saturation: (layer.adjustments?.saturation ?? 0) / 100,
-        lightness: (layer.adjustments?.lightness ?? 0) / 100,
-        useMask: Boolean(layer.maskUrl),
-        useDepthCheck: Boolean(layer.depthUrl),
-        renderedColor: isRenderedLocalRepaintLayer(layer),
-      })),
-    [stableAllPreviewProjectedLayers],
-  );
-  const hasVisibleUvOverlay = useMemo(
-    () =>
-      layers.some(
+      layers.filter(
         (layer) =>
           layer.type === 'uv' &&
           layer.visible &&
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedObjectId),
-      ),
+      ).length,
     [importedObjectId, layers],
   );
   const directProjectedSamplerBudget = useMemo(
     () =>
       getProjectedLayerSamplerBudget(previewProjectionInputs, gl.capabilities.maxTextures, {
-        useUvOverlayMap: hasVisibleUvOverlay,
+        useUvOverlayMap: visibleUvOverlayCount > 0,
+        // The viewport can keep one rendered/live UV patch separate from the
+        // composited UV stack. Counting a second visible UV layer conservatively
+        // reserves that sampler before an eye toggle reaches WebGL validation.
+        useTopUvOverlayMap: visibleUvOverlayCount > 1,
       }),
-    [gl.capabilities.maxTextures, hasVisibleUvOverlay, previewProjectionInputs],
+    [gl.capabilities.maxTextures, previewProjectionInputs, visibleUvOverlayCount],
   );
-  const allProjectedDirectSamplerBudget = useMemo(
-    () =>
-      getProjectedLayerSamplerBudget(allProjectionInputs, gl.capabilities.maxTextures, {
-        useUvOverlayMap: hasVisibleUvOverlay,
-      }),
-    [allProjectionInputs, gl.capabilities.maxTextures, hasVisibleUvOverlay],
-  );
-  const projectedTextureArraySamplerBudget = useMemo(
-    () =>
-      getProjectedLayerSamplerBudget(allProjectionInputs, gl.capabilities.maxTextures, {
-        useUvOverlayMap: hasVisibleUvOverlay,
-        useTextureArrays: true,
-      }),
-    [allProjectionInputs, gl.capabilities.maxTextures, hasVisibleUvOverlay],
-  );
-  const useProjectedTextureArrays = Boolean(
-    gl.capabilities.isWebGL2 &&
-    previewProjectionInputs.length > 0 &&
-    allProjectionInputs.length > 1 &&
-    !allProjectedDirectSamplerBudget.withinBudget &&
-    projectedTextureArraySamplerBudget.withinBudget,
-  );
-  const projectedTextureArrayStructureSignature = useMemo(
-    () =>
-      allProjectionInputs
-        .map((layer) =>
-          [
-            layer.layerId,
-            layer.imageUrl,
-            layer.maskUrl ?? '',
-            layer.depthUrl ?? '',
-            layer.maskSpace ?? 'projection',
-            layer.useMask ? 1 : 0,
-            layer.useDepthCheck ? 1 : 0,
-            layer.objectMatrixWorld?.join(',') ?? '',
-            layer.camera.viewMatrix?.join(',') ?? '',
-            layer.camera.projectionMatrix?.join(',') ?? '',
-          ].join('~'),
-        )
-        .join('|'),
-    [allProjectionInputs],
-  );
-  const projectedSamplerBudget = useProjectedTextureArrays
-    ? projectedTextureArraySamplerBudget
-    : directProjectedSamplerBudget;
-  const textureArrayCompositionFallbackRequired = Boolean(
-    useProjectedTextureArrays &&
-    projectedTextureArrayStructureSignature &&
-    failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature,
-  );
-  const canUseDirectVisibleStackAfterArrayFailure = Boolean(
-    textureArrayCompositionFallbackRequired && directProjectedSamplerBudget.withinBudget,
-  );
-  // Prefer an exact projected material. If the device still rejects a downscaled
-  // array, preserve every visible layer through the tiled compositor rather than
-  // dropping layers. UV-safe imports may use this path proactively as before.
-  const canUseProgressiveUvFallback = Boolean(
-    importedModel?.group.userData.liclickUvCompositeSafe === true ||
-    (textureArrayCompositionFallbackRequired &&
-      !canUseDirectVisibleStackAfterArrayFailure),
-  );
-  const projectedPreviewNeedsComposition = Boolean(
-    !projectedSamplerBudget.withinBudget ||
-    (textureArrayCompositionFallbackRequired &&
-      !canUseDirectVisibleStackAfterArrayFailure),
-  );
-  const activeProjectedPreviewInput = useMemo(
-    () => previewProjectionInputs.find((layer) => layer.layerId === activeLayerId),
-    [activeLayerId, previewProjectionInputs],
-  );
-  const progressiveBackgroundInputs = useMemo(
-    () =>
-      activeProjectedPreviewInput
-        ? previewProjectionInputs.filter(
-            (layer) => layer.layerId !== activeProjectedPreviewInput.layerId,
-          )
-        : previewProjectionInputs,
-    [activeProjectedPreviewInput, previewProjectionInputs],
-  );
-  const progressiveBackgroundSignature = useMemo(
-    () =>
-      `${importedObjectId ?? 'no-object'}:${RESOLUTION_TO_SIZE[resolution]}:${progressiveBackgroundInputs
-        .map((layer) =>
-          [
-            layer.layerId,
-            layer.imageUrl,
-            layer.maskUrl ?? '',
-            layer.depthUrl ?? '',
-            layer.opacity,
-            layer.strength,
-            layer.blendMode,
-            layer.useMask ? 1 : 0,
-            layer.maskSpace ?? 'projection',
-            layer.useDepthCheck ? 1 : 0,
-            layer.renderedColor ? 1 : 0,
-            layer.hue,
-            layer.saturation,
-            layer.lightness,
-            layer.objectMatrixWorld?.join(',') ?? '',
-            layer.camera.position?.join(',') ?? '',
-            layer.camera.viewMatrix?.join(',') ?? '',
-            layer.camera.projectionMatrix?.join(',') ?? '',
-          ].join('~'),
-        )
-        .join('|')}`,
-    [importedObjectId, progressiveBackgroundInputs, resolution],
-  );
-  const progressiveProjectedPreviewReady =
-    canUseProgressiveUvFallback &&
-    projectedPreviewNeedsComposition &&
-    progressiveProjectedPreview?.signature === progressiveBackgroundSignature;
-  const progressivePreviewScopeMatches = Boolean(
-    progressiveProjectedPreview &&
-    progressiveProjectedPreview.resolution === RESOLUTION_TO_SIZE[resolution] &&
-    progressiveProjectedPreview.signature.startsWith(`${importedObjectId ?? 'no-object'}:`),
-  );
-  const visibleProjectedLayerIds = useMemo(
-    () => new Set(previewProjectionInputs.map((layer) => layer.layerId)),
-    [previewProjectionInputs],
-  );
-  const progressiveBaseLayersStillVisible = Boolean(
-    progressivePreviewScopeMatches &&
-    progressiveProjectedPreview?.layerIds.every((layerId) => visibleProjectedLayerIds.has(layerId)),
-  );
-  const progressiveIncrementalInputs = useMemo(() => {
-    if (!progressiveBaseLayersStillVisible || !progressiveProjectedPreview) return [];
-    const baseLayerIds = new Set(progressiveProjectedPreview.layerIds);
-    return previewProjectionInputs.filter((layer) => !baseLayerIds.has(layer.layerId));
-  }, [previewProjectionInputs, progressiveBaseLayersStillVisible, progressiveProjectedPreview]);
-  const progressiveIncrementalBudget = useMemo(
-    () =>
-      getProjectedLayerSamplerBudget(progressiveIncrementalInputs, gl.capabilities.maxTextures, {
-        useBaseMap: true,
-        useBaseRenderedColorMaskMap: true,
-        useUvOverlayMap: hasVisibleUvOverlay,
-      }),
-    [gl.capabilities.maxTextures, hasVisibleUvOverlay, progressiveIncrementalInputs],
-  );
-  const progressiveIncrementalPreviewReady = Boolean(
-    canUseProgressiveUvFallback &&
-    projectedPreviewNeedsComposition &&
-    !progressiveProjectedPreviewReady &&
-    progressiveBaseLayersStillVisible &&
-    progressiveIncrementalInputs.length > 0 &&
-    progressiveIncrementalBudget.withinBudget,
-  );
-  const canUseProgressivePreviewBase =
-    progressiveProjectedPreviewReady || progressiveIncrementalPreviewReady;
-  const progressivePreviewBase =
-    canUseProgressivePreviewBase && progressiveProjectedPreview
-      ? progressiveProjectedPreview
-      : undefined;
+  const projectedSamplerBudget = directProjectedSamplerBudget;
 
   useEffect(() => {
-    if (
-      !projectedPreviewNeedsComposition ||
-      !canUseProgressiveUvFallback ||
-      progressiveBackgroundInputs.length === 0 ||
-      !importedModel
-    ) {
-      projectedPreviewCompositorRef.current?.cancelPending();
-      return;
-    }
-    const compositor =
-      projectedPreviewCompositorRef.current ?? new ProjectedLayerPreviewCompositor();
-    projectedPreviewCompositorRef.current = compositor;
-    compositor.request({
-      signature: progressiveBackgroundSignature,
-      renderer: gl,
-      group: importedModel.group,
-      layers: progressiveBackgroundInputs,
-      resolution: RESOLUTION_TO_SIZE[resolution],
-      onReady: (result) => {
-        setProgressiveProjectedPreview(result);
-        notifyProjectedPreviewReady(previewProjectionInputs.length);
-      },
-      onProgress: notifyProjectedPreviewProgress,
-      onError: (error) => {
-        console.error('[Liclick 3D Texture] Progressive projected preview failed.', error);
-        notifyProjectedPreviewFailure(error);
-      },
+    if (selectedObjectId && selectedObjectId !== importedObjectId) return undefined;
+    return setProjectedLayerVisibilityGuard((candidateLayers) => {
+      const projectedInputs = candidateLayers
+        .filter(
+          (layer) =>
+            layer.type === 'projected' &&
+            layer.visible &&
+            layer.imageUrl &&
+            layer.camera &&
+            (!layer.objectId || layer.objectId === importedObjectId),
+        )
+        .map((layer) => ({
+          layerId: layer.id,
+          imageUrl: layer.imageUrl,
+          maskUrl: layer.maskUrl,
+          depthUrl: layer.depthUrl,
+          camera: layer.camera!,
+          opacity: layer.opacity,
+          visible: true,
+          useMask: Boolean(layer.maskUrl),
+          useDepthCheck: Boolean(layer.depthUrl),
+        }));
+      const candidateUvOverlayCount = candidateLayers.filter(
+        (layer) =>
+          layer.type === 'uv' &&
+          layer.visible &&
+          Boolean(layer.imageUrl) &&
+          (!layer.objectId || layer.objectId === importedObjectId),
+      ).length;
+      const budget = getProjectedLayerSamplerBudget(
+        projectedInputs,
+        gl.capabilities.maxTextures,
+        {
+          useUvOverlayMap: candidateUvOverlayCount > 0,
+          useTopUvOverlayMap: candidateUvOverlayCount > 1,
+        },
+      );
+      if (budget.withinBudget) return true;
+      notifyProjectedPreviewLimit(budget.required, budget.available);
+      return false;
     });
-  }, [
-    gl,
-    canUseProgressiveUvFallback,
-    importedModel,
-    progressiveBackgroundInputs,
-    progressiveBackgroundSignature,
-    projectedPreviewNeedsComposition,
-    previewProjectionInputs.length,
-    resolution,
-  ]);
-
-  useEffect(
-    () => () => {
-      projectedPreviewCompositorRef.current?.dispose();
-      projectedPreviewCompositorRef.current = undefined;
-    },
-    [],
-  );
+  }, [gl.capabilities.maxTextures, importedObjectId, selectedObjectId]);
 
   useEffect(() => {
-    const canvas = gl.domElement;
-    const interaction = projectedPreviewInteractionRef.current;
-    const markMoved = () => {
-      interaction.lastMovedAt = performance.now();
-    };
-    const markDown = () => {
-      interaction.pointerDown = true;
-      markMoved();
-    };
-    const markUp = () => {
-      interaction.pointerDown = false;
-      markMoved();
-    };
-    canvas.addEventListener('pointerdown', markDown, { passive: true });
-    canvas.addEventListener('pointermove', markMoved, { passive: true });
-    window.addEventListener('pointerup', markUp, { passive: true });
-    window.addEventListener('pointercancel', markUp, { passive: true });
-    return () => {
-      canvas.removeEventListener('pointerdown', markDown);
-      canvas.removeEventListener('pointermove', markMoved);
-      window.removeEventListener('pointerup', markUp);
-      window.removeEventListener('pointercancel', markUp);
-    };
-  }, [gl]);
+    if (directProjectedSamplerBudget.withinBudget) return;
+    const activeProjectedLayer = layers.find(
+      (layer) =>
+        layer.id === activeLayerId &&
+        layer.type === 'projected' &&
+        layer.visible &&
+        (!layer.objectId || layer.objectId === importedObjectId),
+    );
+    const layerToClose = activeProjectedLayer ?? previewProjectedLayers[0];
+    if (!layerToClose) return;
+    notifyProjectedPreviewLimit(
+      directProjectedSamplerBudget.required,
+      directProjectedSamplerBudget.available,
+    );
+    useLayerStore.getState().setLayerVisibility([layerToClose.id], false);
+  }, [
+    activeLayerId,
+    directProjectedSamplerBudget,
+    importedObjectId,
+    layers,
+    previewProjectedLayers,
+  ]);
   const visibleUvLayers = useMemo(
     () =>
       layers
@@ -1242,10 +961,6 @@ function ImportedModel({
   );
 
   useFrame(() => {
-    const interaction = projectedPreviewInteractionRef.current;
-    const isInteracting =
-      interaction.pointerDown || performance.now() - interaction.lastMovedAt < 140;
-    projectedPreviewCompositorRef.current?.step(isInteracting ? 1.25 : 5, isInteracting ? 1 : 4);
     if (stableVisibleProjectedLayers.length === 0) {
       lastProjectedTransformRef.current = undefined;
       return;
@@ -1269,40 +984,13 @@ function ImportedModel({
     async function applyMaterials() {
       const selected = false;
       model.group.updateMatrixWorld(true);
-      const progressiveActiveInputs = activeProjectedPreviewInput
-        ? [activeProjectedPreviewInput]
-        : [];
-      const useProjectedTextureArrayMaterial =
-        useProjectedTextureArrays && !textureArrayCompositionFallbackRequired;
-      const materialProjectionInputs = progressiveProjectedPreviewReady
-        ? progressiveActiveInputs
-        : progressiveIncrementalPreviewReady
-          ? progressiveIncrementalInputs
-          : useProjectedTextureArrayMaterial
-            ? allProjectionInputs
-            : previewProjectionInputs;
-      const shouldAnnounceTextureArray = Boolean(
-        canPreviewProjectedLayers &&
-        useProjectedTextureArrayMaterial &&
-        projectedTextureArrayStructureSignature &&
-        lastProjectedTextureArrayNoticeRef.current !== projectedTextureArrayStructureSignature,
-      );
-      if (shouldAnnounceTextureArray) {
-        lastProjectedTextureArrayNoticeRef.current = projectedTextureArrayStructureSignature;
-        notifyProjectedTextureArrayPreparing(allProjectionInputs.length);
-      }
+      const materialProjectionInputs = previewProjectionInputs;
       const projectedLayerInput =
         canPreviewProjectedLayers && materialProjectionInputs.length > 0
           ? {
               layers: materialProjectionInputs,
               objectId: model.objectId,
               currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
-              ...(progressivePreviewBase
-                ? {
-                    baseTexture: progressivePreviewBase.colorTexture,
-                    baseRenderedColorMaskTexture: progressivePreviewBase.renderedColorMaskTexture,
-                  }
-                : {}),
               uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
               uvOverlaySaturation: directUvLayer
                 ? (directUvLayer.adjustments?.saturation ?? 0) / 100
@@ -1318,35 +1006,23 @@ function ImportedModel({
             }
           : undefined;
       const projectedPreviewOverBudget = Boolean(
-        canPreviewProjectedLayers &&
-        projectedPreviewNeedsComposition &&
-        !canUseProgressivePreviewBase,
+        canPreviewProjectedLayers && !projectedSamplerBudget.withinBudget,
       );
-      const progressiveBaseOnly =
-        canUseProgressivePreviewBase && materialProjectionInputs.length === 0;
       const previewStatus = {
         mode: projectedPreviewOverBudget
-          ? 'gpu-composing'
-          : useProjectedTextureArrayMaterial
-            ? 'texture-array'
-            : progressiveProjectedPreviewReady
-              ? 'gpu-composite'
-              : progressiveIncrementalPreviewReady
-                ? 'gpu-incremental'
-                : projectedLayerInput
-                  ? 'direct'
-                  : previewBakedTextureRecord
-                    ? 'exact-baked'
-                    : 'base',
+          ? 'sampler-blocked'
+          : projectedLayerInput
+            ? 'direct'
+            : previewBakedTextureRecord
+              ? 'exact-baked'
+              : 'base',
         ready: !projectedPreviewOverBudget,
         logicalLayerCount: previewProjectionInputs.length,
         processedLayerIds: projectedPreviewOverBudget
-          ? (progressiveProjectedPreview?.layerIds ?? [])
+          ? []
           : previewProjectionInputs.map((layer) => layer.layerId),
         missingLayerIds: projectedPreviewOverBudget
-          ? previewProjectionInputs
-              .map((layer) => layer.layerId)
-              .filter((layerId) => !progressiveProjectedPreview?.layerIds.includes(layerId))
+          ? previewProjectionInputs.map((layer) => layer.layerId)
           : [],
         samplerBudget: projectedSamplerBudget,
       };
@@ -1397,7 +1073,7 @@ function ImportedModel({
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
         if (projectedPreviewOverBudget) continue;
-        if ((loadedUvTexture || liveTopUvTexture || progressiveBaseOnly) && !projectedLayerInput) {
+        if ((loadedUvTexture || liveTopUvTexture) && !projectedLayerInput) {
           const uvMaterialInput = {
             displayMode,
             selected,
@@ -1430,12 +1106,6 @@ function ImportedModel({
             previewLighting,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
             ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
-            ...(progressiveBaseOnly && progressivePreviewBase
-              ? {
-                  baseTexture: progressivePreviewBase.colorTexture,
-                  baseRenderedColorMaskTexture: progressivePreviewBase.renderedColorMaskTexture,
-                }
-              : {}),
           };
           if (updateUvOverlayPreviewMaterial(previousMaterial, uvMaterialInput)) continue;
           child.material = createUvOverlayPreviewMaterial(uvMaterialInput);
@@ -1484,29 +1154,13 @@ function ImportedModel({
             ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
             ...topUvProjectedOverlayInput,
           };
-          try {
-            sharedProjectedMaterial = await createProjectedLayerStackMaterial(
-              projectedMaterialInput,
-              {
-                maxTextureImageUnits: gl.capabilities.maxTextures,
-                renderer: gl,
-                isCancelled: () => cancelled,
-              },
-            );
-          } catch (error) {
-            if (!useProjectedTextureArrayMaterial || cancelled) throw error;
-            console.warn(
-              '[Liclick 3D Texture] Projected texture arrays are unavailable; switching the complete visible stack to a bounded fallback.',
-              error,
-            );
-            useToastStore
-              .getState()
-              .dismissToastByDedupeKey(PROJECTED_TEXTURE_ARRAY_TOAST_KEY);
-            setFailedProjectedTextureArraySignature(
-              projectedTextureArrayStructureSignature,
-            );
-            return;
-          }
+          sharedProjectedMaterial = await createProjectedLayerStackMaterial(
+            projectedMaterialInput,
+            {
+              maxTextureImageUnits: gl.capabilities.maxTextures,
+              isCancelled: () => cancelled,
+            },
+          );
         }
         const projectedMaterial = projectedLayerInput ? sharedProjectedMaterial : undefined;
         if (cancelled) {
@@ -1527,9 +1181,6 @@ function ImportedModel({
       useToastStore
         .getState()
         .dismissToastByDedupeKey(PROJECTED_PREVIEW_FAILURE_TOAST_KEY);
-      if (shouldAnnounceTextureArray && !cancelled) {
-        notifyProjectedTextureArrayReady(allProjectionInputs.length);
-      }
       if (lastProjectedTransformRef.current) {
         lastProjectedTransformRef.current.copy(model.group.matrixWorld);
       } else {
@@ -1553,7 +1204,6 @@ function ImportedModel({
     canPreviewProjectedLayers,
     displayMode,
     directUvLayer,
-    allProjectionInputs,
     gl,
     importedModel,
     loadedBakedTexture,
@@ -1566,18 +1216,7 @@ function ImportedModel({
     previewBakedTextureRecord,
     previewProjectionInputs,
     previewProjectedLayerSignature,
-    progressiveProjectedPreview,
-    progressiveProjectedPreviewReady,
-    progressiveIncrementalInputs,
-    progressiveIncrementalPreviewReady,
-    canUseProgressivePreviewBase,
-    progressivePreviewBase,
     projectedSamplerBudget,
-    projectedPreviewNeedsComposition,
-    projectedTextureArrayStructureSignature,
-    textureArrayCompositionFallbackRequired,
-    useProjectedTextureArrays,
-    activeProjectedPreviewInput,
     stablePreviewProjectedLayers,
     topUvProjectedOverlayInput,
     visibleStackHasBakedPreview,

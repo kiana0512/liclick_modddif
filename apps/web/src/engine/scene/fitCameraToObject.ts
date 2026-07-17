@@ -7,7 +7,14 @@ export function fitCameraToBoundingBox(runtime: ViewportRuntime, boundingBox: Mo
   const center = new THREE.Vector3().fromArray(boundingBox.center);
   const radius = Math.max(getMaxDimension(boundingBox), 1);
 
-  runtime.camera.position.set(center.x + radius * 1.15, center.y + radius * 0.82, center.z + radius * 1.45);
+  // A fit operation starts a fresh, predictable viewport view. Do not carry a
+  // rolled/upside-down orbit basis from another object or workspace mode.
+  runtime.camera.up.set(0, 1, 0);
+  runtime.camera.position.set(
+    center.x + radius * 1.15,
+    center.y + radius * 0.82,
+    center.z + radius * 1.45,
+  );
   runtime.camera.lookAt(center);
 
   if (runtime.camera instanceof THREE.PerspectiveCamera) {

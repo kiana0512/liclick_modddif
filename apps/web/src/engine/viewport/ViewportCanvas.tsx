@@ -937,6 +937,8 @@ type LocalRepaintCompositeState = {
   maskContext: CanvasRenderingContext2D;
   scratchCanvas: HTMLCanvasElement;
   scratchContext: CanvasRenderingContext2D;
+  allowedMaskCanvas: HTMLCanvasElement;
+  allowedMaskAlpha: Uint8ClampedArray;
   worldToSourceClip: THREE.Matrix4;
   restoredMaskUrl?: string;
 };
@@ -1178,6 +1180,7 @@ function createLocalRepaintSourceKey(source: LocalRepaintProjectionSource, objec
     source.objectId ?? objectId,
     source.targetLayerId ?? '',
     source.imageUrl,
+    source.allowedMaskUrl,
   ].join('|');
 }
 
@@ -1214,6 +1217,7 @@ function createLocalRepaintComposite(
   layerId: string,
   width: number,
   height: number,
+  allowedMaskImage: CanvasImageSource,
 ): LocalRepaintCompositeState | undefined {
   const maskCanvas = document.createElement('canvas');
   maskCanvas.width = width;
@@ -1224,6 +1228,32 @@ function createLocalRepaintComposite(
   scratchCanvas.height = height;
   const scratchContext = scratchCanvas.getContext('2d');
   if (!maskContext || !scratchContext) return undefined;
+  const allowedMaskCanvas = document.createElement('canvas');
+  allowedMaskCanvas.width = width;
+  allowedMaskCanvas.height = height;
+  const allowedMaskContext = allowedMaskCanvas.getContext('2d', { willReadFrequently: true });
+  if (!allowedMaskContext) return undefined;
+  allowedMaskContext.drawImage(allowedMaskImage, 0, 0, width, height);
+  const allowedMaskImageData = allowedMaskContext.getImageData(0, 0, width, height);
+  const allowedMaskAlpha = new Uint8ClampedArray(width * height);
+  for (let pixelIndex = 0; pixelIndex < allowedMaskAlpha.length; pixelIndex += 1) {
+    const offset = pixelIndex * 4;
+    // Serialized selection masks use opaque black outside and white inside.
+    // Convert luminance to alpha once when apply mode opens; pointer moves only
+    // perform constant-time array lookups and dirty-rectangle canvas composites.
+    const luminance = Math.max(
+      allowedMaskImageData.data[offset],
+      allowedMaskImageData.data[offset + 1],
+      allowedMaskImageData.data[offset + 2],
+    );
+    const alpha = Math.round((luminance * allowedMaskImageData.data[offset + 3]) / 255);
+    allowedMaskAlpha[pixelIndex] = alpha;
+    allowedMaskImageData.data[offset] = 255;
+    allowedMaskImageData.data[offset + 1] = 255;
+    allowedMaskImageData.data[offset + 2] = 255;
+    allowedMaskImageData.data[offset + 3] = alpha;
+  }
+  allowedMaskContext.putImageData(allowedMaskImageData, 0, 0);
   const maskUrl = registerLiveProjectedCanvasTexture(layerId, maskCanvas, THREE.NoColorSpace);
   const maskTexture = getLiveProjectedCanvasTexture(maskUrl, THREE.NoColorSpace);
   if (!maskTexture) return undefined;
@@ -1236,6 +1266,8 @@ function createLocalRepaintComposite(
     maskContext,
     scratchCanvas,
     scratchContext,
+    allowedMaskCanvas,
+    allowedMaskAlpha,
     worldToSourceClip: new THREE.Matrix4(),
   };
 }
@@ -1342,6 +1374,23 @@ function mergeLocalRepaintScratchPatch(
   const bottom = Math.min(composite.maskCanvas.height, Math.ceil(dirtyRect.y + dirtyRect.height));
   const width = Math.max(1, right - x);
   const height = Math.max(1, bottom - y);
+
+  // Button 1 is the hard permission boundary for button 3. Clip the soft brush
+  // in its small dirty rectangle before it reaches the live projection mask.
+  composite.scratchContext.save();
+  composite.scratchContext.globalCompositeOperation = 'destination-in';
+  composite.scratchContext.drawImage(
+    composite.allowedMaskCanvas,
+    x,
+    y,
+    width,
+    height,
+    x,
+    y,
+    width,
+    height,
+  );
+  composite.scratchContext.restore();
 
   composite.maskContext.save();
   composite.maskContext.globalCompositeOperation = 'lighten';
@@ -1535,6 +1584,10 @@ function SurfacePaintOverlay() {
   const maskHasContentRef = useRef(false);
   const paintMaskCommitRevisionRef = useRef(0);
   const localRepaintSourceImageRef = useRef<{
+    url: string;
+    image: HTMLImageElement;
+  }>();
+  const localRepaintAllowedMaskImageRef = useRef<{
     url: string;
     image: HTMLImageElement;
   }>();
@@ -1925,6 +1978,7 @@ function SurfacePaintOverlay() {
     useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     const source = localRepaintProjectionSource;
     localRepaintSourceImageRef.current = undefined;
+    localRepaintAllowedMaskImageRef.current = undefined;
     localRepaintCompositeRef.current = undefined;
     setLocalRepaintAssetsRevision(0);
     if (!source) {
@@ -1968,8 +2022,8 @@ function SurfacePaintOverlay() {
     }
 
     let cancelled = false;
-    void loadImageElement(source.imageUrl)
-      .then((sourceImage) => {
+    void Promise.all([loadImageElement(source.imageUrl), loadImageElement(source.allowedMaskUrl)])
+      .then(([sourceImage, allowedMaskImage]) => {
         if (cancelled) return;
         // The image has already been decoded for source-alpha checks. Seed the
         // projected material cache with it so the first brush stroke does not
@@ -1978,6 +2032,10 @@ function SurfacePaintOverlay() {
         localRepaintSourceImageRef.current = {
           url: source.imageUrl,
           image: sourceImage,
+        };
+        localRepaintAllowedMaskImageRef.current = {
+          url: source.allowedMaskUrl,
+          image: allowedMaskImage,
         };
         localRepaintCompositeRef.current = undefined;
         setLocalRepaintAssetsRevision((revision) => revision + 1);
@@ -1988,6 +2046,7 @@ function SurfacePaintOverlay() {
           error,
         );
         localRepaintSourceImageRef.current = undefined;
+        localRepaintAllowedMaskImageRef.current = undefined;
         localRepaintCompositeRef.current = undefined;
       });
     return () => {
@@ -2419,7 +2478,8 @@ function SurfacePaintOverlay() {
     (model: SurfacePaintTarget, sourceOverride?: LocalRepaintProjectionSource) => {
       const localRepaintSource = sourceOverride ?? localRepaintProjectionSource;
       const sourceImage = localRepaintSourceImageRef.current?.image;
-      if (!localRepaintSource || !sourceImage) return undefined;
+      const allowedMaskImage = localRepaintAllowedMaskImageRef.current?.image;
+      if (!localRepaintSource || !sourceImage || !allowedMaskImage) return undefined;
       const sourceWidth = sourceImage.naturalWidth || sourceImage.width;
       const sourceHeight = sourceImage.naturalHeight || sourceImage.height;
       if (sourceWidth <= 0 || sourceHeight <= 0) return undefined;
@@ -2457,7 +2517,13 @@ function SurfacePaintOverlay() {
         composite.maskCanvas.width !== width ||
         composite.maskCanvas.height !== height
       ) {
-        composite = createLocalRepaintComposite(sourceKey, layerId, width, height);
+        composite = createLocalRepaintComposite(
+          sourceKey,
+          layerId,
+          width,
+          height,
+          allowedMaskImage,
+        );
         localRepaintCompositeRef.current = composite;
         const savedMaskUrl = existingLayer?.maskUrl;
         if (composite && savedMaskUrl && savedMaskUrl !== composite.maskUrl) {
@@ -2477,6 +2543,8 @@ function SurfacePaintOverlay() {
               composite.maskCanvas.width,
               composite.maskCanvas.height,
             );
+            composite.maskContext.globalCompositeOperation = 'destination-in';
+            composite.maskContext.drawImage(composite.allowedMaskCanvas, 0, 0);
             composite.maskContext.restore();
             markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
           };
@@ -2570,7 +2638,20 @@ function SurfacePaintOverlay() {
   ]);
 
   const hasLocalRepaintSourceContent = useCallback(
-    (_screenUv: THREE.Vector2) => Boolean(localRepaintSourceImageRef.current),
+    (screenUv: THREE.Vector2, composite: LocalRepaintCompositeState) => {
+      if (!localRepaintSourceImageRef.current) return false;
+      const x = THREE.MathUtils.clamp(
+        Math.floor(screenUv.x * composite.maskCanvas.width),
+        0,
+        composite.maskCanvas.width - 1,
+      );
+      const y = THREE.MathUtils.clamp(
+        Math.floor(screenUv.y * composite.maskCanvas.height),
+        0,
+        composite.maskCanvas.height - 1,
+      );
+      return (composite.allowedMaskAlpha[y * composite.maskCanvas.width + x] ?? 0) > 0;
+    },
     [],
   );
 
@@ -2767,7 +2848,7 @@ function SurfacePaintOverlay() {
           !localRepaintSourceImageRef.current ||
           !composite ||
           !localRepaintUv ||
-          !hasLocalRepaintSourceContent(localRepaintUv)
+          !hasLocalRepaintSourceContent(localRepaintUv, composite)
         ) {
           lastUvRef.current = undefined;
           lastSampleRef.current = undefined;
@@ -3046,9 +3127,9 @@ function SurfacePaintOverlay() {
           transientLayers: [transientLayer],
           resolution: bakeResolution,
           enableBackfaceCulling: true,
-          // Fill small uncovered texels inside UV islands and pad their edges
-          // using the GPU postprocess. skipCpuPostprocess keeps this off the
-          // blocking full-canvas CPU seam path.
+          // One GPU-only padding pass keeps bilinear sampling away from transparent
+          // UV-island borders. Constraining it back to interior holes removes the
+          // border padding and exposes triangle/UV seams on the model.
           enableDilation: true,
           dilationPixels: 1,
           outputAlpha: 'transparent',
@@ -3062,7 +3143,14 @@ function SurfacePaintOverlay() {
           strictDepthCheck: false,
           maximumDepthError: 0.12,
           minimumOutputCoverage: 0.025,
-          constrainDilationToInteriorHoles: true,
+          // Only well-established texels may seed the one-pixel UV padding.
+          // This keeps seam protection without turning low-alpha 8-bit color
+          // quantization into the pastel/rainbow fringe seen on the model.
+          minimumDilationSourceAlpha: 0.15,
+          // Padding still carries the correct neighbouring color, but fades into
+          // the underlying UV texture instead of forming an opaque sticker ring.
+          dilationOpacityScale: 0.22,
+          constrainDilationToInteriorHoles: false,
           skipGpuValidation: true,
           minimumCoverageRatio: 0,
           commitToProject: false,
@@ -3180,7 +3268,9 @@ function SurfacePaintOverlay() {
           generationId: source.generationId,
           captureId: source.captureId,
           replacementTargetLayerId: source.targetLayerId,
-          renderedColor: true,
+          // The live projected source is display color, but the persistent UV
+          // result must participate in the same PBR lighting as its target texture.
+          renderedColor: false,
           visible: true,
           opacity: 1,
           strength: 1,
@@ -3746,6 +3836,9 @@ function SurfacePaintOverlay() {
       updateCursorFromHit(result);
       if (isLocalRepaintApplyMode) {
         const source = resolveLocalRepaintStrokeSource();
+        const composite = source
+          ? ensureLiveLocalRepaintComposite(result.model, source)
+          : undefined;
         const projectedUv = source
           ? projectWorldPointToLocalRepaintUv(
               result.hit.point,
@@ -3757,7 +3850,8 @@ function SurfacePaintOverlay() {
               localRepaintProjectionScratch.projectedUv,
             )
           : undefined;
-        if (!projectedUv || !hasLocalRepaintSourceContent(projectedUv)) return;
+        if (!projectedUv || !composite || !hasLocalRepaintSourceContent(projectedUv, composite))
+          return;
       }
       isPaintingRef.current = true;
       pendingPaintTargetsRef.current = [];
@@ -3852,6 +3946,7 @@ function SurfacePaintOverlay() {
     commitPaintStroke,
     commitStrokeHistory,
     enabled,
+    ensureLiveLocalRepaintComposite,
     gl,
     hasLocalRepaintSourceContent,
     isInpaintMode,

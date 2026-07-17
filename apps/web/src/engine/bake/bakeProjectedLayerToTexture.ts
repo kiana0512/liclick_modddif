@@ -1024,6 +1024,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         strictDepthCheck: input.strictDepthCheck,
         maximumDepthError: input.maximumDepthError,
         minimumOutputCoverage: input.minimumOutputCoverage,
+        minimumDilationSourceAlpha: input.minimumDilationSourceAlpha,
+        dilationOpacityScale: input.dilationOpacityScale,
         constrainDilationToInteriorHoles: input.constrainDilationToInteriorHoles,
         onProgress: (progress) =>
           input.onProgress?.({

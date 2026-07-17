@@ -108,6 +108,8 @@ corepack pnpm db:push
 - Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. The old frontend mock generation service has been removed; the mock project gallery remains only as an offline homepage fallback.
 - Liclick image generation and Texture Map generation keep separate prompts. Liclick image generation can be stopped from the Generate panel so the UI does not stay locked until the remote task finishes.
 - Local repaint opens a focused current-view repair dialog. The brush is continuous, clipped to the visible model silhouette, and submits image + mask through the same authenticated Atlas/Liclick gateway used by normal generation.
+- Local repaint apply keeps the original selection mask as a hard permission boundary: button 3 cannot paint or merge outside the area authored with button 1. The interactive mask is prepared once at low resolution and subsequent strokes clip only their dirty rectangles.
+- Local repaint UV commits stay on the responsive 512 px GPU path. A single UV-island padding pass rejects weak quantized color seeds and writes a feathered overlay edge, preventing rainbow fringes and sticker-like borders without enabling the blocking full-canvas CPU seam reconciliation path. Persistent UV repaint layers use normal material lighting instead of a flat captured-color veil.
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.
 - Projected preview now separates loose coverage from strict quality, rejects out-of-frustum, backface, masked, and approximate depth-failed fragments, and falls back to the model/base material for uncovered fragments instead of showing black or white artifacts.
 - Layer visibility, blend/overlay mode, opacity, projection strength, delete, and go-to-camera work for projected layer preview.
@@ -117,7 +119,7 @@ corepack pnpm db:push
 - Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
 - Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
 - Project thumbnails are captured from the real WebGL viewport and shown on the Projects page when saved. Grid lines and paint/helper overlays are hidden during capture so the card shows the textured model, not the editor background.
-- Export now supports Scene GLB / OBJ / STL, selected Object GLB / OBJ / STL, baked BaseColor PNG, normal-map PNG when the model provides one, viewport PNG snapshot, and 5 second WebM turntable recording.
+- Export now supports Scene GLB / OBJ / STL, selected Object GLB / OBJ / STL, baked BaseColor PNG, normal-map PNG when the model provides one, viewport PNG snapshot, and 5 second WebM turntable recording. Runtime local-repaint canvases are encoded directly during model/BaseColor export instead of being fetched as network URLs.
 - Paint, Eraser, Quick Mask, Segments, Multiview, Normal generation, and DCC connectors are either disabled with a tooltip or shown as mode-specific coming-soon panels. Repeated coming-soon toast noise is deduped.
 
 ## Phase 2 Workflow
@@ -191,10 +193,11 @@ Test flow:
 - File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
 - UV bake supports one object, one UV channel, and basecolor only.
 - UV bake uses the same frustum/mask/depth/backface visibility gates as projected preview, with grayscale depth as an MVP approximation.
+- Local repaint UV merge layers use a deliberately responsive 512 px interactive bake. Existing merge layers keep their already-baked pixels; after changing seam or mask behavior, remove the old merge layer and create a new stroke to evaluate the updated result.
 - 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, browser PNG encoding, workspace persistence, the low-resolution CPU coverage validation pass, and same-resolution CPU fallback on unsupported hardware.
 - Segments ColorID, MP4, and portable project package zip are still coming soon.
 
-See `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for desktop release notes, `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md` for the broad release audit, and `docs/34_PHOTOSHOP_LIVE_LINK_AND_DATA_AUDIT_2026-07-17.md` for the Photoshop integration and local-data boundary.
+See `docs/38_RELEASE_AUDIT_2026-07-17_BUILD_1603.md` for the latest installer audit, `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for accumulated desktop release notes, `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md` for the broad release audit, and `docs/34_PHOTOSHOP_LIVE_LINK_AND_DATA_AUDIT_2026-07-17.md` for the Photoshop integration and local-data boundary.
 
 ## Development Rules
 

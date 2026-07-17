@@ -94,6 +94,10 @@ export interface BakeVisibleProjectedLayersInput {
   maximumDepthError?: number;
   /** Reject weak projected fragments before they can seed dilation. */
   minimumOutputCoverage?: number;
+  /** Ignore weak, quantized edge texels when selecting colors for GPU dilation. */
+  minimumDilationSourceAlpha?: number;
+  /** Scale alpha written by newly dilated texels; lower values create a soft overlay edge. */
+  dilationOpacityScale?: number;
   /** Keep dilation only where it closes an interior pinhole or narrow crack. */
   constrainDilationToInteriorHoles?: boolean;
   debugIgnoreMask?: boolean;

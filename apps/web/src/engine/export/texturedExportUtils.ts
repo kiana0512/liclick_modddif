@@ -13,6 +13,7 @@ import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { saveBlobAsset, saveDataUrlAsset } from '@/services/workspaceApiClient';
+import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import type { BakedTexture, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { BakeProjectedLayerResult } from '@/engine/bake/uvBakeTypes';
 import type { ModelExportInput } from './exportTypes';
@@ -48,7 +49,9 @@ function getTexturedExportObjectId(input: ModelExportInput) {
     : input.importedModel.objectId;
 }
 
-async function blobFromUrl(url: string) {
+export async function blobFromImageAssetUrl(url: string) {
+  const liveCanvas = getLiveProjectedCanvasState(url)?.canvas;
+  if (liveCanvas) return encodeCanvasPng(liveCanvas);
   const response = await fetch(resolveImageAssetUrl(url));
   if (!response.ok) throw new Error(`Could not read baked texture: ${response.statusText}`);
   return response.blob();
@@ -114,7 +117,7 @@ function findVisibleUvLayers(objectId: string) {
 
 async function composeUvLayersOverBase(baseBlob: Blob | undefined, uvLayers: ReturnType<typeof findVisibleUvLayers>) {
   if (!baseBlob && uvLayers.length === 0) return undefined;
-  const layerBlobs = await Promise.all(uvLayers.map((layer) => blobFromUrl(layer.imageUrl)));
+  const layerBlobs = await Promise.all(uvLayers.map((layer) => blobFromImageAssetUrl(layer.imageUrl)));
   const probeBlob = baseBlob ?? layerBlobs[0];
   if (!probeBlob) return undefined;
   const probeBitmap = await createImageBitmap(probeBlob);
@@ -340,7 +343,9 @@ export async function prepareTexturedModelExport(
   const uvLayers = findVisibleUvLayers(objectId);
   if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 
-  const textureBaseBlob = bakedTexture?.imageUrl ? await blobFromUrl(bakedTexture.imageUrl) : undefined;
+  const textureBaseBlob = bakedTexture?.imageUrl
+    ? await blobFromImageAssetUrl(bakedTexture.imageUrl)
+    : undefined;
   const textureBlob = await composeUvLayersOverBase(textureBaseBlob, uvLayers);
   if (!textureBlob) return { root };
   const textureUrl = URL.createObjectURL(textureBlob);

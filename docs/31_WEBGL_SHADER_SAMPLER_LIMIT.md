@@ -1,6 +1,6 @@
 # WebGL Shader Sampler Limit Incident
 
-Updated: 2026-07-08
+Updated: 2026-07-17
 
 This document explains the projected-layer WebGL failure observed during local repaint testing, why it happens, why the app cannot simply increase the limit, and what the correct engineering direction should be.
 
@@ -14,7 +14,9 @@ FRAGMENT shader texture image units count exceeds MAX_TEXTURE_IMAGE_UNITS(16)
 
 This means the generated fragment shader declared more `sampler2D` textures than the current WebGL device/browser allows in one fragment shader program. The visible symptom looked like a broken render or WebGL crash, but the immediate trigger was shader validation failure before the shader could be used.
 
-The app briefly tested a "texture budget" workaround that dropped extra projected layers from live preview before shader creation. That avoided the validation failure, but it was product-wrong because visible projected layers silently disappeared. That budget cap has been removed. The app now keeps visible projected layers in the live stack; hidden layers are filtered out because that matches layer UI semantics.
+The retired implementation also tried a tiled UV-space "fast composition" fallback. It was not safe for general FBX/OBJ/GLTF content because submeshes and mirrored parts can share or overlap UV space. The fallback could therefore produce black diagnostic stripes, white untextured surfaces, or projections written onto the wrong part of the model even though the ordinary screen-space projection was correct.
+
+That fallback has now been deleted. The shipped rule is deliberately strict: only the ordinary, exact projected material is allowed. Before a layer eye is opened, the app calculates the actual sampler cost of all visible projected images, masks, depth maps, and the UV overlay. If the next state exceeds `MAX_TEXTURE_IMAGE_UNITS`, the eye remains closed and the user is told to close another projected layer or merge the visible projections into a UV layer first.
 
 ## Why It Fails
 
@@ -87,20 +89,19 @@ When validation fails:
 - Three.js may continue rendering the scene, but affected meshes have no valid material program.
 - The user sees the model disappear, turn black, or recover only after deleting the offending layer/material path.
 
-## Current State After The Fix Pass
+## Current Shipped Behavior
 
 Current app behavior:
 
-- App-side hard 16-texture preview clipping was removed.
-- Visible projected layers are no longer silently dropped.
-- Hidden layers are filtered before material creation, so closing a layer eye removes it from live preview.
-- Local repaint button 3 keeps one live local repaint projected mask layer per source instead of creating many projected layers.
-- Local repaint brush mask updates in memory during stroke and encodes once on commit/save.
-- The known WebGL sampler overflow remains a real architectural risk when too many visible projected layers are live at once.
+- The ordinary projected material remains the visual source of truth.
+- A visibility guard runs before `toggleLayer`, multi-layer visibility changes, visibility drag, and keyboard visibility toggles commit state.
+- A newly generated projected layer is added with its eye closed when opening it would exceed the device budget.
+- When blocked, the existing correct material remains unchanged; no partial layer set and no UV-flattened approximation is applied.
+- The warning reports required/available texture units and explicitly asks the user to close a projected layer or merge visible projections into a UV layer.
+- Closing an existing projected layer immediately frees its image/mask/depth sampler cost, after which another eye can be opened.
+- Legacy projects that already contain an over-budget visible stack are not silently rewritten. Rendering keeps the last valid material and shows the same corrective warning.
 
-This is intentional for now: keeping layer correctness is more important than hiding user-visible layers to avoid the limit.
-
-## Correct Long-Term Solutions
+## Possible Future Solutions (Not Shipped)
 
 ### 1. Batched Projected Preview Composition
 
@@ -129,7 +130,7 @@ Tradeoffs:
 - Needs careful invalidation when layer image, mask, depth, opacity, visibility, object transform, or camera metadata changes.
 - Needs good caching to avoid recompositing every pointer move.
 
-This is the preferred direction for live preview correctness.
+This remains a possible direction only after it can be proven visually equivalent on multi-mesh, overlapping-UV, mirrored-UV, masked, and depth-gated fixtures. It must not replace the current hard guard while it is approximate.
 
 ### 2. Projected Stack Cache / UV Bake Fast Path
 
@@ -146,7 +147,7 @@ Tradeoffs:
 - Bake output is UV-space, so it depends on the current UV bake quality and alignment.
 - Not ideal for local repaint while brushing because the user needs immediate old/new comparison and undoable live strokes.
 
-This remains useful for stable texture-map stacks, but local repaint live brushing still needs a responsive preview path.
+This remains useful only as an explicit user operation (for example, "merge visible projected layers to UV"), not as an invisible live-preview fallback.
 
 ### 3. Texture Atlas Or Packed Layer Inputs
 
@@ -183,34 +184,21 @@ Tradeoffs:
 
 This can be considered later, but it is not the safest immediate path.
 
-## Recommended Implementation Plan
+## Acceptance Gate For Any Replacement
 
-1. Add device capability telemetry.
-   - Log `MAX_TEXTURE_IMAGE_UNITS`, `MAX_COMBINED_TEXTURE_IMAGE_UNITS`, WebGL version, renderer, and vendor.
-   - Surface a developer-only warning when the projected stack is near or over the limit.
+Any future high-capacity replacement must pass all of these before it can be user-visible:
 
-2. Add a projected-preview composer service.
-   - Input: visible projected layers for an object.
-   - Output: one or a small fixed number of preview textures.
-   - Invalidate only when relevant layer/object/camera inputs change.
-
-3. Batch by actual sampler cost.
-   - Count `imageUrl`, `maskUrl`, `depthUrl`, plus fixed base/overlay requirements.
-   - Split visible layers into batches that fit the current device.
-   - Never drop a visible layer; defer it to the next batch.
-
-4. Keep local repaint live mask as a cheap dynamic input.
-   - During brushing, update only the live mask canvas/texture.
-   - Composite the affected local repaint source through the composer without recreating layers.
-
-5. Add a regression scenario.
-   - Synthetic scene with many visible projected layers.
-   - Assert no shader validation error.
-   - Assert all layer thumbnails/visibility toggles affect final output.
+1. Pixel-level comparison against the ordinary projected material for the same camera, lighting, opacity, strength, HSV adjustment, mask, depth gate, and layer order.
+2. Multi-mesh FBX fixtures with overlapping UV islands and reused 0-1 UV ranges.
+3. Mirrored UVs, missing UVs, multiple material groups, negative scales, and transformed child meshes.
+4. No black diagnostic stripes, white fallback surfaces, missing parts, or active-layer ordering differences.
+5. The existing eye-limit guard remains enabled until the replacement succeeds; failure must keep the last valid material rather than exposing a partial result.
 
 ## What Not To Do
 
 - Do not hard-code a fixed 16-layer or 16-sampler app budget that hides visible layers.
+- Do not flatten a general imported model into one shared UV preview texture.
+- Do not open an eye first and attempt recovery after WebGL shader validation fails.
 - Do not create a new projected layer per brush dab.
 - Do not encode PNG/data URLs during every pointer move.
 - Do not rely on WebGL context recovery to solve shader validation errors.
@@ -221,4 +209,3 @@ This can be considered later, but it is not the safest immediate path.
 Short version:
 
 The black render was caused by the live projected-layer shader asking WebGL for more texture samplers than the browser/GPU allows in one fragment shader. This limit is reported by WebGL and cannot be increased by app code. We should not fix it by hiding layers. The correct fix is to split visible projected layers into batches or precompose them into a cached preview texture, so every visible layer still contributes while each shader stays within the GPU limit.
-

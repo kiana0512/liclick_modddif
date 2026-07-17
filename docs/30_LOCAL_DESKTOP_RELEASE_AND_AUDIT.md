@@ -2,7 +2,7 @@
 
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
-Updated: 2026-07-15
+Updated: 2026-07-17
 
 The current comprehensive test and security report is `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md`. This file keeps the accumulated desktop/editor release history.
 
@@ -17,7 +17,7 @@ The Windows installer now starts a lightweight Electron desktop shell instead of
 - Electron runtime: copied from `node_modules/electron/dist` into `{app}\electron`
 - Installed app ports: backend `4617`, frontend `5673`
 - Development ports remain unchanged: backend `4517`, frontend `5173`
-- Current desktop shell build: `2026.07.15.1104`
+- Current desktop shell build: `2026.07.17.1452`
 
 The launcher now uses the same bundled Noto Sans SC family as the web workspace for consistent Chinese/English rendering. Its home view scales continuously between compact, short-wide, tall-narrow, and large windows; the former height breakpoint that caused layout jumps and unused bottom space has been removed. Only the native title-bar app icon remains, avoiding duplicated branding in the sidebar/content header.
 
@@ -53,6 +53,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
   - model files import as objects
   - image files import as reference images for the selected object
 - Multiple models can be imported into one project. The editor keeps one active model in texture mode, selected from the Objects panel.
+- Texture, normal, and segment workspaces now fit the camera directly to the selected model after refresh, model selection, or workspace entry. Scene/export mode still fits the complete scene. Each fresh fit resets the orbit up-axis, so an off-center scene placement or a previous pole-crossing rotation cannot leak into the single-model texture view.
 - Reference images and layers are scoped to the selected object. Older unscoped project data remains visible for compatibility.
 - Liclick image generation and Texture Map generation use separate prompts.
 - The obsolete image-generation mode switches were removed from the user avatar menu. Normal texture generation uses Liclick, while the defined local-repaint workflow uses the configured ComfyUI path.
@@ -95,7 +96,7 @@ The legacy CLI launcher still supports the old browser-opening behavior. Electro
 - Current object/layer snapshot persistence is debounced during rapid UI edits such as slider drags. Undo/redo remains immediate, while continuous adjustment no longer writes the full snapshot on every pointer movement.
 - Local repaint button 3 keeps a single live projected layer per repaint source and updates its mask canvas in place while brushing. It no longer spawns a new projected layer per dab.
 - Projected preview filters hidden layers before shader/material creation, so closing a layer eye actually removes that layer from the live projected stack.
-- App-side live-preview texture-budget clipping was removed. Visible projected layers are no longer silently dropped to satisfy a fixed budget; WebGL sampler overflow remains tracked as an architecture item for a batched/composited projected-preview path.
+- Projected-layer visibility now uses the device's reported WebGL sampler budget as a pre-commit guard. An over-budget eye stays closed and the user is asked to close another projection or merge the visible projections into a UV layer; no visible layer is silently dropped from an already accepted stack.
 
 ## Code Audit Summary
 
@@ -112,13 +113,14 @@ Low-risk cleanup completed in this pass:
 - Cached the paintable mesh list used by surface-paint raycasts so pointer movement no longer traverses the full model hierarchy every frame.
 - Switched surface-paint raycasts to a non-recursive flat mesh list and kept paint overlay meshes out of the raycast/material processing path.
 - Removed duplicate full-canvas mask alpha scans at stroke commit; inpaint add/subtract state now updates from the stroke history path.
-- Removed the old app-side live-preview layer cap from the projected stack path. The app now keeps visible layers in the live stack and documents WebGL sampler overflow as a separate rendering architecture problem.
+- Deleted the unsafe UV-space fast projected-preview compositor. Ordinary direct projection is the visual source of truth; over-budget visibility requests are rejected before shader creation so the last valid material remains intact.
 - Added `PerfScenarioLoader` for `100-models`, `100-layers`, and `100-layers-unbaked` browser runtime stress tests.
 - Improved `scripts/perf-audit.mjs` stress output with status-code/error aggregation and first-failure details.
 - Cleaned generated build and packaging output before release: `.codex-tmp`, `apps/web/dist`, `apps/server/dist`, and the old `dist-installer`.
 - Shared generation upsert/failure handling in `GeneratePanel` to reduce duplicated state writes.
 - Consolidated viewport drag payload detection so drag events scan file lists once.
 - Kept texture mode rendering focused on the currently selected imported model instead of rendering every imported model.
+- Replaced the old two-stage camera initialization that first framed the whole scene and then only translated toward the selected object. Single-model workspaces now recompute both target and distance from the selected model bounds, and restored camera requests rebuild controls from a deterministic world-up basis.
 - Kept generated layers, reference images, and new empty layers object-scoped.
 - Removed unused projection thumbnail renderer, UV bake stub, dead frontend mock generation service, unused mock layer/reference seed files, and the uncalled command registry/feature flag pair.
 - Updated docs for projected layer blend/overlay behavior, thumbnail capture, global bake gating, and current offline fallback boundaries.
@@ -137,6 +139,10 @@ Low-risk cleanup completed in this pass:
 - Updated Windows installer shortcuts to launch the Electron shell while keeping the command-line launcher as a support fallback.
 - Kept the existing Node launcher as the service engine and added `LICLICK_OPEN_BROWSER=0` plus `LICLICK_WINDOWS_HIDE=1` so the GUI shell can start services without opening a console or browser automatically.
 - Audited the local repaint full-frame path after the ROI alignment regression. The current path uploads the complete current-view frame and complete mask, then composites the full returned frame back into the protected source frame before baking a UV repair layer.
+- Audited the local repaint apply-mask boundary. Button 3 now loads the button-1 generation mask together with the returned image, converts the low-resolution mask to alpha once, rejects pointer starts outside it, clips every dirty brush rectangle before live projection, and clips restored masks before reuse. The pointer path performs no full-canvas readback.
+- Kept the local repaint UV commit on the 512 px GPU-only path. One unconstrained padding pass supplies texture border pixels for UV-island bilinear sampling; weak low-alpha texels cannot seed padding, and new padding uses premultiplied feathered alpha so it cannot become a rainbow fringe or opaque sticker outline. CPU seam reconciliation and multi-pixel dilation remain disabled to avoid interaction stalls and cross-island color streaks.
+- Persistent local repaint UV layers now participate in the normal material-lighting path. The transient projected preview remains captured display color, while the committed UV layer no longer renders as a pale flat veil.
+- Model and BaseColor export now recognize live local-repaint canvas URLs and encode their canvas directly as PNG. Export no longer calls `fetch` on the runtime-only `liclick-live-projected-canvas:` scheme, which previously surfaced as `Failed to fetch` when the repaint merge layer was visible.
 - Audited the projected-layer image editor path after preview-angle regressions. The current mapped preview no longer hides other visible texture layers, no longer lets OrbitControls reinterpret the saved camera, and captures from the layer's transformed projector MVP rather than the user's incidental current viewport.
 - Fixed a projected-layer image editor commit leak where mapped-preview refreshes could temporarily write edited pixels into the global layer store and be mirrored into project state before `Apply edit`. Preview captures are now serialized, suppressed from project sync, and restored with the previous active layer.
 - Cleaned the image editor default state so new sessions select the top edit layer instead of the locked/base image layer, matching Photoshop's expected "paint on the active editable layer" behavior.
@@ -258,4 +264,4 @@ The 2026-06-26 browser runtime stress pass reached:
 - Legacy unscoped references/layers remain visible for compatibility. New project data should always write `objectId`.
 - Large Vite chunk warnings are currently known and non-blocking, but code splitting should be considered after the texture workflow stabilizes.
 - Local repaint transition quality is still an active product tuning area. Do not replace the full-frame mapping path with ROI scaling/cropping; any future transition work should preserve full-frame coordinate alignment first.
-- Projected-layer live preview can still exceed WebGL fragment sampler limits when many visible image/mask/depth projected layers are active at once. The detailed incident note and preferred batched/composited solution are documented in `docs/31_WEBGL_SHADER_SAMPLER_LIMIT.md`.
+- Projected-layer live preview cannot open another eye when its image/mask/depth sampler cost would exceed the device limit. The warning directs the user to close a projected layer or merge the visible stack to UV; the rationale and future acceptance gate are documented in `docs/31_WEBGL_SHADER_SAMPLER_LIMIT.md`.
