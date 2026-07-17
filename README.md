@@ -35,10 +35,10 @@ The Windows desktop build uses a lightweight Electron launcher. It starts the lo
 corepack pnpm package:windows
 ```
 
-The installer output is:
+The installer output includes the desktop Shell Build identifier:
 
 ```text
-dist-installer/Liclick 3D Texture Setup.exe
+dist-installer/Liclick 3D Texture Setup YYYY.MM.DD.HHmm.exe
 ```
 
 Installed builds use dedicated ports so they can run beside development:

@@ -42,16 +42,13 @@ export async function handlePhotoshopRoute(
         sendJson(response, 400, { error: '项目、图层和图层类型不能为空。' });
         return true;
       }
-      sendJson(
-        response,
-        201,
-        await photoshopBridge.createSession({
-          projectId: body.projectId,
-          layerId: body.layerId,
-          layerName: body.layerName,
-          layerType: body.layerType as 'projected' | 'uv',
-        }),
-      );
+      const session = await photoshopBridge.createSession({
+        projectId: body.projectId,
+        layerId: body.layerId,
+        layerName: body.layerName,
+        layerType: body.layerType as 'projected' | 'uv',
+      });
+      sendJson(response, session.reused ? 200 : 201, session);
       return true;
     }
     const sessionId = segments[3];

@@ -145,11 +145,26 @@ function safeDocumentName(layerName: string, sessionId: string) {
   return `LIclick-${normalized || 'Texture'}-${sessionId.slice(0, 8)}.psd`;
 }
 
+type ReusablePhotoshopSession = {
+  session: PhotoshopSessionDocument;
+  hasWorkingDocument: boolean;
+  hasSource: boolean;
+  duplicates: PhotoshopSessionDocument[];
+};
+
+type PhotoshopSessionInput = {
+  projectId: string;
+  layerId: string;
+  layerName: string;
+  layerType: 'projected' | 'uv';
+};
+
 class PhotoshopBridgeService {
   private readonly sessions = new Map<string, PhotoshopSessionDocument>();
   private readonly sessionWrites = new Map<string, Promise<void>>();
   private readonly webClients = new Map<string, Set<WebSocket>>();
   private readonly openCommands = new Set<string>();
+  private sessionCreateQueue = Promise.resolve();
   private readonly wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   private pluginSocket?: WebSocket;
   private pluginInfo: PhotoshopPluginInfo = { connected: false };
@@ -266,14 +281,83 @@ class PhotoshopBridgeService {
     return { installation: selected, pluginConnected: this.pluginInfo.connected };
   }
 
-  async createSession(input: {
-    projectId: string;
-    layerId: string;
-    layerName: string;
-    layerType: 'projected' | 'uv';
-  }) {
+  private async findReusableSession(projectId: string, layerId: string): Promise<ReusablePhotoshopSession | undefined> {
+    const matches = [...this.sessions.values()].filter(
+      (session) => session.projectId === projectId && session.layerId === layerId,
+    );
+    const inspected = await Promise.all(
+      matches.map(async (session) => ({
+        session,
+        hasWorkingDocument: await isFile(session.workingDocumentPath),
+        hasSource: Boolean(session.sourcePath && (await isFile(session.sourcePath))),
+      })),
+    );
+    const ranked = inspected.sort((left, right) => {
+      if (left.hasWorkingDocument !== right.hasWorkingDocument) return left.hasWorkingDocument ? -1 : 1;
+      if (left.hasSource !== right.hasSource) return left.hasSource ? -1 : 1;
+      return (Date.parse(right.session.updatedAt) || 0) - (Date.parse(left.session.updatedAt) || 0);
+    });
+    const selected = ranked[0];
+    return selected
+      ? {
+          ...selected,
+          duplicates: ranked.slice(1).map((item) => item.session),
+        }
+      : undefined;
+  }
+
+  private async retireDuplicateSessions(sessions: PhotoshopSessionDocument[]) {
+    await Promise.all(
+      sessions.map(async (session) => {
+        if (session.status === 'closed') return;
+        if (this.pluginReady()) this.sendPlugin({ type: 'close-session', sessionId: session.id });
+        session.status = 'closed';
+        this.openCommands.delete(session.id);
+        await this.persistSession(session);
+        this.broadcastSession(session);
+      }),
+    );
+  }
+
+  async createSession(input: PhotoshopSessionInput) {
+    const previous = this.sessionCreateQueue;
+    let release!: () => void;
+    this.sessionCreateQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.createOrReuseSession(input);
+    } finally {
+      release();
+    }
+  }
+
+  private async createOrReuseSession(input: PhotoshopSessionInput) {
     await this.ensureInitialized();
     const settings = await getLocalSettings();
+    const projectId = input.projectId.slice(0, 200);
+    const layerId = input.layerId.slice(0, 200);
+    const reusable = await this.findReusableSession(projectId, layerId);
+    if (reusable) {
+      await this.retireDuplicateSessions(reusable.duplicates);
+      const session = reusable.session;
+      session.layerName = input.layerName.slice(0, 240);
+      session.layerType = input.layerType;
+      session.status = reusable.hasWorkingDocument ? 'waiting_for_plugin' : 'awaiting_source';
+      session.syncMode = settings.photoshop.syncMode;
+      session.liveSyncDelayMs = settings.photoshop.liveSyncDelayMs;
+      session.error = undefined;
+      session.updatedAt = now();
+      this.openCommands.delete(session.id);
+      await this.persistSession(session);
+      this.broadcastSession(session);
+      return {
+        ...publicPhotoshopSession(session),
+        reused: true,
+        sourceRequired: !reusable.hasWorkingDocument,
+      };
+    }
     const id = crypto.randomUUID();
     const token = crypto.randomBytes(24).toString('base64url');
     const directory = path.join(sessionRoot, id);
@@ -284,8 +368,8 @@ class PhotoshopBridgeService {
       protocolVersion: PHOTOSHOP_BRIDGE_PROTOCOL_VERSION,
       id,
       token,
-      projectId: input.projectId.slice(0, 200),
-      layerId: input.layerId.slice(0, 200),
+      projectId,
+      layerId,
       layerName: input.layerName.slice(0, 240),
       layerType: input.layerType,
       status: 'awaiting_source',
@@ -299,7 +383,11 @@ class PhotoshopBridgeService {
     };
     this.sessions.set(id, session);
     await this.persistSession(session);
-    return publicPhotoshopSession(session);
+    return {
+      ...publicPhotoshopSession(session),
+      reused: false,
+      sourceRequired: true,
+    };
   }
 
   async uploadSource(sessionId: string, token: string, mime: string, buffer: Buffer) {
@@ -322,7 +410,9 @@ class PhotoshopBridgeService {
 
   async openSession(sessionId: string, token: string) {
     const session = await this.requireSession(sessionId, token);
-    if (!session.sourcePath || !(await isFile(session.sourcePath))) throw new Error('Photoshop 会话源图像尚未上传。');
+    const hasSource = Boolean(session.sourcePath && (await isFile(session.sourcePath)));
+    const hasWorkingDocument = await isFile(session.workingDocumentPath);
+    if (!hasSource && !hasWorkingDocument) throw new Error('Photoshop 会话源图像尚未上传。');
     session.status = this.pluginReady() ? 'opening' : 'launching';
     session.error = undefined;
     session.updatedAt = now();
@@ -421,7 +511,7 @@ class PhotoshopBridgeService {
   }
 
   private sendOpenSession(session: PhotoshopSessionDocument) {
-    if (!session.sourcePath || this.openCommands.has(session.id)) return;
+    if (this.openCommands.has(session.id)) return;
     this.openCommands.add(session.id);
     session.status = 'opening';
     session.updatedAt = now();
@@ -535,7 +625,12 @@ class PhotoshopBridgeService {
         liveSyncDelayMs: settings.photoshop.liveSyncDelayMs,
       });
       for (const session of this.sessions.values()) {
-        if (session.status !== 'closed' && session.sourcePath) this.sendOpenSession(session);
+        if (
+          session.status !== 'closed' &&
+          ((session.sourcePath && (await isFile(session.sourcePath))) || (await isFile(session.workingDocumentPath)))
+        ) {
+          this.sendOpenSession(session);
+        }
       }
       this.broadcastBridgeStatus();
       return;

@@ -63,10 +63,10 @@ The installer is built with:
 corepack pnpm package:windows
 ```
 
-The generated setup file is:
+The generated setup file includes the desktop Shell Build identifier:
 
 ```text
-dist-installer/Liclick 3D Texture Setup.exe
+dist-installer/Liclick 3D Texture Setup YYYY.MM.DD.HHmm.exe
 ```
 
 The desktop shortcut opens the Electron launcher. Its hidden managed service process:

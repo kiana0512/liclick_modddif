@@ -2418,13 +2418,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     setPhotoshopEditBusy(true);
     let createdSession: PhotoshopSession | undefined;
     try {
-      const registeredBlob = getRegisteredObjectUrlBlob(layer.imageUrl);
-      const sourceBlob: Blob =
-        registeredBlob ??
-        (await fetch(layer.imageUrl).then((response) => {
-          if (!response.ok) throw new Error(`无法读取图层图片（${response.status}）。`);
-          return response.blob();
-        }).then((blob) => blob));
       createdSession = await createPhotoshopSession({
         projectId: project.id,
         layerId: layer.id,
@@ -2433,16 +2426,28 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
       });
       photoshopEditLayerSnapshotRef.current = { ...layer };
       photoshopEditSessionRef.current = createdSession;
-      photoshopEditRevisionRef.current = 0;
+      photoshopEditRevisionRef.current = createdSession.latestRevision;
       holdPhotoshopPreviewProjectSync();
       setPhotoshopEditSession(createdSession);
       photoshopEditUnsubscribeRef.current = subscribePhotoshopSession(
         createdSession,
         receivePhotoshopSession,
       );
-      const uploaded = await uploadPhotoshopSessionSource(createdSession, sourceBlob);
-      receivePhotoshopSession(uploaded);
-      receivePhotoshopSession(await openPhotoshopSession(uploaded));
+      let sessionToOpen = createdSession;
+      if (createdSession.sourceRequired !== false) {
+        const registeredBlob = getRegisteredObjectUrlBlob(layer.imageUrl);
+        const sourceBlob: Blob =
+          registeredBlob ??
+          (await fetch(layer.imageUrl)
+            .then((response) => {
+              if (!response.ok) throw new Error(`无法读取图层图片（${response.status}）。`);
+              return response.blob();
+            })
+            .then((blob) => blob));
+        sessionToOpen = await uploadPhotoshopSessionSource(createdSession, sourceBlob);
+        receivePhotoshopSession(sessionToOpen);
+      }
+      receivePhotoshopSession(await openPhotoshopSession(sessionToOpen));
     } catch (error) {
       if (createdSession) void closePhotoshopSession(createdSession).catch(() => undefined);
       releasePhotoshopPreviewProjectSync();

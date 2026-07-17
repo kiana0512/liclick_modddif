@@ -36,6 +36,15 @@ async function waitForHealth(baseUrl) {
   throw new Error('Photoshop bridge smoke server did not become healthy.');
 }
 
+async function waitForCondition(predicate, message) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(message);
+}
+
 async function requestJson(url, init) {
   const response = await fetch(url, init);
   const payload = await response.json().catch(() => ({}));
@@ -121,7 +130,7 @@ try {
       const message = JSON.parse(String(raw));
       if (message.type !== 'open-session' || message.session.id !== session.id) return;
       openCommands += 1;
-      const filename = 'rev-smoke-000001.png';
+      const filename = `rev-smoke-${String(openCommands).padStart(6, '0')}.png`;
       await fs.writeFile(path.join(message.session.revisionsDirectory, filename), png);
       plugin.send(JSON.stringify({ type: 'session-status', sessionId: session.id, status: 'ready' }));
       plugin.send(JSON.stringify({ type: 'session-exported', sessionId: session.id, filename }));
@@ -165,6 +174,7 @@ try {
   ) {
     throw new Error(`Unexpected Photoshop bridge result: ${JSON.stringify(result)}`);
   }
+  await fs.writeFile(session.workingDocumentPath, Buffer.from('photoshop-smoke-psd'));
   await requestJson(`${baseUrl}/api/photoshop/sessions/${session.id}/close`, {
     method: 'POST',
     headers: {
@@ -173,7 +183,58 @@ try {
     },
     body: '{}',
   });
-  console.log(`Photoshop bridge smoke passed: ${JSON.stringify(result)}`);
+  const reusedSession = await requestJson(`${baseUrl}/api/photoshop/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      projectId: 'photoshop-smoke-project',
+      layerId: 'photoshop-smoke-layer',
+      layerName: 'Photoshop smoke layer renamed',
+      layerType: 'projected',
+    }),
+  });
+  if (
+    reusedSession.id !== session.id ||
+    reusedSession.token !== session.token ||
+    reusedSession.workingDocumentPath !== session.workingDocumentPath ||
+    reusedSession.reused !== true ||
+    reusedSession.sourceRequired !== false
+  ) {
+    throw new Error(`Photoshop layer session was not reused: ${JSON.stringify(reusedSession)}`);
+  }
+  await requestJson(`${baseUrl}/api/photoshop/sessions/${reusedSession.id}/open`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-liclick-session-token': reusedSession.token,
+    },
+    body: '{}',
+  });
+  await waitForCondition(() => openCommands === 2, 'Reused Photoshop PSD did not receive a second open command.');
+  const createOtherLayerSession = () =>
+    requestJson(`${baseUrl}/api/photoshop/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectId: 'photoshop-smoke-project',
+        layerId: 'photoshop-smoke-other-layer',
+        layerName: 'Photoshop smoke other layer',
+        layerType: 'uv',
+      }),
+    });
+  const [otherLayerSession, concurrentOtherLayerSession] = await Promise.all([
+    createOtherLayerSession(),
+    createOtherLayerSession(),
+  ]);
+  if (otherLayerSession.id === session.id || otherLayerSession.workingDocumentPath === session.workingDocumentPath) {
+    throw new Error('Different LI3D layers unexpectedly share one Photoshop PSD.');
+  }
+  if (concurrentOtherLayerSession.id !== otherLayerSession.id) {
+    throw new Error('Concurrent edit requests created duplicate Photoshop PSDs for one LI3D layer.');
+  }
+  console.log(
+    `Photoshop bridge smoke passed: ${JSON.stringify({ ...result, reusedSession: reusedSession.id, otherLayer: otherLayerSession.id })}`,
+  );
 } catch (error) {
   console.error(childLog.trim());
   throw error;
