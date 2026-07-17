@@ -1,0 +1,46 @@
+{
+  "manifestVersion": 5,
+  "id": "com.liclick.live-texture",
+  "name": "LIclick Live Texture",
+  "version": "1.0.0",
+  "main": "index.html",
+  "host": {
+    "app": "PS",
+    "minVersion": "23.0.0",
+    "data": {
+      "loadEvent": "startup"
+    }
+  },
+  "requiredPermissions": {
+    "network": {
+      "domains": [
+        "ws://127.0.0.1:4617",
+        "http://127.0.0.1:4617",
+        "ws://localhost:4617",
+        "http://localhost:4617"
+      ]
+    },
+    "localFileSystem": "fullAccess"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "liclickLiveTexturePanel",
+      "label": {
+        "default": "LIclick Live Texture"
+      },
+      "minimumSize": {
+        "width": 260,
+        "height": 220
+      },
+      "preferredDockedSize": {
+        "width": 300,
+        "height": 420
+      },
+      "preferredFloatingSize": {
+        "width": 340,
+        "height": 480
+      }
+    }
+  ]
+}

@@ -9,6 +9,8 @@ import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
 import { handleLiclickRoute } from './routes/liclick.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
+import { handlePhotoshopRoute } from './routes/photoshop.js';
+import { photoshopBridge } from './photoshop/photoshopBridgeService.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
@@ -25,7 +27,8 @@ const mimeTypes: Record<string, string> = {
   '.obj': 'text/plain',
 };
 
-const publicWorkspaceFilePattern = /^((?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports))\/(.+)$/;
+const publicWorkspaceFilePattern =
+  /^((?:(?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports)|photoshop-sessions\/[a-f0-9-]+\/revisions))\/(.+)$/i;
 
 function isWithinDirectory(root: string, candidate: string) {
   const relative = path.relative(root, candidate);
@@ -127,6 +130,7 @@ async function handleWorkspaceRequest(
   }
   if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/photoshop') && (await handlePhotoshopRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
   if (
     (url.pathname.startsWith('/api/liclick') || url.pathname === '/api/generate-image') &&
@@ -150,6 +154,8 @@ async function startServer() {
       sendJson(response, 500, { error: error instanceof Error ? error.message : 'Internal server error.' });
     }
   });
+
+  photoshopBridge.attach(server);
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code !== 'EADDRINUSE') {

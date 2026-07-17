@@ -12,6 +12,9 @@
 #ifndef AtlasSkillhubRegistry
 #define AtlasSkillhubRegistry "https://registry-cnpm.lilithgame.com/"
 #endif
+#ifndef MyShellBuild
+#define MyShellBuild "dev"
+#endif
 #define MyPublisher "Liclick"
 
 [Setup]
@@ -23,11 +26,11 @@ DefaultDirName={autopf}\Liclick 3D Texture
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 PrivilegesRequired=admin
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 SetupIconFile={#SourceRoot}\assets\liclick-icon.ico
 UninstallDisplayIcon={app}\assets\liclick-icon.ico
 OutputDir=..\..\dist-installer
-OutputBaseFilename=Liclick 3D Texture Setup
+OutputBaseFilename=Liclick 3D Texture Setup {#MyShellBuild}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -40,6 +43,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+Name: "photoshopplugin"; Description: "安装 Photoshop 实时纹理插件（推荐）"; GroupDescription: "创作工具集成："; Flags: checkedonce
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\*"
@@ -54,7 +58,8 @@ Name: "{group}\{#MyAppName} CLI"; Filename: "{app}\scripts\windows-desktop-launc
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\electron\Liclick 3D Texture.exe"; Parameters: """{app}\apps\desktop\main.mjs"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\liclick-icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\electron\Liclick 3D Texture.exe"; Parameters: """{app}\apps\desktop\main.mjs"""; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{app}\node\node.exe"; Parameters: """{app}\scripts\install-photoshop-cep.mjs"" ""{app}\plugins\photoshop-cep"""; StatusMsg: "正在为当前用户安装 Photoshop 实时纹理插件..."; Flags: runhidden runasoriginaluser; Tasks: photoshopplugin
+Filename: "{app}\electron\Liclick 3D Texture.exe"; Parameters: """{app}\apps\desktop\main.mjs"""; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent unchecked runasoriginaluser
 
 [Code]
 function NodeAlreadyInstalled(): Boolean;

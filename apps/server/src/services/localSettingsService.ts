@@ -16,6 +16,28 @@ export type ShortcutBinding = {
 
 export type ShortcutOverrides = Record<string, ShortcutBinding[]>;
 
+export type PhotoshopSyncMode = 'save' | 'live';
+
+export type PhotoshopSettings = {
+  executablePath: string;
+  preferredVersion: string;
+  syncMode: PhotoshopSyncMode;
+  liveSyncDelayMs: number;
+  autoLaunch: boolean;
+  keepSessionFiles: boolean;
+  windowPlacement: 'none' | 'side-by-side';
+};
+
+const defaultPhotoshopSettings: PhotoshopSettings = {
+  executablePath: '',
+  preferredVersion: '',
+  syncMode: 'live',
+  liveSyncDelayMs: 120,
+  autoLaunch: true,
+  keepSessionFiles: true,
+  windowPlacement: 'none',
+};
+
 type LocalSettingsDocument = {
   version: 1;
   activeUserId: string;
@@ -24,6 +46,7 @@ type LocalSettingsDocument = {
   profiles: Record<string, LocalProfile>;
   shortcutsByUser: Record<string, ShortcutOverrides>;
   shortcutsConfiguredByUser: Record<string, boolean>;
+  photoshop: PhotoshopSettings;
 };
 
 export type LocalSettingsView = {
@@ -34,6 +57,7 @@ export type LocalSettingsView = {
   profile: LocalProfile;
   shortcutOverrides: ShortcutOverrides;
   shortcutOverridesConfigured: boolean;
+  photoshop: PhotoshopSettings;
 };
 
 const defaultDocument: LocalSettingsDocument = {
@@ -44,6 +68,7 @@ const defaultDocument: LocalSettingsDocument = {
   profiles: {},
   shortcutsByUser: {},
   shortcutsConfiguredByUser: {},
+  photoshop: defaultPhotoshopSettings,
 };
 
 let writeQueue = Promise.resolve();
@@ -87,6 +112,28 @@ function normalizeShortcuts(value: unknown): ShortcutOverrides {
   return result;
 }
 
+function normalizePhotoshopSettings(value: unknown): PhotoshopSettings {
+  if (!value || typeof value !== 'object') return { ...defaultPhotoshopSettings };
+  const candidate = value as Record<string, unknown>;
+  const executablePath =
+    typeof candidate.executablePath === 'string' ? candidate.executablePath.trim().slice(0, 1024) : '';
+  const preferredVersion =
+    typeof candidate.preferredVersion === 'string' ? candidate.preferredVersion.trim().slice(0, 100) : '';
+  const requestedDelay =
+    typeof candidate.liveSyncDelayMs === 'number' && Number.isFinite(candidate.liveSyncDelayMs)
+      ? candidate.liveSyncDelayMs
+      : defaultPhotoshopSettings.liveSyncDelayMs;
+  return {
+    executablePath,
+    preferredVersion,
+    syncMode: candidate.syncMode === 'save' ? 'save' : 'live',
+    liveSyncDelayMs: Math.round(Math.max(80, Math.min(5000, requestedDelay))),
+    autoLaunch: candidate.autoLaunch !== false,
+    keepSessionFiles: candidate.keepSessionFiles !== false,
+    windowPlacement: candidate.windowPlacement === 'side-by-side' ? 'side-by-side' : 'none',
+  };
+}
+
 function normalizeDocument(value: unknown): LocalSettingsDocument {
   if (!value || typeof value !== 'object') return structuredClone(defaultDocument);
   const candidate = value as Record<string, unknown>;
@@ -124,6 +171,7 @@ function normalizeDocument(value: unknown): LocalSettingsDocument {
     profiles,
     shortcutsByUser,
     shortcutsConfiguredByUser,
+    photoshop: normalizePhotoshopSettings(candidate.photoshop),
   };
 }
 
@@ -157,6 +205,7 @@ function createView(document: LocalSettingsDocument, requestedUserId?: string): 
     profile: document.profiles[userId] ?? { customId: '' },
     shortcutOverrides: document.shortcutsByUser[userId] ?? {},
     shortcutOverridesConfigured: document.shortcutsConfiguredByUser[userId] === true,
+    photoshop: document.photoshop,
   };
 }
 
@@ -172,6 +221,7 @@ export async function updateLocalSettings(input: {
   profile?: unknown;
   shortcutOverrides?: unknown;
   migrationShortcutOverrides?: unknown;
+  photoshop?: unknown;
 }) {
   const document = await readDocument();
   const userId = normalizeUserId(input.userId ?? document.activeUserId);
@@ -197,6 +247,7 @@ export async function updateLocalSettings(input: {
     document.shortcutsByUser[userId] = normalizeShortcuts(input.migrationShortcutOverrides);
     document.shortcutsConfiguredByUser[userId] = true;
   }
+  if (input.photoshop !== undefined) document.photoshop = normalizePhotoshopSettings(input.photoshop);
   await writeDocument(document);
   return createView(document, userId);
 }

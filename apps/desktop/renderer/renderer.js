@@ -55,6 +55,28 @@ const elements = {
   shortcutList: document.querySelector('#shortcutList'),
   shortcutMessage: document.querySelector('#shortcutMessage'),
   resetAllShortcuts: document.querySelector('#resetAllShortcuts'),
+  photoshopInstallation: document.querySelector('#photoshopInstallation'),
+  photoshopExecutablePath: document.querySelector('#photoshopExecutablePath'),
+  browsePhotoshop: document.querySelector('#browsePhotoshop'),
+  photoshopSyncMode: document.querySelector('#photoshopSyncMode'),
+  photoshopSyncDelay: document.querySelector('#photoshopSyncDelay'),
+  savePhotoshopSettings: document.querySelector('#savePhotoshopSettings'),
+  launchPhotoshop: document.querySelector('#launchPhotoshop'),
+  installPhotoshopPlugin: document.querySelector('#installPhotoshopPlugin'),
+  openPhotoshopBackups: document.querySelector('#openPhotoshopBackups'),
+  photoshopStatus: document.querySelector('#photoshopStatus'),
+  photoshopPluginState: document.querySelector('#photoshopPluginState'),
+  photoshopConnectionState: document.querySelector('#photoshopConnectionState'),
+  photoshopAutoLaunch: document.querySelector('#photoshopAutoLaunch'),
+  photoshopKeepSessions: document.querySelector('#photoshopKeepSessions'),
+  photoshopHomeCard: document.querySelector('#photoshopHomeCard'),
+  photoshopHomeState: document.querySelector('#photoshopHomeState'),
+  photoshopHomeDetail: document.querySelector('#photoshopHomeDetail'),
+  photoshopHomeVersion: document.querySelector('#photoshopHomeVersion'),
+  photoshopHomeLatency: document.querySelector('#photoshopHomeLatency'),
+  photoshopHomeLaunch: document.querySelector('#photoshopHomeLaunch'),
+  photoshopHomeRepair: document.querySelector('#photoshopHomeRepair'),
+  photoshopHomeSettings: document.querySelector('#photoshopHomeSettings'),
 };
 
 const statusText = {
@@ -73,7 +95,7 @@ let currentState = {
   workspaceUrl: 'http://127.0.0.1:4617',
   webUrl: 'http://127.0.0.1:5673',
   workspaceDir: '-',
-  shellBuild: '2026.07.15.1104',
+  shellBuild: '2026.07.17.1135',
   logs: [],
 };
 let currentLocalSettings = {
@@ -81,9 +103,22 @@ let currentLocalSettings = {
   performanceTestModeEnabled: false,
   profile: { customId: '' },
   shortcutOverrides: {},
+  photoshop: {
+    executablePath: '',
+    preferredVersion: '',
+    syncMode: 'live',
+    liveSyncDelayMs: 120,
+    autoLaunch: true,
+    keepSessionFiles: true,
+    windowPlacement: 'none',
+  },
 };
 let pendingAvatarDataUrl;
 let recordingShortcutId;
+let detectedPhotoshopInstallations = [];
+let photoshopStatusInFlight;
+let photoshopInstallationsSignature = '';
+let photoshopSettingsDirty = false;
 
 const shortcutDefinitions = Array.isArray(window.LICLICK_SHORTCUT_DEFINITIONS)
   ? window.LICLICK_SHORTCUT_DEFINITIONS
@@ -145,7 +180,131 @@ function renderLocalSettings(settings) {
   elements.performanceModeLabel.textContent = currentLocalSettings.performanceTestModeEnabled
     ? '已启用'
     : '已关闭';
+  renderPhotoshopSettings();
   if (!elements.shortcutModal.hidden) renderShortcutList();
+}
+
+function renderPhotoshopSettings() {
+  const settings = currentLocalSettings.photoshop ?? {};
+  elements.photoshopExecutablePath.value = settings.executablePath ?? '';
+  elements.photoshopSyncMode.value = settings.syncMode === 'save' ? 'save' : 'live';
+  elements.photoshopSyncDelay.value = String(settings.liveSyncDelayMs ?? 120);
+  elements.photoshopAutoLaunch.checked = settings.autoLaunch !== false;
+  elements.photoshopKeepSessions.checked = settings.keepSessionFiles !== false;
+  elements.photoshopHomeLatency.textContent = `${settings.syncMode === 'save' ? '保存时同步' : '实时同步'} · ${settings.liveSyncDelayMs ?? 120}ms`;
+  renderPhotoshopInstallationOptions(settings.executablePath ?? '');
+}
+
+function renderPhotoshopInstallationOptions(selectedValue = '') {
+  const signature = JSON.stringify(
+    detectedPhotoshopInstallations.map((installation) => [
+      installation.executablePath,
+      installation.label,
+      installation.version,
+    ]),
+  );
+  if (signature === photoshopInstallationsSignature && elements.photoshopInstallation.options.length > 0) {
+    if (!photoshopSettingsDirty) elements.photoshopInstallation.value = selectedValue;
+    return;
+  }
+  photoshopInstallationsSignature = signature;
+  const draftValue = photoshopSettingsDirty ? elements.photoshopInstallation.value : selectedValue;
+  const selectedPath = draftValue.toLowerCase();
+  elements.photoshopInstallation.replaceChildren();
+  const automatic = document.createElement('option');
+  automatic.value = '';
+  automatic.textContent = '自动检测 Photoshop';
+  elements.photoshopInstallation.append(automatic);
+  for (const installation of detectedPhotoshopInstallations) {
+    const option = document.createElement('option');
+    option.value = installation.executablePath;
+    option.textContent = `${installation.label} · ${installation.version}`;
+    elements.photoshopInstallation.append(option);
+  }
+  if (selectedPath) {
+    const match = detectedPhotoshopInstallations.find(
+      (installation) => installation.executablePath.toLowerCase() === selectedPath,
+    );
+    if (!match) {
+      const custom = document.createElement('option');
+      custom.value = draftValue;
+      custom.textContent = '自定义 Photoshop';
+      elements.photoshopInstallation.append(custom);
+    }
+    elements.photoshopInstallation.value = draftValue;
+  }
+}
+
+function setPhotoshopChip(element, text, tone = 'online') {
+  element.textContent = text;
+  element.dataset.tone = tone;
+}
+
+function renderPhotoshopStatus(status) {
+  const localPlugin = status.localPlugin ?? {};
+  const connected = status.plugin?.connected === true;
+  const selected = status.selectedInstallation;
+  const activeSessions = Number(status.activeSessions) || 0;
+  const version = localPlugin.version || localPlugin.bundledVersion || status.plugin?.pluginVersion || '--';
+
+  elements.photoshopHomeVersion.textContent = `CEP ${version}`;
+  if (connected) {
+    elements.photoshopHomeCard.dataset.state = 'connected';
+    elements.photoshopHomeState.textContent = '实时链路已连接';
+    elements.photoshopHomeDetail.textContent = `Photoshop ${status.plugin.photoshopVersion ?? ''}${activeSessions ? ` · ${activeSessions} 个编辑会话` : ' · 等待编辑任务'}`.trim();
+    if (!photoshopSettingsDirty) {
+      elements.photoshopStatus.textContent = `插件已连接 · PS ${status.plugin.photoshopVersion ?? ''}`.trim();
+    }
+    setPhotoshopChip(elements.photoshopConnectionState, '实时链路已连接');
+  } else if (localPlugin.installed) {
+    elements.photoshopHomeCard.dataset.state = 'ready';
+    elements.photoshopHomeState.textContent = '插件已就绪';
+    elements.photoshopHomeDetail.textContent = selected
+      ? `${selected.label} · 启动后自动连接`
+      : status.serverAvailable
+        ? '启动 Photoshop 后将自动连接'
+        : '工作区启动后可进行实时同步';
+    if (!photoshopSettingsDirty) {
+      elements.photoshopStatus.textContent = selected
+        ? `插件已安装 · ${selected.label}`
+        : '插件已安装 · 等待 Photoshop';
+    }
+    setPhotoshopChip(elements.photoshopConnectionState, '等待 Photoshop', 'warning');
+  } else {
+    elements.photoshopHomeCard.dataset.state = 'missing';
+    elements.photoshopHomeState.textContent = '插件需要安装';
+    elements.photoshopHomeDetail.textContent = localPlugin.bundled
+      ? '安装包已内置，点击即可自动修复'
+      : '当前版本未包含 Photoshop 插件';
+    if (!photoshopSettingsDirty) elements.photoshopStatus.textContent = 'Photoshop 插件未安装';
+    setPhotoshopChip(elements.photoshopConnectionState, '尚未连接', 'warning');
+  }
+
+  if (localPlugin.installed) {
+    const versionLabel = localPlugin.version ? `CEP ${localPlugin.version}` : '插件已安装';
+    const debugSuffix = localPlugin.debugModeEnabled ? '' : ' · 调试模式未启用';
+    setPhotoshopChip(elements.photoshopPluginState, `${versionLabel}${debugSuffix}`, localPlugin.debugModeEnabled ? 'online' : 'warning');
+  } else {
+    setPhotoshopChip(elements.photoshopPluginState, '插件未安装', 'warning');
+  }
+}
+
+async function refreshPhotoshopStatus() {
+  if (!api?.getPhotoshopStatus) return;
+  if (photoshopStatusInFlight) return photoshopStatusInFlight;
+  photoshopStatusInFlight = (async () => {
+    const status = await api.getPhotoshopStatus();
+    detectedPhotoshopInstallations = Array.isArray(status.installations) ? status.installations : [];
+    renderPhotoshopInstallationOptions(elements.photoshopInstallation.value);
+    renderPhotoshopStatus(status);
+    return status;
+  })().catch((error) => {
+    elements.photoshopStatus.textContent = '工作区未连接';
+    appendLog(`[launcher] Photoshop 检测失败：${error instanceof Error ? error.message : String(error)}`);
+  }).finally(() => {
+    photoshopStatusInFlight = undefined;
+  });
+  return photoshopStatusInFlight;
 }
 
 async function updateSharedSettings(patch) {
@@ -358,6 +517,7 @@ document.querySelectorAll('[data-view-target]').forEach((button) => {
     showView(button.dataset.viewTarget);
     if (button.dataset.viewTarget === 'settings' && api?.getLocalSettings) {
       void api.getLocalSettings().then(renderLocalSettings).catch(() => undefined);
+      void refreshPhotoshopStatus();
     }
   });
 });
@@ -505,6 +665,126 @@ elements.performanceModeToggle.addEventListener('change', async () => {
   }
 });
 
+elements.photoshopInstallation.addEventListener('change', () => {
+  photoshopSettingsDirty = true;
+  elements.photoshopExecutablePath.value = elements.photoshopInstallation.value;
+  elements.photoshopStatus.textContent = '等待保存';
+});
+
+elements.photoshopExecutablePath.addEventListener('input', () => {
+  photoshopSettingsDirty = true;
+  elements.photoshopStatus.textContent = '等待保存';
+});
+
+elements.browsePhotoshop.addEventListener('click', async () => {
+  if (!api?.choosePhotoshopExecutable) return;
+  try {
+    const result = await api.choosePhotoshopExecutable();
+    if (result?.canceled || !result?.executablePath) return;
+    elements.photoshopExecutablePath.value = result.executablePath;
+    photoshopSettingsDirty = true;
+    elements.photoshopStatus.textContent = '等待保存';
+  } catch (error) {
+    appendLog(`[launcher] 选择 Photoshop 失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+
+async function savePhotoshopSettings() {
+  const executablePath = elements.photoshopExecutablePath.value.trim();
+  const installation = detectedPhotoshopInstallations.find(
+    (item) => item.executablePath.toLowerCase() === executablePath.toLowerCase(),
+  );
+  const liveSyncDelayMs = Math.max(80, Math.min(5000, Number(elements.photoshopSyncDelay.value) || 120));
+  elements.savePhotoshopSettings.disabled = true;
+  elements.photoshopStatus.textContent = '保存中';
+  photoshopSettingsDirty = false;
+  try {
+    await updateSharedSettings({
+      photoshop: {
+        ...(currentLocalSettings.photoshop ?? {}),
+        executablePath,
+        preferredVersion: installation?.version ?? '',
+        syncMode: elements.photoshopSyncMode.value === 'save' ? 'save' : 'live',
+        liveSyncDelayMs,
+        autoLaunch: elements.photoshopAutoLaunch.checked,
+        keepSessionFiles: elements.photoshopKeepSessions.checked,
+      },
+    });
+    elements.photoshopStatus.textContent = '已保存';
+    return true;
+  } catch (error) {
+    photoshopSettingsDirty = true;
+    elements.photoshopStatus.textContent = '保存失败';
+    appendLog(`[launcher] Photoshop 设置保存失败：${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  } finally {
+    elements.savePhotoshopSettings.disabled = false;
+  }
+}
+
+elements.savePhotoshopSettings.addEventListener('click', () => void savePhotoshopSettings());
+
+async function launchPhotoshop({ saveSettings = false } = {}) {
+  if (saveSettings && !(await savePhotoshopSettings())) return;
+  elements.launchPhotoshop.disabled = true;
+  elements.photoshopHomeLaunch.disabled = true;
+  elements.photoshopStatus.textContent = '正在启动';
+  try {
+    await api.launchPhotoshop();
+    elements.photoshopStatus.textContent = 'Photoshop 已启动';
+    window.setTimeout(() => void refreshPhotoshopStatus(), 1800);
+  } catch (error) {
+    elements.photoshopStatus.textContent = '启动失败';
+    appendLog(`[launcher] Photoshop 启动失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    elements.launchPhotoshop.disabled = false;
+    elements.photoshopHomeLaunch.disabled = false;
+  }
+}
+
+elements.launchPhotoshop.addEventListener('click', () => void launchPhotoshop({ saveSettings: true }));
+elements.photoshopHomeLaunch.addEventListener('click', () => void launchPhotoshop());
+
+for (const control of [
+  elements.photoshopSyncMode,
+  elements.photoshopSyncDelay,
+  elements.photoshopAutoLaunch,
+  elements.photoshopKeepSessions,
+]) {
+  control.addEventListener('change', () => {
+    photoshopSettingsDirty = true;
+    elements.photoshopStatus.textContent = '等待保存';
+  });
+}
+
+async function repairPhotoshopPlugin() {
+  elements.installPhotoshopPlugin.disabled = true;
+  elements.photoshopHomeRepair.disabled = true;
+  elements.photoshopStatus.textContent = '正在安装插件';
+  try {
+    const result = await api.installPhotoshopPlugin();
+    elements.photoshopStatus.textContent = '插件已安装，重启 Photoshop 生效';
+    appendLog(`[launcher] Photoshop 本地插件已安装：${result.destination}`);
+    await refreshPhotoshopStatus();
+  } catch (error) {
+    elements.photoshopStatus.textContent = '插件安装失败';
+    appendLog(`[launcher] Photoshop 插件安装失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    elements.installPhotoshopPlugin.disabled = false;
+    elements.photoshopHomeRepair.disabled = false;
+  }
+}
+
+elements.installPhotoshopPlugin.addEventListener('click', () => void repairPhotoshopPlugin());
+elements.photoshopHomeRepair.addEventListener('click', () => void repairPhotoshopPlugin());
+elements.photoshopHomeSettings.addEventListener('click', () => {
+  showView('settings');
+  void refreshPhotoshopStatus();
+});
+elements.openPhotoshopBackups.addEventListener('click', () => {
+  void safeCall(() => api.openPhotoshopBackups(), '无法打开 Photoshop 恢复文件');
+});
+
 elements.openShortcutSettings.addEventListener('click', () => {
   recordingShortcutId = undefined;
   elements.shortcutSearch.value = '';
@@ -597,7 +877,10 @@ if (api) {
     });
   api
     .getLocalSettings()
-    .then(renderLocalSettings)
+    .then((settings) => {
+      renderLocalSettings(settings);
+      void refreshPhotoshopStatus();
+    })
     .catch((error) => {
       appendLog(
         `[launcher] 无法读取本地设置：${error instanceof Error ? error.message : String(error)}`,
@@ -613,4 +896,15 @@ if (api) {
     '浏览器预览模式：Electron preload 未连接。\n通过 LIclick 3D Texture.exe 启动后，这里会显示实时服务日志。\n';
   elements.logOutput.dataset.empty = 'false';
   renderLocalSettings(currentLocalSettings);
+  renderPhotoshopStatus({
+    plugin: { connected: false },
+    installations: [],
+    activeSessions: 0,
+    serverAvailable: false,
+    localPlugin: { installed: false, bundled: false },
+  });
 }
+
+window.setInterval(() => {
+  if (!document.hidden && api) void refreshPhotoshopStatus();
+}, 2500);

@@ -295,14 +295,18 @@ function runtimeIsReady(signature) {
 
 function runtimeFilesReady() {
   if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'dist', 'index.js'))) return false;
+  if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'node_modules', 'ws', 'wrapper.mjs'))) return false;
   if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'web', 'dist', 'index.html'))) return false;
   return true;
 }
 
 async function prepareRuntime() {
   const signature = sourceSignature();
-  const readyBeforeCopy = runtimeIsReady(signature);
-  const includePreparedArtifacts = !readyBeforeCopy && fs.existsSync(preparedInstallMarker);
+  if (runtimeIsReady(signature)) {
+    writeLog('Runtime artifacts and dependencies are ready; skipping runtime sync.');
+    return;
+  }
+  const includePreparedArtifacts = fs.existsSync(preparedInstallMarker);
   await syncRuntimeSource(includePreparedArtifacts);
   if (runtimeIsReady(signature)) {
     writeLog('Runtime artifacts and dependencies are ready; skipping dependency install.');
@@ -471,6 +475,7 @@ try {
   await startServices();
   if (shouldOpenBrowser) openBrowser();
   writeLog('Liclick 3D Texture is running. Keep this terminal open while using the app.');
+  setInterval(() => undefined, 60_000);
   await new Promise(() => undefined);
 } catch (error) {
   writeLog(`Startup failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);

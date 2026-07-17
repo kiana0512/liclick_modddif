@@ -50,6 +50,10 @@ Installed builds use dedicated ports so they can run beside development:
 
 The installed app stores runtime, workspace data, and logs under `%LocalAppData%\Liclick 3D Texture`. Updating the installer replaces program files but keeps user workspace data.
 
+The Windows installer also deploys the bundled offline Photoshop CEP bridge by default. It is installed for the current user at `%APPDATA%\Adobe\CEP\extensions\com.liclick.live-texture`, communicates only with `127.0.0.1:4617`, and does not require Photoshop network access. The launcher home page reports plugin/connection state and can launch or repair the selected Photoshop installation. Photoshop PSD recovery documents and immutable PNG revisions remain under `%LocalAppData%\Liclick 3D Texture\workspace\photoshop-sessions`.
+
+`workspace/` is runtime/user data and is ignored as a whole by Git. Do not force-add projects, authentication state, generated images, Photoshop sessions, model validation outputs, logs, or local backups. Reusable DCC validation scripts belong under `scripts/validation/dcc/`.
+
 ## Auth And Liclick Login
 
 The Projects homepage and local editor can be viewed without login. Workspace operations and AI features that call authenticated APIs require the Liclick session. The visible `飞书登录` entry calls the server, the server starts the local `@lilith/atlas-skillhub` gateway login, and then stores only its own httpOnly Liclick session cookie.
@@ -190,7 +194,7 @@ Test flow:
 - 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, browser PNG encoding, workspace persistence, the low-resolution CPU coverage validation pass, and same-resolution CPU fallback on unsupported hardware.
 - Segments ColorID, MP4, and portable project package zip are still coming soon.
 
-See `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for desktop release notes and `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md` for the latest test, security, and residual-risk audit.
+See `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for desktop release notes, `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md` for the broad release audit, and `docs/34_PHOTOSHOP_LIVE_LINK_AND_DATA_AUDIT_2026-07-17.md` for the Photoshop integration and local-data boundary.
 
 ## Development Rules
 

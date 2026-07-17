@@ -147,7 +147,7 @@
                 <footer class="runtime-meta" aria-label="启动器信息">
                   <dl>
                     <dt>启动器版本</dt>
-                    <dd id="footerBuild">Build 2026.07.15.1104</dd>
+                    <dd id="footerBuild">Build 2026.07.17.1045</dd>
                   </dl>
                   <dl>
                     <dt>后端服务</dt>
@@ -183,6 +183,29 @@
                   <strong id="connectionTitle">正在连接本地工作区</strong>
                   <span id="connectionCopy">启动器正在检查本地服务，请稍候。</span>
                 </div>
+                <section class="photoshop-home-card" id="photoshopHomeCard" data-state="checking" aria-label="Photoshop 实时编辑状态">
+                  <div class="photoshop-home-head">
+                    <span class="photoshop-home-logo" aria-hidden="true">Ps</span>
+                    <div>
+                      <small>CREATIVE LINK</small>
+                      <strong>Photoshop 实时编辑</strong>
+                    </div>
+                    <span class="photoshop-link-dot" id="photoshopHomeDot"></span>
+                  </div>
+                  <div class="photoshop-home-status">
+                    <strong id="photoshopHomeState">正在检测</strong>
+                    <span id="photoshopHomeDetail">检查本地插件与 Photoshop 连接</span>
+                  </div>
+                  <div class="photoshop-home-meta">
+                    <span id="photoshopHomeVersion">CEP --</span>
+                    <span id="photoshopHomeLatency">实时同步 · 120ms</span>
+                  </div>
+                  <div class="photoshop-home-actions">
+                    <button type="button" id="photoshopHomeLaunch">启动 Ps</button>
+                    <button type="button" id="photoshopHomeRepair">安装 / 修复</button>
+                    <button type="button" id="photoshopHomeSettings" aria-label="打开 Photoshop 高级设置">设置</button>
+                  </div>
+                </section>
                 <button class="launch-button" type="button" id="primaryLaunch">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>
                   <span>一键启动</span>
@@ -345,6 +368,47 @@
                   </div>
                 </div>
                 <span class="setting-value" id="profileSaveStatus">本地保存</span>
+              </article>
+              <article class="photoshop-setting-row">
+                <span class="row-icon photoshop-icon">Ps</span>
+                <div>
+                  <div class="photoshop-setting-title">
+                    <strong>Adobe Photoshop 实时编辑</strong>
+                    <span class="photoshop-chip" id="photoshopPluginState">检测插件</span>
+                    <span class="photoshop-chip subtle" id="photoshopConnectionState">等待连接</span>
+                  </div>
+                  <p>插件只通过 127.0.0.1 与 LIclick 交换本地纹理；PSD 与修订图保留在用户工作区，可用于恢复，不会上传或加入 Git。</p>
+                  <div class="inline-setting-controls photoshop-controls">
+                    <select id="photoshopInstallation" class="setting-input" aria-label="Photoshop 版本">
+                      <option value="">自动检测 Photoshop</option>
+                    </select>
+                    <input id="photoshopExecutablePath" class="setting-input path-input" placeholder="Photoshop.exe 路径" />
+                    <button class="button" type="button" id="browsePhotoshop">浏览</button>
+                    <select id="photoshopSyncMode" class="setting-input compact-input" aria-label="同步模式">
+                      <option value="live">实时同步</option>
+                      <option value="save">保存时同步</option>
+                    </select>
+                    <input id="photoshopSyncDelay" class="setting-input delay-input" type="number" min="80" max="5000" step="20" value="120" aria-label="实时同步延迟" />
+                    <span class="input-suffix">ms</span>
+                  </div>
+                  <div class="photoshop-option-grid">
+                    <label class="photoshop-option">
+                      <input id="photoshopAutoLaunch" type="checkbox" checked />
+                      <span><strong>编辑时自动启动</strong><small>点击网页“Photoshop 编辑”时自动唤醒所选版本</small></span>
+                    </label>
+                    <label class="photoshop-option">
+                      <input id="photoshopKeepSessions" type="checkbox" checked />
+                      <span><strong>保留 PSD 恢复文件</strong><small>会话、源图和历史修订只保存在本机用户工作区</small></span>
+                    </label>
+                  </div>
+                  <div class="inline-setting-controls photoshop-actions">
+                    <button class="button primary" type="button" id="savePhotoshopSettings">保存设置</button>
+                    <button class="button" type="button" id="launchPhotoshop">启动 Photoshop</button>
+                    <button class="button" type="button" id="installPhotoshopPlugin">安装 / 修复插件</button>
+                    <button class="button" type="button" id="openPhotoshopBackups">打开恢复文件</button>
+                  </div>
+                </div>
+                <span class="setting-value" id="photoshopStatus">等待检测</span>
               </article>
               <article>
                 <span class="row-icon"
