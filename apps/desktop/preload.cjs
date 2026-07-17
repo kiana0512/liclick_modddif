@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('liclickLauncher', {
   launchPhotoshop: () => ipcRenderer.invoke('launcher:launch-photoshop'),
   choosePhotoshopExecutable: () => ipcRenderer.invoke('launcher:choose-photoshop-executable'),
   installPhotoshopPlugin: () => ipcRenderer.invoke('launcher:install-photoshop-plugin'),
+  openPhotoshopBackups: () => ipcRenderer.invoke('launcher:open-photoshop-backups'),
   quit: () => ipcRenderer.invoke('launcher:quit'),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);

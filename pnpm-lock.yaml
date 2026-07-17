@@ -41,13 +41,13 @@ importers:
 
   apps/server:
     dependencies:
-      '@prisma/client':
-        specifier: ^6.10.1
-        version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
       ws:
         specifier: ^8.21.1
         version: 8.21.1
     devDependencies:
+      '@prisma/client':
+        specifier: ^6.10.1
+        version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
       '@types/node':
         specifier: ^24.0.3
         version: 24.13.2

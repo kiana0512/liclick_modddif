@@ -6,9 +6,16 @@ dist-plugins/
 .vite
 .turbo
 .DS_Store
+Thumbs.db
 *.log
 *.tsbuildinfo
 *.local
+*.tmp
+*.bak
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 .env
 .atlas-ai-gateway-oauth.json
 *.atlas-ai-gateway-oauth.json
@@ -17,20 +24,14 @@ secrets/*
 !secrets/README.md
 apps/server/.env
 logs/
-workspace/*.db
-workspace/generation-jobs.json
-workspace/atlas-homes/
-workspace/auth.json
-workspace/users/
-workspace/projects/
-workspace/trash/
-workspace/folders.json
-workspace/recent-projects.json
-workspace/settings.json
-workspace/config/
-workspace/photoshop-sessions/
+
+# Runtime/user data. Recovery PSDs, projects, auth, caches, logs, and generated
+# validation outputs belong to the local machine and must never enter Git.
+workspace/
 workspace-auth-smoke/
 workspace-auth-smoke-feishu/
+.codex/*.png
+*_contact_sheet.png
 
 # Adobe working documents are local recovery data, never source assets.
 *.psd

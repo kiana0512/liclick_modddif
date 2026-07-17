@@ -525,6 +525,129 @@ svg {
   font-size: 12px;
   line-height: 1.6;
 }
+.photoshop-home-card {
+  position: relative;
+  display: grid;
+  gap: 11px;
+  margin-top: 14px;
+  overflow: hidden;
+  padding: 14px;
+  border: 1px solid rgba(78, 180, 255, 0.2);
+  border-radius: 9px;
+  background:
+    radial-gradient(circle at 92% 0, rgba(64, 176, 255, 0.16), transparent 46%),
+    linear-gradient(145deg, rgba(5, 23, 39, 0.92), rgba(19, 24, 43, 0.96));
+  box-shadow: inset 0 1px 0 rgba(143, 211, 255, 0.08);
+}
+.photoshop-home-card::before {
+  position: absolute;
+  top: -28px;
+  right: -16px;
+  width: 92px;
+  height: 92px;
+  border: 1px solid rgba(88, 187, 255, 0.12);
+  border-radius: 50%;
+  content: '';
+}
+.photoshop-home-head {
+  position: relative;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+.photoshop-home-logo {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(75, 184, 255, 0.48);
+  border-radius: 8px;
+  color: #77d2ff;
+  background: linear-gradient(145deg, #052a46, #071c32);
+  box-shadow: 0 8px 20px rgba(0, 120, 204, 0.2);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+.photoshop-home-head small,
+.photoshop-home-head strong {
+  display: block;
+}
+.photoshop-home-head small {
+  margin-bottom: 2px;
+  color: #65bce9;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+}
+.photoshop-home-head strong {
+  font-size: 13px;
+}
+.photoshop-link-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #65717a;
+  box-shadow: 0 0 0 4px rgba(101, 113, 122, 0.12);
+}
+.photoshop-home-card[data-state='connected'] .photoshop-link-dot {
+  background: var(--online);
+  box-shadow: 0 0 0 4px rgba(47, 211, 174, 0.12), 0 0 16px rgba(47, 211, 174, 0.45);
+}
+.photoshop-home-card[data-state='ready'] .photoshop-link-dot,
+.photoshop-home-card[data-state='checking'] .photoshop-link-dot {
+  background: #4ab7f5;
+  box-shadow: 0 0 0 4px rgba(74, 183, 245, 0.12);
+}
+.photoshop-home-card[data-state='missing'] .photoshop-link-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px rgba(230, 168, 77, 0.12);
+}
+.photoshop-home-status {
+  display: grid;
+  gap: 3px;
+}
+.photoshop-home-status strong {
+  color: #eaf7ff;
+  font-size: 14px;
+}
+.photoshop-home-status span,
+.photoshop-home-meta {
+  color: #8fa6b5;
+  font-size: 10px;
+}
+.photoshop-home-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(100, 190, 245, 0.1);
+}
+.photoshop-home-actions {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr auto;
+  gap: 6px;
+}
+.photoshop-home-actions button {
+  min-height: 29px;
+  padding: 0 9px;
+  border: 1px solid rgba(101, 193, 247, 0.2);
+  border-radius: 6px;
+  color: #cceeff;
+  background: rgba(51, 144, 202, 0.08);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.photoshop-home-actions button:hover {
+  border-color: rgba(101, 193, 247, 0.5);
+  background: rgba(51, 144, 202, 0.18);
+}
+.photoshop-home-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
 .launch-button {
   display: flex;
   width: 100%;
@@ -686,15 +809,44 @@ svg {
   min-height: 122px !important;
 }
 .photoshop-setting-row {
-  min-height: 160px !important;
+  min-height: 266px !important;
+  align-items: start !important;
 }
 .photoshop-icon {
+  margin-top: 2px;
   border-radius: 10px;
   color: #70c9ff;
   background: #071f33;
   font-size: 17px;
   font-weight: 800;
   letter-spacing: -0.04em;
+}
+.photoshop-setting-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.photoshop-chip {
+  display: inline-flex;
+  min-height: 23px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid rgba(47, 211, 174, 0.22);
+  border-radius: 999px;
+  color: #8be5d0;
+  background: rgba(47, 211, 174, 0.08);
+  font-size: 10px;
+  font-weight: 650;
+}
+.photoshop-chip.subtle {
+  border-color: rgba(111, 199, 255, 0.2);
+  color: #84cfff;
+  background: rgba(39, 139, 203, 0.08);
+}
+.photoshop-chip[data-tone='warning'] {
+  border-color: rgba(230, 168, 77, 0.25);
+  color: #f0c376;
+  background: rgba(230, 168, 77, 0.08);
 }
 .photoshop-controls .path-input {
   min-width: 360px;
@@ -706,6 +858,52 @@ svg {
 .photoshop-controls .delay-input {
   min-width: 104px;
   width: 104px;
+}
+.input-suffix {
+  align-self: center;
+  margin-left: -37px;
+  padding-right: 9px;
+  color: var(--muted-2);
+  font-size: 11px;
+  pointer-events: none;
+}
+.photoshop-option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.photoshop-option {
+  display: grid;
+  min-height: 54px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(5, 7, 18, 0.3);
+  cursor: pointer;
+}
+.photoshop-option input {
+  width: 15px;
+  height: 15px;
+  accent-color: #56bfff;
+}
+.photoshop-option strong,
+.photoshop-option small {
+  display: block;
+}
+.photoshop-option strong {
+  font-size: 12px;
+}
+.photoshop-option small {
+  margin-top: 2px;
+  color: var(--muted-2);
+  font-size: 10px;
+}
+.photoshop-actions {
+  margin-top: 10px;
 }
 .local-avatar {
   display: grid;
@@ -1130,7 +1328,8 @@ svg {
     padding-top: 0;
   }
   .service-summary article {
-    min-height: 60px;
+    min-height: 54px;
+    padding-block: 9px;
   }
   .service-summary {
     gap: 8px;
@@ -1139,6 +1338,25 @@ svg {
   .rail-note {
     margin-top: 12px;
     padding-block: 11px;
+  }
+  .photoshop-home-card {
+    gap: 7px;
+    margin-top: 10px;
+    padding: 10px 12px;
+  }
+  .photoshop-home-logo {
+    width: 31px;
+    height: 31px;
+  }
+  .photoshop-home-head {
+    grid-template-columns: 31px minmax(0, 1fr) auto;
+  }
+  .photoshop-home-status span,
+  .photoshop-home-meta {
+    display: none;
+  }
+  .photoshop-home-actions button {
+    min-height: 26px;
   }
   .launch-button {
     height: 50px;

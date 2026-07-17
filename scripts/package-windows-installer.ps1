@@ -27,6 +27,11 @@ $ElectronSourceDir = Join-Path $Root "node_modules\electron\dist"
 $ElectronDir = Join-Path $StagingRoot "electron"
 $ElectronExe = Join-Path $ElectronDir "Liclick 3D Texture.exe"
 $PackageVersion = (Get-Content -Raw -LiteralPath (Join-Path $Root "package.json") | ConvertFrom-Json).version
+$DesktopMainSource = Get-Content -Raw -LiteralPath (Join-Path $Root "apps\desktop\main.mjs")
+$ShellBuild = [regex]::Match($DesktopMainSource, "const shellBuild = '([^']+)'" ).Groups[1].Value
+if (!$ShellBuild) {
+  throw "Could not read shellBuild from apps\desktop\main.mjs"
+}
 $PhotoshopPluginPackage = Join-Path $Root "dist-plugins\LIclick Live Texture.ccx"
 
 function Invoke-Step {
@@ -170,6 +175,25 @@ function Copy-SourceFreeRuntimeToStaging {
   Copy-StagingFile "scripts\windows-desktop-launcher.cmd"
   Copy-StagingFile "scripts\windows-node-bootstrap.ps1"
   Copy-StagingFile "scripts\windows-static-web-server.mjs"
+  Copy-StagingFile "scripts\install-photoshop-cep.mjs"
+}
+
+function Copy-ServerRuntimeDependencies {
+  $serverPackagePath = Join-Path $Root "apps\server\package.json"
+  $serverPackage = Get-Content -Raw -LiteralPath $serverPackagePath | ConvertFrom-Json
+  $packagedDependencies = @("ws")
+  $declaredDependencies = @($serverPackage.dependencies.PSObject.Properties.Name)
+  $unpackagedDependencies = @($declaredDependencies | Where-Object { $_ -notin $packagedDependencies })
+  if ($unpackagedDependencies.Count -gt 0) {
+    throw "Server runtime dependencies are not included in the source-free installer: $($unpackagedDependencies -join ', ')"
+  }
+
+  foreach ($dependency in $packagedDependencies) {
+    if ($dependency -notin $declaredDependencies) {
+      throw "Packaged server dependency is no longer declared: $dependency"
+    }
+    Copy-StagingDirectory "apps\server\node_modules\$dependency" "apps\server\node_modules\$dependency"
+  }
 }
 
 function Get-StagingRelativePath {
@@ -216,6 +240,17 @@ function Assert-SourceFreeStaging {
       Get-StagingRelativePath $_.FullName
     }
     throw "Source-free packaging guard failed. Forbidden source/debug files found:`n$($sample -join "`n")"
+  }
+
+  $requiredRuntimeFiles = @(
+    "apps\server\dist\index.js",
+    "apps\server\node_modules\ws\wrapper.mjs",
+    "apps\web\dist\index.html"
+  )
+  foreach ($relativePath in $requiredRuntimeFiles) {
+    if (!(Test-Path -LiteralPath (Join-Path $StagingRoot $relativePath))) {
+      throw "Source-free packaging guard failed: required runtime file is missing: $relativePath"
+    }
   }
 }
 
@@ -312,6 +347,7 @@ try {
 
   Invoke-Step "Prepare installer staging directory" {
     Copy-SourceFreeRuntimeToStaging
+    Copy-ServerRuntimeDependencies
     New-IcoFromPng -PngPath $IconPng -IcoPath $IconIco
     Copy-ElectronRuntime
     Install-PortableNode
@@ -322,7 +358,7 @@ try {
       packageVersion = $PackageVersion
       workspacePort = 4617
       webPort = 5673
-      includesNodeModules = (Test-Path (Join-Path $StagingRoot "node_modules"))
+      includesNodeModules = (Test-Path (Join-Path $StagingRoot "apps\server\node_modules\ws\wrapper.mjs"))
       includesPortableNode = (Test-Path (Join-Path $NodeDir "node.exe"))
       includesNodeInstallerMsi = (Test-Path $NodeInstallerMsi)
       includesElectronShell = (Test-Path $ElectronExe)
@@ -343,14 +379,14 @@ try {
     if (!(Test-Path $InstallerScript)) {
       throw "Installer script not found: $InstallerScript"
     }
-    & $InnoCompiler "/DSourceRoot=$StagingRoot" "/DMyAppVersion=$PackageVersion" "/DAtlasSkillhubVersion=$AtlasSkillhubVersion" "/DAtlasSkillhubRegistry=$AtlasSkillhubRegistry" $InstallerScript
+    & $InnoCompiler "/DSourceRoot=$StagingRoot" "/DMyAppVersion=$PackageVersion" "/DMyShellBuild=$ShellBuild" "/DAtlasSkillhubVersion=$AtlasSkillhubVersion" "/DAtlasSkillhubRegistry=$AtlasSkillhubRegistry" $InstallerScript
     if ($LASTEXITCODE -ne 0) {
       throw "Inno Setup failed with exit code $LASTEXITCODE"
     }
   }
 
   Write-Host ""
-  Write-Host "Installer output: $(Join-Path $DistRoot 'Liclick 3D Texture Setup.exe')" -ForegroundColor Green
+  Write-Host "Installer output: $(Join-Path $DistRoot "Liclick 3D Texture Setup $ShellBuild.exe")" -ForegroundColor Green
 } finally {
   Pop-Location
 }

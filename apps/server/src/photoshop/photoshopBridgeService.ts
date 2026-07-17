@@ -17,7 +17,6 @@ import {
   type PhotoshopPluginMessage,
   type PhotoshopServerMessage,
   type PhotoshopSessionDocument,
-  type PhotoshopSessionStatus,
 } from './protocol.js';
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +26,19 @@ const maxSourceBytes = 512 * 1024 * 1024;
 
 function now() {
   return new Date().toISOString();
+}
+
+async function removeSessionDirectoryWhenReleased(directory: string) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await fs.rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!['EBUSY', 'EPERM', 'EACCES'].includes(code ?? '')) return;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
 }
 
 function normalizeExecutablePath(value?: string) {
@@ -123,7 +135,10 @@ function safeRevisionFilename(value: string) {
 function safeDocumentName(layerName: string, sessionId: string) {
   const normalized = layerName
     .normalize('NFKC')
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/[<>:"/\\|?*]/g, '-')
+    .split('')
+    .map((character) => (character.charCodeAt(0) < 32 ? '-' : character))
+    .join('')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80);
@@ -351,7 +366,14 @@ class PhotoshopBridgeService {
     session.updatedAt = now();
     await this.persistSession(session);
     this.broadcastSession(session);
-    return publicPhotoshopSession(session);
+    const result = publicPhotoshopSession(session);
+    const settings = await getLocalSettings();
+    if (!settings.photoshop.keepSessionFiles) {
+      this.sessions.delete(session.id);
+      this.sessionWrites.delete(session.id);
+      void removeSessionDirectoryWhenReleased(path.join(sessionRoot, session.id));
+    }
+    return result;
   }
 
   private async requireSession(sessionId: string, token: string) {

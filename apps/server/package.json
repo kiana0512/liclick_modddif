@@ -15,10 +15,10 @@
     "db:seed": "node dist/db/seed.js"
   },
   "dependencies": {
-    "@prisma/client": "^6.10.1",
     "ws": "^8.21.1"
   },
   "devDependencies": {
+    "@prisma/client": "^6.10.1",
     "@types/node": "^24.0.3",
     "@types/ws": "^8.18.1",
     "prisma": "^6.10.1"

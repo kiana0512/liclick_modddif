@@ -342,13 +342,6 @@ async function imageDataToPersistedDataUrl(imageData: ImageData) {
   return blobToDataUrl(await imageDataToBlob(imageData));
 }
 
-async function waitForViewportMaterialRefresh() {
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-}
-
 async function persistLocalRepaintRuntime(runtime: LocalRepaintRuntime) {
   if (!runtime.projectId || typeof window === 'undefined') return;
   const payload: PersistedLocalRepaintRuntime = {

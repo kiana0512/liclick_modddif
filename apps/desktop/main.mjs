@@ -19,7 +19,7 @@ const workspaceUrl =
 const webUrl = process.env.LICLICK_FRONTEND_URL ?? `http://127.0.0.1:${webPort}`;
 const rendererUrl = new URL('./renderer/index.html', import.meta.url);
 const iconPath = path.join(appRoot, 'assets', 'liclick-icon.png');
-const shellBuild = '2026.07.15.1104';
+const shellBuild = '2026.07.17.1135';
 
 const state = {
   launcherPid: undefined,
@@ -47,6 +47,8 @@ let isQuitting = false;
 let hasShownTrayHint = false;
 let hasAutoOpenedWorkspace = false;
 let lastLogLines = [];
+let photoshopPluginCache;
+let photoshopInstallationsCache;
 
 const defaultLocalSettings = {
   version: 1,
@@ -552,19 +554,187 @@ async function choosePhotoshopExecutable() {
   return { canceled: false, executablePath: result.filePaths[0] };
 }
 
+function photoshopPluginDirectories() {
+  const roamingAppData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
+  return {
+    destination: path.join(
+      roamingAppData,
+      'Adobe',
+      'CEP',
+      'extensions',
+      'com.liclick.live-texture',
+    ),
+    candidates: [
+      path.join(appRoot, 'plugins', 'photoshop-cep'),
+      path.join(appRoot, 'integrations', 'photoshop-cep'),
+    ],
+  };
+}
+
+function photoshopPluginVersion(manifestPath) {
+  try {
+    const manifest = fs.readFileSync(manifestPath, 'utf8');
+    return manifest.match(/ExtensionBundleVersion="([^"]+)"/i)?.[1] ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function isCepDebugModeEnabled() {
+  if (process.platform !== 'win32') return true;
+  return ['10', '11', '12'].some((version) => {
+    const result = spawnSync(
+      'reg.exe',
+      ['query', `HKCU\\Software\\Adobe\\CSXS.${version}`, '/v', 'PlayerDebugMode'],
+      { windowsHide: true, encoding: 'utf8' },
+    );
+    return result.status === 0 && /PlayerDebugMode\s+REG_SZ\s+1/i.test(result.stdout ?? '');
+  });
+}
+
+function getPhotoshopPluginInstallation(force = false) {
+  if (!force && photoshopPluginCache && Date.now() - photoshopPluginCache.checkedAt < 15_000) {
+    return photoshopPluginCache.value;
+  }
+  const { destination, candidates } = photoshopPluginDirectories();
+  const installedManifest = path.join(destination, 'CSXS', 'manifest.xml');
+  const bundledSource = candidates.find((candidate) =>
+    fs.existsSync(path.join(candidate, 'CSXS', 'manifest.xml')),
+  );
+  const value = {
+    installed: fs.existsSync(installedManifest),
+    destination,
+    version: photoshopPluginVersion(installedManifest),
+    bundled: Boolean(bundledSource),
+    bundledVersion: bundledSource
+      ? photoshopPluginVersion(path.join(bundledSource, 'CSXS', 'manifest.xml'))
+      : '',
+    debugModeEnabled: isCepDebugModeEnabled(),
+  };
+  photoshopPluginCache = { checkedAt: Date.now(), value };
+  return value;
+}
+
+function photoshopVersionFromPath(executablePath) {
+  const folder = path.basename(path.dirname(executablePath));
+  return folder.match(/Photoshop\s+(.+)$/i)?.[1]?.trim() ?? '';
+}
+
+function detectLocalPhotoshopInstallations(force = false) {
+  const configuredPath = getLocalSettings().photoshop?.executablePath ?? '';
+  const cacheKey = `${configuredPath.toLowerCase()}|${process.env.LICLICK_PHOTOSHOP_PATH ?? ''}`;
+  if (
+    !force &&
+    photoshopInstallationsCache?.key === cacheKey &&
+    Date.now() - photoshopInstallationsCache.checkedAt < 15_000
+  ) {
+    return photoshopInstallationsCache.value;
+  }
+
+  const candidates = [];
+  const append = (executablePath, source) => {
+    if (typeof executablePath !== 'string' || !executablePath.trim()) return;
+    candidates.push({ executablePath: executablePath.trim().replace(/^"|"$/g, ''), source });
+  };
+  append(configuredPath, 'settings');
+  append(process.env.LICLICK_PHOTOSHOP_PATH, 'environment');
+
+  if (process.platform === 'win32') {
+    for (const registryKey of [
+      'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Photoshop.exe',
+      'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Photoshop.exe',
+    ]) {
+      const result = spawnSync('reg.exe', ['query', registryKey, '/ve'], {
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+      const registryPath = (result.stdout ?? '').match(/REG_SZ\s+(.+?Photoshop\.exe)\s*$/im)?.[1];
+      append(registryPath, 'registry');
+    }
+  }
+
+  for (const programFiles of [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]) {
+    if (!programFiles) continue;
+    const adobeRoot = path.join(programFiles, 'Adobe');
+    try {
+      for (const entry of fs.readdirSync(adobeRoot, { withFileTypes: true })) {
+        if (entry.isDirectory() && /^Adobe Photoshop/i.test(entry.name)) {
+          append(path.join(adobeRoot, entry.name, 'Photoshop.exe'), 'filesystem');
+        }
+      }
+    } catch {
+      // Adobe may not be installed under this Program Files root.
+    }
+  }
+
+  const unique = new Map();
+  for (const candidate of candidates) {
+    const executablePath = path.resolve(candidate.executablePath);
+    try {
+      if (!fs.statSync(executablePath).isFile()) continue;
+    } catch {
+      continue;
+    }
+    const key = executablePath.toLowerCase();
+    if (unique.has(key)) continue;
+    const label = path.basename(path.dirname(executablePath)) || 'Adobe Photoshop';
+    unique.set(key, {
+      id: key,
+      label,
+      version: photoshopVersionFromPath(executablePath),
+      executablePath,
+      source: candidate.source,
+      selected: configuredPath
+        ? key === path.resolve(configuredPath).toLowerCase()
+        : false,
+    });
+  }
+  const value = [...unique.values()].sort((left, right) =>
+    right.version.localeCompare(left.version, undefined, { numeric: true }),
+  );
+  if (!value.some((installation) => installation.selected) && value[0]) value[0].selected = true;
+  photoshopInstallationsCache = { key: cacheKey, checkedAt: Date.now(), value };
+  return value;
+}
+
+async function getPhotoshopStatus() {
+  const localPlugin = getPhotoshopPluginInstallation();
+  const localInstallations = detectLocalPhotoshopInstallations();
+  try {
+    const serverStatus = await requestWorkspaceJson('/api/photoshop/status');
+    const installations = serverStatus.installations?.length
+      ? serverStatus.installations
+      : localInstallations;
+    return {
+      ...serverStatus,
+      installations,
+      selectedInstallation:
+        serverStatus.selectedInstallation ?? installations.find((installation) => installation.selected),
+      serverAvailable: true,
+      localPlugin,
+    };
+  } catch (error) {
+    return {
+      protocolVersion: 'offline',
+      plugin: { connected: false },
+      installations: localInstallations,
+      selectedInstallation: localInstallations.find((installation) => installation.selected),
+      activeSessions: 0,
+      serverAvailable: false,
+      localPlugin,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function installPhotoshopPlugin() {
-  const candidates = [
-    path.join(appRoot, 'plugins', 'photoshop-cep'),
-    path.join(appRoot, 'integrations', 'photoshop-cep'),
-  ];
+  const { candidates, destination } = photoshopPluginDirectories();
   const sourceDirectory = candidates.find((candidate) =>
     fs.existsSync(path.join(candidate, 'CSXS', 'manifest.xml')),
   );
   if (!sourceDirectory) throw new Error('Photoshop 本地桥接插件尚未包含在当前版本中。');
 
-  const roamingAppData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
-  const extensionParent = path.join(roamingAppData, 'Adobe', 'CEP', 'extensions');
-  const destination = path.join(extensionParent, 'com.liclick.live-texture');
+  const extensionParent = path.dirname(destination);
   const temporary = `${destination}.installing-${process.pid}`;
   fs.mkdirSync(extensionParent, { recursive: true });
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -595,7 +765,30 @@ async function installPhotoshopPlugin() {
     }
   }
 
-  return { installed: destination, restartRequired: true };
+  photoshopPluginCache = undefined;
+  return { ...getPhotoshopPluginInstallation(true), restartRequired: true };
+}
+
+function launchPhotoshopFromLauncher() {
+  const installations = detectLocalPhotoshopInstallations(true);
+  const selected = installations.find((installation) => installation.selected) ?? installations[0];
+  if (!selected) {
+    throw new Error('未检测到 Photoshop。请在高级设置中选择 Photoshop.exe 并保存。');
+  }
+  const child = spawn(selected.executablePath, [], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  });
+  child.unref();
+  emitLog(`[desktop] launching Photoshop: ${selected.executablePath}`);
+  return { installation: selected };
+}
+
+function openPhotoshopBackups() {
+  const directory = path.join(workspaceDir, 'photoshop-sessions');
+  fs.mkdirSync(directory, { recursive: true });
+  return shell.openPath(directory);
 }
 
 function showWindow() {
@@ -729,12 +922,11 @@ ipcMain.handle('launcher:open-workspace-dir', () => openWorkspaceDir());
 ipcMain.handle('launcher:open-logs', () => openLogsDir());
 ipcMain.handle('launcher:get-local-settings', () => getLocalSettings());
 ipcMain.handle('launcher:update-local-settings', (_event, input) => updateLocalSettings(input));
-ipcMain.handle('launcher:get-photoshop-status', () => requestWorkspaceJson('/api/photoshop/status'));
-ipcMain.handle('launcher:launch-photoshop', () =>
-  requestWorkspaceJson('/api/photoshop/launch', { method: 'POST', body: {} }),
-);
+ipcMain.handle('launcher:get-photoshop-status', () => getPhotoshopStatus());
+ipcMain.handle('launcher:launch-photoshop', () => launchPhotoshopFromLauncher());
 ipcMain.handle('launcher:choose-photoshop-executable', () => choosePhotoshopExecutable());
 ipcMain.handle('launcher:install-photoshop-plugin', () => installPhotoshopPlugin());
+ipcMain.handle('launcher:open-photoshop-backups', () => openPhotoshopBackups());
 ipcMain.handle('launcher:show-window', () => showWindow());
 ipcMain.handle('launcher:quit', () => {
   isQuitting = true;
