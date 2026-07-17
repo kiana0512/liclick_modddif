@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld('liclickLauncher', {
   openLogs: () => ipcRenderer.invoke('launcher:open-logs'),
   getLocalSettings: () => ipcRenderer.invoke('launcher:get-local-settings'),
   updateLocalSettings: (input) => ipcRenderer.invoke('launcher:update-local-settings', input),
+  getPhotoshopStatus: () => ipcRenderer.invoke('launcher:get-photoshop-status'),
+  launchPhotoshop: () => ipcRenderer.invoke('launcher:launch-photoshop'),
+  choosePhotoshopExecutable: () => ipcRenderer.invoke('launcher:choose-photoshop-executable'),
+  installPhotoshopPlugin: () => ipcRenderer.invoke('launcher:install-photoshop-plugin'),
   quit: () => ipcRenderer.invoke('launcher:quit'),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);

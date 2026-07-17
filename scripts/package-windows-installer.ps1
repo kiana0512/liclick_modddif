@@ -27,6 +27,7 @@ $ElectronSourceDir = Join-Path $Root "node_modules\electron\dist"
 $ElectronDir = Join-Path $StagingRoot "electron"
 $ElectronExe = Join-Path $ElectronDir "Liclick 3D Texture.exe"
 $PackageVersion = (Get-Content -Raw -LiteralPath (Join-Path $Root "package.json") | ConvertFrom-Json).version
+$PhotoshopPluginPackage = Join-Path $Root "dist-plugins\LIclick Live Texture.ccx"
 
 function Invoke-Step {
   param(
@@ -162,6 +163,9 @@ function Copy-SourceFreeRuntimeToStaging {
   Copy-StagingFile "apps\server\scripts\prisma.mjs"
   Copy-StagingDirectory "apps\web\dist"
   Copy-StagingDirectory "apps\desktop"
+  Copy-StagingDirectory "integrations\photoshop-cep" "plugins\photoshop-cep"
+  Copy-StagingFile "dist-plugins\LIclick Live Texture.ccx" "plugins\photoshop-uxp\LIclick Live Texture.ccx"
+  Copy-StagingFile "integrations\photoshop-uxp\README.md" "plugins\photoshop-uxp\README.md"
   Copy-StagingFile "scripts\windows-desktop-launcher.mjs"
   Copy-StagingFile "scripts\windows-desktop-launcher.cmd"
   Copy-StagingFile "scripts\windows-node-bootstrap.ps1"
@@ -300,6 +304,10 @@ try {
       Invoke-LoggedCommand "corepack" @("pnpm", "--filter", "@liclick/server", "build") $buildEnv
       Invoke-LoggedCommand "corepack" @("pnpm", "--filter", "@liclick/web", "build") $buildEnv
     }
+  }
+
+  Invoke-Step "Package Photoshop UXP bridge" {
+    & (Join-Path $Root "scripts\package-photoshop-uxp.ps1") -OutputPath $PhotoshopPluginPackage
   }
 
   Invoke-Step "Prepare installer staging directory" {

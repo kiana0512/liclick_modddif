@@ -346,6 +346,29 @@
                 </div>
                 <span class="setting-value" id="profileSaveStatus">本地保存</span>
               </article>
+              <article class="photoshop-setting-row">
+                <span class="row-icon photoshop-icon">Ps</span>
+                <div>
+                  <strong>Adobe Photoshop 实时编辑</strong>
+                  <p>选择本机 Photoshop 版本；插件仅通过 127.0.0.1 与 LIclick 交换状态和本地纹理文件，不访问互联网。</p>
+                  <div class="inline-setting-controls photoshop-controls">
+                    <select id="photoshopInstallation" class="setting-input" aria-label="Photoshop 版本">
+                      <option value="">自动检测 Photoshop</option>
+                    </select>
+                    <input id="photoshopExecutablePath" class="setting-input path-input" placeholder="Photoshop.exe 路径" />
+                    <button class="button" type="button" id="browsePhotoshop">浏览</button>
+                    <select id="photoshopSyncMode" class="setting-input compact-input" aria-label="同步模式">
+                      <option value="live">实时同步</option>
+                      <option value="save">保存时同步</option>
+                    </select>
+                    <input id="photoshopSyncDelay" class="setting-input delay-input" type="number" min="80" max="5000" step="20" value="120" aria-label="实时同步延迟" />
+                    <button class="button primary" type="button" id="savePhotoshopSettings">保存设置</button>
+                    <button class="button" type="button" id="launchPhotoshop">启动 Photoshop</button>
+                    <button class="button" type="button" id="installPhotoshopPlugin">安装/更新本地插件</button>
+                  </div>
+                </div>
+                <span class="setting-value" id="photoshopStatus">等待检测</span>
+              </article>
               <article>
                 <span class="row-icon"
                   ><svg viewBox="0 0 24 24"><path d="M5 7h14v10H5zM8 10h1M11 10h1M14 10h1M8 13h8" /></svg

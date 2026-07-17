@@ -2,6 +2,7 @@ node_modules
 .pnpm-store/
 dist
 dist-installer/
+dist-plugins/
 .vite
 .turbo
 .DS_Store
@@ -27,5 +28,10 @@ workspace/folders.json
 workspace/recent-projects.json
 workspace/settings.json
 workspace/config/
+workspace/photoshop-sessions/
 workspace-auth-smoke/
 workspace-auth-smoke-feishu/
+
+# Adobe working documents are local recovery data, never source assets.
+*.psd
+*.psb

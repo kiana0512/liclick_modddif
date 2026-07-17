@@ -4,7 +4,17 @@ import { Download, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
-import { ImageLayerEditorDialog } from '@/components/layerEdit/ImageLayerEditorDialog';
+import { PhotoshopEditSessionPanel } from '@/features/photoshop/PhotoshopEditSessionPanel';
+import {
+  closePhotoshopSession,
+  createPhotoshopSession,
+  launchPhotoshop,
+  openPhotoshopSession,
+  subscribePhotoshopSession,
+  syncPhotoshopSession,
+  uploadPhotoshopSessionSource,
+  type PhotoshopSession,
+} from '@/features/photoshop/photoshopBridgeClient';
 import {
   LocalRepaintDialog,
   type LocalRepaintGenerateInput,
@@ -148,7 +158,6 @@ const resolutionToSize = {
 
 const LOCAL_REPAINT_CAPTURE_SCALE = 0.75;
 const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 1536;
-const IMAGE_EDIT_MAPPED_PREVIEW_SIZE = 3072;
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
 const PROJECT_THUMBNAIL_SIZE = 2048;
@@ -626,10 +635,13 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     'idle',
   );
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
-  const [imageEditLayerId, setImageEditLayerId] = useState<string>();
-  const [imageEditLayerSnapshot, setImageEditLayerSnapshot] = useState<Layer>();
-  const [imageEditMappedPreviewUrl, setImageEditMappedPreviewUrl] = useState<string>();
-  const imageEditPreviewChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
+  const [photoshopEditBusy, setPhotoshopEditBusy] = useState(false);
+  const photoshopEditSessionRef = useRef<PhotoshopSession>();
+  const photoshopEditLayerSnapshotRef = useRef<Layer>();
+  const photoshopEditUnsubscribeRef = useRef<() => void>();
+  const photoshopEditRevisionRef = useRef(0);
+  const photoshopProjectSyncHeldRef = useRef(false);
   const suppressProjectLayerSyncRef = useRef(0);
   const restoredHistoryProjectIdRef = useRef<string>();
   const localRepaintRuntime = useLocalRepaintStore((state) => state.runtime);
@@ -698,8 +710,6 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
   const canUndo = useEditorHistoryStore((state) => state.past.length > 0);
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
   const activeLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
-  const imageEditLayer =
-    imageEditLayerSnapshot ?? layers.find((item) => item.id === imageEditLayerId);
   const activeBakedTexture = project?.bakedTextures.find(
     (texture) => texture.id === activeLayer?.bakedTextureId,
   );
@@ -2360,132 +2370,178 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     }
   }
 
-  function openLayerImageEdit(layer: Layer) {
-    setImageEditLayerId(layer.id);
-    setImageEditLayerSnapshot({ ...layer });
-    setImageEditMappedPreviewUrl(undefined);
-    window.requestAnimationFrame(() => {
-      void captureLayerMappedPreview(layer).then((preview) => {
-        if (preview) setImageEditMappedPreviewUrl(preview);
+  function holdPhotoshopPreviewProjectSync() {
+    if (photoshopProjectSyncHeldRef.current) return;
+    suppressProjectLayerSyncRef.current += 1;
+    photoshopProjectSyncHeldRef.current = true;
+  }
+
+  function releasePhotoshopPreviewProjectSync() {
+    if (!photoshopProjectSyncHeldRef.current) return;
+    suppressProjectLayerSyncRef.current = Math.max(0, suppressProjectLayerSyncRef.current - 1);
+    photoshopProjectSyncHeldRef.current = false;
+  }
+
+  function clearPhotoshopEditSession() {
+    photoshopEditUnsubscribeRef.current?.();
+    photoshopEditUnsubscribeRef.current = undefined;
+    photoshopEditSessionRef.current = undefined;
+    photoshopEditLayerSnapshotRef.current = undefined;
+    photoshopEditRevisionRef.current = 0;
+    setPhotoshopEditSession(undefined);
+  }
+
+  function receivePhotoshopSession(nextSession: PhotoshopSession) {
+    photoshopEditSessionRef.current = nextSession;
+    setPhotoshopEditSession(nextSession);
+    const snapshot = photoshopEditLayerSnapshotRef.current;
+    if (
+      !snapshot ||
+      !nextSession.latestImageUrl ||
+      nextSession.latestRevision <= photoshopEditRevisionRef.current
+    ) {
+      return;
+    }
+    photoshopEditRevisionRef.current = nextSession.latestRevision;
+    const current = useLayerStore.getState().layers.find((layer) => layer.id === snapshot.id);
+    updateLayer(snapshot.id, {
+      imageUrl: nextSession.latestImageUrl,
+      contentRevision: Math.max((current?.contentRevision ?? 0) + 1, nextSession.latestRevision),
+    });
+    scheduleTexturedThumbnailRefresh(snapshot.type === 'uv' ? 250 : 450);
+  }
+
+  async function openLayerImageEdit(layer: Layer) {
+    if (photoshopEditSessionRef.current) {
+      pushToast({
+        tone: 'warning',
+        title: 'Photoshop 编辑会话正在运行',
+        description: '请先应用或放弃当前 Photoshop 编辑，再打开其他图层。',
+        dedupeKey: 'photoshop-session-already-open',
       });
-    });
+      return;
+    }
+    if (!project || !layer.imageUrl || (layer.type !== 'projected' && layer.type !== 'uv')) return;
+    setPhotoshopEditBusy(true);
+    let createdSession: PhotoshopSession | undefined;
+    try {
+      const registeredBlob = getRegisteredObjectUrlBlob(layer.imageUrl);
+      const sourceBlob: Blob =
+        registeredBlob ??
+        (await fetch(layer.imageUrl).then((response) => {
+          if (!response.ok) throw new Error(`无法读取图层图片（${response.status}）。`);
+          return response.blob();
+        }).then((blob) => blob));
+      createdSession = await createPhotoshopSession({
+        projectId: project.id,
+        layerId: layer.id,
+        layerName: layer.name,
+        layerType: layer.type,
+      });
+      photoshopEditLayerSnapshotRef.current = { ...layer };
+      photoshopEditSessionRef.current = createdSession;
+      photoshopEditRevisionRef.current = 0;
+      holdPhotoshopPreviewProjectSync();
+      setPhotoshopEditSession(createdSession);
+      photoshopEditUnsubscribeRef.current = subscribePhotoshopSession(
+        createdSession,
+        receivePhotoshopSession,
+      );
+      const uploaded = await uploadPhotoshopSessionSource(createdSession, sourceBlob);
+      receivePhotoshopSession(uploaded);
+      receivePhotoshopSession(await openPhotoshopSession(uploaded));
+    } catch (error) {
+      if (createdSession) void closePhotoshopSession(createdSession).catch(() => undefined);
+      releasePhotoshopPreviewProjectSync();
+      clearPhotoshopEditSession();
+      pushToast({
+        tone: 'error',
+        title: '无法启动 Photoshop 编辑',
+        description: error instanceof Error ? error.message : 'Photoshop 本地桥接启动失败。',
+      });
+    } finally {
+      setPhotoshopEditBusy(false);
+    }
   }
 
-  function closeLayerImageEdit() {
-    setImageEditLayerId(undefined);
-    setImageEditLayerSnapshot(undefined);
-    setImageEditMappedPreviewUrl(undefined);
+  async function handlePhotoshopSyncNow() {
+    const session = photoshopEditSessionRef.current;
+    if (!session) return;
+    try {
+      receivePhotoshopSession(await syncPhotoshopSession(session));
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: 'Photoshop 同步失败',
+        description: error instanceof Error ? error.message : '无法请求 Photoshop 导出纹理。',
+      });
+    }
   }
 
-  function getLayerMappedPreviewCamera(layer: Layer) {
-    if (!layer.camera) return undefined;
-    const targetModel =
-      useSceneStore.getState().importedModels.find((model) => model.objectId === layer.objectId) ??
-      importedModel;
-    if (!layer.objectMatrixWorld || !targetModel) return layer.camera;
-
-    targetModel.group.updateMatrixWorld(true);
-    const captureObjectMatrix = new THREE.Matrix4().fromArray(layer.objectMatrixWorld);
-    const currentObjectMatrix = targetModel.group.matrixWorld.clone();
-    const captureToCurrent = currentObjectMatrix.multiply(captureObjectMatrix.clone().invert());
-    const rotationDelta = new THREE.Quaternion().setFromRotationMatrix(
-      new THREE.Matrix4().extractRotation(captureToCurrent),
-    );
-    const position = new THREE.Vector3()
-      .fromArray(layer.camera.position)
-      .applyMatrix4(captureToCurrent);
-    const target = new THREE.Vector3()
-      .fromArray(layer.camera.target)
-      .applyMatrix4(captureToCurrent);
-    const quaternion = rotationDelta.multiply(
-      new THREE.Quaternion().fromArray(layer.camera.quaternion),
-    );
-    const matrixWorld = new THREE.Matrix4().compose(
-      position,
-      quaternion,
-      new THREE.Vector3(1, 1, 1),
-    );
-
-    return {
-      ...layer.camera,
-      position: position.toArray() as [number, number, number],
-      target: target.toArray() as [number, number, number],
-      quaternion: quaternion.toArray() as [number, number, number, number],
-      matrixWorld: matrixWorld.toArray(),
-      viewMatrix: matrixWorld.clone().invert().toArray(),
-    };
+  async function handlePhotoshopApply() {
+    const session = photoshopEditSessionRef.current;
+    const snapshot = photoshopEditLayerSnapshotRef.current;
+    if (!session?.latestImageUrl || !snapshot || !project) return;
+    setPhotoshopEditBusy(true);
+    try {
+      const response = await fetch(session.latestImageUrl);
+      if (!response.ok) throw new Error(`无法读取 Photoshop 同步结果（${response.status}）。`);
+      const imageBlob = await response.blob();
+      const saved = await saveBlobAsset({
+        projectId: project.id,
+        category: 'layers',
+        blob: imageBlob,
+        filename: `${snapshot.id}-photoshop-${session.latestRevision}.png`,
+      });
+      updateLayer(snapshot.id, snapshot);
+      captureHistory(`应用 Photoshop 编辑：${snapshot.name}`);
+      releasePhotoshopPreviewProjectSync();
+      updateLayer(snapshot.id, {
+        imageUrl: saved.asset.url,
+        contentRevision: Math.max((snapshot.contentRevision ?? 0) + 1, session.latestRevision),
+        needsRebake: snapshot.isBaked ? true : snapshot.needsRebake,
+      });
+      setProjectLayers(useLayerStore.getState().layers);
+      await closePhotoshopSession(session).catch(() => undefined);
+      clearPhotoshopEditSession();
+      scheduleTexturedThumbnailRefresh(snapshot.type === 'uv' ? 250 : 450);
+      pushToast({
+        tone: 'success',
+        title: 'Photoshop 纹理已应用',
+        description: snapshot.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
+      });
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: '无法应用 Photoshop 纹理',
+        description: error instanceof Error ? error.message : '保存 Photoshop 编辑结果失败。',
+      });
+    } finally {
+      setPhotoshopEditBusy(false);
+    }
   }
 
-  async function captureLayerMappedPreview(layer: Layer, imageUrl?: string) {
-    const run = async () => {
-      const previousLayers = useLayerStore.getState().layers.map((item) => ({ ...item }));
-      const previousActiveLayerId = useLayerStore.getState().activeProjectedLayerId;
-      let preview: string | undefined;
-      suppressProjectLayerSyncRef.current += 1;
-      try {
-        setLayers(
-          previousLayers.map((item) =>
-            item.id === layer.id
-              ? { ...item, imageUrl: imageUrl ?? item.imageUrl, visible: true }
-              : item,
-          ),
-        );
-        await waitForViewportMaterialRefresh();
-        const previewCamera = getLayerMappedPreviewCamera(layer);
-        preview =
-          getViewportThumbnailDataUrl({
-            camera: previewCamera,
-            width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-            height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-            cropVisibleContent: true,
-            matchCameraToRenderAspect: true,
-          }) ??
-          getViewportThumbnailDataUrl({
-            width: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-            height: IMAGE_EDIT_MAPPED_PREVIEW_SIZE,
-            cropVisibleContent: true,
-            matchCameraToRenderAspect: true,
-          });
-      } finally {
-        setLayers(previousLayers);
-        if (previousActiveLayerId) setActiveLayer(previousActiveLayerId);
-        await waitForViewportMaterialRefresh();
-        suppressProjectLayerSyncRef.current = Math.max(0, suppressProjectLayerSyncRef.current - 1);
-      }
-      if (preview) setImageEditMappedPreviewUrl(preview);
-      return preview;
-    };
-
-    const chained = imageEditPreviewChainRef.current.catch(() => undefined).then(run);
-    imageEditPreviewChainRef.current = chained.catch(() => undefined);
-    return chained;
+  function handlePhotoshopCancel() {
+    const session = photoshopEditSessionRef.current;
+    const snapshot = photoshopEditLayerSnapshotRef.current;
+    if (snapshot) updateLayer(snapshot.id, snapshot);
+    releasePhotoshopPreviewProjectSync();
+    if (snapshot) setProjectLayers(useLayerStore.getState().layers);
+    if (session) void closePhotoshopSession(session).catch(() => undefined);
+    clearPhotoshopEditSession();
+    if (snapshot) scheduleTexturedThumbnailRefresh(snapshot.type === 'uv' ? 250 : 450);
   }
 
-  async function refreshLayerImageMappedPreview(dataUrl: string) {
-    const targetLayerId = imageEditLayerId;
-    if (!targetLayerId) return undefined;
-    const targetLayer =
-      useLayerStore.getState().layers.find((item) => item.id === targetLayerId) ??
-      imageEditLayerSnapshot;
-    if (!targetLayer) return undefined;
-    return captureLayerMappedPreview(targetLayer, dataUrl);
-  }
-
-  async function applyLayerImageEdit(dataUrl: string) {
-    const targetLayer = imageEditLayer;
-    if (!targetLayer) return;
-    captureHistory(`应用图像编辑：${targetLayer.name}`);
-    const imageUrl = await persistEditedLayerDataUrl(targetLayer, dataUrl);
-    updateLayerImage(targetLayer.id, imageUrl);
-    setProjectLayers(useLayerStore.getState().layers);
-    closeLayerImageEdit();
-    scheduleTexturedThumbnailRefresh(targetLayer.type === 'uv' ? 250 : 450);
-    pushToast({
-      tone: 'success',
-      title: t('imageEditApplied'),
-      description:
-        targetLayer.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
-    });
+  async function handlePhotoshopLaunch() {
+    try {
+      await launchPhotoshop();
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: '无法启动 Photoshop',
+        description: error instanceof Error ? error.message : '请在启动器高级设置中选择 Photoshop。',
+      });
+    }
   }
 
   const completeLocalRepaintRuntime = useCallback(
@@ -4111,15 +4167,16 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           error={localRepaintRuntime.error}
         />
       )}
-      {imageEditLayer && (
-        <ImageLayerEditorDialog
-          layer={imageEditLayer}
-          mappedPreviewUrl={imageEditMappedPreviewUrl}
-          onRefreshMappedPreview={refreshLayerImageMappedPreview}
-          onApply={applyLayerImageEdit}
-          onCancel={closeLayerImageEdit}
+      {photoshopEditSession ? (
+        <PhotoshopEditSessionPanel
+          session={photoshopEditSession}
+          busy={photoshopEditBusy}
+          onSync={() => void handlePhotoshopSyncNow()}
+          onApply={() => void handlePhotoshopApply()}
+          onCancel={handlePhotoshopCancel}
+          onLaunch={() => void handlePhotoshopLaunch()}
         />
-      )}
+      ) : null}
       {manualBakeProgress &&
         createPortal(<AutoBakeProgressBar progress={manualBakeProgress} />, document.body)}
     </>

@@ -10,6 +10,7 @@ type LocalSettingsInput = {
   profile?: unknown;
   shortcutOverrides?: unknown;
   migrationShortcutOverrides?: unknown;
+  photoshop?: unknown;
 };
 
 export async function handleLocalSettingsRoute(

@@ -685,6 +685,28 @@ svg {
 .profile-setting-row {
   min-height: 122px !important;
 }
+.photoshop-setting-row {
+  min-height: 160px !important;
+}
+.photoshop-icon {
+  border-radius: 10px;
+  color: #70c9ff;
+  background: #071f33;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+.photoshop-controls .path-input {
+  min-width: 360px;
+  flex: 1 1 360px;
+}
+.photoshop-controls .compact-input {
+  min-width: 130px;
+}
+.photoshop-controls .delay-input {
+  min-width: 104px;
+  width: 104px;
+}
 .local-avatar {
   display: grid;
   width: 48px;
