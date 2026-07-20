@@ -21,7 +21,7 @@ function buildGridGeometry(size: number, step: number, majorEvery: number, major
   return geometry;
 }
 
-export function Grid() {
+export function Grid({ variant = 'default' }: { variant?: 'default' | 'subtle' }) {
   const minorGeometry = useMemo(() => buildGridGeometry(140, 1, 4, false), []);
   const majorGeometry = useMemo(() => buildGridGeometry(140, 1, 4, true), []);
 
@@ -29,18 +29,18 @@ export function Grid() {
     <group position={[0, -0.018, 0]} renderOrder={-10} userData={{ liclickViewportHelper: true }}>
       <lineSegments geometry={minorGeometry} frustumCulled={false}>
         <lineBasicMaterial
-          color="#302346"
+          color={variant === 'subtle' ? '#26304a' : '#302346'}
           transparent
-          opacity={0.34}
+          opacity={variant === 'subtle' ? 0.18 : 0.34}
           depthWrite={false}
           toneMapped={false}
         />
       </lineSegments>
       <lineSegments geometry={majorGeometry} frustumCulled={false}>
         <lineBasicMaterial
-          color="#d4774c"
+          color={variant === 'subtle' ? '#34405c' : '#d4774c'}
           transparent
-          opacity={0.78}
+          opacity={variant === 'subtle' ? 0.22 : 0.78}
           depthWrite={false}
           toneMapped={false}
         />

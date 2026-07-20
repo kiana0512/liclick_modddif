@@ -86,6 +86,7 @@ import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
+import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
@@ -130,6 +131,8 @@ import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 type EditorPageProps = {
   projectId: string;
   onBack: () => void;
+  onOpenBake: () => void;
+  onOpenDelivery: () => void;
 };
 
 declare global {
@@ -635,7 +638,7 @@ function arrangeImportedModelForComparison(
   };
 }
 
-export function EditorPage({ projectId, onBack }: EditorPageProps) {
+export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const loadedProjectIdRef = useRef<string>();
@@ -1963,11 +1966,11 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     void handleManualSave();
   };
 
-  function handleBackToProjects() {
+  function navigateAfterProjectSave(navigate: () => void) {
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
-      onBack();
+      navigate();
       return;
     }
 
@@ -1979,22 +1982,24 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const snapshot = getProjectSnapshot();
     if (!snapshot) {
       backNavigationPendingRef.current = false;
-      onBack();
+      navigate();
       return;
     }
 
     setSaveStatus('saving');
 
-    // Navigation must never wait for asset uploads. The request keeps running
-    // after this screen unmounts, and a second pass captures any state that
-    // changed while the first snapshot was being persisted.
-    onBack();
+    // Hand the live scene snapshot to the next workflow module synchronously.
+    // Disk persistence can continue in the background, but Module 2 must never
+    // see the older empty server snapshot while that request is still running.
+    const navigationSnapshot = {
+      ...snapshot,
+      thumbnail: thumbnail ?? snapshot.thumbnail,
+    };
+    replaceCurrentProject(navigationSnapshot);
+    navigate();
     void (async () => {
       try {
-        let result = await saveToWorkspaceServer({
-          ...snapshot,
-          thumbnail: thumbnail ?? snapshot.thumbnail,
-        });
+        let result = await saveToWorkspaceServer(navigationSnapshot);
         if (!result.savedLatestSnapshot) {
           const latestSnapshot = getProjectSnapshot();
           if (latestSnapshot) result = await saveToWorkspaceServer(latestSnapshot);
@@ -2007,6 +2012,10 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         backNavigationPendingRef.current = false;
       }
     })();
+  }
+
+  function handleBackToProjects() {
+    navigateAfterProjectSave(onBack);
   }
 
   function getBakeProgressDetail(progress: BakeProgress) {
@@ -4156,6 +4165,15 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         projectName={project?.name ?? 'Untitled Project'}
         workspaceLabel={getWorkspaceLabel()}
         onBack={handleBackToProjects}
+        workflowSwitcher={
+          <WorkflowModuleSwitcher
+            compact
+            activeModule="texture"
+            onOpenTexture={() => undefined}
+            onOpenBake={() => navigateAfterProjectSave(onOpenBake)}
+            onOpenDelivery={() => navigateAfterProjectSave(onOpenDelivery)}
+          />
+        }
         exportMenu={
           <ExportMenu
             canExportScene={Boolean(importedModel && viewport)}

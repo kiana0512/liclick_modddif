@@ -37,6 +37,10 @@ type ProjectStore = {
 
 function getReferencedObjectIds(project: Project) {
   const referenced = new Set<string>();
+  Object.entries(project.bakeWorkspace?.bakeSets ?? {}).forEach(([objectId, bakeSet]) => {
+    referenced.add(objectId);
+    referenced.add(bakeSet.objectId);
+  });
   project.references?.forEach((reference) => {
     if (reference.objectId) referenced.add(reference.objectId);
   });

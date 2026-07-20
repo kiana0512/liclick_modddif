@@ -151,8 +151,36 @@ function workspaceUrlToProjectRelative(userId: string, slug: string, value?: str
     : value;
 }
 
+function mapBakeWorkspaceAssetUrls(
+  workspace: unknown,
+  mapUrl: (url?: string) => string | undefined,
+) {
+  if (!isRecord(workspace) || !isRecord(workspace.bakeSets)) return workspace;
+  const bakeSets = Object.fromEntries(
+    Object.entries(workspace.bakeSets).map(([objectId, value]) => {
+      if (!isRecord(value)) return [objectId, value];
+      const next = { ...value };
+      (['low', 'cage', 'color'] as const).forEach((key) => {
+        const asset = value[key];
+        if (isRecord(asset)) next[key] = { ...asset, url: mapUrl(readString(asset.url)) };
+      });
+      return [objectId, next];
+    }),
+  );
+  return { ...workspace, bakeSets };
+}
+
 function collectReferencedObjectIds(project: WorkspaceProject) {
   const referenced = new Set<string>();
+  if (isRecord(project.bakeWorkspace) && isRecord(project.bakeWorkspace.bakeSets)) {
+    Object.entries(project.bakeWorkspace.bakeSets).forEach(([objectId, bakeSet]) => {
+      referenced.add(objectId);
+      if (isRecord(bakeSet)) {
+        const explicitObjectId = readString(bakeSet.objectId);
+        if (explicitObjectId) referenced.add(explicitObjectId);
+      }
+    });
+  }
   project.references.forEach((reference) => {
     if (isRecord(reference)) {
       const objectId = readString(reference.objectId);
@@ -241,6 +269,7 @@ function normalizeProjectAssetReferences(userId: string, slug: string, project: 
     bakedTextures: bakedTextures.map((texture) =>
       isRecord(texture) ? { ...texture, imageUrl: normalizeUrl(readString(texture.imageUrl)) } : texture,
     ),
+    bakeWorkspace: mapBakeWorkspaceAssetUrls(project.bakeWorkspace, normalizeUrl),
   };
 }
 
@@ -416,6 +445,7 @@ function resolveProjectAssets(userId: string, slug: string, project: WorkspacePr
         ? { ...texture, imageUrl: resolveUrl((texture as { imageUrl?: string }).imageUrl) }
         : texture,
     ),
+    bakeWorkspace: mapBakeWorkspaceAssetUrls(project.bakeWorkspace, resolveUrl),
   };
 }
 

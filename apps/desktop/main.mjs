@@ -19,7 +19,7 @@ const workspaceUrl =
 const webUrl = process.env.LICLICK_FRONTEND_URL ?? `http://127.0.0.1:${webPort}`;
 const rendererUrl = new URL('./renderer/index.html', import.meta.url);
 const iconPath = path.join(appRoot, 'assets', 'liclick-icon.png');
-const shellBuild = '2026.07.17.1603';
+const shellBuild = '2026.07.20.1846';
 
 const state = {
   launcherPid: undefined,
@@ -46,6 +46,7 @@ let isStarting = false;
 let isQuitting = false;
 let hasShownTrayHint = false;
 let hasAutoOpenedWorkspace = false;
+let hasAutoLaunchedSubstance = false;
 let lastLogLines = [];
 let photoshopPluginCache;
 let photoshopInstallationsCache;
@@ -538,6 +539,32 @@ function autoOpenWorkspace() {
     .catch((error) => emitLog(`[desktop] failed to open workspace: ${error.message}`));
 }
 
+function launchSubstanceDesignerAtStartup() {
+  if (hasAutoLaunchedSubstance || process.env.LICLICK_AUTO_LAUNCH_SUBSTANCE === '0') return;
+  hasAutoLaunchedSubstance = true;
+  const executablePath =
+    process.env.LICLICK_SUBSTANCE_DESIGNER_PATH ??
+    'C:\\Program Files\\Adobe\\Adobe Substance 3D Designer\\Adobe Substance 3D Designer.exe';
+  if (!fs.existsSync(executablePath)) {
+    emitLog(`[desktop] Substance Designer not found: ${executablePath}`);
+    return;
+  }
+  if (process.platform === 'win32') {
+    const running = spawnSync(
+      'tasklist.exe',
+      ['/FI', 'IMAGENAME eq Adobe Substance 3D Designer.exe', '/NH'],
+      { windowsHide: true, encoding: 'utf8' },
+    );
+    if (/Adobe Substance 3D Designer\.exe/i.test(running.stdout ?? '')) {
+      emitLog('[desktop] Substance Designer is already running.');
+      return;
+    }
+  }
+  const child = spawn(executablePath, [], { detached: true, stdio: 'ignore', windowsHide: false });
+  child.unref();
+  emitLog(`[desktop] launching Substance Designer: ${executablePath}`);
+}
+
 function openLogsDir() {
   fs.mkdirSync(logsDir, { recursive: true });
   shell.openPath(logsDir);
@@ -898,6 +925,7 @@ if (!gotLock) {
     createTray();
     startHealthPolling();
     startServices().catch((error) => emitLog(`[desktop] startup failed: ${error.message}`));
+    launchSubstanceDesignerAtStartup();
   });
 }
 

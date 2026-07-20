@@ -3,10 +3,20 @@ import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { useAuthStore } from './stores/authStore';
 
-type RouteState = { name: 'projects' } | { name: 'editor'; projectId: string };
+type RouteState =
+  | { name: 'projects' }
+  | { name: 'editor'; projectId: string }
+  | { name: 'bake'; projectId: string }
+  | { name: 'delivery'; projectId: string };
 
 const ProjectsPage = lazy(() => import('./routes/ProjectsPage').then((module) => ({ default: module.ProjectsPage })));
 const EditorPage = lazy(() => import('./routes/EditorPage').then((module) => ({ default: module.EditorPage })));
+const BakeWorkspacePage = lazy(() =>
+  import('./routes/BakeWorkspacePage').then((module) => ({ default: module.BakeWorkspacePage })),
+);
+const DeliveryWorkspacePage = lazy(() =>
+  import('./routes/DeliveryWorkspacePage').then((module) => ({ default: module.DeliveryWorkspacePage })),
+);
 
 function AppRouteFallback() {
   return (
@@ -29,12 +39,21 @@ function stripAppBasePath(pathname: string) {
 
 function routeFromPath(pathname: string): RouteState {
   const segments = stripAppBasePath(pathname).split('/').filter(Boolean).map(decodeURIComponent);
-  if (segments[0] === 'project' && segments[1]) return { name: 'editor', projectId: segments[1] };
+  if (segments[0] === 'project' && segments[1]) {
+    if (segments[2] === 'bake') return { name: 'bake', projectId: segments[1] };
+    if (segments[2] === 'delivery') return { name: 'delivery', projectId: segments[1] };
+    return { name: 'editor', projectId: segments[1] };
+  }
   return { name: 'projects' };
 }
 
 function pathFromRoute(route: RouteState) {
-  const path = route.name === 'editor' ? `/project/${encodeURIComponent(route.projectId)}` : '/projects';
+  const path =
+    route.name === 'projects'
+      ? '/projects'
+      : route.name === 'editor'
+        ? `/project/${encodeURIComponent(route.projectId)}`
+        : `/project/${encodeURIComponent(route.projectId)}/${route.name}`;
   return `${appBasePath()}${path}`;
 }
 
@@ -54,6 +73,16 @@ export function App() {
       },
       openEditor: (projectId: string) => {
         const nextRoute: RouteState = { name: 'editor', projectId };
+        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        setRoute(nextRoute);
+      },
+      openBake: (projectId: string) => {
+        const nextRoute: RouteState = { name: 'bake', projectId };
+        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        setRoute(nextRoute);
+      },
+      openDelivery: (projectId: string) => {
+        const nextRoute: RouteState = { name: 'delivery', projectId };
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
       },
@@ -103,7 +132,44 @@ export function App() {
     return (
       <>
         <Suspense fallback={<AppRouteFallback />}>
-          <EditorPage projectId={route.projectId} onBack={navigation.openProjects} />
+          <EditorPage
+            projectId={route.projectId}
+            onBack={navigation.openProjects}
+            onOpenBake={() => navigation.openBake(route.projectId)}
+            onOpenDelivery={() => navigation.openDelivery(route.projectId)}
+          />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
+
+  if (route.name === 'bake') {
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <BakeWorkspacePage
+            projectId={route.projectId}
+            onBack={navigation.openProjects}
+            onOpenTexture={() => navigation.openEditor(route.projectId)}
+            onOpenDelivery={() => navigation.openDelivery(route.projectId)}
+          />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
+
+  if (route.name === 'delivery') {
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <DeliveryWorkspacePage
+            projectId={route.projectId}
+            onBack={navigation.openProjects}
+            onOpenTexture={() => navigation.openEditor(route.projectId)}
+            onOpenBake={() => navigation.openBake(route.projectId)}
+          />
         </Suspense>
         <ToastHost />
       </>

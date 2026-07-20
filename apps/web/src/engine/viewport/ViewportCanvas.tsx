@@ -8,6 +8,7 @@ import {
   useState,
   type DragEvent,
   type PointerEvent,
+  type ReactNode,
   type WheelEvent,
 } from 'react';
 import * as THREE from 'three';
@@ -50,6 +51,12 @@ type ViewportCanvasProps = {
   onImportModels: (files: File[]) => void;
   onImportReferenceImages: (files: File[]) => void;
   onOpenImport: () => void;
+  showGrid?: boolean;
+  gridVariant?: 'default' | 'subtle';
+  backgroundColor?: string;
+  showCaptureFrame?: boolean;
+  showViewCube?: boolean;
+  sceneOverlay?: ReactNode;
 };
 
 const MODEL_FILE_EXTENSIONS = new Set(['glb', 'gltf', 'fbx', 'obj', 'stl']);
@@ -243,14 +250,23 @@ function recordSurfacePaintPerf(durationMs: number) {
   });
 }
 
-function AcceleratedSceneRoot() {
+function AcceleratedSceneRoot({
+  showGrid = true,
+  gridVariant = 'default',
+  sceneOverlay,
+}: {
+  showGrid?: boolean;
+  gridVariant?: 'default' | 'subtle';
+  sceneOverlay?: ReactNode;
+}) {
   const modelSignature = useSceneStore((state) =>
     state.importedModels.map((model) => `${model.objectId}:${model.group.uuid}`).join('|'),
   );
 
   return (
     <Bvh key={modelSignature} firstHitOnly maxLeafTris={12} verbose={false}>
-      <SceneRoot />
+      <SceneRoot showGrid={showGrid} gridVariant={gridVariant} />
+      {sceneOverlay}
     </Bvh>
   );
 }
@@ -3971,6 +3987,12 @@ export function ViewportCanvas({
   onImportModels,
   onImportReferenceImages,
   onOpenImport,
+  showGrid = true,
+  gridVariant = 'default',
+  backgroundColor = '#080914',
+  showCaptureFrame = true,
+  showViewCube = true,
+  sceneOverlay,
 }: ViewportCanvasProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [captureFrameVisible, setCaptureFrameVisible] = useState(false);
@@ -4027,7 +4049,8 @@ export function ViewportCanvas({
 
   return (
     <div
-      className="relative h-full w-full bg-[#080914]"
+      className="relative h-full w-full"
+      style={{ backgroundColor }}
       onPointerDownCapture={paintTool === 'none' ? pulseCaptureFrame : undefined}
       onPointerMoveCapture={paintTool === 'none' ? handlePointerMove : undefined}
       onWheelCapture={handleWheel}
@@ -4085,22 +4108,22 @@ export function ViewportCanvas({
           setViewportIssue(error instanceof Error ? error.message : '视口渲染失败。');
         }}
       >
-        <color attach="background" args={['#080914']} />
+        <color attach="background" args={[backgroundColor]} />
         <Suspense fallback={null}>
           <RendererSettings />
           <ViewportPerformanceProbe enabled={performanceTestModeEnabled} />
-          <AcceleratedSceneRoot />
+          <AcceleratedSceneRoot showGrid={showGrid} gridVariant={gridVariant} sceneOverlay={sceneOverlay} />
           <SurfacePaintOverlay />
         </Suspense>
         <CameraController />
       </Canvas>
       {performanceTestModeEnabled && <PerformanceTestHud />}
-      <div
+      {showCaptureFrame ? <div
         className={`pointer-events-none absolute left-1/2 top-1/2 z-20 h-[82%] w-[72%] max-w-[1280px] -translate-x-1/2 -translate-y-1/2 rounded-[18px] border-[3px] border-dashed border-[#d9795c]/75 shadow-[0_0_0_1px_rgba(217,121,92,0.12)] transition-opacity duration-300 ${
           captureFrameVisible && workspaceMode !== 'scene' ? 'opacity-100' : 'opacity-0'
         }`}
         aria-hidden="true"
-      />
+      /> : null}
       {viewportIssue && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-[#080914]/86 px-5 text-white backdrop-blur-sm">
           <div className="grid max-w-[420px] gap-3 rounded-lg border border-white/14 bg-black/50 p-4 text-center shadow-2xl">
@@ -4119,7 +4142,7 @@ export function ViewportCanvas({
           </div>
         </div>
       )}
-      <ViewCube />
+      {showViewCube ? <ViewCube /> : null}
       {!hasImportedModel && (
         <button
           type="button"

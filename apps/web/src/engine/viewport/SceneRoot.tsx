@@ -1243,7 +1243,13 @@ function ImportedModel({
   );
 }
 
-export function SceneRoot() {
+export function SceneRoot({
+  showGrid = true,
+  gridVariant = 'default',
+}: {
+  showGrid?: boolean;
+  gridVariant?: 'default' | 'subtle';
+} = {}) {
   const importedModels = useSceneStore((state) => state.importedModels);
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
@@ -1287,7 +1293,7 @@ export function SceneRoot() {
       <hemisphereLight args={['#fff0e8', '#302640', 0.82]} />
       <directionalLight position={keyLightPosition} intensity={keyIntensity} castShadow />
       <directionalLight position={fillLightPosition} intensity={fillIntensity} />
-      <Grid />
+      {showGrid ? <Grid variant={gridVariant} /> : null}
       {renderedModels.map((model) => (
         <ImportedModel
           key={model.objectId}

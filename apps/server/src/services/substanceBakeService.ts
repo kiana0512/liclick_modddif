@@ -1,0 +1,331 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { serverConfig } from '../config.js';
+
+export type BakeChannelId = 'baseColor' | 'ambientOcclusion' | 'normal';
+
+export type NormalBakeSettings = {
+  resolution: 1024 | 2048 | 4096 | 8192;
+  padding: number;
+  sampling: '1x1' | '2x2' | '4x4' | '8x8';
+  normalOrientation: 'directx' | 'opengl';
+  device: 'gpu' | 'cpu';
+  udim: number;
+  frontalDistance: number;
+  rearDistance: number;
+  matchMode: 'always' | 'by-name';
+  projectionMode: 'distance' | 'cage';
+  hitStrategy: 'inward' | 'closest-from-source';
+  ignoreBackfaces: boolean;
+  channels: BakeChannelId[];
+};
+
+export type BakeUpload = { fileName: string; data: Buffer };
+
+export type NormalBakeJob = {
+  id: string;
+  kind: 'bake-maps';
+  projectId: string;
+  objectId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  stage: 'waiting-for-worker' | 'baking-maps' | 'verifying-file' | 'finished';
+  progress: number;
+  settings: NormalBakeSettings;
+  input: { high: string; low: string; cage?: string; color?: string };
+  output?: { fileName: string; width: number; height: number; url: string };
+  outputs?: Partial<Record<BakeChannelId, { fileName: string; width: number; height: number; url: string }>>;
+  error?: string;
+  logs: string[];
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
+type InternalJob = NormalBakeJob & {
+  directory: string;
+  highPath: string;
+  lowPath: string;
+  cagePath?: string;
+  colorPath?: string;
+  outputPaths: Record<BakeChannelId, string>;
+};
+
+const jobs = new Map<string, InternalJob>();
+const processes = new Map<string, ChildProcessWithoutNullStreams>();
+const maxLogLines = 400;
+
+function locateBaker() {
+  const configured = process.env.LICLICK_SUBSTANCE_BAKER_PATH?.trim();
+  const candidates = [
+    configured,
+    process.platform === 'win32'
+      ? 'C:\\Program Files\\Adobe\\Adobe Substance 3D Designer\\substance3d_baker.exe'
+      : undefined,
+    'substance3d_baker',
+  ].filter((value): value is string => Boolean(value));
+  return candidates.find((candidate) => candidate === 'substance3d_baker' || fs.existsSync(candidate));
+}
+
+function publicJob(job: InternalJob): NormalBakeJob {
+  const result: Partial<InternalJob> = { ...job };
+  delete result.directory;
+  delete result.highPath;
+  delete result.lowPath;
+  delete result.cagePath;
+  delete result.colorPath;
+  delete result.outputPaths;
+  return result as NormalBakeJob;
+}
+
+function persist(job: InternalJob) {
+  job.updatedAt = new Date().toISOString();
+  fs.writeFileSync(path.join(job.directory, 'job.json'), JSON.stringify(publicJob(job), null, 2));
+}
+
+function appendLog(job: InternalJob, chunk: Buffer | string) {
+  const lines = String(chunk).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  job.logs.push(...lines);
+  if (job.logs.length > maxLogLines) job.logs.splice(0, job.logs.length - maxLogLines);
+  persist(job);
+}
+
+function safeFileName(value: string, fallback: string) {
+  const base = path.basename(value).replace(/[^a-zA-Z0-9._-]/g, '_');
+  return base || fallback;
+}
+
+function validateSettings(input: NormalBakeSettings): NormalBakeSettings {
+  const resolutions = new Set([1024, 2048, 4096, 8192]);
+  const samplings = new Set(['1x1', '2x2', '4x4', '8x8']);
+  if (!resolutions.has(input.resolution)) throw new Error('Unsupported bake resolution.');
+  if (!samplings.has(input.sampling)) throw new Error('Unsupported sampling rate.');
+  if (!Number.isInteger(input.padding) || input.padding < 0 || input.padding > 256) throw new Error('Invalid padding.');
+  if (!Number.isInteger(input.udim) || input.udim < 1001 || input.udim > 9999) throw new Error('Invalid UDIM.');
+  if (!Number.isFinite(input.frontalDistance) || input.frontalDistance < 0 || input.frontalDistance > 10) throw new Error('Invalid frontal distance.');
+  if (!Number.isFinite(input.rearDistance) || input.rearDistance < 0 || input.rearDistance > 10) throw new Error('Invalid rear distance.');
+  const validChannels = new Set<BakeChannelId>(['baseColor', 'ambientOcclusion', 'normal']);
+  const channels = Array.from(new Set(input.channels?.filter((channel) => validChannels.has(channel)) ?? []));
+  if (channels.length === 0) throw new Error('Select at least one bake channel.');
+  return { ...input, channels };
+}
+
+function pngSize(filePath: string) {
+  const header = Buffer.alloc(24);
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) throw new Error('Normal output is truncated.');
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  if (!header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    throw new Error('Normal output is not a readable PNG.');
+  }
+  return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+}
+
+function buildArguments(job: InternalJob, channel: BakeChannelId) {
+  const settings = job.settings;
+  const sampling = settings.sampling === '1x1' ? 'none' : settings.sampling;
+  const command = channel === 'baseColor'
+    ? 'TextureTransfer.Raytraced'
+    : channel === 'ambientOcclusion'
+      ? 'AmbientOcclusion.Raytraced'
+      : 'Normal.Raytraced';
+  const outputName = channel === 'baseColor' ? 'basecolor' : channel === 'ambientOcclusion' ? 'ao' : 'normal';
+  const args = [
+    '--verbose',
+    command,
+    '--inputs', job.lowPath,
+    '--high_scene_paths', job.highPath,
+    '--output_path', path.dirname(job.outputPaths[channel]),
+    '--output_name', outputName,
+    '--output_format', 'png',
+    '--output_size', `${settings.resolution},${settings.resolution}`,
+    '--padding_radius', String(settings.padding),
+    '--base.uv_set', '0',
+    '--udim', String(settings.udim),
+    '--projection.max_depth', String(settings.rearDistance),
+    '--projection.max_height', String(settings.frontalDistance),
+    '--projection.normalized_distance', 'true',
+    '--projection.cull_backfaces', String(settings.ignoreBackfaces),
+    '--projection.hit_strategy', settings.hitStrategy === 'closest-from-source' ? 'closest_from_source' : 'inward',
+    '--projection.smooth_normals', 'true',
+    '--projection.mesh_match_mode', settings.matchMode === 'by-name' ? 'match_mesh_name' : 'match_all',
+    '--projection.sampling_rate', sampling,
+    '--recompute_tangents', 'true',
+    '--enable_mip_diffusion', 'true',
+  ];
+  if (channel === 'baseColor') {
+    if (!job.colorPath) throw new Error('Base Color bake requires a high-poly color image.');
+    args.push('--source_texture_path', job.colorPath, '--highpoly_uv_set', '0', '--filtering_mode', 'bilinear');
+  }
+  if (channel === 'normal') {
+    args.push('--output_texture_orientation', settings.normalOrientation, '--output_texture_space', 'tangent_space');
+  }
+  if (settings.device === 'cpu') args.push('--cpu');
+  if (settings.projectionMode === 'cage') {
+    if (!job.cagePath) throw new Error('Cage mode requires a cage file.');
+    args.push('--use_cage', 'true', '--cage_scene_path', job.cagePath);
+  }
+  return args;
+}
+
+async function runJob(job: InternalJob) {
+  const baker = locateBaker();
+  job.startedAt = new Date().toISOString();
+  if (!baker) {
+    job.status = 'failed';
+    job.stage = 'finished';
+    job.error = '未找到 Substance 3D Designer 命令行 Baker。';
+    job.finishedAt = new Date().toISOString();
+    persist(job);
+    return;
+  }
+  try {
+    job.status = 'running';
+    job.stage = 'baking-maps';
+    job.progress = 10;
+    const outputs: NonNullable<NormalBakeJob['outputs']> = {};
+    for (let index = 0; index < job.settings.channels.length; index += 1) {
+      const channel = job.settings.channels[index];
+      const args = buildArguments(job, channel);
+      appendLog(job, `[LI3D] ${channel} · ${path.basename(baker)} ${args.join(' ')}`);
+      const child = spawn(baker, args, { cwd: job.directory, windowsHide: true });
+      processes.set(job.id, child);
+      child.stdout.on('data', (chunk: Buffer) => appendLog(job, chunk));
+      child.stderr.on('data', (chunk: Buffer) => appendLog(job, chunk));
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', (code) => resolve(code ?? -1));
+      });
+      processes.delete(job.id);
+      const outputPath = job.outputPaths[channel];
+      if (!fs.existsSync(outputPath)) throw new Error(`Substance Baker did not create ${path.basename(outputPath)}.`);
+      const dimensions = pngSize(outputPath);
+      if (dimensions.width !== job.settings.resolution || dimensions.height !== job.settings.resolution) {
+        throw new Error(`${channel} output size is ${dimensions.width}x${dimensions.height}, expected ${job.settings.resolution}x${job.settings.resolution}.`);
+      }
+      if (exitCode !== 0) appendLog(job, `[LI3D] ${channel} baker returned ${exitCode}, but the PNG passed validation; keeping the valid result.`);
+      outputs[channel] = {
+        fileName: path.basename(outputPath),
+        ...dimensions,
+        url: `/api/bake/jobs/${job.id}/output/${channel}`,
+      };
+      job.progress = 10 + Math.round(((index + 1) / job.settings.channels.length) * 75);
+      persist(job);
+    }
+    job.stage = 'verifying-file';
+    job.progress = 90;
+    persist(job);
+    job.outputs = outputs;
+    job.output = outputs.normal;
+    job.status = 'succeeded';
+    job.stage = 'finished';
+    job.progress = 100;
+    job.finishedAt = new Date().toISOString();
+    persist(job);
+  } catch (error) {
+    processes.delete(job.id);
+    job.status = 'failed';
+    job.stage = 'finished';
+    job.error = error instanceof Error ? error.message : 'Normal bake failed.';
+    job.finishedAt = new Date().toISOString();
+    appendLog(job, `[LI3D] ${job.error}`);
+  }
+}
+
+export function createNormalBakeJob(input: {
+  projectId: string;
+  objectId: string;
+  settings: NormalBakeSettings;
+  high: BakeUpload;
+  low: BakeUpload;
+  cage?: BakeUpload;
+  color?: BakeUpload;
+}) {
+  const id = `bake_${randomUUID()}`;
+  const directory = path.join(serverConfig.workspaceDir, 'bake-jobs', id);
+  const inputDirectory = path.join(directory, 'input');
+  const outputDirectory = path.join(directory, 'output');
+  fs.mkdirSync(inputDirectory, { recursive: true });
+  fs.mkdirSync(outputDirectory, { recursive: true });
+  const highName = safeFileName(input.high.fileName, 'high.fbx');
+  const lowName = safeFileName(input.low.fileName, 'low.fbx');
+  const cageName = input.cage ? safeFileName(input.cage.fileName, 'cage.fbx') : undefined;
+  const colorName = input.color ? safeFileName(input.color.fileName, 'high-color.png') : undefined;
+  const highPath = path.join(inputDirectory, `high-${highName}`);
+  const lowPath = path.join(inputDirectory, `low-${lowName}`);
+  const cagePath = cageName ? path.join(inputDirectory, `cage-${cageName}`) : undefined;
+  const colorPath = colorName ? path.join(inputDirectory, `color-${colorName}`) : undefined;
+  fs.writeFileSync(highPath, input.high.data);
+  fs.writeFileSync(lowPath, input.low.data);
+  if (input.cage && cagePath) fs.writeFileSync(cagePath, input.cage.data);
+  if (input.color && colorPath) fs.writeFileSync(colorPath, input.color.data);
+  const settings = validateSettings(input.settings);
+  if (settings.channels.includes('baseColor') && !colorPath) throw new Error('Base Color bake requires a high-poly color image.');
+  const now = new Date().toISOString();
+  const job: InternalJob = {
+    id,
+    kind: 'bake-maps',
+    projectId: input.projectId,
+    objectId: input.objectId,
+    status: 'queued',
+    stage: 'waiting-for-worker',
+    progress: 0,
+    settings,
+    input: { high: highName, low: lowName, ...(cageName ? { cage: cageName } : {}), ...(colorName ? { color: colorName } : {}) },
+    logs: [],
+    createdAt: now,
+    updatedAt: now,
+    directory,
+    highPath,
+    lowPath,
+    cagePath,
+    colorPath,
+    outputPaths: {
+      baseColor: path.join(outputDirectory, 'basecolor.png'),
+      ambientOcclusion: path.join(outputDirectory, 'ao.png'),
+      normal: path.join(outputDirectory, 'normal.png'),
+    },
+  };
+  jobs.set(id, job);
+  persist(job);
+  setImmediate(() => void runJob(job));
+  return publicJob(job);
+}
+
+export function getNormalBakeJob(id: string) {
+  const job = jobs.get(id);
+  if (job) return publicJob(job);
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return undefined;
+  const persistedPath = path.join(serverConfig.workspaceDir, 'bake-jobs', id, 'job.json');
+  if (!fs.existsSync(persistedPath)) return undefined;
+  try {
+    return JSON.parse(fs.readFileSync(persistedPath, 'utf8')) as NormalBakeJob;
+  } catch {
+    return undefined;
+  }
+}
+
+export function getNormalBakeOutputPath(id: string, channel: BakeChannelId = 'normal') {
+  const job = jobs.get(id);
+  if (job?.status === 'succeeded' && job.settings.channels.includes(channel)) return job.outputPaths[channel];
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return undefined;
+  const fileName = channel === 'baseColor' ? 'basecolor.png' : channel === 'ambientOcclusion' ? 'ao.png' : 'normal.png';
+  const persistedOutput = path.join(serverConfig.workspaceDir, 'bake-jobs', id, 'output', fileName);
+  return fs.existsSync(persistedOutput) ? persistedOutput : undefined;
+}
+
+export function getSubstanceBakerStatus() {
+  const executablePath = locateBaker();
+  if (!executablePath) return { available: false };
+  const result = spawnSync(executablePath, ['--version'], { windowsHide: true, encoding: 'utf8', timeout: 5000 });
+  return {
+    available: result.status === 0,
+    executablePath,
+    version: (result.stdout || result.stderr || '').trim(),
+  };
+}

@@ -61,6 +61,20 @@ button {
     #090a17;
 }
 
+.workflow-preview-grid {
+  background-color: #080914;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 38px 38px;
+  background-position: center;
+}
+
+.workflow-scrollbar {
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-width: thin;
+}
+
 @media (max-width: 430px) {
   .li3d-brand-copy {
     display: none;
@@ -135,4 +149,74 @@ button {
 .liclick-range-compact::-moz-range-thumb {
   width: 16px;
   height: 16px;
+}
+
+.compact-input {
+  height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: #0c0e19;
+  padding: 0 10px;
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 14px;
+  outline: none;
+}
+
+.compact-input:focus {
+  border-color: rgba(196, 78, 204, 0.55);
+}
+
+.compact-button {
+  display: flex;
+  height: 40px;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: #0c0e19;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 13px;
+}
+
+.compact-button:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.84);
+}
+
+.bake-range {
+  height: 14px;
+  appearance: none;
+  background: transparent;
+}
+
+.bake-range::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.bake-range::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  appearance: none;
+  border: 2px solid #d05acb;
+  border-radius: 999px;
+  background: #151726;
+}
+
+.bake-range::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.bake-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #d05acb;
+  border-radius: 999px;
+  background: #151726;
 }
