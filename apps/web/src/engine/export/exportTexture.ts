@@ -2,13 +2,7 @@ import type { Material, Mesh, Object3D, Texture } from 'three';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { Project } from '@/types/project';
 import { downloadBlob, getExportFilename } from './exportUtils';
-import { makeTransparentBaseColorForExport } from './texturedExportUtils';
-
-async function blobFromUrl(url: string) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Could not read texture: ${response.statusText}`);
-  return response.blob();
-}
+import { blobFromImageAssetUrl, makeTransparentBaseColorForExport } from './texturedExportUtils';
 
 function isCanvas(value: unknown): value is HTMLCanvasElement | OffscreenCanvas {
   return (
@@ -24,7 +18,7 @@ function getTextureImage(texture: Texture) {
 async function blobFromTexture(texture: Texture) {
   const image = getTextureImage(texture);
   if (!image) throw new Error('Normal texture has no image data.');
-  if (image instanceof HTMLImageElement && image.src) return blobFromUrl(image.src);
+  if (image instanceof HTMLImageElement && image.src) return blobFromImageAssetUrl(image.src);
   if (isCanvas(image)) {
     if (image instanceof HTMLCanvasElement) {
       return new Promise<Blob>((resolve, reject) => {
@@ -66,7 +60,7 @@ export function findNormalMapTexture(model?: ModelLoadResult) {
 }
 
 export async function exportTextureUrl(project: Project, imageUrl: string, suffix: string) {
-  const blob = await blobFromUrl(imageUrl);
+  const blob = await blobFromImageAssetUrl(imageUrl);
   const shouldExportBaseColor =
     suffix.toLowerCase().includes('color') || suffix.toLowerCase().includes('basecolor') || suffix.toLowerCase().includes('base-color');
   const outputBlob = shouldExportBaseColor ? await makeTransparentBaseColorForExport(blob) : blob;

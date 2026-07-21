@@ -44,6 +44,56 @@ export type ProjectSettings = {
   };
 };
 
+export type BakeAssetReference = {
+  name: string;
+  url: string;
+  relativePath?: string;
+  mimeType?: string;
+};
+
+export type BakeDraftSettings = {
+  engine: 'substance-designer';
+  qualityPreset: 'preview' | 'production';
+  resolution: number;
+  frontalDistance: number;
+  rearDistance: number;
+  projectionMode: 'distance' | 'cage';
+  cageInflation: number;
+  matchMode: 'always' | 'by-name';
+  sampling: string;
+  padding: number;
+  normalOrientation: 'directx' | 'opengl';
+  device: 'gpu' | 'cpu';
+  udim: number;
+  hitStrategy: 'inward' | 'closest-from-source';
+  ignoreBackfaces: boolean;
+  enabledChannels: Array<
+    | 'baseColor'
+    | 'normal'
+    | 'ambientOcclusion'
+    | 'curvature'
+    | 'worldNormal'
+    | 'thickness'
+    | 'position'
+  >;
+};
+
+export type ProjectBakeSetState = {
+  objectId: string;
+  low?: BakeAssetReference;
+  cage?: BakeAssetReference;
+  color?: BakeAssetReference;
+  settings?: BakeDraftSettings;
+  lastJobId?: string;
+};
+
+export type ProjectBakeWorkspace = {
+  version: 1;
+  activeStage?: 'assets' | 'alignment' | 'bake' | 'check' | 'pbr' | 'publish';
+  selectedObjectId?: string;
+  bakeSets: Record<string, ProjectBakeSetState>;
+};
+
 export type Project = {
   id: string;
   name: string;
@@ -56,6 +106,7 @@ export type Project = {
   generations: Generation[];
   layers: Layer[];
   bakedTextures: BakedTexture[];
+  bakeWorkspace?: ProjectBakeWorkspace;
   workspaceName?: string;
   workspaceMode?: WorkspaceMode;
   folderId?: string | null;

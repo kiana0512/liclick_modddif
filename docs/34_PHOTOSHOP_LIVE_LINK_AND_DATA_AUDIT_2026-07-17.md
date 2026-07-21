@@ -4,7 +4,7 @@ Date: 2026-07-17
 
 ## Outcome
 
-LIclick now treats Photoshop as an offline local editing companion rather than an embedded image editor. The web editor creates a session, sends the selected projected or UV texture to the local bridge, the CEP extension opens an editable PSD, and exported composite PNG revisions are applied back to the live 3D material. The 3D viewport remains interactive while Photoshop is open.
+LIclick now treats Photoshop as an offline local editing companion rather than an embedded image editor. Each projected or UV layer has one persistent Photoshop session and PSD, keyed by the LI3D project ID and layer ID. The web editor sends a source texture only when that PSD does not exist; later edits reopen the same layered document, and exported composite PNG revisions are applied back to the live 3D material. The 3D viewport remains interactive while Photoshop is open.
 
 The Windows launcher is the control surface for this integration:
 
@@ -52,6 +52,8 @@ The Photoshop artifacts introduced by the local, unpushed integration commit wer
 
 `keepSessionFiles` defaults to `true`. Closing an edit session therefore preserves its PSD, source image, session manifest, and revision history for recovery. The launcher exposes `打开恢复文件` to open the directory directly.
 
+Creating an edit session is idempotent for a `(projectId, layerId)` pair. When older builds have already created duplicate sessions for one layer, the bridge selects the most recently updated session that still has a PSD, marks the other duplicates closed so Photoshop will not automatically reopen them, keeps every recovery folder untouched, and reuses the selected path from then on. Renaming a layer updates its display name without renaming or replacing its PSD. Deleting a layer does not notify the Photoshop bridge or remove its files, so restoring the same layer ID through project history reconnects to the same PSD; a genuinely new layer ID receives a new PSD.
+
 If the user disables retention, the server closes the Photoshop session and retries background removal of that session directory when Photoshop releases file handles. A failed cleanup is conservative: files remain local rather than risking data loss elsewhere.
 
 ## Git Audit Rules
@@ -74,9 +76,10 @@ The first two commands must produce no tracked files. Do not use `git add -f` fo
 3. Start LIclick, then Photoshop 2024, without enabling Photoshop network access.
 4. Confirm the launcher changes from `插件已就绪` to `实时链路已连接` automatically.
 5. Start Photoshop editing from a projected layer and a merged UV layer; verify left-to-right source transfer.
-6. Paint and save in Photoshop; verify immutable revisions update the live 3D material without freezing orbit controls.
-7. Close the session with retention enabled and reopen the PSD from the launcher recovery directory.
-8. Run typecheck, lint, production build, Photoshop bridge smoke, installer packaging, and launcher browser QA.
+6. Close and reopen Photoshop editing for the same LI3D layer; verify the session ID and PSD path are unchanged and the existing Photoshop layers remain present.
+7. Paint and save in Photoshop; verify immutable revisions update the live 3D material without freezing orbit controls.
+8. Close the session with retention enabled and reopen the PSD from the launcher recovery directory.
+9. Run typecheck, lint, production build, Photoshop bridge smoke, installer packaging, and launcher browser QA.
 
 ## Release Verification
 
@@ -91,10 +94,10 @@ The 2026-07-17 local release candidate passed the following automated checks:
 
 Generated setup artifact:
 
-- File: `dist-installer/Liclick 3D Texture Setup.exe`
-- Build: `2026.07.17.1045`
-- Size: `140,661,438` bytes (`134.15 MiB`)
-- SHA-256: `F9CC471466E63B72B0F674307B92ECD0C34ED226BA29980ABFEB87F3A5C0ACF1`
+- File: `dist-installer/Liclick 3D Texture Setup 2026.07.17.1158.exe`
+- Build: `2026.07.17.1158`
+- Size: `140,693,202` bytes (`134.18 MiB`)
+- SHA-256: `7E063573B37EF531B67018F87F44EAAEF1866FBD002BFA40716B873CE174A772`
 - Authenticode: not signed in this local test build.
 
 ## Known Release Constraints

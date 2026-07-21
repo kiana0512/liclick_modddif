@@ -86,6 +86,7 @@ import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
+import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
@@ -130,6 +131,8 @@ import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 type EditorPageProps = {
   projectId: string;
   onBack: () => void;
+  onOpenBake: () => void;
+  onOpenDelivery: () => void;
 };
 
 declare global {
@@ -635,7 +638,12 @@ function arrangeImportedModelForComparison(
   };
 }
 
-export function EditorPage({ projectId, onBack }: EditorPageProps) {
+export function EditorPage({
+  projectId,
+  onBack,
+  onOpenBake,
+  onOpenDelivery,
+}: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const loadedProjectIdRef = useRef<string>();
@@ -4162,6 +4170,15 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         projectName={project?.name ?? 'Untitled Project'}
         workspaceLabel={getWorkspaceLabel()}
         onBack={handleBackToProjects}
+        workflowSwitcher={
+          <WorkflowModuleSwitcher
+            compact
+            activeModule="texture"
+            onOpenTexture={() => undefined}
+            onOpenBake={onOpenBake}
+            onOpenDelivery={onOpenDelivery}
+          />
+        }
         exportMenu={
           <ExportMenu
             canExportScene={Boolean(importedModel && viewport)}

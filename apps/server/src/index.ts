@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { serverConfig } from './config.js';
 import { handleAssetsRoute } from './routes/assets.js';
 import { handleAuthRoute } from './routes/auth.js';
+import { handleBakeRoute } from './routes/bake.js';
 import { handleComfyuiRoute } from './routes/comfyui.js';
 import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
@@ -130,6 +131,7 @@ async function handleWorkspaceRequest(
   }
   if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/bake') && (await handleBakeRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/photoshop') && (await handlePhotoshopRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
   if (

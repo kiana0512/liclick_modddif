@@ -1,13 +1,15 @@
 import { spawn, spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const children = new Set();
-const serverRoot = new URL('..', import.meta.url);
-const useShell = process.platform === 'win32';
+const serverRoot = fileURLToPath(new URL('..', import.meta.url));
+const tscCli = path.resolve(serverRoot, '..', '..', 'node_modules', 'typescript', 'bin', 'tsc');
 
 function runInitialBuild() {
-  const result = spawnSync('tsc', ['-p', 'tsconfig.json'], {
+  const result = spawnSync(process.execPath, [tscCli, '-p', 'tsconfig.json'], {
     cwd: serverRoot,
-    shell: useShell,
+    shell: false,
     stdio: 'inherit',
   });
   if (result.status && result.status !== 0) process.exit(result.status);
@@ -20,7 +22,7 @@ function runInitialBuild() {
 function run(command, args, label) {
   const child = spawn(command, args, {
     cwd: serverRoot,
-    shell: useShell,
+    shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -49,5 +51,5 @@ process.on('SIGTERM', () => {
 });
 
 runInitialBuild();
-run('tsc', ['-p', 'tsconfig.json', '--watch', '--preserveWatchOutput', 'false'], 'server:tsc');
-run('node', ['--watch', 'dist/index.js'], 'server');
+run(process.execPath, [tscCli, '-p', 'tsconfig.json', '--watch', '--preserveWatchOutput', 'false'], 'server:tsc');
+run(process.execPath, ['--watch', 'dist/index.js'], 'server');

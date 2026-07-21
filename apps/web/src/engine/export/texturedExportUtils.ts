@@ -64,7 +64,7 @@ async function canvasToPngBlob(canvas: HTMLCanvasElement) {
   });
 }
 
-async function blobFromUrl(url: string) {
+export async function blobFromImageAssetUrl(url: string) {
   const liveCanvas = getLiveProjectedCanvasState(url)?.canvas;
   if (liveCanvas) return canvasToPngBlob(liveCanvas);
 
@@ -86,6 +86,8 @@ async function blobFromUrl(url: string) {
   }
   return response.blob();
 }
+
+const blobFromUrl = blobFromImageAssetUrl;
 
 async function loadExportTexture(imageUrl: string) {
   const texture = await new THREE.TextureLoader().loadAsync(resolveImageAssetUrl(imageUrl));

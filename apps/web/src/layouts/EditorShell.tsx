@@ -36,6 +36,7 @@ type EditorShellProps = {
   bottomToolbar: ReactNode;
   center: ReactNode;
   panels: WorkspacePanelDefinition[];
+  workflowSwitcher?: ReactNode;
 };
 
 const modeIcons: Record<WorkspaceMode, typeof Palette> = {
@@ -107,6 +108,7 @@ export function EditorShell({
   bottomToolbar,
   center,
   panels,
+  workflowSwitcher,
 }: EditorShellProps) {
   const [mobileDock, setMobileDock] = useState<DockSide>();
   const [resolutionMenuOpen, setResolutionMenuOpen] = useState(false);
@@ -143,6 +145,7 @@ export function EditorShell({
             <div className="text-[11px] text-white/42">{workspaceLabel ?? 'No workspace'}</div>
           </div>
         </div>
+        {workflowSwitcher ? <div className="pointer-events-auto hidden md:block">{workflowSwitcher}</div> : null}
         <div className="pointer-events-auto flex flex-wrap items-center justify-start gap-2 rounded-lg border border-white/10 bg-black/42 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
           <div className="flex gap-1 lg:hidden">
             <Button

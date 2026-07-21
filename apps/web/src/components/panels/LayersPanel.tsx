@@ -10,7 +10,25 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, PencilLine, Plus, Scissors, Trash2, Upload, WandSparkles } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  Download,
+  Eraser,
+  Eye,
+  EyeOff,
+  Focus,
+  MoreVertical,
+  PaintBucket,
+  PencilLine,
+  Plus,
+  Scissors,
+  TextCursorInput,
+  Trash2,
+  Upload,
+  WandSparkles,
+} from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
 import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
@@ -1044,14 +1062,20 @@ function LayerMenu({
         </>
       ) : (
         <>
-          <MenuButton onClick={() => run(onView)}>
+          <MenuButton onClick={() => run(onView)} icon={<Eye className="h-4 w-4" />}>
             {t('view')}
             <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">SHIFT</span>
           </MenuButton>
-          <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
-          <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
+          <MenuButton onClick={() => run(onMoveUp)} icon={<ArrowUp className="h-4 w-4" />}>
+            {t('moveLayerUp')}
+          </MenuButton>
+          <MenuButton onClick={() => run(onMoveDown)} icon={<ArrowDown className="h-4 w-4" />}>
+            {t('moveLayerDown')}
+          </MenuButton>
           {layer.maskUrl ? (
-            <MenuButton onClick={() => run(() => onClearMask(layer))}>{t('clearMask')}</MenuButton>
+            <MenuButton onClick={() => run(() => onClearMask(layer))} icon={<Eraser className="h-4 w-4" />}>
+              {t('clearMask')}
+            </MenuButton>
           ) : null}
           {(layer.type === 'projected' || layer.type === 'uv') && (
             <>
@@ -1085,7 +1109,9 @@ function LayerMenu({
               {t('downloadImage')}
             </MenuButton>
           )}
-          <MenuButton onClick={() => run(() => onRename(layer))}>{t('rename')}</MenuButton>
+          <MenuButton onClick={() => run(() => onRename(layer))} icon={<TextCursorInput className="h-4 w-4" />}>
+            {t('rename')}
+          </MenuButton>
           <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
             {t('delete')}
           </MenuButton>

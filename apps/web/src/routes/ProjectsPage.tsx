@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Folder, FolderPlus, Plus } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, Flame, Folder, FolderPlus, Palette, Plus } from 'lucide-react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
 import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
@@ -31,6 +31,8 @@ import {
 } from '@/services/workspaceApiClient';
 
 type ProjectsPageProps = {
+  module: 'texture' | 'bake';
+  onBack: () => void;
   onOpenProject: (projectId: string) => void;
   onLogout: () => void;
 };
@@ -257,7 +259,7 @@ function MoveDialog({
   );
 }
 
-export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
+export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: ProjectsPageProps) {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>('updated-desc');
   const [, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
@@ -522,12 +524,37 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         />
       )}
 
-      <header className="flex h-16 items-center px-4 sm:px-6">
+      <header className="flex h-16 items-center border-b border-white/[0.055] px-4 sm:px-6">
         <BrandMark />
       </header>
 
-      <section className="mx-auto w-full max-w-[1240px] px-4 pb-16 pt-1 sm:px-7 lg:px-8">
-        <div className="flex items-center justify-end gap-2">
+      <section className="mx-auto w-full max-w-[1240px] px-4 pb-16 pt-8 sm:px-7 lg:px-8">
+        <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
+          <div>
+            <button
+              type="button"
+              onClick={onBack}
+              className="inline-flex items-center gap-2 text-sm text-white/44 transition hover:text-white"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              返回功能首页
+            </button>
+            <div className="mt-5 flex items-center gap-3">
+              <span className={`grid h-10 w-10 place-items-center rounded-xl border ${module === 'texture' ? 'border-fuchsia-300/24 bg-fuchsia-400/10 text-fuchsia-100' : 'border-orange-300/24 bg-orange-400/10 text-orange-100'}`}>
+                {module === 'texture' ? <Palette className="h-5 w-5" /> : <Flame className="h-5 w-5" />}
+              </span>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-[-0.025em] text-white">
+                  {module === 'texture' ? '贴图绘制' : '模型烘焙'}
+                </h1>
+                <p className="mt-1 text-xs text-white/36">
+                  {module === 'texture' ? '选择项目进入贴图创作工作台' : '选择项目进入独立烘焙工作台'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
             <Button
               className="h-10 border-white/16 bg-transparent px-4 hover:border-white/28 hover:bg-white/8"
               icon={<FolderPlus className="h-4 w-4" />}
@@ -539,6 +566,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
               {t('newProject')}
             </Button>
             <UserMenu onLogout={onLogout} />
+          </div>
         </div>
 
         {pageNotice && (

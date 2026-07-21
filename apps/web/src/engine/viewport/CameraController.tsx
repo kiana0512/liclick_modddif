@@ -50,6 +50,7 @@ export function CameraController() {
     if (!(camera instanceof THREE.PerspectiveCamera || camera instanceof THREE.OrthographicCamera)) return;
     const controls = new BlenderOrbitControls(camera, gl.domElement);
     controlsRef.current = controls;
+    orbitTargetKeyRef.current = undefined;
     return () => {
       controls.dispose();
       if (controlsRef.current === controls) controlsRef.current = null;
@@ -83,58 +84,56 @@ export function CameraController() {
   }, [camera, gl, scene, setViewportRuntime]);
 
   useEffect(() => {
-    if (importedModels.length === 0) return;
-    if (!importSettings.autoFitCamera) return;
-    const boundingBox = getCombinedBoundingBox(importedModels.map((model) => model.group));
+    const controls = controlsRef.current;
+    if (!controls || importedModels.length === 0) return;
+    const isSceneWorkspace = workspaceMode === 'scene' || workspaceMode === 'export';
+    if (isSceneWorkspace && !importSettings.autoFitCamera) return;
+    const selectedModel =
+      (selectedObjectId
+        ? importedModels.find((model) => model.objectId === selectedObjectId)
+        : importedModel) ?? importedModels[0];
+    const targetModels = isSceneWorkspace ? importedModels : [selectedModel];
+    const targetObjects = targetModels.map((model) => model.group);
+    const boundingBox = getCombinedBoundingBox(targetObjects);
     if (!boundingBox) return;
+    const targetKey = `${camera.uuid}:${workspaceMode}:${targetModels
+      .map((model) => model.objectId)
+      .join('|')}`;
+    if (orbitTargetKeyRef.current === targetKey) return;
+    orbitTargetKeyRef.current = targetKey;
     fitCameraToBoundingBox(
       {
         gl,
         scene,
         camera,
-        controls: controlsRef.current
-          ? {
-              target: controlsRef.current.target,
-              update: () => controlsRef.current?.update(),
-              setEnabled: (enabled) => {
-                if (controlsRef.current) controlsRef.current.enabled = enabled;
-              },
-          }
-          : undefined,
+        controls: {
+          target: controls.target,
+          update: controls.update,
+          setEnabled: (enabled) => {
+            controls.enabled = enabled;
+          },
+        },
       },
       boundingBox,
     );
-  }, [camera, gl, importSettings.autoFitCamera, importedModels, scene]);
-
-  useEffect(() => {
-    const controls = controlsRef.current;
-    if (!controls || importedModels.length === 0) return;
-    const targetModels =
-      workspaceMode === 'scene' || workspaceMode === 'export'
-        ? importedModels
-        : [
-            (selectedObjectId
-              ? importedModels.find((model) => model.objectId === selectedObjectId)
-              : importedModel) ?? importedModels[0],
-          ];
-    const targetObjects = targetModels.map((model) => model.group);
-    const boundingBox = getCombinedBoundingBox(targetObjects);
-    if (!boundingBox) return;
-    const targetKey = `${workspaceMode}:${targetModels.map((model) => model.objectId).join('|')}`;
-    if (orbitTargetKeyRef.current === targetKey) return;
-    orbitTargetKeyRef.current = targetKey;
-
-    const nextTarget = new THREE.Vector3().fromArray(boundingBox.center);
-    const delta = nextTarget.clone().sub(controls.target);
-    if (delta.lengthSq() < 0.000001) return;
-    camera.position.add(delta);
-    controls.target.copy(nextTarget);
-    controls.update();
-  }, [camera, importedModel, importedModels, selectedObjectId, workspaceMode]);
+  }, [
+    camera,
+    gl,
+    importedModel,
+    importedModels,
+    importSettings.autoFitCamera,
+    scene,
+    selectedObjectId,
+    workspaceMode,
+  ]);
 
   useEffect(() => {
     if (!restoreCameraRequest) return;
     applySerializedCamera(camera, restoreCameraRequest.camera);
+    // Serialized captures do not include camera.up. Reset it before controls
+    // rebuild the look-at quaternion so a previous pole crossing cannot leak a
+    // rolled orbit basis into the restored view.
+    camera.up.set(0, 1, 0);
     controlsRef.current?.target.fromArray(restoreCameraRequest.camera.target);
     orbitTargetKeyRef.current = undefined;
     controlsRef.current?.update();

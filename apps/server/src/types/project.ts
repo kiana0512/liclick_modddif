@@ -30,6 +30,7 @@ export type WorkspaceProject = {
   generations: unknown[];
   layers: unknown[];
   bakedTextures: unknown[];
+  bakeWorkspace?: unknown;
   settings: WorkspaceProjectSettings;
   currentMode?: string;
   activeObjectId?: string;

@@ -27,6 +27,8 @@ export type PhotoshopSession = {
   latestImageUrl?: string;
   syncMode: 'save' | 'live';
   liveSyncDelayMs: number;
+  reused?: boolean;
+  sourceRequired?: boolean;
   error?: string;
   createdAt: string;
   updatedAt: string;

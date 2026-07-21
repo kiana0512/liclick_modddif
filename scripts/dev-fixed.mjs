@@ -1,12 +1,21 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptsDir, '..');
-const workspacePort = process.env.LICLICK_WORKSPACE_PORT ?? '4517';
-const webPort = process.env.LICLICK_WEB_PORT ?? '5173';
+function devPort(value, fallback, label) {
+  const candidate = value ?? fallback;
+  if (!/^\d{1,5}$/.test(candidate) || Number(candidate) < 1 || Number(candidate) > 65535) {
+    throw new Error(`[dev] Invalid ${label}: ${candidate}`);
+  }
+  return candidate;
+}
+
+const workspacePort = devPort(process.env.LICLICK_WORKSPACE_PORT, '4517', 'LICLICK_WORKSPACE_PORT');
+const webPort = devPort(process.env.LICLICK_WEB_PORT, '5173', 'LICLICK_WEB_PORT');
 const restartWorkspace = process.env.LICLICK_DEV_RESTART_WORKSPACE !== '0';
 
 const env = {
@@ -176,17 +185,46 @@ async function prepareWorkspacePort() {
   await killPortOnUnix(webPort);
 }
 
-await prepareWorkspacePort();
+function assertDevelopmentDependencies() {
+  const requiredFiles = [
+    path.join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'),
+    path.join(repoRoot, 'apps', 'web', 'node_modules', 'vite', 'bin', 'vite.js'),
+  ];
+  const missing = requiredFiles.filter((filePath) => !fs.existsSync(filePath));
+  if (missing.length === 0) return;
+  throw new Error(
+    `[dev] Development dependencies are incomplete. Run "corepack pnpm install --frozen-lockfile" and retry. Missing: ${missing
+      .map((filePath) => path.relative(repoRoot, filePath))
+      .join(', ')}`,
+  );
+}
 
-const child = spawn('corepack', ['pnpm', '--parallel', '--filter', '@liclick/server', '--filter', '@liclick/web', 'dev'], {
+try {
+  assertDevelopmentDependencies();
+  await prepareWorkspacePort();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+const pnpmArgs = ['pnpm', '--parallel', '--filter', '@liclick/server', '--filter', '@liclick/web', 'dev'];
+const child = spawn(
+  process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : 'corepack',
+  process.platform === 'win32' ? ['/d', '/s', '/c', 'corepack', ...pnpmArgs] : pnpmArgs,
+  {
   cwd: repoRoot,
   env,
-  shell: process.platform === 'win32',
+  shell: false,
   stdio: ['ignore', 'pipe', 'pipe'],
-});
+  },
+);
 
 child.stdout?.on('data', (chunk) => process.stdout.write(chunk));
 child.stderr?.on('data', (chunk) => process.stderr.write(chunk));
+child.on('error', (error) => {
+  console.error(`[dev] Could not start pnpm: ${error.message}`);
+  process.exitCode = 1;
+});
 
 child.on('exit', (code, signal) => {
   if (signal) {

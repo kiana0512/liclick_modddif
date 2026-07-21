@@ -1,0 +1,56 @@
+{
+  "id": "bake_39718784-37f9-4d23-b57f-0eef055036c3",
+  "kind": "bake-normal",
+  "projectId": "smoke",
+  "objectId": "22-high",
+  "status": "succeeded",
+  "stage": "finished",
+  "progress": 100,
+  "settings": {
+    "resolution": 1024,
+    "padding": 16,
+    "sampling": "2x2",
+    "normalOrientation": "directx",
+    "device": "gpu",
+    "udim": 1001,
+    "frontalDistance": 0.1,
+    "rearDistance": 0.1,
+    "matchMode": "always",
+    "projectionMode": "distance"
+  },
+  "input": {
+    "high": "22_high.fbx",
+    "low": "11_low.fbx"
+  },
+  "logs": [
+    "[LI3D] substance3d_baker.exe --verbose Normal.Raytraced --inputs E:\\Liclick 3D Texture\\workspace-smoke\\bake-jobs\\bake_39718784-37f9-4d23-b57f-0eef055036c3\\input\\low-11_low.fbx --high_scene_paths E:\\Liclick 3D Texture\\workspace-smoke\\bake-jobs\\bake_39718784-37f9-4d23-b57f-0eef055036c3\\input\\high-22_high.fbx --output_path E:\\Liclick 3D Texture\\workspace-smoke\\bake-jobs\\bake_39718784-37f9-4d23-b57f-0eef055036c3\\output --output_name normal --output_format png --output_size 1024,1024 --padding_radius 16 --base.uv_set 0 --udim 1001 --projection.max_depth 0.1 --projection.max_height 0.1 --projection.normalized_distance true --projection.cull_backfaces false --projection.hit_strategy closest_from_source --projection.mesh_match_mode match_all --projection.sampling_rate 2x2 --recompute_tangents true --output_texture_orientation directx --output_texture_space tangent_space",
+    "[INFO][Bakers]Backend order: SAL Embree SoRa",
+    "[INFO][SBSBaker]Processing E:\\Liclick 3D Texture\\workspace-smoke\\bake-jobs\\bake_39718784-37f9-4d23-b57f-0eef055036c3\\input\\low-11_low.fbx",
+    "[INFO][Bakers]Run baker normal",
+    "[INFO][Bakers]Retrieve Low poly scene",
+    "Warning: in importFbxMaterials at line 1210 of D:\\j\\workspace\\igner_nightly_pipeline_sd-15.0.1\\build\\build\\_deps\\usdfileformatsprivate-src\\fbx\\src\\fbxImport.cpp -- FBX image \"$666法线.png\" not found relative to source file",
+    "[INFO][Bakers]Mesh add to the scene, hash: 2299757362, name: Mesh, path: /root/_1_low/Mesh",
+    "[INFO][Bakers]Retrieve high poly scene",
+    "[INFO][Bakers]Mesh add to the scene, hash: 2299757362, name: Mesh, path: /root/_2_high/Mesh",
+    "[INFO][Bakers]Run normal for UVTile 0x0",
+    "[INFO][Bakers]Start baker::Normal.Raytraced baker",
+    "[INFO][Bakers]Baker: Normal | Engine: SAL | Compute: 0.154988s",
+    "[INFO][Bakers]Baker: World to tangent | Engine: SAL | Compute: 0.021852s",
+    "[INFO][Bakers]Bake finished. Wall time: 0.224777s",
+    "[INFO][Bakers]Start baker::PostProcess.UVPadding baker",
+    "[INFO][Bakers]Baker: UV padding | Engine: SAL | Compute: 0.038288s",
+    "[INFO][Bakers]Bake finished. Wall time: 0.051746s",
+    "[INFO][Bakers]Bake finished successfully",
+    "[INFO][Bakers]Saving result of normal to E:/Liclick 3D Texture/workspace-smoke/bake-jobs/bake_39718784-37f9-4d23-b57f-0eef055036c3/output/normal.png"
+  ],
+  "createdAt": "2026-07-20T10:03:58.957Z",
+  "updatedAt": "2026-07-20T10:04:00.382Z",
+  "startedAt": "2026-07-20T10:03:58.959Z",
+  "output": {
+    "fileName": "normal.png",
+    "width": 1024,
+    "height": 1024,
+    "url": "/api/bake/jobs/bake_39718784-37f9-4d23-b57f-0eef055036c3/output/normal"
+  },
+  "finishedAt": "2026-07-20T10:04:00.382Z"
+}
