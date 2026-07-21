@@ -52,7 +52,7 @@ export type BakeAssetReference = {
 };
 
 export type BakeDraftSettings = {
-  engine: 'substance-designer' | 'marmoset-toolbag';
+  engine: 'substance-designer';
   qualityPreset: 'preview' | 'production';
   resolution: number;
   frontalDistance: number;
@@ -67,7 +67,15 @@ export type BakeDraftSettings = {
   udim: number;
   hitStrategy: 'inward' | 'closest-from-source';
   ignoreBackfaces: boolean;
-  enabledChannels: Array<'baseColor' | 'ambientOcclusion' | 'normal'>;
+  enabledChannels: Array<
+    | 'baseColor'
+    | 'normal'
+    | 'ambientOcclusion'
+    | 'curvature'
+    | 'worldNormal'
+    | 'thickness'
+    | 'position'
+  >;
 };
 
 export type ProjectBakeSetState = {

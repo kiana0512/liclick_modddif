@@ -1,13 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import {
-  ArrowLeft,
-  Boxes,
-  ChevronDown,
-  Download,
-  Globe2,
-  Palette,
-  ScanLine,
-} from 'lucide-react';
+import { ArrowLeft, Boxes, ChevronDown, Download, Globe2, Palette, ScanLine } from 'lucide-react';
 import { BrandMark } from '@/components/common/BrandMark';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
@@ -37,12 +29,14 @@ export function WorkflowShell({
   projectName,
   eyebrow,
   onBack,
+  backLabel = '返回项目列表',
   navigation,
   children,
 }: {
   projectName: string;
   eyebrow: string;
   onBack: () => void;
+  backLabel?: string;
   navigation: WorkflowNavigation;
   connected?: boolean;
   children: ReactNode;
@@ -69,7 +63,7 @@ export function WorkflowShell({
             className="h-8 w-8 px-0"
             icon={<ArrowLeft className="h-4 w-4" />}
             onClick={onBack}
-            aria-label="返回项目列表"
+            aria-label={backLabel}
           />
           <BrandMark compact className="hidden sm:flex" />
           <div className="min-w-0 border-l border-white/12 pl-2 sm:pl-3">

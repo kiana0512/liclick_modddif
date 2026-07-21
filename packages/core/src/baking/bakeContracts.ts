@@ -1,6 +1,13 @@
-export type BakeEngineId = 'substance-designer' | 'marmoset-toolbag';
+export type BakeEngineId = 'substance-designer';
 
-export type BakeMapId = 'baseColor' | 'ambientOcclusion' | 'normal';
+export type BakeMapId =
+  | 'baseColor'
+  | 'normal'
+  | 'ambientOcclusion'
+  | 'curvature'
+  | 'worldNormal'
+  | 'thickness'
+  | 'position';
 
 export type BakeNormalOrientation = 'directx' | 'opengl';
 
@@ -68,22 +75,15 @@ export const bakeEngineProfiles: Record<BakeEngineId, BakeEngineProfile> = {
       'transferred-color',
       'gpu-baking',
     ],
-    supportedMaps: ['baseColor', 'ambientOcclusion', 'normal'],
-  },
-  'marmoset-toolbag': {
-    id: 'marmoset-toolbag',
-    name: 'Marmoset Toolbag',
-    shortName: 'Marmoset Toolbag',
-    executableNames: ['toolbag.exe'],
-    capabilities: [
-      'distance-projection',
-      'external-cage',
-      'automatic-cage-estimation',
-      'match-by-name',
-      'gpu-baking',
-      'partial-rebake',
+    supportedMaps: [
+      'baseColor',
+      'normal',
+      'ambientOcclusion',
+      'curvature',
+      'worldNormal',
+      'thickness',
+      'position',
     ],
-    supportedMaps: ['ambientOcclusion', 'normal'],
   },
 };
 
@@ -105,6 +105,14 @@ export const defaultBakeDraftSettings: BakeDraftSettings = {
     uvSet: 'UV0',
     udim: 1001,
     device: 'gpu',
-    maps: ['baseColor', 'ambientOcclusion', 'normal'],
+    maps: [
+      'baseColor',
+      'normal',
+      'ambientOcclusion',
+      'curvature',
+      'worldNormal',
+      'thickness',
+      'position',
+    ],
   },
 };

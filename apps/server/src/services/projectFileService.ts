@@ -43,7 +43,9 @@ function readNumber(value: unknown) {
 }
 
 function readStringArray(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : undefined;
 }
 
 function isBlobUrl(value: unknown) {
@@ -58,7 +60,10 @@ function getBakedTextureCoverageRatio(texture: Record<string, unknown>) {
 }
 
 function getBakedTextureSourceLayerIds(texture: Record<string, unknown>) {
-  return readStringArray(texture.sourceLayerIds) ?? [readString(texture.sourceLayerId)].filter((id): id is string => Boolean(id));
+  return (
+    readStringArray(texture.sourceLayerIds) ??
+    [readString(texture.sourceLayerId)].filter((id): id is string => Boolean(id))
+  );
 }
 
 function sanitizeLowCoverageProjectedBakes(project: WorkspaceProject): WorkspaceProject {
@@ -80,9 +85,12 @@ function sanitizeLowCoverageProjectedBakes(project: WorkspaceProject): Workspace
   const bakedTextures = project.bakedTextures.filter((texture) => {
     if (!isRecord(texture)) return true;
     const coverageRatio = getBakedTextureCoverageRatio(texture);
-    if (coverageRatio === undefined || coverageRatio >= MIN_SAVED_PROJECTED_BAKE_COVERAGE_RATIO) return true;
+    if (coverageRatio === undefined || coverageRatio >= MIN_SAVED_PROJECTED_BAKE_COVERAGE_RATIO)
+      return true;
     const sourceLayerIds = getBakedTextureSourceLayerIds(texture);
-    const allSourcesAreProjectedOrStale = sourceLayerIds.every((id) => projectedLayerIds.has(id) || !layerIds.has(id));
+    const allSourcesAreProjectedOrStale = sourceLayerIds.every(
+      (id) => projectedLayerIds.has(id) || !layerIds.has(id),
+    );
     if (sourceLayerIds.length > 0 && !allSourcesAreProjectedOrStale) return true;
     const textureId = readString(texture.id);
     if (textureId) removedTextureIds.add(textureId);
@@ -144,7 +152,10 @@ function workspaceUrlToProjectRelative(userId: string, slug: string, value?: str
     if (!value.startsWith('/workspace/')) return value;
   }
   if (!pathname.startsWith('/workspace/')) return value;
-  const workspaceRelativePath = decodeURIComponent(pathname.slice('/workspace/'.length)).replaceAll('\\', '/');
+  const workspaceRelativePath = decodeURIComponent(pathname.slice('/workspace/'.length)).replaceAll(
+    '\\',
+    '/',
+  );
   const projectPrefix = `users/${userId}/projects/${slug}/`;
   return workspaceRelativePath.startsWith(projectPrefix)
     ? workspaceRelativePath.slice(projectPrefix.length)
@@ -207,8 +218,12 @@ function collectReferencedObjectIds(project: WorkspaceProject) {
   return referenced;
 }
 
-function preserveReferencedObjects(existingProject: WorkspaceProject | undefined, inputProject: WorkspaceProject) {
-  if (!existingProject || inputProject.objects.length >= existingProject.objects.length) return inputProject;
+function preserveReferencedObjects(
+  existingProject: WorkspaceProject | undefined,
+  inputProject: WorkspaceProject,
+) {
+  if (!existingProject || inputProject.objects.length >= existingProject.objects.length)
+    return inputProject;
   const incomingObjectIds = new Set(
     inputProject.objects
       .filter(isRecord)
@@ -219,13 +234,19 @@ function preserveReferencedObjects(existingProject: WorkspaceProject | undefined
   const preservedObjects = existingProject.objects.filter((object) => {
     if (!isRecord(object)) return false;
     const objectId = readString(object.id);
-    return Boolean(objectId && !incomingObjectIds.has(objectId) && referencedObjectIds.has(objectId));
+    return Boolean(
+      objectId && !incomingObjectIds.has(objectId) && referencedObjectIds.has(objectId),
+    );
   });
   if (preservedObjects.length === 0) return inputProject;
   return { ...inputProject, objects: [...inputProject.objects, ...preservedObjects] };
 }
 
-function normalizeProjectAssetReferences(userId: string, slug: string, project: WorkspaceProject): WorkspaceProject {
+function normalizeProjectAssetReferences(
+  userId: string,
+  slug: string,
+  project: WorkspaceProject,
+): WorkspaceProject {
   const normalizeUrl = (url?: string) => workspaceUrlToProjectRelative(userId, slug, url);
   const objects = project.objects ?? [];
   const references = project.references ?? [];
@@ -237,10 +258,14 @@ function normalizeProjectAssetReferences(userId: string, slug: string, project: 
     ...project,
     thumbnail: normalizeUrl(project.thumbnail) ?? '',
     objects: objects.map((object) =>
-      isRecord(object) ? { ...object, sourcePath: normalizeUrl(readString(object.sourcePath)) } : object,
+      isRecord(object)
+        ? { ...object, sourcePath: normalizeUrl(readString(object.sourcePath)) }
+        : object,
     ),
     references: references.map((reference) =>
-      isRecord(reference) ? { ...reference, url: normalizeUrl(readString(reference.url)) } : reference,
+      isRecord(reference)
+        ? { ...reference, url: normalizeUrl(readString(reference.url)) }
+        : reference,
     ),
     captures: captures.map((capture) =>
       isRecord(capture)
@@ -254,7 +279,9 @@ function normalizeProjectAssetReferences(userId: string, slug: string, project: 
         : capture,
     ),
     generations: generations.map((generation) =>
-      isRecord(generation) ? { ...generation, resultUrl: normalizeUrl(readString(generation.resultUrl)) } : generation,
+      isRecord(generation)
+        ? { ...generation, resultUrl: normalizeUrl(readString(generation.resultUrl)) }
+        : generation,
     ),
     layers: layers.map((layer) =>
       isRecord(layer)
@@ -267,7 +294,9 @@ function normalizeProjectAssetReferences(userId: string, slug: string, project: 
         : layer,
     ),
     bakedTextures: bakedTextures.map((texture) =>
-      isRecord(texture) ? { ...texture, imageUrl: normalizeUrl(readString(texture.imageUrl)) } : texture,
+      isRecord(texture)
+        ? { ...texture, imageUrl: normalizeUrl(readString(texture.imageUrl)) }
+        : texture,
     ),
     bakeWorkspace: mapBakeWorkspaceAssetUrls(project.bakeWorkspace, normalizeUrl),
   };
@@ -354,7 +383,9 @@ export async function listProjects(userId: string): Promise<ProjectSummary[]> {
           folderId: project.folderId ?? null,
           createdAt: project.createdAt,
           updatedAt: project.updatedAt,
-          thumbnail: project.thumbnail ? resolveProjectAssetUrl(userId, entry.name, project.thumbnail) : '',
+          thumbnail: project.thumbnail
+            ? resolveProjectAssetUrl(userId, entry.name, project.thumbnail)
+            : '',
           local: true,
           slug: entry.name,
           localPath: getProjectDir(userId, entry.name),
@@ -393,7 +424,11 @@ export function resolveProjectAssetUrl(userId: string, slug: string, relativePat
   return toWorkspaceUrl(path.join('users', userId, 'projects', slug, relativePath));
 }
 
-function resolveProjectAssets(userId: string, slug: string, project: WorkspaceProject): WorkspaceProject {
+function resolveProjectAssets(
+  userId: string,
+  slug: string,
+  project: WorkspaceProject,
+): WorkspaceProject {
   const resolveUrl = (url?: string) => (url ? resolveProjectAssetUrl(userId, slug, url) : url);
   const objects = project.objects ?? [];
   const references = project.references ?? [];
@@ -422,7 +457,7 @@ function resolveProjectAssets(userId: string, slug: string, project: WorkspacePr
             maskUrl: resolveUrl((capture as { maskUrl?: string }).maskUrl),
             depthUrl: resolveUrl((capture as { depthUrl?: string }).depthUrl),
             normalUrl: resolveUrl((capture as { normalUrl?: string }).normalUrl),
-        }
+          }
         : capture,
     ),
     generations: generations.map((generation) =>
@@ -437,7 +472,7 @@ function resolveProjectAssets(userId: string, slug: string, project: WorkspacePr
             imageUrl: resolveUrl((layer as { imageUrl?: string }).imageUrl),
             maskUrl: resolveUrl((layer as { maskUrl?: string }).maskUrl),
             depthUrl: resolveUrl((layer as { depthUrl?: string }).depthUrl),
-        }
+          }
         : layer,
     ),
     bakedTextures: bakedTextures.map((texture) =>
@@ -452,19 +487,28 @@ function resolveProjectAssets(userId: string, slug: string, project: WorkspacePr
 export async function loadProject(userId: string, projectId: string) {
   const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
-  const project = await readJsonFile<WorkspaceProject | undefined>(getProjectFile(getProjectDir(userId, slug)), undefined);
+  const project = await readJsonFile<WorkspaceProject | undefined>(
+    getProjectFile(getProjectDir(userId, slug)),
+    undefined,
+  );
   if (!project) return undefined;
   return { project: resolveProjectAssets(userId, slug, project), slug };
 }
 
-export async function saveProject(userId: string, projectId: string, inputProject: WorkspaceProject) {
+export async function saveProject(
+  userId: string,
+  projectId: string,
+  inputProject: WorkspaceProject,
+) {
   const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
   const projectDir = getProjectDir(userId, slug);
   const existingProject = await loadRawProjectBySlug(userId, slug);
   if (existingProject) {
-    const existingHasSceneData = existingProject.objects.length > 0 || existingProject.layers.length > 0;
-    const incomingClearsSceneData = inputProject.objects.length === 0 && inputProject.layers.length === 0;
+    const existingHasSceneData =
+      existingProject.objects.length > 0 || existingProject.layers.length > 0;
+    const incomingClearsSceneData =
+      inputProject.objects.length === 0 && inputProject.layers.length === 0;
     if (existingHasSceneData && incomingClearsSceneData) {
       throw new ProjectSaveConflictError(
         'Blocked saving an empty scene over an existing project with model or layer data.',
@@ -491,11 +535,14 @@ export async function saveProject(userId: string, projectId: string, inputProjec
   await ensureProjectFolders(projectDir);
   await writeJsonFile(getProjectFile(projectDir), project);
   await writeAutosave(projectDir, project);
-  return { project, slug };
+  return { project: resolveProjectAssets(userId, slug, project), slug };
 }
 
 async function loadRawProjectBySlug(userId: string, slug: string) {
-  return readJsonFile<WorkspaceProject | undefined>(getProjectFile(getProjectDir(userId, slug)), undefined);
+  return readJsonFile<WorkspaceProject | undefined>(
+    getProjectFile(getProjectDir(userId, slug)),
+    undefined,
+  );
 }
 
 async function updateProjectById(

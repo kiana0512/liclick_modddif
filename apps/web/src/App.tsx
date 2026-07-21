@@ -2,20 +2,37 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { useAuthStore } from './stores/authStore';
+import { useProjectStore } from './stores/projectStore';
 
 type RouteState =
-  | { name: 'projects' }
+  | { name: 'home' }
+  | { name: 'projects'; module: 'texture' | 'bake' }
+  | { name: 'modelingToolbox' }
   | { name: 'editor'; projectId: string }
   | { name: 'bake'; projectId: string }
   | { name: 'delivery'; projectId: string };
 
-const ProjectsPage = lazy(() => import('./routes/ProjectsPage').then((module) => ({ default: module.ProjectsPage })));
-const EditorPage = lazy(() => import('./routes/EditorPage').then((module) => ({ default: module.EditorPage })));
+const HomePage = lazy(() =>
+  import('./routes/HomePage').then((module) => ({ default: module.HomePage })),
+);
+const ProjectsPage = lazy(() =>
+  import('./routes/ProjectsPage').then((module) => ({ default: module.ProjectsPage })),
+);
+const ModelingToolboxPage = lazy(() =>
+  import('./routes/ModelingToolboxPage').then((module) => ({
+    default: module.ModelingToolboxPage,
+  })),
+);
+const EditorPage = lazy(() =>
+  import('./routes/EditorPage').then((module) => ({ default: module.EditorPage })),
+);
 const BakeWorkspacePage = lazy(() =>
   import('./routes/BakeWorkspacePage').then((module) => ({ default: module.BakeWorkspacePage })),
 );
 const DeliveryWorkspacePage = lazy(() =>
-  import('./routes/DeliveryWorkspacePage').then((module) => ({ default: module.DeliveryWorkspacePage })),
+  import('./routes/DeliveryWorkspacePage').then((module) => ({
+    default: module.DeliveryWorkspacePage,
+  })),
 );
 
 function AppRouteFallback() {
@@ -39,21 +56,31 @@ function stripAppBasePath(pathname: string) {
 
 function routeFromPath(pathname: string): RouteState {
   const segments = stripAppBasePath(pathname).split('/').filter(Boolean).map(decodeURIComponent);
+  if (segments[0] === 'projects') {
+    if (segments[1] === 'bake') {
+      const projectId = useProjectStore.getState().getCurrentProject()?.id;
+      return projectId ? { name: 'bake', projectId } : { name: 'home' };
+    }
+    return { name: 'projects', module: segments[1] === 'bake' ? 'bake' : 'texture' };
+  }
+  if (segments[0] === 'toolbox') {
+    return { name: 'modelingToolbox' };
+  }
   if (segments[0] === 'project' && segments[1]) {
     if (segments[2] === 'bake') return { name: 'bake', projectId: segments[1] };
     if (segments[2] === 'delivery') return { name: 'delivery', projectId: segments[1] };
     return { name: 'editor', projectId: segments[1] };
   }
-  return { name: 'projects' };
+  return { name: 'home' };
 }
 
 function pathFromRoute(route: RouteState) {
-  const path =
-    route.name === 'projects'
-      ? '/projects'
-      : route.name === 'editor'
-        ? `/project/${encodeURIComponent(route.projectId)}`
-        : `/project/${encodeURIComponent(route.projectId)}/${route.name}`;
+  let path: string;
+  if (route.name === 'home') path = '/';
+  else if (route.name === 'projects') path = `/projects/${route.module}`;
+  else if (route.name === 'modelingToolbox') path = '/toolbox/modeling';
+  else if (route.name === 'editor') path = `/project/${encodeURIComponent(route.projectId)}`;
+  else path = `/project/${encodeURIComponent(route.projectId)}/${route.name}`;
   return `${appBasePath()}${path}`;
 }
 
@@ -66,8 +93,24 @@ export function App() {
 
   const navigation = useMemo(
     () => ({
-      openProjects: () => {
-        const nextRoute: RouteState = { name: 'projects' };
+      openHome: () => {
+        const nextRoute: RouteState = { name: 'home' };
+        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        setRoute(nextRoute);
+      },
+      openTextureProjects: () => {
+        const nextRoute: RouteState = { name: 'projects', module: 'texture' };
+        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        setRoute(nextRoute);
+      },
+      openCurrentBake: () => {
+        const projectId = useProjectStore.getState().getCurrentProject()?.id;
+        const nextRoute: RouteState = projectId ? { name: 'bake', projectId } : { name: 'home' };
+        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        setRoute(nextRoute);
+      },
+      openModelingToolbox: () => {
+        const nextRoute: RouteState = { name: 'modelingToolbox' };
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
       },
@@ -134,7 +177,7 @@ export function App() {
         <Suspense fallback={<AppRouteFallback />}>
           <EditorPage
             projectId={route.projectId}
-            onBack={navigation.openProjects}
+            onBack={navigation.openTextureProjects}
             onOpenBake={() => navigation.openBake(route.projectId)}
             onOpenDelivery={() => navigation.openDelivery(route.projectId)}
           />
@@ -150,7 +193,7 @@ export function App() {
         <Suspense fallback={<AppRouteFallback />}>
           <BakeWorkspacePage
             projectId={route.projectId}
-            onBack={navigation.openProjects}
+            onBack={navigation.openHome}
             onOpenTexture={() => navigation.openEditor(route.projectId)}
             onOpenDelivery={() => navigation.openDelivery(route.projectId)}
           />
@@ -166,7 +209,7 @@ export function App() {
         <Suspense fallback={<AppRouteFallback />}>
           <DeliveryWorkspacePage
             projectId={route.projectId}
-            onBack={navigation.openProjects}
+            onBack={navigation.openHome}
             onOpenTexture={() => navigation.openEditor(route.projectId)}
             onOpenBake={() => navigation.openBake(route.projectId)}
           />
@@ -176,10 +219,43 @@ export function App() {
     );
   }
 
+  if (route.name === 'projects') {
+    const openProject = route.module === 'texture' ? navigation.openEditor : navigation.openBake;
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <ProjectsPage
+            module={route.module}
+            onBack={navigation.openHome}
+            onOpenProject={openProject}
+            onLogout={navigation.openHome}
+          />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
+
+  if (route.name === 'modelingToolbox') {
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <ModelingToolboxPage onBack={navigation.openHome} onLogout={navigation.openHome} />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
+
   return (
     <>
       <Suspense fallback={<AppRouteFallback />}>
-        <ProjectsPage onOpenProject={navigation.openEditor} onLogout={navigation.openProjects} />
+        <HomePage
+          onOpenTexture={navigation.openTextureProjects}
+          onOpenBake={navigation.openCurrentBake}
+          onOpenToolbox={navigation.openModelingToolbox}
+          onLogout={navigation.openHome}
+        />
       </Suspense>
       <ToastHost />
     </>

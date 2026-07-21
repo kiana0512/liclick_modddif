@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Plus } from 'lucide-react';
+import { Download, Flame, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -185,8 +185,7 @@ function isLocalRepaintProjectionLayer(layer: Layer) {
 
 function isLocalRepaintLayer(layer: Layer) {
   return (
-    layer.id.startsWith('local-repaint-') ||
-    layer.imageUrl.includes('surface-edit:local-repaint')
+    layer.id.startsWith('local-repaint-') || layer.imageUrl.includes('surface-edit:local-repaint')
   );
 }
 
@@ -303,9 +302,7 @@ function buildLocalRepaintPatchMask(runtime: LocalRepaintRuntime, sourcePatch: I
   if (editMask && isLocalContentAwareRuntime(runtime)) {
     for (let index = 0; index < patchMask.data.length; index += 1) {
       patchMask.data[index] =
-        (runtime.objectMask.data[index] ?? 0) > 0 && (editMask.data[index] ?? 0) > 0
-          ? 255
-          : 0;
+        (runtime.objectMask.data[index] ?? 0) > 0 && (editMask.data[index] ?? 0) > 0 ? 255 : 0;
     }
     return patchMask;
   }
@@ -1495,10 +1492,7 @@ export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: Ed
         if (originalActiveLayerId) layerState.setActiveLayer(originalActiveLayerId);
         sceneState.setLocalRepaintPreviewLayer(originalPreviewLayer);
         await waitForViewportComposition();
-        suppressProjectLayerSyncRef.current = Math.max(
-          0,
-          suppressProjectLayerSyncRef.current - 1,
-        );
+        suppressProjectLayerSyncRef.current = Math.max(0, suppressProjectLayerSyncRef.current - 1);
       }
     },
     [getCleanViewportCapture],
@@ -1966,10 +1960,18 @@ export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: Ed
     void handleManualSave();
   };
 
-  function navigateAfterProjectSave(navigate: () => void) {
+  function navigateAfterProjectSave(
+    navigate: () => void,
+    prepareSnapshot: (snapshot: Project) => Project = (snapshot) => snapshot,
+  ) {
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
+    const thumbnail = getStandardProjectThumbnailDataUrl();
+    if (thumbnail) updateCurrentProject({ thumbnail });
+    const rawSnapshot = getProjectSnapshot();
+    const preparedSnapshot = rawSnapshot ? prepareSnapshot(rawSnapshot) : undefined;
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
+      if (preparedSnapshot) replaceCurrentProject(preparedSnapshot);
       navigate();
       return;
     }
@@ -1977,9 +1979,7 @@ export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: Ed
     backNavigationPendingRef.current = true;
     window.clearTimeout(autosaveTimerRef.current);
     window.clearTimeout(thumbnailRefreshTimerRef.current);
-    const thumbnail = getStandardProjectThumbnailDataUrl();
-    if (thumbnail) updateCurrentProject({ thumbnail });
-    const snapshot = getProjectSnapshot();
+    const snapshot = preparedSnapshot;
     if (!snapshot) {
       backNavigationPendingRef.current = false;
       navigate();
@@ -2012,6 +2012,61 @@ export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: Ed
         backNavigationPendingRef.current = false;
       }
     })();
+  }
+
+  function handleSendCurrentWorkToBake() {
+    const liveProject = useProjectStore.getState().getCurrentProject() ?? project;
+    const objectId = selectedObjectId ?? importedModel?.objectId ?? liveProject?.activeObjectId;
+    if (!liveProject || !objectId || !importedModel) {
+      pushToast({
+        tone: 'warning',
+        title: '请先导入模型',
+        description: '需要当前高模后才能进入一键烘焙。',
+        dedupeKey: 'send-to-bake-model-required',
+      });
+      return;
+    }
+
+    const liveLayers = useLayerStore.getState().layers;
+    const colorLayer = [...liveLayers]
+      .reverse()
+      .find(
+        (layer) =>
+          layer.type === 'uv' &&
+          layer.visible &&
+          Boolean(layer.imageUrl) &&
+          (!layer.objectId || layer.objectId === objectId),
+      );
+    const bakedColor = [...liveProject.bakedTextures]
+      .reverse()
+      .find((texture) => texture.objectId === objectId && Boolean(texture.imageUrl));
+    if (!colorLayer?.imageUrl && !bakedColor?.imageUrl) {
+      pushToast({
+        tone: 'warning',
+        title: '还没有可传递的颜色贴图',
+        description: '请先把绘制结果合并或烘焙为 UV 颜色贴图，再一键送入烘焙。',
+        dedupeKey: 'send-to-bake-color-required',
+      });
+      return;
+    }
+
+    pushToast({
+      tone: 'success',
+      title: '模型与颜色贴图已联动',
+      description: '进入烘焙页后只需补充低模并选择输出贴图。',
+      dedupeKey: 'send-to-bake-ready',
+    });
+    navigateAfterProjectSave(onOpenBake, (snapshot) => ({
+      ...snapshot,
+      activeObjectId: objectId,
+      activeLayerId: colorLayer?.id ?? snapshot.activeLayerId,
+      bakeWorkspace: {
+        version: 1,
+        activeStage: 'assets',
+        selectedObjectId: objectId,
+        bakeSets: snapshot.bakeWorkspace?.bakeSets ?? {},
+      },
+    }));
   }
 
   function handleBackToProjects() {
@@ -2581,7 +2636,8 @@ export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: Ed
       pushToast({
         tone: 'success',
         title: 'Photoshop 纹理已应用',
-        description: snapshot.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
+        description:
+          snapshot.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
       });
     } catch (error) {
       pushToast({
@@ -2612,7 +2668,8 @@ export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: Ed
       pushToast({
         tone: 'error',
         title: '无法启动 Photoshop',
-        description: error instanceof Error ? error.message : '请在启动器高级设置中选择 Photoshop。',
+        description:
+          error instanceof Error ? error.message : '请在启动器高级设置中选择 Photoshop。',
       });
     }
   }
@@ -4166,13 +4223,23 @@ export function EditorPage({ projectId, onBack, onOpenBake, onOpenDelivery }: Ed
         workspaceLabel={getWorkspaceLabel()}
         onBack={handleBackToProjects}
         workflowSwitcher={
-          <WorkflowModuleSwitcher
-            compact
-            activeModule="texture"
-            onOpenTexture={() => undefined}
-            onOpenBake={() => navigateAfterProjectSave(onOpenBake)}
-            onOpenDelivery={() => navigateAfterProjectSave(onOpenDelivery)}
-          />
+          <div className="flex items-center gap-2">
+            <WorkflowModuleSwitcher
+              compact
+              activeModule="texture"
+              onOpenTexture={() => undefined}
+              onOpenBake={handleSendCurrentWorkToBake}
+              onOpenDelivery={() => navigateAfterProjectSave(onOpenDelivery)}
+            />
+            <Button
+              variant="primary"
+              className="hidden h-12 rounded-lg px-4 text-sm xl:inline-flex"
+              icon={<Flame className="h-4 w-4" />}
+              onClick={handleSendCurrentWorkToBake}
+            >
+              一键送入烘焙
+            </Button>
+          </div>
         }
         exportMenu={
           <ExportMenu

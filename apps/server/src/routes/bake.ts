@@ -15,7 +15,11 @@ import {
 type MultipartData = { fields: Record<string, string>; files: Record<string, BakeUpload> };
 
 function parseMultipart(contentType: string, body: Buffer): MultipartData {
-  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType)?.slice(1).find(Boolean)?.trim();
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i
+    .exec(contentType)
+    ?.slice(1)
+    .find(Boolean)
+    ?.trim();
   if (!boundary) throw new Error('Missing multipart boundary.');
   const delimiter = Buffer.from(`--${boundary}`);
   const fields: Record<string, string> = {};
@@ -43,7 +47,11 @@ function parseMultipart(contentType: string, body: Buffer): MultipartData {
   return { fields, files };
 }
 
-export async function handleBakeRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
+export async function handleBakeRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+) {
   if (url.pathname === '/api/bake/status' && request.method === 'GET') {
     sendJson(response, 200, getSubstanceBakerStatus());
     return true;
@@ -71,7 +79,10 @@ export async function handleBakeRoute(request: IncomingMessage, response: Server
     sendJson(response, 202, { job });
     return true;
   }
-  const match = /^\/api\/bake\/jobs\/([^/]+)(?:\/output\/(baseColor|ambientOcclusion|normal))?$/.exec(url.pathname);
+  const match =
+    /^\/api\/bake\/jobs\/([^/]+)(?:\/output\/(baseColor|normal|ambientOcclusion|curvature|worldNormal|thickness|position))?$/.exec(
+      url.pathname,
+    );
   if (!match || request.method !== 'GET') return false;
   const jobId = decodeURIComponent(match[1]);
   const outputChannel = match[2] as BakeChannelId | undefined;
