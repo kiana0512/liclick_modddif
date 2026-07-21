@@ -427,10 +427,12 @@ function makeAlpha(foreground: Uint8Array, image: ImageData, options: CutoutOpti
   const alpha = gaussianBlurAlpha(hardAlpha, image.width, image.height, options.featherPx);
   const bandRadius = Math.max(1, Math.round(options.featherPx));
   const eroded = erode(foreground, image.width, image.height, bandRadius);
-  const dilated = dilate(foreground, image.width, image.height, bandRadius);
   for (let i = 0; i < alpha.length; i += 1) {
     if (eroded[i]) alpha[i] = 255;
-    if (!dilated[i]) alpha[i] = 0;
+    // Feather only toward the inside of the detected object. Allowing blurred
+    // alpha outside the hard foreground creates a light silhouette around the
+    // whole model once the cutout is projected.
+    if (!foreground[i]) alpha[i] = 0;
     alpha[i] = Math.min(alpha[i], image.data[i * 4 + 3]);
   }
   return alpha;
@@ -495,7 +497,9 @@ function growForegroundBleed(image: ImageData, radius: number) {
         output.data[targetOffset] = output.data[sourceOffset];
         output.data[targetOffset + 1] = output.data[sourceOffset + 1];
         output.data[targetOffset + 2] = output.data[sourceOffset + 2];
-        output.data[targetOffset + 3] = 255;
+        // RGB bleed prevents dark filtering seams, but it must stay invisible.
+        // Expanding alpha here used to add an opaque 18px outline to both the
+        // generated preview and the projection layer.
         nextFrontier.push(nextPixelIndex);
       }
     }
@@ -578,12 +582,85 @@ function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
   return output;
 }
 
+type PixelBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+function getContentBounds(
+  image: ImageData,
+  getCoverage: (offset: number) => number,
+  threshold = 12,
+): PixelBounds | undefined {
+  let left = image.width;
+  let top = image.height;
+  let right = -1;
+  let bottom = -1;
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      if (getCoverage(offset) <= threshold) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < left || bottom < top) return undefined;
+  return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+function alignCutoutToProjectionMask(cutout: ImageData, projectionMask: ImageData) {
+  const sourceBounds = getContentBounds(cutout, (offset) => cutout.data[offset + 3]);
+  const targetBounds = getContentBounds(projectionMask, (offset) => {
+    const luminance =
+      projectionMask.data[offset] * 0.299 +
+      projectionMask.data[offset + 1] * 0.587 +
+      projectionMask.data[offset + 2] * 0.114;
+    return luminance * (projectionMask.data[offset + 3] / 255);
+  });
+  if (!sourceBounds || !targetBounds) return cutout;
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = cutout.width;
+  sourceCanvas.height = cutout.height;
+  const sourceContext = sourceCanvas.getContext('2d');
+  if (!sourceContext) return cutout;
+  sourceContext.putImageData(cutout, 0, 0);
+
+  const outputCanvas = document.createElement('canvas');
+  outputCanvas.width = projectionMask.width;
+  outputCanvas.height = projectionMask.height;
+  const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
+  if (!outputContext) return cutout;
+  outputContext.imageSmoothingEnabled = true;
+  outputContext.imageSmoothingQuality = 'high';
+  // GPT may recenter or resize the subject even when the requested camera view
+  // is unchanged. Normalize its foreground bounds back onto the capture mask so
+  // the saved projection camera and returned pixels share one coordinate frame.
+  outputContext.drawImage(
+    sourceCanvas,
+    sourceBounds.x,
+    sourceBounds.y,
+    sourceBounds.width,
+    sourceBounds.height,
+    targetBounds.x,
+    targetBounds.y,
+    targetBounds.width,
+    targetBounds.height,
+  );
+  return outputContext.getImageData(0, 0, outputCanvas.width, outputCanvas.height);
+}
+
 export async function createMaskedProjectedImage(imageUrl: string, projectionMaskUrl?: string) {
   const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
   const cutout = removeSolidBackground(sourceImage);
   if (!projectionMaskUrl) return imageDataToPngUrl(cutout);
   const projectionMask = await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask');
-  return imageDataToPngUrl(applyProjectedAlphaMask(cutout, projectionMask));
+  const aligned = alignCutoutToProjectionMask(cutout, projectionMask);
+  return imageDataToPngUrl(applyProjectedAlphaMask(aligned, projectionMask));
 }
 
 /**

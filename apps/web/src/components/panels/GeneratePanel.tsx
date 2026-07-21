@@ -241,8 +241,11 @@ function GenerationProgressStatus({
   );
 }
 
-const textureMapDefaultPrompt =
-  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。';
+const textureMapDefaultPrompt = [
+  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。',
+  '第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。',
+  '贴图生成约束：输出应强调材质贴图本身的颜色、粗糙度、纹理颗粒和细节，避免明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影。',
+].join('\n\n');
 
 function buildTextureMapPrompt(userPrompt: string) {
   const trimmedPrompt = userPrompt.trim();
@@ -614,7 +617,9 @@ export function GeneratePanel() {
         resolution: options.resolution ?? resolutionToSize[resolution],
         framing: 'fit-object',
         colorMode: 'clay-target',
-        fillRatio: 0.92,
+        // Leave a stable edge-safe frame for GPT/control-image upload. The
+        // capture camera still keeps the preview direction and roll.
+        fillRatio: 0.88,
         viewDirection: view?.viewDirection,
         viewUp: view?.viewUp,
       });
@@ -1914,7 +1919,7 @@ export function GeneratePanel() {
     const existing = useLayerStore
       .getState()
       .layers.find((layer) => layer.generationId === generation.id);
-    if (existing) return existing;
+    if (existing && options.automatic) return existing;
     const generationCapture =
       lastCapture?.id === generation.captureId
         ? lastCapture
@@ -1938,17 +1943,33 @@ export function GeneratePanel() {
         generation.resultUrl.startsWith('http')
           ? await urlToDataUrl(generation.resultUrl)
           : generation.resultUrl,
+        persistedGenerationCapture?.maskUrl,
       ),
       metadata: {
         ...generation.metadata,
         alphaMode: 'solid-background-cutout',
       },
     };
-    let layer = addProjectedLayerFromGeneration(
-      layerGeneration,
-      persistedGenerationCapture,
-      persistedGenerationCapture?.objectId,
-    );
+    let layer: Layer;
+    if (existing) {
+      layer = {
+        ...existing,
+        imageUrl: layerGeneration.resultUrl,
+        maskUrl: persistedGenerationCapture?.maskUrl,
+        depthUrl: persistedGenerationCapture?.depthUrl,
+        camera: persistedGenerationCapture?.camera,
+        contentRevision: (existing.contentRevision ?? 0) + 1,
+        isBaked: false,
+        needsRebake: true,
+      };
+      useLayerStore.getState().updateLayer(existing.id, layer);
+    } else {
+      layer = addProjectedLayerFromGeneration(
+        layerGeneration,
+        persistedGenerationCapture,
+        persistedGenerationCapture?.objectId,
+      );
+    }
     let nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
     try {

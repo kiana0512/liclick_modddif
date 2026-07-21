@@ -1,7 +1,7 @@
 import type { SerializedCamera } from './capture';
 
 export type LayerType = 'uv' | 'projected' | 'patch' | 'normal';
-export type LayerRole = 'base-color';
+export type LayerRole = 'base-color' | 'merged-uv' | 'local-repaint-overlay';
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';
 export type LayerMaskSpace = 'projection' | 'uv';
 
@@ -20,6 +20,9 @@ export type Layer = {
   maskUrl?: string;
   maskSpace?: LayerMaskSpace;
   depthUrl?: string;
+  depthEncoding?: 'linear-view';
+  /** Runtime geometric-normal visibility captured from the projection camera. */
+  normalUrl?: string;
   objectId?: string;
   objectMatrixWorld?: number[];
   camera?: SerializedCamera;

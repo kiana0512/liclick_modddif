@@ -26,8 +26,8 @@ export function createLiveProjectedCanvasUrl(id: string) {
   return `${LIVE_PROJECTED_CANVAS_PREFIX}${id}`;
 }
 
-export function isLiveProjectedCanvasUrl(url: string | undefined) {
-  return Boolean(url?.startsWith(LIVE_PROJECTED_CANVAS_PREFIX));
+export function isLiveProjectedCanvasUrl(url: unknown) {
+  return typeof url === 'string' && url.startsWith(LIVE_PROJECTED_CANVAS_PREFIX);
 }
 
 export function registerLiveProjectedCanvasTexture(

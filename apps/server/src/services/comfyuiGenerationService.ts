@@ -86,9 +86,9 @@ const comfyNodeIds = {
 };
 
 const comfyInpaintNodeIds = {
-  inputImage: 111,
+  inputImage: 96,
   positivePrompt: 53,
-  automaticPrompt: 110,
+  automaticPrompt: 94,
   automaticPromptDisplay: 95,
   sampler: 57,
   finalSave: 9,

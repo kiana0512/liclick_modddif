@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
+import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { createProjectionMaskedImage } from '@/engine/projection/createMaskedProjectedImage';
 import {
   findExactLayerStackTexture,
   getLayerStackBakeInFlight,
@@ -9,10 +11,15 @@ import {
   registerLayerStackBakeInFlight,
   canUseLayerStackCache,
 } from '@/engine/bake/layerStackCache';
+import {
+  getVisibleUvLayerStack,
+  isLocalRepaintUvOverlayLayer,
+} from '@/engine/layers/uvLayerComposition';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { saveBlobAsset, saveDataUrlAsset } from '@/services/workspaceApiClient';
+import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import type { BakedTexture, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { BakeProjectedLayerResult } from '@/engine/bake/uvBakeTypes';
 import type { ModelExportInput } from './exportTypes';
@@ -26,7 +33,7 @@ const exportResolutionToSize: Record<string, UvBakeResolution> = {
   '4K': 4096,
   '8K': 8192,
 };
-const EXPORT_BASECOLOR_CACHE_SCOPE = 'export-basecolor-v1';
+const EXPORT_BASECOLOR_CACHE_SCOPE = 'export-basecolor-v2';
 type ExportTextureOutputAlpha = 'opaque-viewport' | 'transparent';
 
 type TexturedModelExportOptions = {
@@ -48,9 +55,35 @@ function getTexturedExportObjectId(input: ModelExportInput) {
     : input.importedModel.objectId;
 }
 
+async function canvasToPngBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not encode the in-memory export texture.'));
+    }, 'image/png');
+  });
+}
+
 async function blobFromUrl(url: string) {
-  const response = await fetch(resolveImageAssetUrl(url));
-  if (!response.ok) throw new Error(`Could not read baked texture: ${response.statusText}`);
+  const liveCanvas = getLiveProjectedCanvasState(url)?.canvas;
+  if (liveCanvas) return canvasToPngBlob(liveCanvas);
+
+  const registeredBlob = getRegisteredObjectUrlBlob(url);
+  if (registeredBlob) return registeredBlob;
+
+  const resolvedUrl = resolveImageAssetUrl(url);
+  let response: Response;
+  try {
+    response = await fetch(resolvedUrl);
+  } catch (error) {
+    throw new Error(
+      `Could not read export texture (${url.startsWith('blob:') ? 'expired temporary image' : 'unavailable image asset'}).`,
+      { cause: error },
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`Could not read export texture: HTTP ${response.status}.`);
+  }
   return response.blob();
 }
 
@@ -99,22 +132,214 @@ async function drawBlobToCanvas(context: CanvasRenderingContext2D, blob: Blob, w
   bitmap.close();
 }
 
-function findVisibleUvLayers(objectId: string) {
-  return useLayerStore
-    .getState()
-    .layers.filter(
-      (layer) =>
-        layer.type === 'uv' &&
-        layer.visible &&
-        layer.imageUrl &&
-        (!layer.objectId || layer.objectId === objectId),
-    )
-    .sort((a, b) => b.order - a.order);
+function isRenderedColorUvLayer(layer: ReturnType<typeof findVisibleUvLayers>[number]) {
+  return Boolean(
+    isLocalRepaintUvOverlayLayer(layer) ||
+    layer.renderedColor ||
+    layer.id.startsWith('local-repaint-') ||
+    layer.id.startsWith('content-aware-projected-repair') ||
+    layer.generationId === 'texture-map-content-aware-repair' ||
+    layer.imageUrl.includes('surface-edit:local-repaint'),
+  );
 }
 
-async function composeUvLayersOverBase(baseBlob: Blob | undefined, uvLayers: ReturnType<typeof findVisibleUvLayers>) {
+function sampleCorrectionMap(
+  correctionMap: Float32Array,
+  probeWidth: number,
+  probeHeight: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const probeX = width <= 1 ? 0 : (x / (width - 1)) * (probeWidth - 1);
+  const probeY = height <= 1 ? 0 : (y / (height - 1)) * (probeHeight - 1);
+  const x0 = Math.floor(probeX);
+  const y0 = Math.floor(probeY);
+  const x1 = Math.min(probeWidth - 1, x0 + 1);
+  const y1 = Math.min(probeHeight - 1, y0 + 1);
+  const tx = probeX - x0;
+  const ty = probeY - y0;
+  const top = THREE.MathUtils.lerp(
+    correctionMap[y0 * probeWidth + x0],
+    correctionMap[y0 * probeWidth + x1],
+    tx,
+  );
+  const bottom = THREE.MathUtils.lerp(
+    correctionMap[y1 * probeWidth + x0],
+    correctionMap[y1 * probeWidth + x1],
+    tx,
+  );
+  return THREE.MathUtils.lerp(top, bottom, ty);
+}
+
+function pixelLuminance(data: Uint8ClampedArray, offset: number) {
+  return data[offset] * 0.2126 + data[offset + 1] * 0.7152 + data[offset + 2] * 0.0722;
+}
+
+async function drawRenderedColorLayerAsBaseColor(
+  targetContext: CanvasRenderingContext2D,
+  blob: Blob,
+  width: number,
+  height: number,
+  opacity: number,
+) {
+  const bitmap = await createImageBitmap(blob);
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = width;
+  sourceCanvas.height = height;
+  const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sourceContext) {
+    bitmap.close();
+    await drawBlobToCanvas(targetContext, blob, width, height, opacity);
+    return;
+  }
+  sourceContext.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+
+  // Estimate only the low-frequency illumination difference. The generated
+  // repaint is a viewport render, while the canvas below it is the albedo stack
+  // that Blender will light. A small probe removes the baked light gradient
+  // without blurring or replacing the high-frequency generated details.
+  const probeWidth = Math.max(16, Math.min(96, Math.round(64 * (width / Math.max(height, 1)))));
+  const probeHeight = Math.max(16, Math.min(96, Math.round(64 * (height / Math.max(width, 1)))));
+  const sourceProbe = document.createElement('canvas');
+  sourceProbe.width = probeWidth;
+  sourceProbe.height = probeHeight;
+  const sourceProbeContext = sourceProbe.getContext('2d', { willReadFrequently: true });
+  const baseProbe = document.createElement('canvas');
+  baseProbe.width = probeWidth;
+  baseProbe.height = probeHeight;
+  const baseProbeContext = baseProbe.getContext('2d', { willReadFrequently: true });
+  if (!sourceProbeContext || !baseProbeContext) {
+    targetContext.save();
+    targetContext.globalAlpha = opacity;
+    targetContext.drawImage(sourceCanvas, 0, 0);
+    targetContext.restore();
+    return;
+  }
+  sourceProbeContext.drawImage(sourceCanvas, 0, 0, probeWidth, probeHeight);
+  baseProbeContext.drawImage(targetContext.canvas, 0, 0, probeWidth, probeHeight);
+  const sourceProbeData = sourceProbeContext.getImageData(0, 0, probeWidth, probeHeight).data;
+  const baseProbeData = baseProbeContext.getImageData(0, 0, probeWidth, probeHeight).data;
+
+  const findProbeOffset = (probeX: number, probeY: number) => {
+    const centerOffset = (probeY * probeWidth + probeX) * 4;
+    if (sourceProbeData[centerOffset + 3] > 12) return centerOffset;
+    for (let radius = 1; radius <= 3; radius += 1) {
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          const x = Math.max(0, Math.min(probeWidth - 1, probeX + dx));
+          const y = Math.max(0, Math.min(probeHeight - 1, probeY + dy));
+          const offset = (y * probeWidth + x) * 4;
+          if (sourceProbeData[offset + 3] > 12) return offset;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const correctionMap = new Float32Array(probeWidth * probeHeight);
+  correctionMap.fill(1);
+  for (let probeY = 0; probeY < probeHeight; probeY += 1) {
+    for (let probeX = 0; probeX < probeWidth; probeX += 1) {
+      const mapIndex = probeY * probeWidth + probeX;
+      const probeOffset = findProbeOffset(probeX, probeY);
+      if (probeOffset === undefined) continue;
+      const renderedLuminance = pixelLuminance(sourceProbeData, probeOffset);
+      const baseLuminance = pixelLuminance(baseProbeData, probeOffset);
+      if (renderedLuminance <= 4 || baseLuminance <= 4) continue;
+      const illuminationScale = THREE.MathUtils.clamp(
+        baseLuminance / renderedLuminance,
+        0.55,
+        1.8,
+      );
+      correctionMap[mapIndex] = Math.pow(illuminationScale, 0.88);
+    }
+  }
+
+  // Work in strips to keep 8K export memory bounded.
+  const stripHeight = 256;
+  for (let stripY = 0; stripY < height; stripY += stripHeight) {
+    const currentHeight = Math.min(stripHeight, height - stripY);
+    const imageData = sourceContext.getImageData(0, stripY, width, currentHeight);
+    for (let localY = 0; localY < currentHeight; localY += 1) {
+      const y = stripY + localY;
+      for (let x = 0; x < width; x += 1) {
+        const offset = (localY * width + x) * 4;
+        if (imageData.data[offset + 3] <= 2) continue;
+        // Leave a small part of the generated lighting intact so deliberately
+        // painted highlights remain natural instead of becoming flat patches.
+        // Bilinear sampling is important here: nearest-probe sampling showed up
+        // as rectangular/grid cells after Blender lit the exported base color.
+        const correction = sampleCorrectionMap(
+          correctionMap,
+          probeWidth,
+          probeHeight,
+          x,
+          y,
+          width,
+          height,
+        );
+        imageData.data[offset] = Math.min(255, Math.round(imageData.data[offset] * correction));
+        imageData.data[offset + 1] = Math.min(
+          255,
+          Math.round(imageData.data[offset + 1] * correction),
+        );
+        imageData.data[offset + 2] = Math.min(
+          255,
+          Math.round(imageData.data[offset + 2] * correction),
+        );
+      }
+    }
+    sourceContext.putImageData(imageData, 0, stripY);
+  }
+
+  targetContext.save();
+  targetContext.globalAlpha = opacity;
+  targetContext.globalCompositeOperation = 'source-over';
+  targetContext.drawImage(sourceCanvas, 0, 0);
+  targetContext.restore();
+}
+
+function findVisibleUvLayers(objectId: string) {
+  return getVisibleUvLayerStack(useLayerStore.getState().layers, objectId, 'bottom-to-top');
+}
+
+function getExportMaterialBaseColor(root: THREE.Object3D): [number, number, number] {
+  let result: [number, number, number] | undefined;
+  root.traverse((child) => {
+    if (result || !(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (!('color' in material) || !(material.color instanceof THREE.Color)) continue;
+      result = [
+        Math.round(THREE.MathUtils.clamp(material.color.r, 0, 1) * 255),
+        Math.round(THREE.MathUtils.clamp(material.color.g, 0, 1) * 255),
+        Math.round(THREE.MathUtils.clamp(material.color.b, 0, 1) * 255),
+      ];
+      break;
+    }
+  });
+  return result ?? [128, 128, 128];
+}
+
+async function flattenVisibleLayersToBaseColor(
+  baseBlob: Blob | undefined,
+  uvLayers: ReturnType<typeof findVisibleUvLayers>,
+  fallbackColor: [number, number, number],
+) {
   if (!baseBlob && uvLayers.length === 0) return undefined;
-  const layerBlobs = await Promise.all(uvLayers.map((layer) => blobFromUrl(layer.imageUrl)));
+  // Export uses the same two-stage stack as the editor: first build the ordinary
+  // projected/UV base, then source-over every local-repaint UV patch in authored
+  // order. This prevents a repaint from being flattened into the base and then
+  // applied a second time.
+  const baseUvLayers = uvLayers.filter((layer) => !isLocalRepaintUvOverlayLayer(layer));
+  const localRepaintUvLayers = uvLayers.filter((layer) => isLocalRepaintUvOverlayLayer(layer));
+  const orderedUvLayers = [...baseUvLayers, ...localRepaintUvLayers];
+  const layerBlobs = await Promise.all(
+    orderedUvLayers.map((layer) => blobFromUrl(layer.imageUrl)),
+  );
   const probeBlob = baseBlob ?? layerBlobs[0];
   if (!probeBlob) return undefined;
   const probeBitmap = await createImageBitmap(probeBlob);
@@ -128,11 +353,24 @@ async function composeUvLayersOverBase(baseBlob: Blob | undefined, uvLayers: Ret
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return baseBlob;
 
-  context.clearRect(0, 0, width, height);
+  // FBX receives one self-contained Base Color texture. Start with the imported
+  // material color so even a stack made only from sparse UV patches has no
+  // transparent holes for Blender to reinterpret.
+  context.fillStyle = `rgb(${fallbackColor[0]}, ${fallbackColor[1]}, ${fallbackColor[2]})`;
+  context.fillRect(0, 0, width, height);
   if (baseBlob) await drawBlobToCanvas(context, baseBlob, width, height);
-  for (let index = 0; index < uvLayers.length; index += 1) {
-    await drawBlobToCanvas(context, layerBlobs[index], width, height, Math.max(0, Math.min(1, uvLayers[index].opacity)));
+  for (let index = 0; index < orderedUvLayers.length; index += 1) {
+    const layer = orderedUvLayers[index];
+    const opacity = Math.max(0, Math.min(1, layer.opacity));
+    if (isRenderedColorUvLayer(layer)) {
+      await drawRenderedColorLayerAsBaseColor(context, layerBlobs[index], width, height, opacity);
+    } else {
+      await drawBlobToCanvas(context, layerBlobs[index], width, height, opacity);
+    }
   }
+  // The canvas started opaque, and source-over compositing preserves that alpha.
+  // Avoid a full-canvas readback here so 8K exports do not allocate another
+  // quarter-gigabyte ImageData merely to rewrite alpha bytes to 255.
   return encodeCanvasPng(canvas);
 }
 
@@ -215,6 +453,32 @@ function getLayerStackCacheKey(
 
 type LayerStackLayers = ReturnType<typeof getVisibleProjectedLayerStack>;
 
+function isLocalRepaintProjectionLayer(layer: LayerStackLayers[number]) {
+  return (
+    layer.id.startsWith('local-repaint-projection') ||
+    layer.id.startsWith('local-repaint-brush-projection')
+  );
+}
+
+async function prepareProjectedLayersForExport(layers: LayerStackLayers) {
+  // Match the proven "merge projected layers to UV" path. Local repaint masks
+  // can be backed by live canvases and contain soft coverage. Flatten that mask
+  // into the source image alpha before rasterization instead of sampling two
+  // textures independently in the export bake; the latter exposed tiny rejected
+  // texels as the stripe-shaped speckles visible in Blender.
+  return Promise.all(
+    layers.map(async (layer) =>
+      isLocalRepaintProjectionLayer(layer) && layer.maskUrl
+        ? {
+            ...layer,
+            imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
+            maskUrl: undefined,
+          }
+        : layer,
+    ),
+  );
+}
+
 function findCurrentBakedTexture(
   input: ModelExportInput,
   objectId: string,
@@ -288,19 +552,24 @@ async function bakeCurrentVisibleTextureForExport(
     if (bakedTexture && canUseLayerStackCache(latestVisibleLayers, bakedTexture, resolution, objectId, stackSignature)) return bakedTexture;
   }
 
-  const bakePromise = bakeVisibleProjectedLayersToTexture({
-    objectId,
-    resolution,
-    cacheKey: stackSignature,
-    enableBackfaceCulling: true,
-    enableDilation: true,
-    dilationPixels: 4,
-    outputAlpha,
-    preferBlobOutput: true,
-    commitToProject: false,
-    markSourceLayersBaked: false,
-    onProgress: input.onProgress,
-  }).then((result) => commitExportBakedTexture(input, result));
+  const bakePromise = prepareProjectedLayersForExport(visibleLayers)
+    .then((exportLayers) =>
+      bakeVisibleProjectedLayersToTexture({
+        objectId,
+        transientLayers: exportLayers,
+        resolution,
+        cacheKey: stackSignature,
+        enableBackfaceCulling: true,
+        enableDilation: true,
+        dilationPixels: 4,
+        outputAlpha,
+        preferBlobOutput: true,
+        commitToProject: false,
+        markSourceLayersBaked: false,
+        onProgress: input.onProgress,
+      }),
+    )
+    .then((result) => commitExportBakedTexture(input, result));
   return registerLayerStackBakeInFlight(stackSignature, bakePromise);
 }
 
@@ -341,14 +610,20 @@ export async function prepareTexturedModelExport(
   if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 
   const textureBaseBlob = bakedTexture?.imageUrl ? await blobFromUrl(bakedTexture.imageUrl) : undefined;
-  const textureBlob = await composeUvLayersOverBase(textureBaseBlob, uvLayers);
+  const textureBlob = await flattenVisibleLayersToBaseColor(
+    textureBaseBlob,
+    uvLayers,
+    getExportMaterialBaseColor(root),
+  );
   if (!textureBlob) return { root };
   const textureUrl = URL.createObjectURL(textureBlob);
   const texture = await loadExportTexture(textureUrl);
   URL.revokeObjectURL(textureUrl);
   const averageColor = await getAverageTextureColor(textureBlob);
   applyTextureMaterial(root, texture);
-  const textureId = bakedTexture?.id ?? (uvLayers.map((layer) => layer.id).join('-') || 'uv-stack');
+  const textureId =
+    [bakedTexture?.id, ...uvLayers.map((layer) => layer.id)].filter(Boolean).join('-') ||
+    'flattened-basecolor';
 
   return {
     root,

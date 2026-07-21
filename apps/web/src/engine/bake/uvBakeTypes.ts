@@ -96,6 +96,8 @@ export interface BakeVisibleProjectedLayersInput {
   minimumOutputCoverage?: number;
   /** Keep dilation only where it closes an interior pinhole or narrow crack. */
   constrainDilationToInteriorHoles?: boolean;
+  /** Add color padding only outside UV islands to prevent bilinear-filter seams. */
+  uvIslandGutterPixels?: number;
   debugIgnoreMask?: boolean;
   debugIgnoreDepth?: boolean;
   commitToProject?: boolean;

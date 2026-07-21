@@ -27,6 +27,7 @@ export type Capture = {
   colorUrl: string;
   maskUrl: string;
   depthUrl?: string;
+  depthEncoding?: 'linear-view';
   normalUrl?: string;
   createdAt: string;
   warnings: string[];

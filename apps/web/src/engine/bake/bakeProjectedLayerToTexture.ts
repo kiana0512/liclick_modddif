@@ -1,6 +1,6 @@
 import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
-import { dilateImageData, getUvDilationPixels } from './dilation';
+import { dilateImageData, getUvDilationPixels, padUvIslandGutters } from './dilation';
 import {
   bakeProjectedLayerRastersWithGpu,
   bakeProjectedLayerStackWithGpu,
@@ -11,6 +11,7 @@ import { getVisibleProjectedLayerStack } from './layerStackCache';
 import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod } from './uvBakeDebugControls';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
 import { reconcileUvSeams } from './uvSeamReconciliation';
+import { createRuntimeProjectionDepth } from '@/engine/projection/createRuntimeProjectionDepth';
 import type {
   BakeProjectedLayerInput,
   BakeProjectedLayerResult,
@@ -817,10 +818,11 @@ export async function bakeVisibleProjectedLayersToTexture(
           )
           .sort((a, b) => b.order - a.order)
       : getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
-  const layers = sourceLayers.map((layer) => ({
+  let layers = sourceLayers.map((layer) => ({
     ...layer,
     maskUrl: input.debugIgnoreMask ? undefined : layer.maskUrl,
     depthUrl: input.debugIgnoreDepth ? undefined : layer.depthUrl,
+    normalUrl: input.debugIgnoreDepth ? undefined : layer.normalUrl,
   }));
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
@@ -834,6 +836,35 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   const gpuFallbackWarnings: string[] = [];
   const renderer = useSceneStore.getState().viewport?.gl;
+  // The live viewport builds visibility from the current model pose. Rebuild
+  // that same depth + geometric-normal capture immediately before UV baking so
+  // merge/export cannot fall back to stale capture depth or extrapolate onto
+  // surfaces that were not visible in the projected preview.
+  if (renderer && !input.debugIgnoreDepth) {
+    const currentProject = useProjectStore.getState().getCurrentProject();
+    const captureById = new Map(
+      currentProject?.captures.map((capture) => [capture.id, capture] as const) ?? [],
+    );
+    layers = await Promise.all(
+      layers.map(async (layer) => {
+        const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
+        const visibility = await createRuntimeProjectionDepth({
+          renderer,
+          group: importedModel.group,
+          camera: layer.camera!,
+          captureObjectMatrixWorld: layer.objectMatrixWorld,
+          width: Math.max(1, Math.min(2048, capture?.width ?? 1024)),
+          height: Math.max(1, Math.min(2048, capture?.height ?? 1024)),
+        });
+        return {
+          ...layer,
+          depthUrl: visibility.depthUrl,
+          depthEncoding: 'linear-view' as const,
+          normalUrl: visibility.normalUrl,
+        };
+      }),
+    );
+  }
   const bakeMethod = input.method ?? getDebugUvBakeMethod('gpu');
   if (bakeMethod !== 'cpu' && renderer) {
     try {
@@ -918,18 +949,31 @@ export async function bakeVisibleProjectedLayersToTexture(
         if (input.outputAlpha !== 'transparent') {
           sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
         }
-        const seamResult = reconcileUvSeams(
-          composite,
-          importedModel.group,
-          qualityBlendComposite.coverage,
-        );
-        if (seamResult.adjustedPixels > 0) {
-          warnings.push(
-            `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+        if (input.outputAlpha !== 'transparent') {
+          const seamResult = reconcileUvSeams(
+            composite,
+            importedModel.group,
+            qualityBlendComposite.coverage,
           );
+          if (seamResult.adjustedPixels > 0) {
+            warnings.push(
+              `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+            );
+          }
         }
         if (input.enableDilation) {
           dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
+        }
+        if ((input.uvIslandGutterPixels ?? 0) > 0) {
+          const paddedPixels = padUvIslandGutters(
+            composite,
+            qualityBlendComposite.coverage,
+            importedModel.group,
+            input.uvIslandGutterPixels ?? 0,
+          );
+          if (paddedPixels > 0) {
+            warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
+          }
         }
         if (input.outputAlpha !== 'transparent') fillTransparentTexelsForViewport(composite);
         else clearWeakTransparentTexels(composite);
@@ -1051,11 +1095,13 @@ export async function bakeVisibleProjectedLayersToTexture(
         if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
         const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
         if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
-        const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
-        if (seamResult.adjustedPixels > 0) {
-          gpuBake.warnings.push(
-            `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
-          );
+        if (!wantsTransparentOutput) {
+          const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
+          if (seamResult.adjustedPixels > 0) {
+            gpuBake.warnings.push(
+              `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+            );
+          }
         }
         if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
         if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
@@ -1292,18 +1338,31 @@ export async function bakeVisibleProjectedLayersToTexture(
   if (input.outputAlpha !== 'transparent') {
     sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
   }
-  const seamResult = reconcileUvSeams(
-    composite,
-    importedModel.group,
-    qualityBlendComposite.coverage,
-  );
-  if (seamResult.adjustedPixels > 0) {
-    warnings.push(
-      `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+  if (input.outputAlpha !== 'transparent') {
+    const seamResult = reconcileUvSeams(
+      composite,
+      importedModel.group,
+      qualityBlendComposite.coverage,
     );
+    if (seamResult.adjustedPixels > 0) {
+      warnings.push(
+        `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+      );
+    }
   }
   if (input.enableDilation) {
     dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
+  }
+  if ((input.uvIslandGutterPixels ?? 0) > 0) {
+    const paddedPixels = padUvIslandGutters(
+      composite,
+      qualityBlendComposite.coverage,
+      importedModel.group,
+      input.uvIslandGutterPixels ?? 0,
+    );
+    if (paddedPixels > 0) {
+      warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
+    }
   }
   if (input.outputAlpha !== 'transparent') {
     fillTransparentTexelsForViewport(composite);

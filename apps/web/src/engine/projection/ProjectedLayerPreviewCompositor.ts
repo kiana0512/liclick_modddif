@@ -6,7 +6,8 @@ import type { ProjectionLayerStackInput } from './projectionTypes';
 const TILE_SIZE = 1024;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
-const DEPTH_EPSILON = 0.08;
+const DEPTH_EPSILON = 0.0025;
+const MIN_CAPTURE_FACE_ON = 0.28;
 
 type PreviewLayer = ProjectionLayerStackInput['layers'][number];
 
@@ -105,15 +106,21 @@ const candidateFragmentShader = `
   uniform sampler2D projectedMap;
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
+  uniform sampler2D normalMap;
   uniform mat4 projectorMatrix;
   uniform mat4 objectMatrixDelta;
   uniform mat3 objectNormalDelta;
+  uniform mat4 projectorViewMatrix;
   uniform vec3 projectorPosition;
   uniform float layerOpacity;
   uniform float layerStrength;
   uniform float useMask;
   uniform float maskUsesUv;
   uniform float useDepthCheck;
+  uniform float useNormalCheck;
+  uniform float depthIsLinearView;
+  uniform float projectorNear;
+  uniform float projectorFar;
   uniform float renderedColor;
   uniform float hueShift;
   uniform float saturationShift;
@@ -132,7 +139,7 @@ const candidateFragmentShader = `
     return vec3(abs(q.z + (q.w - q.y) / (6.0 * delta + 1.0e-10)), delta / (q.x + 1.0e-10), q.x);
   }
 
-  vec3 linearToSrgb(vec3 color) {
+  vec3 liclickLinearToSrgb(vec3 color) {
     return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
   }
 
@@ -147,7 +154,7 @@ const candidateFragmentShader = `
 
   vec3 applyAdjustments(vec3 color) {
     if (abs(hueShift) < 0.0001 && abs(saturationShift) < 0.0001 && abs(lightnessShift) < 0.0001) return color;
-    vec3 hsv = rgbToHsv(linearToSrgb(clamp(color, 0.0, 1.0)));
+    vec3 hsv = rgbToHsv(liclickLinearToSrgb(clamp(color, 0.0, 1.0)));
     hsv.x = mod(hsv.x + hueShift + 1.0, 1.0);
     hsv.y = clamp(hsv.y + saturationShift, 0.0, 1.0);
     hsv.z = clamp(hsv.z + lightnessShift, 0.0, 1.0);
@@ -155,7 +162,56 @@ const candidateFragmentShader = `
   }
 
   float unpackDepth(vec4 rgbaDepth) {
-    return dot(rgbaDepth, vec4(1.0 / 16777216.0, 1.0 / 65536.0, 1.0 / 256.0, 1.0));
+    return dot(
+      rgbaDepth,
+      vec4(
+        255.0 / 256.0,
+        255.0 / 65536.0,
+        255.0 / 16777216.0,
+        1.0 / 16777216.0
+      )
+    );
+  }
+
+  float unpackLinearViewDepth(vec4 rgbDepth) {
+    return dot(
+      rgbDepth.rgb,
+      vec3(
+        255.0 / 256.0,
+        255.0 / 65536.0,
+        1.0 / 65536.0
+      )
+    );
+  }
+
+  float computeVisibilitySample(
+    vec4 depthTexel,
+    vec4 normalTexel,
+    float projectedMetric,
+    float depthTolerance,
+    vec3 projectedFaceNormal
+  ) {
+    float capturedDepth = mix(
+      unpackDepth(depthTexel),
+      unpackLinearViewDepth(depthTexel),
+      depthIsLinearView
+    );
+    float capturedMetric = mix(
+      capturedDepth,
+      mix(projectorNear, projectorFar, capturedDepth),
+      depthIsLinearView
+    );
+    float depthVisibility = mix(
+      1.0,
+      1.0 - step(depthTolerance, abs(projectedMetric - capturedMetric)),
+      useDepthCheck
+    );
+    vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
+    float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
+      0.82,
+      abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
+    );
+    return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
   }
 
   float edgeFade(vec2 uv, float edge) {
@@ -181,13 +237,84 @@ const candidateFragmentShader = `
     if (sourceAlpha < 0.01) discard;
     vec3 viewDirection = normalize(projectorPosition - captureWorldPosition.xyz);
     float ndv = dot(captureWorldNormal, viewDirection);
-    if (ndv < -0.35) discard;
-    float angleCoverage = smoothstep(-0.25, 0.08, ndv);
-    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
-    if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
+    if (useDepthCheck < 0.5 && ndv < -0.35) discard;
+    float angleCoverage = mix(smoothstep(-0.62, -0.18, ndv), 1.0, useDepthCheck);
     float projectedDepth = ndc.z * 0.5 + 0.5;
-    float depthError = abs(projectedDepth - unpackDepth(texture(depthMap, uv)));
-    float depthWeight = mix(1.0, 0.2 + 0.8 * exp(-pow(depthError / ${DEPTH_EPSILON.toFixed(2)}, 2.0)), useDepthCheck);
+    float projectedViewDepth = -(projectorViewMatrix * captureWorldPosition).z;
+    float projectedMetric = mix(projectedDepth, projectedViewDepth, depthIsLinearView);
+    float depthTolerance = mix(
+      ${DEPTH_EPSILON.toFixed(4)},
+      max(0.00625, projectedViewDepth * 0.00075),
+      depthIsLinearView
+    );
+    vec3 captureViewPosition = (projectorViewMatrix * captureWorldPosition).xyz;
+    vec3 projectedFaceNormal = normalize(
+      cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
+    );
+    vec2 visibilityTextureSize = mix(
+      vec2(textureSize(depthMap, 0)),
+      vec2(textureSize(normalMap, 0)),
+      useNormalCheck
+    );
+    vec2 visibilityTexelSize = 1.0 / max(visibilityTextureSize, vec2(1.0));
+    float faceOnFactor = abs(projectedFaceNormal.z);
+    float grazingDepthScale = mix(
+      8.0,
+      1.0,
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, 0.35, faceOnFactor)
+    );
+    depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
+    float visibilitySupport = computeVisibilitySample(
+      texture(depthMap, uv), texture(normalMap, uv),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv + vec2(visibilityTexelSize.x, 0.0)),
+      texture(normalMap, uv + vec2(visibilityTexelSize.x, 0.0)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv - vec2(visibilityTexelSize.x, 0.0)),
+      texture(normalMap, uv - vec2(visibilityTexelSize.x, 0.0)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv + vec2(0.0, visibilityTexelSize.y)),
+      texture(normalMap, uv + vec2(0.0, visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv - vec2(0.0, visibilityTexelSize.y)),
+      texture(normalMap, uv - vec2(0.0, visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv + visibilityTexelSize),
+      texture(normalMap, uv + visibilityTexelSize),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv - visibilityTexelSize),
+      texture(normalMap, uv - visibilityTexelSize),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv + vec2(visibilityTexelSize.x, -visibilityTexelSize.y)),
+      texture(normalMap, uv + vec2(visibilityTexelSize.x, -visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture(depthMap, uv + vec2(-visibilityTexelSize.x, visibilityTexelSize.y)),
+      texture(normalMap, uv + vec2(-visibilityTexelSize.x, visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    float requiredVisibilitySupport = 1.5;
+    float visibilityCoverage =
+      step(requiredVisibilitySupport, visibilitySupport) *
+      step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
+    float depthWeight = visibilityCoverage;
+    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
+    if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
     float strength = clamp(layerStrength, 0.25, 3.0);
     float angleWeight = smoothstep(0.02, 0.25, ndv) * pow(clamp(ndv, 0.0, 1.0), 4.0 / strength);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, edgeFade(uv, 0.035));
@@ -268,6 +395,10 @@ const composeFragmentShader = `
   layout(location = 0) out vec4 composedColor;
   layout(location = 1) out vec4 composedRenderedMask;
 
+  vec3 liclickLinearToSrgb(vec3 color) {
+    return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
+  }
+
   void main() {
     vec2 uv = vUv * tileUvScale;
     vec4 r0 = texture(rank0Map, uv);
@@ -295,7 +426,7 @@ const composeFragmentShader = `
       color = r0.rgb * weights.x + r1.rgb * weights.y + r2.rgb * weights.z;
       renderedMix = dot(rendered, weights);
     }
-    composedColor = vec4(linearToSrgb(clamp(color, 0.0, 1.0)), 1.0);
+    composedColor = vec4(liclickLinearToSrgb(clamp(color, 0.0, 1.0)), 1.0);
     composedRenderedMask = vec4(renderedMix, 0.0, 0.0, 1.0);
   }
 `;
@@ -311,6 +442,10 @@ const overlayFragmentShader = `
   layout(location = 0) out vec4 composedColor;
   layout(location = 1) out vec4 composedRenderedMask;
 
+  vec3 liclickLinearToSrgb(vec3 color) {
+    return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
+  }
+
   void main() {
     vec2 uv = vUv * tileUvScale;
     vec4 base = texture(baseMap, uv);
@@ -320,7 +455,7 @@ const overlayFragmentShader = `
     float qualityFade = smoothstep(0.0, 0.15, max(candidate.a, candidateInfo.x * 0.25));
     float alpha = clamp(candidateInfo.x * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
     vec3 color = mix(base.rgb, candidate.rgb, alpha);
-    composedColor = vec4(linearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, step(0.0001, alpha)));
+    composedColor = vec4(liclickLinearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, step(0.0001, alpha)));
     composedRenderedMask = vec4(mix(baseRendered, candidateInfo.y, alpha), 0.0, 0.0, 1.0);
   }
 `;
@@ -336,15 +471,7 @@ const underlayFragmentShader = `
   layout(location = 0) out vec4 composedColor;
   layout(location = 1) out vec4 composedRenderedMask;
 
-  vec3 linearToSrgb(vec3 color) {
-    return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
-  }
-
-  vec3 linearToSrgb(vec3 color) {
-    return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
-  }
-
-  vec3 linearToSrgb(vec3 color) {
+  vec3 liclickLinearToSrgb(vec3 color) {
     return mix(color * 12.92, 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
   }
 
@@ -361,7 +488,7 @@ const underlayFragmentShader = `
     // as an opaque fallback to avoid a dark half-alpha boundary.
     float useCandidate = (1.0 - basePresent) * candidatePresent;
     vec3 color = mix(base.rgb, candidate.rgb, useCandidate);
-    composedColor = vec4(linearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, useCandidate));
+    composedColor = vec4(liclickLinearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, useCandidate));
     composedRenderedMask = vec4(
       mix(baseRendered, candidateInfo.y, useCandidate),
       0.0,
@@ -436,13 +563,16 @@ function createObjectMatrixDelta(group: THREE.Group, layer: PreviewLayer) {
 async function createCandidateMaterial(group: THREE.Group, layer: PreviewLayer) {
   const neutral = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
   neutral.needsUpdate = true;
-  const [projectedMap, maskMap, depthMap] = await Promise.all([
+  const [projectedMap, maskMap, depthMap, normalMap] = await Promise.all([
     loadProjectedTexture(layer.imageUrl),
     layer.useMask && layer.maskUrl
       ? loadProjectedTexture(layer.maskUrl, THREE.NoColorSpace, 'mask')
       : Promise.resolve(neutral),
     layer.useDepthCheck && layer.depthUrl
       ? loadProjectedTexture(layer.depthUrl, THREE.NoColorSpace, 'depth')
+      : Promise.resolve(neutral),
+    layer.useNormalCheck && layer.normalUrl
+      ? loadProjectedTexture(layer.normalUrl, THREE.NoColorSpace, 'normal')
       : Promise.resolve(neutral),
   ]);
   const objectMatrixDelta = createObjectMatrixDelta(group, layer);
@@ -455,15 +585,23 @@ async function createCandidateMaterial(group: THREE.Group, layer: PreviewLayer) 
       projectedMap: { value: projectedMap },
       maskMap: { value: maskMap },
       depthMap: { value: depthMap },
+      normalMap: { value: normalMap },
       projectorMatrix: { value: buildProjectionMatrixBundle(layer.camera).projectorMatrix },
       objectMatrixDelta: { value: objectMatrixDelta },
       objectNormalDelta: { value: new THREE.Matrix3().getNormalMatrix(objectMatrixDelta) },
+      projectorViewMatrix: {
+        value: new THREE.Matrix4().fromArray(layer.camera.viewMatrix),
+      },
       projectorPosition: { value: new THREE.Vector3().fromArray(layer.camera.position) },
       layerOpacity: { value: layer.visible ? layer.opacity : 0 },
       layerStrength: { value: layer.strength ?? 1 },
       useMask: { value: layer.useMask && layer.maskUrl ? 1 : 0 },
       maskUsesUv: { value: layer.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: layer.useDepthCheck && layer.depthUrl ? 1 : 0 },
+      useNormalCheck: { value: layer.useNormalCheck && layer.normalUrl ? 1 : 0 },
+      depthIsLinearView: { value: layer.depthIsLinearView ? 1 : 0 },
+      projectorNear: { value: layer.camera.near },
+      projectorFar: { value: layer.camera.far },
       renderedColor: { value: layer.renderedColor ? 1 : 0 },
       hueShift: { value: layer.hue ?? 0 },
       saturationShift: { value: layer.saturation ?? 0 },

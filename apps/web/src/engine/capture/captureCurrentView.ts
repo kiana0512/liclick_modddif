@@ -53,6 +53,8 @@ function getViewFrame(box: THREE.Box3, viewDirection: THREE.Vector3, sourceUp: T
   return {
     center,
     direction,
+    right,
+    up,
     halfWidth: Math.max(halfWidth, 0.001),
     halfHeight: Math.max(halfHeight, 0.001),
     halfDepth: Math.max(halfDepth, 0.001),
@@ -140,16 +142,32 @@ function createFitObjectCamera(
   const sourcePerspective =
     sourceCamera instanceof THREE.PerspectiveCamera ? sourceCamera : undefined;
   const fov = sourcePerspective?.fov ?? 35;
-  const fovRad = THREE.MathUtils.degToRad(fov);
+  const zoom = sourcePerspective?.zoom ?? 1;
+  const fovRad = THREE.MathUtils.degToRad(
+    sourcePerspective?.getEffectiveFOV() ?? fov,
+  );
   const horizontalFovRad = 2 * Math.atan(Math.tan(fovRad * 0.5) * aspect);
-  const distance =
-    Math.max(
-      frame.halfHeight / Math.tan(fovRad * 0.5),
-      frame.halfWidth / Math.tan(horizontalFovRad * 0.5),
-    ) / safeFillRatio;
+  const tanHalfVerticalFov = Math.max(Math.tan(fovRad * 0.5), 0.0001);
+  const tanHalfHorizontalFov = Math.max(Math.tan(horizontalFovRad * 0.5), 0.0001);
+
+  // Fit every depth-aware corner instead of fitting only the box width/height.
+  // A corner closer to the camera occupies more screen space; ignoring that
+  // perspective term made deep/asymmetric models touch or cross a capture edge.
+  let distance = 0.001;
+  for (const corner of getBoxCorners(box)) {
+    const offset = corner.sub(center);
+    const towardCamera = offset.dot(frame.direction);
+    distance = Math.max(
+      distance,
+      towardCamera + Math.abs(offset.dot(frame.up)) / (tanHalfVerticalFov * safeFillRatio),
+      towardCamera +
+        Math.abs(offset.dot(frame.right)) / (tanHalfHorizontalFov * safeFillRatio),
+    );
+  }
   const camera = new THREE.PerspectiveCamera(fov, aspect);
   camera.position.copy(center).add(direction.multiplyScalar(distance));
   camera.up.copy(upSource);
+  camera.zoom = zoom;
   camera.near = Math.max(0.01, distance - frame.halfDepth * 3);
   camera.far = Math.max(distance + frame.halfDepth * 5, 100);
   camera.lookAt(center);
@@ -277,6 +295,7 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
     maskUrl: mask.url,
     normalUrl: normal.url,
     depthUrl: depth.url,
+    depthEncoding: 'linear-view',
     createdAt: new Date().toISOString(),
     warnings: [
       ...warnings,

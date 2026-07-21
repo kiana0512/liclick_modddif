@@ -102,7 +102,7 @@ const UV_TEXTURE_RESOLUTION = {
 } as const;
 const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
-const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 256;
+const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 320;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -111,6 +111,10 @@ const LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-projection';
 const LEGACY_LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-brush-projection';
 const LOCAL_REPAINT_UV_MERGE_LAYER_ID_PREFIX = 'local-repaint-uv-merge';
 const LOCAL_REPAINT_UV_MERGE_LAYER_NAME = '局部重绘合并层';
+// Paint feedback is an editor overlay, not part of the texture layer stack.
+// Keep it above projected textures, topology wireframes and selection helpers.
+const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1000;
+const PAINT_STROKE_PREVIEW_RENDER_ORDER = 1001;
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
 const automaticFadeBrushStampCache = new Map<number, HTMLCanvasElement>();
@@ -937,9 +941,97 @@ type LocalRepaintCompositeState = {
   maskContext: CanvasRenderingContext2D;
   scratchCanvas: HTMLCanvasElement;
   scratchContext: CanvasRenderingContext2D;
+  falloffCanvas: HTMLCanvasElement;
   worldToSourceClip: THREE.Matrix4;
   restoredMaskUrl?: string;
 };
+
+function createLocalRepaintFalloffCanvas(
+  allowedMaskImage: HTMLImageElement | undefined,
+  width: number,
+  height: number,
+) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return canvas;
+
+  // A missing/empty legacy mask must not make the apply brush unusable.
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  if (!allowedMaskImage) return canvas;
+
+  context.clearRect(0, 0, width, height);
+  context.drawImage(allowedMaskImage, 0, 0, width, height);
+  const mask = context.getImageData(0, 0, width, height);
+  let weightTotal = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const weight =
+        (Math.max(mask.data[offset], mask.data[offset + 1], mask.data[offset + 2]) / 255) *
+        (mask.data[offset + 3] / 255);
+      if (weight <= 0.03) continue;
+      weightTotal += weight;
+      weightedX += x * weight;
+      weightedY += y * weight;
+    }
+  }
+  if (weightTotal <= 0) {
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, width, height);
+    return canvas;
+  }
+
+  const centerX = weightedX / weightTotal;
+  const centerY = weightedY / weightTotal;
+  let coreRadius = 1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const coverage =
+        (Math.max(mask.data[offset], mask.data[offset + 1], mask.data[offset + 2]) / 255) *
+        (mask.data[offset + 3] / 255);
+      if (coverage <= 0.03) continue;
+      coreRadius = Math.max(coreRadius, Math.hypot(x - centerX, y - centerY));
+    }
+  }
+
+  // Preserve full opacity throughout the authored mask, then fade around its
+  // centroid across the complete captured view. Put the zero point beyond the
+  // farthest canvas corner so every visible model pixel remains paintable while
+  // distant replacement content still blends much more softly.
+  const farthestCornerRadius = Math.max(
+    Math.hypot(centerX, centerY),
+    Math.hypot(width - 1 - centerX, centerY),
+    Math.hypot(centerX, height - 1 - centerY),
+    Math.hypot(width - 1 - centerX, height - 1 - centerY),
+  );
+  const fadeEndRadius = Math.max(coreRadius + 1, farthestCornerRadius * 1.2);
+  const expansionRadius = fadeEndRadius - coreRadius;
+  const output = context.createImageData(width, height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const distance = Math.hypot(x - centerX, y - centerY);
+      const linearFade = THREE.MathUtils.clamp(
+        (fadeEndRadius - distance) / Math.max(expansionRadius, 1),
+        0,
+        1,
+      );
+      const opacity = linearFade * linearFade * (3 - 2 * linearFade);
+      const offset = (y * width + x) * 4;
+      output.data[offset] = 255;
+      output.data[offset + 1] = 255;
+      output.data[offset + 2] = 255;
+      output.data[offset + 3] = Math.round(opacity * 255);
+    }
+  }
+  context.putImageData(output, 0, 0);
+  return canvas;
+}
 
 type PaintableMeshCache = {
   objectId: string;
@@ -1033,9 +1125,16 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
     `,
     transparent: true,
     depthWrite: false,
-    depthTest: true,
+    // This is an editor visualization, not a model surface. Projected/UV
+    // content can be rendered by a separate decal-like mesh that sits slightly
+    // in front of the base geometry; leaving depth testing enabled lets that
+    // content punch holes through the mask even with a higher renderOrder.
+    // Draw the mask as the final screen overlay so it remains readable above
+    // every texture layer without changing or writing the scene depth buffer.
+    depthTest: false,
     polygonOffset: true,
     polygonOffsetFactor: -8,
+    polygonOffsetUnits: -8,
     // The projected mask is only valid on camera-facing surfaces. Avoid shading
     // the hidden back faces as well; dense production meshes otherwise pay for
     // the overlay fragment shader twice while the pointer is moving.
@@ -1095,6 +1194,7 @@ function createProjectedPaintPreviewMaterial(maskTexture: THREE.CanvasTexture) {
     depthTest: true,
     polygonOffset: true,
     polygonOffsetFactor: -10,
+    polygonOffsetUnits: -10,
     side: THREE.FrontSide,
     toneMapped: false,
   });
@@ -1214,6 +1314,7 @@ function createLocalRepaintComposite(
   layerId: string,
   width: number,
   height: number,
+  allowedMaskImage?: HTMLImageElement,
 ): LocalRepaintCompositeState | undefined {
   const maskCanvas = document.createElement('canvas');
   maskCanvas.width = width;
@@ -1236,6 +1337,7 @@ function createLocalRepaintComposite(
     maskContext,
     scratchCanvas,
     scratchContext,
+    falloffCanvas: createLocalRepaintFalloffCanvas(allowedMaskImage, width, height),
     worldToSourceClip: new THREE.Matrix4(),
   };
 }
@@ -1342,6 +1444,21 @@ function mergeLocalRepaintScratchPatch(
   const bottom = Math.min(composite.maskCanvas.height, Math.ceil(dirtyRect.y + dirtyRect.height));
   const width = Math.max(1, right - x);
   const height = Math.max(1, bottom - y);
+
+  composite.scratchContext.save();
+  composite.scratchContext.globalCompositeOperation = 'destination-in';
+  composite.scratchContext.drawImage(
+    composite.falloffCanvas,
+    x,
+    y,
+    width,
+    height,
+    x,
+    y,
+    width,
+    height,
+  );
+  composite.scratchContext.restore();
 
   composite.maskContext.save();
   composite.maskContext.globalCompositeOperation = 'lighten';
@@ -1537,6 +1654,7 @@ function SurfacePaintOverlay() {
   const localRepaintSourceImageRef = useRef<{
     url: string;
     image: HTMLImageElement;
+    allowedMaskImage?: HTMLImageElement;
   }>();
   const [localRepaintAssetsRevision, setLocalRepaintAssetsRevision] = useState(0);
   const localRepaintCompositeRef = useRef<LocalRepaintCompositeState>();
@@ -1805,7 +1923,7 @@ function SurfacePaintOverlay() {
       maskOverlay.userData.liclickInpaintMaskOverlay = true;
       maskOverlay.userData.liclickInpaintMaskTexture = layer.projectionTexture;
       maskOverlay.visible = shouldShowInpaintMask;
-      maskOverlay.renderOrder = 31;
+      maskOverlay.renderOrder = INPAINT_MASK_OVERLAY_RENDER_ORDER;
       mesh.add(maskOverlay);
       layer.overlayMeshes.push(maskOverlay);
     },
@@ -1820,7 +1938,7 @@ function SurfacePaintOverlay() {
     paintOverlay.name = 'Liclick UV Paint Stroke Preview';
     paintOverlay.userData.liclickPaintOverlay = true;
     paintOverlay.userData.liclickPaintStrokePreview = true;
-    paintOverlay.renderOrder = 32;
+    paintOverlay.renderOrder = PAINT_STROKE_PREVIEW_RENDER_ORDER;
     mesh.add(paintOverlay);
     layer.overlayMeshes.push(paintOverlay);
     layer.paintPreviewOverlays.push(paintOverlay);
@@ -1968,8 +2086,17 @@ function SurfacePaintOverlay() {
     }
 
     let cancelled = false;
-    void loadImageElement(source.imageUrl)
-      .then((sourceImage) => {
+    void Promise.all([
+      loadImageElement(source.imageUrl),
+      loadImageElement(source.allowedMaskUrl).catch((error) => {
+        console.warn(
+          '[Liclick 3D Texture] Could not prepare local repaint falloff mask; using unrestricted apply opacity.',
+          error,
+        );
+        return undefined;
+      }),
+    ])
+      .then(([sourceImage, allowedMaskImage]) => {
         if (cancelled) return;
         // The image has already been decoded for source-alpha checks. Seed the
         // projected material cache with it so the first brush stroke does not
@@ -1978,6 +2105,7 @@ function SurfacePaintOverlay() {
         localRepaintSourceImageRef.current = {
           url: source.imageUrl,
           image: sourceImage,
+          allowedMaskImage,
         };
         localRepaintCompositeRef.current = undefined;
         setLocalRepaintAssetsRevision((revision) => revision + 1);
@@ -2457,7 +2585,13 @@ function SurfacePaintOverlay() {
         composite.maskCanvas.width !== width ||
         composite.maskCanvas.height !== height
       ) {
-        composite = createLocalRepaintComposite(sourceKey, layerId, width, height);
+        composite = createLocalRepaintComposite(
+          sourceKey,
+          layerId,
+          width,
+          height,
+          localRepaintSourceImageRef.current?.allowedMaskImage,
+        );
         localRepaintCompositeRef.current = composite;
         const savedMaskUrl = existingLayer?.maskUrl;
         if (composite && savedMaskUrl && savedMaskUrl !== composite.maskUrl) {
@@ -2617,7 +2751,6 @@ function SurfacePaintOverlay() {
       let localRepaintUv: THREE.Vector2 | undefined;
       if (strokePaintTool === 'brush') {
         if (!layer) return;
-        const isFirstStrokeStamp = !strokeDraftRef.current?.bounds;
         if (result.hit.object instanceof THREE.Mesh) {
           ensurePaintPreviewOverlayForMesh(layer, result.hit.object);
           layer.paintPreviewOverlays.forEach((overlay) => {
@@ -2635,7 +2768,11 @@ function SurfacePaintOverlay() {
           'screen',
           255,
         );
-        scheduleProjectionTextureUpdate(layer.projectionTexture, isFirstStrokeStamp);
+        // Pointer samples are already collapsed to one surface hit per display
+        // frame. Upload the live projection on that same frame instead of putting
+        // it through the shared 30 fps projection throttle. scheduleTextureUpdate
+        // still coalesces every stamp into at most one GPU upload per frame.
+        scheduleTextureUpdate(layer.projectionTexture);
         const bounds = drawSurfaceBrushSegment(
           layer.paintPreviewContext,
           undefined,
@@ -2665,7 +2802,6 @@ function SurfacePaintOverlay() {
         }
       } else if (strokePaintTool === 'eraser') {
         if (!layer) return;
-        const isFirstStrokeStamp = !strokeDraftRef.current?.bounds;
         if (result.hit.object instanceof THREE.Mesh) {
           ensurePaintPreviewOverlayForMesh(layer, result.hit.object);
           layer.paintPreviewOverlays.forEach((overlay) => {
@@ -2683,7 +2819,7 @@ function SurfacePaintOverlay() {
           'screen',
           255,
         );
-        scheduleProjectionTextureUpdate(layer.projectionTexture, isFirstStrokeStamp);
+        scheduleTextureUpdate(layer.projectionTexture);
         const bounds = drawSurfaceBrushSegment(
           layer.paintPreviewContext,
           undefined,
@@ -2725,7 +2861,7 @@ function SurfacePaintOverlay() {
           'screen',
           255,
         );
-        scheduleProjectionTextureUpdate(layer.projectionTexture);
+        scheduleTextureUpdate(layer.projectionTexture);
         if (strokeDraftRef.current?.target === 'mask') {
           strokeDraftRef.current.bounds = unionDirtyRect(
             strokeDraftRef.current.bounds,
@@ -2748,7 +2884,7 @@ function SurfacePaintOverlay() {
           'screen',
           255,
         );
-        scheduleProjectionTextureUpdate(layer.projectionTexture);
+        scheduleTextureUpdate(layer.projectionTexture);
         if (strokeDraftRef.current?.target === 'mask') {
           strokeDraftRef.current.bounds = unionDirtyRect(
             strokeDraftRef.current.bounds,
@@ -2816,7 +2952,12 @@ function SurfacePaintOverlay() {
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
           mergeLocalRepaintScratchPatch(composite, projectionBounds);
-          scheduleProjectionTextureUpdate(composite.maskTexture, false, 24);
+          // Keep the low-resolution screen projection locked to the brush. The
+          // frame scheduler coalesces repeated stamps, so this is responsive at
+          // the display refresh rate without uploading the texture more than once
+          // per rendered frame. The high-resolution UV bake still starts only
+          // after pointer-up.
+          scheduleTextureUpdate(composite.maskTexture);
         }
       }
 
@@ -2862,7 +3003,7 @@ function SurfacePaintOverlay() {
       paintToolSettings.brushHardness,
       paintToolSettings.color,
       paintToolSettings.eraserHardness,
-      scheduleProjectionTextureUpdate,
+      scheduleTextureUpdate,
     ],
   );
 
@@ -3034,11 +3175,11 @@ function SurfacePaintOverlay() {
           order: 0,
           createdAt: new Date().toISOString(),
         };
-        // This is an interactive handoff rather than a final export. A 512 UV
-        // overlay cuts render-target allocation and GPU readback to one quarter
-        // of the previous 1K cost; existing higher-resolution merge canvases are
-        // still reused and receive this stroke through the normal draw path.
-        const bakeResolution = 512 as const;
+        // Keep the screen-space preview lightweight, but rasterize the completed
+        // projection at 1K. At 512px, small UV islands and thin triangles collapse
+        // into disconnected texels; a later dilation pass then turns those texels
+        // into visible speckles on the model.
+        const bakeResolution = 1024 as const;
         const { bakeVisibleProjectedLayersToTexture } =
           await import('@/engine/bake/bakeProjectedLayerToTexture');
         const bakeResult = await bakeVisibleProjectedLayersToTexture({
@@ -3046,30 +3187,20 @@ function SurfacePaintOverlay() {
           transientLayers: [transientLayer],
           resolution: bakeResolution,
           enableBackfaceCulling: true,
-          // Fill small uncovered texels inside UV islands and pad their edges
-          // using the GPU postprocess. skipCpuPostprocess keeps this off the
-          // blocking full-canvas CPU seam path.
+          // Fill only one-texel cracks backed by the model's pre-rendered UV
+          // topology. The GPU constraint keeps empty atlas space transparent.
           enableDilation: true,
           dilationPixels: 1,
           outputAlpha: 'transparent',
           gpuCompositeMode: 'coverage-alpha',
-          // Reject occluded surfaces and weak feather fragments before they can
-          // become seeds for UV padding. Normal projection-layer merging keeps
-          // its existing thresholds.
-          // Depth captures from older projects are not calibrated consistently
-          // enough for a hard reject. Keep the coverage guard, but leave depth
-          // as the existing soft quality weight so valid strokes cannot vanish.
-          strictDepthCheck: false,
-          maximumDepthError: 0.12,
-          minimumOutputCoverage: 0.025,
           constrainDilationToInteriorHoles: true,
           skipGpuValidation: true,
           minimumCoverageRatio: 0,
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
-          // GPU output already includes hole fill/padding and has straight-alpha
-          // transparent pixels. Avoid a second full-canvas CPU read/write.
+          // Direct GPU output already has straight-alpha transparent pixels.
+          // Avoid a second full-canvas CPU seam/dilation pass.
           skipCpuPostprocess: true,
         });
         if (bakeResult.report.coveredPixels <= 0) {
@@ -3175,6 +3306,7 @@ function SurfacePaintOverlay() {
           id: mergeLayerId,
           name: LOCAL_REPAINT_UV_MERGE_LAYER_NAME,
           type: 'uv',
+          role: 'local-repaint-overlay',
           imageUrl: assetUrl,
           objectId: source.objectId ?? model.objectId,
           generationId: source.generationId,

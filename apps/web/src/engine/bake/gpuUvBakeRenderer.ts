@@ -5,8 +5,8 @@ import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath'
 import type { Layer } from '@/types/layer';
 
 const NDV_HARD_REJECT = -0.35;
-const NDV_COVERAGE_START = -0.25;
-const NDV_COVERAGE_END = 0.08;
+const NDV_COVERAGE_START = -0.62;
+const NDV_COVERAGE_END = -0.18;
 const BASE_ANGLE_GAMMA = 4;
 const MAX_STRENGTH_FOR_ANGLE = 3;
 const SHARPEN_AMOUNT = 0.24;
@@ -14,7 +14,8 @@ const SHARPEN_DETAIL_THRESHOLD = 5 / 255;
 const MAX_GPU_SHARPEN_RESOLUTION = 4096;
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
-const DEPTH_EPSILON = 0.08;
+const DEPTH_EPSILON = 0.0025;
+const MIN_CAPTURE_FACE_ON = 0.28;
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 
 type GpuLayerStackBakeInput = {
@@ -77,6 +78,7 @@ export type GpuLayerSourceSize = {
   projectedImage: string;
   maskImage?: string;
   depthImage?: string;
+  normalImage?: string;
 };
 
 type PreparedMesh = {
@@ -88,8 +90,10 @@ type LoadedLayerTextures = {
   projectedTexture: THREE.Texture;
   maskTexture: THREE.Texture;
   depthTexture: THREE.Texture;
+  normalTexture: THREE.Texture;
   useMask: boolean;
   useDepthCheck: boolean;
+  useNormalCheck: boolean;
   disposableTextures: THREE.Texture[];
   sourceSizes: GpuLayerSourceSize;
 };
@@ -125,7 +129,9 @@ const fragmentShader = `
   uniform sampler2D projectedMap;
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
+  uniform sampler2D normalMap;
   uniform mat4 projectorMatrix;
+  uniform mat4 projectorViewMatrix;
   uniform mat4 objectMatrixDelta;
   uniform mat3 objectNormalDelta;
   uniform vec3 projectorPosition;
@@ -134,6 +140,10 @@ const fragmentShader = `
   uniform float useMask;
   uniform float maskUsesUv;
   uniform float useDepthCheck;
+  uniform float useNormalCheck;
+  uniform float depthIsLinearView;
+  uniform float projectorNear;
+  uniform float projectorFar;
   uniform float strictDepthCheck;
   uniform float maximumDepthError;
   uniform float minimumOutputCoverage;
@@ -142,6 +152,7 @@ const fragmentShader = `
   uniform float useQualityDepth;
   uniform float projectedImageUvFlipY;
   uniform float depthEpsilon;
+  uniform vec2 visibilityTexelSize;
   uniform vec2 projectedMapSize;
   uniform float hueShift;
   uniform float saturationShift;
@@ -177,12 +188,53 @@ const fragmentShader = `
 
   float unpackDepth(vec4 rgbaDepth) {
     const vec4 bitShift = vec4(
-      1.0 / (256.0 * 256.0 * 256.0),
-      1.0 / (256.0 * 256.0),
-      1.0 / 256.0,
-      1.0
+      255.0 / 256.0,
+      255.0 / 65536.0,
+      255.0 / 16777216.0,
+      1.0 / 16777216.0
     );
     return dot(rgbaDepth, bitShift);
+  }
+
+  float unpackLinearViewDepth(vec4 rgbDepth) {
+    return dot(
+      rgbDepth.rgb,
+      vec3(
+        255.0 / 256.0,
+        255.0 / 65536.0,
+        1.0 / 65536.0
+      )
+    );
+  }
+
+  float computeVisibilitySample(
+    vec4 depthTexel,
+    vec4 normalTexel,
+    float projectedMetric,
+    float depthTolerance,
+    vec3 projectedFaceNormal
+  ) {
+    float capturedDepth = mix(
+      unpackDepth(depthTexel),
+      unpackLinearViewDepth(depthTexel),
+      depthIsLinearView
+    );
+    float capturedMetric = mix(
+      capturedDepth,
+      mix(projectorNear, projectorFar, capturedDepth),
+      depthIsLinearView
+    );
+    float depthVisibility = mix(
+      1.0,
+      1.0 - step(depthTolerance, abs(projectedMetric - capturedMetric)),
+      useDepthCheck
+    );
+    vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
+    float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
+      0.82,
+      abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
+    );
+    return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
   }
 
   float computeAngleWeight(float ndv, float strength) {
@@ -266,8 +318,12 @@ const fragmentShader = `
     vec3 projectorViewDir = normalize(projectorPosition - captureWorldPosition.xyz);
     float ndv = dot(captureWorldNormal, projectorViewDir);
     float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
-    if (enableBackfaceCulling > 0.5 && frontFacing < 0.5) discard;
-    float angleCoverage = smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv);
+    if (useDepthCheck < 0.5 && enableBackfaceCulling > 0.5 && frontFacing < 0.5) discard;
+    float angleCoverage = mix(
+      smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv),
+      1.0,
+      useDepthCheck
+    );
     if (angleCoverage <= 0.0001) discard;
 
     vec2 maskSampleUv = mix(projectedSampleUv, vTextureUv, maskUsesUv);
@@ -279,20 +335,80 @@ const fragmentShader = `
     float maskCoverage = mix(1.0, maskValue, useMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
-    float capturedDepth = unpackDepth(texture2D(depthMap, projectedSampleUv));
-    float depthErr = abs(projectedDepth - capturedDepth);
-    if (strictDepthCheck > 0.5 && useDepthCheck > 0.5 && depthErr > maximumDepthError) discard;
-    float depthWeight = useDepthCheck > 0.5
-      ? mix(0.2, 1.0, exp(-pow(depthErr / max(depthEpsilon, 0.000001), 2.0)))
-      : 1.0;
-
+    float projectedViewDepth = -(projectorViewMatrix * captureWorldPosition).z;
+    float projectedMetric = mix(projectedDepth, projectedViewDepth, depthIsLinearView);
+    float depthTolerance = mix(
+      depthEpsilon,
+      max(0.00625, projectedViewDepth * 0.00075),
+      depthIsLinearView
+    );
+    vec3 captureViewPosition = (projectorViewMatrix * captureWorldPosition).xyz;
+    vec3 projectedFaceNormal = normalize(
+      cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
+    );
+    float faceOnFactor = abs(projectedFaceNormal.z);
+    float grazingDepthScale = mix(
+      8.0,
+      1.0,
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, 0.35, faceOnFactor)
+    );
+    depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
+    float visibilitySupport = computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv), texture2D(normalMap, projectedSampleUv),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv + vec2(visibilityTexelSize.x, 0.0)),
+      texture2D(normalMap, projectedSampleUv + vec2(visibilityTexelSize.x, 0.0)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv - vec2(visibilityTexelSize.x, 0.0)),
+      texture2D(normalMap, projectedSampleUv - vec2(visibilityTexelSize.x, 0.0)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv + vec2(0.0, visibilityTexelSize.y)),
+      texture2D(normalMap, projectedSampleUv + vec2(0.0, visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv - vec2(0.0, visibilityTexelSize.y)),
+      texture2D(normalMap, projectedSampleUv - vec2(0.0, visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv + visibilityTexelSize),
+      texture2D(normalMap, projectedSampleUv + visibilityTexelSize),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv - visibilityTexelSize),
+      texture2D(normalMap, projectedSampleUv - visibilityTexelSize),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv + vec2(visibilityTexelSize.x, -visibilityTexelSize.y)),
+      texture2D(normalMap, projectedSampleUv + vec2(visibilityTexelSize.x, -visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    visibilitySupport += computeVisibilitySample(
+      texture2D(depthMap, projectedSampleUv + vec2(-visibilityTexelSize.x, visibilityTexelSize.y)),
+      texture2D(normalMap, projectedSampleUv + vec2(-visibilityTexelSize.x, visibilityTexelSize.y)),
+      projectedMetric, depthTolerance, projectedFaceNormal
+    );
+    float visibilityCoverage =
+      step(1.5, visibilitySupport) *
+      step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
+    if (strictDepthCheck > 0.5 && useDepthCheck > 0.5 && visibilityCoverage < 0.5) discard;
+    float depthWeight = visibilityCoverage;
     vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
     texel.rgb = applyHsvAdjustments(texel.rgb);
     float sourceAlpha = texel.a * maskCoverage;
     if (sourceAlpha < 0.01) discard;
     float angleWeight = computeAngleWeight(ndv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
-    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
     if (coverage <= max(0.025, minimumOutputCoverage)) discard;
     float qualityEdge = computeImageEdgeFade(projectedSampleUv, 0.035);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
@@ -355,41 +471,37 @@ const dilationFragmentShader = `
   }
 `;
 
+const uvTopologyFragmentShader = `
+  void main() {
+    gl_FragColor = vec4(1.0);
+  }
+`;
+
 const interiorHoleConstraintFragmentShader = `
   uniform sampler2D sourceMap;
   uniform sampler2D originalMap;
-  uniform vec2 texelSize;
+  uniform sampler2D uvTopologyBaseMap;
+  uniform sampler2D uvTopologyMap;
   varying vec2 vUv;
-
-  float covered(vec2 offset) {
-    return step(0.0001, texture2D(originalMap, vUv + offset * texelSize).a);
-  }
 
   void main() {
     vec4 original = texture2D(originalMap, vUv);
-    float neighborCount = 0.0;
-    neighborCount += covered(vec2(-1.0, -1.0));
-    neighborCount += covered(vec2(0.0, -1.0));
-    neighborCount += covered(vec2(1.0, -1.0));
-    neighborCount += covered(vec2(-1.0, 0.0));
-    neighborCount += covered(vec2(1.0, 0.0));
-    neighborCount += covered(vec2(-1.0, 1.0));
-    neighborCount += covered(vec2(0.0, 1.0));
-    neighborCount += covered(vec2(1.0, 1.0));
-
     if (original.a > 0.0001) {
-      vec4 source = texture2D(sourceMap, vUv);
-      // Preserve fully surrounded texels, but smoothly fade the one-texel outer
-      // contour. Scaling premultiplied RGB with alpha avoids a dark color fringe.
-      float edgeFactor = smoothstep(0.0, 8.0, neighborCount);
-      gl_FragColor = vec4(source.rgb * edgeFactor, source.a * edgeFactor);
+      // Never alter the original projection edge. Fading it here created the
+      // dark contour around every small UV fragment.
+      gl_FragColor = original;
       return;
     }
 
-    // Six surrounding samples identify an enclosed pinhole or a one-texel
-    // crack. An exterior boundary has neighbors on only one side and is reset
-    // to transparent, so hole filling cannot create a visible outline.
-    gl_FragColor = neighborCount >= 6.0 ? texture2D(sourceMap, vUv) : vec4(0.0);
+    vec4 expanded = texture2D(sourceMap, vUv);
+    float insideOriginalUv = texture2D(uvTopologyBaseMap, vUv).a;
+    float insidePaddedUv = texture2D(uvTopologyMap, vUv).a;
+    // Only bridge a texel that was absent from the original UV raster but is
+    // recovered by its one-pixel topology padding. A normal transparent texel
+    // inside an existing UV island is the brush boundary and must stay empty.
+    gl_FragColor = expanded.a > 0.0001 && insideOriginalUv <= 0.0001 && insidePaddedUv > 0.0001
+      ? expanded
+      : vec4(0.0);
   }
 `;
 
@@ -522,19 +634,35 @@ async function loadLayerTexturesWithOptions(
           flipY: options.inputTextureFlipY,
         })
       : neutralTexture;
+  const normalTexture =
+    layer.normalUrl
+      ? await loadLayerTextureFromCpuImageData({
+          url: layer.normalUrl,
+          resolution,
+          label: `${layer.name} normal`,
+          minFilter: THREE.NearestFilter,
+          magFilter: THREE.NearestFilter,
+          flipY: options.inputTextureFlipY,
+        })
+      : neutralTexture;
   return {
     projectedTexture,
     maskTexture,
     depthTexture,
+    normalTexture,
     useMask: Boolean(layer.maskUrl),
     useDepthCheck: Boolean(layer.depthUrl),
-    disposableTextures: [...new Set([projectedTexture, maskTexture, depthTexture])],
+    useNormalCheck: Boolean(layer.normalUrl),
+    disposableTextures: [
+      ...new Set([projectedTexture, maskTexture, depthTexture, normalTexture]),
+    ],
     sourceSizes: {
       layerId: layer.id,
       layerName: layer.name,
       projectedImage: getTextureImageSize(projectedTexture),
       maskImage: layer.maskUrl ? getTextureImageSize(maskTexture) : undefined,
       depthImage: layer.depthUrl ? getTextureImageSize(depthTexture) : undefined,
+      normalImage: layer.normalUrl ? getTextureImageSize(normalTexture) : undefined,
     },
   };
 }
@@ -610,6 +738,11 @@ function createLayerMaterial(input: {
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
   debugObjectMatrixDelta(input.group, input.layer, objectMatrixDelta);
   const projectedImage = input.textures.projectedTexture.image as { width?: number; height?: number };
+  const visibilityImage = (
+    input.textures.useNormalCheck
+      ? input.textures.normalTexture.image
+      : input.textures.depthTexture.image
+  ) as { width?: number; height?: number };
   return new THREE.ShaderMaterial({
     name: `LiclickGpuUvBake:${input.layer.id}`,
     vertexShader,
@@ -618,7 +751,11 @@ function createLayerMaterial(input: {
       projectedMap: { value: input.textures.projectedTexture },
       maskMap: { value: input.textures.maskTexture },
       depthMap: { value: input.textures.depthTexture },
+      normalMap: { value: input.textures.normalTexture },
       projectorMatrix: { value: buildProjectionMatrixBundle(input.layer.camera).projectorMatrix },
+      projectorViewMatrix: {
+        value: new THREE.Matrix4().fromArray(input.layer.camera.viewMatrix),
+      },
       objectMatrixDelta: { value: objectMatrixDelta },
       objectNormalDelta: { value: new THREE.Matrix3().getNormalMatrix(objectMatrixDelta) },
       projectorPosition: { value: new THREE.Vector3().fromArray(input.layer.camera.position) },
@@ -627,6 +764,10 @@ function createLayerMaterial(input: {
       useMask: { value: input.textures.useMask ? 1 : 0 },
       maskUsesUv: { value: input.layer.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: input.textures.useDepthCheck ? 1 : 0 },
+      useNormalCheck: { value: input.textures.useNormalCheck ? 1 : 0 },
+      depthIsLinearView: { value: input.layer.depthEncoding === 'linear-view' ? 1 : 0 },
+      projectorNear: { value: input.layer.camera.near },
+      projectorFar: { value: input.layer.camera.far },
       strictDepthCheck: { value: input.strictDepthCheck ? 1 : 0 },
       maximumDepthError: {
         value: THREE.MathUtils.clamp(input.maximumDepthError ?? DEPTH_EPSILON, 0.001, 1),
@@ -639,6 +780,12 @@ function createLayerMaterial(input: {
       useQualityDepth: { value: input.compositeMode === 'quality-depth' ? 1 : 0 },
       projectedImageUvFlipY: { value: input.projectedImageUvFlipY ? 1 : 0 },
       depthEpsilon: { value: DEPTH_EPSILON },
+      visibilityTexelSize: {
+        value: new THREE.Vector2(
+          1 / Math.max(1, visibilityImage.width ?? 1),
+          1 / Math.max(1, visibilityImage.height ?? 1),
+        ),
+      },
       projectedMapSize: {
         value: new THREE.Vector2(projectedImage.width ?? 1, projectedImage.height ?? 1),
       },
@@ -710,6 +857,7 @@ function renderFullscreenPass(input: {
 function runGpuPostprocess(input: {
   renderer: THREE.WebGLRenderer;
   source: THREE.WebGLRenderTarget;
+  uvTopologySource?: THREE.WebGLRenderTarget;
   resolution: UvBakeResolution;
   enableDilation: boolean;
   dilationPixels: number;
@@ -742,6 +890,25 @@ function runGpuPostprocess(input: {
     toneMapped: false,
   });
 
+  let paddedUvTopology: THREE.WebGLRenderTarget | undefined;
+  if (
+    input.enableDilation &&
+    input.constrainDilationToInteriorHoles &&
+    input.uvTopologySource
+  ) {
+    paddedUvTopology = createPostprocessTarget(input.resolution);
+    ownedTargets.push(paddedUvTopology);
+    // Pad the geometry occupancy first. The projection is then allowed to fill
+    // only this topology-backed one-texel band, never arbitrary atlas space.
+    renderFullscreenPass({
+      renderer: input.renderer,
+      source: input.uvTopologySource,
+      target: paddedUvTopology,
+      material: dilationMaterial,
+      camera,
+    });
+  }
+
   if (input.enableDilation) {
     for (let iteration = 0; iteration < input.dilationPixels; iteration += 1) {
       renderFullscreenPass({
@@ -757,14 +924,19 @@ function runGpuPostprocess(input: {
   }
   dilationMaterial.dispose();
 
-  if (input.enableDilation && input.constrainDilationToInteriorHoles) {
+  if (
+    input.enableDilation &&
+    input.constrainDilationToInteriorHoles &&
+    paddedUvTopology
+  ) {
     const constraintMaterial = new THREE.ShaderMaterial({
       vertexShader: fullscreenVertexShader,
       fragmentShader: interiorHoleConstraintFragmentShader,
       uniforms: {
         sourceMap: { value: current.texture },
         originalMap: { value: input.source.texture },
-        texelSize: { value: texelSize },
+        uvTopologyBaseMap: { value: input.uvTopologySource?.texture },
+        uvTopologyMap: { value: paddedUvTopology.texture },
       },
       blending: THREE.NoBlending,
       depthTest: false,
@@ -1132,6 +1304,7 @@ export async function bakeProjectedLayerStackWithGpu(
     generateMipmaps: false,
   });
   renderTarget.texture.colorSpace = THREE.NoColorSpace;
+  let uvTopologyTarget: THREE.WebGLRenderTarget | undefined;
 
   let previousState = captureRendererState(renderer);
 
@@ -1200,6 +1373,26 @@ export async function bakeProjectedLayerStackWithGpu(
       await new Promise((resolve) => window.setTimeout(resolve, 0));
       previousState = captureRendererState(renderer);
     }
+    if (input.enableDilation && input.constrainDilationToInteriorHoles) {
+      uvTopologyTarget = createPostprocessTarget(resolution);
+      const topologyMaterial = new THREE.ShaderMaterial({
+        vertexShader,
+        fragmentShader: uvTopologyFragmentShader,
+        blending: THREE.NoBlending,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+        side: THREE.DoubleSide,
+      });
+      bakeScene.bakeMeshes.forEach((mesh) => {
+        mesh.material = topologyMaterial;
+      });
+      setBakeRenderTargetState(renderer, uvTopologyTarget, resolution);
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear(true, true, true);
+      renderer.render(bakeScene.scene, camera);
+      topologyMaterial.dispose();
+    }
     bakeScene.scene.clear();
 
     input.onProgress?.({
@@ -1212,6 +1405,7 @@ export async function bakeProjectedLayerStackWithGpu(
     const postprocess = runGpuPostprocess({
       renderer,
       source: renderTarget,
+      uvTopologySource: uvTopologyTarget,
       resolution,
       enableDilation: input.enableDilation,
       dilationPixels: input.dilationPixels,
@@ -1253,6 +1447,7 @@ export async function bakeProjectedLayerStackWithGpu(
     };
   } finally {
     restoreRendererState(renderer, previousState);
+    uvTopologyTarget?.dispose();
     renderTarget.dispose();
   }
 }

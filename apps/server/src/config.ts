@@ -44,7 +44,7 @@ const comfyuiTextureWorkflowPath =
   process.env.COMFYUI_TEXTURE_WORKFLOW_PATH ??
   'C:/Users/rentian/Downloads/li3d_zimage_web3d_fast_1024_to_4k_16gb.json';
 const comfyuiInpaintBaseUrl = (
-  process.env.COMFYUI_INPAINT_BASE_URL ?? 'http://10.3.34.4:8188'
+  process.env.COMFYUI_INPAINT_BASE_URL ?? 'http://10.3.2.59:56001'
 ).replace(/\/$/, '');
 const comfyuiInpaintWorkflowName =
   process.env.COMFYUI_INPAINT_WORKFLOW_NAME ?? 'flux_fill_inpaint.json';

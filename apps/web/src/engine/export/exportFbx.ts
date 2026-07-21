@@ -868,7 +868,7 @@ function createFbxBinary(input: {
   return concatBytes(chunks);
 }
 
-async function createTransparentPngTextureData(blob: Blob) {
+async function createPngTextureData(blob: Blob) {
   const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
   canvas.width = bitmap.width;
@@ -886,12 +886,15 @@ async function createTransparentPngTextureData(blob: Blob) {
 }
 
 export async function exportModelFbx(input: ModelExportInput) {
-  const { root, textureBlob, textureFilename, averageColor } = await prepareTexturedModelExport(input, {
-    outputAlpha: 'transparent',
-  });
+  // FBX importers do not consistently preserve the alpha semantics of an
+  // embedded base-color PNG. In Blender, transparent and feathered UV texels
+  // were interpreted against the material color and exposed the sparse bake as
+  // stripes and speckles. Export the same opaque final composition used by the
+  // viewport, OBJ and GLB paths so the embedded texture is self-contained.
+  const { root, textureBlob, textureFilename, averageColor } = await prepareTexturedModelExport(input);
   const fbxFilename = getExportFilename(input.project.name, input.target, 'fbx');
   if (textureBlob && textureFilename) {
-    const textureData = await createTransparentPngTextureData(textureBlob);
+    const textureData = await createPngTextureData(textureBlob);
     const fbx = createFbxBinary({ root, textureData, averageColor });
     downloadBlob(new Blob([fbx], { type: 'application/octet-stream' }), fbxFilename);
     return;

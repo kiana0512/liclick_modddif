@@ -2868,6 +2868,7 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         name: 'UV Repair Layer',
         imageUrl,
         objectId,
+        role: 'local-repaint-overlay',
       });
       updateLayer(uvLayer.id, { isBaked: false, needsRebake: false });
       await applyBakedTextureToObject(importedModel.group, imageUrl);
@@ -3137,7 +3138,12 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
     const projectedLayers = layerIds
       .map((layerId) => currentLayers.find((item) => item.id === layerId))
       .filter((layer): layer is Layer =>
-        Boolean(layer?.type === 'projected' && layer.imageUrl && layer.camera),
+        Boolean(
+          layer?.type === 'projected' &&
+            layer.imageUrl &&
+            layer.camera &&
+            !isLocalRepaintProjectionLayer(layer),
+        ),
       );
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     if (projectedLayerIds.length === 0) {
@@ -3172,17 +3178,21 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
         transientLayers: layersToBake,
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        // Projection sampling leaves sub-texel gaps along UV boundaries. Restore
-        // the production seam padding so the UV layer matches the continuous
-        // projected preview instead of exposing the layer underneath.
-        enableDilation: true,
-        dilationPixels: 4,
+        // Keep the merge identical to the projected preview: uncovered source
+        // pixels stay transparent instead of borrowing color from a neighbouring
+        // UV texel and stretching it across a roof/edge.
+        enableDilation: false,
+        dilationPixels: 0,
+        // Add a tiny atlas-only gutter to stop linear filtering from sampling
+        // transparent texels at UV seams. This never fills a model-surface texel.
+        uvIslandGutterPixels: 2,
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,
         preferBlobOutput: project.workspaceMode === 'local-server',
         onProgress: updateManualBakeProgress,
       });
+      const mergedImageBlob = bakeResult.imageBlob;
       let imageUrl = bakeResult.imageUrl;
       if (project.workspaceMode === 'local-server') {
         const filename = `${blankUvLayerId ?? createId('merged-uv-layer')}.png`;
@@ -3190,23 +3200,24 @@ export function EditorPage({ projectId, onBack }: EditorPageProps) {
           await saveBlobAsset({
             projectId: project.id,
             category: 'layers',
-            blob: bakeResult.imageBlob ?? dataUrlToBlob(bakeResult.imageUrl),
+            blob: mergedImageBlob ?? dataUrlToBlob(imageUrl),
             filename,
           })
         ).asset.url;
       }
       mergeLayersIntoUvLayer({
+        // Flatten ordinary projected layers into the UV base first. Local repaint
+        // UV layers deliberately remain separate and are composited above this
+        // base by the normal UV layer stack. Keeping their rendered-color and
+        // alpha semantics prevents a soft repair patch from being lit twice or
+        // becoming darker after the merge.
         sourceLayerIds: projectedLayerIds,
         targetUvLayerId: blankUvLayerId,
         imageUrl,
         objectId,
         name: t('mergedUvLayer'),
-        // A local repaint source is a viewport-rendered ComfyUI frame. Preserve
-        // that color meaning on its UV patch so preview lighting is not applied
-        // a second time after the projected layer is replaced.
-        renderedColor: projectedLayers.every(
-          (layer) => layer.renderedColor || isLocalRepaintProjectionLayer(layer),
-        ),
+        role: 'merged-uv',
+        renderedColor: projectedLayers.every((layer) => layer.renderedColor),
       });
       setProjectLayers(useLayerStore.getState().layers);
       scheduleTexturedThumbnailRefresh(350);

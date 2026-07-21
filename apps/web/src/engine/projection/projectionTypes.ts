@@ -8,6 +8,10 @@ export type ProjectionLayerInput = {
   maskUrl?: string;
   maskSpace?: LayerMaskSpace;
   depthUrl?: string;
+  /** The depth sampler stores linear camera-space distance normalized by near/far. */
+  depthIsLinearView?: boolean;
+  /** Frontmost geometric face normals from the capture view, used to lock cuts to creases. */
+  normalUrl?: string;
   camera: SerializedCamera;
   objectId: string;
   objectMatrixWorld?: number[];
@@ -35,6 +39,7 @@ export type ProjectionLayerInput = {
   depthTest: boolean;
   useMask?: boolean;
   useDepthCheck?: boolean;
+  useNormalCheck?: boolean;
   renderedColor?: boolean;
   enableBackfaceCulling?: boolean;
   edgeFeather?: number;
@@ -60,6 +65,8 @@ export type ProjectionLayerStackInput = Omit<
   | 'maskUrl'
   | 'maskSpace'
   | 'depthUrl'
+  | 'depthIsLinearView'
+  | 'normalUrl'
   | 'camera'
   | 'objectMatrixWorld'
   | 'opacity'
@@ -71,6 +78,7 @@ export type ProjectionLayerStackInput = Omit<
   | 'lightness'
   | 'useMask'
   | 'useDepthCheck'
+  | 'useNormalCheck'
   | 'renderedColor'
 > & {
   layers: Array<
@@ -81,6 +89,8 @@ export type ProjectionLayerStackInput = Omit<
       | 'maskUrl'
       | 'maskSpace'
       | 'depthUrl'
+      | 'depthIsLinearView'
+      | 'normalUrl'
       | 'camera'
       | 'objectMatrixWorld'
       | 'opacity'
@@ -93,6 +103,7 @@ export type ProjectionLayerStackInput = Omit<
       | 'lightness'
       | 'useMask'
       | 'useDepthCheck'
+      | 'useNormalCheck'
       | 'renderedColor'
     >
   >;

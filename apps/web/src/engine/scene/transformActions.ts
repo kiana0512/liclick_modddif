@@ -81,7 +81,11 @@ export function fitCameraToObjectId(objectId?: string) {
     ? sceneState.importedModels.find((item) => item.objectId === objectId)
     : sceneState.importedModel;
   if (!model) return;
-  fitCameraToObject(sceneState.viewport, model.group);
+  fitCameraToObject(sceneState.viewport, model.group, {
+    direction: getObjectViewPresetDirection('front'),
+    up: new THREE.Vector3(0, 1, 0),
+    padding: 1.15,
+  });
 }
 
 /**

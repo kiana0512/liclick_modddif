@@ -1,5 +1,161 @@
+import * as THREE from 'three';
+
 export function getUvDilationPixels(resolution: number, requestedPixels: number) {
   return Math.min(32, Math.max(requestedPixels, Math.ceil(resolution / 256)));
+}
+
+function rasterizeUvTopology(
+  root: THREE.Object3D,
+  width: number,
+  height: number,
+) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Could not create UV topology mask.');
+  context.fillStyle = '#ffffff';
+
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const geometry = object.geometry;
+    const uv = geometry.getAttribute('uv');
+    if (!uv) return;
+    const index = geometry.getIndex();
+    const triangleCount = index ? index.count / 3 : uv.count / 3;
+    for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      const vertexIndices = [0, 1, 2].map((offset) =>
+        index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
+      );
+      const points = vertexIndices.map((vertexIndex) => ({
+        x: uv.getX(vertexIndex) * (width - 1),
+        y: (1 - uv.getY(vertexIndex)) * (height - 1),
+      }));
+      if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) continue;
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      context.lineTo(points[1].x, points[1].y);
+      context.lineTo(points[2].x, points[2].y);
+      context.closePath();
+      context.fill();
+    }
+  });
+
+  const alpha = context.getImageData(0, 0, width, height).data;
+  const topology = new Uint8Array(width * height);
+  for (let index = 0; index < topology.length; index += 1) {
+    // Include anti-aliased triangle boundary pixels in the island itself. The
+    // gutter must begin outside the actual UV footprint, never inside it.
+    topology[index] = alpha[index * 4 + 3] > 8 ? 1 : 0;
+  }
+  return topology;
+}
+
+function expandBinaryMask(mask: Uint8Array, width: number, height: number, iterations: number) {
+  let current = mask.slice();
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const next = current.slice();
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x;
+        if (current[index]) continue;
+        for (let offsetY = -1; offsetY <= 1 && !next[index]; offsetY += 1) {
+          const neighborY = y + offsetY;
+          if (neighborY < 0 || neighborY >= height) continue;
+          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+            if (offsetX === 0 && offsetY === 0) continue;
+            const neighborX = x + offsetX;
+            if (neighborX < 0 || neighborX >= width) continue;
+            if (current[neighborY * width + neighborX]) {
+              next[index] = 1;
+              break;
+            }
+          }
+        }
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Pads only the atlas gutter immediately outside UV islands. Unlike ordinary
+ * dilation, this never writes into an unprojected texel that belongs to a model
+ * surface, so transparent/occluded content remains transparent.
+ */
+export function padUvIslandGutters(
+  imageData: ImageData,
+  coverage: Uint8Array,
+  root: THREE.Object3D,
+  iterations: number,
+) {
+  const { width, height, data } = imageData;
+  if (iterations <= 0) return 0;
+  const topology = rasterizeUvTopology(root, width, height);
+  const paddedTopology = expandBinaryMask(topology, width, height, iterations);
+  const neighborOffsets = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0],            [1, 0],
+    [-1, 1],  [0, 1],  [1, 1],
+  ] as const;
+  let currentFrontier: number[] = [];
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      if (!coverage[index]) continue;
+      const touchesAtlasGutter = neighborOffsets.some(([offsetX, offsetY]) => {
+        const neighborX = x + offsetX;
+        const neighborY = y + offsetY;
+        if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height)
+          return false;
+        const neighborIndex = neighborY * width + neighborX;
+        return !topology[neighborIndex] && Boolean(paddedTopology[neighborIndex]);
+      });
+      if (touchesAtlasGutter) currentFrontier.push(index);
+    }
+  }
+  let paddedPixels = 0;
+
+  for (let iteration = 0; iteration < iterations && currentFrontier.length > 0; iteration += 1) {
+    const pending = new Map<number, number>();
+    for (const sourceIndex of currentFrontier) {
+      const sourceX = sourceIndex % width;
+      const sourceY = Math.floor(sourceIndex / width);
+      for (const [offsetX, offsetY] of neighborOffsets) {
+        const x = sourceX + offsetX;
+        const y = sourceY + offsetY;
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+        const targetIndex = y * width + x;
+        if (
+          coverage[targetIndex] ||
+          topology[targetIndex] ||
+          !paddedTopology[targetIndex] ||
+          pending.has(targetIndex)
+        )
+          continue;
+        pending.set(targetIndex, sourceIndex);
+      }
+    }
+
+    const nextFrontier: number[] = [];
+    pending.forEach((sourceIndex, targetIndex) => {
+      const sourceOffset = sourceIndex * 4;
+      const targetOffset = targetIndex * 4;
+      data[targetOffset] = data[sourceOffset];
+      data[targetOffset + 1] = data[sourceOffset + 1];
+      data[targetOffset + 2] = data[sourceOffset + 2];
+      // Gutter texels are outside all model UV triangles. Opaque alpha keeps
+      // bilinear filtering from blending the island edge with a transparent
+      // white/black texel, but cannot paint an actual model surface.
+      data[targetOffset + 3] = 255;
+      coverage[targetIndex] = 1;
+      nextFrontier.push(targetIndex);
+      paddedPixels += 1;
+    });
+    currentFrontier = nextFrontier;
+  }
+  return paddedPixels;
 }
 
 export function dilateImageData(imageData: ImageData, coverage: Uint8Array, iterations: number) {

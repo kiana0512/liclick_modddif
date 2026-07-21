@@ -5,6 +5,9 @@ import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
 type RenderSceneToPngOptions = {
   applyDisplayTransform?: boolean;
+  dataTexture?: boolean;
+  samples?: number;
+  ignoreSceneBackground?: boolean;
 };
 
 let displayOutputPass: OutputPass | undefined;
@@ -31,10 +34,11 @@ export async function renderSceneToPngUrl(
   // targets. Color captures therefore need a linear intermediate followed by
   // the same display transform used by the on-screen viewport.
   const sceneTarget = new THREE.WebGLRenderTarget(request.width, request.height, {
-    samples: request.width > 1024 || request.height > 1024 ? 0 : 2,
+    samples:
+      options.samples ?? (request.width > 1024 || request.height > 1024 ? 0 : 2),
     ...(options.applyDisplayTransform
       ? { type: THREE.HalfFloatType, colorSpace: THREE.LinearSRGBColorSpace }
-      : { colorSpace: THREE.SRGBColorSpace }),
+      : { colorSpace: options.dataTexture ? THREE.NoColorSpace : THREE.SRGBColorSpace }),
   });
   const outputTarget = options.applyDisplayTransform
     ? new THREE.WebGLRenderTarget(request.width, request.height, {
@@ -46,8 +50,10 @@ export async function renderSceneToPngUrl(
   const previousClearColor = new THREE.Color();
   request.gl.getClearColor(previousClearColor);
   const previousClearAlpha = request.gl.getClearAlpha();
+  const previousBackground = request.scene.background;
   const pixels = new Uint8Array(request.width * request.height * 4);
   try {
+    if (options.ignoreSceneBackground) request.scene.background = null;
     request.gl.setRenderTarget(sceneTarget);
     request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
     request.gl.clear();
@@ -66,6 +72,7 @@ export async function renderSceneToPngUrl(
       pixels,
     );
   } finally {
+    request.scene.background = previousBackground;
     request.gl.setRenderTarget(previousTarget);
     request.gl.setClearColor(previousClearColor, previousClearAlpha);
     sceneTarget.dispose();

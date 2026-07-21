@@ -228,7 +228,10 @@ function buildSubmissionPrompt(input: GenerateImageInput, model: string) {
     (model === 'nano_banana_2' || model === 'nano_banana_pro' ? '生成一张高质量的参考图。' : '');
   const materialConstraint =
     '贴图生成约束：输出应强调材质贴图本身的颜色、粗糙度、纹理颗粒和细节，避免明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影。';
-  return basePrompt ? `${basePrompt}\n\n${materialConstraint}` : materialConstraint;
+  if (!basePrompt) return materialConstraint;
+  return basePrompt.includes(materialConstraint)
+    ? basePrompt
+    : `${basePrompt}\n\n${materialConstraint}`;
 }
 
 function buildImageParam(base64Data: string): LiclickImageParam {

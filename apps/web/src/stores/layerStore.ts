@@ -24,6 +24,7 @@ type LayerStore = {
     targetUvLayerId?: string;
     name?: string;
     renderedColor?: boolean;
+    role?: Layer['role'];
   }) => Layer;
   addProjectedLayerFromGeneration: (
     generation: Generation,
@@ -173,6 +174,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       camera: capture?.camera,
       maskUrl: capture?.maskUrl,
       depthUrl: capture?.depthUrl,
+      depthEncoding: capture?.depthEncoding,
       generationId: generation.id,
       captureId: capture?.id ?? generation.captureId,
       visible: true,
@@ -242,6 +244,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
             imageUrl: input.imageUrl,
             objectId: input.objectId ?? layer.objectId,
             renderedColor: input.renderedColor,
+            role: input.role ?? layer.role,
             visible: true,
             opacity: 1,
             strength: 1,
@@ -261,6 +264,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           imageUrl: input.imageUrl,
           objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
           renderedColor: input.renderedColor,
+          role: input.role,
           visible: true,
           opacity: 1,
           strength: 1,
