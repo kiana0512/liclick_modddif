@@ -1,910 +1,484 @@
 const api = window.liclickLauncher;
 
 const elements = {
+  headerVersion: document.querySelector('#headerVersion'),
+  headerStatusDot: document.querySelector('#headerStatusDot'),
   primaryLaunch: document.querySelector('#primaryLaunch'),
-  primaryLaunchText: document.querySelector('#primaryLaunch span'),
-  openWorkspace: document.querySelector('#openWorkspace'),
-  quickOpenWorkspace: document.querySelector('#quickOpenWorkspace'),
-  restartServices: document.querySelector('#restartServices'),
-  stopServices: document.querySelector('#stopServices'),
-  openLogs: document.querySelector('#openLogs'),
-  openLogsFromView: document.querySelector('#openLogsFromView'),
-  diagOpenLogs: document.querySelector('#diagOpenLogs'),
-  settingsOpenLogs: document.querySelector('#settingsOpenLogs'),
-  openWorkspaceDir: document.querySelector('#openWorkspaceDir'),
-  openProjectResources: document.querySelector('#openProjectResources'),
-  settingsOpenWorkspaceDir: document.querySelector('#settingsOpenWorkspaceDir'),
-  diagRestartServices: document.querySelector('#diagRestartServices'),
-  quitLauncher: document.querySelector('#quitLauncher'),
-  workspaceStatus: document.querySelector('#workspaceStatus'),
+  primaryLaunchText: document.querySelector('#primaryLaunchText'),
+  heroState: document.querySelector('#heroState'),
+  heroStateText: document.querySelector('#heroStateText'),
+  currentVersion: document.querySelector('#currentVersion'),
+  currentBuild: document.querySelector('#currentBuild'),
+  checkUpdates: document.querySelector('#checkUpdates'),
+  updateMessage: document.querySelector('#updateMessage'),
   webStatus: document.querySelector('#webStatus'),
-  runtimeStatus: document.querySelector('#runtimeStatus'),
-  workspaceUrl: document.querySelector('#workspaceUrl'),
-  webUrl: document.querySelector('#webUrl'),
-  workspaceDir: document.querySelector('#workspaceDir'),
-  settingsWorkspaceDir: document.querySelector('#settingsWorkspaceDir'),
-  pidText: document.querySelector('#pidText'),
-  runtimeDot: document.querySelector('#runtimeDot'),
-  serverDot: document.querySelector('#serverDot'),
-  webDot: document.querySelector('#webDot'),
-  logOutput: document.querySelector('#logOutput'),
-  clearLogs: document.querySelector('#clearLogs'),
-  footerBuild: document.querySelector('#footerBuild'),
-  sidebarBuild: document.querySelector('#sidebarBuild'),
-  connectionTitle: document.querySelector('#connectionTitle'),
-  connectionCopy: document.querySelector('#connectionCopy'),
-  serviceRuntimeText: document.querySelector('#serviceRuntimeText'),
-  serviceWorkspaceText: document.querySelector('#serviceWorkspaceText'),
-  serviceWebText: document.querySelector('#serviceWebText'),
-  diagRuntimeText: document.querySelector('#diagRuntimeText'),
-  diagWorkspaceText: document.querySelector('#diagWorkspaceText'),
-  diagWebText: document.querySelector('#diagWebText'),
-  localAvatarPreview: document.querySelector('#localAvatarPreview'),
-  localProfileId: document.querySelector('#localProfileId'),
-  localAvatarFile: document.querySelector('#localAvatarFile'),
-  chooseLocalAvatar: document.querySelector('#chooseLocalAvatar'),
-  saveLocalProfile: document.querySelector('#saveLocalProfile'),
-  resetLocalProfile: document.querySelector('#resetLocalProfile'),
-  profileSaveStatus: document.querySelector('#profileSaveStatus'),
-  performanceModeToggle: document.querySelector('#performanceModeToggle'),
-  performanceModeLabel: document.querySelector('#performanceModeLabel'),
-  openShortcutSettings: document.querySelector('#openShortcutSettings'),
-  shortcutModal: document.querySelector('#shortcutModal'),
-  closeShortcutSettings: document.querySelector('#closeShortcutSettings'),
-  shortcutSearch: document.querySelector('#shortcutSearch'),
-  shortcutList: document.querySelector('#shortcutList'),
-  shortcutMessage: document.querySelector('#shortcutMessage'),
-  resetAllShortcuts: document.querySelector('#resetAllShortcuts'),
-  photoshopInstallation: document.querySelector('#photoshopInstallation'),
-  photoshopExecutablePath: document.querySelector('#photoshopExecutablePath'),
-  browsePhotoshop: document.querySelector('#browsePhotoshop'),
-  photoshopSyncMode: document.querySelector('#photoshopSyncMode'),
-  photoshopSyncDelay: document.querySelector('#photoshopSyncDelay'),
-  savePhotoshopSettings: document.querySelector('#savePhotoshopSettings'),
+  webStatusDot: document.querySelector('#webStatusDot'),
+  workspaceStatus: document.querySelector('#workspaceStatus'),
+  workspaceStatusDot: document.querySelector('#workspaceStatusDot'),
+  bakerStatus: document.querySelector('#bakerStatus'),
+  bakerStatusDot: document.querySelector('#bakerStatusDot'),
+  photoshopHomeStatus: document.querySelector('#photoshopHomeStatus'),
+  photoshopStatusDot: document.querySelector('#photoshopStatusDot'),
+  workspacePath: document.querySelector('#workspacePath'),
+  settingsWorkspacePath: document.querySelector('#settingsWorkspacePath'),
+  autoStartServices: document.querySelector('#autoStartServices'),
+  closeToTray: document.querySelector('#closeToTray'),
+  photoshopDetail: document.querySelector('#photoshopDetail'),
+  photoshopSettingsStatus: document.querySelector('#photoshopSettingsStatus'),
+  bakerDetail: document.querySelector('#bakerDetail'),
+  bakerSettingsStatus: document.querySelector('#bakerSettingsStatus'),
+  openSubstanceInstall: document.querySelector('#openSubstanceInstall'),
   launchPhotoshop: document.querySelector('#launchPhotoshop'),
   installPhotoshopPlugin: document.querySelector('#installPhotoshopPlugin'),
-  openPhotoshopBackups: document.querySelector('#openPhotoshopBackups'),
-  photoshopStatus: document.querySelector('#photoshopStatus'),
-  photoshopPluginState: document.querySelector('#photoshopPluginState'),
-  photoshopConnectionState: document.querySelector('#photoshopConnectionState'),
-  photoshopAutoLaunch: document.querySelector('#photoshopAutoLaunch'),
-  photoshopKeepSessions: document.querySelector('#photoshopKeepSessions'),
-  photoshopHomeCard: document.querySelector('#photoshopHomeCard'),
-  photoshopHomeState: document.querySelector('#photoshopHomeState'),
-  photoshopHomeDetail: document.querySelector('#photoshopHomeDetail'),
-  photoshopHomeVersion: document.querySelector('#photoshopHomeVersion'),
-  photoshopHomeLatency: document.querySelector('#photoshopHomeLatency'),
-  photoshopHomeLaunch: document.querySelector('#photoshopHomeLaunch'),
-  photoshopHomeRepair: document.querySelector('#photoshopHomeRepair'),
-  photoshopHomeSettings: document.querySelector('#photoshopHomeSettings'),
+  maintenanceStatus: document.querySelector('#maintenanceStatus'),
+  toast: document.querySelector('#toast'),
+  authGate: document.querySelector('#authGate'),
+  authGateMessage: document.querySelector('#authGateMessage'),
+  authGateLogin: document.querySelector('#authGateLogin'),
+  authGateLoginText: document.querySelector('#authGateLoginText'),
+  authGateLater: document.querySelector('#authGateLater'),
 };
 
-const statusText = {
-  online: '已就绪',
-  offline: '未运行',
-  starting: '启动中',
-  unknown: '检查中',
+const previewState = {
+  phase: 'running',
+  workspace: 'online',
+  web: 'online',
+  baker: 'online',
+  bakerVersion: '15.0.1',
+  workspaceDir: 'C:\\Users\\User\\AppData\\Local\\Li3D\\workspace',
+  appVersion: '0.1.3',
+  shellBuild: '2026.07.22.1130',
 };
 
-const emptyLogText = '等待启动日志...';
-let currentState = {
-  phase: 'idle',
-  message: '启动器已就绪。',
-  workspace: 'unknown',
-  web: 'unknown',
-  workspaceUrl: 'http://127.0.0.1:4617',
-  webUrl: 'http://127.0.0.1:5673',
-  workspaceDir: '-',
-  shellBuild: '2026.07.17.1135',
-  logs: [],
+let currentState = previewState;
+let currentSettings = {
+  autoStartServices: true,
+  closeToTray: true,
 };
-let currentLocalSettings = {
-  activeUserId: 'anonymous',
-  performanceTestModeEnabled: false,
-  profile: { customId: '' },
-  shortcutOverrides: {},
-  photoshop: {
-    executablePath: '',
-    preferredVersion: '',
-    syncMode: 'live',
-    liveSyncDelayMs: 120,
-    autoLaunch: true,
-    keepSessionFiles: true,
-    windowPlacement: 'none',
-  },
+let photoshopStatus = {
+  serverAvailable: true,
+  plugin: { connected: false },
+  installations: [{ label: 'Adobe Photoshop', version: '2021' }],
+  selectedInstallation: { label: 'Adobe Photoshop', version: '2021' },
+  localPlugin: { installed: true },
 };
-let pendingAvatarDataUrl;
-let recordingShortcutId;
-let detectedPhotoshopInstallations = [];
-let photoshopStatusInFlight;
-let photoshopInstallationsSignature = '';
-let photoshopSettingsDirty = false;
+let toastTimer;
+let settingsSaveInFlight = false;
+let launchInFlight = false;
+let authInFlight = false;
+let authGateDismissed = false;
+let currentAuth = { authenticated: false, pending: true };
 
-const shortcutDefinitions = Array.isArray(window.LICLICK_SHORTCUT_DEFINITIONS)
-  ? window.LICLICK_SHORTCUT_DEFINITIONS
-  : [];
+const sleep = (duration) => new Promise((resolve) => window.setTimeout(resolve, duration));
 
-function bindingKey(binding) {
-  return [binding.primary ? 'primary' : '', binding.shift ? 'shift' : '', binding.alt ? 'alt' : '', binding.code]
-    .filter(Boolean)
-    .join('+');
+function isWorkspaceReady(state = currentState) {
+  return state.workspace === 'online' && state.web === 'online';
 }
 
-function formatBinding(binding) {
-  const keyLabels = {
-    Space: 'Space',
-    BracketLeft: '[',
-    BracketRight: ']',
-    NumpadDecimal: 'Num .',
-  };
-  const codeLabel =
-    keyLabels[binding.code] ??
-    (binding.code.startsWith('Key')
-      ? binding.code.slice(3)
-      : binding.code.replace('Numpad', 'Num '));
-  return [binding.primary ? 'Ctrl' : '', binding.shift ? 'Shift' : '', binding.alt ? 'Alt' : '', codeLabel]
-    .filter(Boolean)
-    .join(' + ');
+function statusClass(value) {
+  if (value === 'online' || value === 'running') return 'online';
+  if (value === 'starting' || value === 'unknown') return 'warning';
+  return 'offline';
 }
 
-function bindingsFor(definition) {
-  return currentLocalSettings.shortcutOverrides[definition.id] ?? definition.defaults;
+function componentLabel(value, readyText = '已就绪') {
+  if (value === 'online') return readyText;
+  if (value === 'starting' || value === 'unknown') return '检查中';
+  if (value === 'missing') return '未安装';
+  return '未运行';
 }
 
-function renderLocalProfile() {
-  const profile = currentLocalSettings.profile ?? { customId: '' };
-  elements.localProfileId.value = profile.customId ?? '';
-  pendingAvatarDataUrl = profile.avatarDataUrl;
-  elements.localAvatarPreview.replaceChildren();
-  if (profile.avatarDataUrl) {
-    const image = document.createElement('img');
-    image.src = profile.avatarDataUrl;
-    image.alt = '';
-    elements.localAvatarPreview.append(image);
-  } else {
-    const fallback = document.createElement('span');
-    fallback.textContent = 'LI';
-    elements.localAvatarPreview.append(fallback);
-  }
+function setStatusDot(element, value) {
+  element?.classList.remove('online', 'warning', 'offline');
+  element?.classList.add(statusClass(value));
 }
 
-function renderLocalSettings(settings) {
-  currentLocalSettings = {
-    ...currentLocalSettings,
-    ...settings,
-    profile: settings?.profile ?? currentLocalSettings.profile,
-    shortcutOverrides: settings?.shortcutOverrides ?? currentLocalSettings.shortcutOverrides,
-  };
-  renderLocalProfile();
-  elements.performanceModeToggle.checked = currentLocalSettings.performanceTestModeEnabled;
-  elements.performanceModeLabel.textContent = currentLocalSettings.performanceTestModeEnabled
-    ? '已启用'
-    : '已关闭';
-  renderPhotoshopSettings();
-  if (!elements.shortcutModal.hidden) renderShortcutList();
+function renderAuth(auth = currentAuth) {
+  currentAuth = { ...currentAuth, ...auth };
+  const authenticated = currentAuth.authenticated === true || currentState.auth === 'authenticated';
+  const signingIn = authInFlight || currentState.auth === 'signing-in';
+  const servicesReady = isWorkspaceReady();
+
+  elements.authGateLogin.disabled = signingIn;
+  elements.authGateLoginText.textContent = signingIn ? '等待登录完成…' : '登录 Li3D';
+  elements.authGateMessage.textContent = signingIn
+    ? '授权页面已经打开，请完成登录。成功后启动器会自动继续。'
+    : '登录状态会安全保存在这台电脑上。以后从启动器打开 Li3D，无需重复登录。';
+  elements.authGate.hidden = authenticated || authGateDismissed || !servicesReady || currentAuth.pending === true;
 }
 
-function renderPhotoshopSettings() {
-  const settings = currentLocalSettings.photoshop ?? {};
-  elements.photoshopExecutablePath.value = settings.executablePath ?? '';
-  elements.photoshopSyncMode.value = settings.syncMode === 'save' ? 'save' : 'live';
-  elements.photoshopSyncDelay.value = String(settings.liveSyncDelayMs ?? 120);
-  elements.photoshopAutoLaunch.checked = settings.autoLaunch !== false;
-  elements.photoshopKeepSessions.checked = settings.keepSessionFiles !== false;
-  elements.photoshopHomeLatency.textContent = `${settings.syncMode === 'save' ? '保存时同步' : '实时同步'} · ${settings.liveSyncDelayMs ?? 120}ms`;
-  renderPhotoshopInstallationOptions(settings.executablePath ?? '');
-}
-
-function renderPhotoshopInstallationOptions(selectedValue = '') {
-  const signature = JSON.stringify(
-    detectedPhotoshopInstallations.map((installation) => [
-      installation.executablePath,
-      installation.label,
-      installation.version,
-    ]),
+function renderState(nextState) {
+  currentState = { ...currentState, ...nextState };
+  const ready = currentState.workspace === 'online' && currentState.web === 'online';
+  const starting = currentState.phase === 'starting';
+  const version = currentState.appVersion ?? '0.1.3';
+  window.queueMicrotask(() =>
+    renderAuth({
+      authenticated: currentState.auth === 'authenticated',
+      pending: currentState.auth === 'checking' && currentAuth.pending,
+      user: currentState.authUser,
+    }),
   );
-  if (signature === photoshopInstallationsSignature && elements.photoshopInstallation.options.length > 0) {
-    if (!photoshopSettingsDirty) elements.photoshopInstallation.value = selectedValue;
-    return;
-  }
-  photoshopInstallationsSignature = signature;
-  const draftValue = photoshopSettingsDirty ? elements.photoshopInstallation.value : selectedValue;
-  const selectedPath = draftValue.toLowerCase();
-  elements.photoshopInstallation.replaceChildren();
-  const automatic = document.createElement('option');
-  automatic.value = '';
-  automatic.textContent = '自动检测 Photoshop';
-  elements.photoshopInstallation.append(automatic);
-  for (const installation of detectedPhotoshopInstallations) {
-    const option = document.createElement('option');
-    option.value = installation.executablePath;
-    option.textContent = `${installation.label} · ${installation.version}`;
-    elements.photoshopInstallation.append(option);
-  }
-  if (selectedPath) {
-    const match = detectedPhotoshopInstallations.find(
-      (installation) => installation.executablePath.toLowerCase() === selectedPath,
-    );
-    if (!match) {
-      const custom = document.createElement('option');
-      custom.value = draftValue;
-      custom.textContent = '自定义 Photoshop';
-      elements.photoshopInstallation.append(custom);
-    }
-    elements.photoshopInstallation.value = draftValue;
-  }
+
+  elements.headerVersion.textContent = `v${version}`;
+  elements.currentVersion.textContent = `Li3D ${version}`;
+  elements.currentBuild.textContent = `Build ${currentState.shellBuild ?? '本地开发版'}`;
+  elements.workspacePath.textContent = currentState.workspaceDir || '本地工作区';
+  elements.settingsWorkspacePath.textContent = currentState.workspaceDir || '本地工作区';
+
+  elements.webStatus.textContent = componentLabel(currentState.web, '可以打开');
+  elements.workspaceStatus.textContent = componentLabel(currentState.workspace, '运行正常');
+  elements.bakerStatus.textContent = componentLabel(currentState.baker, '已安装');
+  setStatusDot(elements.webStatusDot, currentState.web);
+  setStatusDot(elements.workspaceStatusDot, currentState.workspace);
+  setStatusDot(elements.bakerStatusDot, currentState.baker);
+  setStatusDot(elements.headerStatusDot, ready ? 'online' : starting ? 'starting' : 'offline');
+
+  elements.heroState.classList.remove('online', 'warning', 'offline');
+  elements.heroState.classList.add(ready ? 'online' : starting ? 'warning' : 'offline');
+  elements.heroStateText.textContent = ready
+    ? '本地工作区已连接'
+    : starting
+      ? '正在准备 Li3D'
+      : 'Li3D 服务尚未启动';
+
+  // 自动启动服务时仍允许用户点击。点击后会进入“等待就绪并打开工作台”的完整流程。
+  elements.primaryLaunch.disabled = launchInFlight;
+  elements.primaryLaunch.classList.toggle('is-launching', launchInFlight);
+  elements.primaryLaunch.setAttribute('aria-busy', String(launchInFlight));
+  elements.primaryLaunchText.textContent = ready
+    ? '打开 Li3D'
+    : starting || launchInFlight
+      ? '正在准备…'
+      : '启动 Li3D';
+  elements.primaryLaunch.setAttribute(
+    'aria-label',
+    ready ? '打开 Li3D' : starting || launchInFlight ? '正在准备 Li3D' : '启动 Li3D',
+  );
+
+  elements.bakerSettingsStatus.className = `component-state ${statusClass(currentState.baker)}`;
+  elements.bakerSettingsStatus.textContent = componentLabel(currentState.baker, '已安装');
+  elements.bakerDetail.textContent =
+    currentState.baker === 'online'
+      ? `版本 ${currentState.bakerVersion || '已检测'} · 用于一键烘焙贴图`
+      : currentState.baker === 'missing'
+        ? '未检测到 Adobe Substance 3D Baker'
+        : '用于一键烘焙贴图';
+  elements.openSubstanceInstall.textContent =
+    currentState.baker === 'online' ? '查看状态' : '获取组件';
+  elements.maintenanceStatus.textContent = ready
+    ? '当前服务运行正常，通常不需要手动维护。'
+    : starting
+      ? 'Li3D 正在准备本地服务，请稍候。'
+      : '服务尚未运行，可在这里重启或查看日志。';
 }
 
-function setPhotoshopChip(element, text, tone = 'online') {
-  element.textContent = text;
-  element.dataset.tone = tone;
+function renderSettings(settings) {
+  currentSettings = { ...currentSettings, ...settings };
+  elements.autoStartServices.checked = currentSettings.autoStartServices !== false;
+  elements.closeToTray.checked = currentSettings.closeToTray !== false;
 }
 
-function renderPhotoshopStatus(status) {
-  const localPlugin = status.localPlugin ?? {};
-  const connected = status.plugin?.connected === true;
-  const selected = status.selectedInstallation;
-  const activeSessions = Number(status.activeSessions) || 0;
-  const version = localPlugin.version || localPlugin.bundledVersion || status.plugin?.pluginVersion || '--';
+function renderPhotoshop(status) {
+  photoshopStatus = status ?? photoshopStatus;
+  const installation =
+    photoshopStatus.selectedInstallation ?? photoshopStatus.installations?.[0];
+  const installed = Boolean(installation);
+  const pluginInstalled = photoshopStatus.localPlugin?.installed === true;
+  const connected = photoshopStatus.plugin?.connected === true;
+  const displayState = connected
+    ? '已连接'
+    : installed && pluginInstalled
+      ? '插件已安装'
+      : installed
+        ? '需要安装插件'
+        : '未检测到';
+  const displayClass = connected || (installed && pluginInstalled) ? 'online' : installed ? 'warning' : '';
 
-  elements.photoshopHomeVersion.textContent = `CEP ${version}`;
-  if (connected) {
-    elements.photoshopHomeCard.dataset.state = 'connected';
-    elements.photoshopHomeState.textContent = '实时链路已连接';
-    elements.photoshopHomeDetail.textContent = `Photoshop ${status.plugin.photoshopVersion ?? ''}${activeSessions ? ` · ${activeSessions} 个编辑会话` : ' · 等待编辑任务'}`.trim();
-    if (!photoshopSettingsDirty) {
-      elements.photoshopStatus.textContent = `插件已连接 · PS ${status.plugin.photoshopVersion ?? ''}`.trim();
-    }
-    setPhotoshopChip(elements.photoshopConnectionState, '实时链路已连接');
-  } else if (localPlugin.installed) {
-    elements.photoshopHomeCard.dataset.state = 'ready';
-    elements.photoshopHomeState.textContent = '插件已就绪';
-    elements.photoshopHomeDetail.textContent = selected
-      ? `${selected.label} · 启动后自动连接`
-      : status.serverAvailable
-        ? '启动 Photoshop 后将自动连接'
-        : '工作区启动后可进行实时同步';
-    if (!photoshopSettingsDirty) {
-      elements.photoshopStatus.textContent = selected
-        ? `插件已安装 · ${selected.label}`
-        : '插件已安装 · 等待 Photoshop';
-    }
-    setPhotoshopChip(elements.photoshopConnectionState, '等待 Photoshop', 'warning');
-  } else {
-    elements.photoshopHomeCard.dataset.state = 'missing';
-    elements.photoshopHomeState.textContent = '插件需要安装';
-    elements.photoshopHomeDetail.textContent = localPlugin.bundled
-      ? '安装包已内置，点击即可自动修复'
-      : '当前版本未包含 Photoshop 插件';
-    if (!photoshopSettingsDirty) elements.photoshopStatus.textContent = 'Photoshop 插件未安装';
-    setPhotoshopChip(elements.photoshopConnectionState, '尚未连接', 'warning');
-  }
+  elements.photoshopHomeStatus.textContent = displayState;
+  setStatusDot(elements.photoshopStatusDot, connected || (installed && pluginInstalled) ? 'online' : installed ? 'starting' : 'offline');
+  elements.photoshopSettingsStatus.className = `component-state ${displayClass}`;
+  elements.photoshopSettingsStatus.textContent = displayState;
+  elements.photoshopDetail.textContent = installed
+    ? `${installation.label || 'Adobe Photoshop'} ${installation.version || ''} · ${pluginInstalled ? '实时编辑组件可用' : '安装插件后可实时编辑'}`
+    : '本机未检测到 Adobe Photoshop';
+  elements.launchPhotoshop.disabled = !installed;
+  elements.installPhotoshopPlugin.disabled = !photoshopStatus.localPlugin?.bundled && !pluginInstalled;
+  elements.installPhotoshopPlugin.textContent = pluginInstalled ? '修复插件' : '安装插件';
+}
 
-  if (localPlugin.installed) {
-    const versionLabel = localPlugin.version ? `CEP ${localPlugin.version}` : '插件已安装';
-    const debugSuffix = localPlugin.debugModeEnabled ? '' : ' · 调试模式未启用';
-    setPhotoshopChip(elements.photoshopPluginState, `${versionLabel}${debugSuffix}`, localPlugin.debugModeEnabled ? 'online' : 'warning');
-  } else {
-    setPhotoshopChip(elements.photoshopPluginState, '插件未安装', 'warning');
+function showToast(message) {
+  window.clearTimeout(toastTimer);
+  elements.toast.textContent = message;
+  elements.toast.hidden = false;
+  toastTimer = window.setTimeout(() => {
+    elements.toast.hidden = true;
+  }, 3600);
+}
+
+function showView(viewName) {
+  document.querySelectorAll('[data-view]').forEach((view) => {
+    const active = view.dataset.view === viewName;
+    view.hidden = !active;
+    view.classList.toggle('is-active', active);
+    if (active) view.scrollTop = 0;
+  });
+  document.querySelectorAll('[data-view-target]').forEach((button) => {
+    const active = button.dataset.viewTarget === viewName;
+    if (button.classList.contains('nav-button')) {
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', String(active));
+    }
+  });
+}
+
+async function saveBehaviorSettings() {
+  if (!api || settingsSaveInFlight) return;
+  settingsSaveInFlight = true;
+  try {
+    const settings = await api.updateLocalSettings({
+      autoStartServices: elements.autoStartServices.checked,
+      closeToTray: elements.closeToTray.checked,
+    });
+    renderSettings(settings);
+    showToast('设置已保存在本机。');
+  } catch {
+    renderSettings(currentSettings);
+    showToast('设置保存失败，请查看日志。');
+  } finally {
+    settingsSaveInFlight = false;
   }
 }
 
 async function refreshPhotoshopStatus() {
-  if (!api?.getPhotoshopStatus) return;
-  if (photoshopStatusInFlight) return photoshopStatusInFlight;
-  photoshopStatusInFlight = (async () => {
-    const status = await api.getPhotoshopStatus();
-    detectedPhotoshopInstallations = Array.isArray(status.installations) ? status.installations : [];
-    renderPhotoshopInstallationOptions(elements.photoshopInstallation.value);
-    renderPhotoshopStatus(status);
-    return status;
-  })().catch((error) => {
-    elements.photoshopStatus.textContent = '工作区未连接';
-    appendLog(`[launcher] Photoshop 检测失败：${error instanceof Error ? error.message : String(error)}`);
-  }).finally(() => {
-    photoshopStatusInFlight = undefined;
-  });
-  return photoshopStatusInFlight;
-}
-
-async function updateSharedSettings(patch) {
-  if (!api?.updateLocalSettings) {
-    renderLocalSettings({ ...currentLocalSettings, ...patch });
-    return currentLocalSettings;
-  }
-  const result = await api.updateLocalSettings({
-    userId: currentLocalSettings.activeUserId,
-    ...patch,
-  });
-  renderLocalSettings(result);
-  return result;
-}
-
-function renderShortcutList() {
-  const query = elements.shortcutSearch.value.trim().toLowerCase();
-  const visibleDefinitions = shortcutDefinitions.filter((definition) =>
-    `${definition.category} ${definition.label} ${definition.id}`.toLowerCase().includes(query),
-  );
-  elements.shortcutList.replaceChildren();
-  let previousCategory = '';
-  for (const definition of visibleDefinitions) {
-    if (definition.category !== previousCategory) {
-      previousCategory = definition.category;
-      const heading = document.createElement('div');
-      heading.className = 'shortcut-group-title';
-      heading.textContent = definition.category;
-      elements.shortcutList.append(heading);
-    }
-    const row = document.createElement('div');
-    row.className = 'shortcut-row';
-    const label = document.createElement('span');
-    label.textContent = definition.label;
-    const bindingButton = document.createElement('button');
-    bindingButton.type = 'button';
-    bindingButton.className = `shortcut-binding${recordingShortcutId === definition.id ? ' is-recording' : ''}`;
-    const bindings = bindingsFor(definition);
-    bindingButton.textContent =
-      recordingShortcutId === definition.id
-        ? '请按新快捷键…'
-        : bindings.length > 0
-          ? bindings.map(formatBinding).join(' / ')
-          : '未设置';
-    bindingButton.addEventListener('click', () => {
-      recordingShortcutId = definition.id;
-      elements.shortcutMessage.textContent = '请直接按下新的快捷键组合，Esc 取消，Delete 清除。';
-      renderShortcutList();
-    });
-    const clearButton = document.createElement('button');
-    clearButton.type = 'button';
-    clearButton.className = 'shortcut-clear';
-    clearButton.textContent = '×';
-    clearButton.title = '清除快捷键';
-    clearButton.addEventListener('click', () => {
-      const nextOverrides = { ...currentLocalSettings.shortcutOverrides, [definition.id]: [] };
-      void updateSharedSettings({ shortcutOverrides: nextOverrides });
-      recordingShortcutId = undefined;
-      renderShortcutList();
-    });
-    row.append(label, bindingButton, clearButton);
-    elements.shortcutList.append(row);
-  }
-}
-
-function setTone(element, tone) {
-  if (!element) return;
-  element.dataset.tone = tone;
-  document.querySelectorAll(`[data-mirror="${element.id}"]`).forEach((mirror) => {
-    mirror.dataset.tone = tone;
-  });
-}
-
-function appendLog(line) {
-  if (elements.logOutput.dataset.empty === 'true') {
-    elements.logOutput.textContent = '';
-    elements.logOutput.dataset.empty = 'false';
-  }
-  elements.logOutput.textContent += `${line}\n`;
-  elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
-}
-
-function renderState(state) {
-  currentState = { ...currentState, ...state };
-  const running = currentState.phase === 'running';
-  const starting = currentState.phase === 'starting';
-  const error = currentState.phase === 'error';
-  const runtimeReady =
-    running || currentState.workspace === 'online' || currentState.web === 'online';
-
-  elements.openWorkspace.disabled = currentState.web !== 'online';
-  elements.workspaceStatus.textContent =
-    statusText[currentState.workspace] ?? currentState.workspace;
-  elements.webStatus.textContent = statusText[currentState.web] ?? currentState.web;
-  elements.runtimeStatus.textContent = error
-    ? '准备失败'
-    : starting && !runtimeReady
-      ? '正在同步'
-      : runtimeReady
-        ? '准备就绪'
-        : '等待启动';
-  elements.workspaceUrl.textContent = currentState.workspaceUrl;
-  elements.webUrl.textContent = currentState.webUrl;
-  elements.workspaceDir.textContent = currentState.workspaceDir;
-  elements.workspaceDir.title = currentState.workspaceDir;
-  elements.settingsWorkspaceDir.textContent = currentState.workspaceDir;
-  elements.settingsWorkspaceDir.title = currentState.workspaceDir;
-  elements.pidText.textContent = currentState.launcherPid
-    ? `PID ${currentState.launcherPid}`
-    : '本地服务';
-  elements.footerBuild.textContent = currentState.shellBuild
-    ? `Build ${currentState.shellBuild}`
-    : 'Launcher';
-  elements.sidebarBuild.textContent = currentState.shellBuild
-    ? `Build ${currentState.shellBuild}`
-    : 'Launcher';
-
-  const runtimeLabel = error
-    ? '准备失败'
-    : starting && !runtimeReady
-      ? '正在准备'
-      : runtimeReady
-        ? '准备就绪'
-        : '等待启动';
-  const workspaceLabel = statusText[currentState.workspace] ?? currentState.workspace;
-  const webLabel = statusText[currentState.web] ?? currentState.web;
-  elements.serviceRuntimeText.textContent = runtimeLabel;
-  elements.serviceWorkspaceText.textContent = workspaceLabel;
-  elements.serviceWebText.textContent = webLabel;
-  elements.diagRuntimeText.textContent = runtimeLabel;
-  elements.diagWorkspaceText.textContent = workspaceLabel;
-  elements.diagWebText.textContent = webLabel;
-  elements.connectionTitle.textContent = running
-    ? '本地工作区已连接'
-    : error
-      ? '本地工作区连接失败'
-      : starting
-        ? '正在连接本地工作区'
-        : '本地工作区未连接';
-  elements.connectionCopy.textContent = running
-    ? '启动器已与本地服务通信，可以正常访问工作台与资源。'
-    : error
-      ? '请进入“诊断”或“日志”查看失败原因。'
-      : starting
-        ? '正在检查运行环境与前后端服务，请稍候。'
-        : '点击“一键启动”准备本地服务。';
-
-  setTone(
-    elements.runtimeDot,
-    runtimeReady ? 'online' : error ? 'error' : starting ? 'starting' : 'offline',
-  );
-  setTone(
-    elements.serverDot,
-    currentState.workspace === 'online' ? 'online' : starting ? 'starting' : 'offline',
-  );
-  setTone(
-    elements.webDot,
-    currentState.web === 'online' ? 'online' : starting ? 'starting' : 'offline',
-  );
-
-  elements.primaryLaunch.disabled = starting;
-  elements.primaryLaunchText.textContent = starting
-    ? '正在启动...'
-    : running
-      ? '打开工作台'
-      : '一键启动';
-
-  if (
-    Array.isArray(currentState.logs) &&
-    (!elements.logOutput.textContent || elements.logOutput.dataset.empty === 'true')
-  ) {
-    if (currentState.logs.length > 0) {
-      elements.logOutput.textContent = `${currentState.logs.join('\n')}\n`;
-      elements.logOutput.dataset.empty = 'false';
-    } else {
-      elements.logOutput.textContent = emptyLogText;
-      elements.logOutput.dataset.empty = 'true';
-    }
-    elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
-  }
-}
-
-function showView(viewName) {
-  document.querySelectorAll('[data-view-target]').forEach((button) => {
-    const active = button.dataset.viewTarget === viewName;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-selected', String(active));
-  });
-  document.querySelectorAll('[data-view]').forEach((view) => {
-    view.classList.toggle('is-active', view.dataset.view === viewName);
-  });
-}
-
-async function safeCall(action, failureMessage) {
   if (!api) {
-    appendLog(`[launcher] ${failureMessage}：当前不是 Electron 启动器环境。`);
+    renderPhotoshop(photoshopStatus);
+    return;
+  }
+  try {
+    renderPhotoshop(await api.getPhotoshopStatus());
+  } catch {
+    renderPhotoshop({ installations: [], localPlugin: { installed: false } });
+  }
+}
+
+async function waitForWorkspaceReady(timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastState = currentState;
+
+  while (Date.now() < deadline) {
+    lastState = await api.getState();
+    renderState(lastState);
+    if (isWorkspaceReady(lastState)) return lastState;
+    if (lastState.phase === 'error') {
+      throw new Error(lastState.message || 'Li3D 本地服务启动失败。');
+    }
+    await sleep(850);
+  }
+
+  throw new Error(lastState.message || '等待 Li3D 本地服务超时。');
+}
+
+async function startAndOpenWorkspace() {
+  if (!api) {
+    showToast('这是静态设计预览，桌面版中会启动 Li3D。');
+    return;
+  }
+  if (launchInFlight) return;
+
+  launchInFlight = true;
+  renderState(currentState);
+  try {
+    if (!isWorkspaceReady()) {
+      showToast('正在启动 Li3D，本地服务就绪后会自动打开工作台。');
+      await api.start();
+      await waitForWorkspaceReady();
+    }
+    await api.openWorkspace();
+    showToast('Li3D 工作台已打开。');
+  } catch (error) {
+    console.error('[launcher] failed to start and open workspace', error);
+    showToast(error?.message || 'Li3D 启动失败，请在设置中打开日志查看原因。');
+  } finally {
+    launchInFlight = false;
+    renderState(currentState);
+  }
+}
+
+async function refreshAuthStatus({ forcePrompt = false } = {}) {
+  if (!api || !isWorkspaceReady()) return currentAuth;
+  if (forcePrompt) authGateDismissed = false;
+  try {
+    const result = await api.getAuthStatus();
+    renderAuth({ ...result, pending: false });
+    return result;
+  } catch (error) {
+    console.error('[launcher] failed to read auth status', error);
+    renderAuth({ authenticated: false, pending: false });
+    return currentAuth;
+  }
+}
+
+async function loginFromGate() {
+  if (!api || authInFlight) return;
+  authInFlight = true;
+  authGateDismissed = false;
+  renderAuth({ authenticated: false, pending: false });
+  try {
+    const result = await api.login();
+    renderAuth({ ...result, authenticated: true, pending: false });
+    showToast('登录成功，以后从启动器进入无需重复登录。');
+  } catch (error) {
+    console.error('[launcher] login failed', error);
+    elements.authGateMessage.textContent = error?.message || '登录未完成，请重新尝试。';
+    showToast(error?.message || '登录未完成，请重新尝试。');
+  } finally {
+    authInFlight = false;
+    renderAuth(currentAuth);
+  }
+}
+
+function bindButton(selector, handler) {
+  const button = document.querySelector(selector);
+  if (!button) {
+    console.warn(`[launcher] button not found: ${selector}`);
+    return;
+  }
+  button.addEventListener('click', handler);
+}
+
+async function runButtonAction(action, successMessage, failureMessage) {
+  if (!api) {
+    showToast('这是静态设计预览。');
     return;
   }
   try {
     await action();
+    if (successMessage) showToast(successMessage);
   } catch (error) {
-    appendLog(
-      `[launcher] ${failureMessage}：${error instanceof Error ? error.message : String(error)}`,
-    );
+    console.error('[launcher] button action failed', error);
+    showToast(error?.message || failureMessage);
   }
 }
 
 document.querySelectorAll('[data-view-target]').forEach((button) => {
-  button.addEventListener('click', () => {
-    showView(button.dataset.viewTarget);
-    if (button.dataset.viewTarget === 'settings' && api?.getLocalSettings) {
-      void api.getLocalSettings().then(renderLocalSettings).catch(() => undefined);
-      void refreshPhotoshopStatus();
-    }
-  });
+  button.addEventListener('click', () => showView(button.dataset.viewTarget));
 });
 
-elements.primaryLaunch.addEventListener('click', () => {
-  if (currentState.phase === 'running' || currentState.web === 'online') {
-    void safeCall(() => api.openWorkspace(), '无法打开工作台');
-    return;
-  }
-  void safeCall(() => api.start(), '无法启动服务');
+elements.primaryLaunch.addEventListener('click', startAndOpenWorkspace);
+elements.authGateLogin.addEventListener('click', loginFromGate);
+elements.authGateLater.addEventListener('click', () => {
+  authGateDismissed = true;
+  renderAuth(currentAuth);
 });
 
-elements.openWorkspace.addEventListener(
-  'click',
-  () => void safeCall(() => api.openWorkspace(), '无法打开工作台'),
+bindButton('#settingsOpenWorkspaceDir', () =>
+  runButtonAction(
+    () => api.openWorkspaceDir(),
+    '已打开 Li3D 工作目录。',
+    '无法打开工作目录。',
+  ),
 );
-elements.quickOpenWorkspace.addEventListener('click', () => {
-  if (currentState.web === 'online') void safeCall(() => api.openWorkspace(), '无法打开工作台');
-  else void safeCall(() => api.start(), '无法启动服务');
-});
-elements.restartServices.addEventListener(
-  'click',
-  () => void safeCall(() => api.restart(), '无法重启服务'),
+bindButton('#homeOpenLogs', () =>
+  runButtonAction(() => api.openLogs(), '已打开日志目录。', '无法打开日志目录。'),
 );
-elements.stopServices.addEventListener(
-  'click',
-  () => void safeCall(() => api.stop(), '无法停止服务'),
+bindButton('#settingsOpenLogs', () =>
+  runButtonAction(() => api.openLogs(), '已打开日志目录。', '无法打开日志目录。'),
 );
-elements.openLogs.addEventListener(
-  'click',
-  () => void safeCall(() => api.openLogs(), '无法打开日志目录'),
+bindButton('#restartServices', () =>
+  runButtonAction(
+    async () => {
+      showToast('正在重新准备 Li3D 服务…');
+      await api.restart();
+    },
+    'Li3D 服务已进入重启流程。',
+    'Li3D 服务重启失败，请查看日志。',
+  ),
 );
-elements.openLogsFromView.addEventListener(
-  'click',
-  () => void safeCall(() => api.openLogs(), '无法打开日志目录'),
-);
-elements.diagOpenLogs.addEventListener(
-  'click',
-  () => void safeCall(() => api.openLogs(), '无法打开日志目录'),
-);
-elements.settingsOpenLogs.addEventListener(
-  'click',
-  () => void safeCall(() => api.openLogs(), '无法打开日志目录'),
-);
-elements.openWorkspaceDir.addEventListener(
-  'click',
-  () => void safeCall(() => api.openWorkspaceDir(), '无法打开工作目录'),
-);
-elements.openProjectResources.addEventListener(
-  'click',
-  () => void safeCall(() => api.openWorkspaceDir(), '无法打开项目资源'),
-);
-elements.settingsOpenWorkspaceDir.addEventListener(
-  'click',
-  () => void safeCall(() => api.openWorkspaceDir(), '无法打开工作目录'),
-);
-elements.diagRestartServices.addEventListener(
-  'click',
-  () => void safeCall(() => api.restart(), '无法重新检查服务'),
-);
-elements.quitLauncher.addEventListener('click', () => {
-  if (!window.confirm('确定要停止本地服务并彻底退出 LI3D 启动器吗？')) return;
-  void safeCall(() => api.quit(), '无法退出启动器');
-});
-elements.clearLogs.addEventListener('click', () => {
-  elements.logOutput.textContent = emptyLogText;
-  elements.logOutput.dataset.empty = 'true';
-});
+bindButton('#quitLauncher', () => runButtonAction(() => api.quit(), '', '无法退出启动器。'));
 
-elements.chooseLocalAvatar.addEventListener('click', () => elements.localAvatarFile.click());
-elements.localAvatarFile.addEventListener('change', () => {
-  const file = elements.localAvatarFile.files?.[0];
-  if (!file) return;
-  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-    window.alert('请选择 PNG、JPG 或 WebP 图片。');
-    elements.localAvatarFile.value = '';
-    return;
-  }
-  if (file.size > 2 * 1024 * 1024) {
-    window.alert('头像文件不能超过 2 MB。');
-    elements.localAvatarFile.value = '';
-    return;
-  }
-  const reader = new FileReader();
-  reader.addEventListener('load', () => {
-    if (typeof reader.result !== 'string') return;
-    pendingAvatarDataUrl = reader.result;
-    elements.localAvatarPreview.replaceChildren();
-    const image = document.createElement('img');
-    image.src = reader.result;
-    image.alt = '';
-    elements.localAvatarPreview.append(image);
-    elements.profileSaveStatus.textContent = '等待保存';
-  });
-  reader.readAsDataURL(file);
-});
-
-elements.localProfileId.addEventListener('input', () => {
-  elements.profileSaveStatus.textContent = '等待保存';
-});
-
-elements.saveLocalProfile.addEventListener('click', async () => {
-  const customId = elements.localProfileId.value.trim().replace(/^@+/, '');
-  if (customId && !/^[\p{L}\p{N}_-]{2,24}$/u.test(customId)) {
-    window.alert('自定义 ID 需为 2–24 个中文、英文、数字、下划线或短横线。');
-    return;
-  }
-  elements.saveLocalProfile.disabled = true;
-  elements.profileSaveStatus.textContent = '保存中';
+elements.checkUpdates.addEventListener('click', async () => {
+  const label = elements.checkUpdates.querySelector('span');
+  label.textContent = '检查中…';
+  elements.checkUpdates.disabled = true;
   try {
-    await updateSharedSettings({
-      profile: {
-        customId,
-        ...(pendingAvatarDataUrl ? { avatarDataUrl: pendingAvatarDataUrl } : {}),
-      },
-    });
-    elements.profileSaveStatus.textContent = '已保存';
-  } catch (error) {
-    elements.profileSaveStatus.textContent = '保存失败';
-    appendLog(`[launcher] 无法保存本地资料：${error instanceof Error ? error.message : String(error)}`);
+    const result = api
+      ? await api.checkForUpdates()
+      : {
+          status: 'manual',
+          currentVersion: currentState.appVersion,
+          message: '当前为设计预览，在线更新通道尚未接入。',
+        };
+    elements.updateMessage.textContent = result.message;
+    showToast(result.message);
+  } catch {
+    showToast('暂时无法检查更新，请稍后再试。');
   } finally {
-    elements.saveLocalProfile.disabled = false;
+    window.setTimeout(() => {
+      label.textContent = '检查更新';
+      elements.checkUpdates.disabled = false;
+    }, 650);
   }
 });
 
-elements.resetLocalProfile.addEventListener('click', async () => {
-  pendingAvatarDataUrl = undefined;
-  try {
-    await updateSharedSettings({ profile: { customId: '' } });
-    elements.localAvatarFile.value = '';
-    elements.profileSaveStatus.textContent = '已恢复默认';
-  } catch (error) {
-    appendLog(`[launcher] 无法恢复本地资料：${error instanceof Error ? error.message : String(error)}`);
-  }
-});
+elements.autoStartServices.addEventListener('change', saveBehaviorSettings);
+elements.closeToTray.addEventListener('change', saveBehaviorSettings);
 
-elements.performanceModeToggle.addEventListener('change', async () => {
-  const enabled = elements.performanceModeToggle.checked;
-  elements.performanceModeLabel.textContent = enabled ? '已启用' : '已关闭';
-  try {
-    await updateSharedSettings({ performanceTestModeEnabled: enabled });
-  } catch (error) {
-    renderLocalSettings(currentLocalSettings);
-    appendLog(`[launcher] 无法保存性能测试模式：${error instanceof Error ? error.message : String(error)}`);
-  }
-});
-
-elements.photoshopInstallation.addEventListener('change', () => {
-  photoshopSettingsDirty = true;
-  elements.photoshopExecutablePath.value = elements.photoshopInstallation.value;
-  elements.photoshopStatus.textContent = '等待保存';
-});
-
-elements.photoshopExecutablePath.addEventListener('input', () => {
-  photoshopSettingsDirty = true;
-  elements.photoshopStatus.textContent = '等待保存';
-});
-
-elements.browsePhotoshop.addEventListener('click', async () => {
-  if (!api?.choosePhotoshopExecutable) return;
-  try {
-    const result = await api.choosePhotoshopExecutable();
-    if (result?.canceled || !result?.executablePath) return;
-    elements.photoshopExecutablePath.value = result.executablePath;
-    photoshopSettingsDirty = true;
-    elements.photoshopStatus.textContent = '等待保存';
-  } catch (error) {
-    appendLog(`[launcher] 选择 Photoshop 失败：${error instanceof Error ? error.message : String(error)}`);
-  }
-});
-
-async function savePhotoshopSettings() {
-  const executablePath = elements.photoshopExecutablePath.value.trim();
-  const installation = detectedPhotoshopInstallations.find(
-    (item) => item.executablePath.toLowerCase() === executablePath.toLowerCase(),
-  );
-  const liveSyncDelayMs = Math.max(80, Math.min(5000, Number(elements.photoshopSyncDelay.value) || 120));
-  elements.savePhotoshopSettings.disabled = true;
-  elements.photoshopStatus.textContent = '保存中';
-  photoshopSettingsDirty = false;
-  try {
-    await updateSharedSettings({
-      photoshop: {
-        ...(currentLocalSettings.photoshop ?? {}),
-        executablePath,
-        preferredVersion: installation?.version ?? '',
-        syncMode: elements.photoshopSyncMode.value === 'save' ? 'save' : 'live',
-        liveSyncDelayMs,
-        autoLaunch: elements.photoshopAutoLaunch.checked,
-        keepSessionFiles: elements.photoshopKeepSessions.checked,
-      },
-    });
-    elements.photoshopStatus.textContent = '已保存';
-    return true;
-  } catch (error) {
-    photoshopSettingsDirty = true;
-    elements.photoshopStatus.textContent = '保存失败';
-    appendLog(`[launcher] Photoshop 设置保存失败：${error instanceof Error ? error.message : String(error)}`);
-    return false;
-  } finally {
-    elements.savePhotoshopSettings.disabled = false;
-  }
-}
-
-elements.savePhotoshopSettings.addEventListener('click', () => void savePhotoshopSettings());
-
-async function launchPhotoshop({ saveSettings = false } = {}) {
-  if (saveSettings && !(await savePhotoshopSettings())) return;
-  elements.launchPhotoshop.disabled = true;
-  elements.photoshopHomeLaunch.disabled = true;
-  elements.photoshopStatus.textContent = '正在启动';
+elements.launchPhotoshop.addEventListener('click', async () => {
+  if (!api) return showToast('这是静态设计预览。');
   try {
     await api.launchPhotoshop();
-    elements.photoshopStatus.textContent = 'Photoshop 已启动';
-    window.setTimeout(() => void refreshPhotoshopStatus(), 1800);
-  } catch (error) {
-    elements.photoshopStatus.textContent = '启动失败';
-    appendLog(`[launcher] Photoshop 启动失败：${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    elements.launchPhotoshop.disabled = false;
-    elements.photoshopHomeLaunch.disabled = false;
+    showToast('正在打开 Photoshop。');
+  } catch {
+    showToast('无法打开 Photoshop，请确认软件安装位置。');
   }
-}
+});
 
-elements.launchPhotoshop.addEventListener('click', () => void launchPhotoshop({ saveSettings: true }));
-elements.photoshopHomeLaunch.addEventListener('click', () => void launchPhotoshop());
-
-for (const control of [
-  elements.photoshopSyncMode,
-  elements.photoshopSyncDelay,
-  elements.photoshopAutoLaunch,
-  elements.photoshopKeepSessions,
-]) {
-  control.addEventListener('change', () => {
-    photoshopSettingsDirty = true;
-    elements.photoshopStatus.textContent = '等待保存';
-  });
-}
-
-async function repairPhotoshopPlugin() {
-  elements.installPhotoshopPlugin.disabled = true;
-  elements.photoshopHomeRepair.disabled = true;
-  elements.photoshopStatus.textContent = '正在安装插件';
+elements.installPhotoshopPlugin.addEventListener('click', async () => {
+  if (!api) return showToast('这是静态设计预览。');
   try {
-    const result = await api.installPhotoshopPlugin();
-    elements.photoshopStatus.textContent = '插件已安装，重启 Photoshop 生效';
-    appendLog(`[launcher] Photoshop 本地插件已安装：${result.destination}`);
+    await api.installPhotoshopPlugin();
     await refreshPhotoshopStatus();
-  } catch (error) {
-    elements.photoshopStatus.textContent = '插件安装失败';
-    appendLog(`[launcher] Photoshop 插件安装失败：${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    elements.installPhotoshopPlugin.disabled = false;
-    elements.photoshopHomeRepair.disabled = false;
+    showToast('Photoshop 插件已准备完成，重新启动 Photoshop 后生效。');
+  } catch {
+    showToast('插件安装失败，请打开日志查看原因。');
   }
-}
-
-elements.installPhotoshopPlugin.addEventListener('click', () => void repairPhotoshopPlugin());
-elements.photoshopHomeRepair.addEventListener('click', () => void repairPhotoshopPlugin());
-elements.photoshopHomeSettings.addEventListener('click', () => {
-  showView('settings');
-  void refreshPhotoshopStatus();
-});
-elements.openPhotoshopBackups.addEventListener('click', () => {
-  void safeCall(() => api.openPhotoshopBackups(), '无法打开 Photoshop 恢复文件');
 });
 
-elements.openShortcutSettings.addEventListener('click', () => {
-  recordingShortcutId = undefined;
-  elements.shortcutSearch.value = '';
-  elements.shortcutMessage.textContent = '同一作用域内不允许重复快捷键。';
-  elements.shortcutModal.hidden = false;
-  renderShortcutList();
-  elements.shortcutSearch.focus();
-});
-
-function closeShortcutModal() {
-  recordingShortcutId = undefined;
-  elements.shortcutModal.hidden = true;
-}
-
-elements.closeShortcutSettings.addEventListener('click', closeShortcutModal);
-elements.shortcutModal.addEventListener('mousedown', (event) => {
-  if (event.target === elements.shortcutModal) closeShortcutModal();
-});
-elements.shortcutSearch.addEventListener('input', renderShortcutList);
-elements.resetAllShortcuts.addEventListener('click', async () => {
-  recordingShortcutId = undefined;
-  await updateSharedSettings({ shortcutOverrides: {} });
-  elements.shortcutMessage.textContent = '全部快捷键已恢复默认值。';
-  renderShortcutList();
-});
-
-document.addEventListener('keydown', (event) => {
-  if (elements.shortcutModal.hidden) return;
-  if (!recordingShortcutId) {
-    if (event.key === 'Escape') closeShortcutModal();
+elements.openSubstanceInstall.addEventListener('click', async () => {
+  if (currentState.baker === 'online') {
+    showToast(`Substance 3D Baker ${currentState.bakerVersion || ''} 已安装。`);
     return;
   }
-  event.preventDefault();
-  event.stopPropagation();
-  const definition = shortcutDefinitions.find((item) => item.id === recordingShortcutId);
-  if (!definition) return;
-  if (event.key === 'Escape') {
-    recordingShortcutId = undefined;
-    elements.shortcutMessage.textContent = '已取消录制。';
-    renderShortcutList();
-    return;
+  if (!api) return showToast('这是静态设计预览。');
+  try {
+    await api.openSubstanceInstall();
+    showToast('已打开 Substance 3D Designer 获取页面。');
+  } catch {
+    showToast('无法打开 Substance 3D Designer 获取页面。');
   }
-  if (event.key === 'Delete' || event.key === 'Backspace') {
-    const nextOverrides = { ...currentLocalSettings.shortcutOverrides, [definition.id]: [] };
-    recordingShortcutId = undefined;
-    void updateSharedSettings({ shortcutOverrides: nextOverrides });
-    renderShortcutList();
-    return;
-  }
-  if (
-    ['ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight'].includes(
-      event.code,
-    )
-  ) return;
-  const nextBinding = {
-    code: event.code,
-    ...(event.ctrlKey || event.metaKey ? { primary: true } : {}),
-    ...(event.shiftKey ? { shift: true } : {}),
-    ...(event.altKey ? { alt: true } : {}),
-  };
-  const conflict = shortcutDefinitions.find((item) => {
-    if (item.id === definition.id) return false;
-    const sharesScope =
-      item.scope === definition.scope || item.scope === 'global' || definition.scope === 'global';
-    return sharesScope && bindingsFor(item).some((binding) => bindingKey(binding) === bindingKey(nextBinding));
-  });
-  if (conflict) {
-    elements.shortcutMessage.textContent = `该快捷键已用于“${conflict.label}”，请换一个组合。`;
-    return;
-  }
-  const nextOverrides = { ...currentLocalSettings.shortcutOverrides, [definition.id]: [nextBinding] };
-  recordingShortcutId = undefined;
-  void updateSharedSettings({ shortcutOverrides: nextOverrides });
-  elements.shortcutMessage.textContent = `已更新“${definition.label}”。`;
-  renderShortcutList();
 });
 
 if (api) {
   api.onState(renderState);
-  api.onLog(appendLog);
-  api.onLocalSettings?.(renderLocalSettings);
-  api
-    .getState()
-    .then(renderState)
-    .catch((error) => {
-      renderState({ phase: 'error', message: '无法读取启动器状态。' });
-      appendLog(
-        `[launcher] 无法读取状态：${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
-  api
-    .getLocalSettings()
-    .then((settings) => {
-      renderLocalSettings(settings);
-      void refreshPhotoshopStatus();
+  api.onLocalSettings?.(renderSettings);
+  Promise.all([api.getState(), api.getLocalSettings()])
+    .then(([state, settings]) => {
+      renderState(state);
+      renderSettings(settings);
+      void refreshAuthStatus();
     })
-    .catch((error) => {
-      appendLog(
-        `[launcher] 无法读取本地设置：${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    .catch(() => showToast('启动器状态读取失败，请尝试重启。'));
+  refreshPhotoshopStatus();
+  window.setInterval(refreshPhotoshopStatus, 15_000);
+  window.setInterval(() => {
+    if (!currentAuth.authenticated && !authInFlight) void refreshAuthStatus();
+  }, 4_000);
 } else {
-  renderState({
-    phase: 'error',
-    message: '启动壳通信不可用，请通过 EXE 启动器打开。',
-    workspaceDir: 'C:\\Users\\User\\AppData\\Local\\LIclick 3D Texture\\workspace',
-  });
-  elements.logOutput.textContent =
-    '浏览器预览模式：Electron preload 未连接。\n通过 LIclick 3D Texture.exe 启动后，这里会显示实时服务日志。\n';
-  elements.logOutput.dataset.empty = 'false';
-  renderLocalSettings(currentLocalSettings);
-  renderPhotoshopStatus({
-    plugin: { connected: false },
-    installations: [],
-    activeSessions: 0,
-    serverAvailable: false,
-    localPlugin: { installed: false, bundled: false },
-  });
+  renderState(previewState);
+  renderSettings(currentSettings);
+  renderPhotoshop(photoshopStatus);
+  renderAuth({ authenticated: false, pending: false });
 }
 
-window.setInterval(() => {
-  if (!document.hidden && api) void refreshPhotoshopStatus();
-}, 2500);
+showView(window.location.hash === '#settings' ? 'settings' : 'home');

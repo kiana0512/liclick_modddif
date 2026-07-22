@@ -7,7 +7,9 @@ export type BakeMapId =
   | 'curvature'
   | 'worldNormal'
   | 'thickness'
-  | 'position';
+  | 'position'
+  | 'roughness'
+  | 'metallic';
 
 export type BakeNormalOrientation = 'directx' | 'opengl';
 
@@ -83,6 +85,8 @@ export const bakeEngineProfiles: Record<BakeEngineId, BakeEngineProfile> = {
       'worldNormal',
       'thickness',
       'position',
+      'roughness',
+      'metallic',
     ],
   },
 };

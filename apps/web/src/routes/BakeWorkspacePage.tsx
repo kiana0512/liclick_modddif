@@ -26,11 +26,11 @@ import {
   RotateCcw,
   ScanLine,
   Search,
-  Send,
   Settings2,
   ShieldCheck,
   Sparkles,
   ZoomIn,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -61,9 +61,11 @@ import {
   downloadAllBakeOutputs,
   downloadBakeOutput,
   getNormalBakeJob,
+  getSubstanceBakerStatus,
   submitNormalBake,
   type BakeChannelId,
   type NormalBakeJob,
+  type SubstanceBakerStatus,
 } from '@/services/bakeApiClient';
 import { saveBlobAsset, saveProject } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
@@ -72,7 +74,7 @@ import { shortcutMatches } from '@/stores/shortcutStore';
 import type { ModelBoundingBox, SceneObject } from '@/types/model';
 import type { BakeDraftSettings, Project, ProjectBakeSetState } from '@/types/project';
 
-type BakeStage = 'assets' | 'alignment' | 'bake' | 'check' | 'pbr' | 'publish';
+type BakeStage = 'assets' | 'alignment' | 'bake' | 'check' | 'pbr';
 type ChannelId =
   | 'baseColor'
   | 'normal'
@@ -80,7 +82,9 @@ type ChannelId =
   | 'curvature'
   | 'worldNormal'
   | 'thickness'
-  | 'position';
+  | 'position'
+  | 'roughness'
+  | 'metallic';
 type QualityPreset = 'preview' | 'production';
 
 const stages: Array<{
@@ -95,7 +99,6 @@ const stages: Array<{
   { id: 'bake', index: '03', label: '烘焙', short: '生成基础贴图', icon: Flame },
   { id: 'check', index: '04', label: '检查', short: '漏烘与接缝', icon: Search },
   { id: 'pbr', index: '05', label: 'PBR 处理', short: 'Roughness · Metallic', icon: Box },
-  { id: 'publish', index: '06', label: '发布', short: '进入交付', icon: Send },
 ];
 
 const channelLabels: Record<ChannelId, string> = {
@@ -106,6 +109,8 @@ const channelLabels: Record<ChannelId, string> = {
   worldNormal: 'World Normal',
   thickness: 'Thickness',
   position: 'Position',
+  roughness: 'Roughness',
+  metallic: 'Metallic',
 };
 
 const channelShortLabels: Record<ChannelId, string> = {
@@ -116,11 +121,15 @@ const channelShortLabels: Record<ChannelId, string> = {
   worldNormal: '世界法线',
   thickness: '厚度',
   position: 'Position',
+  roughness: '粗糙度',
+  metallic: '金属度',
 };
 
 const resultChannelOrder: BakeChannelId[] = [
   'baseColor',
   'normal',
+  'roughness',
+  'metallic',
   'ambientOcclusion',
   'curvature',
   'worldNormal',
@@ -136,6 +145,8 @@ const channelFileSuffix: Record<BakeChannelId, string> = {
   worldNormal: 'WorldNormal',
   thickness: 'Thickness',
   position: 'Position',
+  roughness: 'Roughness',
+  metallic: 'Metallic',
 };
 
 function getBakeOutput(job: NormalBakeJob | undefined, channel: BakeChannelId) {
@@ -170,9 +181,7 @@ function shapeDeltaRatio(a?: ModelBoundingBox, b?: ModelBoundingBox) {
   const aMax = Math.max(...a.size);
   const bMax = Math.max(...b.size);
   if (!aMax || !bMax) return undefined;
-  return Math.max(
-    ...a.size.map((value, index) => Math.abs(value / aMax - b.size[index] / bMax)),
-  );
+  return Math.max(...a.size.map((value, index) => Math.abs(value / aMax - b.size[index] / bMax)));
 }
 
 function percent(value?: number) {
@@ -221,17 +230,17 @@ export function BakeWorkspacePage({
   projectId,
   onBack,
   onOpenTexture,
-  onOpenDelivery,
 }: {
   projectId: string;
   onBack: () => void;
   onOpenTexture: () => void;
-  onOpenDelivery: () => void;
 }) {
   const highInputRef = useRef<HTMLInputElement>(null);
   const lowInputRef = useRef<HTMLInputElement>(null);
   const cageInputRef = useRef<HTMLInputElement>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
+  const roughnessInputRef = useRef<HTMLInputElement>(null);
+  const metallicInputRef = useRef<HTMLInputElement>(null);
   const fileTargetIdRef = useRef<string>();
   const hydratedProjectRef = useRef('');
   const applyingSettingsRef = useRef(false);
@@ -274,6 +283,9 @@ export function BakeWorkspacePage({
   const [lowFiles, setLowFiles] = useState<Record<string, File>>({});
   const [cageFiles, setCageFiles] = useState<Record<string, File>>({});
   const [colorFiles, setColorFiles] = useState<Record<string, File>>({});
+  const [roughnessFiles, setRoughnessFiles] = useState<Record<string, File>>({});
+  const [metallicFiles, setMetallicFiles] = useState<Record<string, File>>({});
+  const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [engine, setEngine] = useState<BakeEngineId>(defaultBakeDraftSettings.engine);
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>('production');
   const [resolution, setResolution] = useState(4096);
@@ -308,6 +320,8 @@ export function BakeWorkspacePage({
   const [resultLightboxOpen, setResultLightboxOpen] = useState(false);
   const [downloadingResult, setDownloadingResult] = useState(false);
   const [downloadingAllResults, setDownloadingAllResults] = useState(false);
+  const [bakerStatus, setBakerStatus] = useState<SubstanceBakerStatus>();
+  const [bakerStatusChecking, setBakerStatusChecking] = useState(true);
   const lowInputs = useMemo<BakeModelFileInput[]>(
     () => Object.entries(lowFiles).map(([objectId, file]) => ({ objectId, file })),
     [lowFiles],
@@ -317,6 +331,21 @@ export function BakeWorkspacePage({
     [cageFiles],
   );
   const alignmentInfo = useBakeModelAnalysis(lowInputs, cageInputs);
+
+  const refreshBakerStatus = useCallback(async () => {
+    setBakerStatusChecking(true);
+    try {
+      setBakerStatus(await getSubstanceBakerStatus());
+    } catch {
+      // Keep the last confirmed result when a recheck is interrupted.
+    } finally {
+      setBakerStatusChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshBakerStatus();
+  }, [refreshBakerStatus]);
 
   useEffect(() => {
     if (!project || currentProjectId !== projectId || workspaceObjects === project.objects) return;
@@ -341,7 +370,10 @@ export function BakeWorkspacePage({
   );
 
   const persistImportedFiles = useCallback(
-    async (kind: 'low' | 'cage' | 'color', assigned: Record<string, File>) => {
+    async (
+      kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic',
+      assigned: Record<string, File>,
+    ) => {
       if (Object.keys(assigned).length === 0) return;
       setAssetSaveState('saving');
       try {
@@ -349,7 +381,10 @@ export function BakeWorkspacePage({
           Object.entries(assigned).map(async ([objectId, file]) => {
             const result = await saveBlobAsset({
               projectId,
-              category: kind === 'color' ? 'references' : 'models',
+              category:
+                kind === 'color' || kind === 'roughness' || kind === 'metallic'
+                  ? 'references'
+                  : 'models',
               blob: file,
               filename: `bake-${objectId}-${kind}-${file.name}`,
             });
@@ -378,7 +413,10 @@ export function BakeWorkspacePage({
           uploaded.forEach(([objectId, asset]) => {
             const previous = bakeSets[objectId] ?? { objectId };
             bakeSets[objectId] = { ...previous, [kind]: asset };
-            const category = kind === 'color' ? 'references' : 'models';
+            const category =
+              kind === 'color' || kind === 'roughness' || kind === 'metallic'
+                ? 'references'
+                : 'models';
             assetManifest[category] = Array.from(
               new Set([...(assetManifest[category] ?? []), asset.relativePath ?? asset.url]),
             );
@@ -463,9 +501,11 @@ export function BakeWorkspacePage({
     if (!project || !workspace || hydratedProjectRef.current === project.id) return;
     hydratedProjectRef.current = project.id;
     if (workspace.selectedObjectId) setSelectedObjectId(workspace.selectedObjectId);
-    if (workspace.activeStage) setActiveStage(workspace.activeStage);
+    if (workspace.activeStage) {
+      setActiveStage(workspace.activeStage === 'publish' ? 'pbr' : workspace.activeStage);
+    }
     let cancelled = false;
-    const restoreKind = async (kind: 'low' | 'cage' | 'color') => {
+    const restoreKind = async (kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic') => {
       const entries = await Promise.all(
         Object.entries(workspace.bakeSets).map(async ([objectId, set]) => {
           const asset = set[kind];
@@ -483,12 +523,20 @@ export function BakeWorkspacePage({
         entries.filter((entry): entry is readonly [string, File] => Boolean(entry)),
       );
     };
-    void Promise.all([restoreKind('low'), restoreKind('cage'), restoreKind('color')])
-      .then(([low, cage, color]) => {
+    void Promise.all([
+      restoreKind('low'),
+      restoreKind('cage'),
+      restoreKind('color'),
+      restoreKind('roughness'),
+      restoreKind('metallic'),
+    ])
+      .then(([low, cage, color, roughness, metallic]) => {
         if (cancelled) return;
         setLowFiles(low);
         setCageFiles(cage);
         setColorFiles(color);
+        setRoughnessFiles(roughness);
+        setMetallicFiles(metallic);
         setAssetSaveState('saved');
       })
       .catch((reason: unknown) => {
@@ -560,8 +608,14 @@ export function BakeWorkspacePage({
   const selectedLow = selectedHigh ? lowFiles[selectedHigh.id] : undefined;
   const selectedCage = selectedHigh ? cageFiles[selectedHigh.id] : undefined;
   const selectedColor = selectedHigh ? colorFiles[selectedHigh.id] : undefined;
+  const selectedRoughness = selectedHigh ? roughnessFiles[selectedHigh.id] : undefined;
+  const selectedMetallic = selectedHigh ? metallicFiles[selectedHigh.id] : undefined;
   const selectedProjectColor = selectedHigh ? projectColorForObject(selectedHigh.id) : undefined;
   const selectedColorName = selectedColor?.name ?? selectedProjectColor?.name;
+  const materialMapCount =
+    Number(Boolean(selectedColorName)) +
+    Number(Boolean(selectedRoughness)) +
+    Number(Boolean(selectedMetallic));
   const selectedLowInfo = selectedHigh ? alignmentInfo.low[selectedHigh.id] : undefined;
   const currentDraftSettings = useMemo<BakeDraftSettings>(
     () => ({
@@ -624,7 +678,7 @@ export function BakeWorkspacePage({
     setMatchMode(saved.matchMode);
     setSampling(saved.sampling);
     setPadding(saved.padding);
-    setNormalOrientation(saved.normalOrientation);
+    setNormalOrientation(saved.normalOrientation ?? 'directx');
     setDevice(saved.device);
     setUdim(saved.udim);
     setHitStrategy(saved.hitStrategy);
@@ -745,15 +799,23 @@ export function BakeWorkspacePage({
   const shapeDelta = shapeDeltaRatio(highBox, lowBox);
   const hasUv0 = selectedLowInfo?.uvSets.includes('UV0') ?? false;
   const requiresColor = enabledChannels.has('baseColor');
+  const requiresRoughness = enabledChannels.has('roughness');
+  const requiresMetallic = enabledChannels.has('metallic');
   const selectedReady = Boolean(
-    selectedHigh && selectedLow && (!requiresColor || selectedColorName),
+    selectedHigh &&
+    selectedLow &&
+    (!requiresColor || selectedColorName) &&
+    (!requiresRoughness || selectedRoughness) &&
+    (!requiresMetallic || selectedMetallic),
   );
   const allRequiredAssetsReady =
     highObjects.length > 0 &&
     highObjects.every((object) =>
       Boolean(
         lowFiles[object.id] &&
-        (!requiresColor || colorFiles[object.id] || projectColorForObject(object.id)?.imageUrl),
+        (!requiresColor || colorFiles[object.id] || projectColorForObject(object.id)?.imageUrl) &&
+        (!requiresRoughness || roughnessFiles[object.id]) &&
+        (!requiresMetallic || metallicFiles[object.id]),
       ),
     );
   const alignmentReady = Boolean(
@@ -780,7 +842,7 @@ export function BakeWorkspacePage({
       id: string;
       title: string;
       detail: string;
-      action?: 'low' | 'cage' | 'color';
+      action?: 'low' | 'cage' | 'color' | 'roughness' | 'metallic';
     }> = [];
     if (!channelReady) {
       issues.push({
@@ -804,6 +866,22 @@ export function BakeWorkspacePage({
         title: 'Base Color 缺少颜色贴图',
         detail: '选择高模颜色贴图，或取消 Base Color；只烘焙 Normal / AO 不需要颜色贴图。',
         action: 'color',
+      });
+    }
+    if (requiresRoughness && !selectedRoughness) {
+      issues.push({
+        id: 'roughness',
+        title: 'Roughness 缺少源贴图',
+        detail: '请在材质贴图窗口导入高模 Roughness 贴图，或取消粗糙度输出。',
+        action: 'roughness',
+      });
+    }
+    if (requiresMetallic && !selectedMetallic) {
+      issues.push({
+        id: 'metallic',
+        title: 'Metallic 缺少源贴图',
+        detail: '请在材质贴图窗口导入高模 Metallic 贴图，或取消金属度输出。',
+        action: 'metallic',
       });
     }
     if (!hasUv0) {
@@ -872,18 +950,27 @@ export function BakeWorkspacePage({
     hasUv0,
     positionDelta,
     requiresColor,
+    requiresMetallic,
+    requiresRoughness,
     selectedColorName,
+    selectedMetallic,
     selectedLow,
+    selectedRoughness,
     shapeDelta,
     sizeDelta,
   ]);
 
-  function chooseFiles(kind: 'high' | 'low' | 'cage' | 'color', objectId?: string) {
+  function chooseFiles(
+    kind: 'high' | 'low' | 'cage' | 'color' | 'roughness' | 'metallic',
+    objectId?: string,
+  ) {
     fileTargetIdRef.current = objectId ?? selectedHigh?.id;
     if (kind === 'high') highInputRef.current?.click();
     if (kind === 'low') lowInputRef.current?.click();
     if (kind === 'cage') cageInputRef.current?.click();
     if (kind === 'color') colorInputRef.current?.click();
+    if (kind === 'roughness') roughnessInputRef.current?.click();
+    if (kind === 'metallic') metallicInputRef.current?.click();
   }
 
   function handleLowImport(files: File[]) {
@@ -922,6 +1009,50 @@ export function BakeWorkspacePage({
     setOneClickBakeAttempted(false);
     setBakeError(undefined);
     void persistImportedFiles('color', assigned);
+  }
+
+  function handleMaterialChannelImport(kind: 'roughness' | 'metallic', files: File[]) {
+    const imageFiles = files.filter(
+      (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
+    );
+    if (imageFiles.length === 0) {
+      setBakeError('材质贴图仅支持 PNG、JPG、WEBP 或 TGA 图片。');
+      return;
+    }
+    if (!selectedHigh) {
+      setBakeError('请先导入高模，再添加对应的材质贴图。');
+      return;
+    }
+    const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
+    if (kind === 'roughness') {
+      setRoughnessFiles((current) => ({ ...current, ...assigned }));
+    } else {
+      setMetallicFiles((current) => ({ ...current, ...assigned }));
+    }
+    setBakeJob(undefined);
+    setOneClickBakeAttempted(false);
+    setBakeError(undefined);
+    void persistImportedFiles(kind, assigned);
+  }
+
+  function handleMaterialImport(files: File[]) {
+    const imageFiles = files.filter(
+      (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
+    );
+    if (imageFiles.length === 0) {
+      setBakeError('材质贴图仅支持 PNG、JPG、WEBP 或 TGA 图片。');
+      return;
+    }
+    const roughness = imageFiles.filter((file) => /(?:roughness|rough)(?:\W|_|$)/i.test(file.name));
+    const metallic = imageFiles.filter((file) =>
+      /(?:metallic|metalness|metal)(?:\W|_|$)/i.test(file.name),
+    );
+    const classified = new Set([...roughness, ...metallic]);
+    const color = imageFiles.filter((file) => !classified.has(file)).slice(0, 1);
+    if (color.length > 0) handleColorImport(color);
+    if (roughness.length > 0) handleMaterialChannelImport('roughness', roughness);
+    if (metallic.length > 0) handleMaterialChannelImport('metallic', metallic);
+    setMaterialDialogOpen(true);
   }
 
   async function handleHighImport(files: File[]) {
@@ -1051,6 +1182,12 @@ export function BakeWorkspacePage({
   }
 
   function toggleChannel(channel: ChannelId) {
+    if (
+      (channel === 'roughness' && !enabledChannels.has(channel) && !selectedRoughness) ||
+      (channel === 'metallic' && !enabledChannels.has(channel) && !selectedMetallic)
+    ) {
+      setMaterialDialogOpen(true);
+    }
     setEnabledChannels((current) => {
       const next = new Set(current);
       if (next.has(channel)) next.delete(channel);
@@ -1080,6 +1217,16 @@ export function BakeWorkspacePage({
     });
   }
 
+  function createRoughnessFile() {
+    if (!selectedRoughness) throw new Error('Roughness 对烘需要高模粗糙度贴图。');
+    return selectedRoughness;
+  }
+
+  function createMetallicFile() {
+    if (!selectedMetallic) throw new Error('Metallic 对烘需要高模金属度贴图。');
+    return selectedMetallic;
+  }
+
   async function handleCreateBakeJob() {
     if (!project || !selectedHigh || !selectedLow) return;
     setBakeSubmitting(true);
@@ -1087,6 +1234,8 @@ export function BakeWorkspacePage({
     try {
       const high = await createHighFile();
       const color = requiresColor ? await createColorFile() : undefined;
+      const roughness = requiresRoughness ? createRoughnessFile() : undefined;
+      const metallic = requiresMetallic ? createMetallicFile() : undefined;
       const job = await submitNormalBake({
         projectId: project.id,
         objectId: selectedHigh.id,
@@ -1094,11 +1243,13 @@ export function BakeWorkspacePage({
         low: selectedLow,
         cage: undefined,
         color,
+        roughness,
+        metallic,
         settings: {
           resolution: resolution as 1024 | 2048 | 4096 | 8192,
           padding: 16,
           sampling: '2x2',
-          normalOrientation: 'directx',
+          normalOrientation,
           device: 'gpu',
           udim: 1001,
           frontalDistance: 0.1,
@@ -1132,8 +1283,7 @@ export function BakeWorkspacePage({
       return;
     }
     if (activeStage === 'check') return openStage('pbr');
-    if (activeStage === 'pbr') return openStage('publish');
-    onOpenDelivery();
+    onBack();
   }
 
   const primaryLabel: Record<BakeStage, string> = {
@@ -1141,8 +1291,7 @@ export function BakeWorkspacePage({
     alignment: '继续：烘焙设置',
     bake: '创建烘焙任务',
     check: '进入 PBR 处理',
-    pbr: '保存 PBR 版本',
-    publish: '进入交付模块',
+    pbr: '完成并返回首页',
   };
   const primaryActionLabel =
     activeStage === 'alignment' && preflightRan && !preflightPassed
@@ -1156,6 +1305,10 @@ export function BakeWorkspacePage({
             : primaryLabel[activeStage];
   const selectedResultOutput = getBakeOutput(bakeJob, selectedResultChannel);
   const selectedResultUrl = bakeJob ? bakeOutputUrl(bakeJob, selectedResultChannel) : undefined;
+  const selectedResultLabel =
+    selectedResultChannel === 'normal' && bakeJob
+      ? `Normal · ${bakeJob.settings.normalOrientation === 'directx' ? 'DX' : 'OP'}`
+      : channelLabels[selectedResultChannel];
   const selectedResultFilename = `${fileStem(selectedHigh?.name ?? 'bake')}_${channelFileSuffix[selectedResultChannel]}`;
   const availableResultChannels =
     bakeJob?.status === 'succeeded'
@@ -1172,9 +1325,12 @@ export function BakeWorkspacePage({
   const selectedSetProgress = selectedHigh
     ? Number(Boolean(selectedHigh)) +
       Number(Boolean(selectedLow)) +
-      Number(Boolean(requiresColor && selectedColorName))
+      Number(Boolean(requiresColor && selectedColorName)) +
+      Number(Boolean(requiresRoughness && selectedRoughness)) +
+      Number(Boolean(requiresMetallic && selectedMetallic))
     : 0;
-  const selectedSetRequirementCount = requiresColor ? 3 : 2;
+  const selectedSetRequirementCount =
+    2 + Number(requiresColor) + Number(requiresRoughness) + Number(requiresMetallic);
   const selectedObjectIndex = Math.max(
     0,
     highObjects.findIndex((object) => object.id === selectedHigh?.id),
@@ -1186,27 +1342,39 @@ export function BakeWorkspacePage({
     selectObject(highObjects[nextIndex].id);
   }
 
-  const oneClickRequiredAssetCount = requiresColor ? 3 : 2;
+  const oneClickRequiredAssetCount =
+    2 + Number(requiresColor) + Number(requiresRoughness) + Number(requiresMetallic);
   const oneClickAssetCount =
     Number(Boolean(selectedHigh)) +
     Number(Boolean(selectedLow)) +
-    Number(Boolean(requiresColor && selectedColorName));
+    Number(Boolean(requiresColor && selectedColorName)) +
+    Number(Boolean(requiresRoughness && selectedRoughness)) +
+    Number(Boolean(requiresMetallic && selectedMetallic));
   const oneClickAssetsReady = oneClickAssetCount === oneClickRequiredAssetCount;
   const oneClickReady = oneClickAssetsReady && alignmentReady && channelReady;
+  const bakerMissing = bakerStatus?.available === false;
   const bakeBusy = bakeSubmitting || bakeJob?.status === 'queued' || bakeJob?.status === 'running';
-  const oneClickActionLabel = bakeBusy
-    ? `正在烘焙 ${bakeJob?.progress ?? 0}%`
-    : bakeJob?.status === 'succeeded'
-      ? '重新一键烘焙'
-      : oneClickAssetsReady && !alignmentReady
-        ? '高低模未对齐'
-        : oneClickReady
-          ? '开始一键烘焙'
-          : `继续准备 ${oneClickAssetCount}/${oneClickRequiredAssetCount}`;
+  const oneClickActionLabel = bakerStatusChecking
+    ? '正在检测烘焙组件'
+    : bakerMissing
+      ? '需要安装烘焙组件'
+      : bakeBusy
+        ? `正在烘焙 ${bakeJob?.progress ?? 0}%`
+        : bakeJob?.status === 'succeeded'
+          ? '重新一键烘焙'
+          : oneClickAssetsReady && !alignmentReady
+            ? '高低模未对齐'
+            : oneClickReady
+              ? '开始一键烘焙'
+              : `继续准备 ${oneClickAssetCount}/${oneClickRequiredAssetCount}`;
 
   function handleOneClickBake() {
     setOneClickBakeAttempted(true);
     setBakeError(undefined);
+    if (bakerMissing) {
+      setBakeError('请先安装 Adobe Substance 3D Designer，再重新检测烘焙组件。');
+      return;
+    }
     if (!selectedHigh) {
       setBakeError('请先在贴图工作区导入高模。');
       return;
@@ -1216,7 +1384,15 @@ export function BakeWorkspacePage({
       return;
     }
     if (requiresColor && !selectedColorName) {
-      chooseFiles('color');
+      setMaterialDialogOpen(true);
+      return;
+    }
+    if (requiresRoughness && !selectedRoughness) {
+      setMaterialDialogOpen(true);
+      return;
+    }
+    if (requiresMetallic && !selectedMetallic) {
+      setMaterialDialogOpen(true);
       return;
     }
     if (enabledChannels.size === 0) {
@@ -1258,7 +1434,6 @@ export function BakeWorkspacePage({
           activeModule: 'bake',
           onOpenTexture,
           onOpenBake: () => undefined,
-          onOpenDelivery,
         }}
       >
         <input
@@ -1291,13 +1466,101 @@ export function BakeWorkspacePage({
             event.target.value = '';
           }}
         />
+        <input
+          ref={roughnessInputRef}
+          className="hidden"
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp,.tga"
+          onChange={(event) => {
+            handleMaterialChannelImport('roughness', Array.from(event.target.files ?? []));
+            event.target.value = '';
+          }}
+        />
+        <input
+          ref={metallicInputRef}
+          className="hidden"
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp,.tga"
+          onChange={(event) => {
+            handleMaterialChannelImport('metallic', Array.from(event.target.files ?? []));
+            event.target.value = '';
+          }}
+        />
+
+        {materialDialogOpen ? (
+          <div
+            className="fixed inset-0 z-[105] grid place-items-center bg-black/82 p-5 backdrop-blur-md"
+            role="dialog"
+            aria-modal="true"
+            aria-label="材质贴图输入"
+            onClick={() => setMaterialDialogOpen(false)}
+          >
+            <div
+              className="w-full max-w-2xl overflow-hidden rounded-[28px] border border-white/12 bg-[#0d0f1e] shadow-[0_32px_100px_rgba(0,0,0,.62)]"
+              onClick={(event) => event.stopPropagation()}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'copy';
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                handleMaterialImport(Array.from(event.dataTransfer.files));
+              }}
+            >
+              <div className="flex items-start justify-between border-b border-white/[0.08] px-6 py-5">
+                <div>
+                  <p className="text-lg font-semibold text-white">材质贴图</p>
+                  <p className="mt-1 text-xs leading-5 text-white/42">
+                    三张贴图共用高模 UV，通过 Texture Transfer 对烘到低模 UV。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/[0.035] text-white/48 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  aria-label="关闭材质贴图窗口"
+                  onClick={() => setMaterialDialogOpen(false)}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="grid gap-3 p-5 sm:p-6">
+                <MaterialMapSlot
+                  label="Base Color"
+                  description="颜色 / Albedo"
+                  fileName={selectedColorName}
+                  required={requiresColor}
+                  onClick={() => chooseFiles('color')}
+                />
+                <MaterialMapSlot
+                  label="Roughness"
+                  description="黑色光滑，白色粗糙"
+                  fileName={selectedRoughness?.name}
+                  required={requiresRoughness}
+                  onClick={() => chooseFiles('roughness')}
+                />
+                <MaterialMapSlot
+                  label="Metallic"
+                  description="黑色非金属，白色金属"
+                  fileName={selectedMetallic?.name}
+                  required={requiresMetallic}
+                  onClick={() => chooseFiles('metallic')}
+                />
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-center text-[11px] text-white/30">
+                  也可以一次拖入多张贴图；文件名包含 Roughness / Metallic 时会自动归类。
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {resultLightboxOpen && selectedResultUrl ? (
           <div
             className="fixed inset-0 z-[100] grid place-items-center bg-black/88 p-8 backdrop-blur-md"
             role="dialog"
             aria-modal="true"
-            aria-label={`${channelLabels[selectedResultChannel]} 全尺寸预览`}
+            aria-label={`${selectedResultLabel} 全尺寸预览`}
             onClick={() => setResultLightboxOpen(false)}
           >
             <div
@@ -1306,7 +1569,7 @@ export function BakeWorkspacePage({
             >
               <img
                 src={selectedResultUrl}
-                alt={`${channelLabels[selectedResultChannel]} 烘焙贴图`}
+                alt={`${selectedResultLabel} 烘焙贴图`}
                 className="max-h-[86vh] max-w-[86vw] object-contain"
               />
             </div>
@@ -1330,43 +1593,79 @@ export function BakeWorkspacePage({
                   一键模型烘焙
                 </h1>
                 <p className="mt-4 text-[15px] leading-7 text-white/48">
-                  准备高模、带 UV 的低模和颜色贴图，选择输出尺寸，剩下的交给 Li3D。
+                  准备高模、带 UV 的低模和材质贴图，选择输出尺寸，剩下的交给 Li3D。
                 </p>
               </div>
               <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.035] px-4 py-3 backdrop-blur-xl">
                 <span className="relative flex h-2.5 w-2.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-45" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-300" />
+                  {!bakerMissing ? (
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-45" />
+                  ) : null}
+                  <span
+                    className={cn(
+                      'relative inline-flex h-2.5 w-2.5 rounded-full',
+                      bakerStatusChecking
+                        ? 'bg-white/32'
+                        : bakerMissing
+                          ? 'bg-amber-300'
+                          : 'bg-emerald-300',
+                    )}
+                  />
                 </span>
                 <div>
                   <p className="text-xs font-medium text-white/76">Substance 烘焙引擎</p>
-                  <p className="mt-0.5 text-[10px] text-white/32">支持 7 张标准烘焙贴图</p>
+                  <p className="mt-0.5 text-[10px] text-white/32">
+                    {bakerStatusChecking
+                      ? '正在检测本地组件'
+                      : bakerMissing
+                        ? '未检测到烘焙组件'
+                        : '支持 9 张标准烘焙与材质贴图'}
+                  </p>
                 </div>
               </div>
             </header>
 
-            <section className="mt-8 overflow-hidden rounded-[28px] border border-white/[0.09] bg-[#0d0f1e]/82 shadow-[0_30px_100px_rgba(0,0,0,.38)] backdrop-blur-2xl">
-              <div className="flex items-center justify-between border-b border-white/[0.07] px-6 py-4 sm:px-7">
-                <div>
-                  <h2 className="text-sm font-semibold text-white/88">准备烘焙素材</h2>
-                  <p className="mt-1 text-xs text-white/34">
-                    按顺序确认三项输入，已导入内容可随时替换。
-                  </p>
+            {bakerMissing ? (
+              <div
+                className="mt-6 flex flex-col gap-4 rounded-2xl border border-amber-300/18 bg-amber-300/[0.055] px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+                role="alert"
+              >
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-200/78" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-50/88">需要安装烘焙组件</p>
+                    <p className="mt-1 text-xs leading-5 text-amber-100/52">
+                      未检测到 Adobe Substance 3D Designer。安装完成后即可使用一键烘焙，无需打开 Designer。
+                    </p>
+                  </div>
                 </div>
-                <div
-                  className={cn(
-                    'rounded-full border px-3 py-1.5 text-xs font-medium tabular-nums',
-                    oneClickReady
-                      ? 'border-emerald-300/20 bg-emerald-300/[0.08] text-emerald-100/76'
-                      : 'border-white/10 bg-white/[0.035] text-white/46',
-                  )}
+                <button
+                  type="button"
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-xl border border-amber-200/20 bg-amber-100/[0.07] px-4 text-xs font-semibold text-amber-50/72 transition-colors hover:bg-amber-100/[0.12] hover:text-amber-50 disabled:cursor-wait disabled:opacity-50"
+                  disabled={bakerStatusChecking}
+                  onClick={() => void refreshBakerStatus()}
                 >
-                  {oneClickReady
-                    ? '素材已就绪'
-                    : oneClickAssetsReady && alignmentMismatch
-                      ? '高低模不匹配'
-                      : `${oneClickAssetCount} / ${oneClickRequiredAssetCount} 已准备`}
+                  <RotateCcw className={cn('h-3.5 w-3.5', bakerStatusChecking && 'animate-spin')} />
+                  重新检测
+                </button>
+              </div>
+            ) : null}
+
+            <section className="mt-8 overflow-hidden rounded-[28px] border border-white/[0.09] bg-[#0d0f1e]/82 shadow-[0_30px_100px_rgba(0,0,0,.38)] backdrop-blur-2xl">
+              <div className="flex h-11 items-center justify-between border-b border-white/[0.06] px-5 sm:px-6">
+                <div className="flex min-w-0 items-center gap-3">
+                  <h2 className="shrink-0 text-xs font-medium text-white/48">烘焙素材</h2>
+                  <span className="hidden truncate text-[10px] text-white/20 sm:inline">
+                    高模 · 低模 · 材质贴图
+                  </span>
                 </div>
+                <span className="text-[10px] tabular-nums text-white/26">
+                  {oneClickReady
+                    ? '已就绪'
+                    : oneClickAssetsReady && alignmentMismatch
+                      ? '模型待检查'
+                      : `${oneClickAssetCount}/${oneClickRequiredAssetCount}`}
+                </span>
               </div>
 
               <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-3">
@@ -1412,20 +1711,32 @@ export function BakeWorkspacePage({
                 />
                 <OneClickAssetCard
                   step="03"
-                  title="颜色贴图"
-                  english="BASE COLOR"
-                  description={
-                    requiresColor ? '用于把高模颜色传递到低模' : '未选择颜色输出，可选导入'
+                  title="材质贴图"
+                  english="MATERIAL MAPS"
+                  description={'颜色、粗糙度和金属度共用一个入口，分别对烘到低模 UV'}
+                  value={
+                    materialMapCount > 0
+                      ? `${materialMapCount}/3 已导入 · ${[
+                          selectedColorName ? '颜色' : undefined,
+                          selectedRoughness ? '粗糙度' : undefined,
+                          selectedMetallic ? '金属度' : undefined,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}`
+                      : '点击管理材质贴图'
                   }
-                  value={selectedColorName ?? '点击导入颜色贴图'}
-                  ready={Boolean(selectedColorName) || !requiresColor}
+                  ready={
+                    (!requiresColor || Boolean(selectedColorName)) &&
+                    (!requiresRoughness || Boolean(selectedRoughness)) &&
+                    (!requiresMetallic || Boolean(selectedMetallic))
+                  }
                   icon={Sparkles}
                   tone="rose"
                   preview={selectedProjectColor?.imageUrl}
-                  actionLabel={selectedColorName ? '替换贴图' : '选择贴图'}
-                  onClick={() => chooseFiles('color')}
-                  onFilesDropped={handleColorImport}
-                  dropHint="颜色贴图"
+                  actionLabel={materialMapCount > 0 ? '管理贴图' : '导入贴图'}
+                  onClick={() => setMaterialDialogOpen(true)}
+                  onFilesDropped={handleMaterialImport}
+                  dropHint="Base Color / Roughness / Metallic"
                 />
               </div>
 
@@ -1454,6 +1765,36 @@ export function BakeWorkspacePage({
                       </button>
                     );
                   })}
+                  {enabledChannels.has('normal') ? (
+                    <div className="ml-auto flex h-8 items-center rounded-lg border border-white/[0.07] bg-black/20 p-0.5">
+                      <span className="px-2 text-[10px] font-medium text-white/34">法线</span>
+                      {(
+                        [
+                          { value: 'directx', label: 'DX', title: 'DirectX 法线（Y-）' },
+                          { value: 'opengl', label: 'OP', title: 'OpenGL 法线（Y+）' },
+                        ] as const
+                      ).map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          title={option.title}
+                          aria-pressed={normalOrientation === option.value}
+                          className={cn(
+                            'inline-flex h-6 min-w-9 items-center justify-center rounded-md px-2 text-[10px] font-semibold transition-all duration-150 active:scale-95',
+                            normalOrientation === option.value
+                              ? 'bg-white/[0.09] text-white/76'
+                              : 'bg-transparent text-white/28 hover:bg-white/[0.04] hover:text-white/52',
+                          )}
+                          onClick={() => {
+                            setNormalOrientation(option.value);
+                            setBakeError(undefined);
+                          }}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
@@ -1485,7 +1826,7 @@ export function BakeWorkspacePage({
                   <Button
                     variant="primary"
                     className="h-full min-h-[84px] rounded-2xl bg-gradient-to-r from-[#e84fb8] via-[#bc55e5] to-[#765cf6] px-6 text-base font-semibold shadow-[0_18px_44px_rgba(170,70,220,.24)] transition-transform hover:-translate-y-0.5 disabled:translate-y-0"
-                    disabled={bakeBusy}
+                    disabled={bakeBusy || bakerStatusChecking || bakerMissing}
                     onClick={handleOneClickBake}
                     icon={
                       bakeBusy ? (
@@ -1576,6 +1917,10 @@ export function BakeWorkspacePage({
                     .map((channel) => {
                       const output = getBakeOutput(bakeJob, channel);
                       const outputUrl = output ? bakeOutputUrl(bakeJob, channel) : undefined;
+                      const outputLabel =
+                        channel === 'normal'
+                          ? `Normal · ${bakeJob.settings.normalOrientation === 'directx' ? 'DX' : 'OP'}`
+                          : channelLabels[channel];
                       const filename = `${fileStem(selectedHigh?.name ?? 'bake')}_${channelFileSuffix[channel]}`;
                       return (
                         <div
@@ -1594,7 +1939,7 @@ export function BakeWorkspacePage({
                             {outputUrl ? (
                               <img
                                 src={outputUrl}
-                                alt={channelLabels[channel]}
+                                alt={outputLabel}
                                 className="h-full w-full object-cover"
                               />
                             ) : (
@@ -1602,7 +1947,7 @@ export function BakeWorkspacePage({
                             )}
                           </button>
                           <div className="min-w-0 flex-1">
-                            <p className="font-medium text-white/82">{channelLabels[channel]}</p>
+                            <p className="font-medium text-white/82">{outputLabel}</p>
                             <p className="mt-1 truncate text-xs text-white/32">
                               {output ? `${output.width} × ${output.height} · PNG` : '正在准备输出'}
                             </p>
@@ -1610,7 +1955,7 @@ export function BakeWorkspacePage({
                           <button
                             type="button"
                             className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.035] text-white/52 transition-colors hover:border-violet-300/28 hover:bg-violet-300/[0.08] hover:text-white disabled:opacity-30"
-                            aria-label={`下载 ${channelLabels[channel]}`}
+                            aria-label={`下载 ${outputLabel}`}
                             disabled={!output || downloadingResult || downloadingAllResults}
                             onClick={async () => {
                               setDownloadingResult(true);
@@ -1635,9 +1980,12 @@ export function BakeWorkspacePage({
               </section>
             ) : null}
 
-            <p className="mt-5 text-center text-[11px] text-white/24">
-              Li3D 会自动使用 GPU、DirectX 法线与标准投射距离完成烘焙。
-            </p>
+            {enabledChannels.has('normal') ? (
+              <p className="mt-3 text-center text-[9px] text-white/18">
+                法线：{normalOrientation === 'directx' ? 'DX（Y-）' : 'OP（Y+）'}
+              </p>
+            ) : null}
+
           </main>
         </div>
       </WorkflowShell>
@@ -1653,7 +2001,6 @@ export function BakeWorkspacePage({
         activeModule: 'bake',
         onOpenTexture,
         onOpenBake: () => undefined,
-        onOpenDelivery,
       }}
     >
       <input
@@ -1677,7 +2024,7 @@ export function BakeWorkspacePage({
           className="fixed inset-0 z-[100] grid place-items-center bg-black/86 p-8 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
-          aria-label={`${channelLabels[selectedResultChannel]} 全尺寸预览`}
+          aria-label={`${selectedResultLabel} 全尺寸预览`}
           onClick={() => setResultLightboxOpen(false)}
         >
           <div
@@ -1686,7 +2033,7 @@ export function BakeWorkspacePage({
           >
             <img
               src={selectedResultUrl}
-              alt={`${channelLabels[selectedResultChannel]} 全尺寸贴图`}
+              alt={`${selectedResultLabel} 全尺寸贴图`}
               className="max-h-[86vh] max-w-[86vw] object-contain"
             />
           </div>
@@ -2313,22 +2660,6 @@ export function BakeWorkspacePage({
                 </div>
               ) : null}
 
-              {activeStage === 'publish' ? (
-                <div className="space-y-5">
-                  <InspectorSection title="发布内容">
-                    <SummaryLine label="Bake Sets" value={`${highObjects.length} 个`} />
-                    <SummaryLine label="已就绪" value={`${Object.keys(lowFiles).length} 个低模`} />
-                    <SummaryLine
-                      label="Normal"
-                      value={normalOrientation === 'directx' ? 'DirectX' : 'OpenGL'}
-                    />
-                    <SummaryLine label="记录" value="Manifest + Job 日志" />
-                  </InspectorSection>
-                  <p className="text-xs leading-5 text-white/38">
-                    发布后冻结模型、贴图、单位、法线方向与来源 Job ID，再进入模块 3。
-                  </p>
-                </div>
-              ) : null}
             </div>
           </aside>
         </div>
@@ -2392,6 +2723,58 @@ export function BakeWorkspacePage({
         </footer>
       </div>
     </WorkflowShell>
+  );
+}
+
+function MaterialMapSlot({
+  label,
+  description,
+  fileName,
+  required,
+  onClick,
+}: {
+  label: string;
+  description: string;
+  fileName?: string;
+  required: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        'group flex items-center gap-4 rounded-2xl border px-4 py-3.5 text-left transition-all',
+        fileName
+          ? 'border-emerald-300/18 bg-emerald-300/[0.045] hover:border-emerald-300/34'
+          : required
+            ? 'border-fuchsia-300/20 bg-fuchsia-300/[0.045] hover:border-fuchsia-300/38'
+            : 'border-white/[0.08] bg-white/[0.025] hover:border-white/18 hover:bg-white/[0.045]',
+      )}
+      onClick={onClick}
+    >
+      <span
+        className={cn(
+          'grid h-11 w-11 shrink-0 place-items-center rounded-xl border',
+          fileName
+            ? 'border-emerald-200/20 bg-emerald-300/[0.08] text-emerald-100/80'
+            : 'border-white/10 bg-black/20 text-white/34',
+        )}
+      >
+        {fileName ? <Check className="h-5 w-5" /> : <FileUp className="h-5 w-5" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          <strong className="text-sm font-semibold text-white/84">{label}</strong>
+          <span className="rounded-full border border-white/[0.08] px-2 py-0.5 text-[9px] text-white/30">
+            {required ? '当前需要' : '可选'}
+          </span>
+        </span>
+        <span className="mt-1 block truncate text-xs text-white/36">{fileName ?? description}</span>
+      </span>
+      <span className="text-xs font-medium text-white/42 transition-colors group-hover:text-white/72">
+        {fileName ? '替换' : '导入'}
+      </span>
+    </button>
   );
 }
 

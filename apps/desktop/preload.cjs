@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('liclickLauncher', {
   restart: () => ipcRenderer.invoke('launcher:restart'),
   stop: () => ipcRenderer.invoke('launcher:stop'),
   openWorkspace: () => ipcRenderer.invoke('launcher:open-workspace'),
+  getAuthStatus: () => ipcRenderer.invoke('launcher:get-auth-status'),
+  login: () => ipcRenderer.invoke('launcher:login'),
   openWorkspaceDir: () => ipcRenderer.invoke('launcher:open-workspace-dir'),
   openLogs: () => ipcRenderer.invoke('launcher:open-logs'),
   getLocalSettings: () => ipcRenderer.invoke('launcher:get-local-settings'),
@@ -15,6 +17,8 @@ contextBridge.exposeInMainWorld('liclickLauncher', {
   choosePhotoshopExecutable: () => ipcRenderer.invoke('launcher:choose-photoshop-executable'),
   installPhotoshopPlugin: () => ipcRenderer.invoke('launcher:install-photoshop-plugin'),
   openPhotoshopBackups: () => ipcRenderer.invoke('launcher:open-photoshop-backups'),
+  openSubstanceInstall: () => ipcRenderer.invoke('launcher:open-substance-install'),
+  checkForUpdates: () => ipcRenderer.invoke('launcher:check-for-updates'),
   quit: () => ipcRenderer.invoke('launcher:quit'),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);

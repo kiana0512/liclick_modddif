@@ -1,4 +1,4 @@
-import { Box, Flame, Send } from 'lucide-react';
+import { Box, Flame } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import type { WorkflowModule, WorkflowNavigation } from './workflowTypes';
 
@@ -10,20 +10,17 @@ const modules: Array<{
 }> = [
   { id: 'texture', label: 'AI 高模贴图', shortLabel: '贴图', icon: Box },
   { id: 'bake', label: 'PBR 烘焙', shortLabel: '烘焙', icon: Flame },
-  { id: 'delivery', label: 'DCC 交付', shortLabel: '交付', icon: Send },
 ];
 
 export function WorkflowModuleSwitcher({
   activeModule,
   onOpenTexture,
   onOpenBake,
-  onOpenDelivery,
   compact = false,
 }: WorkflowNavigation & { compact?: boolean }) {
   const handlers: Record<WorkflowModule, () => void> = {
     texture: onOpenTexture,
     bake: onOpenBake,
-    delivery: onOpenDelivery,
   };
 
   return (

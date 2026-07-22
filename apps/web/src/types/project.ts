@@ -75,6 +75,8 @@ export type BakeDraftSettings = {
     | 'worldNormal'
     | 'thickness'
     | 'position'
+    | 'roughness'
+    | 'metallic'
   >;
 };
 
@@ -83,6 +85,8 @@ export type ProjectBakeSetState = {
   low?: BakeAssetReference;
   cage?: BakeAssetReference;
   color?: BakeAssetReference;
+  roughness?: BakeAssetReference;
+  metallic?: BakeAssetReference;
   settings?: BakeDraftSettings;
   lastJobId?: string;
 };
