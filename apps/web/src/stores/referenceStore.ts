@@ -18,7 +18,10 @@ type ReferenceStore = {
   references: ReferenceImage[];
   selectedReferenceIds: string[];
   setReferences: (references: ReferenceImage[]) => void;
-  addReferences: (references: ReferenceImage[]) => void;
+  addReferences: (
+    references: ReferenceImage[],
+    selectionBehavior?: 'select-new' | 'clear-all',
+  ) => void;
   setSelectedReferences: (referenceIds: string[]) => void;
   toggleReference: (referenceId: string, selectionMode?: 'multiple' | 'single') => void;
   renameReference: (referenceId: string, name: string) => void;
@@ -37,15 +40,21 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
         selectedReferenceIds: nextReferences.filter((reference) => reference.isPrimary).map((reference) => reference.id),
       };
     }),
-  addReferences: (references) =>
+  addReferences: (references, selectionBehavior = 'select-new') =>
     set((state) => {
       const projectReferences = references.map(asProjectReference);
-      const selectedReferenceIds = [
-        ...projectReferences.map((reference) => reference.id),
-        ...state.selectedReferenceIds,
-      ];
+      const selectedReferenceIds =
+        selectionBehavior === 'clear-all'
+          ? []
+          : [
+              ...projectReferences.map((reference) => reference.id),
+              ...state.selectedReferenceIds,
+            ];
       return {
-        references: [...projectReferences.map((reference) => ({ ...reference, isPrimary: true })), ...state.references],
+        references: [...projectReferences, ...state.references].map((reference) => ({
+          ...reference,
+          isPrimary: selectedReferenceIds.includes(reference.id),
+        })),
         selectedReferenceIds,
       };
     }),

@@ -2267,15 +2267,11 @@ export function EditorPage({
           isPrimary: true,
         });
       }
-      addReferences(importedReferences);
-      const nextReferences = [
-        ...importedReferences,
-        ...useReferenceStore
-          .getState()
-          .references.filter(
-            (reference) => !importedReferences.some((item) => item.id === reference.id),
-          ),
-      ];
+      addReferences(
+        importedReferences,
+        importedReferences.length > 1 ? 'clear-all' : 'select-new',
+      );
+      const nextReferences = useReferenceStore.getState().references;
       setProjectReferences(nextReferences);
       pushToast({
         tone: 'success',
@@ -3186,14 +3182,26 @@ export function EditorPage({
         transientLayers: layersToBake,
         resolution: resolutionToSize[resolution],
         enableBackfaceCulling: true,
-        // Keep the merge identical to the projected preview: uncovered source
-        // pixels stay transparent instead of borrowing color from a neighbouring
-        // UV texel and stretching it across a roof/edge.
+        // Do not use unconstrained atlas-wide dilation. The topology and
+        // geometry-aware passes below repair only model UV texels and seams.
         enableDilation: false,
         dilationPixels: 0,
         // Add a tiny atlas-only gutter to stop linear filtering from sampling
         // transparent texels at UV seams. This never fills a model-surface texel.
         uvIslandGutterPixels: 2,
+        // Dense/high-poly meshes can contain small triangles that are visible
+        // in the capture but miss every depth-buffer sample during UV baking.
+        // Propagate nearby valid projection inside the same UV topology. The
+        // radius scales with output resolution and cannot cross empty atlas space.
+        uvCoverageGapPixels: Math.min(
+          256,
+          Math.max(64, Math.ceil(resolutionToSize[resolution] / 16)),
+        ),
+        repairMissingUvSeams: true,
+        uvSeamRepairPixels: Math.min(
+          16,
+          Math.max(4, Math.ceil(resolutionToSize[resolution] / 256)),
+        ),
         outputAlpha: 'transparent',
         commitToProject: false,
         markSourceLayersBaked: false,

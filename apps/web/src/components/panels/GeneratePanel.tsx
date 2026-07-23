@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  Banana,
+  Bot,
   Download,
   Image,
   ImagePlus,
@@ -68,6 +70,7 @@ import {
 type GenerateTab = 'single' | 'multiview' | 'repaint';
 type GenerateMode = 'visible' | 'upscale';
 type TextureMapViewMode = 'single-view' | 'multi-view';
+type CameraViewPresetId = 'preset-1' | 'preset-2';
 type CameraViewOption = {
   value: ObjectViewPreset;
   labelKey:
@@ -90,6 +93,12 @@ type CameraViewItem = {
   viewUp?: [number, number, number];
 };
 type CameraViewPreviewMap = Partial<Record<string, CaptureNormalPreview>>;
+type CameraViewPresetDefinition = {
+  id: CameraViewPresetId;
+  label: string;
+  description: string;
+  views: ObjectViewPreset[];
+};
 type GenerateNotice = {
   tone: 'info' | 'warning' | 'error';
   message: string;
@@ -110,25 +119,59 @@ const imageModels: { value: LiclickImageModel; label: string }[] = [
   { value: 'midjourney-7', label: 'Midjourney V7' },
 ];
 
-const cameraViewOptions: CameraViewOption[] = [
-  { value: 'front-left', labelKey: 'frontLeftView' },
-  { value: 'front', labelKey: 'frontView' },
-  { value: 'front-right', labelKey: 'frontRightView' },
-  { value: 'left', labelKey: 'leftView' },
-  { value: 'right', labelKey: 'rightView' },
-  { value: 'back-left', labelKey: 'backLeftView' },
-  { value: 'back', labelKey: 'backView' },
-  { value: 'back-right', labelKey: 'backRightView' },
+const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
+  front: { value: 'front', labelKey: 'frontView' },
+  back: { value: 'back', labelKey: 'backView' },
+  left: { value: 'left', labelKey: 'leftView' },
+  right: { value: 'right', labelKey: 'rightView' },
+  top: { value: 'top', labelKey: 'topView' },
+  bottom: { value: 'bottom', labelKey: 'bottomView' },
+  'front-left': { value: 'front-left', labelKey: 'frontLeftView' },
+  'front-right': { value: 'front-right', labelKey: 'frontRightView' },
+  'back-left': { value: 'back-left', labelKey: 'backLeftView' },
+  'back-right': { value: 'back-right', labelKey: 'backRightView' },
+};
+
+const cameraViewPresets: CameraViewPresetDefinition[] = [
+  {
+    id: 'preset-1',
+    label: '预设 1',
+    description: '6 个正交视角：前、后、左、右、上、下',
+    views: ['front', 'back', 'left', 'right', 'top', 'bottom'],
+  },
+  {
+    id: 'preset-2',
+    label: '预设 2',
+    description: '6 个正交视角，加左前、右前、左后、右后',
+    views: [
+      'front',
+      'back',
+      'left',
+      'right',
+      'top',
+      'bottom',
+      'front-left',
+      'front-right',
+      'back-left',
+      'back-right',
+    ],
+  },
 ];
 
-const cubeCameraViewOptions: CameraViewOption[] = [
-  { value: 'front', labelKey: 'frontView' },
-  { value: 'back', labelKey: 'backView' },
-  { value: 'left', labelKey: 'leftView' },
-  { value: 'right', labelKey: 'rightView' },
-  { value: 'top', labelKey: 'topView' },
-  { value: 'bottom', labelKey: 'bottomView' },
-];
+function getCameraViewPresetDefinition(presetId: CameraViewPresetId) {
+  return cameraViewPresets.find((preset) => preset.id === presetId) ?? cameraViewPresets[0];
+}
+
+function createCameraViewsForPreset(
+  presetId: CameraViewPresetId,
+  translate: (key: CameraViewOption['labelKey']) => string,
+) {
+  const preset = getCameraViewPresetDefinition(presetId);
+  return preset.views.map((value) => {
+    const option = cameraViewOptions[value];
+    return createPresetCameraViewItem(option, translate(option.labelKey));
+  });
+}
 
 function createPresetCameraViewItem(option: CameraViewOption, label: string): CameraViewItem {
   const viewDirection = getObjectViewPresetDirection(option.value).toArray() as [
@@ -141,7 +184,12 @@ function createPresetCameraViewItem(option: CameraViewOption, label: string): Ca
     value: option.value,
     label,
     viewDirection,
-    viewUp: option.value === 'top' ? [0, 0, -1] : option.value === 'bottom' ? [0, 0, 1] : undefined,
+    viewUp:
+      option.value === 'top'
+        ? [0, 0, -1]
+        : option.value === 'bottom'
+          ? [0, 0, 1]
+          : [0, 1, 0],
   };
 }
 
@@ -422,8 +470,10 @@ export function GeneratePanel() {
     sourceUrl: string;
     previewUrl: string;
   }>();
+  const [selectedCameraViewPreset, setSelectedCameraViewPreset] =
+    useState<CameraViewPresetId | null>('preset-1');
   const [cameraViews, setCameraViews] = useState<CameraViewItem[]>(() =>
-    cameraViewOptions.map((option) => createPresetCameraViewItem(option, t(option.labelKey))),
+    createCameraViewsForPreset('preset-1', t),
   );
   const [activeCameraViewId, setActiveCameraViewId] = useState('front');
   const [aiOneClickConfirmOpen, setAiOneClickConfirmOpen] = useState(false);
@@ -744,6 +794,12 @@ export function GeneratePanel() {
     void captureMissingViews();
     return () => {
       cancelled = true;
+      missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view.id));
+      setCapturingCameraViews((current) => {
+        const next = new Set(current);
+        missingViews.forEach((view) => next.delete(view.id));
+        return next;
+      });
     };
   }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, textureMapViewMode]);
 
@@ -926,7 +982,19 @@ export function GeneratePanel() {
     setActiveCameraViewId(view.id);
   }
 
+  function handleCameraViewPresetSelect(presetId: CameraViewPresetId) {
+    const nextViews = createCameraViewsForPreset(presetId, t);
+    cameraViewPreviewsRef.current = {};
+    capturingCameraViewsRef.current = new Set();
+    setCameraViewPreviews({});
+    setCapturingCameraViews(new Set());
+    setSelectedCameraViewPreset(presetId);
+    setCameraViews(nextViews);
+    setActiveCameraViewId(nextViews[0]?.id ?? '');
+  }
+
   function handleDeleteCameraView(viewId: string) {
+    setSelectedCameraViewPreset(null);
     setCameraViews((current) => current.filter((view) => view.id !== viewId));
     setCameraViewPreviews((current) => {
       const next = { ...current };
@@ -961,6 +1029,7 @@ export function GeneratePanel() {
       viewDirection: [x / length, y / length, z / length],
       viewUp: [viewport.camera.up.x, viewport.camera.up.y, viewport.camera.up.z],
     };
+    setSelectedCameraViewPreset(null);
     setCameraViews((current) => [...current, nextView]);
     setActiveCameraViewId(id);
     pushToast({ tone: 'success', title: '已添加当前 MVP 视角' });
@@ -1384,9 +1453,8 @@ export function GeneratePanel() {
       (reference) => reference.id === activeSelectedReferenceIds[0],
     );
     if (!materialReference || submitLockRef.current) return;
-    const cubeViews = cubeCameraViewOptions.map((option) =>
-      createPresetCameraViewItem(option, t(option.labelKey)),
-    );
+    const cubeViews = createCameraViewsForPreset('preset-1', t);
+    setSelectedCameraViewPreset('preset-1');
     setCameraViews(cubeViews);
     setActiveCameraViewId(cubeViews[0]?.id ?? '');
     submitLockRef.current = true;
@@ -2083,6 +2151,44 @@ export function GeneratePanel() {
           onChange={setTab}
           className="mb-2"
         />
+        {!isLocalRepaintTab && (
+          <div
+            className="mb-2 grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
+            role="radiogroup"
+            aria-label="生成模型"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={imageModel === 'gpt-image-2'}
+              title="使用 GPT-Image 2"
+              className={`flex h-9 items-center justify-center gap-2 rounded-md border text-xs font-semibold transition ${
+                imageModel === 'gpt-image-2'
+                  ? 'border-sky-300/48 bg-sky-400/18 text-sky-50 shadow-[0_0_18px_rgba(56,189,248,0.18)]'
+                  : 'border-transparent text-white/58 hover:bg-white/8 hover:text-white/88'
+              }`}
+              onClick={() => updateGenerationSettings({ model: 'gpt-image-2' })}
+            >
+              <Bot className="h-4 w-4" />
+              <span>GPT 2</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={imageModel === 'nano_banana_2'}
+              title="使用 Nano Banana 2"
+              className={`flex h-9 items-center justify-center gap-2 rounded-md border text-xs font-semibold transition ${
+                imageModel === 'nano_banana_2'
+                  ? 'border-amber-300/48 bg-amber-300/18 text-amber-50 shadow-[0_0_18px_rgba(251,191,36,0.18)]'
+                  : 'border-transparent text-white/58 hover:bg-white/8 hover:text-white/88'
+              }`}
+              onClick={() => updateGenerationSettings({ model: 'nano_banana_2' })}
+            >
+              <Banana className="h-4 w-4" />
+              <span>Nano 2</span>
+            </button>
+          </div>
+        )}
         <div className="overflow-hidden rounded-md border border-white/10 bg-black/24">
           <div className="relative h-[240px] overflow-hidden bg-[#1b1b1b]">
             {previewGeneration?.resultUrl ? (
@@ -2279,6 +2385,40 @@ export function GeneratePanel() {
                     </button>
                   </div>
                 </div>
+                <div
+                  className="grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
+                  role="radiogroup"
+                  aria-label="模型方向预设"
+                >
+                  {cameraViewPresets.map((preset) => {
+                    const selected = selectedCameraViewPreset === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        title={preset.description}
+                        className={`grid min-h-10 place-items-center rounded px-1 py-1 text-[11px] font-semibold leading-4 transition ${
+                          selected
+                            ? 'bg-white text-black shadow-sm'
+                            : 'text-white/62 hover:bg-white/10 hover:text-white'
+                        }`}
+                        onClick={() => handleCameraViewPresetSelect(preset.id)}
+                      >
+                        <span>{preset.label}</span>
+                        <span className={selected ? 'text-black/56' : 'text-white/38'}>
+                          {preset.views.length} 视角
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="px-0.5 text-[11px] leading-4 text-white/45">
+                  {selectedCameraViewPreset
+                    ? getCameraViewPresetDefinition(selectedCameraViewPreset).description
+                    : `自定义组合：${cameraViews.length} 个视角`}
+                </p>
                 <div className="grid grid-cols-3 gap-2">
                   {cameraViews.map((view) => (
                     <div key={view.id} className="group relative h-[76px]">
@@ -2297,6 +2437,9 @@ export function GeneratePanel() {
                           preview={cameraViewPreviews[view.id]}
                           loading={capturingCameraViews.has(view.id)}
                         />
+                        <span className="pointer-events-none absolute bottom-1 left-1 z-10 rounded bg-black/68 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-white/88 shadow">
+                          {view.label}
+                        </span>
                       </button>
                       <button
                         type="button"

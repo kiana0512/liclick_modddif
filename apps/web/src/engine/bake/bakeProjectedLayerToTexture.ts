@@ -1,6 +1,11 @@
 import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
-import { dilateImageData, getUvDilationPixels, padUvIslandGutters } from './dilation';
+import {
+  dilateImageData,
+  dilateUvCoverageWithinTopology,
+  getUvDilationPixels,
+  padUvIslandGutters,
+} from './dilation';
 import {
   bakeProjectedLayerRastersWithGpu,
   bakeProjectedLayerStackWithGpu,
@@ -949,16 +954,31 @@ export async function bakeVisibleProjectedLayersToTexture(
         if (input.outputAlpha !== 'transparent') {
           sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
         }
-        if (input.outputAlpha !== 'transparent') {
+        if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
           const seamResult = reconcileUvSeams(
             composite,
             importedModel.group,
             qualityBlendComposite.coverage,
+            {
+              repairMissingCoverage: input.repairMissingUvSeams,
+              bandPixels: input.uvSeamRepairPixels,
+            },
           );
           if (seamResult.adjustedPixels > 0) {
             warnings.push(
               `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
             );
+          }
+        }
+        if ((input.uvCoverageGapPixels ?? 0) > 0) {
+          const filledPixels = dilateUvCoverageWithinTopology(
+            composite,
+            qualityBlendComposite.coverage,
+            importedModel.group,
+            Math.ceil((input.uvCoverageGapPixels ?? 0) / 2),
+          );
+          if (filledPixels > 0) {
+            warnings.push(`UV-topology coverage repair filled ${filledPixels} texels.`);
           }
         }
         if (input.enableDilation) {
@@ -1087,6 +1107,7 @@ export async function bakeVisibleProjectedLayersToTexture(
       const canSkipCpuPostprocess =
         input.skipCpuPostprocess &&
         wantsTransparentOutput &&
+        (input.uvCoverageGapPixels ?? 0) <= 0 &&
         !needsCpuSharpen &&
         !needsCpuViewportFill &&
         (!input.enableDilation || useGpuDilation);
@@ -1095,11 +1116,32 @@ export async function bakeVisibleProjectedLayersToTexture(
         if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
         const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
         if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
-        if (!wantsTransparentOutput) {
-          const seamResult = reconcileUvSeams(gpuImage, importedModel.group, gpuBake.coverage);
+        if (!wantsTransparentOutput || input.repairMissingUvSeams) {
+          const seamResult = reconcileUvSeams(
+            gpuImage,
+            importedModel.group,
+            gpuBake.coverage,
+            {
+              repairMissingCoverage: input.repairMissingUvSeams,
+              bandPixels: input.uvSeamRepairPixels,
+            },
+          );
           if (seamResult.adjustedPixels > 0) {
             gpuBake.warnings.push(
               `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
+            );
+          }
+        }
+        if ((input.uvCoverageGapPixels ?? 0) > 0) {
+          const filledPixels = dilateUvCoverageWithinTopology(
+            gpuImage,
+            gpuBake.coverage,
+            importedModel.group,
+            Math.ceil((input.uvCoverageGapPixels ?? 0) / 2),
+          );
+          if (filledPixels > 0) {
+            gpuBake.warnings.push(
+              `UV-topology coverage repair filled ${filledPixels} texels.`,
             );
           }
         }
@@ -1338,16 +1380,31 @@ export async function bakeVisibleProjectedLayersToTexture(
   if (input.outputAlpha !== 'transparent') {
     sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
   }
-  if (input.outputAlpha !== 'transparent') {
+  if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
     const seamResult = reconcileUvSeams(
       composite,
       importedModel.group,
       qualityBlendComposite.coverage,
+      {
+        repairMissingCoverage: input.repairMissingUvSeams,
+        bandPixels: input.uvSeamRepairPixels,
+      },
     );
     if (seamResult.adjustedPixels > 0) {
       warnings.push(
         `Geometry-aware UV seam reconciliation adjusted ${seamResult.adjustedPixels} edge texels across ${seamResult.seamPairs} seam pairs.`,
       );
+    }
+  }
+  if ((input.uvCoverageGapPixels ?? 0) > 0) {
+    const filledPixels = dilateUvCoverageWithinTopology(
+      composite,
+      qualityBlendComposite.coverage,
+      importedModel.group,
+      Math.ceil((input.uvCoverageGapPixels ?? 0) / 2),
+    );
+    if (filledPixels > 0) {
+      warnings.push(`UV-topology coverage repair filled ${filledPixels} texels.`);
     }
   }
   if (input.enableDilation) {

@@ -125,7 +125,11 @@ export function ReferenceImagePicker({
 
   function confirmPendingImport() {
     if (!pendingImport) return;
-    addReferences(pendingImport);
+    const isBatchImport = selectionMode === 'multiple' && pendingImport.length > 1;
+    // Batch imports should populate the reference library without making an
+    // implicit generation choice. The user explicitly selects the references
+    // that should constrain the next generation.
+    addReferences(pendingImport, isBatchImport ? 'clear-all' : 'select-new');
     if (selectionMode === 'single' && pendingImport[0]) {
       setSelectedReferences([pendingImport[0].id]);
     }

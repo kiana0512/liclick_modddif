@@ -98,6 +98,12 @@ export interface BakeVisibleProjectedLayersInput {
   constrainDilationToInteriorHoles?: boolean;
   /** Add color padding only outside UV islands to prevent bilinear-filter seams. */
   uvIslandGutterPixels?: number;
+  /** Propagate nearby projected color only across texels occupied by model UV topology. */
+  uvCoverageGapPixels?: number;
+  /** Copy valid color across geometrically paired UV seams when one side missed projection. */
+  repairMissingUvSeams?: boolean;
+  /** Width of the geometry-aware UV seam repair band. */
+  uvSeamRepairPixels?: number;
   debugIgnoreMask?: boolean;
   debugIgnoreDepth?: boolean;
   commitToProject?: boolean;

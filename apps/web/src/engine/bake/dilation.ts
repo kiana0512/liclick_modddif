@@ -44,9 +44,12 @@ function rasterizeUvTopology(
   const alpha = context.getImageData(0, 0, width, height).data;
   const topology = new Uint8Array(width * height);
   for (let index = 0; index < topology.length; index += 1) {
-    // Include anti-aliased triangle boundary pixels in the island itself. The
-    // gutter must begin outside the actual UV footprint, never inside it.
-    topology[index] = alpha[index * 4 + 3] > 8 ? 1 : 0;
+    // Match the pixel-centre coverage used by WebGL rasterization. Treating
+    // every faint canvas anti-aliasing sample as model topology creates a
+    // one-pixel no-man's-land: the bake does not cover it, while gutter padding
+    // refuses to write it. Linear texture filtering then exposes that transparent
+    // ring as a bright crack along every UV island.
+    topology[index] = alpha[index * 4 + 3] >= 128 ? 1 : 0;
   }
   return topology;
 }
@@ -158,12 +161,18 @@ export function padUvIslandGutters(
   return paddedPixels;
 }
 
-export function dilateImageData(imageData: ImageData, coverage: Uint8Array, iterations: number) {
+export function dilateImageData(
+  imageData: ImageData,
+  coverage: Uint8Array,
+  iterations: number,
+  targetMask?: Uint8Array,
+  preserveSourceAlpha = false,
+) {
   const { width, height, data } = imageData;
   const currentCoverage = coverage;
   const currentData = data;
 
-  if (iterations <= 0) return;
+  if (iterations <= 0) return 0;
 
   const pixelCount = width * height;
   const sourceSeeds = new Int32Array(pixelCount);
@@ -192,6 +201,7 @@ export function dilateImageData(imageData: ImageData, coverage: Uint8Array, iter
   }
 
   let currentFrontier = frontier;
+  let filledPixels = 0;
   for (let iteration = 0; iteration < iterations && currentFrontier.length > 0; iteration += 1) {
     const touched: number[] = [];
 
@@ -209,7 +219,7 @@ export function dilateImageData(imageData: ImageData, coverage: Uint8Array, iter
         const nextY = y + offsetY;
         if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
         const nextIndex = nextY * width + nextX;
-        if (currentCoverage[nextIndex]) continue;
+        if (currentCoverage[nextIndex] || (targetMask && !targetMask[nextIndex])) continue;
 
         const candidateDistance =
           (nextX - seedX) * (nextX - seedX) + (nextY - seedY) * (nextY - seedY);
@@ -240,11 +250,31 @@ export function dilateImageData(imageData: ImageData, coverage: Uint8Array, iter
       currentData[targetOffset] = currentData[sourceOffset];
       currentData[targetOffset + 1] = currentData[sourceOffset + 1];
       currentData[targetOffset + 2] = currentData[sourceOffset + 2];
-      currentData[targetOffset + 3] = 255;
+      // Topology repair for transparent overlays must extend the source
+      // coverage continuously. Forcing a soft boundary seed to opaque creates
+      // a full-strength ring outside a partial-alpha texel, which appears as a
+      // dark seam after the mask is composited.
+      currentData[targetOffset + 3] = preserveSourceAlpha
+        ? currentData[sourceOffset + 3]
+        : 255;
       currentCoverage[index] = 1;
       sourceSeeds[index] = seedValue;
       nextFrontier.push(index);
+      filledPixels += 1;
     }
     currentFrontier = nextFrontier;
   }
+  return filledPixels;
+}
+
+/** Expands projected color only across texels occupied by model UV triangles. */
+export function dilateUvCoverageWithinTopology(
+  imageData: ImageData,
+  coverage: Uint8Array,
+  root: THREE.Object3D,
+  iterations: number,
+) {
+  if (iterations <= 0) return 0;
+  const topology = rasterizeUvTopology(root, imageData.width, imageData.height);
+  return dilateImageData(imageData, coverage, iterations, topology, true);
 }

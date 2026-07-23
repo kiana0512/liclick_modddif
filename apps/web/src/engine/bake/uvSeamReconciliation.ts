@@ -65,7 +65,7 @@ function normalsAreContinuous(a: EdgeRecord, b: EdgeRecord) {
   return a.a.normal.dot(b.a.normal) > 0.55 && a.b.normal.dot(b.b.normal) > 0.55;
 }
 
-function collectUvSeamPairs(root: THREE.Object3D) {
+function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) {
   const groupedEdges = new Map<string, EdgeRecord[]>();
   root.updateMatrixWorld(true);
 
@@ -125,7 +125,9 @@ function collectUvSeamPairs(root: THREE.Object3D) {
     const reference = unique[0];
     for (let index = 1; index < unique.length; index += 1) {
       const candidate = orientedLike(reference, unique[index]);
-      if (normalsAreContinuous(reference, candidate)) pairs.push([reference, candidate]);
+      if (includeDiscontinuous || normalsAreContinuous(reference, candidate)) {
+        pairs.push([reference, candidate]);
+      }
     }
   });
   return pairs;
@@ -141,11 +143,15 @@ export function reconcileUvSeams(
   imageData: ImageData,
   root: THREE.Object3D,
   coverage: Uint8Array,
+  options: { repairMissingCoverage?: boolean; bandPixels?: number } = {},
 ) {
   const { width, height, data } = imageData;
   const source = new Uint8ClampedArray(data);
-  const seamPairs = collectUvSeamPairs(root);
-  const bandPixels = Math.max(2, Math.min(6, Math.round(Math.max(width, height) / 1024)));
+  const seamPairs = collectUvSeamPairs(root, Boolean(options.repairMissingCoverage));
+  const bandPixels = Math.max(
+    2,
+    Math.min(32, options.bandPixels ?? Math.round(Math.max(width, height) / 1024)),
+  );
   let adjustedPixels = 0;
 
   for (const [first, second] of seamPairs) {
@@ -188,10 +194,32 @@ export function reconcileUvSeams(
         };
         const firstIndex = pixelIndex(firstPoint, width, height);
         const secondIndex = pixelIndex(secondPoint, width, height);
-        if (!coverage[firstIndex] || !coverage[secondIndex]) continue;
         const firstOffset = firstIndex * 4;
         const secondOffset = secondIndex * 4;
-        if (source[firstOffset + 3] === 0 || source[secondOffset + 3] === 0) continue;
+        const firstCovered = Boolean(coverage[firstIndex] && source[firstOffset + 3]);
+        const secondCovered = Boolean(coverage[secondIndex] && source[secondOffset + 3]);
+
+        if (options.repairMissingCoverage && firstCovered !== secondCovered) {
+          const sourceOffset = firstCovered ? firstOffset : secondOffset;
+          const targetOffset = firstCovered ? secondOffset : firstOffset;
+          const targetIndex = firstCovered ? secondIndex : firstIndex;
+          for (let channel = 0; channel < 4; channel += 1) {
+            data[targetOffset + channel] = source[sourceOffset + channel];
+            // Let a repaired seam become a source for another geometrically
+            // connected UV edge later in this pass. This closes fragmented
+            // high-poly islands without leaking across unrelated atlas space.
+            source[targetOffset + channel] = source[sourceOffset + channel];
+          }
+          coverage[targetIndex] = 1;
+          adjustedPixels += 1;
+          continue;
+        }
+
+        // Transparent merged projections only need missing-coverage transfer.
+        // Do not average two already valid texels across a hard/noisy high-poly
+        // edge, because that would blur legitimate material boundaries.
+        if (options.repairMissingCoverage) continue;
+        if (!firstCovered || !secondCovered) continue;
         const strength = 0.9 * (1 - depth / bandPixels);
 
         for (let channel = 0; channel < 3; channel += 1) {
