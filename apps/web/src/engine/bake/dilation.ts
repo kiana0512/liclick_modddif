@@ -4,7 +4,7 @@ export function getUvDilationPixels(resolution: number, requestedPixels: number)
   return Math.min(32, Math.max(requestedPixels, Math.ceil(resolution / 256)));
 }
 
-function rasterizeUvTopology(
+export function rasterizeUvTopologyMask(
   root: THREE.Object3D,
   width: number,
   height: number,
@@ -95,7 +95,7 @@ export function padUvIslandGutters(
 ) {
   const { width, height, data } = imageData;
   if (iterations <= 0) return 0;
-  const topology = rasterizeUvTopology(root, width, height);
+  const topology = rasterizeUvTopologyMask(root, width, height);
   const paddedTopology = expandBinaryMask(topology, width, height, iterations);
   const neighborOffsets = [
     [-1, -1], [0, -1], [1, -1],
@@ -275,6 +275,6 @@ export function dilateUvCoverageWithinTopology(
   iterations: number,
 ) {
   if (iterations <= 0) return 0;
-  const topology = rasterizeUvTopology(root, imageData.width, imageData.height);
+  const topology = rasterizeUvTopologyMask(root, imageData.width, imageData.height);
   return dilateImageData(imageData, coverage, iterations, topology, true);
 }

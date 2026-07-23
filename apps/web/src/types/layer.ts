@@ -1,7 +1,11 @@
 import type { SerializedCamera } from './capture';
 
 export type LayerType = 'uv' | 'projected' | 'patch' | 'normal';
-export type LayerRole = 'base-color' | 'merged-uv' | 'local-repaint-overlay';
+export type LayerRole =
+  | 'base-color'
+  | 'merged-uv'
+  | 'local-repaint-overlay'
+  | 'content-aware-underlay';
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';
 export type LayerMaskSpace = 'projection' | 'uv';
 

@@ -140,7 +140,8 @@ function isRenderedColorUvLayer(layer: ReturnType<typeof findVisibleUvLayers>[nu
     layer.renderedColor ||
     layer.id.startsWith('local-repaint-') ||
     layer.id.startsWith('content-aware-projected-repair') ||
-    layer.generationId === 'texture-map-content-aware-repair' ||
+    (layer.generationId === 'texture-map-content-aware-repair' &&
+      layer.role !== 'content-aware-underlay') ||
     layer.imageUrl.includes('surface-edit:local-repaint'),
   );
 }
@@ -336,13 +337,24 @@ async function flattenVisibleLayersToBaseColor(
   // projected/UV base, then source-over every local-repaint UV patch in authored
   // order. This prevents a repaint from being flattened into the base and then
   // applied a second time.
-  const baseUvLayers = uvLayers.filter((layer) => !isLocalRepaintUvOverlayLayer(layer));
-  const localRepaintUvLayers = uvLayers.filter((layer) => isLocalRepaintUvOverlayLayer(layer));
-  const orderedUvLayers = [...baseUvLayers, ...localRepaintUvLayers];
-  const layerBlobs = await Promise.all(
-    orderedUvLayers.map((layer) => blobFromUrl(layer.imageUrl)),
+  const contentAwareUnderlayLayers = uvLayers.filter(
+    (layer) => layer.role === 'content-aware-underlay',
   );
-  const probeBlob = baseBlob ?? layerBlobs[0];
+  const baseUvLayers = uvLayers.filter(
+    (layer) =>
+      layer.role !== 'content-aware-underlay' &&
+      !isLocalRepaintUvOverlayLayer(layer),
+  );
+  const localRepaintUvLayers = uvLayers.filter((layer) => isLocalRepaintUvOverlayLayer(layer));
+  const layerRecords = await Promise.all(
+    [...contentAwareUnderlayLayers, ...baseUvLayers, ...localRepaintUvLayers].map(
+      async (layer) => ({
+        layer,
+        blob: await blobFromUrl(layer.imageUrl),
+      }),
+    ),
+  );
+  const probeBlob = baseBlob ?? layerRecords[0]?.blob;
   if (!probeBlob) return undefined;
   const probeBitmap = await createImageBitmap(probeBlob);
   const width = Math.max(1, probeBitmap.width);
@@ -360,14 +372,25 @@ async function flattenVisibleLayersToBaseColor(
   // transparent holes for Blender to reinterpret.
   context.fillStyle = `rgb(${fallbackColor[0]}, ${fallbackColor[1]}, ${fallbackColor[2]})`;
   context.fillRect(0, 0, width, height);
+
+  // Content-aware repair is a model-wide fallback. Keep it below the baked
+  // projections so it fills only their uncovered UV regions during export.
+  for (const { layer, blob } of layerRecords.slice(0, contentAwareUnderlayLayers.length)) {
+    await drawBlobToCanvas(
+      context,
+      blob,
+      width,
+      height,
+      Math.max(0, Math.min(1, layer.opacity)),
+    );
+  }
   if (baseBlob) await drawBlobToCanvas(context, baseBlob, width, height);
-  for (let index = 0; index < orderedUvLayers.length; index += 1) {
-    const layer = orderedUvLayers[index];
+  for (const { layer, blob } of layerRecords.slice(contentAwareUnderlayLayers.length)) {
     const opacity = Math.max(0, Math.min(1, layer.opacity));
     if (isRenderedColorUvLayer(layer)) {
-      await drawRenderedColorLayerAsBaseColor(context, layerBlobs[index], width, height, opacity);
+      await drawRenderedColorLayerAsBaseColor(context, blob, width, height, opacity);
     } else {
-      await drawBlobToCanvas(context, layerBlobs[index], width, height, opacity);
+      await drawBlobToCanvas(context, blob, width, height, opacity);
     }
   }
   // The canvas started opaque, and source-over compositing preserves that alpha.

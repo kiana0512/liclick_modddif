@@ -714,31 +714,37 @@ function ImportedModel({
     );
     if (candidates.length === 0) return undefined;
 
-    void Promise.all(
-      candidates.map(async (layer) => {
-        const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
-        const visibility = await createRuntimeProjectionDepth({
-          renderer: gl,
-          group: importedModel.group,
-          camera: layer.camera!,
-          captureObjectMatrixWorld: layer.objectMatrixWorld,
-          width: Math.max(1, Math.min(2048, capture?.width ?? 1024)),
-          height: Math.max(1, Math.min(2048, capture?.height ?? 1024)),
-        });
-        return [layer.id, visibility] as const;
-      }),
-    )
-      .then((entries) => {
+    void (async () => {
+      const completedVisibility: Record<string, { depthUrl: string; normalUrl: string }> = {};
+      for (const layer of candidates) {
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
         if (cancelled) return;
-        setRuntimeVisibilityByLayerId((current) => ({
-          ...current,
-          ...Object.fromEntries(entries),
-        }));
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error('[Liclick 3D Texture] Could not build projection visibility depth.', error);
-      });
+        try {
+          const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
+          const visibility = await createRuntimeProjectionDepth({
+            renderer: gl,
+            group: importedModel.group,
+            camera: layer.camera!,
+            captureObjectMatrixWorld: layer.objectMatrixWorld,
+            width: Math.max(1, Math.min(2048, capture?.width ?? 1024)),
+            height: Math.max(1, Math.min(2048, capture?.height ?? 1024)),
+          });
+          if (cancelled) return;
+          completedVisibility[layer.id] = visibility;
+        } catch (error) {
+          if (cancelled) return;
+          console.error(
+            `[Liclick 3D Texture] Could not build projection visibility depth for ${layer.name}.`,
+            error,
+          );
+        }
+      }
+      if (cancelled || Object.keys(completedVisibility).length === 0) return;
+      setRuntimeVisibilityByLayerId((current) => ({
+        ...current,
+        ...completedVisibility,
+      }));
+    })();
     return () => {
       cancelled = true;
     };
@@ -814,15 +820,25 @@ function ImportedModel({
     () =>
       stablePreviewProjectedLayers.map((layer) => {
         const runtimeVisibility = runtimeVisibilityByLayerId[layer.id];
-        const depthUrl = runtimeVisibility?.depthUrl ?? layer.depthUrl;
+        const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
+        const depthUrl = runtimeVisibility?.depthUrl ?? layer.depthUrl ?? capture?.depthUrl;
+        // Capture.normalUrl is a smooth shaded normal pass intended for image
+        // generation. Projection visibility requires the flat geometric normal
+        // produced by createRuntimeProjectionDepth; mixing the two clips large
+        // regions on curved or low-poly surfaces. Until that runtime pass is
+        // ready, depth-only visibility is safer and matches the bake footprint.
+        const normalUrl = runtimeVisibility?.normalUrl;
         return {
           layerId: layer.id,
           imageUrl: layer.imageUrl,
           maskUrl: layer.maskUrl,
           maskSpace: layer.maskSpace,
           depthUrl,
-          depthIsLinearView: Boolean(runtimeVisibility?.depthUrl),
-          normalUrl: runtimeVisibility?.normalUrl,
+          depthIsLinearView:
+            Boolean(runtimeVisibility?.depthUrl) ||
+            layer.depthEncoding === 'linear-view' ||
+            capture?.depthEncoding === 'linear-view',
+          normalUrl,
           camera: layer.camera!,
           objectMatrixWorld: layer.objectMatrixWorld,
           opacity: layer.opacity,
@@ -843,13 +859,26 @@ function ImportedModel({
           renderedColor: isRenderedLocalRepaintLayer(layer),
         };
       }),
-    [runtimeVisibilityByLayerId, stablePreviewProjectedLayers],
+    [captureById, runtimeVisibilityByLayerId, stablePreviewProjectedLayers],
+  );
+  const contentAwareUvUnderlayLayer = useMemo(
+    () =>
+      layers.find(
+        (layer) =>
+          layer.type === 'uv' &&
+          layer.role === 'content-aware-underlay' &&
+          layer.visible &&
+          Boolean(layer.imageUrl) &&
+          (!layer.objectId || layer.objectId === importedObjectId),
+      ),
+    [importedObjectId, layers],
   );
   const hasVisibleUvOverlay = useMemo(
     () =>
       layers.some(
         (layer) =>
           layer.type === 'uv' &&
+          layer.role !== 'content-aware-underlay' &&
           layer.visible &&
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedObjectId),
@@ -859,17 +888,29 @@ function ImportedModel({
   const directProjectedSamplerBudget = useMemo(
     () =>
       getProjectedLayerSamplerBudget(previewProjectionInputs, gl.capabilities.maxTextures, {
+        useBaseMap: Boolean(contentAwareUvUnderlayLayer),
         useUvOverlayMap: hasVisibleUvOverlay,
       }),
-    [gl.capabilities.maxTextures, hasVisibleUvOverlay, previewProjectionInputs],
+    [
+      contentAwareUvUnderlayLayer,
+      gl.capabilities.maxTextures,
+      hasVisibleUvOverlay,
+      previewProjectionInputs,
+    ],
   );
   const projectedTextureArraySamplerBudget = useMemo(
     () =>
       getProjectedLayerSamplerBudget(previewProjectionInputs, gl.capabilities.maxTextures, {
+        useBaseMap: Boolean(contentAwareUvUnderlayLayer),
         useUvOverlayMap: hasVisibleUvOverlay,
         useTextureArrays: true,
       }),
-    [gl.capabilities.maxTextures, hasVisibleUvOverlay, previewProjectionInputs],
+    [
+      contentAwareUvUnderlayLayer,
+      gl.capabilities.maxTextures,
+      hasVisibleUvOverlay,
+      previewProjectionInputs,
+    ],
   );
   const directProjectedSamplerHeadroom = Math.max(
     1,
@@ -887,7 +928,7 @@ function ImportedModel({
   );
   const projectedTextureArrayStructureSignature = useMemo(
     () =>
-      previewProjectionInputs
+      `${contentAwareUvUnderlayLayer?.id ?? ''}:${contentAwareUvUnderlayLayer?.imageUrl ?? ''}|${previewProjectionInputs
         .map((layer) =>
           [
             layer.layerId,
@@ -904,8 +945,8 @@ function ImportedModel({
             layer.camera.projectionMatrix?.join(',') ?? '',
           ].join('~'),
         )
-        .join('|'),
-    [previewProjectionInputs],
+        .join('|')}`,
+    [contentAwareUvUnderlayLayer, previewProjectionInputs],
   );
   const projectedSamplerBudget = useProjectedTextureArrays
     ? projectedTextureArraySamplerBudget
@@ -1090,7 +1131,10 @@ function ImportedModel({
     };
   }, [gl]);
   const visibleUvLayers = useMemo(
-    () => getVisibleUvLayerStack(layers, importedObjectId, 'top-to-bottom'),
+    () =>
+      getVisibleUvLayerStack(layers, importedObjectId, 'top-to-bottom').filter(
+        (layer) => layer.role !== 'content-aware-underlay',
+      ),
     [importedObjectId, layers],
   );
   const visibleUvLayerSignature = useMemo(
@@ -1098,6 +1142,9 @@ function ImportedModel({
     [visibleUvLayers],
   );
   const stableVisibleUvLayers = useStableValueBySignature(visibleUvLayers, visibleUvLayerSignature);
+  const loadedContentAwareUnderlayTexture = useLoadedPreviewTexture(
+    contentAwareUvUnderlayLayer?.imageUrl,
+  );
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];
     const cacheKey = getProjectedLayerStackSignature(
@@ -1214,6 +1261,7 @@ function ImportedModel({
   const visibleStackNeedsLivePreview =
     hasLiveProjectedPreview ||
     hasLocalRepaintPreview ||
+    Boolean(contentAwareUvUnderlayLayer) ||
     stableVisibleProjectedLayers.some((layer) => layer.needsRebake);
   // A same-layer cache may still describe the previous mask revision. Prefer the
   // projected material while a live canvas is attached or the layer is dirty;
@@ -1304,7 +1352,9 @@ function ImportedModel({
                     baseTexture: progressivePreviewBase.colorTexture,
                     baseRenderedColorMaskTexture: progressivePreviewBase.renderedColorMaskTexture,
                   }
-                : {}),
+                : loadedContentAwareUnderlayTexture
+                  ? { baseTexture: loadedContentAwareUnderlayTexture }
+                  : {}),
               uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
               uvOverlaySaturation: directUvLayer
                 ? (directUvLayer.adjustments?.saturation ?? 0) / 100
@@ -1408,7 +1458,13 @@ function ImportedModel({
         if (bakedTexture) child.userData.bakedTexture = bakedTexture;
         const previousMaterial = child.material;
         if (projectedPreviewOverBudget) continue;
-        if ((loadedUvTexture || liveTopUvTexture || progressiveBaseOnly) && !projectedLayerInput) {
+        if (
+          (loadedUvTexture ||
+            liveTopUvTexture ||
+            loadedContentAwareUnderlayTexture ||
+            progressiveBaseOnly) &&
+          !projectedLayerInput
+        ) {
           const uvMaterialInput = {
             displayMode,
             selected,
@@ -1438,6 +1494,9 @@ function ImportedModel({
               : {}),
             previewLighting,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
+            ...(loadedContentAwareUnderlayTexture
+              ? { baseTexture: loadedContentAwareUnderlayTexture }
+              : {}),
             ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
             ...(progressiveBaseOnly && progressivePreviewBase
               ? {
@@ -1560,6 +1619,7 @@ function ImportedModel({
     gl,
     importedModel,
     loadedBakedTexture,
+    loadedContentAwareUnderlayTexture,
     loadedUvTexture,
     gl.capabilities.maxTextures,
     liveTopUvLayer,

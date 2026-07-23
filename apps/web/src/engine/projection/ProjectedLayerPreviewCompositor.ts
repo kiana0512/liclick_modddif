@@ -7,7 +7,12 @@ const TILE_SIZE = 1024;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
-const MIN_CAPTURE_FACE_ON = 0.28;
+const MIN_CAPTURE_FACE_ON = 0.04;
+const FULL_CAPTURE_FACE_ON = 0.2;
+const MAX_GRAZING_DEPTH_SCALE = 4;
+const MIN_VISIBILITY_SUPPORT = 1.5;
+const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
+const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
 
 type PreviewLayer = ProjectionLayerStackInput['layers'][number];
 
@@ -208,7 +213,7 @@ const candidateFragmentShader = `
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
-      0.82,
+      ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
@@ -259,9 +264,9 @@ const candidateFragmentShader = `
     vec2 visibilityTexelSize = 1.0 / max(visibilityTextureSize, vec2(1.0));
     float faceOnFactor = abs(projectedFaceNormal.z);
     float grazingDepthScale = mix(
-      8.0,
+      ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
       1.0,
-      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, 0.35, faceOnFactor)
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
     depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
     float visibilitySupport = computeVisibilitySample(
@@ -308,7 +313,16 @@ const candidateFragmentShader = `
       texture(normalMap, uv + vec2(-visibilityTexelSize.x, visibilityTexelSize.y)),
       projectedMetric, depthTolerance, projectedFaceNormal
     );
-    float requiredVisibilitySupport = 1.5;
+    float grazingConfidence = smoothstep(
+      ${MIN_CAPTURE_FACE_ON.toFixed(2)},
+      ${FULL_CAPTURE_FACE_ON.toFixed(2)},
+      faceOnFactor
+    );
+    float requiredVisibilitySupport = mix(
+      ${MAX_GRAZING_VISIBILITY_SUPPORT.toFixed(1)},
+      ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
+      grazingConfidence
+    );
     float visibilityCoverage =
       step(requiredVisibilitySupport, visibilitySupport) *
       step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);

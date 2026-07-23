@@ -3,6 +3,8 @@ import type { ViewportRuntime } from '@/stores/sceneStore';
 import { getBoundingBoxForObject, getMaxDimension } from './boundingBoxUtils';
 import type { ModelBoundingBox } from '@/types/model';
 
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
 export type CameraFitOptions = {
   direction?: THREE.Vector3;
   up?: THREE.Vector3;
@@ -82,6 +84,10 @@ export function fitCameraToBoundingBox(
   const radius = Math.max(getMaxDimension(boundingBox), 1);
 
   runtime.camera.position.set(center.x + radius * 1.15, center.y + radius * 0.82, center.z + radius * 1.45);
+  // Orbiting across a pole intentionally rotates camera.up to keep navigation
+  // continuous. A later auto-fit changes the viewing direction completely, so
+  // carrying that old up vector across the fit introduces an arbitrary roll.
+  runtime.camera.up.copy(WORLD_UP);
   runtime.camera.lookAt(center);
 
   if (runtime.camera instanceof THREE.PerspectiveCamera) {

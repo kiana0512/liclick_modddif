@@ -87,11 +87,15 @@ const DOMINANT_QUALITY_MARGIN = 0.035;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
-// Projection is intentionally all-or-nothing for strongly foreshortened faces.
-// Below this capture-facing ratio the source cannot cover the whole surface
-// reliably, so reject the face instead of alternating projected scan lines and
-// empty-preview pixels across it.
-const MIN_CAPTURE_FACE_ON = 0.28;
+// Large turns should still receive projection when the capture depth/normal
+// neighbourhood proves that the surface was visible. At grazing angles we
+// require much broader support instead of accepting isolated scan-line samples.
+const MIN_CAPTURE_FACE_ON = 0.04;
+const FULL_CAPTURE_FACE_ON = 0.2;
+const MAX_GRAZING_DEPTH_SCALE = 4;
+const MIN_VISIBILITY_SUPPORT = 1.5;
+const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
+const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
 const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
 const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
@@ -378,7 +382,7 @@ const fragmentShader = `
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
-      0.82,
+      ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
@@ -456,9 +460,9 @@ const fragmentShader = `
     // relaxation on the same surface, while the wider tolerance reconnects
     // rasterized scan lines into one continuous visible region.
     float grazingDepthScale = mix(
-      8.0,
+      ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
       1.0,
-      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, 0.35, faceOnFactor)
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
     depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
     float visibilitySupport = computeSingleVisibilitySample(
@@ -508,7 +512,16 @@ const fragmentShader = `
     // A face seen edge-on in the source capture can rasterize as isolated scan
     // lines. Require broader local support for those grazing faces so the scan
     // lines do not get magnified into zebra stripes in the current viewport.
-    float requiredVisibilitySupport = 1.5;
+    float grazingConfidence = smoothstep(
+      ${MIN_CAPTURE_FACE_ON.toFixed(2)},
+      ${FULL_CAPTURE_FACE_ON.toFixed(2)},
+      faceOnFactor
+    );
+    float requiredVisibilitySupport = mix(
+      ${MAX_GRAZING_VISIBILITY_SUPPORT.toFixed(1)},
+      ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
+      grazingConfidence
+    );
     float visibilityCoverage =
       step(requiredVisibilitySupport, visibilitySupport) *
       step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
@@ -703,10 +716,15 @@ function buildStackFragmentShader(
     }
     const texelSize = `visibilityTexelSize${index}`;
     return `float faceOnFactor = abs(projectedFaceNormal.z);
+      float grazingConfidence = smoothstep(
+        ${MIN_CAPTURE_FACE_ON.toFixed(2)},
+        ${FULL_CAPTURE_FACE_ON.toFixed(2)},
+        faceOnFactor
+      );
       float grazingDepthScale = mix(
-        8.0,
+        ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
         1.0,
-        smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, 0.35, faceOnFactor)
+        grazingConfidence
       );
       depthTolerance *= mix(1.0, grazingDepthScale, ${layerUsesNormal(index) ? '1.0' : '0.0'});
       float visibilitySupport = ${visibilitySample(index, 'uv')};
@@ -718,7 +736,11 @@ function buildStackFragmentShader(
       visibilitySupport += ${visibilitySample(index, `uv - ${texelSize}`)};
       visibilitySupport += ${visibilitySample(index, `uv + vec2(${texelSize}.x, -${texelSize}.y)`)};
       visibilitySupport += ${visibilitySample(index, `uv + vec2(-${texelSize}.x, ${texelSize}.y)`)};
-      float requiredVisibilitySupport = 1.5;
+      float requiredVisibilitySupport = mix(
+        ${MAX_GRAZING_VISIBILITY_SUPPORT.toFixed(1)},
+        ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
+        grazingConfidence
+      );
       float visibilityCoverage =
         step(requiredVisibilitySupport, visibilitySupport) *
         step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);`;
@@ -1003,7 +1025,7 @@ function buildStackFragmentShader(
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
-      0.82,
+      ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
     );
     return depthVisibility * mix(1.0, normalVisibility, sampleUsesNormal);

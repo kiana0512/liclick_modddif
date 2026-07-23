@@ -44,6 +44,7 @@ export function CameraController() {
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const controlsRef = useRef<BlenderOrbitControls | null>(null);
   const orbitTargetKeyRef = useRef<string>();
+  const importedModelIdsRef = useRef<Set<string>>(new Set());
   const { gl, scene, camera, size } = useThree();
 
   useEffect(() => {
@@ -51,6 +52,7 @@ export function CameraController() {
     const controls = new BlenderOrbitControls(camera, gl.domElement);
     controlsRef.current = controls;
     orbitTargetKeyRef.current = undefined;
+    importedModelIdsRef.current = new Set();
     return () => {
       controls.dispose();
       if (controlsRef.current === controls) controlsRef.current = null;
@@ -85,7 +87,17 @@ export function CameraController() {
 
   useEffect(() => {
     const controls = controlsRef.current;
-    if (!controls || importedModels.length === 0) return;
+    const currentModelIds = new Set(importedModels.map((model) => model.objectId));
+    const previousModelIds = importedModelIdsRef.current;
+    const isAppendingModels =
+      previousModelIds.size > 0 &&
+      currentModelIds.size > previousModelIds.size &&
+      [...previousModelIds].every((objectId) => currentModelIds.has(objectId));
+    importedModelIdsRef.current = currentModelIds;
+    if (!controls || importedModels.length === 0) {
+      if (importedModels.length === 0) orbitTargetKeyRef.current = undefined;
+      return;
+    }
     const isSceneWorkspace = workspaceMode === 'scene' || workspaceMode === 'export';
     if (isSceneWorkspace && !importSettings.autoFitCamera) return;
     const selectedModel =
@@ -96,10 +108,18 @@ export function CameraController() {
     const targetObjects = targetModels.map((model) => model.group);
     const boundingBox = getCombinedBoundingBox(targetObjects);
     if (!boundingBox) return;
-    const targetKey = `${camera.uuid}:${workspaceMode}:${targetModels
-      .map((model) => model.objectId)
-      .join('|')}`;
+    // A workspace-mode change alone must not move the camera. Refit only when
+    // the set of models that needs framing actually changes (for example, from
+    // one active texture model to a multi-model scene).
+    const targetKey = `${camera.uuid}:${targetModels.map((model) => model.objectId).join('|')}`;
     if (orbitTargetKeyRef.current === targetKey) return;
+    // Importing another model must not discard the view the user has already
+    // established. The first model (or a freshly restored scene) still gets an
+    // initial fit, while later additions only become the new framing baseline.
+    if (isAppendingModels) {
+      orbitTargetKeyRef.current = targetKey;
+      return;
+    }
     orbitTargetKeyRef.current = targetKey;
     fitCameraToBoundingBox(
       {

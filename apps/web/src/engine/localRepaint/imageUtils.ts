@@ -226,6 +226,11 @@ export function contentAwareFillMaskedPixels(
   const fillPixels: number[] = [];
   const unknown = new Uint8Array(width * height);
   const known = new Uint8Array(width * height);
+  let fallbackRed = 0;
+  let fallbackGreen = 0;
+  let fallbackBlue = 0;
+  let fallbackAlpha = 0;
+  let knownPixelCount = 0;
 
   for (let index = 0; index < editMask.data.length; index += 1) {
     const offset = index * 4;
@@ -237,10 +242,19 @@ export function contentAwareFillMaskedPixels(
     }
     if (!inFill && onObject && imageData.data[offset + 3] > 8) {
       known[index] = 1;
+      fallbackRed += imageData.data[offset];
+      fallbackGreen += imageData.data[offset + 1];
+      fallbackBlue += imageData.data[offset + 2];
+      fallbackAlpha += imageData.data[offset + 3];
+      knownPixelCount += 1;
     }
   }
 
-  if (fillPixels.length === 0 || known.every((value) => value === 0)) return output;
+  if (fillPixels.length === 0 || knownPixelCount === 0) return output;
+  fallbackRed /= knownPixelCount;
+  fallbackGreen /= knownPixelCount;
+  fallbackBlue /= knownPixelCount;
+  fallbackAlpha /= knownPixelCount;
 
   // Record the nearest real edge texel in all four cardinal directions. This
   // preserves the actual boundary colors instead of repeatedly averaging
@@ -326,12 +340,21 @@ export function contentAwareFillMaskedPixels(
     };
     addAxisEstimate(left[index], right[index], false);
     addAxisEstimate(up[index], down[index], true);
-    if (totalWeight <= 0) continue;
     const offset = index * 4;
-    output.data[offset] = Math.round(red / totalWeight);
-    output.data[offset + 1] = Math.round(green / totalWeight);
-    output.data[offset + 2] = Math.round(blue / totalWeight);
-    output.data[offset + 3] = Math.round(alpha / totalWeight);
+    if (totalWeight <= 0) {
+      // A completely uncovered UV island may not share a row or column with a
+      // valid source texel. Give it a stable model-wide fallback instead of
+      // leaving transparent black pixels that recreate the viewport hatch.
+      output.data[offset] = Math.round(fallbackRed);
+      output.data[offset + 1] = Math.round(fallbackGreen);
+      output.data[offset + 2] = Math.round(fallbackBlue);
+      output.data[offset + 3] = Math.round(fallbackAlpha);
+    } else {
+      output.data[offset] = Math.round(red / totalWeight);
+      output.data[offset + 1] = Math.round(green / totalWeight);
+      output.data[offset + 2] = Math.round(blue / totalWeight);
+      output.data[offset + 3] = Math.round(alpha / totalWeight);
+    }
   }
 
   return output;

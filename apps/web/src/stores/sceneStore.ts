@@ -95,6 +95,7 @@ type SceneStore = {
   restoreCameraRequest?: { camera: SerializedCamera; nonce: number };
   setObjects: (objects: SceneObject[]) => void;
   setImportedModel: (model: ModelLoadResult, object: SceneObject) => void;
+  restoreImportedModels: (models: ModelLoadResult[], activeObjectId?: string) => void;
   setActiveImportedModel: (objectId: string) => void;
   clearImportedModel: () => void;
   renameObject: (objectId: string, name: string) => void;
@@ -259,6 +260,25 @@ export const useSceneStore = create<SceneStore>()(
             objects,
             selectedObjectId: object.id,
             importWarnings: model.warnings,
+          };
+        }),
+      restoreImportedModels: (models, requestedActiveObjectId) =>
+        set((state) => {
+          const activeObjectId =
+            (requestedActiveObjectId &&
+            models.some((model) => model.objectId === requestedActiveObjectId)
+              ? requestedActiveObjectId
+              : models[0]?.objectId) ?? state.objects[0]?.id;
+          const importedModel = models.find((model) => model.objectId === activeObjectId);
+          return {
+            importedModels: models,
+            importedModel,
+            selectedObjectId: activeObjectId,
+            objects: state.objects.map((object) => ({
+              ...object,
+              selected: object.id === activeObjectId,
+            })),
+            importWarnings: importedModel?.warnings ?? [],
           };
         }),
       setActiveImportedModel: (objectId) =>

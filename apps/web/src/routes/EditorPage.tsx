@@ -38,6 +38,7 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 import type { WorkspacePanelDefinition } from '@/components/workspace/workspacePanelTypes';
 import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
+import { rasterizeUvTopologyMask } from '@/engine/bake/dilation';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import {
@@ -62,8 +63,6 @@ import {
   contentAwareFillMaskedPixels,
   dataUrlToBlob,
   imageDataToBlob,
-  inferAlphaObjectMask,
-  inferProjectionGapMask,
   resizeImageData,
   restoreProtectedPixels,
   urlToImageData,
@@ -78,7 +77,6 @@ import {
   expandRect,
   featherMask,
   maskToBlob,
-  removeSmallMaskComponents,
 } from '@/engine/localRepaint/maskUtils';
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import type { LoadedModel, ModelLoadResult } from '@/engine/loaders/modelImportTypes';
@@ -117,7 +115,7 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { shortcutMatches } from '@/stores/shortcutStore';
 import { useToastStore } from '@/stores/toastStore';
-import type { BakeProgress } from '@/engine/bake/uvBakeTypes';
+import type { BakeProgress, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { LocalRepaintRuntime, MaskBitmap, Rect } from '@/types/localRepaint';
 import type { SerializedCamera } from '@/types/capture';
 import type { Generation } from '@/types/generation';
@@ -158,11 +156,10 @@ const resolutionToSize = {
   '8K': 8192,
 } as const;
 
-const LOCAL_REPAINT_CAPTURE_SCALE = 0.75;
-const LOCAL_REPAINT_CAPTURE_MAX_DIMENSION = 1536;
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
 const PROJECT_THUMBNAIL_SIZE = 2048;
+const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
 
 function isLocalRepaintGeneration(generation: Generation) {
   return generation.metadata.workflow === 'local-repaint';
@@ -189,10 +186,12 @@ function isLocalRepaintLayer(layer: Layer) {
   );
 }
 
-function waitForViewportComposition() {
-  return new Promise<void>((resolve) => {
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
-  });
+function isContentAwareRepairLayer(layer: Layer) {
+  return (
+    layer.generationId === 'texture-map-content-aware-repair' ||
+    layer.id.startsWith('content-aware-projected-repair') ||
+    layer.id.startsWith('content-aware-uv-repair')
+  );
 }
 
 function isMatchingLocalRepaintProjectionLayer(
@@ -251,29 +250,37 @@ function constrainMaskToObject(mask: MaskBitmap, objectMask: MaskBitmap) {
   return output;
 }
 
-function buildContentAwareRepairMask(baseMask: MaskBitmap, objectMask: MaskBitmap) {
-  // Never grow into an already covered projection. The repair layer may only
-  // write pixels explicitly identified as the zero-coverage hatch.
-  return constrainMaskToObject(baseMask, objectMask);
-}
-
 function buildContentAwareSamplingMask(editMask: MaskBitmap, objectMask: MaskBitmap) {
-  // Keep the output mask strict, but move the color-sampling frontier past the
-  // antialiased black hatch. Otherwise those dark fringe pixels become valid
-  // seeds and are propagated back into the repaired gap as a visible seam.
+  // Move the sampling frontier past partially covered projection borders. The
+  // UV repair is an underlay, so authored projection color remains on top.
   const maxDimension = Math.max(editMask.width, editMask.height);
   const samplingPadding = Math.max(4, Math.min(10, Math.round(maxDimension / 256)));
   return constrainMaskToObject(dilateMask(editMask, samplingPadding), objectMask);
 }
 
-function buildContentAwareUnderlapMask(editMask: MaskBitmap, objectMask: MaskBitmap) {
-  // Push the repair fallback safely beneath valid projection coverage. The
-  // renderer treats this layer as a true underlay, so this padding cannot
-  // overwrite authored color; it only guarantees that no sub-pixel gap remains
-  // between the two coverage masks.
-  const maxDimension = Math.max(editMask.width, editMask.height);
-  const underlapRadius = Math.max(8, Math.min(16, Math.round(maxDimension / 128)));
-  return constrainMaskToObject(dilateMask(editMask, underlapRadius), objectMask);
+function createUvTopologyObjectMask(
+  root: THREE.Object3D,
+  width: number,
+  height: number,
+): MaskBitmap {
+  const topology = rasterizeUvTopologyMask(root, width, height);
+  return {
+    width,
+    height,
+    data: Uint8ClampedArray.from(topology, (value) => (value ? 255 : 0)),
+  };
+}
+
+function inferUvCoverageGapMask(imageData: ImageData, objectMask: MaskBitmap) {
+  const mask = createEmptyMask(imageData.width, imageData.height);
+  for (let index = 0; index < mask.data.length; index += 1) {
+    if ((objectMask.data[index] ?? 0) === 0) continue;
+    // Include soft projection borders as well as fully transparent holes. The
+    // generated UV layer sits below all authored layers, so this becomes a
+    // continuous fallback without replacing valid texture.
+    if (imageData.data[index * 4 + 3] < 250) mask.data[index] = 255;
+  }
+  return mask;
 }
 
 function getLocalRepaintFeatherRadius(mask: MaskBitmap) {
@@ -647,6 +654,13 @@ export function EditorPage({
   const loadedProjectIdRef = useRef<string>();
   const serverLoadedProjectIdRef = useRef<string>();
   const restoredModelKeyRef = useRef<string>();
+  const modelRestoreRequestRef = useRef(0);
+  const hydratedProjectVersionRef = useRef<string>();
+  const skipProjectStoreSyncRef = useRef({
+    layers: false,
+    generations: false,
+    references: false,
+  });
   const autosaveTimerRef = useRef<number>();
   const manualSaveHandlerRef = useRef<() => void>(() => undefined);
   const manualSaveRunningRef = useRef(false);
@@ -693,7 +707,7 @@ export function EditorPage({
   const setObjects = useSceneStore((state) => state.setObjects);
   const objects = useSceneStore((state) => state.objects);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
-  const setActiveImportedModel = useSceneStore((state) => state.setActiveImportedModel);
+  const restoreImportedModels = useSceneStore((state) => state.restoreImportedModels);
   const clearImportedModel = useSceneStore((state) => state.clearImportedModel);
   const importedModel = useSceneStore((state) => state.importedModel);
   const viewport = useSceneStore((state) => state.viewport);
@@ -758,6 +772,9 @@ export function EditorPage({
   useEffect(() => {
     setRouteProjectStatus('idle');
     restoredHistoryProjectIdRef.current = undefined;
+    hydratedProjectVersionRef.current = undefined;
+    restoredModelKeyRef.current = undefined;
+    modelRestoreRequestRef.current += 1;
   }, [projectId]);
 
   useEffect(
@@ -778,15 +795,9 @@ export function EditorPage({
     void loadWorkspaceProject(projectId)
       .then((result) => {
         serverLoadedProjectIdRef.current = result.project.id;
+        loadedProjectIdRef.current = result.project.id;
         replaceCurrentProject(result.project);
-        setObjects(result.project.objects.filter((object) => object.format !== 'primitive'));
-        setLayers(result.project.layers);
-        setGenerations(result.project.generations, result.project.id);
-        setReferences(result.project.references);
-        void restoreProjectModel(result.project).then(() => {
-          restorePersistedHistory(result.project.id);
-          restoredHistoryProjectIdRef.current = result.project.id;
-        });
+        hydrateProjectStores(result.project);
         setRouteProjectStatus('idle');
       })
       .catch(() => {
@@ -809,8 +820,6 @@ export function EditorPage({
     routeProjectStatus,
     setGenerations,
     setLayers,
-    setObjects,
-    setReferences,
     t,
   ]);
 
@@ -819,24 +828,13 @@ export function EditorPage({
     if (loadedProjectIdRef.current === project.id) return;
     loadedProjectIdRef.current = project.id;
     setCurrentProject(project.id);
-    setObjects(project.objects.filter((object) => object.format !== 'primitive'));
-    setLayers(project.layers);
-    setGenerations(project.generations, project.id);
-    setReferences(project.references);
-    void restoreProjectModel(project).then(() => {
-      restorePersistedHistory(project.id);
-      restoredHistoryProjectIdRef.current = project.id;
-    });
+    hydrateProjectStores(project);
     // restoreProjectModel is intentionally not a dependency; this effect should run once per project id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     project,
     restorePersistedHistory,
     setCurrentProject,
-    setGenerations,
-    setLayers,
-    setObjects,
-    setReferences,
   ]);
 
   useEffect(() => {
@@ -847,14 +845,7 @@ export function EditorPage({
       .then((result) => {
         replaceCurrentProject(result.project);
         setSaveStatus('saved');
-        setObjects(result.project.objects.filter((object) => object.format !== 'primitive'));
-        setLayers(result.project.layers);
-        setGenerations(result.project.generations, result.project.id);
-        setReferences(result.project.references);
-        void restoreProjectModel(result.project).then(() => {
-          restorePersistedHistory(result.project.id);
-          restoredHistoryProjectIdRef.current = result.project.id;
-        });
+        hydrateProjectStores(result.project);
       })
       .catch(() => {
         setSaveStatus('offline');
@@ -871,14 +862,14 @@ export function EditorPage({
     pushToast,
     replaceCurrentProject,
     restorePersistedHistory,
-    setGenerations,
-    setLayers,
-    setObjects,
-    setReferences,
     t,
   ]);
 
   useEffect(() => {
+    if (skipProjectStoreSyncRef.current.layers) {
+      skipProjectStoreSyncRef.current.layers = false;
+      return;
+    }
     if (suppressProjectLayerSyncRef.current > 0) return;
     const storedProject = useProjectStore.getState().projects.find((item) => item.id === projectId);
     if (import.meta.hot && layers.length === 0 && (storedProject?.layers.length ?? 0) > 0) {
@@ -893,10 +884,18 @@ export function EditorPage({
   }, [objects]);
 
   useEffect(() => {
+    if (skipProjectStoreSyncRef.current.generations) {
+      skipProjectStoreSyncRef.current.generations = false;
+      return;
+    }
     setProjectGenerations(generations);
   }, [generations, setProjectGenerations]);
 
   useEffect(() => {
+    if (skipProjectStoreSyncRef.current.references) {
+      skipProjectStoreSyncRef.current.references = false;
+      return;
+    }
     setProjectReferences(references);
   }, [references, setProjectReferences]);
 
@@ -1381,19 +1380,6 @@ export function EditorPage({
     };
   }, []);
 
-  const getLocalRepaintCaptureSize = useCallback((canvas: HTMLCanvasElement) => {
-    const maxSide = Math.max(canvas.width, canvas.height);
-    if (maxSide <= 0) return undefined;
-    const scale = Math.max(
-      0.5,
-      Math.min(LOCAL_REPAINT_CAPTURE_SCALE, LOCAL_REPAINT_CAPTURE_MAX_DIMENSION / maxSide),
-    );
-    return {
-      width: Math.max(1, Math.round(canvas.width * scale)),
-      height: Math.max(1, Math.round(canvas.height * scale)),
-    };
-  }, []);
-
   const prepareViewportRenderSize = useCallback((width: number, height: number) => {
     const viewportRuntime = useSceneStore.getState().viewport;
     if (!viewportRuntime) return undefined;
@@ -1427,85 +1413,6 @@ export function EditorPage({
       }
     };
   }, []);
-
-  const getCleanViewportCapture = useCallback(
-    (size?: { width: number; height: number }) => {
-      const viewportRuntime = useSceneStore.getState().viewport;
-      if (!viewportRuntime) return undefined;
-      const canvas = viewportRuntime.gl.domElement;
-      if (!canvas || canvas.width === 0 || canvas.height === 0) return undefined;
-      const hiddenHelpers: Array<{ object: THREE.Object3D; visible: boolean }> = [];
-      const previousBackground = viewportRuntime.scene.background;
-      const previousClearColor = viewportRuntime.gl.getClearColor(new THREE.Color()).clone();
-      const previousClearAlpha = viewportRuntime.gl.getClearAlpha();
-      let restoreRenderSize: (() => void) | undefined;
-      try {
-        viewportRuntime.scene.traverse((object) => {
-          if (!object.userData.liclickViewportHelper && !object.userData.liclickPaintOverlay)
-            return;
-          hiddenHelpers.push({ object, visible: object.visible });
-          object.visible = false;
-        });
-        viewportRuntime.scene.background = null;
-        viewportRuntime.gl.setClearColor(0x000000, 0);
-        if (size) restoreRenderSize = prepareViewportRenderSize(size.width, size.height);
-        viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
-        const dataUrl = canvas.toDataURL('image/png');
-        const readCanvas = document.createElement('canvas');
-        readCanvas.width = canvas.width;
-        readCanvas.height = canvas.height;
-        const context = readCanvas.getContext('2d', { willReadFrequently: true });
-        if (!context) return { dataUrl, objectMask: createFullMask(canvas.width, canvas.height) };
-        context.drawImage(canvas, 0, 0);
-        return {
-          dataUrl,
-          objectMask: inferAlphaObjectMask(context.getImageData(0, 0, canvas.width, canvas.height)),
-        };
-      } finally {
-        for (const { object, visible } of hiddenHelpers) object.visible = visible;
-        viewportRuntime.scene.background = previousBackground;
-        viewportRuntime.gl.setClearColor(previousClearColor, previousClearAlpha);
-        restoreRenderSize?.();
-        viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
-      }
-    },
-    [prepareViewportRenderSize],
-  );
-
-  const getContentAwareBaseCapture = useCallback(
-    async (size?: { width: number; height: number }) => {
-      const layerState = useLayerStore.getState();
-      const sceneState = useSceneStore.getState();
-      const originalLayers = layerState.layers;
-      const originalActiveLayerId = layerState.activeProjectedLayerId;
-      const originalPreviewLayer = sceneState.localRepaintPreviewLayer;
-      const baseLayers = originalLayers.filter((layer) => !isLocalRepaintLayer(layer));
-      const needsFilteredCapture =
-        baseLayers.length !== originalLayers.length || Boolean(originalPreviewLayer);
-      if (!needsFilteredCapture) return getCleanViewportCapture(size);
-
-      // Content-aware repair should inspect the underlying texture stack, not a
-      // local-repaint patch that already sits on top of it. Suppress persistence
-      // while React renders the temporary filtered stack for the capture.
-      suppressProjectLayerSyncRef.current += 1;
-      try {
-        layerState.setLayers(baseLayers);
-        sceneState.setLocalRepaintPreviewLayer(undefined);
-        await waitForViewportComposition();
-        return getCleanViewportCapture(size);
-      } finally {
-        layerState.setLayers(originalLayers);
-        if (originalActiveLayerId) layerState.setActiveLayer(originalActiveLayerId);
-        sceneState.setLocalRepaintPreviewLayer(originalPreviewLayer);
-        await waitForViewportComposition();
-        suppressProjectLayerSyncRef.current = Math.max(
-          0,
-          suppressProjectLayerSyncRef.current - 1,
-        );
-      }
-    },
-    [getCleanViewportCapture],
-  );
 
   async function referenceIdsToBlobs(referenceIds: string[]) {
     const selected = references.filter((reference) => referenceIds.includes(reference.id));
@@ -1592,6 +1499,35 @@ export function EditorPage({
     return fromPath || object.name;
   }
 
+  function getProjectHydrationVersion(projectToHydrate: Project) {
+    return [
+      projectToHydrate.id,
+      projectToHydrate.updatedAt,
+      projectToHydrate.objects.length,
+      projectToHydrate.layers.length,
+      projectToHydrate.generations.length,
+      projectToHydrate.references.length,
+    ].join(':');
+  }
+
+  function hydrateProjectStores(projectToHydrate: Project) {
+    const hydrationVersion = getProjectHydrationVersion(projectToHydrate);
+    if (hydratedProjectVersionRef.current === hydrationVersion) return;
+    hydratedProjectVersionRef.current = hydrationVersion;
+    skipProjectStoreSyncRef.current.layers = true;
+    skipProjectStoreSyncRef.current.generations = true;
+    skipProjectStoreSyncRef.current.references = true;
+    setObjects(projectToHydrate.objects.filter((object) => object.format !== 'primitive'));
+    setLayers(projectToHydrate.layers);
+    setGenerations(projectToHydrate.generations, projectToHydrate.id);
+    setReferences(projectToHydrate.references);
+    void restoreProjectModel(projectToHydrate).then(() => {
+      if (restoredHistoryProjectIdRef.current === projectToHydrate.id) return;
+      restorePersistedHistory(projectToHydrate.id);
+      restoredHistoryProjectIdRef.current = projectToHydrate.id;
+    });
+  }
+
   function applySavedObjectToLoadedModel(
     loaded: Awaited<ReturnType<typeof loadModelFromUrl>>,
     object: SceneObject,
@@ -1638,6 +1574,7 @@ export function EditorPage({
       (item) => item.format !== 'primitive' && item.sourcePath,
     );
     if (objects.length === 0) {
+      modelRestoreRequestRef.current += 1;
       clearImportedModel();
       return;
     }
@@ -1659,8 +1596,18 @@ export function EditorPage({
       });
     }
     if (restorableObjects.length === 0) return;
-    try {
-      for (const object of restorableObjects) {
+    const restoreRequest = ++modelRestoreRequestRef.current;
+    const activeObjectId = projectToRestore.activeObjectId ?? restorableObjects[0]?.id;
+    const prioritizedObjects = activeObjectId
+      ? [
+          ...restorableObjects.filter((object) => object.id === activeObjectId),
+          ...restorableObjects.filter((object) => object.id !== activeObjectId),
+        ]
+      : restorableObjects;
+    const [primaryObject, ...remainingObjects] = prioritizedObjects;
+
+    async function loadRestoredModel(object: SceneObject) {
+      try {
         const loaded = await loadModelFromUrl({
           sourceUrl: object.sourcePath!,
           fileName: getObjectFileName(object),
@@ -1670,20 +1617,57 @@ export function EditorPage({
             targetMaxDimension: object.importNormalizationTransform?.targetMaxDimension ?? 3,
           },
         });
-        const restoredResult = applySavedObjectToLoadedModel(loaded, object);
-        setImportedModel(restoredResult, {
-          ...object,
-          selected: object.id === projectToRestore.activeObjectId,
-        });
+        return {
+          object,
+          model: applySavedObjectToLoadedModel(loaded, object),
+        };
+      } catch (error) {
+        return { object, error };
       }
-      const activeObjectId = projectToRestore.activeObjectId ?? restorableObjects[0]?.id;
-      if (activeObjectId) setActiveImportedModel(activeObjectId);
-    } catch (error) {
-      console.error('[Liclick 3D Texture] Restore model failed:', error);
+    }
+
+    const remainingPromise = mapWithConcurrency(remainingObjects, 2, loadRestoredModel);
+    const primaryResult = await loadRestoredModel(primaryObject);
+    if (restoreRequest !== modelRestoreRequestRef.current) return;
+    if (primaryResult.model) {
+      restoreImportedModels([primaryResult.model], activeObjectId);
+    }
+
+    const remainingResults = await remainingPromise;
+    if (restoreRequest !== modelRestoreRequestRef.current) return;
+    const allResults = [primaryResult, ...remainingResults];
+    const modelByObjectId = new Map(
+      allResults.flatMap((result) =>
+        result.model ? ([[result.object.id, result.model]] as const) : [],
+      ),
+    );
+    const restoredModels = restorableObjects.flatMap((object) => {
+      const model = modelByObjectId.get(object.id);
+      return model ? [model] : [];
+    });
+    if (restoredModels.length > 0) {
+      restoreImportedModels(restoredModels, activeObjectId);
+    } else {
+      restoredModelKeyRef.current = undefined;
+    }
+
+    const failedResults = allResults.filter((result) => result.error);
+    if (failedResults.length > 0) {
+      failedResults.forEach((result) => {
+        console.error(
+          `[Liclick 3D Texture] Restore model failed: ${result.object.name}`,
+          result.error,
+        );
+      });
       pushToast({
         tone: 'error',
         title: t('modelRestoreFailed'),
-        description: error instanceof Error ? error.message : t('modelRestoreFailedHelp'),
+        description:
+          failedResults.length === restorableObjects.length
+            ? failedResults[0]?.error instanceof Error
+              ? failedResults[0].error.message
+              : t('modelRestoreFailedHelp')
+            : `${failedResults.length} / ${restorableObjects.length} 个模型加载失败，其余模型已恢复。`,
         dedupeKey: `model-restore:${projectToRestore.id}`,
       });
     }
@@ -2883,60 +2867,42 @@ export function EditorPage({
     }
   }
 
-  const addProjectedRepairLayer = useCallback(
-    async (runtime: LocalRepaintRuntime) => {
-      if (!project || !importedModel) throw new Error(t('importModelFirst'));
-      const cameraState = runtime.cameraState ?? getCurrentCameraSnapshot();
-      if (!cameraState) throw new Error(t('viewportUnavailable'));
-      const sourcePatch = runtime.mergedImageData ?? runtime.workingImageData;
-      const patchMask = buildLocalRepaintPatchMask(runtime, sourcePatch);
-      // Pad transparent RGB around the patch. The alpha/edit mask stays exact,
-      // but bilinear and mipmap sampling can no longer pull the black gap color
-      // back into the visible edge.
-      const patchImage = applyAlphaFromMask(sourcePatch, patchMask, 12);
-      const layerId = createId('content-aware-projected-repair');
-      const imageUrl = await persistLayerImage(patchImage, `${layerId}.png`);
-      const objectId = selectedObjectId ?? importedModel.objectId;
-      importedModel.group.updateMatrixWorld(true);
+  const addUvContentAwareRepairLayer = useCallback(
+    async (imageData: ImageData, objectId: string) => {
+      const layerId = createId('content-aware-uv-repair');
+      const imageUrl = await persistLayerImage(imageData, `${layerId}.png`);
+      const currentLayers = useLayerStore.getState().layers;
+      const layersWithoutPreviousRepair = currentLayers.filter(
+        (layer) =>
+          !(
+            isContentAwareRepairLayer(layer) &&
+            (!layer.objectId || layer.objectId === objectId)
+          ),
+      );
       const layer: Layer = {
         id: layerId,
         name: t('contentAwareRepair'),
-        type: 'projected',
+        type: 'uv',
+        role: 'content-aware-underlay',
         imageUrl,
         objectId,
-        objectMatrixWorld: importedModel.group.matrixWorld.toArray(),
-        camera: cameraState,
         generationId: 'texture-map-content-aware-repair',
-        // The patch is sampled from a fully rendered viewport capture. Mark it
-        // as display color so projection preview does not apply lighting and
-        // exposure a second time.
-        renderedColor: true,
         visible: true,
         opacity: 1,
         strength: 1,
         blendMode: 'normal',
         adjustments: { hue: 0, saturation: 0, lightness: 0 },
-        order: 0,
+        // The layer list is top-to-bottom. Appending this UV texture makes it a
+        // model-wide fallback beneath authored UV and projected layers.
+        order: layersWithoutPreviousRepair.length,
         createdAt: new Date().toISOString(),
       };
-      // Content-aware repair is a foundation/fill layer. Keep every authored
-      // projection, UV paint and local-repaint patch above it in panel order.
-      setLayers([...useLayerStore.getState().layers, layer]);
+      setLayers([...layersWithoutPreviousRepair, layer]);
       setActiveLayer(layer.id);
       scheduleTexturedThumbnailRefresh(300);
       return layer;
     },
-    [
-      getCurrentCameraSnapshot,
-      importedModel,
-      persistLayerImage,
-      project,
-      scheduleTexturedThumbnailRefresh,
-      selectedObjectId,
-      setActiveLayer,
-      setLayers,
-      t,
-    ],
+    [persistLayerImage, scheduleTexturedThumbnailRefresh, setActiveLayer, setLayers, t],
   );
 
   async function acceptLocalRepaint({ continueEditing }: { continueEditing: boolean }) {
@@ -3553,11 +3519,7 @@ export function EditorPage({
   const handleContentAwareRepairFromToolbar = useCallback(() => {
     void (async () => {
       const viewportRuntime = useSceneStore.getState().viewport;
-      const captureSize = viewportRuntime
-        ? getLocalRepaintCaptureSize(viewportRuntime.gl.domElement)
-        : undefined;
-      const cameraState = getCurrentCameraSnapshot();
-      if (!viewportRuntime || !cameraState || !importedModel) {
+      if (!viewportRuntime || !importedModel) {
         pushToast({
           tone: 'warning',
           title: t('viewportUnavailable'),
@@ -3571,18 +3533,60 @@ export function EditorPage({
         setManualBakeProgress({
           title: t('contentAwareRepair'),
           detail: t('contentAwareRepairScanning'),
-          progress: 0.08,
+          progress: 0.04,
         });
-        const capture = await getContentAwareBaseCapture(captureSize);
-        if (!capture) throw new Error(t('viewportUnavailable'));
-        const workingImageData = await urlToImageData(capture.dataUrl);
-        const objectMask = capture.objectMask;
-        const exposure = useSettingsStore.getState().exposure;
-        const projectionGapMask = removeSmallMaskComponents(
-          inferProjectionGapMask(workingImageData, objectMask, exposure),
-          4,
+        const objectId = importedModel.objectId;
+        const sourceLayerIds = useLayerStore
+          .getState()
+          .layers.filter(
+            (layer) =>
+              layer.type === 'projected' &&
+              layer.visible &&
+              Boolean(layer.imageUrl && layer.camera) &&
+              (!layer.objectId || layer.objectId === objectId) &&
+              !isLocalRepaintLayer(layer) &&
+              !isContentAwareRepairLayer(layer),
+          )
+          .map((layer) => layer.id);
+        if (sourceLayerIds.length === 0) {
+          throw new Error(t('contentAwareRepairNoSource'));
+        }
+        const repairResolution = Math.min(
+          resolutionToSize[useSettingsStore.getState().resolution],
+          CONTENT_AWARE_UV_MAX_RESOLUTION,
+        ) as UvBakeResolution;
+        const bakeResult = await bakeVisibleProjectedLayersToTexture({
+          objectId,
+          layerIds: sourceLayerIds,
+          resolution: repairResolution,
+          enableBackfaceCulling: true,
+          enableDilation: false,
+          dilationPixels: 0,
+          outputAlpha: 'transparent',
+          commitToProject: false,
+          markSourceLayersBaked: false,
+          skipImageEncoding: true,
+          onProgress: (progress) =>
+            setManualBakeProgress({
+              title: t('contentAwareRepair'),
+              detail: t('contentAwareRepairScanning'),
+              progress: 0.04 + progress.progress * 0.54,
+            }),
+        });
+        const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
+        if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
+        const workingImageData = bakeContext.getImageData(
+          0,
+          0,
+          repairResolution,
+          repairResolution,
         );
-        const detectedGapMask = buildContentAwareRepairMask(projectionGapMask, objectMask);
+        const objectMask = createUvTopologyObjectMask(
+          importedModel.group,
+          repairResolution,
+          repairResolution,
+        );
+        const detectedGapMask = inferUvCoverageGapMask(workingImageData, objectMask);
         if (!ensureMaskContent(detectedGapMask)) {
           setManualBakeProgress(undefined);
           pushToast({
@@ -3594,55 +3598,33 @@ export function EditorPage({
           return;
         }
 
-        const repairMask = buildContentAwareUnderlapMask(detectedGapMask, objectMask);
-        const bbox = computeMaskBoundingBox(repairMask);
-        if (!bbox) throw new Error(t('contentAwareRepairNoBlankArea'));
-        const roiRect = expandRect(bbox, 32, {
-          width: workingImageData.width,
-          height: workingImageData.height,
-        });
-        captureHistory('内容识别修补白膜未填充区域');
+        captureHistory('内容识别修补模型全部 UV 空洞');
         setManualBakeProgress({
           title: t('contentAwareRepair'),
           detail: t('contentAwareRepairFilling'),
-          progress: 0.24,
+          progress: 0.64,
         });
-        const samplingMask = buildContentAwareSamplingMask(repairMask, objectMask);
+        const samplingMask = buildContentAwareSamplingMask(detectedGapMask, objectMask);
         const filled = contentAwareFillMaskedPixels(workingImageData, samplingMask, objectMask, {
-          searchRadius: Math.max(
-            24,
-            Math.min(72, Math.ceil(Math.max(roiRect.w, roiRect.h) * 0.26)),
-          ),
+          searchRadius: 72,
           iterations: 5,
           patchRadius: 4,
         });
-        const composited = compositeUsingMask(workingImageData, filled, repairMask);
-        const protectMask = buildProtectMask(objectMask, repairMask);
-        const restored = restoreProtectedPixels(workingImageData, composited, protectMask);
-        const runtime: LocalRepaintRuntime = {
-          id: createId('content-aware-repair'),
-          projectId,
-          mode: 'repair_current_view',
-          targetName: importedModel.name,
-          cameraState,
-          workingImageUrl: capture.dataUrl,
-          workingImageData,
-          objectMask,
-          holeMask: detectedGapMask,
-          editMask: repairMask,
-          protectMask,
-          roiRect,
-          mergedImageData: restored,
-          previewUrl: await imageDataToDataUrl(restored),
-          providerRaw: { provider: 'local-content-aware-fill' },
-          status: 'preview_ready',
-        };
-        const repairLayer = await addProjectedRepairLayer(runtime);
+        // Build one continuous UV fallback beneath every authored layer. This
+        // covers all model-facing UV texels and never samples the screen hatch,
+        // eliminating both view dependence and moire artifacts.
+        const repairTexture = applyAlphaFromMask(filled, objectMask, 12);
+        setManualBakeProgress({
+          title: t('contentAwareRepair'),
+          detail: t('contentAwareRepairFilling'),
+          progress: 0.9,
+        });
+        const repairLayer = await addUvContentAwareRepairLayer(repairTexture, objectId);
         setProjectLayers(useLayerStore.getState().layers);
         pushToast({
           tone: 'success',
           title: t('contentAwareFillComplete'),
-          description: `${t('projectedLayerAdded')}: ${repairLayer.name}`,
+          description: `${t('uvRepairLayerCreated')}: ${repairLayer.name}`,
           dedupeKey: `content-aware-repair:${repairLayer.id}`,
         });
       } catch (error) {
@@ -3660,13 +3642,9 @@ export function EditorPage({
       }
     })();
   }, [
-    addProjectedRepairLayer,
+    addUvContentAwareRepairLayer,
     captureHistory,
-    getCurrentCameraSnapshot,
-    getContentAwareBaseCapture,
-    getLocalRepaintCaptureSize,
     importedModel,
-    projectId,
     pushToast,
     setProjectLayers,
     t,
