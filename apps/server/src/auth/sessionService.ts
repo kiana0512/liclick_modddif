@@ -23,6 +23,21 @@ const emptyAuthDatabase: AuthDatabase = {
 
 let writeQueue = Promise.resolve();
 
+type BrowserSessionHandoff = {
+  sessionToken: string;
+  expiresAt: number;
+};
+
+const browserSessionHandoffs = new Map<string, BrowserSessionHandoff>();
+const browserSessionHandoffTtlMs = 2 * 60 * 1000;
+
+function pruneBrowserSessionHandoffs() {
+  const now = Date.now();
+  for (const [code, handoff] of browserSessionHandoffs) {
+    if (handoff.expiresAt <= now) browserSessionHandoffs.delete(code);
+  }
+}
+
 export function parseCookies(request: IncomingMessage) {
   const header = request.headers.cookie ?? '';
   return Object.fromEntries(
@@ -143,6 +158,27 @@ export async function verifySession(token?: string): Promise<AuthUser | undefine
   const user = database.users.find((item) => item.id === session.userId);
   if (!user || user.status !== 'active') return undefined;
   return user;
+}
+
+export async function createBrowserSessionHandoff(sessionToken?: string) {
+  const user = await verifySession(sessionToken);
+  if (!sessionToken || !user) return undefined;
+  pruneBrowserSessionHandoffs();
+  const code = crypto.randomBytes(32).toString('base64url');
+  browserSessionHandoffs.set(code, {
+    sessionToken,
+    expiresAt: Date.now() + browserSessionHandoffTtlMs,
+  });
+  return code;
+}
+
+export function consumeBrowserSessionHandoff(code?: string) {
+  if (!code) return undefined;
+  pruneBrowserSessionHandoffs();
+  const handoff = browserSessionHandoffs.get(code);
+  browserSessionHandoffs.delete(code);
+  if (!handoff || handoff.expiresAt <= Date.now()) return undefined;
+  return handoff.sessionToken;
 }
 
 export async function revokeSession(token?: string) {

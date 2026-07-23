@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readBinaryBody, sendJson } from './httpUtils.js';
+import { corsHeaders, readBinaryBody, sendJson } from './httpUtils.js';
 import {
   createNormalBakeJob,
   getNormalBakeJob,
@@ -11,6 +11,7 @@ import {
   type BakeChannelId,
   type NormalBakeSettings,
 } from '../services/substanceBakeService.js';
+import { getBakeArchive, streamBakeArchive } from '../services/bakeArchiveService.js';
 
 type MultipartData = { fields: Record<string, string>; files: Record<string, BakeUpload> };
 
@@ -75,12 +76,32 @@ export async function handleBakeRoute(
       low: multipart.files.low,
       cage: multipart.files.cage,
       color: multipart.files.color,
+      roughness: multipart.files.roughness,
+      metallic: multipart.files.metallic,
     });
     sendJson(response, 202, { job });
     return true;
   }
+  const archiveMatch = /^\/api\/bake\/jobs\/([^/]+)\/archive$/.exec(url.pathname);
+  if (archiveMatch && (request.method === 'GET' || request.method === 'HEAD')) {
+    const jobId = decodeURIComponent(archiveMatch[1]);
+    const archive = getBakeArchive(jobId, url.searchParams.get('name') ?? '');
+    if (!archive) {
+      sendJson(response, 404, { error: 'Bake archive is not available.' });
+      return true;
+    }
+    response.writeHead(200, {
+      'content-type': 'application/zip',
+      'content-disposition': `attachment; filename="${archive.fileName}"`,
+      'cache-control': 'no-store',
+      ...corsHeaders(response),
+    });
+    if (request.method === 'HEAD') response.end();
+    else await streamBakeArchive(response, archive.entries);
+    return true;
+  }
   const match =
-    /^\/api\/bake\/jobs\/([^/]+)(?:\/output\/(baseColor|normal|ambientOcclusion|curvature|worldNormal|thickness|position))?$/.exec(
+    /^\/api\/bake\/jobs\/([^/]+)(?:\/output\/(baseColor|normal|ambientOcclusion|curvature|worldNormal|thickness|position|roughness|metallic))?$/.exec(
       url.pathname,
     );
   if (!match || request.method !== 'GET') return false;

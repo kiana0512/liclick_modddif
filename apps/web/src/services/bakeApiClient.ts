@@ -1,6 +1,5 @@
 import { getWorkspaceApiBase } from './workspaceApiBase';
 import { slugifyExportName } from '@/engine/export/exportUtils';
-import { zip } from 'fflate';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
@@ -11,7 +10,9 @@ export type BakeChannelId =
   | 'curvature'
   | 'worldNormal'
   | 'thickness'
-  | 'position';
+  | 'position'
+  | 'roughness'
+  | 'metallic';
 
 export type NormalBakeSettings = {
   resolution: 1024 | 2048 | 4096 | 8192;
@@ -38,7 +39,14 @@ export type NormalBakeJob = {
   stage: 'waiting-for-worker' | 'baking-maps' | 'verifying-file' | 'finished';
   progress: number;
   settings: NormalBakeSettings;
-  input: { high: string; low: string; cage?: string; color?: string };
+  input: {
+    high: string;
+    low: string;
+    cage?: string;
+    color?: string;
+    roughness?: string;
+    metallic?: string;
+  };
   output?: { fileName: string; width: number; height: number; url: string };
   outputs?: Partial<
     Record<BakeChannelId, { fileName: string; width: number; height: number; url: string }>
@@ -49,6 +57,12 @@ export type NormalBakeJob = {
   updatedAt: string;
   startedAt?: string;
   finishedAt?: string;
+};
+
+export type SubstanceBakerStatus = {
+  available: boolean;
+  executablePath?: string;
+  version?: string;
 };
 
 async function responseJson<T>(response: Response) {
@@ -66,6 +80,14 @@ async function responseJson<T>(response: Response) {
   return payload as T;
 }
 
+export async function getSubstanceBakerStatus() {
+  const response = await fetch(`${workspaceApiBase}/api/bake/status`, {
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  return responseJson<SubstanceBakerStatus>(response);
+}
+
 export async function submitNormalBake(input: {
   projectId: string;
   objectId: string;
@@ -73,6 +95,8 @@ export async function submitNormalBake(input: {
   low: File;
   cage?: File;
   color?: File;
+  roughness?: File;
+  metallic?: File;
   settings: NormalBakeSettings;
 }) {
   const body = new FormData();
@@ -83,6 +107,8 @@ export async function submitNormalBake(input: {
   body.set('low', input.low);
   if (input.cage) body.set('cage', input.cage);
   if (input.color) body.set('color', input.color);
+  if (input.roughness) body.set('roughness', input.roughness);
+  if (input.metallic) body.set('metallic', input.metallic);
   const response = await fetch(`${workspaceApiBase}/api/bake/jobs`, {
     method: 'POST',
     body,
@@ -124,44 +150,22 @@ export function downloadBakeOutput(
   anchor.remove();
 }
 
-const bakeChannelFileSuffix: Record<BakeChannelId, string> = {
-  baseColor: 'BaseColor',
-  normal: 'Normal',
-  ambientOcclusion: 'AO',
-  curvature: 'Curvature',
-  worldNormal: 'WorldNormal',
-  thickness: 'Thickness',
-  position: 'Position',
-};
-
 export async function downloadAllBakeOutputs(job: NormalBakeJob, filenameBase: string) {
   const channels = job.settings.channels.filter((channel) => bakeOutputUrl(job, channel));
   if (channels.length === 0) throw new Error('没有可导出的烘焙贴图。');
-
-  const entries = await Promise.all(
-    channels.map(async (channel) => {
-      const url = bakeOutputUrl(job, channel);
-      if (!url) throw new Error(`${channel} output is not available.`);
-      const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
-      if (!response.ok) throw new Error(`${channel} 贴图读取失败（${response.status}）。`);
-      const fileName = `${slugifyExportName(filenameBase)}_${bakeChannelFileSuffix[channel]}.png`;
-      return [fileName, new Uint8Array(await response.arrayBuffer())] as const;
-    }),
-  );
-  const archive = await new Promise<Uint8Array>((resolve, reject) => {
-    zip(Object.fromEntries(entries), { level: 0 }, (error, data) => {
-      if (error) reject(error);
-      else resolve(data);
-    });
+  const base = slugifyExportName(filenameBase);
+  const archiveUrl = `${workspaceApiBase}/api/bake/jobs/${encodeURIComponent(job.id)}/archive?name=${encodeURIComponent(base)}`;
+  const probe = await fetch(archiveUrl, {
+    method: 'HEAD',
+    credentials: 'include',
+    cache: 'no-store',
   });
-  const archiveBytes = archive.slice().buffer;
-  const objectUrl = URL.createObjectURL(new Blob([archiveBytes], { type: 'application/zip' }));
+  if (!probe.ok) throw new Error(`全部贴图打包失败（${probe.status}）。`);
   const anchor = document.createElement('a');
-  anchor.href = objectUrl;
-  anchor.download = `${slugifyExportName(filenameBase)}_BakedMaps.zip`;
+  anchor.href = archiveUrl;
+  anchor.download = `${base}_BakedMaps.zip`;
   anchor.style.display = 'none';
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }

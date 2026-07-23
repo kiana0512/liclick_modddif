@@ -9,8 +9,7 @@ type RouteState =
   | { name: 'projects'; module: 'texture' | 'bake' }
   | { name: 'modelingToolbox' }
   | { name: 'editor'; projectId: string }
-  | { name: 'bake'; projectId: string }
-  | { name: 'delivery'; projectId: string };
+  | { name: 'bake'; projectId: string };
 
 const HomePage = lazy(() =>
   import('./routes/HomePage').then((module) => ({ default: module.HomePage })),
@@ -28,11 +27,6 @@ const EditorPage = lazy(() =>
 );
 const BakeWorkspacePage = lazy(() =>
   import('./routes/BakeWorkspacePage').then((module) => ({ default: module.BakeWorkspacePage })),
-);
-const DeliveryWorkspacePage = lazy(() =>
-  import('./routes/DeliveryWorkspacePage').then((module) => ({
-    default: module.DeliveryWorkspacePage,
-  })),
 );
 
 function AppRouteFallback() {
@@ -68,7 +62,8 @@ function routeFromPath(pathname: string): RouteState {
   }
   if (segments[0] === 'project' && segments[1]) {
     if (segments[2] === 'bake') return { name: 'bake', projectId: segments[1] };
-    if (segments[2] === 'delivery') return { name: 'delivery', projectId: segments[1] };
+    // Delivery was removed. Keep old bookmarks useful by redirecting them to baking.
+    if (segments[2] === 'delivery') return { name: 'bake', projectId: segments[1] };
     return { name: 'editor', projectId: segments[1] };
   }
   return { name: 'home' };
@@ -124,11 +119,6 @@ export function App() {
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
       },
-      openDelivery: (projectId: string) => {
-        const nextRoute: RouteState = { name: 'delivery', projectId };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
     }),
     [],
   );
@@ -179,7 +169,6 @@ export function App() {
             projectId={route.projectId}
             onBack={navigation.openTextureProjects}
             onOpenBake={() => navigation.openBake(route.projectId)}
-            onOpenDelivery={() => navigation.openDelivery(route.projectId)}
           />
         </Suspense>
         <ToastHost />
@@ -195,23 +184,6 @@ export function App() {
             projectId={route.projectId}
             onBack={navigation.openHome}
             onOpenTexture={() => navigation.openEditor(route.projectId)}
-            onOpenDelivery={() => navigation.openDelivery(route.projectId)}
-          />
-        </Suspense>
-        <ToastHost />
-      </>
-    );
-  }
-
-  if (route.name === 'delivery') {
-    return (
-      <>
-        <Suspense fallback={<AppRouteFallback />}>
-          <DeliveryWorkspacePage
-            projectId={route.projectId}
-            onBack={navigation.openHome}
-            onOpenTexture={() => navigation.openEditor(route.projectId)}
-            onOpenBake={() => navigation.openBake(route.projectId)}
           />
         </Suspense>
         <ToastHost />

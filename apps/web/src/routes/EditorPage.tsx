@@ -132,7 +132,6 @@ type EditorPageProps = {
   projectId: string;
   onBack: () => void;
   onOpenBake: () => void;
-  onOpenDelivery: () => void;
 };
 
 declare global {
@@ -642,7 +641,6 @@ export function EditorPage({
   projectId,
   onBack,
   onOpenBake,
-  onOpenDelivery,
 }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
@@ -4184,7 +4182,6 @@ export function EditorPage({
             activeModule="texture"
             onOpenTexture={() => undefined}
             onOpenBake={onOpenBake}
-            onOpenDelivery={onOpenDelivery}
           />
         }
         exportMenu={

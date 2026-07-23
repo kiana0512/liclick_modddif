@@ -22,7 +22,9 @@ const webUrl = process.env.LICLICK_FRONTEND_URL ?? `http://127.0.0.1:${webPort}`
 const isWindows = process.platform === 'win32';
 const shouldOpenBrowser = process.env.LICLICK_OPEN_BROWSER !== '0';
 const shouldHideChildWindows = process.env.LICLICK_WINDOWS_HIDE === '1';
+const shouldUseSourceRuntime = process.env.LICLICK_SOURCE_RUNTIME === '1';
 const managedChildren = new Set();
+let serviceRoot = runtimeRoot;
 
 fs.mkdirSync(logsDir, { recursive: true });
 fs.mkdirSync(workspaceDir, { recursive: true });
@@ -134,7 +136,7 @@ function spawnService(name, command, args, logFile) {
   const invocation = commandInvocation(command, args);
   writeLog(`${name} command: ${invocation.display}`);
   const child = spawn(invocation.command, invocation.args, {
-    cwd: runtimeRoot,
+    cwd: serviceRoot,
     env: launcherEnv(),
     shell: false,
     windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
@@ -294,13 +296,28 @@ function runtimeIsReady(signature) {
 }
 
 function runtimeFilesReady() {
-  if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'dist', 'index.js'))) return false;
-  if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'server', 'node_modules', 'ws', 'wrapper.mjs'))) return false;
-  if (!fs.existsSync(path.join(runtimeRoot, 'apps', 'web', 'dist', 'index.html'))) return false;
+  return runtimeFilesReadyAt(runtimeRoot);
+}
+
+function runtimeFilesReadyAt(root) {
+  if (!fs.existsSync(path.join(root, 'apps', 'server', 'dist', 'index.js'))) return false;
+  if (!fs.existsSync(path.join(root, 'apps', 'server', 'node_modules', 'ws', 'wrapper.mjs'))) return false;
+  if (!fs.existsSync(path.join(root, 'apps', 'web', 'dist', 'index.html'))) return false;
   return true;
 }
 
 async function prepareRuntime() {
+  if (shouldUseSourceRuntime) {
+    if (!runtimeFilesReadyAt(installRoot)) {
+      throw new Error(
+        'Local source runtime is not built. Build apps/server and apps/web before launching Li3D.',
+      );
+    }
+    serviceRoot = installRoot;
+    writeLog(`Source checkout detected; using built files directly from ${serviceRoot}.`);
+    return;
+  }
+
   const signature = sourceSignature();
   if (runtimeIsReady(signature)) {
     writeLog('Runtime artifacts and dependencies are ready; skipping runtime sync.');

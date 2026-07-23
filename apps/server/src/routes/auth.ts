@@ -8,7 +8,14 @@ import {
 } from '../auth/atlasAuthService.js';
 import { toPublicUser } from '../auth/currentUser.js';
 import { loginDevUser } from '../auth/devMockAuthService.js';
-import { clearSessionCookie, getSessionCookie, revokeSession } from '../auth/sessionService.js';
+import {
+  clearSessionCookie,
+  consumeBrowserSessionHandoff,
+  createBrowserSessionHandoff,
+  getSessionCookie,
+  revokeSession,
+  setSessionCookie,
+} from '../auth/sessionService.js';
 import {
   handleWebOAuthCallback,
   isWebOAuthLoginId,
@@ -77,6 +84,38 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
           : serverConfig.feishuWebOAuthMissingConfigKeys,
       atlas: atlasStatus,
     });
+    return true;
+  }
+
+  if (request.method === 'POST' && route === 'browser-handoff') {
+    const code = await createBrowserSessionHandoff(getSessionCookie(request));
+    if (!code) {
+      sendJson(response, 401, { error: 'Authentication required.' });
+      return true;
+    }
+    const handoffUrl = new URL(`/api/auth/browser-handoff/${encodeURIComponent(code)}`, serverConfig.publicWorkspaceUrl);
+    handoffUrl.searchParams.set('redirect', serverConfig.frontendUrl);
+    sendJson(response, 200, { handoffUrl: handoffUrl.toString() });
+    return true;
+  }
+
+  if (request.method === 'GET' && route === 'browser-handoff' && segments[3]) {
+    const sessionToken = consumeBrowserSessionHandoff(segments[3]);
+    if (!sessionToken) {
+      sendJson(response, 410, { error: 'This login handoff has expired. Please open Li3D from the launcher again.' });
+      return true;
+    }
+    const requestedRedirect = url.searchParams.get('redirect') || serverConfig.frontendUrl;
+    let redirectUrl = serverConfig.frontendUrl;
+    try {
+      const parsed = new URL(requestedRedirect);
+      if (serverConfig.allowedOrigins.includes(parsed.origin)) redirectUrl = parsed.toString();
+    } catch {
+      redirectUrl = serverConfig.frontendUrl;
+    }
+    setSessionCookie(response, sessionToken);
+    response.writeHead(302, { location: redirectUrl, 'cache-control': 'no-store' });
+    response.end();
     return true;
   }
 
