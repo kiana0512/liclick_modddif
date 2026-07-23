@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { ClientRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { serverConfig } from '../config.js';
 import { saveBinaryAsset } from './assetFileService.js';
 
@@ -65,6 +67,8 @@ type ActiveComfyJob = {
   cancelled: boolean;
   promptId?: string;
   baseUrl?: string;
+  serviceUrl?: string;
+  abort?: () => void;
 };
 
 const activeComfyJobs = new Map<string, ActiveComfyJob>();
@@ -83,15 +87,6 @@ const comfyNodeIds = {
   sampler: 51,
   finalAlphaSave: 63,
   finalRgbSave: 64,
-};
-
-const comfyInpaintNodeIds = {
-  inputImage: 96,
-  positivePrompt: 53,
-  automaticPrompt: 94,
-  automaticPromptDisplay: 95,
-  sampler: 57,
-  finalSave: 9,
 };
 
 const requiredInputPaths = {
@@ -113,6 +108,105 @@ function dataUrlToBuffer(dataUrl: string) {
     buffer: isBase64
       ? Buffer.from(payload, 'base64')
       : Buffer.from(decodeURIComponent(payload), 'utf8'),
+  };
+}
+
+type InpaintServiceResponse = {
+  statusCode: number;
+  contentType: string;
+  requestId?: string;
+  buffer: Buffer;
+};
+
+function requestInpaintService(
+  method: 'GET' | 'POST',
+  options: {
+    body?: Buffer;
+    headers?: Record<string, string | number>;
+    timeoutMs: number;
+    onRequest?: (request: ClientRequest) => void;
+  },
+) {
+  const serviceUrl = new URL(serverConfig.comfyuiInpaintServiceUrl);
+  if (serviceUrl.protocol !== 'https:') {
+    throw new Error(`局部重绘服务必须使用 HTTPS：${serviceUrl.toString()}`);
+  }
+  return new Promise<InpaintServiceResponse>((resolve, reject) => {
+    const request = httpsRequest(
+      serviceUrl,
+      {
+        method,
+        headers: options.headers,
+        rejectUnauthorized: serverConfig.comfyuiInpaintTlsRejectUnauthorized,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        response.on('data', (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > 128 * 1024 * 1024) {
+            request.destroy(new Error('局部重绘服务返回内容超过 128 MB。'));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on('end', () => {
+          clearTimeout(timeout);
+          const requestIdHeader = response.headers['x-request-id'];
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            contentType: String(response.headers['content-type'] ?? ''),
+            requestId: Array.isArray(requestIdHeader) ? requestIdHeader[0] : requestIdHeader,
+            buffer: Buffer.concat(chunks),
+          });
+        });
+      },
+    );
+    const timeout = setTimeout(() => {
+      request.destroy(new Error(`局部重绘服务请求超过 ${options.timeoutMs / 1000} 秒。`));
+    }, options.timeoutMs);
+    request.on('error', (error) => {
+      clearTimeout(timeout);
+      reject(
+        new Error(
+          `无法连接局部重绘服务：${serverConfig.comfyuiInpaintServiceUrl}。${
+            error instanceof Error ? ` (${error.message})` : ''
+          }`,
+        ),
+      );
+    });
+    options.onRequest?.(request);
+    request.end(options.body);
+  });
+}
+
+export async function checkComfyInpaintServiceStatus() {
+  const response = await requestInpaintService('GET', { timeoutMs: 5000 });
+  // The service exposes only POST. A 405 response confirms that HTTPS, routing,
+  // and the service process are all reachable without starting an inpaint job.
+  if (response.statusCode !== 200 && response.statusCode !== 405) {
+    throw new Error(`局部重绘服务状态检查失败：${response.statusCode}`);
+  }
+  return {
+    statusCode: response.statusCode,
+    requestId: response.requestId,
+  };
+}
+
+function createInpaintServiceMultipart(file: ComfyControlFile) {
+  const { mime, buffer } = dataUrlToBuffer(file.dataUrl);
+  const filename = safeFilename(file.path);
+  const boundary = `----li3d-${randomUUID()}`;
+  const prefix = Buffer.from(
+    `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="image"; filename="${filename}"\r\n` +
+      `Content-Type: ${mime}\r\n\r\n`,
+    'utf8',
+  );
+  const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+  return {
+    body: Buffer.concat([prefix, buffer, suffix]),
+    contentType: `multipart/form-data; boundary=${boundary}`,
   };
 }
 
@@ -246,22 +340,6 @@ async function loadWorkflowTemplate() {
   return JSON.parse(content) as UiWorkflow;
 }
 
-async function loadInpaintWorkflowTemplate() {
-  const workflowPath = encodeURIComponent(`workflows/${serverConfig.comfyuiInpaintWorkflowName}`);
-  const response = await comfyFetch(
-    `/api/userdata/${workflowPath}`,
-    { method: 'GET' },
-    30_000,
-    serverConfig.comfyuiInpaintBaseUrl,
-  );
-  if (!response.ok) {
-    throw new Error(
-      `无法从 ComfyUI 读取局部重绘 workflow：${serverConfig.comfyuiInpaintWorkflowName} (${response.status})。`,
-    );
-  }
-  return response.json() as Promise<UiWorkflow>;
-}
-
 function composeComfyPositivePrompt(userPrompt: string) {
   const materialPrompt = userPrompt.trim() || '根据所选材质参考图生成真实、连续、干净的物体材质。';
   return [
@@ -326,122 +404,6 @@ function patchWorkflow(
         `li3d_zimage/web3d_${jobId}/${nodeId === comfyNodeIds.finalRgbSave ? 'final_rgb_4096' : 'final_alpha_4096'}`,
       ];
   }
-}
-
-function keepOnlyOutputAncestors(
-  workflow: UiWorkflow,
-  outputNodeId: number,
-  additionalOutputNodeIds: number[] = [],
-) {
-  const requiredNodeIds = new Set<number>([outputNodeId, ...additionalOutputNodeIds]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const link of workflow.links) {
-      if (!requiredNodeIds.has(link[3]) || requiredNodeIds.has(link[1])) continue;
-      requiredNodeIds.add(link[1]);
-      changed = true;
-    }
-  }
-  workflow.nodes.forEach((node) => {
-    if (!requiredNodeIds.has(node.id)) node.mode = 4;
-  });
-}
-
-function patchInpaintWorkflow(
-  workflow: UiWorkflow,
-  input: ComfyInpaintInput,
-  uploadedImage: string,
-  jobId: string,
-) {
-  const nodes = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const imageNode = nodes.get(comfyInpaintNodeIds.inputImage);
-  if (!imageNode)
-    throw new Error(
-      `ComfyUI 局部重绘 workflow 缺少 LoadImage 节点：${comfyInpaintNodeIds.inputImage}`,
-    );
-  imageNode.widgets_values = [uploadedImage, 'image'];
-
-  const automaticPromptNode = nodes.get(comfyInpaintNodeIds.automaticPrompt);
-  if (!automaticPromptNode) {
-    throw new Error(
-      `ComfyUI 局部重绘 workflow 缺少 Qwen3 VL Plus 节点：${comfyInpaintNodeIds.automaticPrompt}`,
-    );
-  }
-  automaticPromptNode.mode = 0;
-  const originalAutomaticPrompt =
-    typeof automaticPromptNode.widgets_values?.[0] === 'string'
-      ? automaticPromptNode.widgets_values[0].trim()
-      : '';
-  const userPrompt = input.prompt.trim();
-  automaticPromptNode.widgets_values = [
-    [
-      originalAutomaticPrompt,
-      userPrompt ? `用户对局部重绘结果的补充要求：${userPrompt}` : '',
-      '请综合图片内容与用户要求，只输出可直接用于图像修复的英文提示词。',
-    ]
-      .filter(Boolean)
-      .join('\n'),
-    ...(automaticPromptNode.widgets_values?.slice(1) ?? []),
-  ];
-  const positivePromptNode = nodes.get(comfyInpaintNodeIds.positivePrompt);
-  if (!positivePromptNode) {
-    throw new Error(
-      `ComfyUI 局部重绘 workflow 缺少提示词节点：${comfyInpaintNodeIds.positivePrompt}`,
-    );
-  }
-  const promptInputIndex =
-    positivePromptNode.inputs?.findIndex((nodeInput) => nodeInput.name === 'text') ?? -1;
-  const automaticPromptLink = workflow.links.find(
-    (link) =>
-      link[1] === comfyInpaintNodeIds.automaticPrompt &&
-      link[3] === comfyInpaintNodeIds.positivePrompt &&
-      link[4] === promptInputIndex,
-  );
-  if (promptInputIndex < 0 || !automaticPromptLink) {
-    throw new Error(
-      `ComfyUI 局部重绘 workflow 缺少 Qwen3 VL Plus → Prompt 连线：${comfyInpaintNodeIds.automaticPrompt} → ${comfyInpaintNodeIds.positivePrompt}`,
-    );
-  }
-  positivePromptNode.inputs![promptInputIndex].link = automaticPromptLink[0];
-  const automaticPromptDisplayNode = nodes.get(comfyInpaintNodeIds.automaticPromptDisplay);
-  const automaticPromptDisplayLink = workflow.links.find(
-    (link) =>
-      link[1] === comfyInpaintNodeIds.automaticPrompt &&
-      link[3] === comfyInpaintNodeIds.automaticPromptDisplay,
-  );
-  if (!automaticPromptDisplayNode || !automaticPromptDisplayLink) {
-    throw new Error(
-      `ComfyUI 局部重绘 workflow 缺少 Qwen3 VL Plus → 展示任何连线：${comfyInpaintNodeIds.automaticPrompt} → ${comfyInpaintNodeIds.automaticPromptDisplay}`,
-    );
-  }
-  automaticPromptDisplayNode.mode = 0;
-
-  const samplerNode = nodes.get(comfyInpaintNodeIds.sampler);
-  if (samplerNode?.widgets_values?.length) {
-    const seed = Number.isFinite(input.seed)
-      ? Math.floor(input.seed ?? 0)
-      : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
-    samplerNode.widgets_values = [
-      seed,
-      samplerNode.widgets_values[1] ?? 'randomize',
-      samplerNode.widgets_values[2] ?? 10,
-      samplerNode.widgets_values[3] ?? 1,
-      samplerNode.widgets_values[4] ?? 'euler',
-      samplerNode.widgets_values[5] ?? 'normal',
-      samplerNode.widgets_values[6] ?? 1,
-    ];
-  }
-
-  const saveNode = nodes.get(comfyInpaintNodeIds.finalSave);
-  if (!saveNode)
-    throw new Error(
-      `ComfyUI 局部重绘 workflow 缺少 SaveImage 节点：${comfyInpaintNodeIds.finalSave}`,
-    );
-  saveNode.widgets_values = [`li3d_inpaint/${jobId}/final`];
-  keepOnlyOutputAncestors(workflow, comfyInpaintNodeIds.finalSave, [
-    comfyInpaintNodeIds.automaticPromptDisplay,
-  ]);
 }
 
 function isBypassed(node: UiNode) {
@@ -639,10 +601,15 @@ async function downloadComfyImage(image: ComfyImageOutput, baseUrl = serverConfi
 }
 
 export async function cancelComfyTextureMap(jobId?: string) {
-  const baseUrl = jobId ? activeComfyJobs.get(jobId)?.baseUrl : undefined;
+  const activeJob = jobId ? activeComfyJobs.get(jobId) : undefined;
+  const baseUrl = activeJob?.baseUrl;
   if (jobId) {
     cancelledComfyJobIds.add(jobId);
     getActiveComfyJob(jobId).cancelled = true;
+  }
+  if (activeJob?.abort) {
+    activeJob.abort();
+    return { ok: true, cancelledJobId: jobId };
   }
   const interrupt = await comfyFetch('/interrupt', { method: 'POST' }, 10_000, baseUrl).catch(
     (error: unknown) => {
@@ -702,45 +669,61 @@ export async function generateComfyInpaint(input: ComfyInpaintInput, userId: str
   const projectId = input.projectId;
   if (!projectId) throw new Error('ComfyUI 局部重绘需要当前项目 ID。');
   if (!input.image?.dataUrl) throw new Error('ComfyUI 局部重绘输入图不能为空。');
-  const baseUrl = serverConfig.comfyuiInpaintBaseUrl;
-  await checkComfyuiStatus(baseUrl);
+  await checkComfyInpaintServiceStatus();
   const jobId = input.clientGenerationId || `comfy-inpaint-${randomUUID()}`;
-  activeComfyJobs.set(jobId, { cancelled: cancelledComfyJobIds.has(jobId), baseUrl });
+  activeComfyJobs.set(jobId, {
+    cancelled: cancelledComfyJobIds.has(jobId),
+    serviceUrl: serverConfig.comfyuiInpaintServiceUrl,
+  });
   try {
     assertComfyJobActive(jobId);
-    const [workflow, objectInfo] = await Promise.all([
-      loadInpaintWorkflowTemplate(),
-      getObjectInfo(baseUrl),
-    ]);
-    assertComfyJobActive(jobId);
-    const uploadedImage = await uploadImage(input.image, `li3d_inpaint/${jobId}`, baseUrl);
-    assertComfyJobActive(jobId);
-    patchInpaintWorkflow(workflow, input, uploadedImage, jobId);
-    const prompt = convertWorkflowToApiPrompt(workflow, objectInfo);
-    const promptId = await queuePrompt(prompt, `liclick-inpaint-${jobId}`, baseUrl);
-    getActiveComfyJob(jobId).promptId = promptId;
-    const output = await waitForOutput(promptId, jobId, {
-      baseUrl,
-      preferredNodeIds: [comfyInpaintNodeIds.finalSave],
+    const multipart = createInpaintServiceMultipart(input.image);
+    const response = await requestInpaintService('POST', {
+      body: multipart.body,
+      timeoutMs: 30 * 60 * 1000,
+      headers: {
+        Accept: 'image/*',
+        'Content-Type': multipart.contentType,
+        'Content-Length': multipart.body.length,
+        'Idempotency-Key': jobId,
+      },
+      onRequest: (request) => {
+        getActiveComfyJob(jobId).abort = () =>
+          request.destroy(new Error('局部重绘任务已取消。'));
+      },
     });
     assertComfyJobActive(jobId);
-    const image = await downloadComfyImage(output.image, baseUrl);
-    assertComfyJobActive(jobId);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      const detail = response.buffer.toString('utf8').slice(0, 1000);
+      throw new Error(
+        `局部重绘服务请求失败：${response.statusCode}${detail ? ` (${detail})` : ''}`,
+      );
+    }
+    const mime = response.contentType.split(';', 1)[0]?.trim().toLowerCase();
+    if (!mime?.startsWith('image/')) {
+      throw new Error(
+        `局部重绘服务没有返回图片：${response.contentType || 'unknown content type'}`,
+      );
+    }
+    const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
     const saved = await saveBinaryAsset({
       userId,
       projectId,
       category: 'generations',
-      mime: image.contentType,
-      buffer: image.buffer,
-      filename: `${jobId}-comfy-inpaint.png`,
+      mime,
+      buffer: response.buffer,
+      filename: `${jobId}-modelview-inpaint.${extension}`,
     });
     if (!saved) throw new Error('当前项目不存在，无法保存 ComfyUI 局部重绘输出。');
     return {
       id: jobId,
       resultUrl: saved.url,
       resultUrls: [saved.url],
-      promptId,
-      output: output.image,
+      output: {
+        provider: 'modelview-inpaint',
+        requestId: response.requestId,
+        contentType: mime,
+      },
     };
   } finally {
     activeComfyJobs.delete(jobId);

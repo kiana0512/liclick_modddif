@@ -3,6 +3,7 @@ import { requireAuth } from '../auth/authMiddleware.js';
 import { serverConfig } from '../config.js';
 import {
   cancelComfyTextureMap,
+  checkComfyInpaintServiceStatus,
   checkComfyuiStatus,
   generateComfyInpaint,
   generateComfyTextureMap,
@@ -38,18 +39,17 @@ export async function handleComfyuiRoute(
 
   if (request.method === 'GET' && segments[2] === 'inpaint-status') {
     try {
-      await checkComfyuiStatus(serverConfig.comfyuiInpaintBaseUrl);
+      const status = await checkComfyInpaintServiceStatus();
       sendJson(response, 200, {
         ok: true,
-        baseUrl: serverConfig.comfyuiInpaintBaseUrl,
-        workflow: serverConfig.comfyuiInpaintWorkflowName,
+        serviceUrl: serverConfig.comfyuiInpaintServiceUrl,
+        ...status,
       });
     } catch (error) {
       sendJson(response, 503, {
         ok: false,
-        baseUrl: serverConfig.comfyuiInpaintBaseUrl,
-        workflow: serverConfig.comfyuiInpaintWorkflowName,
-        error: error instanceof Error ? error.message : 'ComfyUI 局部重绘后端未启动。',
+        serviceUrl: serverConfig.comfyuiInpaintServiceUrl,
+        error: error instanceof Error ? error.message : '局部重绘服务未启动。',
       });
     }
     return true;
