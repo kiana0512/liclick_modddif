@@ -1509,9 +1509,7 @@ export function GeneratePanel() {
         aspect: maskSize.width / maskSize.height,
       });
       setLastCapture(capture);
-      const submittedPrompt =
-        prompt.trim() ||
-        '修复并重绘蒙版区域，保持主体结构、相机视角、材质、颜色、光照和周围细节自然连续。';
+      const submittedPrompt = prompt.trim();
       const generationId = createId('local-repaint');
       pendingGeneration = {
         id: generationId,
@@ -1535,7 +1533,7 @@ export function GeneratePanel() {
       addProjectGeneration(pendingGeneration);
       setGenerateNotice({
         tone: 'info',
-        message: '正在把当前 MVP 视角和蒙版提交到 ComfyUI 局部重绘。',
+        message: '正在把当前视角和蒙版提交到 ModelView 局部重绘。',
       });
       const abortController = new AbortController();
       comfyGenerationAbortRef.current = abortController;
@@ -1552,7 +1550,7 @@ export function GeneratePanel() {
           prompt: submittedPrompt,
           captureId: capture.id,
           objectId,
-          image: { path: 'local_repaint_input.png', dataUrl: inputImage },
+          image: { path: 'input-with-mask.png', dataUrl: inputImage },
         },
         { signal: abortController.signal },
       );

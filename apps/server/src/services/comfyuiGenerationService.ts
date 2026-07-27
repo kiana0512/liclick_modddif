@@ -22,7 +22,7 @@ export type ComfyTextureMapInput = {
 export type ComfyInpaintInput = {
   clientGenerationId?: string;
   projectId?: string;
-  prompt: string;
+  prompt?: string;
   image: ComfyControlFile;
   seed?: number;
 };
@@ -115,8 +115,14 @@ type InpaintServiceResponse = {
   statusCode: number;
   contentType: string;
   requestId?: string;
+  jobId?: string;
+  clientId?: string;
   buffer: Buffer;
 };
+
+function readResponseHeader(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
 
 function requestInpaintService(
   method: 'GET' | 'POST',
@@ -136,7 +142,12 @@ function requestInpaintService(
       serviceUrl,
       {
         method,
-        headers: options.headers,
+        headers: {
+          ...(serverConfig.comfyuiInpaintApiKey
+            ? { 'X-API-Key': serverConfig.comfyuiInpaintApiKey }
+            : {}),
+          ...options.headers,
+        },
         rejectUnauthorized: serverConfig.comfyuiInpaintTlsRejectUnauthorized,
       },
       (response) => {
@@ -152,11 +163,12 @@ function requestInpaintService(
         });
         response.on('end', () => {
           clearTimeout(timeout);
-          const requestIdHeader = response.headers['x-request-id'];
           resolve({
             statusCode: response.statusCode ?? 0,
             contentType: String(response.headers['content-type'] ?? ''),
-            requestId: Array.isArray(requestIdHeader) ? requestIdHeader[0] : requestIdHeader,
+            requestId: readResponseHeader(response.headers['x-request-id']),
+            jobId: readResponseHeader(response.headers['x-job-id']),
+            clientId: readResponseHeader(response.headers['x-client-id']),
             buffer: Buffer.concat(chunks),
           });
         });
@@ -190,24 +202,57 @@ export async function checkComfyInpaintServiceStatus() {
   return {
     statusCode: response.statusCode,
     requestId: response.requestId,
+    jobId: response.jobId,
+    clientId: response.clientId,
   };
 }
 
-function createInpaintServiceMultipart(file: ComfyControlFile) {
+function createInpaintServiceMultipart(file: ComfyControlFile, prompt?: string) {
   const { mime, buffer } = dataUrlToBuffer(file.dataUrl);
   const filename = safeFilename(file.path);
   const boundary = `----li3d-${randomUUID()}`;
-  const prefix = Buffer.from(
-    `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="image"; filename="${filename}"\r\n` +
-      `Content-Type: ${mime}\r\n\r\n`,
-    'utf8',
-  );
-  const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+  const chunks = [
+    Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="image"; filename="${filename}"\r\n` +
+        `Content-Type: ${mime}\r\n\r\n`,
+      'utf8',
+    ),
+    buffer,
+    Buffer.from('\r\n', 'utf8'),
+  ];
+  const normalizedPrompt = prompt?.trim();
+  if (normalizedPrompt) {
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+          'Content-Disposition: form-data; name="prompt"\r\n' +
+          'Content-Type: text/plain; charset=utf-8\r\n\r\n' +
+          `${normalizedPrompt}\r\n`,
+        'utf8',
+      ),
+    );
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'));
   return {
-    body: Buffer.concat([prefix, buffer, suffix]),
+    body: Buffer.concat(chunks),
     contentType: `multipart/form-data; boundary=${boundary}`,
   };
+}
+
+function createInpaintIdempotencyKey(projectId: string, jobId: string) {
+  const normalizePart = (value: string, fallback: string) =>
+    value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 96) || fallback;
+  return `${normalizePart(projectId, 'project')}:inpaint:g1:attempt-${normalizePart(jobId, '1')}`;
+}
+
+function formatInpaintTrace(response: InpaintServiceResponse) {
+  const entries = [
+    response.jobId ? `job=${response.jobId}` : '',
+    response.clientId ? `client=${response.clientId}` : '',
+    response.requestId ? `request=${response.requestId}` : '',
+  ].filter(Boolean);
+  return entries.length ? ` [${entries.join(', ')}]` : '';
 }
 
 function normalizeRelativePath(value: string) {
@@ -669,23 +714,26 @@ export async function generateComfyInpaint(input: ComfyInpaintInput, userId: str
   const projectId = input.projectId;
   if (!projectId) throw new Error('ComfyUI 局部重绘需要当前项目 ID。');
   if (!input.image?.dataUrl) throw new Error('ComfyUI 局部重绘输入图不能为空。');
-  await checkComfyInpaintServiceStatus();
+  if (input.prompt && Array.from(input.prompt).length > 4096) {
+    throw new Error('局部重绘提示词不能超过 4096 个字符。');
+  }
   const jobId = input.clientGenerationId || `comfy-inpaint-${randomUUID()}`;
+  const idempotencyKey = createInpaintIdempotencyKey(projectId, jobId);
   activeComfyJobs.set(jobId, {
     cancelled: cancelledComfyJobIds.has(jobId),
     serviceUrl: serverConfig.comfyuiInpaintServiceUrl,
   });
   try {
     assertComfyJobActive(jobId);
-    const multipart = createInpaintServiceMultipart(input.image);
+    const multipart = createInpaintServiceMultipart(input.image, input.prompt);
     const response = await requestInpaintService('POST', {
       body: multipart.body,
-      timeoutMs: 30 * 60 * 1000,
+      timeoutMs: 1900 * 1000,
       headers: {
         Accept: 'image/*',
         'Content-Type': multipart.contentType,
         'Content-Length': multipart.body.length,
-        'Idempotency-Key': jobId,
+        'Idempotency-Key': idempotencyKey,
       },
       onRequest: (request) => {
         getActiveComfyJob(jobId).abort = () =>
@@ -696,23 +744,26 @@ export async function generateComfyInpaint(input: ComfyInpaintInput, userId: str
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const detail = response.buffer.toString('utf8').slice(0, 1000);
       throw new Error(
-        `局部重绘服务请求失败：${response.statusCode}${detail ? ` (${detail})` : ''}`,
+        `局部重绘服务请求失败：${response.statusCode}${formatInpaintTrace(response)}${
+          detail ? ` (${detail})` : ''
+        }`,
       );
     }
     const mime = response.contentType.split(';', 1)[0]?.trim().toLowerCase();
-    if (!mime?.startsWith('image/')) {
+    if (mime !== 'image/png') {
       throw new Error(
-        `局部重绘服务没有返回图片：${response.contentType || 'unknown content type'}`,
+        `局部重绘服务没有返回最终 PNG：${
+          response.contentType || 'unknown content type'
+        }${formatInpaintTrace(response)}`,
       );
     }
-    const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
     const saved = await saveBinaryAsset({
       userId,
       projectId,
       category: 'generations',
       mime,
       buffer: response.buffer,
-      filename: `${jobId}-modelview-inpaint.${extension}`,
+      filename: `${jobId}-modelview-inpaint.png`,
     });
     if (!saved) throw new Error('当前项目不存在，无法保存 ComfyUI 局部重绘输出。');
     return {
@@ -721,7 +772,10 @@ export async function generateComfyInpaint(input: ComfyInpaintInput, userId: str
       resultUrls: [saved.url],
       output: {
         provider: 'modelview-inpaint',
+        jobId: response.jobId,
+        clientId: response.clientId,
         requestId: response.requestId,
+        idempotencyKey,
         contentType: mime,
       },
     };

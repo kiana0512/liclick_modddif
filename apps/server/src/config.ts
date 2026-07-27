@@ -47,6 +47,7 @@ const comfyuiInpaintServiceUrl = (
   process.env.COMFYUI_INPAINT_SERVICE_URL ??
   'https://10.3.34.11/api/v1/services/modelview-inpaint'
 ).trim();
+const comfyuiInpaintApiKey = process.env.COMFYUI_INPAINT_API_KEY?.trim() || undefined;
 const comfyuiInpaintTlsRejectUnauthorized =
   (process.env.COMFYUI_INPAINT_TLS_REJECT_UNAUTHORIZED ?? 'false').toLowerCase() !== 'false';
 
@@ -209,6 +210,7 @@ export const serverConfig = {
   comfyuiBaseUrl,
   comfyuiTextureWorkflowPath,
   comfyuiInpaintServiceUrl,
+  comfyuiInpaintApiKey,
   comfyuiInpaintTlsRejectUnauthorized,
   frontendOrigin: getOrigin(frontendUrl),
   allowedOrigins: [

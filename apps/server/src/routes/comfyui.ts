@@ -72,8 +72,8 @@ export async function handleComfyuiRoute(
 
   if (request.method === 'POST' && segments[2] === 'generate-inpaint') {
     const input = await readJsonBody<ComfyInpaintInput>(request);
-    if (!input.prompt?.trim()) {
-      sendJson(response, 400, { error: 'Prompt is required for ComfyUI local repaint.' });
+    if (input.prompt && Array.from(input.prompt).length > 4096) {
+      sendJson(response, 400, { error: '局部重绘提示词不能超过 4096 个字符。' });
       return true;
     }
     if (!input.image?.dataUrl) {

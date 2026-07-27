@@ -24,7 +24,7 @@ export type ComfyTextureMapInput = {
 export type ComfyInpaintInput = {
   clientGenerationId: string;
   projectId?: string;
-  prompt: string;
+  prompt?: string;
   captureId?: string;
   objectId?: string;
   image: ComfyControlFile;
@@ -132,14 +132,14 @@ export function createComfyuiApiClient() {
         output?: unknown;
       }>('/api/comfyui/generate-inpaint', {
         method: 'POST',
-        timeoutMs: 30 * 60 * 1000,
+        timeoutMs: 1920 * 1000,
         signal: options?.signal,
         body: JSON.stringify(input),
       });
       return {
         id: input.clientGenerationId,
         mode: 'inpaint',
-        prompt: input.prompt,
+        prompt: input.prompt ?? '',
         referenceIds: [],
         captureId: input.captureId,
         resultUrl: result.resultUrl,
