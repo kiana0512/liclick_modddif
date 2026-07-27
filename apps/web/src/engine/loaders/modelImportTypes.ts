@@ -22,6 +22,7 @@ export type ModelLoadResult = {
   importNormalizationTransform: ImportNormalizationTransform;
   childMeshCount: number;
   warnings: string[];
+  restoreStage?: 'bounds' | 'outline' | 'full';
 };
 
 export type LoadedModel = {

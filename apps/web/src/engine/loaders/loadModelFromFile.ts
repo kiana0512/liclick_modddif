@@ -43,6 +43,7 @@ export async function loadModelFromUrl(input: {
   sourceUrl: string;
   fileName: string;
   normalizeOptions?: NormalizeImportedModelOptions;
+  sourceBuffer?: ArrayBuffer;
 }): Promise<LoadedModel> {
   const format = getModelFormatFromFileName(input.fileName);
   if (!format) {
@@ -53,6 +54,7 @@ export async function loadModelFromUrl(input: {
     sourceUrl: input.sourceUrl,
     fileName: input.fileName,
     normalizeOptions: input.normalizeOptions,
+    sourceBuffer: input.sourceBuffer,
   };
 
   if (format === 'glb' || format === 'gltf') return loadGltfModel(options);

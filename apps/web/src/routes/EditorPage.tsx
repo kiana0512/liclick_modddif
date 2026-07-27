@@ -84,6 +84,7 @@ import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
+import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
@@ -161,8 +162,11 @@ const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
 const PROJECT_THUMBNAIL_SIZE = 2048;
 const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
 
-function waitForProjectRestoreIdle(timeoutMs = 800) {
-  return new Promise<void>((resolve) => {
+async function waitForProjectRestoreIdle(timeoutMs = 800) {
+  while (isViewportInteractionBusy()) {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  }
+  await new Promise<void>((resolve) => {
     const scheduleIdle = () => {
       if (typeof window.requestIdleCallback === 'function') {
         window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
@@ -172,6 +176,143 @@ function waitForProjectRestoreIdle(timeoutMs = 800) {
     };
     window.requestAnimationFrame(() => scheduleIdle());
   });
+  if (isViewportInteractionBusy()) {
+    await waitForProjectRestoreIdle(timeoutMs);
+  }
+}
+
+function getPlaceholderBoundingBox(object: SceneObject): ModelLoadResult['boundingBox'] {
+  if (object.boundingBox) return object.boundingBox;
+  const center = object.transform.position;
+  const size = object.transform.scale.map((value) => Math.max(Math.abs(value), 0.4)) as [
+    number,
+    number,
+    number,
+  ];
+  const halfSize = size.map((value) => value / 2) as [number, number, number];
+  return {
+    min: [
+      center[0] - halfSize[0],
+      center[1] - halfSize[1],
+      center[2] - halfSize[2],
+    ],
+    max: [
+      center[0] + halfSize[0],
+      center[1] + halfSize[1],
+      center[2] + halfSize[2],
+    ],
+    center: [...center],
+    size,
+  };
+}
+
+function createProjectModelBoundsPlaceholder(object: SceneObject): ModelLoadResult {
+  const boundingBox = getPlaceholderBoundingBox(object);
+  const group = new THREE.Group();
+  group.name = `${object.name} loading bounds`;
+  group.userData.liclickObjectId = object.id;
+  group.userData.liclickRestorePlaceholder = true;
+  const geometry = new THREE.BoxGeometry(
+    Math.max(boundingBox.size[0], 0.02),
+    Math.max(boundingBox.size[1], 0.02),
+    Math.max(boundingBox.size[2], 0.02),
+  );
+  const material = new THREE.MeshStandardMaterial({
+    color: '#777777',
+    roughness: 0.96,
+    metalness: 0,
+    transparent: true,
+    opacity: 0.72,
+    depthWrite: true,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = `${object.name} bounds`;
+  mesh.position.fromArray(boundingBox.center);
+  mesh.userData.liclickObjectId = object.id;
+  mesh.userData.liclickRestorePlaceholder = true;
+  mesh.raycast = () => undefined;
+  group.add(mesh);
+  group.updateMatrixWorld(true);
+  const format = object.format === 'primitive' ? 'glb' : object.format;
+  const importNormalizationTransform = object.importNormalizationTransform ?? {
+    position: [0, 0, 0],
+    scale: [1, 1, 1],
+    targetMaxDimension: Math.max(...boundingBox.size),
+    grounded: false,
+    normalized: false,
+  };
+  return {
+    objectId: object.id,
+    name: object.name,
+    format,
+    group,
+    sourceFileName: object.name,
+    objectUrl: object.sourcePath,
+    materialSlots: object.materialSlots.map((slot) => slot.name),
+    uvSets: object.uvSets,
+    boundingBox,
+    originalBoundingBox: object.originalBoundingBox ?? boundingBox,
+    importNormalizationTransform,
+    childMeshCount: 1,
+    warnings: object.warnings ?? [],
+    restoreStage: 'bounds',
+  };
+}
+
+function disposeProjectModelBoundsPlaceholder(model: ModelLoadResult | undefined) {
+  if (!model || model.restoreStage !== 'bounds') return;
+  model.group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry.dispose();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => material.dispose());
+  });
+  model.group.removeFromParent();
+}
+
+function startProjectModelSourcePrefetch(
+  objects: SceneObject[],
+  getFileName: (object: SceneObject) => string,
+  concurrency = 3,
+) {
+  const deferred = new Map<
+    string,
+    {
+      promise: Promise<ArrayBuffer | undefined>;
+      resolve: (value: ArrayBuffer | undefined) => void;
+    }
+  >();
+  objects.forEach((object) => {
+    let resolve!: (value: ArrayBuffer | undefined) => void;
+    const promise = new Promise<ArrayBuffer | undefined>((nextResolve) => {
+      resolve = nextResolve;
+    });
+    deferred.set(object.id, { promise, resolve });
+  });
+
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < objects.length) {
+      const object = objects[cursor];
+      cursor += 1;
+      const entry = deferred.get(object.id);
+      if (!entry) continue;
+      const fileName = getFileName(object);
+      if (!/\.(glb|fbx|obj)$/i.test(fileName) || !object.sourcePath) {
+        entry.resolve(undefined);
+        continue;
+      }
+      try {
+        const response = await fetch(object.sourcePath);
+        entry.resolve(response.ok ? await response.arrayBuffer() : undefined);
+      } catch {
+        entry.resolve(undefined);
+      }
+    }
+  };
+  const workerCount = Math.min(Math.max(1, concurrency), objects.length);
+  for (let index = 0; index < workerCount; index += 1) void worker();
+  return new Map([...deferred].map(([objectId, entry]) => [objectId, entry.promise]));
 }
 
 function isLocalRepaintGeneration(generation: Generation) {
@@ -1617,13 +1758,39 @@ export function EditorPage({
           ...restorableObjects.filter((object) => object.id !== activeObjectId),
         ]
       : restorableObjects;
-    const [primaryObject, ...remainingObjects] = prioritizedObjects;
+    const sourcePrefetchByObjectId = startProjectModelSourcePrefetch(
+      prioritizedObjects,
+      getObjectFileName,
+    );
+    const restoredModelByObjectId = new Map<string, ModelLoadResult>(
+      restorableObjects.map((object) => [
+        object.id,
+        createProjectModelBoundsPlaceholder(object),
+      ]),
+    );
+    const publishRestoreProgress = () => {
+      if (restoreRequest !== modelRestoreRequestRef.current) return;
+      restoreImportedModels(
+        restorableObjects.flatMap((object) => {
+          const model = restoredModelByObjectId.get(object.id);
+          return model ? [model] : [];
+        }),
+        activeObjectId,
+      );
+    };
+    publishRestoreProgress();
 
     async function loadRestoredModel(object: SceneObject) {
       try {
+        const sourceBuffer = await sourcePrefetchByObjectId.get(object.id);
+        await waitForProjectRestoreIdle();
+        if (restoreRequest !== modelRestoreRequestRef.current) {
+          return { object, cancelled: true as const };
+        }
         const loaded = await loadModelFromUrl({
           sourceUrl: object.sourcePath!,
           fileName: getObjectFileName(object),
+          sourceBuffer,
           normalizeOptions: {
             normalize: object.importNormalizationTransform?.normalized ?? true,
             ground: object.importNormalizationTransform?.grounded ?? true,
@@ -1632,44 +1799,63 @@ export function EditorPage({
         });
         return {
           object,
-          model: applySavedObjectToLoadedModel(loaded, object),
+          model: {
+            ...applySavedObjectToLoadedModel(loaded, object),
+            restoreStage: 'outline' as const,
+          },
         };
       } catch (error) {
         return { object, error };
       }
     }
 
-    const primaryResult = await loadRestoredModel(primaryObject);
-    if (restoreRequest !== modelRestoreRequestRef.current) return;
-    const restoredModelByObjectId = new Map<string, ModelLoadResult>();
-    const allResults = [primaryResult];
-    if (primaryResult.model) {
-      restoredModelByObjectId.set(primaryResult.object.id, primaryResult.model);
-      restoreImportedModels([primaryResult.model], activeObjectId);
-    }
+    let textureRestoreQueue = Promise.resolve();
+    const queueFullTextureRestore = (objectId: string) => {
+      textureRestoreQueue = textureRestoreQueue.then(async () => {
+        await waitForProjectRestoreIdle(1200);
+        if (restoreRequest !== modelRestoreRequestRef.current) return;
+        const outlineModel = restoredModelByObjectId.get(objectId);
+        if (!outlineModel || outlineModel.restoreStage !== 'outline') return;
+        restoredModelByObjectId.set(objectId, {
+          ...outlineModel,
+          restoreStage: 'full',
+        });
+        publishRestoreProgress();
+        // Let image decoding and the first lightweight texture-array slices run
+        // before admitting the next model's complete material stack.
+        await waitForProjectRestoreIdle(1200);
+      });
+    };
 
-    // Model parsers run substantial synchronous work after their network reads.
-    // Loading the active model together with two background models made the first
-    // editor frames compete for the main thread. Restore the active model first,
-    // then admit the remaining models one at a time between idle frames.
-    for (const object of remainingObjects) {
-      await waitForProjectRestoreIdle();
+    const allResults: Array<Awaited<ReturnType<typeof loadRestoredModel>>> = [];
+    // Model downloads run concurrently, but parsing is admitted one model at a
+    // time. Each parsed model first replaces its bounds with a cheap clay
+    // silhouette. A separate queue then enables UV/projected textures one model
+    // at a time, so geometry and texture restoration can progress independently.
+    for (const object of prioritizedObjects) {
       if (restoreRequest !== modelRestoreRequestRef.current) return;
       const result = await loadRestoredModel(object);
       if (restoreRequest !== modelRestoreRequestRef.current) return;
+      if ('cancelled' in result) return;
       allResults.push(result);
-      if (!result.model) continue;
+      const placeholder = restoredModelByObjectId.get(result.object.id);
+      if (!result.model) {
+        restoredModelByObjectId.delete(result.object.id);
+        publishRestoreProgress();
+        disposeProjectModelBoundsPlaceholder(placeholder);
+        continue;
+      }
       restoredModelByObjectId.set(result.object.id, result.model);
-      const progressivelyRestoredModels = restorableObjects.flatMap((restorableObject) => {
-        const model = restoredModelByObjectId.get(restorableObject.id);
-        return model ? [model] : [];
-      });
-      restoreImportedModels(progressivelyRestoredModels, activeObjectId);
+      publishRestoreProgress();
+      window.requestAnimationFrame(() => disposeProjectModelBoundsPlaceholder(placeholder));
+      queueFullTextureRestore(result.object.id);
     }
+    await textureRestoreQueue;
+    if (restoreRequest !== modelRestoreRequestRef.current) return;
 
     const restoredModels = restorableObjects.flatMap((object) => {
       const model = restoredModelByObjectId.get(object.id);
-      return model ? [model] : [];
+      return model && model.restoreStage !== 'bounds' ? [model] : [];
     });
     if (restoredModels.length > 0) {
       restoreImportedModels(restoredModels, activeObjectId);

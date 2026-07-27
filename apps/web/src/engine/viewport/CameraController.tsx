@@ -9,6 +9,11 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 import { useSceneStore } from '@/stores/sceneStore';
 import type { ModelBoundingBox } from '@/types/model';
 import { BlenderOrbitControls } from './BlenderOrbitControls';
+import {
+  markViewportInteractionActivity,
+  markViewportInteractionEnd,
+  markViewportInteractionStart,
+} from './viewportInteractionState';
 
 function getCombinedBoundingBox(objects: THREE.Object3D[]): ModelBoundingBox | undefined {
   const box = new THREE.Box3();
@@ -50,11 +55,38 @@ export function CameraController() {
   useEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera || camera instanceof THREE.OrthographicCamera)) return;
     const controls = new BlenderOrbitControls(camera, gl.domElement);
+    const canvas = gl.domElement;
+    let pointerActive = false;
+    const handlePointerDown = () => {
+      if (pointerActive) return;
+      pointerActive = true;
+      markViewportInteractionStart();
+    };
+    const handlePointerMove = () => {
+      if (pointerActive) markViewportInteractionActivity();
+    };
+    const handlePointerUp = () => {
+      if (!pointerActive) return;
+      pointerActive = false;
+      markViewportInteractionEnd();
+    };
+    const handleWheel = () => markViewportInteractionActivity();
+    canvas.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    canvas.addEventListener('pointermove', handlePointerMove, { passive: true });
+    window.addEventListener('pointerup', handlePointerUp, { passive: true });
+    window.addEventListener('pointercancel', handlePointerUp, { passive: true });
+    canvas.addEventListener('wheel', handleWheel, { passive: true });
     controlsRef.current = controls;
     orbitTargetKeyRef.current = undefined;
     importedModelIdsRef.current = new Set();
     return () => {
       controls.dispose();
+      if (pointerActive) markViewportInteractionEnd();
+      canvas.removeEventListener('pointerdown', handlePointerDown);
+      canvas.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+      canvas.removeEventListener('wheel', handleWheel);
       if (controlsRef.current === controls) controlsRef.current = null;
     };
   }, [camera, gl.domElement]);

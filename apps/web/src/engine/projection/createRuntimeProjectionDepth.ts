@@ -141,9 +141,35 @@ function createGeometricViewNormalMaterial() {
   });
 }
 
+function cloneVisibilityGeometry(group: THREE.Group) {
+  const originalUserData: Array<{ object: THREE.Object3D; userData: Record<string, unknown> }> = [];
+  group.traverse((object) => {
+    originalUserData.push({ object, userData: object.userData });
+    object.userData = {
+      ...(object.userData.liclickObjectId
+        ? { liclickObjectId: object.userData.liclickObjectId }
+        : {}),
+      ...(object.userData.liclickPaintOverlay
+        ? { liclickPaintOverlay: true }
+        : {}),
+    };
+  });
+  try {
+    // Object3D.clone serializes userData through JSON. Imported meshes keep
+    // source/original materials and runtime textures in userData, so cloning
+    // them directly converts every ImageBitmap to a data URL. Visibility passes
+    // only need hierarchy, transforms and the paint-overlay marker.
+    return group.clone(true);
+  } finally {
+    originalUserData.forEach(({ object, userData }) => {
+      object.userData = userData;
+    });
+  }
+}
+
 async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthRequest) {
   request.group.updateMatrixWorld(true);
-  const clone = request.group.clone(true);
+  const clone = cloneVisibilityGeometry(request.group);
   const captureRootMatrix = request.captureObjectMatrixWorld?.length === 16
     ? new THREE.Matrix4().fromArray(request.captureObjectMatrixWorld)
     : request.group.matrixWorld.clone();

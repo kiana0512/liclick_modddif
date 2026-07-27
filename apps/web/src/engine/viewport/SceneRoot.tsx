@@ -710,6 +710,8 @@ function ImportedModel({
   const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
+  const texturedRestoreReady =
+    !importedModel.restoreStage || importedModel.restoreStage === 'full';
   const layers = useLayerStore((state) => state.layers);
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
@@ -726,6 +728,7 @@ function ImportedModel({
     Record<string, { depthUrl: string; normalUrl: string }>
   >({});
   useEffect(() => {
+    if (!texturedRestoreReady) return undefined;
     let cancelled = false;
     const candidates = [
       ...layers,
@@ -782,9 +785,17 @@ function ImportedModel({
     return () => {
       cancelled = true;
     };
-  }, [captureById, gl, importedModel, layers, localRepaintPreviewLayer]);
+  }, [
+    captureById,
+    gl,
+    importedModel,
+    layers,
+    localRepaintPreviewLayer,
+    texturedRestoreReady,
+  ]);
   const importedObjectId = importedModel?.objectId;
   const visibleProjectedLayers = useMemo(() => {
+    if (!texturedRestoreReady) return [];
     const storedLayers = importedObjectId
       ? getVisibleProjectedLayerStack(layers, importedObjectId)
       : [];
@@ -799,7 +810,7 @@ function ImportedModel({
       localRepaintPreviewLayer,
       ...storedLayers.filter((layer) => layer.id !== localRepaintPreviewLayer.id),
     ];
-  }, [importedObjectId, layers, localRepaintPreviewLayer]);
+  }, [importedObjectId, layers, localRepaintPreviewLayer, texturedRestoreReady]);
   const visibleProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleProjectedLayers),
     [visibleProjectedLayers],
@@ -818,6 +829,7 @@ function ImportedModel({
   const [failedProjectedTextureArraySignature, setFailedProjectedTextureArraySignature] =
     useState('');
   const previewProjectedLayers = useMemo(() => {
+    if (!texturedRestoreReady) return [];
     const storedLayers = layers
       .filter(
         (layer) =>
@@ -841,7 +853,7 @@ function ImportedModel({
       ...storedLayers.filter((layer) => layer.id !== localRepaintPreviewLayer.id),
       localRepaintPreviewLayer,
     ];
-  }, [importedObjectId, layers, localRepaintPreviewLayer]);
+  }, [importedObjectId, layers, localRepaintPreviewLayer, texturedRestoreReady]);
   const previewProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(previewProjectedLayers),
     [previewProjectedLayers],
@@ -897,18 +909,21 @@ function ImportedModel({
   );
   const contentAwareUvUnderlayLayer = useMemo(
     () =>
-      layers.find(
-        (layer) =>
-          layer.type === 'uv' &&
-          layer.role === 'content-aware-underlay' &&
-          layer.visible &&
-          Boolean(layer.imageUrl) &&
-          (!layer.objectId || layer.objectId === importedObjectId),
-      ),
-    [importedObjectId, layers],
+      texturedRestoreReady
+        ? layers.find(
+            (layer) =>
+              layer.type === 'uv' &&
+              layer.role === 'content-aware-underlay' &&
+              layer.visible &&
+              Boolean(layer.imageUrl) &&
+              (!layer.objectId || layer.objectId === importedObjectId),
+          )
+        : undefined,
+    [importedObjectId, layers, texturedRestoreReady],
   );
   const hasVisibleUvOverlay = useMemo(
     () =>
+      texturedRestoreReady &&
       layers.some(
         (layer) =>
           layer.type === 'uv' &&
@@ -917,7 +932,7 @@ function ImportedModel({
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedObjectId),
       ),
-    [importedObjectId, layers],
+    [importedObjectId, layers, texturedRestoreReady],
   );
   const directProjectedSamplerBudget = useMemo(
     () =>
@@ -1166,10 +1181,12 @@ function ImportedModel({
   }, [gl]);
   const visibleUvLayers = useMemo(
     () =>
-      getVisibleUvLayerStack(layers, importedObjectId, 'top-to-bottom').filter(
-        (layer) => layer.role !== 'content-aware-underlay',
-      ),
-    [importedObjectId, layers],
+      texturedRestoreReady
+        ? getVisibleUvLayerStack(layers, importedObjectId, 'top-to-bottom').filter(
+            (layer) => layer.role !== 'content-aware-underlay',
+          )
+        : [],
+    [importedObjectId, layers, texturedRestoreReady],
   );
   const visibleUvLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleUvLayers),
@@ -1353,6 +1370,28 @@ function ImportedModel({
     const model = importedModel;
 
     async function applyMaterials() {
+      if (model.restoreStage === 'bounds') return;
+      if (model.restoreStage === 'outline') {
+        const outlineMaterial = createFlatPreviewMaterial(undefined, false);
+        const disposedMaterials = new Set<THREE.Material | THREE.Material[]>();
+        model.group.traverse((child) => {
+          if (!(child instanceof THREE.Mesh) || child.userData.liclickPaintOverlay) return;
+          const previousMaterial = child.material;
+          child.material = outlineMaterial;
+          if (previousMaterial !== outlineMaterial && !disposedMaterials.has(previousMaterial)) {
+            disposedMaterials.add(previousMaterial);
+            disposeGeneratedMaterialTree(previousMaterial);
+          }
+        });
+        model.group.userData.liclickProjectedPreviewStatus = {
+          mode: 'outline',
+          ready: false,
+          logicalLayerCount: 0,
+          processedLayerIds: [],
+          missingLayerIds: [],
+        };
+        return;
+      }
       const selected = false;
       model.group.updateMatrixWorld(true);
       const progressiveActiveInputs = activeProjectedPreviewInput
@@ -1693,8 +1732,12 @@ function ImportedModel({
           selectObject(importedModel.objectId);
         }}
       />
-      {displayMode === 'wire' && <TopologyWireframeOverlay object={importedModel.group} />}
-      {showSelectionGlow && selectedObjectId === importedModel.objectId && (
+      {importedModel.restoreStage !== 'bounds' &&
+        displayMode === 'wire' &&
+        <TopologyWireframeOverlay object={importedModel.group} />}
+      {importedModel.restoreStage === 'full' &&
+        showSelectionGlow &&
+        selectedObjectId === importedModel.objectId && (
         <SelectionEdgeGlow object={importedModel.group} />
       )}
     </>
@@ -1738,12 +1781,19 @@ export function SceneRoot() {
       ? importedModels
       : importedModels.filter((model) => model.objectId === activeObjectId);
   const showSelectionGlow = workspaceMode === 'scene' || workspaceMode === 'export';
+  const hasProgressiveRestore = renderedModels.some(
+    (model) => model.restoreStage && model.restoreStage !== 'full',
+  );
 
   return (
     <group onPointerMissed={() => selectObject(undefined)}>
       <ambientLight intensity={ambientIntensity} />
       <hemisphereLight args={['#fff0e8', '#302640', 0.82]} />
-      <directionalLight position={keyLightPosition} intensity={keyIntensity} castShadow />
+      <directionalLight
+        position={keyLightPosition}
+        intensity={keyIntensity}
+        castShadow={!hasProgressiveRestore}
+      />
       <directionalLight position={fillLightPosition} intensity={fillIntensity} />
       <Grid />
       {renderedModels.map((model) => (
@@ -1754,7 +1804,9 @@ export function SceneRoot() {
         />
       ))}
       <ObjectTransformControls />
-      <ContactShadows position={[0, -0.02, 0]} opacity={0.22} scale={8} blur={2.4} />
+      {!hasProgressiveRestore && (
+        <ContactShadows position={[0, -0.02, 0]} opacity={0.22} scale={8} blur={2.4} />
+      )}
     </group>
   );
 }

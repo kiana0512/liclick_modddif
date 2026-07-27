@@ -4,8 +4,11 @@ import { summarizeLoadedGroup } from './modelLoadUtils';
 
 export async function loadGltfModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new GLTFLoader();
-  const gltf = await loader.loadAsync(options.sourceUrl);
   const format = options.fileName.toLowerCase().endsWith('.gltf') ? 'gltf' : 'glb';
+  const gltf =
+    format === 'glb' && options.sourceBuffer
+      ? await loader.parseAsync(options.sourceBuffer, '')
+      : await loader.loadAsync(options.sourceUrl);
   const result = summarizeLoadedGroup({
     group: gltf.scene,
     format,

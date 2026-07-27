@@ -4,7 +4,9 @@ import { summarizeLoadedGroup } from './modelLoadUtils';
 
 export async function loadObjModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new OBJLoader();
-  const obj = await loader.loadAsync(options.sourceUrl);
+  const obj = options.sourceBuffer
+    ? loader.parse(new TextDecoder().decode(options.sourceBuffer))
+    : await loader.loadAsync(options.sourceUrl);
   const result = summarizeLoadedGroup({
     group: obj,
     format: 'obj',
