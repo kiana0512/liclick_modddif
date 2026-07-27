@@ -126,7 +126,7 @@ const LOCAL_REPAINT_UV_MERGE_LAYER_NAME = '局部重绘合并层';
 // The inpaint selection must be the final model-space overlay so its striped
 // feedback cannot be covered by a paint preview or any texture-layer material.
 const PAINT_STROKE_PREVIEW_RENDER_ORDER = 1000;
-const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1001;
+const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1_000_000_000;
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
 const automaticFadeBrushStampCache = new Map<number, HTMLCanvasElement>();
@@ -1267,10 +1267,10 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
     `,
     transparent: true,
     depthWrite: false,
-    // The selection must remain on the foremost visible surface. Disabling
-    // depth testing lets the same screen-space stamp show through on rear or
-    // occluded meshes, especially on thin shells and disconnected parts.
-    depthTest: true,
+    // This material is display-only feedback for the already recorded mask.
+    // Draw it after every model/material pass without consulting scene depth so
+    // no fitting, projected texture or preview layer can cover the stripes.
+    depthTest: false,
     polygonOffset: true,
     polygonOffsetFactor: -8,
     polygonOffsetUnits: -8,
