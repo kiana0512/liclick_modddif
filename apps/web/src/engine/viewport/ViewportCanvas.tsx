@@ -1249,7 +1249,7 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
 
       void main() {
         if (projectionReady < 0.5) discard;
-        if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
+        if (vProjectedPosition.w <= 0.0001) discard;
         vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
         if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
         vec2 maskUv = ndc.xy * 0.5 + 0.5;
@@ -1274,10 +1274,11 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
     polygonOffset: true,
     polygonOffsetFactor: -8,
     polygonOffsetUnits: -8,
-    // The projected mask is only valid on camera-facing surfaces. Avoid shading
-    // the hidden back faces as well; dense production meshes otherwise pay for
-    // the overlay fragment shader twice while the pointer is moving.
-    side: THREE.FrontSide,
+    // Imported production meshes can contain reversed winding or two-sided
+    // parts. Visibility is decided by the scene depth buffer, so render both
+    // sides here instead of letting inconsistent normals punch holes through
+    // the topmost selection overlay.
+    side: THREE.DoubleSide,
     toneMapped: false,
   });
 }
@@ -2109,12 +2110,25 @@ function SurfacePaintOverlay() {
     (layer: UvPaintLayer, model: SurfacePaintTarget) => {
       // The selection texture lives in screen space and may span several
       // disconnected submeshes even when the pointer itself only raycasts one
-      // of them. Every paintable surface therefore needs the final mask
-      // overlay; otherwise nearby fittings appear to punch holes through the
-      // selection and make it look as if the mask were below the texture stack.
-      getPaintableMeshes(model).forEach((mesh) => ensureOverlayForMesh(layer, mesh));
+      // of them. Include real geometry even when it has no UVs; UV availability
+      // is relevant to texture baking, but must not make a visible fitting punch
+      // a hole through this screen-space editor overlay.
+      const meshes: THREE.Mesh[] = [];
+      model.group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        if (
+          child.userData.liclickPaintOverlay ||
+          child.userData.liclickViewportHelper ||
+          child.userData.liclickSelectionGlow ||
+          child.userData.liclickWireframeOverlay
+        )
+          return;
+        if (!child.geometry.getAttribute('position')) return;
+        meshes.push(child);
+      });
+      meshes.forEach((mesh) => ensureOverlayForMesh(layer, mesh));
     },
-    [ensureOverlayForMesh, getPaintableMeshes],
+    [ensureOverlayForMesh],
   );
 
   const ensurePaintPreviewOverlayForMesh = useCallback((layer: UvPaintLayer, mesh: THREE.Mesh) => {
