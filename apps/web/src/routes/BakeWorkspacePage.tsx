@@ -1065,6 +1065,8 @@ export function BakeWorkspacePage({
     setHighImporting(true);
     setBakeError(undefined);
     setAssetSaveState('saving');
+    let importedIntoWorkspace = false;
+    let temporaryObjectUrl: string | undefined;
     try {
       const resourceFiles = files.filter((file) => file !== modelFile);
       const loaded = await loadModelFromFile(
@@ -1073,12 +1075,6 @@ export function BakeWorkspacePage({
         resourceFiles,
       );
       const objectId = selectedHigh?.id ?? loaded.object.id;
-      const saved = await saveBlobAsset({
-        projectId,
-        category: 'models',
-        blob: modelFile,
-        filename: `bake-${objectId}-high-${modelFile.name}`,
-      });
 
       loaded.root.name = modelFile.name;
       loaded.root.userData.liclickObjectId = objectId;
@@ -1086,27 +1082,76 @@ export function BakeWorkspacePage({
         child.userData.liclickObjectId = objectId;
       });
 
-      const importedResult = {
+      temporaryObjectUrl = URL.createObjectURL(modelFile);
+      const liveImportedResult = {
         ...loaded.result,
         objectId,
         name: modelFile.name,
         sourceFileName: modelFile.name,
-        objectUrl: saved.asset.url,
+        objectUrl: temporaryObjectUrl,
         group: loaded.root,
       };
-      const importedObject: SceneObject = {
+      const liveImportedObject: SceneObject = {
         ...loaded.object,
         id: objectId,
         name: modelFile.name,
-        sourcePath: saved.asset.url,
+        sourcePath: temporaryObjectUrl,
         selected: true,
         visible: true,
       };
 
-      setImportedModel(importedResult, importedObject);
+      // Make the imported mesh available immediately. Saving is deliberately
+      // performed afterwards so an unavailable/stale project record cannot
+      // make the file picker look as though it ignored a valid model.
+      setImportedModel(liveImportedResult, liveImportedObject);
       setSelectedObjectId(objectId);
       setBakeJob(undefined);
       setOneClickBakeAttempted(false);
+      const currentProject = useProjectStore
+        .getState()
+        .projects.find((item) => item.id === projectId);
+      if (currentProject) {
+        const hasExistingObject = currentProject.objects.some((object) => object.id === objectId);
+        const objects = hasExistingObject
+          ? currentProject.objects.map((object) =>
+              object.id === objectId
+                ? liveImportedObject
+                : { ...object, selected: false },
+            )
+          : [
+              ...currentProject.objects.map((object) => ({ ...object, selected: false })),
+              liveImportedObject,
+            ];
+        replaceCurrentProject({
+          ...currentProject,
+          objects,
+          activeObjectId: objectId,
+          dirty: true,
+          bakeWorkspace: {
+            version: 1,
+            activeStage: 'assets',
+            selectedObjectId: objectId,
+            bakeSets: currentProject.bakeWorkspace?.bakeSets ?? {},
+          },
+        });
+      }
+      importedIntoWorkspace = true;
+
+      const saved = await saveBlobAsset({
+        projectId,
+        category: 'models',
+        blob: modelFile,
+        filename: `bake-${objectId}-high-${modelFile.name}`,
+      });
+      const importedResult = {
+        ...liveImportedResult,
+        objectUrl: saved.asset.url,
+      };
+      const importedObject: SceneObject = {
+        ...liveImportedObject,
+        sourcePath: saved.asset.url,
+      };
+      setImportedModel(importedResult, importedObject);
 
       await persistProjectUpdate((current) => {
         const hasExistingObject = current.objects.some((object) => object.id === objectId);
@@ -1143,11 +1188,18 @@ export function BakeWorkspacePage({
           },
         };
       });
+      if (temporaryObjectUrl) {
+        URL.revokeObjectURL(temporaryObjectUrl);
+        temporaryObjectUrl = undefined;
+      }
       setAssetSaveState('saved');
     } catch (reason) {
       setAssetSaveState('error');
+      const detail = reason instanceof Error ? reason.message : '请重试。';
       setBakeError(
-        reason instanceof Error ? `高模导入失败：${reason.message}` : '高模导入失败，请重试。',
+        importedIntoWorkspace
+          ? `高模已导入当前工作区，但未能保存到项目：${detail}`
+          : `高模导入失败：${detail}`,
       );
     } finally {
       setHighImporting(false);
