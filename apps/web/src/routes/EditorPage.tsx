@@ -161,6 +161,19 @@ const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
 const PROJECT_THUMBNAIL_SIZE = 2048;
 const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
 
+function waitForProjectRestoreIdle(timeoutMs = 800) {
+  return new Promise<void>((resolve) => {
+    const scheduleIdle = () => {
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
+        return;
+      }
+      window.setTimeout(resolve, 0);
+    };
+    window.requestAnimationFrame(() => scheduleIdle());
+  });
+}
+
 function isLocalRepaintGeneration(generation: Generation) {
   return generation.metadata.workflow === 'local-repaint';
 }
@@ -1626,23 +1639,36 @@ export function EditorPage({
       }
     }
 
-    const remainingPromise = mapWithConcurrency(remainingObjects, 2, loadRestoredModel);
     const primaryResult = await loadRestoredModel(primaryObject);
     if (restoreRequest !== modelRestoreRequestRef.current) return;
+    const restoredModelByObjectId = new Map<string, ModelLoadResult>();
+    const allResults = [primaryResult];
     if (primaryResult.model) {
+      restoredModelByObjectId.set(primaryResult.object.id, primaryResult.model);
       restoreImportedModels([primaryResult.model], activeObjectId);
     }
 
-    const remainingResults = await remainingPromise;
-    if (restoreRequest !== modelRestoreRequestRef.current) return;
-    const allResults = [primaryResult, ...remainingResults];
-    const modelByObjectId = new Map(
-      allResults.flatMap((result) =>
-        result.model ? ([[result.object.id, result.model]] as const) : [],
-      ),
-    );
+    // Model parsers run substantial synchronous work after their network reads.
+    // Loading the active model together with two background models made the first
+    // editor frames compete for the main thread. Restore the active model first,
+    // then admit the remaining models one at a time between idle frames.
+    for (const object of remainingObjects) {
+      await waitForProjectRestoreIdle();
+      if (restoreRequest !== modelRestoreRequestRef.current) return;
+      const result = await loadRestoredModel(object);
+      if (restoreRequest !== modelRestoreRequestRef.current) return;
+      allResults.push(result);
+      if (!result.model) continue;
+      restoredModelByObjectId.set(result.object.id, result.model);
+      const progressivelyRestoredModels = restorableObjects.flatMap((restorableObject) => {
+        const model = restoredModelByObjectId.get(restorableObject.id);
+        return model ? [model] : [];
+      });
+      restoreImportedModels(progressivelyRestoredModels, activeObjectId);
+    }
+
     const restoredModels = restorableObjects.flatMap((object) => {
-      const model = modelByObjectId.get(object.id);
+      const model = restoredModelByObjectId.get(object.id);
       return model ? [model] : [];
     });
     if (restoredModels.length > 0) {

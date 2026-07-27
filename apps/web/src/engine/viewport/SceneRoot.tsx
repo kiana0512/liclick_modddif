@@ -62,6 +62,7 @@ const PROJECTED_PREVIEW_LIMIT_TOAST_KEY = 'projected-preview:sampler-limit';
 const PROJECTED_PREVIEW_FAILURE_TOAST_KEY = 'projected-preview:failure';
 const PROJECTED_TEXTURE_ARRAY_TOAST_KEY = 'projected-preview:texture-array';
 const PROJECTED_PREVIEW_PROGRESS_INTERVAL_MS = 250;
+const RUNTIME_PROJECTION_PREVIEW_MAX_SIDE = 1024;
 // Keep a safety margin below the advertised fragment-sampler limit. A projected
 // layer can consume color, depth and normal samplers, while a UV/local-repaint
 // layer adds another sampler. Some WebGL2 drivers fail to link that direct shader
@@ -69,6 +70,31 @@ const PROJECTED_PREVIEW_PROGRESS_INTERVAL_MS = 250;
 // boundary is reached, so the fourth fully sampled projection uses arrays instead
 // of attempting an unstable 12-sampler direct material.
 const PROJECTED_ARRAY_DIRECT_SAMPLER_HEADROOM_RATIO = 0.75;
+
+function waitForProjectionVisibilityIdle(delayMs: number, timeoutMs = 1200) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(() => {
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
+        return;
+      }
+      window.requestAnimationFrame(() => resolve());
+    }, delayMs);
+  });
+}
+
+function getRuntimeProjectionPreviewSize(width: number, height: number) {
+  const safeWidth = Math.max(1, width);
+  const safeHeight = Math.max(1, height);
+  const scale = Math.min(
+    1,
+    RUNTIME_PROJECTION_PREVIEW_MAX_SIDE / Math.max(safeWidth, safeHeight),
+  );
+  return {
+    width: Math.max(1, Math.round(safeWidth * scale)),
+    height: Math.max(1, Math.round(safeHeight * scale)),
+  };
+}
 let lastProjectedPreviewProgressAt = 0;
 let lastProjectedPreviewPercent = 0;
 
@@ -716,18 +742,26 @@ function ImportedModel({
 
     void (async () => {
       const completedVisibility: Record<string, { depthUrl: string; normalUrl: string }> = {};
-      for (const layer of candidates) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      for (let index = 0; index < candidates.length; index += 1) {
+        const layer = candidates[index];
+        // Stored capture depth is sufficient for the first visible material.
+        // Rebuild the sharper runtime depth/crease-normal pair after the model
+        // and its textures have had time to present, yielding between layers.
+        await waitForProjectionVisibilityIdle(index === 0 ? 1000 : 32);
         if (cancelled) return;
         try {
           const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
+          const previewSize = getRuntimeProjectionPreviewSize(
+            capture?.width ?? 1024,
+            capture?.height ?? 1024,
+          );
           const visibility = await createRuntimeProjectionDepth({
             renderer: gl,
             group: importedModel.group,
             camera: layer.camera!,
             captureObjectMatrixWorld: layer.objectMatrixWorld,
-            width: Math.max(1, Math.min(2048, capture?.width ?? 1024)),
-            height: Math.max(1, Math.min(2048, capture?.height ?? 1024)),
+            width: previewSize.width,
+            height: previewSize.height,
           });
           if (cancelled) return;
           completedVisibility[layer.id] = visibility;

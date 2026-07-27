@@ -66,7 +66,16 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
 
   if (liveCanvas) return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
   if (!layer.imageUrl) return null;
-  return <img src={layer.imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />;
+  return (
+    <img
+      src={layer.imageUrl}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      className="h-full w-full object-cover"
+      draggable={false}
+    />
+  );
 }
 
 function LayerPreviewImage({ layer }: { layer: Layer }) {
@@ -848,7 +857,7 @@ function LayerRow({
       onDrop={onDrop}
       onDragEnd={onDragEnd}
       className={cn(
-        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition hover:bg-white/[0.06]',
+        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition [contain-intrinsic-size:58px] [content-visibility:auto] hover:bg-white/[0.06]',
         selected && 'bg-white/[0.22]',
         active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
         dragging && 'opacity-45',

@@ -9,6 +9,7 @@ import {
   getLiveProjectedCanvasTexture,
   isLiveProjectedCanvasUrl,
 } from './liveProjectedCanvasTextureRegistry';
+import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
 const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
 const DEFAULT_FLAT_COLOR = '#f4f5f2';
@@ -1534,8 +1535,10 @@ type ProjectedTextureArrayBundle = {
   uvScales: THREE.Vector2[];
 };
 
-const PROJECTED_ARRAY_PREVIEW_MEMORY_BUDGET = 192 * 1024 * 1024;
+const PROJECTED_ARRAY_PREVIEW_MEMORY_BUDGET = 96 * 1024 * 1024;
 const PROJECTED_ARRAY_MIN_PREVIEW_SIDE = 256;
+const PROJECTED_ARRAY_MAX_PREVIEW_SIDE = 1024;
+const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 524_288;
 
 function getTexturePixelSize(texture: THREE.Texture) {
   const image = texture.image as
@@ -1653,7 +1656,10 @@ async function createProjectedTextureArray(
     textureData.set(uploadContext.getImageData(0, 0, width, height).data, index * sliceByteLength);
 
     uploadedPixelsThisFrame += previewSize.width * previewSize.height;
-    if (uploadedPixelsThisFrame >= 4_194_304 && index < sources.length - 1) {
+    if (
+      uploadedPixelsThisFrame >= PROJECTED_ARRAY_FRAME_PIXEL_BUDGET &&
+      index < sources.length - 1
+    ) {
       uploadedPixelsThisFrame = 0;
       await yieldProjectedArrayUploadFrame();
       if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
@@ -1705,7 +1711,7 @@ function getProjectedArrayPreviewSide(renderer: THREE.WebGLRenderer, totalSlices
   );
   return Math.max(
     PROJECTED_ARRAY_MIN_PREVIEW_SIDE,
-    Math.min(renderer.capabilities.maxTextureSize, budgetSide),
+    Math.min(renderer.capabilities.maxTextureSize, PROJECTED_ARRAY_MAX_PREVIEW_SIDE, budgetSide),
   );
 }
 
@@ -2059,8 +2065,10 @@ export async function createProjectedLayerStackMaterial(
       normalArraySlice?: number;
     }
   > = [];
-  const preparedLayers = await Promise.all(
-    layers.map(async (layer) => {
+  const preparedLayers = await mapWithConcurrency(
+    layers,
+    2,
+    async (layer) => {
       const requestedMask = Boolean(layer.useMask && layer.maskUrl);
       const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
       const requestedNormal = Boolean(layer.useNormalCheck && layer.normalUrl);
@@ -2102,7 +2110,7 @@ export async function createProjectedLayerStackMaterial(
       ]);
       if (!texture) return undefined;
       return { layer, texture, maskTexture, depthTexture, normalTexture };
-    }),
+    },
   );
   if (options.isCancelled?.()) {
     neutralTexture.dispose();
