@@ -123,8 +123,10 @@ const LOCAL_REPAINT_UV_MERGE_LAYER_ID_PREFIX = 'local-repaint-uv-merge';
 const LOCAL_REPAINT_UV_MERGE_LAYER_NAME = '局部重绘合并层';
 // Paint feedback is an editor overlay, not part of the texture layer stack.
 // Keep it above projected textures, topology wireframes and selection helpers.
-const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1000;
-const PAINT_STROKE_PREVIEW_RENDER_ORDER = 1001;
+// The inpaint selection must be the final model-space overlay so its striped
+// feedback cannot be covered by a paint preview or any texture-layer material.
+const PAINT_STROKE_PREVIEW_RENDER_ORDER = 1000;
+const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1001;
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
 const automaticFadeBrushStampCache = new Map<number, HTMLCanvasElement>();
