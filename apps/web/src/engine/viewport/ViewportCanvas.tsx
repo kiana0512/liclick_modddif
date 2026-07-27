@@ -2105,6 +2105,18 @@ function SurfacePaintOverlay() {
     [shouldShowInpaintMask],
   );
 
+  const ensureInpaintMaskOverlaysForModel = useCallback(
+    (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+      // The selection texture lives in screen space and may span several
+      // disconnected submeshes even when the pointer itself only raycasts one
+      // of them. Every paintable surface therefore needs the final mask
+      // overlay; otherwise nearby fittings appear to punch holes through the
+      // selection and make it look as if the mask were below the texture stack.
+      getPaintableMeshes(model).forEach((mesh) => ensureOverlayForMesh(layer, mesh));
+    },
+    [ensureOverlayForMesh, getPaintableMeshes],
+  );
+
   const ensurePaintPreviewOverlayForMesh = useCallback((layer: UvPaintLayer, mesh: THREE.Mesh) => {
     if (layer.paintOverlayTargets.has(mesh)) return;
     layer.paintOverlayTargets.add(mesh);
@@ -2374,6 +2386,7 @@ function SurfacePaintOverlay() {
     const model = getTargetModel();
     if (!model) return;
     const layer = syncInpaintMaskProjection(model);
+    ensureInpaintMaskOverlaysForModel(layer, model);
 
     // Local repaint uses a different capture camera and a dedicated live mask.
     // Rebind the ordinary selection projector as soon as the user switches back.
@@ -2385,6 +2398,7 @@ function SurfacePaintOverlay() {
       if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
     });
   }, [
+    ensureInpaintMaskOverlaysForModel,
     getTargetModel,
     isInpaintMode,
     syncInpaintMaskProjection,
@@ -3234,10 +3248,7 @@ function SurfacePaintOverlay() {
           : undefined;
       if (target === 'mask') {
         if (!layer) return;
-        // A full-model overlay duplicates every draw call as soon as the first
-        // stroke starts. Add overlays lazily for only the meshes the brush
-        // actually reaches; paintAt expands this set when a stroke crosses parts.
-        if (result.hit.object instanceof THREE.Mesh) ensureOverlayForMesh(layer, result.hit.object);
+        ensureInpaintMaskOverlaysForModel(layer, result.model);
         layer.overlayMeshes.forEach((mesh) => {
           if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
         });
@@ -3289,7 +3300,7 @@ function SurfacePaintOverlay() {
       getUvPaintLayer,
       camera,
       gl.domElement,
-      ensureOverlayForMesh,
+      ensureInpaintMaskOverlaysForModel,
       ensureLiveLocalRepaintComposite,
       isInpaintMode,
       isLocalRepaintApplyMode,
