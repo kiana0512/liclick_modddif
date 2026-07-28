@@ -134,6 +134,57 @@ try {
   const uploaded = await upload.json();
   assert(uploaded.asset?.url, 'Asset upload must return a workspace URL.');
 
+  const objectWithLayer = {
+    ...created.project,
+    objects: [
+      {
+        id: 'smoke-object',
+        name: 'Smoke object',
+        type: 'model',
+        sourcePath: uploaded.asset.url,
+        format: 'fbx',
+        materialSlots: [],
+        uvSets: [],
+        warnings: [],
+      },
+    ],
+    layers: [
+      {
+        id: 'smoke-layer',
+        name: 'Smoke layer',
+        type: 'uv',
+        objectId: 'smoke-object',
+        imageUrl: uploaded.asset.url,
+        visible: true,
+        opacity: 1,
+      },
+    ],
+  };
+  const saveLayeredProject = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify(objectWithLayer),
+    },
+  );
+  assert.equal(saveLayeredProject.status, 200, 'A project with models and layers must save normally.');
+  const savedLayeredProject = await saveLayeredProject.json();
+
+  const accidentalLayerClear = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({ ...savedLayeredProject.project, layers: [] }),
+    },
+  );
+  assert.equal(
+    accidentalLayerClear.status,
+    409,
+    'A stale client snapshot must not clear every layer while project models remain.',
+  );
+
   const asset = await fetch(uploaded.asset.url, { headers: { Origin: allowedOrigin } });
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get('access-control-allow-origin'), allowedOrigin);

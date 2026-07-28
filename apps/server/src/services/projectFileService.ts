@@ -514,6 +514,15 @@ export async function saveProject(
         'Blocked saving an empty scene over an existing project with model or layer data.',
       );
     }
+    const incomingUnexpectedlyDropsAllLayers =
+      existingProject.layers.length > 0 &&
+      inputProject.objects.length > 0 &&
+      inputProject.layers.length === 0;
+    if (incomingUnexpectedlyDropsAllLayers) {
+      throw new ProjectSaveConflictError(
+        'Blocked clearing every layer from a project that still contains models. Reload the complete project before saving.',
+      );
+    }
   }
   const now = new Date().toISOString();
   const objectSafeProject = preserveReferencedObjects(existingProject, inputProject);
