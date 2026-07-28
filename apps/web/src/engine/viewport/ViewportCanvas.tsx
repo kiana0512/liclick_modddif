@@ -114,6 +114,9 @@ const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
 const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
 const LOCAL_REPAINT_LIVE_TEXTURE_MAX_FPS = 30;
+// Stop projection before a surface becomes so foreshortened that a few source
+// pixels stretch into visible scan lines. 0.2 is about 78 degrees from face-on.
+const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.2;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -959,6 +962,9 @@ type LocalRepaintCompositeState = {
   scratchContext: CanvasRenderingContext2D;
   falloffCanvas: HTMLCanvasElement;
   worldToSourceClip: THREE.Matrix4;
+  objectMatrixDelta: THREE.Matrix4;
+  objectNormalDelta: THREE.Matrix3;
+  projectorViewNormalMatrix: THREE.Matrix3;
   restoredMaskUrl?: string;
 };
 
@@ -1498,19 +1504,22 @@ function createLocalRepaintComposite(
     scratchContext,
     falloffCanvas: createLocalRepaintFalloffCanvas(allowedMaskImage, width, height),
     worldToSourceClip: new THREE.Matrix4(),
+    objectMatrixDelta: new THREE.Matrix4(),
+    objectNormalDelta: new THREE.Matrix3(),
+    projectorViewNormalMatrix: new THREE.Matrix3(),
   };
 }
 
 const localRepaintProjectionScratch = {
   currentObjectInverse: new THREE.Matrix4(),
   captureObjectMatrix: new THREE.Matrix4(),
-  objectMatrixDelta: new THREE.Matrix4(),
+  projectorViewMatrix: new THREE.Matrix4(),
   clipPoint: new THREE.Vector4(),
   projectedUv: new THREE.Vector2(),
 };
 
 function updateLocalRepaintProjectionMatrix(
-  target: THREE.Matrix4,
+  composite: LocalRepaintCompositeState,
   model: SurfacePaintTarget,
   source: LocalRepaintProjectionSource,
 ) {
@@ -1519,13 +1528,40 @@ function updateLocalRepaintProjectionMatrix(
   const captureObjectMatrix = source.objectMatrixWorld
     ? localRepaintProjectionScratch.captureObjectMatrix.fromArray(source.objectMatrixWorld)
     : model.group.matrixWorld;
-  localRepaintProjectionScratch.objectMatrixDelta
+  composite.objectMatrixDelta
     .copy(captureObjectMatrix)
     .multiply(localRepaintProjectionScratch.currentObjectInverse);
-  target
+  composite.objectNormalDelta.getNormalMatrix(composite.objectMatrixDelta);
+  composite.projectorViewNormalMatrix.getNormalMatrix(
+    localRepaintProjectionScratch.projectorViewMatrix.fromArray(source.camera.viewMatrix),
+  );
+  composite.worldToSourceClip
     .copy(buildProjectionMatrixBundle(source.camera).projectorMatrix)
-    .multiply(localRepaintProjectionScratch.objectMatrixDelta);
-  return target;
+    .multiply(composite.objectMatrixDelta);
+  return composite.worldToSourceClip;
+}
+
+function isLocalRepaintSurfaceFacingProjector(
+  composite: LocalRepaintCompositeState,
+  mesh: THREE.Mesh,
+  face: THREE.Face,
+) {
+  const position = mesh.geometry.getAttribute('position');
+  if (!(position instanceof THREE.BufferAttribute)) return false;
+  const { p0, p1, p2, edge1, edge2, normal } = surfaceBrushScratch;
+  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
+  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
+  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
+  edge1.copy(p1).sub(p0);
+  edge2.copy(p2).sub(p0);
+  normal.crossVectors(edge1, edge2);
+  if (normal.lengthSq() < 1e-16) return false;
+  normal
+    .normalize()
+    .applyMatrix3(composite.objectNormalDelta)
+    .applyMatrix3(composite.projectorViewNormalMatrix)
+    .normalize();
+  return Math.abs(normal.z) >= LOCAL_REPAINT_MINIMUM_FACE_ON;
 }
 
 function projectWorldPointToLocalRepaintUv(
@@ -1803,7 +1839,6 @@ function SurfacePaintOverlay() {
   );
   raycasterRef.current.firstHitOnly = true;
   const pointerRef = useRef(new THREE.Vector2());
-  const localRepaintPointerProjectionMatrixRef = useRef(new THREE.Matrix4());
   const isPaintingRef = useRef(false);
   const lastUvRef = useRef<THREE.Vector2>();
   const lastSampleRef = useRef<UvPaintSample>();
@@ -2840,7 +2875,7 @@ function SurfacePaintOverlay() {
         }
       }
       if (!composite) return undefined;
-      updateLocalRepaintProjectionMatrix(composite.worldToSourceClip, model, localRepaintSource);
+      updateLocalRepaintProjectionMatrix(composite, model, localRepaintSource);
 
       const projectedLayer: Layer = {
         ...existingLayer,
@@ -2860,6 +2895,7 @@ function SurfacePaintOverlay() {
         captureId: localRepaintSource.captureId,
         replacementTargetLayerId: localRepaintSource.targetLayerId,
         renderedColor: true,
+        minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
         isBaked: false,
         needsRebake: true,
         visible: true,
@@ -2883,6 +2919,7 @@ function SurfacePaintOverlay() {
         currentPreviewLayer.objectId === projectedLayer.objectId &&
         currentPreviewLayer.generationId === projectedLayer.generationId &&
         currentPreviewLayer.captureId === projectedLayer.captureId &&
+        currentPreviewLayer.minimumProjectionFacing === projectedLayer.minimumProjectionFacing &&
         currentPreviewLayer.replacementTargetLayerId ===
           projectedLayer.replacementTargetLayerId;
       // Re-publishing an equivalent object makes SceneRoot rebuild the projected
@@ -3127,6 +3164,15 @@ function SurfacePaintOverlay() {
       } else if (strokePaintTool === 'inpaint-apply') {
         const draft = strokeDraftRef.current;
         const composite = draft?.localRepaintComposite;
+        const surfaceFacesProjector =
+          composite &&
+          result.hit.object instanceof THREE.Mesh &&
+          result.hit.face &&
+          isLocalRepaintSurfaceFacingProjector(
+            composite,
+            result.hit.object,
+            result.hit.face,
+          );
         localRepaintUv = composite
           ? projectWorldPointToLocalRepaintUv(result.hit.point, composite.worldToSourceClip)
           : undefined;
@@ -3134,6 +3180,7 @@ function SurfacePaintOverlay() {
           !draft?.localRepaintSource ||
           !localRepaintSourceImageRef.current ||
           !composite ||
+          !surfaceFacesProjector ||
           !localRepaintUv ||
           !hasLocalRepaintSourceContent(localRepaintUv)
         ) {
@@ -3399,6 +3446,7 @@ function SurfacePaintOverlay() {
           captureId: source.captureId,
           replacementTargetLayerId: source.targetLayerId,
           renderedColor: true,
+          minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
           visible: true,
           opacity: 1,
           strength: 1,
@@ -4226,17 +4274,26 @@ function SurfacePaintOverlay() {
       updateCursorFromHit(result);
       if (isLocalRepaintApplyMode) {
         const source = resolveLocalRepaintStrokeSource();
-        const projectedUv = source
-          ? projectWorldPointToLocalRepaintUv(
-              result.hit.point,
-              updateLocalRepaintProjectionMatrix(
-                localRepaintPointerProjectionMatrixRef.current,
-                result.model,
-                source,
-              ),
-              localRepaintProjectionScratch.projectedUv,
-            )
+        const composite = source
+          ? ensureLiveLocalRepaintComposite(result.model, source)
           : undefined;
+        const surfaceFacesProjector =
+          composite &&
+          result.hit.object instanceof THREE.Mesh &&
+          result.hit.face &&
+          isLocalRepaintSurfaceFacingProjector(
+            composite,
+            result.hit.object,
+            result.hit.face,
+          );
+        const projectedUv =
+          composite && surfaceFacesProjector
+            ? projectWorldPointToLocalRepaintUv(
+                result.hit.point,
+                composite.worldToSourceClip,
+                localRepaintProjectionScratch.projectedUv,
+              )
+            : undefined;
         if (!projectedUv || !hasLocalRepaintSourceContent(projectedUv)) return;
       }
       isPaintingRef.current = true;
@@ -4332,6 +4389,7 @@ function SurfacePaintOverlay() {
     commitPaintStroke,
     commitStrokeHistory,
     enabled,
+    ensureLiveLocalRepaintComposite,
     gl,
     hasLocalRepaintSourceContent,
     isInpaintMode,

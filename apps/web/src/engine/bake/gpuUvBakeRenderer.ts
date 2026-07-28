@@ -21,6 +21,7 @@ const MAX_GRAZING_DEPTH_SCALE = 4;
 const MIN_VISIBILITY_SUPPORT = 1.5;
 const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
 const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
+const PROJECTION_FACING_FEATHER = 0.08;
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 
 type GpuLayerStackBakeInput = {
@@ -152,6 +153,7 @@ const fragmentShader = `
   uniform float strictDepthCheck;
   uniform float maximumDepthError;
   uniform float minimumOutputCoverage;
+  uniform float minimumProjectionFacing;
   uniform float enableBackfaceCulling;
   uniform float useCoverageAlpha;
   uniform float useQualityDepth;
@@ -352,6 +354,17 @@ const fragmentShader = `
       cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
     );
     float faceOnFactor = abs(projectedFaceNormal.z);
+    if (faceOnFactor < minimumProjectionFacing) discard;
+    float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
+    float projectionFacingCoverage = mix(
+      1.0,
+      smoothstep(
+        minimumProjectionFacing,
+        minimumProjectionFacing + ${PROJECTION_FACING_FEATHER.toFixed(2)},
+        faceOnFactor
+      ),
+      useProjectionFacingGuard
+    );
     float grazingDepthScale = mix(
       ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
       1.0,
@@ -423,7 +436,7 @@ const fragmentShader = `
     if (sourceAlpha < 0.01) discard;
     float angleWeight = computeAngleWeight(ndv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
-    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
     if (coverage <= max(0.025, minimumOutputCoverage)) discard;
     float qualityEdge = computeImageEdgeFade(projectedSampleUv, 0.035);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
@@ -805,6 +818,9 @@ function createLayerMaterial(input: {
       },
       minimumOutputCoverage: {
         value: THREE.MathUtils.clamp(input.minimumOutputCoverage ?? 0, 0, 0.99),
+      },
+      minimumProjectionFacing: {
+        value: THREE.MathUtils.clamp(input.layer.minimumProjectionFacing ?? 0, 0, 0.99),
       },
       enableBackfaceCulling: { value: input.enableBackfaceCulling ? 1 : 0 },
       useCoverageAlpha: { value: input.compositeMode === 'coverage-alpha' ? 1 : 0 },

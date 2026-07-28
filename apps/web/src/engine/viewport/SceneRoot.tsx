@@ -231,6 +231,7 @@ function layerPreviewSignature(layer: Layer) {
     layer.adjustments?.saturation ?? 0,
     layer.adjustments?.lightness ?? 0,
     layer.renderedColor ? 1 : 0,
+    layer.minimumProjectionFacing ?? 0,
     layer.contentRevision ?? 0,
     layer.needsRebake ? 1 : 0,
     stableNumberListSignature(layer.objectMatrixWorld),
@@ -903,6 +904,7 @@ function ImportedModel({
           useDepthCheck: Boolean(depthUrl),
           useNormalCheck: Boolean(runtimeVisibility?.normalUrl),
           renderedColor: isRenderedLocalRepaintLayer(layer),
+          minimumProjectionFacing: layer.minimumProjectionFacing,
         };
       }),
     [captureById, runtimeVisibilityByLayerId, stablePreviewProjectedLayers],

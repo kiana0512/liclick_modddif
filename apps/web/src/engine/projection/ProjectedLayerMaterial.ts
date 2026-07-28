@@ -97,6 +97,7 @@ const MAX_GRAZING_DEPTH_SCALE = 4;
 const MIN_VISIBILITY_SUPPORT = 1.5;
 const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
 const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
+const PROJECTION_FACING_FEATHER = 0.08;
 const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
 const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
@@ -265,6 +266,7 @@ const fragmentShader = `
   uniform float layerOpacity;
   uniform float layerStrength;
   uniform float projectedIsRenderedColor;
+  uniform float minimumProjectionFacing;
   uniform float projectedBlendModeOverlay;
   uniform float projectedCompositeUnderlay;
   uniform float useMask;
@@ -456,6 +458,16 @@ const fragmentShader = `
     // Neighbourhood matching removes seams between two faces that were both
     // visible in the capture, while still rejecting genuinely hidden faces.
     float faceOnFactor = abs(projectedFaceNormal.z);
+    float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
+    float projectionFacingCoverage = mix(
+      1.0,
+      smoothstep(
+        minimumProjectionFacing,
+        minimumProjectionFacing + ${PROJECTION_FACING_FEATHER.toFixed(2)},
+        faceOnFactor
+      ),
+      useProjectionFacingGuard
+    );
     // On a foreshortened plane the expected depth changes several times more
     // per source pixel than on a face-on plane. The normal buffer keeps this
     // relaxation on the same surface, while the wider tolerance reconnects
@@ -538,7 +550,7 @@ const fragmentShader = `
       useDepthCheck
     );
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
-    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
     float angleWeight = computeAngleWeight(ndv, layerStrength);
     float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
@@ -643,6 +655,7 @@ function buildStackFragmentShader(
     depthArraySlice?: number;
     normalArraySlice?: number;
     renderedColor?: boolean;
+    minimumProjectionFacing?: number;
     blendMode?: ProjectionLayerStackInput['layers'][number]['blendMode'];
     compositeRole?: ProjectionLayerStackInput['layers'][number]['compositeRole'];
   }>,
@@ -655,6 +668,12 @@ function buildStackFragmentShader(
     Boolean(layers[index].useDepthCheck && layers[index].depthUrl);
   const layerUsesNormal = (index: number) =>
     Boolean(layers[index].useNormalCheck && layers[index].normalUrl);
+  const projectionFacingCoverage = (index: number) => {
+    const minimum = THREE.MathUtils.clamp(layers[index].minimumProjectionFacing ?? 0, 0, 0.99);
+    return minimum > 0
+      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(projectedFaceNormal.z))`
+      : '1.0';
+  };
   const layerUsesProjectedArray = (index: number) =>
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].imageUrl);
   const layerUsesMaskArray = (index: number) =>
@@ -813,6 +832,7 @@ function buildStackFragmentShader(
       };
       vec3 captureViewPosition = (projectorViewMatrix${index} * captureWorldPosition).xyz;
       vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
+      float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
       float depthWeight = visibilityCoverage;
       vec4 texel = ${projectedSample(index, 'uv')};
@@ -830,7 +850,7 @@ function buildStackFragmentShader(
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
-      float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+      float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
       float angleWeight = computeAngleWeight(ndv, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
@@ -886,6 +906,7 @@ function buildStackFragmentShader(
       };
       vec3 captureViewPosition = (projectorViewMatrix${index} * captureWorldPosition).xyz;
       vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
+      float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
       float depthWeight = visibilityCoverage;
       vec4 texel = ${projectedSample(index, 'uv')};
@@ -903,7 +924,7 @@ function buildStackFragmentShader(
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
-      float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+      float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
       float angleWeight = computeAngleWeight(ndv, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
@@ -1329,6 +1350,7 @@ function getProjectionLayerStructureSignature(
           layer.useDepthCheck ? 1 : 0,
           layer.useNormalCheck ? 1 : 0,
           layer.renderedColor ? 1 : 0,
+          layer.minimumProjectionFacing ?? 0,
           layer.blendMode ?? 'normal',
           layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
@@ -1737,6 +1759,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     useDepthCheck: input.useDepthCheck,
     useNormalCheck: input.useNormalCheck,
     renderedColor: input.renderedColor,
+    minimumProjectionFacing: input.minimumProjectionFacing,
   };
   const texture = await loadProjectedTexture(input.imageUrl);
 
@@ -1848,6 +1871,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       layerOpacity: { value: input.visible ? input.opacity : 0 },
       layerStrength: { value: input.strength ?? 1 },
       projectedIsRenderedColor: { value: input.renderedColor ? 1 : 0 },
+      minimumProjectionFacing: {
+        value: THREE.MathUtils.clamp(input.minimumProjectionFacing ?? 0, 0, 0.99),
+      },
       projectedBlendModeOverlay: { value: input.blendMode === 'overlay' ? 1 : 0 },
       projectedCompositeUnderlay: { value: input.compositeRole === 'underlay' ? 1 : 0 },
       useMask: { value: input.useMask && input.maskUrl ? 1 : 0 },
@@ -1987,6 +2013,7 @@ export async function createProjectedLayerStackMaterial(
       useDepthCheck: layer.useDepthCheck,
       useNormalCheck: layer.useNormalCheck,
       renderedColor: layer.renderedColor,
+      minimumProjectionFacing: layer.minimumProjectionFacing,
     });
     material.userData[PROJECTED_LAYER_SAMPLER_BUDGET_KEY] = samplerBudget;
     return material;
