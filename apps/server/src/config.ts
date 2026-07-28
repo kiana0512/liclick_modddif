@@ -43,13 +43,13 @@ const comfyuiBaseUrl = (process.env.COMFYUI_BASE_URL ?? 'http://127.0.0.1:8188')
 const comfyuiTextureWorkflowPath =
   process.env.COMFYUI_TEXTURE_WORKFLOW_PATH ??
   'C:/Users/rentian/Downloads/li3d_zimage_web3d_fast_1024_to_4k_16gb.json';
-const comfyuiInpaintServiceUrl = (
+const comfyuiInpaintBaseUrl = (
+  process.env.COMFYUI_INPAINT_BASE_URL ??
   process.env.COMFYUI_INPAINT_SERVICE_URL ??
-  'https://10.3.34.11/api/v1/services/modelview-inpaint'
-).trim();
-const comfyuiInpaintApiKey = process.env.COMFYUI_INPAINT_API_KEY?.trim() || undefined;
-const comfyuiInpaintTlsRejectUnauthorized =
-  (process.env.COMFYUI_INPAINT_TLS_REJECT_UNAUTHORIZED ?? 'false').toLowerCase() !== 'false';
+  'http://10.3.2.59:56001'
+).replace(/\/$/, '');
+const comfyuiInpaintWorkflowName =
+  process.env.COMFYUI_INPAINT_WORKFLOW_NAME ?? 'flux_fill_inpaint.json';
 
 function getOrigin(value: string) {
   try {
@@ -209,9 +209,8 @@ export const serverConfig = {
   frontendUrl,
   comfyuiBaseUrl,
   comfyuiTextureWorkflowPath,
-  comfyuiInpaintServiceUrl,
-  comfyuiInpaintApiKey,
-  comfyuiInpaintTlsRejectUnauthorized,
+  comfyuiInpaintBaseUrl,
+  comfyuiInpaintWorkflowName,
   frontendOrigin: getOrigin(frontendUrl),
   allowedOrigins: [
     getOrigin(frontendUrl),
