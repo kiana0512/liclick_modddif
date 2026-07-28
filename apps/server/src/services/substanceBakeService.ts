@@ -94,6 +94,7 @@ export type NormalBakeJob = {
     low: string;
     cage?: string;
     color?: string;
+    normalMap?: string;
     roughness?: string;
     metallic?: string;
   };
@@ -115,6 +116,7 @@ type InternalJob = NormalBakeJob & {
   lowPath: string;
   cagePath?: string;
   colorPath?: string;
+  normalMapPath?: string;
   roughnessPath?: string;
   metallicPath?: string;
   outputPaths: Record<BakeChannelId, string>;
@@ -145,6 +147,7 @@ function publicJob(job: InternalJob): NormalBakeJob {
   delete result.lowPath;
   delete result.cagePath;
   delete result.colorPath;
+  delete result.normalMapPath;
   delete result.roughnessPath;
   delete result.metallicPath;
   delete result.outputPaths;
@@ -243,9 +246,13 @@ function buildArguments(job: InternalJob, channel: BakeChannelId) {
   const settings = job.settings;
   const sampling = settings.sampling === '1x1' ? 'none' : settings.sampling;
   const definition = bakeChannelDefinitions[channel];
+  const command =
+    channel === 'normal' && job.normalMapPath
+      ? 'TextureTransfer.Raytraced'
+      : definition.command;
   const args = [
     '--verbose',
-    definition.command,
+    command,
     '--inputs',
     job.lowPath,
     '--high_scene_paths',
@@ -303,12 +310,31 @@ function buildArguments(job: InternalJob, channel: BakeChannelId) {
     );
   }
   if (channel === 'normal') {
-    args.push(
-      '--output_texture_orientation',
-      settings.normalOrientation,
-      '--output_texture_space',
-      'tangent_space',
-    );
+    if (job.normalMapPath) {
+      args.push(
+        '--source_texture_path',
+        job.normalMapPath,
+        '--source_texture_isnormal',
+        'true',
+        '--source_texture_space',
+        'tangent_space',
+        '--source_texture_orientation',
+        'directx',
+        '--output_texture_orientation',
+        settings.normalOrientation,
+        '--highpoly_uv_set',
+        '0',
+        '--filtering_mode',
+        'bilinear',
+      );
+    } else {
+      args.push(
+        '--output_texture_orientation',
+        settings.normalOrientation,
+        '--output_texture_space',
+        'tangent_space',
+      );
+    }
   }
   if (channel === 'worldNormal') {
     args.push('--output_texture_orientation', 'opengl', '--output_texture_space', 'world_space');
@@ -423,6 +449,7 @@ export function createNormalBakeJob(input: {
   low: BakeUpload;
   cage?: BakeUpload;
   color?: BakeUpload;
+  normalMap?: BakeUpload;
   roughness?: BakeUpload;
   metallic?: BakeUpload;
 }) {
@@ -430,6 +457,7 @@ export function createNormalBakeJob(input: {
   validateBakeUpload(input.low, '低模', 'model');
   if (input.cage) validateBakeUpload(input.cage, 'Cage', 'model');
   if (input.color) validateBakeUpload(input.color, '颜色贴图', 'image');
+  if (input.normalMap) validateBakeUpload(input.normalMap, 'Normal', 'image');
   if (input.roughness) validateBakeUpload(input.roughness, 'Roughness', 'image');
   if (input.metallic) validateBakeUpload(input.metallic, 'Metallic', 'image');
   const id = `bake_${randomUUID()}`;
@@ -442,6 +470,9 @@ export function createNormalBakeJob(input: {
   const lowName = safeFileName(input.low.fileName, 'low.fbx');
   const cageName = input.cage ? safeFileName(input.cage.fileName, 'cage.fbx') : undefined;
   const colorName = input.color ? safeFileName(input.color.fileName, 'high-color.png') : undefined;
+  const normalMapName = input.normalMap
+    ? safeFileName(input.normalMap.fileName, 'high-normal.png')
+    : undefined;
   const roughnessName = input.roughness
     ? safeFileName(input.roughness.fileName, 'high-roughness.png')
     : undefined;
@@ -452,6 +483,9 @@ export function createNormalBakeJob(input: {
   const lowPath = path.join(inputDirectory, `low-${lowName}`);
   const cagePath = cageName ? path.join(inputDirectory, `cage-${cageName}`) : undefined;
   const colorPath = colorName ? path.join(inputDirectory, `color-${colorName}`) : undefined;
+  const normalMapPath = normalMapName
+    ? path.join(inputDirectory, `normal-${normalMapName}`)
+    : undefined;
   const roughnessPath = roughnessName
     ? path.join(inputDirectory, `roughness-${roughnessName}`)
     : undefined;
@@ -462,6 +496,7 @@ export function createNormalBakeJob(input: {
   fs.writeFileSync(lowPath, input.low.data);
   if (input.cage && cagePath) fs.writeFileSync(cagePath, input.cage.data);
   if (input.color && colorPath) fs.writeFileSync(colorPath, input.color.data);
+  if (input.normalMap && normalMapPath) fs.writeFileSync(normalMapPath, input.normalMap.data);
   if (input.roughness && roughnessPath) fs.writeFileSync(roughnessPath, input.roughness.data);
   if (input.metallic && metallicPath) fs.writeFileSync(metallicPath, input.metallic.data);
   const settings = validateSettings(input.settings);
@@ -486,6 +521,7 @@ export function createNormalBakeJob(input: {
       low: lowName,
       ...(cageName ? { cage: cageName } : {}),
       ...(colorName ? { color: colorName } : {}),
+      ...(normalMapName ? { normalMap: normalMapName } : {}),
       ...(roughnessName ? { roughness: roughnessName } : {}),
       ...(metallicName ? { metallic: metallicName } : {}),
     },
@@ -497,6 +533,7 @@ export function createNormalBakeJob(input: {
     lowPath,
     cagePath,
     colorPath,
+    normalMapPath,
     roughnessPath,
     metallicPath,
     outputPaths: {

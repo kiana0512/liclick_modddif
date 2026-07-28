@@ -44,6 +44,7 @@ export type NormalBakeJob = {
     low: string;
     cage?: string;
     color?: string;
+    normalMap?: string;
     roughness?: string;
     metallic?: string;
   };
@@ -95,6 +96,7 @@ export async function submitNormalBake(input: {
   low: File;
   cage?: File;
   color?: File;
+  normalMap?: File;
   roughness?: File;
   metallic?: File;
   settings: NormalBakeSettings;
@@ -107,6 +109,7 @@ export async function submitNormalBake(input: {
   body.set('low', input.low);
   if (input.cage) body.set('cage', input.cage);
   if (input.color) body.set('color', input.color);
+  if (input.normalMap) body.set('normalMap', input.normalMap);
   if (input.roughness) body.set('roughness', input.roughness);
   if (input.metallic) body.set('metallic', input.metallic);
   const response = await fetch(`${workspaceApiBase}/api/bake/jobs`, {

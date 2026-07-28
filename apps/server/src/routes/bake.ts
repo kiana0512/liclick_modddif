@@ -76,6 +76,7 @@ export async function handleBakeRoute(
       low: multipart.files.low,
       cage: multipart.files.cage,
       color: multipart.files.color,
+      normalMap: multipart.files.normalMap,
       roughness: multipart.files.roughness,
       metallic: multipart.files.metallic,
     });

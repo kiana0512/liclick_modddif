@@ -46,6 +46,7 @@ import {
   useBakeModelAnalysis,
   type BakeModelFileInput,
 } from '@/features/bake/useBakeModelAnalysis';
+import { dehighlightBaseColorFile } from '@/features/bake/dehighlightBaseColor';
 import { BakeSceneOverlay, type BakeViewportMode } from '@/features/bake/BakeSceneOverlay';
 import { WorkflowShell } from '@/features/workflow/WorkflowShell';
 import { ModuleOneReadonlyViewport } from '@/features/workflow/ModuleOneReadonlyViewport';
@@ -75,6 +76,7 @@ import type { ModelBoundingBox, SceneObject } from '@/types/model';
 import type { BakeDraftSettings, Project, ProjectBakeSetState } from '@/types/project';
 
 type BakeStage = 'assets' | 'alignment' | 'bake' | 'check' | 'pbr';
+type MaterialMapKind = 'color' | 'normalMap' | 'roughness' | 'metallic';
 type ChannelId =
   | 'baseColor'
   | 'normal'
@@ -239,6 +241,7 @@ export function BakeWorkspacePage({
   const lowInputRef = useRef<HTMLInputElement>(null);
   const cageInputRef = useRef<HTMLInputElement>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
+  const normalMapInputRef = useRef<HTMLInputElement>(null);
   const roughnessInputRef = useRef<HTMLInputElement>(null);
   const metallicInputRef = useRef<HTMLInputElement>(null);
   const fileTargetIdRef = useRef<string>();
@@ -283,8 +286,12 @@ export function BakeWorkspacePage({
   const [lowFiles, setLowFiles] = useState<Record<string, File>>({});
   const [cageFiles, setCageFiles] = useState<Record<string, File>>({});
   const [colorFiles, setColorFiles] = useState<Record<string, File>>({});
+  const [normalMapFiles, setNormalMapFiles] = useState<Record<string, File>>({});
   const [roughnessFiles, setRoughnessFiles] = useState<Record<string, File>>({});
   const [metallicFiles, setMetallicFiles] = useState<Record<string, File>>({});
+  const [ignoredProjectColorIds, setIgnoredProjectColorIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [engine, setEngine] = useState<BakeEngineId>(defaultBakeDraftSettings.engine);
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>('production');
@@ -305,6 +312,7 @@ export function BakeWorkspacePage({
   const [preflightRan, setPreflightRan] = useState(false);
   const [roughnessSource, setRoughnessSource] = useState<'manual' | 'comfy'>('manual');
   const [cleanBaseColor, setCleanBaseColor] = useState(false);
+  const [dehighlightStrength, setDehighlightStrength] = useState(70);
   const [enabledChannels, setEnabledChannels] = useState<Set<ChannelId>>(
     () => new Set(defaultOneClickChannels),
   );
@@ -371,7 +379,7 @@ export function BakeWorkspacePage({
 
   const persistImportedFiles = useCallback(
     async (
-      kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic',
+      kind: 'low' | 'cage' | 'color' | 'normalMap' | 'roughness' | 'metallic',
       assigned: Record<string, File>,
     ) => {
       if (Object.keys(assigned).length === 0) return;
@@ -382,7 +390,10 @@ export function BakeWorkspacePage({
             const result = await saveBlobAsset({
               projectId,
               category:
-                kind === 'color' || kind === 'roughness' || kind === 'metallic'
+                kind === 'color' ||
+                kind === 'normalMap' ||
+                kind === 'roughness' ||
+                kind === 'metallic'
                   ? 'references'
                   : 'models',
               blob: file,
@@ -412,9 +423,16 @@ export function BakeWorkspacePage({
           };
           uploaded.forEach(([objectId, asset]) => {
             const previous = bakeSets[objectId] ?? { objectId };
-            bakeSets[objectId] = { ...previous, [kind]: asset };
+            bakeSets[objectId] = {
+              ...previous,
+              [kind]: asset,
+              ...(kind === 'color' ? { ignoreProjectColor: false } : {}),
+            };
             const category =
-              kind === 'color' || kind === 'roughness' || kind === 'metallic'
+              kind === 'color' ||
+              kind === 'normalMap' ||
+              kind === 'roughness' ||
+              kind === 'metallic'
                 ? 'references'
                 : 'models';
             assetManifest[category] = Array.from(
@@ -505,7 +523,9 @@ export function BakeWorkspacePage({
       setActiveStage(workspace.activeStage === 'publish' ? 'pbr' : workspace.activeStage);
     }
     let cancelled = false;
-    const restoreKind = async (kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic') => {
+    const restoreKind = async (
+      kind: 'low' | 'cage' | 'color' | 'normalMap' | 'roughness' | 'metallic',
+    ) => {
       const entries = await Promise.all(
         Object.entries(workspace.bakeSets).map(async ([objectId, set]) => {
           const asset = set[kind];
@@ -527,14 +547,16 @@ export function BakeWorkspacePage({
       restoreKind('low'),
       restoreKind('cage'),
       restoreKind('color'),
+      restoreKind('normalMap'),
       restoreKind('roughness'),
       restoreKind('metallic'),
     ])
-      .then(([low, cage, color, roughness, metallic]) => {
+      .then(([low, cage, color, normalMap, roughness, metallic]) => {
         if (cancelled) return;
         setLowFiles(low);
         setCageFiles(cage);
         setColorFiles(color);
+        setNormalMapFiles(normalMap);
         setRoughnessFiles(roughness);
         setMetallicFiles(metallic);
         setAssetSaveState('saved');
@@ -550,6 +572,17 @@ export function BakeWorkspacePage({
     return () => {
       cancelled = true;
     };
+  }, [project]);
+
+  useEffect(() => {
+    if (!project) return;
+    setIgnoredProjectColorIds(
+      new Set(
+        Object.values(project.bakeWorkspace?.bakeSets ?? {})
+          .filter((set) => set.ignoreProjectColor)
+          .map((set) => set.objectId),
+      ),
+    );
   }, [project]);
 
   useEffect(() => {
@@ -608,12 +641,17 @@ export function BakeWorkspacePage({
   const selectedLow = selectedHigh ? lowFiles[selectedHigh.id] : undefined;
   const selectedCage = selectedHigh ? cageFiles[selectedHigh.id] : undefined;
   const selectedColor = selectedHigh ? colorFiles[selectedHigh.id] : undefined;
+  const selectedNormalMap = selectedHigh ? normalMapFiles[selectedHigh.id] : undefined;
   const selectedRoughness = selectedHigh ? roughnessFiles[selectedHigh.id] : undefined;
   const selectedMetallic = selectedHigh ? metallicFiles[selectedHigh.id] : undefined;
-  const selectedProjectColor = selectedHigh ? projectColorForObject(selectedHigh.id) : undefined;
+  const selectedProjectColor =
+    selectedHigh && !ignoredProjectColorIds.has(selectedHigh.id)
+      ? projectColorForObject(selectedHigh.id)
+      : undefined;
   const selectedColorName = selectedColor?.name ?? selectedProjectColor?.name;
   const materialMapCount =
     Number(Boolean(selectedColorName)) +
+    Number(Boolean(selectedNormalMap)) +
     Number(Boolean(selectedRoughness)) +
     Number(Boolean(selectedMetallic));
   const selectedLowInfo = selectedHigh ? alignmentInfo.low[selectedHigh.id] : undefined;
@@ -725,11 +763,11 @@ export function BakeWorkspacePage({
         };
       })
         .then(() => setAssetSaveState('saved'))
-        .catch((reason: unknown) => {
+        .catch(() => {
+          // Settings autosave is non-blocking. Keep its status separate from
+          // bake execution errors so a missing demo project never makes a
+          // successful bake look like it failed.
           setAssetSaveState('error');
-          setBakeError(
-            reason instanceof Error ? `烘焙设置保存失败：${reason.message}` : '烘焙设置保存失败',
-          );
         });
     }, 700);
     return () => window.clearTimeout(timer);
@@ -961,7 +999,7 @@ export function BakeWorkspacePage({
   ]);
 
   function chooseFiles(
-    kind: 'high' | 'low' | 'cage' | 'color' | 'roughness' | 'metallic',
+    kind: 'high' | 'low' | 'cage' | 'color' | 'normalMap' | 'roughness' | 'metallic',
     objectId?: string,
   ) {
     fileTargetIdRef.current = objectId ?? selectedHigh?.id;
@@ -969,6 +1007,7 @@ export function BakeWorkspacePage({
     if (kind === 'low') lowInputRef.current?.click();
     if (kind === 'cage') cageInputRef.current?.click();
     if (kind === 'color') colorInputRef.current?.click();
+    if (kind === 'normalMap') normalMapInputRef.current?.click();
     if (kind === 'roughness') roughnessInputRef.current?.click();
     if (kind === 'metallic') metallicInputRef.current?.click();
   }
@@ -1004,6 +1043,11 @@ export function BakeWorkspacePage({
       return;
     }
     const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
+    setIgnoredProjectColorIds((current) => {
+      const next = new Set(current);
+      next.delete(selectedHigh.id);
+      return next;
+    });
     setColorFiles((current) => ({ ...current, ...assigned }));
     setBakeJob(undefined);
     setOneClickBakeAttempted(false);
@@ -1011,7 +1055,10 @@ export function BakeWorkspacePage({
     void persistImportedFiles('color', assigned);
   }
 
-  function handleMaterialChannelImport(kind: 'roughness' | 'metallic', files: File[]) {
+  function handleMaterialChannelImport(
+    kind: 'normalMap' | 'roughness' | 'metallic',
+    files: File[],
+  ) {
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1024,7 +1071,9 @@ export function BakeWorkspacePage({
       return;
     }
     const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
-    if (kind === 'roughness') {
+    if (kind === 'normalMap') {
+      setNormalMapFiles((current) => ({ ...current, ...assigned }));
+    } else if (kind === 'roughness') {
       setRoughnessFiles((current) => ({ ...current, ...assigned }));
     } else {
       setMetallicFiles((current) => ({ ...current, ...assigned }));
@@ -1033,6 +1082,56 @@ export function BakeWorkspacePage({
     setOneClickBakeAttempted(false);
     setBakeError(undefined);
     void persistImportedFiles(kind, assigned);
+  }
+
+  function handleMaterialRemove(kind: MaterialMapKind) {
+    if (!selectedHigh) return;
+    const objectId = selectedHigh.id;
+    const removeObjectFile = (current: Record<string, File>) => {
+      const next = { ...current };
+      delete next[objectId];
+      return next;
+    };
+
+    if (kind === 'color') {
+      setColorFiles(removeObjectFile);
+      setCleanBaseColor(false);
+      setIgnoredProjectColorIds((current) => new Set(current).add(objectId));
+    } else if (kind === 'normalMap') {
+      setNormalMapFiles(removeObjectFile);
+    } else if (kind === 'roughness') {
+      setRoughnessFiles(removeObjectFile);
+    } else {
+      setMetallicFiles(removeObjectFile);
+    }
+
+    setBakeJob(undefined);
+    setOneClickBakeAttempted(false);
+    setBakeError(undefined);
+    setAssetSaveState('saving');
+    void persistProjectUpdate((current) => {
+      const bakeSets = { ...(current.bakeWorkspace?.bakeSets ?? {}) };
+      const nextSet: ProjectBakeSetState = { ...(bakeSets[objectId] ?? { objectId }) };
+      delete nextSet[kind];
+      if (kind === 'color') nextSet.ignoreProjectColor = true;
+      bakeSets[objectId] = nextSet;
+      return {
+        ...current,
+        bakeWorkspace: {
+          version: 1,
+          activeStage,
+          selectedObjectId: objectId,
+          bakeSets,
+        },
+      };
+    })
+      .then(() => setAssetSaveState('saved'))
+      .catch((reason: unknown) => {
+        setAssetSaveState('error');
+        setBakeError(
+          reason instanceof Error ? `材质贴图移除失败：${reason.message}` : '材质贴图移除失败',
+        );
+      });
   }
 
   function handleMaterialImport(files: File[]) {
@@ -1047,9 +1146,13 @@ export function BakeWorkspacePage({
     const metallic = imageFiles.filter((file) =>
       /(?:metallic|metalness|metal)(?:\W|_|$)/i.test(file.name),
     );
-    const classified = new Set([...roughness, ...metallic]);
+    const normalMap = imageFiles.filter((file) =>
+      /(?:normal|normalgl|normaldx|norm|nrm)(?:\W|_|$)/i.test(file.name),
+    );
+    const classified = new Set([...normalMap, ...roughness, ...metallic]);
     const color = imageFiles.filter((file) => !classified.has(file)).slice(0, 1);
     if (color.length > 0) handleColorImport(color);
+    if (normalMap.length > 0) handleMaterialChannelImport('normalMap', normalMap);
     if (roughness.length > 0) handleMaterialChannelImport('roughness', roughness);
     if (metallic.length > 0) handleMaterialChannelImport('metallic', metallic);
     setMaterialDialogOpen(true);
@@ -1114,9 +1217,7 @@ export function BakeWorkspacePage({
         const hasExistingObject = currentProject.objects.some((object) => object.id === objectId);
         const objects = hasExistingObject
           ? currentProject.objects.map((object) =>
-              object.id === objectId
-                ? liveImportedObject
-                : { ...object, selected: false },
+              object.id === objectId ? liveImportedObject : { ...object, selected: false },
             )
           : [
               ...currentProject.objects.map((object) => ({ ...object, selected: false })),
@@ -1253,14 +1354,17 @@ export function BakeWorkspacePage({
   }
 
   async function createColorFile() {
-    if (selectedColor) return selectedColor;
-    if (!selectedProjectColor?.imageUrl) throw new Error('Base Color 烘焙需要高模颜色贴图。');
-    const response = await fetch(selectedProjectColor.imageUrl, { credentials: 'include' });
-    if (!response.ok) throw new Error(`读取高模颜色贴图失败（${response.status}）。`);
-    const blob = await response.blob();
-    return new File([blob], `${fileStem(selectedHigh?.name ?? 'high')}_BaseColor.png`, {
-      type: blob.type || 'image/png',
-    });
+    let colorFile = selectedColor;
+    if (!colorFile) {
+      if (!selectedProjectColor?.imageUrl) throw new Error('Base Color 烘焙需要高模颜色贴图。');
+      const response = await fetch(selectedProjectColor.imageUrl, { credentials: 'include' });
+      if (!response.ok) throw new Error(`读取高模颜色贴图失败（${response.status}）。`);
+      const blob = await response.blob();
+      colorFile = new File([blob], `${fileStem(selectedHigh?.name ?? 'high')}_BaseColor.png`, {
+        type: blob.type || 'image/png',
+      });
+    }
+    return cleanBaseColor ? dehighlightBaseColorFile(colorFile, dehighlightStrength) : colorFile;
   }
 
   function createRoughnessFile() {
@@ -1280,6 +1384,7 @@ export function BakeWorkspacePage({
     try {
       const high = await createHighFile();
       const color = requiresColor ? await createColorFile() : undefined;
+      const normalMap = enabledChannels.has('normal') ? selectedNormalMap : undefined;
       const roughness = requiresRoughness ? createRoughnessFile() : undefined;
       const metallic = requiresMetallic ? createMetallicFile() : undefined;
       const job = await submitNormalBake({
@@ -1289,6 +1394,7 @@ export function BakeWorkspacePage({
         low: selectedLow,
         cage: undefined,
         color,
+        normalMap,
         roughness,
         metallic,
         settings: {
@@ -1513,6 +1619,17 @@ export function BakeWorkspacePage({
           }}
         />
         <input
+          ref={normalMapInputRef}
+          className="hidden"
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp,.tga"
+          onChange={(event) => {
+            handleMaterialChannelImport('normalMap', Array.from(event.target.files ?? []));
+            event.target.value = '';
+          }}
+        />
+        <input
           ref={roughnessInputRef}
           className="hidden"
           type="file"
@@ -1544,14 +1661,16 @@ export function BakeWorkspacePage({
             onClick={() => setMaterialDialogOpen(false)}
           >
             <div
-              className="w-full max-w-2xl overflow-hidden rounded-[28px] border border-white/12 bg-[#0d0f1e] shadow-[0_32px_100px_rgba(0,0,0,.62)]"
+              className="max-h-[calc(100vh-40px)] w-full max-w-4xl overflow-y-auto rounded-[28px] border border-white/12 bg-[#0d0f1e] shadow-[0_32px_100px_rgba(0,0,0,.62)]"
               onClick={(event) => event.stopPropagation()}
               onDragOver={(event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 event.dataTransfer.dropEffect = 'copy';
               }}
               onDrop={(event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 handleMaterialImport(Array.from(event.dataTransfer.files));
               }}
             >
@@ -1559,7 +1678,7 @@ export function BakeWorkspacePage({
                 <div>
                   <p className="text-lg font-semibold text-white">材质贴图</p>
                   <p className="mt-1 text-xs leading-5 text-white/42">
-                    三张贴图共用高模 UV，通过 Texture Transfer 对烘到低模 UV。
+                    颜色、法线、粗糙度与金属度共享高模 UV，并对烘到低模 UV。
                   </p>
                 </div>
                 <button
@@ -1574,27 +1693,132 @@ export function BakeWorkspacePage({
               <div className="grid gap-3 p-5 sm:p-6">
                 <MaterialMapSlot
                   label="Base Color"
-                  description="颜色 / Albedo"
+                  description="颜色贴图 / Albedo"
                   fileName={selectedColorName}
                   required={requiresColor}
                   onClick={() => chooseFiles('color')}
+                  onRemove={() => handleMaterialRemove('color')}
+                  onFilesDropped={handleColorImport}
+                  preview={
+                    selectedColorName ? (
+                      <MaterialMapThumbnail
+                        file={selectedColor}
+                        imageUrl={selectedProjectColor?.imageUrl}
+                        alt="已导入的颜色贴图"
+                      />
+                    ) : undefined
+                  }
+                  accessory={
+                    selectedColorName ? (
+                      <div
+                        className={cn(
+                          'flex h-10 items-center rounded-xl border px-3 transition-colors',
+                          cleanBaseColor
+                            ? 'border-cyan-200/15 bg-cyan-300/[0.035]'
+                            : 'border-white/[0.065] bg-[#111524]',
+                        )}
+                      >
+                        <label className="flex cursor-pointer items-center gap-2.5">
+                          <span className="whitespace-nowrap text-[11px] font-medium text-white/52">
+                            去高光
+                          </span>
+                          <input
+                            className="peer sr-only"
+                            type="checkbox"
+                            checked={cleanBaseColor}
+                            onChange={(event) => setCleanBaseColor(event.target.checked)}
+                          />
+                          <span className="relative h-[18px] w-8 rounded-full bg-white/10 transition-colors peer-checked:bg-cyan-400/45 after:absolute after:left-0.5 after:top-0.5 after:h-3.5 after:w-3.5 after:rounded-full after:bg-white/65 after:shadow-sm after:transition-transform peer-checked:after:translate-x-3.5 peer-checked:after:bg-white" />
+                        </label>
+                        <span className="mx-3 h-4 w-px bg-white/[0.07]" />
+                        <div
+                          className={cn(
+                            'flex items-center gap-2.5 transition-opacity',
+                            cleanBaseColor ? 'opacity-100' : 'opacity-[0.32]',
+                          )}
+                        >
+                          <div className="relative w-24">
+                            <div className="pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-white/[0.11]">
+                              <span
+                                className="block h-full rounded-full bg-cyan-300/55"
+                                style={{ width: `${dehighlightStrength}%` }}
+                              />
+                            </div>
+                            <input
+                              aria-label="去高光强度"
+                              aria-valuetext={`${dehighlightStrength}%`}
+                              className="relative z-10 block h-5 w-full cursor-pointer appearance-none bg-transparent outline-none disabled:cursor-not-allowed [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-white/60 [&::-webkit-slider-thumb]:bg-[#e7edf4] [&::-webkit-slider-thumb]:shadow-[0_1px_3px_rgba(0,0,0,.4)]"
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={dehighlightStrength}
+                              disabled={!cleanBaseColor}
+                              onChange={(event) =>
+                                setDehighlightStrength(Number(event.target.value))
+                              }
+                            />
+                          </div>
+                          <output className="w-8 text-right text-[10px] font-medium tabular-nums text-white/48">
+                            {dehighlightStrength}%
+                          </output>
+                        </div>
+                      </div>
+                    ) : undefined
+                  }
+                />
+                {selectedColorName ? (
+                  <DehighlightPreview
+                    file={selectedColor}
+                    imageUrl={selectedProjectColor?.imageUrl}
+                    enabled={cleanBaseColor}
+                    strength={dehighlightStrength}
+                  />
+                ) : null}
+                <MaterialMapSlot
+                  label="Normal"
+                  description="补充高模表面细节；未导入时按高低模几何生成"
+                  fileName={selectedNormalMap?.name}
+                  required={false}
+                  onClick={() => chooseFiles('normalMap')}
+                  onRemove={() => handleMaterialRemove('normalMap')}
+                  onFilesDropped={(files) => handleMaterialChannelImport('normalMap', files)}
+                  preview={
+                    selectedNormalMap ? (
+                      <MaterialMapThumbnail file={selectedNormalMap} alt="已导入的法线贴图" />
+                    ) : undefined
+                  }
                 />
                 <MaterialMapSlot
                   label="Roughness"
-                  description="黑色光滑，白色粗糙"
+                  description="控制表面光滑与粗糙"
                   fileName={selectedRoughness?.name}
                   required={requiresRoughness}
                   onClick={() => chooseFiles('roughness')}
+                  onRemove={() => handleMaterialRemove('roughness')}
+                  onFilesDropped={(files) => handleMaterialChannelImport('roughness', files)}
+                  preview={
+                    selectedRoughness ? (
+                      <MaterialMapThumbnail file={selectedRoughness} alt="已导入的粗糙度贴图" />
+                    ) : undefined
+                  }
                 />
                 <MaterialMapSlot
                   label="Metallic"
-                  description="黑色非金属，白色金属"
+                  description="控制非金属与金属区域"
                   fileName={selectedMetallic?.name}
                   required={requiresMetallic}
                   onClick={() => chooseFiles('metallic')}
+                  onRemove={() => handleMaterialRemove('metallic')}
+                  onFilesDropped={(files) => handleMaterialChannelImport('metallic', files)}
+                  preview={
+                    selectedMetallic ? (
+                      <MaterialMapThumbnail file={selectedMetallic} alt="已导入的金属度贴图" />
+                    ) : undefined
+                  }
                 />
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-center text-[11px] text-white/30">
-                  也可以一次拖入多张贴图；文件名包含 Roughness / Metallic 时会自动归类。
+                  可一次拖入多张贴图，系统会按文件名自动识别。
                 </div>
               </div>
             </div>
@@ -1681,7 +1905,8 @@ export function BakeWorkspacePage({
                   <div>
                     <p className="text-sm font-semibold text-amber-50/88">需要安装烘焙组件</p>
                     <p className="mt-1 text-xs leading-5 text-amber-100/52">
-                      未检测到 Adobe Substance 3D Designer。安装完成后即可使用一键烘焙，无需打开 Designer。
+                      未检测到 Adobe Substance 3D Designer。安装完成后即可使用一键烘焙，无需打开
+                      Designer。
                     </p>
                   </div>
                 </div>
@@ -1759,11 +1984,12 @@ export function BakeWorkspacePage({
                   step="03"
                   title="材质贴图"
                   english="MATERIAL MAPS"
-                  description={'颜色、粗糙度和金属度共用一个入口，分别对烘到低模 UV'}
+                  description={'颜色、法线、粗糙度和金属度共用一个入口，分别对烘到低模 UV'}
                   value={
                     materialMapCount > 0
-                      ? `${materialMapCount}/3 已导入 · ${[
+                      ? `${materialMapCount}/4 已导入 · ${[
                           selectedColorName ? '颜色' : undefined,
+                          selectedNormalMap ? '法线' : undefined,
                           selectedRoughness ? '粗糙度' : undefined,
                           selectedMetallic ? '金属度' : undefined,
                         ]
@@ -1782,7 +2008,7 @@ export function BakeWorkspacePage({
                   actionLabel={materialMapCount > 0 ? '管理贴图' : '导入贴图'}
                   onClick={() => setMaterialDialogOpen(true)}
                   onFilesDropped={handleMaterialImport}
-                  dropHint="Base Color / Roughness / Metallic"
+                  dropHint="Base Color / Normal / Roughness / Metallic"
                 />
               </div>
 
@@ -2031,7 +2257,6 @@ export function BakeWorkspacePage({
                 法线：{normalOrientation === 'directx' ? 'DX（Y-）' : 'OP（Y+）'}
               </p>
             ) : null}
-
           </main>
         </div>
       </WorkflowShell>
@@ -2695,17 +2920,11 @@ export function BakeWorkspacePage({
                       onChange={setRoughnessSource}
                     />
                   </Field>
-                  <ToggleLine
-                    label="净化 Base Color"
-                    checked={cleanBaseColor}
-                    onChange={setCleanBaseColor}
-                  />
                   <p className="text-xs leading-5 text-white/38">
                     ComfyUI 为可选远程步骤；断开时继续使用原始 Base Color 和手工 Roughness。
                   </p>
                 </div>
               ) : null}
-
             </div>
           </aside>
         </div>
@@ -2778,49 +2997,307 @@ function MaterialMapSlot({
   fileName,
   required,
   onClick,
+  onRemove,
+  onFilesDropped,
+  accessory,
+  preview,
 }: {
   label: string;
   description: string;
   fileName?: string;
   required: boolean;
   onClick: () => void;
+  onRemove: () => void;
+  onFilesDropped: (files: File[]) => void;
+  accessory?: ReactNode;
+  preview?: ReactNode;
 }) {
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepth = useRef(0);
+
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragActive(false);
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = 0;
+    setDragActive(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length > 0) onFilesDropped(files);
+  }
+
   return (
-    <button
-      type="button"
+    <div
       className={cn(
-        'group flex items-center gap-4 rounded-2xl border px-4 py-3.5 text-left transition-all',
+        'group relative flex items-center overflow-hidden rounded-2xl border text-left transition-all',
         fileName
           ? 'border-emerald-300/18 bg-emerald-300/[0.045] hover:border-emerald-300/34'
           : required
             ? 'border-fuchsia-300/20 bg-fuchsia-300/[0.045] hover:border-fuchsia-300/38'
             : 'border-white/[0.08] bg-white/[0.025] hover:border-white/18 hover:bg-white/[0.045]',
+        dragActive &&
+          'border-cyan-200/55 bg-cyan-300/[0.08] shadow-[0_0_0_1px_rgba(103,232,249,.12)]',
       )}
-      onClick={onClick}
+      title={`点击选择${label}，或将图片拖到此处${fileName ? '替换' : '导入'}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
-      <span
-        className={cn(
-          'grid h-11 w-11 shrink-0 place-items-center rounded-xl border',
-          fileName
-            ? 'border-emerald-200/20 bg-emerald-300/[0.08] text-emerald-100/80'
-            : 'border-white/10 bg-black/20 text-white/34',
-        )}
+      {dragActive ? (
+        <div className="pointer-events-none absolute inset-1 z-20 grid place-items-center rounded-[14px] border border-dashed border-cyan-200/50 bg-[#0b1724]/92 text-xs font-medium text-cyan-50 backdrop-blur-lg">
+          松开即可{fileName ? '替换' : '导入'} {label}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-4 px-4 py-3.5 text-left"
+        aria-label={`${fileName ? '更换' : '导入'} ${label} 贴图`}
+        onClick={onClick}
       >
-        {fileName ? <Check className="h-5 w-5" /> : <FileUp className="h-5 w-5" />}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          <strong className="text-sm font-semibold text-white/84">{label}</strong>
-          <span className="rounded-full border border-white/[0.08] px-2 py-0.5 text-[9px] text-white/30">
-            {required ? '当前需要' : '可选'}
+        <span
+          className={cn(
+            'grid h-11 w-11 shrink-0 place-items-center rounded-xl border',
+            fileName
+              ? 'border-emerald-200/20 bg-emerald-300/[0.08] text-emerald-100/80'
+              : 'border-white/10 bg-black/20 text-white/34',
+          )}
+        >
+          {preview ?? (fileName ? <Check className="h-5 w-5" /> : <FileUp className="h-5 w-5" />)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <strong className="text-sm font-semibold text-white/84">{label}</strong>
+            <span className="rounded-full border border-white/[0.08] px-2 py-0.5 text-[9px] text-white/30">
+              {required ? '当前需要' : '可选'}
+            </span>
+          </span>
+          <span className="mt-1 block truncate text-xs text-white/36">
+            {fileName ?? description}
           </span>
         </span>
-        <span className="mt-1 block truncate text-xs text-white/36">{fileName ?? description}</span>
+      </button>
+      {accessory ? (
+        <div className="relative z-10 shrink-0 py-3.5" onClick={(event) => event.stopPropagation()}>
+          {accessory}
+        </div>
+      ) : null}
+      {fileName ? (
+        <button
+          type="button"
+          className="relative z-10 mr-3 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.025] text-white/46 transition-all hover:border-rose-200/24 hover:bg-rose-300/[0.07] hover:text-white"
+          aria-label={`移除 ${label} 贴图`}
+          title={`移除 ${label} 贴图`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove();
+          }}
+        >
+          <X className="h-4 w-4" />
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="relative z-10 w-16 shrink-0 self-stretch px-2 text-xs font-medium text-white/42 transition-colors hover:text-white/72"
+          aria-label={`导入 ${label} 贴图`}
+          onClick={onClick}
+        >
+          导入
+        </button>
+      )}
+    </div>
+  );
+}
+
+function MaterialMapThumbnail({
+  file,
+  imageUrl,
+  alt,
+}: {
+  file?: File;
+  imageUrl?: string;
+  alt: string;
+}) {
+  const [previewUrl, setPreviewUrl] = useState(imageUrl);
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(imageUrl);
+      return;
+    }
+
+    const nextUrl = URL.createObjectURL(file);
+    setPreviewUrl(nextUrl);
+    return () => URL.revokeObjectURL(nextUrl);
+  }, [file, imageUrl]);
+
+  return previewUrl ? (
+    <img className="h-full w-full rounded-[11px] object-cover" src={previewUrl} alt={alt} />
+  ) : (
+    <Check className="h-5 w-5" />
+  );
+}
+
+function DehighlightPreview({
+  file,
+  imageUrl,
+  enabled,
+  strength,
+}: {
+  file?: File;
+  imageUrl?: string;
+  enabled: boolean;
+  strength: number;
+}) {
+  const [sourcePreviewUrl, setSourcePreviewUrl] = useState(imageUrl);
+  const [resultPreviewUrl, setResultPreviewUrl] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>();
+  const resultUrlRef = useRef<string>();
+
+  useEffect(() => {
+    if (!file) {
+      setSourcePreviewUrl(imageUrl);
+      return;
+    }
+
+    const nextUrl = URL.createObjectURL(file);
+    setSourcePreviewUrl(nextUrl);
+    return () => URL.revokeObjectURL(nextUrl);
+  }, [file, imageUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const clearResultUrl = () => {
+      if (resultUrlRef.current) {
+        URL.revokeObjectURL(resultUrlRef.current);
+        resultUrlRef.current = undefined;
+      }
+    };
+
+    if (!enabled || (!file && !imageUrl)) {
+      clearResultUrl();
+      setResultPreviewUrl(undefined);
+      setLoading(false);
+      setError(undefined);
+      return;
+    }
+
+    setLoading(true);
+    setError(undefined);
+    const timerId = window.setTimeout(async () => {
+      try {
+        let sourceFile = file;
+        if (!sourceFile && imageUrl) {
+          const response = await fetch(imageUrl, { credentials: 'include' });
+          if (!response.ok) {
+            throw new Error('读取颜色贴图失败（' + response.status + '）');
+          }
+          const blob = await response.blob();
+          sourceFile = new File([blob], 'BaseColor.png', {
+            type: blob.type || 'image/png',
+          });
+        }
+        if (!sourceFile) throw new Error('没有可预览的颜色贴图');
+
+        const previewFile = await dehighlightBaseColorFile(sourceFile, strength, 640);
+        if (cancelled) return;
+        const nextUrl = URL.createObjectURL(previewFile);
+        clearResultUrl();
+        resultUrlRef.current = nextUrl;
+        setResultPreviewUrl(nextUrl);
+      } catch (previewError) {
+        if (!cancelled) {
+          setError(previewError instanceof Error ? previewError.message : '去高光预览生成失败');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 140);
+
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+    };
+  }, [enabled, file, imageUrl, strength]);
+
+  useEffect(
+    () => () => {
+      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+    },
+    [],
+  );
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-white/[0.08] bg-black/15">
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3">
+        <div>
+          <p className="text-xs font-medium text-white/70">去高光预览</p>
+          <p className="mt-0.5 text-[10px] text-white/30">仅用于对比，原始贴图不会被修改</p>
+        </div>
+        <span className="rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 py-1 text-[10px] tabular-nums text-white/42">
+          {enabled ? strength + '%' : '未开启'}
+        </span>
+      </div>
+      <div className="grid gap-3 p-3 sm:grid-cols-2">
+        <TexturePreviewTile label="原图" imageUrl={sourcePreviewUrl} />
+        <TexturePreviewTile
+          label="去高光"
+          imageUrl={resultPreviewUrl}
+          loading={loading}
+          emptyText={enabled ? (error ?? '正在准备预览') : '开启去高光后查看效果'}
+        />
+      </div>
+    </section>
+  );
+}
+
+function TexturePreviewTile({
+  label,
+  imageUrl,
+  loading = false,
+  emptyText = '暂无预览',
+}: {
+  label: string;
+  imageUrl?: string;
+  loading?: boolean;
+  emptyText?: string;
+}) {
+  return (
+    <div className="relative h-44 overflow-hidden rounded-xl border border-white/[0.08] bg-[#090b14]">
+      <span className="absolute left-3 top-3 z-10 rounded-md border border-white/[0.08] bg-black/55 px-2 py-1 text-[10px] font-medium text-white/62 backdrop-blur">
+        {label}
       </span>
-      <span className="text-xs font-medium text-white/42 transition-colors group-hover:text-white/72">
-        {fileName ? '替换' : '导入'}
-      </span>
-    </button>
+      {imageUrl ? (
+        <img className="h-full w-full object-contain" src={imageUrl} alt={label + '预览'} />
+      ) : (
+        <div className="grid h-full place-items-center px-6 text-center text-[11px] text-white/28">
+          {emptyText}
+        </div>
+      )}
+      {loading ? (
+        <div className="absolute inset-0 grid place-items-center bg-[#090b14]/62 text-[11px] text-white/52 backdrop-blur-[2px]">
+          预览更新中…
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -3440,29 +3917,6 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
         {value}
       </span>
     </div>
-  );
-}
-
-function ToggleLine({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="flex cursor-pointer items-center justify-between border-y border-white/8 py-2.5">
-      <span className="text-[12px] text-white/58">{label}</span>
-      <input
-        className="peer sr-only"
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      <span className="relative h-[18px] w-8 rounded-full bg-white/10 peer-checked:bg-[#8d42b0] after:absolute after:left-0.5 after:top-0.5 after:h-3.5 after:w-3.5 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-3.5" />
-    </label>
   );
 }
 
