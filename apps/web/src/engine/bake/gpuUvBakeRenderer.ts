@@ -354,14 +354,17 @@ const fragmentShader = `
       cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
     );
     float faceOnFactor = abs(projectedFaceNormal.z);
-    if (faceOnFactor < minimumProjectionFacing) discard;
+    float projectionFacingFactor = abs(
+      dot(projectedFaceNormal, normalize(-captureViewPosition))
+    );
+    if (projectionFacingFactor < minimumProjectionFacing) discard;
     float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
     float projectionFacingCoverage = mix(
       1.0,
       smoothstep(
         minimumProjectionFacing,
         minimumProjectionFacing + ${PROJECTION_FACING_FEATHER.toFixed(2)},
-        faceOnFactor
+        projectionFacingFactor
       ),
       useProjectionFacingGuard
     );

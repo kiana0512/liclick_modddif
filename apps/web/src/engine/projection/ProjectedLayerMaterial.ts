@@ -458,13 +458,16 @@ const fragmentShader = `
     // Neighbourhood matching removes seams between two faces that were both
     // visible in the capture, while still rejecting genuinely hidden faces.
     float faceOnFactor = abs(projectedFaceNormal.z);
+    float projectionFacingFactor = abs(
+      dot(projectedFaceNormal, normalize(-captureViewPosition))
+    );
     float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
     float projectionFacingCoverage = mix(
       1.0,
       smoothstep(
         minimumProjectionFacing,
         minimumProjectionFacing + ${PROJECTION_FACING_FEATHER.toFixed(2)},
-        faceOnFactor
+        projectionFacingFactor
       ),
       useProjectionFacingGuard
     );
@@ -671,7 +674,7 @@ function buildStackFragmentShader(
   const projectionFacingCoverage = (index: number) => {
     const minimum = THREE.MathUtils.clamp(layers[index].minimumProjectionFacing ?? 0, 0, 0.99);
     return minimum > 0
-      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(projectedFaceNormal.z))`
+      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
       : '1.0';
   };
   const layerUsesProjectedArray = (index: number) =>

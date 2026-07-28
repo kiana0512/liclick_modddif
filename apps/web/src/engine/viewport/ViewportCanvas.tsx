@@ -115,8 +115,8 @@ const PROJECTION_PAINT_MAX_SIZE = 512;
 const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
 const LOCAL_REPAINT_LIVE_TEXTURE_MAX_FPS = 30;
 // Stop projection before a surface becomes so foreshortened that a few source
-// pixels stretch into visible scan lines. 0.2 is about 78 degrees from face-on.
-const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.2;
+// pixels stretch into visible scan lines. 0.35 is about 70 degrees from face-on.
+const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.35;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -964,6 +964,7 @@ type LocalRepaintCompositeState = {
   worldToSourceClip: THREE.Matrix4;
   objectMatrixDelta: THREE.Matrix4;
   objectNormalDelta: THREE.Matrix3;
+  projectorViewMatrix: THREE.Matrix4;
   projectorViewNormalMatrix: THREE.Matrix3;
   restoredMaskUrl?: string;
 };
@@ -1506,6 +1507,7 @@ function createLocalRepaintComposite(
     worldToSourceClip: new THREE.Matrix4(),
     objectMatrixDelta: new THREE.Matrix4(),
     objectNormalDelta: new THREE.Matrix3(),
+    projectorViewMatrix: new THREE.Matrix4(),
     projectorViewNormalMatrix: new THREE.Matrix3(),
   };
 }
@@ -1513,7 +1515,8 @@ function createLocalRepaintComposite(
 const localRepaintProjectionScratch = {
   currentObjectInverse: new THREE.Matrix4(),
   captureObjectMatrix: new THREE.Matrix4(),
-  projectorViewMatrix: new THREE.Matrix4(),
+  captureViewPoint: new THREE.Vector3(),
+  viewDirection: new THREE.Vector3(),
   clipPoint: new THREE.Vector4(),
   projectedUv: new THREE.Vector2(),
 };
@@ -1532,8 +1535,9 @@ function updateLocalRepaintProjectionMatrix(
     .copy(captureObjectMatrix)
     .multiply(localRepaintProjectionScratch.currentObjectInverse);
   composite.objectNormalDelta.getNormalMatrix(composite.objectMatrixDelta);
+  composite.projectorViewMatrix.fromArray(source.camera.viewMatrix);
   composite.projectorViewNormalMatrix.getNormalMatrix(
-    localRepaintProjectionScratch.projectorViewMatrix.fromArray(source.camera.viewMatrix),
+    composite.projectorViewMatrix,
   );
   composite.worldToSourceClip
     .copy(buildProjectionMatrixBundle(source.camera).projectorMatrix)
@@ -1545,6 +1549,7 @@ function isLocalRepaintSurfaceFacingProjector(
   composite: LocalRepaintCompositeState,
   mesh: THREE.Mesh,
   face: THREE.Face,
+  hitPoint: THREE.Vector3,
 ) {
   const position = mesh.geometry.getAttribute('position');
   if (!(position instanceof THREE.BufferAttribute)) return false;
@@ -1561,7 +1566,16 @@ function isLocalRepaintSurfaceFacingProjector(
     .applyMatrix3(composite.objectNormalDelta)
     .applyMatrix3(composite.projectorViewNormalMatrix)
     .normalize();
-  return Math.abs(normal.z) >= LOCAL_REPAINT_MINIMUM_FACE_ON;
+  const captureViewPoint = localRepaintProjectionScratch.captureViewPoint
+    .copy(hitPoint)
+    .applyMatrix4(composite.objectMatrixDelta)
+    .applyMatrix4(composite.projectorViewMatrix);
+  const viewDirection = localRepaintProjectionScratch.viewDirection
+    .copy(captureViewPoint)
+    .multiplyScalar(-1);
+  if (viewDirection.lengthSq() < 1e-16) return false;
+  viewDirection.normalize();
+  return Math.abs(normal.dot(viewDirection)) >= LOCAL_REPAINT_MINIMUM_FACE_ON;
 }
 
 function projectWorldPointToLocalRepaintUv(
@@ -3172,6 +3186,7 @@ function SurfacePaintOverlay() {
             composite,
             result.hit.object,
             result.hit.face,
+            result.hit.point,
           );
         localRepaintUv = composite
           ? projectWorldPointToLocalRepaintUv(result.hit.point, composite.worldToSourceClip)
@@ -4285,6 +4300,7 @@ function SurfacePaintOverlay() {
             composite,
             result.hit.object,
             result.hit.face,
+            result.hit.point,
           );
         const projectedUv =
           composite && surfaceFacesProjector
