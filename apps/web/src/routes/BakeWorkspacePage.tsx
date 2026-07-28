@@ -1234,12 +1234,6 @@ export function BakeWorkspacePage({
   }
 
   function toggleChannel(channel: ChannelId) {
-    if (
-      (channel === 'roughness' && !enabledChannels.has(channel) && !selectedRoughness) ||
-      (channel === 'metallic' && !enabledChannels.has(channel) && !selectedMetallic)
-    ) {
-      setMaterialDialogOpen(true);
-    }
     setEnabledChannels((current) => {
       const next = new Set(current);
       if (next.has(channel)) next.delete(channel);
