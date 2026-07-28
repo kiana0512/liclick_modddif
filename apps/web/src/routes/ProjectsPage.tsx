@@ -98,6 +98,28 @@ function mergeProjectsWithMock(
     const currentThumbnail = currentProject?.thumbnail;
     merged.set(project.id, {
       ...project,
+      // Project list responses contain summaries only. Never replace a project that has
+      // already been hydrated with the summary's placeholder empty collections: a late
+      // list refresh can otherwise race project opening and make the editor autosave an
+      // empty layer stack over the real project.
+      ...(currentProject
+        ? {
+            objects: currentProject.objects,
+            references: currentProject.references,
+            captures: currentProject.captures,
+            generations: currentProject.generations,
+            layers: currentProject.layers,
+            bakedTextures: currentProject.bakedTextures,
+            settings: currentProject.settings,
+            bakeWorkspace: currentProject.bakeWorkspace,
+            currentMode: currentProject.currentMode,
+            activeObjectId: currentProject.activeObjectId,
+            activeLayerId: currentProject.activeLayerId,
+            assetManifest: currentProject.assetManifest,
+            lastSavedAt: currentProject.lastSavedAt,
+            dirty: currentProject.dirty,
+          }
+        : {}),
       thumbnail:
         currentThumbnail && (currentThumbnail.startsWith('data:') || currentThumbnail.startsWith('blob:'))
           ? currentThumbnail

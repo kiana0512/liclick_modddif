@@ -832,6 +832,7 @@ export function EditorPage({
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>(
     'idle',
   );
+  const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
   const [photoshopEditBusy, setPhotoshopEditBusy] = useState(false);
@@ -925,6 +926,7 @@ export function EditorPage({
 
   useEffect(() => {
     setRouteProjectStatus('idle');
+    setServerReadyProjectId(undefined);
     restoredHistoryProjectIdRef.current = undefined;
     hydratedProjectVersionRef.current = undefined;
     restoredModelKeyRef.current = undefined;
@@ -952,6 +954,7 @@ export function EditorPage({
         loadedProjectIdRef.current = result.project.id;
         replaceCurrentProject(result.project);
         hydrateProjectStores(result.project);
+        setServerReadyProjectId(result.project.id);
         setRouteProjectStatus('idle');
       })
       .catch(() => {
@@ -1000,6 +1003,7 @@ export function EditorPage({
         replaceCurrentProject(result.project);
         setSaveStatus('saved');
         hydrateProjectStores(result.project);
+        setServerReadyProjectId(result.project.id);
       })
       .catch(() => {
         setSaveStatus('offline');
@@ -1020,6 +1024,7 @@ export function EditorPage({
   ]);
 
   useEffect(() => {
+    if (serverReadyProjectId !== projectId) return;
     if (skipProjectStoreSyncRef.current.layers) {
       skipProjectStoreSyncRef.current.layers = false;
       return;
@@ -1031,27 +1036,29 @@ export function EditorPage({
       return;
     }
     setProjectLayers(layers);
-  }, [layers, projectId, setLayers, setProjectLayers]);
+  }, [layers, projectId, serverReadyProjectId, setLayers, setProjectLayers]);
 
   useEffect(() => {
     void objects;
   }, [objects]);
 
   useEffect(() => {
+    if (serverReadyProjectId !== projectId) return;
     if (skipProjectStoreSyncRef.current.generations) {
       skipProjectStoreSyncRef.current.generations = false;
       return;
     }
     setProjectGenerations(generations);
-  }, [generations, setProjectGenerations]);
+  }, [generations, projectId, serverReadyProjectId, setProjectGenerations]);
 
   useEffect(() => {
+    if (serverReadyProjectId !== projectId) return;
     if (skipProjectStoreSyncRef.current.references) {
       skipProjectStoreSyncRef.current.references = false;
       return;
     }
     setProjectReferences(references);
-  }, [references, setProjectReferences]);
+  }, [projectId, references, serverReadyProjectId, setProjectReferences]);
 
   useEffect(() => {
     if (!activeProjectedLayerId) return;
@@ -1089,7 +1096,13 @@ export function EditorPage({
   }, [redo, undo]);
 
   useEffect(() => {
-    if (!project || project.workspaceMode !== 'local-server' || !project.dirty) return;
+    if (
+      !project ||
+      project.workspaceMode !== 'local-server' ||
+      !project.dirty ||
+      serverReadyProjectId !== project.id
+    )
+      return;
     window.clearTimeout(autosaveTimerRef.current);
     setSaveStatus('idle');
     const runAutosave = () => {
@@ -1158,7 +1171,14 @@ export function EditorPage({
     return () => window.clearTimeout(autosaveTimerRef.current);
     // Autosave is intentionally keyed to project dirty/id/mode. The save helpers read the latest stores.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autosaveRetryToken, project?.dirty, project?.id, project?.workspaceMode, pushToast]);
+  }, [
+    autosaveRetryToken,
+    project?.dirty,
+    project?.id,
+    project?.workspaceMode,
+    pushToast,
+    serverReadyProjectId,
+  ]);
 
   const offlineRetryProjectId = project?.id;
   const offlineRetryProjectDirty = project?.dirty;
@@ -2129,6 +2149,15 @@ export function EditorPage({
       });
       return;
     }
+    if (serverReadyProjectId !== currentProject.id) {
+      pushToast({
+        tone: 'warning',
+        title: '项目仍在加载',
+        description: '完整的模型、图层和贴图加载完成前不会保存，请稍后重试。',
+        dedupeKey: 'manual-save-project-loading',
+      });
+      return;
+    }
     const snapshot = getProjectSnapshot();
     if (!snapshot) return;
 
@@ -2169,6 +2198,10 @@ export function EditorPage({
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
+      onBack();
+      return;
+    }
+    if (serverReadyProjectId !== currentProject.id) {
       onBack();
       return;
     }
