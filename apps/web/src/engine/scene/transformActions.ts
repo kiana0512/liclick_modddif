@@ -8,10 +8,14 @@ import type { Transform } from '@/types/model';
 export type ObjectViewPreset =
   | 'front'
   | 'front-left'
+  | 'front-left-top'
   | 'front-right'
+  | 'front-right-bottom'
   | 'back'
   | 'back-left'
+  | 'back-left-bottom'
   | 'back-right'
+  | 'back-right-top'
   | 'left'
   | 'right'
   | 'top'
@@ -119,9 +123,15 @@ export function focusCameraOrbitOnObjectId(objectId?: string) {
 export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
   if (preset === 'back') return new THREE.Vector3(0, 0, -1);
   if (preset === 'back-left') return new THREE.Vector3(-1, 0, -1).normalize();
+  if (preset === 'back-left-bottom')
+    return new THREE.Vector3(-1, -Math.SQRT2, -1).normalize();
   if (preset === 'back-right') return new THREE.Vector3(1, 0, -1).normalize();
+  if (preset === 'back-right-top') return new THREE.Vector3(1, Math.SQRT2, -1).normalize();
   if (preset === 'front-left') return new THREE.Vector3(-1, 0, 1).normalize();
+  if (preset === 'front-left-top') return new THREE.Vector3(-1, Math.SQRT2, 1).normalize();
   if (preset === 'front-right') return new THREE.Vector3(1, 0, 1).normalize();
+  if (preset === 'front-right-bottom')
+    return new THREE.Vector3(1, -Math.SQRT2, 1).normalize();
   if (preset === 'left') return new THREE.Vector3(-1, 0, 0);
   if (preset === 'right') return new THREE.Vector3(1, 0, 0);
   if (preset === 'top') return new THREE.Vector3(0, 1, 0);

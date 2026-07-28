@@ -70,16 +70,20 @@ import {
 type GenerateTab = 'single' | 'multiview' | 'repaint';
 type GenerateMode = 'visible' | 'upscale';
 type TextureMapViewMode = 'single-view' | 'multi-view';
-type CameraViewPresetId = 'preset-1' | 'preset-2';
+type CameraViewPresetId = 'preset-1' | 'preset-2' | 'preset-3';
 type CameraViewOption = {
   value: ObjectViewPreset;
   labelKey:
     | 'frontView'
     | 'frontLeftView'
+    | 'frontLeftTopView'
     | 'frontRightView'
+    | 'frontRightBottomView'
     | 'backView'
     | 'backLeftView'
+    | 'backLeftBottomView'
     | 'backRightView'
+    | 'backRightTopView'
     | 'leftView'
     | 'rightView'
     | 'topView'
@@ -127,9 +131,13 @@ const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
   top: { value: 'top', labelKey: 'topView' },
   bottom: { value: 'bottom', labelKey: 'bottomView' },
   'front-left': { value: 'front-left', labelKey: 'frontLeftView' },
+  'front-left-top': { value: 'front-left-top', labelKey: 'frontLeftTopView' },
   'front-right': { value: 'front-right', labelKey: 'frontRightView' },
+  'front-right-bottom': { value: 'front-right-bottom', labelKey: 'frontRightBottomView' },
   'back-left': { value: 'back-left', labelKey: 'backLeftView' },
+  'back-left-bottom': { value: 'back-left-bottom', labelKey: 'backLeftBottomView' },
   'back-right': { value: 'back-right', labelKey: 'backRightView' },
+  'back-right-top': { value: 'back-right-top', labelKey: 'backRightTopView' },
 };
 
 const cameraViewPresets: CameraViewPresetDefinition[] = [
@@ -154,6 +162,23 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
       'front-right',
       'back-left',
       'back-right',
+    ],
+  },
+  {
+    id: 'preset-3',
+    label: '预设 3',
+    description: '上、下、左、右、前、后，加左前上、右后上、左后下、右前下 45° 视角',
+    views: [
+      'top',
+      'bottom',
+      'left',
+      'right',
+      'front',
+      'back',
+      'front-left-top',
+      'back-right-top',
+      'back-left-bottom',
+      'front-right-bottom',
     ],
   },
 ];
@@ -2456,7 +2481,7 @@ export function GeneratePanel() {
                   </div>
                 </div>
                 <div
-                  className="grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
+                  className="grid grid-cols-3 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
                   role="radiogroup"
                   aria-label="模型方向预设"
                 >
