@@ -536,93 +536,93 @@ function useCompositedUvTexture(layers: Layer[]) {
   return texture;
 }
 
-function SelectionEdgeGlow({ object }: { object: THREE.Object3D }) {
-  const glowGroupRef = useRef<THREE.Group>();
-  const shellMaterial = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        color: '#ff62d2',
-        transparent: true,
-        opacity: 0.62,
-        side: THREE.BackSide,
-        depthTest: true,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    [],
+function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
+  const lastMatrixWorldRef = useRef(
+    new THREE.Matrix4().set(Number.NaN, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1),
   );
-  const edgeMaterial = useMemo(
-    () =>
-      new THREE.LineBasicMaterial({
-        color: '#ff62d2',
-        transparent: true,
-        opacity: 1,
-        depthTest: true,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    [],
-  );
+  const indicator = useMemo(() => {
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(8 * 3 * 2 * 3);
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
-  useEffect(
-    () => () => {
-      shellMaterial.dispose();
-      edgeMaterial.dispose();
-    },
-    [edgeMaterial, shellMaterial],
-  );
+    const material = new THREE.LineBasicMaterial({
+      color: '#ff8a68',
+      transparent: true,
+      opacity: 0.92,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const lines = new THREE.LineSegments(geometry, material);
+    lines.name = 'Liclick Selection Bounds Corners';
+    lines.renderOrder = 82;
+    lines.frustumCulled = false;
+    lines.userData.liclickSelectionGlow = true;
+    lines.userData.liclickViewportHelper = true;
+    lines.raycast = () => undefined;
+
+    const bounds = new THREE.Box3();
+    const size = new THREE.Vector3();
+    const paddedBounds = new THREE.Box3();
+
+    const update = () => {
+      object.updateMatrixWorld(true);
+      bounds.setFromObject(object, true);
+      if (bounds.isEmpty()) {
+        lines.visible = false;
+        return;
+      }
+
+      lines.visible = true;
+      bounds.getSize(size);
+      const padding = Math.max(size.length() * 0.012, 0.001);
+      paddedBounds.copy(bounds).expandByScalar(padding);
+      paddedBounds.getSize(size);
+
+      const attribute = geometry.getAttribute('position') as THREE.BufferAttribute;
+      let vertexIndex = 0;
+      for (const xAtMax of [false, true]) {
+        for (const yAtMax of [false, true]) {
+          for (const zAtMax of [false, true]) {
+            const startX = xAtMax ? paddedBounds.max.x : paddedBounds.min.x;
+            const startY = yAtMax ? paddedBounds.max.y : paddedBounds.min.y;
+            const startZ = zAtMax ? paddedBounds.max.z : paddedBounds.min.z;
+            const inwardX = xAtMax ? -1 : 1;
+            const inwardY = yAtMax ? -1 : 1;
+            const inwardZ = zAtMax ? -1 : 1;
+
+            attribute.setXYZ(vertexIndex++, startX, startY, startZ);
+            attribute.setXYZ(vertexIndex++, startX + inwardX * size.x * 0.16, startY, startZ);
+            attribute.setXYZ(vertexIndex++, startX, startY, startZ);
+            attribute.setXYZ(vertexIndex++, startX, startY + inwardY * size.y * 0.16, startZ);
+            attribute.setXYZ(vertexIndex++, startX, startY, startZ);
+            attribute.setXYZ(vertexIndex++, startX, startY, startZ + inwardZ * size.z * 0.16);
+          }
+        }
+      }
+      attribute.needsUpdate = true;
+      geometry.computeBoundingSphere();
+      lastMatrixWorldRef.current.copy(object.matrixWorld);
+    };
+
+    return { geometry, material, lines, update };
+  }, [object]);
 
   useEffect(() => {
-    const glowGroup = new THREE.Group();
-    glowGroup.name = 'Liclick Selection Edge Glow';
-    glowGroup.userData.liclickSelectionGlow = true;
-    glowGroup.renderOrder = 80;
-    const edgeGeometries: THREE.EdgesGeometry[] = [];
-    object.updateMatrixWorld(true);
-    const inverseRoot = object.matrixWorld.clone().invert();
-    object.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      if (child.userData.liclickPaintOverlay || child.userData.liclickSelectionGlow) return;
-      const localMatrix = inverseRoot.clone().multiply(child.matrixWorld);
-      const position = new THREE.Vector3();
-      const quaternion = new THREE.Quaternion();
-      const scale = new THREE.Vector3();
-      localMatrix.decompose(position, quaternion, scale);
-
-      const glowMesh = new THREE.Mesh(child.geometry, shellMaterial);
-      glowMesh.position.copy(position);
-      glowMesh.quaternion.copy(quaternion);
-      glowMesh.scale.copy(scale.clone().multiplyScalar(1.052));
-      glowMesh.renderOrder = 80;
-      glowMesh.userData.liclickSelectionGlow = true;
-      glowGroup.add(glowMesh);
-
-      const edgeGeometry = new THREE.EdgesGeometry(child.geometry, 32);
-      edgeGeometries.push(edgeGeometry);
-      const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
-      edgeLines.position.copy(position);
-      edgeLines.quaternion.copy(quaternion);
-      edgeLines.scale.copy(scale.clone().multiplyScalar(1.012));
-      edgeLines.renderOrder = 82;
-      edgeLines.userData.liclickSelectionGlow = true;
-      glowGroup.add(edgeLines);
-    });
-    object.add(glowGroup);
-    glowGroupRef.current = glowGroup;
+    indicator.update();
     return () => {
-      glowGroup.removeFromParent();
-      edgeGeometries.forEach((geometry) => geometry.dispose());
-      glowGroupRef.current = undefined;
+      indicator.lines.removeFromParent();
+      indicator.geometry.dispose();
+      indicator.material.dispose();
     };
-  }, [edgeMaterial, object, shellMaterial]);
+  }, [indicator]);
 
-  useFrame(({ clock }) => {
-    const pulse = Math.sin(clock.elapsedTime * 4.8);
-    shellMaterial.opacity = 0.5 + pulse * 0.12;
-    edgeMaterial.opacity = 0.9 + pulse * 0.1;
-    glowGroupRef.current?.updateMatrixWorld(true);
+  useFrame(() => {
+    object.updateMatrixWorld(true);
+    if (!lastMatrixWorldRef.current.equals(object.matrixWorld)) indicator.update();
   });
-  return null;
+
+  return <primitive object={indicator.lines} />;
 }
 
 function TopologyWireframeOverlay({ object }: { object: THREE.Object3D }) {
@@ -1739,14 +1739,14 @@ function ImportedModel({
           selectObject(importedModel.objectId);
         }}
       />
-      {importedModel.restoreStage !== 'bounds' &&
-        displayMode === 'wire' &&
-        <TopologyWireframeOverlay object={importedModel.group} />}
+      {importedModel.restoreStage !== 'bounds' && displayMode === 'wire' && (
+        <TopologyWireframeOverlay object={importedModel.group} />
+      )}
       {importedModel.restoreStage === 'full' &&
         showSelectionGlow &&
         selectedObjectId === importedModel.objectId && (
-        <SelectionEdgeGlow object={importedModel.group} />
-      )}
+          <SelectionBoundsCorners object={importedModel.group} />
+        )}
     </>
   );
 }
