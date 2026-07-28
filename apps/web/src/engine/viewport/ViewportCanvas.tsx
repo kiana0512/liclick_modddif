@@ -115,8 +115,8 @@ const PROJECTION_PAINT_MAX_SIZE = 512;
 const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
 const LOCAL_REPAINT_LIVE_TEXTURE_MAX_FPS = 30;
 // Stop projection before a surface becomes so foreshortened that a few source
-// pixels stretch into visible scan lines. 0.35 is about 70 degrees from face-on.
-const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.35;
+// pixels stretch into visible scan lines. 0.5 is 60 degrees from face-on.
+const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.5;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
