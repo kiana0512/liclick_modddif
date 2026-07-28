@@ -693,9 +693,11 @@ function TopologyWireframeOverlay({ object }: { object: THREE.Object3D }) {
 function ImportedModel({
   importedModel,
   showSelectionGlow,
+  workspaceVisible,
 }: {
   importedModel: ModelLoadResult;
   showSelectionGlow: boolean;
+  workspaceVisible: boolean;
 }) {
   const { gl } = useThree();
   const displayMode = useSceneStore((state) => state.displayMode);
@@ -1723,7 +1725,10 @@ function ImportedModel({
 
   if (!importedModel) return null;
 
-  if (!objectVisible) return null;
+  // Keep this component and its decoded texture/material state alive when the
+  // workspace hides the model. Returning only its scene primitive prevents a
+  // scene/texture switch from rebuilding the complete material pipeline.
+  if (!objectVisible || !workspaceVisible) return null;
 
   return (
     <>
@@ -1778,12 +1783,15 @@ export function SceneRoot() {
   const keyIntensity = previewLighting.keyLightIntensity;
   const fillIntensity = previewLighting.ambientIntensity * 0.52;
   const activeObjectId = selectedObjectId ?? importedModel?.objectId ?? importedModels[0]?.objectId;
-  const renderedModels =
-    workspaceMode === 'scene' || workspaceMode === 'export'
-      ? importedModels
-      : importedModels.filter((model) => model.objectId === activeObjectId);
-  const showSelectionGlow = workspaceMode === 'scene' || workspaceMode === 'export';
-  const hasProgressiveRestore = renderedModels.some(
+  const isSceneWorkspace = workspaceMode === 'scene' || workspaceMode === 'export';
+  const workspaceVisibleModels = isSceneWorkspace
+    ? importedModels
+    : importedModels.filter((model) => model.objectId === activeObjectId);
+  const workspaceVisibleModelIds = new Set(
+    workspaceVisibleModels.map((model) => model.objectId),
+  );
+  const showSelectionGlow = isSceneWorkspace;
+  const hasProgressiveRestore = workspaceVisibleModels.some(
     (model) => model.restoreStage && model.restoreStage !== 'full',
   );
 
@@ -1798,11 +1806,12 @@ export function SceneRoot() {
       />
       <directionalLight position={fillLightPosition} intensity={fillIntensity} />
       <Grid />
-      {renderedModels.map((model) => (
+      {importedModels.map((model) => (
         <ImportedModel
           key={model.objectId}
           importedModel={model}
           showSelectionGlow={showSelectionGlow}
+          workspaceVisible={workspaceVisibleModelIds.has(model.objectId)}
         />
       ))}
       <ObjectTransformControls />

@@ -19,9 +19,12 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
   const reorderPanel = useWorkspaceLayoutStore((state) => state.reorderPanel);
   const isPanelDragging = useDragInteractionStore((state) => state.isPanelDragging);
   const clearDrag = useDragInteractionStore((state) => state.clearDrag);
-  const matchingPanels = panels
-    .filter((panel) => panel.visible && (panel.mode === 'all' || panel.mode === mode))
+  const dockPanels = panels
+    .filter((panel) => panel.visible)
     .sort((a, b) => a.order - b.order);
+  const matchingPanels = dockPanels.filter(
+    (panel) => panel.mode === 'all' || panel.mode === mode,
+  );
   const allPanelsCollapsed = matchingPanels.length > 0 && matchingPanels.every((panel) => panel.collapsed);
 
   if (matchingPanels.length === 0) return null;
@@ -70,31 +73,37 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
           event.stopPropagation();
         }}
       >
-        {matchingPanels.map((panel) => (
-          <div
-            key={panel.id}
-            className="pointer-events-auto"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setIsDropTarget(false);
-              const panelId = event.dataTransfer.getData('application/liclick-panel-id') as PanelId;
-              if (panelId && panelId !== panel.id) reorderPanel(panelId, side, panel.id);
-              clearDrag();
-            }}
-          >
-            <WorkspacePanel
-              id={panel.id}
-              title={panel.title}
-              collapsed={panel.collapsed}
-              actions={panel.actions}
-              onToggleCollapsed={() => togglePanelCollapsed(panel.id)}
+        {dockPanels.map((panel) => {
+          const activeInMode = panel.mode === 'all' || panel.mode === mode;
+          return (
+            <div
+              key={panel.id}
+              className={cn('pointer-events-auto', !activeInMode && 'hidden')}
+              aria-hidden={!activeInMode}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setIsDropTarget(false);
+                const panelId = event.dataTransfer.getData(
+                  'application/liclick-panel-id',
+                ) as PanelId;
+                if (panelId && panelId !== panel.id) reorderPanel(panelId, side, panel.id);
+                clearDrag();
+              }}
             >
-              {panel.content}
-            </WorkspacePanel>
-          </div>
-        ))}
+              <WorkspacePanel
+                id={panel.id}
+                title={panel.title}
+                collapsed={panel.collapsed}
+                actions={panel.actions}
+                onToggleCollapsed={() => togglePanelCollapsed(panel.id)}
+              >
+                {panel.content}
+              </WorkspacePanel>
+            </div>
+          );
+        })}
       </div>
       {compactHidden && (
         <button type="button" className="sr-only" onClick={onRequestOpen}>
