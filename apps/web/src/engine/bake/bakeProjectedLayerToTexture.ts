@@ -990,6 +990,7 @@ export async function bakeVisibleProjectedLayersToTexture(
             qualityBlendComposite.coverage,
             importedModel.group,
             input.uvIslandGutterPixels ?? 0,
+            input.outputAlpha === 'transparent',
           );
           if (paddedPixels > 0) {
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
@@ -1416,6 +1417,7 @@ export async function bakeVisibleProjectedLayersToTexture(
       qualityBlendComposite.coverage,
       importedModel.group,
       input.uvIslandGutterPixels ?? 0,
+      input.outputAlpha === 'transparent',
     );
     if (paddedPixels > 0) {
       warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);

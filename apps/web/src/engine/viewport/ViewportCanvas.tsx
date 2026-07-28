@@ -112,7 +112,8 @@ const UV_TEXTURE_RESOLUTION = {
 } as const;
 const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
-const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 320;
+const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
+const LOCAL_REPAINT_LIVE_TEXTURE_MAX_FPS = 30;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -2766,8 +2767,9 @@ function SurfacePaintOverlay() {
       // The pointer path is rasterized at PROJECTION_PAINT_MAX_SIZE, so keeping a
       // source-resolution mask adds no detail and forces a multi-megabyte canvas
       // upload after every stroke. Keep the live mask at the same screen-space
-      // resolution and let the shader sample it linearly. A 384px live mask cuts
-      // the per-frame texture upload almost in half compared with 512px.
+      // resolution and let the shader sample it linearly. The final UV result is
+      // still baked at 1K; this smaller canvas only controls interactive feedback
+      // and substantially reduces the upload that can stall a dense viewport.
       const sourceAspect = sourceWidth / Math.max(sourceHeight, 1);
       const width =
         sourceAspect >= 1
@@ -2871,7 +2873,23 @@ function SurfacePaintOverlay() {
       // Keep the interactive projection out of the persisted layer stack. It is
       // renderer-only state, so pointer-down no longer creates a temporary row or
       // forces the UV layer compositor to rebuild.
-      useSceneStore.getState().setLocalRepaintPreviewLayer(projectedLayer);
+      const sceneState = useSceneStore.getState();
+      const currentPreviewLayer = sceneState.localRepaintPreviewLayer;
+      const previewAlreadyPublished =
+        currentPreviewLayer?.id === projectedLayer.id &&
+        currentPreviewLayer.imageUrl === projectedLayer.imageUrl &&
+        currentPreviewLayer.maskUrl === projectedLayer.maskUrl &&
+        currentPreviewLayer.depthUrl === projectedLayer.depthUrl &&
+        currentPreviewLayer.objectId === projectedLayer.objectId &&
+        currentPreviewLayer.generationId === projectedLayer.generationId &&
+        currentPreviewLayer.captureId === projectedLayer.captureId &&
+        currentPreviewLayer.replacementTargetLayerId ===
+          projectedLayer.replacementTargetLayerId;
+      // Re-publishing an equivalent object makes SceneRoot rebuild the projected
+      // layer inputs and can compile/rebind materials at pointer-down. The live
+      // canvas texture is mutable, so one published layer is enough for every
+      // subsequent stamp in the same repaint session.
+      if (!previewAlreadyPublished) sceneState.setLocalRepaintPreviewLayer(projectedLayer);
       if (existingLayer) {
         const layerState = useLayerStore.getState();
         layerState.setLayers(
@@ -3166,12 +3184,14 @@ function SurfacePaintOverlay() {
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
           mergeLocalRepaintScratchPatch(composite, projectionBounds);
-          // Keep the low-resolution screen projection locked to the brush. The
-          // frame scheduler coalesces repeated stamps, so this is responsive at
-          // the display refresh rate without uploading the texture more than once
-          // per rendered frame. The high-resolution UV bake still starts only
-          // after pointer-up.
-          scheduleTextureUpdate(composite.maskTexture);
+          // CanvasTexture uploads are full-surface GPU transfers. Limit only that
+          // transfer (not pointer sampling or mask rasterization) so orbit/render
+          // frames stay responsive while the brush still tracks every RAF.
+          scheduleProjectionTextureUpdate(
+            composite.maskTexture,
+            false,
+            LOCAL_REPAINT_LIVE_TEXTURE_MAX_FPS,
+          );
         }
       }
 
@@ -3217,6 +3237,7 @@ function SurfacePaintOverlay() {
       paintToolSettings.brushHardness,
       paintToolSettings.color,
       paintToolSettings.eraserHardness,
+      scheduleProjectionTextureUpdate,
       scheduleTextureUpdate,
     ],
   );
@@ -3398,8 +3419,9 @@ function SurfacePaintOverlay() {
           transientLayers: [transientLayer],
           resolution: bakeResolution,
           enableBackfaceCulling: true,
-          // Fill only one-texel cracks backed by the model's pre-rendered UV
-          // topology. The GPU constraint keeps empty atlas space transparent.
+          // Fill only the one-texel, topology-backed band around UV islands. The
+          // GPU dilation retains feathered source alpha, so this closes filtering
+          // cracks without turning the repaint boundary into an opaque outline.
           enableDilation: true,
           dilationPixels: 1,
           outputAlpha: 'transparent',
@@ -3410,8 +3432,6 @@ function SurfacePaintOverlay() {
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
-          // Direct GPU output already has straight-alpha transparent pixels.
-          // Avoid a second full-canvas CPU seam/dilation pass.
           skipCpuPostprocess: true,
         });
         if (bakeResult.report.coveredPixels <= 0) {
@@ -3835,7 +3855,12 @@ function SurfacePaintOverlay() {
       const model = getTargetModel();
       if (!model || !localRepaintSourceImageRef.current?.image) return;
       model.group.updateMatrixWorld(true);
-      const composite = ensureLiveLocalRepaintComposite(model, localRepaintSource);
+      // Pointer-down already resolved and published this composite. Reusing the
+      // draft avoids a redundant preview-layer store update/material pass at the
+      // exact moment the user releases the brush.
+      const composite =
+        draft.localRepaintComposite ??
+        ensureLiveLocalRepaintComposite(model, localRepaintSource);
       if (!composite) return;
 
       // Keep the projected canvas visible while the completed stroke is converted

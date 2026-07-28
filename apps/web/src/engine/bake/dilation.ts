@@ -92,6 +92,7 @@ export function padUvIslandGutters(
   coverage: Uint8Array,
   root: THREE.Object3D,
   iterations: number,
+  preserveSourceAlpha = false,
 ) {
   const { width, height, data } = imageData;
   if (iterations <= 0) return 0;
@@ -148,10 +149,11 @@ export function padUvIslandGutters(
       data[targetOffset] = data[sourceOffset];
       data[targetOffset + 1] = data[sourceOffset + 1];
       data[targetOffset + 2] = data[sourceOffset + 2];
-      // Gutter texels are outside all model UV triangles. Opaque alpha keeps
-      // bilinear filtering from blending the island edge with a transparent
-      // white/black texel, but cannot paint an actual model surface.
-      data[targetOffset + 3] = 255;
+      // Gutter texels are outside all model UV triangles and cannot paint an
+      // actual surface. Transparent overlays must nevertheless retain their
+      // feathered source alpha: forcing these pixels opaque creates a contour
+      // when bilinear filtering samples across the UV-island border.
+      data[targetOffset + 3] = preserveSourceAlpha ? data[sourceOffset + 3] : 255;
       coverage[targetIndex] = 1;
       nextFrontier.push(targetIndex);
       paddedPixels += 1;

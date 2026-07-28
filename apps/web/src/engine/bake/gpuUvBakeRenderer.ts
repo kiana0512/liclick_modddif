@@ -459,9 +459,16 @@ const dilationFragmentShader = `
     return vec4(color.rgb / color.a, color.a);
   }
 
-  void accumulateNeighbor(vec4 color, float weight, inout vec3 colorSum, inout float weightSum) {
+  void accumulateNeighbor(
+    vec4 color,
+    float weight,
+    inout vec3 colorSum,
+    inout float alphaSum,
+    inout float weightSum
+  ) {
     if (color.a <= 0.0001) return;
     colorSum += unpremultiply(color).rgb * weight;
+    alphaSum += color.a * weight;
     weightSum += weight;
   }
 
@@ -473,16 +480,25 @@ const dilationFragmentShader = `
     }
 
     vec3 colorSum = vec3(0.0);
+    float alphaSum = 0.0;
     float weightSum = 0.0;
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, 0.0)), 1.0, colorSum, weightSum);
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, 0.0)), 1.0, colorSum, weightSum);
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(0.0, texelSize.y)), 1.0, colorSum, weightSum);
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(0.0, -texelSize.y)), 1.0, colorSum, weightSum);
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, -texelSize.y)), 0.7071, colorSum, weightSum);
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, -texelSize.y)), 0.7071, colorSum, weightSum);
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, texelSize.y)), 0.7071, colorSum, weightSum);
-    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, texelSize.y)), 0.7071, colorSum, weightSum);
-    gl_FragColor = weightSum > 0.0 ? vec4(colorSum / weightSum, 1.0) : vec4(0.0);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, 0.0)), 1.0, colorSum, alphaSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, 0.0)), 1.0, colorSum, alphaSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(0.0, texelSize.y)), 1.0, colorSum, alphaSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(0.0, -texelSize.y)), 1.0, colorSum, alphaSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, -texelSize.y)), 0.7071, colorSum, alphaSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, -texelSize.y)), 0.7071, colorSum, alphaSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(-texelSize.x, texelSize.y)), 0.7071, colorSum, alphaSum, weightSum);
+    accumulateNeighbor(texture2D(sourceMap, vUv + vec2(texelSize.x, texelSize.y)), 0.7071, colorSum, alphaSum, weightSum);
+    if (weightSum <= 0.0) {
+      gl_FragColor = vec4(0.0);
+      return;
+    }
+    float alpha = alphaSum / weightSum;
+    vec3 straightColor = colorSum / weightSum;
+    // Render targets contain premultiplied RGB. Preserve the neighbouring alpha
+    // instead of forcing a solid ring around a feathered transparent overlay.
+    gl_FragColor = vec4(straightColor * alpha, alpha);
   }
 `;
 
