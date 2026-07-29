@@ -981,7 +981,7 @@ export async function bakeVisibleProjectedLayersToTexture(
             warnings.push(`UV-topology coverage repair filled ${filledPixels} texels.`);
           }
         }
-        if (input.enableDilation) {
+        if (input.enableDilation && !input.constrainDilationToInteriorHoles) {
           dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
         }
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
@@ -1090,6 +1090,10 @@ export async function bakeVisibleProjectedLayersToTexture(
         maximumDepthError: input.maximumDepthError,
         minimumOutputCoverage: input.minimumOutputCoverage,
         constrainDilationToInteriorHoles: input.constrainDilationToInteriorHoles,
+        repairMissingUvSeams: input.skipCpuPostprocess
+          ? input.repairMissingUvSeams
+          : false,
+        uvSeamRepairPixels: input.uvSeamRepairPixels,
         onProgress: (progress) =>
           input.onProgress?.({
             ...progress,
@@ -1146,7 +1150,8 @@ export async function bakeVisibleProjectedLayersToTexture(
             );
           }
         }
-        if (input.enableDilation) dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
+        if (input.enableDilation && !input.constrainDilationToInteriorHoles)
+          dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
         if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
         else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
         gpuContext.putImageData(gpuImage, 0, 0);
@@ -1408,7 +1413,7 @@ export async function bakeVisibleProjectedLayersToTexture(
       warnings.push(`UV-topology coverage repair filled ${filledPixels} texels.`);
     }
   }
-  if (input.enableDilation) {
+  if (input.enableDilation && !input.constrainDilationToInteriorHoles) {
     dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
   }
   if ((input.uvIslandGutterPixels ?? 0) > 0) {

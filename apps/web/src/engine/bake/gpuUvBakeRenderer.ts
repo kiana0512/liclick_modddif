@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { loadImageData } from './imageSampler';
+import {
+  collectUvSeamPairs,
+  type UvSeamEdgeRecord,
+} from './uvSeamReconciliation';
 import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -23,6 +27,10 @@ const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
 const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
 const PROJECTION_FACING_FEATHER = 0.08;
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
+const gpuUvSeamPairCache = new WeakMap<
+  THREE.Object3D,
+  ReturnType<typeof collectUvSeamPairs>
+>();
 
 type GpuLayerStackBakeInput = {
   renderer: THREE.WebGLRenderer;
@@ -40,6 +48,8 @@ type GpuLayerStackBakeInput = {
   maximumDepthError?: number;
   minimumOutputCoverage?: number;
   constrainDilationToInteriorHoles?: boolean;
+  repairMissingUvSeams?: boolean;
+  uvSeamRepairPixels?: number;
   onProgress?: (progress: BakeProgress) => void;
 };
 
@@ -520,7 +530,26 @@ const dilationFragmentShader = `
 
 const uvTopologyFragmentShader = `
   void main() {
-    gl_FragColor = vec4(1.0);
+    gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+  }
+`;
+
+const topologyDilationFragmentShader = `
+  uniform sampler2D sourceMap;
+  uniform vec2 texelSize;
+  varying vec2 vUv;
+
+  void main() {
+    float occupied = texture2D(sourceMap, vUv).r;
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(-texelSize.x, 0.0)).r);
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(texelSize.x, 0.0)).r);
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(0.0, texelSize.y)).r);
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(0.0, -texelSize.y)).r);
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(-texelSize.x, -texelSize.y)).r);
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(texelSize.x, -texelSize.y)).r);
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(-texelSize.x, texelSize.y)).r);
+    occupied = max(occupied, texture2D(sourceMap, vUv + vec2(texelSize.x, texelSize.y)).r);
+    gl_FragColor = vec4(occupied, 0.0, 0.0, 1.0);
   }
 `;
 
@@ -541,14 +570,51 @@ const interiorHoleConstraintFragmentShader = `
     }
 
     vec4 expanded = texture2D(sourceMap, vUv);
-    float insideOriginalUv = texture2D(uvTopologyBaseMap, vUv).a;
-    float insidePaddedUv = texture2D(uvTopologyMap, vUv).a;
+    float insideOriginalUv = texture2D(uvTopologyBaseMap, vUv).r;
+    float insidePaddedUv = texture2D(uvTopologyMap, vUv).r;
     // Only bridge a texel that was absent from the original UV raster but is
     // recovered by its one-pixel topology padding. A normal transparent texel
     // inside an existing UV island is the brush boundary and must stay empty.
     gl_FragColor = expanded.a > 0.0001 && insideOriginalUv <= 0.0001 && insidePaddedUv > 0.0001
       ? expanded
       : vec4(0.0);
+  }
+`;
+
+const copyFragmentShader = `
+  uniform sampler2D sourceMap;
+  varying vec2 vUv;
+
+  void main() {
+    gl_FragColor = texture2D(sourceMap, vUv);
+  }
+`;
+
+const uvSeamRepairVertexShader = `
+  attribute vec2 pairedUv;
+  varying vec2 vDestinationUv;
+  varying vec2 vPairedUv;
+
+  void main() {
+    vDestinationUv = position.xy;
+    vPairedUv = pairedUv;
+    gl_Position = vec4(position.xy * 2.0 - 1.0, 0.0, 1.0);
+  }
+`;
+
+const uvSeamRepairFragmentShader = `
+  uniform sampler2D sourceMap;
+  varying vec2 vDestinationUv;
+  varying vec2 vPairedUv;
+
+  void main() {
+    vec4 destination = texture2D(sourceMap, clamp(vDestinationUv, vec2(0.0), vec2(1.0)));
+    vec4 paired = texture2D(sourceMap, clamp(vPairedUv, vec2(0.0), vec2(1.0)));
+    // Local repaint needs missing-coverage transfer, not colour averaging.
+    // Preserve authored texels and copy only when the geometrically paired UV
+    // side contains valid projected coverage.
+    if (destination.a > 0.0001 || paired.a <= 0.0001) discard;
+    gl_FragColor = paired;
   }
 `;
 
@@ -885,6 +951,88 @@ function createPostprocessTarget(resolution: number) {
   return target;
 }
 
+function createTopologyTarget(resolution: number) {
+  const target = new THREE.WebGLRenderTarget(resolution, resolution, {
+    depthBuffer: false,
+    stencilBuffer: false,
+    format: THREE.RedFormat,
+    type: THREE.UnsignedByteType,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    generateMipmaps: false,
+  });
+  target.texture.colorSpace = THREE.NoColorSpace;
+  return target;
+}
+
+function getUvEdgeInward(edge: UvSeamEdgeRecord) {
+  const direction = edge.b.uv.clone().sub(edge.a.uv);
+  const length = direction.length();
+  if (length <= 1e-8) return new THREE.Vector2();
+  direction.multiplyScalar(1 / length);
+  const inward = new THREE.Vector2(-direction.y, direction.x);
+  if (edge.insideUv.clone().sub(edge.a.uv).dot(inward) < 0) inward.multiplyScalar(-1);
+  return inward;
+}
+
+function createUvSeamRepairGeometry(
+  root: THREE.Object3D,
+  resolution: number,
+  bandPixels: number,
+) {
+  let seamPairs = gpuUvSeamPairCache.get(root);
+  if (!seamPairs) {
+    seamPairs = collectUvSeamPairs(root, true);
+    gpuUvSeamPairCache.set(root, seamPairs);
+  }
+  if (seamPairs.length === 0) return undefined;
+  const positions: number[] = [];
+  const pairedUvs: number[] = [];
+  const indices: number[] = [];
+  const minimumDepth = 0.25 / resolution;
+  const maximumDepth = (Math.max(2, Math.min(32, bandPixels)) + 0.5) / resolution;
+
+  const appendDirection = (destination: UvSeamEdgeRecord, paired: UvSeamEdgeRecord) => {
+    const destinationInward = getUvEdgeInward(destination);
+    const pairedInward = getUvEdgeInward(paired);
+    if (destinationInward.lengthSq() <= 1e-12 || pairedInward.lengthSq() <= 1e-12) return;
+    const destinationPoints = [
+      destination.a.uv.clone().addScaledVector(destinationInward, minimumDepth),
+      destination.b.uv.clone().addScaledVector(destinationInward, minimumDepth),
+      destination.b.uv.clone().addScaledVector(destinationInward, maximumDepth),
+      destination.a.uv.clone().addScaledVector(destinationInward, maximumDepth),
+    ];
+    const pairedPoints = [
+      paired.a.uv.clone().addScaledVector(pairedInward, minimumDepth),
+      paired.b.uv.clone().addScaledVector(pairedInward, minimumDepth),
+      paired.b.uv.clone().addScaledVector(pairedInward, maximumDepth),
+      paired.a.uv.clone().addScaledVector(pairedInward, maximumDepth),
+    ];
+    const baseIndex = positions.length / 3;
+    destinationPoints.forEach((point) => positions.push(point.x, point.y, 0));
+    pairedPoints.forEach((point) => pairedUvs.push(point.x, point.y));
+    indices.push(
+      baseIndex,
+      baseIndex + 1,
+      baseIndex + 2,
+      baseIndex,
+      baseIndex + 2,
+      baseIndex + 3,
+    );
+  };
+
+  seamPairs.forEach(([first, second]) => {
+    appendDirection(first, second);
+    appendDirection(second, first);
+  });
+  if (indices.length === 0) return undefined;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('pairedUv', new THREE.Float32BufferAttribute(pairedUvs, 2));
+  geometry.setIndex(indices);
+  return { geometry, seamPairs: seamPairs.length };
+}
+
 function renderFullscreenPass(input: {
   renderer: THREE.WebGLRenderer;
   source: THREE.WebGLRenderTarget;
@@ -908,13 +1056,14 @@ function runGpuPostprocess(input: {
   renderer: THREE.WebGLRenderer;
   source: THREE.WebGLRenderTarget;
   uvTopologySource?: THREE.WebGLRenderTarget;
+  uvSeamGeometry?: THREE.BufferGeometry;
   resolution: UvBakeResolution;
   enableDilation: boolean;
   dilationPixels: number;
   enableSharpen: boolean;
   constrainDilationToInteriorHoles?: boolean;
 }) {
-  if (!input.enableDilation && !input.enableSharpen) {
+  if (!input.enableDilation && !input.enableSharpen && !input.uvSeamGeometry) {
     return { target: input.source, ownedTargets: [] };
   }
 
@@ -946,17 +1095,39 @@ function runGpuPostprocess(input: {
     input.constrainDilationToInteriorHoles &&
     input.uvTopologySource
   ) {
-    paddedUvTopology = createPostprocessTarget(input.resolution);
-    ownedTargets.push(paddedUvTopology);
-    // Pad the geometry occupancy first. The projection is then allowed to fill
-    // only this topology-backed one-texel band, never arbitrary atlas space.
-    renderFullscreenPass({
-      renderer: input.renderer,
-      source: input.uvTopologySource,
-      target: paddedUvTopology,
-      material: dilationMaterial,
-      camera,
+    const topologyPing = createTopologyTarget(input.resolution);
+    const topologyPong = createTopologyTarget(input.resolution);
+    ownedTargets.push(topologyPing, topologyPong);
+    let topologyCurrent = input.uvTopologySource;
+    let topologyNext = topologyPing;
+    const topologyDilationMaterial = new THREE.ShaderMaterial({
+      vertexShader: fullscreenVertexShader,
+      fragmentShader: topologyDilationFragmentShader,
+      uniforms: {
+        sourceMap: { value: topologyCurrent.texture },
+        texelSize: { value: texelSize },
+      },
+      blending: THREE.NoBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
     });
+    // Grow topology by the same number of texels as the colour pass. The final
+    // constraint therefore keeps a real multi-pixel atlas gutter while still
+    // rejecting dilation into an unpainted model-surface texel.
+    for (let iteration = 0; iteration < input.dilationPixels; iteration += 1) {
+      renderFullscreenPass({
+        renderer: input.renderer,
+        source: topologyCurrent,
+        target: topologyNext,
+        material: topologyDilationMaterial,
+        camera,
+      });
+      topologyCurrent = topologyNext;
+      topologyNext = topologyNext === topologyPing ? topologyPong : topologyPing;
+    }
+    paddedUvTopology = topologyCurrent;
+    topologyDilationMaterial.dispose();
   }
 
   if (input.enableDilation) {
@@ -1003,6 +1174,48 @@ function runGpuPostprocess(input: {
     current = next;
     next = next === ping ? pong : ping;
     constraintMaterial.dispose();
+  }
+
+  if (input.uvSeamGeometry) {
+    const copyMaterial = new THREE.ShaderMaterial({
+      vertexShader: fullscreenVertexShader,
+      fragmentShader: copyFragmentShader,
+      uniforms: { sourceMap: { value: current.texture } },
+      blending: THREE.NoBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    renderFullscreenPass({
+      renderer: input.renderer,
+      source: current,
+      target: next,
+      material: copyMaterial,
+      camera,
+    });
+    copyMaterial.dispose();
+
+    const seamMaterial = new THREE.ShaderMaterial({
+      vertexShader: uvSeamRepairVertexShader,
+      fragmentShader: uvSeamRepairFragmentShader,
+      uniforms: { sourceMap: { value: current.texture } },
+      blending: THREE.NoBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    });
+    const seamScene = new THREE.Scene();
+    const seamMesh = new THREE.Mesh(input.uvSeamGeometry, seamMaterial);
+    seamMesh.frustumCulled = false;
+    seamScene.add(seamMesh);
+    input.renderer.autoClear = false;
+    input.renderer.setRenderTarget(next);
+    input.renderer.render(seamScene, camera);
+    seamScene.clear();
+    seamMaterial.dispose();
+    current = next;
+    next = next === ping ? pong : ping;
   }
 
   if (input.enableSharpen && input.resolution <= MAX_GPU_SHARPEN_RESOLUTION) {
@@ -1355,6 +1568,7 @@ export async function bakeProjectedLayerStackWithGpu(
   });
   renderTarget.texture.colorSpace = THREE.NoColorSpace;
   let uvTopologyTarget: THREE.WebGLRenderTarget | undefined;
+  let uvSeamGeometry: THREE.BufferGeometry | undefined;
 
   let previousState = captureRendererState(renderer);
 
@@ -1424,7 +1638,7 @@ export async function bakeProjectedLayerStackWithGpu(
       previousState = captureRendererState(renderer);
     }
     if (input.enableDilation && input.constrainDilationToInteriorHoles) {
-      uvTopologyTarget = createPostprocessTarget(resolution);
+      uvTopologyTarget = createTopologyTarget(resolution);
       const topologyMaterial = new THREE.ShaderMaterial({
         vertexShader,
         fragmentShader: uvTopologyFragmentShader,
@@ -1452,10 +1666,24 @@ export async function bakeProjectedLayerStackWithGpu(
       layerCount: input.layers.length,
     });
     const outputAlpha = input.outputAlpha ?? 'opaque-viewport';
+    if (input.repairMissingUvSeams) {
+      const seamRepair = createUvSeamRepairGeometry(
+        input.group,
+        resolution,
+        input.uvSeamRepairPixels ?? Math.ceil(resolution / 256),
+      );
+      uvSeamGeometry = seamRepair?.geometry;
+      if (seamRepair) {
+        warnings.push(
+          `GPU UV seam repair mapped ${seamRepair.seamPairs} geometric seam pairs.`,
+        );
+      }
+    }
     const postprocess = runGpuPostprocess({
       renderer,
       source: renderTarget,
       uvTopologySource: uvTopologyTarget,
+      uvSeamGeometry,
       resolution,
       enableDilation: input.enableDilation,
       dilationPixels: input.dilationPixels,
@@ -1497,6 +1725,7 @@ export async function bakeProjectedLayerStackWithGpu(
     };
   } finally {
     restoreRendererState(renderer, previousState);
+    uvSeamGeometry?.dispose();
     uvTopologyTarget?.dispose();
     renderTarget.dispose();
   }

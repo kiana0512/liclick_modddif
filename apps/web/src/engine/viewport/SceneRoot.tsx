@@ -739,6 +739,7 @@ function ImportedModel({
     ].filter(
       (layer) =>
         layer.type === 'projected' &&
+        !isRenderedLocalRepaintLayer(layer) &&
         layer.visible &&
         layer.imageUrl &&
         layer.camera &&

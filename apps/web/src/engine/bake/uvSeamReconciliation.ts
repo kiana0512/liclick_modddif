@@ -1,14 +1,14 @@
 import * as THREE from 'three';
 
-type Endpoint = {
+export type UvSeamEndpoint = {
   position: THREE.Vector3;
   normal: THREE.Vector3;
   uv: THREE.Vector2;
 };
 
-type EdgeRecord = {
-  a: Endpoint;
-  b: Endpoint;
+export type UvSeamEdgeRecord = {
+  a: UvSeamEndpoint;
+  b: UvSeamEndpoint;
   insideUv: THREE.Vector2;
 };
 
@@ -28,7 +28,7 @@ function edgeKey(a: THREE.Vector3, b: THREE.Vector3) {
   return aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`;
 }
 
-function uvEdgeKey(edge: EdgeRecord) {
+function uvEdgeKey(edge: UvSeamEdgeRecord) {
   const a = `${quantize(edge.a.uv.x, 1000000)},${quantize(edge.a.uv.y, 1000000)}`;
   const b = `${quantize(edge.b.uv.x, 1000000)},${quantize(edge.b.uv.y, 1000000)}`;
   return a < b ? `${a}|${b}` : `${b}|${a}`;
@@ -52,7 +52,7 @@ function inwardPixelNormal(edgeStart: PixelPoint, edgeEnd: PixelPoint, inside: P
   return { x, y };
 }
 
-function orientedLike(reference: EdgeRecord, candidate: EdgeRecord) {
+function orientedLike(reference: UvSeamEdgeRecord, candidate: UvSeamEdgeRecord) {
   const direct = reference.a.position.distanceToSquared(candidate.a.position) +
     reference.b.position.distanceToSquared(candidate.b.position);
   const crossed = reference.a.position.distanceToSquared(candidate.b.position) +
@@ -61,12 +61,12 @@ function orientedLike(reference: EdgeRecord, candidate: EdgeRecord) {
   return { ...candidate, a: candidate.b, b: candidate.a };
 }
 
-function normalsAreContinuous(a: EdgeRecord, b: EdgeRecord) {
+function normalsAreContinuous(a: UvSeamEdgeRecord, b: UvSeamEdgeRecord) {
   return a.a.normal.dot(b.a.normal) > 0.55 && a.b.normal.dot(b.b.normal) > 0.55;
 }
 
-function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) {
-  const groupedEdges = new Map<string, EdgeRecord[]>();
+export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) {
+  const groupedEdges = new Map<string, UvSeamEdgeRecord[]>();
   root.updateMatrixWorld(true);
 
   root.traverse((object) => {
@@ -86,7 +86,7 @@ function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) 
       const indices = [0, 1, 2].map((offset) =>
         index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
       );
-      const endpoints = indices.map((vertexIndex): Endpoint => ({
+      const endpoints = indices.map((vertexIndex): UvSeamEndpoint => ({
         position: new THREE.Vector3(
           position.getX(vertexIndex),
           position.getY(vertexIndex),
@@ -102,7 +102,7 @@ function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) 
 
       const edgeIndices = [[0, 1, 2], [1, 2, 0], [2, 0, 1]] as const;
       for (const [start, end, inside] of edgeIndices) {
-        const record: EdgeRecord = {
+        const record: UvSeamEdgeRecord = {
           a: endpoints[start],
           b: endpoints[end],
           insideUv: endpoints[inside].uv,
@@ -115,10 +115,10 @@ function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) 
     }
   });
 
-  const pairs: Array<[EdgeRecord, EdgeRecord]> = [];
+  const pairs: Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]> = [];
   groupedEdges.forEach((records) => {
     if (records.length < 2) return;
-    const uniqueByUv = new Map<string, EdgeRecord>();
+    const uniqueByUv = new Map<string, UvSeamEdgeRecord>();
     records.forEach((record) => uniqueByUv.set(uvEdgeKey(record), record));
     const unique = [...uniqueByUv.values()];
     if (unique.length < 2) return;
