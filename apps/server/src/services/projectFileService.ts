@@ -218,6 +218,68 @@ function collectReferencedObjectIds(project: WorkspaceProject) {
   return referenced;
 }
 
+function applyExplicitObjectDeletions(project: WorkspaceProject) {
+  const deletedObjectIds = new Set(project.deletedObjectIds ?? []);
+  if (deletedObjectIds.size === 0) return project;
+  const removedLayerIds = new Set(
+    project.layers
+      .filter(isRecord)
+      .filter((layer) => deletedObjectIds.has(readString(layer.objectId) ?? ''))
+      .map((layer) => readString(layer.id))
+      .filter((id): id is string => Boolean(id)),
+  );
+  let bakeWorkspace = project.bakeWorkspace;
+  if (isRecord(bakeWorkspace) && isRecord(bakeWorkspace.bakeSets)) {
+    const bakeSets = Object.fromEntries(
+      Object.entries(bakeWorkspace.bakeSets).filter(
+        ([objectId, bakeSet]) =>
+          !deletedObjectIds.has(objectId) &&
+          (!isRecord(bakeSet) ||
+            !deletedObjectIds.has(readString(bakeSet.objectId) ?? '')),
+      ),
+    );
+    const nextBakeWorkspace: Record<string, unknown> = { ...bakeWorkspace, bakeSets };
+    if (deletedObjectIds.has(readString(nextBakeWorkspace.selectedObjectId) ?? '')) {
+      delete nextBakeWorkspace.selectedObjectId;
+    }
+    bakeWorkspace = nextBakeWorkspace;
+  }
+  return {
+    ...project,
+    objects: project.objects.filter(
+      (object) => !isRecord(object) || !deletedObjectIds.has(readString(object.id) ?? ''),
+    ),
+    references: project.references.filter(
+      (reference) =>
+        !isRecord(reference) ||
+        !deletedObjectIds.has(readString(reference.objectId) ?? ''),
+    ),
+    captures: project.captures.filter(
+      (capture) =>
+        !isRecord(capture) ||
+        !deletedObjectIds.has(readString(capture.objectId) ?? ''),
+    ),
+    generations: project.generations.filter(
+      (generation) =>
+        !isRecord(generation) ||
+        !isRecord(generation.metadata) ||
+        !deletedObjectIds.has(readString(generation.metadata.objectId) ?? ''),
+    ),
+    layers: project.layers.filter(
+      (layer) =>
+        !isRecord(layer) || !deletedObjectIds.has(readString(layer.objectId) ?? ''),
+    ),
+    bakedTextures: project.bakedTextures.filter((texture) => {
+      if (!isRecord(texture)) return true;
+      if (deletedObjectIds.has(readString(texture.objectId) ?? '')) return false;
+      return !getBakedTextureSourceLayerIds(texture).some((layerId) =>
+        removedLayerIds.has(layerId),
+      );
+    }),
+    bakeWorkspace,
+  };
+}
+
 function preserveReferencedObjects(
   existingProject: WorkspaceProject | undefined,
   inputProject: WorkspaceProject,
@@ -504,33 +566,50 @@ export async function saveProject(
   if (!slug) return undefined;
   const projectDir = getProjectDir(userId, slug);
   const existingProject = await loadRawProjectBySlug(userId, slug);
+  const explicitDeletionIds = new Set(inputProject.deletedObjectIds ?? []);
+  const deletionAwareInput = applyExplicitObjectDeletions(inputProject);
   if (existingProject) {
     const existingHasSceneData =
       existingProject.objects.length > 0 || existingProject.layers.length > 0;
     const incomingClearsSceneData =
-      inputProject.objects.length === 0 && inputProject.layers.length === 0;
-    if (existingHasSceneData && incomingClearsSceneData) {
+      deletionAwareInput.objects.length === 0 && deletionAwareInput.layers.length === 0;
+    const explicitlyDeletesEveryExistingObject = existingProject.objects.every(
+      (object) => {
+        const objectId = isRecord(object) ? readString(object.id) : undefined;
+        return Boolean(objectId && explicitDeletionIds.has(objectId));
+      },
+    );
+    if (
+      existingHasSceneData &&
+      incomingClearsSceneData &&
+      !explicitlyDeletesEveryExistingObject
+    ) {
       throw new ProjectSaveConflictError(
         'Blocked saving an empty scene over an existing project with model or layer data.',
       );
     }
     const incomingUnexpectedlyDropsAllLayers =
       existingProject.layers.length > 0 &&
-      inputProject.objects.length > 0 &&
-      inputProject.layers.length === 0;
-    if (incomingUnexpectedlyDropsAllLayers) {
+      deletionAwareInput.objects.length > 0 &&
+      deletionAwareInput.layers.length === 0;
+    const explicitlyDeletesEveryExistingLayer = existingProject.layers.every((layer) => {
+      const objectId = isRecord(layer) ? readString(layer.objectId) : undefined;
+      return Boolean(objectId && explicitDeletionIds.has(objectId));
+    });
+    if (incomingUnexpectedlyDropsAllLayers && !explicitlyDeletesEveryExistingLayer) {
       throw new ProjectSaveConflictError(
         'Blocked clearing every layer from a project that still contains models. Reload the complete project before saving.',
       );
     }
   }
   const now = new Date().toISOString();
-  const objectSafeProject = preserveReferencedObjects(existingProject, inputProject);
+  const objectSafeProject = preserveReferencedObjects(existingProject, deletionAwareInput);
   const sanitizedProject = normalizeProjectAssetReferences(
     userId,
     slug,
     sanitizeLowCoverageProjectedBakes(sanitizeVolatileLayerAssets(objectSafeProject)),
   );
+  delete sanitizedProject.deletedObjectIds;
   const project = {
     ...sanitizedProject,
     id: projectId,

@@ -21,6 +21,7 @@ type GenerationStore = {
   addGeneration: (generation: Generation) => void;
   setLastCapture: (capture: Capture) => void;
   setGenerations: (generations: Generation[], projectId?: string) => void;
+  deleteObjectData: (objectId: string) => void;
 };
 
 function isPendingGeneration(generation: Generation, projectId?: string) {
@@ -88,6 +89,25 @@ export const useGenerationStore = create<GenerationStore>()(
             generations: nextGenerations,
             currentGeneration: nextGenerations[0],
             isGenerating: state.isGenerating || isActiveGenerationRunning(nextGenerations[0]),
+          };
+        }),
+      deleteObjectData: (objectId) =>
+        set((state) => {
+          const generations = state.generations.filter(
+            (generation) => generation.metadata.objectId !== objectId,
+          );
+          const currentGeneration =
+            state.currentGeneration?.metadata.objectId === objectId
+              ? generations[0]
+              : state.currentGeneration;
+          return {
+            generations,
+            currentGeneration,
+            lastCapture:
+              state.lastCapture?.objectId === objectId ? undefined : state.lastCapture,
+            isGenerating: generations.some((generation) =>
+              isActiveGenerationRunning(generation),
+            ),
           };
         }),
     }),

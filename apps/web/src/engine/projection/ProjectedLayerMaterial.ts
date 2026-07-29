@@ -481,10 +481,11 @@ const fragmentShader = `
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
     depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
-    float visibilitySupport = computeSingleVisibilitySample(
+    float centerVisibility = computeSingleVisibilitySample(
       texture2D(depthMap, uv), texture2D(normalMap, uv),
       projectedMetric, depthTolerance, projectedFaceNormal
     );
+    float visibilitySupport = centerVisibility;
     visibilitySupport += computeSingleVisibilitySample(
       texture2D(depthMap, uv + vec2(visibilityTexelSize.x, 0.0)),
       texture2D(normalMap, uv + vec2(visibilityTexelSize.x, 0.0)),
@@ -538,8 +539,16 @@ const fragmentShader = `
       ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
       grazingConfidence
     );
+    float neighborhoodVisibility = step(requiredVisibilitySupport, visibilitySupport);
+    // A thin bevel on a low-poly mesh can cover only the center capture texel.
+    // Keep it when that texel has an exact geometric-normal match. Captures
+    // without a normal buffer still require a reasonably face-on projection,
+    // preserving the neighborhood guard against grazing zebra stripes.
+    float centerBackedVisibility =
+      step(0.5, centerVisibility) *
+      max(useNormalCheck, step(${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
     float visibilityCoverage =
-      step(requiredVisibilitySupport, visibilitySupport) *
+      max(neighborhoodVisibility, centerBackedVisibility) *
       step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
     float depthWeight = visibilityCoverage;
     float lambert = computePreviewLight(normal);
@@ -750,7 +759,8 @@ function buildStackFragmentShader(
         grazingConfidence
       );
       depthTolerance *= mix(1.0, grazingDepthScale, ${layerUsesNormal(index) ? '1.0' : '0.0'});
-      float visibilitySupport = ${visibilitySample(index, 'uv')};
+      float centerVisibility = ${visibilitySample(index, 'uv')};
+      float visibilitySupport = centerVisibility;
       visibilitySupport += ${visibilitySample(index, `uv + vec2(${texelSize}.x, 0.0)`)};
       visibilitySupport += ${visibilitySample(index, `uv - vec2(${texelSize}.x, 0.0)`)};
       visibilitySupport += ${visibilitySample(index, `uv + vec2(0.0, ${texelSize}.y)`)};
@@ -764,8 +774,12 @@ function buildStackFragmentShader(
         ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
         grazingConfidence
       );
+      float neighborhoodVisibility = step(requiredVisibilitySupport, visibilitySupport);
+      float centerBackedVisibility =
+        step(0.5, centerVisibility) *
+        max(${layerUsesNormal(index) ? '1.0' : '0.0'}, step(${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
       float visibilityCoverage =
-        step(requiredVisibilitySupport, visibilitySupport) *
+        max(neighborhoodVisibility, centerBackedVisibility) *
         step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);`;
   };
   const uniformDeclarations = Array.from(

@@ -113,7 +113,10 @@ const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
 const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
 const LOCAL_REPAINT_PREVIEW_MAX_SIZE = 512;
-const LOCAL_REPAINT_HIGH_RES_IDLE_MS = 1800;
+// Keep the 4K UV/seam pass out of normal brush cadence. A short pause between
+// strokes should still feel like one painting session rather than immediately
+// starting a GPU bake that competes with the next gesture.
+const LOCAL_REPAINT_HIGH_RES_IDLE_MS = 3000;
 const LOCAL_REPAINT_HANDOFF_DURATION_MS = 160;
 // Stop projection before a surface becomes so foreshortened that a few source
 // pixels stretch into visible scan lines. 0.31 is about 72 degrees from face-on;
@@ -1895,6 +1898,7 @@ function SurfacePaintOverlay() {
   const projectionTextureLastUpdateAtRef = useRef(0);
   const localRepaintUvCommitRevisionRef = useRef(0);
   const localRepaintUvCommitChainRef = useRef(Promise.resolve());
+  const localRepaintUvScheduleFrameRef = useRef<number>();
   const localRepaintHandoffFrameRef = useRef<number>();
   const localRepaintPreviewTextureIdRef = useRef(createId('local-repaint-source-preview'));
   const paintPreviewRevisionRef = useRef(0);
@@ -2367,6 +2371,9 @@ function SurfacePaintOverlay() {
       if (localRepaintHandoffFrameRef.current !== undefined)
         window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
       localRepaintHandoffFrameRef.current = undefined;
+      if (localRepaintUvScheduleFrameRef.current !== undefined)
+        window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
+      localRepaintUvScheduleFrameRef.current = undefined;
       localRepaintUvCommitRevisionRef.current += 1;
       useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     },
@@ -2378,6 +2385,9 @@ function SurfacePaintOverlay() {
     if (localRepaintHandoffFrameRef.current !== undefined)
       window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
     localRepaintHandoffFrameRef.current = undefined;
+    if (localRepaintUvScheduleFrameRef.current !== undefined)
+      window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
+    localRepaintUvScheduleFrameRef.current = undefined;
     useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     const source = localRepaintProjectionSource;
     localRepaintSourceImageRef.current = undefined;
@@ -3021,7 +3031,6 @@ function SurfacePaintOverlay() {
     if (!localRepaintProjectionSource || localRepaintAssetsRevision <= 0) return undefined;
     let cancelled = false;
     let timeoutId: number | undefined;
-    let idleId: number | undefined;
     const prepare = () => {
       if (cancelled) return;
       if (isPaintingRef.current) {
@@ -3033,14 +3042,14 @@ function SurfacePaintOverlay() {
       const source = resolveLocalRepaintStrokeSource();
       if (source) ensureLiveLocalRepaintComposite(model, source);
     };
-    if (window.requestIdleCallback) {
-      idleId = window.requestIdleCallback(prepare, { timeout: 600 });
-    } else {
-      timeoutId = window.setTimeout(prepare, 0);
-    }
+    // Publish the empty lightweight projection on the very next frame. Waiting
+    // for requestIdleCallback left shader/material creation until the first
+    // brush gesture on busy scenes, so a valid stroke could remain invisible
+    // for several frames while the projected material was being prepared.
+    const frameId = window.requestAnimationFrame(prepare);
     return () => {
       cancelled = true;
-      if (idleId !== undefined) window.cancelIdleCallback?.(idleId);
+      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [
@@ -3314,9 +3323,11 @@ function SurfacePaintOverlay() {
           // UV and returned image alpha still reject pixels outside valid content.
           mergeLocalRepaintScratchPatch(composite, projectionBounds);
           // This mask is only 288px. Upload it on the same RAF as the stamp so
-          // every accepted sample has immediate visual feedback; the generic
-          // projection throttle can otherwise postpone or drop the first update.
-          scheduleTextureUpdate(composite.maskTexture);
+          // every accepted sample has immediate visual feedback. paintAt already
+          // runs at most once per display frame for projected strokes, so setting
+          // needsUpdate directly does not add duplicate uploads and avoids
+          // scheduling the actual texture change one frame later.
+          composite.maskTexture.needsUpdate = true;
         }
       }
 
@@ -4122,7 +4133,28 @@ function SurfacePaintOverlay() {
       // Keep the projected canvas visible while the completed stroke is converted
       // to UV. The preview is renderer-only and never appears in the layer list.
       markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
-      queueLocalRepaintUvCommit(model, localRepaintSource, composite);
+      if (localRepaintUvScheduleFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
+      }
+      // Let the newly updated live mask complete one browser paint before taking
+      // a snapshot, touching layer state or entering the high-resolution GPU
+      // queue. Consecutive strokes replace this pending task and the cumulative
+      // live mask is committed once interaction pauses.
+      const scheduleUvCommitAfterPreview = (hasYieldedFrame: boolean) => {
+        localRepaintUvScheduleFrameRef.current = window.requestAnimationFrame(() => {
+          if (isPaintingRef.current) {
+            scheduleUvCommitAfterPreview(false);
+            return;
+          }
+          if (!hasYieldedFrame) {
+            scheduleUvCommitAfterPreview(true);
+            return;
+          }
+          localRepaintUvScheduleFrameRef.current = undefined;
+          queueLocalRepaintUvCommit(model, localRepaintSource, composite);
+        });
+      };
+      scheduleUvCommitAfterPreview(false);
     }
   }, [
     drawSurfaceBrushSegment,

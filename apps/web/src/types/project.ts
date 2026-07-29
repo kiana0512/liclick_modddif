@@ -120,6 +120,8 @@ export type Project = {
   workspaceVersion?: string;
   lastSavedAt?: string;
   dirty?: boolean;
+  /** Transient save intent; the workspace server removes these objects and then clears this list. */
+  deletedObjectIds?: string[];
   assetManifest?: AssetManifest;
   settings: ProjectSettings;
 };

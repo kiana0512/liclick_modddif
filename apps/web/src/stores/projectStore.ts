@@ -7,6 +7,8 @@ import type { Layer } from '@/types/layer';
 import type { ModelBoundingBox, SceneObject, Transform } from '@/types/model';
 import type { AssetManifest, Project, ReferenceImage, WorkspaceMode } from '@/types/project';
 
+export const IMMEDIATE_PROJECT_SAVE_EVENT = 'liclick:immediate-project-save';
+
 type ProjectStore = {
   projects: Project[];
   currentProjectId: string;
@@ -20,6 +22,7 @@ type ProjectStore = {
   setProjectGenerations: (generations: Generation[]) => void;
   setProjectCaptures: (captures: Capture[]) => void;
   setProjectReferences: (references: ReferenceImage[]) => void;
+  deleteProjectObject: (objectId: string) => void;
   setWorkspaceState: (state: {
     workspaceName?: string;
     workspaceMode: WorkspaceMode;
@@ -68,6 +71,54 @@ function preserveReferencedObjects(project: Project, patch: Partial<Project>) {
   return { ...patch, objects: [...patch.objects, ...preservedObjects] };
 }
 
+function withoutObjectData(project: Project, objectId: string): Project {
+  const removedLayerIds = new Set(
+    project.layers.filter((layer) => layer.objectId === objectId).map((layer) => layer.id),
+  );
+  const bakeWorkspace = project.bakeWorkspace
+    ? {
+        ...project.bakeWorkspace,
+        selectedObjectId:
+          project.bakeWorkspace.selectedObjectId === objectId
+            ? undefined
+            : project.bakeWorkspace.selectedObjectId,
+        bakeSets: Object.fromEntries(
+          Object.entries(project.bakeWorkspace.bakeSets).filter(
+            ([key, bakeSet]) => key !== objectId && bakeSet.objectId !== objectId,
+          ),
+        ),
+      }
+    : undefined;
+  const objects = project.objects.filter((object) => object.id !== objectId);
+  const layers = project.layers.filter((layer) => layer.objectId !== objectId);
+  return {
+    ...project,
+    objects,
+    layers,
+    references: project.references.filter((reference) => reference.objectId !== objectId),
+    captures: project.captures.filter((capture) => capture.objectId !== objectId),
+    generations: project.generations.filter(
+      (generation) => generation.metadata.objectId !== objectId,
+    ),
+    bakedTextures: project.bakedTextures.filter(
+      (texture) =>
+        texture.objectId !== objectId &&
+        !removedLayerIds.has(texture.sourceLayerId) &&
+        !(texture.sourceLayerIds ?? []).some((layerId) => removedLayerIds.has(layerId)),
+    ),
+    bakeWorkspace,
+    activeObjectId:
+      project.activeObjectId === objectId ? objects[0]?.id : project.activeObjectId,
+    activeLayerId:
+      project.activeLayerId && removedLayerIds.has(project.activeLayerId)
+        ? layers.find((layer) => layer.objectId === objects[0]?.id)?.id
+        : project.activeLayerId,
+    deletedObjectIds: Array.from(new Set([...(project.deletedObjectIds ?? []), objectId])),
+    dirty: true,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function updateProject(projects: Project[], projectId: string, patch: Partial<Project>) {
   return projects.map((project) =>
     project.id === projectId
@@ -113,10 +164,21 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   setProjectGenerations: (generations) => get().updateCurrentProject({ generations }),
   setProjectCaptures: (captures) => get().updateCurrentProject({ captures }),
   setProjectReferences: (references) => get().updateCurrentProject({ references }),
+  deleteProjectObject: (objectId) =>
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === state.currentProjectId ? withoutObjectData(project, objectId) : project,
+      ),
+    })),
   setWorkspaceState: (workspaceState) => get().updateCurrentProject(workspaceState),
   markDirty: () => get().updateCurrentProject({ dirty: true }),
   markSaved: (lastSavedAt, assetManifest) =>
-    get().updateCurrentProject({ lastSavedAt, dirty: false, assetManifest }),
+    get().updateCurrentProject({
+      lastSavedAt,
+      dirty: false,
+      deletedObjectIds: [],
+      assetManifest,
+    }),
   updateObjectTransform: (objectId, transform, boundingBox) =>
     set((state) => {
       const project = state.projects.find((item) => item.id === state.currentProjectId);

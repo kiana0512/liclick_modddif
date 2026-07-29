@@ -41,6 +41,7 @@ export type WorkspaceProject = {
   workspaceMode?: string;
   lastSavedAt?: string;
   dirty?: boolean;
+  deletedObjectIds?: string[];
 };
 
 export type ProjectSummary = {

@@ -1743,7 +1743,7 @@ function ImportedModel({
       {importedModel.restoreStage !== 'bounds' && displayMode === 'wire' && (
         <TopologyWireframeOverlay object={importedModel.group} />
       )}
-      {importedModel.restoreStage === 'full' &&
+      {texturedRestoreReady &&
         showSelectionGlow &&
         selectedObjectId === importedModel.objectId && (
           <SelectionBoundsCorners object={importedModel.group} />

@@ -28,7 +28,7 @@ import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import type { BakedTexture, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { BakeProjectedLayerResult } from '@/engine/bake/uvBakeTypes';
 import type { ModelExportInput } from './exportTypes';
-import { getExportRoot, slugifyExportName } from './exportUtils';
+import { cloneExportRoot, slugifyExportName } from './exportUtils';
 
 export const EXPORT_BASECOLOR_MATERIAL_NAME = 'Liclick_BaseColor';
 const LEGACY_BAKE_FILL: [number, number, number] = [244, 245, 242];
@@ -814,9 +814,7 @@ export async function prepareTexturedModelExport(
   input: ModelExportInput,
   options: TexturedModelExportOptions = {},
 ): Promise<PreparedTexturedExport> {
-  const sourceRoot = getExportRoot(input);
-  const root = sourceRoot.clone(true);
-  root.updateMatrixWorld(true);
+  const root = cloneExportRoot(input);
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
   const objectId = getTexturedExportObjectId(input);
@@ -826,7 +824,7 @@ export async function prepareTexturedModelExport(
   const uvLayers = findVisibleUvLayers(objectId);
   if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 
-  const importedBaseTexture = findImportedBaseColorTexture(sourceRoot);
+  const importedBaseTexture = findImportedBaseColorTexture(root);
   const importedBaseBlob = importedBaseTexture
     ? await blobFromTextureImage(importedBaseTexture)
     : undefined;
@@ -835,7 +833,7 @@ export async function prepareTexturedModelExport(
     importedBaseBlob,
     textureBaseBlob,
     uvLayers,
-    getExportMaterialBaseColor(sourceRoot),
+    getExportMaterialBaseColor(root),
     root,
   );
   if (!textureBlob) return { root };

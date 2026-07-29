@@ -384,10 +384,11 @@ const fragmentShader = `
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
     depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
-    float visibilitySupport = computeVisibilitySample(
+    float centerVisibility = computeVisibilitySample(
       texture2D(depthMap, projectedSampleUv), texture2D(normalMap, projectedSampleUv),
       projectedMetric, depthTolerance, projectedFaceNormal
     );
+    float visibilitySupport = centerVisibility;
     visibilitySupport += computeVisibilitySample(
       texture2D(depthMap, projectedSampleUv + vec2(visibilityTexelSize.x, 0.0)),
       texture2D(normalMap, projectedSampleUv + vec2(visibilityTexelSize.x, 0.0)),
@@ -438,8 +439,15 @@ const fragmentShader = `
       ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
       grazingConfidence
     );
+    float neighborhoodVisibility = step(requiredVisibilitySupport, visibilitySupport);
+    // Preserve capture-texel-wide low-poly bevels when the center depth and
+    // geometric normal agree. Without a normal buffer, only use this fallback
+    // for face-on regions so grazing scan-line rejection remains intact.
+    float centerBackedVisibility =
+      step(0.5, centerVisibility) *
+      max(useNormalCheck, step(${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
     float visibilityCoverage =
-      step(requiredVisibilitySupport, visibilitySupport) *
+      max(neighborhoodVisibility, centerBackedVisibility) *
       step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
     if (strictDepthCheck > 0.5 && useDepthCheck > 0.5 && visibilityCoverage < 0.5) discard;
     float depthWeight = visibilityCoverage;

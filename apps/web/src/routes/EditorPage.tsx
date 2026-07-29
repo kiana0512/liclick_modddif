@@ -106,7 +106,10 @@ import { useLocalRepaintStore } from '@/stores/localRepaintStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
-import { useProjectStore } from '@/stores/projectStore';
+import {
+  IMMEDIATE_PROJECT_SAVE_EVENT,
+  useProjectStore,
+} from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import {
   MAX_PAINT_MASK_BRUSH_SIZE,
@@ -817,6 +820,7 @@ export function EditorPage({
   });
   const autosaveTimerRef = useRef<number>();
   const manualSaveHandlerRef = useRef<() => void>(() => undefined);
+  const immediateSaveHandlerRef = useRef<() => void>(() => undefined);
   const manualSaveRunningRef = useRef(false);
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
@@ -1080,6 +1084,13 @@ export function EditorPage({
   }, []);
 
   useEffect(() => {
+    const handleImmediateSave = () => immediateSaveHandlerRef.current();
+    window.addEventListener(IMMEDIATE_PROJECT_SAVE_EVENT, handleImmediateSave);
+    return () =>
+      window.removeEventListener(IMMEDIATE_PROJECT_SAVE_EVENT, handleImmediateSave);
+  }, []);
+
+  useEffect(() => {
     function handleUndoRedo(event: KeyboardEvent) {
       if (document.querySelector('[data-shortcut-dialog]')) return;
       if (document.querySelector('[data-editor-shortcut-scope]')) return;
@@ -1210,19 +1221,21 @@ export function EditorPage({
   }, [offlineRetryProjectDirty, offlineRetryProjectId, offlineRetryWorkspaceMode, saveStatus]);
 
   function getProjectSnapshot(options: { refreshThumbnail?: boolean } = {}): Project | undefined {
-    if (!project) return undefined;
+    const latestProject = useProjectStore.getState().getCurrentProject();
+    const snapshotProject = latestProject?.id === projectId ? latestProject : project;
+    if (!snapshotProject) return undefined;
     return {
-      ...project,
+      ...snapshotProject,
       thumbnail:
         options.refreshThumbnail === false
-          ? project.thumbnail
-          : (getStandardProjectThumbnailDataUrl() ?? project.thumbnail),
+          ? snapshotProject.thumbnail
+          : (getStandardProjectThumbnailDataUrl() ?? snapshotProject.thumbnail),
       objects: useSceneStore.getState().objects,
       layers: useLayerStore.getState().layers,
       generations: useGenerationStore.getState().generations,
-      captures: useProjectStore.getState().getCurrentProject()?.captures ?? project.captures,
+      captures: snapshotProject.captures,
       bakedTextures:
-        useProjectStore.getState().getCurrentProject()?.bakedTextures ?? project.bakedTextures,
+        snapshotProject.bakedTextures,
       references: useReferenceStore.getState().references,
       updatedAt: new Date().toISOString(),
     };
@@ -2137,7 +2150,7 @@ export function EditorPage({
     }
   }
 
-  async function handleManualSave() {
+  async function handleManualSave(showSuccessToast = true) {
     if (manualSaveRunningRef.current || backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
@@ -2172,7 +2185,7 @@ export function EditorPage({
       }
       if (result.savedLatestSnapshot) {
         setSaveStatus('saved');
-        pushToast({
+        if (showSuccessToast) pushToast({
           tone: 'success',
           title: '项目已保存',
           description: 'Ctrl+S',
@@ -2192,6 +2205,9 @@ export function EditorPage({
 
   manualSaveHandlerRef.current = () => {
     void handleManualSave();
+  };
+  immediateSaveHandlerRef.current = () => {
+    void handleManualSave(false);
   };
 
   function handleBackToProjects() {
