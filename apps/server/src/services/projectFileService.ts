@@ -387,6 +387,20 @@ async function ensureProjectFolders(projectDir: string) {
   ]);
 }
 
+async function allocateProjectSlug(userId: string, projectId: string, name: string) {
+  const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-8) || createId('project').slice(-8);
+  const baseSlug = `${slugify(name || 'Untitled Project')}-${safeId}`;
+  let slug = baseSlug;
+  for (let attempt = 2; ; attempt += 1) {
+    try {
+      await fs.access(getProjectDir(userId, slug));
+      slug = `${baseSlug}-${attempt}`;
+    } catch {
+      return slug;
+    }
+  }
+}
+
 export async function createProject(userId: string, input: { name?: string; folderId?: string }) {
   const now = new Date().toISOString();
   const id = createId('project');
@@ -562,8 +576,9 @@ export async function saveProject(
   projectId: string,
   inputProject: WorkspaceProject,
 ) {
-  const slug = await findProjectSlug(userId, projectId);
-  if (!slug) return undefined;
+  const slug =
+    (await findProjectSlug(userId, projectId)) ??
+    (await allocateProjectSlug(userId, projectId, inputProject.name));
   const projectDir = getProjectDir(userId, slug);
   const existingProject = await loadRawProjectBySlug(userId, slug);
   const explicitDeletionIds = new Set(inputProject.deletedObjectIds ?? []);

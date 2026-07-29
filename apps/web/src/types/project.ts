@@ -67,6 +67,9 @@ export type BakeDraftSettings = {
   udim: number;
   hitStrategy: 'inward' | 'closest-from-source';
   ignoreBackfaces: boolean;
+  dehighlightBaseColor?: boolean;
+  dehighlightStrength?: number;
+  generateRoughnessFromBakedBaseColor?: boolean;
   enabledChannels: Array<
     | 'baseColor'
     | 'normal'
@@ -96,6 +99,14 @@ export type ProjectBakeWorkspace = {
   activeStage?: 'assets' | 'alignment' | 'bake' | 'check' | 'pbr' | 'publish';
   selectedObjectId?: string;
   bakeSets: Record<string, ProjectBakeSetState>;
+};
+
+export type TextureBakeHandoff = {
+  objectId: string;
+  baseColor?: {
+    name: string;
+    imageUrl: string;
+  };
 };
 
 export type Project = {

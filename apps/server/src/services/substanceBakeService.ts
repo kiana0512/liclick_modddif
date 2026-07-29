@@ -1,8 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import http from 'node:http';
+import https from 'node:https';
+import tls from 'node:tls';
+import { deflateSync } from 'node:zlib';
+import { createHash, randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { serverConfig } from '../config.js';
+import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
 
 export type BakeChannelId =
   | 'baseColor'
@@ -15,55 +20,8 @@ export type BakeChannelId =
   | 'roughness'
   | 'metallic';
 
-const bakeChannelDefinitions: Record<
-  BakeChannelId,
-  { command: string; outputName: string; fileName: string }
-> = {
-  baseColor: {
-    command: 'TextureTransfer.Raytraced',
-    outputName: 'basecolor',
-    fileName: 'basecolor.png',
-  },
-  normal: { command: 'Normal.Raytraced', outputName: 'normal', fileName: 'normal.png' },
-  ambientOcclusion: {
-    command: 'AmbientOcclusion.Raytraced',
-    outputName: 'ao',
-    fileName: 'ao.png',
-  },
-  curvature: {
-    command: 'Curvature.Raytraced',
-    outputName: 'curvature',
-    fileName: 'curvature.png',
-  },
-  worldNormal: {
-    command: 'Normal.Raytraced',
-    outputName: 'world_normal',
-    fileName: 'world_normal.png',
-  },
-  thickness: {
-    command: 'Thickness.Raytraced',
-    outputName: 'thickness',
-    fileName: 'thickness.png',
-  },
-  position: {
-    command: 'Position.Raytraced',
-    outputName: 'position',
-    fileName: 'position.png',
-  },
-  roughness: {
-    command: 'TextureTransfer.Raytraced',
-    outputName: 'roughness',
-    fileName: 'roughness.png',
-  },
-  metallic: {
-    command: 'TextureTransfer.Raytraced',
-    outputName: 'metallic',
-    fileName: 'metallic.png',
-  },
-};
-
 export type NormalBakeSettings = {
-  resolution: 1024 | 2048 | 4096 | 8192;
+  resolution: 1024 | 2048 | 4096;
   padding: number;
   sampling: '1x1' | '2x2' | '4x4' | '8x8';
   normalOrientation: 'directx' | 'opengl';
@@ -75,17 +33,59 @@ export type NormalBakeSettings = {
   projectionMode: 'distance' | 'cage';
   hitStrategy: 'inward' | 'closest-from-source';
   ignoreBackfaces: boolean;
+  generateRoughnessFromBakedBaseColor?: boolean;
   channels: BakeChannelId[];
 };
 
 export type BakeUpload = { fileName: string; data: Buffer };
+
+type RemoteBakeProfile =
+  | 'ao-self-v1'
+  | 'normal-dx-v1'
+  | 'pbr-core-v1'
+  | 'li3d-pbr-full-v2';
+
+type RemoteBakeStatus = 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+
+type RemoteTiming = {
+  queue_position?: number;
+  estimated_start_seconds?: number;
+  elapsed_seconds?: number;
+  estimated_remaining_seconds?: number;
+};
+
+type RemoteArtifact = {
+  id: string;
+  kind: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  download_url: string;
+};
+
+type RemoteJobPayload = {
+  job_id: string;
+  status?: RemoteBakeStatus;
+  progress?: number;
+  stage?: string;
+  stage_message?: string;
+  status_url?: string;
+  events_url?: string;
+  cancel_url?: string;
+  worker_id?: string;
+  delivery_ready?: boolean;
+  timing?: RemoteTiming;
+  artifacts?: RemoteArtifact[];
+  error?: unknown;
+};
 
 export type NormalBakeJob = {
   id: string;
   kind: 'bake-maps';
   projectId: string;
   objectId: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  status: 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
   stage: 'waiting-for-worker' | 'baking-maps' | 'verifying-file' | 'finished';
   progress: number;
   settings: NormalBakeSettings;
@@ -101,6 +101,19 @@ export type NormalBakeJob = {
   outputs?: Partial<
     Record<BakeChannelId, { fileName: string; width: number; height: number; url: string }>
   >;
+  remote?: {
+    jobId: string;
+    profile: RemoteBakeProfile;
+    statusUrl: string;
+    eventsUrl?: string;
+    cancelUrl?: string;
+    status?: RemoteBakeStatus;
+    workerId?: string;
+    stage?: string;
+    stageMessage?: string;
+    deliveryReady?: boolean;
+    timing?: RemoteTiming;
+  };
   error?: string;
   logs: string[];
   createdAt: string;
@@ -111,59 +124,299 @@ export type NormalBakeJob = {
 
 type InternalJob = NormalBakeJob & {
   directory: string;
-  highPath: string;
-  lowPath: string;
-  cagePath?: string;
-  colorPath?: string;
-  roughnessPath?: string;
-  metallicPath?: string;
   outputPaths: Record<BakeChannelId, string>;
 };
 
+type RemoteResponse = {
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  body: Buffer;
+};
+
+class BakeRequestError extends Error {
+  constructor(
+    message: string,
+    readonly httpStatus = 400,
+  ) {
+    super(message);
+  }
+}
+
 const jobs = new Map<string, InternalJob>();
-const processes = new Map<string, ChildProcessWithoutNullStreams>();
+const monitors = new Set<string>();
 const maxLogLines = 400;
+const outputFileNames: Record<BakeChannelId, string> = {
+  baseColor: 'basecolor.png',
+  normal: 'normal.png',
+  ambientOcclusion: 'ao.png',
+  curvature: 'curvature.png',
+  worldNormal: 'world_normal.png',
+  thickness: 'thickness.png',
+  position: 'position.png',
+  roughness: 'roughness.png',
+  metallic: 'metallic.png',
+};
 
-function locateBaker() {
-  const configured = process.env.LICLICK_SUBSTANCE_BAKER_PATH?.trim();
-  const candidates = [
-    configured,
-    process.platform === 'win32'
-      ? 'C:\\Program Files\\Adobe\\Adobe Substance 3D Designer\\substance3d_baker.exe'
-      : undefined,
-    'substance3d_baker',
-  ].filter((value): value is string => Boolean(value));
-  return candidates.find(
-    (candidate) => candidate === 'substance3d_baker' || fs.existsSync(candidate),
-  );
+const fullProfileArtifactFiles = [
+  'asset_base_color.png',
+  'asset_roughness.png',
+  'asset_metallic.png',
+  'asset_ao.png',
+  'asset_normal_dx.png',
+  'asset_normal_gl.png',
+  'asset_world_normal.png',
+  'asset_curvature.png',
+  'asset_thickness.png',
+  'asset_position.png',
+  'baker_result.json',
+  'baker.log',
+] as const;
+
+const artifactChannelMap: Record<string, BakeChannelId | undefined> = {
+  'asset_base_color.png': 'baseColor',
+  'asset_roughness.png': 'roughness',
+  'asset_metallic.png': 'metallic',
+  'asset_ao.png': 'ambientOcclusion',
+  'asset_world_normal.png': 'worldNormal',
+  'asset_curvature.png': 'curvature',
+  'asset_thickness.png': 'thickness',
+  'asset_position.png': 'position',
+};
+
+function crc32(data: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
-function publicJob(job: InternalJob): NormalBakeJob {
-  const result: Partial<InternalJob> = { ...job };
-  delete result.directory;
-  delete result.highPath;
-  delete result.lowPath;
-  delete result.cagePath;
-  delete result.colorPath;
-  delete result.roughnessPath;
-  delete result.metallicPath;
-  delete result.outputPaths;
-  return result as NormalBakeJob;
+function pngChunk(type: string, data: Buffer) {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const result = Buffer.alloc(12 + data.length);
+  result.writeUInt32BE(data.length, 0);
+  typeBuffer.copy(result, 4);
+  data.copy(result, 8);
+  result.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 8 + data.length);
+  return result;
 }
 
-function persist(job: InternalJob) {
-  job.updatedAt = new Date().toISOString();
-  fs.writeFileSync(path.join(job.directory, 'job.json'), JSON.stringify(publicJob(job), null, 2));
+function solidPng(red: number, green: number, blue: number) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8;
+  header[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.from([0, red, green, blue, 255]))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
-function appendLog(job: InternalJob, chunk: Buffer | string) {
-  const lines = String(chunk)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  job.logs.push(...lines);
-  if (job.logs.length > maxLogLines) job.logs.splice(0, job.logs.length - maxLogLines);
-  persist(job);
+function neutralMaterialUpload(channel: 'color' | 'roughness' | 'metallic'): BakeUpload {
+  const value = channel === 'metallic' ? 0 : 128;
+  return {
+    fileName: `liclick_neutral_${channel}.png`,
+    data: solidPng(value, value, value),
+  };
+}
+
+function remoteUrl(value: string) {
+  const baseUrl = new URL(`${serverConfig.substanceBakerBaseUrl}/`);
+  const url = new URL(value, baseUrl);
+  const loopback = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new BakeRequestError('远端 Substance Baker 必须使用 HTTPS。', 500);
+  }
+  if (url.origin !== baseUrl.origin) {
+    throw new BakeRequestError('远端 Substance Baker 返回了不同源 URL，已拒绝访问。', 502);
+  }
+  return url;
+}
+
+type RemoteTrust = {
+  ca?: string[];
+  source:
+    | 'configured-ca'
+    | 'auto-discovered-ca'
+    | 'embedded-ca'
+    | 'system-ca'
+    | 'node-default-ca';
+  caPath?: string;
+};
+
+function remoteTrust(): RemoteTrust {
+  const configuredPath =
+    serverConfig.substanceBakerCaPath || process.env.NODE_EXTRA_CA_CERTS?.trim() || '';
+  const candidates = configuredPath
+    ? [path.resolve(configuredPath)]
+    : [
+        path.join(serverConfig.workspaceDir, 'config', 'GPU_CONTROL_LAN_CA.crt'),
+        path.join(serverConfig.repoRoot, 'config', 'GPU_CONTROL_LAN_CA.crt'),
+        path.join(serverConfig.repoRoot, 'secrets', 'GPU_CONTROL_LAN_CA.crt'),
+        path.join(serverConfig.repoRoot, 'GPU_CONTROL_LAN_CA.crt'),
+        ...(process.env.USERPROFILE
+          ? [path.join(process.env.USERPROFILE, 'Downloads', 'GPU_CONTROL_LAN_CA.crt')]
+          : []),
+      ];
+  const caPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (configuredPath && !caPath) {
+    throw new BakeRequestError(`远端 Substance Baker LAN CA 不存在：${candidates[0]}`, 500);
+  }
+  if (caPath) {
+    return {
+      ca: [...tls.rootCertificates, fs.readFileSync(caPath, 'utf8')],
+      source: configuredPath ? 'configured-ca' : 'auto-discovered-ca',
+      caPath,
+    };
+  }
+
+  const getCACertificates = (
+    tls as typeof tls & {
+      getCACertificates?: (type?: 'default' | 'system' | 'bundled' | 'extra') => string[];
+    }
+  ).getCACertificates;
+  if (getCACertificates) {
+    const certificates = Array.from(
+      new Set([
+        ...getCACertificates('default'),
+        ...getCACertificates('system'),
+        gpuControlLanCa,
+      ]),
+    );
+    return { ca: certificates, source: 'embedded-ca' };
+  }
+  return { ca: [...tls.rootCertificates, gpuControlLanCa], source: 'embedded-ca' };
+}
+
+function requestRemote(
+  target: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    bodyChunks?: Buffer[];
+    timeoutMs?: number;
+    maxBytes?: number;
+  } = {},
+) {
+  const url = remoteUrl(target);
+  const bodyChunks = options.bodyChunks ?? [];
+  const headers = {
+    accept: 'application/json',
+    ...(serverConfig.substanceBakerApiKey
+      ? { 'x-api-key': serverConfig.substanceBakerApiKey }
+      : {}),
+    ...options.headers,
+  };
+  const transport = url.protocol === 'https:' ? https : http;
+  return new Promise<RemoteResponse>((resolve, reject) => {
+    const trust = url.protocol === 'https:' ? remoteTrust() : undefined;
+    const request = transport.request(
+      url,
+      {
+        method: options.method ?? 'GET',
+        headers,
+        ...(url.protocol === 'https:'
+          ? { ...(trust?.ca ? { ca: trust.ca } : {}), rejectUnauthorized: true }
+          : {}),
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let totalBytes = 0;
+        const maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
+        response.on('data', (chunk: Buffer) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          totalBytes += buffer.length;
+          if (totalBytes > maxBytes) {
+            response.destroy(new Error('Remote Substance Baker response is too large.'));
+            return;
+          }
+          chunks.push(buffer);
+        });
+        response.once('error', reject);
+        response.once('end', () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks, totalBytes),
+          });
+        });
+      },
+    );
+    request.setTimeout(options.timeoutMs ?? 30_000, () => {
+      request.destroy(new Error('连接远端 Substance Baker 超时。'));
+    });
+    request.once('error', reject);
+    for (const chunk of bodyChunks) request.write(chunk);
+    request.end();
+  });
+}
+
+function parseJson<T>(response: RemoteResponse) {
+  try {
+    return JSON.parse(response.body.toString('utf8')) as T;
+  } catch {
+    throw new BakeRequestError(
+      `远端 Substance Baker 返回了无效 JSON（HTTP ${response.statusCode}）。`,
+      502,
+    );
+  }
+}
+
+function readableRemoteError(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    return value.map(readableRemoteError).filter(Boolean).join('; ');
+  }
+  if (!value || typeof value !== 'object') return '';
+
+  const record = value as Record<string, unknown>;
+  const location = Array.isArray(record.loc)
+    ? record.loc.map((part) => String(part)).join('.')
+    : '';
+  const code = readableRemoteError(record.code ?? record.type);
+  const message = readableRemoteError(record.message ?? record.msg);
+  const detail = readableRemoteError(record.detail);
+  const primary = [location, code, message || detail].filter(Boolean).join(': ');
+  if (primary) return primary;
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function remoteErrorMessage(response: RemoteResponse) {
+  let detail = response.body.toString('utf8').trim();
+  try {
+    const payload = JSON.parse(detail) as Record<string, unknown>;
+    detail =
+      readableRemoteError(payload.error) ||
+      readableRemoteError(payload.detail) ||
+      readableRemoteError({
+        code: payload.code,
+        message: payload.message,
+      }) ||
+      readableRemoteError(payload);
+  } catch {
+    // Preserve a plain-text upstream error.
+  }
+  return `远端 Substance Baker 请求失败（HTTP ${response.statusCode}）${detail ? `：${detail}` : ''}`;
+}
+
+function ensureRemoteSuccess(response: RemoteResponse, acceptedStatuses = [200]) {
+  if (!acceptedStatuses.includes(response.statusCode)) {
+    const upstreamStatus =
+      response.statusCode >= 400 && response.statusCode < 500 ? response.statusCode : 502;
+    throw new BakeRequestError(remoteErrorMessage(response), upstreamStatus);
+  }
 }
 
 function safeFileName(value: string, fallback: string) {
@@ -177,245 +430,540 @@ function looksLikeHtml(data: Buffer) {
 }
 
 function validateBakeUpload(upload: BakeUpload, label: string, kind: 'model' | 'image') {
-  if (upload.data.length < 16) throw new Error(`${label} 文件为空或已损坏，请重新导入。`);
+  if (upload.data.length < 16)
+    throw new BakeRequestError(`${label} 文件为空或已损坏，请重新导入。`);
   if (looksLikeHtml(upload.data)) {
-    throw new Error(`${label} 读取到了网页而不是资源文件，请刷新页面后重新导入。`);
+    throw new BakeRequestError(`${label} 读取到网页而不是资源文件，请刷新页面后重新导入。`);
   }
-  if (kind !== 'image') return;
-  const extension = path.extname(upload.fileName).toLowerCase();
-  const isPng = upload.data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-  const isJpeg = upload.data[0] === 0xff && upload.data[1] === 0xd8 && upload.data[2] === 0xff;
-  const isWebp =
-    upload.data.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    upload.data.subarray(8, 12).toString('ascii') === 'WEBP';
-  const valid =
-    (extension === '.png' && isPng) ||
-    ((extension === '.jpg' || extension === '.jpeg') && isJpeg) ||
-    (extension === '.webp' && isWebp) ||
-    extension === '.tga';
-  if (!valid) throw new Error(`${label} 不是有效的 PNG、JPG、WebP 或 TGA 图片。`);
+  if (kind === 'image') {
+    const extension = path.extname(upload.fileName).toLowerCase();
+    const supportedExtensions = new Set([
+      '.png',
+      '.jpg',
+      '.jpeg',
+      '.webp',
+      '.tga',
+      '.tif',
+      '.tiff',
+      '.exr',
+    ]);
+    if (!supportedExtensions.has(extension)) {
+      throw new BakeRequestError(
+        `${label} 格式不受支持；请使用 PNG、JPEG、WebP、TGA、TIFF 或 EXR。`,
+      );
+    }
+  }
 }
 
-function validateSettings(input: NormalBakeSettings): NormalBakeSettings {
-  const resolutions = new Set([1024, 2048, 4096, 8192]);
-  const samplings = new Set(['1x1', '2x2', '4x4', '8x8']);
-  if (!resolutions.has(input.resolution)) throw new Error('Unsupported bake resolution.');
-  if (!samplings.has(input.sampling)) throw new Error('Unsupported sampling rate.');
-  if (!Number.isInteger(input.padding) || input.padding < 0 || input.padding > 256)
-    throw new Error('Invalid padding.');
-  if (!Number.isInteger(input.udim) || input.udim < 1001 || input.udim > 9999)
-    throw new Error('Invalid UDIM.');
-  const normalOrientation = input.normalOrientation === 'opengl' ? 'opengl' : 'directx';
-  if (
-    !Number.isFinite(input.frontalDistance) ||
-    input.frontalDistance < 0 ||
-    input.frontalDistance > 10
-  )
-    throw new Error('Invalid frontal distance.');
-  if (!Number.isFinite(input.rearDistance) || input.rearDistance < 0 || input.rearDistance > 10)
-    throw new Error('Invalid rear distance.');
-  const validChannels = new Set<BakeChannelId>(
-    Object.keys(bakeChannelDefinitions) as BakeChannelId[],
-  );
+function profileForChannels(
+  channels: BakeChannelId[],
+  normalOrientation: NormalBakeSettings['normalOrientation'],
+): RemoteBakeProfile {
+  const fullProfile =
+    channels.some((channel) => channel !== 'normal' && channel !== 'ambientOcclusion') ||
+    (channels.includes('normal') && normalOrientation === 'opengl');
+  if (fullProfile) return 'li3d-pbr-full-v2';
+  const normal = channels.includes('normal');
+  const ao = channels.includes('ambientOcclusion');
+  if (normal && ao) return 'pbr-core-v1' as const;
+  if (normal) return 'normal-dx-v1' as const;
+  if (ao) return 'ao-self-v1' as const;
+  throw new BakeRequestError('请至少选择一张烘焙输出贴图。');
+}
+
+function validateSettings(input: NormalBakeSettings) {
+  if (![1024, 2048, 4096].includes(input.resolution)) {
+    throw new BakeRequestError('远端 Substance Baker 仅支持 1K、2K 和 4K 输出。');
+  }
+  const generateRoughnessFromBakedBaseColor =
+    input.generateRoughnessFromBakedBaseColor === true;
   const channels = Array.from(
-    new Set(input.channels?.filter((channel) => validChannels.has(channel)) ?? []),
+    new Set([
+      ...(input.channels ?? []),
+      ...(generateRoughnessFromBakedBaseColor
+        ? (['baseColor', 'roughness'] satisfies BakeChannelId[])
+        : []),
+    ]),
   );
-  if (channels.length === 0) throw new Error('Select at least one bake channel.');
-  return { ...input, normalOrientation, channels };
+  const knownChannels = new Set<BakeChannelId>(Object.keys(outputFileNames) as BakeChannelId[]);
+  const unsupported = channels.filter((channel) => !knownChannels.has(channel));
+  if (unsupported.length > 0) {
+    throw new BakeRequestError(`未知烘焙输出：${unsupported.join(', ')}。`);
+  }
+  const profile = profileForChannels(channels, input.normalOrientation);
+  const textureCacheMb = serverConfig.substanceBakerTextureCacheMb;
+  if (![8192, 16384, 32768].includes(textureCacheMb)) {
+    throw new BakeRequestError(
+      'LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB 必须是 8192、16384 或 32768。',
+      500,
+    );
+  }
+  return {
+    settings: {
+      ...input,
+      device: 'gpu' as const,
+      channels,
+      generateRoughnessFromBakedBaseColor,
+    },
+    profile,
+    textureCacheMb,
+  };
+}
+
+function outputPaths(directory: string) {
+  return Object.fromEntries(
+    Object.entries(outputFileNames).map(([channel, fileName]) => [
+      channel,
+      path.join(directory, 'output', fileName),
+    ]),
+  ) as Record<BakeChannelId, string>;
+}
+
+function publicJob(job: InternalJob): NormalBakeJob {
+  const result: Partial<InternalJob> = { ...job };
+  delete result.directory;
+  delete result.outputPaths;
+  return result as NormalBakeJob;
+}
+
+function persist(job: InternalJob) {
+  job.updatedAt = new Date().toISOString();
+  fs.mkdirSync(job.directory, { recursive: true });
+  fs.writeFileSync(path.join(job.directory, 'job.json'), JSON.stringify(publicJob(job), null, 2));
+}
+
+function appendLog(job: InternalJob, message: string) {
+  const clean = message.trim();
+  if (!clean) return;
+  job.logs.push(clean);
+  if (job.logs.length > maxLogLines) job.logs.splice(0, job.logs.length - maxLogLines);
+  persist(job);
 }
 
 function pngSize(filePath: string) {
   const header = Buffer.alloc(24);
   const descriptor = fs.openSync(filePath, 'r');
   try {
-    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length)
-      throw new Error('Normal output is truncated.');
+    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) {
+      throw new Error('PNG output is truncated.');
+    }
   } finally {
     fs.closeSync(descriptor);
   }
   if (!header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-    throw new Error('Normal output is not a readable PNG.');
+    throw new Error('Remote bake output is not a readable PNG.');
   }
   return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
 }
 
-function buildArguments(job: InternalJob, channel: BakeChannelId) {
-  const settings = job.settings;
-  const sampling = settings.sampling === '1x1' ? 'none' : settings.sampling;
-  const definition = bakeChannelDefinitions[channel];
-  const args = [
-    '--verbose',
-    definition.command,
-    '--inputs',
-    job.lowPath,
-    '--high_scene_paths',
-    job.highPath,
-    '--output_path',
-    path.dirname(job.outputPaths[channel]),
-    '--output_name',
-    definition.outputName,
-    '--output_format',
-    'png',
-    '--output_size',
-    `${settings.resolution},${settings.resolution}`,
-    '--padding_radius',
-    String(settings.padding),
-    '--base.uv_set',
-    '0',
-    '--udim',
-    String(settings.udim),
-    '--projection.max_depth',
-    String(settings.rearDistance),
-    '--projection.max_height',
-    String(settings.frontalDistance),
-    '--projection.normalized_distance',
-    'true',
-    '--projection.cull_backfaces',
-    String(settings.ignoreBackfaces),
-    '--projection.hit_strategy',
-    settings.hitStrategy === 'closest-from-source' ? 'closest_from_source' : 'inward',
-    '--projection.smooth_normals',
-    'true',
-    '--projection.mesh_match_mode',
-    settings.matchMode === 'by-name' ? 'match_mesh_name' : 'match_all',
-    '--projection.sampling_rate',
-    sampling,
-    '--recompute_tangents',
-    'true',
-    '--enable_mip_diffusion',
-    'true',
-  ];
-  if (channel === 'baseColor' || channel === 'roughness' || channel === 'metallic') {
-    const sourcePath =
-      channel === 'baseColor'
-        ? job.colorPath
-        : channel === 'roughness'
-          ? job.roughnessPath
-          : job.metallicPath;
-    if (!sourcePath) throw new Error(`${channel} bake requires a matching high-poly texture.`);
-    args.push(
-      '--source_texture_path',
-      sourcePath,
-      '--highpoly_uv_set',
-      '0',
-      '--filtering_mode',
-      'bilinear',
-    );
-  }
-  if (channel === 'normal') {
-    args.push(
-      '--output_texture_orientation',
-      settings.normalOrientation,
-      '--output_texture_space',
-      'tangent_space',
-    );
-  }
-  if (channel === 'worldNormal') {
-    args.push('--output_texture_orientation', 'opengl', '--output_texture_space', 'world_space');
-  }
-  if (channel === 'position') {
-    args.push(
-      '--mode',
-      'all_axes',
-      '--normalization',
-      'bbox',
-      '--normalization_scale',
-      'full_scene',
-    );
-  }
-  if (settings.device === 'cpu') args.push('--cpu');
-  if (settings.projectionMode === 'cage') {
-    if (!job.cagePath) throw new Error('Cage mode requires a cage file.');
-    args.push('--use_cage', 'true', '--cage_scene_path', job.cagePath);
-  }
-  return args;
+function multipartFileHeader(boundary: string, name: string, fileName: string) {
+  const safeName = safeFileName(fileName, `${name}.bin`).replace(/"/g, '_');
+  return Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${safeName}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+  );
 }
 
-async function runJob(job: InternalJob) {
-  const baker = locateBaker();
-  job.startedAt = new Date().toISOString();
-  if (!baker) {
-    job.status = 'failed';
-    job.stage = 'finished';
-    job.error = '未找到 Substance 3D Designer 命令行 Baker。';
-    job.finishedAt = new Date().toISOString();
-    persist(job);
-    return;
+function multipartField(boundary: string, name: string, value: string) {
+  return Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\nContent-Type: application/json; charset=utf-8\r\n\r\n${value}\r\n`,
+  );
+}
+
+function buildMultipart(input: {
+  boundary: string;
+  low: BakeUpload;
+  high?: BakeUpload;
+  cage?: BakeUpload;
+  color?: BakeUpload;
+  roughness?: BakeUpload;
+  metallic?: BakeUpload;
+  metadata: string;
+}) {
+  const chunks: Buffer[] = [];
+  const addFile = (name: string, upload: BakeUpload) => {
+    chunks.push(
+      multipartFileHeader(input.boundary, name, upload.fileName),
+      upload.data,
+      Buffer.from('\r\n'),
+    );
+  };
+  addFile('low_mesh', input.low);
+  if (input.high) addFile('high_mesh', input.high);
+  if (input.cage) addFile('cage_mesh', input.cage);
+  if (input.color) addFile('base_color_texture', input.color);
+  if (input.roughness) addFile('roughness_texture', input.roughness);
+  if (input.metallic) addFile('metallic_texture', input.metallic);
+  chunks.push(
+    multipartField(input.boundary, 'metadata', input.metadata),
+    Buffer.from(`--${input.boundary}--\r\n`),
+  );
+  return chunks;
+}
+
+function mapRemoteError(error: unknown) {
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const value = error as { code?: string; message?: string; detail?: string };
+    return [value.code, value.message ?? value.detail].filter(Boolean).join(': ');
   }
-  try {
+  return '';
+}
+
+function applyRemoteStatus(job: InternalJob, payload: RemoteJobPayload) {
+  if (!job.remote) return;
+  const status = payload.status ?? job.remote.status ?? 'QUEUED';
+  job.remote = {
+    ...job.remote,
+    status,
+    workerId: payload.worker_id ?? job.remote.workerId,
+    stage: payload.stage ?? job.remote.stage,
+    stageMessage: payload.stage_message ?? job.remote.stageMessage,
+    timing: payload.timing ?? job.remote.timing,
+    deliveryReady: payload.delivery_ready ?? job.remote.deliveryReady,
+  };
+  job.progress = Math.max(0, Math.min(100, Math.round(payload.progress ?? job.progress)));
+  if (status === 'QUEUED') {
+    job.status = 'queued';
+    job.stage = 'waiting-for-worker';
+  } else if (status === 'RUNNING') {
     job.status = 'running';
     job.stage = 'baking-maps';
-    job.progress = 10;
-    const outputs: NonNullable<NormalBakeJob['outputs']> = {};
-    for (let index = 0; index < job.settings.channels.length; index += 1) {
-      const channel = job.settings.channels[index];
-      const args = buildArguments(job, channel);
-      appendLog(job, `[LI3D] ${channel} · ${path.basename(baker)} ${args.join(' ')}`);
-      const child = spawn(baker, args, { cwd: job.directory, windowsHide: true });
-      processes.set(job.id, child);
-      child.stdout.on('data', (chunk: Buffer) => appendLog(job, chunk));
-      child.stderr.on('data', (chunk: Buffer) => appendLog(job, chunk));
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (code) => resolve(code ?? -1));
-      });
-      processes.delete(job.id);
-      const outputPath = job.outputPaths[channel];
-      if (!fs.existsSync(outputPath)) {
-        const bakerError = [...job.logs]
-          .reverse()
-          .find((line) => line.includes('[ERROR]'))
-          ?.replace(/^.*?\[ERROR\]/, '')
-          .trim();
-        throw new Error(
-          bakerError
-            ? `Substance ${channel} 烘焙失败：${bakerError}`
-            : `Substance 未生成 ${path.basename(outputPath)}，请检查模型匹配和输入贴图。`,
-        );
-      }
-      const dimensions = pngSize(outputPath);
-      if (
-        dimensions.width !== job.settings.resolution ||
-        dimensions.height !== job.settings.resolution
-      ) {
-        throw new Error(
-          `${channel} output size is ${dimensions.width}x${dimensions.height}, expected ${job.settings.resolution}x${job.settings.resolution}.`,
-        );
-      }
-      if (exitCode !== 0)
-        appendLog(
-          job,
-          `[LI3D] ${channel} baker returned ${exitCode}, but the PNG passed validation; keeping the valid result.`,
-        );
-      outputs[channel] = {
-        fileName: path.basename(outputPath),
-        ...dimensions,
-        url: `/api/bake/jobs/${job.id}/output/${channel}`,
-      };
-      job.progress = 10 + Math.round(((index + 1) / job.settings.channels.length) * 75);
-      persist(job);
-    }
+    job.startedAt ??= new Date().toISOString();
+  } else if (status === 'CANCELLING') {
+    job.status = 'cancelling';
+    job.stage = 'baking-maps';
+  } else if (status === 'SUCCEEDED') {
+    job.status = 'running';
     job.stage = 'verifying-file';
-    job.progress = 90;
-    persist(job);
-    job.outputs = outputs;
-    job.output = outputs.normal;
-    job.status = 'succeeded';
-    job.stage = 'finished';
-    job.progress = 100;
-    job.finishedAt = new Date().toISOString();
-    persist(job);
-  } catch (error) {
-    processes.delete(job.id);
+    job.progress = Math.max(job.progress, 95);
+  } else if (status === 'FAILED') {
     job.status = 'failed';
     job.stage = 'finished';
-    job.error = error instanceof Error ? error.message : 'Normal bake failed.';
+    job.error = mapRemoteError(payload.error) || '远端 Substance Baker 执行失败。';
     job.finishedAt = new Date().toISOString();
-    appendLog(job, `[LI3D] ${job.error}`);
+  } else {
+    job.status = 'cancelled';
+    job.stage = 'finished';
+    job.error = undefined;
+    job.finishedAt = new Date().toISOString();
+  }
+  persist(job);
+}
+
+async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
+  if (payload.delivery_ready !== true) {
+    throw new Error('远端任务已成功，但 delivery_ready 尚未发布。');
+  }
+  const artifacts = payload.artifacts ?? [];
+  const expected =
+    job.remote?.profile === 'li3d-pbr-full-v2'
+      ? new Set<string>(fullProfileArtifactFiles)
+      : new Set(
+          job.settings.channels.map((channel) =>
+            channel === 'normal' ? 'asset_normal_dx.png' : 'asset_ao.png',
+          ),
+        );
+  for (const fileName of expected) {
+    if (!artifacts.some((artifact) => artifact.filename === fileName)) {
+      throw new Error(`远端原子产物缺少 ${fileName}。`);
+    }
+  }
+
+  const downloaded: Array<{ artifact: RemoteArtifact; data: Buffer }> = [];
+  for (const artifact of artifacts) {
+    const safeName = safeFileName(artifact.filename, `artifact-${artifact.id}`);
+    const cachedPath = path.join(job.directory, 'output', safeName);
+    if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size === artifact.size_bytes) {
+      const cachedData = fs.readFileSync(cachedPath);
+      const cachedSha = createHash('sha256').update(cachedData).digest('hex');
+      if (cachedSha === artifact.sha256.toLowerCase()) {
+        downloaded.push({ artifact, data: cachedData });
+        continue;
+      }
+    }
+    const response = await requestRemote(artifact.download_url, {
+      timeoutMs: 300_000,
+      maxBytes: 512 * 1024 * 1024,
+      headers: { accept: artifact.content_type || 'application/octet-stream' },
+    });
+    ensureRemoteSuccess(response);
+    const declaredSha = artifact.sha256.toLowerCase();
+    const headerValue = response.headers['x-artifact-sha256'];
+    const headerSha = (
+      Array.isArray(headerValue) ? headerValue[0] : (headerValue ?? '')
+    ).toLowerCase();
+    const actualSha = createHash('sha256').update(response.body).digest('hex');
+    if (!/^[a-f0-9]{64}$/.test(declaredSha)) {
+      throw new Error(`${artifact.filename} 的远端 SHA-256 格式无效。`);
+    }
+    if ((headerSha && headerSha !== declaredSha) || actualSha !== declaredSha) {
+      throw new Error(`${artifact.filename} 的 SHA-256 校验失败。`);
+    }
+    if (response.body.length !== artifact.size_bytes) {
+      throw new Error(`${artifact.filename} 的下载尺寸与 artifacts 清单不一致。`);
+    }
+    downloaded.push({ artifact, data: response.body });
+  }
+
+  fs.mkdirSync(path.join(job.directory, 'output'), { recursive: true });
+  const outputs: NonNullable<NormalBakeJob['outputs']> = {};
+  for (const { artifact, data } of downloaded) {
+    const safeName = safeFileName(artifact.filename, `artifact-${artifact.id}`);
+    const artifactPath = path.join(job.directory, 'output', safeName);
+    fs.writeFileSync(artifactPath, data);
+    const channel =
+      artifact.filename ===
+      (job.settings.normalOrientation === 'opengl'
+        ? 'asset_normal_gl.png'
+        : 'asset_normal_dx.png')
+        ? 'normal'
+        : artifactChannelMap[artifact.filename];
+    if (!channel || !job.settings.channels.includes(channel)) continue;
+    const localPath = job.outputPaths[channel];
+    fs.writeFileSync(localPath, data);
+    const dimensions = pngSize(localPath);
+    if (
+      dimensions.width !== job.settings.resolution ||
+      dimensions.height !== job.settings.resolution
+    ) {
+      throw new Error(
+        `${artifact.filename} 尺寸为 ${dimensions.width}x${dimensions.height}，预期 ${job.settings.resolution}x${job.settings.resolution}。`,
+      );
+    }
+    outputs[channel] = {
+      fileName: path.basename(localPath),
+      ...dimensions,
+      url: `/api/bake/jobs/${job.id}/output/${channel}`,
+    };
+  }
+
+  if (job.settings.generateRoughnessFromBakedBaseColor) {
+    const bakedBaseColorPath = job.outputPaths.baseColor;
+    if (!outputs.baseColor || !fs.existsSync(bakedBaseColorPath)) {
+      throw new Error('自动生成 Roughness 需要烘焙后的 Base Color，但该产物不存在。');
+    }
+    job.progress = 98;
+    if (job.remote) {
+      job.remote.stage = 'generating-roughness';
+      job.remote.stageMessage = '正在用烘焙后的 Base Color 生成最终 Roughness';
+    }
+    appendLog(job, '[ComfyUI] 正在提交烘焙后的 Base Color 生成最终 Roughness。');
+    persist(job);
+
+    const roughnessResult = await generateRemoteRoughness(
+      {
+        fileName: path.basename(bakedBaseColorPath),
+        data: fs.readFileSync(bakedBaseColorPath),
+      },
+      `baked_roughness_${job.id}`,
+    );
+    if (!roughnessResult.contentType.toLowerCase().startsWith('image/png')) {
+      throw new Error(
+        `Roughness 服务返回 ${roughnessResult.contentType}，最终烘焙产物必须是 PNG。`,
+      );
+    }
+    const finalRoughnessPath = job.outputPaths.roughness;
+    fs.writeFileSync(finalRoughnessPath, roughnessResult.data);
+    const roughnessDimensions = pngSize(finalRoughnessPath);
+    if (
+      roughnessDimensions.width !== job.settings.resolution ||
+      roughnessDimensions.height !== job.settings.resolution
+    ) {
+      throw new Error(
+        `ComfyUI Roughness 尺寸为 ${roughnessDimensions.width}x${roughnessDimensions.height}，预期 ${job.settings.resolution}x${job.settings.resolution}。`,
+      );
+    }
+    outputs.roughness = {
+      fileName: path.basename(finalRoughnessPath),
+      ...roughnessDimensions,
+      url: `/api/bake/jobs/${job.id}/output/roughness`,
+    };
+    if (job.remote) {
+      job.remote.stage = 'roughness-finished';
+      job.remote.stageMessage = '最终 Roughness 已生成';
+    }
+    appendLog(
+      job,
+      `[ComfyUI] 最终 Roughness 已生成${
+        roughnessResult.jobId ? `，GPU 任务 ${roughnessResult.jobId}` : ''
+      }。`,
+    );
+  }
+
+  job.outputs = outputs;
+  job.output = outputs.normal;
+  job.status = 'succeeded';
+  job.stage = 'finished';
+  job.progress = 100;
+  job.finishedAt = new Date().toISOString();
+  job.error = undefined;
+  persist(job);
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function monitorRemoteJob(job: InternalJob) {
+  if (!job.remote || monitors.has(job.id)) return;
+  monitors.add(job.id);
+  let consecutivePollErrors = 0;
+  let consecutivePostprocessErrors = 0;
+  try {
+    while (job.remote && !['succeeded', 'failed', 'cancelled'].includes(job.status)) {
+      try {
+        const response = await requestRemote(job.remote.statusUrl, { timeoutMs: 30_000 });
+        ensureRemoteSuccess(response);
+        const payload = parseJson<RemoteJobPayload>(response);
+        if (payload.job_id !== job.remote.jobId) {
+          throw new Error('远端状态响应的 job_id 与提交响应不一致。');
+        }
+        consecutivePollErrors = 0;
+        applyRemoteStatus(job, payload);
+        if (payload.status === 'SUCCEEDED') {
+          try {
+            await downloadArtifacts(job, payload);
+            return;
+          } catch (error) {
+            consecutivePostprocessErrors += 1;
+            const message = error instanceof Error ? error.message : String(error);
+            appendLog(
+              job,
+              `[Postprocess] 后处理失败（${consecutivePostprocessErrors}/3）：${message}`,
+            );
+            const permanentClientError =
+              error instanceof BakeRequestError &&
+              error.httpStatus >= 400 &&
+              error.httpStatus < 500;
+            if (permanentClientError || consecutivePostprocessErrors >= 3) throw error;
+          }
+        } else {
+          consecutivePostprocessErrors = 0;
+        }
+        if (payload.status === 'FAILED' || payload.status === 'CANCELLED') return;
+      } catch (error) {
+        if (job.remote?.status === 'SUCCEEDED') throw error;
+        consecutivePollErrors += 1;
+        appendLog(
+          job,
+          `[Remote] 状态同步失败（${consecutivePollErrors}/10）：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        if (consecutivePollErrors >= 10) throw error;
+      }
+      await delay(3000);
+    }
+  } catch (error) {
+    job.status = 'failed';
+    job.stage = 'finished';
+    job.error = error instanceof Error ? error.message : '远端 Substance Baker 状态同步失败。';
+    job.finishedAt = new Date().toISOString();
+    appendLog(job, `[Remote] ${job.error}`);
+  } finally {
+    monitors.delete(job.id);
   }
 }
 
-export function createNormalBakeJob(input: {
+function internalJobFromPersisted(job: NormalBakeJob) {
+  const directory = path.join(serverConfig.workspaceDir, 'bake-jobs', job.id);
+  return { ...job, directory, outputPaths: outputPaths(directory) } satisfies InternalJob;
+}
+
+function loadJob(id: string) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return undefined;
+  const persistedPath = path.join(serverConfig.workspaceDir, 'bake-jobs', id, 'job.json');
+  if (!fs.existsSync(persistedPath)) return undefined;
+  try {
+    const job = internalJobFromPersisted(
+      JSON.parse(fs.readFileSync(persistedPath, 'utf8')) as NormalBakeJob,
+    );
+    jobs.set(id, job);
+    return job;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function generateRemoteRoughness(input: BakeUpload, idempotencyKey?: string) {
+  validateBakeUpload(input, 'Base Color', 'image');
+  const sourceMetadata = await sharp(input.data).metadata();
+  const sourceWidth = sourceMetadata.width;
+  const sourceHeight = sourceMetadata.height;
+  if (!sourceWidth || !sourceHeight) {
+    throw new BakeRequestError('Base Color 图像尺寸无效。');
+  }
+
+  const serviceMaxDimension = 2048;
+  const needsServiceResize =
+    Math.max(sourceWidth, sourceHeight) > serviceMaxDimension ||
+    input.data.length > 60 * 1024 * 1024;
+  const serviceData = needsServiceResize
+    ? await sharp(input.data)
+        .resize({
+          width: serviceMaxDimension,
+          height: serviceMaxDimension,
+          fit: 'inside',
+          withoutEnlargement: true,
+          kernel: sharp.kernel.lanczos3,
+        })
+        .png({ compressionLevel: 9, adaptiveFiltering: true })
+        .toBuffer()
+    : input.data;
+  const serviceHash = createHash('sha256').update(serviceData).digest('hex').slice(0, 16);
+  const stableKey = idempotencyKey?.trim()
+    ? `${idempotencyKey.trim().slice(0, 80)}_${serviceHash}`
+    : `roughness_${serviceHash}`;
+  const boundary = `----liclick-roughness-${randomUUID()}`;
+  const bodyChunks = [
+    multipartFileHeader(boundary, 'image', safeFileName(input.fileName, 'basecolor.png')),
+    serviceData,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ];
+  const response = await requestRemote('/api/v1/services/modelview-roughness', {
+    method: 'POST',
+    timeoutMs: 1_900_000,
+    maxBytes: 128 * 1024 * 1024,
+    headers: {
+      accept: 'image/*',
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+      'content-length': String(bodyChunks.reduce((total, chunk) => total + chunk.length, 0)),
+      'idempotency-key': stableKey,
+    },
+    bodyChunks,
+  });
+  ensureRemoteSuccess(response);
+  const contentTypeValue = response.headers['content-type'];
+  const contentType = Array.isArray(contentTypeValue)
+    ? contentTypeValue[0]
+    : (contentTypeValue ?? 'application/octet-stream');
+  if (!contentType.toLowerCase().startsWith('image/') || looksLikeHtml(response.body)) {
+    throw new BakeRequestError('粗糙度服务返回的不是有效图片。', 502);
+  }
+  const resultMetadata = await sharp(response.body).metadata();
+  const shouldRestoreSourceSize =
+    resultMetadata.width !== sourceWidth || resultMetadata.height !== sourceHeight;
+  const resultData = shouldRestoreSourceSize
+    ? await sharp(response.body)
+        .resize({
+          width: sourceWidth,
+          height: sourceHeight,
+          fit: 'fill',
+          kernel: sharp.kernel.lanczos3,
+        })
+        .png({ compressionLevel: 9, adaptiveFiltering: true })
+        .toBuffer()
+    : response.body;
+  const jobIdValue = response.headers['x-job-id'];
+  return {
+    data: resultData,
+    contentType: shouldRestoreSourceSize ? 'image/png' : contentType,
+    jobId: Array.isArray(jobIdValue) ? jobIdValue[0] : jobIdValue,
+    resizedForService: needsServiceResize,
+  };
+}
+
+export async function createNormalBakeJob(input: {
   projectId: string;
   objectId: string;
   settings: NormalBakeSettings;
@@ -429,49 +977,40 @@ export function createNormalBakeJob(input: {
   validateBakeUpload(input.high, '高模', 'model');
   validateBakeUpload(input.low, '低模', 'model');
   if (input.cage) validateBakeUpload(input.cage, 'Cage', 'model');
-  if (input.color) validateBakeUpload(input.color, '颜色贴图', 'image');
+  if (input.color) validateBakeUpload(input.color, 'Base Color', 'image');
   if (input.roughness) validateBakeUpload(input.roughness, 'Roughness', 'image');
   if (input.metallic) validateBakeUpload(input.metallic, 'Metallic', 'image');
+  const { settings, profile, textureCacheMb } = validateSettings(input.settings);
+  const colorUpload =
+    profile === 'li3d-pbr-full-v2' ? (input.color ?? neutralMaterialUpload('color')) : input.color;
+  const roughnessUpload =
+    profile === 'li3d-pbr-full-v2'
+      ? (input.roughness ?? neutralMaterialUpload('roughness'))
+      : input.roughness;
+  const metallicUpload =
+    profile === 'li3d-pbr-full-v2'
+      ? (input.metallic ?? neutralMaterialUpload('metallic'))
+      : input.metallic;
+  if (settings.projectionMode === 'cage' && !input.cage) {
+    throw new BakeRequestError('Cage 模式需要上传 Cage 模型。');
+  }
+
   const id = `bake_${randomUUID()}`;
   const directory = path.join(serverConfig.workspaceDir, 'bake-jobs', id);
-  const inputDirectory = path.join(directory, 'input');
-  const outputDirectory = path.join(directory, 'output');
-  fs.mkdirSync(inputDirectory, { recursive: true });
-  fs.mkdirSync(outputDirectory, { recursive: true });
+  const now = new Date().toISOString();
   const highName = safeFileName(input.high.fileName, 'high.fbx');
   const lowName = safeFileName(input.low.fileName, 'low.fbx');
   const cageName = input.cage ? safeFileName(input.cage.fileName, 'cage.fbx') : undefined;
-  const colorName = input.color ? safeFileName(input.color.fileName, 'high-color.png') : undefined;
-  const roughnessName = input.roughness
-    ? safeFileName(input.roughness.fileName, 'high-roughness.png')
+  const colorName = colorUpload
+    ? safeFileName(colorUpload.fileName, 'base_color.png')
     : undefined;
-  const metallicName = input.metallic
-    ? safeFileName(input.metallic.fileName, 'high-metallic.png')
+  const roughnessName = roughnessUpload
+    ? safeFileName(roughnessUpload.fileName, 'roughness.png')
     : undefined;
-  const highPath = path.join(inputDirectory, `high-${highName}`);
-  const lowPath = path.join(inputDirectory, `low-${lowName}`);
-  const cagePath = cageName ? path.join(inputDirectory, `cage-${cageName}`) : undefined;
-  const colorPath = colorName ? path.join(inputDirectory, `color-${colorName}`) : undefined;
-  const roughnessPath = roughnessName
-    ? path.join(inputDirectory, `roughness-${roughnessName}`)
+  const metallicName = metallicUpload
+    ? safeFileName(metallicUpload.fileName, 'metallic.png')
     : undefined;
-  const metallicPath = metallicName
-    ? path.join(inputDirectory, `metallic-${metallicName}`)
-    : undefined;
-  fs.writeFileSync(highPath, input.high.data);
-  fs.writeFileSync(lowPath, input.low.data);
-  if (input.cage && cagePath) fs.writeFileSync(cagePath, input.cage.data);
-  if (input.color && colorPath) fs.writeFileSync(colorPath, input.color.data);
-  if (input.roughness && roughnessPath) fs.writeFileSync(roughnessPath, input.roughness.data);
-  if (input.metallic && metallicPath) fs.writeFileSync(metallicPath, input.metallic.data);
-  const settings = validateSettings(input.settings);
-  if (settings.channels.includes('baseColor') && !colorPath)
-    throw new Error('Base Color bake requires a high-poly color image.');
-  if (settings.channels.includes('roughness') && !roughnessPath)
-    throw new Error('Roughness bake requires a high-poly roughness image.');
-  if (settings.channels.includes('metallic') && !metallicPath)
-    throw new Error('Metallic bake requires a high-poly metallic image.');
-  const now = new Date().toISOString();
+  const statusUrl = `/api/v1/assets/jobs/pending`;
   const job: InternalJob = {
     id,
     kind: 'bake-maps',
@@ -493,69 +1032,147 @@ export function createNormalBakeJob(input: {
     createdAt: now,
     updatedAt: now,
     directory,
-    highPath,
-    lowPath,
-    cagePath,
-    colorPath,
-    roughnessPath,
-    metallicPath,
-    outputPaths: {
-      baseColor: path.join(outputDirectory, 'basecolor.png'),
-      normal: path.join(outputDirectory, 'normal.png'),
-      ambientOcclusion: path.join(outputDirectory, 'ao.png'),
-      curvature: path.join(outputDirectory, 'curvature.png'),
-      worldNormal: path.join(outputDirectory, 'world_normal.png'),
-      thickness: path.join(outputDirectory, 'thickness.png'),
-      position: path.join(outputDirectory, 'position.png'),
-      roughness: path.join(outputDirectory, 'roughness.png'),
-      metallic: path.join(outputDirectory, 'metallic.png'),
+    outputPaths: outputPaths(directory),
+    remote: {
+      jobId: 'pending',
+      profile,
+      statusUrl,
     },
   };
   jobs.set(id, job);
   persist(job);
-  setImmediate(() => void runJob(job));
-  return publicJob(job);
-}
 
-export function getNormalBakeJob(id: string) {
-  const job = jobs.get(id);
-  if (job) return publicJob(job);
-  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return undefined;
-  const persistedPath = path.join(serverConfig.workspaceDir, 'bake-jobs', id, 'job.json');
-  if (!fs.existsSync(persistedPath)) return undefined;
+  const boundary = `----liclick-substance-${randomUUID()}`;
+  const metadata = JSON.stringify({
+    external_asset_id: id,
+    options: {
+      profile,
+      resolution: settings.resolution,
+      texture_cache_mb: textureCacheMb,
+    },
+  });
+  const bodyChunks = buildMultipart({
+    boundary,
+    low: input.low,
+    high: profile === 'ao-self-v1' ? undefined : input.high,
+    cage: input.cage,
+    color: profile === 'li3d-pbr-full-v2' ? colorUpload : undefined,
+    roughness: profile === 'li3d-pbr-full-v2' ? roughnessUpload : undefined,
+    metallic: profile === 'li3d-pbr-full-v2' ? metallicUpload : undefined,
+    metadata,
+  });
+  const contentLength = bodyChunks.reduce((total, chunk) => total + chunk.length, 0);
   try {
-    return JSON.parse(fs.readFileSync(persistedPath, 'utf8')) as NormalBakeJob;
-  } catch {
-    return undefined;
+    const response = await requestRemote('/api/v1/assets/bake/process', {
+      method: 'POST',
+      timeoutMs: 300_000,
+      maxBytes: 8 * 1024 * 1024,
+      headers: {
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+        'content-length': String(contentLength),
+        'idempotency-key': id,
+      },
+      bodyChunks,
+    });
+    ensureRemoteSuccess(response, [200, 202]);
+    const payload = parseJson<RemoteJobPayload>(response);
+    if (!payload.job_id || !payload.status_url) {
+      throw new BakeRequestError('远端提交响应缺少 job_id 或 status_url。', 502);
+    }
+    job.remote = {
+      jobId: payload.job_id,
+      profile,
+      statusUrl: payload.status_url,
+      eventsUrl: payload.events_url,
+      cancelUrl: payload.cancel_url,
+      status: payload.status,
+      workerId: payload.worker_id,
+      stage: payload.stage,
+      stageMessage: payload.stage_message,
+      deliveryReady: payload.delivery_ready,
+      timing: payload.timing,
+    };
+    applyRemoteStatus(job, payload);
+    appendLog(job, `[Remote] 已提交 ${profile}，远端任务 ${payload.job_id}。`);
+    void monitorRemoteJob(job);
+    return publicJob(job);
+  } catch (error) {
+    job.status = 'failed';
+    job.stage = 'finished';
+    job.error = error instanceof Error ? error.message : '提交远端 Substance Baker 失败。';
+    job.finishedAt = new Date().toISOString();
+    appendLog(job, `[Remote] ${job.error}`);
+    throw error;
   }
 }
 
-export function getNormalBakeOutputPath(id: string, channel: BakeChannelId = 'normal') {
-  const job = jobs.get(id);
-  if (job?.status === 'succeeded' && job.settings.channels.includes(channel))
-    return job.outputPaths[channel];
-  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return undefined;
-  const persistedOutput = path.join(
-    serverConfig.workspaceDir,
-    'bake-jobs',
-    id,
-    'output',
-    bakeChannelDefinitions[channel].fileName,
-  );
-  return fs.existsSync(persistedOutput) ? persistedOutput : undefined;
+export function getNormalBakeJob(id: string) {
+  const job = jobs.get(id) ?? loadJob(id);
+  if (!job) return undefined;
+  if (!['succeeded', 'failed', 'cancelled'].includes(job.status)) void monitorRemoteJob(job);
+  return publicJob(job);
 }
 
-export function getSubstanceBakerStatus() {
-  const executablePath = locateBaker();
-  if (!executablePath) return { available: false };
-  const result = spawnSync(executablePath, ['--version'], {
-    windowsHide: true,
-    encoding: 'utf8',
-    timeout: 5000,
+export function getNormalBakeOutputPath(id: string, channel: BakeChannelId = 'normal') {
+  const job = jobs.get(id) ?? loadJob(id);
+  if (!job || job.status !== 'succeeded' || !job.settings.channels.includes(channel)) {
+    return undefined;
+  }
+  const outputPath = job.outputPaths[channel];
+  return fs.existsSync(outputPath) ? outputPath : undefined;
+}
+
+export async function cancelNormalBakeJob(id: string) {
+  const job = jobs.get(id) ?? loadJob(id);
+  if (!job) return undefined;
+  if (!job.remote?.cancelUrl || ['succeeded', 'failed', 'cancelled'].includes(job.status)) {
+    return publicJob(job);
+  }
+  const response = await requestRemote(job.remote.cancelUrl, {
+    method: 'POST',
+    timeoutMs: 30_000,
   });
-  return {
-    available: result.status === 0,
-    executablePath,
-    version: (result.stdout || result.stderr || '').trim(),
-  };
+  ensureRemoteSuccess(response);
+  applyRemoteStatus(job, parseJson<RemoteJobPayload>(response));
+  return publicJob(job);
+}
+
+export async function getSubstanceBakerStatus() {
+  const endpoint = serverConfig.substanceBakerBaseUrl;
+  try {
+    const trust = remoteTrust();
+    const response = await requestRemote('/api/v1/assets/jobs/liclick-connection-probe', {
+      timeoutMs: 5000,
+      maxBytes: 1024 * 1024,
+    });
+    const connected = response.statusCode > 0 && response.statusCode < 500;
+    const authorized = ![401, 403].includes(response.statusCode);
+    return {
+      available: connected && authorized,
+      connected,
+      endpoint,
+      workerId: 'asset-worker-3090-b-windows',
+      tlsVerified: true,
+      trustSource: trust.source,
+      ...(trust.caPath ? { caPath: trust.caPath } : {}),
+      ...(connected && authorized ? {} : { error: remoteErrorMessage(response) }),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '无法连接远端 Substance Baker。';
+    const certificateError =
+      /certificate|self[- ]signed|unable to verify|issuer|ca\b/i.test(message);
+    return {
+      available: false,
+      connected: false,
+      endpoint,
+      tlsVerified: false,
+      error: certificateError
+        ? `${message} 请安装 GPU_CONTROL_LAN_CA.crt 到系统信任库，或配置 LICLICK_SUBSTANCE_BAKER_CA_PATH。`
+        : message,
+    };
+  }
+}
+
+export function bakeRequestErrorStatus(error: unknown) {
+  return error instanceof BakeRequestError ? error.httpStatus : 500;
 }

@@ -3,13 +3,14 @@ import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { useAuthStore } from './stores/authStore';
 import { useProjectStore } from './stores/projectStore';
+import type { TextureBakeHandoff } from './types/project';
 
 type RouteState =
   | { name: 'home' }
   | { name: 'projects'; module: 'texture' | 'bake' }
   | { name: 'modelingToolbox' }
   | { name: 'editor'; projectId: string }
-  | { name: 'bake'; projectId: string };
+  | { name: 'bake'; projectId: string; handoff?: TextureBakeHandoff };
 
 const HomePage = lazy(() =>
   import('./routes/HomePage').then((module) => ({ default: module.HomePage })),
@@ -114,8 +115,8 @@ export function App() {
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
       },
-      openBake: (projectId: string) => {
-        const nextRoute: RouteState = { name: 'bake', projectId };
+      openBake: (projectId: string, handoff?: TextureBakeHandoff) => {
+        const nextRoute: RouteState = { name: 'bake', projectId, handoff };
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
       },
@@ -168,7 +169,7 @@ export function App() {
           <EditorPage
             projectId={route.projectId}
             onBack={navigation.openTextureProjects}
-            onOpenBake={() => navigation.openBake(route.projectId)}
+            onOpenBake={(handoff) => navigation.openBake(route.projectId, handoff)}
           />
         </Suspense>
         <ToastHost />
@@ -184,6 +185,7 @@ export function App() {
             projectId={route.projectId}
             onBack={navigation.openHome}
             onOpenTexture={() => navigation.openEditor(route.projectId)}
+            handoff={route.handoff}
           />
         </Suspense>
         <ToastHost />

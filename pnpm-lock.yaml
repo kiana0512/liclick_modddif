@@ -41,6 +41,9 @@ importers:
 
   apps/server:
     dependencies:
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
       ws:
         specifier: ^8.21.1
         version: 8.21.1

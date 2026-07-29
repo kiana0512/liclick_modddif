@@ -15,6 +15,7 @@
     "db:seed": "node dist/db/seed.js"
   },
   "dependencies": {
+    "sharp": "^0.34.5",
     "ws": "^8.21.1"
   },
   "devDependencies": {

@@ -8,6 +8,7 @@ import type { ModelBoundingBox, SceneObject, Transform } from '@/types/model';
 import type { AssetManifest, Project, ReferenceImage, WorkspaceMode } from '@/types/project';
 
 export const IMMEDIATE_PROJECT_SAVE_EVENT = 'liclick:immediate-project-save';
+const LOCAL_OBJECT_DELETION_KEY = 'liclick:pending-object-deletions:v1';
 
 type ProjectStore = {
   projects: Project[];
@@ -119,6 +120,58 @@ function withoutObjectData(project: Project, objectId: string): Project {
   };
 }
 
+function readLocalObjectDeletions() {
+  if (typeof window === 'undefined') return {} as Record<string, string[]>;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LOCAL_OBJECT_DELETION_KEY) ?? '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+      return {} as Record<string, string[]>;
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([projectId, value]) => {
+        if (!Array.isArray(value)) return [];
+        const ids = value.filter((item): item is string => typeof item === 'string');
+        return ids.length > 0 ? [[projectId, Array.from(new Set(ids))]] : [];
+      }),
+    );
+  } catch {
+    return {} as Record<string, string[]>;
+  }
+}
+
+function writeLocalObjectDeletions(deletions: Record<string, string[]>) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (Object.keys(deletions).length === 0)
+      window.localStorage.removeItem(LOCAL_OBJECT_DELETION_KEY);
+    else window.localStorage.setItem(LOCAL_OBJECT_DELETION_KEY, JSON.stringify(deletions));
+  } catch {
+    // The in-memory deletion still applies when browser storage is unavailable.
+  }
+}
+
+function recordLocalObjectDeletion(projectId: string, objectId: string) {
+  const deletions = readLocalObjectDeletions();
+  deletions[projectId] = Array.from(new Set([...(deletions[projectId] ?? []), objectId]));
+  writeLocalObjectDeletions(deletions);
+}
+
+function clearLocalObjectDeletions(projectId: string, objectIds: string[]) {
+  if (objectIds.length === 0) return;
+  const deletions = readLocalObjectDeletions();
+  const clearedIds = new Set(objectIds);
+  const remaining = (deletions[projectId] ?? []).filter((objectId) => !clearedIds.has(objectId));
+  if (remaining.length > 0) deletions[projectId] = remaining;
+  else delete deletions[projectId];
+  writeLocalObjectDeletions(deletions);
+}
+
+function applyLocalObjectDeletions(project: Project) {
+  return (readLocalObjectDeletions()[project.id] ?? []).reduce(
+    (current, objectId) => withoutObjectData(current, objectId),
+    project,
+  );
+}
+
 function updateProject(projects: Project[], projectId: string, patch: Partial<Project>) {
   return projects.map((project) =>
     project.id === projectId
@@ -133,11 +186,11 @@ function upsertGeneration(generations: Generation[], generation: Generation) {
 }
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
-  projects: mockProjects,
+  projects: mockProjects.map(applyLocalObjectDeletions),
   currentProjectId: mockProjects[0]?.id ?? '',
   setProjects: (projects) =>
     set((state) => ({
-      projects,
+      projects: projects.map(applyLocalObjectDeletions),
       currentProjectId: projects.some((project) => project.id === state.currentProjectId)
         ? state.currentProjectId
         : (projects[0]?.id ?? ''),
@@ -147,12 +200,15 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     get().projects.find((project) => project.id === get().currentProjectId) ?? get().projects[0],
   replaceCurrentProject: (project) =>
     set((state) => {
+      const projectWithLocalDeletions = applyLocalObjectDeletions(project);
       const exists = state.projects.some((item) => item.id === project.id);
       return {
         currentProjectId: project.id,
         projects: exists
-          ? state.projects.map((item) => (item.id === project.id ? project : item))
-          : [project, ...state.projects],
+          ? state.projects.map((item) =>
+              item.id === project.id ? projectWithLocalDeletions : item,
+            )
+          : [projectWithLocalDeletions, ...state.projects],
       };
     }),
   updateCurrentProject: (patch) =>
@@ -165,20 +221,26 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   setProjectCaptures: (captures) => get().updateCurrentProject({ captures }),
   setProjectReferences: (references) => get().updateCurrentProject({ references }),
   deleteProjectObject: (objectId) =>
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === state.currentProjectId ? withoutObjectData(project, objectId) : project,
-      ),
-    })),
+    set((state) => {
+      recordLocalObjectDeletion(state.currentProjectId, objectId);
+      return {
+        projects: state.projects.map((project) =>
+          project.id === state.currentProjectId ? withoutObjectData(project, objectId) : project,
+        ),
+      };
+    }),
   setWorkspaceState: (workspaceState) => get().updateCurrentProject(workspaceState),
   markDirty: () => get().updateCurrentProject({ dirty: true }),
-  markSaved: (lastSavedAt, assetManifest) =>
+  markSaved: (lastSavedAt, assetManifest) => {
+    const project = get().getCurrentProject();
+    if (project) clearLocalObjectDeletions(project.id, project.deletedObjectIds ?? []);
     get().updateCurrentProject({
       lastSavedAt,
       dirty: false,
       deletedObjectIds: [],
       assetManifest,
-    }),
+    });
+  },
   updateObjectTransform: (objectId, transform, boundingBox) =>
     set((state) => {
       const project = state.projects.find((item) => item.id === state.currentProjectId);

@@ -3,7 +3,10 @@ import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { corsHeaders, readBinaryBody, sendJson } from './httpUtils.js';
 import {
+  bakeRequestErrorStatus,
+  cancelNormalBakeJob,
   createNormalBakeJob,
+  generateRemoteRoughness,
   getNormalBakeJob,
   getNormalBakeOutputPath,
   getSubstanceBakerStatus,
@@ -54,7 +57,40 @@ export async function handleBakeRoute(
   url: URL,
 ) {
   if (url.pathname === '/api/bake/status' && request.method === 'GET') {
-    sendJson(response, 200, getSubstanceBakerStatus());
+    sendJson(response, 200, await getSubstanceBakerStatus());
+    return true;
+  }
+  if (url.pathname === '/api/bake/roughness' && request.method === 'POST') {
+    const contentType = request.headers['content-type'] ?? '';
+    if (!contentType.startsWith('multipart/form-data')) {
+      sendJson(response, 415, { error: 'Expected multipart/form-data.' });
+      return true;
+    }
+    try {
+      const multipart = parseMultipart(contentType, await readBinaryBody(request, 64 * 1024 * 1024));
+      if (!multipart.files.image) {
+        sendJson(response, 400, { error: 'Base Color image is required.' });
+        return true;
+      }
+      const result = await generateRemoteRoughness(
+        multipart.files.image,
+        typeof request.headers['idempotency-key'] === 'string'
+          ? request.headers['idempotency-key']
+          : undefined,
+      );
+      response.writeHead(200, {
+        'content-type': result.contentType,
+        'content-length': String(result.data.length),
+        'cache-control': 'no-store',
+        ...(result.jobId ? { 'x-job-id': result.jobId } : {}),
+        ...corsHeaders(response),
+      });
+      response.end(result.data);
+    } catch (error) {
+      sendJson(response, bakeRequestErrorStatus(error), {
+        error: error instanceof Error ? error.message : 'Roughness generation failed.',
+      });
+    }
     return true;
   }
   if (url.pathname === '/api/bake/jobs' && request.method === 'POST') {
@@ -68,18 +104,40 @@ export async function handleBakeRoute(
       sendJson(response, 400, { error: 'High and low model files are required.' });
       return true;
     }
-    const job = createNormalBakeJob({
-      projectId: multipart.fields.projectId ?? '',
-      objectId: multipart.fields.objectId ?? '',
-      settings: JSON.parse(multipart.fields.settings ?? '{}') as NormalBakeSettings,
-      high: multipart.files.high,
-      low: multipart.files.low,
-      cage: multipart.files.cage,
-      color: multipart.files.color,
-      roughness: multipart.files.roughness,
-      metallic: multipart.files.metallic,
-    });
-    sendJson(response, 202, { job });
+    try {
+      const job = await createNormalBakeJob({
+        projectId: multipart.fields.projectId ?? '',
+        objectId: multipart.fields.objectId ?? '',
+        settings: JSON.parse(multipart.fields.settings ?? '{}') as NormalBakeSettings,
+        high: multipart.files.high,
+        low: multipart.files.low,
+        cage: multipart.files.cage,
+        color: multipart.files.color,
+        roughness: multipart.files.roughness,
+        metallic: multipart.files.metallic,
+      });
+      sendJson(response, 202, { job });
+    } catch (error) {
+      sendJson(response, bakeRequestErrorStatus(error), {
+        error: error instanceof Error ? error.message : 'Remote bake submission failed.',
+      });
+    }
+    return true;
+  }
+  const cancelMatch = /^\/api\/bake\/jobs\/([^/]+)\/cancel$/.exec(url.pathname);
+  if (cancelMatch && request.method === 'POST') {
+    try {
+      const job = await cancelNormalBakeJob(decodeURIComponent(cancelMatch[1]));
+      if (!job) {
+        sendJson(response, 404, { error: 'Bake job not found.' });
+      } else {
+        sendJson(response, 200, { job });
+      }
+    } catch (error) {
+      sendJson(response, bakeRequestErrorStatus(error), {
+        error: error instanceof Error ? error.message : 'Remote bake cancellation failed.',
+      });
+    }
     return true;
   }
   const archiveMatch = /^\/api\/bake\/jobs\/([^/]+)\/archive$/.exec(url.pathname);

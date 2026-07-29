@@ -25,6 +25,7 @@ import {
   moveProject,
   renameFolder,
   renameProject,
+  saveProject as saveWorkspaceProject,
   WorkspaceApiError,
   type ProjectSummary,
   type WorkspaceFolder,
@@ -462,7 +463,21 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
       const result = await loadProject(projectId);
       replaceCurrentProject(result.project);
     } catch {
-      // Mock fallback projects can still open without the local workspace server.
+      const fallbackProject = useProjectStore
+        .getState()
+        .projects.find((project) => project.id === projectId);
+      if (fallbackProject) {
+        try {
+          const result = await saveWorkspaceProject({
+            ...fallbackProject,
+            workspaceMode: 'local-server',
+            dirty: true,
+          });
+          replaceCurrentProject(result.project);
+        } catch {
+          // Mock fallback projects can still open while the workspace server is offline.
+        }
+      }
     }
     onOpenProject(projectId);
   }
