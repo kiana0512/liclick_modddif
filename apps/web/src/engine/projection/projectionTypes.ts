@@ -29,6 +29,9 @@ export type ProjectionLayerInput = {
   topUvOverlayHue?: number;
   topUvOverlaySaturation?: number;
   topUvOverlayLightness?: number;
+  /** Live UV keep-mask multiplied over one projected layer while the eraser moves. */
+  liveEraserMaskTexture?: THREE.Texture;
+  liveEraserLayerId?: string;
   baseColor?: THREE.ColorRepresentation;
   opacity: number;
   strength?: number;

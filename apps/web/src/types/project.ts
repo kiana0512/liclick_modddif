@@ -90,6 +90,7 @@ export type ProjectBakeSetState = {
   color?: BakeAssetReference;
   roughness?: BakeAssetReference;
   metallic?: BakeAssetReference;
+  normal?: BakeAssetReference;
   settings?: BakeDraftSettings;
   lastJobId?: string;
 };

@@ -22,7 +22,10 @@ import {
   captureCurrentView,
 } from '@/engine/capture/captureCurrentView';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
-import { createSubjectFilledPreview } from '@/engine/localRepaint/resultPreviewUtils';
+import {
+  createCaptureMaskedPreview,
+  createSubjectFilledPreview,
+} from '@/engine/localRepaint/resultPreviewUtils';
 import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
@@ -560,11 +563,12 @@ function getImportedModelMatrixWorld(objectId?: string) {
 
 export function GeneratePanel() {
   const t = useT();
-  const [tab, setTab] = useState<GenerateTab>('single');
+  const [tab, setTab] = useState<GenerateTab>('multiview');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
     sourceUrl: string;
+    maskUrl?: string;
     previewUrl: string;
   }>();
   const [selectedCameraViewPreset, setSelectedCameraViewPreset] =
@@ -673,37 +677,76 @@ export function GeneratePanel() {
   const previewCancelled = previewGeneration?.metadata.cancelled === true;
   const canCancelGeneration = Boolean(activeProjectGeneration);
   const previewRawResultUrl = previewGeneration?.resultUrl;
-  const previewNeedsSubjectFill = Boolean(
+  const previewCapture = previewGeneration?.captureId
+    ? lastCapture?.id === previewGeneration.captureId
+      ? lastCapture
+      : currentProject?.captures.find((capture) => capture.id === previewGeneration.captureId)
+    : previewGeneration &&
+        isLocalRepaintGeneration(previewGeneration) &&
+        lastCapture &&
+        (!previewGeneration.metadata.objectId ||
+          previewGeneration.metadata.objectId === lastCapture.objectId)
+      ? lastCapture
+      : undefined;
+  const capturePreviewMaskUrl =
     previewGeneration &&
-    (isLocalRepaintGeneration(previewGeneration) || isTextureMapGeneration(previewGeneration)),
-  );
+    (isLocalRepaintGeneration(previewGeneration) || isTextureMapGeneration(previewGeneration))
+      ? previewCapture?.maskUrl
+      : undefined;
+  const previewProcessingMode = previewGeneration
+    ? isLocalRepaintGeneration(previewGeneration)
+      ? capturePreviewMaskUrl
+        ? 'capture-mask'
+        : 'dark-background'
+      : isTextureMapGeneration(previewGeneration)
+        ? capturePreviewMaskUrl
+          ? 'capture-mask'
+          : undefined
+        : undefined
+    : undefined;
   const previewResultUrl =
     previewRawResultUrl &&
-    previewNeedsSubjectFill &&
-    subjectFilledPreview?.sourceUrl === previewRawResultUrl
+    subjectFilledPreview?.sourceUrl === previewRawResultUrl &&
+    subjectFilledPreview.maskUrl === capturePreviewMaskUrl
       ? subjectFilledPreview.previewUrl
       : previewRawResultUrl;
 
   useEffect(() => {
     const sourceUrl = previewRawResultUrl;
-    if (!sourceUrl || !previewNeedsSubjectFill) {
+    if (!sourceUrl || !previewProcessingMode) {
       setSubjectFilledPreview(undefined);
       return undefined;
     }
     let cancelled = false;
-    void createSubjectFilledPreview(sourceUrl)
+    const previewPromise =
+      previewProcessingMode === 'capture-mask'
+        ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!)
+        : createSubjectFilledPreview(
+            sourceUrl,
+            previewProcessingMode === 'dark-background' ? 'dark-only' : 'neutral',
+          );
+    void previewPromise
       .then((previewUrl) => {
-        if (!cancelled) setSubjectFilledPreview({ sourceUrl, previewUrl });
+        if (!cancelled)
+          setSubjectFilledPreview({
+            sourceUrl,
+            maskUrl: capturePreviewMaskUrl,
+            previewUrl,
+          });
       })
       .catch((error) => {
         if (cancelled) return;
         console.warn('[Liclick 3D Texture] Could not prepare generated image preview.', error);
-        setSubjectFilledPreview({ sourceUrl, previewUrl: sourceUrl });
+        setSubjectFilledPreview({
+          sourceUrl,
+          maskUrl: capturePreviewMaskUrl,
+          previewUrl: sourceUrl,
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, [previewNeedsSubjectFill, previewRawResultUrl]);
+  }, [capturePreviewMaskUrl, previewProcessingMode, previewRawResultUrl]);
 
   const notifyReferencePreprocessed = useCallback(
     (result: ReferencePreprocessingResult) => {
@@ -1606,6 +1649,7 @@ export function GeneratePanel() {
         aspect: maskSize.width / maskSize.height,
       });
       setLastCapture(capture);
+      addProjectCapture(capture);
       const submittedPrompt = prompt.trim();
       const generationId = createId('local-repaint');
       pendingGeneration = {
@@ -1654,6 +1698,7 @@ export function GeneratePanel() {
       if (isCancelledGeneration(pendingGeneration)) return;
       syncGeneration({
         ...generation,
+        captureId: generation.captureId ?? capture.id,
         metadata: {
           ...generation.metadata,
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
@@ -1838,6 +1883,10 @@ export function GeneratePanel() {
         return;
       }
       const capture = await captureTextureMapReferenceView();
+      // Keep the same capture/mask pairing used by local repaint so completed
+      // texture generations can restore their exact silhouette preview after a
+      // reload instead of falling back to color-based background removal.
+      addProjectCapture(capture);
       const object = objects.find((item) => item.id === capture.objectId);
       if (!(await requireAiLogin())) return;
       const texturePrompt = buildTextureMapPrompt(prompt);
@@ -2239,9 +2288,9 @@ export function GeneratePanel() {
         <SegmentedControl
           value={tab}
           options={[
-            { value: 'single', label: t('single') },
             { value: 'multiview', label: t('multiview') },
             { value: 'repaint', label: t('localRepaint') },
+            { value: 'single', label: t('single') },
           ]}
           onChange={setTab}
           className="mb-2"

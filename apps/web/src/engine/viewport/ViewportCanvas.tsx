@@ -33,6 +33,10 @@ import {
   registerLiveProjectedCanvasTexture,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
+import {
+  clearLiveSurfacePaintPreview,
+  publishLiveSurfacePaintPreview,
+} from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { SceneRoot } from './SceneRoot';
 import { CameraController } from './CameraController';
@@ -41,6 +45,7 @@ import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
+import { getCanvasAlphaBoundsAsync } from '@/utils/getCanvasAlphaBounds';
 
 type SurfacePaintTarget = {
   objectId: string;
@@ -113,11 +118,14 @@ const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
 const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
 const LOCAL_REPAINT_PREVIEW_MAX_SIZE = 512;
-// Keep the 4K UV/seam pass out of normal brush cadence. A short pause between
-// strokes should still feel like one painting session rather than immediately
-// starting a GPU bake that competes with the next gesture.
+// Keep brush interaction on the lightweight projected preview, then promote the
+// accumulated result to the selected UV resolution once the editor is idle.
+// New paint input invalidates the queued commit, so the expensive pass never
+// competes with an active stroke.
+const LOCAL_REPAINT_INTERACTIVE_UV_BAKE_ENABLED = true;
 const LOCAL_REPAINT_HIGH_RES_IDLE_MS = 3000;
 const LOCAL_REPAINT_HANDOFF_DURATION_MS = 160;
+const PROJECTED_ERASER_HIGH_RES_IDLE_MS = 1800;
 // Stop projection before a surface becomes so foreshortened that a few source
 // pixels stretch into visible scan lines. 0.31 is about 72 degrees from face-on;
 // the shared 0.08 cosine feather starts fading at roughly 67 degrees.
@@ -636,6 +644,11 @@ type UvPaintLayer = {
   paintPreviewCanvas: HTMLCanvasElement;
   paintPreviewContext: CanvasRenderingContext2D;
   paintPreviewMaterial: THREE.ShaderMaterial;
+  liveResultCanvas: HTMLCanvasElement;
+  liveResultContext: CanvasRenderingContext2D;
+  liveResultTexture: THREE.CanvasTexture;
+  liveResultUrl: string;
+  liveEraserPreviewActive: boolean;
   paintOverlayTargets: Set<THREE.Mesh>;
   paintPreviewOverlays: THREE.Mesh[];
   projectionCanvas: HTMLCanvasElement;
@@ -876,6 +889,47 @@ type PaintStrokeDraft = {
   localRepaintComposite?: LocalRepaintCompositeState;
 };
 
+type PaintHistoryTile = {
+  bounds: PaintDirtyRect;
+  before: HTMLCanvasElement;
+  after: HTMLCanvasElement;
+};
+
+type PendingProjectedEraserBatch = {
+  layer: UvPaintLayer;
+  snapshots: ProjectedEraserSnapshot[];
+  revision: number;
+  timerId?: number;
+  idleCallbackId?: number;
+  latestHistoryTiles?: PaintHistoryTile[];
+};
+
+function appendProjectedEraserSnapshot(
+  snapshots: ProjectedEraserSnapshot[],
+  snapshot: ProjectedEraserSnapshot,
+) {
+  const previous = snapshots.at(-1);
+  const sharesProjection =
+    previous &&
+    previous.model.objectId === snapshot.model.objectId &&
+    previous.maskCanvas.width === snapshot.maskCanvas.width &&
+    previous.maskCanvas.height === snapshot.maskCanvas.height &&
+    previous.objectMatrixWorld.every(
+      (value, index) => Math.abs(value - snapshot.objectMatrixWorld[index]) < 1e-6,
+    ) &&
+    JSON.stringify(previous.camera) === JSON.stringify(snapshot.camera);
+  if (!sharesProjection) {
+    snapshots.push(snapshot);
+    return;
+  }
+  const context = previous.maskCanvas.getContext('2d');
+  if (!context) {
+    snapshots.push(snapshot);
+    return;
+  }
+  context.drawImage(snapshot.maskCanvas, 0, 0);
+}
+
 type ClientPoint = { x: number; y: number; pressure: number };
 
 function getPointerPressure(event: Pick<globalThis.PointerEvent, 'pointerType' | 'pressure'>) {
@@ -1096,33 +1150,6 @@ function copyCanvasRect(source: HTMLCanvasElement, bounds: PaintDirtyRect) {
   return copy;
 }
 
-function getCanvasAlphaBounds(canvas: HTMLCanvasElement): PaintDirtyRect | undefined {
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) return undefined;
-  const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
-  let minX = canvas.width;
-  let minY = canvas.height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < canvas.height; y += 1) {
-    const rowOffset = y * canvas.width * 4;
-    for (let x = 0; x < canvas.width; x += 1) {
-      if (data[rowOffset + x * 4 + 3] === 0) continue;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-    }
-  }
-  if (maxX < minX || maxY < minY) return undefined;
-  return {
-    x: minX,
-    y: minY,
-    width: maxX - minX + 1,
-    height: maxY - minY + 1,
-  };
-}
-
 function scaleDirtyRect(
   bounds: PaintDirtyRect,
   sourceWidth: number,
@@ -1153,73 +1180,79 @@ function getEraserBakeResolution(canvas: HTMLCanvasElement): UvBakeResolution {
   return 512;
 }
 
-async function bakeProjectedEraserStrokeToUv(input: {
+type ProjectedEraserSnapshot = {
   model: SurfacePaintTarget;
   camera: SerializedCamera;
   objectMatrixWorld: number[];
   maskCanvas: HTMLCanvasElement;
+};
+
+async function bakeProjectedEraserStrokesToUv(input: {
+  snapshots: ProjectedEraserSnapshot[];
   resolution: UvBakeResolution;
   runtimeKey: string;
 }) {
-  const strokeId = createId('surface-eraser-projection');
-  const whiteCanvas = document.createElement('canvas');
-  whiteCanvas.width = input.maskCanvas.width;
-  whiteCanvas.height = input.maskCanvas.height;
-  const whiteContext = whiteCanvas.getContext('2d');
-  if (!whiteContext) throw new Error('Could not create projected eraser source.');
-  whiteContext.fillStyle = '#ffffff';
-  whiteContext.fillRect(0, 0, whiteCanvas.width, whiteCanvas.height);
-  const imageUrl = registerLiveProjectedCanvasTexture(
-    `surface-eraser:${input.runtimeKey}:image`,
-    whiteCanvas,
-    THREE.SRGBColorSpace,
-  );
-  const maskUrl = registerLiveProjectedCanvasTexture(
-    `surface-eraser:${input.runtimeKey}:mask`,
-    input.maskCanvas,
-    THREE.NoColorSpace,
-  );
-  const transientLayer: Layer = {
-    id: strokeId,
-    name: '投影橡皮擦笔迹',
-    type: 'projected',
-    imageUrl,
-    maskUrl,
-    maskSpace: 'projection',
-    objectId: input.model.objectId,
-    objectMatrixWorld: input.objectMatrixWorld,
-    camera: input.camera,
-    renderedColor: true,
-    visible: true,
-    opacity: 1,
-    strength: 1,
-    blendMode: 'normal',
-    adjustments: { hue: 0, saturation: 0, lightness: 0 },
-    order: 0,
-    createdAt: new Date().toISOString(),
-  };
+  if (input.snapshots.length === 0) throw new Error('Projected eraser batch is empty.');
+  const transientLayers = input.snapshots.map((snapshot, index): Layer => {
+    const whiteCanvas = document.createElement('canvas');
+    whiteCanvas.width = snapshot.maskCanvas.width;
+    whiteCanvas.height = snapshot.maskCanvas.height;
+    const whiteContext = whiteCanvas.getContext('2d');
+    if (!whiteContext) throw new Error('Could not create projected eraser source.');
+    whiteContext.fillStyle = '#ffffff';
+    whiteContext.fillRect(0, 0, whiteCanvas.width, whiteCanvas.height);
+    const imageUrl = registerLiveProjectedCanvasTexture(
+      `surface-eraser:${input.runtimeKey}:${index}:image`,
+      whiteCanvas,
+      THREE.SRGBColorSpace,
+    );
+    const maskUrl = registerLiveProjectedCanvasTexture(
+      `surface-eraser:${input.runtimeKey}:${index}:mask`,
+      snapshot.maskCanvas,
+      THREE.NoColorSpace,
+    );
+    return {
+      id: createId('surface-eraser-projection'),
+      name: '投影橡皮擦笔迹',
+      type: 'projected',
+      imageUrl,
+      maskUrl,
+      maskSpace: 'projection',
+      objectId: snapshot.model.objectId,
+      objectMatrixWorld: snapshot.objectMatrixWorld,
+      camera: snapshot.camera,
+      renderedColor: true,
+      visible: true,
+      opacity: 1,
+      strength: 1,
+      blendMode: 'normal',
+      adjustments: { hue: 0, saturation: 0, lightness: 0 },
+      order: index,
+      createdAt: new Date().toISOString(),
+    };
+  });
   const { bakeVisibleProjectedLayersToTexture } =
     await import('@/engine/bake/bakeProjectedLayerToTexture');
   return bakeVisibleProjectedLayersToTexture({
-    objectId: input.model.objectId,
-    transientLayers: [transientLayer],
+    objectId: input.snapshots[0].model.objectId,
+    transientLayers,
     resolution: input.resolution,
     enableBackfaceCulling: true,
     enableDilation: false,
     dilationPixels: 0,
     outputAlpha: 'transparent',
     gpuCompositeMode: 'coverage-alpha',
-    // GPU triangle edge rules can leave a one-texel transparent line between
-    // adjacent UV triangles. Repair only those texels that the model's UV
-    // topology confirms are real surface area; this closes hairline remnants
-    // without freely growing the eraser mask through empty atlas space.
-    uvCoverageGapPixels: 2,
+    // Repair paired UV seams in the GPU pass. Keeping this result GPU-final
+    // avoids a 4K getImageData/topology scan on the editor thread.
+    uvCoverageGapPixels: 0,
+    repairMissingUvSeams: true,
+    uvSeamRepairPixels: 2,
     skipGpuValidation: true,
     minimumCoverageRatio: 0,
     commitToProject: false,
     markSourceLayersBaked: false,
     skipImageEncoding: true,
-    skipCpuPostprocess: false,
+    skipCpuPostprocess: true,
   });
 }
 
@@ -1366,9 +1399,7 @@ function configureCanvasTexture(texture: THREE.CanvasTexture, colorSpace: THREE.
 
 function updateInpaintProjectionCamera(layer: UvPaintLayer, camera: THREE.Camera) {
   camera.updateMatrixWorld(true);
-  layer.maskProjectorMatrix
-    .copy(camera.projectionMatrix)
-    .multiply(camera.matrixWorldInverse);
+  layer.maskProjectorMatrix.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse);
   layer.maskProjectionReady = true;
   [layer.maskMaterial, layer.paintPreviewMaterial].forEach((material) => {
     const uniforms = material.uniforms;
@@ -1396,6 +1427,7 @@ function hasInpaintProjectionCameraChanged(layer: UvPaintLayer, camera: THREE.Ca
 
 function disposeUvPaintLayer(layer?: UvPaintLayer) {
   if (!layer) return;
+  endLiveEraserPreview(layer);
   layer.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
   layer.paintPreviewMaterial.dispose();
   layer.projectionTexture.dispose();
@@ -1563,9 +1595,7 @@ function updateLocalRepaintProjectionMatrix(
     .multiply(localRepaintProjectionScratch.currentObjectInverse);
   composite.objectNormalDelta.getNormalMatrix(composite.objectMatrixDelta);
   composite.projectorViewMatrix.fromArray(source.camera.viewMatrix);
-  composite.projectorViewNormalMatrix.getNormalMatrix(
-    composite.projectorViewMatrix,
-  );
+  composite.projectorViewNormalMatrix.getNormalMatrix(composite.projectorViewMatrix);
   composite.worldToSourceClip
     .copy(buildProjectionMatrixBundle(source.camera).projectorMatrix)
     .multiply(composite.objectMatrixDelta);
@@ -1788,10 +1818,7 @@ function resizeProjectionCanvas(layer: UvPaintLayer, aspect: number, clear = tru
   if (clear) layer.projectionContext.clearRect(0, 0, width, height);
 }
 
-function getPaintHistoryTileKeysForBounds(
-  paintCanvas: HTMLCanvasElement,
-  bounds: PaintDirtyRect,
-) {
+function getPaintHistoryTileKeysForBounds(paintCanvas: HTMLCanvasElement, bounds: PaintDirtyRect) {
   const keys = new Set<string>();
   const x = Math.max(0, Math.floor(bounds.x));
   const y = Math.max(0, Math.floor(bounds.y));
@@ -1855,6 +1882,74 @@ function ensurePaintBackingCanvasInitialized(layer: UvPaintLayer) {
   layer.paintBackingInitialized = true;
 }
 
+function beginLiveEraserPreview(layer: UvPaintLayer) {
+  // UV image erasing previews a copy of the edited image. Projected masks use
+  // a separate all-white keep-mask that is multiplied over the original mask
+  // in the shader, regardless of whether that original lives in projection or
+  // UV space.
+  const source =
+    layer.target === 'uv-image'
+      ? layer.paintBackingInitialized
+        ? layer.paintCanvas
+        : layer.pendingBaseImage
+      : undefined;
+  if (!source && layer.target === 'uv-image') {
+    layer.liveEraserPreviewActive = false;
+    return false;
+  }
+  const sourceWidth =
+    source instanceof HTMLImageElement
+      ? source.naturalWidth || source.width
+      : source?.width || layer.paintDefaultResolution;
+  const sourceHeight =
+    source instanceof HTMLImageElement
+      ? source.naturalHeight || source.height
+      : source?.height || layer.paintDefaultResolution;
+  const scale = UV_STROKE_PREVIEW_RESOLUTION / Math.max(sourceWidth, sourceHeight, 1);
+  layer.liveResultCanvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  layer.liveResultCanvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  layer.liveResultContext.clearRect(
+    0,
+    0,
+    layer.liveResultCanvas.width,
+    layer.liveResultCanvas.height,
+  );
+  if (source) {
+    layer.liveResultContext.drawImage(
+      source,
+      0,
+      0,
+      layer.liveResultCanvas.width,
+      layer.liveResultCanvas.height,
+    );
+  } else {
+    // A projected layer without an existing UV mask starts fully visible.
+    layer.liveResultContext.fillStyle = '#ffffff';
+    layer.liveResultContext.fillRect(
+      0,
+      0,
+      layer.liveResultCanvas.width,
+      layer.liveResultCanvas.height,
+    );
+  }
+  layer.liveEraserPreviewActive = true;
+  markLiveProjectedCanvasTextureUpdated(layer.liveResultUrl);
+  publishLiveSurfacePaintPreview({
+    objectId: layer.objectId,
+    layerId: layer.layerId,
+    target: layer.target === 'projected-mask' ? 'projected-mask' : 'uv-image',
+    assetUrl: layer.liveResultUrl,
+    composition:
+      layer.target === 'projected-mask' ? 'multiply-original-mask' : 'replace',
+  });
+  return true;
+}
+
+function endLiveEraserPreview(layer: UvPaintLayer) {
+  layer.liveEraserPreviewActive = false;
+  clearLiveSurfacePaintPreview(layer.layerId, layer.liveResultUrl);
+}
+
 function getPaintHistoryTileBounds(
   canvas: HTMLCanvasElement,
   key: string,
@@ -1896,6 +1991,8 @@ function SurfacePaintOverlay() {
   const textureUpdateFrameRef = useRef<number>();
   const projectionTextureUpdateTimerRef = useRef<number>();
   const projectionTextureLastUpdateAtRef = useRef(0);
+  const projectedEraserBatchesRef = useRef(new Map<string, PendingProjectedEraserBatch>());
+  const pointerListenerGenerationRef = useRef(0);
   const localRepaintUvCommitRevisionRef = useRef(0);
   const localRepaintUvCommitChainRef = useRef(Promise.resolve());
   const localRepaintUvScheduleFrameRef = useRef<number>();
@@ -1933,8 +2030,7 @@ function SurfacePaintOverlay() {
   const t = useT();
   const isInpaintMode = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
   const isLocalRepaintApplyMode = paintTool === 'inpaint-apply';
-  const shouldShowInpaintMask =
-    isInpaintMode || (paintTool === 'none' && paintMaskHasContent);
+  const shouldShowInpaintMask = isInpaintMode || (paintTool === 'none' && paintMaskHasContent);
   const enabled =
     paintTool === 'brush' || paintTool === 'eraser' || isInpaintMode || isLocalRepaintApplyMode;
   const texturePaintReady = Boolean(importedModel || selectedObjectId);
@@ -2108,6 +2204,17 @@ function SurfacePaintOverlay() {
       projectionTexture.needsUpdate = true;
       const paintPreview = createPaintCanvas(UV_STROKE_PREVIEW_RESOLUTION, false);
       const paintPreviewMaterial = createProjectedPaintPreviewMaterial(projectionTexture);
+      const liveResult = createPaintCanvas(1, false);
+      const liveResultUrl = registerLiveProjectedCanvasTexture(
+        `surface-edit-preview:${target}:${layerId}`,
+        liveResult.canvas,
+        colorSpace,
+        { flipY },
+      );
+      const liveResultTexture = getLiveProjectedCanvasTexture(liveResultUrl, colorSpace, {
+        flipY,
+      });
+      if (!liveResultTexture) throw new Error('Could not create live eraser preview texture.');
       const mask = createPaintCanvas();
       const maskTexture = new THREE.CanvasTexture(mask.canvas);
       configureCanvasTexture(maskTexture, THREE.NoColorSpace);
@@ -2130,6 +2237,11 @@ function SurfacePaintOverlay() {
         paintPreviewCanvas: paintPreview.canvas,
         paintPreviewContext: paintPreview.context,
         paintPreviewMaterial,
+        liveResultCanvas: liveResult.canvas,
+        liveResultContext: liveResult.context,
+        liveResultTexture,
+        liveResultUrl,
+        liveEraserPreviewActive: false,
         paintOverlayTargets: new Set(),
         paintPreviewOverlays: [],
         projectionCanvas: projection.canvas,
@@ -2332,10 +2444,6 @@ function SurfacePaintOverlay() {
                   tryCommit();
                   return;
                 }
-                // A 4K seam/topology pass is intentionally started only in a
-                // genuine browser idle slice. This prevents a just-finished
-                // stroke from immediately competing with orbiting or the next
-                // brush gesture on the main thread.
                 if (!deadline.didTimeout && deadline.timeRemaining() < 12) {
                   tryCommit();
                   return;
@@ -2521,12 +2629,7 @@ function SurfacePaintOverlay() {
     layer.overlayMeshes.forEach((mesh) => {
       if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
     });
-  }, [
-    ensureInpaintMaskOverlaysForModel,
-    getTargetModel,
-    isInpaintMode,
-    syncInpaintMaskProjection,
-  ]);
+  }, [ensureInpaintMaskOverlaysForModel, getTargetModel, isInpaintMode, syncInpaintMaskProjection]);
 
   const getBrushWorldRadius = useCallback(
     (
@@ -2640,10 +2743,7 @@ function SurfacePaintOverlay() {
       if (normalizedX < 0 || normalizedX > 1 || normalizedY < 0 || normalizedY > 1) {
         return undefined;
       }
-      const screenUv = new THREE.Vector2(
-        normalizedX,
-        normalizedY,
-      );
+      const screenUv = new THREE.Vector2(normalizedX, normalizedY);
       pointerRef.current.set(screenUv.x * 2 - 1, -(screenUv.y * 2 - 1));
       raycasterRef.current.setFromCamera(pointerRef.current, camera);
       const hit = raycasterRef.current.intersectObjects(getPaintableMeshes(model), false)[0];
@@ -2849,21 +2949,18 @@ function SurfacePaintOverlay() {
     [scheduleTextureUpdate],
   );
 
-  const getStrokeSourceUv = useCallback(
-    (result: UvPaintHit) => {
-      const previous = lastSampleRef.current;
-      if (!previous || !(result.hit.object instanceof THREE.Mesh)) return undefined;
-      const sameMesh = previous.meshUuid === result.hit.object.uuid;
-      const sameFace =
-        sameMesh && previous.faceIndex !== undefined && previous.faceIndex === result.hit.faceIndex;
-      // Screen-space input is densely raycast below. Connect samples only while
-      // they remain on the same projected triangle; crossing a triangle/UV seam
-      // is represented by overlapping stamps instead of a line through the UV
-      // atlas. This is the same projection rule used by the live preview.
-      return sameFace ? previous.uv : undefined;
-    },
-    [],
-  );
+  const getStrokeSourceUv = useCallback((result: UvPaintHit) => {
+    const previous = lastSampleRef.current;
+    if (!previous || !(result.hit.object instanceof THREE.Mesh)) return undefined;
+    const sameMesh = previous.meshUuid === result.hit.object.uuid;
+    const sameFace =
+      sameMesh && previous.faceIndex !== undefined && previous.faceIndex === result.hit.faceIndex;
+    // Screen-space input is densely raycast below. Connect samples only while
+    // they remain on the same projected triangle; crossing a triangle/UV seam
+    // is represented by overlapping stamps instead of a line through the UV
+    // atlas. This is the same projection rule used by the live preview.
+    return sameFace ? previous.uv : undefined;
+  }, []);
 
   const ensureLiveLocalRepaintComposite = useCallback(
     (model: SurfacePaintTarget, sourceOverride?: LocalRepaintProjectionSource) => {
@@ -2997,23 +3094,12 @@ function SurfacePaintOverlay() {
         currentPreviewLayer.captureId === projectedLayer.captureId &&
         currentPreviewLayer.opacity === projectedLayer.opacity &&
         currentPreviewLayer.minimumProjectionFacing === projectedLayer.minimumProjectionFacing &&
-        currentPreviewLayer.replacementTargetLayerId ===
-          projectedLayer.replacementTargetLayerId;
+        currentPreviewLayer.replacementTargetLayerId === projectedLayer.replacementTargetLayerId;
       // Re-publishing an equivalent object makes SceneRoot rebuild the projected
       // layer inputs and can compile/rebind materials at pointer-down. The live
       // canvas texture is mutable, so one published layer is enough for every
       // subsequent stamp in the same repaint session.
       if (!previewAlreadyPublished) sceneState.setLocalRepaintPreviewLayer(projectedLayer);
-      if (existingLayer) {
-        const layerState = useLayerStore.getState();
-        layerState.setLayers(
-          currentLayers.filter(
-            (item) =>
-              !isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
-          ),
-        );
-        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
-      }
       return composite;
     },
     [localRepaintProjectionSource],
@@ -3163,7 +3249,7 @@ function SurfacePaintOverlay() {
         if (result.hit.object instanceof THREE.Mesh) {
           ensurePaintPreviewOverlayForMesh(layer, result.hit.object);
           layer.paintPreviewOverlays.forEach((overlay) => {
-            overlay.visible = true;
+            overlay.visible = !layer.liveEraserPreviewActive;
           });
         }
         drawSurfaceBrushSegment(
@@ -3179,6 +3265,20 @@ function SurfacePaintOverlay() {
           paintToolSettings.eraserHardness,
         );
         scheduleTextureUpdate(layer.projectionTexture);
+        if (layer.liveEraserPreviewActive) {
+          drawSurfaceBrushSegment(
+            layer.liveResultContext,
+            layer.liveResultTexture,
+            fromUv,
+            result.uv,
+            uvBrush,
+            '#ffffff',
+            'destination-out',
+            'uv',
+            undefined,
+            paintToolSettings.eraserHardness,
+          );
+        }
         const bounds = drawSurfaceBrushSegment(
           layer.paintPreviewContext,
           undefined,
@@ -3439,6 +3539,9 @@ function SurfacePaintOverlay() {
       }
       if (target === 'paint') {
         if (!layer) return;
+        const usesLiveEraserPreview =
+          strokePaintTool === 'eraser' && beginLiveEraserPreview(layer);
+        if (strokePaintTool !== 'eraser') endLiveEraserPreview(layer);
         const previewRevision = paintPreviewRevisionRef.current + 1;
         paintPreviewRevisionRef.current = previewRevision;
         layer.paintPreviewContext.clearRect(
@@ -3454,7 +3557,8 @@ function SurfacePaintOverlay() {
         (previewUniforms.previewColor.value as THREE.Color).set(
           strokePaintTool === 'eraser' ? '#ffffff' : paintToolSettings.color,
         );
-        previewUniforms.previewOpacity.value = strokePaintTool === 'eraser' ? 0.82 : 1;
+        previewUniforms.previewOpacity.value =
+          strokePaintTool === 'eraser' ? (usesLiveEraserPreview ? 0 : 0.82) : 1;
         previewUniforms.projectionReady.value = 1;
         layer.paintPreviewOverlays.forEach((overlay) => {
           overlay.visible = false;
@@ -3496,11 +3600,7 @@ function SurfacePaintOverlay() {
   );
 
   const handoffLocalRepaintPreview = useCallback(
-    (
-      composite: LocalRepaintCompositeState,
-      sourceKey: string,
-      commitRevision: number,
-    ) => {
+    (composite: LocalRepaintCompositeState, sourceKey: string, commitRevision: number) => {
       if (localRepaintHandoffFrameRef.current !== undefined)
         window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
       const startedAt = performance.now();
@@ -3533,9 +3633,7 @@ function SurfacePaintOverlay() {
           isPaintingRef.current;
         if (superseded) {
           if (currentPreview?.id === composite.layerId && currentPreview.opacity !== 1) {
-            useSceneStore
-              .getState()
-              .setLocalRepaintPreviewLayer({ ...currentPreview, opacity: 1 });
+            useSceneStore.getState().setLocalRepaintPreviewLayer({ ...currentPreview, opacity: 1 });
           }
           localRepaintHandoffFrameRef.current = undefined;
           return;
@@ -3569,6 +3667,61 @@ function SurfacePaintOverlay() {
       source: LocalRepaintProjectionSource,
       composite: LocalRepaintCompositeState,
     ) => {
+      if (!LOCAL_REPAINT_INTERACTIVE_UV_BAKE_ENABLED) {
+        const layerState = useLayerStore.getState();
+        const currentLayers = layerState.layers;
+        const existingProjectionLayer = currentLayers.find((item) =>
+          isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
+        );
+        const previewLayer = useSceneStore.getState().localRepaintPreviewLayer;
+        const persistedLayer: Layer = {
+          ...(previewLayer?.id === composite.layerId ? previewLayer : existingProjectionLayer),
+          id: composite.layerId,
+          name: source.targetLayerName
+            ? `${source.targetLayerName} · 局部替换`
+            : (source.name ?? 'Local repaint brush'),
+          type: 'projected',
+          // The renderer preview uses a downscaled source image, but persistence
+          // keeps the original result. Export will sample this image and the
+          // lightweight live mask when it performs the final-resolution UV bake.
+          imageUrl: source.imageUrl,
+          maskUrl: composite.maskUrl,
+          depthUrl: source.depthUrl,
+          objectId: source.objectId ?? model.objectId,
+          objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
+          camera: source.camera,
+          generationId: source.generationId,
+          captureId: source.captureId,
+          replacementTargetLayerId: source.targetLayerId,
+          renderedColor: true,
+          minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
+          isBaked: false,
+          needsRebake: true,
+          visible: true,
+          opacity: 1,
+          strength: 1,
+          blendMode: 'overlay',
+          adjustments: existingProjectionLayer?.adjustments ?? {
+            hue: 0,
+            saturation: 0,
+            lightness: 0,
+          },
+          order: 0,
+          contentRevision: (existingProjectionLayer?.contentRevision ?? 0) + 1,
+          createdAt: existingProjectionLayer?.createdAt ?? new Date().toISOString(),
+        };
+        const retainedLayers = currentLayers.filter(
+          (item) =>
+            item.id !== persistedLayer.id &&
+            !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId) &&
+            !isLocalRepaintUvMergeLayer(item, model.objectId),
+        );
+        layerState.setLayers([persistedLayer, ...retainedLayers]);
+        useLayerStore.getState().setActiveLayer(persistedLayer.id);
+        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        return;
+      }
+
       const commitRevision = localRepaintUvCommitRevisionRef.current + 1;
       localRepaintUvCommitRevisionRef.current = commitRevision;
       const sourceKey = composite.sourceKey;
@@ -3732,8 +3885,8 @@ function SurfacePaintOverlay() {
           existingMergeLayers.length === 1 &&
           Boolean(
             existingLiveCanvas &&
-              existingLiveCanvas.width === bakeResult.canvas.width &&
-              existingLiveCanvas.height === bakeResult.canvas.height,
+            existingLiveCanvas.width === bakeResult.canvas.width &&
+            existingLiveCanvas.height === bakeResult.canvas.height,
           );
         const existingSources =
           existingMergeLayers.length === 0 || canReuseLiveMergeCanvas
@@ -3777,13 +3930,7 @@ function SurfacePaintOverlay() {
           nextCanvas = existingLiveCanvas;
           const liveContext = nextCanvas.getContext('2d');
           if (!liveContext) throw new Error('Could not update local repaint UV merge canvas.');
-          liveContext.drawImage(
-            bakeResult.canvas,
-            0,
-            0,
-            nextCanvas.width,
-            nextCanvas.height,
-          );
+          liveContext.drawImage(bakeResult.canvas, 0, 0, nextCanvas.width, nextCanvas.height);
         } else {
           nextCanvas = document.createElement('canvas');
           nextCanvas.width = width;
@@ -3860,19 +4007,233 @@ function SurfacePaintOverlay() {
         });
       });
     },
-    [
-      handoffLocalRepaintPreview,
-      pushToast,
-      textureResolutionSetting,
-      waitForPaintCommitIdle,
-    ],
+    [handoffLocalRepaintPreview, pushToast, textureResolutionSetting, waitForPaintCommitIdle],
+  );
+
+  const cancelProjectedEraserBatch = useCallback((layerId: string) => {
+    const batch = projectedEraserBatchesRef.current.get(layerId);
+    if (!batch) return;
+    batch.revision += 1;
+    if (batch.timerId !== undefined) window.clearTimeout(batch.timerId);
+    if (batch.idleCallbackId !== undefined) window.cancelIdleCallback?.(batch.idleCallbackId);
+    projectedEraserBatchesRef.current.delete(layerId);
+  }, []);
+
+  const runProjectedEraserRefinement = useCallback(
+    async (batch: PendingProjectedEraserBatch, revision: number) => {
+      const isCurrent = () =>
+        projectedEraserBatchesRef.current.get(batch.layer.layerId) === batch &&
+        batch.revision === revision;
+      if (!isCurrent() || batch.snapshots.length === 0) return;
+      const startedAt = performance.now();
+      const snapshots = [...batch.snapshots];
+      try {
+        const bakeResult = await bakeProjectedEraserStrokesToUv({
+          snapshots,
+          resolution: getEraserBakeResolution(batch.layer.paintCanvas),
+          runtimeKey: `${batch.layer.layerId}:${revision}`,
+        });
+        const alphaBounds = await getCanvasAlphaBoundsAsync(bakeResult.canvas);
+        if (!isCurrent()) return;
+        const latestLayer = useLayerStore
+          .getState()
+          .layers.find((item) => item.id === batch.layer.layerId);
+        if (!latestLayer) {
+          projectedEraserBatchesRef.current.delete(batch.layer.layerId);
+          return;
+        }
+        if (bakeResult.report.coveredPixels <= 0 || !alphaBounds) {
+          projectedEraserBatchesRef.current.delete(batch.layer.layerId);
+          return;
+        }
+
+        const projectedBounds = scaleDirtyRect(
+          alphaBounds,
+          bakeResult.canvas.width,
+          bakeResult.canvas.height,
+          batch.layer.paintCanvas.width,
+          batch.layer.paintCanvas.height,
+        );
+        const touchedTiles = getPaintHistoryTileKeysForBounds(
+          batch.layer.paintCanvas,
+          projectedBounds,
+        );
+        const historyTiles = batch.latestHistoryTiles ?? [];
+        batch.latestHistoryTiles = historyTiles;
+        const historyTilesByKey = new Map(
+          historyTiles.map((tile) => [
+            `${Math.floor(tile.bounds.x / PAINT_HISTORY_TILE_SIZE)}:${Math.floor(
+              tile.bounds.y / PAINT_HISTORY_TILE_SIZE,
+            )}`,
+            tile,
+          ]),
+        );
+        touchedTiles.forEach((key) => {
+          if (historyTilesByKey.has(key)) return;
+          const bounds = getPaintHistoryTileBounds(batch.layer.paintCanvas, key);
+          if (!bounds) return;
+          const tile: PaintHistoryTile = {
+            bounds,
+            before: copyCanvasRect(batch.layer.paintCanvas, bounds),
+            after: copyCanvasRect(batch.layer.paintCanvas, bounds),
+          };
+          historyTiles.push(tile);
+          historyTilesByKey.set(key, tile);
+        });
+
+        // The interactive UV stamps have already made the eraser feel instant.
+        // This single deferred projection pass only fills missed UV islands and
+        // triangle seams after input has been idle.
+        batch.layer.paintContext.save();
+        batch.layer.paintContext.globalCompositeOperation = 'destination-out';
+        batch.layer.paintContext.drawImage(
+          bakeResult.canvas,
+          0,
+          0,
+          batch.layer.paintCanvas.width,
+          batch.layer.paintCanvas.height,
+        );
+        batch.layer.paintContext.restore();
+        if (batch.layer.target === 'projected-mask') {
+          batch.layer.paintContext.save();
+          batch.layer.paintContext.globalCompositeOperation = 'destination-over';
+          batch.layer.paintContext.fillStyle = '#000000';
+          batch.layer.paintContext.fillRect(
+            0,
+            0,
+            batch.layer.paintCanvas.width,
+            batch.layer.paintCanvas.height,
+          );
+          batch.layer.paintContext.restore();
+        }
+        historyTiles.forEach((tile) => {
+          tile.after = copyCanvasRect(batch.layer.paintCanvas, tile.bounds);
+        });
+        projectedEraserBatchesRef.current.delete(batch.layer.layerId);
+        markLiveProjectedCanvasTextureUpdated(batch.layer.assetUrl);
+        useLayerStore.getState().updateLayer(batch.layer.layerId, {
+          ...(batch.layer.target === 'uv-image'
+            ? { imageUrl: batch.layer.assetUrl }
+            : { maskUrl: batch.layer.assetUrl, maskSpace: 'uv' as const }),
+          contentRevision: (latestLayer.contentRevision ?? 0) + 1,
+          isBaked: false,
+          needsRebake: batch.layer.target === 'projected-mask',
+        });
+        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        if (useSettingsStore.getState().performanceTestModeEnabled) {
+          console.info('[Liclick Eraser Refinement]', {
+            strokes: snapshots.length,
+            resolution: `${bakeResult.canvas.width}x${bakeResult.canvas.height}`,
+            historyTiles: historyTiles.length,
+            totalMs: performance.now() - startedAt,
+          });
+        }
+      } catch (error) {
+        if (!isCurrent()) return;
+        projectedEraserBatchesRef.current.delete(batch.layer.layerId);
+        // The immediate UV result is already committed, so a failed refinement
+        // must never block the editor or replay the same expensive task.
+        console.warn(
+          '[Liclick 3D Texture] Deferred projected eraser refinement failed:',
+          error,
+        );
+      }
+    },
+    [],
+  );
+
+  const scheduleProjectedEraserRefinement = useCallback(
+    (
+      layer: UvPaintLayer,
+      snapshot: ProjectedEraserSnapshot,
+      historyTiles: PaintHistoryTile[],
+    ) => {
+      let batch = projectedEraserBatchesRef.current.get(layer.layerId);
+      if (!batch || batch.layer !== layer) {
+        if (batch) cancelProjectedEraserBatch(layer.layerId);
+        batch = {
+          layer,
+          snapshots: [],
+          revision: 0,
+        };
+        projectedEraserBatchesRef.current.set(layer.layerId, batch);
+      }
+      appendProjectedEraserSnapshot(batch.snapshots, snapshot);
+      batch.latestHistoryTiles = historyTiles;
+      batch.revision += 1;
+      const revision = batch.revision;
+      if (batch.timerId !== undefined) window.clearTimeout(batch.timerId);
+      if (batch.idleCallbackId !== undefined) window.cancelIdleCallback?.(batch.idleCallbackId);
+      batch.timerId = undefined;
+      batch.idleCallbackId = undefined;
+
+      const waitUntilIdle = () => {
+        if (
+          projectedEraserBatchesRef.current.get(layer.layerId) !== batch ||
+          batch.revision !== revision
+        )
+          return;
+        const idleFor = performance.now() - lastPaintActivityAtRef.current;
+        if (isPaintingRef.current || idleFor < PROJECTED_ERASER_HIGH_RES_IDLE_MS) {
+          batch.timerId = window.setTimeout(
+            waitUntilIdle,
+            Math.max(32, Math.min(160, PROJECTED_ERASER_HIGH_RES_IDLE_MS - idleFor)),
+          );
+          return;
+        }
+        const run = () => {
+          batch.idleCallbackId = undefined;
+          if (
+            projectedEraserBatchesRef.current.get(layer.layerId) !== batch ||
+            batch.revision !== revision
+          )
+            return;
+          if (isPaintingRef.current) {
+            batch.timerId = window.setTimeout(waitUntilIdle, 120);
+            return;
+          }
+          void runProjectedEraserRefinement(batch, revision);
+        };
+        if (window.requestIdleCallback) {
+          batch.idleCallbackId = window.requestIdleCallback(
+            (deadline) => {
+              if (!deadline.didTimeout && deadline.timeRemaining() < 10) {
+                batch.timerId = window.setTimeout(waitUntilIdle, 120);
+                return;
+              }
+              run();
+            },
+            { timeout: 2500 },
+          );
+        } else {
+          batch.timerId = window.setTimeout(run, 0);
+        }
+      };
+      batch.timerId = window.setTimeout(waitUntilIdle, PROJECTED_ERASER_HIGH_RES_IDLE_MS);
+    },
+    [cancelProjectedEraserBatch, runProjectedEraserRefinement],
+  );
+
+  useEffect(
+    () => () => {
+      projectedEraserBatchesRef.current.forEach((batch) => {
+        batch.revision += 1;
+        if (batch.timerId !== undefined) window.clearTimeout(batch.timerId);
+        if (batch.idleCallbackId !== undefined) window.cancelIdleCallback?.(batch.idleCallbackId);
+      });
+      projectedEraserBatchesRef.current.clear();
+    },
+    [],
   );
 
   const commitPaintStroke = useCallback(() => {
     const draft = strokeDraftRef.current;
     const layer = draft?.layer;
     const localRepaintSource = draft?.localRepaintSource ?? localRepaintProjectionSource;
-    if (!draft?.bounds) return;
+    if (!draft?.bounds) {
+      if (layer) endLiveEraserPreview(layer);
+      return;
+    }
 
     if (draft.target === 'paint') {
       if (!layer) return;
@@ -3883,9 +4244,7 @@ function SurfacePaintOverlay() {
         model.group.updateMatrixWorld(true);
         const viewportRect = gl.domElement.getBoundingClientRect();
         const aspect = viewportRect.width / Math.max(viewportRect.height, 1);
-        const target = new THREE.Box3()
-          .setFromObject(model.group)
-          .getCenter(new THREE.Vector3());
+        const target = new THREE.Box3().setFromObject(model.group).getCenter(new THREE.Vector3());
         return {
           model,
           camera: serializeCamera(camera, aspect, target),
@@ -3902,6 +4261,7 @@ function SurfacePaintOverlay() {
       // repaint. Detach it now so another stroke can start while the source UV
       // image is still decoding in the background.
       const previewBounds = draft.bounds;
+      const paintPreviewCommit = copyCanvasRect(layer.paintPreviewCanvas, previewBounds);
       layer.paintPreviewContext.clearRect(
         previewBounds.x,
         previewBounds.y,
@@ -3918,6 +4278,7 @@ function SurfacePaintOverlay() {
             isPaintingRef.current
           )
             return;
+          endLiveEraserPreview(layer);
           layer.projectionContext.clearRect(
             0,
             0,
@@ -3948,35 +4309,6 @@ function SurfacePaintOverlay() {
           finishProjectedPreview();
           return;
         }
-        let projectedEraserMask: HTMLCanvasElement | undefined;
-        let projectedEraserBounds: PaintDirtyRect | undefined;
-        if (projectedEraserCommit) {
-          try {
-            const bakeResult = await bakeProjectedEraserStrokeToUv({
-              ...projectedEraserCommit,
-              resolution: getEraserBakeResolution(layer.paintCanvas),
-              runtimeKey: layer.layerId,
-            });
-            const alphaBounds = getCanvasAlphaBounds(bakeResult.canvas);
-            if (bakeResult.report.coveredPixels > 0 && alphaBounds) {
-              projectedEraserMask = bakeResult.canvas;
-              projectedEraserBounds = scaleDirtyRect(
-                alphaBounds,
-                bakeResult.canvas.width,
-                bakeResult.canvas.height,
-                layer.paintCanvas.width,
-                layer.paintCanvas.height,
-              );
-            }
-          } catch (error) {
-            // Keep the original per-hit UV stamps as a safe fallback if the GPU
-            // projection bake is unavailable on a device.
-            console.warn(
-              '[Liclick 3D Texture] Projected eraser bake failed; using UV fallback:',
-              error,
-            );
-          }
-        }
         const latestLayer = useLayerStore
           .getState()
           .layers.find((item) => item.id === layer.layerId);
@@ -3984,47 +4316,34 @@ function SurfacePaintOverlay() {
           finishProjectedPreview();
           return;
         }
-        const touchedTiles =
-          projectedEraserMask && projectedEraserBounds
-            ? getPaintHistoryTileKeysForBounds(layer.paintCanvas, projectedEraserBounds)
-            : getPaintHistoryTileKeys(layer, draft.bounds!);
+        const touchedTiles = getPaintHistoryTileKeys(layer, draft.bounds!);
         const beforeTiles = [...touchedTiles]
           .map((key) => getPaintHistoryTileBounds(layer.paintCanvas, key))
           .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds))
           .map((bounds) => ({ bounds, before: copyCanvasRect(layer.paintCanvas, bounds) }));
 
-        if (projectedEraserMask) {
-          // Rasterize the whole screen-space brush footprint back through the
-          // capture camera. Every visible triangle inside the circle contributes
-          // its own UV texels, including disconnected micro-islands and seams.
-          layer.paintContext.save();
-          layer.paintContext.globalCompositeOperation = 'destination-out';
-          layer.paintContext.drawImage(
-            projectedEraserMask,
-            0,
-            0,
-            layer.paintCanvas.width,
-            layer.paintCanvas.height,
-          );
-          layer.paintContext.restore();
-        } else {
-          const compositeOperation =
-            draft.paintOperation === 'eraser' ? 'destination-out' : 'source-over';
-          draft.paintSegments?.forEach((segment) => {
-            drawSurfaceBrushSegment(
-              layer.paintContext,
-              undefined,
-              segment.fromUv,
-              segment.toUv,
-              segment.brush,
-              segment.color,
-              compositeOperation,
-              'uv',
-              undefined,
-              segment.hardness,
-            );
-          });
-        }
+        const paintBounds = scaleDirtyRect(
+          previewBounds,
+          layer.paintPreviewCanvas.width,
+          layer.paintPreviewCanvas.height,
+          layer.paintCanvas.width,
+          layer.paintCanvas.height,
+        );
+        layer.paintContext.save();
+        layer.paintContext.globalCompositeOperation =
+          draft.paintOperation === 'eraser' ? 'destination-out' : 'source-over';
+        layer.paintContext.drawImage(
+          paintPreviewCommit,
+          0,
+          0,
+          paintPreviewCommit.width,
+          paintPreviewCommit.height,
+          paintBounds.x,
+          paintBounds.y,
+          paintBounds.width,
+          paintBounds.height,
+        );
+        layer.paintContext.restore();
         if (draft.paintOperation === 'eraser' && layer.target === 'projected-mask') {
           // Store projection masks as opaque grayscale instead of transparent
           // white. Transparent mask edges interpolate both RGB and alpha, and
@@ -4034,21 +4353,17 @@ function SurfacePaintOverlay() {
           layer.paintContext.save();
           layer.paintContext.globalCompositeOperation = 'destination-over';
           layer.paintContext.fillStyle = '#000000';
-          layer.paintContext.fillRect(
-            0,
-            0,
-            layer.paintCanvas.width,
-            layer.paintCanvas.height,
-          );
+          layer.paintContext.fillRect(0, 0, layer.paintCanvas.width, layer.paintCanvas.height);
           layer.paintContext.restore();
         }
 
-        const historyTiles = beforeTiles.map(({ bounds, before }) => ({
+        const historyTiles: PaintHistoryTile[] = beforeTiles.map(({ bounds, before }) => ({
           bounds,
           before,
           after: copyCanvasRect(layer.paintCanvas, bounds),
         }));
         const applyTiles = (side: 'before' | 'after') => {
+          cancelProjectedEraserBatch(layer.layerId);
           historyTiles.forEach((tile) => {
             layer.paintContext.clearRect(
               tile.bounds.x,
@@ -4092,6 +4407,9 @@ function SurfacePaintOverlay() {
             redo: () => applyTiles('after'),
           });
         }
+        if (projectedEraserCommit) {
+          scheduleProjectedEraserRefinement(layer, projectedEraserCommit, historyTiles);
+        }
         // Let the committed UV texture render for one frame before withdrawing
         // the projected plane. This keeps continuous feedback through the
         // pointer-up handoff instead of flashing back to the old texture.
@@ -4126,20 +4444,19 @@ function SurfacePaintOverlay() {
       // draft avoids a redundant preview-layer store update/material pass at the
       // exact moment the user releases the brush.
       const composite =
-        draft.localRepaintComposite ??
-        ensureLiveLocalRepaintComposite(model, localRepaintSource);
+        draft.localRepaintComposite ?? ensureLiveLocalRepaintComposite(model, localRepaintSource);
       if (!composite) return;
 
-      // Keep the projected canvas visible while the completed stroke is converted
-      // to UV. The preview is renderer-only and never appears in the layer list.
+      // Keep the projected canvas visible while the completed stroke is
+      // persisted. Final-resolution UV conversion is deferred to export.
       markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
       if (localRepaintUvScheduleFrameRef.current !== undefined) {
         window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
       }
       // Let the newly updated live mask complete one browser paint before taking
-      // a snapshot, touching layer state or entering the high-resolution GPU
-      // queue. Consecutive strokes replace this pending task and the cumulative
-      // live mask is committed once interaction pauses.
+      // a snapshot or touching layer state. Consecutive strokes replace this
+      // pending task and the cumulative live mask is persisted after interaction
+      // pauses.
       const scheduleUvCommitAfterPreview = (hasYieldedFrame: boolean) => {
         localRepaintUvScheduleFrameRef.current = window.requestAnimationFrame(() => {
           if (isPaintingRef.current) {
@@ -4157,13 +4474,14 @@ function SurfacePaintOverlay() {
       scheduleUvCommitAfterPreview(false);
     }
   }, [
-    drawSurfaceBrushSegment,
+    cancelProjectedEraserBatch,
     ensureLiveLocalRepaintComposite,
     getTargetModel,
     camera,
     gl.domElement,
     localRepaintProjectionSource,
     queueLocalRepaintUvCommit,
+    scheduleProjectedEraserRefinement,
     scheduleProjectionTextureUpdate,
   ]);
 
@@ -4193,6 +4511,8 @@ function SurfacePaintOverlay() {
 
   useEffect(() => {
     const canvas = gl.domElement;
+    const listenerGeneration = pointerListenerGenerationRef.current + 1;
+    pointerListenerGenerationRef.current = listenerGeneration;
     const previousTouchAction = canvas.style.touchAction;
     if (enabled) canvas.style.touchAction = 'none';
     const isMaskStroke = isInpaintMode || isLocalRepaintApplyMode;
@@ -4604,31 +4924,38 @@ function SurfacePaintOverlay() {
       window.removeEventListener('pointercancel', handlePointerCancel, true);
       canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);
       canvas.removeEventListener('pointerleave', handlePointerLeave);
-      if (isPaintingRef.current) flushPendingPaintTargets();
-      pendingPaintTargetsRef.current = [];
-      if (paintInputFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(paintInputFrameRef.current);
-        paintInputFrameRef.current = undefined;
-      }
-      clearPointerCancelRecovery();
       canvas.style.touchAction = previousTouchAction;
-      cursorCircleRef.current?.setAttribute('visibility', 'hidden');
-      if (isPaintingRef.current) {
-        isPaintingRef.current = false;
-        lastPaintActivityAtRef.current = performance.now();
-        setOrbitControlsEnabled(true);
-        commitPaintStroke();
-        commitStrokeHistory();
-        commitMaskIfDirty();
-        finishStrokeTelemetry('effect-cleanup');
-      }
-      const activePointerId = activePointerIdRef.current;
-      if (activePointerId !== undefined && canvas.hasPointerCapture(activePointerId)) {
-        canvas.releasePointerCapture(activePointerId);
-      }
-      activePointerIdRef.current = undefined;
-      strokePaintToolRef.current = undefined;
-      gl.domElement.style.cursor = '';
+      // React tears down and recreates this listener effect whenever one of its
+      // callbacks changes. Defer destructive stroke cleanup by one microtask:
+      // a replacement effect advances the generation and keeps the live stroke;
+      // a real component unmount has no replacement and performs the teardown.
+      queueMicrotask(() => {
+        if (pointerListenerGenerationRef.current !== listenerGeneration) return;
+        if (isPaintingRef.current) flushPendingPaintTargets();
+        pendingPaintTargetsRef.current = [];
+        if (paintInputFrameRef.current !== undefined) {
+          window.cancelAnimationFrame(paintInputFrameRef.current);
+          paintInputFrameRef.current = undefined;
+        }
+        clearPointerCancelRecovery();
+        cursorCircleRef.current?.setAttribute('visibility', 'hidden');
+        if (isPaintingRef.current) {
+          isPaintingRef.current = false;
+          lastPaintActivityAtRef.current = performance.now();
+          setOrbitControlsEnabled(true);
+          commitPaintStroke();
+          commitStrokeHistory();
+          commitMaskIfDirty();
+          finishStrokeTelemetry('effect-cleanup');
+        }
+        const activePointerId = activePointerIdRef.current;
+        if (activePointerId !== undefined && canvas.hasPointerCapture(activePointerId)) {
+          canvas.releasePointerCapture(activePointerId);
+        }
+        activePointerIdRef.current = undefined;
+        strokePaintToolRef.current = undefined;
+        gl.domElement.style.cursor = '';
+      });
     };
   }, [
     commitMaskIfDirty,

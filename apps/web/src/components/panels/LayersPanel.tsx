@@ -385,6 +385,20 @@ export function LayersPanel({
     );
     if (ids.length === 0) return;
     captureHistory(`删除图层：${describeLayerSelection(ids)}`);
+    const sceneState = useSceneStore.getState();
+    const deletesLiveLocalRepaint = Boolean(
+      sceneState.localRepaintPreviewLayer &&
+        ids.includes(sceneState.localRepaintPreviewLayer.id),
+    );
+    if (deletesLiveLocalRepaint) {
+      // The local-repaint row has a renderer-only twin backed by a live canvas.
+      // Deleting the persisted row must also end that live session, otherwise
+      // SurfacePaintOverlay republishes the orphaned projection after deletion.
+      sceneState.setLocalRepaintPreviewLayer(undefined);
+      sceneState.setLocalRepaintProjectionSource(undefined);
+      sceneState.setPaintTool('none');
+      sceneState.clearPaintMask();
+    }
     deleteLayers(ids);
     setMenu(undefined);
     setSelectedLayerIds([]);

@@ -136,7 +136,7 @@ export type ProjectedLayerSamplerBudget = {
   withinBudget: boolean;
 };
 
-const SINGLE_LAYER_FIXED_SAMPLERS = 8;
+const SINGLE_LAYER_FIXED_SAMPLERS = 9;
 
 type ProjectedLayerSamplerFeatures = {
   useBaseMap?: boolean;
@@ -169,6 +169,7 @@ export function getProjectedLayerSamplerBudget(
   const normalLayers = renderableLayers.filter((layer) => layer.useNormalCheck && layer.normalUrl);
   const normalizedFeatures = normalizeSamplerFeatures(features);
   const stackFixed =
+    1 +
     Number(normalizedFeatures.useBaseMap) +
     Number(normalizedFeatures.useBaseRenderedColorMaskMap) +
     Number(normalizedFeatures.useUvOverlayMap) +
@@ -257,6 +258,7 @@ const fragmentShader = `
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
   uniform sampler2D normalMap;
+  uniform sampler2D liveEraserMaskMap;
   uniform vec2 visibilityTexelSize;
   uniform mat4 projectorMatrix;
   uniform mat4 objectMatrixDelta;
@@ -271,6 +273,7 @@ const fragmentShader = `
   uniform float projectedCompositeUnderlay;
   uniform float useMask;
   uniform float maskUsesUv;
+  uniform float useLiveEraserMask;
   uniform float useDepthCheck;
   uniform float useNormalCheck;
   uniform float depthIsLinearView;
@@ -411,10 +414,10 @@ const fragmentShader = `
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    // Keep uncovered texels visually distinct from actual projected content.
-    // This is display-only and does not alter the source or baked resolution.
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+    // Empty projection coverage is a real hole in the selected layer, not an
+    // editor selection mask. Reveal the lower/model surface while painting so
+    // eraser feedback matches the committed composition on every pointer move.
+    return baseSurfaceColor;
   }
 
   void main() {
@@ -442,6 +445,14 @@ const fragmentShader = `
     vec4 maskTexel = texture2D(maskMap, maskUv);
     float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
     float maskAlpha = mix(1.0, maskValue, useMask);
+    vec4 liveEraserMaskTexel = texture2D(
+      liveEraserMaskMap,
+      vec2(vUv.x, 1.0 - vUv.y)
+    );
+    float liveEraserMaskAlpha =
+      dot(liveEraserMaskTexel.rgb, vec3(0.299, 0.587, 0.114)) *
+      liveEraserMaskTexel.a;
+    maskAlpha *= mix(1.0, liveEraserMaskAlpha, useLiveEraserMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
     float projectedViewDepth = -(projectorViewMatrix * captureWorldPosition).z;
@@ -732,6 +743,13 @@ function buildStackFragmentShader(
     layerUsesNormalArray(index)
       ? `texture(normalMaps, vec3((${uv}) * normalMapUvScale${index}, ${normalArraySlice(index).toFixed(1)}))`
       : `texture2D(normalMap${index}, ${uv})`;
+  const liveEraserMaskFactor = (index: number) =>
+    `mix(
+        1.0,
+        liveEraserMaskAlpha,
+        useLiveEraserMask *
+          (1.0 - step(0.5, abs(liveEraserLayerIndex - ${index.toFixed(1)})))
+      )`;
   const visibilitySample = (index: number, uv: string) =>
     `computeVisibilitySample(
       ${layerUsesDepth(index) ? depthSample(index, uv) : 'vec4(1.0)'},
@@ -834,6 +852,7 @@ function buildStackFragmentShader(
 
       vec4 maskTexel = ${layerUsesMask(index) ? maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv') : 'vec4(1.0)'};
       float maskAlpha = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
+      maskAlpha *= ${liveEraserMaskFactor(index)};
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float projectedViewDepth = -(projectorViewMatrix${index} * captureWorldPosition).z;
@@ -908,6 +927,7 @@ function buildStackFragmentShader(
 
       vec4 maskTexel = ${layerUsesMask(index) ? maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv') : 'vec4(1.0)'};
       float maskAlpha = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
+      maskAlpha *= ${liveEraserMaskFactor(index)};
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float projectedViewDepth = -(projectorViewMatrix${index} * captureWorldPosition).z;
@@ -964,6 +984,9 @@ function buildStackFragmentShader(
   uniform float enableBackfaceCulling;
   uniform float edgeFeather;
   uniform float depthBias;
+  uniform sampler2D liveEraserMaskMap;
+  uniform float useLiveEraserMask;
+  uniform float liveEraserLayerIndex;
   ${features.useBaseMap ? 'uniform sampler2D baseMap;' : ''}
   ${features.useBaseRenderedColorMaskMap ? 'uniform sampler2D baseRenderedColorMaskMap;' : ''}
   ${features.useUvOverlayMap ? 'uniform sampler2D uvOverlayMap;' : ''}
@@ -1101,10 +1124,9 @@ function buildStackFragmentShader(
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    // Match the UV-layer empty-area treatment so projection gaps never look
-    // like a valid white texture contribution.
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+    // Keep the multi-layer and direct projection paths visually identical:
+    // transparent coverage reveals the lower/model surface immediately.
+    return baseSurfaceColor;
   }
 
   float topQuality0 = 0.0;
@@ -1174,6 +1196,13 @@ function buildStackFragmentShader(
   void main() {
     vec3 normal = normalize(vWorldNormal);
     float lambert = computePreviewLight(normal);
+    vec4 liveEraserMaskTexel = texture2D(
+      liveEraserMaskMap,
+      vec2(vUv.x, 1.0 - vUv.y)
+    );
+    float liveEraserMaskAlpha =
+      dot(liveEraserMaskTexel.rgb, vec3(0.299, 0.587, 0.114)) *
+      liveEraserMaskTexel.a;
     ${features.useBaseMap ? 'vec4 baseTexel = texture2D(baseMap, vUv);' : ''}
     ${features.useBaseRenderedColorMaskMap ? 'float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r;' : 'float baseRenderedColor = 0.0;'}
     ${
@@ -1318,6 +1347,17 @@ function prepareUvTexture(texture: THREE.Texture) {
   texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = UV_OVERLAY_TEXTURE_PROFILE;
 }
 
+function prepareLiveEraserMaskTexture(texture: THREE.Texture) {
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.flipY = false;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+}
+
 function prepareExistingBaseTexture(texture: THREE.Texture) {
   if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === BASE_PREVIEW_TEXTURE_PROFILE) return;
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -1419,6 +1459,9 @@ function updateSharedPreviewUniforms(
   input: ProjectionLayerStackInput,
 ) {
   const previewLighting = getPreviewLighting(input.previewLighting);
+  const liveEraserLayerIndex = input.liveEraserLayerId
+    ? input.layers.findIndex((layer) => layer.layerId === input.liveEraserLayerId)
+    : -1;
   if (material.uniforms.baseMap && input.baseTexture)
     material.uniforms.baseMap.value = input.baseTexture;
   if (material.uniforms.baseRenderedColorMaskMap && input.baseRenderedColorMaskTexture)
@@ -1427,6 +1470,13 @@ function updateSharedPreviewUniforms(
     material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
   if (material.uniforms.topUvOverlayMap && input.topUvOverlayTexture)
     material.uniforms.topUvOverlayMap.value = input.topUvOverlayTexture;
+  if (material.uniforms.liveEraserMaskMap && input.liveEraserMaskTexture)
+    material.uniforms.liveEraserMaskMap.value = input.liveEraserMaskTexture;
+  if (material.uniforms.useLiveEraserMask)
+    material.uniforms.useLiveEraserMask.value =
+      input.liveEraserMaskTexture && liveEraserLayerIndex >= 0 ? 1 : 0;
+  if (material.uniforms.liveEraserLayerIndex)
+    material.uniforms.liveEraserLayerIndex.value = liveEraserLayerIndex;
   if (material.uniforms.useBaseMap) material.uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
   if (material.uniforms.useBaseRenderedColorMaskMap)
     material.uniforms.useBaseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture
@@ -1467,6 +1517,8 @@ function updateSharedPreviewUniforms(
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
+  if (input.liveEraserMaskTexture)
+    prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
 }
 
 export function updateProjectedLayerStackMaterial(
@@ -1831,9 +1883,12 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   const baseTexture = input.baseTexture ?? neutralTexture;
   const uvOverlayTexture = input.uvOverlayTexture ?? neutralTexture;
   const topUvOverlayTexture = input.topUvOverlayTexture ?? neutralTexture;
+  const liveEraserMaskTexture = input.liveEraserMaskTexture ?? neutralTexture;
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
+  if (input.liveEraserMaskTexture)
+    prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
   maskTexture.flipY = false;
   depthTexture.flipY = false;
   normalTexture.flipY = false;
@@ -1875,6 +1930,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       maskMap: { value: maskTexture },
       depthMap: { value: depthTexture },
       normalMap: { value: normalTexture },
+      liveEraserMaskMap: { value: liveEraserMaskTexture },
       visibilityTexelSize: {
         value: new THREE.Vector2(1 / visibilityPixelSize.width, 1 / visibilityPixelSize.height),
       },
@@ -1895,6 +1951,10 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       projectedCompositeUnderlay: { value: input.compositeRole === 'underlay' ? 1 : 0 },
       useMask: { value: input.useMask && input.maskUrl ? 1 : 0 },
       maskUsesUv: { value: input.maskSpace === 'uv' ? 1 : 0 },
+      useLiveEraserMask: {
+        value:
+          input.liveEraserMaskTexture && input.liveEraserLayerId === input.layerId ? 1 : 0,
+      },
       useDepthCheck: {
         value: input.useDepthCheck && input.depthUrl && depthTexture !== neutralTexture ? 1 : 0,
       },
@@ -2050,6 +2110,19 @@ export async function createProjectedLayerStackMaterial(
     baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
     uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
     topUvOverlayMap: { value: input.topUvOverlayTexture ?? neutralTexture },
+    liveEraserMaskMap: { value: input.liveEraserMaskTexture ?? neutralTexture },
+    useLiveEraserMask: {
+      value:
+        input.liveEraserMaskTexture &&
+        input.layers.some((layer) => layer.layerId === input.liveEraserLayerId)
+          ? 1
+          : 0,
+    },
+    liveEraserLayerIndex: {
+      value: input.liveEraserLayerId
+        ? input.layers.findIndex((layer) => layer.layerId === input.liveEraserLayerId)
+        : -1,
+    },
     useBaseMap: { value: input.baseTexture ? 1 : 0 },
     useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
     useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
@@ -2072,6 +2145,8 @@ export async function createProjectedLayerStackMaterial(
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
+  if (input.liveEraserMaskTexture)
+    prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
   const disposableTextures: THREE.Texture[] = [neutralTexture];
   const captureObjectMatrices: Array<number[] | undefined> = [];
   const projectedTextures: THREE.Texture[] = [];
@@ -2264,6 +2339,12 @@ export async function createProjectedLayerStackMaterial(
     });
   }
   if (loadedLayers.length === 0) return undefined;
+  const loadedLiveEraserLayerIndex = input.liveEraserLayerId
+    ? loadedLayers.findIndex((layer) => layer.layerId === input.liveEraserLayerId)
+    : -1;
+  uniforms.liveEraserLayerIndex.value = loadedLiveEraserLayerIndex;
+  uniforms.useLiveEraserMask.value =
+    input.liveEraserMaskTexture && loadedLiveEraserLayerIndex >= 0 ? 1 : 0;
 
   if (useTextureArrays) {
     const renderer = options.renderer;
