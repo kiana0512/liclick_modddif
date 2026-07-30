@@ -15,7 +15,7 @@ export type BakeChannelId =
   | 'metallic';
 
 export type NormalBakeSettings = {
-  resolution: 1024 | 2048 | 4096 | 8192;
+  resolution: 1024 | 2048 | 4096;
   padding: number;
   sampling: '1x1' | '2x2' | '4x4' | '8x8';
   normalOrientation: 'directx' | 'opengl';
@@ -27,6 +27,7 @@ export type NormalBakeSettings = {
   projectionMode: 'distance' | 'cage';
   hitStrategy: 'inward' | 'closest-from-source';
   ignoreBackfaces: boolean;
+  generateRoughnessFromBakedBaseColor?: boolean;
   channels: BakeChannelId[];
 };
 
@@ -35,7 +36,7 @@ export type NormalBakeJob = {
   kind: 'bake-maps';
   projectId: string;
   objectId: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  status: 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
   stage: 'waiting-for-worker' | 'baking-maps' | 'verifying-file' | 'finished';
   progress: number;
   settings: NormalBakeSettings;
@@ -52,6 +53,24 @@ export type NormalBakeJob = {
   outputs?: Partial<
     Record<BakeChannelId, { fileName: string; width: number; height: number; url: string }>
   >;
+  remote?: {
+    jobId: string;
+    profile: 'ao-self-v1' | 'normal-dx-v1' | 'pbr-core-v1' | 'li3d-pbr-full-v2';
+    statusUrl: string;
+    eventsUrl?: string;
+    cancelUrl?: string;
+    status?: 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+    workerId?: string;
+    stage?: string;
+    stageMessage?: string;
+    deliveryReady?: boolean;
+    timing?: {
+      queue_position?: number;
+      estimated_start_seconds?: number;
+      elapsed_seconds?: number;
+      estimated_remaining_seconds?: number;
+    };
+  };
   error?: string;
   logs: string[];
   createdAt: string;
@@ -62,8 +81,18 @@ export type NormalBakeJob = {
 
 export type SubstanceBakerStatus = {
   available: boolean;
-  executablePath?: string;
-  version?: string;
+  connected: boolean;
+  endpoint: string;
+  workerId?: string;
+  tlsVerified: boolean;
+  trustSource?:
+    | 'configured-ca'
+    | 'auto-discovered-ca'
+    | 'embedded-ca'
+    | 'system-ca'
+    | 'node-default-ca';
+  caPath?: string;
+  error?: string;
 };
 
 async function responseJson<T>(response: Response) {
@@ -87,6 +116,32 @@ export async function getSubstanceBakerStatus() {
     cache: 'no-store',
   });
   return responseJson<SubstanceBakerStatus>(response);
+}
+
+export async function generateRoughnessMap(image: File) {
+  const body = new FormData();
+  body.set('image', image);
+  const response = await fetch(`${workspaceApiBase}/api/bake/roughness`, {
+    method: 'POST',
+    body,
+    credentials: 'include',
+    headers: { 'idempotency-key': `roughness_${crypto.randomUUID()}` },
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => undefined)) as
+      | { error?: string }
+      | undefined;
+    throw new Error(payload?.error ?? `Roughness generation failed: ${response.status}`);
+  }
+  const blob = await response.blob();
+  const extension =
+    blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
+  return {
+    file: new File([blob], `roughness-${Date.now()}.${extension}`, {
+      type: blob.type || 'image/png',
+    }),
+    jobId: response.headers.get('x-job-id') ?? undefined,
+  };
 }
 
 export async function submitNormalBake(input: {
@@ -125,6 +180,17 @@ export async function getNormalBakeJob(jobId: string) {
     credentials: 'include',
     cache: 'no-store',
   });
+  return (await responseJson<{ job: NormalBakeJob }>(response)).job;
+}
+
+export async function cancelNormalBake(jobId: string) {
+  const response = await fetch(
+    `${workspaceApiBase}/api/bake/jobs/${encodeURIComponent(jobId)}/cancel`,
+    {
+      method: 'POST',
+      credentials: 'include',
+    },
+  );
   return (await responseJson<{ job: NormalBakeJob }>(response)).job;
 }
 

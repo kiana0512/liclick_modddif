@@ -70,16 +70,20 @@ import {
 type GenerateTab = 'single' | 'multiview' | 'repaint';
 type GenerateMode = 'visible' | 'upscale';
 type TextureMapViewMode = 'single-view' | 'multi-view';
-type CameraViewPresetId = 'preset-1' | 'preset-2';
+type CameraViewPresetId = 'preset-1' | 'preset-2' | 'preset-3';
 type CameraViewOption = {
   value: ObjectViewPreset;
   labelKey:
     | 'frontView'
     | 'frontLeftView'
+    | 'frontLeftTopView'
     | 'frontRightView'
+    | 'frontRightBottomView'
     | 'backView'
     | 'backLeftView'
+    | 'backLeftBottomView'
     | 'backRightView'
+    | 'backRightTopView'
     | 'leftView'
     | 'rightView'
     | 'topView'
@@ -127,9 +131,13 @@ const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
   top: { value: 'top', labelKey: 'topView' },
   bottom: { value: 'bottom', labelKey: 'bottomView' },
   'front-left': { value: 'front-left', labelKey: 'frontLeftView' },
+  'front-left-top': { value: 'front-left-top', labelKey: 'frontLeftTopView' },
   'front-right': { value: 'front-right', labelKey: 'frontRightView' },
+  'front-right-bottom': { value: 'front-right-bottom', labelKey: 'frontRightBottomView' },
   'back-left': { value: 'back-left', labelKey: 'backLeftView' },
+  'back-left-bottom': { value: 'back-left-bottom', labelKey: 'backLeftBottomView' },
   'back-right': { value: 'back-right', labelKey: 'backRightView' },
+  'back-right-top': { value: 'back-right-top', labelKey: 'backRightTopView' },
 };
 
 const cameraViewPresets: CameraViewPresetDefinition[] = [
@@ -154,6 +162,23 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
       'front-right',
       'back-left',
       'back-right',
+    ],
+  },
+  {
+    id: 'preset-3',
+    label: '预设 3',
+    description: '上、下、左、右、前、后，加左前上、右后上、左后下、右前下 45° 视角',
+    views: [
+      'top',
+      'bottom',
+      'left',
+      'right',
+      'front',
+      'back',
+      'front-left-top',
+      'back-right-top',
+      'back-left-bottom',
+      'front-right-bottom',
     ],
   },
 ];
@@ -289,11 +314,83 @@ function GenerationProgressStatus({
   );
 }
 
-const textureMapDefaultPrompt = [
-  '第一张参考图是唯一的几何、轮廓、姿态、相机、构图、主体大小、画面占比、裁切、可见表面和空间位置约束，必须严格一比一对齐第一张白膜模型视图。最终图里的模型必须和第一张白膜一样大、一样近、一样裁切、一样视角，不能缩小成远景，不能改变模型形状、朝向、透视、比例和可见区域。',
-  '第二张参考图只提供材质贴图本身的颜色、粗糙度、纹理颗粒和细节风格，禁止复制第二张参考图的多视角排版、背景、构图、物体姿态或物体大小。最终只输出第一张白膜视角里的同一个模型，把第二张参考图的材质贴到第一张白膜模型的可见表面上。必须是可用于 3D 贴图投射的 base color/albedo 结果，不要明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影，只保留材质自身颜色和纹理变化。不要生成地面网格、场景背景、阴影背景、文字、边框、拼图、多视角图或额外物体。',
-  '贴图生成约束：输出应强调材质贴图本身的颜色、粗糙度、纹理颗粒和细节，避免明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影。',
-].join('\n\n');
+const textureMapDefaultPrompt = `任务类型：视角锁定的材质迁移，不是重新生成模型或场景。
+
+【最高优先级：锁定参考图一】
+
+参考图一是目标模型和最终画面的唯一空间依据。
+
+必须严格保持参考图一的：
+- 画布尺寸与宽高比
+- 模型外轮廓和内部轮廓
+- 几何形状、结构和部件边界
+- 姿态、朝向和透视
+- 相机位置、焦距和观察角度
+- 主体中心、主体大小和画面占比
+- 裁切范围、可见表面和遮挡关系
+
+只允许改变目标模型可见表面内部的材质颜色与微观纹理。
+禁止移动、缩放、旋转、重塑、补全、删减或重新解释目标模型。
+目标模型的像素包围框和轮廓蒙版必须与参考图一重合。
+
+【参考图二的用途】
+
+参考图二只作为材质来源，不作为构图、几何、姿态、相机、背景或物体大小参考。
+
+首先识别参考图二中与参考图一目标模型在语义、功能和部件位置上相对应的主体对象。
+只提取该对应主体自身表面的材质。
+
+不要简单复制参考图二中颜色最醒目、面积最大或细节最多的区域。
+
+忽略参考图二中的：
+- 背景、地面、阴影和环境
+- 与目标模型无关的独立物体
+- 容器中的内容物、填充物、液体、食物或货物
+- 人物、植物、装饰物及临时摆放物
+- 参考图一中不存在的附件和新增几何
+- 多视角排版、文字、边框和拼图结构
+
+独立物体或内容物不能被误当成目标模型的表面材质，也不能被压扁后铺到目标模型上。
+
+【语义对应与材质映射】
+
+按照“对应部件映射到对应部件”的原则迁移材质：
+
+- 外壳材质只映射到外壳
+- 边缘材质只映射到对应边缘
+- 把手、框架、面板等材质只映射到参考图一中已有的对应部件
+- 不同部件存在不同材质时，保持合理的材质分区
+- 参考图一中没有对应几何的内容不得出现在最终图中
+- 不得把一个局部材质无差别铺满整个目标模型
+- 纹理方向、尺度和密度必须符合目标表面的走向与尺寸
+- 材质变化只能改变表面外观，不能改变轮廓或制造新的几何凸起
+
+如果参考图二包含多个视角，这些视角只能用于理解同一主体的材质，不得复制其多视角布局。
+
+【Base Color / Albedo 输出要求】
+
+输出为目标模型当前视角下的无光照 Base Color／Albedo 材质投射结果。
+
+保留：
+- 材料自身固有颜色
+- 颜色斑驳、颗粒、纤维、木纹、石纹、磨损、污渍等真实颜色细节
+- 与材料固有颜色有关的细微变化
+
+去除：
+- 直接光照和明暗塑形
+- 阴影、投影和环境遮蔽
+- 镜面反射、强高光和轮廓光
+- 环境色渐变和摄影棚反光
+- 烘焙光影及由光照产生的明暗信息
+
+不要在 Base Color 中编码粗糙度、金属反射、高光或凹凸信息。
+粗糙度、法线和高度信息应作为独立贴图处理。
+
+【输出限制】
+
+只输出参考图一当前视角中的同一个目标模型。
+不得出现新物体、内容物、地面、网格、文字、边框、拼图或多视角结果。
+模型外部区域保持与参考图一完全一致，不得重新生成背景。`;
 
 function buildTextureMapPrompt(userPrompt: string) {
   const trimmedPrompt = userPrompt.trim();
@@ -2384,7 +2481,7 @@ export function GeneratePanel() {
                   </div>
                 </div>
                 <div
-                  className="grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
+                  className="grid grid-cols-3 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
                   role="radiogroup"
                   aria-label="模型方向预设"
                 >

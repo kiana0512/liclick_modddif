@@ -43,13 +43,21 @@ const comfyuiBaseUrl = (process.env.COMFYUI_BASE_URL ?? 'http://127.0.0.1:8188')
 const comfyuiTextureWorkflowPath =
   process.env.COMFYUI_TEXTURE_WORKFLOW_PATH ??
   'C:/Users/rentian/Downloads/li3d_zimage_web3d_fast_1024_to_4k_16gb.json';
-const comfyuiInpaintServiceUrl = (
+const comfyuiInpaintBaseUrl = (
+  process.env.COMFYUI_INPAINT_BASE_URL ??
   process.env.COMFYUI_INPAINT_SERVICE_URL ??
-  'https://10.3.34.11/api/v1/services/modelview-inpaint'
-).trim();
-const comfyuiInpaintApiKey = process.env.COMFYUI_INPAINT_API_KEY?.trim() || undefined;
-const comfyuiInpaintTlsRejectUnauthorized =
-  (process.env.COMFYUI_INPAINT_TLS_REJECT_UNAUTHORIZED ?? 'false').toLowerCase() !== 'false';
+  'http://10.3.2.59:56001'
+).replace(/\/$/, '');
+const comfyuiInpaintWorkflowName =
+  process.env.COMFYUI_INPAINT_WORKFLOW_NAME ?? 'flux_fill_inpaint.json';
+const substanceBakerBaseUrl = (
+  process.env.LICLICK_SUBSTANCE_BAKER_BASE_URL ?? 'https://10.3.34.11'
+).replace(/\/$/, '');
+const substanceBakerCaPath = process.env.LICLICK_SUBSTANCE_BAKER_CA_PATH?.trim() ?? '';
+const substanceBakerApiKey = process.env.LICLICK_SUBSTANCE_BAKER_API_KEY?.trim() ?? '';
+const substanceBakerTextureCacheMb = Number(
+  process.env.LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB ?? 32768,
+);
 
 function getOrigin(value: string) {
   try {
@@ -177,7 +185,9 @@ const sessionSecret = process.env.SESSION_SECRET ?? 'dev-only-change-me';
 const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
 
 if (!loopbackHosts.has(host) && sessionSecret === 'dev-only-change-me') {
-  throw new Error('SESSION_SECRET must be set to a strong unique value before the server listens on a non-loopback host.');
+  throw new Error(
+    'SESSION_SECRET must be set to a strong unique value before the server listens on a non-loopback host.',
+  );
 }
 
 export const serverConfig = {
@@ -186,7 +196,11 @@ export const serverConfig = {
   workspaceDir: path.resolve(process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace')),
   localSettingsPath: path.resolve(
     process.env.LICLICK_LOCAL_SETTINGS_PATH ??
-      path.join(process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'), 'config', 'local-settings.json'),
+      path.join(
+        process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),
+        'config',
+        'local-settings.json',
+      ),
   ),
   publicWorkspaceUrl,
   publicPath: normalizePublicPath(process.env.LICLICK_PUBLIC_PATH),
@@ -209,9 +223,12 @@ export const serverConfig = {
   frontendUrl,
   comfyuiBaseUrl,
   comfyuiTextureWorkflowPath,
-  comfyuiInpaintServiceUrl,
-  comfyuiInpaintApiKey,
-  comfyuiInpaintTlsRejectUnauthorized,
+  comfyuiInpaintBaseUrl,
+  comfyuiInpaintWorkflowName,
+  substanceBakerBaseUrl,
+  substanceBakerCaPath,
+  substanceBakerApiKey,
+  substanceBakerTextureCacheMb,
   frontendOrigin: getOrigin(frontendUrl),
   allowedOrigins: [
     getOrigin(frontendUrl),

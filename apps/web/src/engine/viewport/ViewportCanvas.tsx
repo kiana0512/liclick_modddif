@@ -32,7 +32,6 @@ import {
   markLiveProjectedCanvasTextureUpdated,
   registerLiveProjectedCanvasTexture,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
-import { primeProjectedImageTexture } from '@/engine/projection/ProjectedLayerMaterial';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { SceneRoot } from './SceneRoot';
@@ -112,7 +111,17 @@ const UV_TEXTURE_RESOLUTION = {
 } as const;
 const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
-const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 320;
+const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
+const LOCAL_REPAINT_PREVIEW_MAX_SIZE = 512;
+// Keep the 4K UV/seam pass out of normal brush cadence. A short pause between
+// strokes should still feel like one painting session rather than immediately
+// starting a GPU bake that competes with the next gesture.
+const LOCAL_REPAINT_HIGH_RES_IDLE_MS = 3000;
+const LOCAL_REPAINT_HANDOFF_DURATION_MS = 160;
+// Stop projection before a surface becomes so foreshortened that a few source
+// pixels stretch into visible scan lines. 0.31 is about 72 degrees from face-on;
+// the shared 0.08 cosine feather starts fading at roughly 67 degrees.
+const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.31;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -958,6 +967,10 @@ type LocalRepaintCompositeState = {
   scratchContext: CanvasRenderingContext2D;
   falloffCanvas: HTMLCanvasElement;
   worldToSourceClip: THREE.Matrix4;
+  objectMatrixDelta: THREE.Matrix4;
+  objectNormalDelta: THREE.Matrix3;
+  projectorViewMatrix: THREE.Matrix4;
+  projectorViewNormalMatrix: THREE.Matrix3;
   restoredMaskUrl?: string;
 };
 
@@ -1429,13 +1442,35 @@ function loadImageElement(url: string) {
   });
 }
 
+function createLocalRepaintPreviewCanvas(image: HTMLImageElement) {
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  if (
+    sourceWidth <= 0 ||
+    sourceHeight <= 0 ||
+    Math.max(sourceWidth, sourceHeight) <= LOCAL_REPAINT_PREVIEW_MAX_SIZE
+  )
+    return undefined;
+  const scale = LOCAL_REPAINT_PREVIEW_MAX_SIZE / Math.max(sourceWidth, sourceHeight);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext('2d');
+  if (!context) return undefined;
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  // The 4K source is already decoded here. Creating a resized ImageBitmap can
+  // take seconds on some Windows GPU/driver combinations and delayed the first
+  // apply-brush click. A single 512px canvas draw is deterministic and cheap.
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
 function createLocalRepaintSourceKey(source: LocalRepaintProjectionSource, objectId: string) {
   return [
-    source.generationId ?? '',
-    source.captureId ?? '',
+    source.generationId ?? source.captureId ?? source.imageUrl,
     source.objectId ?? objectId,
     source.targetLayerId ?? '',
-    source.imageUrl,
   ].join('|');
 }
 
@@ -1497,19 +1532,24 @@ function createLocalRepaintComposite(
     scratchContext,
     falloffCanvas: createLocalRepaintFalloffCanvas(allowedMaskImage, width, height),
     worldToSourceClip: new THREE.Matrix4(),
+    objectMatrixDelta: new THREE.Matrix4(),
+    objectNormalDelta: new THREE.Matrix3(),
+    projectorViewMatrix: new THREE.Matrix4(),
+    projectorViewNormalMatrix: new THREE.Matrix3(),
   };
 }
 
 const localRepaintProjectionScratch = {
   currentObjectInverse: new THREE.Matrix4(),
   captureObjectMatrix: new THREE.Matrix4(),
-  objectMatrixDelta: new THREE.Matrix4(),
+  captureViewPoint: new THREE.Vector3(),
+  viewDirection: new THREE.Vector3(),
   clipPoint: new THREE.Vector4(),
   projectedUv: new THREE.Vector2(),
 };
 
 function updateLocalRepaintProjectionMatrix(
-  target: THREE.Matrix4,
+  composite: LocalRepaintCompositeState,
   model: SurfacePaintTarget,
   source: LocalRepaintProjectionSource,
 ) {
@@ -1518,13 +1558,51 @@ function updateLocalRepaintProjectionMatrix(
   const captureObjectMatrix = source.objectMatrixWorld
     ? localRepaintProjectionScratch.captureObjectMatrix.fromArray(source.objectMatrixWorld)
     : model.group.matrixWorld;
-  localRepaintProjectionScratch.objectMatrixDelta
+  composite.objectMatrixDelta
     .copy(captureObjectMatrix)
     .multiply(localRepaintProjectionScratch.currentObjectInverse);
-  target
+  composite.objectNormalDelta.getNormalMatrix(composite.objectMatrixDelta);
+  composite.projectorViewMatrix.fromArray(source.camera.viewMatrix);
+  composite.projectorViewNormalMatrix.getNormalMatrix(
+    composite.projectorViewMatrix,
+  );
+  composite.worldToSourceClip
     .copy(buildProjectionMatrixBundle(source.camera).projectorMatrix)
-    .multiply(localRepaintProjectionScratch.objectMatrixDelta);
-  return target;
+    .multiply(composite.objectMatrixDelta);
+  return composite.worldToSourceClip;
+}
+
+function isLocalRepaintSurfaceFacingProjector(
+  composite: LocalRepaintCompositeState,
+  mesh: THREE.Mesh,
+  face: THREE.Face,
+  hitPoint: THREE.Vector3,
+) {
+  const position = mesh.geometry.getAttribute('position');
+  if (!(position instanceof THREE.BufferAttribute)) return false;
+  const { p0, p1, p2, edge1, edge2, normal } = surfaceBrushScratch;
+  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
+  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
+  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
+  edge1.copy(p1).sub(p0);
+  edge2.copy(p2).sub(p0);
+  normal.crossVectors(edge1, edge2);
+  if (normal.lengthSq() < 1e-16) return false;
+  normal
+    .normalize()
+    .applyMatrix3(composite.objectNormalDelta)
+    .applyMatrix3(composite.projectorViewNormalMatrix)
+    .normalize();
+  const captureViewPoint = localRepaintProjectionScratch.captureViewPoint
+    .copy(hitPoint)
+    .applyMatrix4(composite.objectMatrixDelta)
+    .applyMatrix4(composite.projectorViewMatrix);
+  const viewDirection = localRepaintProjectionScratch.viewDirection
+    .copy(captureViewPoint)
+    .multiplyScalar(-1);
+  if (viewDirection.lengthSq() < 1e-16) return false;
+  viewDirection.normalize();
+  return Math.abs(normal.dot(viewDirection)) >= LOCAL_REPAINT_MINIMUM_FACE_ON;
 }
 
 function projectWorldPointToLocalRepaintUv(
@@ -1802,7 +1880,6 @@ function SurfacePaintOverlay() {
   );
   raycasterRef.current.firstHitOnly = true;
   const pointerRef = useRef(new THREE.Vector2());
-  const localRepaintPointerProjectionMatrixRef = useRef(new THREE.Matrix4());
   const isPaintingRef = useRef(false);
   const lastUvRef = useRef<THREE.Vector2>();
   const lastSampleRef = useRef<UvPaintSample>();
@@ -1821,6 +1898,9 @@ function SurfacePaintOverlay() {
   const projectionTextureLastUpdateAtRef = useRef(0);
   const localRepaintUvCommitRevisionRef = useRef(0);
   const localRepaintUvCommitChainRef = useRef(Promise.resolve());
+  const localRepaintUvScheduleFrameRef = useRef<number>();
+  const localRepaintHandoffFrameRef = useRef<number>();
+  const localRepaintPreviewTextureIdRef = useRef(createId('local-repaint-source-preview'));
   const paintPreviewRevisionRef = useRef(0);
   const maskDirtyRef = useRef(false);
   const maskHasContentRef = useRef(false);
@@ -1828,6 +1908,7 @@ function SurfacePaintOverlay() {
   const localRepaintSourceImageRef = useRef<{
     url: string;
     image: HTMLImageElement;
+    previewImageUrl: string;
     allowedMaskImage?: HTMLImageElement;
   }>();
   const [localRepaintAssetsRevision, setLocalRepaintAssetsRevision] = useState(0);
@@ -2233,7 +2314,7 @@ function SurfacePaintOverlay() {
   const waitForPaintCommitIdle = useCallback(
     () =>
       new Promise<void>((resolve) => {
-        const minimumIdleMs = 140;
+        const minimumIdleMs = LOCAL_REPAINT_HIGH_RES_IDLE_MS;
         const tryCommit = () => {
           const idleFor = performance.now() - lastPaintActivityAtRef.current;
           if (isPaintingRef.current || idleFor < minimumIdleMs) {
@@ -2243,7 +2324,7 @@ function SurfacePaintOverlay() {
           const requestIdle = window.requestIdleCallback;
           if (requestIdle) {
             requestIdle(
-              () => {
+              (deadline) => {
                 if (
                   isPaintingRef.current ||
                   performance.now() - lastPaintActivityAtRef.current < minimumIdleMs
@@ -2251,9 +2332,17 @@ function SurfacePaintOverlay() {
                   tryCommit();
                   return;
                 }
+                // A 4K seam/topology pass is intentionally started only in a
+                // genuine browser idle slice. This prevents a just-finished
+                // stroke from immediately competing with orbiting or the next
+                // brush gesture on the main thread.
+                if (!deadline.didTimeout && deadline.timeRemaining() < 12) {
+                  tryCommit();
+                  return;
+                }
                 resolve();
               },
-              { timeout: 500 },
+              { timeout: 5000 },
             );
             return;
           }
@@ -2279,6 +2368,12 @@ function SurfacePaintOverlay() {
       if (projectionTextureUpdateTimerRef.current !== undefined)
         window.clearTimeout(projectionTextureUpdateTimerRef.current);
       projectionTextureUpdateTimerRef.current = undefined;
+      if (localRepaintHandoffFrameRef.current !== undefined)
+        window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
+      localRepaintHandoffFrameRef.current = undefined;
+      if (localRepaintUvScheduleFrameRef.current !== undefined)
+        window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
+      localRepaintUvScheduleFrameRef.current = undefined;
       localRepaintUvCommitRevisionRef.current += 1;
       useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     },
@@ -2287,6 +2382,12 @@ function SurfacePaintOverlay() {
 
   useEffect(() => {
     localRepaintUvCommitRevisionRef.current += 1;
+    if (localRepaintHandoffFrameRef.current !== undefined)
+      window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
+    localRepaintHandoffFrameRef.current = undefined;
+    if (localRepaintUvScheduleFrameRef.current !== undefined)
+      window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
+    localRepaintUvScheduleFrameRef.current = undefined;
     useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     const source = localRepaintProjectionSource;
     localRepaintSourceImageRef.current = undefined;
@@ -2345,13 +2446,22 @@ function SurfacePaintOverlay() {
     ])
       .then(([sourceImage, allowedMaskImage]) => {
         if (cancelled) return;
-        // The image has already been decoded for source-alpha checks. Seed the
-        // projected material cache with it so the first brush stroke does not
-        // trigger a second decode before it can appear on the model.
-        primeProjectedImageTexture(source.imageUrl, sourceImage);
+        // Retain the original ComfyUI result for the background UV bake. Do not
+        // prime its 4K GPU texture while entering the brush; only the 512px proxy
+        // belongs to the interactive material.
+        const previewCanvas = createLocalRepaintPreviewCanvas(sourceImage);
+        if (cancelled) return;
+        const previewImageUrl = previewCanvas
+          ? registerLiveProjectedCanvasTexture(
+              localRepaintPreviewTextureIdRef.current,
+              previewCanvas,
+              THREE.SRGBColorSpace,
+            )
+          : source.imageUrl;
         localRepaintSourceImageRef.current = {
           url: source.imageUrl,
           image: sourceImage,
+          previewImageUrl,
           allowedMaskImage,
         };
         localRepaintCompositeRef.current = undefined;
@@ -2766,8 +2876,10 @@ function SurfacePaintOverlay() {
       // The pointer path is rasterized at PROJECTION_PAINT_MAX_SIZE, so keeping a
       // source-resolution mask adds no detail and forces a multi-megabyte canvas
       // upload after every stroke. Keep the live mask at the same screen-space
-      // resolution and let the shader sample it linearly. A 384px live mask cuts
-      // the per-frame texture upload almost in half compared with 512px.
+      // resolution and let the shader sample it linearly. The final UV result is
+      // baked separately from the untouched high-resolution source; this smaller
+      // canvas controls only interactive feedback and avoids dense uploads while
+      // the pointer is moving.
       const sourceAspect = sourceWidth / Math.max(sourceHeight, 1);
       const width =
         sourceAspect >= 1
@@ -2838,7 +2950,7 @@ function SurfacePaintOverlay() {
         }
       }
       if (!composite) return undefined;
-      updateLocalRepaintProjectionMatrix(composite.worldToSourceClip, model, localRepaintSource);
+      updateLocalRepaintProjectionMatrix(composite, model, localRepaintSource);
 
       const projectedLayer: Layer = {
         ...existingLayer,
@@ -2847,7 +2959,8 @@ function SurfacePaintOverlay() {
           ? `${localRepaintSource.targetLayerName} · 局部替换`
           : (localRepaintSource.name ?? 'Local repaint brush'),
         type: 'projected',
-        imageUrl: localRepaintSource.imageUrl,
+        imageUrl:
+          localRepaintSourceImageRef.current?.previewImageUrl ?? localRepaintSource.imageUrl,
         maskUrl: composite.maskUrl,
         depthUrl: localRepaintSource.depthUrl,
         objectId: localRepaintSource.objectId ?? model.objectId,
@@ -2858,6 +2971,7 @@ function SurfacePaintOverlay() {
         captureId: localRepaintSource.captureId,
         replacementTargetLayerId: localRepaintSource.targetLayerId,
         renderedColor: true,
+        minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
         isBaked: false,
         needsRebake: true,
         visible: true,
@@ -2871,7 +2985,25 @@ function SurfacePaintOverlay() {
       // Keep the interactive projection out of the persisted layer stack. It is
       // renderer-only state, so pointer-down no longer creates a temporary row or
       // forces the UV layer compositor to rebuild.
-      useSceneStore.getState().setLocalRepaintPreviewLayer(projectedLayer);
+      const sceneState = useSceneStore.getState();
+      const currentPreviewLayer = sceneState.localRepaintPreviewLayer;
+      const previewAlreadyPublished =
+        currentPreviewLayer?.id === projectedLayer.id &&
+        currentPreviewLayer.imageUrl === projectedLayer.imageUrl &&
+        currentPreviewLayer.maskUrl === projectedLayer.maskUrl &&
+        currentPreviewLayer.depthUrl === projectedLayer.depthUrl &&
+        currentPreviewLayer.objectId === projectedLayer.objectId &&
+        currentPreviewLayer.generationId === projectedLayer.generationId &&
+        currentPreviewLayer.captureId === projectedLayer.captureId &&
+        currentPreviewLayer.opacity === projectedLayer.opacity &&
+        currentPreviewLayer.minimumProjectionFacing === projectedLayer.minimumProjectionFacing &&
+        currentPreviewLayer.replacementTargetLayerId ===
+          projectedLayer.replacementTargetLayerId;
+      // Re-publishing an equivalent object makes SceneRoot rebuild the projected
+      // layer inputs and can compile/rebind materials at pointer-down. The live
+      // canvas texture is mutable, so one published layer is enough for every
+      // subsequent stamp in the same repaint session.
+      if (!previewAlreadyPublished) sceneState.setLocalRepaintPreviewLayer(projectedLayer);
       if (existingLayer) {
         const layerState = useLayerStore.getState();
         layerState.setLayers(
@@ -2896,20 +3028,33 @@ function SurfacePaintOverlay() {
   );
 
   useEffect(() => {
-    if (
-      !isLocalRepaintApplyMode ||
-      !localRepaintProjectionSource ||
-      localRepaintAssetsRevision <= 0
-    )
-      return;
-    const model = getTargetModel();
-    if (!model || !localRepaintSourceImageRef.current) return;
-    const source = resolveLocalRepaintStrokeSource();
-    if (source) ensureLiveLocalRepaintComposite(model, source);
+    if (!localRepaintProjectionSource || localRepaintAssetsRevision <= 0) return undefined;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const prepare = () => {
+      if (cancelled) return;
+      if (isPaintingRef.current) {
+        timeoutId = window.setTimeout(prepare, 80);
+        return;
+      }
+      const model = getTargetModel();
+      if (!model || !localRepaintSourceImageRef.current) return;
+      const source = resolveLocalRepaintStrokeSource();
+      if (source) ensureLiveLocalRepaintComposite(model, source);
+    };
+    // Publish the empty lightweight projection on the very next frame. Waiting
+    // for requestIdleCallback left shader/material creation until the first
+    // brush gesture on busy scenes, so a valid stroke could remain invisible
+    // for several frames while the projected material was being prepared.
+    const frameId = window.requestAnimationFrame(prepare);
+    return () => {
+      cancelled = true;
+      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
   }, [
     ensureLiveLocalRepaintComposite,
     getTargetModel,
-    isLocalRepaintApplyMode,
     localRepaintAssetsRevision,
     localRepaintProjectionSource,
     resolveLocalRepaintStrokeSource,
@@ -3109,6 +3254,16 @@ function SurfacePaintOverlay() {
       } else if (strokePaintTool === 'inpaint-apply') {
         const draft = strokeDraftRef.current;
         const composite = draft?.localRepaintComposite;
+        const surfaceFacesProjector =
+          composite &&
+          result.hit.object instanceof THREE.Mesh &&
+          result.hit.face &&
+          isLocalRepaintSurfaceFacingProjector(
+            composite,
+            result.hit.object,
+            result.hit.face,
+            result.hit.point,
+          );
         localRepaintUv = composite
           ? projectWorldPointToLocalRepaintUv(result.hit.point, composite.worldToSourceClip)
           : undefined;
@@ -3116,6 +3271,7 @@ function SurfacePaintOverlay() {
           !draft?.localRepaintSource ||
           !localRepaintSourceImageRef.current ||
           !composite ||
+          !surfaceFacesProjector ||
           !localRepaintUv ||
           !hasLocalRepaintSourceContent(localRepaintUv)
         ) {
@@ -3166,12 +3322,12 @@ function SurfacePaintOverlay() {
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
           mergeLocalRepaintScratchPatch(composite, projectionBounds);
-          // Keep the low-resolution screen projection locked to the brush. The
-          // frame scheduler coalesces repeated stamps, so this is responsive at
-          // the display refresh rate without uploading the texture more than once
-          // per rendered frame. The high-resolution UV bake still starts only
-          // after pointer-up.
-          scheduleTextureUpdate(composite.maskTexture);
+          // This mask is only 288px. Upload it on the same RAF as the stamp so
+          // every accepted sample has immediate visual feedback. paintAt already
+          // runs at most once per display frame for projected strokes, so setting
+          // needsUpdate directly does not add duplicate uploads and avoids
+          // scheduling the actual texture change one frame later.
+          composite.maskTexture.needsUpdate = true;
         }
       }
 
@@ -3253,12 +3409,26 @@ function SurfacePaintOverlay() {
         : isLocalRepaintApplyMode
           ? 'apply-local-repaint'
           : 'paint';
+      // Invalidate an older high-resolution handoff as soon as a new gesture
+      // begins, rather than waiting for pointer-up. The live 512px proxy remains
+      // authoritative until the newest accumulated mask receives its 4K bake.
+      if (target === 'apply-local-repaint') {
+        localRepaintUvCommitRevisionRef.current += 1;
+      }
       const layer = target === 'apply-local-repaint' ? undefined : getUvPaintLayer(result.model);
       const localRepaintSource =
         target === 'apply-local-repaint' ? resolveLocalRepaintStrokeSource() : undefined;
+      const preparedLocalRepaintComposite =
+        target === 'apply-local-repaint' &&
+        localRepaintSource &&
+        localRepaintCompositeRef.current?.sourceKey ===
+          createLocalRepaintSourceKey(localRepaintSource, result.model.objectId)
+          ? localRepaintCompositeRef.current
+          : undefined;
       const localRepaintComposite =
         target === 'apply-local-repaint' && localRepaintSource
-          ? ensureLiveLocalRepaintComposite(result.model, localRepaintSource)
+          ? (preparedLocalRepaintComposite ??
+            ensureLiveLocalRepaintComposite(result.model, localRepaintSource))
           : undefined;
       if (target === 'mask') {
         if (!layer) return;
@@ -3325,6 +3495,74 @@ function SurfacePaintOverlay() {
     ],
   );
 
+  const handoffLocalRepaintPreview = useCallback(
+    (
+      composite: LocalRepaintCompositeState,
+      sourceKey: string,
+      commitRevision: number,
+    ) => {
+      if (localRepaintHandoffFrameRef.current !== undefined)
+        window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
+      const startedAt = performance.now();
+      const finish = () => {
+        const currentPreview = useSceneStore.getState().localRepaintPreviewLayer;
+        if (currentPreview?.id === composite.layerId) {
+          useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
+        }
+        if (localRepaintCompositeRef.current === composite) {
+          composite.maskContext.clearRect(
+            0,
+            0,
+            composite.maskCanvas.width,
+            composite.maskCanvas.height,
+          );
+          composite.scratchContext.clearRect(
+            0,
+            0,
+            composite.scratchCanvas.width,
+            composite.scratchCanvas.height,
+          );
+        }
+        localRepaintHandoffFrameRef.current = undefined;
+      };
+      const step = (now: number) => {
+        const currentPreview = useSceneStore.getState().localRepaintPreviewLayer;
+        const superseded =
+          localRepaintUvCommitRevisionRef.current !== commitRevision ||
+          localRepaintCompositeRef.current?.sourceKey !== sourceKey ||
+          isPaintingRef.current;
+        if (superseded) {
+          if (currentPreview?.id === composite.layerId && currentPreview.opacity !== 1) {
+            useSceneStore
+              .getState()
+              .setLocalRepaintPreviewLayer({ ...currentPreview, opacity: 1 });
+          }
+          localRepaintHandoffFrameRef.current = undefined;
+          return;
+        }
+        if (!currentPreview || currentPreview.id !== composite.layerId) {
+          finish();
+          return;
+        }
+        const progress = THREE.MathUtils.clamp(
+          (now - startedAt) / LOCAL_REPAINT_HANDOFF_DURATION_MS,
+          0,
+          1,
+        );
+        if (progress >= 1) {
+          finish();
+          return;
+        }
+        useSceneStore
+          .getState()
+          .setLocalRepaintPreviewLayer({ ...currentPreview, opacity: 1 - progress });
+        localRepaintHandoffFrameRef.current = window.requestAnimationFrame(step);
+      };
+      localRepaintHandoffFrameRef.current = window.requestAnimationFrame(step);
+    },
+    [],
+  );
+
   const queueLocalRepaintUvCommit = useCallback(
     (
       model: SurfacePaintTarget,
@@ -3350,12 +3588,50 @@ function SurfacePaintOverlay() {
         width: composite.maskCanvas.width,
         height: composite.maskCanvas.height,
       });
+      if (!currentMergeLayer) {
+        // The live projection is renderer-only for stroke responsiveness, but
+        // users still need an immediate, stable layer-stack entry. Publish an
+        // image-less UV placeholder on pointer-up; SceneRoot ignores it until
+        // the 4K bake replaces imageUrl on this same layer id.
+        const pendingLayer: Layer = {
+          id: mergeLayerId,
+          name: LOCAL_REPAINT_UV_MERGE_LAYER_NAME,
+          type: 'uv',
+          role: 'local-repaint-overlay',
+          imageUrl: '',
+          objectId: source.objectId ?? model.objectId,
+          generationId: source.generationId,
+          captureId: source.captureId,
+          replacementTargetLayerId: source.targetLayerId,
+          renderedColor: true,
+          visible: true,
+          opacity: 1,
+          strength: 1,
+          blendMode: 'normal',
+          adjustments: { hue: 0, saturation: 0, lightness: 0 },
+          order: 0,
+          contentRevision: 0,
+          isBaked: false,
+          needsRebake: true,
+          createdAt: new Date().toISOString(),
+        };
+        const retainedLayers = currentLayers.filter(
+          (item) =>
+            !isLocalRepaintUvMergeLayer(item, model.objectId) &&
+            !isLocalRepaintProjectionLayer(item),
+        );
+        const layerState = useLayerStore.getState();
+        layerState.setLayers([pendingLayer, ...retainedLayers]);
+        useLayerStore.getState().setActiveLayer(mergeLayerId);
+        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+      }
 
       const commitUvStroke = async () => {
         await waitForPaintCommitIdle();
         if (
           localRepaintUvCommitRevisionRef.current !== commitRevision ||
-          localRepaintCompositeRef.current?.sourceKey !== sourceKey
+          localRepaintCompositeRef.current?.sourceKey !== sourceKey ||
+          isPaintingRef.current
         )
           return;
 
@@ -3378,6 +3654,7 @@ function SurfacePaintOverlay() {
           captureId: source.captureId,
           replacementTargetLayerId: source.targetLayerId,
           renderedColor: true,
+          minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
           visible: true,
           opacity: 1,
           strength: 1,
@@ -3386,11 +3663,15 @@ function SurfacePaintOverlay() {
           order: 0,
           createdAt: new Date().toISOString(),
         };
-        // Keep the screen-space preview lightweight, but rasterize the completed
-        // projection at 1K. At 512px, small UV islands and thin triangles collapse
-        // into disconnected texels; a later dilation pass then turns those texels
-        // into visible speckles on the model.
-        const bakeResolution = 1024 as const;
+        // Keep the screen-space preview lightweight, but persist the completed
+        // projection in project texture space. Baking the sparse UV islands at
+        // 1K and later enlarging them to 4K magnifies one-texel island edges into
+        // visible seams, especially after Blender mipmapping.
+        const bakeResolution = Math.min(
+          UV_TEXTURE_RESOLUTION[textureResolutionSetting],
+          4096,
+        ) as UvBakeResolution;
+        const bakeResolutionScale = bakeResolution / 1024;
         const { bakeVisibleProjectedLayersToTexture } =
           await import('@/engine/bake/bakeProjectedLayerToTexture');
         const bakeResult = await bakeVisibleProjectedLayersToTexture({
@@ -3398,20 +3679,28 @@ function SurfacePaintOverlay() {
           transientLayers: [transientLayer],
           resolution: bakeResolution,
           enableBackfaceCulling: true,
-          // Fill only one-texel cracks backed by the model's pre-rendered UV
-          // topology. The GPU constraint keeps empty atlas space transparent.
+          // A local repaint is previewed in projection space, but its persisted
+          // form is a sparse UV overlay. Repair the topology-backed triangle
+          // gaps and geometrically paired UV seams before replacing the live
+          // preview; otherwise the opaque base shows through as a jagged crack.
           enableDilation: true,
-          dilationPixels: 1,
+          dilationPixels: Math.max(2, Math.ceil(bakeResolutionScale * 2)),
+          constrainDilationToInteriorHoles: true,
+          // GPU seam transfer plus topology-constrained dilation owns the normal
+          // path. Keep the matching CPU gutter only as a renderer-failure
+          // fallback; skipCpuPostprocess prevents it from running after a
+          // successful GPU bake.
+          uvIslandGutterPixels: Math.max(2, Math.ceil(bakeResolutionScale * 2)),
+          uvCoverageGapPixels: 0,
+          repairMissingUvSeams: true,
+          uvSeamRepairPixels: Math.max(4, Math.ceil(bakeResolution / 256)),
           outputAlpha: 'transparent',
           gpuCompositeMode: 'coverage-alpha',
-          constrainDilationToInteriorHoles: true,
           skipGpuValidation: true,
           minimumCoverageRatio: 0,
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
-          // Direct GPU output already has straight-alpha transparent pixels.
-          // Avoid a second full-canvas CPU seam/dilation pass.
           skipCpuPostprocess: true,
         });
         if (bakeResult.report.coveredPixels <= 0) {
@@ -3424,7 +3713,8 @@ function SurfacePaintOverlay() {
         // second idle callback here only delayed the projection-to-UV handoff.
         if (
           localRepaintUvCommitRevisionRef.current !== commitRevision ||
-          localRepaintCompositeRef.current?.sourceKey !== sourceKey
+          localRepaintCompositeRef.current?.sourceKey !== sourceKey ||
+          isPaintingRef.current
         )
           return;
 
@@ -3439,7 +3729,12 @@ function SurfacePaintOverlay() {
           ? getLiveProjectedCanvasState(existingMergeLayer.imageUrl)?.canvas
           : undefined;
         const canReuseLiveMergeCanvas =
-          existingMergeLayers.length === 1 && Boolean(existingLiveCanvas);
+          existingMergeLayers.length === 1 &&
+          Boolean(
+            existingLiveCanvas &&
+              existingLiveCanvas.width === bakeResult.canvas.width &&
+              existingLiveCanvas.height === bakeResult.canvas.height,
+          );
         const existingSources =
           existingMergeLayers.length === 0 || canReuseLiveMergeCanvas
             ? []
@@ -3455,7 +3750,8 @@ function SurfacePaintOverlay() {
               );
         if (
           localRepaintUvCommitRevisionRef.current !== commitRevision ||
-          localRepaintCompositeRef.current?.sourceKey !== sourceKey
+          localRepaintCompositeRef.current?.sourceKey !== sourceKey ||
+          isPaintingRef.current
         )
           return;
         const width = Math.max(
@@ -3546,24 +3842,10 @@ function SurfacePaintOverlay() {
         layerState.setLayers([mergedLayer, ...retainedLayers]);
         useLayerStore.getState().setActiveLayer(mergeLayerId);
         useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
-        useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
-        if (localRepaintCompositeRef.current === composite) {
-          composite.maskContext.clearRect(
-            0,
-            0,
-            composite.maskCanvas.width,
-            composite.maskCanvas.height,
-          );
-          composite.scratchContext.clearRect(
-            0,
-            0,
-            composite.scratchCanvas.width,
-            composite.scratchCanvas.height,
-          );
-          // Do not upload the cleared mask: the preview was just detached, and
-          // uploading an empty texture here can flash before the UV result draws.
-          // The next brush sample marks this canvas dirty again.
-        }
+        // Keep the lightweight projection briefly above the completed 4K UV
+        // result, then fade it away. This makes the resolution handoff visible
+        // as a refinement instead of a one-frame texture swap.
+        handoffLocalRepaintPreview(composite, sourceKey, commitRevision);
       };
 
       const queuedCommit = localRepaintUvCommitChainRef.current.then(commitUvStroke);
@@ -3578,7 +3860,12 @@ function SurfacePaintOverlay() {
         });
       });
     },
-    [pushToast, waitForPaintCommitIdle],
+    [
+      handoffLocalRepaintPreview,
+      pushToast,
+      textureResolutionSetting,
+      waitForPaintCommitIdle,
+    ],
   );
 
   const commitPaintStroke = useCallback(() => {
@@ -3835,13 +4122,39 @@ function SurfacePaintOverlay() {
       const model = getTargetModel();
       if (!model || !localRepaintSourceImageRef.current?.image) return;
       model.group.updateMatrixWorld(true);
-      const composite = ensureLiveLocalRepaintComposite(model, localRepaintSource);
+      // Pointer-down already resolved and published this composite. Reusing the
+      // draft avoids a redundant preview-layer store update/material pass at the
+      // exact moment the user releases the brush.
+      const composite =
+        draft.localRepaintComposite ??
+        ensureLiveLocalRepaintComposite(model, localRepaintSource);
       if (!composite) return;
 
       // Keep the projected canvas visible while the completed stroke is converted
       // to UV. The preview is renderer-only and never appears in the layer list.
       markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
-      queueLocalRepaintUvCommit(model, localRepaintSource, composite);
+      if (localRepaintUvScheduleFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
+      }
+      // Let the newly updated live mask complete one browser paint before taking
+      // a snapshot, touching layer state or entering the high-resolution GPU
+      // queue. Consecutive strokes replace this pending task and the cumulative
+      // live mask is committed once interaction pauses.
+      const scheduleUvCommitAfterPreview = (hasYieldedFrame: boolean) => {
+        localRepaintUvScheduleFrameRef.current = window.requestAnimationFrame(() => {
+          if (isPaintingRef.current) {
+            scheduleUvCommitAfterPreview(false);
+            return;
+          }
+          if (!hasYieldedFrame) {
+            scheduleUvCommitAfterPreview(true);
+            return;
+          }
+          localRepaintUvScheduleFrameRef.current = undefined;
+          queueLocalRepaintUvCommit(model, localRepaintSource, composite);
+        });
+      };
+      scheduleUvCommitAfterPreview(false);
     }
   }, [
     drawSurfaceBrushSegment,
@@ -4059,7 +4372,7 @@ function SurfacePaintOverlay() {
       }
       const localRepaintComposite = localRepaintCompositeRef.current;
       if (isLocalRepaintApplyMode && localRepaintComposite) {
-        scheduleProjectionTextureUpdate(localRepaintComposite.maskTexture, true);
+        scheduleTextureUpdate(localRepaintComposite.maskTexture);
       }
       isPaintingRef.current = false;
       lastPaintActivityAtRef.current = performance.now();
@@ -4201,17 +4514,33 @@ function SurfacePaintOverlay() {
       updateCursorFromHit(result);
       if (isLocalRepaintApplyMode) {
         const source = resolveLocalRepaintStrokeSource();
-        const projectedUv = source
-          ? projectWorldPointToLocalRepaintUv(
-              result.hit.point,
-              updateLocalRepaintProjectionMatrix(
-                localRepaintPointerProjectionMatrixRef.current,
-                result.model,
-                source,
-              ),
-              localRepaintProjectionScratch.projectedUv,
-            )
+        const preparedComposite =
+          source &&
+          localRepaintCompositeRef.current?.sourceKey ===
+            createLocalRepaintSourceKey(source, result.model.objectId)
+            ? localRepaintCompositeRef.current
+            : undefined;
+        const composite = source
+          ? (preparedComposite ?? ensureLiveLocalRepaintComposite(result.model, source))
           : undefined;
+        const surfaceFacesProjector =
+          composite &&
+          result.hit.object instanceof THREE.Mesh &&
+          result.hit.face &&
+          isLocalRepaintSurfaceFacingProjector(
+            composite,
+            result.hit.object,
+            result.hit.face,
+            result.hit.point,
+          );
+        const projectedUv =
+          composite && surfaceFacesProjector
+            ? projectWorldPointToLocalRepaintUv(
+                result.hit.point,
+                composite.worldToSourceClip,
+                localRepaintProjectionScratch.projectedUv,
+              )
+            : undefined;
         if (!projectedUv || !hasLocalRepaintSourceContent(projectedUv)) return;
       }
       isPaintingRef.current = true;
@@ -4307,12 +4636,14 @@ function SurfacePaintOverlay() {
     commitPaintStroke,
     commitStrokeHistory,
     enabled,
+    ensureLiveLocalRepaintComposite,
     gl,
     hasLocalRepaintSourceContent,
     isInpaintMode,
     isLocalRepaintApplyMode,
     paintAt,
     scheduleProjectionTextureUpdate,
+    scheduleTextureUpdate,
     paintTool,
     raycastModel,
     resolveLocalRepaintStrokeSource,

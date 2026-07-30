@@ -335,6 +335,9 @@ export const useSceneStore = create<SceneStore>()(
           const importedModel = selectedObjectId
             ? importedModels.find((model) => model.objectId === selectedObjectId)
             : undefined;
+          const removesLocalRepaint =
+            state.localRepaintProjectionSource?.objectId === objectId ||
+            state.localRepaintPreviewLayer?.objectId === objectId;
 
           return {
             objects: arranged.objects.map((object) => ({
@@ -345,6 +348,16 @@ export const useSceneStore = create<SceneStore>()(
             importedModel,
             selectedObjectId,
             importWarnings: importedModel?.warnings ?? [],
+            ...(removesLocalRepaint
+              ? {
+                  paintTool: 'none' as const,
+                  paintMaskDataUrl: undefined,
+                  paintMaskHasContent: false,
+                  localRepaintProjectionSource: undefined,
+                  localRepaintPreviewLayer: undefined,
+                  paintMaskResetRevision: state.paintMaskResetRevision + 1,
+                }
+              : {}),
           };
         }),
       arrangeImportedModels: () =>

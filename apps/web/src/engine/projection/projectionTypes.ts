@@ -41,6 +41,8 @@ export type ProjectionLayerInput = {
   useDepthCheck?: boolean;
   useNormalCheck?: boolean;
   renderedColor?: boolean;
+  /** Reject projected fragments below this absolute geometric face-on cosine. */
+  minimumProjectionFacing?: number;
   enableBackfaceCulling?: boolean;
   edgeFeather?: number;
   depthBias?: number;
@@ -80,6 +82,7 @@ export type ProjectionLayerStackInput = Omit<
   | 'useDepthCheck'
   | 'useNormalCheck'
   | 'renderedColor'
+  | 'minimumProjectionFacing'
 > & {
   layers: Array<
     Pick<
@@ -105,6 +108,7 @@ export type ProjectionLayerStackInput = Omit<
       | 'useDepthCheck'
       | 'useNormalCheck'
       | 'renderedColor'
+      | 'minimumProjectionFacing'
     >
   >;
 };

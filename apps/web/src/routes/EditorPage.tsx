@@ -106,7 +106,10 @@ import { useLocalRepaintStore } from '@/stores/localRepaintStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
-import { useProjectStore } from '@/stores/projectStore';
+import {
+  IMMEDIATE_PROJECT_SAVE_EVENT,
+  useProjectStore,
+} from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import {
   MAX_PAINT_MASK_BRUSH_SIZE,
@@ -122,7 +125,7 @@ import type { SerializedCamera } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
-import type { Project, ReferenceImage } from '@/types/project';
+import type { Project, ReferenceImage, TextureBakeHandoff } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
@@ -130,7 +133,7 @@ import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 type EditorPageProps = {
   projectId: string;
   onBack: () => void;
-  onOpenBake: () => void;
+  onOpenBake: (handoff?: TextureBakeHandoff) => void;
 };
 
 declare global {
@@ -817,7 +820,10 @@ export function EditorPage({
   });
   const autosaveTimerRef = useRef<number>();
   const manualSaveHandlerRef = useRef<() => void>(() => undefined);
+  const immediateSaveHandlerRef = useRef<() => void>(() => undefined);
   const manualSaveRunningRef = useRef(false);
+  const pendingImmediateSaveRef = useRef(false);
+  const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
@@ -832,6 +838,7 @@ export function EditorPage({
   const [routeProjectStatus, setRouteProjectStatus] = useState<'idle' | 'loading' | 'missing'>(
     'idle',
   );
+  const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
   const [photoshopEditBusy, setPhotoshopEditBusy] = useState(false);
@@ -915,6 +922,15 @@ export function EditorPage({
     activeLayer?.type === 'uv' && activeLayer.imageUrl
       ? activeLayer.imageUrl
       : activeBakedTexture?.imageUrl;
+  const selectedObjectBakedColor = [...(project?.bakedTextures ?? [])]
+    .reverse()
+    .find((texture) => texture.objectId === selectedObjectId && Boolean(texture.imageUrl));
+  const selectedObjectBaseColor =
+    activeLayer?.objectId === selectedObjectId && activeColorTextureUrl
+      ? { name: activeLayer?.name ?? 'BaseColor', imageUrl: activeColorTextureUrl }
+      : selectedObjectBakedColor?.imageUrl
+        ? { name: 'BaseColor', imageUrl: selectedObjectBakedColor.imageUrl }
+        : undefined;
   const normalLayer = layers.find(
     (layer) =>
       layer.type === 'normal' &&
@@ -925,6 +941,7 @@ export function EditorPage({
 
   useEffect(() => {
     setRouteProjectStatus('idle');
+    setServerReadyProjectId(undefined);
     restoredHistoryProjectIdRef.current = undefined;
     hydratedProjectVersionRef.current = undefined;
     restoredModelKeyRef.current = undefined;
@@ -952,6 +969,7 @@ export function EditorPage({
         loadedProjectIdRef.current = result.project.id;
         replaceCurrentProject(result.project);
         hydrateProjectStores(result.project);
+        setServerReadyProjectId(result.project.id);
         setRouteProjectStatus('idle');
       })
       .catch(() => {
@@ -1000,6 +1018,7 @@ export function EditorPage({
         replaceCurrentProject(result.project);
         setSaveStatus('saved');
         hydrateProjectStores(result.project);
+        setServerReadyProjectId(result.project.id);
       })
       .catch(() => {
         setSaveStatus('offline');
@@ -1020,6 +1039,7 @@ export function EditorPage({
   ]);
 
   useEffect(() => {
+    if (serverReadyProjectId !== projectId) return;
     if (skipProjectStoreSyncRef.current.layers) {
       skipProjectStoreSyncRef.current.layers = false;
       return;
@@ -1031,27 +1051,29 @@ export function EditorPage({
       return;
     }
     setProjectLayers(layers);
-  }, [layers, projectId, setLayers, setProjectLayers]);
+  }, [layers, projectId, serverReadyProjectId, setLayers, setProjectLayers]);
 
   useEffect(() => {
     void objects;
   }, [objects]);
 
   useEffect(() => {
+    if (serverReadyProjectId !== projectId) return;
     if (skipProjectStoreSyncRef.current.generations) {
       skipProjectStoreSyncRef.current.generations = false;
       return;
     }
     setProjectGenerations(generations);
-  }, [generations, setProjectGenerations]);
+  }, [generations, projectId, serverReadyProjectId, setProjectGenerations]);
 
   useEffect(() => {
+    if (serverReadyProjectId !== projectId) return;
     if (skipProjectStoreSyncRef.current.references) {
       skipProjectStoreSyncRef.current.references = false;
       return;
     }
     setProjectReferences(references);
-  }, [references, setProjectReferences]);
+  }, [projectId, references, serverReadyProjectId, setProjectReferences]);
 
   useEffect(() => {
     if (!activeProjectedLayerId) return;
@@ -1073,6 +1095,13 @@ export function EditorPage({
   }, []);
 
   useEffect(() => {
+    const handleImmediateSave = () => immediateSaveHandlerRef.current();
+    window.addEventListener(IMMEDIATE_PROJECT_SAVE_EVENT, handleImmediateSave);
+    return () =>
+      window.removeEventListener(IMMEDIATE_PROJECT_SAVE_EVENT, handleImmediateSave);
+  }, []);
+
+  useEffect(() => {
     function handleUndoRedo(event: KeyboardEvent) {
       if (document.querySelector('[data-shortcut-dialog]')) return;
       if (document.querySelector('[data-editor-shortcut-scope]')) return;
@@ -1089,7 +1118,13 @@ export function EditorPage({
   }, [redo, undo]);
 
   useEffect(() => {
-    if (!project || project.workspaceMode !== 'local-server' || !project.dirty) return;
+    if (
+      !project ||
+      project.workspaceMode !== 'local-server' ||
+      !project.dirty ||
+      serverReadyProjectId !== project.id
+    )
+      return;
     window.clearTimeout(autosaveTimerRef.current);
     setSaveStatus('idle');
     const runAutosave = () => {
@@ -1158,7 +1193,14 @@ export function EditorPage({
     return () => window.clearTimeout(autosaveTimerRef.current);
     // Autosave is intentionally keyed to project dirty/id/mode. The save helpers read the latest stores.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autosaveRetryToken, project?.dirty, project?.id, project?.workspaceMode, pushToast]);
+  }, [
+    autosaveRetryToken,
+    project?.dirty,
+    project?.id,
+    project?.workspaceMode,
+    pushToast,
+    serverReadyProjectId,
+  ]);
 
   const offlineRetryProjectId = project?.id;
   const offlineRetryProjectDirty = project?.dirty;
@@ -1190,19 +1232,21 @@ export function EditorPage({
   }, [offlineRetryProjectDirty, offlineRetryProjectId, offlineRetryWorkspaceMode, saveStatus]);
 
   function getProjectSnapshot(options: { refreshThumbnail?: boolean } = {}): Project | undefined {
-    if (!project) return undefined;
+    const latestProject = useProjectStore.getState().getCurrentProject();
+    const snapshotProject = latestProject?.id === projectId ? latestProject : project;
+    if (!snapshotProject) return undefined;
     return {
-      ...project,
+      ...snapshotProject,
       thumbnail:
         options.refreshThumbnail === false
-          ? project.thumbnail
-          : (getStandardProjectThumbnailDataUrl() ?? project.thumbnail),
+          ? snapshotProject.thumbnail
+          : (getStandardProjectThumbnailDataUrl() ?? snapshotProject.thumbnail),
       objects: useSceneStore.getState().objects,
       layers: useLayerStore.getState().layers,
       generations: useGenerationStore.getState().generations,
-      captures: useProjectStore.getState().getCurrentProject()?.captures ?? project.captures,
+      captures: snapshotProject.captures,
       bakedTextures:
-        useProjectStore.getState().getCurrentProject()?.bakedTextures ?? project.bakedTextures,
+        snapshotProject.bakedTextures,
       references: useReferenceStore.getState().references,
       updatedAt: new Date().toISOString(),
     };
@@ -1944,17 +1988,22 @@ export function EditorPage({
       workspaceMode: 'local-server',
     });
 
-    const persistOptionalLayerAsset = async (url: string | undefined, filename: string) => {
+    const persistOptionalAsset = async (
+      url: string | undefined,
+      category: 'references' | 'captures' | 'generations' | 'layers' | 'baked',
+      filename: string,
+      fallback = url,
+    ) => {
       try {
         const resolvedUrl =
           url && isLiveProjectedCanvasUrl(url) ? (getLiveProjectedCanvasDataUrl(url) ?? url) : url;
-        return await persistAssetUrl(projectForSave.id, resolvedUrl, 'layers', filename);
+        return await persistAssetUrl(projectForSave.id, resolvedUrl, category, filename);
       } catch (error) {
         console.warn(
-          `[Liclick 3D Texture] Dropping unsaved optional layer asset ${filename}.`,
+          `[Liclick 3D Texture] Skipping unavailable optional asset ${category}/${filename}.`,
           error,
         );
-        return undefined;
+        return fallback;
       }
     };
     const persistenceTasks: Array<() => Promise<void>> = [];
@@ -1971,15 +2020,18 @@ export function EditorPage({
     for (const reference of projectForSave.references) {
       persistenceTasks.push(async () => {
         reference.url =
-          (await persistAssetUrl(projectForSave.id, reference.url, 'references', reference.name)) ??
+          (await persistOptionalAsset(
+            reference.url,
+            'references',
+            reference.name,
+          )) ??
           reference.url;
       });
     }
     for (const capture of projectForSave.captures) {
       persistenceTasks.push(async () => {
         capture.colorUrl =
-          (await persistAssetUrl(
-            projectForSave.id,
+          (await persistOptionalAsset(
             capture.colorUrl,
             'captures',
             `${capture.id}-color.png`,
@@ -1987,24 +2039,21 @@ export function EditorPage({
       });
       persistenceTasks.push(async () => {
         capture.maskUrl =
-          (await persistAssetUrl(
-            projectForSave.id,
+          (await persistOptionalAsset(
             capture.maskUrl,
             'captures',
             `${capture.id}-mask.png`,
           )) ?? capture.maskUrl;
       });
       persistenceTasks.push(async () => {
-        capture.depthUrl = await persistAssetUrl(
-          projectForSave.id,
+        capture.depthUrl = await persistOptionalAsset(
           capture.depthUrl,
           'captures',
           `${capture.id}-depth.png`,
         );
       });
       persistenceTasks.push(async () => {
-        capture.normalUrl = await persistAssetUrl(
-          projectForSave.id,
+        capture.normalUrl = await persistOptionalAsset(
           capture.normalUrl,
           'captures',
           `${capture.id}-normal.png`,
@@ -2014,8 +2063,7 @@ export function EditorPage({
     for (const generation of projectForSave.generations) {
       persistenceTasks.push(async () => {
         generation.resultUrl =
-          (await persistAssetUrl(
-            projectForSave.id,
+          (await persistOptionalAsset(
             generation.resultUrl,
             'generations',
             `${generation.id}.png`,
@@ -2028,25 +2076,33 @@ export function EditorPage({
           ? (getLiveProjectedCanvasDataUrl(layer.imageUrl) ?? layer.imageUrl)
           : layer.imageUrl;
         layer.imageUrl =
-          (await persistAssetUrl(
-            projectForSave.id,
+          (await persistOptionalAsset(
             resolvedImageUrl,
             'layers',
             `${layer.id}.png`,
           )) ?? layer.imageUrl;
       });
       persistenceTasks.push(async () => {
-        layer.maskUrl = await persistOptionalLayerAsset(layer.maskUrl, `${layer.id}-mask.png`);
+        layer.maskUrl = await persistOptionalAsset(
+          layer.maskUrl,
+          'layers',
+          `${layer.id}-mask.png`,
+          undefined,
+        );
       });
       persistenceTasks.push(async () => {
-        layer.depthUrl = await persistOptionalLayerAsset(layer.depthUrl, `${layer.id}-depth.png`);
+        layer.depthUrl = await persistOptionalAsset(
+          layer.depthUrl,
+          'layers',
+          `${layer.id}-depth.png`,
+          undefined,
+        );
       });
     }
     for (const bakedTexture of projectForSave.bakedTextures) {
       persistenceTasks.push(async () => {
         bakedTexture.imageUrl =
-          (await persistAssetUrl(
-            projectForSave.id,
+          (await persistOptionalAsset(
             bakedTexture.imageUrl,
             'baked',
             `${bakedTexture.id}.png`,
@@ -2055,8 +2111,7 @@ export function EditorPage({
     }
     persistenceTasks.push(async () => {
       projectForSave.thumbnail =
-        (await persistAssetUrl(
-          projectForSave.id,
+        (await persistOptionalAsset(
           projectForSave.thumbnail,
           'captures',
           'project-thumbnail.png',
@@ -2070,7 +2125,7 @@ export function EditorPage({
     return projectForSave;
   }
 
-  async function saveToWorkspaceServer(snapshot: Project) {
+  async function performWorkspaceServerSave(snapshot: Project) {
     const slowSaveToastKey = `workspace-save-progress:${snapshot.id}`;
     const slowSaveTimer = window.setTimeout(() => {
       pushToast({
@@ -2091,11 +2146,23 @@ export function EditorPage({
       const latestProject = useProjectStore.getState().getCurrentProject();
       const snapshotUpdatedAt = Date.parse(snapshot.updatedAt);
       const latestUpdatedAt = Date.parse(latestProject?.updatedAt ?? '');
+      const sameObjectIds =
+        latestProject?.objects.map((object) => object.id).sort().join('|') ===
+        snapshot.objects.map((object) => object.id).sort().join('|');
+      const sameLayerIds =
+        latestProject?.layers.map((layer) => layer.id).sort().join('|') ===
+        snapshot.layers.map((layer) => layer.id).sort().join('|');
+      const sameDeletionIntent =
+        [...(latestProject?.deletedObjectIds ?? [])].sort().join('|') ===
+        [...(snapshot.deletedObjectIds ?? [])].sort().join('|');
       const savedLatestSnapshot = Boolean(
         latestProject?.id === snapshot.id &&
         Number.isFinite(snapshotUpdatedAt) &&
         Number.isFinite(latestUpdatedAt) &&
-        latestUpdatedAt <= snapshotUpdatedAt,
+        latestUpdatedAt <= snapshotUpdatedAt &&
+        sameObjectIds &&
+        sameLayerIds &&
+        sameDeletionIntent,
       );
       if (savedLatestSnapshot) {
         markSaved(
@@ -2117,8 +2184,23 @@ export function EditorPage({
     }
   }
 
-  async function handleManualSave() {
-    if (manualSaveRunningRef.current || backNavigationPendingRef.current) return;
+  function saveToWorkspaceServer(snapshot: Project) {
+    const operation = workspaceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => performWorkspaceServerSave(snapshot));
+    workspaceSaveQueueRef.current = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  async function handleManualSave(showSuccessToast = true) {
+    if (manualSaveRunningRef.current) {
+      if (!showSuccessToast) pendingImmediateSaveRef.current = true;
+      return;
+    }
+    if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
       pushToast({
@@ -2126,6 +2208,15 @@ export function EditorPage({
         title: '当前项目没有连接本地工作区',
         description: '请先从项目主页创建或打开本地项目。',
         dedupeKey: 'manual-save-workspace-unavailable',
+      });
+      return;
+    }
+    if (serverReadyProjectId !== currentProject.id) {
+      pushToast({
+        tone: 'warning',
+        title: '项目仍在加载',
+        description: '完整的模型、图层和贴图加载完成前不会保存，请稍后重试。',
+        dedupeKey: 'manual-save-project-loading',
       });
       return;
     }
@@ -2143,7 +2234,7 @@ export function EditorPage({
       }
       if (result.savedLatestSnapshot) {
         setSaveStatus('saved');
-        pushToast({
+        if (showSuccessToast) pushToast({
           tone: 'success',
           title: '项目已保存',
           description: 'Ctrl+S',
@@ -2158,17 +2249,28 @@ export function EditorPage({
       console.error('[Liclick 3D Texture] Manual workspace save failed.', error);
     } finally {
       manualSaveRunningRef.current = false;
+      if (pendingImmediateSaveRef.current) {
+        pendingImmediateSaveRef.current = false;
+        void handleManualSave(false);
+      }
     }
   }
 
   manualSaveHandlerRef.current = () => {
     void handleManualSave();
   };
+  immediateSaveHandlerRef.current = () => {
+    void handleManualSave(false);
+  };
 
   function handleBackToProjects() {
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
+      onBack();
+      return;
+    }
+    if (serverReadyProjectId !== currentProject.id) {
       onBack();
       return;
     }
@@ -4371,7 +4473,16 @@ export function EditorPage({
             compact
             activeModule="texture"
             onOpenTexture={() => undefined}
-            onOpenBake={onOpenBake}
+            onOpenBake={() =>
+              onOpenBake(
+                selectedObjectId
+                  ? {
+                      objectId: selectedObjectId,
+                      baseColor: selectedObjectBaseColor,
+                    }
+                  : undefined,
+              )
+            }
           />
         }
         exportMenu={

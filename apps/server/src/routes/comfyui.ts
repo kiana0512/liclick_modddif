@@ -42,13 +42,13 @@ export async function handleComfyuiRoute(
       const status = await checkComfyInpaintServiceStatus();
       sendJson(response, 200, {
         ok: true,
-        serviceUrl: serverConfig.comfyuiInpaintServiceUrl,
+        serviceUrl: serverConfig.comfyuiInpaintBaseUrl,
         ...status,
       });
     } catch (error) {
       sendJson(response, 503, {
         ok: false,
-        serviceUrl: serverConfig.comfyuiInpaintServiceUrl,
+        serviceUrl: serverConfig.comfyuiInpaintBaseUrl,
         error: error instanceof Error ? error.message : '局部重绘服务未启动。',
       });
     }

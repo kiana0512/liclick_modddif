@@ -38,3 +38,27 @@ export function getExportRoot(input: ModelExportInput): Object3D {
   }
   return input.importedModel.group;
 }
+
+export function isEditorOnlyExportObject(object: Object3D) {
+  return Boolean(
+    object.userData.liclickPaintOverlay ||
+      object.userData.liclickViewportHelper ||
+      object.userData.liclickSelectionGlow ||
+      object.userData.liclickWireframeOverlay ||
+      object.userData.liclickInpaintMaskOverlay ||
+      object.userData.liclickPaintStrokePreview,
+  );
+}
+
+export function cloneExportRoot(input: ModelExportInput): Object3D {
+  const root = getExportRoot(input).clone(true);
+  const editorOnlyObjects: Object3D[] = [];
+  root.traverse((object) => {
+    if (object !== root && isEditorOnlyExportObject(object)) editorOnlyObjects.push(object);
+  });
+  // Remove helpers after traversal. Removing children during traverse mutates
+  // the array being iterated and can leave an adjacent overlay in the export.
+  editorOnlyObjects.forEach((object) => object.removeFromParent());
+  root.updateMatrixWorld(true);
+  return root;
+}

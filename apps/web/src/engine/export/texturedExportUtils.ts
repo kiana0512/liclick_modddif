@@ -15,6 +15,11 @@ import {
   getVisibleUvLayerStack,
   isLocalRepaintUvOverlayLayer,
 } from '@/engine/layers/uvLayerComposition';
+import {
+  dilateUvCoverageWithinTopology,
+  padUvIslandGutters,
+} from '@/engine/bake/dilation';
+import { reconcileUvSeams } from '@/engine/bake/uvSeamReconciliation';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -23,7 +28,7 @@ import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import type { BakedTexture, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { BakeProjectedLayerResult } from '@/engine/bake/uvBakeTypes';
 import type { ModelExportInput } from './exportTypes';
-import { getExportRoot, slugifyExportName } from './exportUtils';
+import { cloneExportRoot, slugifyExportName } from './exportUtils';
 
 export const EXPORT_BASECOLOR_MATERIAL_NAME = 'Liclick_BaseColor';
 const LEGACY_BAKE_FILL: [number, number, number] = [244, 245, 242];
@@ -132,6 +137,77 @@ async function drawBlobToCanvas(context: CanvasRenderingContext2D, blob: Blob, w
   context.drawImage(bitmap, 0, 0, width, height);
   context.restore();
   bitmap.close();
+}
+
+async function repairLocalRepaintUvBlobForExport(
+  blob: Blob,
+  root: THREE.Object3D,
+  targetWidth: number,
+  targetHeight: number,
+) {
+  const bitmap = await createImageBitmap(blob);
+  // Repair in final atlas space instead of fixing the 1K source first and then
+  // magnifying its one-texel seam. Cap the CPU pass at 4K; an 8K export will
+  // still receive a 16px effective gutter after the final 2x draw.
+  const repairScale = Math.min(1, 4096 / Math.max(targetWidth, targetHeight, 1));
+  const repairWidth = Math.max(1, Math.round(targetWidth * repairScale));
+  const repairHeight = Math.max(1, Math.round(targetHeight * repairScale));
+  const resized = bitmap.width !== repairWidth || bitmap.height !== repairHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = repairWidth;
+  canvas.height = repairHeight;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) {
+    bitmap.close();
+    return blob;
+  }
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(bitmap, 0, 0, repairWidth, repairHeight);
+  bitmap.close();
+
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const coverage = new Uint8Array(canvas.width * canvas.height);
+  let coveredPixels = 0;
+  for (let index = 0; index < coverage.length; index += 1) {
+    if (imageData.data[index * 4 + 3] <= 2) continue;
+    coverage[index] = 1;
+    coveredPixels += 1;
+  }
+  if (coveredPixels === 0) return blob;
+
+  // Persisted local-repaint layers from older projects may have skipped the
+  // CPU topology pass used by the normal "merge projection to UV" workflow.
+  // Repair both sides of paired UV seams, then close only one-pixel holes inside
+  // model topology and add a transparent-alpha gutter for linear filtering.
+  const resolutionScale = Math.max(canvas.width, canvas.height) / 1024;
+  const seamResult = reconcileUvSeams(imageData, root, coverage, {
+    repairMissingCoverage: true,
+    bandPixels: Math.max(4, Math.min(16, Math.ceil(Math.max(canvas.width, canvas.height) / 256))),
+  });
+  const gapPixels = dilateUvCoverageWithinTopology(
+    imageData,
+    coverage,
+    root,
+    Math.max(1, Math.ceil(resolutionScale)),
+  );
+  const gutterPixels = padUvIslandGutters(
+    imageData,
+    coverage,
+    root,
+    Math.max(2, Math.ceil(resolutionScale * 2)),
+    true,
+  );
+  if (
+    !resized &&
+    seamResult.adjustedPixels === 0 &&
+    gapPixels === 0 &&
+    gutterPixels === 0
+  )
+    return blob;
+
+  context.putImageData(imageData, 0, 0);
+  return encodeCanvasPng(canvas);
 }
 
 function isRenderedColorUvLayer(layer: ReturnType<typeof findVisibleUvLayers>[number]) {
@@ -305,6 +381,29 @@ async function drawRenderedColorLayerAsBaseColor(
   targetContext.restore();
 }
 
+function reconcileFlattenedBaseColorUvSeams(
+  context: CanvasRenderingContext2D,
+  root: THREE.Object3D,
+) {
+  const { width, height } = context.canvas;
+  // A full 8K readback plus the reconciliation copy would allocate more than
+  // half a gigabyte. Its sparse repaint layers were already repaired at 4K
+  // above, so reserve this final opaque-atlas pass for the resolutions where
+  // it is both most useful and safely bounded.
+  if (Math.max(width, height) > 4096) return;
+
+  const imageData = context.getImageData(0, 0, width, height);
+  const coverage = new Uint8Array(width * height);
+  coverage.fill(1);
+  const result = reconcileUvSeams(imageData, root, coverage, {
+    // At this point both sides are opaque. Average corresponding texels instead
+    // of running missing-coverage repair: this removes the colour discontinuity
+    // that Blender's bilinear and mip-map sampling otherwise magnifies.
+    bandPixels: Math.max(8, Math.min(32, Math.ceil(Math.max(width, height) / 128))),
+  });
+  if (result.adjustedPixels > 0) context.putImageData(imageData, 0, 0);
+}
+
 function findVisibleUvLayers(objectId: string) {
   return getVisibleUvLayerStack(useLayerStore.getState().layers, objectId, 'bottom-to-top');
 }
@@ -313,7 +412,22 @@ function getExportMaterialBaseColor(root: THREE.Object3D): [number, number, numb
   let result: [number, number, number] | undefined;
   root.traverse((child) => {
     if (result || !(child instanceof THREE.Mesh)) return;
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    const storedOriginalMaterial = child.userData.originalMaterial as unknown;
+    const storedMaterials = Array.isArray(storedOriginalMaterial)
+      ? storedOriginalMaterial.filter(
+          (material): material is THREE.Material =>
+            Boolean(material && (material as THREE.Material).isMaterial),
+        )
+      : storedOriginalMaterial &&
+          (storedOriginalMaterial as THREE.Material).isMaterial
+        ? [storedOriginalMaterial as THREE.Material]
+        : [];
+    const materials =
+      storedMaterials.length > 0
+        ? storedMaterials
+        : Array.isArray(child.material)
+          ? child.material
+          : [child.material];
     for (const material of materials) {
       if (!('color' in material) || !(material.color instanceof THREE.Color)) continue;
       result = [
@@ -327,12 +441,70 @@ function getExportMaterialBaseColor(root: THREE.Object3D): [number, number, numb
   return result ?? [128, 128, 128];
 }
 
+function findImportedBaseColorTexture(root: THREE.Object3D) {
+  let result: THREE.Texture | undefined;
+  root.traverse((child) => {
+    if (result || !(child instanceof THREE.Mesh)) return;
+    const storedOriginalMaterial = child.userData.originalMaterial as unknown;
+    const storedMaterials = Array.isArray(storedOriginalMaterial)
+      ? storedOriginalMaterial
+      : storedOriginalMaterial
+        ? [storedOriginalMaterial]
+        : [];
+    const materials = storedMaterials.some(
+      (material) => material && (material as THREE.Material).isMaterial,
+    )
+      ? storedMaterials
+      : Array.isArray(child.material)
+        ? child.material
+        : [child.material];
+    for (const material of materials) {
+      if (
+        material &&
+        'map' in material &&
+        material.map instanceof THREE.Texture
+      ) {
+        result = material.map;
+        break;
+      }
+    }
+  });
+  return result;
+}
+
+async function blobFromTextureImage(texture: THREE.Texture) {
+  const image = texture.image as
+    | HTMLImageElement
+    | HTMLCanvasElement
+    | OffscreenCanvas
+    | ImageBitmap
+    | undefined;
+  if (!image) return undefined;
+  if (image instanceof HTMLImageElement && image.src) {
+    return blobFromImageAssetUrl(image.currentSrc || image.src);
+  }
+  if (image instanceof HTMLCanvasElement) return canvasToPngBlob(image);
+  if (typeof OffscreenCanvas !== 'undefined' && image instanceof OffscreenCanvas) {
+    return image.convertToBlob({ type: 'image/png' });
+  }
+  if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, image.width);
+    canvas.height = Math.max(1, image.height);
+    canvas.getContext('2d')?.drawImage(image, 0, 0);
+    return encodeCanvasPng(canvas);
+  }
+  return undefined;
+}
+
 async function flattenVisibleLayersToBaseColor(
+  importedBaseBlob: Blob | undefined,
   baseBlob: Blob | undefined,
   uvLayers: ReturnType<typeof findVisibleUvLayers>,
   fallbackColor: [number, number, number],
+  root: THREE.Object3D,
 ) {
-  if (!baseBlob && uvLayers.length === 0) return undefined;
+  if (!importedBaseBlob && !baseBlob && uvLayers.length === 0) return undefined;
   // Export uses the same two-stage stack as the editor: first build the ordinary
   // projected/UV base, then source-over every local-repaint UV patch in authored
   // order. This prevents a repaint from being flattened into the base and then
@@ -346,20 +518,31 @@ async function flattenVisibleLayersToBaseColor(
       !isLocalRepaintUvOverlayLayer(layer),
   );
   const localRepaintUvLayers = uvLayers.filter((layer) => isLocalRepaintUvOverlayLayer(layer));
-  const layerRecords = await Promise.all(
+  const sourceLayerRecords = await Promise.all(
     [...contentAwareUnderlayLayers, ...baseUvLayers, ...localRepaintUvLayers].map(
-      async (layer) => ({
-        layer,
-        blob: await blobFromUrl(layer.imageUrl),
-      }),
+      async (layer) => {
+        const sourceBlob = await blobFromUrl(layer.imageUrl);
+        return {
+          layer,
+          blob: sourceBlob,
+        };
+      },
     ),
   );
-  const probeBlob = baseBlob ?? layerRecords[0]?.blob;
+  const probeBlob = baseBlob ?? importedBaseBlob ?? sourceLayerRecords[0]?.blob;
   if (!probeBlob) return undefined;
   const probeBitmap = await createImageBitmap(probeBlob);
   const width = Math.max(1, probeBitmap.width);
   const height = Math.max(1, probeBitmap.height);
   probeBitmap.close();
+  const layerRecords = await Promise.all(
+    sourceLayerRecords.map(async ({ layer, blob }) => ({
+      layer,
+      blob: isLocalRepaintUvOverlayLayer(layer)
+        ? await repairLocalRepaintUvBlobForExport(blob, root, width, height)
+        : blob,
+    })),
+  );
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -372,6 +555,13 @@ async function flattenVisibleLayersToBaseColor(
   // transparent holes for Blender to reinterpret.
   context.fillStyle = `rgb(${fallbackColor[0]}, ${fallbackColor[1]}, ${fallbackColor[2]})`;
   context.fillRect(0, 0, width, height);
+
+  // The projected bake contains only authored projection coverage. Preserve
+  // the imported material's Base Color below it so uncovered UV texels match
+  // the editor instead of inheriting the dark viewport clear color.
+  if (importedBaseBlob) {
+    await drawBlobToCanvas(context, importedBaseBlob, width, height);
+  }
 
   // Content-aware repair is a model-wide fallback. Keep it below the baked
   // projections so it fills only their uncovered UV regions during export.
@@ -393,6 +583,7 @@ async function flattenVisibleLayersToBaseColor(
       await drawBlobToCanvas(context, blob, width, height, opacity);
     }
   }
+  reconcileFlattenedBaseColorUvSeams(context, root);
   // The canvas started opaque, and source-over compositing preserves that alpha.
   // Avoid a full-canvas readback here so 8K exports do not allocate another
   // quarter-gigabyte ImageData merely to rewrite alpha bytes to 255.
@@ -468,7 +659,7 @@ function getLayerStackCacheKey(
   options: TexturedModelExportOptions = {},
 ) {
   const project = getLatestProject(input);
-  const outputAlpha = options.outputAlpha ?? 'opaque-viewport';
+  const outputAlpha = options.outputAlpha ?? 'transparent';
   return getProjectedLayerStackSignature(project.id, objectId, `${EXPORT_BASECOLOR_CACHE_SCOPE}:${resolution}`, visibleLayers, {
     outputAlpha,
     enableDilation: true,
@@ -565,7 +756,7 @@ async function bakeCurrentVisibleTextureForExport(
   if (visibleLayers.length === 0) return undefined;
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
-  const outputAlpha = options.outputAlpha ?? 'opaque-viewport';
+  const outputAlpha = options.outputAlpha ?? 'transparent';
   const cachedTexture = findCurrentBakedTexture(input, objectId, resolution, options);
   if (cachedTexture) return cachedTexture;
 
@@ -623,8 +814,7 @@ export async function prepareTexturedModelExport(
   input: ModelExportInput,
   options: TexturedModelExportOptions = {},
 ): Promise<PreparedTexturedExport> {
-  const root = getExportRoot(input).clone(true);
-  root.updateMatrixWorld(true);
+  const root = cloneExportRoot(input);
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
   const objectId = getTexturedExportObjectId(input);
@@ -634,11 +824,17 @@ export async function prepareTexturedModelExport(
   const uvLayers = findVisibleUvLayers(objectId);
   if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 
+  const importedBaseTexture = findImportedBaseColorTexture(root);
+  const importedBaseBlob = importedBaseTexture
+    ? await blobFromTextureImage(importedBaseTexture)
+    : undefined;
   const textureBaseBlob = bakedTexture?.imageUrl ? await blobFromUrl(bakedTexture.imageUrl) : undefined;
   const textureBlob = await flattenVisibleLayersToBaseColor(
+    importedBaseBlob,
     textureBaseBlob,
     uvLayers,
     getExportMaterialBaseColor(root),
+    root,
   );
   if (!textureBlob) return { root };
   const textureUrl = URL.createObjectURL(textureBlob);

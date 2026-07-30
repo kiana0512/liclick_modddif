@@ -24,8 +24,13 @@ import { downloadBlob, getExportFilename } from '@/engine/export/exportUtils';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { fitCameraToObjectId, transformFromObject } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
+import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
-import { useProjectStore } from '@/stores/projectStore';
+import { useLayerStore } from '@/stores/layerStore';
+import {
+  IMMEDIATE_PROJECT_SAVE_EVENT,
+  useProjectStore,
+} from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
@@ -142,6 +147,7 @@ export function ObjectsPanel() {
   const toggleObjectVisibility = useSceneStore((state) => state.toggleObjectVisibility);
   const renameObject = useSceneStore((state) => state.renameObject);
   const deleteObject = useSceneStore((state) => state.deleteObject);
+  const deleteProjectObject = useProjectStore((state) => state.deleteProjectObject);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
   const currentProject = useProjectStore((state) => state.getCurrentProject());
   const setProjectObjects = useProjectStore((state) => state.setProjectObjects);
@@ -198,10 +204,15 @@ export function ObjectsPanel() {
     const object = objects.find((item) => item.id === objectId);
     if (!object) return;
     captureHistory(`${t('objectDeleteHistory')}：${object?.name ?? t('model')}`);
+    const layerStore = useLayerStore.getState();
+    layerStore.setLayers(layerStore.layers.filter((layer) => layer.objectId !== objectId));
+    useGenerationStore.getState().deleteObjectData(objectId);
     deleteObject(objectId);
+    deleteProjectObject(objectId);
     const scene = useSceneStore.getState();
     updateCurrentProject({ objects: scene.objects, activeObjectId: scene.selectedObjectId });
     setDeleteCandidateId(undefined);
+    window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
   }
 
   function handleDuplicateObject(objectId: string) {

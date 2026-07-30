@@ -34,6 +34,8 @@ export type Layer = {
   captureId?: string;
   replacementTargetLayerId?: string;
   renderedColor?: boolean;
+  /** Minimum absolute face-on cosine accepted by projection; 0 disables the guard. */
+  minimumProjectionFacing?: number;
   visible: boolean;
   opacity: number;
   strength?: number;

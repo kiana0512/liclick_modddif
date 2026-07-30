@@ -67,6 +67,9 @@ export type BakeDraftSettings = {
   udim: number;
   hitStrategy: 'inward' | 'closest-from-source';
   ignoreBackfaces: boolean;
+  dehighlightBaseColor?: boolean;
+  dehighlightStrength?: number;
+  generateRoughnessFromBakedBaseColor?: boolean;
   enabledChannels: Array<
     | 'baseColor'
     | 'normal'
@@ -100,6 +103,14 @@ export type ProjectBakeWorkspace = {
   bakeSets: Record<string, ProjectBakeSetState>;
 };
 
+export type TextureBakeHandoff = {
+  objectId: string;
+  baseColor?: {
+    name: string;
+    imageUrl: string;
+  };
+};
+
 export type Project = {
   id: string;
   name: string;
@@ -122,6 +133,8 @@ export type Project = {
   workspaceVersion?: string;
   lastSavedAt?: string;
   dirty?: boolean;
+  /** Transient save intent; the workspace server removes these objects and then clears this list. */
+  deletedObjectIds?: string[];
   assetManifest?: AssetManifest;
   settings: ProjectSettings;
 };

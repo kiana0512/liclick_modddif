@@ -50,6 +50,7 @@ export function CameraController() {
   const controlsRef = useRef<BlenderOrbitControls | null>(null);
   const orbitTargetKeyRef = useRef<string>();
   const importedModelIdsRef = useRef<Set<string>>(new Set());
+  const workspaceModeRef = useRef(workspaceMode);
   const { gl, scene, camera, size } = useThree();
 
   useEffect(() => {
@@ -121,6 +122,12 @@ export function CameraController() {
     const controls = controlsRef.current;
     const currentModelIds = new Set(importedModels.map((model) => model.objectId));
     const previousModelIds = importedModelIdsRef.current;
+    const previousWorkspaceMode = workspaceModeRef.current;
+    const workspaceModeChanged = previousWorkspaceMode !== workspaceMode;
+    workspaceModeRef.current = workspaceMode;
+    const modelSetUnchanged =
+      previousModelIds.size === currentModelIds.size &&
+      [...previousModelIds].every((objectId) => currentModelIds.has(objectId));
     const isAppendingModels =
       previousModelIds.size > 0 &&
       currentModelIds.size > previousModelIds.size &&
@@ -130,6 +137,9 @@ export function CameraController() {
       if (importedModels.length === 0) orbitTargetKeyRef.current = undefined;
       return;
     }
+    // Scene/texture mode changes only alter which already-loaded models are
+    // visible. They must not trigger another fit or disturb the current orbit.
+    if (workspaceModeChanged && modelSetUnchanged) return;
     const isSceneWorkspace = workspaceMode === 'scene' || workspaceMode === 'export';
     if (isSceneWorkspace && !importSettings.autoFitCamera) return;
     const selectedModel =
