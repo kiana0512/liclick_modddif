@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { Layers3, X } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { useToastStore, type ToastTone } from '@/stores/toastStore';
 
@@ -30,6 +30,23 @@ export function ToastHost() {
               <div className="text-[13px] font-semibold">{toast.title}</div>
               {toast.description && (
                 <div className="mt-1 text-xs leading-5 opacity-72">{toast.description}</div>
+              )}
+              {toast.action && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      toast.action?.onClick();
+                    } finally {
+                      dismissToast(toast.id);
+                    }
+                  }}
+                  className="mt-2.5 inline-flex h-8 items-center gap-1.5 rounded-md border border-current/20 bg-white/8 px-2.5 text-xs font-semibold transition hover:bg-white/14"
+                  title={toast.action.label}
+                >
+                  {toast.action.icon === 'add-layer' && <Layers3 className="h-4 w-4" />}
+                  <span>{toast.action.label}</span>
+                </button>
               )}
             </div>
             <button

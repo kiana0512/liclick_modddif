@@ -1522,6 +1522,25 @@ function isLocalRepaintUvMergeLayer(layer: Layer, objectId?: string) {
   );
 }
 
+function isMatchingLocalRepaintUvMergeLayer(
+  layer: Layer,
+  source: LocalRepaintProjectionSource,
+  objectId: string,
+) {
+  return Boolean(
+    source.targetLayerId &&
+      layer.id === source.targetLayerId &&
+      layer.type === 'uv' &&
+      (!layer.objectId || layer.objectId === (source.objectId ?? objectId)),
+  );
+}
+
+function addEmptyLocalRepaintDestinationLayer() {
+  useEditorHistoryStore.getState().capture('创建局部重绘空白图层');
+  useLayerStore.getState().addEmptyLayer();
+  useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+}
+
 function isMatchingLocalRepaintProjectionLayer(
   layer: Layer,
   source: LocalRepaintProjectionSource,
@@ -2424,10 +2443,14 @@ function SurfacePaintOverlay() {
   });
 
   const waitForPaintCommitIdle = useCallback(
-    () =>
-      new Promise<void>((resolve) => {
+    (isCancelled?: () => boolean) =>
+      new Promise<boolean>((resolve) => {
         const minimumIdleMs = LOCAL_REPAINT_HIGH_RES_IDLE_MS;
         const tryCommit = () => {
+          if (isCancelled?.()) {
+            resolve(false);
+            return;
+          }
           const idleFor = performance.now() - lastPaintActivityAtRef.current;
           if (isPaintingRef.current || idleFor < minimumIdleMs) {
             window.setTimeout(tryCommit, Math.max(16, Math.min(50, minimumIdleMs - idleFor)));
@@ -2437,6 +2460,10 @@ function SurfacePaintOverlay() {
           if (requestIdle) {
             requestIdle(
               (deadline) => {
+                if (isCancelled?.()) {
+                  resolve(false);
+                  return;
+                }
                 if (
                   isPaintingRef.current ||
                   performance.now() - lastPaintActivityAtRef.current < minimumIdleMs
@@ -2448,18 +2475,22 @@ function SurfacePaintOverlay() {
                   tryCommit();
                   return;
                 }
-                resolve();
+                resolve(true);
               },
               { timeout: 5000 },
             );
             return;
           }
           window.setTimeout(() => {
+            if (isCancelled?.()) {
+              resolve(false);
+              return;
+            }
             if (isPaintingRef.current) {
               tryCommit();
               return;
             }
-            resolve();
+            resolve(true);
           }, 0);
         };
         tryCommit();
@@ -2620,8 +2651,8 @@ function SurfacePaintOverlay() {
     const layer = syncInpaintMaskProjection(model);
     ensureInpaintMaskOverlaysForModel(layer, model);
 
-    // Local repaint uses a different capture camera and a dedicated live mask.
-    // Rebind the ordinary selection projector as soon as the user switches back.
+    // Local repaint uses a dedicated projected preview. Hide that transient
+    // material when the user returns to the persistent selection projector.
     layer.paintPreviewMaterial.uniforms.projectionReady.value = 0;
     layer.paintPreviewOverlays.forEach((overlay) => {
       overlay.visible = false;
@@ -3605,10 +3636,8 @@ function SurfacePaintOverlay() {
         window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
       const startedAt = performance.now();
       const finish = () => {
-        const currentPreview = useSceneStore.getState().localRepaintPreviewLayer;
-        if (currentPreview?.id === composite.layerId) {
-          useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
-        }
+        const sceneState = useSceneStore.getState();
+        const currentPreview = sceneState.localRepaintPreviewLayer;
         if (localRepaintCompositeRef.current === composite) {
           composite.maskContext.clearRect(
             0,
@@ -3621,6 +3650,19 @@ function SurfacePaintOverlay() {
             0,
             composite.scratchCanvas.width,
             composite.scratchCanvas.height,
+          );
+          markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
+        }
+        if (currentPreview?.id === composite.layerId) {
+          const keepInteractivePathWarm =
+            sceneState.paintTool === 'inpaint-apply' &&
+            localRepaintCompositeRef.current?.sourceKey === sourceKey;
+          // Keep the now-empty renderer preview mounted between strokes. The
+          // mask makes it visually inert, while retaining the prepared
+          // projection material so the next stroke follows the same hot path as
+          // the first one instead of recompiling after pointer-down.
+          sceneState.setLocalRepaintPreviewLayer(
+            keepInteractivePathWarm ? { ...currentPreview, opacity: 1 } : undefined,
           );
         }
         localRepaintHandoffFrameRef.current = undefined;
@@ -3713,8 +3755,7 @@ function SurfacePaintOverlay() {
         const retainedLayers = currentLayers.filter(
           (item) =>
             item.id !== persistedLayer.id &&
-            !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId) &&
-            !isLocalRepaintUvMergeLayer(item, model.objectId),
+            !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
         );
         layerState.setLayers([persistedLayer, ...retainedLayers]);
         useLayerStore.getState().setActiveLayer(persistedLayer.id);
@@ -3728,10 +3769,30 @@ function SurfacePaintOverlay() {
       const previewLayerId = composite.layerId;
       const currentLayers = useLayerStore.getState().layers;
       const currentMergeLayer = currentLayers.find((item) =>
-        isLocalRepaintUvMergeLayer(item, model.objectId),
+        isMatchingLocalRepaintUvMergeLayer(item, source, model.objectId),
       );
-      const mergeLayerId =
-        currentMergeLayer?.id ?? createId(LOCAL_REPAINT_UV_MERGE_LAYER_ID_PREFIX);
+      if (
+        !currentMergeLayer ||
+        (currentMergeLayer.imageUrl && currentMergeLayer.role !== 'local-repaint-overlay')
+      ) {
+        const sceneState = useSceneStore.getState();
+        sceneState.setLocalRepaintProjectionSource(undefined);
+        sceneState.setPaintTool('none');
+        pushToast({
+          tone: 'warning',
+          title: '请选择可用于局部重绘的图层',
+          description:
+            '请选择空白 UV 图层或已有局部重绘图层；普通非空图层不能直接接收局部重绘。',
+          action: {
+            label: '新建图层',
+            icon: 'add-layer',
+            onClick: addEmptyLocalRepaintDestinationLayer,
+          },
+          dedupeKey: 'local-repaint-destination-layer-required',
+        });
+        return;
+      }
+      const mergeLayerId = currentMergeLayer.id;
       // The mask contains only strokes that have not reached UV yet. Freeze it
       // synchronously, then keep drawing into the live canvas while this snapshot
       // is processed in the serialized background queue.
@@ -3741,46 +3802,14 @@ function SurfacePaintOverlay() {
         width: composite.maskCanvas.width,
         height: composite.maskCanvas.height,
       });
-      if (!currentMergeLayer) {
-        // The live projection is renderer-only for stroke responsiveness, but
-        // users still need an immediate, stable layer-stack entry. Publish an
-        // image-less UV placeholder on pointer-up; SceneRoot ignores it until
-        // the 4K bake replaces imageUrl on this same layer id.
-        const pendingLayer: Layer = {
-          id: mergeLayerId,
-          name: LOCAL_REPAINT_UV_MERGE_LAYER_NAME,
-          type: 'uv',
-          role: 'local-repaint-overlay',
-          imageUrl: '',
-          objectId: source.objectId ?? model.objectId,
-          generationId: source.generationId,
-          captureId: source.captureId,
-          replacementTargetLayerId: source.targetLayerId,
-          renderedColor: true,
-          visible: true,
-          opacity: 1,
-          strength: 1,
-          blendMode: 'normal',
-          adjustments: { hue: 0, saturation: 0, lightness: 0 },
-          order: 0,
-          contentRevision: 0,
-          isBaked: false,
-          needsRebake: true,
-          createdAt: new Date().toISOString(),
-        };
-        const retainedLayers = currentLayers.filter(
-          (item) =>
-            !isLocalRepaintUvMergeLayer(item, model.objectId) &&
-            !isLocalRepaintProjectionLayer(item),
-        );
-        const layerState = useLayerStore.getState();
-        layerState.setLayers([pendingLayer, ...retainedLayers]);
-        useLayerStore.getState().setActiveLayer(mergeLayerId);
-        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
-      }
 
       const commitUvStroke = async () => {
-        await waitForPaintCommitIdle();
+        const canCommit = await waitForPaintCommitIdle(
+          () =>
+            localRepaintUvCommitRevisionRef.current !== commitRevision ||
+            localRepaintCompositeRef.current?.sourceKey !== sourceKey,
+        );
+        if (!canCommit) return;
         if (
           localRepaintUvCommitRevisionRef.current !== commitRevision ||
           localRepaintCompositeRef.current?.sourceKey !== sourceKey ||
@@ -3874,10 +3903,13 @@ function SurfacePaintOverlay() {
         const layerState = useLayerStore.getState();
         const latestLayers = layerState.layers;
         const existingMergeLayers = latestLayers.filter((item) =>
-          isLocalRepaintUvMergeLayer(item, model.objectId),
+          isMatchingLocalRepaintUvMergeLayer(item, source, model.objectId),
         );
         const existingMergeLayer =
           existingMergeLayers.find((item) => item.id === mergeLayerId) ?? existingMergeLayers[0];
+        if (!existingMergeLayer) {
+          throw new Error('局部重绘目标图层已被删除，请新建并选中空白图层后重试。');
+        }
         const existingLiveCanvas = existingMergeLayer?.imageUrl
           ? getLiveProjectedCanvasState(existingMergeLayer.imageUrl)?.canvas
           : undefined;
@@ -3920,7 +3952,7 @@ function SurfacePaintOverlay() {
           ),
         );
         let nextCanvas: HTMLCanvasElement;
-        if (existingMergeLayers.length === 0) {
+        if (!existingMergeLayer.imageUrl) {
           // First stroke: use the GPU bake canvas directly instead of allocating
           // and copying a second full-resolution surface.
           nextCanvas = bakeResult.canvas;
@@ -3952,13 +3984,13 @@ function SurfacePaintOverlay() {
 
         const retainedLayers = latestLayers.filter(
           (item) =>
-            !isLocalRepaintUvMergeLayer(item, model.objectId) &&
+            !isMatchingLocalRepaintUvMergeLayer(item, source, model.objectId) &&
             !isLocalRepaintProjectionLayer(item),
         );
         const mergedLayer: Layer = {
           ...existingMergeLayer,
           id: mergeLayerId,
-          name: LOCAL_REPAINT_UV_MERGE_LAYER_NAME,
+          name: existingMergeLayer.name || source.name || LOCAL_REPAINT_UV_MERGE_LAYER_NAME,
           type: 'uv',
           role: 'local-repaint-overlay',
           imageUrl: assetUrl,
@@ -4493,15 +4525,11 @@ function SurfacePaintOverlay() {
     if (draft.target === 'apply-local-repaint') return;
     if (!draft.layer) return;
 
-    const targetCanvas =
-      draft.target === 'mask' ? draft.layer.projectionCanvas : draft.layer.paintCanvas;
-    const targetContext =
-      draft.target === 'mask' ? draft.layer.projectionContext : draft.layer.paintContext;
     const afterMaskHasContent =
       draft.target === 'mask'
         ? paintTool === 'inpaint-add'
           ? true
-          : hasCanvasAlpha(targetCanvas, targetContext)
+          : hasCanvasAlpha(draft.layer.projectionCanvas, draft.layer.projectionContext)
         : maskHasContentRef.current;
 
     if (draft.target === 'mask') {
@@ -4516,9 +4544,9 @@ function SurfacePaintOverlay() {
     const previousTouchAction = canvas.style.touchAction;
     if (enabled) canvas.style.touchAction = 'none';
     const isMaskStroke = isInpaintMode || isLocalRepaintApplyMode;
-    // Selection/local-repaint masks can be filled by one projected segment per
-    // frame. Texture paint and eraser commits need dense surface raycasts so the
-    // UV result follows the projected screen path across every visible triangle.
+    // Both selection and generated local-repaint masks use camera projection.
+    // One surface hit per frame is enough because the projected segment
+    // rasterizer fills the path without touching the model UV layout.
     const usesProjectedLiveStroke = isMaskStroke;
     const paintClientPath = (targets: ClientPoint[]) => {
       const telemetry = strokeTelemetryRef.current;

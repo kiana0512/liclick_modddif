@@ -367,6 +367,20 @@ function collapseLocalRepaintProjectionLayers(
   });
 }
 
+function isLocalRepaintDestinationLayer(
+  layer: Layer | undefined,
+  objectId: string,
+): layer is Layer & { type: 'uv' } {
+  if (
+    !layer ||
+    layer.type !== 'uv' ||
+    (layer.objectId && layer.objectId !== objectId)
+  )
+    return false;
+  if (!layer.imageUrl) return true;
+  return layer.role === 'local-repaint-overlay';
+}
+
 function findNormalMapTexture(model?: ModelLoadResult) {
   let normalMap: THREE.Texture | undefined;
   model?.group.traverse((object) => {
@@ -861,7 +875,6 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
   const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
-  const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
   const setLocalRepaintProjectionSource = useSceneStore(
     (state) => state.setLocalRepaintProjectionSource,
   );
@@ -3646,6 +3659,29 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     return promise;
   }, []);
 
+  useEffect(() => {
+    const latestLocalRepaintGeneration = generations.find(
+      (generation) =>
+        generation.resultUrl &&
+        generation.status === 'succeeded' &&
+        isLocalRepaintGeneration(generation) &&
+        (!generation.metadata.projectId || generation.metadata.projectId === projectId),
+    );
+    if (!latestLocalRepaintGeneration?.resultUrl) return;
+    // Start fetching/converting the ComfyUI result as soon as it arrives. The
+    // apply button should only bind an already warm source, regardless of which
+    // repaint round the user is entering.
+    void getLocalRepaintProjectionImage(latestLocalRepaintGeneration.resultUrl).catch((error) => {
+      console.warn('[Liclick 3D Texture] Could not preload local repaint result:', error);
+    });
+  }, [generations, getLocalRepaintProjectionImage, projectId]);
+
+  const addLocalRepaintDestinationLayer = useCallback(() => {
+    captureHistory('创建局部重绘空白图层');
+    useLayerStore.getState().addEmptyLayer();
+    setProjectLayers(useLayerStore.getState().layers);
+  }, [captureHistory, setProjectLayers]);
+
   const handleLocalRepaintFromToolbar = useCallback(() => {
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
     localRepaintToolRequestRevisionRef.current = requestRevision;
@@ -3662,13 +3698,19 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       const targetLayer = useLayerStore
         .getState()
         .layers.find((layer) => layer.id === targetLayerId);
-      if (!targetLayer || (targetLayer.type !== 'uv' && targetLayer.type !== 'projected')) {
+      if (!targetLayer) {
+        setLocalRepaintProjectionSource(undefined);
+        setPaintTool('none');
         pushToast({
           tone: 'warning',
-          title: '请先选择替换目标图层',
-          description:
-            '按钮 3 会把重绘结果刷入当前选中的 UV 图层，或作为所选投射图层的局部替换层。',
-          dedupeKey: 'local-repaint-target-layer-required',
+          title: '请选择可用于局部重绘的图层',
+          description: '点击图层面板右上角的“＋”，新建并选中空白图层后再进行局部重绘。',
+          action: {
+            label: '新建图层',
+            icon: 'add-layer',
+            onClick: addLocalRepaintDestinationLayer,
+          },
+          dedupeKey: 'local-repaint-destination-layer-required',
         });
         return;
       }
@@ -3689,6 +3731,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           (!generation.metadata.projectId || generation.metadata.projectId === projectId),
       );
       if (!latestLocalRepaintGeneration?.resultUrl) {
+        setLocalRepaintProjectionSource(undefined);
+        setPaintTool('none');
         pushToast({
           tone: 'warning',
           title: t('localRepaintUnavailable'),
@@ -3703,6 +3747,24 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           .getState()
           .getCurrentProject()
           ?.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId);
+      const objectId = selectedObjectId ?? generationCapture?.objectId ?? importedModel.objectId;
+      if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
+        setLocalRepaintProjectionSource(undefined);
+        setPaintTool('none');
+        pushToast({
+          tone: 'warning',
+          title: '请选择可用于局部重绘的图层',
+          description:
+            '请选择空白 UV 图层或已有局部重绘图层。也可以点击下方按钮直接新建图层。',
+          action: {
+            label: '新建图层',
+            icon: 'add-layer',
+            onClick: addLocalRepaintDestinationLayer,
+          },
+          dedupeKey: 'local-repaint-destination-layer-required',
+        });
+        return;
+      }
       const cameraState = generationCapture?.camera ?? getCurrentCameraSnapshot();
       if (!cameraState) {
         pushToast({
@@ -3712,33 +3774,52 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         });
         return;
       }
-      const objectId = selectedObjectId ?? generationCapture?.objectId ?? importedModel.objectId;
       importedModel.group.updateMatrixWorld(true);
       const captureId = generationCapture?.id ?? latestLocalRepaintGeneration.captureId;
       const generationMaskUrl =
         typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
           ? latestLocalRepaintGeneration.metadata.maskUrl
           : paintMaskDataUrl;
-      // Reflect the selected tool immediately. More importantly, this gives us
-      // an intent boundary: if the user switches to mask painting while the
-      // repaint image is still being decoded, the completed async work must not
-      // switch the tool back underneath them.
-      setPaintTool('inpaint-apply');
+      const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
+      if (
+        preparedSource?.generationId === latestLocalRepaintGeneration.id &&
+        preparedSource.allowedMaskUrl === generationMaskUrl &&
+        preparedSource.objectId === objectId &&
+        preparedSource.targetLayerId === targetLayer.id
+      ) {
+        setPaintTool('inpaint-apply');
+        return;
+      }
+      // A new ComfyUI result is a fresh interactive session. Keep painting
+      // disabled while its lightweight source and renderer material are being
+      // prepared, so an early gesture cannot be silently queued behind setup.
+      setPaintTool('none');
+      setLocalRepaintProjectionSource(undefined);
       const projectionImageUrl = await getLocalRepaintProjectionImage(
         latestLocalRepaintGeneration.resultUrl,
       );
       if (
         localRepaintToolRequestRevisionRef.current !== requestRevision ||
-        useSceneStore.getState().paintTool !== 'inpaint-apply'
+        useSceneStore.getState().paintTool !== 'none'
       )
         return;
-      if (
-        localRepaintProjectionSource?.generationId === latestLocalRepaintGeneration.id &&
-        localRepaintProjectionSource.allowedMaskUrl === generationMaskUrl &&
-        localRepaintProjectionSource.imageUrl === projectionImageUrl &&
-        localRepaintProjectionSource.objectId === objectId &&
-        localRepaintProjectionSource.targetLayerId === targetLayer.id
-      ) {
+      const currentTargetLayer = useLayerStore
+        .getState()
+        .layers.find((layer) => layer.id === targetLayer.id);
+      if (!isLocalRepaintDestinationLayer(currentTargetLayer, objectId)) {
+        setLocalRepaintProjectionSource(undefined);
+        setPaintTool('none');
+        pushToast({
+          tone: 'warning',
+          title: '局部重绘目标图层已变化',
+          description: '请选择空白 UV 图层或已有局部重绘图层，然后再次启用局部重绘。',
+          action: {
+            label: '新建图层',
+            icon: 'add-layer',
+            onClick: addLocalRepaintDestinationLayer,
+          },
+          dedupeKey: 'local-repaint-destination-layer-changed',
+        });
         return;
       }
       const nameSource = latestLocalRepaintGeneration.prompt.trim();
@@ -3765,26 +3846,23 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         generationId: latestLocalRepaintGeneration.id,
         captureId,
         name: nameSource ? `${t('localRepaint')}: ${nameSource.slice(0, 20)}` : t('localRepaint'),
-        targetLayerId: targetLayer.id,
-        targetLayerType: targetLayer.type,
-        targetLayerName: targetLayer.name,
+        targetLayerId: currentTargetLayer.id,
+        targetLayerType: currentTargetLayer.type,
+        targetLayerName: currentTargetLayer.name,
       });
       pushToast({
         tone: 'info',
         title: t('localRepaint'),
-        description:
-          targetLayer.type === 'uv'
-            ? `当前目标：${targetLayer.name}。刷完一笔后会在后台合成回这个 UV 图层。`
-            : `当前目标：${targetLayer.name}。刷过的区域会作为该图层的局部替换。`,
+        description: `正在准备绘制图层：${currentTargetLayer.name}。准备完成后会自动进入局部重绘。`,
         dedupeKey: `local-repaint-apply-source:${latestLocalRepaintGeneration.id}`,
       });
     })();
   }, [
+    addLocalRepaintDestinationLayer,
     generations,
     getCurrentCameraSnapshot,
     getLocalRepaintProjectionImage,
     importedModel,
-    localRepaintProjectionSource,
     paintMaskDataUrl,
     paintMaskHasContent,
     project,

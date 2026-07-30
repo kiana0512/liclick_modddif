@@ -867,6 +867,7 @@ function ImportedModel({
   const lastProjectedTransformRef = useRef<THREE.Matrix4>();
   const lastProjectedSamplerWarningRef = useRef('');
   const lastProjectedTextureArrayNoticeRef = useRef('');
+  const activatedLocalRepaintPreviewKeyRef = useRef('');
   const projectedPreviewCompositorRef = useRef<ProjectedLayerPreviewCompositor>();
   const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   const [progressiveProjectedPreview, setProgressiveProjectedPreview] =
@@ -1748,6 +1749,34 @@ function ImportedModel({
       } else {
         lastProjectedTransformRef.current = model.group.matrixWorld.clone();
       }
+      if (
+        projectedLayerInput &&
+        !projectedPreviewOverBudget &&
+        visibleLocalRepaintPreviewLayer &&
+        previewStatus.processedLayerIds.includes(visibleLocalRepaintPreviewLayer.id)
+      ) {
+        const activationKey = [
+          visibleLocalRepaintPreviewLayer.id,
+          visibleLocalRepaintPreviewLayer.generationId ?? '',
+          visibleLocalRepaintPreviewLayer.replacementTargetLayerId ?? '',
+          visibleLocalRepaintPreviewLayer.maskUrl ?? '',
+        ].join('|');
+        if (activatedLocalRepaintPreviewKeyRef.current !== activationKey) {
+          activatedLocalRepaintPreviewKeyRef.current = activationKey;
+          const sceneState = useSceneStore.getState();
+          const currentPreview = sceneState.localRepaintPreviewLayer;
+          const currentSource = sceneState.localRepaintProjectionSource;
+          if (
+            sceneState.paintTool === 'none' &&
+            currentPreview?.id === visibleLocalRepaintPreviewLayer.id &&
+            currentSource?.generationId === visibleLocalRepaintPreviewLayer.generationId &&
+            currentSource?.targetLayerId ===
+              visibleLocalRepaintPreviewLayer.replacementTargetLayerId
+          ) {
+            sceneState.setPaintTool('inpaint-apply');
+          }
+        }
+      }
     }
 
     void applyMaterials().catch((error) => {
@@ -1795,6 +1824,7 @@ function ImportedModel({
     activeProjectedPreviewInput,
     stablePreviewProjectedLayers,
     topUvProjectedOverlayInput,
+    visibleLocalRepaintPreviewLayer,
     visibleStackHasBakedPreview,
   ]);
 

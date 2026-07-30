@@ -43,13 +43,18 @@ const comfyuiBaseUrl = (process.env.COMFYUI_BASE_URL ?? 'http://127.0.0.1:8188')
 const comfyuiTextureWorkflowPath =
   process.env.COMFYUI_TEXTURE_WORKFLOW_PATH ??
   'C:/Users/rentian/Downloads/li3d_zimage_web3d_fast_1024_to_4k_16gb.json';
-const comfyuiInpaintBaseUrl = (
-  process.env.COMFYUI_INPAINT_BASE_URL ??
-  process.env.COMFYUI_INPAINT_SERVICE_URL ??
-  'http://10.3.2.59:56001'
-).replace(/\/$/, '');
-const comfyuiInpaintWorkflowName =
-  process.env.COMFYUI_INPAINT_WORKFLOW_NAME ?? 'flux_fill_inpaint.json';
+const modelviewInpaintUrl =
+  process.env.LICLICK_MODELVIEW_INPAINT_URL?.trim() ||
+  'https://10.3.34.11/api/v1/services/modelview-inpaint';
+const modelviewInpaintCaPath =
+  process.env.LICLICK_MODELVIEW_INPAINT_CA_PATH?.trim() ||
+  process.env.LICLICK_SUBSTANCE_BAKER_CA_PATH?.trim() ||
+  '';
+const modelviewInpaintApiKey =
+  process.env.LICLICK_MODELVIEW_INPAINT_API_KEY?.trim() ?? '';
+const modelviewInpaintTimeoutMs = Number(
+  process.env.LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS ?? 1_900_000,
+);
 const substanceBakerBaseUrl = (
   process.env.LICLICK_SUBSTANCE_BAKER_BASE_URL ?? 'https://10.3.34.11'
 ).replace(/\/$/, '');
@@ -274,8 +279,10 @@ export const serverConfig = {
   frontendUrl,
   comfyuiBaseUrl,
   comfyuiTextureWorkflowPath,
-  comfyuiInpaintBaseUrl,
-  comfyuiInpaintWorkflowName,
+  modelviewInpaintUrl,
+  modelviewInpaintCaPath,
+  modelviewInpaintApiKey,
+  modelviewInpaintTimeoutMs,
   substanceBakerBaseUrl,
   substanceBakerCaPath,
   substanceBakerApiKey,

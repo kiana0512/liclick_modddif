@@ -11,6 +11,7 @@ import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
 import { handleLiclickRoute } from './routes/liclick.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
+import { handleModelviewRoute } from './routes/modelview.js';
 import { handlePhotoshopRoute } from './routes/photoshop.js';
 import { photoshopBridge } from './photoshop/photoshopBridgeService.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
@@ -138,6 +139,7 @@ async function handleWorkspaceRequest(
   ) return;
   if (url.pathname.startsWith('/api/bake') && (await handleBakeRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/photoshop') && (await handlePhotoshopRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/modelview') && (await handleModelviewRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
   if (
     (url.pathname.startsWith('/api/liclick') || url.pathname === '/api/generate-image') &&

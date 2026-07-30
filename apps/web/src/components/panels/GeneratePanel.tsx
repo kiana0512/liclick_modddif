@@ -33,6 +33,7 @@ import {
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
 import { devLogin } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
+import { createModelviewApiClient } from '@/services/modelviewApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import {
   createLiclickApiClient,
@@ -1212,9 +1213,11 @@ export function GeneratePanel() {
     const isTextureMap = isTextureMapGeneration(generationToCancel);
     const isLocalRepaint = isLocalRepaintGeneration(generationToCancel);
     const isComfyGeneration = generationToCancel.metadata.provider === 'comfyui-local';
+    const isModelviewGeneration =
+      generationToCancel.metadata.provider === 'modelview-seedvr2';
     cancelledGenerationIdsRef.current.add(generationToCancel.id);
     cancelledGenerationIdsRef.current.add(jobId);
-    if (isComfyGeneration) comfyGenerationAbortRef.current?.abort();
+    if (isComfyGeneration || isModelviewGeneration) comfyGenerationAbortRef.current?.abort();
     const cancelledGeneration: Generation = {
       ...generationToCancel,
       status: 'failed',
@@ -1240,9 +1243,11 @@ export function GeneratePanel() {
           ? '已终止当前局部重绘生成任务。'
           : '已终止当前莉刻生图任务。',
     });
-    const cancelRequest = isComfyGeneration
-      ? createComfyuiApiClient().cancelTextureMap(jobId)
-      : createLiclickApiClient().cancelGenerationJob(jobId);
+    const cancelRequest = isModelviewGeneration
+      ? Promise.resolve()
+      : isComfyGeneration
+        ? createComfyuiApiClient().cancelTextureMap(jobId)
+        : createLiclickApiClient().cancelGenerationJob(jobId);
     void cancelRequest.catch((error) => {
       console.warn('[Liclick 3D Texture] Could not cancel remote generation job:', error);
       pushToast({
@@ -1639,7 +1644,14 @@ export function GeneratePanel() {
       submitLockRef.current = true;
       if (authStatus !== 'authenticated' && !(await requireAiLogin())) return;
       const objectId = captureObjectId;
-      const maskSize = await getImageSize(paintMaskDataUrl);
+      // The selection accumulates camera-specific projections instead of using
+      // model UVs. Reproject their union from the current camera immediately
+      // before submission so it matches the captured frame.
+      const currentPaintMaskDataUrl =
+        (await useSceneStore.getState().paintMaskCapture?.()) ?? paintMaskDataUrl;
+      if (!currentPaintMaskDataUrl) throw new Error(t('localRepaintMaskMissing'));
+      useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
+      const maskSize = await getImageSize(currentPaintMaskDataUrl);
       if (!maskSize.width || !maskSize.height) throw new Error('无法读取当前局部重绘蒙版尺寸。');
       const capture = await captureCurrentView({
         objectId,
@@ -1660,7 +1672,7 @@ export function GeneratePanel() {
         captureId: capture.id,
         status: 'running',
         metadata: {
-          provider: 'comfyui-local',
+          provider: 'modelview-seedvr2',
           workflow: 'local-repaint',
           clientGenerationId: generationId,
           projectId: currentProject.id,
@@ -1680,11 +1692,11 @@ export function GeneratePanel() {
       comfyGenerationAbortRef.current = abortController;
       const inputImage = await createComfyInpaintInputImage(
         capture.colorUrl,
-        paintMaskDataUrl,
+        currentPaintMaskDataUrl,
         capture.width,
         capture.height,
       );
-      const generation = await createComfyuiApiClient().generateInpaint(
+      const generation = await createModelviewApiClient().generateInpaint(
         {
           clientGenerationId: generationId,
           projectId: currentProject.id,
@@ -1702,7 +1714,7 @@ export function GeneratePanel() {
         metadata: {
           ...generation.metadata,
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
-          maskUrl: paintMaskDataUrl,
+          maskUrl: currentPaintMaskDataUrl,
         },
       });
       setGenerateNotice(undefined);
@@ -2796,7 +2808,9 @@ export function GeneratePanel() {
                 当前任务会立即从莉刻 3D Texture 面板中停止等待，生成结果不会写回预览、图层或项目。
                 {cancelConfirmGeneration.metadata.provider === 'comfyui-local'
                   ? ' 同时会向本地 ComfyUI 发送中断请求。'
-                  : ' 同时会向生图后端发送取消请求。'}
+                  : cancelConfirmGeneration.metadata.provider === 'modelview-seedvr2'
+                    ? ' ModelView 接口没有取消端点，本地会断开当前等待。'
+                    : ' 同时会向生图后端发送取消请求。'}
               </p>
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <Button

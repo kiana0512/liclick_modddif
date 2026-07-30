@@ -414,10 +414,10 @@ const fragmentShader = `
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    // Empty projection coverage is a real hole in the selected layer, not an
-    // editor selection mask. Reveal the lower/model surface while painting so
-    // eraser feedback matches the committed composition on every pointer move.
-    return baseSurfaceColor;
+    // Keep uncovered texels visually distinct from actual projected content.
+    // This is display-only and does not alter the source or baked resolution.
+    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
+    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
   }
 
   void main() {
@@ -1124,9 +1124,10 @@ function buildStackFragmentShader(
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
-    // Keep the multi-layer and direct projection paths visually identical:
-    // transparent coverage reveals the lower/model surface immediately.
-    return baseSurfaceColor;
+    // Match the UV-layer empty-area treatment so projection gaps never look
+    // like a valid white texture contribution.
+    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
+    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
   }
 
   float topQuality0 = 0.0;
@@ -2783,7 +2784,7 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
       liveUvOverlaySaturationShift: { value: input.liveUvOverlaySaturation ?? 0 },
       liveUvOverlayLightnessShift: { value: input.liveUvOverlayLightness ?? 0 },
       useSurfaceMaskMap: { value: input.surfaceMaskTexture ? 1 : 0 },
-      showEmptyUvChecker: { value: input.showEmptyUvChecker === true ? 1 : 0 },
+      showEmptyUvChecker: { value: input.showEmptyUvChecker === false ? 0 : 1 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       previewLightingEnabled: { value: previewLighting.enabled },
       previewExposure: { value: previewLighting.exposure },
@@ -2837,7 +2838,7 @@ export function updateUvOverlayPreviewMaterial(
   uniforms.liveUvOverlaySaturationShift.value = input.liveUvOverlaySaturation ?? 0;
   uniforms.liveUvOverlayLightnessShift.value = input.liveUvOverlayLightness ?? 0;
   uniforms.useSurfaceMaskMap.value = input.surfaceMaskTexture ? 1 : 0;
-  uniforms.showEmptyUvChecker.value = input.showEmptyUvChecker === true ? 1 : 0;
+  uniforms.showEmptyUvChecker.value = input.showEmptyUvChecker === false ? 0 : 1;
   uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   uniforms.previewLightingEnabled.value = previewLighting.enabled;
   uniforms.previewExposure.value = previewLighting.exposure;

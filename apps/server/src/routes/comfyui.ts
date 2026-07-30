@@ -3,11 +3,8 @@ import { requireAuth } from '../auth/authMiddleware.js';
 import { serverConfig } from '../config.js';
 import {
   cancelComfyTextureMap,
-  checkComfyInpaintServiceStatus,
   checkComfyuiStatus,
-  generateComfyInpaint,
   generateComfyTextureMap,
-  type ComfyInpaintInput,
   type ComfyTextureMapInput,
 } from '../services/comfyuiGenerationService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
@@ -37,24 +34,6 @@ export async function handleComfyuiRoute(
     return true;
   }
 
-  if (request.method === 'GET' && segments[2] === 'inpaint-status') {
-    try {
-      const status = await checkComfyInpaintServiceStatus();
-      sendJson(response, 200, {
-        ok: true,
-        serviceUrl: serverConfig.comfyuiInpaintBaseUrl,
-        ...status,
-      });
-    } catch (error) {
-      sendJson(response, 503, {
-        ok: false,
-        serviceUrl: serverConfig.comfyuiInpaintBaseUrl,
-        error: error instanceof Error ? error.message : '局部重绘服务未启动。',
-      });
-    }
-    return true;
-  }
-
   if (request.method === 'POST' && segments[2] === 'generate-texture-map') {
     const input = await readJsonBody<ComfyTextureMapInput>(request);
     if (!input.prompt?.trim()) {
@@ -66,21 +45,6 @@ export async function handleComfyuiRoute(
       return true;
     }
     const result = await generateComfyTextureMap(input, user.id);
-    sendJson(response, 200, result);
-    return true;
-  }
-
-  if (request.method === 'POST' && segments[2] === 'generate-inpaint') {
-    const input = await readJsonBody<ComfyInpaintInput>(request);
-    if (input.prompt && Array.from(input.prompt).length > 4096) {
-      sendJson(response, 400, { error: '局部重绘提示词不能超过 4096 个字符。' });
-      return true;
-    }
-    if (!input.image?.dataUrl) {
-      sendJson(response, 400, { error: 'ComfyUI 局部重绘输入图不能为空。' });
-      return true;
-    }
-    const result = await generateComfyInpaint(input, user.id);
     sendJson(response, 200, result);
     return true;
   }

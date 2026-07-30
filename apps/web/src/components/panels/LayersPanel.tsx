@@ -232,10 +232,15 @@ export function LayersPanel({
   }, [activeProjectedLayerId, setActiveLayer, visibleLayers]);
 
   useEffect(() => {
-    if (!activeProjectedLayerId || selectedLayerIds.length > 0) return;
+    if (
+      !activeProjectedLayerId ||
+      !layerIdSet.has(activeProjectedLayerId) ||
+      selectedLayerIds.includes(activeProjectedLayerId)
+    )
+      return;
     setSelectedLayerIds([activeProjectedLayerId]);
     setLastSelectedLayerId(activeProjectedLayerId);
-  }, [activeProjectedLayerId, selectedLayerIds.length]);
+  }, [activeProjectedLayerId, layerIdSet, selectedLayerIds]);
 
   useEffect(() => {
     if (!menu) return undefined;

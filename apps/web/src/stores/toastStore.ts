@@ -3,11 +3,18 @@ import { createId } from '@/utils/id';
 
 export type ToastTone = 'info' | 'success' | 'warning' | 'error';
 
+export type ToastAction = {
+  label: string;
+  icon?: 'add-layer';
+  onClick: () => void;
+};
+
 export type ToastMessage = {
   id: string;
   title: string;
   description?: string;
   tone: ToastTone;
+  action?: ToastAction;
   dedupeKey?: string;
   durationMs?: number;
   persistent?: boolean;
@@ -56,6 +63,9 @@ export const useToastStore = create<ToastStore>((set, get) => ({
           existing.title === nextToast.title &&
           existing.description === nextToast.description &&
           existing.tone === nextToast.tone &&
+          existing.action?.label === nextToast.action?.label &&
+          existing.action?.icon === nextToast.action?.icon &&
+          existing.action?.onClick === nextToast.action?.onClick &&
           existing.durationMs === nextToast.durationMs &&
           existing.persistent === nextToast.persistent;
         if (unchanged) return state;

@@ -71,6 +71,8 @@ export type ViewportRuntime = {
   };
 };
 
+export type PaintMaskCapture = () => Promise<string | undefined>;
+
 type SceneStore = {
   objects: SceneObject[];
   importedModels: ModelLoadResult[];
@@ -86,6 +88,7 @@ type SceneStore = {
   paintMaskInvertRevision: number;
   paintMaskDataUrl?: string;
   paintMaskHasContent: boolean;
+  paintMaskCapture?: PaintMaskCapture;
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
   localRepaintPreviewLayer?: Layer;
   paintMaskSettings: PaintMaskSettings;
@@ -110,6 +113,7 @@ type SceneStore = {
   setPaintTool: (mode: PaintToolMode) => void;
   markPaintMaskChanged: () => void;
   setPaintMaskDataUrl: (dataUrl?: string, hasContent?: boolean) => void;
+  setPaintMaskCapture: (capture?: PaintMaskCapture) => void;
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
   setLocalRepaintPreviewLayer: (layer?: Layer) => void;
   setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
@@ -204,6 +208,7 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskInvertRevision: 0,
       paintMaskDataUrl: undefined,
       paintMaskHasContent: false,
+      paintMaskCapture: undefined,
       localRepaintProjectionSource: undefined,
       localRepaintPreviewLayer: undefined,
       paintMaskSettings: {
@@ -421,6 +426,7 @@ export const useSceneStore = create<SceneStore>()(
             paintMaskHasContent ?? (paintMaskDataUrl ? state.paintMaskHasContent : false),
           paintMaskRevision: state.paintMaskRevision + 1,
         })),
+      setPaintMaskCapture: (paintMaskCapture) => set({ paintMaskCapture }),
       setLocalRepaintProjectionSource: (localRepaintProjectionSource) =>
         set({ localRepaintProjectionSource }),
       setLocalRepaintPreviewLayer: (localRepaintPreviewLayer) =>
