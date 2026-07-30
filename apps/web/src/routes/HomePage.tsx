@@ -266,11 +266,15 @@ export function HomePage({
   onOpenTexture,
   onOpenBake,
   onOpenToolbox,
+  onOpenRetopology,
+  onOpenUv,
   onLogout,
 }: {
   onOpenTexture: () => void;
   onOpenBake: () => void;
   onOpenToolbox: () => void;
+  onOpenRetopology: () => void;
+  onOpenUv: () => void;
   onLogout: () => void;
 }) {
   return (
@@ -300,7 +304,7 @@ export function HomePage({
             </span>
             <span className="hidden h-3 w-px bg-white/12 sm:block" />
             <span className="hidden items-center gap-2 sm:inline-flex">
-              <Boxes className="h-3.5 w-3.5" />3 个可用 · 2 项规划中
+              <Boxes className="h-3.5 w-3.5" />5 个工作模块
             </span>
           </div>
         </div>
@@ -354,8 +358,9 @@ export function HomePage({
             icon={Network}
             accent="blue"
             visual="retopo"
-            badge="规划中"
-            disabled
+            badge="测试中"
+            hoverAction="进入自动拓扑"
+            onClick={onOpenRetopology}
             layout="compact"
           />
           <ModuleCard
@@ -366,8 +371,9 @@ export function HomePage({
             icon={MapIcon}
             accent="emerald"
             visual="uv"
-            badge="规划中"
-            disabled
+            badge="可用"
+            hoverAction="进入自动展 UV"
+            onClick={onOpenUv}
             layout="compact"
           />
         </div>

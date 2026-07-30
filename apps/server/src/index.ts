@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { serverConfig } from './config.js';
 import { handleAssetsRoute } from './routes/assets.js';
+import { handleAssetProcessingRoute } from './routes/assetProcessing.js';
 import { handleAuthRoute } from './routes/auth.js';
 import { handleBakeRoute } from './routes/bake.js';
 import { handleComfyuiRoute } from './routes/comfyui.js';
@@ -131,6 +132,10 @@ async function handleWorkspaceRequest(
   }
   if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
+  if (
+    url.pathname.startsWith('/api/asset-processing') &&
+    (await handleAssetProcessingRoute(request, response, url))
+  ) return;
   if (url.pathname.startsWith('/api/bake') && (await handleBakeRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/photoshop') && (await handlePhotoshopRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;

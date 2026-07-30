@@ -15,8 +15,10 @@ export function corsHeaders(response: ServerResponse) {
     'access-control-allow-origin': allowOrigin,
     'access-control-allow-credentials': 'true',
     'access-control-allow-methods': 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS',
-    'access-control-allow-headers': 'content-type,x-liclick-session-token,idempotency-key',
-    'access-control-expose-headers': 'x-job-id',
+    'access-control-allow-headers':
+      'content-type,x-liclick-session-token,x-request-id,idempotency-key,last-event-id',
+    'access-control-expose-headers':
+      'content-disposition,x-job-id,x-request-id,x-li3d-request-id,x-artifact-sha256,x-li3d-artifact-verified',
     vary: 'Origin',
   };
 }

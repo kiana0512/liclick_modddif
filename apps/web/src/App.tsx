@@ -9,6 +9,8 @@ type RouteState =
   | { name: 'home' }
   | { name: 'projects'; module: 'texture' | 'bake' }
   | { name: 'modelingToolbox' }
+  | { name: 'autoRetopology' }
+  | { name: 'autoUv' }
   | { name: 'editor'; projectId: string }
   | { name: 'bake'; projectId: string; handoff?: TextureBakeHandoff };
 
@@ -21,6 +23,16 @@ const ProjectsPage = lazy(() =>
 const ModelingToolboxPage = lazy(() =>
   import('./routes/ModelingToolboxPage').then((module) => ({
     default: module.ModelingToolboxPage,
+  })),
+);
+const AutoRetopologyPage = lazy(() =>
+  import('./routes/AssetProcessingPage').then((module) => ({
+    default: module.AutoRetopologyPage,
+  })),
+);
+const AutoUvPage = lazy(() =>
+  import('./routes/AssetProcessingPage').then((module) => ({
+    default: module.AutoUvPage,
   })),
 );
 const EditorPage = lazy(() =>
@@ -61,6 +73,12 @@ function routeFromPath(pathname: string): RouteState {
   if (segments[0] === 'toolbox') {
     return { name: 'modelingToolbox' };
   }
+  if (segments[0] === 'retopology') {
+    return { name: 'autoRetopology' };
+  }
+  if (segments[0] === 'uv') {
+    return { name: 'autoUv' };
+  }
   if (segments[0] === 'project' && segments[1]) {
     if (segments[2] === 'bake') return { name: 'bake', projectId: segments[1] };
     // Delivery was removed. Keep old bookmarks useful by redirecting them to baking.
@@ -75,6 +93,8 @@ function pathFromRoute(route: RouteState) {
   if (route.name === 'home') path = '/';
   else if (route.name === 'projects') path = `/projects/${route.module}`;
   else if (route.name === 'modelingToolbox') path = '/toolbox/modeling';
+  else if (route.name === 'autoRetopology') path = '/retopology';
+  else if (route.name === 'autoUv') path = '/uv';
   else if (route.name === 'editor') path = `/project/${encodeURIComponent(route.projectId)}`;
   else path = `/project/${encodeURIComponent(route.projectId)}/${route.name}`;
   return `${appBasePath()}${path}`;
@@ -107,6 +127,16 @@ export function App() {
       },
       openModelingToolbox: () => {
         const nextRoute: RouteState = { name: 'modelingToolbox' };
+        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        setRoute(nextRoute);
+      },
+      openAutoRetopology: () => {
+        const nextRoute: RouteState = { name: 'autoRetopology' };
+        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        setRoute(nextRoute);
+      },
+      openAutoUv: () => {
+        const nextRoute: RouteState = { name: 'autoUv' };
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
       },
@@ -221,6 +251,28 @@ export function App() {
     );
   }
 
+  if (route.name === 'autoRetopology') {
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <AutoRetopologyPage onBack={navigation.openHome} onLogout={navigation.openHome} />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
+
+  if (route.name === 'autoUv') {
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <AutoUvPage onBack={navigation.openHome} onLogout={navigation.openHome} />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
+
   return (
     <>
       <Suspense fallback={<AppRouteFallback />}>
@@ -228,6 +280,8 @@ export function App() {
           onOpenTexture={navigation.openTextureProjects}
           onOpenBake={navigation.openCurrentBake}
           onOpenToolbox={navigation.openModelingToolbox}
+          onOpenRetopology={navigation.openAutoRetopology}
+          onOpenUv={navigation.openAutoUv}
           onLogout={navigation.openHome}
         />
       </Suspense>

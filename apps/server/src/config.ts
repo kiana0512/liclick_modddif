@@ -58,6 +58,57 @@ const substanceBakerApiKey = process.env.LICLICK_SUBSTANCE_BAKER_API_KEY?.trim()
 const substanceBakerTextureCacheMb = Number(
   process.env.LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB ?? 32768,
 );
+const assetServiceBaseUrl = (
+  process.env.ASSET_SERVICE_BASE_URL ?? 'https://10.3.34.11'
+).replace(/\/$/, '');
+const assetServiceApiKey = process.env.ASSET_SERVICE_API_KEY?.trim() || undefined;
+const assetServiceCaCertPath =
+  process.env.ASSET_SERVICE_CA_CERT_PATH?.trim() || undefined;
+const assetServiceTlsRejectUnauthorized =
+  (process.env.ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED ?? 'true').toLowerCase() !== 'false';
+
+function positiveNumber(value: string | undefined, fallback: number, name: string) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a finite positive number.`);
+  }
+  return parsed;
+}
+
+const assetServiceRequestTimeoutMs = positiveNumber(
+  process.env.ASSET_SERVICE_REQUEST_TIMEOUT_MS,
+  120_000,
+  'ASSET_SERVICE_REQUEST_TIMEOUT_MS',
+);
+const assetServiceMaxUploadBytes = positiveNumber(
+  process.env.ASSET_SERVICE_MAX_UPLOAD_BYTES,
+  2 * 1024 * 1024 * 1024,
+  'ASSET_SERVICE_MAX_UPLOAD_BYTES',
+);
+const assetServiceMaxArtifactBytes = positiveNumber(
+  process.env.ASSET_SERVICE_MAX_ARTIFACT_BYTES,
+  1024 * 1024 * 1024,
+  'ASSET_SERVICE_MAX_ARTIFACT_BYTES',
+);
+const blenderExecutablePath =
+  process.env.BLENDER_EXECUTABLE_PATH?.trim() ||
+  process.env.LICLICK_BLENDER_PATH?.trim() ||
+  undefined;
+const retopologyPrepareTimeoutMs = positiveNumber(
+  process.env.RETOPOLOGY_PREPARE_TIMEOUT_MS,
+  10 * 60_000,
+  'RETOPOLOGY_PREPARE_TIMEOUT_MS',
+);
+const retopologyPrepareMaxFileBytes = positiveNumber(
+  process.env.RETOPOLOGY_PREPARE_MAX_FILE_BYTES,
+  1024 * 1024 * 1024,
+  'RETOPOLOGY_PREPARE_MAX_FILE_BYTES',
+);
+const retopologyPrepareMaxUploadBytes = positiveNumber(
+  process.env.RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES,
+  assetServiceMaxUploadBytes,
+  'RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES',
+);
 
 function getOrigin(value: string) {
   try {
@@ -229,6 +280,17 @@ export const serverConfig = {
   substanceBakerCaPath,
   substanceBakerApiKey,
   substanceBakerTextureCacheMb,
+  assetServiceBaseUrl,
+  assetServiceApiKey,
+  assetServiceCaCertPath,
+  assetServiceTlsRejectUnauthorized,
+  assetServiceRequestTimeoutMs,
+  assetServiceMaxUploadBytes,
+  assetServiceMaxArtifactBytes,
+  blenderExecutablePath,
+  retopologyPrepareTimeoutMs,
+  retopologyPrepareMaxFileBytes,
+  retopologyPrepareMaxUploadBytes,
   frontendOrigin: getOrigin(frontendUrl),
   allowedOrigins: [
     getOrigin(frontendUrl),

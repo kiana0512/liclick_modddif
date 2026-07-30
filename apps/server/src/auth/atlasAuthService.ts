@@ -391,6 +391,17 @@ export async function startAtlasLogin(request: IncomingMessage, response: Server
   }
 
   prunePendingAtlasLogins();
+  const defaultHomeDir = os.homedir();
+  const existingStatus = await getAtlasStatus(defaultHomeDir).catch((error) => ({
+    valid: false,
+    message: error instanceof Error ? error.message : 'Atlas status unavailable.',
+  })) as PublicAtlasStatus;
+  if (existingStatus.valid) {
+    cancelPendingAtlasLogins();
+    const user = await createLoggedInSession(defaultHomeDir, request, response);
+    return { user, status: existingStatus };
+  }
+
   cancelPendingAtlasLogins();
   const login = await startAtlasLoginProcess();
 
