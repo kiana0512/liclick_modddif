@@ -7,11 +7,19 @@ type LiveCanvasEntry = {
   texture: THREE.CanvasTexture;
   revision: number;
   flipY: boolean;
+  encodedPng?: {
+    revision: number;
+    promise: Promise<Blob>;
+  };
 };
 
 const liveCanvasTextures = new Map<string, LiveCanvasEntry>();
 
-function configureTexture(texture: THREE.CanvasTexture, colorSpace: THREE.ColorSpace, flipY: boolean) {
+function configureTexture(
+  texture: THREE.CanvasTexture,
+  colorSpace: THREE.ColorSpace,
+  flipY: boolean,
+) {
   texture.colorSpace = colorSpace;
   texture.flipY = flipY;
   texture.wrapS = THREE.ClampToEdgeWrapping;
@@ -79,6 +87,26 @@ export function getLiveProjectedCanvasState(url: string) {
   return entry ? { canvas: entry.canvas, revision: entry.revision } : undefined;
 }
 
-export function getLiveProjectedCanvasDataUrl(url: string) {
-  return liveCanvasTextures.get(url)?.canvas.toDataURL('image/png');
+function canvasToPngBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not encode the live projected canvas as PNG.'));
+    }, 'image/png');
+  });
+}
+
+export function getLiveProjectedCanvasBlob(url: string) {
+  const entry = liveCanvasTextures.get(url);
+  if (!entry) return undefined;
+  if (entry.encodedPng?.revision === entry.revision) return entry.encodedPng.promise;
+
+  const revision = entry.revision;
+  const promise = canvasToPngBlob(entry.canvas).catch((error) => {
+    const latest = liveCanvasTextures.get(url);
+    if (latest?.encodedPng?.promise === promise) latest.encodedPng = undefined;
+    throw error;
+  });
+  entry.encodedPng = { revision, promise };
+  return promise;
 }

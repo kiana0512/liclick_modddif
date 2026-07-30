@@ -264,6 +264,7 @@ export function BakeWorkspacePage({
   const colorInputRef = useRef<HTMLInputElement>(null);
   const roughnessInputRef = useRef<HTMLInputElement>(null);
   const metallicInputRef = useRef<HTMLInputElement>(null);
+  const normalInputRef = useRef<HTMLInputElement>(null);
   const fileTargetIdRef = useRef<string>();
   const hydratedProjectRef = useRef('');
   const applyingSettingsRef = useRef(false);
@@ -319,6 +320,7 @@ export function BakeWorkspacePage({
   const [colorFiles, setColorFiles] = useState<Record<string, File>>({});
   const [roughnessFiles, setRoughnessFiles] = useState<Record<string, File>>({});
   const [metallicFiles, setMetallicFiles] = useState<Record<string, File>>({});
+  const [normalFiles, setNormalFiles] = useState<Record<string, File>>({});
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [engine, setEngine] = useState<BakeEngineId>(defaultBakeDraftSettings.engine);
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>('production');
@@ -409,7 +411,7 @@ export function BakeWorkspacePage({
 
   const persistImportedFiles = useCallback(
     async (
-      kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic',
+      kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
       assigned: Record<string, File>,
     ) => {
       if (Object.keys(assigned).length === 0) return;
@@ -420,7 +422,10 @@ export function BakeWorkspacePage({
             const result = await saveBlobAsset({
               projectId,
               category:
-                kind === 'color' || kind === 'roughness' || kind === 'metallic'
+                kind === 'color' ||
+                kind === 'roughness' ||
+                kind === 'metallic' ||
+                kind === 'normal'
                   ? 'references'
                   : 'models',
               blob: file,
@@ -452,7 +457,10 @@ export function BakeWorkspacePage({
             const previous = bakeSets[objectId] ?? { objectId };
             bakeSets[objectId] = { ...previous, [kind]: asset };
             const category =
-              kind === 'color' || kind === 'roughness' || kind === 'metallic'
+              kind === 'color' ||
+              kind === 'roughness' ||
+              kind === 'metallic' ||
+              kind === 'normal'
                 ? 'references'
                 : 'models';
             assetManifest[category] = Array.from(
@@ -544,7 +552,9 @@ export function BakeWorkspacePage({
       setActiveStage(workspace.activeStage === 'publish' ? 'pbr' : workspace.activeStage);
     }
     let cancelled = false;
-    const restoreKind = async (kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic') => {
+    const restoreKind = async (
+      kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
+    ) => {
       const entries = await Promise.all(
         Object.entries(workspace.bakeSets).map(async ([objectId, set]) => {
           const asset = set[kind];
@@ -568,14 +578,16 @@ export function BakeWorkspacePage({
       restoreKind('color'),
       restoreKind('roughness'),
       restoreKind('metallic'),
+      restoreKind('normal'),
     ])
-      .then(([low, cage, color, roughness, metallic]) => {
+      .then(([low, cage, color, roughness, metallic, normal]) => {
         if (cancelled) return;
         setLowFiles(low);
         setCageFiles(cage);
         setColorFiles(color);
         setRoughnessFiles(roughness);
         setMetallicFiles(metallic);
+        setNormalFiles(normal);
         setAssetSaveState('saved');
       })
       .catch((reason: unknown) => {
@@ -658,6 +670,7 @@ export function BakeWorkspacePage({
   const selectedColor = selectedHigh ? colorFiles[selectedHigh.id] : undefined;
   const selectedRoughness = selectedHigh ? roughnessFiles[selectedHigh.id] : undefined;
   const selectedMetallic = selectedHigh ? metallicFiles[selectedHigh.id] : undefined;
+  const selectedNormal = selectedHigh ? normalFiles[selectedHigh.id] : undefined;
   const selectedProjectColor = selectedHigh ? projectColorForObject(selectedHigh.id) : undefined;
   const selectedColorName = selectedColor?.name ?? selectedProjectColor?.name;
   const autoRoughnessEnabled = roughnessSource === 'comfy';
@@ -665,10 +678,12 @@ export function BakeWorkspacePage({
   const selectedColorPreview = useFilePreviewUrl(processedBaseColor, selectedRawColorPreview);
   const selectedRoughnessPreview = useFilePreviewUrl(selectedRoughness);
   const selectedMetallicPreview = useFilePreviewUrl(selectedMetallic);
+  const selectedNormalPreview = useFilePreviewUrl(selectedNormal);
   const materialMapCount =
     Number(Boolean(selectedColorName)) +
     Number(Boolean(selectedRoughness) || autoRoughnessEnabled) +
-    Number(Boolean(selectedMetallic));
+    Number(Boolean(selectedMetallic)) +
+    Number(Boolean(selectedNormal));
   const selectedLowInfo = selectedHigh ? alignmentInfo.low[selectedHigh.id] : undefined;
   const loadSelectedBaseColorFile = useCallback(async () => {
     if (selectedColor) return selectedColor;
@@ -1088,7 +1103,7 @@ export function BakeWorkspacePage({
   ]);
 
   function chooseFiles(
-    kind: 'high' | 'low' | 'cage' | 'color' | 'roughness' | 'metallic',
+    kind: 'high' | 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
     objectId?: string,
   ) {
     fileTargetIdRef.current = objectId ?? selectedHigh?.id;
@@ -1098,6 +1113,7 @@ export function BakeWorkspacePage({
     if (kind === 'color') colorInputRef.current?.click();
     if (kind === 'roughness') roughnessInputRef.current?.click();
     if (kind === 'metallic') metallicInputRef.current?.click();
+    if (kind === 'normal') normalInputRef.current?.click();
   }
 
   function handleLowImport(files: File[]) {
@@ -1138,7 +1154,7 @@ export function BakeWorkspacePage({
     void persistImportedFiles('color', assigned);
   }
 
-  function handleMaterialChannelImport(kind: 'roughness' | 'metallic', files: File[]) {
+  function handleMaterialChannelImport(kind: 'roughness' | 'metallic' | 'normal', files: File[]) {
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1154,8 +1170,10 @@ export function BakeWorkspacePage({
     if (kind === 'roughness') {
       setRoughnessFiles((current) => ({ ...current, ...assigned }));
       setRoughnessSource('manual');
-    } else {
+    } else if (kind === 'metallic') {
       setMetallicFiles((current) => ({ ...current, ...assigned }));
+    } else {
+      setNormalFiles((current) => ({ ...current, ...assigned }));
     }
     setBakeJob(undefined);
     setOneClickBakeAttempted(false);
@@ -1175,11 +1193,15 @@ export function BakeWorkspacePage({
     const metallic = imageFiles.filter((file) =>
       /(?:metallic|metalness|metal)(?:\W|_|$)/i.test(file.name),
     );
-    const classified = new Set([...roughness, ...metallic]);
+    const normal = imageFiles.filter((file) =>
+      /(?:normal(?:[_\-. ]?(?:dx|gl|directx|opengl))?|nrm)(?:\W|_|$)/i.test(file.name),
+    );
+    const classified = new Set([...roughness, ...metallic, ...normal]);
     const color = imageFiles.filter((file) => !classified.has(file)).slice(0, 1);
     if (color.length > 0) handleColorImport(color);
     if (roughness.length > 0) handleMaterialChannelImport('roughness', roughness);
     if (metallic.length > 0) handleMaterialChannelImport('metallic', metallic);
+    if (normal.length > 0) handleMaterialChannelImport('normal', normal);
     setMaterialDialogOpen(true);
   }
 
@@ -1692,6 +1714,17 @@ export function BakeWorkspacePage({
             event.target.value = '';
           }}
         />
+        <input
+          ref={normalInputRef}
+          className="hidden"
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp,.tga"
+          onChange={(event) => {
+            handleMaterialChannelImport('normal', Array.from(event.target.files ?? []));
+            event.target.value = '';
+          }}
+        />
 
         {materialDialogOpen ? (
           <div
@@ -1717,7 +1750,7 @@ export function BakeWorkspacePage({
                 <div>
                   <p className="text-lg font-semibold text-white">材质贴图</p>
                   <p className="mt-1 text-xs leading-5 text-white/42">
-                    三张贴图共用高模 UV，通过 Texture Transfer 对烘到低模 UV。
+                    四张贴图按当前高模统一管理，可直接拖入对应栏位。
                   </p>
                 </div>
                 <button
@@ -1939,6 +1972,15 @@ export function BakeWorkspacePage({
                   onClick={() => chooseFiles('metallic')}
                   onFilesDropped={(files) => handleMaterialChannelImport('metallic', files)}
                 />
+                <MaterialMapSlot
+                  label="Normal"
+                  description="切线空间法线贴图"
+                  fileName={selectedNormal?.name}
+                  previewUrl={selectedNormalPreview}
+                  required={false}
+                  onClick={() => chooseFiles('normal')}
+                  onFilesDropped={(files) => handleMaterialChannelImport('normal', files)}
+                />
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-center text-[11px] text-white/30">
                   将贴图直接拖到对应槽位即可导入。
                 </div>
@@ -2106,10 +2148,10 @@ export function BakeWorkspacePage({
                   step="03"
                   title="材质贴图"
                   english="MATERIAL MAPS"
-                  description={'颜色、粗糙度和金属度共用一个入口，分别对烘到低模 UV'}
+                  description={'颜色、粗糙度、金属度和法线贴图共用一个入口'}
                   value={
                     materialMapCount > 0
-                      ? `${materialMapCount}/3 已准备 · ${[
+                      ? `${materialMapCount}/4 已准备 · ${[
                           selectedColorName ? '颜色' : undefined,
                           selectedRoughness
                             ? '粗糙度'
@@ -2117,6 +2159,7 @@ export function BakeWorkspacePage({
                               ? 'AI 粗糙度'
                               : undefined,
                           selectedMetallic ? '金属度' : undefined,
+                          selectedNormal ? '法线' : undefined,
                         ]
                           .filter(Boolean)
                           .join(' · ')}`
@@ -2135,7 +2178,7 @@ export function BakeWorkspacePage({
                   actionLabel={materialMapCount > 0 ? '管理贴图' : '导入贴图'}
                   onClick={() => setMaterialDialogOpen(true)}
                   onFilesDropped={handleMaterialImport}
-                  dropHint="Base Color / Roughness / Metallic"
+                  dropHint="Base Color / Roughness / Metallic / Normal"
                 />
               </div>
 

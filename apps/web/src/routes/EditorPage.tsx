@@ -50,7 +50,7 @@ import {
   setDebugUvBakeVerbose,
 } from '@/engine/bake/uvBakeDebugControls';
 import {
-  getLiveProjectedCanvasDataUrl,
+  getLiveProjectedCanvasBlob,
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { createProjectionMaskedImage } from '@/engine/projection/createMaskedProjectedImage';
@@ -106,10 +106,7 @@ import { useLocalRepaintStore } from '@/stores/localRepaintStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
-import {
-  IMMEDIATE_PROJECT_SAVE_EVENT,
-  useProjectStore,
-} from '@/stores/projectStore';
+import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import {
   MAX_PAINT_MASK_BRUSH_SIZE,
@@ -194,16 +191,8 @@ function getPlaceholderBoundingBox(object: SceneObject): ModelLoadResult['boundi
   ];
   const halfSize = size.map((value) => value / 2) as [number, number, number];
   return {
-    min: [
-      center[0] - halfSize[0],
-      center[1] - halfSize[1],
-      center[2] - halfSize[2],
-    ],
-    max: [
-      center[0] + halfSize[0],
-      center[1] + halfSize[1],
-      center[2] + halfSize[2],
-    ],
+    min: [center[0] - halfSize[0], center[1] - halfSize[1], center[2] - halfSize[2]],
+    max: [center[0] + halfSize[0], center[1] + halfSize[1], center[2] + halfSize[2]],
     center: [...center],
     size,
   };
@@ -338,8 +327,7 @@ function isLocalRepaintProjectionLayer(layer: Layer) {
 
 function isLocalRepaintLayer(layer: Layer) {
   return (
-    layer.id.startsWith('local-repaint-') ||
-    layer.imageUrl.includes('surface-edit:local-repaint')
+    layer.id.startsWith('local-repaint-') || layer.imageUrl.includes('surface-edit:local-repaint')
   );
 }
 
@@ -466,9 +454,7 @@ function buildLocalRepaintPatchMask(runtime: LocalRepaintRuntime, sourcePatch: I
   if (editMask && isLocalContentAwareRuntime(runtime)) {
     for (let index = 0; index < patchMask.data.length; index += 1) {
       patchMask.data[index] =
-        (runtime.objectMask.data[index] ?? 0) > 0 && (editMask.data[index] ?? 0) > 0
-          ? 255
-          : 0;
+        (runtime.objectMask.data[index] ?? 0) > 0 && (editMask.data[index] ?? 0) > 0 ? 255 : 0;
     }
     return patchMask;
   }
@@ -801,11 +787,7 @@ function arrangeImportedModelForComparison(
   };
 }
 
-export function EditorPage({
-  projectId,
-  onBack,
-  onOpenBake,
-}: EditorPageProps) {
+export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const loadedProjectIdRef = useRef<string>();
@@ -1003,11 +985,7 @@ export function EditorPage({
     hydrateProjectStores(project);
     // restoreProjectModel is intentionally not a dependency; this effect should run once per project id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    project,
-    restorePersistedHistory,
-    setCurrentProject,
-  ]);
+  }, [project, restorePersistedHistory, setCurrentProject]);
 
   useEffect(() => {
     if (!project || project.workspaceMode !== 'local-server') return;
@@ -1030,13 +1008,7 @@ export function EditorPage({
       });
     // restoreProjectModel is intentionally not a dependency; this effect should run once per server project id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    project,
-    pushToast,
-    replaceCurrentProject,
-    restorePersistedHistory,
-    t,
-  ]);
+  }, [project, pushToast, replaceCurrentProject, restorePersistedHistory, t]);
 
   useEffect(() => {
     if (serverReadyProjectId !== projectId) return;
@@ -1097,8 +1069,7 @@ export function EditorPage({
   useEffect(() => {
     const handleImmediateSave = () => immediateSaveHandlerRef.current();
     window.addEventListener(IMMEDIATE_PROJECT_SAVE_EVENT, handleImmediateSave);
-    return () =>
-      window.removeEventListener(IMMEDIATE_PROJECT_SAVE_EVENT, handleImmediateSave);
+    return () => window.removeEventListener(IMMEDIATE_PROJECT_SAVE_EVENT, handleImmediateSave);
   }, []);
 
   useEffect(() => {
@@ -1245,8 +1216,7 @@ export function EditorPage({
       layers: useLayerStore.getState().layers,
       generations: useGenerationStore.getState().generations,
       captures: snapshotProject.captures,
-      bakedTextures:
-        snapshotProject.bakedTextures,
+      bakedTextures: snapshotProject.bakedTextures,
       references: useReferenceStore.getState().references,
       updatedAt: new Date().toISOString(),
     };
@@ -1807,10 +1777,7 @@ export function EditorPage({
       getObjectFileName,
     );
     const restoredModelByObjectId = new Map<string, ModelLoadResult>(
-      restorableObjects.map((object) => [
-        object.id,
-        createProjectModelBoundsPlaceholder(object),
-      ]),
+      restorableObjects.map((object) => [object.id, createProjectModelBoundsPlaceholder(object)]),
     );
     const publishRestoreProgress = () => {
       if (restoreRequest !== modelRestoreRequestRef.current) return;
@@ -1995,9 +1962,18 @@ export function EditorPage({
       fallback = url,
     ) => {
       try {
-        const resolvedUrl =
-          url && isLiveProjectedCanvasUrl(url) ? (getLiveProjectedCanvasDataUrl(url) ?? url) : url;
-        return await persistAssetUrl(projectForSave.id, resolvedUrl, category, filename);
+        if (url && isLiveProjectedCanvasUrl(url)) {
+          const blobPromise = getLiveProjectedCanvasBlob(url);
+          if (!blobPromise) return fallback;
+          const result = await saveBlobAsset({
+            projectId: projectForSave.id,
+            category,
+            blob: await blobPromise,
+            filename,
+          });
+          return result.asset.relativePath;
+        }
+        return await persistAssetUrl(projectForSave.id, url, category, filename);
       } catch (error) {
         console.warn(
           `[Liclick 3D Texture] Skipping unavailable optional asset ${category}/${filename}.`,
@@ -2020,30 +1996,20 @@ export function EditorPage({
     for (const reference of projectForSave.references) {
       persistenceTasks.push(async () => {
         reference.url =
-          (await persistOptionalAsset(
-            reference.url,
-            'references',
-            reference.name,
-          )) ??
+          (await persistOptionalAsset(reference.url, 'references', reference.name)) ??
           reference.url;
       });
     }
     for (const capture of projectForSave.captures) {
       persistenceTasks.push(async () => {
         capture.colorUrl =
-          (await persistOptionalAsset(
-            capture.colorUrl,
-            'captures',
-            `${capture.id}-color.png`,
-          )) ?? capture.colorUrl;
+          (await persistOptionalAsset(capture.colorUrl, 'captures', `${capture.id}-color.png`)) ??
+          capture.colorUrl;
       });
       persistenceTasks.push(async () => {
         capture.maskUrl =
-          (await persistOptionalAsset(
-            capture.maskUrl,
-            'captures',
-            `${capture.id}-mask.png`,
-          )) ?? capture.maskUrl;
+          (await persistOptionalAsset(capture.maskUrl, 'captures', `${capture.id}-mask.png`)) ??
+          capture.maskUrl;
       });
       persistenceTasks.push(async () => {
         capture.depthUrl = await persistOptionalAsset(
@@ -2072,15 +2038,9 @@ export function EditorPage({
     }
     for (const layer of projectForSave.layers) {
       persistenceTasks.push(async () => {
-        const resolvedImageUrl = isLiveProjectedCanvasUrl(layer.imageUrl)
-          ? (getLiveProjectedCanvasDataUrl(layer.imageUrl) ?? layer.imageUrl)
-          : layer.imageUrl;
         layer.imageUrl =
-          (await persistOptionalAsset(
-            resolvedImageUrl,
-            'layers',
-            `${layer.id}.png`,
-          )) ?? layer.imageUrl;
+          (await persistOptionalAsset(layer.imageUrl, 'layers', `${layer.id}.png`)) ??
+          layer.imageUrl;
       });
       persistenceTasks.push(async () => {
         layer.maskUrl = await persistOptionalAsset(
@@ -2102,11 +2062,8 @@ export function EditorPage({
     for (const bakedTexture of projectForSave.bakedTextures) {
       persistenceTasks.push(async () => {
         bakedTexture.imageUrl =
-          (await persistOptionalAsset(
-            bakedTexture.imageUrl,
-            'baked',
-            `${bakedTexture.id}.png`,
-          )) ?? bakedTexture.imageUrl;
+          (await persistOptionalAsset(bakedTexture.imageUrl, 'baked', `${bakedTexture.id}.png`)) ??
+          bakedTexture.imageUrl;
       });
     }
     persistenceTasks.push(async () => {
@@ -2147,11 +2104,23 @@ export function EditorPage({
       const snapshotUpdatedAt = Date.parse(snapshot.updatedAt);
       const latestUpdatedAt = Date.parse(latestProject?.updatedAt ?? '');
       const sameObjectIds =
-        latestProject?.objects.map((object) => object.id).sort().join('|') ===
-        snapshot.objects.map((object) => object.id).sort().join('|');
+        latestProject?.objects
+          .map((object) => object.id)
+          .sort()
+          .join('|') ===
+        snapshot.objects
+          .map((object) => object.id)
+          .sort()
+          .join('|');
       const sameLayerIds =
-        latestProject?.layers.map((layer) => layer.id).sort().join('|') ===
-        snapshot.layers.map((layer) => layer.id).sort().join('|');
+        latestProject?.layers
+          .map((layer) => layer.id)
+          .sort()
+          .join('|') ===
+        snapshot.layers
+          .map((layer) => layer.id)
+          .sort()
+          .join('|');
       const sameDeletionIntent =
         [...(latestProject?.deletedObjectIds ?? [])].sort().join('|') ===
         [...(snapshot.deletedObjectIds ?? [])].sort().join('|');
@@ -2234,12 +2203,13 @@ export function EditorPage({
       }
       if (result.savedLatestSnapshot) {
         setSaveStatus('saved');
-        if (showSuccessToast) pushToast({
-          tone: 'success',
-          title: '项目已保存',
-          description: 'Ctrl+S',
-          dedupeKey: 'manual-project-save-success',
-        });
+        if (showSuccessToast)
+          pushToast({
+            tone: 'success',
+            title: '项目已保存',
+            description: 'Ctrl+S',
+            dedupeKey: 'manual-project-save-success',
+          });
       } else {
         setSaveStatus('idle');
         setAutosaveRetryToken((token) => token + 1);
@@ -2563,10 +2533,7 @@ export function EditorPage({
           isPrimary: true,
         });
       }
-      addReferences(
-        importedReferences,
-        importedReferences.length > 1 ? 'clear-all' : 'select-new',
-      );
+      addReferences(importedReferences, importedReferences.length > 1 ? 'clear-all' : 'select-new');
       const nextReferences = useReferenceStore.getState().references;
       setProjectReferences(nextReferences);
       pushToast({
@@ -2787,10 +2754,12 @@ export function EditorPage({
       const registeredBlob = getRegisteredObjectUrlBlob(layer.imageUrl);
       const sourceBlob: Blob =
         registeredBlob ??
-        (await fetch(layer.imageUrl).then((response) => {
-          if (!response.ok) throw new Error(`无法读取图层图片（${response.status}）。`);
-          return response.blob();
-        }).then((blob) => blob));
+        (await fetch(layer.imageUrl)
+          .then((response) => {
+            if (!response.ok) throw new Error(`无法读取图层图片（${response.status}）。`);
+            return response.blob();
+          })
+          .then((blob) => blob));
       createdSession = await createPhotoshopSession({
         projectId: project.id,
         layerId: layer.id,
@@ -2867,7 +2836,8 @@ export function EditorPage({
       pushToast({
         tone: 'success',
         title: 'Photoshop 纹理已应用',
-        description: snapshot.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
+        description:
+          snapshot.type === 'uv' ? t('imageEditUvAppliedHelp') : t('projectionPreservedHelp'),
       });
     } catch (error) {
       pushToast({
@@ -2898,7 +2868,8 @@ export function EditorPage({
       pushToast({
         tone: 'error',
         title: '无法启动 Photoshop',
-        description: error instanceof Error ? error.message : '请在启动器高级设置中选择 Photoshop。',
+        description:
+          error instanceof Error ? error.message : '请在启动器高级设置中选择 Photoshop。',
       });
     }
   }
@@ -3105,7 +3076,7 @@ export function EditorPage({
     const patchUrl = await blobToDataUrl(patchBlob);
     const objectId = selectedObjectId ?? importedModel.objectId;
     importedModel.group.updateMatrixWorld(true);
-      const tempLayer: Layer = {
+    const tempLayer: Layer = {
       id: createId('local-repaint-patch'),
       name: 'Local repaint UV patch',
       type: 'projected',
@@ -3188,10 +3159,7 @@ export function EditorPage({
       const currentLayers = useLayerStore.getState().layers;
       const layersWithoutPreviousRepair = currentLayers.filter(
         (layer) =>
-          !(
-            isContentAwareRepairLayer(layer) &&
-            (!layer.objectId || layer.objectId === objectId)
-          ),
+          !(isContentAwareRepairLayer(layer) && (!layer.objectId || layer.objectId === objectId)),
       );
       const layer: Layer = {
         id: layerId,
@@ -3422,9 +3390,9 @@ export function EditorPage({
       .filter((layer): layer is Layer =>
         Boolean(
           layer?.type === 'projected' &&
-            layer.imageUrl &&
-            layer.camera &&
-            !isLocalRepaintProjectionLayer(layer),
+          layer.imageUrl &&
+          layer.camera &&
+          !isLocalRepaintProjectionLayer(layer),
         ),
       );
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
@@ -3889,12 +3857,7 @@ export function EditorPage({
         });
         const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
         if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
-        const workingImageData = bakeContext.getImageData(
-          0,
-          0,
-          repairResolution,
-          repairResolution,
-        );
+        const workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
         const objectMask = createUvTopologyObjectMask(
           importedModel.group,
           repairResolution,
@@ -3955,14 +3918,7 @@ export function EditorPage({
         );
       }
     })();
-  }, [
-    addUvContentAwareRepairLayer,
-    captureHistory,
-    importedModel,
-    pushToast,
-    setProjectLayers,
-    t,
-  ]);
+  }, [addUvContentAwareRepairLayer, captureHistory, importedModel, pushToast, setProjectLayers, t]);
 
   useEffect(() => {
     function isEditingText(target: EventTarget | null) {

@@ -91,6 +91,7 @@ export type ProjectBakeSetState = {
   normalMap?: BakeAssetReference;
   roughness?: BakeAssetReference;
   metallic?: BakeAssetReference;
+  normal?: BakeAssetReference;
   ignoreProjectColor?: boolean;
   settings?: BakeDraftSettings;
   lastJobId?: string;

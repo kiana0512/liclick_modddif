@@ -1,6 +1,10 @@
 import { blobToDataUrl, imageDataToBlob, urlToImageData } from './imageUtils';
 
 const previewCache = new Map<string, Promise<string>>();
+const captureMaskedPreviewCache = new Map<
+  string,
+  { maskUrl: string; promise: Promise<string> }
+>();
 const MAX_PREVIEW_CACHE_ENTRIES = 12;
 const SUBJECT_PADDING_RATIO = 0.02;
 
@@ -16,23 +20,36 @@ function getTone(data: Uint8ClampedArray, offset: number) {
   return { alpha, max, min, chroma, luma };
 }
 
-function isBackgroundSeed(data: Uint8ClampedArray, offset: number) {
+type BackgroundRemovalMode = 'neutral' | 'dark-only';
+
+function isBackgroundSeed(
+  data: Uint8ClampedArray,
+  offset: number,
+  mode: BackgroundRemovalMode,
+) {
   const { alpha, max, min, chroma, luma } = getTone(data, offset);
   if (alpha <= 32) return true;
   const black = luma <= 28 && max <= 42 && chroma <= 24;
   const white = luma >= 238 && min >= 224 && chroma <= 30;
-  return black || white;
+  return black || (mode === 'neutral' && white);
 }
 
-function isBackgroundCandidate(data: Uint8ClampedArray, offset: number) {
+function isBackgroundCandidate(
+  data: Uint8ClampedArray,
+  offset: number,
+  mode: BackgroundRemovalMode,
+) {
   const { alpha, max, min, chroma, luma } = getTone(data, offset);
   if (alpha <= 64) return true;
   const black = luma <= 58 && max <= 82 && chroma <= 36;
   const white = luma >= 208 && min >= 190 && chroma <= 52;
-  return black || white;
+  return black || (mode === 'neutral' && white);
 }
 
-function removeEdgeConnectedNeutralBackground(imageData: ImageData) {
+function removeEdgeConnectedNeutralBackground(
+  imageData: ImageData,
+  mode: BackgroundRemovalMode,
+) {
   const { width, height } = imageData;
   const output = new ImageData(new Uint8ClampedArray(imageData.data), width, height);
   const visited = new Uint8Array(width * height);
@@ -49,7 +66,7 @@ function removeEdgeConnectedNeutralBackground(imageData: ImageData) {
   }
 
   const enqueueSeed = (index: number) => {
-    if (visited[index] || !isBackgroundSeed(output.data, index * 4)) return;
+    if (visited[index] || !isBackgroundSeed(output.data, index * 4, mode)) return;
     visited[index] = 1;
     queue[tail] = index;
     tail += 1;
@@ -77,7 +94,11 @@ function removeEdgeConnectedNeutralBackground(imageData: ImageData) {
       y < height - 1 ? current + width : -1,
     ];
     for (const neighbor of neighbors) {
-      if (neighbor < 0 || visited[neighbor] || !isBackgroundCandidate(output.data, neighbor * 4))
+      if (
+        neighbor < 0 ||
+        visited[neighbor] ||
+        !isBackgroundCandidate(output.data, neighbor * 4, mode)
+      )
         continue;
       visited[neighbor] = 1;
       queue[tail] = neighbor;
@@ -90,7 +111,7 @@ function removeEdgeConnectedNeutralBackground(imageData: ImageData) {
   // neutral regions so small dark or light material details remain intact.
   const minimumDetachedRegionSize = Math.max(64, Math.floor(width * height * 0.0025));
   for (let index = 0; index < width * height; index += 1) {
-    if (visited[index] || !isBackgroundSeed(output.data, index * 4)) continue;
+    if (visited[index] || !isBackgroundSeed(output.data, index * 4, mode)) continue;
     head = 0;
     tail = 0;
     visited[index] = 1;
@@ -108,7 +129,11 @@ function removeEdgeConnectedNeutralBackground(imageData: ImageData) {
         y < height - 1 ? current + width : -1,
       ];
       for (const neighbor of neighbors) {
-        if (neighbor < 0 || visited[neighbor] || !isBackgroundCandidate(output.data, neighbor * 4))
+        if (
+          neighbor < 0 ||
+          visited[neighbor] ||
+          !isBackgroundCandidate(output.data, neighbor * 4, mode)
+        )
           continue;
         visited[neighbor] = 1;
         queue[tail] = neighbor;
@@ -169,9 +194,9 @@ function getAlphaContentBounds(imageData: ImageData) {
   };
 }
 
-async function createPreviewUncached(sourceUrl: string) {
+async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalMode) {
   const source = await urlToImageData(sourceUrl);
-  const backgroundResult = removeEdgeConnectedNeutralBackground(source);
+  const backgroundResult = removeEdgeConnectedNeutralBackground(source, mode);
   const transparent = backgroundResult.imageData;
   const bounds = getAlphaContentBounds(transparent);
   if (!bounds) return sourceUrl;
@@ -228,14 +253,92 @@ async function createPreviewUncached(sourceUrl: string) {
   return blobToDataUrl(await imageDataToBlob(output));
 }
 
-export function createSubjectFilledPreview(sourceUrl: string) {
-  const cached = previewCache.get(sourceUrl);
-  if (cached) return cached;
-  const promise = createPreviewUncached(sourceUrl).catch((error) => {
-    if (previewCache.get(sourceUrl) === promise) previewCache.delete(sourceUrl);
+async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string) {
+  const source = await urlToImageData(sourceUrl);
+  const mask = await urlToImageData(maskUrl, source.width, source.height);
+  const masked = new ImageData(new Uint8ClampedArray(source.data), source.width, source.height);
+  for (let offset = 0; offset < masked.data.length; offset += 4) {
+    const maskLuminance =
+      mask.data[offset] * 0.299 + mask.data[offset + 1] * 0.587 + mask.data[offset + 2] * 0.114;
+    const maskCoverage = (maskLuminance / 255) * (mask.data[offset + 3] / 255);
+    const nextAlpha = Math.round(masked.data[offset + 3] * maskCoverage);
+    masked.data[offset + 3] = nextAlpha;
+    if (nextAlpha > 0) continue;
+    masked.data[offset] = 0;
+    masked.data[offset + 1] = 0;
+    masked.data[offset + 2] = 0;
+  }
+
+  const bounds = getAlphaContentBounds(masked);
+  if (!bounds) return sourceUrl;
+  const padding = Math.max(
+    2,
+    Math.round(Math.max(bounds.width, bounds.height) * SUBJECT_PADDING_RATIO),
+  );
+  const cropX = Math.max(0, bounds.x - padding);
+  const cropY = Math.max(0, bounds.y - padding);
+  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
+  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
+  const cropWidth = Math.max(1, cropRight - cropX);
+  const cropHeight = Math.max(1, cropBottom - cropY);
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = source.width;
+  sourceCanvas.height = source.height;
+  const sourceContext = sourceCanvas.getContext('2d');
+  if (!sourceContext) return sourceUrl;
+  sourceContext.putImageData(masked, 0, 0);
+
+  const outputCanvas = document.createElement('canvas');
+  outputCanvas.width = cropWidth;
+  outputCanvas.height = cropHeight;
+  const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
+  if (!outputContext) return sourceUrl;
+  outputContext.drawImage(
+    sourceCanvas,
+    cropX,
+    cropY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight,
+  );
+  return blobToDataUrl(
+    await imageDataToBlob(outputContext.getImageData(0, 0, cropWidth, cropHeight)),
+  );
+}
+
+export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string) {
+  const cached = captureMaskedPreviewCache.get(sourceUrl);
+  if (cached?.maskUrl === maskUrl) return cached.promise;
+  const promise = createCaptureMaskedPreviewUncached(sourceUrl, maskUrl).catch((error) => {
+    if (captureMaskedPreviewCache.get(sourceUrl)?.promise === promise)
+      captureMaskedPreviewCache.delete(sourceUrl);
     throw error;
   });
-  previewCache.set(sourceUrl, promise);
+  captureMaskedPreviewCache.set(sourceUrl, { maskUrl, promise });
+  while (captureMaskedPreviewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
+    const oldestKey = captureMaskedPreviewCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    captureMaskedPreviewCache.delete(oldestKey);
+  }
+  return promise;
+}
+
+export function createSubjectFilledPreview(
+  sourceUrl: string,
+  mode: BackgroundRemovalMode = 'neutral',
+) {
+  const cacheKey = `${mode}:${sourceUrl}`;
+  const cached = previewCache.get(cacheKey);
+  if (cached) return cached;
+  const promise = createPreviewUncached(sourceUrl, mode).catch((error) => {
+    if (previewCache.get(cacheKey) === promise) previewCache.delete(cacheKey);
+    throw error;
+  });
+  previewCache.set(cacheKey, promise);
   while (previewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
     const oldestKey = previewCache.keys().next().value as string | undefined;
     if (!oldestKey) break;

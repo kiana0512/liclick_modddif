@@ -1,9 +1,6 @@
 import * as THREE from 'three';
 import { loadImageData } from './imageSampler';
-import {
-  collectUvSeamPairs,
-  type UvSeamEdgeRecord,
-} from './uvSeamReconciliation';
+import { collectUvSeamPairs, type UvSeamEdgeRecord } from './uvSeamReconciliation';
 import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -27,10 +24,7 @@ const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
 const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
 const PROJECTION_FACING_FEATHER = 0.08;
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
-const gpuUvSeamPairCache = new WeakMap<
-  THREE.Object3D,
-  ReturnType<typeof collectUvSeamPairs>
->();
+const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
 
 type GpuLayerStackBakeInput = {
   renderer: THREE.WebGLRenderer;
@@ -690,12 +684,19 @@ function prepareTexture(
 }
 
 function createNeutralTexture() {
-  const texture = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat);
+  const texture = new THREE.DataTexture(
+    new Uint8Array([255, 255, 255, 255]),
+    1,
+    1,
+    THREE.RGBAFormat,
+  );
   return prepareTexture(texture, THREE.NearestFilter, THREE.NearestFilter);
 }
 
 function getTextureImageSize(texture: THREE.Texture) {
-  const image = texture.image as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number } | undefined;
+  const image = texture.image as
+    | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }
+    | undefined;
   const width = image?.naturalWidth ?? image?.width ?? 'unknown';
   const height = image?.naturalHeight ?? image?.height ?? 'unknown';
   return `${width}x${height}`;
@@ -716,7 +717,12 @@ async function loadLayerTextureFromCpuImageData(input: {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error(`Could not create texture canvas for ${input.label}.`);
   context.putImageData(imageData, 0, 0);
-  return prepareTexture(new THREE.CanvasTexture(canvas), input.minFilter, input.magFilter, input.flipY);
+  return prepareTexture(
+    new THREE.CanvasTexture(canvas),
+    input.minFilter,
+    input.magFilter,
+    input.flipY,
+  );
 }
 
 async function loadLayerTexturesWithOptions(
@@ -733,39 +739,36 @@ async function loadLayerTexturesWithOptions(
     flipY: options.inputTextureFlipY,
   });
   const neutralTexture = createNeutralTexture();
-  const maskTexture =
-    layer.maskUrl
-      ? await loadLayerTextureFromCpuImageData({
-          url: layer.maskUrl,
-          resolution,
-          label: `${layer.name} mask`,
-          minFilter: THREE.LinearFilter,
-          magFilter: THREE.LinearFilter,
-          flipY: options.inputTextureFlipY,
-        })
-      : neutralTexture;
-  const depthTexture =
-    layer.depthUrl
-      ? await loadLayerTextureFromCpuImageData({
-          url: layer.depthUrl,
-          resolution,
-          label: `${layer.name} depth`,
-          minFilter: THREE.NearestFilter,
-          magFilter: THREE.NearestFilter,
-          flipY: options.inputTextureFlipY,
-        })
-      : neutralTexture;
-  const normalTexture =
-    layer.normalUrl
-      ? await loadLayerTextureFromCpuImageData({
-          url: layer.normalUrl,
-          resolution,
-          label: `${layer.name} normal`,
-          minFilter: THREE.NearestFilter,
-          magFilter: THREE.NearestFilter,
-          flipY: options.inputTextureFlipY,
-        })
-      : neutralTexture;
+  const maskTexture = layer.maskUrl
+    ? await loadLayerTextureFromCpuImageData({
+        url: layer.maskUrl,
+        resolution,
+        label: `${layer.name} mask`,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        flipY: options.inputTextureFlipY,
+      })
+    : neutralTexture;
+  const depthTexture = layer.depthUrl
+    ? await loadLayerTextureFromCpuImageData({
+        url: layer.depthUrl,
+        resolution,
+        label: `${layer.name} depth`,
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        flipY: options.inputTextureFlipY,
+      })
+    : neutralTexture;
+  const normalTexture = layer.normalUrl
+    ? await loadLayerTextureFromCpuImageData({
+        url: layer.normalUrl,
+        resolution,
+        label: `${layer.name} normal`,
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        flipY: options.inputTextureFlipY,
+      })
+    : neutralTexture;
   return {
     projectedTexture,
     maskTexture,
@@ -774,9 +777,7 @@ async function loadLayerTexturesWithOptions(
     useMask: Boolean(layer.maskUrl),
     useDepthCheck: Boolean(layer.depthUrl),
     useNormalCheck: Boolean(layer.normalUrl),
-    disposableTextures: [
-      ...new Set([projectedTexture, maskTexture, depthTexture, normalTexture]),
-    ],
+    disposableTextures: [...new Set([projectedTexture, maskTexture, depthTexture, normalTexture])],
     sourceSizes: {
       layerId: layer.id,
       layerName: layer.name,
@@ -791,7 +792,9 @@ async function loadLayerTexturesWithOptions(
 function createObjectMatrixDelta(group: THREE.Group, layer: Layer) {
   group.updateMatrixWorld(true);
   if (!layer.objectMatrixWorld) return new THREE.Matrix4();
-  return new THREE.Matrix4().fromArray(layer.objectMatrixWorld).multiply(group.matrixWorld.clone().invert());
+  return new THREE.Matrix4()
+    .fromArray(layer.objectMatrixWorld)
+    .multiply(group.matrixWorld.clone().invert());
 }
 
 function debugObjectMatrixDelta(group: THREE.Group, layer: Layer, delta: THREE.Matrix4) {
@@ -858,7 +861,10 @@ function createLayerMaterial(input: {
   if (!input.layer.camera) throw new Error('Projected layer has no capture camera.');
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
   debugObjectMatrixDelta(input.group, input.layer, objectMatrixDelta);
-  const projectedImage = input.textures.projectedTexture.image as { width?: number; height?: number };
+  const projectedImage = input.textures.projectedTexture.image as {
+    width?: number;
+    height?: number;
+  };
   const visibilityImage = (
     input.textures.useNormalCheck
       ? input.textures.normalTexture.image
@@ -983,11 +989,7 @@ function getUvEdgeInward(edge: UvSeamEdgeRecord) {
   return inward;
 }
 
-function createUvSeamRepairGeometry(
-  root: THREE.Object3D,
-  resolution: number,
-  bandPixels: number,
-) {
+function createUvSeamRepairGeometry(root: THREE.Object3D, resolution: number, bandPixels: number) {
   let seamPairs = gpuUvSeamPairCache.get(root);
   if (!seamPairs) {
     seamPairs = collectUvSeamPairs(root, true);
@@ -1019,14 +1021,7 @@ function createUvSeamRepairGeometry(
     const baseIndex = positions.length / 3;
     destinationPoints.forEach((point) => positions.push(point.x, point.y, 0));
     pairedPoints.forEach((point) => pairedUvs.push(point.x, point.y));
-    indices.push(
-      baseIndex,
-      baseIndex + 1,
-      baseIndex + 2,
-      baseIndex,
-      baseIndex + 2,
-      baseIndex + 3,
-    );
+    indices.push(baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3);
   };
 
   seamPairs.forEach(([first, second]) => {
@@ -1098,11 +1093,7 @@ function runGpuPostprocess(input: {
   });
 
   let paddedUvTopology: THREE.WebGLRenderTarget | undefined;
-  if (
-    input.enableDilation &&
-    input.constrainDilationToInteriorHoles &&
-    input.uvTopologySource
-  ) {
+  if (input.enableDilation && input.constrainDilationToInteriorHoles && input.uvTopologySource) {
     const topologyPing = createTopologyTarget(input.resolution);
     const topologyPong = createTopologyTarget(input.resolution);
     ownedTargets.push(topologyPing, topologyPong);
@@ -1153,11 +1144,7 @@ function runGpuPostprocess(input: {
   }
   dilationMaterial.dispose();
 
-  if (
-    input.enableDilation &&
-    input.constrainDilationToInteriorHoles &&
-    paddedUvTopology
-  ) {
+  if (input.enableDilation && input.constrainDilationToInteriorHoles && paddedUvTopology) {
     const constraintMaterial = new THREE.ShaderMaterial({
       vertexShader: fullscreenVertexShader,
       fragmentShader: interiorHoleConstraintFragmentShader,
@@ -1255,18 +1242,32 @@ function runGpuPostprocess(input: {
   return { target: current, ownedTargets };
 }
 
-function readRenderTargetToImageData(
+const GPU_READBACK_ROWS_PER_YIELD = 64;
+
+function yieldDuringGpuReadbackConversion() {
+  const browserScheduler = (
+    globalThis as typeof globalThis & {
+      scheduler?: { yield?: () => Promise<void> };
+    }
+  ).scheduler;
+  return browserScheduler?.yield
+    ? browserScheduler.yield()
+    : new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+async function readRenderTargetToImageData(
   renderer: THREE.WebGLRenderer,
   target: THREE.WebGLRenderTarget,
   resolution: number,
   outputAlpha: 'opaque-viewport' | 'transparent' = 'opaque-viewport',
 ) {
   const pixels = new Uint8Array(resolution * resolution * 4);
-  renderer.readRenderTargetPixels(target, 0, 0, resolution, resolution, pixels);
+  await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
 
   const imageData = new ImageData(resolution, resolution);
   const coverage = new Uint8Array(resolution * resolution);
   const rowLength = resolution * 4;
+  let coveredPixels = 0;
   for (let y = 0; y < resolution; y += 1) {
     const sourceY = resolution - 1 - y;
     const sourceStart = sourceY * rowLength;
@@ -1301,6 +1302,7 @@ function readRenderTargetToImageData(
         // solid UV island when this direct GPU path is selected.
         imageData.data[targetOffset + 3] = alphaByte;
         coverage[pixelIndex] = 1;
+        coveredPixels += 1;
       } else if (outputAlpha === 'opaque-viewport') {
         imageData.data[targetOffset] = UNPROJECTED_TEXTURE_FILL[0];
         imageData.data[targetOffset + 1] = UNPROJECTED_TEXTURE_FILL[1];
@@ -1313,13 +1315,20 @@ function readRenderTargetToImageData(
         imageData.data[targetOffset + 3] = 0;
       }
     }
+    if ((y + 1) % GPU_READBACK_ROWS_PER_YIELD === 0 && y + 1 < resolution) {
+      await yieldDuringGpuReadbackConversion();
+    }
   }
-  return { imageData, coverage };
+  return { imageData, coverage, coveredPixels };
 }
 
-function readRenderTargetToLayerImageData(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget, resolution: number) {
+async function readRenderTargetToLayerImageData(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  resolution: number,
+) {
   const pixels = new Uint8Array(resolution * resolution * 4);
-  renderer.readRenderTargetPixels(target, 0, 0, resolution, resolution, pixels);
+  await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
 
   const imageData = new ImageData(resolution, resolution);
   const coverage = new Uint8Array(resolution * resolution);
@@ -1351,13 +1360,20 @@ function readRenderTargetToLayerImageData(renderer: THREE.WebGLRenderer, target:
       coverage[pixelIndex] = 1;
       coveredPixels += 1;
     }
+    if ((y + 1) % GPU_READBACK_ROWS_PER_YIELD === 0 && y + 1 < resolution) {
+      await yieldDuringGpuReadbackConversion();
+    }
   }
   return { imageData, coverage, coveredPixels };
 }
 
-function readRenderTargetAlphaToFloat(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget, resolution: number) {
+async function readRenderTargetAlphaToFloat(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  resolution: number,
+) {
   const pixels = new Uint8Array(resolution * resolution * 4);
-  renderer.readRenderTargetPixels(target, 0, 0, resolution, resolution, pixels);
+  await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
 
   const quality = new Float32Array(resolution * resolution);
   const rowLength = resolution * 4;
@@ -1366,6 +1382,9 @@ function readRenderTargetAlphaToFloat(renderer: THREE.WebGLRenderer, target: THR
     const sourceStart = sourceY * rowLength;
     for (let x = 0; x < resolution; x += 1) {
       quality[y * resolution + x] = pixels[sourceStart + x * 4 + 3] / 255;
+    }
+    if ((y + 1) % GPU_READBACK_ROWS_PER_YIELD === 0 && y + 1 < resolution) {
+      await yieldDuringGpuReadbackConversion();
     }
   }
   return quality;
@@ -1408,7 +1427,11 @@ function restoreRendererState(renderer: THREE.WebGLRenderer, state: RendererStat
   renderer.xr.enabled = state.xrEnabled;
 }
 
-function setBakeRenderTargetState(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget, resolution: number) {
+function setBakeRenderTargetState(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  resolution: number,
+) {
   renderer.xr.enabled = false;
   renderer.setPixelRatio(1);
   renderer.autoClear = false;
@@ -1422,7 +1445,9 @@ export async function bakeProjectedLayerRastersWithGpu(
 ): Promise<GpuLayerRastersBakeOutput> {
   const { renderer, resolution } = input;
   if (resolution > renderer.capabilities.maxTextureSize) {
-    throw new Error(`GPU max texture size is ${renderer.capabilities.maxTextureSize}, requested ${resolution}.`);
+    throw new Error(
+      `GPU max texture size is ${renderer.capabilities.maxTextureSize}, requested ${resolution}.`,
+    );
   }
 
   const warnings: string[] = [];
@@ -1491,7 +1516,16 @@ export async function bakeProjectedLayerRastersWithGpu(
       renderer.clear(true, true, true);
       reportProgress(layer, layerIndex, true);
       renderer.render(bakeScene.scene, camera);
-      const layerRaster = readRenderTargetToLayerImageData(renderer, colorTarget, resolution);
+      const layerRasterPromise = readRenderTargetToLayerImageData(
+        renderer,
+        colorTarget,
+        resolution,
+      );
+      // Async GPU readback is safe only after React Three Fiber regains its
+      // onscreen target and viewport. The PBO already owns the submitted pixels.
+      restoreRendererState(renderer, previousState);
+      const layerRaster = await layerRasterPromise;
+      previousState = captureRendererState(renderer);
       coverageMaterial.dispose();
 
       const qualityMaterial = createLayerMaterial({
@@ -1512,7 +1546,10 @@ export async function bakeProjectedLayerRastersWithGpu(
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
       renderer.render(bakeScene.scene, camera);
-      const quality = readRenderTargetAlphaToFloat(renderer, qualityTarget, resolution);
+      const qualityPromise = readRenderTargetAlphaToFloat(renderer, qualityTarget, resolution);
+      restoreRendererState(renderer, previousState);
+      const quality = await qualityPromise;
+      previousState = captureRendererState(renderer);
       qualityMaterial.dispose();
 
       textures.disposableTextures.forEach((texture) => texture.dispose());
@@ -1534,7 +1571,9 @@ export async function bakeProjectedLayerRastersWithGpu(
     }
     bakeScene.scene.clear();
 
-    warnings.push('GPU per-layer UV bake used CPU parity compositing; CPU raster fallback remains available for diagnostics.');
+    warnings.push(
+      'GPU per-layer UV bake used CPU parity compositing; CPU raster fallback remains available for diagnostics.',
+    );
     return {
       rasters,
       sourceSizes,
@@ -1556,7 +1595,9 @@ export async function bakeProjectedLayerStackWithGpu(
 ): Promise<GpuLayerStackBakeOutput> {
   const { renderer, resolution } = input;
   if (resolution > renderer.capabilities.maxTextureSize) {
-    throw new Error(`GPU max texture size is ${renderer.capabilities.maxTextureSize}, requested ${resolution}.`);
+    throw new Error(
+      `GPU max texture size is ${renderer.capabilities.maxTextureSize}, requested ${resolution}.`,
+    );
   }
 
   const warnings: string[] = [];
@@ -1682,9 +1723,7 @@ export async function bakeProjectedLayerStackWithGpu(
       );
       uvSeamGeometry = seamRepair?.geometry;
       if (seamRepair) {
-        warnings.push(
-          `GPU UV seam repair mapped ${seamRepair.seamPairs} geometric seam pairs.`,
-        );
+        warnings.push(`GPU UV seam repair mapped ${seamRepair.seamPairs} geometric seam pairs.`);
       }
     }
     const postprocess = runGpuPostprocess({
@@ -1698,13 +1737,16 @@ export async function bakeProjectedLayerStackWithGpu(
       enableSharpen: outputAlpha !== 'transparent',
       constrainDilationToInteriorHoles: input.constrainDilationToInteriorHoles,
     });
-    const { imageData, coverage } = readRenderTargetToImageData(renderer, postprocess.target, resolution, outputAlpha);
+    const readbackPromise = readRenderTargetToImageData(
+      renderer,
+      postprocess.target,
+      resolution,
+      outputAlpha,
+    );
+    restoreRendererState(renderer, previousState);
+    const { imageData, coverage, coveredPixels: finalCoveredPixels } = await readbackPromise;
+    previousState = captureRendererState(renderer);
     postprocess.ownedTargets.forEach((target) => target.dispose());
-
-    let finalCoveredPixels = 0;
-    for (let index = 0; index < coverage.length; index += 1) {
-      if (coverage[index]) finalCoveredPixels += 1;
-    }
 
     const canvas = document.createElement('canvas');
     canvas.width = resolution;
@@ -1713,7 +1755,9 @@ export async function bakeProjectedLayerStackWithGpu(
     if (!context) throw new Error('Could not create GPU UV bake canvas.');
     context.putImageData(imageData, 0, 0);
 
-    warnings.push('GPU bake does not expose per-rejection texel counters yet; fallback CPU remains available for diagnostics.');
+    warnings.push(
+      'GPU bake does not expose per-rejection texel counters yet; fallback CPU remains available for diagnostics.',
+    );
 
     return {
       canvas,

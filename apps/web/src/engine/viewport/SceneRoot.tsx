@@ -23,6 +23,7 @@ import {
   getLiveProjectedCanvasState,
   getLiveProjectedCanvasTexture,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { useLiveSurfacePaintPreview } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { createRuntimeProjectionDepth } from '@/engine/projection/createRuntimeProjectionDepth';
 import {
   compareUvLayersForComposition,
@@ -716,7 +717,17 @@ function ImportedModel({
   const texturedRestoreReady =
     !importedModel.restoreStage || importedModel.restoreStage === 'full';
   const layers = useLayerStore((state) => state.layers);
+  const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
+  const visibleLocalRepaintPreviewLayer = useMemo(() => {
+    if (!localRepaintPreviewLayer?.visible) return undefined;
+    const storedLayer = layers.find((layer) => layer.id === localRepaintPreviewLayer.id);
+    // Once the renderer-only repaint preview has a matching row in the layer
+    // stack, that row is authoritative. Otherwise hiding the row leaves the
+    // duplicate live preview visible on the model.
+    if (storedLayer && !storedLayer.visible) return undefined;
+    return localRepaintPreviewLayer;
+  }, [layers, localRepaintPreviewLayer]);
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
     state.currentProjectId
@@ -735,7 +746,7 @@ function ImportedModel({
     let cancelled = false;
     const candidates = [
       ...layers,
-      ...(localRepaintPreviewLayer ? [localRepaintPreviewLayer] : []),
+      ...(visibleLocalRepaintPreviewLayer ? [visibleLocalRepaintPreviewLayer] : []),
     ].filter(
       (layer) =>
         layer.type === 'projected' &&
@@ -794,27 +805,57 @@ function ImportedModel({
     gl,
     importedModel,
     layers,
-    localRepaintPreviewLayer,
     texturedRestoreReady,
+    visibleLocalRepaintPreviewLayer,
   ]);
   const importedObjectId = importedModel?.objectId;
+  const liveProjectedEraserMaskTexture = useMemo(() => {
+    if (
+      liveSurfacePaintPreview?.target !== 'projected-mask' ||
+      liveSurfacePaintPreview.composition !== 'multiply-original-mask' ||
+      liveSurfacePaintPreview.objectId !== importedObjectId
+    )
+      return undefined;
+    return getLiveProjectedCanvasTexture(
+      liveSurfacePaintPreview.assetUrl,
+      THREE.NoColorSpace,
+      { flipY: false },
+    );
+  }, [importedObjectId, liveSurfacePaintPreview]);
   const visibleProjectedLayers = useMemo(() => {
     if (!texturedRestoreReady) return [];
-    const storedLayers = importedObjectId
-      ? getVisibleProjectedLayerStack(layers, importedObjectId)
-      : [];
+    const storedLayers = (
+      importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []
+    ).map((layer) =>
+      liveSurfacePaintPreview?.target === 'projected-mask' &&
+      liveSurfacePaintPreview.composition === 'replace' &&
+      liveSurfacePaintPreview.objectId === importedObjectId &&
+      liveSurfacePaintPreview.layerId === layer.id
+        ? {
+            ...layer,
+            maskUrl: liveSurfacePaintPreview.assetUrl,
+            maskSpace: 'uv' as const,
+          }
+        : layer,
+    );
     if (
-      !localRepaintPreviewLayer?.visible ||
-      !localRepaintPreviewLayer.imageUrl ||
-      !localRepaintPreviewLayer.camera ||
-      (localRepaintPreviewLayer.objectId && localRepaintPreviewLayer.objectId !== importedObjectId)
+      !visibleLocalRepaintPreviewLayer?.imageUrl ||
+      !visibleLocalRepaintPreviewLayer.camera ||
+      (visibleLocalRepaintPreviewLayer.objectId &&
+        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
     )
       return storedLayers;
     return [
-      localRepaintPreviewLayer,
-      ...storedLayers.filter((layer) => layer.id !== localRepaintPreviewLayer.id),
+      visibleLocalRepaintPreviewLayer,
+      ...storedLayers.filter((layer) => layer.id !== visibleLocalRepaintPreviewLayer.id),
     ];
-  }, [importedObjectId, layers, localRepaintPreviewLayer, texturedRestoreReady]);
+  }, [
+    importedObjectId,
+    layers,
+    liveSurfacePaintPreview,
+    texturedRestoreReady,
+    visibleLocalRepaintPreviewLayer,
+  ]);
   const visibleProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleProjectedLayers),
     [visibleProjectedLayers],
@@ -845,19 +886,37 @@ function ImportedModel({
       )
       // Layer order 0 is the top row in the panel. Feed the shader bottom-up
       // so later overlay evaluations preserve that visible stacking order.
-      .sort((a, b) => b.order - a.order);
+      .sort((a, b) => b.order - a.order)
+      .map((layer) =>
+        liveSurfacePaintPreview?.target === 'projected-mask' &&
+        liveSurfacePaintPreview.composition === 'replace' &&
+        liveSurfacePaintPreview.objectId === importedObjectId &&
+        liveSurfacePaintPreview.layerId === layer.id
+          ? {
+              ...layer,
+              maskUrl: liveSurfacePaintPreview.assetUrl,
+              maskSpace: 'uv' as const,
+            }
+          : layer,
+      );
     if (
-      !localRepaintPreviewLayer?.visible ||
-      !localRepaintPreviewLayer.imageUrl ||
-      !localRepaintPreviewLayer.camera ||
-      (localRepaintPreviewLayer.objectId && localRepaintPreviewLayer.objectId !== importedObjectId)
+      !visibleLocalRepaintPreviewLayer?.imageUrl ||
+      !visibleLocalRepaintPreviewLayer.camera ||
+      (visibleLocalRepaintPreviewLayer.objectId &&
+        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
     )
       return storedLayers;
     return [
-      ...storedLayers.filter((layer) => layer.id !== localRepaintPreviewLayer.id),
-      localRepaintPreviewLayer,
+      ...storedLayers.filter((layer) => layer.id !== visibleLocalRepaintPreviewLayer.id),
+      visibleLocalRepaintPreviewLayer,
     ];
-  }, [importedObjectId, layers, localRepaintPreviewLayer, texturedRestoreReady]);
+  }, [
+    importedObjectId,
+    layers,
+    liveSurfacePaintPreview,
+    texturedRestoreReady,
+    visibleLocalRepaintPreviewLayer,
+  ]);
   const previewProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(previewProjectedLayers),
     [previewProjectedLayers],
@@ -1187,11 +1246,17 @@ function ImportedModel({
   const visibleUvLayers = useMemo(
     () =>
       texturedRestoreReady
-        ? getVisibleUvLayerStack(layers, importedObjectId, 'top-to-bottom').filter(
-            (layer) => layer.role !== 'content-aware-underlay',
-          )
+        ? getVisibleUvLayerStack(layers, importedObjectId, 'top-to-bottom')
+            .filter((layer) => layer.role !== 'content-aware-underlay')
+            .map((layer) =>
+              liveSurfacePaintPreview?.target === 'uv-image' &&
+              liveSurfacePaintPreview.objectId === importedObjectId &&
+              liveSurfacePaintPreview.layerId === layer.id
+                ? { ...layer, imageUrl: liveSurfacePaintPreview.assetUrl }
+                : layer,
+            )
         : [],
-    [importedObjectId, layers, texturedRestoreReady],
+    [importedObjectId, layers, liveSurfacePaintPreview, texturedRestoreReady],
   );
   const visibleUvLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleUvLayers),
@@ -1236,8 +1301,8 @@ function ImportedModel({
     )
       return undefined;
     const hasLiveLocalRepaintStroke = Boolean(
-      localRepaintPreviewLayer?.visible &&
-      stableVisibleProjectedLayers.some((layer) => layer.id === localRepaintPreviewLayer.id),
+      visibleLocalRepaintPreviewLayer &&
+      stableVisibleProjectedLayers.some((layer) => layer.id === visibleLocalRepaintPreviewLayer.id),
     );
     // Keep the accumulated local-repaint UV canvas resident while the next
     // projected stroke is being drawn. Moving it back into the ordinary UV
@@ -1255,7 +1320,7 @@ function ImportedModel({
     );
     if (!hasLiveLocalRepaintStroke && topLayer.order >= topProjectedOrder) return undefined;
     return topLayer;
-  }, [localRepaintPreviewLayer, stableVisibleProjectedLayers, stableVisibleUvLayers]);
+  }, [stableVisibleProjectedLayers, stableVisibleUvLayers, visibleLocalRepaintPreviewLayer]);
   const nonLiveUvLayers = useMemo(
     () =>
       liveTopUvLayer
@@ -1316,6 +1381,7 @@ function ImportedModel({
   const hasLocalRepaintPreview = stableVisibleProjectedLayers.some(isRenderedLocalRepaintLayer);
   const visibleStackNeedsLivePreview =
     hasLiveProjectedPreview ||
+    Boolean(liveProjectedEraserMaskTexture) ||
     hasLocalRepaintPreview ||
     Boolean(contentAwareUvUnderlayLayer) ||
     stableVisibleProjectedLayers.some((layer) => layer.needsRebake);
@@ -1445,6 +1511,12 @@ function ImportedModel({
               edgeFeather: 0.004,
               depthBias: 0.025,
               previewLighting,
+              ...(liveProjectedEraserMaskTexture && liveSurfacePaintPreview
+                ? {
+                    liveEraserMaskTexture: liveProjectedEraserMaskTexture,
+                    liveEraserLayerId: liveSurfacePaintPreview.layerId,
+                  }
+                : {}),
             }
           : undefined;
       const projectedPreviewOverBudget = Boolean(
@@ -1700,6 +1772,8 @@ function ImportedModel({
     loadedContentAwareUnderlayTexture,
     loadedUvTexture,
     gl.capabilities.maxTextures,
+    liveProjectedEraserMaskTexture,
+    liveSurfacePaintPreview,
     liveTopUvLayer,
     liveTopUvTexture,
     liveSurfaceMaskTexture,

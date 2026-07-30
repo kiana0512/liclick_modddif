@@ -34,8 +34,7 @@ export async function renderSceneToPngUrl(
   // targets. Color captures therefore need a linear intermediate followed by
   // the same display transform used by the on-screen viewport.
   const sceneTarget = new THREE.WebGLRenderTarget(request.width, request.height, {
-    samples:
-      options.samples ?? (request.width > 1024 || request.height > 1024 ? 0 : 2),
+    samples: options.samples ?? (request.width > 1024 || request.height > 1024 ? 0 : 2),
     ...(options.applyDisplayTransform
       ? { type: THREE.HalfFloatType, colorSpace: THREE.LinearSRGBColorSpace }
       : { colorSpace: options.dataTexture ? THREE.NoColorSpace : THREE.SRGBColorSpace }),
@@ -63,7 +62,7 @@ export async function renderSceneToPngUrl(
       getDisplayOutputPass().render(request.gl, outputTarget, sceneTarget, 0, false);
     }
 
-    request.gl.readRenderTargetPixels(
+    const readbackPromise = request.gl.readRenderTargetPixelsAsync(
       readTarget,
       0,
       0,
@@ -71,6 +70,12 @@ export async function renderSceneToPngUrl(
       request.height,
       pixels,
     );
+    // The async PBO read owns the submitted frame. Restore the shared renderer
+    // before waiting so React Three Fiber can keep drawing the viewport.
+    request.scene.background = previousBackground;
+    request.gl.setRenderTarget(previousTarget);
+    request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    await readbackPromise;
   } finally {
     request.scene.background = previousBackground;
     request.gl.setRenderTarget(previousTarget);
