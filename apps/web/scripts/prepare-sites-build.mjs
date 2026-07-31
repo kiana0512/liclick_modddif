@@ -36,7 +36,7 @@ function json(payload, init = {}) {
 function uploadAuthorized(request, env) {
   const configured = env.INSTALLER_UPLOAD_TOKEN;
   if (!configured) return false;
-  return request.headers.get('authorization') === \`Bearer \${configured}\`;
+  return request.headers.get('x-li3d-installer-token') === configured;
 }
 
 async function serveInstaller(request, env) {

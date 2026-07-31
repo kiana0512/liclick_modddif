@@ -15,7 +15,7 @@ if (!token) throw new Error('LI3D_INSTALLER_UPLOAD_TOKEN is required.');
 if (!existsSync(installerPath)) throw new Error(`Installer not found: ${installerPath}`);
 
 const uploadRoute = `${siteUrl}/api/internal/installers/windows-x64/multipart`;
-const headers = { authorization: `Bearer ${token}` };
+const headers = { 'x-li3d-installer-token': token };
 
 async function expectJson(response) {
   const body = await response.text();
