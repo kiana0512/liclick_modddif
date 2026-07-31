@@ -112,7 +112,9 @@ function pathFromRoute(route: RouteState) {
 
 export function App() {
   const [route, setRoute] = useState<RouteState>(() => routeFromPath(window.location.pathname));
-  const localTextureRuntime = useLocalTextureRuntime();
+  const textureRouteActive =
+    route.name === 'editor' || (route.name === 'projects' && route.module === 'texture');
+  const localTextureRuntime = useLocalTextureRuntime(textureRouteActive);
   const setChecking = useAuthStore((state) => state.setChecking);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
@@ -315,7 +317,6 @@ export function App() {
           onOpenRetopology={navigation.openAutoRetopology}
           onOpenUv={navigation.openAutoUv}
           onLogout={navigation.openHome}
-          localTextureRuntime={localTextureRuntime.state}
         />
       </Suspense>
       <ToastHost />

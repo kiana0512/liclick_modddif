@@ -4,7 +4,7 @@ import {
   type LocalTextureRuntimeState,
 } from '@/services/localTextureRuntimeClient';
 
-export function useLocalTextureRuntime() {
+export function useLocalTextureRuntime(enabled = true) {
   const [state, setState] = useState<LocalTextureRuntimeState>({ status: 'checking' });
 
   const refresh = useCallback(async () => {
@@ -15,6 +15,7 @@ export function useLocalTextureRuntime() {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     void refresh();
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refresh();
@@ -25,7 +26,7 @@ export function useLocalTextureRuntime() {
       window.clearInterval(interval);
       window.removeEventListener('focus', handleFocus);
     };
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   return { state, refresh };
 }

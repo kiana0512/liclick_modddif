@@ -13,7 +13,6 @@ import {
 } from 'lucide-react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
-import type { LocalTextureRuntimeState } from '@/services/localTextureRuntimeClient';
 
 type ModuleCardProps = {
   eyebrow: string;
@@ -270,7 +269,6 @@ export function HomePage({
   onOpenRetopology,
   onOpenUv,
   onLogout,
-  localTextureRuntime,
 }: {
   onOpenTexture: () => void;
   onOpenBake: () => void;
@@ -278,25 +276,7 @@ export function HomePage({
   onOpenRetopology: () => void;
   onOpenUv: () => void;
   onLogout: () => void;
-  localTextureRuntime: LocalTextureRuntimeState;
 }) {
-  const localRuntimeLabel =
-    localTextureRuntime.status === 'ready'
-      ? '本地贴图组件已就绪'
-      : localTextureRuntime.status === 'checking'
-        ? '正在检测本地组件'
-        : localTextureRuntime.status === 'outdated'
-          ? '本地贴图组件需更新'
-          : '本地贴图组件未安装';
-  const localRuntimeBadge =
-    localTextureRuntime.status === 'ready'
-      ? '本机就绪'
-      : localTextureRuntime.status === 'checking'
-        ? '检测中'
-        : localTextureRuntime.status === 'outdated'
-          ? '需更新'
-          : '需安装';
-
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute left-[8%] top-36 h-72 w-72 rounded-full bg-fuchsia-500/[0.075] blur-[90px]" />
@@ -324,16 +304,7 @@ export function HomePage({
             </span>
             <span className="hidden h-3 w-px bg-white/12 sm:block" />
             <span className="hidden items-center gap-2 sm:inline-flex">
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  localTextureRuntime.status === 'ready'
-                    ? 'bg-emerald-300'
-                    : localTextureRuntime.status === 'checking'
-                      ? 'animate-pulse bg-violet-300'
-                      : 'bg-amber-300'
-                }`}
-              />
-              {localRuntimeLabel}
+              <Boxes className="h-3.5 w-3.5" />5 个工作模块
             </span>
           </div>
         </div>
@@ -347,8 +318,8 @@ export function HomePage({
             icon={Palette}
             accent="violet"
             visual="paint"
-            badge={localRuntimeBadge}
-            hoverAction={localTextureRuntime.status === 'ready' ? '进入贴图工作台' : '检测并安装本地组件'}
+            badge="本机运行"
+            hoverAction="进入贴图工作台"
             onClick={onOpenTexture}
             layout="featured"
             className="xl:row-span-2"
