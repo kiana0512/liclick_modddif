@@ -7,12 +7,23 @@ const TILE_SIZE = 1024;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
-const MIN_CAPTURE_FACE_ON = 0.04;
+const DEPTH_BACKED_ANGLE_COVERAGE_START = 0.02;
+const DEPTH_BACKED_ANGLE_COVERAGE_END = 0.38;
+const BLEND_POWER = 2.4;
+const RESIDUAL_MIX = 0.2;
+const DOMINANCE_BLEND_START = 1.45;
+const DOMINANCE_BLEND_END = 2.6;
+const DOMINANCE_MARGIN_START = 0.05;
+const DOMINANCE_MARGIN_END = 0.2;
+const MIN_CAPTURE_FACE_ON = 0.01;
 const FULL_CAPTURE_FACE_ON = 0.2;
-const MAX_GRAZING_DEPTH_SCALE = 4;
-const MIN_VISIBILITY_SUPPORT = 1.5;
-const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
-const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
+const MAX_GRAZING_DEPTH_SCALE = 5;
+const MIN_VISIBILITY_SUPPORT = 1.25;
+const MAX_GRAZING_VISIBILITY_SUPPORT = 3.75;
+const VISIBILITY_SUPPORT_FEATHER = 1.25;
+const FACE_ON_VISIBILITY_FULL = 0.06;
+const MIN_CAPTURE_NORMAL_AGREEMENT = 0.72;
+const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 
 type PreviewLayer = ProjectionLayerStackInput['layers'][number];
 
@@ -206,14 +217,16 @@ const candidateFragmentShader = `
       mix(projectorNear, projectorFar, capturedDepth),
       depthIsLinearView
     );
+    float depthError = abs(projectedMetric - capturedMetric);
     float depthVisibility = mix(
       1.0,
-      1.0 - step(depthTolerance, abs(projectedMetric - capturedMetric)),
+      1.0 - smoothstep(depthTolerance * 0.75, depthTolerance * 1.75, depthError),
       useDepthCheck
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
-    float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
+    float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
+      ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
@@ -243,7 +256,11 @@ const candidateFragmentShader = `
     vec3 viewDirection = normalize(projectorPosition - captureWorldPosition.xyz);
     float ndv = dot(captureWorldNormal, viewDirection);
     if (useDepthCheck < 0.5 && ndv < -0.35) discard;
-    float angleCoverage = mix(smoothstep(-0.62, -0.18, ndv), 1.0, useDepthCheck);
+    float angleCoverage = mix(
+      smoothstep(-0.62, -0.18, ndv),
+      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv),
+      useDepthCheck
+    );
     float projectedDepth = ndc.z * 0.5 + 0.5;
     float projectedViewDepth = -(projectorViewMatrix * captureWorldPosition).z;
     float projectedMetric = mix(projectedDepth, projectedViewDepth, depthIsLinearView);
@@ -269,10 +286,11 @@ const candidateFragmentShader = `
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
     depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
-    float visibilitySupport = computeVisibilitySample(
+    float centerVisibility = computeVisibilitySample(
       texture(depthMap, uv), texture(normalMap, uv),
       projectedMetric, depthTolerance, projectedFaceNormal
     );
+    float visibilitySupport = centerVisibility;
     visibilitySupport += computeVisibilitySample(
       texture(depthMap, uv + vec2(visibilityTexelSize.x, 0.0)),
       texture(normalMap, uv + vec2(visibilityTexelSize.x, 0.0)),
@@ -323,10 +341,19 @@ const candidateFragmentShader = `
       ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
       grazingConfidence
     );
+    float neighborhoodVisibility = smoothstep(
+      requiredVisibilitySupport - ${VISIBILITY_SUPPORT_FEATHER.toFixed(2)},
+      requiredVisibilitySupport + 0.5,
+      visibilitySupport
+    );
+    float centerBackedVisibility =
+      centerVisibility *
+      mix(0.35, 1.0, grazingConfidence) *
+      max(useNormalCheck, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
     float visibilityCoverage =
-      step(requiredVisibilitySupport, visibilitySupport) *
-      step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
-    float depthWeight = visibilityCoverage;
+      max(neighborhoodVisibility, centerBackedVisibility) *
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
     if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
     float strength = clamp(layerStrength, 0.25, 3.0);
@@ -429,16 +456,22 @@ const composeFragmentShader = `
     }
     vec3 color;
     float renderedMix;
-    if (count < 1.5 || r0.a >= r1.a * 1.18 || r0.a - r1.a >= 0.035) {
+    if (count < 1.5) {
       color = r0.rgb;
       renderedMix = rendered.x;
     } else {
-      vec3 strong = pow(max(vec3(r0.a, r1.a, r2.a), vec3(0.0)), vec3(4.0));
+      vec3 strong = pow(max(vec3(r0.a, r1.a, r2.a), vec3(0.0)), vec3(${BLEND_POWER.toFixed(1)}));
       float strongSum = max(dot(strong, vec3(1.0)), 0.000001);
       float softSum = max(info.r + info.g + info.b, 0.000001);
-      vec3 weights = mix(strong / strongSum, info.rgb / softSum, 0.05);
-      color = r0.rgb * weights.x + r1.rgb * weights.y + r2.rgb * weights.z;
-      renderedMix = dot(rendered, weights);
+      vec3 weights = mix(strong / strongSum, info.rgb / softSum, ${RESIDUAL_MIX.toFixed(2)});
+      vec3 blendedColor = r0.rgb * weights.x + r1.rgb * weights.y + r2.rgb * weights.z;
+      float blendedRendered = dot(rendered, weights);
+      float qualityRatio = r0.a / max(r1.a, 0.000001);
+      float dominance =
+        smoothstep(${DOMINANCE_BLEND_START.toFixed(2)}, ${DOMINANCE_BLEND_END.toFixed(2)}, qualityRatio) *
+        smoothstep(${DOMINANCE_MARGIN_START.toFixed(2)}, ${DOMINANCE_MARGIN_END.toFixed(2)}, r0.a - r1.a);
+      color = mix(blendedColor, r0.rgb, dominance);
+      renderedMix = mix(blendedRendered, rendered.x, dominance);
     }
     composedColor = vec4(liclickLinearToSrgb(clamp(color, 0.0, 1.0)), 1.0);
     composedRenderedMask = vec4(renderedMix, 0.0, 0.0, 1.0);

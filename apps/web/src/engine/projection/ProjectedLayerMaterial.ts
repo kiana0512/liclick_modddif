@@ -77,26 +77,33 @@ export function syncProjectedLayerMaterialProjection(root: THREE.Object3D) {
 const NDV_HARD_REJECT = -0.35;
 const NDV_COVERAGE_START = -0.62;
 const NDV_COVERAGE_END = -0.18;
+const DEPTH_BACKED_ANGLE_COVERAGE_START = 0.02;
+const DEPTH_BACKED_ANGLE_COVERAGE_END = 0.38;
 const NDV_QUALITY_START = 0.02;
 const NDV_QUALITY_END = 0.25;
 const BASE_ANGLE_GAMMA = 4;
 const MAX_STRENGTH_FOR_ANGLE = 3;
-const BLEND_POWER = 4;
-const RESIDUAL_MIX = 0.05;
-const DOMINANT_QUALITY_RATIO = 1.18;
-const DOMINANT_QUALITY_MARGIN = 0.035;
+const BLEND_POWER = 2.4;
+const RESIDUAL_MIX = 0.2;
+const DOMINANCE_BLEND_START = 1.45;
+const DOMINANCE_BLEND_END = 2.6;
+const DOMINANCE_MARGIN_START = 0.05;
+const DOMINANCE_MARGIN_END = 0.2;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
 // Large turns should still receive projection when the capture depth/normal
 // neighbourhood proves that the surface was visible. At grazing angles we
 // require much broader support instead of accepting isolated scan-line samples.
-const MIN_CAPTURE_FACE_ON = 0.04;
+const MIN_CAPTURE_FACE_ON = 0.01;
 const FULL_CAPTURE_FACE_ON = 0.2;
-const MAX_GRAZING_DEPTH_SCALE = 4;
-const MIN_VISIBILITY_SUPPORT = 1.5;
-const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
-const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
+const MAX_GRAZING_DEPTH_SCALE = 5;
+const MIN_VISIBILITY_SUPPORT = 1.25;
+const MAX_GRAZING_VISIBILITY_SUPPORT = 3.75;
+const VISIBILITY_SUPPORT_FEATHER = 1.25;
+const FACE_ON_VISIBILITY_FULL = 0.06;
+const MIN_CAPTURE_NORMAL_AGREEMENT = 0.72;
+const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 const PROJECTION_FACING_FEATHER = 0.08;
 const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
@@ -381,14 +388,16 @@ const fragmentShader = `
       mix(projectorNear, projectorFar, capturedDepth),
       depthIsLinearView
     );
+    float depthError = abs(projectedMetric - capturedMetric);
     float depthVisibility = mix(
       1.0,
-      1.0 - step(depthTolerance, abs(projectedMetric - capturedMetric)),
+      1.0 - smoothstep(depthTolerance * 0.75, depthTolerance * 1.75, depthError),
       useDepthCheck
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
-    float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
+    float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
+      ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
@@ -550,18 +559,23 @@ const fragmentShader = `
       ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
       grazingConfidence
     );
-    float neighborhoodVisibility = step(requiredVisibilitySupport, visibilitySupport);
+    float neighborhoodVisibility = smoothstep(
+      requiredVisibilitySupport - ${VISIBILITY_SUPPORT_FEATHER.toFixed(2)},
+      requiredVisibilitySupport + 0.5,
+      visibilitySupport
+    );
     // A thin bevel on a low-poly mesh can cover only the center capture texel.
     // Keep it when that texel has an exact geometric-normal match. Captures
     // without a normal buffer still require a reasonably face-on projection,
     // preserving the neighborhood guard against grazing zebra stripes.
     float centerBackedVisibility =
-      step(0.5, centerVisibility) *
-      max(useNormalCheck, step(${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
+      centerVisibility *
+      mix(0.35, 1.0, grazingConfidence) *
+      max(useNormalCheck, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
     float visibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
-      step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
-    float depthWeight = visibilityCoverage;
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     float lambert = computePreviewLight(normal);
     vec4 texel = texture2D(projectedMap, uv);
     texel.rgb = applyHsvAdjustments(texel.rgb, hueShift, saturationShift, lightnessShift);
@@ -569,7 +583,7 @@ const fragmentShader = `
     float alphaCoverage = step(0.01, sourceAlpha);
     float angleCoverage = mix(
       smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv),
-      1.0,
+      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv),
       useDepthCheck
     );
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
@@ -792,13 +806,18 @@ function buildStackFragmentShader(
         ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
         grazingConfidence
       );
-      float neighborhoodVisibility = step(requiredVisibilitySupport, visibilitySupport);
+      float neighborhoodVisibility = smoothstep(
+        requiredVisibilitySupport - ${VISIBILITY_SUPPORT_FEATHER.toFixed(2)},
+        requiredVisibilitySupport + 0.5,
+        visibilitySupport
+      );
       float centerBackedVisibility =
-        step(0.5, centerVisibility) *
-        max(${layerUsesNormal(index) ? '1.0' : '0.0'}, step(${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
+        centerVisibility *
+        mix(0.35, 1.0, grazingConfidence) *
+        max(${layerUsesNormal(index) ? '1.0' : '0.0'}, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
       float visibilityCoverage =
         max(neighborhoodVisibility, centerBackedVisibility) *
-        step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);`;
+        smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);`;
   };
   const uniformDeclarations = Array.from(
     { length: layerCount },
@@ -870,7 +889,7 @@ function buildStackFragmentShader(
       vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
       float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
-      float depthWeight = visibilityCoverage;
+      float depthWeight = mix(0.7, 1.0, visibilityCoverage);
       vec4 texel = ${projectedSample(index, 'uv')};
       texel.rgb = applyHsvAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
       texel.rgb *= mix(
@@ -882,7 +901,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesDepth(index)
-          ? '1.0'
+          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv)`
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
@@ -945,7 +964,7 @@ function buildStackFragmentShader(
       vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
       float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
-      float depthWeight = visibilityCoverage;
+      float depthWeight = mix(0.7, 1.0, visibilityCoverage);
       vec4 texel = ${projectedSample(index, 'uv')};
       texel.rgb = applyHsvAdjustments(texel.rgb, hueShift${index}, saturationShift${index}, lightnessShift${index});
       texel.rgb *= mix(
@@ -957,7 +976,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesDepth(index)
-          ? '1.0'
+          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv)`
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
@@ -1080,14 +1099,16 @@ function buildStackFragmentShader(
       mix(sampleNear, sampleFar, capturedDepth),
       sampleDepthIsLinearView
     );
+    float depthError = abs(projectedMetric - capturedMetric);
     float depthVisibility = mix(
       1.0,
-      1.0 - step(depthTolerance, abs(projectedMetric - capturedMetric)),
+      1.0 - smoothstep(depthTolerance * 0.75, depthTolerance * 1.75, depthError),
       sampleUsesDepth
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
-    float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
+    float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
+      ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
     );
     return depthVisibility * mix(1.0, normalVisibility, sampleUsesNormal);
@@ -1174,13 +1195,6 @@ function buildStackFragmentShader(
       step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage2);
     if (candidateCount <= 0.5) return fallbackColor;
     if (candidateCount <= 1.5) return topColor0;
-    if (
-      topQuality0 >= topQuality1 * ${DOMINANT_QUALITY_RATIO.toFixed(2)} ||
-      topQuality0 - topQuality1 >= ${DOMINANT_QUALITY_MARGIN.toFixed(3)}
-    ) {
-      return topColor0;
-    }
-
     float sumStrong =
       pow(max(topQuality0, 0.0), ${BLEND_POWER.toFixed(1)}) +
       pow(max(topQuality1, 0.0), ${BLEND_POWER.toFixed(1)}) +
@@ -1191,7 +1205,12 @@ function buildStackFragmentShader(
     float w0 = mix(pow(topQuality0, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage0 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
     float w1 = mix(pow(topQuality1, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage1 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
     float w2 = mix(pow(topQuality2, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage2 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
-    return topColor0 * w0 + topColor1 * w1 + topColor2 * w2;
+    vec3 blendedColor = topColor0 * w0 + topColor1 * w1 + topColor2 * w2;
+    float qualityRatio = topQuality0 / max(topQuality1, 0.000001);
+    float dominance =
+      smoothstep(${DOMINANCE_BLEND_START.toFixed(2)}, ${DOMINANCE_BLEND_END.toFixed(2)}, qualityRatio) *
+      smoothstep(${DOMINANCE_MARGIN_START.toFixed(2)}, ${DOMINANCE_MARGIN_END.toFixed(2)}, topQuality0 - topQuality1);
+    return mix(blendedColor, topColor0, dominance);
   }
 
   void main() {

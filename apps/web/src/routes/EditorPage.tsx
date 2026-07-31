@@ -3434,12 +3434,17 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
                 maskUrl: undefined,
               }
             : layer,
-        ),
+          ),
+      );
+      const bakeResolution = resolutionToSize[resolution];
+      const uvIslandPaddingPixels = Math.min(
+        32,
+        Math.max(4, Math.ceil(bakeResolution / 256)),
       );
       const bakeResult = await bakeVisibleProjectedLayersToTexture({
         objectId,
         transientLayers: layersToBake,
-        resolution: resolutionToSize[resolution],
+        resolution: bakeResolution,
         enableBackfaceCulling: true,
         // Do not use unconstrained atlas-wide dilation. The topology and
         // geometry-aware passes below repair only model UV texels and seams.
@@ -3447,19 +3452,22 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         dilationPixels: 0,
         // Add a tiny atlas-only gutter to stop linear filtering from sampling
         // transparent texels at UV seams. This never fills a model-surface texel.
-        uvIslandGutterPixels: 2,
+        // Restore resolution-aware colour bleed outside every UV island. The
+        // high-poly topology repair below fills interior misses; this separate
+        // pass prevents mip/bilinear sampling from exposing the atlas background.
+        uvIslandGutterPixels: uvIslandPaddingPixels,
         // Dense/high-poly meshes can contain small triangles that are visible
         // in the capture but miss every depth-buffer sample during UV baking.
         // Propagate nearby valid projection inside the same UV topology. The
         // radius scales with output resolution and cannot cross empty atlas space.
         uvCoverageGapPixels: Math.min(
           256,
-          Math.max(64, Math.ceil(resolutionToSize[resolution] / 16)),
+          Math.max(64, Math.ceil(bakeResolution / 16)),
         ),
         repairMissingUvSeams: true,
         uvSeamRepairPixels: Math.min(
           16,
-          Math.max(4, Math.ceil(resolutionToSize[resolution] / 256)),
+          Math.max(4, Math.ceil(bakeResolution / 256)),
         ),
         outputAlpha: 'transparent',
         commitToProject: false,

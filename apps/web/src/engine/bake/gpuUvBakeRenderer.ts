@@ -8,6 +8,8 @@ import type { Layer } from '@/types/layer';
 const NDV_HARD_REJECT = -0.35;
 const NDV_COVERAGE_START = -0.62;
 const NDV_COVERAGE_END = -0.18;
+const DEPTH_BACKED_ANGLE_COVERAGE_START = 0.02;
+const DEPTH_BACKED_ANGLE_COVERAGE_END = 0.38;
 const BASE_ANGLE_GAMMA = 4;
 const MAX_STRENGTH_FOR_ANGLE = 3;
 const SHARPEN_AMOUNT = 0.24;
@@ -16,12 +18,15 @@ const MAX_GPU_SHARPEN_RESOLUTION = 4096;
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
-const MIN_CAPTURE_FACE_ON = 0.04;
+const MIN_CAPTURE_FACE_ON = 0.01;
 const FULL_CAPTURE_FACE_ON = 0.2;
-const MAX_GRAZING_DEPTH_SCALE = 4;
-const MIN_VISIBILITY_SUPPORT = 1.5;
-const MAX_GRAZING_VISIBILITY_SUPPORT = 5.5;
-const MIN_CAPTURE_NORMAL_AGREEMENT = 0.9;
+const MAX_GRAZING_DEPTH_SCALE = 5;
+const MIN_VISIBILITY_SUPPORT = 1.25;
+const MAX_GRAZING_VISIBILITY_SUPPORT = 3.75;
+const VISIBILITY_SUPPORT_FEATHER = 1.25;
+const FACE_ON_VISIBILITY_FULL = 0.06;
+const MIN_CAPTURE_NORMAL_AGREEMENT = 0.72;
+const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 const PROJECTION_FACING_FEATHER = 0.08;
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
@@ -235,14 +240,16 @@ const fragmentShader = `
       mix(projectorNear, projectorFar, capturedDepth),
       depthIsLinearView
     );
+    float depthError = abs(projectedMetric - capturedMetric);
     float depthVisibility = mix(
       1.0,
-      1.0 - step(depthTolerance, abs(projectedMetric - capturedMetric)),
+      1.0 - smoothstep(depthTolerance * 0.75, depthTolerance * 1.75, depthError),
       useDepthCheck
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
-    float normalVisibility = step(0.25, length(capturedFaceNormal)) * step(
+    float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
+      ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
@@ -332,7 +339,7 @@ const fragmentShader = `
     if (useDepthCheck < 0.5 && enableBackfaceCulling > 0.5 && frontFacing < 0.5) discard;
     float angleCoverage = mix(
       smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv),
-      1.0,
+      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv),
       useDepthCheck
     );
     if (angleCoverage <= 0.0001) discard;
@@ -433,18 +440,23 @@ const fragmentShader = `
       ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
       grazingConfidence
     );
-    float neighborhoodVisibility = step(requiredVisibilitySupport, visibilitySupport);
+    float neighborhoodVisibility = smoothstep(
+      requiredVisibilitySupport - ${VISIBILITY_SUPPORT_FEATHER.toFixed(2)},
+      requiredVisibilitySupport + 0.5,
+      visibilitySupport
+    );
     // Preserve capture-texel-wide low-poly bevels when the center depth and
     // geometric normal agree. Without a normal buffer, only use this fallback
     // for face-on regions so grazing scan-line rejection remains intact.
     float centerBackedVisibility =
-      step(0.5, centerVisibility) *
-      max(useNormalCheck, step(${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
+      centerVisibility *
+      mix(0.35, 1.0, grazingConfidence) *
+      max(useNormalCheck, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
     float visibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
-      step(${MIN_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor);
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
     if (strictDepthCheck > 0.5 && useDepthCheck > 0.5 && visibilityCoverage < 0.5) discard;
-    float depthWeight = visibilityCoverage;
+    float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
     texel.rgb = applyHsvAdjustments(texel.rgb);
     float sourceAlpha = texel.a * maskCoverage;

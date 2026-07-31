@@ -8,6 +8,7 @@ export function rasterizeUvTopologyMask(
   root: THREE.Object3D,
   width: number,
   height: number,
+  coverageMode: 'pixel-center' | 'conservative' = 'pixel-center',
 ) {
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -43,13 +44,15 @@ export function rasterizeUvTopologyMask(
 
   const alpha = context.getImageData(0, 0, width, height).data;
   const topology = new Uint8Array(width * height);
+  const alphaThreshold = coverageMode === 'conservative' ? 1 : 128;
   for (let index = 0; index < topology.length; index += 1) {
-    // Match the pixel-centre coverage used by WebGL rasterization. Treating
-    // every faint canvas anti-aliasing sample as model topology creates a
-    // one-pixel no-man's-land: the bake does not cover it, while gutter padding
-    // refuses to write it. Linear texture filtering then exposes that transparent
-    // ring as a bright crack along every UV island.
-    topology[index] = alpha[index * 4 + 3] >= 128 ? 1 : 0;
+    // Gutter padding needs pixel-centre coverage so a faint anti-aliasing fringe
+    // cannot become a no-man's-land outside the island. Hole repair has the
+    // opposite requirement: high-poly atlases contain many sub-pixel triangles,
+    // and dropping their faint samples breaks the topology into pepper-like
+    // gaps. Keep these two masks distinct instead of trading one artifact for
+    // the other.
+    topology[index] = alpha[index * 4 + 3] >= alphaThreshold ? 1 : 0;
   }
   return topology;
 }
@@ -277,6 +280,14 @@ export function dilateUvCoverageWithinTopology(
   iterations: number,
 ) {
   if (iterations <= 0) return 0;
-  const topology = rasterizeUvTopologyMask(root, imageData.width, imageData.height);
+  // Conservative coverage includes every triangle touched by the pixel. This is
+  // deliberately used only for filling missing model texels; atlas-gutter
+  // padding continues to use the stricter pixel-centre mask above.
+  const topology = rasterizeUvTopologyMask(
+    root,
+    imageData.width,
+    imageData.height,
+    'conservative',
+  );
   return dilateImageData(imageData, coverage, iterations, topology, true);
 }

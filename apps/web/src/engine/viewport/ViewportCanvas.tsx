@@ -1281,7 +1281,8 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
       projectorPosition: { value: new THREE.Vector3() },
       projectionReady: { value: 0 },
       stripeColor: { value: new THREE.Color('#d6703e') },
-      stripeOpacity: { value: 0.64 },
+      stripeOpacity: { value: 0.94 },
+      selectionFillOpacity: { value: 0.16 },
       stripePeriod: { value: 14 },
       stripeWidth: { value: 7 },
     },
@@ -1305,6 +1306,7 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
       uniform float projectionReady;
       uniform vec3 stripeColor;
       uniform float stripeOpacity;
+      uniform float selectionFillOpacity;
       uniform float stripePeriod;
       uniform float stripeWidth;
       varying vec4 vProjectedPosition;
@@ -1323,9 +1325,15 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
 
         float coord = mod(gl_FragCoord.x + gl_FragCoord.y, stripePeriod);
         float stripe = 1.0 - step(stripeWidth, coord);
-        if (stripe <= 0.01) discard;
-
-        gl_FragColor = vec4(stripeColor, stripeOpacity * stripe);
+        // Projection materials slightly bias their own fragment depth to keep
+        // multi-mesh layers stable. Make the editor-only selection decisively
+        // closer so it cannot z-fight or inherit broken-looking gaps from the
+        // projected color stack underneath it.
+        gl_FragDepthEXT = clamp(gl_FragCoord.z - 0.00008, 0.0, 1.0);
+        gl_FragColor = vec4(
+          stripeColor,
+          mix(selectionFillOpacity, stripeOpacity, stripe)
+        );
       }
     `,
     transparent: true,
@@ -1334,8 +1342,8 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
     // a front-side selection can never bleed through to hidden back faces.
     depthTest: true,
     polygonOffset: true,
-    polygonOffsetFactor: -8,
-    polygonOffsetUnits: -8,
+    polygonOffsetFactor: -16,
+    polygonOffsetUnits: -16,
     // Imported production meshes can contain reversed winding or two-sided
     // parts. Visibility is decided by the scene depth buffer, so render both
     // sides here instead of letting inconsistent normals punch holes through

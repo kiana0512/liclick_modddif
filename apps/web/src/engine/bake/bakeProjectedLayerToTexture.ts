@@ -38,10 +38,12 @@ const SHARPEN_DETAIL_THRESHOLD = 5;
 const MAX_CPU_SHARPEN_RESOLUTION = 2048;
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const TOP_K_BLEND_LAYERS = 3;
-const BLEND_POWER = 4;
-const RESIDUAL_MIX = 0.05;
-const DOMINANT_QUALITY_RATIO = 1.18;
-const DOMINANT_QUALITY_MARGIN = 0.035;
+const BLEND_POWER = 2.4;
+const RESIDUAL_MIX = 0.2;
+const DOMINANCE_BLEND_START = 1.45;
+const DOMINANCE_BLEND_END = 2.6;
+const DOMINANCE_MARGIN_START = 0.05;
+const DOMINANCE_MARGIN_END = 0.2;
 const COLOR_CONSISTENCY_SIGMA = 0.22;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
@@ -450,6 +452,11 @@ function srgbByteToLinear(value: number) {
   return SRGB_BYTE_TO_LINEAR[value] ?? 0;
 }
 
+function smoothstepScalar(edge0: number, edge1: number, value: number) {
+  const t = Math.max(0, Math.min(1, (value - edge0) / Math.max(edge1 - edge0, 0.000001)));
+  return t * t * (3 - 2 * t);
+}
+
 function linearToSrgbByte(value: number) {
   const color = Math.max(0, Math.min(1, value));
   const srgb = color <= 0.0031308 ? color * 12.92 : 1.055 * color ** (1 / 2.4) - 0.055;
@@ -521,18 +528,6 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
     }
 
     applyColorConsistency(qualities, colors);
-    if (
-      qualities[0] >= qualities[1] * DOMINANT_QUALITY_RATIO ||
-      qualities[0] - qualities[1] >= DOMINANT_QUALITY_MARGIN
-    ) {
-      output.data[offset] = composite.colors[0][colorOffset];
-      output.data[offset + 1] = composite.colors[0][colorOffset + 1];
-      output.data[offset + 2] = composite.colors[0][colorOffset + 2];
-      output.data[offset + 3] = 255;
-      writtenTexels += 1;
-      continue;
-    }
-
     let sumStrong = 0;
     let sumSoft = 0;
     for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
@@ -557,9 +552,24 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       finalBlue += colors[slot][2] * weight;
     }
 
-    output.data[offset] = linearToSrgbByte(finalRed);
-    output.data[offset + 1] = linearToSrgbByte(finalGreen);
-    output.data[offset + 2] = linearToSrgbByte(finalBlue);
+    const qualityRatio = qualities[0] / Math.max(qualities[1], 0.000001);
+    const dominance =
+      smoothstepScalar(DOMINANCE_BLEND_START, DOMINANCE_BLEND_END, qualityRatio) *
+      smoothstepScalar(
+        DOMINANCE_MARGIN_START,
+        DOMINANCE_MARGIN_END,
+        qualities[0] - qualities[1],
+      );
+    const winnerRed = colors[0][0];
+    const winnerGreen = colors[0][1];
+    const winnerBlue = colors[0][2];
+    output.data[offset] = linearToSrgbByte(finalRed * (1 - dominance) + winnerRed * dominance);
+    output.data[offset + 1] = linearToSrgbByte(
+      finalGreen * (1 - dominance) + winnerGreen * dominance,
+    );
+    output.data[offset + 2] = linearToSrgbByte(
+      finalBlue * (1 - dominance) + winnerBlue * dominance,
+    );
     output.data[offset + 3] = 255;
     writtenTexels += 1;
   }
