@@ -2124,6 +2124,7 @@ function SurfacePaintOverlay() {
   const maskHasContentRef = useRef(false);
   const currentProjectionHasContentRef = useRef(false);
   const paintMaskCommitRevisionRef = useRef(0);
+  const handledPaintMaskInvertRevisionRef = useRef(0);
   const localRepaintSourceImageRef = useRef<{
     url: string;
     image: HTMLImageElement;
@@ -2134,6 +2135,7 @@ function SurfacePaintOverlay() {
   const localRepaintCompositeRef = useRef<LocalRepaintCompositeState>();
   const paintTool = useSceneStore((state) => state.paintTool);
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
+  const paintMaskInvertRevision = useSceneStore((state) => state.paintMaskInvertRevision);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
@@ -2720,6 +2722,103 @@ function SurfacePaintOverlay() {
       }
     };
   }, [capturePaintMask, setPaintMaskCapture]);
+
+  useEffect(() => {
+    if (
+      paintMaskInvertRevision === 0 ||
+      paintMaskInvertRevision === handledPaintMaskInvertRevisionRef.current
+    )
+      return;
+    handledPaintMaskInvertRevisionRef.current = paintMaskInvertRevision;
+    let cancelled = false;
+
+    void (async () => {
+      const model = getTargetModel();
+      if (!model) return;
+      const hadMaskContent = maskHasContentRef.current;
+      const combinedMaskUrl = hadMaskContent ? await capturePaintMask() : undefined;
+      if (cancelled || handledPaintMaskInvertRevisionRef.current !== paintMaskInvertRevision) return;
+
+      const layer = getUvPaintLayer(model);
+      layer.inpaintSnapshots.forEach((snapshot) => {
+        snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
+        snapshot.texture.dispose();
+        snapshot.material.dispose();
+      });
+      layer.inpaintSnapshots = [];
+
+      const viewportRect = gl.domElement.getBoundingClientRect();
+      resizeProjectionCanvas(layer, viewportRect.width / Math.max(viewportRect.height, 1), true);
+      updateInpaintProjectionCamera(layer, camera, model.group);
+      ensureInpaintMaskOverlaysForModel(layer, model);
+
+      if (combinedMaskUrl) {
+        const combinedMaskImage = await loadImageElement(combinedMaskUrl);
+        if (cancelled || handledPaintMaskInvertRevisionRef.current !== paintMaskInvertRevision)
+          return;
+        const scratch = document.createElement('canvas');
+        scratch.width = layer.projectionCanvas.width;
+        scratch.height = layer.projectionCanvas.height;
+        const scratchContext = scratch.getContext('2d', { willReadFrequently: true });
+        if (!scratchContext) throw new Error('Could not invert the local repaint mask.');
+        scratchContext.drawImage(combinedMaskImage, 0, 0, scratch.width, scratch.height);
+        const source = scratchContext.getImageData(0, 0, scratch.width, scratch.height);
+        const inverted = layer.projectionContext.createImageData(scratch.width, scratch.height);
+        for (let index = 0; index < source.data.length; index += 4) {
+          const sourceValue = Math.max(
+            source.data[index],
+            source.data[index + 1],
+            source.data[index + 2],
+          );
+          const invertedValue = 255 - sourceValue;
+          inverted.data[index] = 255;
+          inverted.data[index + 1] = 255;
+          inverted.data[index + 2] = 255;
+          inverted.data[index + 3] = invertedValue;
+        }
+        layer.projectionContext.putImageData(inverted, 0, 0);
+      } else {
+        layer.projectionContext.fillStyle = '#ffffff';
+        layer.projectionContext.fillRect(
+          0,
+          0,
+          layer.projectionCanvas.width,
+          layer.projectionCanvas.height,
+        );
+      }
+
+      currentProjectionHasContentRef.current = true;
+      maskHasContentRef.current = true;
+      maskDirtyRef.current = false;
+      paintMaskCommitRevisionRef.current += 1;
+      layer.projectionTexture.needsUpdate = true;
+      const invertedMaskUrl = await projectionMaskToDataUrl(layer.projectionCanvas);
+      if (cancelled || handledPaintMaskInvertRevisionRef.current !== paintMaskInvertRevision) return;
+      setPaintMaskDataUrl(invertedMaskUrl, true);
+    })().catch((error) => {
+      console.warn('[Liclick 3D Texture] Could not invert the painted mask.', error);
+      pushToast({
+        tone: 'error',
+        title: '反选局部重绘区域失败',
+        description: error instanceof Error ? error.message : '请重试。',
+        dedupeKey: 'invert-local-repaint-mask-failed',
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    camera,
+    capturePaintMask,
+    ensureInpaintMaskOverlaysForModel,
+    getTargetModel,
+    getUvPaintLayer,
+    gl.domElement,
+    paintMaskInvertRevision,
+    pushToast,
+    setPaintMaskDataUrl,
+  ]);
 
   const waitForPaintCommitIdle = useCallback(
     (isCancelled?: () => boolean) =>

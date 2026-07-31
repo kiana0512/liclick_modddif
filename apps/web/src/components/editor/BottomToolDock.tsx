@@ -217,7 +217,7 @@ export function BottomToolDock({
   return (
     <div
       ref={dockRef}
-      className="mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
+      className="relative mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
     >
       {!isTextureMode && (
         <>
@@ -232,9 +232,9 @@ export function BottomToolDock({
           {selectTool && renderTransformButton(selectTool)}
           {divider}
 
-          <span className="relative inline-flex">
+          <span className="inline-flex">
             {activeMenu === 'brush' && (
-              <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[300px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[300px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
                 <label className="grid gap-1.5 text-[13px] font-semibold">
                   <span className="flex items-center justify-between">
                     <span>{labels.brushSize}</span>
@@ -322,9 +322,9 @@ export function BottomToolDock({
               </button>
             </IconTooltip>
           </span>
-          <span className="relative inline-flex">
+          <span className="inline-flex">
             {activeMenu === 'eraser' && (
-              <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[284px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
                 <label className="grid gap-1.5 text-[13px] font-semibold">
                   <span className="flex items-center justify-between">
                     <span>{labels.eraserSize}</span>
@@ -387,9 +387,9 @@ export function BottomToolDock({
               </button>
             </IconTooltip>
           </span>
-          <span className="relative inline-flex">
+          <span className="inline-flex">
             {inpaintMenuVisible && (
-              <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[284px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
                 <label className="grid gap-1.5 text-[13px] font-semibold">
                   <span className="flex items-center justify-between">
                     <span>{labels.brushSize}</span>
