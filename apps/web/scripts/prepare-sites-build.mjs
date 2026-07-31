@@ -75,7 +75,7 @@ function serveInstaller(request, env) {
     'content-type': installerContentType,
     'content-disposition': \`attachment; filename="LIclick-3D-Texture-Local-Component-Setup.exe"; filename*=UTF-8''\${encodeURIComponent(installerFilename)}\`,
     'content-length': String(installerBytes),
-    'cache-control': 'public, max-age=3600',
+    'cache-control': 'no-store',
     'x-li3d-installer-sha256': installerSha256,
   });
   if (request.method === 'HEAD') return new Response(null, { headers });

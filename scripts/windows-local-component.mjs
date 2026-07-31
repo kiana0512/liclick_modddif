@@ -14,7 +14,8 @@ const dataRoot = path.join(
 const workspaceDir = path.join(dataRoot, 'workspace');
 const logsDir = path.join(dataRoot, 'logs');
 const pidFile = path.join(dataRoot, 'local-component.pid');
-const healthUrl = 'http://127.0.0.1:4617/api/health';
+const localComponentPort = '4618';
+const healthUrl = `http://127.0.0.1:${localComponentPort}/api/health`;
 const publicSite = 'https://li3d-creation-suite.zany-degu-7838.chatgpt.site';
 
 function ensureDirectories() {
@@ -51,15 +52,15 @@ ensureDirectories();
 let health = await probeHealth();
 if (health.compatible) process.exit(0);
 
-// The old desktop launcher also used port 4617. Give it time to close instead
-// of racing the new always-on local component for the same port.
-for (let attempt = 0; health.reachable && attempt < 120; attempt += 1) {
-  await delay(5_000);
+// Give a previous local component a brief moment to finish shutting down before
+// reporting a genuine collision on the dedicated standalone-component port.
+for (let attempt = 0; health.reachable && attempt < 4; attempt += 1) {
+  await delay(1_000);
   health = await probeHealth();
   if (health.compatible) process.exit(0);
 }
 if (health.reachable) {
-  throw new Error('Port 4617 is occupied by another application. Close the old LIclick desktop app and start the local component again.');
+  throw new Error(`Port ${localComponentPort} is occupied by another application.`);
 }
 
 const stdout = fs.openSync(path.join(logsDir, 'local-component.log'), 'a');
@@ -72,11 +73,11 @@ const child = spawn(nodeExecutable, [serverEntry], {
   env: {
     ...process.env,
     LICLICK_LOCAL_COMPONENT_MODE: '1',
-    LICLICK_WORKSPACE_PORT: '4617',
+    LICLICK_WORKSPACE_PORT: localComponentPort,
     SERVER_HOST: '127.0.0.1',
     LICLICK_WORKSPACE_DIR: workspaceDir,
     LICLICK_LOCAL_SETTINGS_PATH: path.join(workspaceDir, 'config', 'local-settings.json'),
-    LICLICK_PUBLIC_WORKSPACE_URL: 'http://127.0.0.1:4617',
+    LICLICK_PUBLIC_WORKSPACE_URL: `http://127.0.0.1:${localComponentPort}`,
     LICLICK_FRONTEND_URL: publicSite,
     LICLICK_ALLOWED_ORIGINS: publicSite,
     LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: 'false',

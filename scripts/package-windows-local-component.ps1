@@ -159,7 +159,7 @@ function Prepare-Staging {
   @{
     name = "LIclick 3D Texture Local Component"
     runtimeVersion = $PackageVersion
-    workspacePort = 4617
+    workspacePort = 4618
     capabilities = @("texture-painting", "local-files", "project-storage", "dcc-bridge", "photoshop-bridge")
     excludes = @("electron-launcher", "web-homepage", "comfyui", "ai-models", "baking", "retopology", "auto-uv")
     preparedAt = (Get-Date).ToString("o")

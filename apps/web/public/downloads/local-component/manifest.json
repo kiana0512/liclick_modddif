@@ -2,38 +2,38 @@
   "version": 1,
   "filename": "LIclick 3D Texture Local Component Setup.exe",
   "contentType": "application/vnd.microsoft.portable-executable",
-  "bytes": 23384664,
-  "sha256": "a52e83839b70302e8f4c85b8c69e03cdb7b6f55f334610cea14fd33c0d1a7813",
+  "bytes": 23384447,
+  "sha256": "8c72d3050ae47914e31995b1ac7f5c0e89d661cb957b1e9570f22898622e9a56",
   "parts": [
     {
       "file": "part-001.bin",
       "bytes": 4194304,
-      "sha256": "3c5fa445bd24ccb1d2a22ac699d2b76e45c9dba9bd572cbe9c2cce361ff655ed"
+      "sha256": "a6ccad255849499aea49ccba2d47a06c02e732fc745751cee10e7d2b9e6a7de4"
     },
     {
       "file": "part-002.bin",
       "bytes": 4194304,
-      "sha256": "7c6d70a589b3f9705b646ea68df7f5d130ee5975039ec26a21a4f48913defcba"
+      "sha256": "0a59edb6442720979e34bba07330989845b1bd85bf7c2dc429d2c961b8a00b9f"
     },
     {
       "file": "part-003.bin",
       "bytes": 4194304,
-      "sha256": "07d4ffb1a645c78cd294f3731ebf51bc2a14db2c110dc0bf5d2824b17778c765"
+      "sha256": "7e75cea7412de5700bd5749b5f69aee725a1e912fa6f96fd3844bc3c2957bedb"
     },
     {
       "file": "part-004.bin",
       "bytes": 4194304,
-      "sha256": "3c1a07e2b2bb78d6d86b989f2c3c2a13c59859bec097f63257b97ada80b03d9d"
+      "sha256": "a8c31be668b0081048410c6144b116c9508559cdfb0372057670e96264201d8c"
     },
     {
       "file": "part-005.bin",
       "bytes": 4194304,
-      "sha256": "d93781b8891853340d3ce4ae6f46b87efbfaa839eed131050dcff756f808c1a2"
+      "sha256": "94207169e8c3bfadc39d592415624743532eacfca8fd803f8125266f6fba24e6"
     },
     {
       "file": "part-006.bin",
-      "bytes": 2413144,
-      "sha256": "25bc2a79939f352caacbaf9bd6da914e36868823d40d7e6a41c6f0c303e994cc"
+      "bytes": 2412927,
+      "sha256": "cf4f6f9ad841645dfec300dd7d250527023d449d1e774944c58dadd0c77b704e"
     }
   ]
 }

@@ -12,7 +12,7 @@ export type LocalTextureRuntimeState =
   | { status: 'missing'; reason?: string }
   | { status: 'outdated'; health: LocalTextureRuntimeHealth; requiredVersion: string };
 
-const desktopRuntimePort = '4617';
+const desktopRuntimePort = '4618';
 const developmentRuntimePort = '4517';
 
 function isLoopbackHost(hostname: string) {
@@ -43,7 +43,7 @@ function compareVersions(left: string, right: string) {
 export function getLocalTextureRuntimeDownloadUrl() {
   return (
     import.meta.env.VITE_LI3D_LOCAL_RUNTIME_DOWNLOAD_URL?.trim() ||
-    '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe'
+    '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe?v=0.1.4'
   );
 }
 
