@@ -2,6 +2,7 @@ node_modules
 .pnpm-store/
 dist
 dist-installer/
+dist-local-component/
 dist-plugins/
 .vite
 .turbo

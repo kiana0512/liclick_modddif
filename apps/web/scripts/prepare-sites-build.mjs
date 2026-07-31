@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -8,8 +8,13 @@ const client = path.join(dist, 'client');
 const server = path.join(dist, 'server');
 const hostingSource = path.join(root, '.openai', 'hosting.json');
 const hostingOutput = path.join(dist, '.openai', 'hosting.json');
-const installerKey = 'windows/LIclick-3D-Texture-Setup-2026.07.22.1130.exe';
-const installerFilename = 'LIclick 3D Texture Setup 2026.07.22.1130.exe';
+const installerRoute = '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe';
+const installerManifest = JSON.parse(
+  await readFile(path.join(root, 'public', 'downloads', 'local-component', 'manifest.json'), 'utf8'),
+);
+const installerParts = installerManifest.parts.map(
+  (part) => `/downloads/local-component/${part.file}`,
+);
 
 await mkdir(client, { recursive: true });
 for (const entry of await readdir(dist, { withFileTypes: true })) {
@@ -18,134 +23,71 @@ for (const entry of await readdir(dist, { withFileTypes: true })) {
     recursive: true,
     force: true,
   });
+  await rm(path.join(dist, entry.name), { recursive: true, force: true });
 }
 
 await mkdir(server, { recursive: true });
 await writeFile(
   path.join(server, 'index.js'),
-  `const installerKey = ${JSON.stringify(installerKey)};
-const installerFilename = ${JSON.stringify(installerFilename)};
-const uploadRoute = '/api/internal/installers/windows-x64/multipart';
+  `const installerRoute = ${JSON.stringify(installerRoute)};
+const installerFilename = ${JSON.stringify(installerManifest.filename)};
+const installerContentType = ${JSON.stringify(installerManifest.contentType)};
+const installerBytes = ${JSON.stringify(installerManifest.bytes)};
+const installerSha256 = ${JSON.stringify(installerManifest.sha256)};
+const installerParts = ${JSON.stringify(installerParts)};
 
-function json(payload, init = {}) {
-  const headers = new Headers(init.headers);
-  headers.set('content-type', 'application/json; charset=utf-8');
-  return new Response(JSON.stringify(payload), { ...init, headers });
+function installerStream(request, env) {
+  let partIndex = 0;
+  let reader;
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        while (partIndex < installerParts.length) {
+          if (!reader) {
+            const partUrl = new URL(installerParts[partIndex], request.url);
+            const response = await env.ASSETS.fetch(new Request(partUrl));
+            if (!response.ok || !response.body) {
+              throw new Error(\`Installer part \${partIndex + 1} is unavailable.\`);
+            }
+            reader = response.body.getReader();
+          }
+          const result = await reader.read();
+          if (!result.done) {
+            controller.enqueue(result.value);
+            return;
+          }
+          reader = undefined;
+          partIndex += 1;
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader?.cancel(reason);
+    },
+  });
 }
 
-function uploadAuthorized(request, env) {
-  const configured = env.INSTALLER_UPLOAD_TOKEN;
-  if (!configured) return false;
-  return request.headers.get('x-li3d-installer-token') === configured;
-}
-
-async function serveInstaller(request, env) {
-  if (!env.INSTALLERS) {
-    return json({ error: 'Installer storage is unavailable.' }, { status: 503 });
-  }
-  const installer = await env.INSTALLERS.get(installerKey);
-  if (!installer) {
-    return json({ error: 'Installer has not been published yet.' }, { status: 404 });
-  }
-
-  const headers = new Headers();
-  installer.writeHttpMetadata(headers);
-  headers.set('content-type', 'application/vnd.microsoft.portable-executable');
-  headers.set(
-    'content-disposition',
-    \`attachment; filename="LIclick-3D-Texture-Setup.exe"; filename*=UTF-8''\${encodeURIComponent(installerFilename)}\`,
-  );
-  headers.set('content-length', String(installer.size));
-  headers.set('cache-control', 'public, max-age=3600');
-  headers.set('etag', installer.httpEtag);
-
+function serveInstaller(request, env) {
+  const headers = new Headers({
+    'content-type': installerContentType,
+    'content-disposition': \`attachment; filename="LIclick-3D-Texture-Local-Component-Setup.exe"; filename*=UTF-8''\${encodeURIComponent(installerFilename)}\`,
+    'content-length': String(installerBytes),
+    'cache-control': 'public, max-age=3600',
+    'x-li3d-installer-sha256': installerSha256,
+  });
   if (request.method === 'HEAD') return new Response(null, { headers });
-  return new Response(installer.body, { headers });
-}
-
-async function handleMultipartUpload(request, env, url) {
-  if (!uploadAuthorized(request, env)) {
-    const received = request.headers.get('x-li3d-installer-token');
-    return json(
-      {
-        error: 'Unauthorized.',
-        uploadAuth: {
-          configured: Boolean(env.INSTALLER_UPLOAD_TOKEN),
-          configuredType: typeof env.INSTALLER_UPLOAD_TOKEN,
-          received: Boolean(received),
-          receivedLength: received?.length ?? 0,
-        },
-      },
-      { status: 401 },
-    );
-  }
-  if (!env.INSTALLERS) {
-    return json({ error: 'Installer storage is unavailable.' }, { status: 503 });
-  }
-
-  if (request.method === 'POST' && url.pathname === \`\${uploadRoute}/start\`) {
-    const upload = await env.INSTALLERS.createMultipartUpload(installerKey, {
-      httpMetadata: {
-        contentType: 'application/vnd.microsoft.portable-executable',
-        contentDisposition: \`attachment; filename="LIclick-3D-Texture-Setup.exe"\`,
-      },
-      customMetadata: {
-        product: 'LIclick 3D Texture',
-        platform: 'windows-x64',
-        version: '2026.07.22.1130',
-      },
-    });
-    return json({ key: upload.key, uploadId: upload.uploadId });
-  }
-
-  if (request.method === 'PUT' && url.pathname.startsWith(\`\${uploadRoute}/part/\`)) {
-    const segments = url.pathname.slice(\`\${uploadRoute}/part/\`.length).split('/');
-    const uploadId = decodeURIComponent(segments[0] ?? '');
-    const partNumber = Number.parseInt(segments[1] ?? '', 10);
-    if (!uploadId || !Number.isInteger(partNumber) || partNumber < 1) {
-      return json({ error: 'Invalid multipart upload part.' }, { status: 400 });
-    }
-    const upload = env.INSTALLERS.resumeMultipartUpload(installerKey, uploadId);
-    const part = await upload.uploadPart(partNumber, request.body);
-    return json({ partNumber: part.partNumber, etag: part.etag });
-  }
-
-  if (request.method === 'POST' && url.pathname === \`\${uploadRoute}/complete\`) {
-    const payload = await request.json();
-    if (!payload?.uploadId || !Array.isArray(payload.parts)) {
-      return json({ error: 'Invalid multipart completion payload.' }, { status: 400 });
-    }
-    const upload = env.INSTALLERS.resumeMultipartUpload(installerKey, payload.uploadId);
-    const object = await upload.complete(payload.parts);
-    return json({ ok: true, key: object.key, size: object.size, etag: object.etag });
-  }
-
-  if (request.method === 'POST' && url.pathname === \`\${uploadRoute}/abort\`) {
-    const payload = await request.json();
-    if (!payload?.uploadId) {
-      return json({ error: 'Missing uploadId.' }, { status: 400 });
-    }
-    const upload = env.INSTALLERS.resumeMultipartUpload(installerKey, payload.uploadId);
-    await upload.abort();
-    return json({ ok: true });
-  }
-
-  return json({ error: 'Not found.' }, { status: 404 });
+  return new Response(installerStream(request, env), { headers });
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (
-      url.pathname === '/api/runtime/download/windows-x64' &&
-      (request.method === 'GET' || request.method === 'HEAD')
-    ) {
+    if (url.pathname === installerRoute && (request.method === 'GET' || request.method === 'HEAD')) {
       return serveInstaller(request, env);
     }
-    if (url.pathname.startsWith(uploadRoute)) {
-      return handleMultipartUpload(request, env, url);
-    }
-
     const response = await env.ASSETS.fetch(request);
     if (response.status !== 404 || request.method !== 'GET') return response;
     url.pathname = '/index.html';

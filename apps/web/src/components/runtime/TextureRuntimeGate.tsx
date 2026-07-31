@@ -58,6 +58,7 @@ function RuntimeStatus({
       <div className="flex flex-col gap-3 sm:flex-row">
         <a
           href={getLocalTextureRuntimeDownloadUrl()}
+          download="LIclick 3D Texture Local Component Setup.exe"
           className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_14px_36px_rgba(139,92,246,0.28)] transition hover:brightness-110"
         >
           <Download className="h-4 w-4" />

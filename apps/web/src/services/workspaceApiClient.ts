@@ -1,7 +1,7 @@
 import type { Project } from '@/types/project';
-import { getWorkspaceApiBase } from './workspaceApiBase';
+import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
 
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const workspaceApiBase = getLocalTextureRuntimeApiBase();
 
 export class WorkspaceApiError extends Error {
   status: number;

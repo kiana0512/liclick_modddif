@@ -1,11 +1,11 @@
-import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
+import { getLocalTextureRuntimeApiBase } from '@/services/localTextureRuntimeClient';
 import { useProjectStore } from '@/stores/projectStore';
 import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 export type ImageSample = [number, number, number, number];
 const COLOR_ALPHA_REJECT_THRESHOLD = 3;
 const MAX_CACHED_IMAGE_DATA_BYTES = 192 * 1024 * 1024;
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const workspaceApiBase = getLocalTextureRuntimeApiBase();
 const imageDataCache = new Map<string, { imageData: ImageData; bytes: number; usedAt: number }>();
 let cachedImageDataBytes = 0;
 

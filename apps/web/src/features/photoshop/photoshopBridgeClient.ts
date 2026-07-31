@@ -1,6 +1,6 @@
-import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
+import { getLocalTextureRuntimeApiBase } from '@/services/localTextureRuntimeClient';
 
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const workspaceApiBase = getLocalTextureRuntimeApiBase();
 
 export type PhotoshopSessionStatus =
   | 'awaiting_source'

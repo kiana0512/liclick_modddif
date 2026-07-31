@@ -1,7 +1,7 @@
 import type { ShortcutOverrides } from '@/stores/shortcutStore';
-import { getWorkspaceApiBase } from './workspaceApiBase';
+import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
 
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const workspaceApiBase = getLocalTextureRuntimeApiBase();
 
 export type LocalProfile = {
   customId: string;

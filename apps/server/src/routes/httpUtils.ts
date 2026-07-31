@@ -14,6 +14,7 @@ export function corsHeaders(response: ServerResponse) {
   return {
     'access-control-allow-origin': allowOrigin,
     'access-control-allow-credentials': 'true',
+    'access-control-allow-private-network': 'true',
     'access-control-allow-methods': 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS',
     'access-control-allow-headers':
       'content-type,x-liclick-session-token,x-request-id,idempotency-key,last-event-id',
