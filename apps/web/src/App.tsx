@@ -1,4 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { TextureRuntimeGate } from './components/runtime/TextureRuntimeGate';
+import { useLocalTextureRuntime } from './hooks/useLocalTextureRuntime';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { useAuthStore } from './stores/authStore';
@@ -63,6 +65,14 @@ function stripAppBasePath(pathname: string) {
 
 function routeFromPath(pathname: string): RouteState {
   const segments = stripAppBasePath(pathname).split('/').filter(Boolean).map(decodeURIComponent);
+  if (segments[0] === 'texture') {
+    if (segments[1] === 'project' && segments[2]) return { name: 'editor', projectId: segments[2] };
+    return { name: 'projects', module: 'texture' };
+  }
+  if (segments[0] === 'baking') {
+    if (segments[1] === 'project' && segments[2]) return { name: 'bake', projectId: segments[2] };
+    return { name: 'projects', module: 'bake' };
+  }
   if (segments[0] === 'projects') {
     if (segments[1] === 'bake') {
       const projectId = useProjectStore.getState().getCurrentProject()?.id;
@@ -70,7 +80,7 @@ function routeFromPath(pathname: string): RouteState {
     }
     return { name: 'projects', module: segments[1] === 'bake' ? 'bake' : 'texture' };
   }
-  if (segments[0] === 'toolbox') {
+  if (segments[0] === 'tools' || segments[0] === 'toolbox') {
     return { name: 'modelingToolbox' };
   }
   if (segments[0] === 'retopology') {
@@ -91,17 +101,18 @@ function routeFromPath(pathname: string): RouteState {
 function pathFromRoute(route: RouteState) {
   let path: string;
   if (route.name === 'home') path = '/';
-  else if (route.name === 'projects') path = `/projects/${route.module}`;
-  else if (route.name === 'modelingToolbox') path = '/toolbox/modeling';
+  else if (route.name === 'projects') path = route.module === 'texture' ? '/texture' : '/baking';
+  else if (route.name === 'modelingToolbox') path = '/tools';
   else if (route.name === 'autoRetopology') path = '/retopology';
   else if (route.name === 'autoUv') path = '/uv';
-  else if (route.name === 'editor') path = `/project/${encodeURIComponent(route.projectId)}`;
-  else path = `/project/${encodeURIComponent(route.projectId)}/${route.name}`;
+  else if (route.name === 'editor') path = `/texture/project/${encodeURIComponent(route.projectId)}`;
+  else path = `/baking/project/${encodeURIComponent(route.projectId)}`;
   return `${appBasePath()}${path}`;
 }
 
 export function App() {
   const [route, setRoute] = useState<RouteState>(() => routeFromPath(window.location.pathname));
+  const localTextureRuntime = useLocalTextureRuntime();
   const setChecking = useAuthStore((state) => state.setChecking);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
@@ -121,7 +132,9 @@ export function App() {
       },
       openCurrentBake: () => {
         const projectId = useProjectStore.getState().getCurrentProject()?.id;
-        const nextRoute: RouteState = projectId ? { name: 'bake', projectId } : { name: 'home' };
+        const nextRoute: RouteState = projectId
+          ? { name: 'bake', projectId }
+          : { name: 'projects', module: 'bake' };
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
       },
@@ -195,13 +208,19 @@ export function App() {
   if (route.name === 'editor') {
     return (
       <>
-        <Suspense fallback={<AppRouteFallback />}>
-          <EditorPage
-            projectId={route.projectId}
-            onBack={navigation.openTextureProjects}
-            onOpenBake={(handoff) => navigation.openBake(route.projectId, handoff)}
-          />
-        </Suspense>
+        <TextureRuntimeGate
+          state={localTextureRuntime.state}
+          onRetry={() => void localTextureRuntime.refresh()}
+          onBack={navigation.openHome}
+        >
+          <Suspense fallback={<AppRouteFallback />}>
+            <EditorPage
+              projectId={route.projectId}
+              onBack={navigation.openTextureProjects}
+              onOpenBake={(handoff) => navigation.openBake(route.projectId, handoff)}
+            />
+          </Suspense>
+        </TextureRuntimeGate>
         <ToastHost />
       </>
     );
@@ -225,16 +244,29 @@ export function App() {
 
   if (route.name === 'projects') {
     const openProject = route.module === 'texture' ? navigation.openEditor : navigation.openBake;
+    const page = (
+      <Suspense fallback={<AppRouteFallback />}>
+        <ProjectsPage
+          module={route.module}
+          onBack={navigation.openHome}
+          onOpenProject={openProject}
+          onLogout={navigation.openHome}
+        />
+      </Suspense>
+    );
     return (
       <>
-        <Suspense fallback={<AppRouteFallback />}>
-          <ProjectsPage
-            module={route.module}
+        {route.module === 'texture' ? (
+          <TextureRuntimeGate
+            state={localTextureRuntime.state}
+            onRetry={() => void localTextureRuntime.refresh()}
             onBack={navigation.openHome}
-            onOpenProject={openProject}
-            onLogout={navigation.openHome}
-          />
-        </Suspense>
+          >
+            {page}
+          </TextureRuntimeGate>
+        ) : (
+          page
+        )}
         <ToastHost />
       </>
     );
@@ -283,6 +315,7 @@ export function App() {
           onOpenRetopology={navigation.openAutoRetopology}
           onOpenUv={navigation.openAutoUv}
           onLogout={navigation.openHome}
+          localTextureRuntime={localTextureRuntime.state}
         />
       </Suspense>
       <ToastHost />
