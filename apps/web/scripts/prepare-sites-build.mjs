@@ -65,7 +65,19 @@ async function serveInstaller(request, env) {
 
 async function handleMultipartUpload(request, env, url) {
   if (!uploadAuthorized(request, env)) {
-    return json({ error: 'Unauthorized.' }, { status: 401 });
+    const received = request.headers.get('x-li3d-installer-token');
+    return json(
+      {
+        error: 'Unauthorized.',
+        uploadAuth: {
+          configured: Boolean(env.INSTALLER_UPLOAD_TOKEN),
+          configuredType: typeof env.INSTALLER_UPLOAD_TOKEN,
+          received: Boolean(received),
+          receivedLength: received?.length ?? 0,
+        },
+      },
+      { status: 401 },
+    );
   }
   if (!env.INSTALLERS) {
     return json({ error: 'Installer storage is unavailable.' }, { status: 503 });
