@@ -71,11 +71,23 @@ export type AssetJobSubmission = {
   cancel_url: string;
 };
 
+export type AssetProcessingCapacity = {
+  schemaVersion: string;
+  advisory: boolean;
+  onlineWorkers: number;
+  totalSlots: number;
+  usedSlots: number;
+  availableSlots: number;
+  asOf: string;
+};
+
 export type AssetProcessingStatus = {
   configured: boolean;
   available: boolean;
   reachable: boolean;
   authorized: boolean;
+  capacityCheckPassed?: boolean;
+  capacity?: AssetProcessingCapacity;
   message: string;
   endpoint: string;
   apiKeyConfigured: boolean;
@@ -84,6 +96,11 @@ export type AssetProcessingStatus = {
     rejectUnauthorized: boolean;
     customCaConfigured: boolean;
     customCaAvailable: boolean;
+    customCaIntegrityValid?: boolean;
+    customCaSha256?: string;
+    expectedCaSha256?: string;
+    customCaManaged?: boolean;
+    customCaError?: string;
   };
   capabilities: {
     uv: boolean;
@@ -106,6 +123,15 @@ function errorDetails(payload: unknown, fallback: string) {
     if (value && typeof value === 'object') {
       if ('summary' in value && typeof value.summary === 'string') message = value.summary;
       else if ('message' in value && typeof value.message === 'string') message = value.message;
+      if ('code' in value && typeof value.code === 'string') code = value.code;
+    }
+  }
+  if ('detail' in payload) {
+    const value = payload.detail;
+    if (typeof value === 'string') {
+      message = value;
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      if ('message' in value && typeof value.message === 'string') message = value.message;
       if ('code' in value && typeof value.code === 'string') code = value.code;
     }
   }

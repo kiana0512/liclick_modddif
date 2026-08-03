@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
+import { validateGpuControlLanCaBytes } from '../certs/gpuControlLanCa.js';
 import { serverConfig } from '../config.js';
 import { corsHeaders } from '../routes/httpUtils.js';
 
@@ -20,13 +21,24 @@ const hopByHopHeaders = new Set([
   'transfer-encoding',
   'upgrade',
 ]);
-const probeJobId = '00000000-0000-0000-0000-000000000000';
-let probeCache:
-  | {
-      expiresAt: number;
-      value: Awaited<ReturnType<typeof probeAssetService>>;
-    }
-  | undefined;
+
+type AssetServiceCapacity = {
+  schemaVersion: string;
+  advisory: boolean;
+  onlineWorkers: number;
+  totalSlots: number;
+  usedSlots: number;
+  availableSlots: number;
+  asOf: string;
+};
+
+type CaCertificateState = {
+  available: boolean;
+  integrityValid: boolean;
+  sha256?: string;
+  bytes?: Buffer;
+  error?: string;
+};
 
 function assetServiceUrl(upstreamPath: string) {
   const baseUrl = new URL(serverConfig.assetServiceBaseUrl);
@@ -36,11 +48,48 @@ function assetServiceUrl(upstreamPath: string) {
   return new URL(upstreamPath, `${baseUrl.origin}/`);
 }
 
-function safeCaCertificate() {
+function inspectCaCertificate(): CaCertificateState {
   const certificatePath = serverConfig.assetServiceCaCertPath;
-  if (!certificatePath) return undefined;
-  const resolved = fs.realpathSync(certificatePath);
-  return fs.readFileSync(resolved);
+  if (!certificatePath) {
+    return {
+      available: false,
+      integrityValid: false,
+      error: 'Asset V4 CA certificate path is not configured.',
+    };
+  }
+  try {
+    const resolved = fs.realpathSync(certificatePath);
+    if (!fs.statSync(resolved).isFile()) {
+      throw new Error(`Asset V4 CA path is not a file: ${certificatePath}`);
+    }
+    const bytes = fs.readFileSync(resolved);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    try {
+      validateGpuControlLanCaBytes(bytes);
+      return { available: true, integrityValid: true, sha256, bytes };
+    } catch (error) {
+      return {
+        available: true,
+        integrityValid: false,
+        sha256,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  } catch (error) {
+    return {
+      available: false,
+      integrityValid: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function safeCaCertificate() {
+  const state = inspectCaCertificate();
+  if (!state.integrityValid || !state.bytes) {
+    throw new Error(state.error || 'Asset V4 CA certificate is unavailable or invalid.');
+  }
+  return state.bytes;
 }
 
 function forwardedResponseHeaders(headers: IncomingHttpHeaders) {
@@ -197,47 +246,126 @@ export async function fetchAssetJobSnapshot(jobId: string, timeoutMs = 10_000) {
   return record;
 }
 
+function capacityInteger(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (!Number.isInteger(value) || (value as number) < 0) {
+    throw new Error(`Asset V4 capacity field ${key} must be a non-negative integer.`);
+  }
+  return value as number;
+}
+
+function parseAssetServiceCapacity(body: Buffer): AssetServiceCapacity {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body.toString('utf8'));
+  } catch (error) {
+    throw new Error(
+      `Asset V4 capacity response is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Asset V4 capacity response must be a JSON object.');
+  }
+  const record = payload as Record<string, unknown>;
+  if (typeof record.schema_version !== 'string' || !record.schema_version.trim()) {
+    throw new Error('Asset V4 capacity field schema_version must be a non-empty string.');
+  }
+  if (typeof record.advisory !== 'boolean') {
+    throw new Error('Asset V4 capacity field advisory must be a boolean.');
+  }
+  if (typeof record.as_of !== 'string' || !record.as_of.trim()) {
+    throw new Error('Asset V4 capacity field as_of must be a non-empty string.');
+  }
+  if (Number.isNaN(Date.parse(record.as_of))) {
+    throw new Error('Asset V4 capacity field as_of must be a valid timestamp.');
+  }
+
+  const capacity = {
+    schemaVersion: record.schema_version,
+    advisory: record.advisory,
+    onlineWorkers: capacityInteger(record, 'online_workers'),
+    totalSlots: capacityInteger(record, 'total_slots'),
+    usedSlots: capacityInteger(record, 'used_slots'),
+    availableSlots: capacityInteger(record, 'available_slots'),
+    asOf: record.as_of,
+  };
+  if (capacity.usedSlots > capacity.totalSlots) {
+    throw new Error('Asset V4 capacity used_slots cannot exceed total_slots.');
+  }
+  if (capacity.availableSlots > capacity.totalSlots) {
+    throw new Error('Asset V4 capacity available_slots cannot exceed total_slots.');
+  }
+  return capacity;
+}
+
 async function probeAssetService() {
   try {
     const result = await requestBuffer(
       'GET',
-      `/api/v1/assets/jobs/${probeJobId}`,
+      '/api/v1/assets/capacity',
       { timeoutMs: 6_000, maxBytes: 256 * 1024 },
     );
-    const reachable = result.statusCode > 0 && result.statusCode < 500;
-    const authorized =
-      (result.statusCode >= 200 && result.statusCode < 300) ||
-      result.statusCode === 404;
-    return {
-      reachable,
-      authorized,
-      message: authorized
-        ? 'Asset V4 已连接。'
-        : '资产服务未授权，请配置 API Key 或为当前电脑绑定访问权限。',
-    };
+    const successful = result.statusCode >= 200 && result.statusCode < 300;
+    if (result.statusCode === 401 || result.statusCode === 403) {
+      return {
+        reachable: true,
+        authorized: false,
+        capacityCheckPassed: false,
+        errorKind: 'authorization' as const,
+        httpStatus: result.statusCode,
+        message:
+          result.statusCode === 401
+            ? 'Asset V4 API Key 鉴权未通过。'
+            : '本机 IP 尚未获得 Asset V4 访问权限。',
+      };
+    }
+    if (!successful) {
+      return {
+        reachable: true,
+        authorized: true,
+        capacityCheckPassed: false,
+        errorKind: 'http' as const,
+        httpStatus: result.statusCode,
+        message: `Asset V4 容量检查失败：HTTP ${result.statusCode}。`,
+      };
+    }
+    try {
+      const capacity = parseAssetServiceCapacity(result.body);
+      return {
+        reachable: true,
+        authorized: true,
+        capacityCheckPassed: true,
+        capacity,
+        message: `Asset V4 已连接：${capacity.onlineWorkers} 个 Worker，${capacity.availableSlots}/${capacity.totalSlots} 个槽位可用。`,
+      };
+    } catch (error) {
+      return {
+        reachable: true,
+        authorized: true,
+        capacityCheckPassed: false,
+        errorKind: 'schema' as const,
+        httpStatus: result.statusCode,
+        message: `Asset V4 容量响应格式无效：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Asset V4 is unreachable.';
     const certificateFailure =
-      /certificate|cert_|unable to verify|self[- ]signed|unknown ca/i.test(message);
+      /certificate|cert_|unable to verify|self[- ]signed|unknown ca|altname|ERR_TLS/i.test(message);
     return {
       reachable: false,
       authorized: false,
+      capacityCheckPassed: false,
+      errorKind: certificateFailure ? 'tls' as const : 'connection' as const,
       message: certificateFailure
-        ? '资产服务证书未受信任，请配置 GPU Control LAN CA 后重新检测。'
+        ? `资产服务 TLS 校验失败：${message}`
         : `资产服务无法连接：${message}`,
     };
   }
 }
 
 export async function assetProcessingProxyStatus() {
-  let caCertificateAvailable = false;
-  if (serverConfig.assetServiceCaCertPath) {
-    try {
-      caCertificateAvailable = fs.existsSync(serverConfig.assetServiceCaCertPath);
-    } catch {
-      caCertificateAvailable = false;
-    }
-  }
+  const caState = inspectCaCertificate();
   const endpoint = (() => {
     try {
       return new URL(serverConfig.assetServiceBaseUrl).origin;
@@ -248,35 +376,47 @@ export async function assetProcessingProxyStatus() {
   const configured = Boolean(
     endpoint.startsWith('https://') &&
     serverConfig.assetServiceTlsRejectUnauthorized &&
-    (!serverConfig.assetServiceCaCertPath || caCertificateAvailable),
+    caState.integrityValid,
   );
-  if (!probeCache || probeCache.expiresAt < Date.now()) {
-    probeCache = {
-      expiresAt: Date.now() + 15_000,
-      value: configured
-        ? await probeAssetService()
-        : {
-            reachable: false,
-            authorized: false,
-            message: '资产服务配置不完整，请检查 HTTPS 地址与 CA 证书。',
-          },
-    };
-  }
-  const probe = probeCache.value;
+  const configurationMessage = !endpoint.startsWith('https://')
+    ? 'Asset V4 服务地址必须使用 HTTPS。'
+    : !serverConfig.assetServiceTlsRejectUnauthorized
+      ? 'Asset V4 要求启用严格 TLS 证书校验。'
+      : !caState.integrityValid
+        ? `Asset V4 CA 校验失败：${caState.error || '证书不可用。'}`
+        : '资产服务配置不完整。';
+  const probe = configured
+    ? await probeAssetService()
+    : {
+        reachable: false,
+        authorized: false,
+        capacityCheckPassed: false,
+        errorKind: 'configuration' as const,
+        message: configurationMessage,
+      };
 
   return {
     configured,
-    available: configured && probe.reachable && probe.authorized,
+    available: configured && probe.capacityCheckPassed,
+    capacityCheckPassed: configured && probe.capacityCheckPassed,
+    ...('capacity' in probe ? { capacity: probe.capacity } : {}),
     reachable: probe.reachable,
     authorized: probe.authorized,
     message: probe.message,
+    errorKind: 'errorKind' in probe ? probe.errorKind : undefined,
+    httpStatus: 'httpStatus' in probe ? probe.httpStatus : undefined,
     endpoint,
     apiKeyConfigured: Boolean(serverConfig.assetServiceApiKey),
     authorizationMode: serverConfig.assetServiceApiKey ? 'api-key' : 'client-ip',
     tls: {
       rejectUnauthorized: serverConfig.assetServiceTlsRejectUnauthorized,
       customCaConfigured: Boolean(serverConfig.assetServiceCaCertPath),
-      customCaAvailable: caCertificateAvailable,
+      customCaAvailable: caState.available,
+      customCaIntegrityValid: caState.integrityValid,
+      customCaSha256: caState.sha256,
+      expectedCaSha256: serverConfig.assetServiceCaCertExpectedSha256,
+      customCaManaged: serverConfig.assetServiceCaCertManaged,
+      customCaError: caState.error,
     },
     capabilities: {
       uv: true,

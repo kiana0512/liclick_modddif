@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { requireAuth } from './auth/authMiddleware.js';
+import { materializeGpuControlLanCa } from './certs/gpuControlLanCa.js';
 import { serverConfig } from './config.js';
 import { handleAssetsRoute } from './routes/assets.js';
 import { handleAssetProcessingRoute } from './routes/assetProcessing.js';
@@ -237,6 +238,10 @@ function startTelemetryAggregateWorker() {
 }
 
 async function startServer() {
+  await materializeGpuControlLanCa(
+    serverConfig.assetServiceCaCertPath,
+    serverConfig.assetServiceCaCertManaged,
+  );
   await initializeWorkspace();
   await identityTelemetryStorage.initialize();
   startTelemetryAggregateWorker();
