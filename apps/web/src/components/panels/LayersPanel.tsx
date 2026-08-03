@@ -32,6 +32,7 @@ import {
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
 import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -1044,6 +1045,9 @@ function LayerMenu({
   const t = useT();
   if (!layer) return null;
   const selectedProjectedLayers = selectedLayers.filter((item) => item.type === 'projected');
+  const selectedMergeSourceLayers = selectedLayers.filter(
+    (item) => item.type === 'projected' || isFlattenableUvMergeSource(item),
+  );
   const selectedBlankUvLayer = selectedLayers.find((item) => item.type === 'uv' && !item.imageUrl);
   const isMulti = selectedLayers.length > 1;
 
@@ -1063,7 +1067,9 @@ function LayerMenu({
       {isMulti ? (
         <>
           <MenuButton
-            onClick={() => run(() => onMergeSelectedToUvLayer(selectedProjectedLayers.map((item) => item.id)))}
+            onClick={() =>
+              run(() => onMergeSelectedToUvLayer(selectedMergeSourceLayers.map((item) => item.id)))
+            }
             icon={<Scissors className="h-4 w-4" />}
             disabled={selectedProjectedLayers.length === 0}
           >
@@ -1074,7 +1080,7 @@ function LayerMenu({
               selectedBlankUvLayer &&
               run(() =>
                 onMergeIntoSelectedBlankUvLayer(
-                  selectedProjectedLayers.map((item) => item.id),
+                  selectedMergeSourceLayers.map((item) => item.id),
                   selectedBlankUvLayer.id,
                 ),
               )

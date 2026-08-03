@@ -27,48 +27,44 @@ The local workspace server runs on `127.0.0.1:4517` by default and stores projec
 
 For Linux, Docker, or long-running A100 deployment, build first and run the compiled server through a process manager. See `docs/26_PROJECT_STRUCTURE_AND_DEPLOYMENT_AUDIT.md`.
 
-## Windows Desktop Installer
+## Browser Service And Local Component
 
-The Windows desktop build uses a lightweight Electron launcher. It starts the local backend and frontend with hidden child windows, shows their health in the launcher, and keeps them available from the system tray.
+The product runs as a long-lived browser service; the retired Electron launcher and full desktop installer are no longer part of the source tree. On Windows, register or inspect the LAN service with:
 
 ```bash
-corepack pnpm package:windows
+corepack pnpm lan:web:register
+corepack pnpm lan:web:status
 ```
 
-The installer output includes the desktop Shell Build identifier:
+Texture painting keeps its small local component for local files, project storage, DCC communication, and the Photoshop bridge. Build that component independently with:
 
-```text
-dist-installer/Liclick 3D Texture Setup YYYY.MM.DD.HHmm.exe
+```bash
+corepack pnpm package:windows:local-component
 ```
 
-Installed builds use dedicated ports so they can run beside development:
-
-- installed backend: `127.0.0.1:4617`
-- installed frontend: `127.0.0.1:5673`
-- development backend: `127.0.0.1:4517`
-- development frontend: `127.0.0.1:5173`
-
-The installed app stores runtime, workspace data, and logs under `%LocalAppData%\Liclick 3D Texture`. Updating the installer replaces program files but keeps user workspace data.
-
-The Windows installer also deploys the bundled offline Photoshop CEP bridge by default. It is installed for the current user at `%APPDATA%\Adobe\CEP\extensions\com.liclick.live-texture`, communicates only with `127.0.0.1:4617`, and does not require Photoshop network access. The launcher home page reports plugin/connection state and can launch or repair the selected Photoshop installation. Photoshop PSD recovery documents and immutable PNG revisions remain under `%LocalAppData%\Liclick 3D Texture\workspace\photoshop-sessions`.
+The packager resolves the current Windows `node.exe`, caches it under `.build-cache/local-component/node/<version>`, and caches the matching Node.js license. It no longer depends on the retired `dist-installer` staging directory. Photoshop UXP remains separately packageable with `corepack pnpm package:photoshop`.
 
 `workspace/` is runtime/user data and is ignored as a whole by Git. Do not force-add projects, authentication state, generated images, Photoshop sessions, model validation outputs, logs, or local backups. Reusable DCC validation scripts belong under `scripts/validation/dcc/`.
 
 ## Auth And Liclick Login
 
-The Projects homepage and local editor can be viewed without login. Workspace operations and AI features that call authenticated APIs require the Liclick session. The visible `飞书登录` entry calls the server, the server starts the local `@lilith/atlas-skillhub` gateway login, and then stores only its own httpOnly Liclick session cookie.
+For the browser-only deployment, follow [docs/61_FEISHU_WEB_LOGIN_SETUP.md](docs/61_FEISHU_WEB_LOGIN_SETUP.md).
 
-`dev-mock` is only a deliberate development fallback. The current real login path does not require Liclick to register a localhost Service URL in IDaaS. It relies on the local Atlas gateway runtime used by Liclick services. If Atlas needs authorization, it opens the company IDaaS / Feishu flow itself and writes the local Atlas token cache.
+For the single-node browser deployment path, see [docs/60_SINGLE_NODE_WEB_MVP.md](docs/60_SINGLE_NODE_WEB_MVP.md).
+
+The module homepage remains visible before login. The upper-right `飞书登录` entry calls the integrated server, which starts the official Feishu Web OAuth flow, consumes a one-time `state` with PKCE, exchanges the code server-side, and stores only LI3D's own HttpOnly session cookie. Random application IDs bind the current browser installation to the employee identity; module-entry events are allow-listed, deduplicated by `event_id`, and persisted locally before optional daily aggregate synchronization.
+
+`dev-mock` is only a deliberate development fallback. Production Web OAuth requires an exact HTTPS callback registered in the Feishu developer console. App Secret, Feishu tokens, API keys, and LI3D session-token values never enter the frontend.
 
 ```bash
 AUTH_MODE=feishu-oauth
-LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=true
+LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=false
 IDAAS_JWT_SSO_ENABLED=false
 ```
 
-The frontend never receives Atlas tokens, Feishu tokens, API keys, or session token values. User name and email are decoded server-side from the Atlas gateway token claims and copied into the local user session. Avatar currently falls back to a deterministic local avatar when the token does not include a profile image URL.
+Browser identity uses Feishu OAuth. Liclick generation uses a separate personal-account boundary: the updated local component opens the company IDaaS/Atlas authorization flow on `localhost:20265`, validates that the Liclick email matches the current Feishu email, and stores the token only under that Windows user's local application-data directory. The browser then submits generation and image-edit requests to `127.0.0.1:4618`; the shared LAN server never falls back to a machine-wide Liclick credential.
 
-`GET /api/liclick/status` verifies whether the logged-in user can reach the Liclick API through Atlas and lists the discovered Liclick tools.
+`GET http://127.0.0.1:4618/api/local-liclick-account/status` reports only sanitized binding state. `GET /api/liclick/status` on the local component verifies whether that personal account may submit generation work. Tokens are never returned to the browser.
 
 Database setup:
 
@@ -105,9 +101,9 @@ corepack pnpm db:push
 - Imported model metadata records original bounding box, normalization transform, user transform, mesh count, UV status, and import warnings.
 - Move / Rotate / Scale controls work for the selected imported model, with Reset, Center, Ground, and Fit Camera actions.
 - Viewport capture now renders real color, mask, normal, and grayscale depth PNGs from WebGL render targets. Browser captures use registered Blob URLs in memory and local-server saves materialize them as binary assets instead of inflating project JSON with base64.
-- Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. The old frontend mock generation service has been removed; the mock project gallery remains only as an offline homepage fallback.
+- Generate calls the authenticated Liclick / Atlas gateway through the employee's loopback local component. Each submission carries the current Feishu email and is rejected unless it matches the locally bound Liclick account. The old frontend mock generation service has been removed; the mock project gallery remains only as an offline homepage fallback.
 - Liclick image generation and Texture Map generation keep separate prompts. Liclick image generation can be stopped from the Generate panel so the UI does not stay locked until the remote task finishes.
-- Local repaint opens a focused current-view repair dialog. The brush is continuous, clipped to the visible model silhouette, and submits image + mask through the same authenticated Atlas/Liclick gateway used by normal generation.
+- Local repaint opens a focused current-view repair dialog. The brush is continuous, clipped to the visible model silhouette, and submits image + mask through the same employee-bound local Atlas/Liclick path used by normal generation.
 - Local repaint apply keeps the original selection mask as a hard permission boundary: button 3 cannot paint or merge outside the area authored with button 1. The interactive mask is prepared once at low resolution and subsequent strokes clip only their dirty rectangles.
 - Local repaint UV commits stay on the responsive 512 px GPU path. A single UV-island padding pass rejects weak quantized color seeds and writes a feathered overlay edge, preventing rainbow fringes and sticker-like borders without enabling the blocking full-canvas CPU seam reconciliation path. Persistent UV repaint layers use normal material lighting instead of a flat captured-color veil.
 - Add as Projected Layer applies a real shader-based projection preview to the imported model.

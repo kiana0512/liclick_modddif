@@ -173,6 +173,30 @@ async function requestBuffer(
   });
 }
 
+export async function fetchAssetJobSnapshot(jobId: string, timeoutMs = 10_000) {
+  const normalizedJobId = jobId.trim();
+  if (!normalizedJobId || normalizedJobId.length > 200) {
+    throw new Error('Asset job id is invalid.');
+  }
+  const result = await requestBuffer(
+    'GET',
+    `/api/v1/assets/jobs/${encodeURIComponent(normalizedJobId)}`,
+    { timeoutMs: Math.min(10_000, Math.max(1_000, timeoutMs)), maxBytes: 2 * 1024 * 1024 },
+  );
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    throw new Error(`Asset job is unavailable (${result.statusCode}).`);
+  }
+  const payload = JSON.parse(result.body.toString('utf8')) as unknown;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Asset service returned an invalid job snapshot.');
+  }
+  const record = payload as Record<string, unknown>;
+  if (record.job_id !== normalizedJobId || typeof record.status !== 'string') {
+    throw new Error('Asset service job snapshot is missing required fields.');
+  }
+  return record;
+}
+
 async function probeAssetService() {
   try {
     const result = await requestBuffer(

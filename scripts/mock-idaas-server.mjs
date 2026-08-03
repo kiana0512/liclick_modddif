@@ -1,9 +1,11 @@
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 
 const port = Number(process.env.MOCK_IDAAS_PORT ?? 5199);
 const issuer = process.env.MOCK_IDAAS_ISSUER ?? `http://127.0.0.1:${port}`;
 const clientId = process.env.MOCK_IDAAS_CLIENT_ID ?? 'liclick-local-test';
 const clientSecret = process.env.MOCK_IDAAS_CLIENT_SECRET ?? 'local-secret';
+const requireJsonTokenRequest = process.env.MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST === 'true';
 
 const codes = new Map();
 const tokens = new Map();
@@ -74,6 +76,8 @@ const server = createServer(async (request, response) => {
   if (request.method === 'GET' && url.pathname === '/authorize') {
     const redirectUri = url.searchParams.get('redirect_uri') ?? '';
     const state = url.searchParams.get('state') ?? '';
+    const codeChallenge = url.searchParams.get('code_challenge') ?? '';
+    const codeChallengeMethod = url.searchParams.get('code_challenge_method') ?? '';
     const requestedClientId = url.searchParams.get('client_id') ?? '';
     if (requestedClientId !== clientId || !redirectUri || !state) {
       sendHtml(response, 400, '<h1>IDaaS mock request invalid</h1>');
@@ -90,7 +94,7 @@ const server = createServer(async (request, response) => {
         name: 'Liclick Mock User',
         picture: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2296%22 height=%2296%22%3E%3Crect width=%2296%22 height=%2296%22 rx=%2248%22 fill=%22%23ef4bd2%22/%3E%3Ctext x=%2248%22 y=%2256%22 text-anchor=%22middle%22 font-size=%2238%22 font-family=%22Arial%22 fill=%22white%22%3EL%3C/text%3E%3C/svg%3E',
       };
-      codes.set(code, { user, redirectUri, createdAt: Date.now() });
+      codes.set(code, { user, redirectUri, codeChallenge, codeChallengeMethod, createdAt: Date.now() });
       const callback = new URL(redirectUri);
       callback.searchParams.set('code', code);
       callback.searchParams.set('state', state);
@@ -118,6 +122,8 @@ const server = createServer(async (request, response) => {
       <form method="post" action="/approve" style="margin-top:24px">
         <input type="hidden" name="redirect_uri" value="${redirectUri.replaceAll('"', '&quot;')}">
         <input type="hidden" name="state" value="${state.replaceAll('"', '&quot;')}">
+        <input type="hidden" name="code_challenge" value="${codeChallenge.replaceAll('"', '&quot;')}">
+        <input type="hidden" name="code_challenge_method" value="${codeChallengeMethod.replaceAll('"', '&quot;')}">
         <button style="width:100%;height:42px;border:0;border-radius:8px;background:#2563eb;color:white;font-weight:700;cursor:pointer">授权</button>
       </form>
     </section>
@@ -131,6 +137,8 @@ const server = createServer(async (request, response) => {
     const body = new URLSearchParams(await readBody(request));
     const redirectUri = body.get('redirect_uri') ?? '';
     const state = body.get('state') ?? '';
+    const codeChallenge = body.get('code_challenge') ?? '';
+    const codeChallengeMethod = body.get('code_challenge_method') ?? '';
     const code = crypto.randomUUID();
     const user = {
       sub: 'mock-user-001',
@@ -139,7 +147,7 @@ const server = createServer(async (request, response) => {
       email: 'mock.user@liclick.local',
       name: 'Liclick Mock User',
     };
-    codes.set(code, { user, redirectUri, createdAt: Date.now() });
+    codes.set(code, { user, redirectUri, codeChallenge, codeChallengeMethod, createdAt: Date.now() });
     const callback = new URL(redirectUri);
     callback.searchParams.set('code', code);
     callback.searchParams.set('state', state);
@@ -149,7 +157,14 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === 'POST' && url.pathname === '/token') {
-    const body = new URLSearchParams(await readBody(request));
+    if (requireJsonTokenRequest && !request.headers['content-type']?.includes('application/json')) {
+      sendJson(response, 415, { error: 'json_token_request_required' });
+      return;
+    }
+    const rawBody = await readBody(request);
+    const body = request.headers['content-type']?.includes('application/json')
+      ? new URLSearchParams(Object.entries(JSON.parse(rawBody)).map(([key, value]) => [key, String(value)]))
+      : new URLSearchParams(rawBody);
     if (!validateClient(request, body)) {
       sendJson(response, 401, { error: 'invalid_client' });
       return;
@@ -159,6 +174,17 @@ const server = createServer(async (request, response) => {
     if (!record) {
       sendJson(response, 400, { error: 'invalid_grant' });
       return;
+    }
+    if (record.codeChallenge) {
+      const verifier = body.get('code_verifier') ?? '';
+      const actualChallenge =
+        record.codeChallengeMethod === 'S256'
+          ? createHash('sha256').update(verifier).digest('base64url')
+          : verifier;
+      if (actualChallenge !== record.codeChallenge) {
+        sendJson(response, 400, { code: 20049, msg: 'pkce_code_challenge_failed' });
+        return;
+      }
     }
     codes.delete(code);
     const accessToken = `mock-access-${crypto.randomUUID()}`;

@@ -3,6 +3,7 @@ import {
   Box,
   Boxes,
   Clock3,
+  Download,
   Flame,
   Map as MapIcon,
   Network,
@@ -13,6 +14,11 @@ import {
 } from 'lucide-react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
+import { getLocalTextureRuntimeDownloadUrl } from '@/services/localTextureRuntimeClient';
+import {
+  trackHomeModuleEntry,
+  type HomeTelemetryModule,
+} from '@/services/telemetryClient';
 
 type ModuleCardProps = {
   eyebrow: string;
@@ -24,6 +30,7 @@ type ModuleCardProps = {
   visual: 'paint' | 'bake' | 'tools' | 'retopo' | 'uv';
   badge: string;
   hoverAction?: string;
+  telemetryModule: HomeTelemetryModule;
   onClick?: () => void;
   disabled?: boolean;
   layout?: 'standard' | 'featured' | 'compact';
@@ -207,6 +214,7 @@ function ModuleCard({
   visual,
   badge,
   hoverAction,
+  telemetryModule,
   onClick,
   disabled = false,
   layout = 'standard',
@@ -219,7 +227,10 @@ function ModuleCard({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => {
+        trackHomeModuleEntry(telemetryModule);
+        onClick?.();
+      }}
       disabled={disabled}
       className={`group relative overflow-hidden rounded-2xl border border-white/10 bg-[#111321]/92 text-left shadow-[0_24px_70px_rgba(0,0,0,0.28)] outline-none transition duration-300 focus-visible:ring-2 focus-visible:ring-white/55 ${cardSize} ${disabled ? 'cursor-default' : `hover:-translate-y-1.5 hover:bg-[#17192b] active:translate-y-0 active:scale-[0.995] ${style.border} ${style.shadow}`} ${className}`}
     >
@@ -310,20 +321,32 @@ export function HomePage({
         </div>
 
         <div className="mt-9 grid gap-5 md:grid-cols-2 xl:grid-cols-3 xl:grid-rows-[300px_300px]">
-          <ModuleCard
-            eyebrow="TEXTURE PAINTING"
-            title="贴图绘制"
-            description="浏览器本机运行绘制，局部重绘连接云端 ComfyUI。"
-            detail="本机绘制 · 云端 AI · 本地保存"
-            icon={Palette}
-            accent="violet"
-            visual="paint"
-            badge="本机运行"
-            hoverAction="进入贴图工作台"
-            onClick={onOpenTexture}
-            layout="featured"
-            className="xl:row-span-2"
-          />
+          <div className="relative xl:row-span-2">
+            <ModuleCard
+              eyebrow="TEXTURE PAINTING"
+              title="贴图绘制"
+              description="浏览器本机运行绘制，局部重绘连接云端 ComfyUI。"
+              detail="本机绘制 · 云端 AI · 本地保存"
+              icon={Palette}
+              accent="violet"
+              visual="paint"
+              badge="本机运行"
+              hoverAction="进入贴图工作台"
+              telemetryModule="texture_painting"
+              onClick={onOpenTexture}
+              layout="featured"
+              className="h-full w-full"
+            />
+            <a
+              href={getLocalTextureRuntimeDownloadUrl()}
+              download="LIclick 3D Texture Local Component Setup.exe"
+              className="absolute bottom-5 right-5 z-20 inline-flex h-9 items-center gap-2 rounded-xl border border-fuchsia-200/20 bg-fuchsia-300/[0.09] px-3 text-[11px] font-semibold text-fuchsia-50/78 shadow-[0_10px_28px_rgba(168,85,247,0.12)] backdrop-blur-md transition hover:border-fuchsia-200/40 hover:bg-fuchsia-300/16 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-200/60"
+              aria-label="下载最新的贴图绘制本地组件安装包"
+            >
+              <Download className="h-3.5 w-3.5" />
+              下载最新安装包
+            </a>
+          </div>
           <ModuleCard
             eyebrow="MODEL BAKING"
             title="模型烘焙"
@@ -334,6 +357,7 @@ export function HomePage({
             visual="bake"
             badge="云端服务"
             hoverAction="进入烘焙工作台"
+            telemetryModule="model_baking"
             onClick={onOpenBake}
             layout="compact"
           />
@@ -347,6 +371,7 @@ export function HomePage({
             visual="tools"
             badge="云端服务"
             hoverAction="打开工具箱"
+            telemetryModule="toolbox"
             onClick={onOpenToolbox}
             layout="compact"
           />
@@ -360,6 +385,7 @@ export function HomePage({
             visual="retopo"
             badge="云端测试"
             hoverAction="进入自动拓扑"
+            telemetryModule="auto_retopology"
             onClick={onOpenRetopology}
             layout="compact"
           />
@@ -373,10 +399,14 @@ export function HomePage({
             visual="uv"
             badge="云端服务"
             hoverAction="进入自动展 UV"
+            telemetryModule="auto_uv"
             onClick={onOpenUv}
             layout="compact"
           />
         </div>
+        <p className="mt-4 text-center text-[11px] leading-5 text-white/28">
+          使用统计仅记录模块入口和次数，不上传作品、提示词或文件路径。
+        </p>
       </section>
     </main>
   );

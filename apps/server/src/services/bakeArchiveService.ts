@@ -44,12 +44,12 @@ function safeArchiveBase(value: string) {
   return normalized || 'bake';
 }
 
-export function getBakeArchive(id: string, requestedBase: string) {
-  const job = getNormalBakeJob(id);
+export function getBakeArchive(id: string, userId: string, requestedBase: string) {
+  const job = getNormalBakeJob(id, userId);
   if (!job || job.status !== 'succeeded') return undefined;
   const base = safeArchiveBase(requestedBase || job.input.high);
   const entries = job.settings.channels.flatMap((channel) => {
-    const filePath = getNormalBakeOutputPath(id, channel);
+    const filePath = getNormalBakeOutputPath(id, userId, channel);
     if (!filePath || !fs.existsSync(filePath)) return [];
     return [
       {

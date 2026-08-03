@@ -1,5 +1,10 @@
 # Local Desktop Release And Code Audit
 
+> Historical record only. The Electron launcher, ports 4617/5673, and the legacy
+> Windows desktop installer described below were retired in August 2026. The
+> supported product is now the persistent web service plus the standalone local
+> texture component; do not use the commands in this document for current releases.
+
 This note records the current Windows desktop release flow, the editor UX changes, and the code audit status for this build.
 
 Updated: 2026-07-17

@@ -66,6 +66,7 @@ const child = spawn(process.execPath, ['apps/server/dist/index.js'], {
     LICLICK_FRONTEND_URL: 'http://127.0.0.1:5173',
     LICLICK_WORKSPACE_DIR: smokeRoot,
     LICLICK_LOCAL_SETTINGS_PATH: path.join(smokeRoot, 'config', 'local-settings.json'),
+    LICLICK_LOCAL_COMPONENT_MODE: '1',
     AUTH_MODE: 'dev-mock',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

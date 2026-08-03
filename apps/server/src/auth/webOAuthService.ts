@@ -1,20 +1,30 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 import type { AuthUser } from './authTypes.js';
-import { createSession, upsertUser } from './sessionService.js';
+import { createSession, parseCookies, upsertUser } from './sessionService.js';
+import {
+  bindDeviceToFeishuIdentity,
+  type DeviceIdentityInput,
+} from '../services/identityTelemetryService.js';
+import { enrichFeishuUserByOpenId } from '../services/feishuPlatformService.js';
 
 type PendingWebOAuthLogin = {
   id: string;
   provider: 'web-oauth' | 'idaas-sp';
   state: string;
+  codeVerifier?: string;
   startedAt: number;
   completedAt?: number;
   user?: AuthUser;
   error?: string;
+  bindingDevice?: DeviceIdentityInput;
+  browserNonceHash: string;
 };
 
 type TokenResponse = {
+  code?: number;
+  msg?: string;
   access_token?: string;
   id_token?: string;
   token_type?: string;
@@ -31,19 +41,56 @@ type OAuthClaims = {
   unionid?: string;
   user_id?: string;
   email?: string;
+  enterprise_email?: string;
   name?: string;
+  en_name?: string;
   username?: string;
   display_name?: string;
   avatar_url?: string;
   picture?: string;
+  tenant_key?: string;
+  department?: string;
+  department_name?: string;
   data?: OAuthClaims;
   user?: OAuthClaims;
   userinfo?: OAuthClaims;
 };
 
+// Single-instance MVP only. Before adding replicas or rolling deployments,
+// replace both indexes with a shared store that supports TTL and atomic
+// one-time state consumption (for example Redis SET NX + GETDEL).
 const pendingWebOAuthLogins = new Map<string, PendingWebOAuthLogin>();
 const pendingWebOAuthByState = new Map<string, PendingWebOAuthLogin>();
 const pendingWebOAuthTtlMs = 10 * 60 * 1000;
+const webOAuthBrowserCookieName = 'li3d_oauth_nonce';
+
+function hashBrowserNonce(value: string) {
+  return createHash('sha256').update(value).digest();
+}
+
+export function setWebOAuthBrowserCookie(response: ServerResponse, nonce: string) {
+  const attributes = [
+    `${webOAuthBrowserCookieName}=${encodeURIComponent(nonce)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${Math.ceil(pendingWebOAuthTtlMs / 1000)}`,
+  ];
+  if (serverConfig.sessionCookieSecure) attributes.push('Secure');
+  response.setHeader('set-cookie', attributes.join('; '));
+}
+
+function clearWebOAuthBrowserCookie(response: ServerResponse) {
+  const attributes = [
+    `${webOAuthBrowserCookieName}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+  if (serverConfig.sessionCookieSecure) attributes.push('Secure');
+  response.setHeader('set-cookie', attributes.join('; '));
+}
 
 function prunePendingWebOAuthLogins() {
   const now = Date.now();
@@ -117,46 +164,71 @@ function normalizeClaims(payload?: OAuthClaims) {
 
 function extractProfile(token: TokenResponse, userInfo?: OAuthClaims) {
   const claims = { ...decodeJwtClaims(token.id_token), ...normalizeClaims(userInfo) };
-  const externalId =
-    claims.union_id ?? claims.unionid ?? claims.open_id ?? claims.openid ?? claims.user_id ?? claims.sub ?? claims.email;
-  const email = claims.email;
-  const displayName = claims.name ?? claims.display_name ?? claims.username ?? email ?? externalId ?? 'Liclick User';
+  const unionId = claims.union_id ?? claims.unionid;
+  const userId = claims.user_id;
+  const openId = claims.open_id ?? claims.openid;
+  const externalId = unionId ?? userId ?? openId ?? claims.sub ?? claims.email ?? claims.enterprise_email;
+  const email = claims.email ?? claims.enterprise_email;
+  const displayName =
+    claims.name ?? claims.en_name ?? claims.display_name ?? claims.username ?? email ?? externalId ?? 'Liclick User';
   return {
     externalId,
+    unionId,
+    userId,
+    openId,
+    tenantKey: claims.tenant_key,
     email,
     displayName,
+    department: claims.department ?? claims.department_name,
     avatarUrl: claims.avatar_url ?? claims.picture ?? avatarDataUrl(displayName, email),
   };
 }
 
-async function exchangeCodeForToken(code: string) {
+async function exchangeCodeForToken(code: string, codeVerifier?: string) {
   const config = serverConfig.feishuWebOAuth;
-  const body = new URLSearchParams({
+  const parameters: Record<string, string> = {
     grant_type: 'authorization_code',
     code,
     redirect_uri: oauthRedirectUrl(),
-  });
+  };
+  if (codeVerifier) parameters.code_verifier = codeVerifier;
   const headers: Record<string, string> = {
     accept: 'application/json',
-    'content-type': 'application/x-www-form-urlencoded',
   };
 
   if (config.tokenAuthMethod === 'client_secret_basic') {
     headers.authorization = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64')}`;
-    body.set('client_id', config.clientId);
+    parameters.client_id = config.clientId;
   } else {
-    body.set('client_id', config.clientId);
-    if (config.clientSecret) body.set('client_secret', config.clientSecret);
+    parameters.client_id = config.clientId;
+    if (config.clientSecret) parameters.client_secret = config.clientSecret;
   }
+
+  const body =
+    config.tokenRequestFormat === 'json'
+      ? JSON.stringify(parameters)
+      : new URLSearchParams(parameters);
+  headers['content-type'] =
+    config.tokenRequestFormat === 'json'
+      ? 'application/json; charset=utf-8'
+      : 'application/x-www-form-urlencoded';
 
   const response = await fetch(config.tokenUrl, {
     method: 'POST',
     headers,
     body,
   });
-  const payload = (await response.json().catch(() => ({}))) as TokenResponse & { error?: string; error_description?: string };
-  if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description ?? payload.error ?? `OAuth token exchange failed: ${response.status}`);
+  const payload = (await response.json().catch(() => ({}))) as TokenResponse & {
+    error?: string;
+    error_description?: string;
+  };
+  if (!response.ok || payload.code || !payload.access_token) {
+    throw new Error(
+      payload.error_description ??
+        payload.msg ??
+        payload.error ??
+        `OAuth token exchange failed: ${response.status}`,
+    );
   }
   return payload;
 }
@@ -167,10 +239,15 @@ async function fetchUserInfo(accessToken?: string) {
     headers: {
       accept: 'application/json',
       authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json; charset=utf-8',
     },
   });
-  if (!response.ok) return undefined;
-  const payload = (await response.json().catch(() => undefined)) as OAuthClaims | undefined;
+  const payload = (await response.json().catch(() => undefined)) as
+    | (OAuthClaims & { code?: number; msg?: string })
+    | undefined;
+  if (!response.ok || payload?.code) {
+    throw new Error(payload?.msg ?? `OAuth user info request failed: ${response.status}`);
+  }
   return normalizeClaims(payload) as OAuthClaims;
 }
 
@@ -189,18 +266,23 @@ export function isWebOAuthLoginId(loginId: string) {
   return pendingWebOAuthLogins.has(loginId) || loginId.startsWith('web-oauth-');
 }
 
-export function startWebOAuthLogin() {
+export function startWebOAuthLogin(options: { bindingDevice?: DeviceIdentityInput } = {}) {
   if (!serverConfig.feishuWebOAuthEnabled && !serverConfig.idaasJwtSsoEnabled) {
     throw new Error('服务器未配置 IDaaS/飞书网页登录。');
   }
   prunePendingWebOAuthLogins();
   const id = `web-oauth-${randomUUID()}`;
   const state = randomUUID();
+  const browserNonce = randomBytes(32).toString('base64url');
   const login: PendingWebOAuthLogin = {
     id,
     provider: serverConfig.feishuWebOAuthEnabled ? 'web-oauth' : 'idaas-sp',
     state,
     startedAt: Date.now(),
+    codeVerifier:
+      serverConfig.feishuWebOAuthEnabled ? randomBytes(32).toString('base64url') : undefined,
+    bindingDevice: options.bindingDevice,
+    browserNonceHash: hashBrowserNonce(browserNonce).toString('hex'),
   };
   pendingWebOAuthLogins.set(id, login);
   pendingWebOAuthByState.set(state, login);
@@ -212,6 +294,13 @@ export function startWebOAuthLogin() {
     url.searchParams.set('client_id', serverConfig.feishuWebOAuth.clientId);
     url.searchParams.set('redirect_uri', oauthRedirectUrl());
     url.searchParams.set('state', state);
+    if (login.codeVerifier) {
+      url.searchParams.set(
+        'code_challenge',
+        createHash('sha256').update(login.codeVerifier).digest('base64url'),
+      );
+      url.searchParams.set('code_challenge_method', 'S256');
+    }
     if (serverConfig.feishuWebOAuth.scope) url.searchParams.set('scope', serverConfig.feishuWebOAuth.scope);
     for (const [key, value] of Object.entries(serverConfig.feishuWebOAuth.extraAuthorizeParams)) {
       url.searchParams.set(key, value);
@@ -231,6 +320,7 @@ export function startWebOAuthLogin() {
     redirectUrl,
     status: { valid: false, message: '请在弹出的 IDaaS/飞书页面完成授权。' },
     message: '已启动 IDaaS/飞书网页登录。授权完成后会自动返回 Liclick。',
+    browserNonce,
   };
 }
 
@@ -248,29 +338,64 @@ export async function handleWebOAuthCallback(
     url.searchParams.get('assertion') ??
     '';
   const error = url.searchParams.get('error') ?? '';
-  const login =
-    pendingWebOAuthByState.get(state) ??
-    (!state && (code || idToken) && pendingWebOAuthLogins.size === 1
-      ? [...pendingWebOAuthLogins.values()][0]
-      : undefined);
+  const login = state ? pendingWebOAuthByState.get(state) : undefined;
   if (!login) {
     response.writeHead(409, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     response.end(callbackHtml(false, '登录任务已过期，请回到 Liclick 重新点击飞书登录。'));
     return true;
   }
+  const browserNonce = parseCookies(request)[webOAuthBrowserCookieName] ?? '';
+  const expectedNonce = Buffer.from(login.browserNonceHash, 'hex');
+  const receivedNonce = hashBrowserNonce(browserNonce);
+  // Consume state before token exchange or persistence. The loginId remains
+  // available for the polling endpoint, but this callback cannot be replayed.
+  pendingWebOAuthByState.delete(login.state);
+  clearWebOAuthBrowserCookie(response);
   try {
+    if (!browserNonce || !timingSafeEqual(expectedNonce, receivedNonce)) {
+      throw new Error('飞书登录浏览器校验失败，请回到 LI3D 重新点击飞书登录。');
+    }
     if (error) throw new Error(url.searchParams.get('error_description') ?? error);
     if (login.provider === 'idaas-sp' && !idToken) {
       throw new Error('IDaaS 回调缺少 JWT token。请确认 Service URL 指向 Liclick 回调，且 IDaaS 应用使用 JWT 回跳。');
     }
-    if (login.provider === 'web-oauth' && !code && !idToken) {
-      throw new Error('飞书 OAuth 回调缺少 code 或 id_token。');
+    if (login.provider === 'web-oauth' && !code) {
+      throw new Error('飞书 OAuth 回调缺少 code。');
     }
-    const token = idToken
-      ? ({ id_token: idToken, access_token: idToken } satisfies TokenResponse)
-      : await exchangeCodeForToken(code);
-    const userInfo = idToken || login.provider === 'idaas-sp' ? undefined : await fetchUserInfo(token.access_token);
-    const profile = extractProfile(token, userInfo);
+    const token =
+      login.provider === 'idaas-sp'
+        ? ({ id_token: idToken, access_token: idToken } satisfies TokenResponse)
+        : await exchangeCodeForToken(code, login.codeVerifier);
+    const userInfo =
+      login.provider === 'idaas-sp' ? undefined : await fetchUserInfo(token.access_token);
+    let profile = extractProfile(token, userInfo);
+    if (profile.openId) {
+      try {
+        const directoryProfile = await enrichFeishuUserByOpenId(profile.openId);
+        if (directoryProfile) {
+          const unionId = directoryProfile.unionId ?? profile.unionId;
+          const userId = directoryProfile.userId ?? profile.userId;
+          const openId = directoryProfile.openId ?? profile.openId;
+          profile = {
+            ...profile,
+            externalId: unionId ?? userId ?? openId ?? profile.externalId,
+            unionId,
+            userId,
+            openId,
+            displayName: directoryProfile.name || profile.displayName,
+            email: directoryProfile.email ?? profile.email,
+            department: directoryProfile.department ?? profile.department,
+          };
+        }
+      } catch (error) {
+        // Directory data is optional. A permission outage must not break the
+        // base OAuth login or prevent the device from being bound.
+        console.warn(
+          '[LI3D Feishu directory] Optional enrichment failed:',
+          error instanceof Error ? error.message : 'unknown error',
+        );
+      }
+    }
     if (!profile.externalId) throw new Error('IDaaS/飞书没有返回可识别的用户 ID。');
     const user = await upsertUser({
       id: `feishu-${String(profile.externalId).toLowerCase()}`,
@@ -279,6 +404,19 @@ export async function handleWebOAuthCallback(
       avatarUrl: profile.avatarUrl,
       authSource: 'feishu-oauth',
     });
+    if (login.bindingDevice) {
+      await bindDeviceToFeishuIdentity(login.bindingDevice, {
+        authUserId: user.id,
+        userKey: `feishu:${String(profile.externalId).toLowerCase()}`,
+        userName: profile.displayName,
+        email: profile.email,
+        department: profile.department,
+        openId: profile.openId,
+        unionId: profile.unionId,
+        userId: profile.userId,
+        tenantKey: profile.tenantKey,
+      });
+    }
     await createSession(user.id, 'feishu-oauth', request, response);
     login.user = user;
     login.completedAt = Date.now();

@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { optionalAuth } from '../auth/authMiddleware.js';
 import { getLocalSettings, updateLocalSettings } from '../services/localSettingsService.js';
 import { readJsonBody, sendJson } from './httpUtils.js';
 
@@ -19,15 +20,30 @@ export async function handleLocalSettingsRoute(
   url: URL,
 ) {
   if (url.pathname !== '/api/local-settings') return false;
+  const currentUser = await optionalAuth(request);
+  const effectiveUserId = currentUser?.id ?? 'anonymous';
 
   if (request.method === 'GET') {
-    sendJson(response, 200, await getLocalSettings(url.searchParams.get('userId') ?? undefined));
+    sendJson(response, 200, await getLocalSettings(effectiveUserId));
     return true;
   }
 
   if (request.method === 'PUT') {
     const body = await readJsonBody<LocalSettingsInput>(request);
-    sendJson(response, 200, await updateLocalSettings(body));
+    // The request may not select another employee's settings. Anonymous users
+    // keep only non-sensitive UI preferences; server/DCC configuration changes
+    // require a session (the loopback local component gets its synthetic one).
+    sendJson(response, 200, await updateLocalSettings({
+      ...body,
+      userId: effectiveUserId,
+      ...(currentUser
+        ? {}
+        : {
+            performanceTestModeEnabled: undefined,
+            migrationPerformanceTestModeEnabled: undefined,
+            photoshop: undefined,
+          }),
+    }));
     return true;
   }
 

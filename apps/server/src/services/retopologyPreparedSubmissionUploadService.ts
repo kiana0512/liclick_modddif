@@ -33,6 +33,7 @@ type ModelField = (typeof modelFields)[number];
 type StoredModel = {
   path: string;
   size: number;
+  originalFilename: string;
 };
 
 type StoredReferenceImage = PreparedMultipartFile & {
@@ -41,6 +42,7 @@ type StoredReferenceImage = PreparedMultipartFile & {
 
 export type ParsedPreparedRetopologySubmission = {
   sources: RetopologyProjectSourceFiles;
+  sourceName: string;
   metadata: string;
   referenceImages: PreparedMultipartFile[];
   cleanup: () => Promise<void>;
@@ -335,7 +337,13 @@ export async function parsePreparedRetopologySubmission(
         const output = fs.createWriteStream(filePath, { flags: 'wx' });
         openStreams.add(output);
         output.on('close', () => openStreams.delete(output));
-        const storedModel = isModel ? { path: filePath, size: 0 } : undefined;
+        const storedModel = isModel
+          ? {
+              path: filePath,
+              size: 0,
+              originalFilename: safePreparedMultipartFilename(info.filename, `model${extension}`),
+            }
+          : undefined;
         if (isModel) models.set(fieldName, storedModel!);
         const reference = !isModel
           ? {
@@ -394,6 +402,7 @@ export async function parsePreparedRetopologySubmission(
         highModelPath: parsed.models.get('high_model')!.path,
         targetFaces: parsed.targetFaces,
       },
+      sourceName: parsed.models.get('high_model')!.originalFilename,
       metadata: parsed.metadata,
       referenceImages: parsed.referenceImages,
       cleanup: async () => {

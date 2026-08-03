@@ -10,6 +10,7 @@ import {
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
   getProjectedLayerSamplerBudget,
+  markSparseAlphaBaseTexture,
   syncProjectedLayerMaterialProjection,
   updateProjectedLayerStackMaterial,
   updateUvOverlayPreviewMaterial,
@@ -1267,6 +1268,10 @@ function ImportedModel({
   const loadedContentAwareUnderlayTexture = useLoadedPreviewTexture(
     contentAwareUvUnderlayLayer?.imageUrl,
   );
+  useEffect(() => {
+    if (!loadedContentAwareUnderlayTexture) return;
+    markSparseAlphaBaseTexture(loadedContentAwareUnderlayTexture);
+  }, [loadedContentAwareUnderlayTexture]);
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];
     const cacheKey = getProjectedLayerStackSignature(
@@ -1619,6 +1624,11 @@ function ImportedModel({
           const uvMaterialInput = {
             displayMode,
             selected,
+            // When a sparse content-aware repair is the UV base, transparent
+            // overlay texels must reveal that repair. The empty-UV checker is
+            // only a diagnostic fallback; drawing it here hid valid repairs
+            // immediately after projected layers were merged.
+            showEmptyUvChecker: !loadedContentAwareUnderlayTexture,
             ...(loadedUvTexture
               ? {
                   uvOverlayTexture: loadedUvTexture,

@@ -1,4 +1,6 @@
 import { getWorkspaceApiBase } from './workspaceApiBase';
+import { stableAsciiAssetIdentity } from './assetProcessingIdentifiers';
+import { createId } from '@/utils/id';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
@@ -146,7 +148,7 @@ async function responseJson<T>(response: Response) {
 
 function requestHeaders(idempotencyKey?: string) {
   return {
-    'X-Request-ID': crypto.randomUUID(),
+    'X-Request-ID': createId(),
     ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
   };
 }
@@ -233,16 +235,31 @@ export async function submitUvProcessing(input: {
     };
   };
 }) {
+  const externalAssetId = await stableAsciiAssetIdentity(input.metadata.external_asset_id);
   const body = new FormData();
   body.set('asset', input.asset);
-  body.set('metadata', JSON.stringify(input.metadata));
+  body.set(
+    'metadata',
+    JSON.stringify({
+      ...input.metadata,
+      external_asset_id: externalAssetId,
+    }),
+  );
   const response = await fetch(`${workspaceApiBase}/api/asset-processing/uv/process`, {
     method: 'POST',
     credentials: 'include',
-    headers: requestHeaders(input.metadata.external_asset_id),
+    headers: {
+      ...requestHeaders(externalAssetId),
+      'X-LI3D-History-Source-Name': encodeURIComponent(input.asset.name),
+      'X-LI3D-History-Metadata': encodeURIComponent(JSON.stringify(input.metadata.options)),
+    },
     body,
   });
-  return submissionFromResponse(response);
+  const submission = await submissionFromResponse(response);
+  return {
+    ...submission,
+    external_asset_id: submission.external_asset_id ?? externalAssetId,
+  };
 }
 
 export type RetopologyMetadata = {
@@ -269,20 +286,31 @@ export async function submitPreparedRetopologyProcessing(input: {
   metadata: RetopologyMetadata;
   referenceImages: File[];
 }) {
+  const externalAssetId = await stableAsciiAssetIdentity(input.metadata.external_asset_id);
   const body = new FormData();
   body.set('high_model', input.highModel);
-  body.set('metadata', JSON.stringify(input.metadata));
+  body.set(
+    'metadata',
+    JSON.stringify({
+      ...input.metadata,
+      external_asset_id: externalAssetId,
+    }),
+  );
   for (const image of input.referenceImages) body.append('reference_images', image);
   const response = await fetch(
     `${workspaceApiBase}/api/asset-processing/retopology/prepare-and-process`,
     {
       method: 'POST',
       credentials: 'include',
-      headers: requestHeaders(input.metadata.external_asset_id),
+      headers: requestHeaders(externalAssetId),
       body,
     },
   );
-  return submissionFromResponse(response);
+  const submission = await submissionFromResponse(response);
+  return {
+    ...submission,
+    external_asset_id: submission.external_asset_id ?? externalAssetId,
+  };
 }
 
 export async function getAssetJob(jobId: string) {

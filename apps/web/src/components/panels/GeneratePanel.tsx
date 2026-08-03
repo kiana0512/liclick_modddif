@@ -35,6 +35,12 @@ import { devLogin } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { createModelviewApiClient } from '@/services/modelviewApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
+import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
+import {
+  getCachedPersonalLiclickAccountStatus,
+  getPersonalLiclickAccountStatus,
+  isPersonalLiclickAccountForEmail,
+} from '@/services/liclickAccountApiClient';
 import {
   createLiclickApiClient,
   type LiclickAspectRatio,
@@ -658,6 +664,10 @@ export function GeneratePanel() {
   const authStatus = useAuthStore((state) => state.status);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
+  useEffect(() => {
+    if (authStatus !== 'authenticated') return;
+    void getPersonalLiclickAccountStatus().catch(() => undefined);
+  }, [authStatus]);
   const submitLockRef = useRef(false);
   const cancelledGenerationIdsRef = useRef(new Set<string>());
   const generationPollFailureCountsRef = useRef(new Map<string, number>());
@@ -1260,16 +1270,16 @@ export function GeneratePanel() {
     });
   }
 
-  async function requireAiLogin() {
-    if (authStatus === 'authenticated') return true;
+  async function requireFeishuLogin() {
+    if (useAuthStore.getState().status === 'authenticated') return true;
     setGenerateNotice({
       tone: 'warning',
-      message: 'AI 生图需要先完成飞书/IDaaS 授权。正在启动登录流程...',
+      message: '此功能需要先完成飞书身份验证，正在启动登录流程...',
     });
     pushToast({
       tone: 'warning',
       title: '需要飞书登录',
-      description: 'AI 生图需要莉刻 API 权限验证，登录后会继续使用当前项目。',
+      description: '飞书登录用于识别员工身份；莉刻生图账号将在下一步单独验证。',
       dedupeKey: 'ai-login-required',
     });
     try {
@@ -1296,11 +1306,11 @@ export function GeneratePanel() {
         setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
         setGenerateNotice({
           tone: 'info',
-          message: '飞书授权已完成，正在继续提交莉刻生图任务。',
+          message: '飞书身份验证已完成。',
         });
         return true;
       }
-      throw new Error('登录服务没有返回用户信息，请确认 Atlas/莉刻登录已完成。');
+      throw new Error('登录服务没有返回用户信息，请确认飞书授权已完成。');
     } catch (error) {
       setGenerateNotice({
         tone: 'error',
@@ -1311,6 +1321,67 @@ export function GeneratePanel() {
         title: '飞书登录不可用',
         description: error instanceof Error ? error.message : 'Could not start login.',
         dedupeKey: 'ai-login-start-failed',
+      });
+      return false;
+    }
+  }
+
+  async function requirePersonalLiclickAccount() {
+    const wasAuthenticated = useAuthStore.getState().status === 'authenticated';
+    if (!(await requireFeishuLogin())) return false;
+    if (!wasAuthenticated) {
+      setGenerateNotice({
+        tone: 'info',
+        message: '飞书登录已完成。请再次点击生成，以绑定此电脑上的个人莉刻账号。',
+      });
+      return false;
+    }
+    const authenticatedUser = useAuthStore.getState().user;
+    if (!authenticatedUser) return false;
+    const expectedEmail = authenticatedUser.email?.trim();
+    if (
+      isPersonalLiclickAccountForEmail(
+        getCachedPersonalLiclickAccountStatus(),
+        authenticatedUser.authSource === 'dev-mock' ? undefined : expectedEmail,
+      )
+    ) return true;
+
+    try {
+      setGenerateNotice({
+        tone: 'warning',
+        message: '正在检查并绑定此电脑上的个人莉刻账号。',
+      });
+      pushToast({
+        tone: 'info',
+        title: '绑定个人莉刻账号',
+        description: '生图任务和费用将归属你登录的莉刻账号；凭证只保存在这台电脑。',
+        dedupeKey: 'liclick-account-binding-required',
+      });
+      const account = await ensurePersonalLiclickAccountForUser(authenticatedUser, {
+        onStatus: (message) => setGenerateNotice({ tone: 'info', message }),
+      });
+      setGenerateNotice({
+        tone: 'info',
+        message: `已绑定个人莉刻账号${account.email ? `：${account.email}` : ''}，正在继续提交任务。`,
+      });
+      pushToast({
+        tone: 'success',
+        title: '个人莉刻账号绑定成功',
+        description: account.email
+          ? `当前电脑将使用 ${account.email} 提交莉刻生图任务。`
+          : '当前电脑已使用你的个人莉刻账号提交生图任务。',
+        dedupeKey: 'liclick-account-binding-success',
+      });
+      return true;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : '个人莉刻账号绑定失败，请重新尝试。';
+      setGenerateNotice({ tone: 'error', message });
+      pushToast({
+        tone: 'error',
+        title: '个人莉刻账号不可用',
+        description: message,
+        dedupeKey: 'liclick-account-binding-failed',
       });
       return false;
     }
@@ -1392,6 +1463,7 @@ export function GeneratePanel() {
   ) {
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     if (requestedViews.length === 0) throw new Error('请先添加至少一个模型视角。');
+    if (!(await requirePersonalLiclickAccount())) return;
     const objectId = captureObjectId;
     const object = objects.find((item) => item.id === objectId);
     const texturePrompt = buildTextureMapPrompt(prompt);
@@ -1399,8 +1471,6 @@ export function GeneratePanel() {
     const viewCaptures = await getTextureMapMultiviewCaptures(requestedViews);
     if (viewCaptures.length === 0) throw new Error('无法捕获多视图模型方向。');
     viewCaptures.forEach(({ capture }) => addProjectCapture(capture));
-    if (!(await requireAiLogin())) return;
-
     setGenerateNotice({
       tone: 'info',
       message: `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`,
@@ -1642,7 +1712,7 @@ export function GeneratePanel() {
         return;
       }
       submitLockRef.current = true;
-      if (authStatus !== 'authenticated' && !(await requireAiLogin())) return;
+      if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return;
       const objectId = captureObjectId;
       // The selection accumulates camera-specific projections instead of using
       // model UVs. Reproject their union from the current camera immediately
@@ -1761,7 +1831,7 @@ export function GeneratePanel() {
         return;
       }
       submitLockRef.current = true;
-      if (!(await requireAiLogin())) return;
+      if (!(await requirePersonalLiclickAccount())) return;
       const submittedPrompt = buildLiclickPrompt(prompt, imageModel);
       const generationId = createId('liclick-image');
       const objectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
@@ -1894,13 +1964,13 @@ export function GeneratePanel() {
         await handleTextureMapMultiviewGenerate(materialReference);
         return;
       }
+      if (!(await requirePersonalLiclickAccount())) return;
       const capture = await captureTextureMapReferenceView();
       // Keep the same capture/mask pairing used by local repaint so completed
       // texture generations can restore their exact silhouette preview after a
       // reload instead of falling back to color-based background removal.
       addProjectCapture(capture);
       const object = objects.find((item) => item.id === capture.objectId);
-      if (!(await requireAiLogin())) return;
       const texturePrompt = buildTextureMapPrompt(prompt);
       const generationId = createId('texture-map');
       const objectMatrixWorld = getImportedModelMatrixWorld(capture.objectId);

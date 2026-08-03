@@ -10,8 +10,10 @@ import { toPublicUser } from '../auth/currentUser.js';
 import { loginDevUser } from '../auth/devMockAuthService.js';
 import {
   clearSessionCookie,
+  consumeLocalIdentityProof,
   consumeBrowserSessionHandoff,
   createBrowserSessionHandoff,
+  createLocalIdentityProof,
   getSessionCookie,
   revokeSession,
   setSessionCookie,
@@ -20,6 +22,7 @@ import {
   handleWebOAuthCallback,
   isWebOAuthLoginId,
   pollWebOAuthLogin,
+  setWebOAuthBrowserCookie,
   startWebOAuthLogin,
 } from '../auth/webOAuthService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
@@ -28,6 +31,34 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
   const segments = getPathSegments(url);
   if (segments[0] !== 'api' || segments[1] !== 'auth') return false;
   const route = segments[2];
+
+  if (request.method === 'POST' && route === 'local-proof' && segments.length === 3) {
+    const issued = await createLocalIdentityProof(getSessionCookie(request));
+    if (!issued) {
+      sendJson(response, 401, { error: '请先完成飞书登录，再连接本地贴图组件。' });
+      return true;
+    }
+    response.setHeader('cache-control', 'no-store');
+    sendJson(response, 200, issued);
+    return true;
+  }
+
+  if (
+    request.method === 'POST' &&
+    route === 'local-proof' &&
+    segments[3] === 'verify' &&
+    segments.length === 4
+  ) {
+    const body = await readJsonBody<{ proof?: string }>(request);
+    const identity = await consumeLocalIdentityProof(body.proof);
+    if (!identity) {
+      sendJson(response, 401, { code: 'INVALID_LOCAL_IDENTITY_PROOF', error: '本地身份证明无效、已使用或已过期。' });
+      return true;
+    }
+    response.setHeader('cache-control', 'no-store');
+    sendJson(response, 200, { valid: true, identity });
+    return true;
+  }
 
   if (request.method === 'GET' && route === 'me') {
     const user = await optionalAuth(request);
@@ -42,7 +73,7 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
   if (request.method === 'GET' && route === 'provider-status') {
     const user = await optionalAuth(request);
     const shouldCheckAtlas =
-      Boolean(user) ||
+      Boolean(user?.atlasHomeDir) ||
       (!serverConfig.feishuWebOAuthEnabled &&
         !serverConfig.idaasJwtSsoEnabled &&
         serverConfig.atlasLocalLoginEnabled &&
@@ -53,7 +84,7 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
           message: error instanceof Error ? error.message : 'Atlas status unavailable.',
         }))
       : {
-          valid: serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled || serverConfig.atlasLocalLoginEnabled,
+          valid: false,
           message:
             serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled
               ? 'IDaaS/飞书网页登录已配置。'
@@ -64,7 +95,10 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
     sendJson(response, 200, {
       authMode: serverConfig.authMode,
       devLoginEnabled: serverConfig.authMode === 'dev-mock',
-      feishuOAuthEnabled: true,
+      feishuOAuthEnabled:
+        serverConfig.feishuWebOAuthEnabled ||
+        serverConfig.idaasJwtSsoEnabled ||
+        serverConfig.atlasLocalLoginEnabled,
       feishuConfigured:
         serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled || serverConfig.atlasLocalLoginEnabled,
       feishuLoginProvider: serverConfig.feishuWebOAuthEnabled
@@ -75,6 +109,7 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
             ? 'atlas-cli'
             : 'not-configured',
       feishuWebOAuthBlockedReason: serverConfig.feishuWebOAuthBlockedReason || undefined,
+      insecureHttpCallback: serverConfig.feishuWebOAuthInsecureHttpCallbackActive,
       atlasLoginMode: serverConfig.atlasLoginMode,
       missingConfigKeys:
         serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled
@@ -158,6 +193,9 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
     }
     const user = 'user' in result ? result.user : undefined;
     const loginId = 'loginId' in result ? result.loginId : undefined;
+    if ('browserNonce' in result && typeof result.browserNonce === 'string') {
+      setWebOAuthBrowserCookie(response, result.browserNonce);
+    }
     sendJson(response, 200, {
       user: user ? toPublicUser(user) : undefined,
       loginId,

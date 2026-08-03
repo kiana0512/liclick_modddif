@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { setCurrentUser } from './currentUser.js';
 import { getSessionCookie, upsertUser, verifySession } from './sessionService.js';
 import { sendJson } from '../routes/httpUtils.js';
 
@@ -17,13 +16,9 @@ function getLocalComponentUser() {
 
 export async function optionalAuth(request: IncomingMessage) {
   if (process.env.LICLICK_LOCAL_COMPONENT_MODE === '1') {
-    const user = await getLocalComponentUser();
-    setCurrentUser(request, user);
-    return user;
+    return getLocalComponentUser();
   }
-  const user = await verifySession(getSessionCookie(request));
-  if (user) setCurrentUser(request, user);
-  return user;
+  return verifySession(getSessionCookie(request));
 }
 
 export async function requireAuth(request: IncomingMessage, response: ServerResponse) {

@@ -113,6 +113,20 @@ try {
   const cookie = login.headers.get('set-cookie')?.split(';', 1)[0];
   assert(cookie, 'Dev login must set a session cookie.');
 
+  const missingComfyCancelJob = await fetch(`${baseUrl}/api/comfyui/cancel`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+    body: JSON.stringify({}),
+  });
+  assert.equal(missingComfyCancelJob.status, 400);
+
+  const unknownComfyCancelJob = await fetch(`${baseUrl}/api/comfyui/cancel`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+    body: JSON.stringify({ jobId: 'not-an-active-job' }),
+  });
+  assert.equal(unknownComfyCancelJob.status, 404);
+
   const createProject = await fetch(`${baseUrl}/api/projects`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
@@ -185,7 +199,9 @@ try {
     'A stale client snapshot must not clear every layer while project models remain.',
   );
 
-  const asset = await fetch(uploaded.asset.url, { headers: { Origin: allowedOrigin } });
+  const asset = await fetch(uploaded.asset.url, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
+  });
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get('access-control-allow-origin'), allowedOrigin);
   assert.equal(asset.headers.get('x-content-type-options'), 'nosniff');
@@ -193,26 +209,30 @@ try {
 
   const assetHead = await fetch(uploaded.asset.url, {
     method: 'HEAD',
-    headers: { Origin: allowedOrigin },
+    headers: { Cookie: cookie, Origin: allowedOrigin },
   });
   assert.equal(assetHead.status, 200);
   assert.equal(await assetHead.text(), '');
 
   const privateWorkspaceFile = await fetch(`${baseUrl}/workspace/auth.json`, {
-    headers: { Origin: allowedOrigin },
+    headers: { Cookie: cookie, Origin: allowedOrigin },
   });
   assert.equal(privateWorkspaceFile.status, 403, 'Workspace metadata must never be publicly served.');
 
   const assetUrl = new URL(uploaded.asset.url);
   const traversalUrl = `${baseUrl}${assetUrl.pathname.replace(/\/assets\/references\/[^/]+$/, '/assets/references/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/auth.json')}`;
-  const traversal = await fetch(traversalUrl, { headers: { Origin: allowedOrigin } });
+  const traversal = await fetch(traversalUrl, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
+  });
   assert.notEqual(traversal.status, 200, 'Traversal from a public asset directory must not reach workspace metadata.');
 
-  const deniedAsset = await fetch(uploaded.asset.url, { headers: { Origin: deniedOrigin } });
+  const deniedAsset = await fetch(uploaded.asset.url, {
+    headers: { Cookie: cookie, Origin: deniedOrigin },
+  });
   assert.equal(deniedAsset.status, 403, 'Workspace assets must reject untrusted Origins.');
 
   await verifyExternalBindRequiresSecret();
-  console.log('Local server smoke passed: auth, project creation, upload, CORS, HEAD, and workspace isolation.');
+  console.log('Local server smoke passed: auth, safe cancellation, project creation, upload, CORS, HEAD, and workspace isolation.');
 } catch (error) {
   if (output.trim()) console.error(output.trim());
   throw error;

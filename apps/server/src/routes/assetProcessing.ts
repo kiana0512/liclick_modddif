@@ -9,7 +9,11 @@ import {
 } from '../services/assetProcessingProxy.js';
 import {
   registerAssetJobOwner,
+  updateAssetJobSnapshot,
   userOwnsAssetJob,
+  type AssetHistoryMode,
+  type AssetHistoryParameter,
+  type AssetHistoryRegistration,
 } from '../services/assetJobOwnership.js';
 import {
   prepareRetopologyProjectFromFiles,
@@ -37,6 +41,75 @@ function requireV4SubmissionJobId(payload: unknown, statusCode: number) {
     throw new Error('Asset V4 submission response is missing required job fields.');
   }
   return record.job_id;
+}
+
+function historyText(value: unknown, maximumLength: number) {
+  if (typeof value !== 'string') return undefined;
+  const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maximumLength);
+  return clean || undefined;
+}
+
+function historyParameter(label: string, value: unknown): AssetHistoryParameter | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const text = historyText(typeof value === 'string' ? value : String(value), 600);
+  return text ? { label, value: text } : undefined;
+}
+
+function historyParameters(mode: AssetHistoryMode, metadata: unknown) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
+  const record = metadata as Record<string, unknown>;
+  const options = record.options && typeof record.options === 'object' && !Array.isArray(record.options)
+    ? record.options as Record<string, unknown>
+    : record;
+  const values: Array<AssetHistoryParameter | undefined> = mode === 'uv'
+    ? [
+        historyParameter('输出尺寸', options.resolution ? `${options.resolution}px` : undefined),
+        historyParameter('隐藏轴', options.hidden_axis),
+        historyParameter('硬边角度', options.hard_edge_angle_degrees !== undefined ? `${options.hard_edge_angle_degrees}°` : undefined),
+        historyParameter('UV 间距', options.padding_px !== undefined ? `${options.padding_px}px` : undefined),
+        historyParameter('纹素密度', options.texel_density_mode),
+        historyParameter('QA 配置', options.qa_profile),
+      ]
+    : [
+        historyParameter('目标面数', options.target_faces),
+        historyParameter('拓扑类型', options.topology_style),
+        historyParameter('锐边保留', options.preserve_sharp === undefined ? undefined : options.preserve_sharp ? '是' : '否'),
+        historyParameter('边界保留', options.preserve_boundary === undefined ? undefined : options.preserve_boundary ? '是' : '否'),
+        historyParameter('封闭模型', options.require_closed === undefined ? undefined : options.require_closed ? '是' : '否'),
+        historyParameter('检查分辨率', options.render_resolution),
+        historyParameter('最大修复轮次', options.max_repair_rounds),
+        historyParameter('参考图', Array.isArray(record.reference_views) ? `${record.reference_views.length} 张` : undefined),
+        historyParameter('制作要求', historyText(record.user_request, 600)),
+      ];
+  return values.filter((value): value is AssetHistoryParameter => Boolean(value));
+}
+
+function decodedHistoryHeader(request: IncomingMessage, name: string, maximumLength: number) {
+  const raw = request.headers[name]?.toString();
+  if (!raw || raw.length > maximumLength * 3) return undefined;
+  try {
+    return historyText(decodeURIComponent(raw), maximumLength);
+  } catch {
+    return undefined;
+  }
+}
+
+function submissionHistory(
+  request: IncomingMessage,
+  mode: AssetHistoryMode,
+): AssetHistoryRegistration {
+  const sourceName = decodedHistoryHeader(request, 'x-li3d-history-source-name', 180)
+    ?? (mode === 'uv' ? '历史展 UV 任务' : '历史拓扑任务');
+  const encodedMetadata = request.headers['x-li3d-history-metadata']?.toString();
+  let metadata: unknown;
+  if (encodedMetadata && encodedMetadata.length <= 8_192 * 3) {
+    try {
+      metadata = JSON.parse(decodeURIComponent(encodedMetadata)) as unknown;
+    } catch {
+      metadata = undefined;
+    }
+  }
+  return { mode, sourceName, parameters: historyParameters(mode, metadata) };
 }
 
 export async function handleAssetProcessingRoute(
@@ -87,8 +160,16 @@ export async function handleAssetProcessingRoute(
           referenceImages: upload.referenceImages,
           metadata: upload.metadata,
         },
-        async (payload, statusCode) =>
-          registerAssetJobOwner(requireV4SubmissionJobId(payload, statusCode), user.id),
+        async (payload, statusCode) => {
+          const jobId = requireV4SubmissionJobId(payload, statusCode);
+          const metadata = JSON.parse(upload!.metadata) as unknown;
+          await registerAssetJobOwner(jobId, user.id, {
+            mode: 'retopology',
+            sourceName: upload!.sourceName,
+            parameters: historyParameters('retopology', metadata),
+          });
+          await updateAssetJobSnapshot(jobId, user.id, payload);
+        },
       );
     } catch (error) {
       if (response.headersSent) {
@@ -141,12 +222,17 @@ export async function handleAssetProcessingRoute(
       );
       return true;
     }
+    const mode: AssetHistoryMode = url.pathname.includes('/uv/') ? 'uv' : 'retopology';
+    const registration = submissionHistory(request, mode);
     await proxyAssetProcessingRequest(
       request,
       response,
       submissionUpstream,
-      async (payload, statusCode) =>
-        registerAssetJobOwner(requireV4SubmissionJobId(payload, statusCode), user.id),
+      async (payload, statusCode) => {
+        const jobId = requireV4SubmissionJobId(payload, statusCode);
+        await registerAssetJobOwner(jobId, user.id, registration);
+        await updateAssetJobSnapshot(jobId, user.id, payload);
+      },
     );
     return true;
   }
@@ -209,7 +295,17 @@ export async function handleAssetProcessingRoute(
       );
       return true;
     }
-    await proxyAssetProcessingRequest(request, response, route.upstream(match));
+    const capturesSnapshot = !url.pathname.endsWith('/events');
+    await proxyAssetProcessingRequest(
+      request,
+      response,
+      route.upstream(match),
+      capturesSnapshot
+        ? async (payload) => {
+            await updateAssetJobSnapshot(jobId, user.id, payload);
+          }
+        : undefined,
+    );
     return true;
   }
 

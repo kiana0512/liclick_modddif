@@ -60,14 +60,6 @@ export function getUserProjectDir(userId: string, slug: string) {
   return path.join(getUserProjectsDir(userId), slug);
 }
 
-export function getTrashProjectsDir() {
-  return path.join(serverConfig.workspaceDir, 'trash', 'projects');
-}
-
-export function getProjectDir(slug: string) {
-  return path.join(getProjectsDir(), slug);
-}
-
 export function getFoldersFile() {
   return path.join(serverConfig.workspaceDir, 'folders.json');
 }

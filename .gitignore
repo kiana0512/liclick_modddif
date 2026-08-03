@@ -4,6 +4,7 @@ dist
 dist-installer/
 dist-local-component/
 dist-plugins/
+.build-cache/
 .vite
 .turbo
 .DS_Store
@@ -33,6 +34,8 @@ logs/
 workspace/
 workspace-auth-smoke/
 workspace-auth-smoke-feishu/
+.codex-tmp/
+workspace-smoke*/
 .codex/*.png
 *_contact_sheet.png
 

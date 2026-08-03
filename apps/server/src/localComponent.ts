@@ -7,12 +7,14 @@ import { handleAssetsRoute } from './routes/assets.js';
 import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
+import { handleLocalLiclickRoute } from './routes/localLiclick.js';
+import { handleLocalLiclickAccountRoute } from './routes/localLiclickAccount.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { handlePhotoshopRoute } from './routes/photoshop.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
 
-const runtimeVersion = '0.1.4';
+const runtimeVersion = '0.1.9';
 const workspaceVersion = '0.6.0';
 const capabilities = [
   'texture-painting',
@@ -20,6 +22,8 @@ const capabilities = [
   'project-storage',
   'dcc-bridge',
   'photoshop-bridge',
+  'atlas-personal-auth',
+  'liclick-generation',
 ] as const;
 
 const mimeTypes: Record<string, string> = {
@@ -116,6 +120,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     serveWorkspaceFile(request, response, url);
     return;
   }
+  if (
+    url.pathname.startsWith('/api/local-liclick-account') &&
+    (await handleLocalLiclickAccountRoute(request, response, url))
+  )
+    return;
+  if (
+    (url.pathname.startsWith('/api/liclick') || url.pathname === '/api/generate-image') &&
+    (await handleLocalLiclickRoute(request, response, url))
+  )
+    return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/photoshop') && (await handlePhotoshopRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/projects') && (await handleAssetsRoute(request, response, url))) return;

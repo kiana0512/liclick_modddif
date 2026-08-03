@@ -1,5 +1,9 @@
 # Photoshop Live Link And Local Data Audit
 
+> Historical record only. The legacy Electron launcher and unsigned Photoshop
+> CEP deployment flow described below were retired in August 2026. Current local
+> integration uses the standalone texture component and the Photoshop UXP bridge.
+
 Date: 2026-07-17
 
 ## Outcome

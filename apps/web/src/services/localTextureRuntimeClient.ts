@@ -41,10 +41,11 @@ function compareVersions(left: string, right: string) {
 }
 
 export function getLocalTextureRuntimeDownloadUrl() {
-  return (
-    import.meta.env.VITE_LI3D_LOCAL_RUNTIME_DOWNLOAD_URL?.trim() ||
-    '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe?v=0.1.4'
-  );
+  const configured = import.meta.env.VITE_LI3D_LOCAL_RUNTIME_DOWNLOAD_URL?.trim();
+  if (configured) return configured;
+  const basePath = `/${(import.meta.env.BASE_URL ?? '/').split('/').filter(Boolean).join('/')}`;
+  const normalizedBase = basePath === '/' ? '' : basePath;
+  return `${normalizedBase}/downloads/LIclick-3D-Texture-Local-Component-Setup.exe?v=0.1.9`;
 }
 
 export async function checkLocalTextureRuntime(): Promise<LocalTextureRuntimeState> {
@@ -82,7 +83,7 @@ export async function checkLocalTextureRuntime(): Promise<LocalTextureRuntimeSta
     if (!health.capabilities.includes('texture-painting')) {
       return { status: 'missing', reason: '检测到旧版程序，请安装新的贴图绘制本地组件' };
     }
-    const requiredVersion = import.meta.env.VITE_LI3D_LOCAL_RUNTIME_MIN_VERSION?.trim();
+    const requiredVersion = import.meta.env.VITE_LI3D_LOCAL_RUNTIME_MIN_VERSION?.trim() || '0.1.8';
     if (requiredVersion && compareVersions(health.runtimeVersion, requiredVersion) < 0) {
       return { status: 'outdated', health, requiredVersion };
     }

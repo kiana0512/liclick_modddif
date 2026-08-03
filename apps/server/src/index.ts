@@ -1,14 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { requireAuth } from './auth/authMiddleware.js';
 import { serverConfig } from './config.js';
 import { handleAssetsRoute } from './routes/assets.js';
 import { handleAssetProcessingRoute } from './routes/assetProcessing.js';
 import { handleAuthRoute } from './routes/auth.js';
 import { handleBakeRoute } from './routes/bake.js';
 import { handleComfyuiRoute } from './routes/comfyui.js';
+import { handleEventsRoute } from './routes/events.js';
 import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
+import { handleHistoryRoute } from './routes/history.js';
+import { handleIdentityRoute } from './routes/identity.js';
 import { handleLiclickRoute } from './routes/liclick.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { handleModelviewRoute } from './routes/modelview.js';
@@ -17,6 +21,9 @@ import { photoshopBridge } from './photoshop/photoshopBridgeService.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
+import { identityTelemetryStorage } from './services/identityTelemetryService.js';
+import { syncTelemetryAggregateToBitable } from './services/feishuPlatformService.js';
+import { serveWebFrontend } from './services/webFrontendService.js';
 
 const mimeTypes: Record<string, string> = {
   '.json': 'application/json',
@@ -38,7 +45,7 @@ function isWithinDirectory(root: string, candidate: string) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-function serveWorkspaceFile(request: IncomingMessage, response: ServerResponse, url: URL) {
+async function serveWorkspaceFile(request: IncomingMessage, response: ServerResponse, url: URL) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     sendJson(response, 405, { error: 'Method not allowed.' });
     return true;
@@ -47,6 +54,8 @@ function serveWorkspaceFile(request: IncomingMessage, response: ServerResponse, 
     sendJson(response, 403, { error: 'Origin is not allowed.' });
     return true;
   }
+  const user = await requireAuth(request, response);
+  if (!user) return true;
 
   let relative: string;
   try {
@@ -58,6 +67,11 @@ function serveWorkspaceFile(request: IncomingMessage, response: ServerResponse, 
   const publicPathMatch = publicWorkspaceFilePattern.exec(relative);
   if (!publicPathMatch) {
     sendJson(response, 403, { error: 'Workspace file is not public.' });
+    return true;
+  }
+  const userOwnedPath = /^users\/([^/]+)\//i.exec(publicPathMatch[1]);
+  if (userOwnedPath && userOwnedPath[1] !== user.id) {
+    sendJson(response, 403, { error: 'Forbidden.' });
     return true;
   }
 
@@ -92,9 +106,9 @@ function serveWorkspaceFile(request: IncomingMessage, response: ServerResponse, 
 
 function stripPublicPath(url: URL) {
   const publicPath = serverConfig.publicPath;
-  if (!publicPath || url.pathname === publicPath || !url.pathname.startsWith(`${publicPath}/`)) return url;
+  if (!publicPath || !url.pathname.startsWith(`${publicPath}/`) && url.pathname !== publicPath) return url;
   const stripped = new URL(url.href);
-  stripped.pathname = stripped.pathname.slice(publicPath.length) || '/';
+  stripped.pathname = url.pathname === publicPath ? '/' : stripped.pathname.slice(publicPath.length) || '/';
   return stripped;
 }
 
@@ -115,7 +129,6 @@ async function handleWorkspaceRequest(
   if (url.pathname === '/api/health') {
     sendJson(response, 200, {
       ok: true,
-      workspaceDir: serverConfig.workspaceDir,
       workspaceVersion: '0.6.0',
       host: serverConfig.host,
       features: {
@@ -123,22 +136,39 @@ async function handleWorkspaceRequest(
           serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled || serverConfig.atlasLocalLoginEnabled,
         atlasCliLogin: serverConfig.atlasLocalLoginEnabled,
         browserHttpUuidFallback: true,
+        integratedWeb: serverConfig.serveWeb,
+        identityBinding: true,
+        usageTelemetry: true,
+        feishuDirectoryEnrichment: serverConfig.feishuPlatform.directory.enabled,
+        feishuBitableSync: serverConfig.feishuPlatform.bitable.enabled,
       },
     });
     return;
   }
   if (url.pathname.startsWith('/workspace/')) {
-    serveWorkspaceFile(request, response, url);
+    await serveWorkspaceFile(request, response, url);
     return;
   }
   if (url.pathname.startsWith('/api/auth') && (await handleAuthRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/identity') && (await handleIdentityRoute(request, response, url))) return;
+  if (url.pathname === '/api/events' && (await handleEventsRoute(request, response, url))) return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
+  if (url.pathname === '/api/history' && (await handleHistoryRoute(request, response, url))) return;
   if (
     url.pathname.startsWith('/api/asset-processing') &&
     (await handleAssetProcessingRoute(request, response, url))
   ) return;
   if (url.pathname.startsWith('/api/bake') && (await handleBakeRoute(request, response, url))) return;
-  if (url.pathname.startsWith('/api/photoshop') && (await handlePhotoshopRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/photoshop')) {
+    // Photoshop/DCC control belongs to the separately installed loopback-only
+    // local component. Never expose those launch/session endpoints on the
+    // public LI3D web server.
+    if (process.env.LICLICK_LOCAL_COMPONENT_MODE !== '1') {
+      sendJson(response, 404, { error: 'Not found.' });
+      return;
+    }
+    if (await handlePhotoshopRoute(request, response, url)) return;
+  }
   if (url.pathname.startsWith('/api/modelview') && (await handleModelviewRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
   if (
@@ -149,11 +179,67 @@ async function handleWorkspaceRequest(
   if (url.pathname.startsWith('/api/projects') && (await handleExportRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/projects') && (await handleProjectsRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/folders') && (await handleFoldersRoute(request, response, url))) return;
+  if (!url.pathname.startsWith('/api/') && (await serveWebFrontend(request, response, url))) return;
   sendJson(response, 404, { error: 'Route not found.' });
+}
+
+let telemetrySyncRunning = false;
+let telemetrySyncFailureStreak = 0;
+
+async function syncPendingTelemetryAggregates() {
+  if (!serverConfig.feishuPlatform.bitable.enabled || telemetrySyncRunning) return;
+  telemetrySyncRunning = true;
+  let hadFailure = false;
+  try {
+    const pending = await identityTelemetryStorage.listPendingAggregates(100);
+    for (const aggregate of pending) {
+      try {
+        const result = await syncTelemetryAggregateToBitable(aggregate);
+        await identityTelemetryStorage.markAggregateSynced({
+          aggregate_key: aggregate.aggregate_key,
+          sync_hash: aggregate.sync_hash,
+          record_id: result.recordId,
+        });
+      } catch (error) {
+        hadFailure = true;
+        await identityTelemetryStorage.markAggregateSyncFailed({
+          aggregate_key: aggregate.aggregate_key,
+          sync_hash: aggregate.sync_hash,
+          error: error instanceof Error ? error.message : 'Feishu Bitable sync failed.',
+        }).catch(() => undefined);
+      }
+    }
+  } catch (error) {
+    hadFailure = true;
+    console.warn(
+      '[LI3D telemetry sync] Pending aggregate scan failed:',
+      error instanceof Error ? error.message : 'unknown error',
+    );
+  } finally {
+    telemetrySyncFailureStreak = hadFailure
+      ? Math.min(telemetrySyncFailureStreak + 1, 6)
+      : 0;
+    telemetrySyncRunning = false;
+  }
+}
+
+function startTelemetryAggregateWorker() {
+  if (!serverConfig.feishuPlatform.bitable.enabled) return;
+  const baseInterval = serverConfig.feishuPlatform.bitable.syncIntervalMs;
+  const scheduleNext = () => {
+    const backoff = 2 ** telemetrySyncFailureStreak;
+    const timer = setTimeout(() => {
+      void syncPendingTelemetryAggregates().finally(scheduleNext);
+    }, Math.min(baseInterval * backoff, 30 * 60_000));
+    timer.unref();
+  };
+  void syncPendingTelemetryAggregates().finally(scheduleNext);
 }
 
 async function startServer() {
   await initializeWorkspace();
+  await identityTelemetryStorage.initialize();
+  startTelemetryAggregateWorker();
 
   const server = createServer(async (request, response) => {
     try {
@@ -164,7 +250,9 @@ async function startServer() {
     }
   });
 
-  photoshopBridge.attach(server);
+  if (process.env.LICLICK_LOCAL_COMPONENT_MODE === '1') {
+    photoshopBridge.attach(server);
+  }
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code !== 'EADDRINUSE') {

@@ -1,6 +1,8 @@
-import { getWorkspaceApiBase } from './workspaceApiBase';
+import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
+import { invalidateCachedPersonalLiclickAccountStatus } from './liclickAccountApiClient';
+import { getLocalIdentityProof } from './localIdentityProofApiClient';
 
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const localLiclickApiBase = getLocalTextureRuntimeApiBase();
 
 export interface ImageEditProvider {
   startEditImage(params: ImageEditParams): Promise<ImageEditJobResult>;
@@ -79,13 +81,15 @@ function describeNetworkFailure(error: unknown, baseUrl: string) {
     return `连接本地莉刻服务超时：${baseUrl}`;
   }
   if (error instanceof TypeError) {
-    return `无法连接本地莉刻服务：${baseUrl}。请确认桌面启动窗口仍在运行，或重新打开 Liclick 3D Texture。`;
+    return `无法连接本地莉刻服务：${baseUrl}。请确认最新版本地贴图组件已安装并正在运行。`;
   }
   return error instanceof Error ? error.message : '无法连接本地莉刻服务。';
 }
 
 async function requestJson<T>(baseUrl: string, path: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const { timeoutMs = 30_000, headers, signal, ...fetchInit } = init;
+  const requestHeaders = new Headers(headers);
+  requestHeaders.set('x-li3d-identity-proof', await getLocalIdentityProof());
   const controller = new AbortController();
   const abortFromSignal = () => controller.abort();
   if (signal?.aborted) controller.abort();
@@ -95,12 +99,24 @@ async function requestJson<T>(baseUrl: string, path: string, init: RequestInit &
     const response = await fetch(`${baseUrl}${path}`, {
       ...fetchInit,
       signal: controller.signal,
-      credentials: 'include',
-      headers,
+      credentials: 'omit',
+      headers: requestHeaders,
     });
     const payload = (await response.json().catch(() => undefined)) as T | undefined;
     if (!response.ok) {
-      if (response.status === 401) throw new Error('请先完成飞书/莉刻登录，然后再使用局部重绘。');
+      const errorCode =
+        payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
+          ? payload.code
+          : undefined;
+      if (
+        response.status === 401 ||
+        response.status === 403 ||
+        response.status === 428 ||
+        errorCode === 'LICLICK_ACCOUNT_EMAIL_MISMATCH'
+      ) {
+        invalidateCachedPersonalLiclickAccountStatus();
+        throw new Error('请先在此电脑绑定你自己的莉刻账号，然后再使用局部重绘。');
+      }
       throw new Error(readErrorMessage(payload, `莉刻请求失败：${response.status}`));
     }
     return payload as T;
@@ -120,7 +136,7 @@ async function requestJson<T>(baseUrl: string, path: string, init: RequestInit &
 }
 
 export class LiClickImageEditProvider implements ImageEditProvider {
-  constructor(private readonly baseUrl = workspaceApiBase) {}
+  constructor(private readonly baseUrl = localLiclickApiBase) {}
 
   async startEditImage(params: ImageEditParams) {
     await requestJson(this.baseUrl, '/api/health', { method: 'GET', timeoutMs: 8_000, signal: params.signal });

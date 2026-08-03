@@ -39,13 +39,17 @@ export type NormalBakeSettings = {
 
 export type BakeUpload = { fileName: string; data: Buffer };
 
-type RemoteBakeProfile =
-  | 'ao-self-v1'
-  | 'normal-dx-v1'
-  | 'pbr-core-v1'
-  | 'li3d-pbr-full-v2';
+type RemoteBakeProfile = 'ao-self-v1' | 'normal-dx-v1' | 'pbr-core-v1' | 'li3d-pbr-full-v2';
 
-type RemoteBakeStatus = 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+type RemoteBakeStatus =
+  | 'QUEUED'
+  | 'CLAIMED'
+  | 'RUNNING'
+  | 'CANCELLING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'CANCELLED'
+  | (string & {});
 
 type RemoteTiming = {
   queue_position?: number;
@@ -82,6 +86,7 @@ type RemoteJobPayload = {
 
 export type NormalBakeJob = {
   id: string;
+  ownerUserId: string;
   kind: 'bake-maps';
   projectId: string;
   objectId: string;
@@ -241,12 +246,7 @@ function remoteUrl(value: string) {
 
 type RemoteTrust = {
   ca?: string[];
-  source:
-    | 'configured-ca'
-    | 'auto-discovered-ca'
-    | 'embedded-ca'
-    | 'system-ca'
-    | 'node-default-ca';
+  source: 'configured-ca' | 'auto-discovered-ca' | 'embedded-ca' | 'system-ca' | 'node-default-ca';
   caPath?: string;
 };
 
@@ -283,11 +283,7 @@ function remoteTrust(): RemoteTrust {
   ).getCACertificates;
   if (getCACertificates) {
     const certificates = Array.from(
-      new Set([
-        ...getCACertificates('default'),
-        ...getCACertificates('system'),
-        gpuControlLanCa,
-      ]),
+      new Set([...getCACertificates('default'), ...getCACertificates('system'), gpuControlLanCa]),
     );
     return { ca: certificates, source: 'embedded-ca' };
   }
@@ -475,8 +471,7 @@ function validateSettings(input: NormalBakeSettings) {
   if (![1024, 2048, 4096].includes(input.resolution)) {
     throw new BakeRequestError('远端 Substance Baker 仅支持 1K、2K 和 4K 输出。');
   }
-  const generateRoughnessFromBakedBaseColor =
-    input.generateRoughnessFromBakedBaseColor === true;
+  const generateRoughnessFromBakedBaseColor = input.generateRoughnessFromBakedBaseColor === true;
   const channels = Array.from(
     new Set([
       ...(input.channels ?? []),
@@ -611,6 +606,7 @@ function mapRemoteError(error: unknown) {
 
 function applyRemoteStatus(job: InternalJob, payload: RemoteJobPayload) {
   if (!job.remote) return;
+  const previousRemoteStatus = job.remote.status;
   const status = payload.status ?? job.remote.status ?? 'QUEUED';
   job.remote = {
     ...job.remote,
@@ -625,7 +621,7 @@ function applyRemoteStatus(job: InternalJob, payload: RemoteJobPayload) {
   if (status === 'QUEUED') {
     job.status = 'queued';
     job.stage = 'waiting-for-worker';
-  } else if (status === 'RUNNING') {
+  } else if (status === 'CLAIMED' || status === 'RUNNING') {
     job.status = 'running';
     job.stage = 'baking-maps';
     job.startedAt ??= new Date().toISOString();
@@ -641,11 +637,17 @@ function applyRemoteStatus(job: InternalJob, payload: RemoteJobPayload) {
     job.stage = 'finished';
     job.error = mapRemoteError(payload.error) || '远端 Substance Baker 执行失败。';
     job.finishedAt = new Date().toISOString();
-  } else {
+  } else if (status === 'CANCELLED') {
     job.status = 'cancelled';
     job.stage = 'finished';
     job.error = undefined;
     job.finishedAt = new Date().toISOString();
+  } else if (status !== previousRemoteStatus) {
+    const safeStatus = String(status)
+      .replace(/[\r\n]/g, ' ')
+      .slice(0, 80);
+    job.logs.push(`[Remote] 收到非终态 ${safeStatus}，继续等待远端任务。`);
+    if (job.logs.length > maxLogLines) job.logs.splice(0, job.logs.length - maxLogLines);
   }
   persist(job);
 }
@@ -709,16 +711,21 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
   const outputs: NonNullable<NormalBakeJob['outputs']> = {};
   for (const { artifact, data } of downloaded) {
     const safeName = safeFileName(artifact.filename, `artifact-${artifact.id}`);
-    const artifactPath = path.join(job.directory, 'output', safeName);
-    fs.writeFileSync(artifactPath, data);
     const channel =
       artifact.filename ===
-      (job.settings.normalOrientation === 'opengl'
-        ? 'asset_normal_gl.png'
-        : 'asset_normal_dx.png')
+      (job.settings.normalOrientation === 'opengl' ? 'asset_normal_gl.png' : 'asset_normal_dx.png')
         ? 'normal'
         : artifactChannelMap[artifact.filename];
-    if (!channel || !job.settings.channels.includes(channel)) continue;
+    if (!channel || !job.settings.channels.includes(channel)) {
+      // Keep the tiny remote report/log for diagnostics, but do not persist every
+      // remote asset PNG. Selected channels are stored once under their stable
+      // public file names below; retaining both copies previously doubled large
+      // bake histories and also kept channels the user did not request.
+      if (!artifact.filename.startsWith('asset_')) {
+        fs.writeFileSync(path.join(job.directory, 'output', safeName), data);
+      }
+      continue;
+    }
     const localPath = job.outputPaths[channel];
     fs.writeFileSync(localPath, data);
     const dimensions = pngSize(localPath);
@@ -885,6 +892,23 @@ function loadJob(id: string) {
   }
 }
 
+function resumePrematurelyCancelledRemoteJob(job: InternalJob) {
+  if (
+    job.status !== 'cancelled' ||
+    !job.remote ||
+    job.remote.status === 'CANCELLED' ||
+    job.outputs
+  ) {
+    return false;
+  }
+  job.status = 'queued';
+  job.stage = 'waiting-for-worker';
+  job.finishedAt = undefined;
+  job.error = undefined;
+  appendLog(job, '[Remote] 恢复此前被过早终止的远端任务状态同步。');
+  return true;
+}
+
 export async function generateRemoteRoughness(input: BakeUpload, idempotencyKey?: string) {
   validateBakeUpload(input, 'Base Color', 'image');
   const sourceMetadata = await sharp(input.data).metadata();
@@ -964,6 +988,7 @@ export async function generateRemoteRoughness(input: BakeUpload, idempotencyKey?
 }
 
 export async function createNormalBakeJob(input: {
+  userId: string;
   projectId: string;
   objectId: string;
   settings: NormalBakeSettings;
@@ -974,6 +999,8 @@ export async function createNormalBakeJob(input: {
   roughness?: BakeUpload;
   metallic?: BakeUpload;
 }) {
+  const ownerUserId = input.userId.trim();
+  if (!ownerUserId) throw new BakeRequestError('Authenticated user id is required.');
   validateBakeUpload(input.high, '高模', 'model');
   validateBakeUpload(input.low, '低模', 'model');
   if (input.cage) validateBakeUpload(input.cage, 'Cage', 'model');
@@ -1001,9 +1028,7 @@ export async function createNormalBakeJob(input: {
   const highName = safeFileName(input.high.fileName, 'high.fbx');
   const lowName = safeFileName(input.low.fileName, 'low.fbx');
   const cageName = input.cage ? safeFileName(input.cage.fileName, 'cage.fbx') : undefined;
-  const colorName = colorUpload
-    ? safeFileName(colorUpload.fileName, 'base_color.png')
-    : undefined;
+  const colorName = colorUpload ? safeFileName(colorUpload.fileName, 'base_color.png') : undefined;
   const roughnessName = roughnessUpload
     ? safeFileName(roughnessUpload.fileName, 'roughness.png')
     : undefined;
@@ -1013,6 +1038,7 @@ export async function createNormalBakeJob(input: {
   const statusUrl = `/api/v1/assets/jobs/pending`;
   const job: InternalJob = {
     id,
+    ownerUserId,
     kind: 'bake-maps',
     projectId: input.projectId,
     objectId: input.objectId,
@@ -1106,25 +1132,77 @@ export async function createNormalBakeJob(input: {
   }
 }
 
-export function getNormalBakeJob(id: string) {
+export function getNormalBakeJob(id: string, userId: string) {
   const job = jobs.get(id) ?? loadJob(id);
-  if (!job) return undefined;
+  if (!job || job.ownerUserId !== userId) return undefined;
+  resumePrematurelyCancelledRemoteJob(job);
   if (!['succeeded', 'failed', 'cancelled'].includes(job.status)) void monitorRemoteJob(job);
   return publicJob(job);
 }
 
-export function getNormalBakeOutputPath(id: string, channel: BakeChannelId = 'normal') {
+export function listNormalBakeJobs(userId: string, limit = 30) {
+  const normalizedUserId = userId.trim();
+  if (!normalizedUserId) return [];
+  const jobsDirectory = path.join(serverConfig.workspaceDir, 'bake-jobs');
+  if (!fs.existsSync(jobsDirectory)) return [];
+
+  const candidates: NormalBakeJob[] = [];
+  for (const entry of fs.readdirSync(jobsDirectory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) continue;
+    const job = getNormalBakeJob(entry.name, normalizedUserId);
+    // Missing owner ids deliberately remain orphaned. Never infer ownership
+    // from a project name or expose an old job to the current employee.
+    if (job) candidates.push(job);
+  }
+
+  return candidates
+    .sort((left, right) => {
+      const timeDelta = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+      return Number.isFinite(timeDelta) && timeDelta !== 0
+        ? timeDelta
+        : right.id.localeCompare(left.id);
+    })
+    .slice(0, Math.min(100, Math.max(1, Math.trunc(limit) || 30)));
+}
+
+export async function recoverNormalBakeJobArtifacts(id: string) {
   const job = jobs.get(id) ?? loadJob(id);
-  if (!job || job.status !== 'succeeded' || !job.settings.channels.includes(channel)) {
+  if (!job?.remote) throw new BakeRequestError('Bake job or its remote task was not found.', 404);
+  const response = await requestRemote(job.remote.statusUrl, { timeoutMs: 30_000 });
+  ensureRemoteSuccess(response);
+  const payload = parseJson<RemoteJobPayload>(response);
+  if (payload.job_id !== job.remote.jobId) {
+    throw new BakeRequestError('远端状态响应的 job_id 与本地任务不一致。', 502);
+  }
+  if (payload.status !== 'SUCCEEDED') {
+    throw new BakeRequestError(`远端任务尚未完成（${payload.status ?? 'UNKNOWN'}）。`, 409);
+  }
+  applyRemoteStatus(job, payload);
+  await downloadArtifacts(job, payload);
+  return publicJob(job);
+}
+
+export function getNormalBakeOutputPath(
+  id: string,
+  userId: string,
+  channel: BakeChannelId = 'normal',
+) {
+  const job = jobs.get(id) ?? loadJob(id);
+  if (
+    !job ||
+    job.ownerUserId !== userId ||
+    job.status !== 'succeeded' ||
+    !job.settings.channels.includes(channel)
+  ) {
     return undefined;
   }
   const outputPath = job.outputPaths[channel];
   return fs.existsSync(outputPath) ? outputPath : undefined;
 }
 
-export async function cancelNormalBakeJob(id: string) {
+export async function cancelNormalBakeJob(id: string, userId: string) {
   const job = jobs.get(id) ?? loadJob(id);
-  if (!job) return undefined;
+  if (!job || job.ownerUserId !== userId) return undefined;
   if (!job.remote?.cancelUrl || ['succeeded', 'failed', 'cancelled'].includes(job.status)) {
     return publicJob(job);
   }
@@ -1159,8 +1237,9 @@ export async function getSubstanceBakerStatus() {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : '无法连接远端 Substance Baker。';
-    const certificateError =
-      /certificate|self[- ]signed|unable to verify|issuer|ca\b/i.test(message);
+    const certificateError = /certificate|self[- ]signed|unable to verify|issuer|ca\b/i.test(
+      message,
+    );
     return {
       available: false,
       connected: false,

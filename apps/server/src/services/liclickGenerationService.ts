@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
-import { callAtlasToolJson, parseJsonFromOutput, runAtlas } from '../auth/atlasAuthService.js';
+import { createHash } from 'node:crypto';
+import { callAtlasToolJson, parseJsonFromOutput } from '../auth/atlasAuthService.js';
 
 type ReferenceInput = {
   id?: string;
@@ -403,33 +403,36 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>) {
 
 async function uploadReference(
   reference: ReferenceInput,
-  tempDir: string,
+  _tempDir: string,
   atlasContext: LiclickAtlasContext = {},
 ): Promise<UploadedReference> {
-  const args = ['gateway', 'call-tool', '--service', 'liclick', '--tool', 'upload_asset', 'asset_type=image'];
+  const toolArguments: Record<string, unknown> = { asset_type: 'image' };
   let cacheKey: string;
   if (reference.url.startsWith('data:')) {
-    const { buffer, ext } = dataUrlToBuffer(reference.url);
+    const { buffer } = dataUrlToBuffer(reference.url);
     const digest = createHash('sha256').update(buffer).digest('hex');
     cacheKey = `${atlasContext.atlasHomeDir ?? 'default'}:image:${digest}`;
-    const filePath = path.join(tempDir, `${reference.id ?? randomUUID()}.${ext}`);
-    await fs.promises.writeFile(filePath, buffer);
-    args.push('--file', `file_path=${filePath}`);
+    toolArguments.file_path = reference.url;
   } else {
     cacheKey = `${atlasContext.atlasHomeDir ?? 'default'}:image-url:${reference.url}`;
-    args.push(`url=${reference.url}`);
+    toolArguments.url = reference.url;
   }
-  args.push('--timeout', '600');
 
   let uploadPromise = uploadedImageAssetCache.get(cacheKey);
   if (!uploadPromise) {
     uploadPromise = (async () => {
-      const upload = await runAtlas(args, 10 * 60 * 1000, false, atlasContext.atlasHomeDir);
+      const upload = await callAtlasToolJson(
+        'liclick',
+        'upload_asset',
+        toolArguments,
+        10 * 60 * 1000,
+        atlasContext.atlasHomeDir,
+      );
       const parsed = parseJsonFromOutput(upload.stdout);
       const assetId =
         findField(parsed, ['asset_id', 'assetId']) || findField(upload.stdout, ['asset_id', 'assetId']);
       if (!assetId) {
-        throw new Error(`参考图上传完成但没有返回 asset_id：${trimOutput(upload.stdout || upload.stderr)}`);
+        throw new Error(`参考图上传完成但没有返回 asset_id：${trimOutput(upload.stdout)}`);
       }
       return assetId;
     })();
@@ -457,21 +460,11 @@ export async function pollLiclickImageTask(
   taskId: string,
   atlasContext: LiclickAtlasContext = {},
 ): Promise<LiclickImageTaskResult> {
-  const poll = await runAtlas(
-    [
-      'gateway',
-      'call-tool',
-      '--service',
-      'liclick',
-      '--tool',
-      'get_task_status',
-      '--args',
-      JSON.stringify({ task_id: taskId, task_type: 'image' }),
-      '--timeout',
-      '120',
-    ],
+  const poll = await callAtlasToolJson(
+    'liclick',
+    'get_task_status',
+    { task_id: taskId, task_type: 'image' },
     3 * 60 * 1000,
-    false,
     atlasContext.atlasHomeDir,
   );
   const payload = parseAtlasPayload(poll.stdout);
@@ -500,32 +493,22 @@ export async function submitLiclickImageJob(
     );
     const { model, extraParams } = buildExtraParams(input, uploadedReferences);
     const prompt = buildSubmissionPrompt(input, model);
-    const submit = await runAtlas(
-      [
-        'gateway',
-        'call-tool',
-        '--service',
-        'liclick',
-        '--tool',
-        'generate_image',
-        '--args',
-        JSON.stringify({
-          prompt,
-          model,
-          extra_params: extraParams,
-        }),
-        '--timeout',
-        '180',
-      ],
+    const submit = await callAtlasToolJson(
+      'liclick',
+      'generate_image',
+      {
+        prompt,
+        model,
+        extra_params: extraParams,
+      },
       4 * 60 * 1000,
-      false,
       atlasContext.atlasHomeDir,
     );
     const payload = parseAtlasPayload(submit.stdout);
     const urls = findUrls(payload);
     const taskId = findTaskId(payload);
     if (urls.length === 0 && !taskId) {
-      const message = findField(payload, ['err_msg', 'error', 'message', 'result']) || trimOutput(submit.stdout || submit.stderr);
+      const message = findField(payload, ['err_msg', 'error', 'message', 'result']) || trimOutput(submit.stdout);
       throw new Error(message || '莉刻图片生成没有返回任务 ID。');
     }
     return {
@@ -574,25 +557,4 @@ export async function submitLiclickImageEdit(
       return submitLocalRepaintFallback(input, tempDir, atlasContext, errorMessage(error));
     }
   });
-}
-
-export async function generateLiclickImage(input: GenerateImageInput, atlasContext: LiclickAtlasContext = {}) {
-  const submission = await submitLiclickImageJob(input, atlasContext);
-  if (submission.resultUrl || !submission.taskId) return submission;
-  const startedAt = Date.now();
-  let result: LiclickImageTaskResult | undefined;
-  while (Date.now() - startedAt < 5 * 60 * 1000) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    result = await pollLiclickImageTask(submission.taskId, atlasContext);
-    if (result.resultUrl) {
-      return {
-        ...submission,
-        status: 'succeeded' as const,
-        resultUrl: result.resultUrl,
-        resultUrls: result.resultUrls,
-        raw: result.raw,
-      };
-    }
-  }
-  throw new Error(`等待莉刻图片生成超时：${submission.taskId || trimOutput(JSON.stringify(result?.raw ?? {}))}`);
 }

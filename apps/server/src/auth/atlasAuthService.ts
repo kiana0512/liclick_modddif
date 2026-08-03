@@ -80,8 +80,11 @@ function atlasNodePath() {
   return process.env.ATLAS_NODE_PATH || process.execPath || 'node';
 }
 
-function atlasTokenFile(homeDir = os.homedir()) {
-  return path.join(homeDir, '.atlas-ai-gateway-oauth.json');
+function atlasTokenFile(homeDir?: string) {
+  if (homeDir) return path.join(homeDir, '.atlas-ai-gateway-oauth.json');
+  const configuredTokenFile = process.env.ATLAS_TOKEN_FILE?.trim();
+  if (configuredTokenFile) return path.resolve(configuredTokenFile);
+  return path.join(os.homedir(), '.atlas-ai-gateway-oauth.json');
 }
 
 function userAtlasHomesRoot() {
@@ -135,6 +138,25 @@ function atlasEnv(homeDir?: string, extraEnv: NodeJS.ProcessEnv = {}) {
   };
 }
 
+function terminateAtlasProcessTree(child: ChildProcessWithoutNullStreams) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform !== 'win32') {
+    child.kill('SIGTERM');
+    const fallback = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }, 1_500);
+    fallback.unref();
+    return;
+  }
+
+  const killer = spawn(
+    'taskkill.exe',
+    ['/pid', String(child.pid), '/t', '/f'],
+    { shell: false, windowsHide: true, stdio: 'ignore' },
+  );
+  killer.once('error', () => child.kill('SIGKILL'));
+}
+
 export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false, homeDir?: string, extraEnv: NodeJS.ProcessEnv = {}) {
   const script = atlasScriptPath();
   if (!script) {
@@ -143,7 +165,11 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
     );
   }
   return new Promise<AtlasCommandResult>((resolve, reject) => {
-    const child = spawn(atlasNodePath(), [script, ...args], {
+    const commandArgs = [...args];
+    if (commandArgs[0] === 'gateway' && !commandArgs.includes('--token-file')) {
+      commandArgs.push('--token-file', atlasTokenFile(homeDir));
+    }
+    const child = spawn(atlasNodePath(), [script, ...commandArgs], {
       cwd: process.cwd(),
       env: atlasEnv(homeDir, extraEnv),
       shell: false,
@@ -151,9 +177,22 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
     });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let forcedSettlement: NodeJS.Timeout | undefined;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forcedSettlement) clearTimeout(forcedSettlement);
+      callback();
+    };
     const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      reject(new Error(`atlas-skillhub ${args.join(' ')} 超时`));
+      timedOut = true;
+      terminateAtlasProcessTree(child);
+      forcedSettlement = setTimeout(() => {
+        settle(() => reject(new Error('atlas-skillhub 调用超时，子进程已强制清理。')));
+      }, 3_000);
     }, timeoutMs);
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -161,14 +200,19 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
+    child.once('error', (error) => {
+      settle(() => reject(error));
     });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0 || allowNonZero) resolve({ code, stdout, stderr });
-      else reject(new Error(trimOutput(stderr || stdout || `atlas-skillhub exited ${code}`)));
+    child.once('close', (code) => {
+      settle(() => {
+        if (timedOut) {
+          reject(new Error('atlas-skillhub 调用超时，子进程已清理。'));
+        } else if (code === 0 || allowNonZero) {
+          resolve({ code, stdout, stderr });
+        } else {
+          reject(new Error(trimOutput(stderr || stdout || `atlas-skillhub exited ${code}`)));
+        }
+      });
     });
   });
 }

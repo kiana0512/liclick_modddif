@@ -38,9 +38,13 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 import type { WorkspacePanelDefinition } from '@/components/workspace/workspacePanelTypes';
 import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
-import { rasterizeUvTopologyMask } from '@/engine/bake/dilation';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import {
+  buildContentAwareRepairMask,
+  buildContentAwareSurfaceTopology,
+  runSurfaceAwareRepair,
+} from '@/engine/contentAware';
 import {
   clearDebugUvBakeMethod,
   getDebugUvBakeStatus,
@@ -56,6 +60,14 @@ import {
 import { createProjectionMaskedImage } from '@/engine/projection/createMaskedProjectedImage';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
+import {
+  compositeRgbaUnderInPlace,
+  getMergeUvPostprocessOptions,
+  getRgbaAlphaCoverageRatio,
+  isContentAwareUvUnderlay,
+  isFlattenableUvMergeSource,
+} from '@/engine/layers/mergeUvComposition';
+import { compareUvLayersForComposition } from '@/engine/layers/uvLayerComposition';
 import {
   applyAlphaFromMask,
   blobToDataUrl,
@@ -73,7 +85,6 @@ import {
   computeMaskBoundingBox,
   createEmptyMask,
   createFullMask,
-  dilateMask,
   expandRect,
   featherMask,
   maskToBlob,
@@ -89,6 +100,7 @@ import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitch
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
+import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
 import {
   fileToDataUrl,
   getWorkspaceHealth,
@@ -102,6 +114,7 @@ import {
   WorkspaceApiError,
 } from '@/services/workspaceApiClient';
 import { useGenerationStore } from '@/stores/generationStore';
+import { useAuthStore } from '@/stores/authStore';
 import { useLocalRepaintStore } from '@/stores/localRepaintStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
@@ -124,6 +137,7 @@ import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
 import type { Project, ReferenceImage, TextureBakeHandoff } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
+import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
@@ -333,6 +347,7 @@ function isLocalRepaintLayer(layer: Layer) {
 
 function isContentAwareRepairLayer(layer: Layer) {
   return (
+    layer.role === 'content-aware-underlay' ||
     layer.generationId === 'texture-map-content-aware-repair' ||
     layer.id.startsWith('content-aware-projected-repair') ||
     layer.id.startsWith('content-aware-uv-repair')
@@ -399,47 +414,6 @@ function findNormalMapTexture(model?: ModelLoadResult) {
 
 function canRecordTurntableInBrowser() {
   return typeof MediaRecorder !== 'undefined' && typeof HTMLCanvasElement !== 'undefined';
-}
-
-function constrainMaskToObject(mask: MaskBitmap, objectMask: MaskBitmap) {
-  const output = createEmptyMask(mask.width, mask.height);
-  for (let index = 0; index < output.data.length; index += 1) {
-    output.data[index] = (mask.data[index] ?? 0) > 0 && (objectMask.data[index] ?? 0) > 0 ? 255 : 0;
-  }
-  return output;
-}
-
-function buildContentAwareSamplingMask(editMask: MaskBitmap, objectMask: MaskBitmap) {
-  // Move the sampling frontier past partially covered projection borders. The
-  // UV repair is an underlay, so authored projection color remains on top.
-  const maxDimension = Math.max(editMask.width, editMask.height);
-  const samplingPadding = Math.max(4, Math.min(10, Math.round(maxDimension / 256)));
-  return constrainMaskToObject(dilateMask(editMask, samplingPadding), objectMask);
-}
-
-function createUvTopologyObjectMask(
-  root: THREE.Object3D,
-  width: number,
-  height: number,
-): MaskBitmap {
-  const topology = rasterizeUvTopologyMask(root, width, height);
-  return {
-    width,
-    height,
-    data: Uint8ClampedArray.from(topology, (value) => (value ? 255 : 0)),
-  };
-}
-
-function inferUvCoverageGapMask(imageData: ImageData, objectMask: MaskBitmap) {
-  const mask = createEmptyMask(imageData.width, imageData.height);
-  for (let index = 0; index < mask.data.length; index += 1) {
-    if ((objectMask.data[index] ?? 0) === 0) continue;
-    // Include soft projection borders as well as fully transparent holes. The
-    // generated UV layer sits below all authored layers, so this becomes a
-    // continuous fallback without replacing valid texture.
-    if (imageData.data[index * 4 + 3] < 250) mask.data[index] = 255;
-  }
-  return mask;
 }
 
 function getLocalRepaintFeatherRadius(mask: MaskBitmap) {
@@ -823,6 +797,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
+  const contentAwareRepairRunningRef = useRef(false);
+  const contentAwareRepairAbortControllerRef = useRef<AbortController>();
   const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
   const localRepaintToolRequestRevisionRef = useRef(0);
   const standardProjectThumbnailCaptureRef = useRef<() => string | undefined>(() => undefined);
@@ -935,6 +911,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const normalMapTexture = findNormalMapTexture(importedModel);
 
   useEffect(() => {
+    contentAwareRepairAbortControllerRef.current?.abort();
+    contentAwareRepairAbortControllerRef.current = undefined;
+    contentAwareRepairRunningRef.current = false;
     setRouteProjectStatus('idle');
     setServerReadyProjectId(undefined);
     restoredHistoryProjectIdRef.current = undefined;
@@ -947,6 +926,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     () => () => {
       window.clearTimeout(manualBakeProgressTimerRef.current);
       window.clearTimeout(thumbnailRefreshTimerRef.current);
+      contentAwareRepairAbortControllerRef.current?.abort();
+      contentAwareRepairAbortControllerRef.current = undefined;
+      contentAwareRepairRunningRef.current = false;
     },
     [],
   );
@@ -1615,8 +1597,14 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   }
 
   const persistLayerImage = useCallback(
-    async (imageData: ImageData, filename: string) => {
-      const blob = await imageDataToBlob(imageData);
+    async (
+      imageData: ImageData,
+      filename: string,
+      options: { preserveTransparentRgb?: boolean } = {},
+    ) => {
+      const blob = options.preserveTransparentRgb
+        ? await encodeRgbaPngBlob(imageData.width, imageData.height, imageData.data)
+        : await imageDataToBlob(imageData);
       if (project?.workspaceMode === 'local-server') {
         const saved = await saveBlobAsset({
           projectId: project.id,
@@ -2925,6 +2913,15 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
 
   async function generateLocalRepaint(input: LocalRepaintGenerateInput) {
     if (!localRepaintRuntime) throw new Error(t('localRepaintUnavailable'));
+    await ensurePersonalLiclickAccountForUser(useAuthStore.getState().user, {
+      onStatus: (message) =>
+        pushToast({
+          tone: 'info',
+          title: '个人莉刻账号',
+          description: message,
+          dedupeKey: 'local-repaint-liclick-account',
+        }),
+    });
     const source = localRepaintRuntime.workingImageData;
     const editMask =
       localRepaintRuntime.mode === 'edit_layer_image'
@@ -3168,7 +3165,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const addUvContentAwareRepairLayer = useCallback(
     async (imageData: ImageData, objectId: string) => {
       const layerId = createId('content-aware-uv-repair');
-      const imageUrl = await persistLayerImage(imageData, `${layerId}.png`);
+      const imageUrl = await persistLayerImage(imageData, `${layerId}.png`, {
+        preserveTransparentRgb: true,
+      });
       const currentLayers = useLayerStore.getState().layers;
       const layersWithoutPreviousRepair = currentLayers.filter(
         (layer) =>
@@ -3398,17 +3397,36 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     }
     const objectId = selectedObjectId ?? currentImportedModel.objectId;
     const currentLayers = useLayerStore.getState().layers;
-    const projectedLayers = layerIds
+    const selectedLayers = layerIds
       .map((layerId) => currentLayers.find((item) => item.id === layerId))
+      .filter((layer): layer is Layer => Boolean(layer && layer.id !== blankUvLayerId));
+    const projectedLayers = selectedLayers
       .filter((layer): layer is Layer =>
         Boolean(
-          layer?.type === 'projected' &&
+          layer.type === 'projected' &&
           layer.imageUrl &&
           layer.camera &&
-          !isLocalRepaintProjectionLayer(layer),
+          (!layer.objectId || layer.objectId === objectId),
         ),
       );
+    const selectedUvLayers = selectedLayers
+      .filter(
+        (layer) =>
+          isFlattenableUvMergeSource(layer) &&
+          (!layer.objectId || layer.objectId === objectId),
+      )
+      .sort((left, right) => {
+        // Repair is always a sparse underlay, irrespective of incidental list
+        // order. Ordinary merged UV color stays above it, while new projection
+        // pixels remain the front-most authored result.
+        const underlayOrder = Number(isContentAwareUvUnderlay(left)) -
+          Number(isContentAwareUvUnderlay(right));
+        if (underlayOrder !== 0) return underlayOrder;
+        return compareUvLayersForComposition(left, right, 'top-to-bottom');
+      });
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
+    const selectedUvLayerIds = selectedUvLayers.map((layer) => layer.id);
+    const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
     if (projectedLayerIds.length === 0) {
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
@@ -3437,77 +3455,107 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           ),
       );
       const bakeResolution = resolutionToSize[resolution];
-      const uvIslandPaddingPixels = Math.min(
-        32,
-        Math.max(4, Math.ceil(bakeResolution / 256)),
+      const postprocess = getMergeUvPostprocessOptions(bakeResolution);
+      const bakeResult =
+        layersToBake.length > 0
+          ? await bakeVisibleProjectedLayersToTexture({
+              objectId,
+              transientLayers: layersToBake,
+              resolution: bakeResolution,
+              enableBackfaceCulling: true,
+              // Keep unrestricted atlas dilation disabled. The restored repair
+              // remains constrained to model UV topology, paired geometry seams
+              // and the small alpha-bearing gutter outside UV islands.
+              enableDilation: false,
+              dilationPixels: 0,
+              uvIslandGutterPixels: postprocess.uvIslandGutterPixels,
+              uvInteriorHolePixels: postprocess.uvInteriorHolePixels,
+              uvCoverageGapPixels: postprocess.uvCoverageGapPixels,
+              repairMissingUvSeams: true,
+              uvSeamRepairPixels: postprocess.uvSeamRepairPixels,
+              outputAlpha: 'transparent',
+              commitToProject: false,
+              markSourceLayersBaked: false,
+              skipImageEncoding: true,
+              onProgress: updateManualBakeProgress,
+            })
+          : undefined;
+
+      const outputCanvas = bakeResult?.canvas ?? document.createElement('canvas');
+      if (!bakeResult) {
+        outputCanvas.width = bakeResolution;
+        outputCanvas.height = bakeResolution;
+      }
+      const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
+      if (!outputContext) throw new Error('Could not create merged UV canvas.');
+      const mergedImageData = outputContext.getImageData(
+        0,
+        0,
+        bakeResolution,
+        bakeResolution,
       );
-      const bakeResult = await bakeVisibleProjectedLayersToTexture({
-        objectId,
-        transientLayers: layersToBake,
-        resolution: bakeResolution,
-        enableBackfaceCulling: true,
-        // Do not use unconstrained atlas-wide dilation. The topology and
-        // geometry-aware passes below repair only model UV texels and seams.
-        enableDilation: false,
-        dilationPixels: 0,
-        // Add a tiny atlas-only gutter to stop linear filtering from sampling
-        // transparent texels at UV seams. This never fills a model-surface texel.
-        // Restore resolution-aware colour bleed outside every UV island. The
-        // high-poly topology repair below fills interior misses; this separate
-        // pass prevents mip/bilinear sampling from exposing the atlas background.
-        uvIslandGutterPixels: uvIslandPaddingPixels,
-        // Dense/high-poly meshes can contain small triangles that are visible
-        // in the capture but miss every depth-buffer sample during UV baking.
-        // Propagate nearby valid projection inside the same UV topology. The
-        // radius scales with output resolution and cannot cross empty atlas space.
-        uvCoverageGapPixels: Math.min(
-          256,
-          Math.max(64, Math.ceil(bakeResolution / 16)),
-        ),
-        repairMissingUvSeams: true,
-        uvSeamRepairPixels: Math.min(
-          16,
-          Math.max(4, Math.ceil(bakeResolution / 256)),
-        ),
-        outputAlpha: 'transparent',
-        commitToProject: false,
-        markSourceLayersBaked: false,
-        preferBlobOutput: project.workspaceMode === 'local-server',
-        onProgress: updateManualBakeProgress,
-      });
-      const mergedImageBlob = bakeResult.imageBlob;
-      let imageUrl = bakeResult.imageUrl;
+
+      // Flatten selected UV sources underneath projection coverage. This is
+      // the step that used to be silently skipped, causing a selected content-
+      // aware repair layer to disappear after merge.
+      for (let index = 0; index < selectedUvLayers.length; index += 1) {
+        const layer = selectedUvLayers[index];
+        const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
+        compositeRgbaUnderInPlace(mergedImageData.data, source.data, layer.opacity);
+        setManualBakeProgress({
+          title: t('mergeSelectedLayersToUvLayer'),
+          detail: t('autoBakePreparing'),
+          progress: 0.9 + ((index + 1) / Math.max(1, selectedUvLayers.length)) * 0.06,
+        });
+      }
+      const mergedCoverageRatio =
+        bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedImageData.data);
+
+      // Encode straight RGBA directly. Canvas PNG export is allowed to erase
+      // RGB beneath alpha=0, which would destroy the transparent UV gutter and
+      // reintroduce dark/white seams at bilinear-filter boundaries.
+      const mergedImageBlob = await encodeRgbaPngBlob(
+        bakeResolution,
+        bakeResolution,
+        mergedImageData.data,
+      );
+      let imageUrl: string;
       if (project.workspaceMode === 'local-server') {
         const filename = `${blankUvLayerId ?? createId('merged-uv-layer')}.png`;
         imageUrl = (
           await saveBlobAsset({
             projectId: project.id,
             category: 'layers',
-            blob: mergedImageBlob ?? dataUrlToBlob(imageUrl),
+            blob: mergedImageBlob,
             filename,
           })
         ).asset.url;
+      } else {
+        imageUrl = await blobToDataUrl(mergedImageBlob);
       }
+      const renderedColorSources = selectedLayers.filter(
+        (layer) => !isContentAwareUvUnderlay(layer),
+      );
       mergeLayersIntoUvLayer({
-        // Flatten ordinary projected layers into the UV base first. Local repaint
-        // UV layers deliberately remain separate and are composited above this
-        // base by the normal UV layer stack. Keeping their rendered-color and
-        // alpha semantics prevents a soft repair patch from being lit twice or
-        // becoming darker after the merge.
-        sourceLayerIds: projectedLayerIds,
+        // Every source that actually contributed to this PNG is consumed. A
+        // selected repair layer no longer remains as an apparently enabled but
+        // visually disconnected layer after the projected sources are hidden.
+        sourceLayerIds: consumedLayerIds,
         targetUvLayerId: blankUvLayerId,
         imageUrl,
         objectId,
         name: t('mergedUvLayer'),
         role: 'merged-uv',
-        renderedColor: projectedLayers.every((layer) => layer.renderedColor),
+        renderedColor:
+          renderedColorSources.length > 0 &&
+          renderedColorSources.every((layer) => Boolean(layer.renderedColor)),
       });
       setProjectLayers(useLayerStore.getState().layers);
       scheduleTexturedThumbnailRefresh(350);
       pushToast({
         tone: 'success',
         title: t('mergeComplete'),
-        description: `${bakeResult.bakedTexture.width}px · ${(bakeResult.report.coverageRatio * 100).toFixed(1)}%`,
+        description: `${bakeResolution}px · ${(mergedCoverageRatio * 100).toFixed(1)}%`,
       });
     } catch (error) {
       pushToast({
@@ -3885,18 +3933,21 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   ]);
 
   const handleContentAwareRepairFromToolbar = useCallback(() => {
+    if (contentAwareRepairRunningRef.current) return;
+    contentAwareRepairRunningRef.current = true;
     void (async () => {
-      const viewportRuntime = useSceneStore.getState().viewport;
-      if (!viewportRuntime || !importedModel) {
-        pushToast({
-          tone: 'warning',
-          title: t('viewportUnavailable'),
-          description: t('importModelFirst'),
-        });
-        return;
-      }
-
+      const abortController = new AbortController();
+      contentAwareRepairAbortControllerRef.current = abortController;
       try {
+        const viewportRuntime = useSceneStore.getState().viewport;
+        if (!viewportRuntime || !importedModel) {
+          pushToast({
+            tone: 'warning',
+            title: t('viewportUnavailable'),
+            description: t('importModelFirst'),
+          });
+          return;
+        }
         window.clearTimeout(manualBakeProgressTimerRef.current);
         setManualBakeProgress({
           title: t('contentAwareRepair'),
@@ -3944,13 +3995,52 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
         if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
         const workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
-        const objectMask = createUvTopologyObjectMask(
+        const topology = await buildContentAwareSurfaceTopology(
           importedModel.group,
           repairResolution,
           repairResolution,
+          {
+            includeInvisible: false,
+            includeSeamLinks: true,
+            seamBandPixels: 1,
+            minimumSeamNormalDot: 0.65,
+            yieldIntervalMs: 8,
+            signal: abortController.signal,
+            onProgress: (progress) => {
+              const phaseRange =
+                progress.phase === 'analyze'
+                  ? [0.58, 0.64]
+                  : progress.phase === 'rasterize'
+                    ? [0.64, 0.7]
+                    : progress.phase === 'seams'
+                      ? [0.7, 0.74]
+                      : [0.74, 0.74];
+              const phaseProgress = progress.total > 0 ? progress.completed / progress.total : 1;
+              setManualBakeProgress({
+                title: t('contentAwareRepair'),
+                detail: t('contentAwareRepairScanning'),
+                progress:
+                  phaseRange[0] +
+                  (phaseRange[1] - phaseRange[0]) * Math.max(0, Math.min(1, phaseProgress)),
+              });
+            },
+          },
         );
-        const detectedGapMask = inferUvCoverageGapMask(workingImageData, objectMask);
-        if (!ensureMaskContent(detectedGapMask)) {
+        const detectedGaps = await buildContentAwareRepairMask({
+          width: repairResolution,
+          height: repairResolution,
+          rgba: workingImageData.data,
+          topologyMask: topology.topologyMask,
+          coreMask: topology.coreMask,
+          regionIds: topology.regionIds,
+          conflictMask: topology.conflictMask,
+          hardAlphaThreshold: 8,
+          weakAlphaThreshold: 24,
+          weakGrowPixels: 1,
+          signal: abortController.signal,
+          yieldIntervalMs: 8,
+        });
+        if (detectedGaps.stats.totalPixels === 0) {
           setManualBakeProgress(undefined);
           pushToast({
             tone: 'info',
@@ -3961,36 +4051,77 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           return;
         }
 
-        captureHistory('内容识别修补模型全部 UV 空洞');
         setManualBakeProgress({
           title: t('contentAwareRepair'),
           detail: t('contentAwareRepairFilling'),
-          progress: 0.64,
+          progress: 0.74,
         });
-        const samplingMask = buildContentAwareSamplingMask(detectedGapMask, objectMask);
-        const filled = contentAwareFillMaskedPixels(workingImageData, samplingMask, objectMask, {
-          searchRadius: 72,
-          iterations: 5,
-          patchRadius: 4,
-        });
-        // Build one continuous UV fallback beneath every authored layer. This
-        // covers all model-facing UV texels and never samples the screen hatch,
-        // eliminating both view dependence and moire artifacts.
-        const repairTexture = applyAlphaFromMask(filled, objectMask, 12);
+        const repair = await runSurfaceAwareRepair(
+          {
+            width: repairResolution,
+            height: repairResolution,
+            rgba: workingImageData.data,
+            writeMask: detectedGaps.mask,
+            sourceExclusionMask: topology.conflictMask,
+            topologyMask: topology.topologyMask,
+            topologyRegionIds: topology.regionIds,
+            seamLinks: topology.seamLinks,
+            sourcePaddingPixels: Math.max(
+              2,
+              Math.min(4, Math.round(repairResolution / 768)),
+            ),
+            maxDistance: Math.max(64, Math.min(128, Math.round(repairResolution / 16))),
+            minSourceAlpha: 224,
+            connectivity: 4,
+            outputBleedPixels: 4,
+            // A fully empty UV strip can see different colours across two
+            // physical seam donors. Pick one dominant donor region for the
+            // complete strip instead of creating white/blue Voronoi bands.
+            lockToDominantSourceRegion: true,
+            // Keep the previous progressive fill behaviour: a large connected
+            // gap may contain texels beyond the search radius, but reachable
+            // texels must still be published instead of discarding the whole
+            // component and exposing a wide strip of the model base material.
+            requireCompleteComponents: false,
+          },
+          {
+            signal: abortController.signal,
+            transferOwnership: { rgba: true, writeMask: true },
+            onProgress: (progress) =>
+              setManualBakeProgress({
+                title: t('contentAwareRepair'),
+                detail: t('contentAwareRepairFilling'),
+                progress: 0.74 + progress.progress * 0.2,
+              }),
+          },
+        );
+        if (repair.stats.repairedPixels === 0) {
+          throw new Error(t('contentAwareRepairNoReachableSource'));
+        }
+        // `filledRgba` is intentionally sparse: only successfully repaired gap
+        // texels are opaque. It never contains a flattened copy of source layers.
+        const repairTexture = new ImageData(repair.filledRgba, repairResolution, repairResolution);
         setManualBakeProgress({
           title: t('contentAwareRepair'),
           detail: t('contentAwareRepairFilling'),
-          progress: 0.9,
+          progress: 0.96,
         });
+        captureHistory('创建独立内容识别 UV 修补图层');
         const repairLayer = await addUvContentAwareRepairLayer(repairTexture, objectId);
         setProjectLayers(useLayerStore.getState().layers);
         pushToast({
           tone: 'success',
           title: t('contentAwareFillComplete'),
-          description: `${t('uvRepairLayerCreated')}: ${repairLayer.name}`,
+          description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px`,
           dedupeKey: `content-aware-repair:${repairLayer.id}`,
         });
       } catch (error) {
+        if (
+          (error instanceof Error && error.name === 'AbortError') ||
+          contentAwareRepairAbortControllerRef.current !== abortController
+        ) {
+          return;
+        }
         setManualBakeProgress(undefined);
         pushToast({
           tone: 'error',
@@ -3998,10 +4129,14 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
         });
       } finally {
-        manualBakeProgressTimerRef.current = window.setTimeout(
-          () => setManualBakeProgress(undefined),
-          1200,
-        );
+        if (contentAwareRepairAbortControllerRef.current === abortController) {
+          contentAwareRepairRunningRef.current = false;
+          contentAwareRepairAbortControllerRef.current = undefined;
+          manualBakeProgressTimerRef.current = window.setTimeout(
+            () => setManualBakeProgress(undefined),
+            1200,
+          );
+        }
       }
     })();
   }, [addUvContentAwareRepairLayer, captureHistory, importedModel, pushToast, setProjectLayers, t]);

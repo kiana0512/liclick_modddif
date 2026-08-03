@@ -356,6 +356,7 @@ async function pollAndUpdateJob(job: GenerationJob) {
   if (job.pollPromise) return job.pollPromise;
   const pollPromise = (async () => {
     try {
+      assertJobUsesPersonalLiclickAccount(job);
       const result = await pollLiclickImageTask(job.taskId!, { atlasHomeDir: job.atlasHomeDir });
       job.pollFailureCount = 0;
       job.message = undefined;
@@ -400,6 +401,7 @@ async function pollAndUpdateEditJob(job: EditImageJob) {
   if (job.pollPromise) return job.pollPromise;
   const pollPromise = (async () => {
     try {
+      assertJobUsesPersonalLiclickAccount(job);
       const result = await pollLiclickImageTask(job.taskId!, { atlasHomeDir: job.atlasHomeDir });
       job.pollFailureCount = 0;
       job.message = undefined;
@@ -440,6 +442,7 @@ function startGenerationJob(job: GenerationJob) {
   if (job.promise || job.status === 'succeeded' || job.status === 'failed') return;
   job.promise = (async () => {
     try {
+      assertJobUsesPersonalLiclickAccount(job);
       if (!job.taskId && job.status === 'submitting') {
         const submission = await submitLiclickImageJob(job.input, {
           atlasHomeDir: job.atlasHomeDir,
@@ -474,6 +477,7 @@ function startEditImageJob(job: EditImageJob) {
   if (job.promise || job.status === 'succeeded' || job.status === 'failed') return;
   job.promise = (async () => {
     try {
+      assertJobUsesPersonalLiclickAccount(job);
       if (!job.taskId && job.status === 'submitting') {
         const submission = await submitLiclickImageEdit(job.input, {
           atlasHomeDir: job.atlasHomeDir,
@@ -558,20 +562,45 @@ async function remoteImageToDataUrl(url: string) {
   return `data:${contentType};base64,${buffer.toString('base64')}`;
 }
 
+const liclickAccountBindingRequiredCode = 'LICLICK_ACCOUNT_BINDING_REQUIRED';
+
+function isLocalComponentMode() {
+  return process.env.LICLICK_LOCAL_COMPONENT_MODE === '1';
+}
+
+function assertJobUsesPersonalLiclickAccount(job: Pick<GenerationJob | EditImageJob, 'atlasHomeDir'>) {
+  if (isLocalComponentMode() || job.atlasHomeDir) return;
+  throw new Error(
+    `${liclickAccountBindingRequiredCode}: 请先在此电脑绑定个人莉刻账号后再生成。`,
+  );
+}
+
+function requirePersonalLiclickAccount(response: ServerResponse, user: AuthUser) {
+  if (isLocalComponentMode() || user.atlasHomeDir) return true;
+  sendJson(response, 428, {
+    ok: false,
+    code: liclickAccountBindingRequiredCode,
+    error: '请先在此电脑绑定个人莉刻账号后再生成。',
+  });
+  return false;
+}
+
 export async function handleLiclickRoute(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
+  authenticatedUser?: AuthUser,
 ) {
   await loadGenerationJobs();
   const segments = getPathSegments(url);
   const isLiclickRoute = segments[0] === 'api' && segments[1] === 'liclick';
   const isLegacyGenerateRoute = segments[0] === 'api' && segments[1] === 'generate-image';
   if (!isLiclickRoute && !isLegacyGenerateRoute) return false;
-  const user = await requireAuth(request, response);
+  const user = authenticatedUser ?? (await requireAuth(request, response));
   if (!user) return true;
 
   if (isLiclickRoute && request.method === 'GET' && segments[2] === 'status') {
+    if (!requirePersonalLiclickAccount(response, user)) return true;
     const result = await checkLiclickApiAccess(user);
     sendJson(response, result.ok ? 200 : 503, result);
     return true;
@@ -588,6 +617,7 @@ export async function handleLiclickRoute(
     segments[2] === 'generate-image' &&
     segments[3]
   ) {
+    if (!requirePersonalLiclickAccount(response, user)) return true;
     const job = findJob(segments[3]);
     if (!job || job.userId !== user.id) {
       sendJson(response, 404, { error: 'Generation job not found.' });
@@ -624,9 +654,11 @@ export async function handleLiclickRoute(
   }
 
   if (request.method === 'GET' && isLiclickRoute && segments[2] === 'edit-image' && segments[3]) {
+    if (!requirePersonalLiclickAccount(response, user)) return true;
     const job = findEditImageJob(segments[3]);
     if (!job || job.userId !== user.id) {
       try {
+        if (isLocalComponentMode()) throw new Error('Local job ownership required.');
         const result = await pollLiclickImageTask(segments[3], { atlasHomeDir: user.atlasHomeDir });
         sendJson(response, 200, {
           id: segments[3],
@@ -675,8 +707,10 @@ export async function handleLiclickRoute(
   }
 
   if (request.method === 'POST' && isLiclickRoute && segments[2] === 'edit-image') {
+    if (!requirePersonalLiclickAccount(response, user)) return true;
     const atlasIdentity = getAtlasIdentity(user.atlasHomeDir);
     if (
+      user.atlasHomeDir &&
       user.email &&
       atlasIdentity.email &&
       user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
@@ -706,6 +740,11 @@ export async function handleLiclickRoute(
       return true;
     }
     const jobId = input.clientEditId || `liclick-edit-${Date.now()}`;
+    const existingJob = editImageJobs.get(jobId);
+    if (existingJob && existingJob.userId !== user.id) {
+      sendJson(response, 409, { error: 'Edit image job id is already owned by another user.' });
+      return true;
+    }
     const job = createEditImageJob(jobId, user, { ...input, projectId });
     if (job.userId !== user.id) {
       sendJson(response, 403, { error: 'Edit image job belongs to another user.' });
@@ -716,8 +755,10 @@ export async function handleLiclickRoute(
   }
 
   if (request.method === 'POST' && isGenerateImageRoute) {
+    if (!requirePersonalLiclickAccount(response, user)) return true;
     const atlasIdentity = getAtlasIdentity(user.atlasHomeDir);
     if (
+      user.atlasHomeDir &&
       user.email &&
       atlasIdentity.email &&
       user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
@@ -748,6 +789,11 @@ export async function handleLiclickRoute(
       return true;
     }
     const jobId = input.clientGenerationId || `liclick-image-${Date.now()}`;
+    const existingJob = generationJobs.get(jobId);
+    if (existingJob && existingJob.userId !== user.id) {
+      sendJson(response, 409, { error: 'Generation job id is already owned by another user.' });
+      return true;
+    }
     const job = createGenerationJob(jobId, user, { ...input, projectId, workflow });
     if (job.userId !== user.id) {
       sendJson(response, 403, { error: 'Generation job belongs to another user.' });

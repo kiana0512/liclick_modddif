@@ -33,6 +33,7 @@ export type NormalBakeSettings = {
 
 export type NormalBakeJob = {
   id: string;
+  ownerUserId: string;
   kind: 'bake-maps';
   projectId: string;
   objectId: string;
@@ -59,7 +60,15 @@ export type NormalBakeJob = {
     statusUrl: string;
     eventsUrl?: string;
     cancelUrl?: string;
-    status?: 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+    status?:
+      | 'QUEUED'
+      | 'CLAIMED'
+      | 'RUNNING'
+      | 'CANCELLING'
+      | 'SUCCEEDED'
+      | 'FAILED'
+      | 'CANCELLED'
+      | (string & {});
     workerId?: string;
     stage?: string;
     stageMessage?: string;

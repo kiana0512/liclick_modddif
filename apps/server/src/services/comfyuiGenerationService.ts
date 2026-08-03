@@ -54,10 +54,25 @@ type ComfyImageOutput = {
 };
 
 type ActiveComfyJob = {
+  userId: string;
   cancelled: boolean;
   promptId?: string;
   baseUrl?: string;
 };
+
+export class ComfyCancelError extends Error {
+  constructor(
+    message: string,
+    readonly httpStatus: 400 | 404,
+  ) {
+    super(message);
+    this.name = 'ComfyCancelError';
+  }
+}
+
+export function comfyCancelErrorStatus(error: unknown) {
+  return error instanceof ComfyCancelError ? error.httpStatus : 202;
+}
 
 const activeComfyJobs = new Map<string, ActiveComfyJob>();
 const cancelledComfyJobIds = new Set<string>();
@@ -204,11 +219,8 @@ async function uploadControlFiles(files: ComfyControlFile[], jobId: string) {
 }
 
 function getActiveComfyJob(jobId: string) {
-  let job = activeComfyJobs.get(jobId);
-  if (!job) {
-    job = { cancelled: cancelledComfyJobIds.has(jobId) };
-    activeComfyJobs.set(jobId, job);
-  }
+  const job = activeComfyJobs.get(jobId);
+  if (!job) throw new Error('ComfyUI texture generation job is not active.');
   return job;
 }
 
@@ -489,32 +501,47 @@ async function downloadComfyImage(image: ComfyImageOutput, baseUrl = serverConfi
   return { contentType, buffer };
 }
 
-export async function cancelComfyTextureMap(jobId?: string) {
-  const activeJob = jobId ? activeComfyJobs.get(jobId) : undefined;
-  const baseUrl = activeJob?.baseUrl;
-  if (jobId) {
-    cancelledComfyJobIds.add(jobId);
-    getActiveComfyJob(jobId).cancelled = true;
+export async function cancelComfyTextureMap(jobId: string, userId: string) {
+  const normalizedJobId = jobId.trim();
+  if (!normalizedJobId) {
+    throw new ComfyCancelError('ComfyUI cancel requires a non-empty jobId.', 400);
   }
-  const interrupt = await comfyFetch('/interrupt', { method: 'POST' }, 10_000, baseUrl).catch(
+  const activeJob = activeComfyJobs.get(normalizedJobId);
+  if (!activeJob || !activeJob.userId || activeJob.userId !== userId) {
+    throw new ComfyCancelError('ComfyUI texture generation job was not found.', 404);
+  }
+  cancelledComfyJobIds.add(normalizedJobId);
+  activeJob.cancelled = true;
+  const interrupt = await comfyFetch(
+    '/interrupt',
+    { method: 'POST' },
+    10_000,
+    activeJob.baseUrl,
+  ).catch(
     (error: unknown) => {
       throw new Error(error instanceof Error ? error.message : 'ComfyUI interrupt failed.');
     },
   );
   if (!interrupt.ok) throw new Error(`ComfyUI interrupt failed: ${interrupt.status}`);
-  return { ok: true, cancelledJobId: jobId };
+  return { ok: true, cancelledJobId: normalizedJobId };
 }
 
 export async function generateComfyTextureMap(input: ComfyTextureMapInput, userId: string) {
   const projectId = input.projectId;
   if (!projectId) throw new Error('ComfyUI 生图需要当前项目 ID。');
-  await checkComfyuiStatus();
-  const jobId = input.clientGenerationId || `comfy-${randomUUID()}`;
+  const ownerUserId = userId.trim();
+  if (!ownerUserId) throw new Error('Authenticated user id is required.');
+  const jobId = input.clientGenerationId?.trim() || `comfy-${randomUUID()}`;
+  if (activeComfyJobs.has(jobId)) {
+    throw new Error('A ComfyUI texture generation job with this id is already active.');
+  }
   activeComfyJobs.set(jobId, {
+    userId: ownerUserId,
     cancelled: cancelledComfyJobIds.has(jobId),
     baseUrl: serverConfig.comfyuiBaseUrl,
   });
   try {
+    await checkComfyuiStatus();
     assertComfyJobActive(jobId);
     const [workflow, objectInfo] = await Promise.all([loadWorkflowTemplate(), getObjectInfo()]);
     assertComfyJobActive(jobId);

@@ -1,6 +1,8 @@
 import type { GenerateTextureInput, Generation } from '@/types/generation';
 import type { ReferenceImage } from '@/types/project';
-import { getWorkspaceApiBase } from './workspaceApiBase';
+import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
+import { invalidateCachedPersonalLiclickAccountStatus } from './liclickAccountApiClient';
+import { getLocalIdentityProof } from './localIdentityProofApiClient';
 import { getUserFacingGenerationError } from './generationErrorMessage';
 import {
   prepareReferenceForAtlas,
@@ -8,7 +10,7 @@ import {
 } from './referenceImagePreprocessor';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const localLiclickApiBase = getLocalTextureRuntimeApiBase();
 
 export type LiclickImageModel =
   | 'gpt-image-2'
@@ -85,6 +87,7 @@ async function requestJson<T>(
 ) {
   const { timeoutMs = 8 * 60 * 1000, headers, ...fetchInit } = init;
   const requestHeaders = new Headers(headers);
+  requestHeaders.set('x-li3d-identity-proof', await getLocalIdentityProof());
   if (fetchInit.body && !requestHeaders.has('content-type'))
     requestHeaders.set('content-type', 'application/json');
   const controller = new AbortController();
@@ -94,19 +97,31 @@ async function requestJson<T>(
     response = await fetch(`${baseUrl}${path}`, {
       ...fetchInit,
       signal: controller.signal,
-      credentials: 'include',
+      credentials: 'omit',
       headers: requestHeaders,
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new Error('莉刻生图服务响应超时，请稍后重试。');
     }
-    throw new Error(`无法连接莉刻生图服务（${baseUrl}），请确认本地工作区服务已启动。`);
+    throw new Error(`无法连接莉刻生图服务（${baseUrl}），请确认最新版本地贴图组件已启动。`);
   } finally {
     window.clearTimeout(timeout);
   }
   const payload = await response.json().catch(() => undefined);
   if (!response.ok) {
+    const errorCode =
+      payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
+        ? payload.code
+        : undefined;
+    if (
+      response.status === 401 ||
+      response.status === 403 ||
+      response.status === 428 ||
+      errorCode === 'LICLICK_ACCOUNT_EMAIL_MISMATCH'
+    ) {
+      invalidateCachedPersonalLiclickAccountStatus();
+    }
     const rawMessage =
       payload &&
       typeof payload === 'object' &&
@@ -120,7 +135,7 @@ async function requestJson<T>(
 }
 
 export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickApiClient {
-  const baseUrl = config.baseUrl ?? workspaceApiBase;
+  const baseUrl = config.baseUrl ?? localLiclickApiBase;
 
   return {
     async generateTextureSingleView(input) {

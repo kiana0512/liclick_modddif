@@ -65,12 +65,19 @@ async function requestJson(url, init) {
   return { response, payload };
 }
 
+function cookiePair(setCookieHeader, name) {
+  const match = new RegExp(`(?:^|,\\s*)(${name}=[^;]*)`).exec(setCookieHeader ?? '');
+  if (!match) throw new Error(`Response did not set ${name}.`);
+  return match[1];
+}
+
 async function main() {
   await fs.rm(tmpRoot, { recursive: true, force: true });
   await fs.mkdir(tmpRoot, { recursive: true });
 
   const mock = startProcess(process.execPath, ['scripts/mock-idaas-server.mjs'], {
     MOCK_IDAAS_PORT: String(mockPort),
+    MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST: 'true',
   });
   const server = startProcess(process.execPath, ['apps/server/dist/index.js'], {
     SERVER_PORT: String(serverPort),
@@ -89,7 +96,8 @@ async function main() {
     FEISHU_OAUTH_TOKEN_URL: `${mockIssuer}/token`,
     FEISHU_OAUTH_USERINFO_URL: `${mockIssuer}/userinfo`,
     FEISHU_OAUTH_REDIRECT_URL: `${serverOrigin}/api/auth/feishu/callback`,
-    FEISHU_OAUTH_SCOPE: 'openid profile email',
+    FEISHU_OAUTH_SCOPE: '',
+    FEISHU_OAUTH_TOKEN_REQUEST_FORMAT: 'json',
     FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER: 'true',
     FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS: 'mock_auto=1',
   });
@@ -110,24 +118,68 @@ async function main() {
     if (!start.payload.loginId || !start.payload.redirectUrl) {
       throw new Error(`Login did not return loginId/redirectUrl: ${JSON.stringify(start.payload)}`);
     }
+    const oauthBrowserCookie = cookiePair(
+      start.response.headers.get('set-cookie'),
+      'li3d_oauth_nonce',
+    );
 
-    const callbackResponse = await fetch(start.payload.redirectUrl, { redirect: 'follow' });
+    const authorizeResponse = await fetch(start.payload.redirectUrl, { redirect: 'manual' });
+    const callbackUrl = authorizeResponse.headers.get('location');
+    if (!callbackUrl) throw new Error('Mock authorize endpoint did not redirect to the callback.');
+    const callbackResponse = await fetch(callbackUrl, {
+      redirect: 'manual',
+      headers: { cookie: oauthBrowserCookie },
+    });
     const callbackHtml = await callbackResponse.text();
     const setCookie = callbackResponse.headers.get('set-cookie');
     if (!callbackResponse.ok || !setCookie || !callbackHtml.includes('Liclick 登录成功')) {
       throw new Error(`Callback failed: status=${callbackResponse.status} cookie=${Boolean(setCookie)}`);
     }
+    const sessionCookie = cookiePair(setCookie, 'liclick_3d_session');
+
+    const replayResponse = await fetch(callbackUrl, {
+      redirect: 'manual',
+      headers: { cookie: oauthBrowserCookie },
+    });
+    if (replayResponse.status !== 409) {
+      throw new Error(`OAuth callback state was replayable: status=${replayResponse.status}`);
+    }
 
     const poll = await requestJson(`${serverOrigin}/api/auth/feishu/poll/${encodeURIComponent(start.payload.loginId)}`, {
-      headers: { cookie: setCookie },
+      headers: { cookie: sessionCookie },
     });
     if (!poll.payload.user?.id) throw new Error(`Poll did not return user: ${JSON.stringify(poll.payload)}`);
 
     const me = await requestJson(`${serverOrigin}/api/auth/me`, {
-      headers: { cookie: setCookie },
+      headers: { cookie: sessionCookie },
     });
     if (!me.payload.authenticated || me.payload.user?.id !== poll.payload.user.id) {
       throw new Error(`Session cookie did not authenticate: ${JSON.stringify(me.payload)}`);
+    }
+
+    const crossBrowserStart = await requestJson(`${serverOrigin}/api/auth/feishu/start`);
+    const crossBrowserCookie = cookiePair(
+      crossBrowserStart.response.headers.get('set-cookie'),
+      'li3d_oauth_nonce',
+    );
+    const crossAuthorize = await fetch(crossBrowserStart.payload.redirectUrl, {
+      redirect: 'manual',
+    });
+    const crossCallbackUrl = crossAuthorize.headers.get('location');
+    if (!crossCallbackUrl) throw new Error('Cross-browser authorize did not return a callback URL.');
+    const missingBrowserCookie = await fetch(crossCallbackUrl, { redirect: 'manual' });
+    if (
+      missingBrowserCookie.status !== 409 ||
+      !(await missingBrowserCookie.text()).includes('浏览器校验失败')
+    ) {
+      throw new Error('OAuth callback was not bound to the browser that started the flow.');
+    }
+    const consumedCrossBrowserState = await fetch(crossCallbackUrl, {
+      redirect: 'manual',
+      headers: { cookie: crossBrowserCookie },
+    });
+    if (consumedCrossBrowserState.status !== 409) {
+      throw new Error('Failed browser verification did not consume the OAuth state.');
     }
 
     console.log('\nOAuth smoke test passed.');

@@ -14,10 +14,12 @@
   "requiredPermissions": {
     "network": {
       "domains": [
-        "ws://127.0.0.1:4617",
-        "http://127.0.0.1:4617",
-        "ws://localhost:4617",
-        "http://localhost:4617"
+        "ws://127.0.0.1:4618",
+        "http://127.0.0.1:4618",
+        "ws://localhost:4618",
+        "http://localhost:4618",
+        "ws://127.0.0.1:4517",
+        "http://127.0.0.1:4517"
       ]
     },
     "localFileSystem": "fullAccess"

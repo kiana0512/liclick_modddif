@@ -51,12 +51,18 @@ async function requestJson<T>(path: string, init?: RequestInit) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new Error('登录服务响应超时，请稍后重试。');
     }
-    throw new Error('无法连接登录服务，请确认本地工作区服务已启动。');
+    throw new Error('无法连接登录服务，请确认 LI3D Web 后端已启动并可访问。');
   } finally {
     window.clearTimeout(timeout);
   }
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      '当前网址只部署了前端页面，尚未连接 LI3D Web 后端。请从已部署前后端一体服务的网址访问。',
+    );
+  }
+  const payload: unknown = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const payload: unknown = await response.json().catch(() => ({}));
     const error = payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;
     const missingConfigKeys =
       payload && typeof payload === 'object' && 'missingConfigKeys' in payload && Array.isArray(payload.missingConfigKeys)
@@ -65,7 +71,7 @@ async function requestJson<T>(path: string, init?: RequestInit) {
     const message = typeof error === 'string' ? error : `Auth request failed: ${response.status}`;
     throw new Error(missingConfigKeys.length > 0 ? `${message} Missing: ${missingConfigKeys.join(', ')}` : message);
   }
-  return response.json() as Promise<T>;
+  return payload as T;
 }
 
 export function getAuthMe() {

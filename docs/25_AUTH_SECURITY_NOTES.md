@@ -1,7 +1,7 @@
 # Auth Security Notes
 
-- Real AI access uses the local Liclick / Atlas gateway flow, not Feishu Open Platform OAuth.
-- The app does not require Feishu app ID, app secret, Open Platform callback URLs, or robot permissions.
+- The legacy launcher can use the local Liclick / Atlas gateway flow without a Feishu Open Platform app.
+- The browser-only Web deployment uses server-side Feishu OAuth and therefore requires a Feishu App ID, App Secret, and an exact HTTPS callback URL. It does not require robot permissions.
 - The frontend never receives Atlas access tokens, Feishu tokens, API keys, or raw session token values.
 - Server-side login reads the local Atlas token cache only to derive display identity and Liclick API access status.
 - Liclick session cookies are `httpOnly`, `SameSite=Lax`, configurable `Secure`, and scoped to `/`.

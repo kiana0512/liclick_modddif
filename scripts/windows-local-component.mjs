@@ -13,14 +13,28 @@ const dataRoot = path.join(
 );
 const workspaceDir = path.join(dataRoot, 'workspace');
 const logsDir = path.join(dataRoot, 'logs');
+const credentialsDir = path.join(dataRoot, 'credentials');
 const pidFile = path.join(dataRoot, 'local-component.pid');
 const localComponentPort = '4618';
 const healthUrl = `http://127.0.0.1:${localComponentPort}/api/health`;
-const publicSite = 'https://li3d-creation-suite.zany-degu-7838.chatgpt.site';
+const frontendUrlFile = path.join(installRoot, 'frontend-url.txt');
+
+function getFrontendUrl() {
+  const configuredUrl =
+    process.env.LICLICK_FRONTEND_URL?.trim() ||
+    (fs.existsSync(frontendUrlFile) ? fs.readFileSync(frontendUrlFile, 'utf8').trim() : '') ||
+    'http://127.0.0.1:5173';
+  const parsed = new URL(configuredUrl);
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`Unsupported LI3D frontend URL protocol: ${parsed.protocol}`);
+  }
+  return parsed.origin;
+}
 
 function ensureDirectories() {
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(credentialsDir, { recursive: true });
 }
 
 function delay(milliseconds) {
@@ -34,7 +48,11 @@ async function probeHealth() {
     const payload = await response.json();
     return {
       reachable: true,
-      compatible: payload?.ok === true && payload?.capabilities?.includes('texture-painting'),
+      compatible:
+        payload?.ok === true &&
+        payload?.capabilities?.includes('texture-painting') &&
+        payload?.capabilities?.includes('atlas-personal-auth') &&
+        payload?.capabilities?.includes('liclick-generation'),
     };
   } catch {
     return { reachable: false, compatible: false };
@@ -48,6 +66,7 @@ if (!fs.existsSync(serverEntry)) {
   throw new Error(`Local component entry is missing: ${serverEntry}`);
 }
 ensureDirectories();
+const frontendUrl = getFrontendUrl();
 
 let health = await probeHealth();
 if (health.compatible) process.exit(0);
@@ -78,9 +97,13 @@ const child = spawn(nodeExecutable, [serverEntry], {
     LICLICK_WORKSPACE_DIR: workspaceDir,
     LICLICK_LOCAL_SETTINGS_PATH: path.join(workspaceDir, 'config', 'local-settings.json'),
     LICLICK_PUBLIC_WORKSPACE_URL: `http://127.0.0.1:${localComponentPort}`,
-    LICLICK_FRONTEND_URL: publicSite,
-    LICLICK_ALLOWED_ORIGINS: publicSite,
+    LICLICK_FRONTEND_URL: frontendUrl,
+    LICLICK_ALLOWED_ORIGINS: frontendUrl,
     LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: 'false',
+    ATLAS_TOKEN_FILE: path.join(credentialsDir, 'atlas.json'),
+    ATLAS_GATEWAY_URL: 'https://atlas-ai-gateway.lilithgames.com',
+    ATLAS_IDAAS_SSO_URL: 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62',
+    ATLAS_IDAAS_ENTERPRISE_ID: 'lilith',
     LICLICK_WINDOWS_HIDE: '1',
   },
 });

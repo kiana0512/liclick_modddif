@@ -4,6 +4,7 @@ import { serverConfig } from '../config.js';
 import {
   cancelComfyTextureMap,
   checkComfyuiStatus,
+  comfyCancelErrorStatus,
   generateComfyTextureMap,
   type ComfyTextureMapInput,
 } from '../services/comfyuiGenerationService.js';
@@ -51,13 +52,18 @@ export async function handleComfyuiRoute(
 
   if (request.method === 'POST' && segments[2] === 'cancel') {
     const input = await readJsonBody<{ jobId?: string }>(request);
+    const jobId = input.jobId?.trim();
+    if (!jobId) {
+      sendJson(response, 400, { error: 'ComfyUI cancel requires a non-empty jobId.' });
+      return true;
+    }
     try {
-      const result = await cancelComfyTextureMap(input.jobId);
+      const result = await cancelComfyTextureMap(jobId, user.id);
       sendJson(response, 200, result);
     } catch (error) {
-      sendJson(response, 202, {
+      sendJson(response, comfyCancelErrorStatus(error), {
         ok: false,
-        cancelledJobId: input.jobId,
+        cancelledJobId: jobId,
         error: error instanceof Error ? error.message : 'ComfyUI cancel failed.',
       });
     }

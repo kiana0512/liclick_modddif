@@ -10,6 +10,13 @@ export function getLiclickUserErrorMessage(
   const normalized = message.toLowerCase();
 
   if (/用户已终止|cancelled|canceled|aborted/.test(normalized)) return '用户已终止生成任务。';
+  if (
+    /atlas token cache is missing|atlas.*凭证.*过期|atlas.*token.*expired|atlas.*access_token/.test(
+      normalized,
+    )
+  ) {
+    return '共享生图服务凭证未配置或已过期，请联系管理员。';
+  }
   if (/billing[_\s-]*(hard[_\s-]*)?limit|计费.*上限|账单.*限额|额度.*用完/.test(normalized)) {
     return '当前账号的生图额度已用完，请检查莉刻账户额度后重试。';
   }

@@ -34,10 +34,6 @@ function normalizeFolders(value: unknown) {
   return [];
 }
 
-export async function listFolders() {
-  return listFoldersForUser('legacy');
-}
-
 export async function listFoldersForUser(userId: string) {
   const foldersFile = getUserFoldersFile(userId);
   const rawFolders = await readJsonFile<unknown>(foldersFile, []);

@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { WebSocket, WebSocketServer } from 'ws';
 import { serverConfig } from '../config.js';
+import { writeFileAtomically } from '../services/atomicFileService.js';
 import { getLocalSettings } from '../services/localSettingsService.js';
 import {
   PHOTOSHOP_BRIDGE_PROTOCOL_VERSION,
@@ -395,9 +396,7 @@ class PhotoshopBridgeService {
     const session = await this.requireSession(sessionId, token);
     if (!mime.startsWith('image/')) throw new Error('Photoshop 会话源文件必须是图像。');
     const sourcePath = path.join(sessionRoot, session.id, `source${sourceExtension(mime)}`);
-    const temporaryPath = `${sourcePath}.tmp`;
-    await fs.writeFile(temporaryPath, buffer);
-    await fs.rename(temporaryPath, sourcePath);
+    await writeFileAtomically(sourcePath, buffer);
     session.sourcePath = sourcePath;
     session.sourceMime = mime;
     session.status = 'waiting_for_plugin';
@@ -487,11 +486,9 @@ class PhotoshopBridgeService {
     const filePath = path.join(sessionRoot, session.id, manifestFilename);
     const snapshot = `${JSON.stringify(session, null, 2)}\n`;
     const previous = this.sessionWrites.get(session.id) ?? Promise.resolve();
-    const write = previous.catch(() => undefined).then(async () => {
-      const temporaryPath = `${filePath}.${crypto.randomUUID()}.tmp`;
-      await fs.writeFile(temporaryPath, snapshot, 'utf8');
-      await fs.rename(temporaryPath, filePath);
-    });
+    const write = previous
+      .catch(() => undefined)
+      .then(() => writeFileAtomically(filePath, snapshot));
     this.sessionWrites.set(session.id, write);
     try {
       await write;
@@ -565,7 +562,13 @@ class PhotoshopBridgeService {
       socket.on('message', (data) => {
         this.pluginMessageQueue = this.pluginMessageQueue
           .catch(() => undefined)
-          .then(() => this.handlePluginMessage(data.toString()));
+          .then(() => this.handlePluginMessage(data.toString()))
+          .catch((error: unknown) => {
+            console.error(
+              '[Photoshop Bridge] Plugin message failed; the workspace server will keep running.',
+              error,
+            );
+          });
       });
       socket.on('pong', () => {
         this.pluginInfo.lastSeenAt = now();

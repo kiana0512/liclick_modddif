@@ -41,6 +41,7 @@ import {
   type BakeProjectionMode,
 } from '@liclick/core';
 import { cn } from '@/components/common/cn';
+import { HistorySidePanel } from '@/components/history/HistorySidePanel';
 import { Button } from '@/components/ui/Button';
 import {
   useBakeModelAnalysis,
@@ -422,10 +423,7 @@ export function BakeWorkspacePage({
             const result = await saveBlobAsset({
               projectId,
               category:
-                kind === 'color' ||
-                kind === 'roughness' ||
-                kind === 'metallic' ||
-                kind === 'normal'
+                kind === 'color' || kind === 'roughness' || kind === 'metallic' || kind === 'normal'
                   ? 'references'
                   : 'models',
               blob: file,
@@ -457,10 +455,7 @@ export function BakeWorkspacePage({
             const previous = bakeSets[objectId] ?? { objectId };
             bakeSets[objectId] = { ...previous, [kind]: asset };
             const category =
-              kind === 'color' ||
-              kind === 'roughness' ||
-              kind === 'metallic' ||
-              kind === 'normal'
+              kind === 'color' || kind === 'roughness' || kind === 'metallic' || kind === 'normal'
                 ? 'references'
                 : 'models';
             assetManifest[category] = Array.from(
@@ -732,12 +727,7 @@ export function BakeWorkspacePage({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [
-    baseColorDehighlightStrength,
-    cleanBaseColor,
-    loadSelectedBaseColorFile,
-    selectedColorName,
-  ]);
+  }, [baseColorDehighlightStrength, cleanBaseColor, loadSelectedBaseColorFile, selectedColorName]);
 
   const currentDraftSettings = useMemo<BakeDraftSettings>(
     () => ({
@@ -953,9 +943,7 @@ export function BakeWorkspacePage({
       Boolean(
         lowFiles[object.id] &&
         (!requiresColor || colorFiles[object.id] || projectColorForObject(object.id)?.imageUrl) &&
-        (!requiresRoughness ||
-          roughnessFiles[object.id] ||
-          autoRoughnessEnabled) &&
+        (!requiresRoughness || roughnessFiles[object.id] || autoRoughnessEnabled) &&
         (!requiresMetallic || metallicFiles[object.id]),
       ),
     );
@@ -1448,9 +1436,7 @@ export function BakeWorkspacePage({
       const high = await createHighFile();
       const color = requiresColor ? await createColorFile() : undefined;
       const roughness =
-        requiresRoughness && roughnessSource !== 'comfy'
-          ? await createRoughnessFile()
-          : undefined;
+        requiresRoughness && roughnessSource !== 'comfy' ? await createRoughnessFile() : undefined;
       const metallic = requiresMetallic ? createMetallicFile() : undefined;
       const job = await submitNormalBake({
         projectId: project.id,
@@ -1578,6 +1564,16 @@ export function BakeWorkspacePage({
     bakeJob?.status === 'queued' ||
     bakeJob?.status === 'running' ||
     bakeJob?.status === 'cancelling';
+  const bakeFeedback =
+    oneClickBakeAttempted || bakeJob?.status === 'cancelled' || bakeJob?.status === 'failed'
+      ? (bakeError ??
+        bakeJob?.error ??
+        (bakeJob?.status === 'cancelled'
+          ? '烘焙任务已取消，未生成贴图，请重新提交。'
+          : bakeJob?.status === 'failed'
+            ? '烘焙任务失败，请重新提交；若再次失败请联系管理员。'
+            : undefined))
+      : undefined;
   const oneClickActionLabel = bakerStatusChecking
     ? '正在连接远端烘焙服务'
     : bakerMissing
@@ -1586,11 +1582,13 @@ export function BakeWorkspacePage({
         ? `正在烘焙 ${bakeJob?.progress ?? 0}%`
         : bakeJob?.status === 'succeeded'
           ? '重新一键烘焙'
-          : oneClickAssetsReady && !alignmentReady
-            ? '高低模未对齐'
-            : oneClickReady
-              ? '开始一键烘焙'
-              : `继续准备 ${oneClickAssetCount}/${oneClickRequiredAssetCount}`;
+          : bakeJob?.status === 'failed' || bakeJob?.status === 'cancelled'
+            ? '重新提交烘焙'
+            : oneClickAssetsReady && !alignmentReady
+              ? '高低模未对齐'
+              : oneClickReady
+                ? '开始一键烘焙'
+                : `继续准备 ${oneClickAssetCount}/${oneClickRequiredAssetCount}`;
 
   function handleOneClickBake() {
     setOneClickBakeAttempted(true);
@@ -1776,9 +1774,7 @@ export function BakeWorkspacePage({
                     <div className="flex min-w-0 items-start gap-2.5">
                       <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-200/72" />
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-white/72">
-                          烘焙后生成 Roughness
-                        </p>
+                        <p className="text-xs font-semibold text-white/72">烘焙后生成 Roughness</p>
                         <p className="mt-1 text-[10px] leading-4 text-white/34">
                           用低模 UV 的烘焙 Base Color 调用 ComfyUI，无需导入粗糙度图。
                         </p>
@@ -1805,152 +1801,149 @@ export function BakeWorkspacePage({
                       />
                     </button>
                   </div>
-                <div
-                  className={cn(
-                    'border-t border-white/[0.07] px-4 py-3.5 transition-colors',
-                    cleanBaseColor && 'bg-violet-300/[0.045]',
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Sparkles className="h-3.5 w-3.5 text-violet-200/72" />
-                        <span className="text-sm font-semibold text-white/80">Base Color 去高光</span>
+                  <div
+                    className={cn(
+                      'border-t border-white/[0.07] px-4 py-3.5 transition-colors',
+                      cleanBaseColor && 'bg-violet-300/[0.045]',
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="h-3.5 w-3.5 text-violet-200/72" />
+                          <span className="text-sm font-semibold text-white/80">
+                            Base Color 去高光
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-4 text-white/36">
+                          压低颜色贴图中的白色反光，保留原有颜色与纹理细节。
+                        </p>
                       </div>
-                      <p className="mt-1 text-[11px] leading-4 text-white/36">
-                        压低颜色贴图中的白色反光，保留原有颜色与纹理细节。
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-label="Base Color 去高光"
-                      aria-checked={cleanBaseColor}
-                      disabled={!selectedColorName}
-                      className={cn(
-                        'relative h-6 w-11 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-30',
-                        cleanBaseColor
-                          ? 'border-violet-200/35 bg-violet-400/70'
-                          : 'border-white/12 bg-white/[0.07]',
-                      )}
-                      onClick={() => setCleanBaseColor((value) => !value)}
-                    >
-                      <span
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-label="Base Color 去高光"
+                        aria-checked={cleanBaseColor}
+                        disabled={!selectedColorName}
                         className={cn(
-                          'absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,.35)] transition-transform duration-200',
-                          cleanBaseColor ? 'translate-x-5' : 'translate-x-0',
+                          'relative h-6 w-11 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-30',
+                          cleanBaseColor
+                            ? 'border-violet-200/35 bg-violet-400/70'
+                            : 'border-white/12 bg-white/[0.07]',
                         )}
-                      />
-                    </button>
-                  </div>
-                  <div
-                    className={cn(
-                      'mt-3 grid grid-cols-[auto_1fr_auto] items-center gap-3',
-                      !cleanBaseColor && 'hidden',
-                    )}
-                  >
-                    <span className="text-[11px] font-medium text-white/38">强度</span>
-                    <input
-                      aria-label="Base Color 去高光强度"
-                      className="bake-range w-full"
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={baseColorDehighlightStrength}
-                      disabled={!cleanBaseColor || !selectedColorName}
-                      onChange={(event) =>
-                        setBaseColorDehighlightStrength(Number(event.target.value))
-                      }
-                    />
-                    <output className="w-10 text-right text-[11px] font-semibold tabular-nums text-violet-100/70">
-                      {Math.round(baseColorDehighlightStrength * 100)}%
-                    </output>
-                  </div>
-                  {cleanBaseColor && selectedColorName ? (
-                    <p
+                        onClick={() => setCleanBaseColor((value) => !value)}
+                      >
+                        <span
+                          className={cn(
+                            'absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,.35)] transition-transform duration-200',
+                            cleanBaseColor ? 'translate-x-5' : 'translate-x-0',
+                          )}
+                        />
+                      </button>
+                    </div>
+                    <div
                       className={cn(
-                        'mt-2 text-[11px]',
-                        baseColorProcessError ? 'text-rose-200/75' : 'text-violet-100/46',
+                        'mt-3 grid grid-cols-[auto_1fr_auto] items-center gap-3',
+                        !cleanBaseColor && 'hidden',
                       )}
                     >
-                      {baseColorProcessError
-                        ? baseColorProcessError
-                        : baseColorProcessing
-                          ? '正在更新去高光预览…'
-                          : processedBaseColor
-                            ? '预览与烘焙输入已应用去高光。'
-                            : '等待生成去高光预览…'}
-                    </p>
-                  ) : null}
-                  <div
-                    className={cn(
-                      'mt-3 grid grid-cols-2 gap-3',
-                      !cleanBaseColor && 'hidden',
-                    )}
-                  >
-                    <figure className="overflow-hidden rounded-xl border border-white/[0.08] bg-black/35">
-                      <figcaption className="flex h-8 items-center justify-between border-b border-white/[0.07] px-3">
-                        <span className="text-[11px] font-medium text-white/55">调整前</span>
-                        <span className="text-[9px] uppercase tracking-[0.12em] text-white/24">
-                          Original
-                        </span>
-                      </figcaption>
-                      <div className="grid h-32 place-items-center overflow-hidden bg-[linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%),linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%)] bg-[length:16px_16px] bg-[position:0_0,8px_8px]">
-                        {selectedRawColorPreview ? (
-                          <img
-                            src={selectedRawColorPreview}
-                            alt="Base Color 调整前预览"
-                            className="h-full w-full object-contain"
-                          />
-                        ) : (
-                          <span className="px-3 text-center text-[11px] text-white/24">
-                            导入 Base Color 后显示
-                          </span>
+                      <span className="text-[11px] font-medium text-white/38">强度</span>
+                      <input
+                        aria-label="Base Color 去高光强度"
+                        className="bake-range w-full"
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={baseColorDehighlightStrength}
+                        disabled={!cleanBaseColor || !selectedColorName}
+                        onChange={(event) =>
+                          setBaseColorDehighlightStrength(Number(event.target.value))
+                        }
+                      />
+                      <output className="w-10 text-right text-[11px] font-semibold tabular-nums text-violet-100/70">
+                        {Math.round(baseColorDehighlightStrength * 100)}%
+                      </output>
+                    </div>
+                    {cleanBaseColor && selectedColorName ? (
+                      <p
+                        className={cn(
+                          'mt-2 text-[11px]',
+                          baseColorProcessError ? 'text-rose-200/75' : 'text-violet-100/46',
                         )}
-                      </div>
-                    </figure>
-                    <figure className="overflow-hidden rounded-xl border border-violet-300/12 bg-black/35">
-                      <figcaption className="flex h-8 items-center justify-between border-b border-white/[0.07] px-3">
-                        <span className="text-[11px] font-medium text-violet-100/70">调整后</span>
-                        <span className="text-[9px] uppercase tracking-[0.12em] text-violet-100/30">
-                          Result
-                        </span>
-                      </figcaption>
-                      <div className="relative grid h-32 place-items-center overflow-hidden bg-[linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%),linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%)] bg-[length:16px_16px] bg-[position:0_0,8px_8px]">
-                        {selectedRawColorPreview ? (
-                          <img
-                            src={
-                              cleanBaseColor && processedBaseColor
-                                ? selectedColorPreview
-                                : selectedRawColorPreview
-                            }
-                            alt="Base Color 调整后预览"
-                            className={cn(
-                              'h-full w-full object-contain transition-opacity',
-                              baseColorProcessing && 'opacity-45',
-                              !cleanBaseColor && 'opacity-55',
-                            )}
-                          />
-                        ) : (
-                          <span className="px-3 text-center text-[11px] text-white/24">
-                            导入 Base Color 后显示
+                      >
+                        {baseColorProcessError
+                          ? baseColorProcessError
+                          : baseColorProcessing
+                            ? '正在更新去高光预览…'
+                            : processedBaseColor
+                              ? '预览与烘焙输入已应用去高光。'
+                              : '等待生成去高光预览…'}
+                      </p>
+                    ) : null}
+                    <div className={cn('mt-3 grid grid-cols-2 gap-3', !cleanBaseColor && 'hidden')}>
+                      <figure className="overflow-hidden rounded-xl border border-white/[0.08] bg-black/35">
+                        <figcaption className="flex h-8 items-center justify-between border-b border-white/[0.07] px-3">
+                          <span className="text-[11px] font-medium text-white/55">调整前</span>
+                          <span className="text-[9px] uppercase tracking-[0.12em] text-white/24">
+                            Original
                           </span>
-                        )}
-                        {selectedRawColorPreview && !cleanBaseColor ? (
-                          <span className="absolute rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[10px] text-white/55 backdrop-blur-sm">
-                            开启去高光后预览
+                        </figcaption>
+                        <div className="grid h-32 place-items-center overflow-hidden bg-[linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%),linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%)] bg-[length:16px_16px] bg-[position:0_0,8px_8px]">
+                          {selectedRawColorPreview ? (
+                            <img
+                              src={selectedRawColorPreview}
+                              alt="Base Color 调整前预览"
+                              className="h-full w-full object-contain"
+                            />
+                          ) : (
+                            <span className="px-3 text-center text-[11px] text-white/24">
+                              导入 Base Color 后显示
+                            </span>
+                          )}
+                        </div>
+                      </figure>
+                      <figure className="overflow-hidden rounded-xl border border-violet-300/12 bg-black/35">
+                        <figcaption className="flex h-8 items-center justify-between border-b border-white/[0.07] px-3">
+                          <span className="text-[11px] font-medium text-violet-100/70">调整后</span>
+                          <span className="text-[9px] uppercase tracking-[0.12em] text-violet-100/30">
+                            Result
                           </span>
-                        ) : null}
-                        {selectedRawColorPreview && cleanBaseColor && baseColorProcessing ? (
-                          <span className="absolute rounded-full border border-violet-200/15 bg-black/60 px-3 py-1.5 text-[10px] text-violet-100/70 backdrop-blur-sm">
-                            正在更新…
-                          </span>
-                        ) : null}
-                      </div>
-                    </figure>
+                        </figcaption>
+                        <div className="relative grid h-32 place-items-center overflow-hidden bg-[linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%),linear-gradient(45deg,rgba(255,255,255,.025)_25%,transparent_25%,transparent_75%,rgba(255,255,255,.025)_75%)] bg-[length:16px_16px] bg-[position:0_0,8px_8px]">
+                          {selectedRawColorPreview ? (
+                            <img
+                              src={
+                                cleanBaseColor && processedBaseColor
+                                  ? selectedColorPreview
+                                  : selectedRawColorPreview
+                              }
+                              alt="Base Color 调整后预览"
+                              className={cn(
+                                'h-full w-full object-contain transition-opacity',
+                                baseColorProcessing && 'opacity-45',
+                                !cleanBaseColor && 'opacity-55',
+                              )}
+                            />
+                          ) : (
+                            <span className="px-3 text-center text-[11px] text-white/24">
+                              导入 Base Color 后显示
+                            </span>
+                          )}
+                          {selectedRawColorPreview && !cleanBaseColor ? (
+                            <span className="absolute rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[10px] text-white/55 backdrop-blur-sm">
+                              开启去高光后预览
+                            </span>
+                          ) : null}
+                          {selectedRawColorPreview && cleanBaseColor && baseColorProcessing ? (
+                            <span className="absolute rounded-full border border-violet-200/15 bg-black/60 px-3 py-1.5 text-[10px] text-violet-100/70 backdrop-blur-sm">
+                              正在更新…
+                            </span>
+                          ) : null}
+                        </div>
+                      </figure>
+                    </div>
                   </div>
-                </div>
                 </MaterialMapSlot>
                 {roughnessSource === 'manual' ? (
                   <MaterialMapSlot
@@ -2010,7 +2003,7 @@ export function BakeWorkspacePage({
           </div>
         ) : null}
 
-        <div className="workflow-scrollbar relative min-h-0 flex-1 overflow-y-auto bg-[#080914] pt-[82px] text-white">
+        <div className="workflow-scrollbar relative min-h-0 flex-1 overflow-y-auto bg-[#080914] pt-[82px] text-white 2xl:pr-[264px] min-[1720px]:pr-[344px]">
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
             <div className="absolute -left-40 top-8 h-[520px] w-[520px] rounded-full bg-[#6d32c8]/14 blur-[130px]" />
             <div className="absolute -right-40 top-32 h-[440px] w-[440px] rounded-full bg-[#1d8b9d]/10 blur-[130px]" />
@@ -2195,11 +2188,7 @@ export function BakeWorkspacePage({
                         key={channel}
                         type="button"
                         disabled={!supported}
-                        title={
-                          supported
-                            ? undefined
-                            : '当前远端配置不支持此输出'
-                        }
+                        title={supported ? undefined : '当前远端配置不支持此输出'}
                         className={cn(
                           'inline-flex h-7 items-center justify-center gap-1 rounded-lg border px-2 text-[10px] font-medium transition-all',
                           selected
@@ -2250,9 +2239,7 @@ export function BakeWorkspacePage({
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
                     <div className="mb-4 sm:mb-0">
                       <p className="text-sm font-semibold text-white/82">输出贴图大小</p>
-                      <p className="mt-1 text-xs text-white/34">
-                        远端 V2 支持完整 PBR 十图输出
-                      </p>
+                      <p className="mt-1 text-xs text-white/34">远端 V2 支持完整 PBR 十图输出</p>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {([1024, 2048, 4096] as const).map((size) => (
@@ -2307,13 +2294,13 @@ export function BakeWorkspacePage({
                   </div>
                 ) : null}
 
-                {oneClickBakeAttempted && (bakeError || bakeJob?.error) ? (
+                {bakeFeedback ? (
                   <div
                     className="mt-4 flex items-start gap-3 rounded-2xl border border-rose-300/18 bg-rose-400/[0.055] px-4 py-3 text-sm text-rose-100/82"
                     role="alert"
                   >
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-300" />
-                    <span>{bakeError ?? bakeJob?.error}</span>
+                    <span>{bakeFeedback}</span>
                   </div>
                 ) : null}
               </div>
@@ -2437,6 +2424,10 @@ export function BakeWorkspacePage({
             ) : null}
           </main>
         </div>
+        <HistorySidePanel
+          module="bake"
+          refreshKey={`${bakeJob?.id ?? 'idle'}:${bakeJob?.status ?? 'idle'}`}
+        />
       </WorkflowShell>
     );
 
@@ -3108,8 +3099,8 @@ export function BakeWorkspacePage({
                     onChange={setCleanBaseColor}
                   />
                   <p className="text-xs leading-5 text-white/38">
-                    远端 AI 会在 Substance 烘焙完成后，根据低模 UV 的 Base Color
-                    生成最终 Roughness。
+                    远端 AI 会在 Substance 烘焙完成后，根据低模 UV 的 Base Color 生成最终
+                    Roughness。
                   </p>
                 </div>
               ) : null}

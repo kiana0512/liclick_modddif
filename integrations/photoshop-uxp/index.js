@@ -4,7 +4,7 @@ const { storage } = require('uxp');
 const PLUGIN_VERSION = '1.0.0';
 const PROTOCOL_VERSION = '1.0.0';
 const BRIDGE_URLS = [
-  'ws://127.0.0.1:4617/api/photoshop/socket?role=plugin',
+  'ws://127.0.0.1:4618/api/photoshop/socket?role=plugin',
   'ws://127.0.0.1:4517/api/photoshop/socket?role=plugin',
 ];
 const sessions = new Map();

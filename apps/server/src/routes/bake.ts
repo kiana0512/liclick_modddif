@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { requireAuth } from '../auth/authMiddleware.js';
 import { corsHeaders, readBinaryBody, sendJson } from './httpUtils.js';
 import {
   bakeRequestErrorStatus,
@@ -60,6 +61,11 @@ export async function handleBakeRoute(
     sendJson(response, 200, await getSubstanceBakerStatus());
     return true;
   }
+  // The service status is harmless and remains visible on the public module
+  // page. Every operation that consumes compute or returns job artifacts needs
+  // an authenticated LI3D session.
+  const user = await requireAuth(request, response);
+  if (!user) return true;
   if (url.pathname === '/api/bake/roughness' && request.method === 'POST') {
     const contentType = request.headers['content-type'] ?? '';
     if (!contentType.startsWith('multipart/form-data')) {
@@ -106,6 +112,7 @@ export async function handleBakeRoute(
     }
     try {
       const job = await createNormalBakeJob({
+        userId: user.id,
         projectId: multipart.fields.projectId ?? '',
         objectId: multipart.fields.objectId ?? '',
         settings: JSON.parse(multipart.fields.settings ?? '{}') as NormalBakeSettings,
@@ -127,7 +134,7 @@ export async function handleBakeRoute(
   const cancelMatch = /^\/api\/bake\/jobs\/([^/]+)\/cancel$/.exec(url.pathname);
   if (cancelMatch && request.method === 'POST') {
     try {
-      const job = await cancelNormalBakeJob(decodeURIComponent(cancelMatch[1]));
+      const job = await cancelNormalBakeJob(decodeURIComponent(cancelMatch[1]), user.id);
       if (!job) {
         sendJson(response, 404, { error: 'Bake job not found.' });
       } else {
@@ -143,7 +150,7 @@ export async function handleBakeRoute(
   const archiveMatch = /^\/api\/bake\/jobs\/([^/]+)\/archive$/.exec(url.pathname);
   if (archiveMatch && (request.method === 'GET' || request.method === 'HEAD')) {
     const jobId = decodeURIComponent(archiveMatch[1]);
-    const archive = getBakeArchive(jobId, url.searchParams.get('name') ?? '');
+    const archive = getBakeArchive(jobId, user.id, url.searchParams.get('name') ?? '');
     if (!archive) {
       sendJson(response, 404, { error: 'Bake archive is not available.' });
       return true;
@@ -166,7 +173,7 @@ export async function handleBakeRoute(
   const jobId = decodeURIComponent(match[1]);
   const outputChannel = match[2] as BakeChannelId | undefined;
   if (outputChannel) {
-    const outputPath = getNormalBakeOutputPath(jobId, outputChannel);
+    const outputPath = getNormalBakeOutputPath(jobId, user.id, outputChannel);
     if (!outputPath || !fs.existsSync(outputPath)) {
       sendJson(response, 404, { error: `${outputChannel} output is not available.` });
       return true;
@@ -181,7 +188,7 @@ export async function handleBakeRoute(
     fs.createReadStream(outputPath).pipe(response);
     return true;
   }
-  const job = getNormalBakeJob(jobId);
+  const job = getNormalBakeJob(jobId, user.id);
   if (!job) {
     sendJson(response, 404, { error: 'Bake job not found.' });
     return true;

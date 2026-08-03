@@ -3,6 +3,8 @@ import { TextureRuntimeGate } from './components/runtime/TextureRuntimeGate';
 import { useLocalTextureRuntime } from './hooks/useLocalTextureRuntime';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
+import { getIdentityStatus } from './services/identityApiClient';
+import { initializeTelemetry } from './services/telemetryClient';
 import { useAuthStore } from './stores/authStore';
 import { useProjectStore } from './stores/projectStore';
 import type { TextureBakeHandoff } from './types/project';
@@ -178,8 +180,13 @@ export function App() {
 
   useEffect(() => {
     void refreshAuth().catch(() => setAnonymous());
+    // A status check can associate an existing authenticated browser session
+    // with its random app IDs. It is non-blocking and never reads hardware data.
+    void getIdentityStatus().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => initializeTelemetry(), []);
 
   useEffect(() => {
     const refresh = () => void refreshLocalSettings().catch(() => undefined);

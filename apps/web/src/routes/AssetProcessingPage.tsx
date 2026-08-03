@@ -30,6 +30,7 @@ import {
 } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
+import { HistorySidePanel } from '@/components/history/HistorySidePanel';
 import {
   assetJobArtifacts,
   assetJobError,
@@ -49,6 +50,7 @@ import {
   type AssetProcessingMode,
   type AssetProcessingStatus,
 } from '@/services/assetProcessingApiClient';
+import { createId } from '@/utils/id';
 
 type AssetProcessingPageProps = {
   mode: AssetProcessingMode;
@@ -88,7 +90,7 @@ function fileStem(fileName: string) {
 }
 
 function externalAssetId(mode: AssetProcessingMode, file: File) {
-  return `li3d:${fileStem(file.name)}:${mode}:${crypto.randomUUID()}`;
+  return `li3d:${fileStem(file.name)}:${mode}:${createId()}`;
 }
 
 function pendingSubmissionStorageKey(mode: AssetProcessingMode) {
@@ -113,12 +115,21 @@ function stableSubmissionKey(
     // Invalid stale state is replaced below.
   }
   const pending = { fingerprint, key: externalAssetId(mode, file) };
-  window.sessionStorage.setItem(storageKey, JSON.stringify(pending));
+  try {
+    window.sessionStorage.setItem(storageKey, JSON.stringify(pending));
+  } catch {
+    // Restricted browser contexts may disable session storage. The in-memory
+    // submission key is still stable for the current request attempt.
+  }
   return pending;
 }
 
 function clearPendingSubmission(mode: AssetProcessingMode) {
-  window.sessionStorage.removeItem(pendingSubmissionStorageKey(mode));
+  try {
+    window.sessionStorage.removeItem(pendingSubmissionStorageKey(mode));
+  } catch {
+    // Storage cleanup is best-effort in restricted browser contexts.
+  }
 }
 
 function submissionErrorMessage(error: unknown, fallback: string) {
@@ -1109,19 +1120,19 @@ function AutoUvWorkspace({
 
   async function submit() {
     if (!asset || busy || !serviceReady) return;
-    const fingerprint = JSON.stringify({
-      file: [asset.name, asset.size, asset.lastModified],
-      resolution,
-      hiddenAxis,
-      hardEdgeAngle,
-      padding,
-    });
-    if (submissionKeyRef.current?.fingerprint !== fingerprint) {
-      submissionKeyRef.current = stableSubmissionKey('uv', asset, fingerprint);
-    }
     setBusy(true);
     setError(undefined);
     try {
+      const fingerprint = JSON.stringify({
+        file: [asset.name, asset.size, asset.lastModified],
+        resolution,
+        hiddenAxis,
+        hardEdgeAngle,
+        padding,
+      });
+      if (submissionKeyRef.current?.fingerprint !== fingerprint) {
+        submissionKeyRef.current = stableSubmissionKey('uv', asset, fingerprint);
+      }
       const submission = await submitUvProcessing({
         asset,
         metadata: {
@@ -1732,6 +1743,7 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
   const iconStyle = mode === 'uv'
     ? 'border-emerald-300/18 bg-emerald-400/[0.075] text-emerald-100'
     : 'border-blue-300/18 bg-blue-400/[0.075] text-blue-100';
+  const historyRefreshKey = `${jobId}:${jobStatus ?? 'idle'}`;
 
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-x-hidden text-white">
@@ -1741,6 +1753,7 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
         <UserMenu onLogout={onLogout} />
       </header>
 
+      <div className="2xl:pr-[264px] min-[1720px]:pr-[344px]">
       <section className="relative z-[1] mx-auto w-full max-w-[1280px] px-5 pb-16 pt-6 sm:px-8">
         <button
           type="button"
@@ -1811,6 +1824,8 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
           </span>
         </div>
       </section>
+      </div>
+      <HistorySidePanel module={mode} refreshKey={historyRefreshKey} />
     </main>
   );
 }

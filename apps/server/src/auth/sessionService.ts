@@ -28,13 +28,36 @@ type BrowserSessionHandoff = {
   expiresAt: number;
 };
 
+type LocalIdentityProof = {
+  userId: string;
+  sessionTokenHash: string;
+  expiresAt: number;
+};
+
 const browserSessionHandoffs = new Map<string, BrowserSessionHandoff>();
 const browserSessionHandoffTtlMs = 2 * 60 * 1000;
+const localIdentityProofs = new Map<string, LocalIdentityProof>();
+const localIdentityProofTtlMs = 60 * 1000;
 
 function pruneBrowserSessionHandoffs() {
   const now = Date.now();
   for (const [code, handoff] of browserSessionHandoffs) {
     if (handoff.expiresAt <= now) browserSessionHandoffs.delete(code);
+  }
+}
+
+function hashLocalIdentityProof(proof: string) {
+  return crypto
+    .createHmac('sha256', serverConfig.sessionSecret)
+    .update('li3d-local-identity-proof\0')
+    .update(proof)
+    .digest('hex');
+}
+
+function pruneLocalIdentityProofs() {
+  const now = Date.now();
+  for (const [proofHash, proof] of localIdentityProofs) {
+    if (proof.expiresAt <= now) localIdentityProofs.delete(proofHash);
   }
 }
 
@@ -69,7 +92,19 @@ export async function readAuthDatabase() {
   return {
     users: Array.isArray(database.users) ? database.users : [],
     feishuAccounts: Array.isArray(database.feishuAccounts) ? database.feishuAccounts : [],
-    sessions: Array.isArray(database.sessions) ? database.sessions : [],
+    // Rebuild session objects from the allow-listed fields. This also strips
+    // historical user-agent/IP metadata the next time the database is written.
+    sessions: Array.isArray(database.sessions)
+      ? database.sessions.map((session) => ({
+          id: session.id,
+          userId: session.userId,
+          sessionTokenHash: session.sessionTokenHash,
+          source: session.source,
+          expiresAt: session.expiresAt,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+        }))
+      : [],
   };
 }
 
@@ -114,11 +149,18 @@ function sessionCookieValue(token: string, maxAgeSeconds: number) {
 
 export function setSessionCookie(response: ServerResponse, token: string) {
   const maxAgeSeconds = Math.max(1, serverConfig.sessionMaxAgeDays) * 24 * 60 * 60;
-  response.setHeader('set-cookie', sessionCookieValue(token, maxAgeSeconds));
+  appendSetCookie(response, sessionCookieValue(token, maxAgeSeconds));
 }
 
 export function clearSessionCookie(response: ServerResponse) {
-  response.setHeader('set-cookie', sessionCookieValue('', 0));
+  appendSetCookie(response, sessionCookieValue('', 0));
+}
+
+function appendSetCookie(response: ServerResponse, value: string) {
+  const existing = response.getHeader('set-cookie');
+  if (Array.isArray(existing)) response.setHeader('set-cookie', [...existing, value]);
+  else if (typeof existing === 'string') response.setHeader('set-cookie', [existing, value]);
+  else response.setHeader('set-cookie', value);
 }
 
 export async function createSession(
@@ -138,8 +180,6 @@ export async function createSession(
     expiresAt: expiresAt.toISOString(),
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
-    userAgent: request.headers['user-agent'],
-    ipAddress: request.socket.remoteAddress,
   };
   await updateAuthDatabase((database) => ({
     ...database,
@@ -158,6 +198,50 @@ export async function verifySession(token?: string): Promise<AuthUser | undefine
   const user = database.users.find((item) => item.id === session.userId);
   if (!user || user.status !== 'active') return undefined;
   return user;
+}
+
+export async function createLocalIdentityProof(sessionToken?: string) {
+  const user = await verifySession(sessionToken);
+  const email = user?.email?.trim().toLowerCase();
+  if (!sessionToken || !user || user.authSource !== 'feishu-oauth' || !email) return undefined;
+  pruneLocalIdentityProofs();
+  const proof = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = Date.now() + localIdentityProofTtlMs;
+  localIdentityProofs.set(hashLocalIdentityProof(proof), {
+    userId: user.id,
+    sessionTokenHash: hashSessionToken(sessionToken),
+    expiresAt,
+  });
+  return {
+    proof,
+    expiresAt: new Date(expiresAt).toISOString(),
+  };
+}
+
+export async function consumeLocalIdentityProof(proof?: string) {
+  if (!proof || proof.length > 256) return undefined;
+  pruneLocalIdentityProofs();
+  const proofHash = hashLocalIdentityProof(proof);
+  const pending = localIdentityProofs.get(proofHash);
+  // A proof is consumed before any asynchronous work so concurrent replays cannot win twice.
+  localIdentityProofs.delete(proofHash);
+  if (!pending || pending.expiresAt <= Date.now()) return undefined;
+  const database = await readAuthDatabase();
+  const session = database.sessions.find(
+    (item) =>
+      item.userId === pending.userId &&
+      item.sessionTokenHash === pending.sessionTokenHash &&
+      new Date(item.expiresAt).getTime() > Date.now(),
+  );
+  const user = database.users.find((item) => item.id === pending.userId);
+  const email = user?.email?.trim().toLowerCase();
+  if (!session || !user || user.status !== 'active' || !email) return undefined;
+  return {
+    id: user.id,
+    displayName: user.displayName,
+    email,
+    authSource: user.authSource,
+  };
 }
 
 export async function createBrowserSessionHandoff(sessionToken?: string) {
