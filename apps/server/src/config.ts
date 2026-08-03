@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  gpuControlLanCaExpectedSha256,
+  gpuControlLanCaFilename,
+} from './certs/gpuControlLanCa.js';
 
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(serverDir, '..', '..', '..');
@@ -37,6 +41,9 @@ loadEnvFile(path.join(serverRoot, '.env'));
 
 const port = Number(process.env.SERVER_PORT ?? process.env.LICLICK_WORKSPACE_PORT ?? 4517);
 const host = process.env.SERVER_HOST ?? process.env.LICLICK_WORKSPACE_HOST ?? '127.0.0.1';
+const workspaceDir = path.resolve(
+  process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),
+);
 const publicWorkspaceUrl = process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? `http://127.0.0.1:${port}`;
 const frontendUrl = process.env.LICLICK_FRONTEND_URL ?? 'http://localhost:5173';
 const comfyuiBaseUrl = (process.env.COMFYUI_BASE_URL ?? 'http://127.0.0.1:8188').replace(/\/$/, '');
@@ -67,8 +74,13 @@ const assetServiceBaseUrl = (
   process.env.ASSET_SERVICE_BASE_URL ?? 'https://10.3.34.11'
 ).replace(/\/$/, '');
 const assetServiceApiKey = process.env.ASSET_SERVICE_API_KEY?.trim() || undefined;
-const assetServiceCaCertPath =
-  process.env.ASSET_SERVICE_CA_CERT_PATH?.trim() || undefined;
+const explicitAssetServiceCaCertPath = process.env.ASSET_SERVICE_CA_CERT_PATH?.trim();
+const assetServiceCaCertManaged = !explicitAssetServiceCaCertPath;
+const assetServiceCaCertPath = path.resolve(
+  explicitAssetServiceCaCertPath ||
+    path.join(workspaceDir, 'config', gpuControlLanCaFilename),
+);
+const assetServiceCaCertExpectedSha256 = gpuControlLanCaExpectedSha256;
 const assetServiceTlsRejectUnauthorized =
   (process.env.ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED ?? 'true').toLowerCase() !== 'false';
 
@@ -249,7 +261,7 @@ if (!loopbackHosts.has(host) && sessionSecret === 'dev-only-change-me') {
 export const serverConfig = {
   port,
   host,
-  workspaceDir: path.resolve(process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace')),
+  workspaceDir,
   localSettingsPath: path.resolve(
     process.env.LICLICK_LOCAL_SETTINGS_PATH ??
       path.join(
@@ -290,6 +302,8 @@ export const serverConfig = {
   assetServiceBaseUrl,
   assetServiceApiKey,
   assetServiceCaCertPath,
+  assetServiceCaCertManaged,
+  assetServiceCaCertExpectedSha256,
   assetServiceTlsRejectUnauthorized,
   assetServiceRequestTimeoutMs,
   assetServiceMaxUploadBytes,

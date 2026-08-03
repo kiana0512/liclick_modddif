@@ -69,11 +69,23 @@ export type AssetJobSubmission = {
   cancel_url: string;
 };
 
+export type AssetProcessingCapacity = {
+  schemaVersion: string;
+  advisory: boolean;
+  onlineWorkers: number;
+  totalSlots: number;
+  usedSlots: number;
+  availableSlots: number;
+  asOf: string;
+};
+
 export type AssetProcessingStatus = {
   configured: boolean;
   available: boolean;
   reachable: boolean;
   authorized: boolean;
+  capacityCheckPassed?: boolean;
+  capacity?: AssetProcessingCapacity;
   message: string;
   endpoint: string;
   apiKeyConfigured: boolean;
@@ -82,6 +94,11 @@ export type AssetProcessingStatus = {
     rejectUnauthorized: boolean;
     customCaConfigured: boolean;
     customCaAvailable: boolean;
+    customCaIntegrityValid?: boolean;
+    customCaSha256?: string;
+    expectedCaSha256?: string;
+    customCaManaged?: boolean;
+    customCaError?: string;
   };
   capabilities: {
     uv: boolean;

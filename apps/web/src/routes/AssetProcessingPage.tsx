@@ -613,27 +613,65 @@ function AdvancedSection({
   );
 }
 
+function backendFailureMessage(status: AssetProcessingStatus) {
+  const message = status.message.trim();
+  if (!message || /(?:已连接|服务可用|connected|\bready\b)/i.test(message)) return '';
+  return message;
+}
+
 function serviceUnavailableReason(
   status: AssetProcessingStatus | undefined,
   loading: boolean,
+  mode: AssetProcessingMode,
+  requestError?: string,
 ) {
   if (loading) return '正在检查 Asset V4 服务，请稍候。';
-  if (!status) return '无法读取 Asset V4 服务状态，请重新检测。';
-  if (
-    status.tls.rejectUnauthorized &&
-    (!status.tls.customCaConfigured || !status.tls.customCaAvailable)
-  ) {
-    return 'Asset V4 公司 CA 证书未配置或文件不可用。';
+  if (!status) return requestError || '无法读取 Asset V4 服务状态，请重新检测。';
+
+  const backendMessage = backendFailureMessage(status);
+  const fallback = (message: string) => backendMessage || message;
+  if (!status.tls.rejectUnauthorized) {
+    return fallback('Asset V4 必须启用严格 TLS 证书校验。');
   }
-  if (!status.configured) return status.message || 'Asset V4 服务尚未配置。';
-  if (!status.reachable) return status.message || 'Asset V4 服务当前无法连接。';
+  if (status.tls.customCaIntegrityValid === false) {
+    if (!status.tls.customCaConfigured) {
+      return fallback('Asset V4 公司 CA 证书尚未配置。');
+    }
+    if (!status.tls.customCaAvailable) {
+      return fallback(status.tls.customCaError || 'Asset V4 公司 CA 证书文件不存在或不可读。');
+    }
+    if (status.tls.customCaError) return fallback(status.tls.customCaError);
+    const actual = status.tls.customCaSha256;
+    const expected = status.tls.expectedCaSha256;
+    return fallback(
+      actual && expected
+        ? `Asset V4 公司 CA 证书 SHA-256 不匹配（实际 ${actual}，期望 ${expected}）。`
+        : 'Asset V4 公司 CA 证书完整性校验未通过。',
+    );
+  }
+  if (!status.configured) return fallback('Asset V4 服务尚未配置。');
+  if (!status.reachable) return fallback('Asset V4 服务当前无法连接。');
   if (!status.authorized) {
-    return status.authorizationMode === 'api-key'
-      ? 'Asset V4 API Key 鉴权未通过。'
-      : '本机 IP 尚未获得 Asset V4 访问权限。';
+    return fallback(
+      status.authorizationMode === 'api-key'
+        ? 'Asset V4 API Key 鉴权未通过。'
+        : '本机 IP 尚未获得 Asset V4 访问权限。',
+    );
   }
-  if (!status.available) return status.message || 'Asset V4 服务当前不可用。';
+  if (status.capacityCheckPassed !== true) {
+    return fallback('Asset V4 容量接口校验未通过。');
+  }
+  if (!status.capabilities[mode]) {
+    return fallback(mode === 'uv' ? '自动展 UV 服务当前不可用。' : '自动拓扑服务当前不可用。');
+  }
+  if (!status.available) return fallback('Asset V4 服务当前不可用。');
   return undefined;
+}
+
+function capacitySummary(status?: AssetProcessingStatus) {
+  const capacity = status?.capacity;
+  if (status?.capacityCheckPassed !== true || !capacity) return undefined;
+  return `${capacity.onlineWorkers} Worker · ${capacity.totalSlots} 槽位`;
 }
 
 function ReferenceImages({
@@ -735,14 +773,23 @@ function ReferenceImages({
 function ServiceBadge({
   status,
   loading,
+  error,
   onRetry,
 }: {
   status?: AssetProcessingStatus;
   loading: boolean;
+  error?: string;
   onRetry: () => void;
 }) {
-  const ready = Boolean(status?.available);
+  const ready = Boolean(
+    !loading && status?.available === true && status.capacityCheckPassed === true,
+  );
   const configured = Boolean(status?.configured);
+  const summary = capacitySummary(status);
+  const caInvalid = status?.tls.customCaIntegrityValid === false;
+  const failureDetail = status
+    ? backendFailureMessage(status) || (caInvalid ? status.tls.customCaError : undefined)
+    : error;
   return (
     <button
       type="button"
@@ -764,14 +811,20 @@ function ServiceBadge({
         {loading
           ? '正在检测服务'
           : ready
-            ? '服务可用'
-            : configured
-              ? '等待服务鉴权'
-              : '服务未配置'}
+            ? summary ?? '服务可用'
+            : caInvalid
+              ? 'CA 证书校验失败'
+              : status?.reachable && status.authorized && status.capacityCheckPassed !== true
+                ? '容量检查失败'
+                : !status
+                  ? '服务检测失败'
+                  : configured
+                    ? '等待服务鉴权'
+                    : '服务未配置'}
       </span>
       {!ready && !loading && (
         <span className="hidden max-w-56 truncate text-[10px] text-white/26 sm:inline">
-          {status?.message ?? '点击重新检测'}
+          {failureDetail || '点击重新检测'}
         </span>
       )}
     </button>
@@ -1564,6 +1617,7 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
   const traceStorageKey = `li3d:asset-processing:${mode}:trace`;
   const [serviceStatus, setServiceStatus] = useState<AssetProcessingStatus>();
   const [serviceLoading, setServiceLoading] = useState(true);
+  const [serviceError, setServiceError] = useState<string>();
   const [serviceCheck, setServiceCheck] = useState(0);
   const [job, setJob] = useState<AssetJob | undefined>(() => {
     const restoredJobId = window.sessionStorage.getItem(jobStorageKey);
@@ -1584,12 +1638,21 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
 
   useEffect(() => {
     let active = true;
+    setServiceLoading(true);
+    setServiceStatus(undefined);
+    setServiceError(undefined);
     void getAssetProcessingStatus()
       .then((status) => {
-        if (active) setServiceStatus(status);
+        if (!active) return;
+        setServiceStatus(status);
+        setServiceError(undefined);
       })
       .catch((statusError) => {
-        if (active) setError(statusError instanceof Error ? statusError.message : '无法读取资产服务配置。');
+        if (!active) return;
+        const message = statusError instanceof Error ? statusError.message : '无法读取资产服务配置。';
+        setServiceStatus(undefined);
+        setServiceError(message);
+        setError(message);
       })
       .finally(() => {
         if (active) setServiceLoading(false);
@@ -1726,8 +1789,18 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
     }
   }
 
-  const serviceReady = Boolean(serviceStatus?.available);
-  const serviceBlockReason = serviceUnavailableReason(serviceStatus, serviceLoading);
+  const serviceReady = Boolean(
+    !serviceLoading &&
+      serviceStatus?.available === true &&
+      serviceStatus.capacityCheckPassed === true &&
+      serviceStatus.capabilities[mode] === true,
+  );
+  const serviceBlockReason = serviceUnavailableReason(
+    serviceStatus,
+    serviceLoading,
+    mode,
+    serviceError,
+  );
   const pageGlow = mode === 'uv' ? 'bg-emerald-400/[0.055]' : 'bg-blue-400/[0.06]';
   const iconStyle = mode === 'uv'
     ? 'border-emerald-300/18 bg-emerald-400/[0.075] text-emerald-100'
@@ -1765,8 +1838,11 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
           <ServiceBadge
             status={serviceStatus}
             loading={serviceLoading}
+            error={serviceError}
             onRetry={() => {
               setServiceLoading(true);
+              setServiceStatus(undefined);
+              setServiceError(undefined);
               setError(undefined);
               setServiceCheck((value) => value + 1);
             }}
