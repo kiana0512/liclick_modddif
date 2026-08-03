@@ -11,6 +11,17 @@ export type ContentAwareRepairMaskInput = {
   hardAlphaThreshold?: number;
   weakAlphaThreshold?: number;
   weakGrowPixels?: 0 | 1;
+  /**
+   * Reject connected hard-gap components smaller than this many texels.
+   * Defaults to 16 texels per megapixel (minimum 4).
+   */
+  minimumComponentPixels?: number;
+  /**
+   * Keep a narrow component when its bounding-box span reaches this value,
+   * even if its area is below `minimumComponentPixels`. Set to 0 to disable
+   * the long-seam exception. Defaults to 12 texels per 1K of linear size.
+   */
+  minimumComponentSpan?: number;
   signal?: AbortSignal;
   yieldIntervalMs?: number;
 };
@@ -21,6 +32,8 @@ export type ContentAwareRepairMaskStats = {
   totalPixels: number;
   conflictRejectedPixels: number;
   conservativeHaloRejectedPixels: number;
+  noiseRejectedPixels: number;
+  noiseRejectedComponents: number;
 };
 
 export type ContentAwareRepairMaskResult = {
@@ -43,6 +56,12 @@ function throwIfAborted(signal?: AbortSignal) {
 
 function now() {
   return typeof performance === 'undefined' ? Date.now() : performance.now();
+}
+
+function normalizeThreshold(value: number | undefined, fallback: number, minimum: number) {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(minimum, Math.floor(value));
 }
 
 /**
@@ -73,12 +92,26 @@ export async function buildContentAwareRepairMask(
     Math.min(255, input.weakAlphaThreshold ?? 24),
   );
   const weakGrowPixels = input.weakGrowPixels ?? 1;
+  const megapixelScale = pixelCount / (1024 * 1024);
+  const linearScale = Math.sqrt(megapixelScale);
+  const minimumComponentPixels = normalizeThreshold(
+    input.minimumComponentPixels,
+    Math.max(4, Math.round(16 * megapixelScale)),
+    1,
+  );
+  const minimumComponentSpan = normalizeThreshold(
+    input.minimumComponentSpan,
+    Math.max(4, Math.round(12 * linearScale)),
+    0,
+  );
   const yieldIntervalMs = Math.max(2, input.yieldIntervalMs ?? 8);
   const mask = new Uint8Array(pixelCount);
   let hardPixels = 0;
   let weakPixels = 0;
   let conflictRejectedPixels = 0;
   let conservativeHaloRejectedPixels = 0;
+  let noiseRejectedPixels = 0;
+  let noiseRejectedComponents = 0;
   let lastYieldAt = now();
 
   const checkpoint = async () => {
@@ -88,6 +121,8 @@ export async function buildContentAwareRepairMask(
     lastYieldAt = now();
     throwIfAborted(input.signal);
   };
+
+  throwIfAborted(input.signal);
 
   for (let y = 0; y < input.height; y += 1) {
     const rowStart = y * input.width;
@@ -111,6 +146,102 @@ export async function buildContentAwareRepairMask(
       hardPixels += 1;
     }
     await checkpoint();
+  }
+
+  // A transparent projection contains thousands of isolated one-texel misses
+  // around rasterized edges. Treating every miss as content to synthesize is
+  // what creates the dirty UV-layer speckles. Filter hard seeds by connected
+  // component before weak growth so rejected noise cannot grow a halo.
+  //
+  // States used during this pass:
+  //   255 = unvisited hard seed, 254 = queued, 253 = retained component.
+  if (hardPixels > 0 && minimumComponentPixels > 1) {
+    const queue = new Uint32Array(pixelCount);
+    let processedComponents = 0;
+    for (let seed = 0; seed < pixelCount; seed += 1) {
+      if (mask[seed] !== 255) continue;
+
+      const regionId = input.regionIds[seed];
+      let head = 0;
+      let tail = 1;
+      queue[0] = seed;
+      mask[seed] = 254;
+      let minX = input.width;
+      let minY = input.height;
+      let maxX = -1;
+      let maxY = -1;
+
+      while (head < tail) {
+        const index = queue[head];
+        head += 1;
+        const y = Math.floor(index / input.width);
+        const x = index - y * input.width;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+
+        if (
+          x > 0 &&
+          mask[index - 1] === 255 &&
+          input.regionIds[index - 1] === regionId
+        ) {
+          mask[index - 1] = 254;
+          queue[tail] = index - 1;
+          tail += 1;
+        }
+        if (
+          x + 1 < input.width &&
+          mask[index + 1] === 255 &&
+          input.regionIds[index + 1] === regionId
+        ) {
+          mask[index + 1] = 254;
+          queue[tail] = index + 1;
+          tail += 1;
+        }
+        if (
+          y > 0 &&
+          mask[index - input.width] === 255 &&
+          input.regionIds[index - input.width] === regionId
+        ) {
+          mask[index - input.width] = 254;
+          queue[tail] = index - input.width;
+          tail += 1;
+        }
+        if (
+          y + 1 < input.height &&
+          mask[index + input.width] === 255 &&
+          input.regionIds[index + input.width] === regionId
+        ) {
+          mask[index + input.width] = 254;
+          queue[tail] = index + input.width;
+          tail += 1;
+        }
+        if ((head & 0x3fff) === 0) await checkpoint();
+      }
+
+      const componentSpan = Math.max(maxX - minX + 1, maxY - minY + 1);
+      const retainComponent =
+        tail >= minimumComponentPixels ||
+        (minimumComponentSpan > 0 && componentSpan >= minimumComponentSpan);
+      const outputState = retainComponent ? 253 : 0;
+      for (let componentIndex = 0; componentIndex < tail; componentIndex += 1) {
+        mask[queue[componentIndex]] = outputState;
+        if (componentIndex > 0 && (componentIndex & 0xffff) === 0) await checkpoint();
+      }
+      if (!retainComponent) {
+        hardPixels -= tail;
+        noiseRejectedPixels += tail;
+        noiseRejectedComponents += 1;
+      }
+      processedComponents += 1;
+      if ((processedComponents & 0xff) === 0) await checkpoint();
+    }
+
+    for (let index = 0; index < pixelCount; index += 1) {
+      if (mask[index] === 253) mask[index] = 255;
+      if ((index & 0xffff) === 0) await checkpoint();
+    }
   }
 
   if (weakGrowPixels === 1 && hardPixels > 0) {
@@ -164,6 +295,8 @@ export async function buildContentAwareRepairMask(
       totalPixels: hardPixels + weakPixels,
       conflictRejectedPixels,
       conservativeHaloRejectedPixels,
+      noiseRejectedPixels,
+      noiseRejectedComponents,
     },
   };
 }

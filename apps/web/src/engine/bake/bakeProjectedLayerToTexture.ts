@@ -3,6 +3,8 @@ import { createBakeReport } from './bakeReport';
 import {
   dilateImageData,
   dilateUvCoverageWithinTopology,
+  fillEnclosedUvCoverageGaps,
+  fillEnclosedUvCoverageGapsWithinTopology,
   getUvDilationPixels,
   padUvIslandGutters,
 } from './dilation';
@@ -17,6 +19,7 @@ import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod } from './uvBake
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
 import { reconcileUvSeams } from './uvSeamReconciliation';
 import { createRuntimeProjectionDepth } from '@/engine/projection/createRuntimeProjectionDepth';
+import { buildContentAwareSurfaceTopology } from '@/engine/contentAware/buildSurfaceTopology';
 import type {
   BakeProjectedLayerInput,
   BakeProjectedLayerResult,
@@ -29,6 +32,7 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
+import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
 
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
@@ -67,6 +71,50 @@ const SHARPEN_KERNEL = [
   { x: 1, y: 1, weight: 1 },
 ];
 
+async function fillUvInteriorGapsWithIslandOwnership(
+  imageData: ImageData,
+  coverage: Uint8Array,
+  root: THREE.Object3D,
+  iterations: number,
+) {
+  if (iterations <= 0) return 0;
+  try {
+    // This is the same cached topology used by content-aware repair. Its
+    // regionIds let the micro-crack pass distinguish a missing texel inside
+    // one UV island from an intentional one-pixel gap between two islands.
+    const topology = await buildContentAwareSurfaceTopology(
+      root,
+      imageData.width,
+      imageData.height,
+      {
+        includeInvisible: false,
+        includeSeamLinks: true,
+        seamBandPixels: 1,
+        minimumSeamNormalDot: 0.65,
+        yieldIntervalMs: 8,
+      },
+    );
+    return fillEnclosedUvCoverageGaps(
+      imageData,
+      coverage,
+      topology.coreMask,
+      iterations,
+      topology.regionIds,
+    );
+  } catch (error) {
+    console.warn(
+      '[Liclick 3D Texture] Island-aware UV repair topology failed; using conservative fallback.',
+      error,
+    );
+    return fillEnclosedUvCoverageGapsWithinTopology(
+      imageData,
+      coverage,
+      root,
+      iterations,
+    );
+  }
+}
+
 function shouldValidateGpuBakeCoverage() {
   try {
     return window.localStorage.getItem('liclick-debug-gpu-coverage-validation') === '1';
@@ -95,8 +143,35 @@ async function encodeBakeCanvas(canvas: HTMLCanvasElement, preferBlobOutput?: bo
 function encodeVisibleBakeCanvas(
   canvas: HTMLCanvasElement,
   input: BakeVisibleProjectedLayersInput,
+  straightRgbaImageData?: ImageData,
 ): Promise<{ imageUrl: string; imageBlob?: Blob }> {
   if (input.skipImageEncoding) return Promise.resolve({ imageUrl: '', imageBlob: undefined });
+  if (
+    input.outputAlpha === 'transparent' &&
+    (input.uvIslandGutterPixels ?? 0) > 0 &&
+    straightRgbaImageData
+  ) {
+    return encodeRgbaPngBlob(
+      straightRgbaImageData.width,
+      straightRgbaImageData.height,
+      straightRgbaImageData.data,
+    ).then(async (imageBlob) => {
+      if (input.preferBlobOutput) {
+        return { imageBlob, imageUrl: createRegisteredObjectUrl(imageBlob) };
+      }
+      const imageUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () =>
+          typeof reader.result === 'string'
+            ? resolve(reader.result)
+            : reject(new Error('Could not encode baked texture PNG data URL.'));
+        reader.onerror = () =>
+          reject(reader.error ?? new Error('Could not read baked texture PNG.'));
+        reader.readAsDataURL(imageBlob);
+      });
+      return { imageUrl };
+    });
+  }
   return encodeBakeCanvas(canvas, input.preferBlobOutput);
 }
 
@@ -168,13 +243,22 @@ function fillTransparentTexelsForViewport(imageData: ImageData) {
   }
 }
 
-function clearWeakTransparentTexels(imageData: ImageData) {
+function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8Array) {
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
     if (imageData.data[offset + 3] > MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
+    const pixelIndex = offset / 4;
+    // `padUvIslandGutters(..., 'rgb-only')` marks filter-only gutter texels
+    // with coverage value 2. Keep their hidden RGB while alpha remains zero.
+    if (imageData.data[offset + 3] === 0 && coverage?.[pixelIndex] === 2) continue;
     imageData.data[offset] = 0;
     imageData.data[offset + 1] = 0;
     imageData.data[offset + 2] = 0;
     imageData.data[offset + 3] = 0;
+    // Keep the logical coverage mask in lockstep with the exported alpha.
+    // Otherwise an alpha<=8 edge sample is treated as a valid wall/donor by
+    // the UV-hole pass and is only erased afterwards, leaving 1px cracks in
+    // the final PNG even though coverage still says that texel is occupied.
+    if (coverage) coverage[pixelIndex] = 0;
   }
 }
 
@@ -957,6 +1041,9 @@ export async function bakeVisibleProjectedLayersToTexture(
           composite,
         );
         applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+        if (input.outputAlpha === 'transparent') {
+          clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+        }
         for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
           if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
         }
@@ -991,6 +1078,17 @@ export async function bakeVisibleProjectedLayersToTexture(
             warnings.push(`UV-topology coverage repair filled ${filledPixels} texels.`);
           }
         }
+        if ((input.uvInteriorHolePixels ?? 0) > 0) {
+          const filledPixels = await fillUvInteriorGapsWithIslandOwnership(
+            composite,
+            qualityBlendComposite.coverage,
+            importedModel.group,
+            input.uvInteriorHolePixels ?? 0,
+          );
+          if (filledPixels > 0) {
+            warnings.push(`Safe enclosed UV-gap repair filled ${filledPixels} texels.`);
+          }
+        }
         if (input.enableDilation && !input.constrainDilationToInteriorHoles) {
           dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
         }
@@ -1007,7 +1105,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           }
         }
         if (input.outputAlpha !== 'transparent') fillTransparentTexelsForViewport(composite);
-        else clearWeakTransparentTexels(composite);
+        else clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
         context.putImageData(composite, 0, 0);
 
         input.onProgress?.({
@@ -1016,7 +1114,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           layerIndex: layers.length - 1,
           layerCount: layers.length,
         });
-        const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(canvas, input);
+        const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(canvas, input, composite);
         const coverageRatio = validateBakeCoverage(
           writtenTexels,
           input.resolution,
@@ -1123,13 +1221,19 @@ export async function bakeVisibleProjectedLayersToTexture(
         input.skipCpuPostprocess &&
         wantsTransparentOutput &&
         (input.uvCoverageGapPixels ?? 0) <= 0 &&
+        (input.uvInteriorHolePixels ?? 0) <= 0 &&
+        (input.uvIslandGutterPixels ?? 0) <= 0 &&
         !needsCpuSharpen &&
         !needsCpuViewportFill &&
         (!input.enableDilation || useGpuDilation);
+      let straightRgbaImageData: ImageData | undefined;
       if (!canSkipCpuPostprocess) {
         const gpuContext = gpuBake.canvas.getContext('2d', { willReadFrequently: true });
         if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
         const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
+        if (wantsTransparentOutput) {
+          clearWeakTransparentTexels(gpuImage, gpuBake.coverage);
+        }
         if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
         if (!wantsTransparentOutput || input.repairMissingUvSeams) {
           const seamResult = reconcileUvSeams(
@@ -1160,11 +1264,39 @@ export async function bakeVisibleProjectedLayersToTexture(
             );
           }
         }
+        if ((input.uvInteriorHolePixels ?? 0) > 0) {
+          const filledPixels = await fillUvInteriorGapsWithIslandOwnership(
+            gpuImage,
+            gpuBake.coverage,
+            importedModel.group,
+            input.uvInteriorHolePixels ?? 0,
+          );
+          if (filledPixels > 0) {
+            gpuBake.warnings.push(
+              `Safe enclosed UV-gap repair filled ${filledPixels} texels.`,
+            );
+          }
+        }
         if (input.enableDilation && !input.constrainDilationToInteriorHoles)
           dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
+        if ((input.uvIslandGutterPixels ?? 0) > 0) {
+          const paddedPixels = padUvIslandGutters(
+            gpuImage,
+            gpuBake.coverage,
+            importedModel.group,
+            input.uvIslandGutterPixels ?? 0,
+            wantsTransparentOutput,
+          );
+          if (paddedPixels > 0) {
+            gpuBake.warnings.push(
+              `UV-island gutter padding added ${paddedPixels} filter-only texels.`,
+            );
+          }
+        }
         if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
-        else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage);
+        else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage, gpuBake.coverage);
         gpuContext.putImageData(gpuImage, 0, 0);
+        straightRgbaImageData = gpuImage;
       }
       if (
         !input.skipGpuValidation &&
@@ -1189,7 +1321,11 @@ export async function bakeVisibleProjectedLayersToTexture(
         layerIndex: layers.length - 1,
         layerCount: layers.length,
       });
-      const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(gpuBake.canvas, input);
+      const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(
+        gpuBake.canvas,
+        input,
+        straightRgbaImageData,
+      );
       const coverageRatio = validateBakeCoverage(
         gpuBake.coveredPixels,
         input.resolution,
@@ -1388,6 +1524,9 @@ export async function bakeVisibleProjectedLayersToTexture(
   }
   const blendWrittenTexels = writeQualityBlendStackComposite(qualityBlendComposite, composite);
   applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+  if (input.outputAlpha === 'transparent') {
+    clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+  }
   let writtenTexels = 0;
   for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
     if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
@@ -1423,6 +1562,17 @@ export async function bakeVisibleProjectedLayersToTexture(
       warnings.push(`UV-topology coverage repair filled ${filledPixels} texels.`);
     }
   }
+  if ((input.uvInteriorHolePixels ?? 0) > 0) {
+    const filledPixels = await fillUvInteriorGapsWithIslandOwnership(
+      composite,
+      qualityBlendComposite.coverage,
+      importedModel.group,
+      input.uvInteriorHolePixels ?? 0,
+    );
+    if (filledPixels > 0) {
+      warnings.push(`Safe enclosed UV-gap repair filled ${filledPixels} texels.`);
+    }
+  }
   if (input.enableDilation && !input.constrainDilationToInteriorHoles) {
     dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
   }
@@ -1441,7 +1591,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   if (input.outputAlpha !== 'transparent') {
     fillTransparentTexelsForViewport(composite);
   } else {
-    clearWeakTransparentTexels(composite);
+    clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
   }
   context.putImageData(composite, 0, 0);
   input.onProgress?.({
@@ -1450,7 +1600,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     layerIndex: layers.length - 1,
     layerCount: layers.length,
   });
-  const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(canvas, input);
+  const { imageBlob, imageUrl } = await encodeVisibleBakeCanvas(canvas, input, composite);
   const coverageRatio = validateBakeCoverage(
     writtenTexels,
     input.resolution,

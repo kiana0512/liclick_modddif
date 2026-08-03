@@ -100,6 +100,8 @@ export interface BakeVisibleProjectedLayersInput {
   uvIslandGutterPixels?: number;
   /** Propagate nearby projected color only across texels occupied by model UV topology. */
   uvCoverageGapPixels?: number;
+  /** Close only enclosed UV pinholes/narrow cracks that have coverage on opposite sides. */
+  uvInteriorHolePixels?: number;
   /** Copy valid color across geometrically paired UV seams when one side missed projection. */
   repairMissingUvSeams?: boolean;
   /** Width of the geometry-aware UV seam repair band. */

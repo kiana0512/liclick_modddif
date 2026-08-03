@@ -1624,6 +1624,11 @@ function ImportedModel({
           const uvMaterialInput = {
             displayMode,
             selected,
+            // When a sparse content-aware repair is the UV base, transparent
+            // overlay texels must reveal that repair. The empty-UV checker is
+            // only a diagnostic fallback; drawing it here hid valid repairs
+            // immediately after projected layers were merged.
+            showEmptyUvChecker: !loadedContentAwareUnderlayTexture,
             ...(loadedUvTexture
               ? {
                   uvOverlayTexture: loadedUvTexture,

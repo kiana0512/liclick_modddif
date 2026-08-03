@@ -60,9 +60,10 @@ export interface SurfaceAwareRepairInput {
   /** Reject a connected gap component when any of its texels cannot be repaired. */
   requireCompleteComponents?: boolean;
   /**
-   * Forces every connected gap component to clone from one dominant UV donor
-   * region. This prevents two sides of a fully empty island (for example a
-   * blue lid and a white metal rim) from producing Voronoi colour stripes.
+   * Forces every connected physical gap component to clone from one dominant
+   * source texel. The donor region is selected first, then one real texel wins
+   * by ownership area, preventing both cross-region and same-region Voronoi
+   * colour stripes.
    */
   lockToDominantSourceRegion?: boolean;
 }
@@ -404,10 +405,11 @@ type SourceRegionLockStats = {
  * The first propagation pass is still useful: it tells us how much of the gap
  * each donor region would own. We select the region with the largest ownership
  * area, retain only those seeds, and flood the complete gap component again.
- * Components deliberately stay inside one target UV region: seam links may
- * nominate donor regions, but they cannot merge hundreds of empty UV islands
- * into one global colour decision on dense high-poly meshes.
- * The second flood clones exact source texels; it never averages RGB values.
+ * Regular adjacency deliberately stays inside one target UV region. Explicit
+ * seam links join only the paired UV islands that touch on the model surface,
+ * so one physical gap gets one donor without creating a global colour decision
+ * across unrelated islands on dense high-poly meshes.
+ * The chosen source is a real input texel; RGB values are never averaged.
  * `queue` and `scratchMask` are reused, so this adds no full-resolution buffer.
  */
 function lockGapComponentsToDominantSourceRegion(
@@ -415,6 +417,7 @@ function lockGapComponentsToDominantSourceRegion(
   owner: Int32Array,
   queue: Uint32Array,
   scratchMask: Uint8Array,
+  seams: SeamAdjacency | undefined,
   checkAbort: () => void,
   report: ReturnType<typeof createProgressReporter>,
 ): SourceRegionLockStats {
@@ -426,6 +429,7 @@ function lockGapComponentsToDominantSourceRegion(
   const neighborX = input.connectivity === 8 ? EIGHT_NEIGHBOR_X : FOUR_NEIGHBOR_X;
   const neighborY = input.connectivity === 8 ? EIGHT_NEIGHBOR_Y : FOUR_NEIGHBOR_Y;
   const donorCounts = new Map<number, number>();
+  const sourceCounts = new Map<number, number>();
   let lockedComponents = 0;
   let reassignedPixels = 0;
   let extendedPixels = 0;
@@ -444,18 +448,25 @@ function lockGapComponentsToDominantSourceRegion(
     queue[0] = start;
     scratchMask[start] = 1;
     donorCounts.clear();
-    let unresolvedPixels = 0;
+    sourceCounts.clear();
+    const targetRegion = input.topologyRegionIds[start];
+    let spansMultipleTargetRegions = false;
 
-    // Gather one connected write component inside a single target UV region.
+    // Gather one physical write component. Regular grid edges stay inside one
+    // UV region, while an explicit seam edge may bridge two UV islands that
+    // touch on the model surface. Unrelated islands have no seam edge and
+    // therefore remain independent colour decisions.
     while (head < tail) {
       const index = queue[head];
       head += 1;
+      if (input.topologyRegionIds[index] !== targetRegion) {
+        spansMultipleTargetRegions = true;
+      }
       const source = owner[index];
       if (source >= 0) {
         const sourceRegion = input.topologyRegionIds[source];
         if (sourceRegion) donorCounts.set(sourceRegion, (donorCounts.get(sourceRegion) ?? 0) + 1);
-      } else {
-        unresolvedPixels += 1;
+        sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
       }
 
       const x = index % input.width;
@@ -477,16 +488,36 @@ function lockGapComponentsToDominantSourceRegion(
         queue[tail] = neighbor;
         tail += 1;
       }
+      if (seams) {
+        for (let edge = seams.heads[index]; edge >= 0; edge = seams.next[edge]) {
+          const neighbor = seams.targets[edge];
+          if (
+            scratchMask[neighbor] !== 0 ||
+            input.writeMask[neighbor] === 0 ||
+            input.topologyMask[neighbor] === 0
+          ) {
+            continue;
+          }
+          scratchMask[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
       if ((head & 0x3fff) === 0) checkAbort();
     }
 
     const componentSize = tail;
-    const targetRegion = input.topologyRegionIds[start];
     // A real donor from the target island is always more trustworthy than a
     // foreign seam donor, even if the first global flood let the foreign donor
     // claim more texels. Only a completely empty island needs a foreign choice.
-    let dominantRegion = donorCounts.has(targetRegion) ? targetRegion : 0;
-    let dominantCount = donorCounts.get(targetRegion) ?? 0;
+    // Preserve the historical preference for a component that stays in one UV
+    // region. Once seam links join multiple regions, pick one true dominant
+    // donor across the complete physical gap instead of biasing whichever UV
+    // island happens to have the lowest pixel index.
+    const preferSingleTargetRegion = !spansMultipleTargetRegions;
+    let dominantRegion =
+      preferSingleTargetRegion && donorCounts.has(targetRegion) ? targetRegion : 0;
+    let dominantCount = dominantRegion ? (donorCounts.get(dominantRegion) ?? 0) : 0;
     if (!dominantRegion) {
       for (const [sourceRegion, count] of donorCounts) {
         if (count > dominantCount || (count === dominantCount && sourceRegion < dominantRegion)) {
@@ -496,7 +527,7 @@ function lockGapComponentsToDominantSourceRegion(
       }
     }
 
-    if (!dominantRegion || (donorCounts.size === 1 && unresolvedPixels === 0)) {
+    if (!dominantRegion) {
       for (let queueIndex = 0; queueIndex < componentSize; queueIndex += 1) {
         scratchMask[queue[queueIndex]] = 0;
       }
@@ -504,66 +535,47 @@ function lockGapComponentsToDominantSourceRegion(
       continue;
     }
 
-    if (donorCounts.size > 1) lockedComponents += 1;
+    // A region can still contain many different source pixels. Retaining all
+    // of them recreates a nearest-owner Voronoi split inside the gap, which is
+    // visible as a white/blue gradient even though the region itself is locked.
+    // Select one real source texel by ownership area; ties prefer higher source
+    // alpha and finally the lower stable texel index. No RGB values are mixed.
+    let dominantSource = -1;
+    let dominantSourceCount = 0;
+    let dominantSourceAlpha = -1;
+    for (const [source, count] of sourceCounts) {
+      if (input.topologyRegionIds[source] !== dominantRegion) continue;
+      const sourceAlpha = input.rgba[source * 4 + 3];
+      if (
+        count > dominantSourceCount ||
+        (count === dominantSourceCount && sourceAlpha > dominantSourceAlpha) ||
+        (count === dominantSourceCount &&
+          sourceAlpha === dominantSourceAlpha &&
+          (dominantSource < 0 || source < dominantSource))
+      ) {
+        dominantSource = source;
+        dominantSourceCount = count;
+        dominantSourceAlpha = sourceAlpha;
+      }
+    }
 
-    // Compact dominant-donor seeds to the front of the reused queue. Writing
-    // to an earlier queue slot is safe because that slot has already been read.
-    let seedCount = 0;
+    if (dominantSource < 0) {
+      for (let queueIndex = 0; queueIndex < componentSize; queueIndex += 1) {
+        scratchMask[queue[queueIndex]] = 0;
+      }
+      report('locking-source-region', 0.85, 0.03, start + 1, input.pixelCount);
+      continue;
+    }
+
+    if (dominantSourceCount < componentSize) lockedComponents += 1;
     for (let queueIndex = 0; queueIndex < componentSize; queueIndex += 1) {
       const index = queue[queueIndex];
       const previousSource = owner[index];
-      const previousRegion =
-        previousSource >= 0 ? input.topologyRegionIds[previousSource] : 0;
-      if (previousRegion === dominantRegion) {
-        scratchMask[index] = 2;
-        queue[seedCount] = index;
-        seedCount += 1;
-      } else {
-        if (previousSource >= 0) reassignedPixels += 1;
-        else extendedPixels += 1;
-        owner[index] = -1;
-        // Value 1 means this component texel still needs a dominant donor.
-        scratchMask[index] = 1;
-      }
-    }
-
-    // `dominantCount` guarantees at least one seed. Re-run the flood only
-    // inside this write component, preserving local texture within the chosen
-    // donor region while removing all white/blue cross-region competition.
-    head = 0;
-    tail = seedCount;
-    while (head < tail) {
-      const index = queue[head];
-      head += 1;
-      const source = owner[index];
-      const x = index % input.width;
-      const y = Math.floor(index / input.width);
-      for (let direction = 0; direction < neighborX.length; direction += 1) {
-        const nextX = x + neighborX[direction];
-        const nextY = y + neighborY[direction];
-        if (nextX < 0 || nextY < 0 || nextX >= input.width || nextY >= input.height) continue;
-        const neighbor = nextY * input.width + nextX;
-        if (
-          scratchMask[neighbor] !== 1 ||
-          input.writeMask[neighbor] === 0 ||
-          input.topologyMask[neighbor] === 0 ||
-          input.topologyRegionIds[index] !== input.topologyRegionIds[neighbor]
-        ) {
-          continue;
-        }
-        scratchMask[neighbor] = 2;
-        owner[neighbor] = source;
-        queue[tail] = neighbor;
-        tail += 1;
-      }
-      if ((head & 0x3fff) === 0) checkAbort();
-    }
-
-    // The seed flood uses the same adjacency as component discovery, therefore
-    // every component texel is reached. Clear the scratch state for the next
-    // component and for the normal write pass below.
-    for (let queueIndex = 0; queueIndex < tail; queueIndex += 1) {
-      scratchMask[queue[queueIndex]] = 0;
+      if (previousSource < 0) extendedPixels += 1;
+      else if (previousSource !== dominantSource) reassignedPixels += 1;
+      owner[index] = dominantSource;
+      scratchMask[index] = 0;
+      if ((queueIndex & 0x3fff) === 0) checkAbort();
     }
     report('locking-source-region', 0.85, 0.03, start + 1, input.pixelCount);
   }
@@ -707,6 +719,7 @@ export function repairSurfaceTexture(
     owner,
     queue,
     repairedMask,
+    seams,
     checkAbort,
     report,
   );

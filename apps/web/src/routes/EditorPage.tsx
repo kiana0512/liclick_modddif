@@ -61,6 +61,14 @@ import { createProjectionMaskedImage } from '@/engine/projection/createMaskedPro
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
 import {
+  compositeRgbaUnderInPlace,
+  getMergeUvPostprocessOptions,
+  getRgbaAlphaCoverageRatio,
+  isContentAwareUvUnderlay,
+  isFlattenableUvMergeSource,
+} from '@/engine/layers/mergeUvComposition';
+import { compareUvLayersForComposition } from '@/engine/layers/uvLayerComposition';
+import {
   applyAlphaFromMask,
   blobToDataUrl,
   compositeUsingMask,
@@ -337,6 +345,7 @@ function isLocalRepaintLayer(layer: Layer) {
 
 function isContentAwareRepairLayer(layer: Layer) {
   return (
+    layer.role === 'content-aware-underlay' ||
     layer.generationId === 'texture-map-content-aware-repair' ||
     layer.id.startsWith('content-aware-projected-repair') ||
     layer.id.startsWith('content-aware-uv-repair')
@@ -3377,17 +3386,36 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     }
     const objectId = selectedObjectId ?? currentImportedModel.objectId;
     const currentLayers = useLayerStore.getState().layers;
-    const projectedLayers = layerIds
+    const selectedLayers = layerIds
       .map((layerId) => currentLayers.find((item) => item.id === layerId))
+      .filter((layer): layer is Layer => Boolean(layer && layer.id !== blankUvLayerId));
+    const projectedLayers = selectedLayers
       .filter((layer): layer is Layer =>
         Boolean(
-          layer?.type === 'projected' &&
+          layer.type === 'projected' &&
           layer.imageUrl &&
           layer.camera &&
-          !isLocalRepaintProjectionLayer(layer),
+          (!layer.objectId || layer.objectId === objectId),
         ),
       );
+    const selectedUvLayers = selectedLayers
+      .filter(
+        (layer) =>
+          isFlattenableUvMergeSource(layer) &&
+          (!layer.objectId || layer.objectId === objectId),
+      )
+      .sort((left, right) => {
+        // Repair is always a sparse underlay, irrespective of incidental list
+        // order. Ordinary merged UV color stays above it, while new projection
+        // pixels remain the front-most authored result.
+        const underlayOrder = Number(isContentAwareUvUnderlay(left)) -
+          Number(isContentAwareUvUnderlay(right));
+        if (underlayOrder !== 0) return underlayOrder;
+        return compareUvLayersForComposition(left, right, 'top-to-bottom');
+      });
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
+    const selectedUvLayerIds = selectedUvLayers.map((layer) => layer.id);
+    const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
     if (projectedLayerIds.length === 0) {
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
@@ -3416,60 +3444,107 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           ),
       );
       const bakeResolution = resolutionToSize[resolution];
-      const bakeResult = await bakeVisibleProjectedLayersToTexture({
-        objectId,
-        transientLayers: layersToBake,
-        resolution: bakeResolution,
-        enableBackfaceCulling: true,
-        // A merge is a faithful flatten of authored projection coverage. Any
-        // source texel that was empty must stay transparent; filling belongs
-        // exclusively to the separate content-aware repair command.
-        enableDilation: false,
-        dilationPixels: 0,
-        // Two transparent-alpha-preserving filter texels outside UV islands are
-        // sufficient for bilinear sampling and never paint a model surface.
-        uvIslandGutterPixels: 2,
-        uvCoverageGapPixels: 0,
-        repairMissingUvSeams: false,
-        outputAlpha: 'transparent',
-        commitToProject: false,
-        markSourceLayersBaked: false,
-        preferBlobOutput: project.workspaceMode === 'local-server',
-        onProgress: updateManualBakeProgress,
-      });
-      const mergedImageBlob = bakeResult.imageBlob;
-      let imageUrl = bakeResult.imageUrl;
+      const postprocess = getMergeUvPostprocessOptions(bakeResolution);
+      const bakeResult =
+        layersToBake.length > 0
+          ? await bakeVisibleProjectedLayersToTexture({
+              objectId,
+              transientLayers: layersToBake,
+              resolution: bakeResolution,
+              enableBackfaceCulling: true,
+              // Keep unrestricted atlas dilation disabled. The restored repair
+              // remains constrained to model UV topology, paired geometry seams
+              // and the small alpha-bearing gutter outside UV islands.
+              enableDilation: false,
+              dilationPixels: 0,
+              uvIslandGutterPixels: postprocess.uvIslandGutterPixels,
+              uvInteriorHolePixels: postprocess.uvInteriorHolePixels,
+              uvCoverageGapPixels: postprocess.uvCoverageGapPixels,
+              repairMissingUvSeams: true,
+              uvSeamRepairPixels: postprocess.uvSeamRepairPixels,
+              outputAlpha: 'transparent',
+              commitToProject: false,
+              markSourceLayersBaked: false,
+              skipImageEncoding: true,
+              onProgress: updateManualBakeProgress,
+            })
+          : undefined;
+
+      const outputCanvas = bakeResult?.canvas ?? document.createElement('canvas');
+      if (!bakeResult) {
+        outputCanvas.width = bakeResolution;
+        outputCanvas.height = bakeResolution;
+      }
+      const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
+      if (!outputContext) throw new Error('Could not create merged UV canvas.');
+      const mergedImageData = outputContext.getImageData(
+        0,
+        0,
+        bakeResolution,
+        bakeResolution,
+      );
+
+      // Flatten selected UV sources underneath projection coverage. This is
+      // the step that used to be silently skipped, causing a selected content-
+      // aware repair layer to disappear after merge.
+      for (let index = 0; index < selectedUvLayers.length; index += 1) {
+        const layer = selectedUvLayers[index];
+        const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
+        compositeRgbaUnderInPlace(mergedImageData.data, source.data, layer.opacity);
+        setManualBakeProgress({
+          title: t('mergeSelectedLayersToUvLayer'),
+          detail: t('autoBakePreparing'),
+          progress: 0.9 + ((index + 1) / Math.max(1, selectedUvLayers.length)) * 0.06,
+        });
+      }
+      const mergedCoverageRatio =
+        bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedImageData.data);
+
+      // Encode straight RGBA directly. Canvas PNG export is allowed to erase
+      // RGB beneath alpha=0, which would destroy the transparent UV gutter and
+      // reintroduce dark/white seams at bilinear-filter boundaries.
+      const mergedImageBlob = await encodeRgbaPngBlob(
+        bakeResolution,
+        bakeResolution,
+        mergedImageData.data,
+      );
+      let imageUrl: string;
       if (project.workspaceMode === 'local-server') {
         const filename = `${blankUvLayerId ?? createId('merged-uv-layer')}.png`;
         imageUrl = (
           await saveBlobAsset({
             projectId: project.id,
             category: 'layers',
-            blob: mergedImageBlob ?? dataUrlToBlob(imageUrl),
+            blob: mergedImageBlob,
             filename,
           })
         ).asset.url;
+      } else {
+        imageUrl = await blobToDataUrl(mergedImageBlob);
       }
+      const renderedColorSources = selectedLayers.filter(
+        (layer) => !isContentAwareUvUnderlay(layer),
+      );
       mergeLayersIntoUvLayer({
-        // Flatten ordinary projected layers into the UV base first. Local repaint
-        // UV layers deliberately remain separate and are composited above this
-        // base by the normal UV layer stack. Keeping their rendered-color and
-        // alpha semantics prevents a soft repair patch from being lit twice or
-        // becoming darker after the merge.
-        sourceLayerIds: projectedLayerIds,
+        // Every source that actually contributed to this PNG is consumed. A
+        // selected repair layer no longer remains as an apparently enabled but
+        // visually disconnected layer after the projected sources are hidden.
+        sourceLayerIds: consumedLayerIds,
         targetUvLayerId: blankUvLayerId,
         imageUrl,
         objectId,
         name: t('mergedUvLayer'),
         role: 'merged-uv',
-        renderedColor: projectedLayers.every((layer) => layer.renderedColor),
+        renderedColor:
+          renderedColorSources.length > 0 &&
+          renderedColorSources.every((layer) => Boolean(layer.renderedColor)),
       });
       setProjectLayers(useLayerStore.getState().layers);
       scheduleTexturedThumbnailRefresh(350);
       pushToast({
         tone: 'success',
         title: t('mergeComplete'),
-        description: `${bakeResult.bakedTexture.width}px · ${(bakeResult.report.coverageRatio * 100).toFixed(1)}%`,
+        description: `${bakeResolution}px · ${(mergedCoverageRatio * 100).toFixed(1)}%`,
       });
     } catch (error) {
       pushToast({
