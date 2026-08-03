@@ -1,9 +1,11 @@
+import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import WebSocket from '../apps/server/node_modules/ws/wrapper.mjs';
+import { writeFileAtomically } from '../apps/server/dist/services/atomicFileService.js';
 
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==',
@@ -52,6 +54,58 @@ async function requestJson(url, init) {
   return payload;
 }
 
+async function assertNoTemporaryFiles(directory) {
+  const entries = await fs.readdir(directory);
+  assert.deepEqual(
+    entries.filter((entry) => entry.endsWith('.tmp')),
+    [],
+    'Atomic file persistence left temporary files behind.',
+  );
+}
+
+async function runAtomicFilePersistenceRegression(root) {
+  const directory = path.join(root, 'atomic-file-regression');
+  const filePath = path.join(directory, 'session.json');
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(filePath, 'old-session\n', 'utf8');
+
+  let transientRenameCalls = 0;
+  await writeFileAtomically(filePath, 'updated-session\n', {
+    retryDelaysMs: [0, 0],
+    renameFile: async (temporaryPath, destinationPath) => {
+      transientRenameCalls += 1;
+      if (transientRenameCalls <= 2) {
+        throw Object.assign(new Error('Simulated transient Windows rename failure.'), { code: 'EPERM' });
+      }
+      await fs.rename(temporaryPath, destinationPath);
+    },
+  });
+  assert.equal(transientRenameCalls, 3, 'Atomic persistence did not retry EPERM twice before succeeding.');
+  assert.equal(await fs.readFile(filePath, 'utf8'), 'updated-session\n');
+  await assertNoTemporaryFiles(directory);
+
+  await fs.writeFile(filePath, 'preserved-session\n', 'utf8');
+  let permanentRenameCalls = 0;
+  await assert.rejects(
+    writeFileAtomically(filePath, 'must-not-replace-session\n', {
+      retryDelaysMs: [0, 0],
+      renameFile: async () => {
+        permanentRenameCalls += 1;
+        throw Object.assign(new Error('Simulated permanent Windows rename failure.'), { code: 'EPERM' });
+      },
+    }),
+    (error) => error?.code === 'EPERM',
+    'Permanent EPERM should reject after exhausting retries.',
+  );
+  assert.equal(permanentRenameCalls, 3, 'Permanent EPERM did not exhaust the configured retry attempts.');
+  assert.equal(
+    await fs.readFile(filePath, 'utf8'),
+    'preserved-session\n',
+    'Failed atomic persistence corrupted the previous session manifest.',
+  );
+  await assertNoTemporaryFiles(directory);
+}
+
 const port = await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const socketBase = `ws://127.0.0.1:${port}`;
@@ -83,6 +137,7 @@ child.stderr.on('data', (chunk) => {
 let plugin;
 let web;
 try {
+  await runAtomicFilePersistenceRegression(smokeRoot);
   await waitForHealth(baseUrl);
   await requestJson(`${baseUrl}/api/local-settings`, {
     method: 'PUT',

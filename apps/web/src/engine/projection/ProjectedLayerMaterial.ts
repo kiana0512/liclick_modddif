@@ -237,6 +237,8 @@ export class ProjectedLayerSamplerBudgetError extends Error {
 const PREPARED_TEXTURE_PROFILE_KEY = 'liclickPreparedTextureProfile';
 const UV_OVERLAY_TEXTURE_PROFILE = 'uv-overlay-v3';
 const BASE_PREVIEW_TEXTURE_PROFILE = 'base-preview-v2';
+const SPARSE_ALPHA_BASE_TEXTURE_PROFILE = 'sparse-alpha-base-v1';
+const SPARSE_ALPHA_BASE_TEXTURE_FLAG = 'liclickSparseAlphaBaseTexture';
 
 const vertexShader = `
   varying vec3 vWorldPosition;
@@ -1379,17 +1381,29 @@ function prepareLiveEraserMaskTexture(texture: THREE.Texture) {
 }
 
 function prepareExistingBaseTexture(texture: THREE.Texture) {
-  if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === BASE_PREVIEW_TEXTURE_PROFILE) return;
+  const sparseAlpha = texture.userData[SPARSE_ALPHA_BASE_TEXTURE_FLAG] === true;
+  const profile = sparseAlpha
+    ? SPARSE_ALPHA_BASE_TEXTURE_PROFILE
+    : BASE_PREVIEW_TEXTURE_PROFILE;
+  if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === profile) return;
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter = texture.isRenderTargetTexture
+  texture.minFilter = sparseAlpha || texture.isRenderTargetTexture
     ? THREE.LinearFilter
     : THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = !texture.isRenderTargetTexture;
+  texture.generateMipmaps = !sparseAlpha && !texture.isRenderTargetTexture;
   if (!texture.isRenderTargetTexture) texture.needsUpdate = true;
-  texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = BASE_PREVIEW_TEXTURE_PROFILE;
+  texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = profile;
+}
+
+/** Marks a straight-alpha sparse repair texture so preview sampling cannot mix
+ * transparent atlas RGB into visible texels through ordinary mip generation. */
+export function markSparseAlphaBaseTexture(texture: THREE.Texture) {
+  texture.userData[SPARSE_ALPHA_BASE_TEXTURE_FLAG] = true;
+  delete texture.userData[PREPARED_TEXTURE_PROFILE_KEY];
+  prepareExistingBaseTexture(texture);
 }
 
 function getLayerCameraSignature(camera: ProjectionLayerStackInput['layers'][number]['camera']) {

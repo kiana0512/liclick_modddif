@@ -10,6 +10,7 @@ import {
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
   getProjectedLayerSamplerBudget,
+  markSparseAlphaBaseTexture,
   syncProjectedLayerMaterialProjection,
   updateProjectedLayerStackMaterial,
   updateUvOverlayPreviewMaterial,
@@ -1267,6 +1268,10 @@ function ImportedModel({
   const loadedContentAwareUnderlayTexture = useLoadedPreviewTexture(
     contentAwareUvUnderlayLayer?.imageUrl,
   );
+  useEffect(() => {
+    if (!loadedContentAwareUnderlayTexture) return;
+    markSparseAlphaBaseTexture(loadedContentAwareUnderlayTexture);
+  }, [loadedContentAwareUnderlayTexture]);
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];
     const cacheKey = getProjectedLayerStackSignature(

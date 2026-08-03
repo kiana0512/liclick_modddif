@@ -186,6 +186,8 @@ export const translations = {
     contentAwareRepairFilling: 'Filling all detected model regions',
     contentAwareRepairNoBlankArea: 'No unfilled region was detected across the model.',
     contentAwareRepairNoSource: 'No visible projected texture is available for model-wide repair.',
+    contentAwareRepairNoReachableSource:
+      'No safe same-surface texture source was found close enough to repair the detected gaps.',
     contentAwareFillComplete: 'Content-aware fill complete',
     contentAwareFillCompleteHelp: 'Masked blank pixels were filled from nearby texture colors.',
     before: 'Before',
@@ -674,6 +676,7 @@ export const translations = {
     contentAwareRepairFilling: '正在填补模型全部缺失区域',
     contentAwareRepairNoBlankArea: '模型全部 UV 中没有检测到未填充区域。',
     contentAwareRepairNoSource: '没有可用于全模型修补的可见投射贴图。',
+    contentAwareRepairNoReachableSource: '检测到缺口，但附近没有可安全采样的同表面纹理。',
     contentAwareFillComplete: '内容识别填充完成',
     contentAwareFillCompleteHelp: '已用周边纹理颜色填补蒙版内空白像素。',
     before: '之前',

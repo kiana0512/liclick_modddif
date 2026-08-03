@@ -61,6 +61,18 @@ export async function encodeRgbaPngDataUrl(
   height: number,
   rgba: Uint8Array | Uint8ClampedArray,
 ) {
+  return blobToDataUrl(await encodeRgbaPngBlob(width, height, rgba));
+}
+
+/**
+ * Blob variant for persisted editor assets. This keeps RGB padding beneath
+ * fully transparent texels intact, which Canvas.toBlob() is allowed to erase.
+ */
+export async function encodeRgbaPngBlob(
+  width: number,
+  height: number,
+  rgba: Uint8Array | Uint8ClampedArray,
+) {
   let pngBuffer: ArrayBuffer;
   if (typeof Worker === 'undefined') {
     pngBuffer = await encodeRgbaPngOnMainThread(width, height, rgba);
@@ -72,5 +84,5 @@ export async function encodeRgbaPngDataUrl(
       pngBuffer = await encodeRgbaPngOnMainThread(width, height, rgba);
     }
   }
-  return blobToDataUrl(new Blob([pngBuffer], { type: 'image/png' }));
+  return new Blob([pngBuffer], { type: 'image/png' });
 }
