@@ -15,6 +15,11 @@ import {
   type BakeChannelId,
   type NormalBakeJob,
 } from '../services/substanceBakeService.js';
+import {
+  displayFilename,
+  englishSafeFilename,
+  englishSafeStem,
+} from '../services/modelFilenameService.js';
 import { sendJson } from './httpUtils.js';
 
 type HistoryModule = 'bake' | AssetHistoryMode;
@@ -53,18 +58,33 @@ const bakeChannelLabels: Record<BakeChannelId, string> = {
   metallic: 'Metallic',
 };
 
+const bakeChannelFileSuffixes: Record<BakeChannelId, string> = {
+  baseColor: 'base-color',
+  normal: 'normal',
+  ambientOcclusion: 'ao',
+  curvature: 'curvature',
+  worldNormal: 'world-normal',
+  thickness: 'thickness',
+  position: 'position',
+  roughness: 'roughness',
+  metallic: 'metallic',
+};
+
 function cleanText(value: unknown, maximumLength = 1_000) {
   if (typeof value !== 'string') return undefined;
-  const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maximumLength);
+  const clean = Array.from(value, (character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 31 || code === 127 ? ' ' : character;
+  }).join('').trim().slice(0, maximumLength);
   return clean || undefined;
 }
 
-function archiveBase(value: string) {
-  return path.basename(value)
-    .replace(/\.[^.]+$/, '')
-    .replace(/[^a-zA-Z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 72) || 'bake';
+function bakeSourceName(job: NormalBakeJob) {
+  return displayFilename(job.displayInput?.high ?? job.input.high, '未命名模型.fbx');
+}
+
+function bakeEnglishBase(job: NormalBakeJob) {
+  return englishSafeStem(bakeSourceName(job), 'bake');
 }
 
 function bakeParameters(job: NormalBakeJob): HistoryParameter[] {
@@ -86,6 +106,7 @@ function bakeParameters(job: NormalBakeJob): HistoryParameter[] {
 function bakeOutputs(job: NormalBakeJob, userId: string): HistoryOutput[] {
   const outputs: HistoryOutput[] = [];
   let totalBytes = 0;
+  const base = bakeEnglishBase(job);
   for (const channel of job.settings.channels) {
     const output = job.outputs?.[channel] ?? (channel === 'normal' ? job.output : undefined);
     const outputPath = getNormalBakeOutputPath(job.id, userId, channel);
@@ -100,17 +121,19 @@ function bakeOutputs(job: NormalBakeJob, userId: string): HistoryOutput[] {
     outputs.push({
       id: channel,
       label: bakeChannelLabels[channel],
-      filename: path.basename(output.fileName),
+      filename: englishSafeFilename(
+        `${base}_${bakeChannelFileSuffixes[channel]}.png`,
+        `${channel}.png`,
+      ),
       sizeBytes,
       downloadUrl: `/api/bake/jobs/${encodeURIComponent(job.id)}/output/${channel}?download=1`,
     });
   }
   if (outputs.length > 0) {
-    const base = archiveBase(job.input.high);
     outputs.unshift({
       id: 'archive',
       label: '全部烘焙贴图 (ZIP)',
-      filename: `${base}_BakedMaps.zip`,
+      filename: englishSafeFilename(`${base}_baked-maps.zip`, 'baked-maps.zip'),
       sizeBytes: totalBytes,
       downloadUrl: `/api/bake/jobs/${encodeURIComponent(job.id)}/archive?name=${encodeURIComponent(base)}`,
     });
@@ -122,7 +145,7 @@ function bakeHistoryRecord(job: NormalBakeJob, userId: string): HistoryRecord {
   return {
     id: job.id,
     module: 'bake',
-    sourceName: path.basename(job.input.high || '未命名模型'),
+    sourceName: bakeSourceName(job),
     status: job.status,
     progress: Math.min(100, Math.max(0, Number(job.progress) || 0)),
     createdAt: job.createdAt,
@@ -147,19 +170,31 @@ function assetHistoryRecord(
   module: AssetHistoryMode,
   record: AssetJobHistoryRecord & { jobId: string },
 ): HistoryRecord {
+  const sourceName = cleanText(record.sourceName, 180)
+    ?? (module === 'uv' ? '历史展 UV 任务' : '历史拓扑任务');
+  const sourceBase = englishSafeStem(sourceName, module === 'uv' ? 'uv' : 'retopology');
+  const visibleArtifacts = (record.artifacts ?? []).filter((artifact) => {
+    const extension = path.extname(artifact.filename).toLowerCase();
+    return extension === '.fbx' || extension === '.blend';
+  });
   return {
     id: record.jobId,
     module,
-    sourceName: cleanText(record.sourceName, 180) ?? (module === 'uv' ? '历史展 UV 任务' : '历史拓扑任务'),
+    sourceName,
     status: normalizedAssetStatus(record.status),
     progress: Math.min(100, Math.max(0, Number(record.progress) || 0)),
     createdAt: record.createdAt,
     ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
     parameters: record.parameters ?? [],
-    outputs: (record.artifacts ?? []).map((artifact) => ({
+    outputs: visibleArtifacts.map((artifact) => ({
       id: artifact.id,
       label: artifact.label,
-      filename: artifact.filename,
+      filename: module === 'retopology'
+        ? englishSafeFilename(
+            `${sourceBase}_retopology-result${path.extname(artifact.filename).toLowerCase()}`,
+            `retopology-result${path.extname(artifact.filename).toLowerCase()}`,
+          )
+        : artifact.filename,
       sizeBytes: artifact.sizeBytes,
       downloadUrl:
         `/api/asset-processing/jobs/${encodeURIComponent(record.jobId)}` +

@@ -52,7 +52,10 @@ let writeQueue = Promise.resolve();
 
 function cleanText(value: unknown, maximumLength: number) {
   if (typeof value !== 'string') return undefined;
-  const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maximumLength);
+  const clean = Array.from(value, (character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 31 || code === 127 ? ' ' : character;
+  }).join('').trim().slice(0, maximumLength);
   return clean || undefined;
 }
 

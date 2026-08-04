@@ -48,6 +48,12 @@ import {
   type LiclickImageSize,
 } from '@/services/liclickApiClient';
 import { getUserFacingGenerationError } from '@/services/generationErrorMessage';
+import {
+  hasTrackedModuleAction,
+  trackModuleAction,
+  trackModuleActionOnce,
+  type TelemetryModule,
+} from '@/services/telemetryClient';
 import type { ReferencePreprocessingResult } from '@/services/referenceImagePreprocessor';
 import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
@@ -782,6 +788,20 @@ export function GeneratePanel() {
 
   const syncGeneration = useCallback(
     (generation: Generation) => {
+      if (isGenerationSubmittedToServer(generation)) {
+        const telemetryModule: TelemetryModule = isLocalRepaintGeneration(generation)
+          ? 'local_repaint'
+          : 'texture_painting';
+        const jobId = getGenerationJobId(generation);
+        trackModuleActionOnce(telemetryModule, 'start', jobId);
+        if (hasTrackedModuleAction(telemetryModule, 'start', jobId)) {
+          if (generation.status === 'succeeded' && generation.resultUrl) {
+            trackModuleActionOnce(telemetryModule, 'complete', jobId);
+          } else if (generation.status === 'failed' && generation.metadata.cancelled !== true) {
+            trackModuleActionOnce(telemetryModule, 'fail', jobId);
+          }
+        }
+      }
       addGeneration(generation);
       addProjectGeneration(generation);
     },
@@ -2355,12 +2375,17 @@ export function GeneratePanel() {
     });
   }
 
-  function handleDownloadGenerationImage() {
+  async function handleDownloadGenerationImage() {
     if (!previewGeneration?.resultUrl) return;
     const kind = isTextureMapGeneration(previewGeneration) ? 'texture_map' : 'liclick_generation';
-    void downloadImageAsset(
+    const downloaded = await downloadImageAsset(
       previewResultUrl ?? previewGeneration.resultUrl,
       `liclick_${kind}_${previewGeneration.id}`,
+    );
+    if (!downloaded) return;
+    trackModuleAction(
+      isLocalRepaintGeneration(previewGeneration) ? 'local_repaint' : 'texture_painting',
+      'download',
     );
   }
 
@@ -2466,7 +2491,7 @@ export function GeneratePanel() {
                   className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
                   title={t('downloadImage')}
                   aria-label={t('downloadImage')}
-                  onClick={handleDownloadGenerationImage}
+                  onClick={() => void handleDownloadGenerationImage()}
                 >
                   <Download className="h-4 w-4" />
                 </button>

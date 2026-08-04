@@ -330,9 +330,13 @@ async function main() {
     });
     assert.equal(createFields['事件总数'], 1);
     assert.equal(
-      createFields['动作计数 JSON'],
+      createFields['动作计数JSON'],
       JSON.stringify({ texture_painting_open_count: 1 }),
     );
+    assert.equal(createFields['贴图绘制次数'], 1);
+    assert.equal(createFields['生图次数'], 0);
+    assert.equal(createFields['下载次数'], 0);
+    assert.equal(createFields['电脑名'], '');
 
     const updatedAggregate = {
       ...baseAggregate,

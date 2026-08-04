@@ -7,6 +7,7 @@
     "dev": "node scripts/dev-server.mjs",
     "serve": "node dist/index.js",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
+    "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "node scripts/prisma.mjs generate",
@@ -16,6 +17,7 @@
   },
   "dependencies": {
     "busboy": "^1.6.0",
+    "pinyin-pro": "3.28.2",
     "sharp": "^0.34.5",
     "ws": "^8.21.1"
   },

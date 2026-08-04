@@ -45,7 +45,10 @@ function requireV4SubmissionJobId(payload: unknown, statusCode: number) {
 
 function historyText(value: unknown, maximumLength: number) {
   if (typeof value !== 'string') return undefined;
-  const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maximumLength);
+  const clean = Array.from(value, (character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 31 || code === 127 ? ' ' : character;
+  }).join('').trim().slice(0, maximumLength);
   return clean || undefined;
 }
 
@@ -86,7 +89,11 @@ function historyParameters(mode: AssetHistoryMode, metadata: unknown) {
 
 function decodedHistoryHeader(request: IncomingMessage, name: string, maximumLength: number) {
   const raw = request.headers[name]?.toString();
-  if (!raw || raw.length > maximumLength * 3) return undefined;
+  // encodeURIComponent expands a Unicode scalar to at most twelve ASCII
+  // characters (four UTF-8 bytes, each encoded as %XX). Keep an absolute cap
+  // as this value originates in an HTTP header.
+  const maximumEncodedLength = Math.min(4_096, maximumLength * 12);
+  if (!raw || raw.length > maximumEncodedLength) return undefined;
   try {
     return historyText(decodeURIComponent(raw), maximumLength);
   } catch {
@@ -165,7 +172,9 @@ export async function handleAssetProcessingRoute(
           const metadata = JSON.parse(upload!.metadata) as unknown;
           await registerAssetJobOwner(jobId, user.id, {
             mode: 'retopology',
-            sourceName: upload!.sourceName,
+            sourceName:
+              decodedHistoryHeader(request, 'x-li3d-history-source-name', 180)
+              ?? upload!.sourceName,
             parameters: historyParameters('retopology', metadata),
           });
           await updateAssetJobSnapshot(jobId, user.id, payload);

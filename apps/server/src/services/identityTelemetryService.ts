@@ -9,6 +9,14 @@ const telemetryDirectory = path.join(serverConfig.workspaceDir, 'telemetry');
 const identityFile = path.join(identityDirectory, 'device-bindings.json');
 const rawEventsFile = path.join(telemetryDirectory, 'events.ndjson');
 const dailyAggregatesFile = path.join(telemetryDirectory, 'daily-aggregates.json');
+const telemetryTimeZone = 'Asia/Shanghai';
+const telemetryAggregateSchemaVersion = 2;
+const telemetryDateFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: telemetryTimeZone,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 const uuidV4Pattern = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const machineIdPattern = new RegExp(`^machine_${uuidV4Pattern}$`, 'i');
@@ -380,15 +388,32 @@ function storedProfile(input: FeishuIdentityProfile, existing?: StoredIdentityPr
     user_key: input.userKey,
     auth_user_id: input.authUserId,
     user_name: input.userName,
-    email: input.email,
-    department: input.department,
-    feishu_open_id: input.openId,
-    feishu_union_id: input.unionId,
-    feishu_user_id: input.userId,
-    tenant_key: input.tenantKey,
+    email: input.email ?? existing?.email,
+    department: input.department ?? existing?.department,
+    feishu_open_id: input.openId ?? existing?.feishu_open_id,
+    feishu_union_id: input.unionId ?? existing?.feishu_union_id,
+    feishu_user_id: input.userId ?? existing?.feishu_user_id,
+    tenant_key: input.tenantKey ?? existing?.tenant_key,
     created_at: existing?.created_at ?? timestamp,
     updated_at: timestamp,
   };
+}
+
+function storedProfileForUser(
+  database: IdentityDatabase,
+  device: DeviceIdentityInput,
+  userKey: string,
+) {
+  const exactPair = pairKey(device);
+  const pairProfile = exactPair ? database.by_pair[exactPair] : undefined;
+  if (pairProfile?.user_key === userKey) return pairProfile;
+  const machineProfile = device.machine_id
+    ? database.by_machine[machineKey(device.machine_id)]?.candidates[userKey]
+    : undefined;
+  if (machineProfile) return machineProfile;
+  return device.install_id
+    ? database.by_install[installKey(device.install_id)]?.candidates[userKey]
+    : undefined;
 }
 
 function addCandidate(
@@ -420,9 +445,19 @@ function eventMatchesResolvedProfile(
   return resolved.profile?.user_key === profile.user_key;
 }
 
+export function telemetryDateKey(timestamp: string) {
+  const parts = Object.fromEntries(
+    telemetryDateFormatter
+      .formatToParts(new Date(timestamp))
+      .filter((part) => part.type === 'year' || part.type === 'month' || part.type === 'day')
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 function aggregateKey(event: StoredTelemetryEvent) {
   return JSON.stringify([
-    event.ts.slice(0, 10),
+    telemetryDateKey(event.ts),
     event.identity.user_key,
     event.version ?? '',
     event.host_version ?? '',
@@ -432,6 +467,7 @@ function aggregateKey(event: StoredTelemetryEvent) {
 function aggregateContentHash(aggregate: DailyTelemetryAggregate) {
   return createHash('sha256')
     .update(JSON.stringify({
+      schema_version: telemetryAggregateSchemaVersion,
       date_key: aggregate.date_key,
       user_key: aggregate.user_key,
       user_name: aggregate.user_name ?? '',
@@ -453,6 +489,7 @@ function buildDailyAggregates(
   const aggregates = new Map<string, DailyTelemetryAggregate>();
   for (const event of events) {
     const key = aggregateKey(event);
+    const dateKey = telemetryDateKey(event.ts);
     const counterKey = `${event.data.module}_${event.data.action}_count`;
     const existing = aggregates.get(key);
     if (existing) {
@@ -465,7 +502,7 @@ function buildDailyAggregates(
     }
     aggregates.set(key, {
       aggregate_key: key,
-      date_key: event.ts.slice(0, 10),
+      date_key: dateKey,
       user_key: event.identity.user_key,
       user_name: event.identity.user_name,
       email: event.identity.email,
@@ -684,7 +721,10 @@ class FileIdentityTelemetryStorage implements IdentityTelemetryStorage {
         }
         pendingIds.add(event.event_id);
         const resolved = identityOverride
-          ? storedProfile(identityOverride)
+          ? storedProfile(
+              identityOverride,
+              storedProfileForUser(this.identityDatabase, event, identityOverride.userKey),
+            )
           : resolveStoredIdentity(this.identityDatabase, {
               machine_id: event.machine_id,
               install_id: event.install_id,

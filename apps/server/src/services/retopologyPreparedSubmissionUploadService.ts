@@ -56,6 +56,19 @@ function isModelField(value: string): value is ModelField {
   return modelFields.includes(value as ModelField);
 }
 
+function safeHistorySourceFilename(value: string, fallback: string) {
+  const token = path.basename(value.replaceAll('\\', '/'))
+    .split('')
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 31 || code === 127 ? ' ' : character;
+    })
+    .join('')
+    .trim()
+    .slice(0, 180);
+  return token || fallback;
+}
+
 function uniqueReferenceFilename(
   filename: string,
   referenceImages: StoredReferenceImage[],
@@ -201,6 +214,10 @@ export async function parsePreparedRetopologySubmission(
   try {
     parser = busboy({
       headers: request.headers,
+      // Browsers encode multipart filenames as UTF-8. Busboy otherwise
+      // defaults unlabelled filename parameters to latin1, which corrupts CJK
+      // names before the history record can preserve the user's display name.
+      defParamCharset: 'utf8',
       limits: {
         files: modelFields.length + maxReferenceImages + 1,
         fields: 2,
@@ -341,7 +358,7 @@ export async function parsePreparedRetopologySubmission(
           ? {
               path: filePath,
               size: 0,
-              originalFilename: safePreparedMultipartFilename(info.filename, `model${extension}`),
+              originalFilename: safeHistorySourceFilename(info.filename, `model${extension}`),
             }
           : undefined;
         if (isModel) models.set(fieldName, storedModel!);

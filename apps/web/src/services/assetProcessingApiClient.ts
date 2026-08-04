@@ -1,5 +1,6 @@
 import { getWorkspaceApiBase } from './workspaceApiBase';
 import { stableAsciiAssetIdentity } from './assetProcessingIdentifiers';
+import { retopologyWireFileNames } from './retopologyWireNames';
 import { createId } from '@/utils/id';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
@@ -313,22 +314,40 @@ export async function submitPreparedRetopologyProcessing(input: {
   referenceImages: File[];
 }) {
   const externalAssetId = await stableAsciiAssetIdentity(input.metadata.external_asset_id);
+  const wireNames = retopologyWireFileNames({
+    externalAssetId,
+    highModelName: input.highModel.name,
+    referenceImageNames: input.referenceImages.map((image) => image.name),
+  });
   const body = new FormData();
-  body.set('high_model', input.highModel);
+  body.set('high_model', input.highModel, wireNames.highModel);
   body.set(
     'metadata',
     JSON.stringify({
       ...input.metadata,
       external_asset_id: externalAssetId,
+      reference_views: input.metadata.reference_views.map((reference, index) => ({
+        ...reference,
+        filename: wireNames.referenceImages[index] ?? reference.filename,
+      })),
     }),
   );
-  for (const image of input.referenceImages) body.append('reference_images', image);
+  for (const [index, image] of input.referenceImages.entries()) {
+    body.append(
+      'reference_images',
+      image,
+      wireNames.referenceImages[index] ?? `li3d-reference-${index + 1}.bin`,
+    );
+  }
   const response = await fetch(
     `${workspaceApiBase}/api/asset-processing/retopology/prepare-and-process`,
     {
       method: 'POST',
       credentials: 'include',
-      headers: requestHeaders(externalAssetId),
+      headers: {
+        ...requestHeaders(externalAssetId),
+        'X-LI3D-History-Source-Name': encodeURIComponent(input.highModel.name),
+      },
       body,
     },
   );

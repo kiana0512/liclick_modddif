@@ -58,6 +58,7 @@ import {
 } from '@/engine/scene/transformActions';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import { dehighlightBaseColorFile } from '@/engine/materials/dehighlightBaseColor';
+import { getBakeHighObjects, replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
 import {
   bakeOutputUrl,
   downloadAllBakeOutputs,
@@ -69,6 +70,11 @@ import {
   type NormalBakeJob,
   type SubstanceBakerStatus,
 } from '@/services/bakeApiClient';
+import {
+  hasTrackedModuleAction,
+  trackModuleAction,
+  trackModuleActionOnce,
+} from '@/services/telemetryClient';
 import { saveBlobAsset, saveProject } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -276,42 +282,23 @@ export function BakeWorkspacePage({
   const autoLowPairRef = useRef(new Set<string>());
   const { project, isLoading, error } = useWorkflowProject(projectId);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
-  const currentProjectId = useProjectStore((state) => state.currentProjectId);
-  const liveSceneObjects = useSceneStore((state) => state.objects);
-  const liveImportedModels = useSceneStore((state) => state.importedModels);
-  const setImportedModel = useSceneStore((state) => state.setImportedModel);
-  const workspaceObjects = useMemo(() => {
-    const persistedObjects = project?.objects ?? [];
-    if (currentProjectId !== projectId || liveSceneObjects.length === 0) return persistedObjects;
-    const persistedIds = new Set(persistedObjects.map((object) => object.id));
-    const additions = liveSceneObjects.filter((object) => !persistedIds.has(object.id));
-    // Preserve the project's array identity when both stores already describe
-    // the same objects. Rebuilding it here makes the readonly viewport write a
-    // new scene array on every effect pass and causes an update-depth loop.
-    return additions.length === 0 ? persistedObjects : [...persistedObjects, ...additions];
-  }, [currentProjectId, liveSceneObjects, project?.objects, projectId]);
-  const viewportProject = useMemo(
-    () =>
-      project
-        ? {
-            ...project,
-            objects: handoff?.objectId
-              ? workspaceObjects.filter((object) => object.id === handoff.objectId)
-              : workspaceObjects,
-          }
-        : undefined,
-    [handoff?.objectId, project, workspaceObjects],
-  );
+  const [highObjectOverrides, setHighObjectOverrides] = useState<Record<string, SceneObject>>({});
+  const workspaceObjects = useMemo(() => project?.objects ?? [], [project?.objects]);
+  const persistedHighObjects = useMemo(() => getBakeHighObjects(project), [project]);
   const highObjects = useMemo(() => {
-    const models = workspaceObjects.filter(
+    const byId = new Map(persistedHighObjects.map((object) => [object.id, object]));
+    Object.values(highObjectOverrides).forEach((object) => byId.set(object.id, object));
+    const candidates = Array.from(byId.values()).filter(
       (object) => object.type === 'mesh' || object.type === 'group',
     );
-    const explicitHigh = models.filter((object) => !isLowOrCageName(object.name));
-    const candidates = explicitHigh.length > 0 ? explicitHigh : models;
     if (!handoff?.objectId) return candidates;
     const handedOffObject = candidates.find((object) => object.id === handoff.objectId);
     return handedOffObject ? [handedOffObject] : [];
-  }, [handoff?.objectId, workspaceObjects]);
+  }, [handoff?.objectId, highObjectOverrides, persistedHighObjects]);
+  const viewportProject = useMemo(
+    () => (project ? { ...project, objects: highObjects } : undefined),
+    [highObjects, project],
+  );
   const [selectedObjectId, setSelectedObjectId] = useState('');
   const [activeStage, setActiveStage] = useState<BakeStage>('assets');
   const [viewportMode, setViewportMode] = useState<BakeViewportMode>('high');
@@ -387,11 +374,6 @@ export function BakeWorkspacePage({
   useEffect(() => {
     void refreshBakerStatus();
   }, [refreshBakerStatus]);
-
-  useEffect(() => {
-    if (!project || currentProjectId !== projectId || workspaceObjects === project.objects) return;
-    replaceCurrentProject({ ...project, objects: workspaceObjects, dirty: true });
-  }, [currentProjectId, project, projectId, replaceCurrentProject, workspaceObjects]);
 
   const persistProjectUpdate = useCallback(
     (update: (current: Project) => Project) => {
@@ -497,8 +479,7 @@ export function BakeWorkspacePage({
       if (!low) return [];
       const pairKey = `${high.id}:${low.id}`;
       if (autoLowPairRef.current.has(pairKey)) return [];
-      const liveModel = liveImportedModels.find((model) => model.objectId === low.id);
-      const source = liveModel?.objectUrl ?? low.sourcePath;
+      const source = low.sourcePath;
       if (!source || !/^(https?:|blob:|data:)/.test(source)) return [];
       autoLowPairRef.current.add(pairKey);
       return [{ highId: high.id, low, source }];
@@ -535,7 +516,7 @@ export function BakeWorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [highObjects, liveImportedModels, lowFiles, persistImportedFiles, project, workspaceObjects]);
+  }, [highObjects, lowFiles, persistImportedFiles, project, workspaceObjects]);
 
   useEffect(() => {
     const workspace = project?.bakeWorkspace;
@@ -603,8 +584,10 @@ export function BakeWorkspacePage({
       setSelectedObjectId(handoff.objectId);
       return;
     }
-    if (!selectedObjectId && highObjects[0])
-      setSelectedObjectId(project?.activeObjectId ?? highObjects[0].id);
+    if (!selectedObjectId && highObjects[0]) {
+      const activeHigh = highObjects.find((object) => object.id === project?.activeObjectId);
+      setSelectedObjectId(activeHigh?.id ?? highObjects[0].id);
+    }
   }, [handoff?.objectId, highObjects, project?.activeObjectId, selectedObjectId]);
 
   useEffect(() => {
@@ -639,6 +622,15 @@ export function BakeWorkspacePage({
     const firstAvailable = resultChannelOrder.find((channel) => getBakeOutput(bakeJob, channel));
     if (firstAvailable) setSelectedResultChannel(firstAvailable);
   }, [bakeJob, selectedResultChannel]);
+
+  useEffect(() => {
+    if (!bakeJob || !hasTrackedModuleAction('model_baking', 'start', bakeJob.id)) return;
+    if (bakeJob.status === 'succeeded') {
+      trackModuleActionOnce('model_baking', 'complete', bakeJob.id);
+    } else if (bakeJob.status === 'failed') {
+      trackModuleActionOnce('model_baking', 'fail', bakeJob.id);
+    }
+  }, [bakeJob]);
 
   const selectedHigh =
     highObjects.find((object) => object.id === selectedObjectId) ?? highObjects[0];
@@ -1203,8 +1195,9 @@ export function BakeWorkspacePage({
     setHighImporting(true);
     setBakeError(undefined);
     setAssetSaveState('saving');
-    let importedIntoWorkspace = false;
     let temporaryObjectUrl: string | undefined;
+    let previousOverride: SceneObject | undefined;
+    let objectId: string | undefined;
     try {
       const resourceFiles = files.filter((file) => file !== modelFile);
       const loaded = await loadModelFromFile(
@@ -1212,7 +1205,8 @@ export function BakeWorkspacePage({
         { normalize: false, ground: false, targetMaxDimension: 3 },
         resourceFiles,
       );
-      const objectId = selectedHigh?.id ?? loaded.object.id;
+      objectId = selectedHigh?.id ?? loaded.object.id;
+      previousOverride = highObjectOverrides[objectId];
 
       loaded.root.name = modelFile.name;
       loaded.root.userData.liclickObjectId = objectId;
@@ -1221,14 +1215,6 @@ export function BakeWorkspacePage({
       });
 
       temporaryObjectUrl = URL.createObjectURL(modelFile);
-      const liveImportedResult = {
-        ...loaded.result,
-        objectId,
-        name: modelFile.name,
-        sourceFileName: modelFile.name,
-        objectUrl: temporaryObjectUrl,
-        group: loaded.root,
-      };
       const liveImportedObject: SceneObject = {
         ...loaded.object,
         id: objectId,
@@ -1238,40 +1224,12 @@ export function BakeWorkspacePage({
         visible: true,
       };
 
-      // Make the imported mesh available immediately. Saving is deliberately
-      // performed afterwards so an unavailable/stale project record cannot
-      // make the file picker look as though it ignored a valid model.
-      setImportedModel(liveImportedResult, liveImportedObject);
+      // Preview the bake-only high mesh immediately. It never enters the
+      // texture scene store or Project.objects.
+      setHighObjectOverrides((current) => ({ ...current, [objectId!]: liveImportedObject }));
       setSelectedObjectId(objectId);
       setBakeJob(undefined);
       setOneClickBakeAttempted(false);
-      const currentProject = useProjectStore
-        .getState()
-        .projects.find((item) => item.id === projectId);
-      if (currentProject) {
-        const hasExistingObject = currentProject.objects.some((object) => object.id === objectId);
-        const objects = hasExistingObject
-          ? currentProject.objects.map((object) =>
-              object.id === objectId ? liveImportedObject : { ...object, selected: false },
-            )
-          : [
-              ...currentProject.objects.map((object) => ({ ...object, selected: false })),
-              liveImportedObject,
-            ];
-        replaceCurrentProject({
-          ...currentProject,
-          objects,
-          activeObjectId: objectId,
-          dirty: true,
-          bakeWorkspace: {
-            version: 1,
-            activeStage: 'assets',
-            selectedObjectId: objectId,
-            bakeSets: currentProject.bakeWorkspace?.bakeSets ?? {},
-          },
-        });
-      }
-      importedIntoWorkspace = true;
 
       const saved = await saveBlobAsset({
         projectId,
@@ -1279,51 +1237,24 @@ export function BakeWorkspacePage({
         blob: modelFile,
         filename: `bake-${objectId}-high-${modelFile.name}`,
       });
-      const importedResult = {
-        ...liveImportedResult,
-        objectUrl: saved.asset.url,
-      };
       const importedObject: SceneObject = {
         ...liveImportedObject,
         sourcePath: saved.asset.url,
       };
-      setImportedModel(importedResult, importedObject);
+      setHighObjectOverrides((current) => ({ ...current, [objectId!]: importedObject }));
 
-      await persistProjectUpdate((current) => {
-        const hasExistingObject = current.objects.some((object) => object.id === objectId);
-        const objects = hasExistingObject
-          ? current.objects.map((object) =>
-              object.id === objectId ? importedObject : { ...object, selected: false },
-            )
-          : [...current.objects.map((object) => ({ ...object, selected: false })), importedObject];
-        const assetManifest = {
-          ...(current.assetManifest ?? {
-            models: [],
-            references: [],
-            generations: [],
-            layers: [],
-            baked: [],
-          }),
-          models: Array.from(
-            new Set([
-              ...(current.assetManifest?.models ?? []),
-              saved.asset.relativePath ?? saved.asset.url,
-            ]),
-          ),
-        };
-        return {
-          ...current,
-          objects,
-          activeObjectId: objectId,
-          assetManifest,
-          bakeWorkspace: {
-            version: 1,
-            activeStage: 'assets',
-            selectedObjectId: objectId,
-            bakeSets: current.bakeWorkspace?.bakeSets ?? {},
+      await persistProjectUpdate((current) =>
+        replaceBakeHighSnapshot(current, {
+          objectId: objectId!,
+          asset: {
+            name: modelFile.name,
+            url: saved.asset.url,
+            relativePath: saved.asset.relativePath,
+            mimeType: modelFile.type || 'application/octet-stream',
           },
-        };
-      });
+          highObject: importedObject,
+        }),
+      );
       if (temporaryObjectUrl) {
         URL.revokeObjectURL(temporaryObjectUrl);
         temporaryObjectUrl = undefined;
@@ -1332,12 +1263,17 @@ export function BakeWorkspacePage({
     } catch (reason) {
       setAssetSaveState('error');
       const detail = reason instanceof Error ? reason.message : '请重试。';
-      setBakeError(
-        importedIntoWorkspace
-          ? `高模已导入当前工作区，但未能保存到项目：${detail}`
-          : `高模导入失败：${detail}`,
-      );
+      if (objectId) {
+        setHighObjectOverrides((current) => {
+          const next = { ...current };
+          if (previousOverride) next[objectId!] = previousOverride;
+          else delete next[objectId!];
+          return next;
+        });
+      }
+      setBakeError(`高模导入失败：${detail}`);
     } finally {
+      if (temporaryObjectUrl) URL.revokeObjectURL(temporaryObjectUrl);
       setHighImporting(false);
       if (highInputRef.current) highInputRef.current.value = '';
     }
@@ -1396,8 +1332,7 @@ export function BakeWorkspacePage({
   }
 
   async function createHighFile() {
-    const liveModel = liveImportedModels.find((model) => model.objectId === selectedHigh?.id);
-    const source = liveModel?.objectUrl ?? selectedHigh?.sourcePath;
+    const source = selectedHigh?.sourcePath;
     if (!source) throw new Error('高模源文件路径不可用，请重新导入高模。');
     const response = await fetch(source, { credentials: 'include' });
     if (!response.ok) throw new Error(`读取高模失败（${response.status}）。`);
@@ -1464,6 +1399,7 @@ export function BakeWorkspacePage({
           channels: resultChannelOrder.filter((channel) => enabledChannels.has(channel)),
         },
       });
+      trackModuleActionOnce('model_baking', 'start', job.id);
       setBakeJob(job);
     } catch (reason) {
       setBakeError(reason instanceof Error ? reason.message : '创建烘焙任务失败');
@@ -2334,6 +2270,7 @@ export function BakeWorkspacePage({
                             bakeJob,
                             fileStem(selectedHigh?.name ?? 'bake'),
                           );
+                          trackModuleAction('model_baking', 'download');
                         } catch (reason) {
                           setBakeError(
                             reason instanceof Error ? reason.message : '全部贴图导出失败',
@@ -2399,6 +2336,7 @@ export function BakeWorkspacePage({
                               setBakeError(undefined);
                               try {
                                 await downloadBakeOutput(bakeJob, channel, filename);
+                                trackModuleAction('model_baking', 'download');
                               } catch (reason) {
                                 setBakeError(
                                   reason instanceof Error ? reason.message : '下载贴图失败',
@@ -2640,7 +2578,7 @@ export function BakeWorkspacePage({
 
             {viewportProject && selectedHigh ? (
               <ModuleOneReadonlyViewport
-                key={`${selectedHigh.id}:${viewportResetKey}`}
+                key={`${selectedHigh.id}:${selectedHigh.sourcePath ?? ''}:${viewportResetKey}`}
                 project={viewportProject}
                 object={selectedHigh}
                 sceneOverlay={
@@ -3043,6 +2981,7 @@ export function BakeWorkspacePage({
                                 selectedResultChannel,
                                 selectedResultFilename,
                               );
+                              trackModuleAction('model_baking', 'download');
                             } catch (reason) {
                               setBakeError(
                                 reason instanceof Error ? reason.message : '下载贴图失败',

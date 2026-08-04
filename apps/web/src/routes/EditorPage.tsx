@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Plus } from 'lucide-react';
+import { Download, Flame, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -99,8 +99,19 @@ import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteraction
 import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
+import {
+  isCurrentEditorProjectLoad,
+  isEditorProjectServerReady,
+  shouldLoadEditorProjectRoute,
+  type EditorProjectLoadToken,
+} from '@/services/editorProjectRouteLoad';
+import { replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
 import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
+import {
+  hasTrackedModuleAction,
+  trackModuleActionOnce,
+} from '@/services/telemetryClient';
 import {
   fileToDataUrl,
   getWorkspaceHealth,
@@ -779,7 +790,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const loadedProjectIdRef = useRef<string>();
-  const serverLoadedProjectIdRef = useRef<string>();
+  const routeProjectLoadRevisionRef = useRef(0);
   const restoredModelKeyRef = useRef<string>();
   const modelRestoreRequestRef = useRef(0);
   const hydratedProjectVersionRef = useRef<string>();
@@ -811,6 +822,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     'idle',
   );
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
+  const [bakeHighImporting, setBakeHighImporting] = useState(false);
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
   const [photoshopEditBusy, setPhotoshopEditBusy] = useState(false);
@@ -832,7 +844,6 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     (state) => state.setActiveAbortController,
   );
   const project = useProjectStore((state) => state.projects.find((item) => item.id === projectId));
-  const setCurrentProject = useProjectStore((state) => state.setCurrentProject);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const setWorkspaceState = useProjectStore((state) => state.setWorkspaceState);
@@ -920,6 +931,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     hydratedProjectVersionRef.current = undefined;
     restoredModelKeyRef.current = undefined;
     modelRestoreRequestRef.current += 1;
+    routeProjectLoadRevisionRef.current += 1;
   }, [projectId]);
 
   useEffect(
@@ -934,15 +946,24 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   );
 
   useEffect(() => {
-    if (project) {
-      setRouteProjectStatus('idle');
-      return;
-    }
-    if (routeProjectStatus !== 'idle') return;
+    if (!shouldLoadEditorProjectRoute(projectId)) return;
+    const token: EditorProjectLoadToken = {
+      projectId,
+      revision: routeProjectLoadRevisionRef.current + 1,
+    };
+    routeProjectLoadRevisionRef.current = token.revision;
     setRouteProjectStatus('loading');
     void loadWorkspaceProject(projectId)
       .then((result) => {
-        serverLoadedProjectIdRef.current = result.project.id;
+        if (
+          !isCurrentEditorProjectLoad({
+            token,
+            currentRevision: routeProjectLoadRevisionRef.current,
+            currentRouteProjectId: projectId,
+            resultProjectId: result.project.id,
+          })
+        )
+          return;
         loadedProjectIdRef.current = result.project.id;
         replaceCurrentProject(result.project);
         hydrateProjectStores(result.project);
@@ -950,6 +971,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         setRouteProjectStatus('idle');
       })
       .catch(() => {
+        if (
+          token.revision !== routeProjectLoadRevisionRef.current ||
+          token.projectId !== projectId
+        )
+          return;
         setRouteProjectStatus('missing');
         pushToast({
           tone: 'error',
@@ -958,52 +984,19 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           dedupeKey: `project-load:${projectId}`,
         });
       });
-    // restoreProjectModel is intentionally not a dependency; this effect should run once per route project id.
+    return () => {
+      if (routeProjectLoadRevisionRef.current === token.revision) {
+        routeProjectLoadRevisionRef.current += 1;
+      }
+    };
+    // hydrateProjectStores is intentionally not a dependency; this effect is authoritative per route id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    project,
     projectId,
     pushToast,
     replaceCurrentProject,
-    restorePersistedHistory,
-    routeProjectStatus,
-    setGenerations,
-    setLayers,
     t,
   ]);
-
-  useEffect(() => {
-    if (!project) return;
-    if (loadedProjectIdRef.current === project.id) return;
-    loadedProjectIdRef.current = project.id;
-    setCurrentProject(project.id);
-    hydrateProjectStores(project);
-    // restoreProjectModel is intentionally not a dependency; this effect should run once per project id.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, restorePersistedHistory, setCurrentProject]);
-
-  useEffect(() => {
-    if (!project || project.workspaceMode !== 'local-server') return;
-    if (serverLoadedProjectIdRef.current === project.id) return;
-    serverLoadedProjectIdRef.current = project.id;
-    void loadWorkspaceProject(project.id)
-      .then((result) => {
-        replaceCurrentProject(result.project);
-        setSaveStatus('saved');
-        hydrateProjectStores(result.project);
-        setServerReadyProjectId(result.project.id);
-      })
-      .catch(() => {
-        setSaveStatus('offline');
-        pushToast({
-          tone: 'warning',
-          title: t('workspaceOfflineToast'),
-          dedupeKey: 'workspace-server-offline',
-        });
-      });
-    // restoreProjectModel is intentionally not a dependency; this effect should run once per server project id.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, pushToast, replaceCurrentProject, restorePersistedHistory, t]);
 
   useEffect(() => {
     if (serverReadyProjectId !== projectId) return;
@@ -2962,6 +2955,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       startedAt: new Date().toISOString(),
     };
     updateLocalRepaintRuntime(submittingRuntime);
+    let acceptedJobId: string | undefined;
     try {
       const job = await liclickImageEditProvider.startEditImage({
         clientEditId: requestId,
@@ -2984,6 +2978,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       if (abortController.signal.aborted) {
         throw new Error('局部重绘任务已终止。');
       }
+      acceptedJobId = job.id;
+      trackModuleActionOnce('local_repaint', 'start', acceptedJobId);
       const runtimeWithJob: LocalRepaintRuntime = {
         ...submittingRuntime,
         editJobId: job.id,
@@ -2997,6 +2993,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         );
         updateLocalRepaintRuntime(completed);
         await persistLocalRepaintRuntime(completed);
+        trackModuleActionOnce('local_repaint', 'complete', acceptedJobId);
         return { previewUrl: completed.previewUrl ?? '' };
       }
       updateLocalRepaintRuntime(runtimeWithJob);
@@ -3019,6 +3016,13 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         };
         updateLocalRepaintRuntime(failedRuntime);
         await persistLocalRepaintRuntime(failedRuntime);
+      }
+      if (
+        !wasAborted &&
+        acceptedJobId &&
+        hasTrackedModuleAction('local_repaint', 'start', acceptedJobId)
+      ) {
+        trackModuleActionOnce('local_repaint', 'fail', acceptedJobId);
       }
       throw new Error(message);
     } finally {
@@ -3344,6 +3348,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           );
           updateLocalRepaintRuntime(completed);
           await persistLocalRepaintRuntime(completed);
+          if (hasTrackedModuleAction('local_repaint', 'start', runtime.editJobId)) {
+            trackModuleActionOnce('local_repaint', 'complete', runtime.editJobId);
+          }
           pushToast({
             tone: 'success',
             title: '局部重绘完成',
@@ -3362,6 +3369,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           };
           updateLocalRepaintRuntime(failedRuntime);
           await persistLocalRepaintRuntime(failedRuntime);
+          if (hasTrackedModuleAction('local_repaint', 'start', runtime.editJobId)) {
+            trackModuleActionOnce('local_repaint', 'fail', runtime.editJobId);
+          }
           return;
         }
         const runningRuntime = {
@@ -3569,6 +3579,96 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         () => setManualBakeProgress(undefined),
         1600,
       );
+    }
+  }
+
+  async function handleImportBakeHigh() {
+    if (!project || !selectedObjectId || bakeHighImporting) return;
+    const sourceObject =
+      objects.find((object) => object.id === selectedObjectId) ??
+      project.objects.find((object) => object.id === selectedObjectId);
+    if (!sourceObject) {
+      pushToast({
+        tone: 'warning',
+        title: '请先选择模型',
+        description: '选择贴图工作区中的模型后，再导入为烘焙高模。',
+        dedupeKey: 'bake-high-source-missing',
+      });
+      return;
+    }
+
+    setBakeHighImporting(true);
+    try {
+      const importedSource = useSceneStore
+        .getState()
+        .importedModels.find((model) => model.objectId === sourceObject.id);
+      const sourceUrls = Array.from(
+        new Set(
+          [importedSource?.objectUrl, sourceObject.sourcePath].filter(
+            (value): value is string => Boolean(value),
+          ),
+        ),
+      );
+      let sourceBlob: Blob | undefined;
+      let lastReadError: unknown;
+      for (const sourceUrl of sourceUrls) {
+        try {
+          sourceBlob = getRegisteredObjectUrlBlob(sourceUrl);
+          if (!sourceBlob) {
+            const response = await fetch(sourceUrl, { credentials: 'include' });
+            if (!response.ok) throw new Error(`读取模型失败（${response.status}）`);
+            sourceBlob = await response.blob();
+          }
+          if (sourceBlob) break;
+        } catch (reason) {
+          lastReadError = reason;
+        }
+      }
+      if (!sourceBlob) {
+        throw lastReadError instanceof Error
+          ? lastReadError
+          : new Error('当前模型源文件不可用，请重新导入模型后再试。');
+      }
+
+      const sourceName = importedSource?.sourceFileName ?? sourceObject.name;
+      const saved = await saveBlobAsset({
+        projectId: project.id,
+        category: 'models',
+        blob: sourceBlob,
+        filename: `bake-${sourceObject.id}-high-${sourceName}`,
+      });
+      const currentProject = useProjectStore
+        .getState()
+        .projects.find((item) => item.id === project.id);
+      if (!currentProject) throw new Error('项目状态已更新，请重试。');
+      const nextProject = replaceBakeHighSnapshot(currentProject, {
+        objectId: sourceObject.id,
+        asset: {
+          name: sourceName,
+          url: saved.asset.url,
+          relativePath: saved.asset.relativePath,
+          mimeType: sourceBlob.type || 'application/octet-stream',
+        },
+        highObject: sourceObject,
+      });
+      const result = await saveWorkspaceProject(nextProject);
+      replaceCurrentProject(result.project);
+      pushToast({
+        tone: 'success',
+        title: '已导入烘焙高模',
+        description: '已创建独立烘焙副本，后续替换不会影响贴图工作区模型。',
+        dedupeKey: 'bake-high-imported',
+      });
+      onOpenBake({ objectId: sourceObject.id, baseColor: selectedObjectBaseColor });
+    } catch (reason) {
+      pushToast({
+        tone: 'error',
+        title: '导入烘焙高模失败',
+        description: reason instanceof Error ? reason.message : '请稍后重试。',
+        dedupeKey: 'bake-high-import-failed',
+      });
+    } finally {
+      setBakeHighImporting(false);
     }
   }
 
@@ -4597,7 +4697,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     };
   });
 
-  if (!project) {
+  if (!project || !isEditorProjectServerReady(projectId, serverReadyProjectId)) {
     return (
       <main className="liclick-surface grid min-h-screen place-items-center px-6 text-white">
         <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
@@ -4646,21 +4746,24 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         workspaceLabel={getWorkspaceLabel()}
         onBack={handleBackToProjects}
         workflowSwitcher={
-          <WorkflowModuleSwitcher
-            compact
-            activeModule="texture"
-            onOpenTexture={() => undefined}
-            onOpenBake={() =>
-              onOpenBake(
-                selectedObjectId
-                  ? {
-                      objectId: selectedObjectId,
-                      baseColor: selectedObjectBaseColor,
-                    }
-                  : undefined,
-              )
-            }
-          />
+          <div className="flex items-center gap-2">
+            <WorkflowModuleSwitcher
+              compact
+              activeModule="texture"
+              onOpenTexture={() => undefined}
+              onOpenBake={() => onOpenBake()}
+            />
+            <Button
+              variant="primary"
+              className="h-12 whitespace-nowrap rounded-lg px-4"
+              icon={<Flame className="h-4 w-4" />}
+              disabled={!selectedObjectId || bakeHighImporting}
+              onClick={() => void handleImportBakeHigh()}
+              title="将当前选中模型复制为独立的烘焙高模"
+            >
+              {bakeHighImporting ? '正在导入…' : '导入烘焙高模'}
+            </Button>
+          </div>
         }
         exportMenu={
           <ExportMenu

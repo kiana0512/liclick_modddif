@@ -85,6 +85,10 @@ export type BakeDraftSettings = {
 
 export type ProjectBakeSetState = {
   objectId: string;
+  /** Bake-only high-poly asset. It is deliberately separate from Project.objects. */
+  high?: BakeAssetReference;
+  /** Serializable preview metadata for the bake-only high-poly asset. */
+  highObject?: SceneObject;
   low?: BakeAssetReference;
   cage?: BakeAssetReference;
   color?: BakeAssetReference;

@@ -50,6 +50,16 @@ import {
   type AssetProcessingMode,
   type AssetProcessingStatus,
 } from '@/services/assetProcessingApiClient';
+import {
+  assetProcessingStatusNeedsRetry,
+  assetProcessingStatusRetryDelay,
+} from '@/services/assetProcessingStatusRetry';
+import {
+  hasTrackedModuleAction,
+  trackModuleAction,
+  trackModuleActionOnce,
+  type TelemetryModule,
+} from '@/services/telemetryClient';
 import { createId } from '@/utils/id';
 
 type AssetProcessingPageProps = {
@@ -80,6 +90,10 @@ const modeCopy = {
     Icon: Network,
   },
 } as const;
+
+function telemetryModuleForMode(mode: AssetProcessingMode): TelemetryModule {
+  return mode === 'uv' ? 'auto_uv' : 'auto_retopology';
+}
 
 function fileStem(fileName: string) {
   return fileName
@@ -637,6 +651,7 @@ function serviceUnavailableReason(
   requestError?: string,
 ) {
   if (loading) return '正在检查 Asset V4 服务，请稍候。';
+  if (requestError) return requestError;
   if (!status) return requestError || '无法读取 Asset V4 服务状态，请重新检测。';
 
   const backendMessage = backendFailureMessage(status);
@@ -793,14 +808,16 @@ function ServiceBadge({
   onRetry: () => void;
 }) {
   const ready = Boolean(
-    !loading && status?.available === true && status.capacityCheckPassed === true,
+    !loading && !error && status?.available === true && status.capacityCheckPassed === true,
   );
   const configured = Boolean(status?.configured);
   const summary = capacitySummary(status);
   const caInvalid = status?.tls.customCaIntegrityValid === false;
-  const failureDetail = status
-    ? backendFailureMessage(status) || (caInvalid ? status.tls.customCaError : undefined)
-    : error;
+  const failureDetail =
+    error ||
+    (status
+      ? backendFailureMessage(status) || (caInvalid ? status.tls.customCaError : undefined)
+      : undefined);
   return (
     <button
       type="button"
@@ -843,9 +860,11 @@ function ServiceBadge({
 }
 
 function ArtifactList({
+  mode,
   job,
   artifacts = assetJobArtifacts(job),
 }: {
+  mode: AssetProcessingMode;
   job: AssetJob;
   artifacts?: AssetArtifact[];
 }) {
@@ -867,6 +886,7 @@ function ArtifactList({
     try {
       await downloadVerifiedArtifact(jobId, artifact);
       setVerifiedArtifacts((current) => new Set(current).add(key));
+      trackModuleAction(telemetryModuleForMode(mode), 'download');
     } catch (artifactError) {
       setDownloadError(
         submissionErrorMessage(artifactError, '交付文件下载或校验失败。'),
@@ -990,6 +1010,7 @@ function JobPanel({
         throw new Error('当前交付中没有可下载的 FBX 模型。');
       }
       await downloadVerifiedArtifact(jobId, fbxArtifact);
+      trackModuleAction(telemetryModuleForMode(mode), 'download');
     } catch (artifactError) {
       setDeliveryDownloadError(
         submissionErrorMessage(artifactError, '完整交付下载或校验失败。'),
@@ -1084,7 +1105,7 @@ function JobPanel({
                   {mode === 'uv' ? `${artifacts.length}/5 项` : `${featuredArtifacts.length} 项`}
                 </span>
               </div>
-              <ArtifactList job={job} artifacts={featuredArtifacts.length ? featuredArtifacts : artifacts} />
+              <ArtifactList mode={mode} job={job} artifacts={featuredArtifacts.length ? featuredArtifacts : artifacts} />
               {featuredArtifacts.length > 0 && diagnosticArtifacts.length > 0 && (
                 <details className="group mt-3 rounded-xl border border-white/[0.065] bg-white/[0.018]">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 text-[11px] text-white/34">
@@ -1095,7 +1116,7 @@ function JobPanel({
                     </span>
                   </summary>
                   <div className="border-t border-white/[0.05] p-2">
-                    <ArtifactList job={job} artifacts={diagnosticArtifacts} />
+                    <ArtifactList mode={mode} job={job} artifacts={diagnosticArtifacts} />
                   </div>
                 </details>
               )}
@@ -1200,6 +1221,8 @@ function AutoUvWorkspace({
           },
         },
       });
+      const submissionJobId = assetJobId(submission);
+      if (submissionJobId) trackModuleActionOnce('auto_uv', 'start', submissionJobId);
       onJob({
         ...submission,
         progress: 0,
@@ -1445,6 +1468,10 @@ function AutoRetopologyWorkspace({
         metadata,
       });
       setPreparing(false);
+      const submissionJobId = assetJobId(submission);
+      if (submissionJobId) {
+        trackModuleActionOnce('auto_retopology', 'start', submissionJobId);
+      }
       onJob({
         ...submission,
         external_asset_id: submission.external_asset_id ?? metadata.external_asset_id,
@@ -1630,6 +1657,7 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
   const [serviceLoading, setServiceLoading] = useState(true);
   const [serviceError, setServiceError] = useState<string>();
   const [serviceCheck, setServiceCheck] = useState(0);
+  const serviceRetryAttemptRef = useRef(0);
   const [job, setJob] = useState<AssetJob | undefined>(() => {
     const restoredJobId = window.sessionStorage.getItem(jobStorageKey);
     return restoredJobId
@@ -1649,27 +1677,42 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
 
   useEffect(() => {
     let active = true;
+    let retryTimer: number | undefined;
+
+    const scheduleRetry = () => {
+      if (!active) return;
+      const delay = assetProcessingStatusRetryDelay(serviceRetryAttemptRef.current);
+      serviceRetryAttemptRef.current += 1;
+      retryTimer = window.setTimeout(() => {
+        if (active) setServiceCheck((value) => value + 1);
+      }, delay);
+    };
+
     setServiceLoading(true);
-    setServiceStatus(undefined);
     setServiceError(undefined);
     void getAssetProcessingStatus()
       .then((status) => {
         if (!active) return;
         setServiceStatus(status);
         setServiceError(undefined);
+        if (assetProcessingStatusNeedsRetry(status)) {
+          scheduleRetry();
+        } else {
+          serviceRetryAttemptRef.current = 0;
+        }
       })
       .catch((statusError) => {
         if (!active) return;
         const message = statusError instanceof Error ? statusError.message : '无法读取资产服务配置。';
-        setServiceStatus(undefined);
         setServiceError(message);
-        setError(message);
+        scheduleRetry();
       })
       .finally(() => {
         if (active) setServiceLoading(false);
       });
     return () => {
       active = false;
+      if (retryTimer) window.clearTimeout(retryTimer);
     };
   }, [serviceCheck]);
 
@@ -1786,6 +1829,17 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
     };
   }, [jobId]);
 
+  useEffect(() => {
+    if (!jobId || !jobStatus) return;
+    const telemetryModule = telemetryModuleForMode(mode);
+    if (!hasTrackedModuleAction(telemetryModule, 'start', jobId)) return;
+    if (jobStatus === 'SUCCEEDED') {
+      trackModuleActionOnce(telemetryModule, 'complete', jobId);
+    } else if (jobStatus === 'FAILED') {
+      trackModuleActionOnce(telemetryModule, 'fail', jobId);
+    }
+  }, [jobId, jobStatus, mode]);
+
   async function handleCancel() {
     if (!jobId) return;
     setBusy(true);
@@ -1802,6 +1856,7 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
 
   const serviceReady = Boolean(
     !serviceLoading &&
+      !serviceError &&
       serviceStatus?.available === true &&
       serviceStatus.capacityCheckPassed === true &&
       serviceStatus.capabilities[mode] === true,
@@ -1853,10 +1908,9 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
             loading={serviceLoading}
             error={serviceError}
             onRetry={() => {
+              serviceRetryAttemptRef.current = 0;
               setServiceLoading(true);
-              setServiceStatus(undefined);
               setServiceError(undefined);
-              setError(undefined);
               setServiceCheck((value) => value + 1);
             }}
           />

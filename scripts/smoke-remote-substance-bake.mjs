@@ -184,11 +184,11 @@ try {
     userId: ownerUserId,
     projectId: 'smoke-project',
     objectId: 'smoke-object',
-    high: { fileName: 'chair_high.fbx', data: Buffer.alloc(32, 1) },
-    low: { fileName: 'chair_low.fbx', data: Buffer.alloc(32, 2) },
-    color: { fileName: 'chair_base_color.png', data: png },
-    roughness: { fileName: 'chair_roughness.png', data: png },
-    metallic: { fileName: 'chair_metallic.png', data: png },
+    high: { fileName: '中文模型.FBX', data: Buffer.alloc(32, 1) },
+    low: { fileName: '中文模型.FBX', data: Buffer.alloc(32, 2) },
+    color: { fileName: '中文贴图.PNG', data: png },
+    roughness: { fileName: '中文贴图.PNG', data: png },
+    metallic: { fileName: '中文贴图.PNG', data: png },
     settings: {
       resolution: 1024,
       padding: 16,
@@ -221,6 +221,29 @@ try {
   assert.equal(created.stage, 'baking-maps');
   assert(created.startedAt);
   assert.equal(created.finishedAt, undefined);
+  assert.deepEqual(created.displayInput, {
+    high: '中文模型.FBX',
+    low: '中文模型.FBX',
+    color: '中文贴图.PNG',
+    roughness: '中文贴图.PNG',
+    metallic: '中文贴图.PNG',
+  });
+  const safeInputNames = Object.values(created.input);
+  assert.equal(new Set(safeInputNames.map((name) => name.toLowerCase())).size, safeInputNames.length);
+  for (const fileName of safeInputNames) {
+    assert.match(fileName, /^[a-z0-9._-]+$/);
+  }
+  assert.match(created.input.high, /\.fbx$/);
+  assert.match(created.input.low, /\.fbx$/);
+  assert.match(created.input.color, /\.png$/);
+  assert.match(created.input.roughness, /\.png$/);
+  assert.match(created.input.metallic, /\.png$/);
+
+  const persistedCreated = JSON.parse(
+    fs.readFileSync(path.join(workspace, 'bake-jobs', created.id, 'job.json'), 'utf8'),
+  );
+  assert.deepEqual(persistedCreated.displayInput, created.displayInput);
+  assert.deepEqual(persistedCreated.input, created.input);
 
   const validating = await waitForJob(
     service,
@@ -274,6 +297,21 @@ try {
   assert.match(multipart, /name="metallic_texture"/);
   assert.match(multipart, /"profile":"li3d-pbr-full-v2"/);
   assert.match(multipart, /"texture_cache_mb":32768/);
+  const submittedFilenames = Array.from(
+    multipart.matchAll(/filename="([^"]+)"/g),
+    (match) => match[1],
+  );
+  assert.deepEqual(submittedFilenames, [
+    created.input.low,
+    created.input.high,
+    created.input.color,
+    created.input.roughness,
+    created.input.metallic,
+  ]);
+  assert.equal(
+    submittedFilenames.every((fileName) => /^[a-z0-9._-]+$/.test(fileName)),
+    true,
+  );
 
   const baseColorOnly = await service.createNormalBakeJob({
     userId: ownerUserId,
@@ -299,6 +337,10 @@ try {
     },
   });
   assert.equal(baseColorOnly.remote?.profile, 'li3d-pbr-full-v2');
+  assert.equal(baseColorOnly.input.high, 'chair_high.fbx');
+  assert.equal(baseColorOnly.input.low, 'chair_low.fbx');
+  assert.equal(baseColorOnly.displayInput?.high, 'chair_high.fbx');
+  assert.equal(baseColorOnly.displayInput?.low, 'chair_low.fbx');
   assert.equal(baseColorOnly.input.roughness, 'liclick_neutral_roughness.png');
   assert.equal(baseColorOnly.input.metallic, 'liclick_neutral_metallic.png');
   const baseColorMultipart = submittedBody.toString('latin1');

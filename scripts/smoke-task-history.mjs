@@ -88,6 +88,11 @@ function bakeSettings() {
 }
 
 function bakeFixture(id, ownerUserId, sourceName, createdAt) {
+  const asciiSourceName = Array.from(sourceName).some(
+    (character) => (character.codePointAt(0) ?? 0) > 0x7f,
+  )
+    ? `${id}_high.fbx`
+    : sourceName;
   return {
     id,
     ...(ownerUserId ? { ownerUserId } : {}),
@@ -99,8 +104,12 @@ function bakeFixture(id, ownerUserId, sourceName, createdAt) {
     progress: 100,
     settings: bakeSettings(),
     input: {
+      high: asciiSourceName,
+      low: asciiSourceName.replace('_high.', '_low.'),
+    },
+    displayInput: {
       high: sourceName,
-      low: sourceName.replace('_high.', '_low.'),
+      low: sourceName.replace('高模', '低模').replace('_high.', '_low.'),
     },
     outputs: {
       baseColor: {
@@ -187,7 +196,7 @@ try {
   const aOutput = Buffer.from('history-owner-a-bake-output');
   await seedBake(
     workspaceDir,
-    bakeFixture(aBakeId, userA.id, 'owner-a_high.fbx', '2026-08-01T10:00:00.000Z'),
+    bakeFixture(aBakeId, userA.id, '湘子高模.fbx', '2026-08-01T10:00:00.000Z'),
     aOutput,
   );
   await seedBake(
@@ -225,18 +234,74 @@ try {
             contentType: 'application/octet-stream',
             sha256: 'a'.repeat(64),
           },
+          {
+            id: 'uv-blend',
+            label: 'UV Blender',
+            filename: 'owner-a-uv-result.blend',
+            sizeBytes: 256,
+            contentType: 'application/octet-stream',
+            sha256: 'f'.repeat(64),
+          },
+          {
+            id: 'uv-report',
+            label: 'UV QA 报告',
+            filename: 'owner-a-uv-report.json',
+            sizeBytes: 64,
+            contentType: 'application/json',
+            sha256: '1'.repeat(64),
+          },
+          {
+            id: 'uv-preview',
+            label: 'UV 预览图',
+            filename: 'owner-a-uv-preview.png',
+            sizeBytes: 32,
+            contentType: 'image/png',
+            sha256: '2'.repeat(64),
+          },
         ],
       },
       'asset-retopology-new-owner-b': {
         userId: userB.id,
         createdAt: '2026-08-02T11:00:00.000Z',
         mode: 'retopology',
-        sourceName: 'owner-b-retopology.fbx',
+        sourceName: '湘子高模.fbx',
         parameters: [{ label: '目标面数', value: '500' }],
-        status: 'FAILED',
-        progress: 42,
-        error: 'History smoke failure.',
-        artifacts: [],
+        status: 'SUCCEEDED',
+        progress: 100,
+        artifacts: [
+          {
+            id: 'retopology-fbx',
+            label: '拓扑 FBX',
+            filename: 'retopology_final.fbx',
+            sizeBytes: 128,
+            contentType: 'application/octet-stream',
+            sha256: 'b'.repeat(64),
+          },
+          {
+            id: 'retopology-blend',
+            label: '拓扑 Blender',
+            filename: 'retopology_final.blend',
+            sizeBytes: 256,
+            contentType: 'application/octet-stream',
+            sha256: 'c'.repeat(64),
+          },
+          {
+            id: 'retopology-report',
+            label: 'QA 报告',
+            filename: 'retopology_report.json',
+            sizeBytes: 64,
+            contentType: 'application/json',
+            sha256: 'd'.repeat(64),
+          },
+          {
+            id: 'retopology-preview',
+            label: '预览图',
+            filename: 'retopology_preview.png',
+            sizeBytes: 32,
+            contentType: 'image/png',
+            sha256: 'e'.repeat(64),
+          },
+        ],
       },
       'asset-legacy-owner-a': {
         userId: userA.id,
@@ -261,13 +326,19 @@ try {
   const aBakeRecord = aBakeHistory[0];
   assert.equal(aBakeRecord.module, 'bake');
   assert.equal(aBakeRecord.status, 'succeeded');
+  assert.equal(aBakeRecord.sourceName, '湘子高模.fbx');
   assert(aBakeRecord.parameters.length > 0, 'Bake history must preserve submitted parameters.');
   assert(
     aBakeRecord.parameters.some((parameter) => /1024|1K/i.test(parameter.value)),
     'Bake history must expose resolution.',
   );
-  const bakeOutput = aBakeRecord.outputs.find((output) => output.filename === 'basecolor.png');
+  const bakeOutput = aBakeRecord.outputs.find((output) => output.id === 'baseColor');
   assert(bakeOutput, 'Bake history must expose the completed map.');
+  assert.match(
+    bakeOutput.filename,
+    /^xiang-zi-high-poly-[a-f0-9]{8}_base-color\.png$/,
+    'Bake history downloads should use a readable ASCII translation of the Chinese source name.',
+  );
   assert.equal(bakeOutput.sizeBytes, aOutput.length);
   const controlledDownload = outputUrl(baseUrl, bakeOutput.downloadUrl);
 
@@ -294,11 +365,30 @@ try {
   );
   const newUvRecord = aUvHistory.find((record) => record.id === 'asset-uv-new-owner-a');
   assert.deepEqual(newUvRecord.parameters, assetOwnership.jobs['asset-uv-new-owner-a'].parameters);
-  assert.equal(newUvRecord.outputs[0]?.filename, 'owner-a-uv-result.fbx');
+  assert.deepEqual(
+    newUvRecord.outputs.map((output) => path.extname(output.filename)).sort(),
+    ['.blend', '.fbx'],
+    'UV history must expose only the final FBX and Blender files.',
+  );
 
   const bRetopologyHistory = await getHistory(baseUrl, userB.cookie, 'retopology');
   assert(bRetopologyHistory.some((record) => record.id === 'asset-retopology-new-owner-b'));
   assert(!bRetopologyHistory.some((record) => record.id === 'asset-uv-new-owner-a'));
+  const bRetopologyRecord = bRetopologyHistory.find(
+    (record) => record.id === 'asset-retopology-new-owner-b',
+  );
+  assert.equal(bRetopologyRecord.sourceName, '湘子高模.fbx');
+  assert.deepEqual(
+    bRetopologyRecord.outputs.map((output) => path.extname(output.filename)).sort(),
+    ['.blend', '.fbx'],
+    'Retopology history must expose only the final FBX and Blender files.',
+  );
+  for (const output of bRetopologyRecord.outputs) {
+    assert.match(
+      output.filename,
+      /^xiang-zi-high-poly-[a-f0-9]{8}_retopology-result\.(?:blend|fbx)$/,
+    );
+  }
 
   // A legacy ownership row has no mode or task snapshot. Reading either module
   // must remain valid and must never accidentally expose it to another user.

@@ -9,10 +9,11 @@ import {
   RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { BrandMark } from '@/components/common/BrandMark';
 import type { LocalTextureRuntimeState } from '@/services/localTextureRuntimeClient';
-import { getLocalTextureRuntimeDownloadUrl } from '@/services/localTextureRuntimeClient';
+import { downloadLocalTextureRuntimeInstaller } from '@/services/localTextureRuntimeClient';
+import { trackModuleAction } from '@/services/telemetryClient';
 
 function RuntimeStatus({
   state,
@@ -21,6 +22,9 @@ function RuntimeStatus({
   state: LocalTextureRuntimeState;
   onRetry: () => void;
 }) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string>();
+
   if (state.status === 'checking') {
     return (
       <div className="flex items-center gap-3 rounded-xl border border-violet-300/15 bg-violet-400/[0.07] px-4 py-3 text-sm text-violet-100/78">
@@ -43,6 +47,19 @@ function RuntimeStatus({
   }
 
   const outdated = state.status === 'outdated';
+  const downloadInstaller = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setDownloadError(undefined);
+    try {
+      await downloadLocalTextureRuntimeInstaller();
+      trackModuleAction('local_component', 'download');
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : '本地组件下载失败。');
+    } finally {
+      setDownloading(false);
+    }
+  };
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-amber-300/16 bg-amber-300/[0.06] px-4 py-3">
@@ -56,14 +73,15 @@ function RuntimeStatus({
         </p>
       </div>
       <div className="flex flex-col gap-3 sm:flex-row">
-        <a
-          href={getLocalTextureRuntimeDownloadUrl()}
-          download="LIclick 3D Texture Local Component Setup.exe"
+        <button
+          type="button"
+          disabled={downloading}
+          onClick={() => void downloadInstaller()}
           className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_14px_36px_rgba(139,92,246,0.28)] transition hover:brightness-110"
         >
           <Download className="h-4 w-4" />
-          {outdated ? '下载最新版本' : '下载本地组件'}
-        </a>
+          {downloading ? '正在下载…' : outdated ? '下载最新版本' : '下载本地组件'}
+        </button>
         <button
           type="button"
           onClick={onRetry}
@@ -73,6 +91,7 @@ function RuntimeStatus({
           安装完成，重新检测
         </button>
       </div>
+      {downloadError ? <p className="text-xs text-rose-200/70">{downloadError}</p> : null}
     </div>
   );
 }

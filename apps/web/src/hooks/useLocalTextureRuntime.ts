@@ -3,6 +3,7 @@ import {
   checkLocalTextureRuntime,
   type LocalTextureRuntimeState,
 } from '@/services/localTextureRuntimeClient';
+import { trackModuleActionOnce } from '@/services/telemetryClient';
 
 export function useLocalTextureRuntime(enabled = true) {
   const [state, setState] = useState<LocalTextureRuntimeState>({ status: 'checking' });
@@ -11,6 +12,9 @@ export function useLocalTextureRuntime(enabled = true) {
     setState((current) => (current.status === 'ready' ? current : { status: 'checking' }));
     const next = await checkLocalTextureRuntime();
     setState(next);
+    if (next.status === 'ready') {
+      trackModuleActionOnce('local_component', 'detect', next.health.runtimeVersion);
+    }
     return next;
   }, []);
 

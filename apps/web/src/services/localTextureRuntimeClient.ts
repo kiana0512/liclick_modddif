@@ -48,6 +48,20 @@ export function getLocalTextureRuntimeDownloadUrl() {
   return `${normalizedBase}/downloads/LIclick-3D-Texture-Local-Component-Setup.exe?v=0.1.9`;
 }
 
+export async function downloadLocalTextureRuntimeInstaller() {
+  const response = await fetch(getLocalTextureRuntimeDownloadUrl());
+  if (!response.ok) throw new Error(`本地组件下载失败（${response.status}）。`);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = 'LIclick 3D Texture Local Component Setup.exe';
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+}
+
 export async function checkLocalTextureRuntime(): Promise<LocalTextureRuntimeState> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 1_600);

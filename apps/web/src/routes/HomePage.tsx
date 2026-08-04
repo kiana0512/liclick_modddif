@@ -12,11 +12,13 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
+import { useState } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
-import { getLocalTextureRuntimeDownloadUrl } from '@/services/localTextureRuntimeClient';
+import { downloadLocalTextureRuntimeInstaller } from '@/services/localTextureRuntimeClient';
 import {
   trackHomeModuleEntry,
+  trackModuleAction,
   type HomeTelemetryModule,
 } from '@/services/telemetryClient';
 
@@ -288,6 +290,21 @@ export function HomePage({
   onOpenUv: () => void;
   onLogout: () => void;
 }) {
+  const [downloadingLocalComponent, setDownloadingLocalComponent] = useState(false);
+
+  async function downloadLocalComponent() {
+    if (downloadingLocalComponent) return;
+    setDownloadingLocalComponent(true);
+    try {
+      await downloadLocalTextureRuntimeInstaller();
+      trackModuleAction('local_component', 'download');
+    } catch (error) {
+      console.warn('[Li3D] Local component download failed.', error);
+    } finally {
+      setDownloadingLocalComponent(false);
+    }
+  }
+
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute left-[8%] top-36 h-72 w-72 rounded-full bg-fuchsia-500/[0.075] blur-[90px]" />
@@ -337,15 +354,16 @@ export function HomePage({
               layout="featured"
               className="h-full w-full"
             />
-            <a
-              href={getLocalTextureRuntimeDownloadUrl()}
-              download="LIclick 3D Texture Local Component Setup.exe"
+            <button
+              type="button"
+              disabled={downloadingLocalComponent}
+              onClick={() => void downloadLocalComponent()}
               className="absolute bottom-5 right-5 z-20 inline-flex h-9 items-center gap-2 rounded-xl border border-fuchsia-200/20 bg-fuchsia-300/[0.09] px-3 text-[11px] font-semibold text-fuchsia-50/78 shadow-[0_10px_28px_rgba(168,85,247,0.12)] backdrop-blur-md transition hover:border-fuchsia-200/40 hover:bg-fuchsia-300/16 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-200/60"
               aria-label="下载最新的贴图绘制本地组件安装包"
             >
               <Download className="h-3.5 w-3.5" />
-              下载最新安装包
-            </a>
+              {downloadingLocalComponent ? '正在下载…' : '下载最新安装包'}
+            </button>
           </div>
           <ModuleCard
             eyebrow="MODEL BAKING"

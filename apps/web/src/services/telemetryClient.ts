@@ -4,7 +4,9 @@ import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 const queueStorageKey = 'li3d.telemetry.queue.v1';
+const onceStorageKey = 'li3d.telemetry.once.v1';
 const maxQueueSize = 200;
+const maxOnceMarkers = 500;
 const batchSize = 20;
 const sendTimeoutMs = 8_000;
 const uuidPattern = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -23,6 +25,25 @@ export const homeTelemetryModules = [
 
 export type HomeTelemetryModule = (typeof homeTelemetryModules)[number];
 
+export const telemetryModules = [
+  ...homeTelemetryModules,
+  'local_repaint',
+  'local_component',
+] as const;
+
+export const telemetryActions = [
+  'open',
+  'start',
+  'complete',
+  'fail',
+  'download',
+  'install',
+  'detect',
+] as const;
+
+export type TelemetryModule = (typeof telemetryModules)[number];
+export type TelemetryAction = (typeof telemetryActions)[number];
+
 type ModuleActionEvent = {
   event_id: string;
   event_type: 'module_action';
@@ -33,12 +54,13 @@ type ModuleActionEvent = {
   version: string;
   host_version: 'browser';
   data: {
-    module: HomeTelemetryModule;
-    action: 'open';
+    module: TelemetryModule;
+    action: TelemetryAction;
   };
 };
 
 let memoryQueue: ModuleActionEvent[] = [];
+let memoryOnceMarkers: string[] = [];
 let flushTimer: number | undefined;
 let retryAttempt = 0;
 let activeFlush: Promise<void> | undefined;
@@ -67,9 +89,36 @@ function isModuleActionEvent(value: unknown): value is ModuleActionEvent {
     value.host_version === 'browser' &&
     dataKeys.length === 2 &&
     dataKeys.every((key) => key === 'module' || key === 'action') &&
-    homeTelemetryModules.includes(value.data.module as HomeTelemetryModule) &&
-    value.data.action === 'open'
+    telemetryModules.includes(value.data.module as TelemetryModule) &&
+    telemetryActions.includes(value.data.action as TelemetryAction)
   );
+}
+
+function readOnceMarkers() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(onceStorageKey) ?? '[]') as unknown;
+    if (!Array.isArray(parsed)) return memoryOnceMarkers;
+    memoryOnceMarkers = parsed
+      .filter((value): value is string => typeof value === 'string')
+      .slice(-maxOnceMarkers);
+  } catch {
+    // Restricted storage still deduplicates during the active page lifetime.
+  }
+  return memoryOnceMarkers;
+}
+
+function writeOnceMarkers(markers: string[]) {
+  memoryOnceMarkers = markers.slice(-maxOnceMarkers);
+  try {
+    window.localStorage.setItem(onceStorageKey, JSON.stringify(memoryOnceMarkers));
+  } catch {
+    // A dedupe marker is only an optimization. Restricted storage must not
+    // prevent telemetry or product actions.
+  }
+}
+
+function onceMarker(module: TelemetryModule, action: TelemetryAction, dedupeKey: string) {
+  return `${module}:${action}:${dedupeKey.trim().slice(0, 256)}`;
 }
 
 function deduplicateAndLimit(events: ModuleActionEvent[]) {
@@ -163,7 +212,7 @@ export function flushTelemetry(options: { keepalive?: boolean } = {}) {
   return activeFlush;
 }
 
-export function trackHomeModuleEntry(module: HomeTelemetryModule) {
+export function trackModuleAction(module: TelemetryModule, action: TelemetryAction) {
   const identity = getClientIdentity();
   const event: ModuleActionEvent = {
     event_id: createEventId(),
@@ -172,10 +221,37 @@ export function trackHomeModuleEntry(module: HomeTelemetryModule) {
     ...identity,
     version: packageMetadata.version,
     host_version: 'browser',
-    data: { module, action: 'open' },
+    data: { module, action },
   };
   writeQueue([...readQueue(), event]);
   scheduleFlush(500);
+}
+
+export function hasTrackedModuleAction(
+  module: TelemetryModule,
+  action: TelemetryAction,
+  dedupeKey: string,
+) {
+  if (!dedupeKey.trim()) return false;
+  return readOnceMarkers().includes(onceMarker(module, action, dedupeKey));
+}
+
+export function trackModuleActionOnce(
+  module: TelemetryModule,
+  action: TelemetryAction,
+  dedupeKey: string,
+) {
+  if (!dedupeKey.trim()) return false;
+  const marker = onceMarker(module, action, dedupeKey);
+  const markers = readOnceMarkers();
+  if (markers.includes(marker)) return false;
+  trackModuleAction(module, action);
+  writeOnceMarkers([...markers, marker]);
+  return true;
+}
+
+export function trackHomeModuleEntry(module: HomeTelemetryModule) {
+  trackModuleAction(module, 'open');
 }
 
 export function initializeTelemetry() {

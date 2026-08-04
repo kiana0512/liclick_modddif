@@ -50,6 +50,14 @@ export type NormalBakeJob = {
     roughness?: string;
     metallic?: string;
   };
+  displayInput?: {
+    high: string;
+    low: string;
+    cage?: string;
+    color?: string;
+    roughness?: string;
+    metallic?: string;
+  };
   output?: { fileName: string; width: number; height: number; url: string };
   outputs?: Partial<
     Record<BakeChannelId, { fileName: string; width: number; height: number; url: string }>
@@ -212,20 +220,28 @@ export function bakeOutputUrl(job: NormalBakeJob, channel: BakeChannelId) {
   return output ? `${workspaceApiBase}${output.url}` : undefined;
 }
 
-export function downloadBakeOutput(
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+}
+
+export async function downloadBakeOutput(
   job: NormalBakeJob,
   channel: BakeChannelId,
   filenameBase: string,
 ) {
   const url = bakeOutputUrl(job, channel);
   if (!url) throw new Error(`${channel} output is not available.`);
-  const anchor = document.createElement('a');
-  anchor.href = `${url}?download=1`;
-  anchor.download = `${slugifyExportName(filenameBase)}.png`;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
+  const response = await fetch(`${url}?download=1`, { credentials: 'include' });
+  if (!response.ok) throw new Error(`贴图下载失败（${response.status}）。`);
+  triggerBlobDownload(await response.blob(), `${slugifyExportName(filenameBase)}.png`);
 }
 
 export async function downloadAllBakeOutputs(job: NormalBakeJob, filenameBase: string) {
@@ -233,17 +249,10 @@ export async function downloadAllBakeOutputs(job: NormalBakeJob, filenameBase: s
   if (channels.length === 0) throw new Error('没有可导出的烘焙贴图。');
   const base = slugifyExportName(filenameBase);
   const archiveUrl = `${workspaceApiBase}/api/bake/jobs/${encodeURIComponent(job.id)}/archive?name=${encodeURIComponent(base)}`;
-  const probe = await fetch(archiveUrl, {
-    method: 'HEAD',
+  const response = await fetch(archiveUrl, {
     credentials: 'include',
     cache: 'no-store',
   });
-  if (!probe.ok) throw new Error(`全部贴图打包失败（${probe.status}）。`);
-  const anchor = document.createElement('a');
-  anchor.href = archiveUrl;
-  anchor.download = `${base}_BakedMaps.zip`;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
+  if (!response.ok) throw new Error(`全部贴图打包失败（${response.status}）。`);
+  triggerBlobDownload(await response.blob(), `${base}_BakedMaps.zip`);
 }

@@ -65,7 +65,9 @@ export function ModuleOneReadonlyViewport({
     setError(undefined);
 
     const scene = useSceneStore.getState();
-    const existing = scene.importedModels.find((model) => model.objectId === object.id);
+    const existing = scene.importedModels.find(
+      (model) => model.objectId === object.id && model.objectUrl === object.sourcePath,
+    );
     const cacheKey = `${project.id}:${object.id}:${object.sourcePath ?? ''}`;
     const cached = moduleOneViewportCache.get(cacheKey);
     useProjectStore.getState().setCurrentProject(project.id);

@@ -17,11 +17,18 @@ import {
   type TaskHistoryOutput,
   type TaskHistoryRecord,
 } from '@/services/taskHistoryApiClient';
+import { trackModuleAction, type TelemetryModule } from '@/services/telemetryClient';
 
 const moduleTitles: Record<TaskHistoryModule, string> = {
   bake: '烘焙历史',
   uv: '展 UV 历史',
   retopology: '拓扑历史',
+};
+
+const telemetryModules: Record<TaskHistoryModule, TelemetryModule> = {
+  bake: 'model_baking',
+  uv: 'auto_uv',
+  retopology: 'auto_retopology',
 };
 
 function formatBytes(bytes: number) {
@@ -80,7 +87,13 @@ function statusPresentation(status: string) {
   };
 }
 
-function HistoryRecordCard({ record }: { record: TaskHistoryRecord }) {
+function HistoryRecordCard({
+  module,
+  record,
+}: {
+  module: TaskHistoryModule;
+  record: TaskHistoryRecord;
+}) {
   const [downloading, setDownloading] = useState<string>();
   const [downloadError, setDownloadError] = useState<string>();
   const presentation = statusPresentation(record.status);
@@ -97,6 +110,7 @@ function HistoryRecordCard({ record }: { record: TaskHistoryRecord }) {
     setDownloadError(undefined);
     try {
       await downloadTaskHistoryOutput(output);
+      trackModuleAction(telemetryModules[module], 'download');
     } catch (error) {
       setDownloadError(error instanceof Error ? error.message : '历史文件下载失败。');
     } finally {
@@ -305,7 +319,7 @@ function PanelContent({
               </div>
             ) : null}
             {records.map((record) => (
-              <HistoryRecordCard key={record.id} record={record} />
+              <HistoryRecordCard key={record.id} module={module} record={record} />
             ))}
           </div>
         )}

@@ -8,6 +8,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { serverConfig } from '../config.js';
 import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
+import {
+  displayFilename,
+  englishSafeFilename,
+  englishSafeStem,
+} from './modelFilenameService.js';
 
 export type BakeChannelId =
   | 'baseColor'
@@ -38,6 +43,15 @@ export type NormalBakeSettings = {
 };
 
 export type BakeUpload = { fileName: string; data: Buffer };
+
+type BakeInputFileNames = {
+  high: string;
+  low: string;
+  cage?: string;
+  color?: string;
+  roughness?: string;
+  metallic?: string;
+};
 
 type RemoteBakeProfile = 'ao-self-v1' | 'normal-dx-v1' | 'pbr-core-v1' | 'li3d-pbr-full-v2';
 
@@ -94,14 +108,9 @@ export type NormalBakeJob = {
   stage: 'waiting-for-worker' | 'baking-maps' | 'verifying-file' | 'finished';
   progress: number;
   settings: NormalBakeSettings;
-  input: {
-    high: string;
-    low: string;
-    cage?: string;
-    color?: string;
-    roughness?: string;
-    metallic?: string;
-  };
+  input: BakeInputFileNames;
+  /** Original user-facing basenames. Never use these values as disk paths or multipart names. */
+  displayInput?: BakeInputFileNames;
   output?: { fileName: string; width: number; height: number; url: string };
   outputs?: Partial<
     Record<BakeChannelId, { fileName: string; width: number; height: number; url: string }>
@@ -416,8 +425,27 @@ function ensureRemoteSuccess(response: RemoteResponse, acceptedStatuses = [200])
 }
 
 function safeFileName(value: string, fallback: string) {
-  const base = path.basename(value).replace(/[^a-zA-Z0-9._-]/g, '_');
-  return base || fallback;
+  return englishSafeFilename(value, fallback);
+}
+
+function uniqueInputFileName(
+  value: string,
+  fallback: string,
+  usedNames: Set<string>,
+) {
+  let candidate = englishSafeFilename(value, fallback);
+  let counter = 1;
+  while (usedNames.has(candidate.toLowerCase())) {
+    const role = englishSafeStem(fallback, 'asset');
+    candidate = englishSafeFilename(`${role}-${counter}-${candidate}`, fallback);
+    counter += 1;
+  }
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function renamedUpload(upload: BakeUpload | undefined, fileName: string | undefined) {
+  return upload && fileName ? { ...upload, fileName } : undefined;
 }
 
 function looksLikeHtml(data: Buffer) {
@@ -1025,15 +1053,24 @@ export async function createNormalBakeJob(input: {
   const id = `bake_${randomUUID()}`;
   const directory = path.join(serverConfig.workspaceDir, 'bake-jobs', id);
   const now = new Date().toISOString();
-  const highName = safeFileName(input.high.fileName, 'high.fbx');
-  const lowName = safeFileName(input.low.fileName, 'low.fbx');
-  const cageName = input.cage ? safeFileName(input.cage.fileName, 'cage.fbx') : undefined;
-  const colorName = colorUpload ? safeFileName(colorUpload.fileName, 'base_color.png') : undefined;
+  const usedInputNames = new Set<string>();
+  const highName = uniqueInputFileName(input.high.fileName, 'high_mesh.fbx', usedInputNames);
+  const lowName = uniqueInputFileName(input.low.fileName, 'low_mesh.fbx', usedInputNames);
+  const cageName = input.cage
+    ? uniqueInputFileName(input.cage.fileName, 'cage_mesh.fbx', usedInputNames)
+    : undefined;
+  const colorName = colorUpload
+    ? uniqueInputFileName(colorUpload.fileName, 'base_color_texture.png', usedInputNames)
+    : undefined;
   const roughnessName = roughnessUpload
-    ? safeFileName(roughnessUpload.fileName, 'roughness.png')
+    ? uniqueInputFileName(
+        roughnessUpload.fileName,
+        'roughness_texture.png',
+        usedInputNames,
+      )
     : undefined;
   const metallicName = metallicUpload
-    ? safeFileName(metallicUpload.fileName, 'metallic.png')
+    ? uniqueInputFileName(metallicUpload.fileName, 'metallic_texture.png', usedInputNames)
     : undefined;
   const statusUrl = `/api/v1/assets/jobs/pending`;
   const job: InternalJob = {
@@ -1053,6 +1090,22 @@ export async function createNormalBakeJob(input: {
       ...(colorName ? { color: colorName } : {}),
       ...(roughnessName ? { roughness: roughnessName } : {}),
       ...(metallicName ? { metallic: metallicName } : {}),
+    },
+    displayInput: {
+      high: displayFilename(input.high.fileName, 'high.fbx'),
+      low: displayFilename(input.low.fileName, 'low.fbx'),
+      ...(input.cage
+        ? { cage: displayFilename(input.cage.fileName, 'cage.fbx') }
+        : {}),
+      ...(input.color
+        ? { color: displayFilename(input.color.fileName, 'base_color.png') }
+        : {}),
+      ...(input.roughness
+        ? { roughness: displayFilename(input.roughness.fileName, 'roughness.png') }
+        : {}),
+      ...(input.metallic
+        ? { metallic: displayFilename(input.metallic.fileName, 'metallic.png') }
+        : {}),
     },
     logs: [],
     createdAt: now,
@@ -1079,12 +1132,22 @@ export async function createNormalBakeJob(input: {
   });
   const bodyChunks = buildMultipart({
     boundary,
-    low: input.low,
-    high: profile === 'ao-self-v1' ? undefined : input.high,
-    cage: input.cage,
-    color: profile === 'li3d-pbr-full-v2' ? colorUpload : undefined,
-    roughness: profile === 'li3d-pbr-full-v2' ? roughnessUpload : undefined,
-    metallic: profile === 'li3d-pbr-full-v2' ? metallicUpload : undefined,
+    low: { ...input.low, fileName: lowName },
+    high:
+      profile === 'ao-self-v1' ? undefined : { ...input.high, fileName: highName },
+    cage: renamedUpload(input.cage, cageName),
+    color:
+      profile === 'li3d-pbr-full-v2'
+        ? renamedUpload(colorUpload, colorName)
+        : undefined,
+    roughness:
+      profile === 'li3d-pbr-full-v2'
+        ? renamedUpload(roughnessUpload, roughnessName)
+        : undefined,
+    metallic:
+      profile === 'li3d-pbr-full-v2'
+        ? renamedUpload(metallicUpload, metallicName)
+        : undefined,
     metadata,
   });
   const contentLength = bodyChunks.reduce((total, chunk) => total + chunk.length, 0);

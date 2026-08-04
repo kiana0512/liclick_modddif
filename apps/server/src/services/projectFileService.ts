@@ -171,10 +171,16 @@ function mapBakeWorkspaceAssetUrls(
     Object.entries(workspace.bakeSets).map(([objectId, value]) => {
       if (!isRecord(value)) return [objectId, value];
       const next = { ...value };
-      (['low', 'cage', 'color', 'normalMap', 'roughness', 'metallic'] as const).forEach((key) => {
+      (['high', 'low', 'cage', 'color', 'normalMap', 'roughness', 'metallic', 'normal'] as const).forEach((key) => {
         const asset = value[key];
         if (isRecord(asset)) next[key] = { ...asset, url: mapUrl(readString(asset.url)) };
       });
+      if (isRecord(value.highObject)) {
+        next.highObject = {
+          ...value.highObject,
+          sourcePath: mapUrl(readString(value.highObject.sourcePath)),
+        };
+      }
       return [objectId, next];
     }),
   );

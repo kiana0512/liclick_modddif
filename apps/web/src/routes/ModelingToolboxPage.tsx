@@ -15,8 +15,11 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
+import { useState } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
+import { downloadBlob } from '@/engine/export/exportUtils';
+import { trackModuleAction } from '@/services/telemetryClient';
 
 type ToolItem = {
   name: string;
@@ -133,6 +136,25 @@ export function ModelingToolboxPage({
   onBack: () => void;
   onLogout: () => void;
 }) {
+  const [downloadingInstaller, setDownloadingInstaller] = useState(false);
+  const [downloadError, setDownloadError] = useState<string>();
+
+  async function downloadInstaller() {
+    if (downloadingInstaller) return;
+    setDownloadingInstaller(true);
+    setDownloadError(undefined);
+    try {
+      const response = await fetch(`${toolboxRoot}modeling-toolbox-v2.0.1.exe`);
+      if (!response.ok) throw new Error(`下载安装包失败（${response.status}）。`);
+      downloadBlob(await response.blob(), '建模工具箱-v2.0.1.exe');
+      trackModuleAction('toolbox', 'download');
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : '下载安装包失败。');
+    } finally {
+      setDownloadingInstaller(false);
+    }
+  }
+
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute right-[10%] top-8 h-96 w-96 rounded-full bg-cyan-400/[0.055] blur-[110px]" />
@@ -182,14 +204,15 @@ export function ModelingToolboxPage({
             </div>
 
             <div className="relative mt-8 flex flex-wrap gap-3">
-              <a
-                href={`${toolboxRoot}modeling-toolbox-v2.0.1.exe`}
-                download="建模工具箱-v2.0.1.exe"
-                className="inline-flex h-11 items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.28)] transition hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0"
+              <button
+                type="button"
+                disabled={downloadingInstaller}
+                onClick={() => void downloadInstaller()}
+                className="inline-flex h-11 items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.28)] transition hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0 disabled:cursor-wait disabled:opacity-60"
               >
                 <Download className="h-4 w-4" />
-                下载 Windows 安装器
-              </a>
+                {downloadingInstaller ? '正在下载…' : '下载 Windows 安装器'}
+              </button>
               <a
                 href={`${toolboxRoot}manual_max.html`}
                 target="_blank"
@@ -201,6 +224,9 @@ export function ModelingToolboxPage({
                 <ExternalLink className="h-3.5 w-3.5 text-white/38" />
               </a>
             </div>
+            {downloadError ? (
+              <p className="relative mt-3 text-xs text-rose-200/70">{downloadError}</p>
+            ) : null}
           </div>
 
           <aside className="border-t border-white/[0.07] bg-black/18 p-7 lg:border-l lg:border-t-0 lg:p-9">

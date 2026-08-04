@@ -242,16 +242,26 @@ export async function enrichFeishuUserByOpenId(
 
 export const FEISHU_TELEMETRY_FIELD_NAMES = {
   aggregateKey: '聚合键',
+  dateTime: '日期时间',
   dateKey: '日期键',
-  userKey: '用户唯一 ID',
+  version: '工具版本',
+  hostVersion: '宿主版本',
   userName: '用户姓名',
   email: '飞书邮箱',
   department: '所属部门',
-  version: '工具版本',
-  hostVersion: '宿主版本',
+  computerName: '电脑名',
+  downloadCount: '下载次数',
+  texturePaintingCount: '贴图绘制次数',
+  generationCount: '生图次数',
+  modelBakingCount: '模型烘焙次数',
+  toolboxCount: '工具箱次数',
+  autoRetopologyCount: '自动拓扑次数',
+  autoUvCount: '自动展UV次数',
+  localRepaintCount: '局部重绘次数',
+  localComponentDownloadCount: '本地组件下载次数',
+  userKey: '用户唯一ID',
   eventCount: '事件总数',
-  countsJson: '动作计数 JSON',
-  lastEventAt: '最后事件时间',
+  countsJson: '动作计数JSON',
   syncHash: '同步哈希',
 } as const;
 
@@ -287,7 +297,18 @@ function assertBoundedString(value: unknown, name: string, maximumLength: number
   return value;
 }
 
-function normalizeAggregate(aggregate: TelemetryAggregateForBitable) {
+function countFor(counts: Record<string, number>, module: string, action: string) {
+  return counts[`${module}_${action}_count`] ?? 0;
+}
+
+function totalDownloadCount(counts: Record<string, number>) {
+  return Object.entries(counts).reduce(
+    (total, [key, value]) => total + (key.endsWith('_download_count') ? value : 0),
+    0,
+  );
+}
+
+export function prepareTelemetryAggregateForBitable(aggregate: TelemetryAggregateForBitable) {
   const aggregateKey = assertBoundedString(aggregate.aggregate_key, 'aggregate_key', 2_000);
   const dateKey = assertBoundedString(aggregate.date_key, 'date_key', 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) throw new Error('date_key must use YYYY-MM-DD.');
@@ -319,16 +340,28 @@ function normalizeAggregate(aggregate: TelemetryAggregateForBitable) {
 
   const fields: BitableFields = {
     [FEISHU_TELEMETRY_FIELD_NAMES.aggregateKey]: aggregateKey,
+    [FEISHU_TELEMETRY_FIELD_NAMES.dateTime]: lastEventTimestamp,
     [FEISHU_TELEMETRY_FIELD_NAMES.dateKey]: dateKey,
-    [FEISHU_TELEMETRY_FIELD_NAMES.userKey]: userKey,
+    [FEISHU_TELEMETRY_FIELD_NAMES.version]: version,
+    [FEISHU_TELEMETRY_FIELD_NAMES.hostVersion]: hostVersion,
     [FEISHU_TELEMETRY_FIELD_NAMES.userName]: aggregate.user_name ?? '',
     [FEISHU_TELEMETRY_FIELD_NAMES.email]: aggregate.email ?? '',
     [FEISHU_TELEMETRY_FIELD_NAMES.department]: aggregate.department ?? '',
-    [FEISHU_TELEMETRY_FIELD_NAMES.version]: version,
-    [FEISHU_TELEMETRY_FIELD_NAMES.hostVersion]: hostVersion,
+    // Browser telemetry has no trustworthy host name. Keep the field explicit
+    // and empty instead of inventing a value from user-controlled headers.
+    [FEISHU_TELEMETRY_FIELD_NAMES.computerName]: '',
+    [FEISHU_TELEMETRY_FIELD_NAMES.downloadCount]: totalDownloadCount(counts),
+    [FEISHU_TELEMETRY_FIELD_NAMES.texturePaintingCount]: countFor(counts, 'texture_painting', 'open'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.generationCount]: countFor(counts, 'texture_painting', 'start'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.modelBakingCount]: countFor(counts, 'model_baking', 'start'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.toolboxCount]: countFor(counts, 'toolbox', 'open'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.autoRetopologyCount]: countFor(counts, 'auto_retopology', 'start'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.autoUvCount]: countFor(counts, 'auto_uv', 'start'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.localRepaintCount]: countFor(counts, 'local_repaint', 'start'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.localComponentDownloadCount]: countFor(counts, 'local_component', 'download'),
+    [FEISHU_TELEMETRY_FIELD_NAMES.userKey]: userKey,
     [FEISHU_TELEMETRY_FIELD_NAMES.eventCount]: aggregate.event_count,
     [FEISHU_TELEMETRY_FIELD_NAMES.countsJson]: JSON.stringify(counts),
-    [FEISHU_TELEMETRY_FIELD_NAMES.lastEventAt]: lastEventTimestamp,
   };
   const syncHash =
     aggregate.sync_hash ??
@@ -464,7 +497,7 @@ export function syncTelemetryAggregateToBitable(
   if (!serverConfig.feishuPlatform.bitable.enabled) {
     return Promise.reject(new Error('Feishu Bitable sync is disabled.'));
   }
-  const prepared = normalizeAggregate(aggregate);
+  const prepared = prepareTelemetryAggregateForBitable(aggregate);
   return runBitableExclusive(async () => {
     const token = await getTenantAccessToken();
     if (prepared.recordId) {

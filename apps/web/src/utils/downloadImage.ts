@@ -45,8 +45,10 @@ export async function downloadImageAsset(url: string, filenameBase: string) {
     const blob = await response.blob();
     const extension = imageExtensionByMimeType[blob.type] ?? fallbackExtension;
     downloadBlob(blob, filenameWithExtension(filenameBase, extension));
+    return true;
   } catch (error) {
     console.warn('[Liclick 3D Texture] Falling back to direct image download:', error);
     clickDownload(url, filenameWithExtension(filenameBase, fallbackExtension));
+    return false;
   }
 }
