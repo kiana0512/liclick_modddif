@@ -6,6 +6,13 @@ import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
 import { PhotoshopEditSessionPanel } from '@/features/photoshop/PhotoshopEditSessionPanel';
 import {
+  frontProjectThumbnailCapture,
+  getFrontProjectThumbnailCameraFrame,
+  getContainedImageDrawRect,
+  getProjectThumbnailFraming,
+} from '@/features/projects/projectThumbnailPolicy';
+import { neutralizeUntexturedThumbnailMaterials } from '@/features/projects/projectThumbnailMaterials';
+import {
   closePhotoshopSession,
   createPhotoshopSession,
   launchPhotoshop,
@@ -58,8 +65,17 @@ import {
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { createProjectionMaskedImage } from '@/engine/projection/createMaskedProjectedImage';
+import { syncProjectedLayerMaterialProjection } from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
+import {
+  getModelImportBatchProgress,
+  isModelImportProgressIndeterminate,
+  type ModelImportPhase,
+  type ModelImportProgressEvent,
+} from '@/engine/loaders/modelImportProgress';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
+import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModelBesideScene';
+import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import {
   compositeRgbaUnderInPlace,
   getMergeUvPostprocessOptions,
@@ -90,9 +106,11 @@ import {
   maskToBlob,
 } from '@/engine/localRepaint/maskUtils';
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
-import type { LoadedModel, ModelLoadResult } from '@/engine/loaders/modelImportTypes';
-import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
-import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
+import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
+import {
+  focusCameraOrbitOnObjectId,
+  setCameraToObjectView,
+} from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
@@ -108,6 +126,7 @@ import {
 import { replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
 import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
+import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
 import {
   hasTrackedModuleAction,
   trackModuleActionOnce,
@@ -186,7 +205,6 @@ const resolutionToSize = {
 
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
-const PROJECT_THUMBNAIL_SIZE = 2048;
 const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
 
 async function waitForProjectRestoreIdle(timeoutMs = 800) {
@@ -724,71 +742,6 @@ async function restorePersistedLocalRepaintRuntime(
   }
 }
 
-function transformFromLoadedGroup(group: THREE.Group) {
-  return {
-    position: [group.position.x, group.position.y, group.position.z] as [number, number, number],
-    rotation: [group.rotation.x, group.rotation.y, group.rotation.z] as [number, number, number],
-    scale: [group.scale.x, group.scale.y, group.scale.z] as [number, number, number],
-  };
-}
-
-function arrangeImportedModelForComparison(
-  loaded: LoadedModel,
-  existingModels: ModelLoadResult[],
-): LoadedModel {
-  if (existingModels.length === 0) return loaded;
-
-  const existingBox = new THREE.Box3();
-  let hasExistingModel = false;
-  existingModels.forEach((model) => {
-    model.group.updateMatrixWorld(true);
-    const modelBox = new THREE.Box3().setFromObject(model.group);
-    if (modelBox.isEmpty()) return;
-    existingBox.union(modelBox);
-    hasExistingModel = true;
-  });
-  if (!hasExistingModel) return loaded;
-
-  loaded.result.group.updateMatrixWorld(true);
-  const newBox = new THREE.Box3().setFromObject(loaded.result.group);
-  if (newBox.isEmpty()) return loaded;
-
-  const existingSize = new THREE.Vector3();
-  const newSize = new THREE.Vector3();
-  const newCenter = new THREE.Vector3();
-  existingBox.getSize(existingSize);
-  newBox.getSize(newSize);
-  newBox.getCenter(newCenter);
-
-  const gap = Math.max(0.45, Math.min(1.2, Math.max(existingSize.x, newSize.x) * 0.18));
-  const targetCenterX = existingBox.max.x + newSize.x / 2 + gap;
-  loaded.result.group.position.x += targetCenterX - newCenter.x;
-  loaded.result.group.updateMatrixWorld(true);
-
-  const boundingBox = getBoundingBoxForObject(loaded.result.group);
-  const transform = transformFromLoadedGroup(loaded.result.group);
-  const importNormalizationTransform = {
-    ...loaded.result.importNormalizationTransform,
-    position: transform.position,
-  };
-
-  return {
-    ...loaded,
-    result: {
-      ...loaded.result,
-      boundingBox,
-      importNormalizationTransform,
-    },
-    object: {
-      ...loaded.object,
-      boundingBox,
-      transform,
-      userTransform: transform,
-      importNormalizationTransform,
-    },
-  };
-}
-
 export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
@@ -811,6 +764,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
+  const modelImportRunningRef = useRef(false);
+  const modelImportRevisionRef = useRef(0);
+  const modelImportProgressTimerRef = useRef<number>();
   const contentAwareRepairRunningRef = useRef(false);
   const contentAwareRepairAbortControllerRef = useRef<AbortController>();
   const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
@@ -827,6 +783,10 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
   const [bakeHighImporting, setBakeHighImporting] = useState(false);
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
+  const [modelImportBusy, setModelImportBusy] = useState(false);
+  const [modelImportProgress, setModelImportProgress] = useState<
+    AutoBakeProgress | undefined
+  >();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
   const [photoshopEditBusy, setPhotoshopEditBusy] = useState(false);
   const photoshopEditSessionRef = useRef<PhotoshopSession>();
@@ -939,12 +899,19 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     restoredModelKeyRef.current = undefined;
     modelRestoreRequestRef.current += 1;
     routeProjectLoadRevisionRef.current += 1;
+    modelImportRevisionRef.current += 1;
+    window.clearTimeout(modelImportProgressTimerRef.current);
+    setModelImportBusy(modelImportRunningRef.current);
+    setModelImportProgress(undefined);
   }, [authenticatedUserId, authStatus, projectId]);
 
   useEffect(
     () => () => {
       window.clearTimeout(manualBakeProgressTimerRef.current);
+      window.clearTimeout(modelImportProgressTimerRef.current);
       window.clearTimeout(thumbnailRefreshTimerRef.current);
+      modelImportRevisionRef.current += 1;
+      modelImportRunningRef.current = false;
       contentAwareRepairAbortControllerRef.current?.abort();
       contentAwareRepairAbortControllerRef.current = undefined;
       contentAwareRepairRunningRef.current = false;
@@ -1244,6 +1211,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       cropVisibleContent?: boolean;
       visibleContentFill?: number;
       matchCameraToRenderAspect?: boolean;
+      imageFit?: 'cover' | 'contain';
+      preserveViewportComposition?: boolean;
     } = {},
   ) {
     const viewportRuntime = useSceneStore.getState().viewport;
@@ -1274,7 +1243,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       : viewportRuntime.camera;
     let restoreRenderSize: (() => void) | undefined;
     try {
-      if (options.width && options.height)
+      if (options.width && options.height && !options.preserveViewportComposition)
         restoreRenderSize = prepareViewportRenderSize(options.width, options.height);
       if (options.camera) {
         applySerializedCamera(renderCamera, options.camera);
@@ -1320,31 +1289,53 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       const context = thumbnailCanvas.getContext('2d', { willReadFrequently: true });
       if (!context) return undefined;
 
-      const sourceAspect = canvas.width / canvas.height;
-      const targetAspect = thumbnailCanvas.width / thumbnailCanvas.height;
-      let sourceX = 0;
-      let sourceY = 0;
-      let sourceWidth = canvas.width;
-      let sourceHeight = canvas.height;
-      if (sourceAspect > targetAspect) {
-        sourceWidth = Math.round(canvas.height * targetAspect);
-        sourceX = Math.round((canvas.width - sourceWidth) / 2);
-      } else if (sourceAspect < targetAspect) {
-        sourceHeight = Math.round(canvas.width / targetAspect);
-        sourceY = Math.round((canvas.height - sourceHeight) / 2);
-      }
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      if (options.imageFit === 'contain') {
+        const drawRect = getContainedImageDrawRect(
+          canvas.width,
+          canvas.height,
+          thumbnailCanvas.width,
+          thumbnailCanvas.height,
+        );
+        context.drawImage(
+          canvas,
+          0,
+          0,
+          canvas.width,
+          canvas.height,
+          drawRect.x,
+          drawRect.y,
+          drawRect.width,
+          drawRect.height,
+        );
+      } else {
+        const sourceAspect = canvas.width / canvas.height;
+        const targetAspect = thumbnailCanvas.width / thumbnailCanvas.height;
+        let sourceX = 0;
+        let sourceY = 0;
+        let sourceWidth = canvas.width;
+        let sourceHeight = canvas.height;
+        if (sourceAspect > targetAspect) {
+          sourceWidth = Math.round(canvas.height * targetAspect);
+          sourceX = Math.round((canvas.width - sourceWidth) / 2);
+        } else if (sourceAspect < targetAspect) {
+          sourceHeight = Math.round(canvas.width / targetAspect);
+          sourceY = Math.round((canvas.height - sourceHeight) / 2);
+        }
 
-      context.drawImage(
-        canvas,
-        sourceX,
-        sourceY,
-        sourceWidth,
-        sourceHeight,
-        0,
-        0,
-        thumbnailCanvas.width,
-        thumbnailCanvas.height,
-      );
+        context.drawImage(
+          canvas,
+          sourceX,
+          sourceY,
+          sourceWidth,
+          sourceHeight,
+          0,
+          0,
+          thumbnailCanvas.width,
+          thumbnailCanvas.height,
+        );
+      }
       if (options.camera) {
         const sample = context.getImageData(
           0,
@@ -1395,8 +1386,31 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   function getStandardProjectThumbnailDataUrl() {
     const sceneState = useSceneStore.getState();
     const models = sceneState.importedModels;
-    if (models.length === 0) return getViewportThumbnailDataUrl();
     const viewportRuntime = sceneState.viewport;
+    if (!viewportRuntime || models.length === 0) return getViewportThumbnailDataUrl();
+    if (sceneState.displayMode !== 'pbr') return undefined;
+    if (models.some((model) => model.restoreStage && model.restoreStage !== 'full')) {
+      return undefined;
+    }
+
+    const framing = getProjectThumbnailFraming(
+      models.map((model) => getBoundingBoxForObject(model.group)),
+    );
+    if (!framing) return getViewportThumbnailDataUrl();
+
+    const cameraFrame = getFrontProjectThumbnailCameraFrame(framing.bounds);
+    const camera = new THREE.PerspectiveCamera(
+      cameraFrame.fov,
+      cameraFrame.aspect,
+      cameraFrame.near,
+      cameraFrame.far,
+    );
+    const target = new THREE.Vector3(...cameraFrame.target);
+    camera.position.fromArray(cameraFrame.position);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(target);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
 
     const originalModelStates = models.map((model) => ({
       group: model.group,
@@ -1407,95 +1421,27 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       scale: model.group.scale.clone(),
       visible: model.group.visible,
     }));
+    let restoreNeutralMaterials: () => void = () => undefined;
 
     try {
-      if (viewportRuntime) {
-        for (const model of models) {
-          if (!viewportRuntime.scene.getObjectById(model.group.id)) {
-            viewportRuntime.scene.attach(model.group);
-            model.group.updateMatrixWorld(true);
-          }
-        }
-      }
-
-      if (models.length > 1) {
-        const modelExtent = 1.82;
-        const modelGap = 0.24;
-        const packedWidths: number[] = [];
-
-        models.forEach((model) => {
-          const { group } = model;
-          group.visible = true;
-          group.updateMatrixWorld(true);
-          const initialBounds = new THREE.Box3().setFromObject(group);
-          const initialSize = initialBounds.getSize(new THREE.Vector3());
-          const maxDimension = Math.max(initialSize.x, initialSize.y, initialSize.z);
-          if (maxDimension > Number.EPSILON) {
-            group.scale.multiplyScalar(modelExtent / maxDimension);
-            group.updateMatrixWorld(true);
-          }
-
-          const packedBounds = new THREE.Box3().setFromObject(group);
-          const packedSize = packedBounds.getSize(new THREE.Vector3());
-          packedWidths.push(Math.max(packedSize.x, modelExtent * 0.18));
-        });
-
-        const packedRowWidth =
-          packedWidths.reduce((sum, width) => sum + width, 0) +
-          modelGap * Math.max(models.length - 1, 0);
-        let cursorX = -packedRowWidth / 2;
-
-        models.forEach((model, index) => {
-          const { group } = model;
-          const width = packedWidths[index];
-          const targetCenter = new THREE.Vector3(cursorX + width / 2, 0, 0);
-          const packedBounds = new THREE.Box3().setFromObject(group);
-          const packedCenter = packedBounds.getCenter(new THREE.Vector3());
-          group.position.add(targetCenter.sub(packedCenter));
-          group.updateMatrixWorld(true);
-          cursorX += width + modelGap;
-        });
-      } else {
-        models[0].group.visible = true;
-        models[0].group.updateMatrixWorld(true);
-      }
-
-      const bounds = new THREE.Box3();
       for (const model of models) {
+        if (!viewportRuntime.scene.getObjectById(model.group.id)) {
+          viewportRuntime.scene.attach(model.group);
+        }
+        model.group.visible = true;
         model.group.updateMatrixWorld(true);
-        bounds.union(new THREE.Box3().setFromObject(model.group));
+        syncProjectedLayerMaterialProjection(model.group);
       }
-      if (bounds.isEmpty()) return getViewportThumbnailDataUrl();
-
-      const center = bounds.getCenter(new THREE.Vector3());
-      const size = bounds.getSize(new THREE.Vector3());
-      const aspect = 1;
-      const fov = 35;
-      const halfFov = THREE.MathUtils.degToRad(fov / 2);
-      const distanceForHeight = size.y / 2 / Math.tan(halfFov);
-      const distanceForWidth = size.x / 2 / (Math.tan(halfFov) * aspect);
-      const distance = Math.max(distanceForHeight, distanceForWidth, 0.5) + size.z * 0.4;
-      const camera = new THREE.PerspectiveCamera(
-        fov,
-        aspect,
-        0.01,
-        Math.max(distance + Math.max(size.x, size.y, size.z) * 8, 100),
+      restoreNeutralMaterials = neutralizeUntexturedThumbnailMaterials(
+        models.map((model) => model.group),
       );
-      camera.position.set(center.x, center.y, center.z + distance);
-      camera.up.set(0, 1, 0);
-      camera.lookAt(center);
-      camera.updateProjectionMatrix();
-      camera.updateMatrixWorld(true);
 
       return getViewportThumbnailDataUrl({
-        camera: serializeCamera(camera, aspect, center),
-        width: PROJECT_THUMBNAIL_SIZE,
-        height: PROJECT_THUMBNAIL_SIZE,
-        cropVisibleContent: true,
-        visibleContentFill: models.length > 1 ? 0.9 : 0.8,
-        matchCameraToRenderAspect: true,
+        ...frontProjectThumbnailCapture,
+        camera: serializeCamera(camera, cameraFrame.aspect, target),
       });
     } finally {
+      restoreNeutralMaterials();
       for (const state of originalModelStates) {
         if (state.group.parent !== state.parent) {
           state.group.removeFromParent();
@@ -1517,10 +1463,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         state.group.scale.copy(state.scale);
         state.group.visible = state.visible;
         state.group.updateMatrixWorld(true);
+        syncProjectedLayerMaterialProjection(state.group);
       }
-      if (viewportRuntime) {
-        viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
-      }
+      viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
     }
   }
   standardProjectThumbnailCaptureRef.current = getStandardProjectThumbnailDataUrl;
@@ -2509,9 +2454,15 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     return result.asset.url;
   }
 
-  async function handleImportModel(file: File, resourceFiles: File[] = []) {
+  async function handleImportModel(
+    file: File,
+    resourceFiles: File[] = [],
+    onProgress?: (event: ModelImportProgressEvent, detail?: string) => void,
+    isCurrentImport: () => boolean = () => true,
+  ) {
     try {
-      const loaded = arrangeImportedModelForComparison(
+      onProgress?.({ phase: 'preparing', phaseProgress: 0 });
+      const loaded = placeImportedModelBesideScene(
         await loadModelFromFile(
           file,
           {
@@ -2520,18 +2471,29 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
             targetMaxDimension: 3,
           },
           resourceFiles,
+          (event) => onProgress?.(event),
         ),
         useSceneStore.getState().importedModels,
       );
+      if (!isCurrentImport()) return false;
       let object = loaded.object;
+      onProgress?.({ phase: 'materials' }, t('modelImportMaterials'));
       const importedBaseColorUrl = await getImportedBaseColorTextureUrl(loaded.result.group);
+      if (!isCurrentImport()) return false;
+      onProgress?.({ phase: 'materials', phaseProgress: 1 }, t('modelImportMaterials'));
       if (project?.workspaceMode === 'local-server') {
+        onProgress?.({ phase: 'persisting' }, t('modelImportSavingFile'));
         try {
-          const saved = await saveDataUrlAsset({
+          const saved = await saveBlobAsset({
             projectId: project.id,
             category: 'models',
-            dataUrl: await fileToDataUrl(file),
+            blob: file,
             filename: `${object.id}-${file.name}`,
+            onProgress: ({ loadedBytes, totalBytes }) =>
+              onProgress?.(
+                { phase: 'persisting', loadedBytes, totalBytes },
+                t('modelImportSavingFile'),
+              ),
           });
           object = { ...object, sourcePath: saved.asset.relativePath };
         } catch (saveError) {
@@ -2547,6 +2509,15 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           }
         }
       }
+      if (!isCurrentImport()) return false;
+      onProgress?.(
+        { phase: 'persisting', phaseProgress: 1 },
+        t('modelImportSavingFile'),
+      );
+      onProgress?.(
+        { phase: 'registering', phaseProgress: 0.15 },
+        t('modelImportAddingToScene'),
+      );
       setImportedModel(loaded.result, object);
       if (importedBaseColorUrl) {
         addUvLayer({
@@ -2561,6 +2532,10 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         layers: useLayerStore.getState().layers,
         activeObjectId: object.id,
       });
+      onProgress?.(
+        { phase: 'registering', phaseProgress: 0.55 },
+        t('modelImportSavingProject'),
+      );
       if (project?.workspaceMode === 'local-server') {
         const importedProjectSnapshot = getProjectSnapshot({ refreshThumbnail: false });
         if (importedProjectSnapshot) {
@@ -2587,6 +2562,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           }
         }
       }
+      if (!isCurrentImport()) return false;
+      onProgress?.(
+        { phase: 'registering', phaseProgress: 0.9 },
+        t('modelImportSavingProject'),
+      );
       window.setTimeout(() => {
         const thumbnail = getStandardProjectThumbnailDataUrl();
         if (thumbnail) updateCurrentProject({ thumbnail });
@@ -2598,24 +2578,85 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           loaded.result.warnings[0] ??
           `${loaded.result.sourceFileName} loaded with ${loaded.result.childMeshCount} mesh node(s).`,
       });
+      onProgress?.({ phase: 'complete', phaseProgress: 1 }, t('modelImportComplete'));
+      return true;
     } catch (error) {
+      if (!isCurrentImport()) return false;
       console.error('[Liclick 3D Texture] Import model failed:', error);
       pushToast({
         tone: 'error',
         title: 'Import failed',
         description: error instanceof Error ? error.message : 'The model could not be loaded.',
       });
-    } finally {
-      if (modelInputRef.current) modelInputRef.current.value = '';
+      return false;
     }
   }
 
   async function handleImportModels(files: File[]) {
     const modelFiles = files.filter((file) => /\.(glb|gltf|fbx|obj)$/i.test(file.name));
     const resourceFiles = files.filter((file) => !modelFiles.includes(file));
-    if (modelFiles.length === 0) return;
-    for (const file of modelFiles) {
-      await handleImportModel(file, resourceFiles);
+    if (modelFiles.length === 0 || modelImportRunningRef.current) return;
+
+    const phaseDetails: Record<ModelImportPhase, string> = {
+      preparing: t('modelImportPreparing'),
+      reading: t('modelImportReading'),
+      parsing: t('modelImportParsing'),
+      materials: t('modelImportMaterials'),
+      persisting: t('modelImportSavingFile'),
+      registering: t('modelImportAddingToScene'),
+      complete: t('modelImportComplete'),
+    };
+    const revision = modelImportRevisionRef.current + 1;
+    modelImportRevisionRef.current = revision;
+    modelImportRunningRef.current = true;
+    setModelImportBusy(true);
+    window.clearTimeout(modelImportProgressTimerRef.current);
+    setModelImportProgress(undefined);
+
+    const isCurrentImport = () => modelImportRevisionRef.current === revision;
+    const reportProgress = (
+      fileIndex: number,
+      file: File,
+      event: ModelImportProgressEvent,
+      detail = phaseDetails[event.phase],
+    ) => {
+      if (!isCurrentImport()) return;
+      const nextProgress = getModelImportBatchProgress(fileIndex, modelFiles.length, event);
+      setModelImportProgress((current) => ({
+        title: t('importingModel'),
+        detail: `${fileIndex + 1}/${modelFiles.length} · ${file.name} · ${detail}`,
+        progress: Math.max(current?.progress ?? 0, nextProgress),
+        indeterminate: isModelImportProgressIndeterminate(event),
+      }));
+    };
+
+    try {
+      for (const [fileIndex, file] of modelFiles.entries()) {
+        if (!isCurrentImport()) break;
+        reportProgress(fileIndex, file, { phase: 'preparing', phaseProgress: 0 });
+        await handleImportModel(
+          file,
+          resourceFiles,
+          (event, detail) => reportProgress(fileIndex, file, event, detail),
+          isCurrentImport,
+        );
+      }
+      if (isCurrentImport()) {
+        const lastFile = modelFiles[modelFiles.length - 1];
+        reportProgress(
+          modelFiles.length - 1,
+          lastFile,
+          { phase: 'complete', phaseProgress: 1 },
+          t('modelImportComplete'),
+        );
+        modelImportProgressTimerRef.current = window.setTimeout(() => {
+          if (modelImportRevisionRef.current === revision) setModelImportProgress(undefined);
+        }, 1200);
+      }
+    } finally {
+      modelImportRunningRef.current = false;
+      setModelImportBusy(false);
+      if (modelInputRef.current) modelInputRef.current.value = '';
     }
   }
 
@@ -3017,15 +3058,24 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
 
   async function generateLocalRepaint(input: LocalRepaintGenerateInput) {
     if (!localRepaintRuntime) throw new Error(t('localRepaintUnavailable'));
-    await ensurePersonalLiclickAccountForUser(useAuthStore.getState().user, {
-      onStatus: (message) =>
-        pushToast({
-          tone: 'info',
-          title: '个人莉刻账号',
-          description: message,
-          dedupeKey: 'local-repaint-liclick-account',
-        }),
-    });
+    const authState = useAuthStore.getState();
+    const providerStatus =
+      authState.providerStatus ?? (await authState.refreshProviderStatus());
+    const authStrategy = resolveLiclickAuthStrategy(providerStatus);
+    if (authStrategy === 'unresolved') {
+      throw new Error('无法确认当前登录方式，请刷新页面或重新登录后再试。');
+    }
+    if (authStrategy === 'personal-local-component') {
+      await ensurePersonalLiclickAccountForUser(authState.user, {
+        onStatus: (message) =>
+          pushToast({
+            tone: 'info',
+            title: '个人莉刻账号',
+            description: message,
+            dedupeKey: 'local-repaint-liclick-account',
+          }),
+      });
+    }
     const source = localRepaintRuntime.workingImageData;
     const editMask =
       localRepaintRuntime.mode === 'edit_layer_image'
@@ -4663,7 +4713,12 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         collapsed: workspacePanels.find((panel) => panel.id === 'objects')?.collapsed ?? false,
         visible: true,
         mode: 'all',
-        actions: <ObjectsPanelActions onImportModelClick={() => modelInputRef.current?.click()} />,
+        actions: (
+          <ObjectsPanelActions
+            onImportModelClick={() => modelInputRef.current?.click()}
+            importDisabled={modelImportBusy}
+          />
+        ),
         content: <ObjectsPanel />,
       },
       {
@@ -4874,6 +4929,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         className="hidden"
         accept=".glb,.gltf,.fbx,.obj,.png,.jpg,.jpeg,.webp,.bmp,.tga"
         multiple
+        disabled={modelImportBusy}
         onChange={(event) => {
           const files = event.target.files ? Array.from(event.target.files) : [];
           if (files.length > 0) void handleImportModels(files);
@@ -4992,6 +5048,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
             onImportModels={(files) => void handleImportModels(files)}
             onImportReferenceImages={(files) => void handleImportReferenceImages(files)}
             onOpenImport={() => modelInputRef.current?.click()}
+            importDisabled={modelImportBusy}
           />
         }
         panels={panelDefinitions}
@@ -5024,8 +5081,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           onLaunch={() => void handlePhotoshopLaunch()}
         />
       ) : null}
-      {manualBakeProgress &&
-        createPortal(<AutoBakeProgressBar progress={manualBakeProgress} />, document.body)}
+      {modelImportProgress
+        ? createPortal(<AutoBakeProgressBar progress={modelImportProgress} />, document.body)
+        : manualBakeProgress
+          ? createPortal(<AutoBakeProgressBar progress={manualBakeProgress} />, document.body)
+          : null}
     </>
   );
 }

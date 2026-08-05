@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSession, upsertUser } from './sessionService.js';
@@ -46,6 +47,10 @@ type AtlasTokenCache = {
   access_token?: string;
   expires_at?: string;
   gateway_url?: string;
+};
+
+type AtlasTokenCacheModule = {
+  readCache?: (tokenFile: string) => AtlasTokenCache | undefined;
 };
 
 type AtlasClaims = {
@@ -300,6 +305,39 @@ function readAtlasTokenCache(homeDir?: string) {
   }
 }
 
+let encryptedTokenCacheReaderPromise:
+  | Promise<(tokenFile: string) => AtlasTokenCache | undefined>
+  | undefined;
+
+function getEncryptedTokenCacheReader() {
+  encryptedTokenCacheReaderPromise ??= (async () => {
+    const script = atlasScriptPath();
+    if (!script) throw new Error('Atlas runtime is unavailable.');
+    const runtimeDir = path.dirname(script);
+    const candidates = fs
+      .readdirSync(runtimeDir)
+      .filter((name) => name.endsWith('.js') && name !== path.basename(script));
+
+    for (const name of candidates) {
+      const candidate = path.join(runtimeDir, name);
+      const source = fs.readFileSync(candidate, 'utf8');
+      if (!source.includes('function readCache(') || !source.includes('readCache,')) continue;
+      const module = (await import(pathToFileURL(candidate).href)) as AtlasTokenCacheModule;
+      if (typeof module.readCache === 'function') return module.readCache;
+    }
+    throw new Error('Installed Atlas runtime does not expose its secure token cache reader.');
+  })();
+  return encryptedTokenCacheReaderPromise;
+}
+
+async function readCompatibleAtlasTokenCache(homeDir?: string) {
+  const tokenFile = atlasTokenFile(homeDir);
+  const plainCache = readAtlasTokenCache(homeDir);
+  if (plainCache.access_token) return plainCache;
+  const readSecureCache = await getEncryptedTokenCacheReader();
+  return readSecureCache(tokenFile) ?? {};
+}
+
 function assertValidAtlasToken(cache: AtlasTokenCache, tokenFile: string) {
   if (!cache.access_token) throw new Error(`Atlas token cache is missing access_token: ${tokenFile}`);
   if (!cache.gateway_url) throw new Error(`Atlas token cache is missing gateway_url: ${tokenFile}`);
@@ -318,7 +356,7 @@ export async function callAtlasToolJson(
   homeDir?: string,
 ): Promise<AtlasToolCallResult> {
   const tokenFile = atlasTokenFile(homeDir);
-  const cache = readAtlasTokenCache(homeDir);
+  const cache = await readCompatibleAtlasTokenCache(homeDir);
   assertValidAtlasToken(cache, tokenFile);
   const gatewayUrl = String(cache.gateway_url).replace(/\/+$/, '');
   const body = JSON.stringify({
@@ -377,8 +415,8 @@ function decodeJwtClaims(token?: string) {
   }
 }
 
-export function getAtlasIdentity(homeDir?: string) {
-  const tokenCache = readAtlasTokenCache(homeDir);
+export async function getAtlasIdentity(homeDir?: string) {
+  const tokenCache = await readCompatibleAtlasTokenCache(homeDir);
   const claims = decodeJwtClaims(tokenCache.access_token);
   const email = claims.email ?? claims.username ?? claims.sub;
   const displayName = claims.name ?? claims.ouName ?? claims.idpUsername ?? email ?? 'Liclick User';
@@ -409,7 +447,7 @@ export async function getAtlasStatus(homeDir?: string) {
 }
 
 async function createLoggedInSession(homeDir: string, request: IncomingMessage, response: ServerResponse) {
-  const atlasIdentity = getAtlasIdentity(homeDir);
+  const atlasIdentity = await getAtlasIdentity(homeDir);
   const directoryProfile = atlasIdentity.email
     ? await enrichFeishuUserByEmail(atlasIdentity.email).catch((error) => {
         console.warn(

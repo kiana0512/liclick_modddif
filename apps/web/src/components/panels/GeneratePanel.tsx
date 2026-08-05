@@ -4,12 +4,10 @@ import {
   Banana,
   Bot,
   Download,
-  Image,
   ImagePlus,
   Layers,
   Maximize2,
   Plus,
-  Settings,
   Sparkles,
   Square,
   X,
@@ -41,6 +39,11 @@ import {
   getPersonalLiclickAccountStatus,
   isPersonalLiclickAccountForEmail,
 } from '@/services/liclickAccountApiClient';
+import {
+  resolveLiclickAuthStrategy,
+  usesLocalAtlasLogin,
+  usesPersonalLiclickAccount,
+} from '@/services/liclickAuthStrategy';
 import {
   createLiclickApiClient,
   LiclickApiError,
@@ -133,15 +136,6 @@ const resolutionToSize = {
   '4K': 4096,
   '8K': 8192,
 } as const;
-
-const imageModels: { value: LiclickImageModel; label: string }[] = [
-  { value: 'gpt-image-2', label: 'GPT-Image 2' },
-  { value: 'nano_banana_2', label: 'Nano Banana 2' },
-  { value: 'nano_banana_pro', label: 'Nano Banana Pro' },
-  { value: 'gpt-image-1.5', label: 'GPT-Image 1.5' },
-  { value: 'doubao-seedream-4-5-251128', label: 'Seedream 4.5' },
-  { value: 'midjourney-7', label: 'Midjourney V7' },
-];
 
 const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
   front: { value: 'front', labelKey: 'frontView' },
@@ -238,17 +232,6 @@ function createPresetCameraViewItem(option: CameraViewOption, label: string): Ca
   };
 }
 
-const aspectRatios: LiclickAspectRatio[] = [
-  'auto',
-  '1:1',
-  '4:3',
-  '3:4',
-  '3:2',
-  '2:3',
-  '16:9',
-  '9:16',
-];
-const imageSizes: LiclickImageSize[] = ['auto', '1K', '2K', '4K'];
 const pendingSubmissionTimeoutMs = 3 * 60 * 1000;
 const generationPollIntervalMs = 5000;
 
@@ -419,11 +402,23 @@ function buildTextureMapPrompt(userPrompt: string) {
     : textureMapDefaultPrompt;
 }
 
-function buildLiclickPrompt(userPrompt: string, model: LiclickImageModel) {
+const multiviewDefaultPrompt = `以输入图片中的主要物体为唯一参考，生成一张用于3D建模的六视图展示图。
+
+严格保持物体的造型、比例、结构、零件、颜色、材质和纹理一致。所有视图必须来自同一个结构固定的三维物体。不可见区域根据对称性和结构逻辑进行最少量补全，不要添加参考图中不存在的细节。
+
+输出横向2×3布局：
+第一排：正面、左前45°、右前45°；
+第二排：左侧、右侧、顶部。
+
+正交视图减少透视畸变，所有物体保持相同比例、状态和方向，完整居中且不裁切。使用纯黑背景和统一的柔和棚拍光照。
+
+不要出现结构变化、零件错位、重复视角、背景元素、文字、边框、Logo或水印。`;
+
+function buildMultiviewPrompt(userPrompt: string) {
   const trimmedPrompt = userPrompt.trim();
-  if (trimmedPrompt) return trimmedPrompt;
-  if (model === 'nano_banana_2' || model === 'nano_banana_pro') return '生成一张高质量的参考图。';
-  return '';
+  return trimmedPrompt
+    ? `${multiviewDefaultPrompt}\n\n用户补充要求：${trimmedPrompt}`
+    : multiviewDefaultPrompt;
 }
 
 function isTextureMapGeneration(generation: Generation) {
@@ -607,7 +602,6 @@ function getImportedModelMatrixWorld(objectId?: string) {
 export function GeneratePanel() {
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
     sourceUrl: string;
@@ -648,12 +642,10 @@ export function GeneratePanel() {
     : isLocalRepaintTab
       ? localRepaintPrompt
       : liclickPrompt;
-  const generateMode = generationSettings.mode ?? 'visible';
   const imageModel = generationSettings.model as LiclickImageModel;
   const aspectRatio = generationSettings.aspectRatio as LiclickAspectRatio;
   const imageSize = generationSettings.imageSize as LiclickImageSize;
   const count = generationSettings.count;
-  const upscaleStrength = generationSettings.upscaleStrength ?? 0;
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
   const references = useReferenceStore((state) => state.references);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
@@ -713,9 +705,9 @@ export function GeneratePanel() {
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   useEffect(() => {
-    if (authStatus !== 'authenticated') return;
+    if (authStatus !== 'authenticated' || !usesPersonalLiclickAccount(providerStatus)) return;
     void getPersonalLiclickAccountStatus().catch(() => undefined);
-  }, [authStatus]);
+  }, [authStatus, providerStatus]);
   const submitLockRef = useRef(false);
   const cancelledGenerationIdsRef = useRef(new Set<string>());
   const generationPollFailureCountsRef = useRef(new Map<string, number>());
@@ -1064,15 +1056,6 @@ export function GeneratePanel() {
     },
     [captureObjectId, resolution, setLastCapture, t],
   );
-
-  useEffect(() => {
-    if (!settingsOpen) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setSettingsOpen(false);
-    };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [settingsOpen]);
 
   useEffect(() => {
     if (tab === 'multiview' && activeSelectedReferenceIds.length > 1) {
@@ -1554,19 +1537,26 @@ export function GeneratePanel() {
       tone: 'warning',
       message: '此功能需要先完成飞书身份验证，正在启动登录流程...',
     });
-    pushToast({
-      tone: 'warning',
-      title: '需要飞书登录',
-      description: '飞书登录用于识别员工身份；莉刻生图账号将在下一步单独验证。',
-      dedupeKey: 'ai-login-required',
-    });
     try {
-      if (providerStatus?.devLoginEnabled && !providerStatus.feishuOAuthEnabled) {
+      const activeProviderStatus =
+        providerStatus ?? (await useAuthStore.getState().refreshProviderStatus());
+      if (resolveLiclickAuthStrategy(activeProviderStatus) === 'unresolved') {
+        throw new Error('当前登录方式尚未配置完成，请检查本地启动配置后重试。');
+      }
+      pushToast({
+        tone: 'warning',
+        title: '需要飞书登录',
+        description: usesLocalAtlasLogin(activeProviderStatus)
+          ? '本地版使用同一个飞书/Atlas 登录完成身份验证和莉刻生图。'
+          : '服务器版使用飞书验证员工身份，莉刻生图账号将在当前电脑单独验证。',
+        dedupeKey: 'ai-login-required',
+      });
+      if (activeProviderStatus.devLoginEnabled && !activeProviderStatus.feishuOAuthEnabled) {
         const result = await devLogin({
           displayName: 'Liclick Dev User',
           email: 'dev@liclick.local',
         });
-        setAuthenticated(result.user, 'dev-mock', providerStatus);
+        setAuthenticated(result.user, 'dev-mock', activeProviderStatus);
         return true;
       }
       const result = await runFeishuLoginFlow({
@@ -1581,7 +1571,11 @@ export function GeneratePanel() {
         },
       });
       if (result.user) {
-        setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+        setAuthenticated(
+          result.user,
+          result.authMode ?? 'feishu-oauth',
+          result.providerStatus ?? activeProviderStatus,
+        );
         setGenerateNotice({
           tone: 'info',
           message: '飞书身份验证已完成。',
@@ -1607,6 +1601,35 @@ export function GeneratePanel() {
   async function requirePersonalLiclickAccount() {
     const wasAuthenticated = useAuthStore.getState().status === 'authenticated';
     if (!(await requireFeishuLogin())) return false;
+    let activeProviderStatus = useAuthStore.getState().providerStatus;
+    try {
+      activeProviderStatus ??= await useAuthStore.getState().refreshProviderStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '无法确认当前登录方式。';
+      setGenerateNotice({ tone: 'error', message });
+      pushToast({
+        tone: 'error',
+        title: '登录方式不可用',
+        description: message,
+        dedupeKey: 'liclick-auth-strategy-unavailable',
+      });
+      return false;
+    }
+    const authStrategy = resolveLiclickAuthStrategy(activeProviderStatus);
+    // The local build follows 7515224: its Atlas session owns both identity
+    // and generation, so it must never enter the server-only account binder.
+    if (authStrategy === 'atlas-workspace') return true;
+    if (authStrategy !== 'personal-local-component') {
+      const message = '当前登录方式尚未配置完成，请刷新页面或重新登录后再试。';
+      setGenerateNotice({ tone: 'error', message });
+      pushToast({
+        tone: 'error',
+        title: '登录方式不可用',
+        description: message,
+        dedupeKey: 'liclick-auth-strategy-unresolved',
+      });
+      return false;
+    }
     if (!wasAuthenticated) {
       setGenerateNotice({
         tone: 'info',
@@ -2243,7 +2266,7 @@ export function GeneratePanel() {
       }
       submitLockRef.current = true;
       if (!(await requirePersonalLiclickAccount())) return;
-      const submittedPrompt = buildLiclickPrompt(prompt, imageModel);
+      const submittedPrompt = buildMultiviewPrompt(prompt);
       const generationId = createId('liclick-image');
       const objectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
       pendingGeneration = {
@@ -2257,8 +2280,8 @@ export function GeneratePanel() {
           clientGenerationId: generationId,
           projectId: currentProject?.id,
           model: imageModel,
-          visibleOnly: generateMode === 'visible',
-          upscale: generateMode === 'upscale',
+          visibleOnly: true,
+          upscale: false,
           resolution,
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
@@ -2287,8 +2310,8 @@ export function GeneratePanel() {
         ),
         resolution,
         textureMode: 'realistic',
-        visibleOnly: generateMode === 'visible',
-        upscale: generateMode === 'upscale',
+        visibleOnly: true,
+        upscale: false,
         model: imageModel,
         aspectRatio: resolveRequestAspectRatio(
           imageModel,
@@ -3189,24 +3212,6 @@ export function GeneratePanel() {
                 </div>
               </div>
             )}
-            {tab === 'single' && generateMode === 'upscale' && (
-              <div className="absolute right-2 top-2 flex overflow-hidden rounded-md bg-black/62 text-white shadow-lg">
-                <button
-                  type="button"
-                  className="grid h-8 w-8 place-items-center hover:bg-white/10"
-                  title={t('captureCurrentView')}
-                >
-                  <Image className="h-4 w-4" />
-                </button>
-                <label
-                  htmlFor="generate-reference-upload"
-                  className="grid h-8 w-8 cursor-pointer place-items-center border-l border-white/10 hover:bg-white/10"
-                  title={t('uploadReference')}
-                >
-                  <Plus className="h-4 w-4" />
-                </label>
-              </div>
-            )}
           </div>
 
           <div className="space-y-3 p-2.5">
@@ -3234,44 +3239,6 @@ export function GeneratePanel() {
                 >
                   {t('multiView')}
                 </button>
-              </div>
-            ) : tab === 'single' ? (
-              <div
-                className={`relative grid gap-2 text-xs text-white/72 ${generateMode === 'visible' ? 'grid-cols-[1fr_1fr_32px]' : 'grid-cols-2'}`}
-              >
-                <button
-                  type="button"
-                  className={`h-9 rounded-md font-medium transition ${
-                    generateMode === 'visible'
-                      ? 'bg-white text-black'
-                      : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
-                  }`}
-                  onClick={() => updateGenerationSettings({ mode: 'visible' })}
-                >
-                  {t('visible')}
-                </button>
-                <button
-                  type="button"
-                  className={`h-9 rounded-md font-medium transition ${
-                    generateMode === 'upscale'
-                      ? 'bg-white text-black'
-                      : 'bg-white/[0.045] text-white/78 hover:bg-white/10'
-                  }`}
-                  onClick={() => updateGenerationSettings({ mode: 'upscale' })}
-                >
-                  {t('upscale')}
-                </button>
-                {generateMode === 'visible' && (
-                  <button
-                    type="button"
-                    className="grid h-9 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
-                    aria-label={t('settings')}
-                    title={t('settings')}
-                    onClick={() => setSettingsOpen((open) => !open)}
-                  >
-                    <Settings className="h-4 w-4" />
-                  </button>
-                )}
               </div>
             ) : null}
 
@@ -3371,70 +3338,46 @@ export function GeneratePanel() {
               </section>
             )}
 
-            {tab !== 'single' || generateMode === 'visible' ? (
-              <>
-                <label className="grid gap-1.5 text-xs font-semibold text-white/82">
-                  <span>{t('prompt')}</span>
-                  <textarea
-                    value={prompt}
-                    onChange={(event) =>
-                      updateGenerationSettings(
-                        isTextureMapTab
-                          ? { textureMapPrompt: event.target.value }
-                          : isLocalRepaintTab
-                            ? { localRepaintPrompt: event.target.value }
-                            : { liclickPrompt: event.target.value },
-                      )
-                    }
-                    className="h-[104px] w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
-                  />
-                </label>
+            <label className="grid gap-1.5 text-xs font-semibold text-white/82">
+              <span>{t('prompt')}</span>
+              <textarea
+                value={prompt}
+                onChange={(event) =>
+                  updateGenerationSettings(
+                    isTextureMapTab
+                      ? { textureMapPrompt: event.target.value }
+                      : isLocalRepaintTab
+                        ? { localRepaintPrompt: event.target.value }
+                        : { liclickPrompt: event.target.value },
+                  )
+                }
+                className="h-[104px] w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
+              />
+            </label>
 
-                {!isLocalRepaintTab && (
-                  <section className="grid gap-2">
-                    <div className="flex items-center justify-between gap-2 text-sm font-semibold text-white/88">
-                      <span>{t('referenceImage')}</span>
-                      {activeSelectedReferenceIds.length > 0 && (
-                        <span className="rounded-full border border-liclick-pink/40 bg-liclick-pink/16 px-2 py-0.5 text-[11px] font-semibold text-liclick-pink">
-                          {activeSelectedReferenceIds.length} {t('referenceSelected')}
-                        </span>
-                      )}
-                      <label
-                        htmlFor="generate-reference-upload"
-                        className="grid h-7 w-7 cursor-pointer place-items-center rounded-md text-white/82 hover:bg-white/10"
-                        title={t('uploadReference')}
-                      >
-                        <Plus className="h-4 w-4" />
-                      </label>
-                    </div>
-                    <ReferenceImagePicker
-                      compact
-                      inputId="generate-reference-upload"
-                      selectionMode={tab === 'multiview' ? 'single' : 'multiple'}
-                    />
-                  </section>
-                )}
-              </>
-            ) : (
-              <label className="grid gap-2 text-sm font-semibold text-white/88">
-                <span className="flex items-center gap-2">
-                  Strength
-                  <span className="grid h-4 w-4 place-items-center rounded-full border border-white/48 text-[10px] text-white/70">
-                    i
-                  </span>
-                </span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={upscaleStrength}
-                  onChange={(event) =>
-                    updateGenerationSettings({ upscaleStrength: Number(event.target.value) })
-                  }
-                  className="w-full accent-liclick-orange"
+            {!isLocalRepaintTab && (
+              <section className="grid gap-2">
+                <div className="flex items-center justify-between gap-2 text-sm font-semibold text-white/88">
+                  <span>{t('referenceImage')}</span>
+                  {activeSelectedReferenceIds.length > 0 && (
+                    <span className="rounded-full border border-liclick-pink/40 bg-liclick-pink/16 px-2 py-0.5 text-[11px] font-semibold text-liclick-pink">
+                      {activeSelectedReferenceIds.length} {t('referenceSelected')}
+                    </span>
+                  )}
+                  <label
+                    htmlFor="generate-reference-upload"
+                    className="grid h-7 w-7 cursor-pointer place-items-center rounded-md text-white/82 hover:bg-white/10"
+                    title={t('uploadReference')}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </label>
+                </div>
+                <ReferenceImagePicker
+                  compact
+                  inputId="generate-reference-upload"
+                  selectionMode={tab === 'multiview' ? 'single' : 'multiple'}
                 />
-              </label>
+              </section>
             )}
 
             {generateNotice && (
@@ -3610,110 +3553,6 @@ export function GeneratePanel() {
               draggable={false}
             />
           </button>,
-          portalRoot,
-        )}
-      {portalRoot &&
-        settingsOpen &&
-        generateMode === 'visible' &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-[130] grid place-items-center bg-black/62 px-4"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setSettingsOpen(false);
-            }}
-          >
-            <div className="w-full max-w-[560px] rounded-lg border border-white/16 bg-[#151520] p-4 text-white shadow-2xl">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <h2 className="text-base font-semibold">{t('generationSettings')}</h2>
-                <button
-                  type="button"
-                  className="grid h-8 w-8 place-items-center rounded-md text-white/72 hover:bg-white/10 hover:text-white"
-                  aria-label={t('close')}
-                  onClick={() => setSettingsOpen(false)}
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="grid gap-4">
-                <label className="grid gap-1.5">
-                  <span className="text-xs font-semibold text-white/64">{t('model')}</span>
-                  <select
-                    value={imageModel}
-                    onChange={(event) =>
-                      updateGenerationSettings({ model: event.target.value as LiclickImageModel })
-                    }
-                    className="h-10 rounded-md border border-white/12 bg-white px-3 text-sm text-black outline-none focus:border-liclick-pink"
-                  >
-                    {imageModels.map((model) => (
-                      <option key={model.value} value={model.value}>
-                        {model.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="grid gap-1.5">
-                  <span className="text-xs font-semibold text-white/64">{t('ratio')}</span>
-                  <div className="grid grid-cols-4 gap-2 sm:grid-cols-8">
-                    {aspectRatios.map((ratio) => (
-                      <button
-                        key={ratio}
-                        type="button"
-                        className={`h-9 rounded-md text-xs font-semibold transition ${
-                          aspectRatio === ratio
-                            ? 'bg-gradient-to-r from-liclick-pink to-liclick-purple text-white shadow-glow'
-                            : 'bg-white/[0.06] text-white/72 hover:bg-white/12'
-                        }`}
-                        onClick={() => updateGenerationSettings({ aspectRatio: ratio })}
-                      >
-                        {ratio === 'auto' ? t('auto') : ratio}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="grid gap-1.5">
-                  <span className="text-xs font-semibold text-white/64">{t('imageSize')}</span>
-                  <div className="grid grid-cols-4 gap-2">
-                    {imageSizes.map((size) => (
-                      <button
-                        key={size}
-                        type="button"
-                        className={`h-9 rounded-md text-xs font-semibold transition ${
-                          imageSize === size
-                            ? 'bg-gradient-to-r from-liclick-pink to-liclick-purple text-white shadow-glow'
-                            : 'bg-white/[0.06] text-white/72 hover:bg-white/12'
-                        }`}
-                        onClick={() => updateGenerationSettings({ imageSize: size })}
-                      >
-                        {size === 'auto' ? t('auto') : size}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="grid gap-1.5">
-                  <span className="text-xs font-semibold text-white/64">{t('count')}</span>
-                  <div className="grid grid-cols-[44px_1fr_44px] overflow-hidden rounded-md border border-white/12">
-                    <button
-                      type="button"
-                      className="h-10 bg-white/[0.06] text-lg text-white/72 hover:bg-white/12"
-                      onClick={() => updateGenerationSettings({ count: Math.max(1, count - 1) })}
-                    >
-                      -
-                    </button>
-                    <div className="grid h-10 place-items-center bg-white/[0.04] text-sm font-semibold text-white">
-                      {count}
-                    </div>
-                    <button
-                      type="button"
-                      className="h-10 bg-white/[0.06] text-lg text-white/72 hover:bg-white/12"
-                      onClick={() => updateGenerationSettings({ count: Math.min(4, count + 1) })}
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>,
           portalRoot,
         )}
     </>

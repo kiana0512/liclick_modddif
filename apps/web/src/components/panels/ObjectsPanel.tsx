@@ -22,7 +22,7 @@ import { cn } from '@/components/common/cn';
 import { Button } from '@/components/ui/Button';
 import { downloadBlob, getExportFilename } from '@/engine/export/exportUtils';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
-import { fitCameraToObjectId, transformFromObject } from '@/engine/scene/transformActions';
+import { transformFromObject } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
@@ -176,7 +176,6 @@ export function ObjectsPanel() {
   function handleSelectObject(objectId: string) {
     selectObject(objectId);
     updateCurrentProject({ objects: useSceneStore.getState().objects, activeObjectId: objectId });
-    window.requestAnimationFrame(() => fitCameraToObjectId(objectId));
   }
 
   function handleToggleVisibility(objectId: string) {
@@ -227,7 +226,6 @@ export function ObjectsPanel() {
     setImportedModel(duplicated.result, duplicated.object);
     const scene = useSceneStore.getState();
     updateCurrentProject({ objects: scene.objects, activeObjectId: duplicated.object.id });
-    window.requestAnimationFrame(() => fitCameraToObjectId(duplicated.object.id));
     pushToast({ tone: 'success', title: t('objectDuplicated'), description: duplicated.object.name });
   }
 
@@ -461,7 +459,13 @@ function DeleteObjectConfirmDialog({
   );
 }
 
-export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick?: () => void }) {
+export function ObjectsPanelActions({
+  onImportModelClick,
+  importDisabled = false,
+}: {
+  onImportModelClick?: () => void;
+  importDisabled?: boolean;
+}) {
   const t = useT();
   const objects = useSceneStore((state) => state.objects);
   const setAllObjectsVisible = useSceneStore((state) => state.setAllObjectsVisible);
@@ -516,7 +520,8 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
       <button
         type="button"
         onClick={onImportModelClick}
-        className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink"
+        disabled={importDisabled}
+        className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink disabled:cursor-wait disabled:opacity-35"
         title={t('importModel')}
         aria-label={t('importModel')}
       >

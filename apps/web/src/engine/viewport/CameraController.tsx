@@ -8,6 +8,10 @@ import { tupleFromVector } from '@/engine/scene/boundingBoxUtils';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import type { ModelBoundingBox } from '@/types/model';
+import {
+  getWorkspaceCameraTransition,
+  isStrictModelAppend,
+} from './cameraFramingPolicy';
 import { BlenderOrbitControls } from './BlenderOrbitControls';
 import {
   markViewportInteractionActivity,
@@ -123,23 +127,21 @@ export function CameraController() {
     const currentModelIds = new Set(importedModels.map((model) => model.objectId));
     const previousModelIds = importedModelIdsRef.current;
     const previousWorkspaceMode = workspaceModeRef.current;
-    const workspaceModeChanged = previousWorkspaceMode !== workspaceMode;
     workspaceModeRef.current = workspaceMode;
     const modelSetUnchanged =
       previousModelIds.size === currentModelIds.size &&
       [...previousModelIds].every((objectId) => currentModelIds.has(objectId));
-    const isAppendingModels =
-      previousModelIds.size > 0 &&
-      currentModelIds.size > previousModelIds.size &&
-      [...previousModelIds].every((objectId) => currentModelIds.has(objectId));
+    const cameraTransition = getWorkspaceCameraTransition(
+      previousWorkspaceMode,
+      workspaceMode,
+      modelSetUnchanged,
+    );
+    const isAppendingModels = isStrictModelAppend(previousModelIds, currentModelIds);
     importedModelIdsRef.current = currentModelIds;
     if (!controls || importedModels.length === 0) {
       if (importedModels.length === 0) orbitTargetKeyRef.current = undefined;
       return;
     }
-    // Scene/texture mode changes only alter which already-loaded models are
-    // visible. They must not trigger another fit or disturb the current orbit.
-    if (workspaceModeChanged && modelSetUnchanged) return;
     const isSceneWorkspace = workspaceMode === 'scene' || workspaceMode === 'export';
     if (isSceneWorkspace && !importSettings.autoFitCamera) return;
     const selectedModel =
@@ -150,15 +152,22 @@ export function CameraController() {
     const targetObjects = targetModels.map((model) => model.group);
     const boundingBox = getCombinedBoundingBox(targetObjects);
     if (!boundingBox) return;
-    // A workspace-mode change alone must not move the camera. Refit only when
-    // the set of models that needs framing actually changes (for example, from
-    // one active texture model to a multi-model scene).
-    const targetKey = `${camera.uuid}:${targetModels.map((model) => model.objectId).join('|')}`;
-    if (orbitTargetKeyRef.current === targetKey) return;
-    // Importing another model must not discard the view the user has already
-    // established. The first model (or a freshly restored scene) still gets an
-    // initial fit, while later additions only become the new framing baseline.
-    if (isAppendingModels) {
+    const targetKey = `${camera.uuid}:${workspaceMode}:${targetModels
+      .map((model) => model.objectId)
+      .join('|')}`;
+    // Switching into texture mode is the deliberate focus action: the selected
+    // model becomes the only visible model and receives a fresh camera fit.
+    // Other workspace-only changes preserve the user's current orbit and mark
+    // that framing as accepted for the new mode.
+    if (cameraTransition === 'preserve') {
+      orbitTargetKeyRef.current = targetKey;
+      return;
+    }
+    if (cameraTransition !== 'focus-selected' && orbitTargetKeyRef.current === targetKey) return;
+    // Additional imports are positioned beside the existing scene without
+    // pulling the camera away from the user's composition. Entering texture
+    // mode is the one exception because focusing the selected model is explicit.
+    if (isAppendingModels && cameraTransition !== 'focus-selected') {
       orbitTargetKeyRef.current = targetKey;
       return;
     }

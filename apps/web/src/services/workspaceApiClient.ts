@@ -170,12 +170,85 @@ export async function saveDataUrlAsset(input: {
   );
 }
 
-export async function saveBlobAsset(input: {
+export type BlobAssetUploadProgress = {
+  loadedBytes: number;
+  totalBytes: number;
+};
+
+type SaveBlobAssetInput = {
   projectId: string;
   category: AssetCategory;
   blob: Blob;
   filename: string;
-}) {
+  onProgress?: (progress: BlobAssetUploadProgress) => void;
+};
+
+type SavedAssetResponse = {
+  asset: { category: AssetCategory; relativePath: string; url: string };
+};
+
+function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
+  return new Promise<SavedAssetResponse>((resolve, reject) => {
+    const params = new URLSearchParams({
+      format: 'blob',
+      category: input.category,
+      filename: input.filename,
+    });
+    const request = new XMLHttpRequest();
+    request.open(
+      'POST',
+      `${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`,
+    );
+    request.withCredentials = true;
+    request.timeout = 60_000;
+    request.setRequestHeader('content-type', input.blob.type || 'application/octet-stream');
+    request.upload.onprogress = (event) => {
+      input.onProgress?.({
+        loadedBytes: event.loaded,
+        totalBytes: event.lengthComputable && event.total > 0 ? event.total : input.blob.size,
+      });
+    };
+    request.upload.onloadstart = () => {
+      input.onProgress?.({ loadedBytes: 0, totalBytes: input.blob.size });
+    };
+    request.onload = () => {
+      let payload: unknown;
+      try {
+        payload = request.responseText ? JSON.parse(request.responseText) : undefined;
+      } catch {
+        payload = undefined;
+      }
+      if (request.status < 200 || request.status >= 300) {
+        const message =
+          payload &&
+          typeof payload === 'object' &&
+          'error' in payload &&
+          typeof payload.error === 'string'
+            ? payload.error
+            : `Workspace request failed: ${request.status}`;
+        reject(new WorkspaceApiError(request.status, message));
+        return;
+      }
+      input.onProgress?.({ loadedBytes: input.blob.size, totalBytes: input.blob.size });
+      resolve(payload as SavedAssetResponse);
+    };
+    request.onerror = () => {
+      reject(
+        new WorkspaceApiError(
+          0,
+          '无法连接本地工作区服务，项目资源尚未上传。',
+        ),
+      );
+    };
+    request.ontimeout = () => {
+      reject(new WorkspaceApiError(408, '项目资源上传超时，请稍后重试。'));
+    };
+    request.send(input.blob);
+  });
+}
+
+export async function saveBlobAsset(input: SaveBlobAssetInput) {
+  if (input.onProgress) return saveBlobAssetWithProgress(input);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 60_000);
   const params = new URLSearchParams({
@@ -210,7 +283,7 @@ export async function saveBlobAsset(input: {
         : `Workspace request failed: ${response.status}`;
     throw new WorkspaceApiError(response.status, message);
   }
-  return response.json() as Promise<{ asset: { category: AssetCategory; relativePath: string; url: string } }>;
+  return response.json() as Promise<SavedAssetResponse>;
 }
 
 export async function saveRemoteUrlAsset(input: {

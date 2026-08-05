@@ -468,6 +468,7 @@ function buildSubmissionPrompt(input: GenerateImageInput, model: string) {
   const basePrompt =
     prompt ||
     (model === 'nano_banana_2' || model === 'nano_banana_pro' ? '生成一张高质量的参考图。' : '');
+  if (input.workflow !== 'texture-map') return basePrompt;
   const materialConstraint =
     '贴图生成约束：输出应强调材质贴图本身的颜色、粗糙度、纹理颗粒和细节，避免明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影。';
   if (!basePrompt) return materialConstraint;

@@ -7,6 +7,7 @@ import type {
   SceneObject,
 } from '@/types/model';
 import type { NormalizeImportedModelOptions } from '@/engine/scene/normalizeImportedModel';
+import type { ModelImportProgressCallback } from './modelImportProgress';
 
 export type ModelLoadResult = {
   objectId: string;
@@ -37,7 +38,9 @@ export type ModelImportOptions = {
   fileName: string;
   normalizeOptions?: NormalizeImportedModelOptions;
   sourceBuffer?: ArrayBuffer;
+  sourceByteLength?: number;
   resourceFiles?: File[];
+  onProgress?: ModelImportProgressCallback;
 };
 
 export type SupportedImportFormat = ModelLoadResult['format'];

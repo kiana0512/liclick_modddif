@@ -39,7 +39,7 @@ function loadEnvFile(filePath: string) {
 loadEnvFile(path.join(repoRoot, '.env'));
 loadEnvFile(path.join(serverRoot, '.env'));
 
-const port = Number(process.env.SERVER_PORT ?? process.env.LICLICK_WORKSPACE_PORT ?? 4517);
+const port = Number(process.env.SERVER_PORT ?? process.env.LICLICK_WORKSPACE_PORT ?? 4518);
 const host = process.env.SERVER_HOST ?? process.env.LICLICK_WORKSPACE_HOST ?? '127.0.0.1';
 const workspaceDir = path.resolve(
   process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),

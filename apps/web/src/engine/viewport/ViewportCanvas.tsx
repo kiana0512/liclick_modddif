@@ -62,6 +62,7 @@ type ViewportCanvasProps = {
   onImportModels: (files: File[]) => void;
   onImportReferenceImages: (files: File[]) => void;
   onOpenImport: () => void;
+  importDisabled?: boolean;
   showGrid?: boolean;
   gridVariant?: 'default' | 'subtle';
   backgroundColor?: string;
@@ -5416,6 +5417,7 @@ export function ViewportCanvas({
   onImportModels,
   onImportReferenceImages,
   onOpenImport,
+  importDisabled = false,
   backgroundColor = '#080914',
   showCaptureFrame = true,
   showViewCube = true,
@@ -5466,7 +5468,7 @@ export function ViewportCanvas({
     }
     const payload = getDragPayload(event);
     if (payload.modelFiles.length > 0) {
-      onImportModels(payload.modelFiles);
+      if (!importDisabled) onImportModels(payload.modelFiles);
       clearDrag();
       return;
     }
@@ -5576,7 +5578,8 @@ export function ViewportCanvas({
         <button
           type="button"
           onClick={onOpenImport}
-          className="absolute bottom-4 left-4 rounded-md border border-white/10 bg-black/42 px-3 py-2 text-xs text-white/66 backdrop-blur transition hover:bg-white/10 hover:text-white"
+          disabled={importDisabled}
+          className="absolute bottom-4 left-4 rounded-md border border-white/10 bg-black/42 px-3 py-2 text-xs text-white/66 backdrop-blur transition hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-45"
         >
           {t('dropModelImport')}
         </button>

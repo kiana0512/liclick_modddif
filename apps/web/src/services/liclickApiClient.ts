@@ -1,16 +1,15 @@
 import type { GenerateTextureInput, Generation } from '@/types/generation';
 import type { ReferenceImage } from '@/types/project';
-import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
+import type { ProviderStatus } from './authApiClient';
 import { invalidateCachedPersonalLiclickAccountStatus } from './liclickAccountApiClient';
 import { getLocalIdentityProof } from './localIdentityProofApiClient';
+import { resolveLiclickTransport, type LiclickTransport } from './liclickTransport';
 import { getUserFacingGenerationError } from './generationErrorMessage';
 import {
   prepareReferenceForAtlas,
   type ReferencePreprocessingResult,
 } from './referenceImagePreprocessor';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
-
-const localLiclickApiBase = getLocalTextureRuntimeApiBase();
 
 export class LiclickApiError extends Error {
   readonly status: number;
@@ -39,6 +38,7 @@ export type LiclickImageSize = 'auto' | '1K' | '2K' | '4K';
 
 export type LiclickApiConfig = {
   baseUrl?: string;
+  providerStatus?: ProviderStatus;
   getAccessToken?: () => Promise<string | undefined>;
   onReferencePreprocessed?: (result: ReferencePreprocessingResult) => void;
 };
@@ -111,7 +111,7 @@ async function prepareReferences(
 }
 
 async function requestJson<T>(
-  baseUrl: string,
+  transport: LiclickTransport,
   path: string,
   init: RequestInit & { timeoutMs?: number },
 ) {
@@ -133,19 +133,21 @@ async function requestJson<T>(
   const requestHeaders = new Headers(headers);
   let response: Response;
   try {
-    requestHeaders.set(
-      'x-li3d-identity-proof',
-      await getLocalIdentityProof({
-        signal: controller.signal,
-        timeoutMs: Math.min(timeoutMs, 8_000),
-      }),
-    );
+    if (transport.requiresIdentityProof) {
+      requestHeaders.set(
+        'x-li3d-identity-proof',
+        await getLocalIdentityProof({
+          signal: controller.signal,
+          timeoutMs: Math.min(timeoutMs, 8_000),
+        }),
+      );
+    }
     if (fetchInit.body && !requestHeaders.has('content-type'))
       requestHeaders.set('content-type', 'application/json');
-    response = await fetch(`${baseUrl}${path}`, {
+    response = await fetch(`${transport.baseUrl}${path}`, {
       ...fetchInit,
       signal: controller.signal,
-      credentials: 'omit',
+      credentials: transport.credentials,
       headers: requestHeaders,
     });
   } catch (error) {
@@ -154,7 +156,8 @@ async function requestJson<T>(
       throw new Error('莉刻生图服务响应超时，请稍后重试。');
     }
     if (error instanceof Error && !(error instanceof TypeError)) throw error;
-    throw new Error(`无法连接莉刻生图服务（${baseUrl}），请确认最新版本地贴图组件已启动。`);
+    const serviceLabel = transport.kind === 'workspace' ? '本地登录服务' : '本地贴图组件';
+    throw new Error(`无法连接莉刻生图服务（${transport.baseUrl}），请确认${serviceLabel}已启动。`);
   } finally {
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener('abort', abortFromCaller);
@@ -166,10 +169,11 @@ async function requestJson<T>(
         ? payload.code
         : undefined;
     if (
-      response.status === 401 ||
-      response.status === 403 ||
-      response.status === 428 ||
-      errorCode === 'LICLICK_ACCOUNT_EMAIL_MISMATCH'
+      transport.kind === 'local-component' &&
+      (response.status === 401 ||
+        response.status === 403 ||
+        response.status === 428 ||
+        errorCode === 'LICLICK_ACCOUNT_EMAIL_MISMATCH')
     ) {
       invalidateCachedPersonalLiclickAccountStatus();
     }
@@ -191,7 +195,7 @@ async function requestJson<T>(
 }
 
 export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickApiClient {
-  const baseUrl = config.baseUrl ?? localLiclickApiBase;
+  const getTransport = () => resolveLiclickTransport(config.providerStatus, config.baseUrl);
 
   return {
     async generateTextureSingleView(input) {
@@ -211,7 +215,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         activeProjectJob?: boolean;
         workflow?: 'liclick' | 'texture-map';
         message?: string;
-      }>(baseUrl, '/api/liclick/generate-image', {
+      }>(await getTransport(), '/api/liclick/generate-image', {
         method: 'POST',
         body: JSON.stringify({
           clientGenerationId: input.clientGenerationId,
@@ -259,7 +263,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
     },
     async getGenerationJob(jobId, options = {}) {
       return requestJson<GenerationJobResult>(
-        baseUrl,
+        await getTransport(),
         `/api/liclick/generate-image/${encodeURIComponent(jobId)}`,
         {
           method: 'GET',
@@ -271,7 +275,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
     },
     async listGenerationJobs(projectId) {
       const result = await requestJson<{ jobs: GenerationJobListItem[] }>(
-        baseUrl,
+        await getTransport(),
         `/api/liclick/generate-image?projectId=${encodeURIComponent(projectId)}`,
         {
           method: 'GET',
@@ -283,7 +287,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
     },
     async cancelGenerationJob(jobId) {
       return requestJson<GenerationJobResult>(
-        baseUrl,
+        await getTransport(),
         `/api/liclick/generate-image/${encodeURIComponent(jobId)}`,
         {
           method: 'DELETE',

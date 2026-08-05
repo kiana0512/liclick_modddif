@@ -44,7 +44,7 @@ function devPort(value, fallback, label) {
   return candidate;
 }
 
-const workspacePort = devPort(process.env.LICLICK_WORKSPACE_PORT, '4517', 'LICLICK_WORKSPACE_PORT');
+const workspacePort = devPort(process.env.LICLICK_WORKSPACE_PORT, '4518', 'LICLICK_WORKSPACE_PORT');
 const webPort = devPort(process.env.LICLICK_WEB_PORT, '5173', 'LICLICK_WEB_PORT');
 const localComponentPort = devPort(
   process.env.VITE_LICLICK_LOCAL_COMPONENT_PORT,
@@ -58,6 +58,7 @@ const managedChildren = new Set();
 
 const env = {
   ...process.env,
+  SERVER_PORT: workspacePort,
   LICLICK_WORKSPACE_PORT: workspacePort,
   LICLICK_WORKSPACE_DIR: process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),
   LICLICK_PUBLIC_WORKSPACE_URL: process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? workspaceOrigin,

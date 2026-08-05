@@ -843,7 +843,7 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isLiclickRoute && segments[2] === 'edit-image') {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    const atlasIdentity = getAtlasIdentity(user.atlasHomeDir);
+    const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
     if (
       user.atlasHomeDir &&
       user.email &&
@@ -891,7 +891,7 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isGenerateImageRoute) {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    const atlasIdentity = getAtlasIdentity(user.atlasHomeDir);
+    const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
     if (
       user.atlasHomeDir &&
       user.email &&

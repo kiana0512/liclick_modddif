@@ -1,4 +1,5 @@
-const devWorkspacePort = '4517';
+const devWorkspacePort = '4518';
+const devWebPort = '5173';
 
 function isLoopbackHost(hostname: string) {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
@@ -13,7 +14,7 @@ function getCurrentPageApiBase() {
   if (typeof window === 'undefined') return `http://127.0.0.1:${devWorkspacePort}`;
   const viteBase = normalizeBasePath(import.meta.env.BASE_URL ?? '/');
   const pagePort = window.location.port;
-  if (isLoopbackHost(window.location.hostname) && pagePort && pagePort !== devWorkspacePort) {
+  if (isLoopbackHost(window.location.hostname) && pagePort === devWebPort) {
     return `${window.location.protocol}//${window.location.hostname}:${devWorkspacePort}`;
   }
   return `${window.location.origin}${viteBase}`;

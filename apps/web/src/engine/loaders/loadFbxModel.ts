@@ -1,6 +1,7 @@
 import { LoadingManager } from 'three';
 import { FBXLoader, TGALoader } from 'three-stdlib';
 import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } from './modelImportTypes';
+import { yieldForModelImportProgressPaint } from './modelImportProgress';
 import { summarizeLoadedGroup } from './modelLoadUtils';
 
 const LEGACY_EMBEDDED_PNG_NAME = new TextEncoder().encode('liclick_image_0_png');
@@ -48,9 +49,27 @@ function createFbxLoadingManager(resourceFiles: File[]) {
 
 export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new FBXLoader(createFbxLoadingManager(options.resourceFiles ?? []));
-  const fbx = options.sourceBuffer
-    ? loader.parse(repairLegacyEmbeddedTextureFileNames(options.sourceBuffer), '')
-    : await loader.loadAsync(options.sourceUrl);
+  let fbx;
+  if (options.sourceBuffer) {
+    options.onProgress?.({ phase: 'parsing' });
+    await yieldForModelImportProgressPaint();
+    fbx = loader.parse(repairLegacyEmbeddedTextureFileNames(options.sourceBuffer), '');
+  } else {
+    options.onProgress?.({ phase: 'reading', phaseProgress: 0 });
+    fbx = await loader.loadAsync(options.sourceUrl, (event) => {
+      options.onProgress?.({
+        phase: 'reading',
+        loadedBytes: event.loaded,
+        totalBytes:
+          event.lengthComputable && event.total > 0
+            ? event.total
+            : options.sourceByteLength,
+      });
+    });
+  }
+  options.onProgress?.({ phase: 'parsing', phaseProgress: 1 });
+  options.onProgress?.({ phase: 'materials' });
+  await yieldForModelImportProgressPaint();
   const result = summarizeLoadedGroup({
     group: fbx,
     format: 'fbx',
@@ -58,6 +77,7 @@ export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedM
     objectUrl: options.sourceUrl,
     normalizeOptions: options.normalizeOptions,
   });
+  options.onProgress?.({ phase: 'materials', phaseProgress: 1 });
 
   return {
     root: fbx,

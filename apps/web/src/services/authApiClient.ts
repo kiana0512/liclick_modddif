@@ -2,6 +2,8 @@ import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
+let cachedProviderStatus: ProviderStatus | undefined;
+
 export type AuthMode = 'dev-mock' | 'feishu-oauth';
 
 export type AuthUser = {
@@ -79,7 +81,14 @@ export function getAuthMe() {
 }
 
 export function getProviderStatus() {
-  return requestJson<ProviderStatus>('/api/auth/provider-status');
+  return requestJson<ProviderStatus>('/api/auth/provider-status').then((providerStatus) => {
+    cachedProviderStatus = providerStatus;
+    return providerStatus;
+  });
+}
+
+export function getCachedProviderStatus() {
+  return cachedProviderStatus;
 }
 
 export function devLogin(input: { displayName?: string; email?: string }) {

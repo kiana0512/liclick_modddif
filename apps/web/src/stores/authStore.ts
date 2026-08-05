@@ -1,5 +1,10 @@
 import { create } from 'zustand';
-import type { AuthMode, AuthUser, ProviderStatus } from '@/services/authApiClient';
+import {
+  getProviderStatus,
+  type AuthMode,
+  type AuthUser,
+  type ProviderStatus,
+} from '@/services/authApiClient';
 import {
   activateLocalSettings,
   getLocalSettings,
@@ -18,6 +23,8 @@ type AuthStore = {
   setChecking: () => void;
   setAnonymous: (authMode?: AuthMode, providerStatus?: ProviderStatus) => void;
   setAuthenticated: (user: AuthUser, authMode: AuthMode, providerStatus?: ProviderStatus) => void;
+  setProviderStatus: (providerStatus: ProviderStatus) => void;
+  refreshProviderStatus: () => Promise<ProviderStatus>;
   refreshLocalSettings: () => Promise<void>;
 };
 
@@ -47,15 +54,35 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   authMode: 'dev-mock',
   localProfile: { customId: '' },
   setChecking: () => set({ status: 'checking' }),
-  setAnonymous: (authMode = 'dev-mock', providerStatus) => {
+  setAnonymous: (authMode, providerStatus) => {
+    const current = get();
     useShortcutStore.getState().setActiveUser('anonymous');
-    set({ status: 'anonymous', authMode, providerStatus, user: undefined, localProfile: { customId: '' } });
+    set({
+      status: 'anonymous',
+      authMode: authMode ?? current.authMode,
+      providerStatus: providerStatus ?? current.providerStatus,
+      user: undefined,
+      localProfile: { customId: '' },
+    });
     void activateAndApplyLocalSettings('anonymous', set).catch(() => undefined);
   },
   setAuthenticated: (user, authMode, providerStatus) => {
+    const current = get();
     useShortcutStore.getState().setActiveUser(user.id);
-    set({ status: 'authenticated', authMode, providerStatus, user, localProfile: { customId: '' } });
+    set({
+      status: 'authenticated',
+      authMode,
+      providerStatus: providerStatus ?? current.providerStatus,
+      user,
+      localProfile: { customId: '' },
+    });
     void activateAndApplyLocalSettings(user.id, set).catch(() => undefined);
+  },
+  setProviderStatus: (providerStatus) => set({ providerStatus, authMode: providerStatus.authMode }),
+  refreshProviderStatus: async () => {
+    const providerStatus = await getProviderStatus();
+    set({ providerStatus, authMode: providerStatus.authMode });
+    return providerStatus;
   },
   refreshLocalSettings: async () => {
     const userId = get().user?.id ?? 'anonymous';

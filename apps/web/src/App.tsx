@@ -1,13 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { TextureRuntimeGate } from './components/runtime/TextureRuntimeGate';
+import { resolveBakeEntryProject } from './features/workflow/resolveBakeEntryProject';
 import { useLocalTextureRuntime } from './hooks/useLocalTextureRuntime';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { getIdentityStatus } from './services/identityApiClient';
 import { initializeTelemetry } from './services/telemetryClient';
+import { listProjects, loadProject } from './services/workspaceApiClient';
 import { useAuthStore } from './stores/authStore';
 import { useProjectStore } from './stores/projectStore';
-import type { TextureBakeHandoff } from './types/project';
+import type { Project, TextureBakeHandoff } from './types/project';
 
 type RouteState =
   | { name: 'home' }
@@ -114,6 +116,8 @@ function pathFromRoute(route: RouteState) {
 
 export function App() {
   const [route, setRoute] = useState<RouteState>(() => routeFromPath(window.location.pathname));
+  const navigationRevisionRef = useRef(0);
+  const bakeEntryProjectPromiseRef = useRef<Promise<Project | undefined> | null>(null);
   const textureRouteActive =
     route.name === 'editor' || (route.name === 'projects' && route.module === 'texture');
   const localTextureRuntime = useLocalTextureRuntime(textureRouteActive);
@@ -123,51 +127,86 @@ export function App() {
   const refreshLocalSettings = useAuthStore((state) => state.refreshLocalSettings);
 
   const navigation = useMemo(
-    () => ({
-      openHome: () => {
-        const nextRoute: RouteState = { name: 'home' };
+    () => {
+      function commitRoute(nextRoute: RouteState) {
         window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
         setRoute(nextRoute);
-      },
-      openTextureProjects: () => {
-        const nextRoute: RouteState = { name: 'projects', module: 'texture' };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
-      openCurrentBake: () => {
-        const projectId = useProjectStore.getState().getCurrentProject()?.id;
-        const nextRoute: RouteState = projectId
-          ? { name: 'bake', projectId }
-          : { name: 'projects', module: 'bake' };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
-      openModelingToolbox: () => {
-        const nextRoute: RouteState = { name: 'modelingToolbox' };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
-      openAutoRetopology: () => {
-        const nextRoute: RouteState = { name: 'autoRetopology' };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
-      openAutoUv: () => {
-        const nextRoute: RouteState = { name: 'autoUv' };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
-      openEditor: (projectId: string) => {
-        const nextRoute: RouteState = { name: 'editor', projectId };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
-      openBake: (projectId: string, handoff?: TextureBakeHandoff) => {
-        const nextRoute: RouteState = { name: 'bake', projectId, handoff };
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
-        setRoute(nextRoute);
-      },
-    }),
+      }
+
+      function navigate(nextRoute: RouteState) {
+        navigationRevisionRef.current += 1;
+        commitRoute(nextRoute);
+      }
+
+      return {
+        openHome: () => {
+          const nextRoute: RouteState = { name: 'home' };
+          navigate(nextRoute);
+        },
+        openTextureProjects: () => {
+          const nextRoute: RouteState = { name: 'projects', module: 'texture' };
+          navigate(nextRoute);
+        },
+        openCurrentBake: () => {
+          const requestRevision = ++navigationRevisionRef.current;
+          const projectStore = useProjectStore.getState();
+          const currentProject = projectStore.getCurrentProject();
+
+          if (currentProject) {
+            commitRoute({ name: 'bake', projectId: currentProject.id });
+            return;
+          }
+
+          let pendingProject = bakeEntryProjectPromiseRef.current;
+          if (!pendingProject) {
+            pendingProject = resolveBakeEntryProject(undefined, { listProjects, loadProject });
+            bakeEntryProjectPromiseRef.current = pendingProject;
+            void pendingProject
+              .finally(() => {
+                if (bakeEntryProjectPromiseRef.current === pendingProject) {
+                  bakeEntryProjectPromiseRef.current = null;
+                }
+              })
+              .catch(() => undefined);
+          }
+
+          void pendingProject
+            .then((project) => {
+              if (navigationRevisionRef.current !== requestRevision) return;
+              if (!project) {
+                commitRoute({ name: 'projects', module: 'bake' });
+                return;
+              }
+              useProjectStore.getState().replaceCurrentProject(project);
+              commitRoute({ name: 'bake', projectId: project.id });
+            })
+            .catch(() => {
+              if (navigationRevisionRef.current !== requestRevision) return;
+              commitRoute({ name: 'projects', module: 'bake' });
+            });
+        },
+        openModelingToolbox: () => {
+          const nextRoute: RouteState = { name: 'modelingToolbox' };
+          navigate(nextRoute);
+        },
+        openAutoRetopology: () => {
+          const nextRoute: RouteState = { name: 'autoRetopology' };
+          navigate(nextRoute);
+        },
+        openAutoUv: () => {
+          const nextRoute: RouteState = { name: 'autoUv' };
+          navigate(nextRoute);
+        },
+        openEditor: (projectId: string) => {
+          const nextRoute: RouteState = { name: 'editor', projectId };
+          navigate(nextRoute);
+        },
+        openBake: (projectId: string, handoff?: TextureBakeHandoff) => {
+          const nextRoute: RouteState = { name: 'bake', projectId, handoff };
+          navigate(nextRoute);
+        },
+      };
+    },
     [],
   );
 
@@ -206,6 +245,7 @@ export function App() {
       window.history.replaceState(route, '', normalizedPath);
     }
     function handlePopState() {
+      navigationRevisionRef.current += 1;
       setRoute(routeFromPath(window.location.pathname));
     }
     window.addEventListener('popstate', handlePopState);

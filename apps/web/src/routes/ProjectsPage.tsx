@@ -409,7 +409,11 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
             },
           });
           if (!result.user) throw new Error('登录服务没有返回用户信息。');
-          setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+          setAuthenticated(
+            result.user,
+            result.authMode ?? 'feishu-oauth',
+            result.providerStatus ?? providerStatus,
+          );
           setPageNotice({
             tone: 'info',
             title: '飞书登录成功',

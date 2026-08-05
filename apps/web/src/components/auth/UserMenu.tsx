@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { KeyRound, Languages, LogIn, LogOut, RefreshCw, Unlink } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
+import {
+  usesLocalAtlasLogin,
+  usesPersonalLiclickAccount,
+} from '@/services/liclickAuthStrategy';
 import { runPersonalLiclickAccountBindingFlow } from '@/services/liclickAccountBindingFlow';
 import {
   getPersonalLiclickAccountStatus,
@@ -33,10 +37,17 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
+  const refreshProviderStatus = useAuthStore((state) => state.refreshProviderStatus);
   const pushToast = useToastStore((state) => state.pushToast);
+  const hasPersonalLiclickAccount = usesPersonalLiclickAccount(providerStatus);
 
   useEffect(() => {
-    if (!open || !user) return undefined;
+    if (!open || providerStatus) return;
+    void refreshProviderStatus().catch(() => undefined);
+  }, [open, providerStatus, refreshProviderStatus]);
+
+  useEffect(() => {
+    if (!open || !user || !hasPersonalLiclickAccount) return undefined;
     let cancelled = false;
     setLiclickStatusLoading(true);
     setLiclickStatusError('');
@@ -57,16 +68,17 @@ export function UserMenu({ onLogout }: UserMenuProps) {
     return () => {
       cancelled = true;
     };
-  }, [open, user]);
+  }, [open, user, hasPersonalLiclickAccount]);
 
   async function handleLogin() {
     if (busy) return;
     setBusy(true);
     setLoginStatus('正在启动飞书授权...');
     try {
-      if (providerStatus?.devLoginEnabled && !providerStatus.feishuOAuthEnabled) {
+      const activeProviderStatus = providerStatus ?? (await refreshProviderStatus());
+      if (activeProviderStatus.devLoginEnabled && !activeProviderStatus.feishuOAuthEnabled) {
         const result = await devLogin({ displayName: 'Liclick Dev User', email: 'dev@liclick.local' });
-        setAuthenticated(result.user, 'dev-mock', providerStatus);
+        setAuthenticated(result.user, 'dev-mock', activeProviderStatus);
         return;
       }
       const result = await runFeishuLoginFlow({
@@ -81,12 +93,15 @@ export function UserMenu({ onLogout }: UserMenuProps) {
         },
       });
       if (result.user) {
-        setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+        const loginProviderStatus = result.providerStatus ?? activeProviderStatus;
+        setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', loginProviderStatus);
         setLoginStatus('');
         pushToast({
           tone: 'success',
           title: t('feishuLoginSuccess'),
-          description: '飞书员工身份已验证。莉刻生图账号需要在当前电脑单独绑定。',
+          description: usesLocalAtlasLogin(loginProviderStatus)
+            ? result.message ?? t('atlasLoginReady')
+            : '飞书员工身份已验证。莉刻生图账号需要在当前电脑单独绑定。',
           dedupeKey: 'auth-login-success',
         });
         return;
@@ -252,6 +267,7 @@ export function UserMenu({ onLogout }: UserMenuProps) {
               {language === 'zh' ? t('switchToEnglish') : t('switchToChinese')}
             </span>
           </button>
+          {hasPersonalLiclickAccount && (
           <div className="mt-1 border-t border-white/8 pt-1">
             <button
               type="button"
@@ -309,6 +325,7 @@ export function UserMenu({ onLogout }: UserMenuProps) {
               </button>
             )}
           </div>
+          )}
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />
             {t('logout')}

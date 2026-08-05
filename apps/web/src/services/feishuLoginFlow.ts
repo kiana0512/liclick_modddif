@@ -47,6 +47,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
         return {
           user: current.user,
           authMode: current.authMode,
+          providerStatus,
           message: `已恢复 ${identityStatus.user_name ?? current.user.displayName} 的登录状态。`,
         };
       }
@@ -73,7 +74,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
     if (started.user) {
       await getIdentityStatus().catch(() => undefined);
       popup.close();
-      return started;
+      return { ...started, providerStatus };
     }
     options.onStatus?.(started.message ?? '飞书/IDaaS 授权任务已启动，正在等待授权窗口。');
 
@@ -101,7 +102,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
       if (polled.user) {
         await getIdentityStatus().catch(() => undefined);
         popup.close();
-        return polled;
+        return { ...polled, providerStatus };
       }
       loginId = polled.loginId ?? loginId;
       if (polled.message) options.onStatus?.(polled.message);

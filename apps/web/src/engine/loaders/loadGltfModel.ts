@@ -1,14 +1,32 @@
 import { GLTFLoader } from 'three-stdlib';
 import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } from './modelImportTypes';
+import { yieldForModelImportProgressPaint } from './modelImportProgress';
 import { summarizeLoadedGroup } from './modelLoadUtils';
 
 export async function loadGltfModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new GLTFLoader();
   const format = options.fileName.toLowerCase().endsWith('.gltf') ? 'gltf' : 'glb';
-  const gltf =
-    format === 'glb' && options.sourceBuffer
-      ? await loader.parseAsync(options.sourceBuffer, '')
-      : await loader.loadAsync(options.sourceUrl);
+  let gltf;
+  if (format === 'glb' && options.sourceBuffer) {
+    options.onProgress?.({ phase: 'parsing' });
+    await yieldForModelImportProgressPaint();
+    gltf = await loader.parseAsync(options.sourceBuffer, '');
+  } else {
+    options.onProgress?.({ phase: 'reading', phaseProgress: 0 });
+    gltf = await loader.loadAsync(options.sourceUrl, (event) => {
+      options.onProgress?.({
+        phase: 'reading',
+        loadedBytes: event.loaded,
+        totalBytes:
+          event.lengthComputable && event.total > 0
+            ? event.total
+            : options.sourceByteLength,
+      });
+    });
+  }
+  options.onProgress?.({ phase: 'parsing', phaseProgress: 1 });
+  options.onProgress?.({ phase: 'materials' });
+  await yieldForModelImportProgressPaint();
   const result = summarizeLoadedGroup({
     group: gltf.scene,
     format,
@@ -16,6 +34,7 @@ export async function loadGltfModel(options: ModelImportOptions): Promise<Loaded
     objectUrl: options.sourceUrl,
     normalizeOptions: options.normalizeOptions,
   });
+  options.onProgress?.({ phase: 'materials', phaseProgress: 1 });
 
   return {
     root: gltf.scene,
