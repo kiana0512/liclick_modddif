@@ -313,6 +313,7 @@ const fragmentShader = `
   uniform float keyLightIntensity;
   uniform vec3 keyLightDirection;
   uniform vec3 baseColor;
+  uniform float showEmptyProjectionHatch;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
   varying vec2 vUv;
@@ -428,7 +429,8 @@ const fragmentShader = `
     // Keep uncovered texels visually distinct from actual projected content.
     // This is display-only and does not alter the source or baked resolution.
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+    vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+    return mix(baseSurfaceColor, hatchColor, showEmptyProjectionHatch);
   }
 
   void main() {
@@ -1026,6 +1028,7 @@ function buildStackFragmentShader(
   uniform float keyLightIntensity;
   uniform vec3 keyLightDirection;
   uniform vec3 baseColor;
+  uniform float showEmptyProjectionHatch;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
   varying vec2 vUv;
@@ -1150,7 +1153,8 @@ function buildStackFragmentShader(
     // Match the UV-layer empty-area treatment so projection gaps never look
     // like a valid white texture contribution.
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+    vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+    return mix(baseSurfaceColor, hatchColor, showEmptyProjectionHatch);
   }
 
   float topQuality0 = 0.0;
@@ -1476,6 +1480,14 @@ function updateLayerUniforms(
         );
       });
   }
+  updateLayerDisplayUniforms(material, binding, layer);
+}
+
+function updateLayerDisplayUniforms(
+  material: THREE.ShaderMaterial,
+  binding: ProjectedLayerUniformBinding,
+  layer: ProjectionLayerStackInput['layers'][number],
+) {
   const opacityUniform = material.uniforms[binding.opacityUniform];
   if (opacityUniform) opacityUniform.value = layer.visible ? layer.opacity : 0;
   const strengthUniform = material.uniforms[binding.strengthUniform];
@@ -1486,6 +1498,64 @@ function updateLayerUniforms(
   if (saturationUniform) saturationUniform.value = layer.saturation ?? 0;
   const lightnessUniform = material.uniforms[binding.lightnessUniform];
   if (lightnessUniform) lightnessUniform.value = layer.lightness ?? 0;
+}
+
+/**
+ * Updates the interactive layer controls on an already resident projected
+ * material without waiting for image/depth/normal texture arrays to rebuild.
+ * The binding is keyed by layer id, so it remains safe when an optional
+ * visibility texture had to fall back during material creation.
+ */
+export function syncProjectedLayerMaterialDisplayState(
+  material: THREE.Material | THREE.Material[] | undefined,
+  layers: ProjectionLayerStackInput['layers'],
+) {
+  const materials = Array.isArray(material) ? material : material ? [material] : [];
+  const layerById = new Map(layers.map((layer) => [layer.layerId, layer]));
+  let updated = false;
+
+  for (const candidate of materials) {
+    if (!(candidate instanceof THREE.ShaderMaterial)) continue;
+    const state = candidate.userData[PROJECTED_LAYER_STACK_STATE_KEY] as
+      | ProjectedLayerMaterialState
+      | undefined;
+    if (!state) continue;
+    for (const binding of state.bindings) {
+      const layer = layerById.get(binding.layerId);
+      if (layer) {
+        updateLayerDisplayUniforms(candidate, binding, layer);
+      } else {
+        const opacityUniform = candidate.uniforms[binding.opacityUniform];
+        if (opacityUniform) opacityUniform.value = 0;
+      }
+    }
+    if (candidate.uniforms.showEmptyProjectionHatch) {
+      candidate.uniforms.showEmptyProjectionHatch.value = layers.some((layer) => layer.visible)
+        ? 1
+        : 0;
+    }
+    updated = true;
+  }
+
+  return updated;
+}
+
+export function syncProjectedLayerMaterialDisplayStateInObject(
+  root: THREE.Object3D,
+  layers: ProjectionLayerStackInput['layers'],
+) {
+  const visited = new Set<THREE.Material>();
+  let updated = false;
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (visited.has(material)) continue;
+      visited.add(material);
+      updated = syncProjectedLayerMaterialDisplayState(material, layers) || updated;
+    }
+  });
+  return updated;
 }
 
 function updateSharedPreviewUniforms(
@@ -1538,6 +1608,12 @@ function updateSharedPreviewUniforms(
     material.uniforms.uvOverlayLightnessShift.value = input.uvOverlayLightness ?? 0;
   if (material.uniforms.baseColor)
     material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
+  if (material.uniforms.showEmptyProjectionHatch)
+    material.uniforms.showEmptyProjectionHatch.value = input.layers.some(
+      (layer) => layer.visible,
+    )
+      ? 1
+      : 0;
   if (material.uniforms.previewLightingEnabled)
     material.uniforms.previewLightingEnabled.value = previewLighting.enabled;
   if (material.uniforms.previewExposure)
@@ -1662,8 +1738,12 @@ type ProjectedTextureArrayBundle = {
 
 const PROJECTED_ARRAY_PREVIEW_MEMORY_BUDGET = 96 * 1024 * 1024;
 const PROJECTED_ARRAY_MIN_PREVIEW_SIDE = 256;
-const PROJECTED_ARRAY_MAX_PREVIEW_SIDE = 1024;
-const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 524_288;
+// Texture arrays are an interactive GPU preview. A 768px slice keeps six/ten
+// view stacks responsive while bake/export continues to use full-resolution
+// source images. Keeping this below 1K also cuts CPU canvas readback and GPU
+// upload cost by nearly half at the direct-to-array transition.
+const PROJECTED_ARRAY_MAX_PREVIEW_SIDE = 768;
+const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 262_144;
 
 function getTexturePixelSize(texture: THREE.Texture) {
   const image = texture.image as
@@ -1908,7 +1988,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   const normalTexture = input.normalUrl
     ? await loadProjectedTexture(input.normalUrl, THREE.NoColorSpace, 'normal').catch((error) => {
         console.warn(
-          '[Liclick 3D Texture] Could not load projection crease normals; keeping visibility closed.',
+          '[Liclick 3D Texture] Could not load projection crease normals; continuing without normal check.',
           error,
         );
         return neutralNormalTexture;
@@ -2009,6 +2089,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
       uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
+      showEmptyProjectionHatch: { value: input.visible ? 1 : 0 },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
@@ -2140,6 +2221,7 @@ export async function createProjectedLayerStackMaterial(
     edgeFeather: { value: input.edgeFeather ?? 0.004 },
     depthBias: { value: input.depthBias ?? 0.025 },
     baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
+    showEmptyProjectionHatch: { value: input.layers.some((layer) => layer.visible) ? 1 : 0 },
     baseMap: { value: input.baseTexture ?? neutralTexture },
     baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
     uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
@@ -2254,7 +2336,7 @@ export async function createProjectedLayerStackMaterial(
         requestedNormal
           ? loadProjectedTexture(layer.normalUrl!, THREE.NoColorSpace, 'normal').catch((error) => {
               console.warn(
-                '[Liclick 3D Texture] Could not load projection crease normals; keeping layer hidden.',
+                '[Liclick 3D Texture] Could not load projection crease normals; continuing without normal check.',
                 error,
               );
               return undefined;
@@ -2279,7 +2361,7 @@ export async function createProjectedLayerStackMaterial(
     // Never reinterpret a masked layer as an unmasked layer. In particular, the
     // renderer-only local repaint preview is created before its first brush
     // upload; a transient mask lookup miss must not reveal its full source image.
-    if ((requestedMask && !maskTexture) || (requestedNormal && !normalTexture)) continue;
+    if (requestedMask && !maskTexture) continue;
     const index = loadedLayers.length;
     const shouldUseMask = requestedMask && Boolean(maskTexture);
     const shouldUseDepth = requestedDepth && Boolean(depthTexture);
@@ -2372,7 +2454,16 @@ export async function createProjectedLayerStackMaterial(
       ...(normalArraySlice >= 0 ? { normalArraySlice } : {}),
     });
   }
-  if (loadedLayers.length === 0) return undefined;
+  if (loadedLayers.length !== layers.length) {
+    const loadedLayerIds = new Set(loadedLayers.map((layer) => layer.layerId));
+    const missingLayerIds = layers
+      .filter((layer) => !loadedLayerIds.has(layer.layerId))
+      .map((layer) => layer.layerId);
+    neutralTexture.dispose();
+    throw new Error(
+      `Projected preview kept the previous complete material because core assets are unavailable for: ${missingLayerIds.join(', ')}.`,
+    );
+  }
   const loadedLiveEraserLayerIndex = input.liveEraserLayerId
     ? loadedLayers.findIndex((layer) => layer.layerId === input.liveEraserLayerId)
     : -1;
@@ -2503,7 +2594,11 @@ export async function createProjectedLayerStackMaterial(
   material.userData[PROJECTED_LAYER_SAMPLER_BUDGET_KEY] = samplerBudget;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
-    signature: getProjectionLayerStructureSignature(loadedLayers, {
+    // Optional depth/normal resources may degrade to color-only projection.
+    // Keep the requested structural signature so eye/opacity changes still use
+    // the resident material instead of retrying the same failed helper texture
+    // and rebuilding the full array on every interaction.
+    signature: getProjectionLayerStructureSignature(layers, {
       useBaseMap: Boolean(input.baseTexture),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture),

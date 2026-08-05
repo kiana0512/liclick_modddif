@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { serverConfig } from '../config.js';
+import { writeFileAtomically } from './atomicFileService.js';
 
 export async function ensureDir(directory: string) {
   await fs.mkdir(directory, { recursive: true });
@@ -17,10 +18,7 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
 }
 
 export async function writeJsonFile(filePath: string, data: unknown) {
-  await ensureDir(path.dirname(filePath));
-  const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporaryPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  await fs.rename(temporaryPath, filePath);
+  await writeFileAtomically(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 export function slugify(value: string) {

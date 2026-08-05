@@ -218,7 +218,7 @@ function isRenderedColorUvLayer(layer: ReturnType<typeof findVisibleUvLayers>[nu
     layer.id.startsWith('content-aware-projected-repair') ||
     (layer.generationId === 'texture-map-content-aware-repair' &&
       layer.role !== 'content-aware-underlay') ||
-    layer.imageUrl.includes('surface-edit:local-repaint'),
+    (layer.imageUrl ?? '').includes('surface-edit:local-repaint'),
   );
 }
 

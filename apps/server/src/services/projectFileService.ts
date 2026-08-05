@@ -16,6 +16,22 @@ import {
 
 const assetFolders = ['models', 'references', 'captures', 'generations', 'layers', 'baked'];
 const MIN_SAVED_PROJECTED_BAKE_COVERAGE_RATIO = 0.35;
+const projectSaveTails = new Map<string, Promise<void>>();
+
+async function runSerializedProjectSave<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = projectSaveTails.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  const tail = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  projectSaveTails.set(key, tail);
+  try {
+    return await current;
+  } finally {
+    if (projectSaveTails.get(key) === tail) projectSaveTails.delete(key);
+  }
+}
 
 export class ProjectSaveConflictError extends Error {
   statusCode = 409;
@@ -113,28 +129,48 @@ function sanitizeLowCoverageProjectedBakes(project: WorkspaceProject): Workspace
   };
 }
 
-function sanitizeVolatileLayerAssets(project: WorkspaceProject): WorkspaceProject {
+function sanitizeVolatileLayerAssets(
+  project: WorkspaceProject,
+  existingProject?: WorkspaceProject,
+): WorkspaceProject {
   const capturesById = new Map(
     project.captures
       .filter(isRecord)
       .map((capture) => [readString(capture.id), capture])
       .filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry[0])),
   );
+  const existingLayersById = new Map(
+    (existingProject?.layers ?? [])
+      .filter(isRecord)
+      .map((layer) => [readString(layer.id), layer])
+      .filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry[0])),
+  );
+  const durableUrl = (value: unknown) => {
+    const url = readString(value);
+    return url && !isBlobUrl(url) ? url : undefined;
+  };
   let changed = false;
   const layers = project.layers.map((layer) => {
     if (!isRecord(layer)) return layer;
     const capture = capturesById.get(readString(layer.captureId) ?? '');
+    const existingLayer = existingLayersById.get(readString(layer.id) ?? '');
     const nextLayer: Record<string, unknown> = { ...layer };
     if (isBlobUrl(nextLayer.maskUrl)) {
-      nextLayer.maskUrl = isBlobUrl(capture?.maskUrl) ? undefined : capture?.maskUrl;
+      nextLayer.maskUrl = durableUrl(existingLayer?.maskUrl) ?? durableUrl(capture?.maskUrl);
       changed = true;
     }
     if (isBlobUrl(nextLayer.depthUrl)) {
-      nextLayer.depthUrl = isBlobUrl(capture?.depthUrl) ? undefined : capture?.depthUrl;
+      nextLayer.depthUrl = durableUrl(existingLayer?.depthUrl) ?? durableUrl(capture?.depthUrl);
       changed = true;
     }
-    if (isBlobUrl(nextLayer.imageUrl)) {
-      delete nextLayer.imageUrl;
+    if (isProjectedLayerRecord(nextLayer) && !durableUrl(nextLayer.imageUrl)) {
+      const existingImageUrl = durableUrl(existingLayer?.imageUrl);
+      if (!existingImageUrl) {
+        throw new ProjectSaveConflictError(
+          'Projected layer image is still uploading. Retry after the layer asset has been saved.',
+        );
+      }
+      nextLayer.imageUrl = existingImageUrl;
       changed = true;
     }
     return nextLayer;
@@ -566,6 +602,42 @@ function resolveProjectAssets(
   };
 }
 
+async function repairMissingLayerImageReferences(
+  userId: string,
+  slug: string,
+  project: WorkspaceProject,
+): Promise<WorkspaceProject> {
+  let changed = false;
+  const layers = await Promise.all(
+    project.layers.map(async (layer) => {
+      if (!isRecord(layer)) return layer;
+      const layerId = readString(layer.id);
+      if (!layerId || !/^[a-zA-Z0-9_-]+$/.test(layerId)) return layer;
+      const repairedLayer: Record<string, unknown> = { ...layer };
+      const candidates = [
+        ['imageUrl', `${layerId}.png`],
+        ['maskUrl', `${layerId}-mask.png`],
+        ['depthUrl', `${layerId}-depth.png`],
+      ] as const;
+      let layerChanged = false;
+      for (const [field, filename] of candidates) {
+        if (readString(repairedLayer[field])) continue;
+        const relativePath = path.posix.join('assets', 'layers', filename);
+        try {
+          await fs.access(path.join(getProjectDir(userId, slug), relativePath));
+        } catch {
+          continue;
+        }
+        repairedLayer[field] = relativePath;
+        layerChanged = true;
+      }
+      changed ||= layerChanged;
+      return layerChanged ? repairedLayer : layer;
+    }),
+  );
+  return changed ? { ...project, layers } : project;
+}
+
 export async function loadProject(userId: string, projectId: string) {
   const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
@@ -574,10 +646,11 @@ export async function loadProject(userId: string, projectId: string) {
     undefined,
   );
   if (!project) return undefined;
-  return { project: resolveProjectAssets(userId, slug, project), slug };
+  const repairedProject = await repairMissingLayerImageReferences(userId, slug, project);
+  return { project: resolveProjectAssets(userId, slug, repairedProject), slug };
 }
 
-export async function saveProject(
+async function saveProjectUnlocked(
   userId: string,
   projectId: string,
   inputProject: WorkspaceProject,
@@ -586,10 +659,24 @@ export async function saveProject(
     (await findProjectSlug(userId, projectId)) ??
     (await allocateProjectSlug(userId, projectId, inputProject.name));
   const projectDir = getProjectDir(userId, slug);
-  const existingProject = await loadRawProjectBySlug(userId, slug);
+  const rawExistingProject = await loadRawProjectBySlug(userId, slug);
+  const existingProject = rawExistingProject
+    ? await repairMissingLayerImageReferences(userId, slug, rawExistingProject)
+    : undefined;
   const explicitDeletionIds = new Set(inputProject.deletedObjectIds ?? []);
   const deletionAwareInput = applyExplicitObjectDeletions(inputProject);
   if (existingProject) {
+    const incomingUpdatedAt = Date.parse(inputProject.updatedAt);
+    const existingUpdatedAt = Date.parse(existingProject.updatedAt);
+    if (
+      Number.isFinite(incomingUpdatedAt) &&
+      Number.isFinite(existingUpdatedAt) &&
+      incomingUpdatedAt < existingUpdatedAt
+    ) {
+      throw new ProjectSaveConflictError(
+        'Blocked saving a stale project snapshot over newer project data. Reload and retry the save.',
+      );
+    }
     const existingHasSceneData =
       existingProject.objects.length > 0 || existingProject.layers.length > 0;
     const incomingClearsSceneData =
@@ -628,7 +715,9 @@ export async function saveProject(
   const sanitizedProject = normalizeProjectAssetReferences(
     userId,
     slug,
-    sanitizeLowCoverageProjectedBakes(sanitizeVolatileLayerAssets(objectSafeProject)),
+    sanitizeLowCoverageProjectedBakes(
+      sanitizeVolatileLayerAssets(objectSafeProject, existingProject),
+    ),
   );
   delete sanitizedProject.deletedObjectIds;
   const project = {
@@ -645,6 +734,16 @@ export async function saveProject(
   await writeJsonFile(getProjectFile(projectDir), project);
   await writeAutosave(projectDir, project);
   return { project: resolveProjectAssets(userId, slug, project), slug };
+}
+
+export async function saveProject(
+  userId: string,
+  projectId: string,
+  inputProject: WorkspaceProject,
+) {
+  return runSerializedProjectSave(`${userId}:${projectId}`, () =>
+    saveProjectUnlocked(userId, projectId, inputProject),
+  );
 }
 
 async function loadRawProjectBySlug(userId: string, slug: string) {

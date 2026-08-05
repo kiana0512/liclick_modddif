@@ -4,7 +4,6 @@ import {
   assetProcessingProxyStatus,
   downloadVerifiedAssetArtifact,
   proxyAssetProcessingRequest,
-  proxyPreparedRetopologySubmission,
   sendAssetProcessingError,
 } from '../services/assetProcessingProxy.js';
 import {
@@ -15,19 +14,15 @@ import {
   type AssetHistoryParameter,
   type AssetHistoryRegistration,
 } from '../services/assetJobOwnership.js';
-import {
-  prepareRetopologyProjectFromFiles,
-  RetopologyPreparationError,
-} from '../services/retopologyProjectPreparationService.js';
-import {
-  parsePreparedRetopologySubmission,
-  type ParsedPreparedRetopologySubmission,
-} from '../services/retopologyPreparedSubmissionUploadService.js';
 import { sendJson } from './httpUtils.js';
 
-function requireV4SubmissionJobId(payload: unknown, statusCode: number) {
+function requireSubmissionJobId(
+  payload: unknown,
+  statusCode: number,
+  mode: AssetHistoryMode,
+) {
   if (statusCode !== 202 || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('Asset V4 returned an invalid submission response.');
+    throw new Error('Asset service returned an invalid submission response.');
   }
   const record = payload as Record<string, unknown>;
   if (
@@ -38,7 +33,10 @@ function requireV4SubmissionJobId(payload: unknown, statusCode: number) {
     typeof record.events_url !== 'string' ||
     typeof record.cancel_url !== 'string'
   ) {
-    throw new Error('Asset V4 submission response is missing required job fields.');
+    throw new Error('Asset service submission response is missing required job fields.');
+  }
+  if (mode === 'retopology' && record.job_type !== 'RETOPOLOGY_PROCESS_V2') {
+    throw new Error('Asset service returned a non-V6 retopology job.');
   }
   return record.job_id;
 }
@@ -74,13 +72,12 @@ function historyParameters(mode: AssetHistoryMode, metadata: unknown) {
         historyParameter('QA 配置', options.qa_profile),
       ]
     : [
-        historyParameter('目标面数', options.target_faces),
+        historyParameter('密度模式', options.budget_mode),
         historyParameter('拓扑类型', options.topology_style),
-        historyParameter('锐边保留', options.preserve_sharp === undefined ? undefined : options.preserve_sharp ? '是' : '否'),
-        historyParameter('边界保留', options.preserve_boundary === undefined ? undefined : options.preserve_boundary ? '是' : '否'),
-        historyParameter('封闭模型', options.require_closed === undefined ? undefined : options.require_closed ? '是' : '否'),
-        historyParameter('检查分辨率', options.render_resolution),
-        historyParameter('最大修复轮次', options.max_repair_rounds),
+        historyParameter('交付档位', options.delivery_profile),
+        historyParameter('保留源文件', options.preserve_source === undefined ? undefined : options.preserve_source ? '是' : '否'),
+        historyParameter('锐边保留', options.preserve_sharp_edges === undefined ? undefined : options.preserve_sharp_edges ? '是' : '否'),
+        historyParameter('边界保留', options.preserve_boundaries === undefined ? undefined : options.preserve_boundaries ? '是' : '否'),
         historyParameter('参考图', Array.isArray(record.reference_views) ? `${record.reference_views.length} 张` : undefined),
         historyParameter('制作要求', historyText(record.user_request, 600)),
       ];
@@ -127,90 +124,6 @@ export async function handleAssetProcessingRoute(
   const user = await requireAuth(request, response);
   if (!user) return true;
 
-  if (url.pathname === '/api/asset-processing/retopology/prepare-and-process') {
-    if (request.method !== 'POST') {
-      sendAssetProcessingError(
-        response,
-        405,
-        'ASSET_METHOD_NOT_ALLOWED',
-        'Method not allowed.',
-      );
-      return true;
-    }
-
-    const abortController = new AbortController();
-    const onResponseClose = () => {
-      if (!response.writableEnded) abortController.abort();
-    };
-    response.once('close', onResponseClose);
-    let upload: ParsedPreparedRetopologySubmission | undefined;
-    let prepared: Awaited<ReturnType<typeof prepareRetopologyProjectFromFiles>> | undefined;
-    try {
-      upload = await parsePreparedRetopologySubmission(request);
-      if (abortController.signal.aborted) return true;
-      prepared = await prepareRetopologyProjectFromFiles(
-        upload.sources,
-        abortController.signal,
-      );
-      if (abortController.signal.aborted) return true;
-      await proxyPreparedRetopologySubmission(
-        request,
-        response,
-        {
-          project: {
-            fieldName: 'project',
-            filePath: prepared.filePath,
-            filename: prepared.filename,
-            size: prepared.size,
-            contentType: 'application/octet-stream',
-          },
-          referenceImages: upload.referenceImages,
-          metadata: upload.metadata,
-        },
-        async (payload, statusCode) => {
-          const jobId = requireV4SubmissionJobId(payload, statusCode);
-          const metadata = JSON.parse(upload!.metadata) as unknown;
-          await registerAssetJobOwner(jobId, user.id, {
-            mode: 'retopology',
-            sourceName:
-              decodedHistoryHeader(request, 'x-li3d-history-source-name', 180)
-              ?? upload!.sourceName,
-            parameters: historyParameters('retopology', metadata),
-          });
-          await updateAssetJobSnapshot(jobId, user.id, payload);
-        },
-      );
-    } catch (error) {
-      if (response.headersSent) {
-        response.destroy(error instanceof Error ? error : undefined);
-      } else if (!abortController.signal.aborted) {
-        const preparationError = error instanceof RetopologyPreparationError;
-        const statusCode = preparationError ? error.statusCode : 500;
-        const code =
-          statusCode === 413
-            ? 'ASSET_UPLOAD_TOO_LARGE'
-            : statusCode === 415
-              ? 'ASSET_MEDIA_TYPE_UNSUPPORTED'
-              : statusCode >= 500
-                ? 'ASSET_PREPARATION_FAILED'
-                : 'ASSET_INPUT_INVALID';
-        sendAssetProcessingError(
-          response,
-          statusCode,
-          code,
-          preparationError
-            ? error.message
-            : 'Could not prepare and submit the retopology project.',
-        );
-      }
-    } finally {
-      response.off('close', onResponseClose);
-      await prepared?.cleanup();
-      await upload?.cleanup();
-    }
-    return true;
-  }
-
   if (url.pathname === '/api/asset-processing/status' && request.method === 'GET') {
     sendJson(response, 200, await assetProcessingProxyStatus());
     return true;
@@ -238,7 +151,7 @@ export async function handleAssetProcessingRoute(
       response,
       submissionUpstream,
       async (payload, statusCode) => {
-        const jobId = requireV4SubmissionJobId(payload, statusCode);
+        const jobId = requireSubmissionJobId(payload, statusCode, mode);
         await registerAssetJobOwner(jobId, user.id, registration);
         await updateAssetJobSnapshot(jobId, user.id, payload);
       },

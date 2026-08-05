@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
@@ -992,5 +993,8 @@ export const useI18nStore = create<I18nStore>()(
 
 export function useT() {
   const language = useI18nStore((state) => state.language);
-  return (key: TranslationKey): string => translations[language][key] ?? translations.en[key];
+  return useCallback(
+    (key: TranslationKey): string => translations[language][key] ?? translations.en[key],
+    [language],
+  );
 }

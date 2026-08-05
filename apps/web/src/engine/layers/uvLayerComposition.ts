@@ -10,7 +10,7 @@ export function isLocalRepaintUvOverlayLayer(
       (layer.role === 'local-repaint-overlay' ||
         layer.id.startsWith('local-repaint-uv-merge') ||
         layer.name === 'UV Repair Layer' ||
-        layer.imageUrl.includes('surface-edit:local-repaint')),
+        (layer.imageUrl ?? '').includes('surface-edit:local-repaint')),
   );
 }
 

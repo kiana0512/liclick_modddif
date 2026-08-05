@@ -12,6 +12,20 @@ import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
 const localLiclickApiBase = getLocalTextureRuntimeApiBase();
 
+export class LiclickApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly rawMessage: string;
+
+  constructor(input: { status: number; code?: string; rawMessage: string; message: string }) {
+    super(input.message);
+    this.name = 'LiclickApiError';
+    this.status = input.status;
+    this.code = input.code;
+    this.rawMessage = input.rawMessage;
+  }
+}
+
 export type LiclickImageModel =
   | 'gpt-image-2'
   | 'nano_banana_2'
@@ -42,7 +56,11 @@ export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
 
 export type LiclickApiClient = {
   generateTextureSingleView(input: LiclickGenerateTextureSingleViewInput): Promise<Generation>;
-  getGenerationJob(jobId: string): Promise<GenerationJobResult>;
+  getGenerationJob(
+    jobId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<GenerationJobResult>;
+  listGenerationJobs(projectId: string): Promise<GenerationJobListItem[]>;
   cancelGenerationJob(jobId: string): Promise<GenerationJobResult>;
   inpaint(input: GenerateTextureInput): Promise<Generation>;
   generateNormal(input: GenerateTextureInput): Promise<Generation>;
@@ -66,6 +84,18 @@ export type GenerationJobResult = {
   updatedAt?: string;
 };
 
+export type GenerationJobListItem = GenerationJobResult & {
+  projectId: string;
+  clientGenerationId?: string;
+  prompt: string;
+  referenceIds: string[];
+  params?: {
+    aspectRatio?: LiclickAspectRatio;
+    imageSize?: LiclickImageSize;
+    count?: number;
+  };
+};
+
 async function prepareReferences(
   references: ReferenceImage[] = [],
   onReferencePreprocessed?: (result: ReferencePreprocessingResult) => void,
@@ -85,15 +115,33 @@ async function requestJson<T>(
   path: string,
   init: RequestInit & { timeoutMs?: number },
 ) {
-  const { timeoutMs = 8 * 60 * 1000, headers, ...fetchInit } = init;
-  const requestHeaders = new Headers(headers);
-  requestHeaders.set('x-li3d-identity-proof', await getLocalIdentityProof());
-  if (fetchInit.body && !requestHeaders.has('content-type'))
-    requestHeaders.set('content-type', 'application/json');
+  const {
+    timeoutMs = 8 * 60 * 1000,
+    headers,
+    signal: callerSignal,
+    ...fetchInit
+  } = init;
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const requestHeaders = new Headers(headers);
   let response: Response;
   try {
+    requestHeaders.set(
+      'x-li3d-identity-proof',
+      await getLocalIdentityProof({
+        signal: controller.signal,
+        timeoutMs: Math.min(timeoutMs, 8_000),
+      }),
+    );
+    if (fetchInit.body && !requestHeaders.has('content-type'))
+      requestHeaders.set('content-type', 'application/json');
     response = await fetch(`${baseUrl}${path}`, {
       ...fetchInit,
       signal: controller.signal,
@@ -101,12 +149,15 @@ async function requestJson<T>(
       headers: requestHeaders,
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (callerSignal?.aborted) throw error;
+    if (timedOut || (error instanceof DOMException && error.name === 'AbortError')) {
       throw new Error('莉刻生图服务响应超时，请稍后重试。');
     }
+    if (error instanceof Error && !(error instanceof TypeError)) throw error;
     throw new Error(`无法连接莉刻生图服务（${baseUrl}），请确认最新版本地贴图组件已启动。`);
   } finally {
     window.clearTimeout(timeout);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
   }
   const payload = await response.json().catch(() => undefined);
   if (!response.ok) {
@@ -129,7 +180,12 @@ async function requestJson<T>(
       typeof payload.error === 'string'
         ? payload.error
         : `Liclick request failed: ${response.status}`;
-    throw new Error(getUserFacingGenerationError(rawMessage));
+    throw new LiclickApiError({
+      status: response.status,
+      code: errorCode,
+      rawMessage,
+      message: getUserFacingGenerationError(rawMessage),
+    });
   }
   return payload as T;
 }
@@ -201,15 +257,29 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         },
       };
     },
-    async getGenerationJob(jobId) {
+    async getGenerationJob(jobId, options = {}) {
       return requestJson<GenerationJobResult>(
         baseUrl,
         `/api/liclick/generate-image/${encodeURIComponent(jobId)}`,
         {
           method: 'GET',
+          cache: 'no-store',
+          signal: options.signal,
+          timeoutMs: 12_000,
+        },
+      );
+    },
+    async listGenerationJobs(projectId) {
+      const result = await requestJson<{ jobs: GenerationJobListItem[] }>(
+        baseUrl,
+        `/api/liclick/generate-image?projectId=${encodeURIComponent(projectId)}`,
+        {
+          method: 'GET',
+          cache: 'no-store',
           timeoutMs: 30_000,
         },
       );
+      return Array.isArray(result.jobs) ? result.jobs : [];
     },
     async cancelGenerationJob(jobId) {
       return requestJson<GenerationJobResult>(

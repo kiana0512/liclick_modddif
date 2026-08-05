@@ -112,6 +112,8 @@ try {
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie')?.split(';', 1)[0];
   assert(cookie, 'Dev login must set a session cookie.');
+  const loggedIn = await login.json();
+  assert(loggedIn.user?.id, 'Dev login must return the authenticated user id.');
 
   const missingComfyCancelJob = await fetch(`${baseUrl}/api/comfyui/cancel`, {
     method: 'POST',
@@ -148,6 +150,27 @@ try {
   const uploaded = await upload.json();
   assert(uploaded.asset?.url, 'Asset upload must return a workspace URL.');
 
+  const layerAssetResponses = await Promise.all(
+    [
+      ['smoke-layer.png', 'local-smoke-layer-image'],
+      ['smoke-layer-mask.png', 'local-smoke-layer-mask'],
+      ['smoke-layer-depth.png', 'local-smoke-layer-depth'],
+    ].map(([filename, contents]) =>
+      fetch(
+        `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}/assets?format=blob&category=layers&filename=${encodeURIComponent(filename)}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'image/png', Cookie: cookie, Origin: allowedOrigin },
+          body: Buffer.from(contents),
+        },
+      ),
+    ),
+  );
+  layerAssetResponses.forEach((response) => assert.equal(response.status, 201));
+  const [layerImageAsset, layerMaskAsset, layerDepthAsset] = await Promise.all(
+    layerAssetResponses.map((response) => response.json()),
+  );
+
   const objectWithLayer = {
     ...created.project,
     objects: [
@@ -166,9 +189,11 @@ try {
       {
         id: 'smoke-layer',
         name: 'Smoke layer',
-        type: 'uv',
+        type: 'projected',
         objectId: 'smoke-object',
-        imageUrl: uploaded.asset.url,
+        imageUrl: layerImageAsset.asset.url,
+        maskUrl: layerMaskAsset.asset.url,
+        depthUrl: layerDepthAsset.asset.url,
         visible: true,
         opacity: 1,
       },
@@ -198,6 +223,89 @@ try {
     409,
     'A stale client snapshot must not clear every layer while project models remain.',
   );
+
+  const preserveExistingLayerAsset = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({
+        ...savedLayeredProject.project,
+        layers: savedLayeredProject.project.layers.map((layer) => ({
+          ...layer,
+          imageUrl: 'blob:http://127.0.0.1/still-uploading',
+        })),
+      }),
+    },
+  );
+  assert.equal(
+    preserveExistingLayerAsset.status,
+    200,
+    'A transient Blob URL must preserve the existing durable projected-layer asset.',
+  );
+  const preservedProject = await preserveExistingLayerAsset.json();
+  assert.equal(preservedProject.project.layers[0].imageUrl, layerImageAsset.asset.url);
+
+  const staleProjectSave = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({ ...preservedProject.project, updatedAt: '2000-01-01T00:00:00.000Z' }),
+    },
+  );
+  assert.equal(
+    staleProjectSave.status,
+    409,
+    'An older full-project snapshot must not overwrite newer captures or projected layers.',
+  );
+
+  const rejectNewVolatileLayer = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({
+        ...preservedProject.project,
+        layers: [
+          {
+            ...preservedProject.project.layers[0],
+            id: 'new-volatile-projected-layer',
+            imageUrl: 'blob:http://127.0.0.1/not-uploaded-yet',
+          },
+          ...preservedProject.project.layers,
+        ],
+      }),
+    },
+  );
+  assert.equal(
+    rejectNewVolatileLayer.status,
+    409,
+    'A new projected layer must not be persisted before its image upload completes.',
+  );
+
+  const rawProjectPath = path.join(
+    workspaceDir,
+    'users',
+    loggedIn.user.id,
+    'projects',
+    created.slug,
+    'project.liclick.json',
+  );
+  const damagedProject = JSON.parse(await fs.readFile(rawProjectPath, 'utf8'));
+  delete damagedProject.layers[0].imageUrl;
+  delete damagedProject.layers[0].maskUrl;
+  delete damagedProject.layers[0].depthUrl;
+  await fs.writeFile(rawProjectPath, `${JSON.stringify(damagedProject, null, 2)}\n`, 'utf8');
+  const repairedProjectResponse = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    { headers: { Cookie: cookie, Origin: allowedOrigin } },
+  );
+  assert.equal(repairedProjectResponse.status, 200);
+  const repairedProject = await repairedProjectResponse.json();
+  assert.equal(repairedProject.project.layers[0].imageUrl, layerImageAsset.asset.url);
+  assert.equal(repairedProject.project.layers[0].maskUrl, layerMaskAsset.asset.url);
+  assert.equal(repairedProject.project.layers[0].depthUrl, layerDepthAsset.asset.url);
 
   const asset = await fetch(uploaded.asset.url, {
     headers: { Cookie: cookie, Origin: allowedOrigin },

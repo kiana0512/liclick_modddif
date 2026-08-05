@@ -6,7 +6,11 @@ import tls from 'node:tls';
 import { createHash, randomUUID } from 'node:crypto';
 import { serverConfig } from '../config.js';
 import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
-import { maxLocalAssetBytes, saveBinaryAsset } from './assetFileService.js';
+import {
+  maxLocalAssetBytes,
+  saveBinaryAsset,
+  saveUserRecoveryAsset,
+} from './assetFileService.js';
 
 type ModelviewControlFile = {
   path: string;
@@ -301,7 +305,7 @@ export async function generateModelviewInpaint(
   }
 
   const sha256 = createHash('sha256').update(response.body).digest('hex');
-  const saved = await saveBinaryAsset({
+  const projectAsset = await saveBinaryAsset({
     userId,
     projectId,
     category: 'generations',
@@ -309,8 +313,21 @@ export async function generateModelviewInpaint(
     buffer: response.body,
     filename: `${jobId}-modelview-seedvr2.png`,
   });
-  if (!saved) {
-    throw new ModelviewInpaintError('当前项目不存在，无法保存 ModelView 局部重绘输出。', 404);
+  const saved =
+    projectAsset ??
+    (await saveUserRecoveryAsset({
+      userId,
+      mime: contentType,
+      buffer: response.body,
+      filename: `${jobId}-modelview-seedvr2.png`,
+    }));
+  if (!projectAsset) {
+    console.warn('[ModelView Inpaint] project missing after remote completion; saved recovery asset', {
+      userId,
+      projectId,
+      jobId: remoteJobId ?? '(missing X-Job-ID)',
+      resultUrl: saved.url,
+    });
   }
   console.info('[ModelView Inpaint] completed', {
     jobId: remoteJobId ?? '(missing X-Job-ID)',
@@ -330,6 +347,7 @@ export async function generateModelviewInpaint(
       bytes: response.body.byteLength,
       sha256,
       source: 'modelview-inpaint',
+      storage: projectAsset ? 'project' : 'user-recovery',
       finalNode: 'SeedVR2VideoUpscaler #110 -> SaveImage #9',
     },
   };

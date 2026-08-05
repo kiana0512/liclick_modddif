@@ -43,6 +43,8 @@ import {
 } from '@/services/liclickAccountApiClient';
 import {
   createLiclickApiClient,
+  LiclickApiError,
+  type GenerationJobListItem,
   type LiclickAspectRatio,
   type LiclickImageModel,
   type LiclickImageSize,
@@ -59,7 +61,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
-import { useProjectStore } from '@/stores/projectStore';
+import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -73,6 +75,7 @@ import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
 import { encodeRgbaPngDataUrl } from '@/utils/encodeRgbaPng';
+import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
 import {
   isWorkspaceAssetUrl,
   saveBlobAsset,
@@ -80,6 +83,7 @@ import {
   saveProject as saveWorkspaceProject,
   saveRemoteUrlAsset,
   urlToDataUrl,
+  WorkspaceApiError,
   type AssetCategory,
 } from '@/services/workspaceApiClient';
 
@@ -449,6 +453,32 @@ function getGenerationStartedAt(generation: Generation) {
   return typeof startedAt === 'string' ? Date.parse(startedAt) : Number.NaN;
 }
 
+function generationRecoverySignature(generation: Generation | undefined) {
+  if (!generation) return undefined;
+  const metadata = generation.metadata;
+  return JSON.stringify({
+    id: generation.id,
+    prompt: generation.prompt,
+    referenceIds: generation.referenceIds,
+    captureId: generation.captureId,
+    resultUrl: generation.resultUrl,
+    status: generation.status,
+    metadata: {
+      clientGenerationId: metadata.clientGenerationId,
+      serverJobId: metadata.serverJobId,
+      projectId: metadata.projectId,
+      workflow: metadata.workflow,
+      taskId: metadata.taskId,
+      model: metadata.model,
+      resultUrls: metadata.resultUrls,
+      startedAt: metadata.startedAt,
+      completedAt: metadata.completedAt,
+      error: metadata.error,
+      serverSubmitted: metadata.serverSubmitted,
+    },
+  });
+}
+
 function isGenerationSubmittedToServer(generation: Generation) {
   return generation.metadata.serverSubmitted === true || Boolean(generation.metadata.taskId);
 }
@@ -605,7 +635,7 @@ export function GeneratePanel() {
   const isTextureMapTab = tab === 'multiview';
   const isLocalRepaintTab = tab === 'repaint';
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
-  const setWorkspaceState = useProjectStore((state) => state.setWorkspaceState);
+  const updateProjectById = useProjectStore((state) => state.updateProjectById);
   const generationSettings = {
     ...defaultImageGenerationSettings,
     ...currentProject?.settings.imageGeneration,
@@ -634,7 +664,19 @@ export function GeneratePanel() {
   const finish = useGenerationStore((state) => state.finish);
   const addGeneration = useGenerationStore((state) => state.addGeneration);
   const setLastCapture = useGenerationStore((state) => state.setLastCapture);
-  const addProjectGeneration = useProjectStore((state) => state.addGeneration);
+  const addProjectGenerationByProjectId = useProjectStore(
+    (state) => state.addGenerationByProjectId,
+  );
+  const addProjectGeneration = useCallback(
+    (generation: Generation) => {
+      const generationProjectId =
+        typeof generation.metadata.projectId === 'string'
+          ? generation.metadata.projectId
+          : currentProjectId;
+      if (generationProjectId) addProjectGenerationByProjectId(generationProjectId, generation);
+    },
+    [addProjectGenerationByProjectId, currentProjectId],
+  );
   const addProjectCapture = useProjectStore((state) => state.addCapture);
   const setProjectLayers = useProjectStore((state) => state.setProjectLayers);
   const setProjectReferences = useProjectStore((state) => state.setProjectReferences);
@@ -678,6 +720,7 @@ export function GeneratePanel() {
   const cancelledGenerationIdsRef = useRef(new Set<string>());
   const generationPollFailureCountsRef = useRef(new Map<string, number>());
   const comfyGenerationAbortRef = useRef<AbortController | undefined>();
+  const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const tabGenerations = generations.filter((generation) => {
     const projectId =
@@ -802,11 +845,183 @@ export function GeneratePanel() {
           }
         }
       }
-      addGeneration(generation);
+      const generationProjectId =
+        typeof generation.metadata.projectId === 'string'
+          ? generation.metadata.projectId
+          : currentProjectId;
+      if (
+        !generationProjectId ||
+        useProjectStore.getState().currentProjectId === generationProjectId
+      ) {
+        addGeneration(generation);
+      }
       addProjectGeneration(generation);
     },
-    [addGeneration, addProjectGeneration],
+    [addGeneration, addProjectGeneration, currentProjectId],
   );
+
+  useEffect(() => {
+    if (!currentProjectId || authStatus !== 'authenticated') return undefined;
+    const recoveryProjectId = currentProjectId;
+    let cancelled = false;
+    let retryTimeout: number | undefined;
+    let inFlight = false;
+    const persistenceAttemptedAt = new Map<string, number>();
+    const client = createLiclickApiClient();
+
+    function matchesJob(generation: Generation, job: GenerationJobListItem) {
+      const jobIds = new Set(
+        [job.id, job.clientGenerationId, job.taskId].filter(
+          (value): value is string => typeof value === 'string' && value.length > 0,
+        ),
+      );
+      return generationIdentityIds(generation).some((id) => jobIds.has(id));
+    }
+
+    function reconcileJob(job: GenerationJobListItem) {
+      const generationState = useGenerationStore.getState().generations;
+      const liveProject = useProjectStore
+        .getState()
+        .projects.find((project) => project.id === recoveryProjectId);
+      const projectGeneration = liveProject?.generations.find((generation) =>
+        matchesJob(generation, job),
+      );
+      const storeGeneration = generationState.find((generation) => matchesJob(generation, job));
+      if (
+        projectGeneration?.metadata.cancelled === true ||
+        storeGeneration?.metadata.cancelled === true
+      )
+        return { changed: false, needsPersist: false };
+
+      const existing = projectGeneration ?? storeGeneration;
+      const fallback = storeGeneration ?? projectGeneration;
+      const existingMetadata = {
+        ...(projectGeneration?.metadata ?? {}),
+        ...(storeGeneration?.metadata ?? {}),
+      };
+      const workspaceResultUrl = [projectGeneration?.resultUrl, storeGeneration?.resultUrl].find(
+        (url): url is string => typeof url === 'string' && isWorkspaceAssetUrl(url),
+      );
+      const resultUrl = workspaceResultUrl ?? existing?.resultUrl ?? fallback?.resultUrl ?? job.resultUrl;
+      const status = resultUrl ? ('succeeded' as const) : job.status;
+      const generation: Generation = {
+        id: existing?.id ?? fallback?.id ?? job.clientGenerationId ?? job.id,
+        mode: existing?.mode ?? fallback?.mode ?? 'single',
+        prompt: existing?.prompt || fallback?.prompt || job.prompt,
+        negativePrompt: existing?.negativePrompt ?? fallback?.negativePrompt,
+        referenceIds:
+          existing?.referenceIds.length
+            ? existing.referenceIds
+            : fallback?.referenceIds.length
+              ? fallback.referenceIds
+              : job.referenceIds,
+        captureId: existing?.captureId ?? fallback?.captureId,
+        resultUrl,
+        status,
+        metadata: {
+          ...existingMetadata,
+          provider: existingMetadata.provider ?? 'liclick-atlas',
+          clientGenerationId:
+            existingMetadata.clientGenerationId ?? job.clientGenerationId ?? job.id,
+          serverJobId: job.id,
+          projectId: job.projectId,
+          workflow: job.workflow ?? existingMetadata.workflow ?? 'liclick',
+          taskId: job.taskId ?? existingMetadata.taskId,
+          model: job.model ?? existingMetadata.model,
+          resultUrls: job.resultUrls ?? existingMetadata.resultUrls,
+          extraParams: job.extraParams ?? existingMetadata.extraParams,
+          uploadedReferences: job.uploadedReferences ?? existingMetadata.uploadedReferences,
+          aspectRatio: job.params?.aspectRatio ?? existingMetadata.aspectRatio,
+          imageSize: job.params?.imageSize ?? existingMetadata.imageSize,
+          count: job.params?.count ?? existingMetadata.count,
+          startedAt: job.startedAt ?? existingMetadata.startedAt,
+          completedAt:
+            status === 'succeeded' || status === 'failed'
+              ? (job.updatedAt ?? existingMetadata.completedAt)
+              : existingMetadata.completedAt,
+          error: status === 'failed' ? (job.error ?? existingMetadata.error) : undefined,
+          serverMessage: undefined,
+          serverSubmitted: true,
+        },
+      };
+      const nextSignature = generationRecoverySignature(generation);
+      const needsPersist = Boolean(generation.resultUrl) && !isWorkspaceAssetUrl(generation.resultUrl);
+      if (
+        generationRecoverySignature(projectGeneration) === nextSignature &&
+        generationRecoverySignature(storeGeneration) === nextSignature
+      )
+        return { changed: false, needsPersist };
+      syncGeneration(generation);
+      return { changed: true, needsPersist };
+    }
+
+    function scheduleReconcile(delay = generationPollIntervalMs) {
+      if (cancelled) return;
+      if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
+      retryTimeout = window.setTimeout(() => {
+        retryTimeout = undefined;
+        void reconcileJobs();
+      }, delay);
+    }
+
+    async function reconcileJobs() {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      let retry = false;
+      try {
+        const jobs = await client.listGenerationJobs(recoveryProjectId);
+        if (cancelled) return;
+        let didChange = false;
+        let shouldPersist = false;
+        for (const job of [...jobs].reverse()) {
+          const reconciliation = reconcileJob(job);
+          didChange = reconciliation.changed || didChange;
+          if (reconciliation.needsPersist && job.resultUrl) {
+            const persistenceKey = `${job.id}:${job.resultUrl}`;
+            const lastAttempt = persistenceAttemptedAt.get(persistenceKey) ?? 0;
+            if (Date.now() - lastAttempt >= 5 * 60 * 1000) {
+              persistenceAttemptedAt.set(persistenceKey, Date.now());
+              shouldPersist = true;
+            }
+          }
+        }
+        if (didChange || shouldPersist) {
+          window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+        }
+        retry = jobs.some((job) => job.status === 'running' || job.status === 'queued');
+      } catch (error) {
+        if (cancelled) return;
+        // Older local components do not expose project-level recovery. The
+        // regular single-job poll remains available in that case.
+        retry =
+          !(error instanceof LiclickApiError) ||
+          error.status === 429 ||
+          error.status >= 500;
+      } finally {
+        inFlight = false;
+        if (!cancelled && retry) scheduleReconcile();
+      }
+    }
+
+    function wakeReconciliation() {
+      if (document.visibilityState !== 'visible') return;
+      if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
+      retryTimeout = undefined;
+      void reconcileJobs();
+    }
+
+    void reconcileJobs();
+    window.addEventListener('focus', wakeReconciliation);
+    window.addEventListener('online', wakeReconciliation);
+    document.addEventListener('visibilitychange', wakeReconciliation);
+    return () => {
+      cancelled = true;
+      if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
+      window.removeEventListener('focus', wakeReconciliation);
+      window.removeEventListener('online', wakeReconciliation);
+      document.removeEventListener('visibilitychange', wakeReconciliation);
+    };
+  }, [authStatus, currentProjectId, syncGeneration]);
 
   const markGenerationFailed = useCallback(
     (generationToFail: Generation, message: string) => {
@@ -982,9 +1197,23 @@ export function GeneratePanel() {
     if (cancelledGenerationIdsRef.current.has(generationToPoll.id)) return undefined;
     if (!isGenerationSubmittedToServer(generationToPoll)) {
       const startedAt = getGenerationStartedAt(generationToPoll);
-      if (Number.isFinite(startedAt) && Date.now() - startedAt < pendingSubmissionTimeoutMs)
-        return undefined;
+      const remaining = Number.isFinite(startedAt)
+        ? pendingSubmissionTimeoutMs - (Date.now() - startedAt)
+        : 0;
+      if (remaining > 0) {
+        const submissionTimeoutId = window.setTimeout(() => {
+          const latest = useGenerationStore
+            .getState()
+            .generations.find((generation) => generation.id === generationToPoll.id);
+          if (latest && isRunningGeneration(latest) && !isGenerationSubmittedToServer(latest)) {
+            markGenerationFailed(latest, '生图任务没有成功提交到莉刻后台，请重新生成。');
+            window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+          }
+        }, remaining);
+        return () => window.clearTimeout(submissionTimeoutId);
+      }
       markGenerationFailed(generationToPoll, '生图任务没有成功提交到莉刻后台，请重新生成。');
+      window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
       return undefined;
     }
     const taskId =
@@ -999,10 +1228,11 @@ export function GeneratePanel() {
       typeof generationToPoll.metadata.serverJobId === 'string'
         ? generationToPoll.metadata.serverJobId
         : undefined;
-    const jobId = taskId ?? serverJobId ?? clientGenerationId ?? generationToPoll.id;
+    const jobId = serverJobId ?? taskId ?? clientGenerationId ?? generationToPoll.id;
     if (cancelledGenerationIdsRef.current.has(jobId)) return undefined;
     let cancelled = false;
     let timeoutId: number | undefined;
+    let requestAbortController: AbortController | undefined;
     const client = createLiclickApiClient();
     const pollToastKey = generationPollToastKey(jobId);
 
@@ -1021,9 +1251,11 @@ export function GeneratePanel() {
     }
 
     async function pollJob() {
+      const controller = new AbortController();
+      requestAbortController = controller;
       try {
-        const result = await client.getGenerationJob(jobId);
-        if (cancelled) return;
+        const result = await client.getGenerationJob(jobId, { signal: controller.signal });
+        if (cancelled || controller.signal.aborted) return;
         if (result.message) {
           generationPollFailureCountsRef.current.set(jobId, 2);
           setGenerateNotice({ tone: 'warning', message: result.message });
@@ -1052,6 +1284,7 @@ export function GeneratePanel() {
             },
           };
           syncGeneration(generation);
+          window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
           pushToast({
             tone: 'success',
             title: '图片生成完成',
@@ -1099,6 +1332,7 @@ export function GeneratePanel() {
           return;
         }
       } catch (error) {
+        if (cancelled || controller.signal.aborted) return;
         const message = error instanceof Error ? error.message : '';
         if (/Generation job not found|生成任务已失效|没有找到.*任务/i.test(message)) {
           clearPollRetryFeedback();
@@ -1121,14 +1355,38 @@ export function GeneratePanel() {
             dedupeKey: pollToastKey,
           });
         }
+      } finally {
+        if (requestAbortController === controller) requestAbortController = undefined;
       }
-      if (!cancelled) timeoutId = window.setTimeout(pollJob, generationPollIntervalMs);
+      if (!cancelled) {
+        timeoutId = window.setTimeout(() => {
+          timeoutId = undefined;
+          void pollJob();
+        }, generationPollIntervalMs);
+      }
+    }
+
+    function wakePolling() {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      requestAbortController?.abort();
+      timeoutId = window.setTimeout(() => {
+        timeoutId = undefined;
+        void pollJob();
+      }, 0);
     }
 
     void pollJob();
+    window.addEventListener('focus', wakePolling);
+    window.addEventListener('online', wakePolling);
+    document.addEventListener('visibilitychange', wakePolling);
     return () => {
       cancelled = true;
-      if (timeoutId) window.clearTimeout(timeoutId);
+      requestAbortController?.abort();
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      window.removeEventListener('focus', wakePolling);
+      window.removeEventListener('online', wakePolling);
+      document.removeEventListener('visibilitychange', wakePolling);
     };
   }, [dismissToastByDedupeKey, markGenerationFailed, previewGeneration, pushToast, syncGeneration]);
 
@@ -1217,7 +1475,7 @@ export function GeneratePanel() {
       typeof generation.metadata.clientGenerationId === 'string'
         ? generation.metadata.clientGenerationId
         : undefined;
-    return taskId ?? serverJobId ?? clientGenerationId ?? generation.id;
+    return serverJobId ?? taskId ?? clientGenerationId ?? generation.id;
   }
 
   function isCancelledGeneration(generation: Generation) {
@@ -1488,9 +1746,32 @@ export function GeneratePanel() {
     const object = objects.find((item) => item.id === objectId);
     const texturePrompt = buildTextureMapPrompt(prompt);
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
-    const viewCaptures = await getTextureMapMultiviewCaptures(requestedViews);
-    if (viewCaptures.length === 0) throw new Error('无法捕获多视图模型方向。');
-    viewCaptures.forEach(({ capture }) => addProjectCapture(capture));
+    const capturedViews = await getTextureMapMultiviewCaptures(requestedViews);
+    if (capturedViews.length === 0) throw new Error('无法捕获多视图模型方向。');
+    if (!currentProject) throw new Error('当前工程尚未加载完成。');
+    // Persist the entire camera batch before any remote job starts. Adding the
+    // captures one-by-one leaves them vulnerable to an overlapping editor save
+    // snapshot; a missing capture also makes its completed image impossible to
+    // reproject correctly after refresh.
+    const currentCaptures =
+      useProjectStore.getState().projects.find((project) => project.id === currentProject.id)
+        ?.captures ?? currentProject.captures;
+    const capturedIds = new Set(capturedViews.map(({ capture }) => capture.id));
+    const persistedCaptures = await persistCaptureAssets(
+      [
+        ...capturedViews.map(({ capture }) => capture),
+        ...currentCaptures.filter((capture) => !capturedIds.has(capture.id)),
+      ],
+      currentProject.id,
+    );
+    updateProjectById(currentProject.id, { captures: persistedCaptures });
+    const persistedCapturesById = new Map(
+      persistedCaptures.map((capture) => [capture.id, capture]),
+    );
+    const viewCaptures = capturedViews.map((view) => ({
+      ...view,
+      capture: persistedCapturesById.get(view.capture.id) ?? view.capture,
+    }));
     setGenerateNotice({
       tone: 'info',
       message: `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`,
@@ -1526,6 +1807,7 @@ export function GeneratePanel() {
           materialReferenceId: materialReference.id,
           modelViewReferenceId: modelViewReference.id,
           multiview: true,
+          autoProjectExpected: true,
           cameraView,
           cameraViewId: viewId,
           cameraViewLabel: label,
@@ -1550,6 +1832,19 @@ export function GeneratePanel() {
       start(pendingGeneration);
       addProjectGeneration(pendingGeneration);
     });
+    try {
+      await saveCriticalProjectState({ captures: persistedCaptures });
+    } catch (error) {
+      const message = getUserFacingGenerationError(
+        error,
+        '多视图相机数据保存失败，任务尚未提交，请稍后重试。',
+      );
+      pendingGenerations.forEach(({ pendingGeneration }) => {
+        syncGeneration(createFailedGeneration(pendingGeneration, message));
+      });
+      finish();
+      throw error;
+    }
 
     const results = await Promise.allSettled(
       pendingGenerations.map(({ capture, generationId, modelViewReference }) =>
@@ -1580,6 +1875,7 @@ export function GeneratePanel() {
     );
 
     const completedGenerations: Generation[] = [];
+    let projectedGenerationCount = 0;
     const submittedGenerations: Generation[] = [];
     results.forEach((result, index) => {
       const pending = pendingGenerations[index];
@@ -1595,6 +1891,7 @@ export function GeneratePanel() {
             materialReferenceId: materialReference.id,
             modelViewReferenceId: pending.modelViewReference.id,
             multiview: true,
+            autoProjectExpected: true,
             cameraView: pending.cameraView,
             cameraViewId: pending.viewId,
             cameraViewLabel: pending.label,
@@ -1621,26 +1918,76 @@ export function GeneratePanel() {
         ),
       );
     });
+    await saveGenerationStateBestEffort();
 
     const completionResults = await Promise.allSettled(
       submittedGenerations.map(async (generation) => {
         const completed = await waitForLiclickGeneration(generation);
         syncGeneration(completed);
-        await addGenerationAsProjectedLayer(completed, { automatic: true });
-        pushToast({
-          tone: 'success',
-          title: `${String(completed.metadata.cameraViewLabel ?? '当前')}视角已上图层`,
-          description: '已自动扣图并加入右侧图层，可继续人工检查和修改。',
-          dedupeKey: `texture-map-view-complete:${completed.id}`,
-        });
-        return completed;
+        const completedProjectId =
+          typeof completed.metadata.projectId === 'string'
+            ? completed.metadata.projectId
+            : currentProject?.id;
+        if (
+          completedProjectId &&
+          useProjectStore.getState().currentProjectId !== completedProjectId
+        ) {
+          return { generation: completed, projected: false };
+        }
+        const exactCapture = pendingGenerations.find(
+          (pending) =>
+            pending.generationId === completed.id || pending.capture.id === completed.captureId,
+        )?.capture;
+        try {
+          const projectedLayer = await addGenerationAsProjectedLayer(completed, {
+            automatic: true,
+            capture: exactCapture,
+          });
+          if (!projectedLayer) {
+            return { generation: completed, projected: false };
+          }
+          const completedWithProjection: Generation = {
+            ...completed,
+            metadata: {
+              ...completed.metadata,
+              autoProjectExpected: true,
+              projectedLayerId: projectedLayer.id,
+              projectionCommittedAt: new Date().toISOString(),
+              projectionError: undefined,
+            },
+          };
+          syncGeneration(completedWithProjection);
+          pushToast({
+            tone: 'success',
+            title: `${String(completed.metadata.cameraViewLabel ?? '当前')}视角已上图层`,
+            description: '已自动扣图并加入右侧图层，可继续人工检查和修改。',
+            dedupeKey: `texture-map-view-complete:${completed.id}`,
+          });
+          return { generation: completedWithProjection, projected: true };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : '生成已完成，但自动投影失败。';
+          const completedWithProjectionError: Generation = {
+            ...completed,
+            metadata: { ...completed.metadata, projectionError: message },
+          };
+          syncGeneration(completedWithProjectionError);
+          pushToast({
+            tone: 'warning',
+            title: `${String(completed.metadata.cameraViewLabel ?? '当前')}视角已生成，等待重新投影`,
+            description: message,
+            dedupeKey: `texture-map-view-projection-failed:${completed.id}`,
+          });
+          return { generation: completedWithProjectionError, projected: false };
+        }
       }),
     );
     completionResults.forEach((result, index) => {
       const submitted = submittedGenerations[index];
       if (!submitted) return;
       if (result.status === 'fulfilled') {
-        completedGenerations.push(result.value);
+        completedGenerations.push(result.value.generation);
+        if (result.value.projected) projectedGenerationCount += 1;
       } else {
         syncGeneration(
           createFailedGeneration(
@@ -1651,13 +1998,57 @@ export function GeneratePanel() {
       }
     });
 
+    // Validate the batch against the actual layer store, not only fulfilled
+    // promises. A concurrent editor save may have refreshed the store while a
+    // view was persisting; retry every completed generation that still has no
+    // durable projected layer before declaring the batch complete.
+    for (let index = 0; index < completedGenerations.length; index += 1) {
+      const generation = completedGenerations[index];
+      if (!generation?.resultUrl || generation.status !== 'succeeded') continue;
+      const existingLayer = useLayerStore
+        .getState()
+        .layers.find((layer) => layer.generationId === generation.id);
+      if (existingLayer) continue;
+      const exactCapture = pendingGenerations.find(
+        (pending) =>
+          pending.generationId === generation.id || pending.capture.id === generation.captureId,
+      )?.capture;
+      try {
+        const recoveredLayer = await addGenerationAsProjectedLayer(generation, {
+          automatic: true,
+          capture: exactCapture,
+        });
+        if (!recoveredLayer) continue;
+        const recoveredGeneration: Generation = {
+          ...generation,
+          metadata: {
+            ...generation.metadata,
+            autoProjectExpected: true,
+            projectedLayerId: recoveredLayer.id,
+            projectionCommittedAt: new Date().toISOString(),
+            projectionError: undefined,
+          },
+        };
+        completedGenerations[index] = recoveredGeneration;
+        syncGeneration(recoveredGeneration);
+      } catch (error) {
+        console.error('[Liclick 3D Texture] Could not recover missing projected view:', error);
+      }
+    }
+    const completedGenerationIds = new Set(completedGenerations.map((generation) => generation.id));
+    projectedGenerationCount = useLayerStore
+      .getState()
+      .layers.filter((layer) => layer.generationId && completedGenerationIds.has(layer.generationId))
+      .length;
+    await saveGenerationStateBestEffort();
+
     setGenerateNotice(undefined);
     pushToast({
       tone: completedGenerations.length > 0 ? 'success' : 'error',
       title: completedGenerations.length > 0 ? t('textureMapGenerated') : t('textureMapFailed'),
       description:
         completedGenerations.length > 0
-          ? `已完成并自动扣图入层 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图。`
+          ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
           : '多视图纹理贴图任务提交失败。',
     });
   }
@@ -1875,6 +2266,9 @@ export function GeneratePanel() {
       };
       start(pendingGeneration);
       addProjectGeneration(pendingGeneration);
+      await saveCriticalProjectState({
+        references: useReferenceStore.getState().references,
+      });
       setGenerateNotice({
         tone: 'info',
         message: '正在提交莉刻生图任务，请等待。',
@@ -1905,8 +2299,10 @@ export function GeneratePanel() {
         count,
       });
       const alignedGeneration: Generation = {
+        ...pendingGeneration,
         ...generation,
         metadata: {
+          ...pendingGeneration.metadata,
           ...generation.metadata,
           objectMatrixWorld,
           serverSubmitted: true,
@@ -1921,6 +2317,7 @@ export function GeneratePanel() {
         return;
       }
       syncGeneration(alignedGeneration);
+      await saveGenerationStateBestEffort();
       if (alignedGeneration.status === 'succeeded' && alignedGeneration.resultUrl) {
         setGenerateNotice(undefined);
         pushToast({
@@ -1941,6 +2338,7 @@ export function GeneratePanel() {
       if (pendingGeneration) {
         syncGeneration(createFailedGeneration(pendingGeneration, message));
       }
+      await saveGenerationStateBestEffort();
       finish();
       pushToast({
         tone: 'error',
@@ -2028,6 +2426,9 @@ export function GeneratePanel() {
       };
       start(pendingGeneration);
       addProjectGeneration(pendingGeneration);
+      await saveCriticalProjectState({
+        references: useReferenceStore.getState().references,
+      });
       setGenerateNotice({
         tone: 'info',
         message: t('textureMapSubmitting'),
@@ -2059,8 +2460,10 @@ export function GeneratePanel() {
       });
       if (isCancelledGeneration(pendingGeneration)) return;
       const textureMapGeneration: Generation = {
+        ...pendingGeneration,
         ...generation,
         metadata: {
+          ...pendingGeneration.metadata,
           ...generation.metadata,
           workflow: 'texture-map',
           objectMatrixWorld,
@@ -2072,6 +2475,7 @@ export function GeneratePanel() {
         },
       };
       syncGeneration(textureMapGeneration);
+      await saveGenerationStateBestEffort();
       if (textureMapGeneration.status === 'succeeded' && textureMapGeneration.resultUrl) {
         setGenerateNotice(undefined);
         pushToast({
@@ -2096,6 +2500,7 @@ export function GeneratePanel() {
       if (pendingGeneration) {
         syncGeneration(createFailedGeneration(pendingGeneration, message));
       }
+      await saveGenerationStateBestEffort();
       finish();
       pushToast({
         tone: 'error',
@@ -2113,16 +2518,20 @@ export function GeneratePanel() {
     url: string,
     filename: string,
     blob?: Blob,
+    targetProjectId = currentProject?.id,
   ) {
+    const targetProject = useProjectStore
+      .getState()
+      .projects.find((project) => project.id === targetProjectId);
     if (
-      !currentProject ||
-      currentProject.workspaceMode !== 'local-server' ||
+      !targetProject ||
+      targetProject.workspaceMode !== 'local-server' ||
       isWorkspaceAssetUrl(url)
     )
       return url;
     if (blob) {
       const result = await saveBlobAsset({
-        projectId: currentProject.id,
+        projectId: targetProject.id,
         category,
         blob,
         filename,
@@ -2130,19 +2539,30 @@ export function GeneratePanel() {
       return result.asset.url;
     }
     if (url.startsWith('http')) {
-      const result = await saveRemoteUrlAsset({
-        projectId: currentProject.id,
-        category,
-        url,
-        filename,
-      });
-      return result.asset.url;
+      try {
+        const result = await saveRemoteUrlAsset({
+          projectId: targetProject.id,
+          category,
+          url,
+          filename,
+        });
+        return result.asset.url;
+      } catch {
+        const dataUrl = await urlToDataUrl(url);
+        const result = await saveDataUrlAsset({
+          projectId: targetProject.id,
+          category,
+          dataUrl,
+          filename,
+        });
+        return result.asset.url;
+      }
     }
     if (url.startsWith('blob:')) {
       const registeredBlob = getRegisteredObjectUrlBlob(url);
       if (registeredBlob) {
         const result = await saveBlobAsset({
-          projectId: currentProject.id,
+          projectId: targetProject.id,
           category,
           blob: registeredBlob,
           filename,
@@ -2152,7 +2572,7 @@ export function GeneratePanel() {
     }
     const dataUrl = url.startsWith('data:') ? url : await urlToDataUrl(url);
     const result = await saveDataUrlAsset({
-      projectId: currentProject.id,
+      projectId: targetProject.id,
       category,
       dataUrl,
       filename,
@@ -2160,8 +2580,11 @@ export function GeneratePanel() {
     return result.asset.url;
   }
 
-  async function persistCaptureAssets(captures: Capture[]) {
-    if (!currentProject || currentProject.workspaceMode !== 'local-server') return captures;
+  async function persistCaptureAssets(captures: Capture[], targetProjectId: string) {
+    const targetProject = useProjectStore
+      .getState()
+      .projects.find((project) => project.id === targetProjectId);
+    if (!targetProject || targetProject.workspaceMode !== 'local-server') return captures;
     let changed = false;
     const persistedCaptures = await Promise.all(
       captures.map(async (capture) => {
@@ -2169,17 +2592,33 @@ export function GeneratePanel() {
           'captures',
           capture.colorUrl,
           `${capture.id}-color.png`,
+          undefined,
+          targetProjectId,
         );
         const maskUrl = await persistGeneratedImage(
           'captures',
           capture.maskUrl,
           `${capture.id}-mask.png`,
+          undefined,
+          targetProjectId,
         );
         const depthUrl = capture.depthUrl
-          ? await persistGeneratedImage('captures', capture.depthUrl, `${capture.id}-depth.png`)
+          ? await persistGeneratedImage(
+              'captures',
+              capture.depthUrl,
+              `${capture.id}-depth.png`,
+              undefined,
+              targetProjectId,
+            )
           : undefined;
         const normalUrl = capture.normalUrl
-          ? await persistGeneratedImage('captures', capture.normalUrl, `${capture.id}-normal.png`)
+          ? await persistGeneratedImage(
+              'captures',
+              capture.normalUrl,
+              `${capture.id}-normal.png`,
+              undefined,
+              targetProjectId,
+            )
           : undefined;
         changed ||=
           colorUrl !== capture.colorUrl ||
@@ -2189,125 +2628,328 @@ export function GeneratePanel() {
         return { ...capture, colorUrl, maskUrl, depthUrl, normalUrl };
       }),
     );
-    if (changed) updateCurrentProject({ captures: persistedCaptures });
+    if (changed) updateProjectById(targetProjectId, { captures: persistedCaptures });
     return persistedCaptures;
+  }
+
+  async function persistReferenceAssets(
+    referencesToPersist: ReferenceImage[],
+    targetProjectId: string,
+  ) {
+    const targetProject = useProjectStore
+      .getState()
+      .projects.find((project) => project.id === targetProjectId);
+    if (!targetProject || targetProject.workspaceMode !== 'local-server') {
+      return referencesToPersist;
+    }
+    let changed = false;
+    const persistedReferences = await Promise.all(
+      referencesToPersist.map(async (reference) => {
+        const url = await persistGeneratedImage(
+          'references',
+          reference.url,
+          `${reference.id}.png`,
+          undefined,
+          targetProjectId,
+        );
+        changed ||= url !== reference.url;
+        return url === reference.url ? reference : { ...reference, url };
+      }),
+    );
+    if (changed) {
+      if (useProjectStore.getState().currentProjectId === targetProjectId) {
+        useReferenceStore.getState().setReferences(persistedReferences);
+      }
+      updateProjectById(targetProjectId, { references: persistedReferences });
+    }
+    return persistedReferences;
   }
 
   async function saveCriticalProjectState(overrides: {
     layers?: Layer[];
     references?: ReferenceImage[];
+    captures?: Capture[];
   }) {
-    const project = useProjectStore.getState().getCurrentProject() ?? currentProject;
-    if (!project || project.workspaceMode !== 'local-server') return;
-    const captures = await persistCaptureAssets(
-      useProjectStore.getState().getCurrentProject()?.captures ?? project.captures,
+    const targetProjectId = currentProject?.id;
+    if (!targetProjectId) return;
+    let result: Awaited<ReturnType<typeof saveWorkspaceProject>> | undefined;
+    let savedProjectSnapshot: ReturnType<typeof useProjectStore.getState>['projects'][number] | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const projectState = useProjectStore.getState();
+      const project = projectState.projects.find((item) => item.id === targetProjectId);
+      if (!project || project.workspaceMode !== 'local-server') return;
+      const isTargetProjectActive = projectState.currentProjectId === targetProjectId;
+      const captures = await persistCaptureAssets(
+        attempt === 0 && overrides.captures ? overrides.captures : project.captures,
+        targetProjectId,
+      );
+      const references = await persistReferenceAssets(
+        attempt === 0 && overrides.references
+          ? overrides.references
+          : isTargetProjectActive
+            ? useReferenceStore.getState().references
+            : project.references,
+        targetProjectId,
+      );
+      const targetGenerations = useGenerationStore
+        .getState()
+        .generations.filter((generation) =>
+          generationBelongsToProject(generation, targetProjectId),
+        );
+      savedProjectSnapshot = {
+        ...project,
+        objects: isTargetProjectActive ? useSceneStore.getState().objects : project.objects,
+        layers:
+          attempt === 0 && overrides.layers
+            ? overrides.layers
+            : isTargetProjectActive
+              ? useLayerStore.getState().layers
+              : project.layers,
+        references,
+        generations: isTargetProjectActive ? targetGenerations : project.generations,
+        captures,
+        bakedTextures: project.bakedTextures,
+        updatedAt: new Date().toISOString(),
+        dirty: false,
+        workspaceMode: 'local-server' as const,
+      };
+      try {
+        result = await saveWorkspaceProject(savedProjectSnapshot);
+        break;
+      } catch (error) {
+        const staleSnapshot =
+          error instanceof WorkspaceApiError &&
+          error.status === 409 &&
+          error.message.includes('stale project snapshot');
+        if (!staleSnapshot || attempt > 0) throw error;
+      }
+    }
+    if (!result || !savedProjectSnapshot) return;
+    const latestProject = useProjectStore
+      .getState()
+      .projects.find((project) => project.id === targetProjectId);
+    const sameIds = (left: Array<{ id: string }> | undefined, right: Array<{ id: string }>) =>
+      (left ?? [])
+        .map((item) => item.id)
+        .sort()
+        .join('|') ===
+      right
+        .map((item) => item.id)
+        .sort()
+        .join('|');
+    const savedLatestSnapshot = Boolean(
+      latestProject?.id === savedProjectSnapshot.id &&
+      Date.parse(latestProject.updatedAt) <= Date.parse(savedProjectSnapshot.updatedAt) &&
+      sameIds(latestProject.layers, savedProjectSnapshot.layers) &&
+      sameIds(latestProject.captures, savedProjectSnapshot.captures) &&
+      sameIds(latestProject.generations, savedProjectSnapshot.generations) &&
+      sameIds(latestProject.references, savedProjectSnapshot.references),
     );
-    const projectForSave = {
-      ...project,
-      objects: useSceneStore.getState().objects,
-      layers: overrides.layers ?? useLayerStore.getState().layers,
-      references: overrides.references ?? useReferenceStore.getState().references,
-      generations: useGenerationStore.getState().generations,
-      captures,
-      bakedTextures:
-        useProjectStore.getState().getCurrentProject()?.bakedTextures ?? project.bakedTextures,
-      updatedAt: new Date().toISOString(),
-      dirty: false,
-      workspaceMode: 'local-server' as const,
-    };
-    const result = await saveWorkspaceProject(projectForSave);
-    setWorkspaceState({
+    updateProjectById(targetProjectId, {
       workspaceMode: 'local-server',
       workspaceName: result.slug,
       lastSavedAt: result.project.lastSavedAt,
-      dirty: false,
+      dirty: !savedLatestSnapshot,
       assetManifest: result.project.assetManifest,
     });
+    if (
+      !savedLatestSnapshot &&
+      typeof window !== 'undefined' &&
+      useProjectStore.getState().currentProjectId === targetProjectId
+    ) {
+      window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+    }
   }
 
-  async function addGenerationAsProjectedLayer(
+  async function saveGenerationStateBestEffort() {
+    try {
+      await saveCriticalProjectState({});
+    } catch (error) {
+      console.error('[Liclick 3D Texture] Could not persist generation state:', error);
+      if (useProjectStore.getState().currentProjectId === currentProject?.id) {
+        window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+      }
+    }
+  }
+
+  async function stageGenerationAsProjectedLayer(
     generation: Generation,
-    options: { automatic?: boolean } = {},
+    options: { automatic?: boolean; capture?: Capture } = {},
   ) {
     if (!generation.resultUrl || !isTextureMapGeneration(generation)) return undefined;
+    const targetProjectId =
+      typeof generation.metadata.projectId === 'string'
+        ? generation.metadata.projectId
+        : currentProject?.id;
+    if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
+      return undefined;
+    }
     const existing = useLayerStore
       .getState()
       .layers.find((layer) => layer.generationId === generation.id);
-    if (existing && options.automatic) return existing;
+    if (existing && options.automatic) {
+      return { layer: existing, shouldPersist: false as const };
+    }
+    const projectCaptures =
+      useProjectStore.getState().projects.find((project) => project.id === targetProjectId)
+        ?.captures ?? currentProject?.captures ?? [];
     const generationCapture =
-      lastCapture?.id === generation.captureId
-        ? lastCapture
-        : (useProjectStore
-            .getState()
-            .getCurrentProject()
-            ?.captures.find((capture) => capture.id === generation.captureId) ??
-          currentProject?.captures.find((capture) => capture.id === generation.captureId) ??
-          lastCapture);
+      options.capture?.id === generation.captureId
+        ? options.capture
+        : lastCapture?.id === generation.captureId
+          ? lastCapture
+          : projectCaptures.find((capture) => capture.id === generation.captureId);
+    if (!generationCapture) {
+      throw new Error(
+        `${String(generation.metadata.cameraViewLabel ?? '当前')}视角缺少对应相机捕获，已停止投影以避免贴到错误方向。`,
+      );
+    }
+    const maskedResultUrl = await createMaskedProjectedImage(
+      generation.resultUrl.startsWith('http')
+        ? await urlToDataUrl(generation.resultUrl)
+        : generation.resultUrl,
+      generationCapture.maskUrl,
+    );
+    // Image download and masking can outlive the editor route. Never apply the
+    // old project's layer to whichever project became current in the meantime.
+    if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
+      return undefined;
+    }
+    const layerId = existing?.id ?? createId('projected-layer');
+    return {
+      generation,
+      existingLayer: existing,
+      layerId,
+      generationCapture,
+      maskedResultUrl,
+      targetProjectId,
+      shouldPersist: true as const,
+    };
+  }
+
+  async function persistGenerationAsProjectedLayer(
+    prepared: {
+      generation: Generation;
+      existingLayer?: Layer;
+      layerId: string;
+      generationCapture: Capture;
+      maskedResultUrl: string;
+      targetProjectId?: string;
+      shouldPersist: true;
+    },
+    options: { automatic?: boolean; capture?: Capture } = {},
+  ) {
+    const {
+      generation,
+      existingLayer,
+      generationCapture,
+      layerId,
+      maskedResultUrl,
+      targetProjectId,
+    } = prepared;
     let persistedGenerationCapture = generationCapture;
-    if (currentProject?.workspaceMode === 'local-server' && generationCapture) {
+    if (currentProject?.workspaceMode === 'local-server') {
+      const currentCaptures =
+        useProjectStore.getState().projects.find((project) => project.id === currentProject.id)
+          ?.captures ?? currentProject.captures;
       const captures = await persistCaptureAssets(
-        useProjectStore.getState().getCurrentProject()?.captures ?? currentProject.captures,
+        [
+          generationCapture,
+          ...currentCaptures.filter((capture) => capture.id !== generationCapture.id),
+        ],
+        currentProject.id,
       );
       persistedGenerationCapture =
         captures.find((capture) => capture.id === generationCapture.id) ?? generationCapture;
     }
-    const layerGeneration = {
-      ...generation,
-      resultUrl: await createMaskedProjectedImage(
-        generation.resultUrl.startsWith('http')
-          ? await urlToDataUrl(generation.resultUrl)
-          : generation.resultUrl,
-        persistedGenerationCapture?.maskUrl,
-      ),
-      metadata: {
-        ...generation.metadata,
-        alphaMode: 'solid-background-cutout',
-      },
-    };
+    let imageUrl: string;
+    let maskUrl: string | undefined;
+    let depthUrl: string | undefined;
+    try {
+      [imageUrl, maskUrl, depthUrl] = await Promise.all([
+        persistGeneratedImage('layers', maskedResultUrl, `${layerId}.png`),
+        persistedGenerationCapture?.maskUrl
+          ? persistGeneratedImage(
+              'layers',
+              persistedGenerationCapture.maskUrl,
+              `${layerId}-mask.png`,
+            )
+          : Promise.resolve(undefined),
+        persistedGenerationCapture?.depthUrl
+          ? persistGeneratedImage(
+              'layers',
+              persistedGenerationCapture.depthUrl,
+              `${layerId}-depth.png`,
+            )
+          : Promise.resolve(undefined),
+      ]);
+    } catch (error) {
+      console.error('[Liclick 3D Texture] Could not persist projected layer assets:', error);
+      pushToast({
+        tone: 'warning',
+        title: '图层保存失败',
+        description: error instanceof Error ? error.message : '请确认工作区服务在线后再试。',
+        dedupeKey: `layer-save-failed:${layerId}`,
+      });
+      throw error;
+    }
+    if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
+      return undefined;
+    }
+    const currentExisting = useLayerStore
+      .getState()
+      .layers.find(
+        (layer) => layer.id === layerId || layer.generationId === generation.id,
+      );
+    // A manual replacement may target a layer that the user deleted while its
+    // files were saving. New automatic layers have not entered the store yet,
+    // so they can be committed safely only after every asset is durable.
+    if (existingLayer && !currentExisting) return undefined;
     let layer: Layer;
-    if (existing) {
+    if (currentExisting) {
       layer = {
-        ...existing,
-        imageUrl: layerGeneration.resultUrl,
-        maskUrl: persistedGenerationCapture?.maskUrl,
-        depthUrl: persistedGenerationCapture?.depthUrl,
-        camera: persistedGenerationCapture?.camera,
-        contentRevision: (existing.contentRevision ?? 0) + 1,
+        ...currentExisting,
+        imageUrl,
+        maskUrl,
+        depthUrl,
+        camera: persistedGenerationCapture.camera,
+        contentRevision: (currentExisting.contentRevision ?? 0) + 1,
         isBaked: false,
         needsRebake: true,
       };
-      useLayerStore.getState().updateLayer(existing.id, layer);
+      useLayerStore.getState().updateLayer(currentExisting.id, layer);
     } else {
       layer = addProjectedLayerFromGeneration(
-        layerGeneration,
-        persistedGenerationCapture,
-        persistedGenerationCapture?.objectId,
+        {
+          ...generation,
+          resultUrl: imageUrl,
+          metadata: {
+            ...generation.metadata,
+            alphaMode: 'solid-background-cutout',
+          },
+        },
+        {
+          ...persistedGenerationCapture,
+          maskUrl: maskUrl ?? persistedGenerationCapture.maskUrl,
+          depthUrl: depthUrl ?? persistedGenerationCapture.depthUrl,
+        },
+        persistedGenerationCapture.objectId,
+        layerId,
       );
     }
-    let nextLayers = useLayerStore.getState().layers;
+    const nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
     try {
-      const imageUrl = await persistGeneratedImage('layers', layer.imageUrl, `${layer.id}.png`);
-      const maskUrl = layer.maskUrl
-        ? await persistGeneratedImage('layers', layer.maskUrl, `${layer.id}-mask.png`)
-        : undefined;
-      const depthUrl = layer.depthUrl
-        ? await persistGeneratedImage('layers', layer.depthUrl, `${layer.id}-depth.png`)
-        : undefined;
-      layer = { ...layer, imageUrl, maskUrl, depthUrl };
-      nextLayers = nextLayers.map((item) => (item.id === layer.id ? layer : item));
-      useLayerStore.getState().setLayers(nextLayers);
-      setProjectLayers(nextLayers);
       await saveCriticalProjectState({ layers: nextLayers });
     } catch (error) {
       console.error('[Liclick 3D Texture] Could not persist projected layer:', error);
-      setProjectLayers(nextLayers);
       pushToast({
         tone: 'warning',
-        title: '图层已添加，但保存失败',
+        title: '图层已添加，但工程保存失败',
         description: error instanceof Error ? error.message : '请确认工作区服务在线后再试。',
         dedupeKey: `layer-save-failed:${layer.id}`,
       });
+      throw error;
     }
     if (!options.automatic) {
       pushToast({
@@ -2317,6 +2959,28 @@ export function GeneratePanel() {
       });
     }
     return layer;
+  }
+
+  async function addGenerationAsProjectedLayer(
+    generation: Generation,
+    options: { automatic?: boolean; capture?: Capture } = {},
+  ) {
+    // Remote multi-view jobs may finish together. Keep staging and persistence
+    // in one transaction: if the next view enters the layer store while the
+    // previous view is saving, that save snapshot contains a not-yet-persisted
+    // blob layer and can be rejected or overwrite part of the six-view batch.
+    const operation = projectedLayerCommitQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const prepared = await stageGenerationAsProjectedLayer(generation, options);
+        if (!prepared || !prepared.shouldPersist) return prepared?.layer;
+        return persistGenerationAsProjectedLayer(prepared, options);
+      });
+    projectedLayerCommitQueueRef.current = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   async function handleAddProjectedLayer() {

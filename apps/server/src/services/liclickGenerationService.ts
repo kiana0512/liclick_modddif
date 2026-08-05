@@ -114,7 +114,10 @@ function findField(value: unknown, keys: string[]): string {
 function findUrls(value: unknown): string[] {
   if (!value) return [];
   if (typeof value === 'string') {
-    return [...value.matchAll(/(?:https?:\/\/|data:image\/)[^\s"'<>]+/g)].map((match) => match[0]);
+    const normalized = value.replace(/\\\//g, '/');
+    return [...normalized.matchAll(/(?:https?:\/\/|data:image\/)[^\s"'<>]+/g)].map(
+      (match) => match[0],
+    );
   }
   if (Array.isArray(value)) return value.flatMap((item) => findUrls(item));
   if (typeof value === 'object') {
@@ -130,31 +133,270 @@ function findUrls(value: unknown): string[] {
   return [];
 }
 
+const knownImageAssetHosts = new Set([
+  'ai-assets.lilithgames.com',
+  'tsh-aiteam-prod-all.oss-accelerate.aliyuncs.com',
+]);
+
+function sanitizeResultUrl(value: string) {
+  return value
+    .trim()
+    .replace(/\\\//g, '/')
+    .replace(/[)\]}>）】》」』，。；、！？：,.;!?:]+$/gu, '');
+}
+
+function isLikelyImageResultUrl(value: string) {
+  if (/^data:image\//i.test(value)) return true;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (knownImageAssetHosts.has(parsed.hostname.toLowerCase())) return true;
+    return /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+const resultContextKeys = new Set([
+  'artifact',
+  'artifacts',
+  'downloadurl',
+  'downloadurls',
+  'generatedimage',
+  'generatedimages',
+  'imageurl',
+  'imageurls',
+  'images',
+  'output',
+  'outputs',
+  'outputimage',
+  'outputimages',
+  'outputurl',
+  'outputurls',
+  'result',
+  'results',
+  'resultimage',
+  'resultimages',
+  'resulturl',
+  'resulturls',
+]);
+
+function normalizePayloadKey(key: string) {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isExcludedUrlContext(key: string) {
+  return /^(?:doc|docs|documentation|help|input|prompt|reference|request|source|status|task|workspace)/.test(
+    normalizePayloadKey(key),
+  );
+}
+
+function hasResultUrlLanguage(text: string) {
+  return /结果|下载(?:地址|链接)?|图片地址|图像地址|输出(?:图片|图像|地址|链接)?|生成(?:的)?(?:图片|图像)|\b(?:result|download|output|generated\s+image|image\s+url)\b/i.test(
+    text,
+  );
+}
+
+function consistsOnlyOfAnImageUrl(text: string, urls: string[]) {
+  let remainder = text;
+  for (const url of urls) remainder = remainder.replace(url, '');
+  return (
+    remainder
+      .replaceAll('[', '')
+      .replaceAll(']', '')
+      .replace(/[\s"'`(){}<>（）【】《》「」『』，。；、！？：,.;!?:_-]+/gu, '') === ''
+  );
+}
+
+function collectResultImageUrls(
+  value: unknown,
+  path: string[] = [],
+  seen: Set<unknown> = new Set(),
+  depth = 0,
+): string[] {
+  if (depth > 12 || value === undefined || value === null) return [];
+  if (typeof value === 'string') {
+    const embedded = parseEmbeddedJson(value);
+    if (embedded !== undefined && embedded !== value) {
+      return collectResultImageUrls(embedded, path, seen, depth + 1);
+    }
+    const discovered = findUrls(value);
+    const imageUrls = discovered
+      .map(sanitizeResultUrl)
+      .filter((url) => url.length > 0 && isLikelyImageResultUrl(url));
+    if (imageUrls.length === 0) return [];
+    const hasExcludedContext = path.some(isExcludedUrlContext);
+    const hasResultContext = path.some((key) => resultContextKeys.has(normalizePayloadKey(key)));
+    const isDirectOutputText =
+      path.length === 0 || path.some((key) => normalizePayloadKey(key) === 'content');
+    if (hasExcludedContext) return [];
+    if (
+      hasResultContext ||
+      hasResultUrlLanguage(value) ||
+      (isDirectOutputText && consistsOnlyOfAnImageUrl(value, discovered))
+    ) {
+      return imageUrls;
+    }
+    return [];
+  }
+  if (typeof value !== 'object') return [];
+  if (seen.has(value)) return [];
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectResultImageUrls(item, path, seen, depth + 1));
+  }
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+    collectResultImageUrls(child, [...path, key], seen, depth + 1),
+  );
+}
+
+function findUniqueImageUrls(value: unknown) {
+  return [...new Set(collectResultImageUrls(value))];
+}
+
+function hasNegatedTerminalLanguage(text: string) {
+  return /尚未(?:成功|完成)|还未(?:成功|完成)|未(?:成功|完成)|没有(?:成功|完成)|完成后|完成度|\b(?:not|isn't|isnt|is\s+not|still\s+not)\s+(?:yet\s+)?(?:succeed(?:ed)?|success(?:ful)?|complete(?:d)?|done|finish(?:ed)?)\b/i.test(
+    text,
+  );
+}
+
 function isTerminalSuccessStatus(status: string) {
-  return /succeed|success|complete|completed|done|finish|finished/i.test(status);
+  if (hasNegatedTerminalLanguage(status)) return false;
+  return /\b(?:succeed(?:ed)?|success(?:ful)?|complete(?:d)?|done|finish(?:ed)?)\b|生成(?:任务)?(?:已)?(?:成功|完成)|任务(?:已)?完成|^(?:已完成|完成|已成功|成功)$/i.test(
+    status.trim(),
+  );
+}
+
+function parseEmbeddedJson(value: string): unknown | undefined {
+  const trimmed = value
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '');
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function collectAtlasPayloadCandidates(
+  value: unknown,
+  seen: Set<unknown> = new Set(),
+  depth = 0,
+): unknown[] {
+  if (depth > 8 || value === undefined || value === null) return [];
+  if (typeof value === 'string') {
+    const candidates: unknown[] = [value];
+    const parsed = parseEmbeddedJson(value);
+    if (parsed !== undefined && parsed !== value) {
+      candidates.push(...collectAtlasPayloadCandidates(parsed, seen, depth + 1));
+    }
+    return candidates;
+  }
+  if (typeof value !== 'object') return [value];
+  if (seen.has(value)) return [];
+  seen.add(value);
+
+  const candidates: unknown[] = [value];
+  const record = value as Record<string, unknown>;
+  for (const key of ['structuredContent', 'result']) {
+    if (record[key] !== undefined) {
+      candidates.push(...collectAtlasPayloadCandidates(record[key], seen, depth + 1));
+    }
+  }
+  if (Array.isArray(record.content)) {
+    for (const item of record.content) {
+      candidates.push(...collectAtlasPayloadCandidates(item, seen, depth + 1));
+      if (item && typeof item === 'object' && 'text' in item) {
+        candidates.push(
+          ...collectAtlasPayloadCandidates((item as Record<string, unknown>).text, seen, depth + 1),
+        );
+      }
+    }
+  }
+  return candidates;
 }
 
 function normalizeAtlasPayload(value: unknown): unknown {
-  if (!value || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  const structuredResult =
-    record.structuredContent &&
-    typeof record.structuredContent === 'object' &&
-    'result' in record.structuredContent
-      ? (record.structuredContent as Record<string, unknown>).result
-      : undefined;
-  if (typeof structuredResult === 'string') {
-    try {
-      return JSON.parse(structuredResult) as unknown;
-    } catch {
-      return structuredResult;
-    }
-  }
-  return value;
+  const candidates = collectAtlasPayloadCandidates(value);
+  if (candidates.length <= 1) return candidates[0] ?? value;
+  return {
+    original: value,
+    normalized: candidates.slice(1),
+  };
+}
+
+function isEmptyObject(value: unknown): value is Record<string, never> {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length === 0,
+  );
 }
 
 function parseAtlasPayload(stdout: string) {
-  return normalizeAtlasPayload(parseJsonFromOutput(stdout));
+  const raw = stdout.trim();
+  if (!raw) return {};
+  const directlyParsed = parseEmbeddedJson(raw);
+  if (directlyParsed !== undefined) return normalizeAtlasPayload(directlyParsed);
+
+  try {
+    const parsed = parseJsonFromOutput(stdout);
+    if (isEmptyObject(parsed) && raw !== '{}') return normalizeAtlasPayload(raw);
+    return normalizeAtlasPayload(parsed);
+  } catch {
+    return normalizeAtlasPayload(raw);
+  }
+}
+
+function collectAtlasText(value: unknown, seen: Set<unknown> = new Set(), depth = 0): string[] {
+  if (depth > 10 || value === undefined || value === null) return [];
+  if (typeof value === 'string') return [value];
+  if (typeof value !== 'object') return [];
+  if (seen.has(value)) return [];
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectAtlasText(item, seen, depth + 1));
+  }
+  return Object.values(value as Record<string, unknown>).flatMap((child) =>
+    collectAtlasText(child, seen, depth + 1),
+  );
+}
+
+function isTerminalSuccessPayload(value: unknown, status: string) {
+  if (isTerminalSuccessStatus(status)) return true;
+  return collectAtlasText(value).some(
+    (text) =>
+      isTerminalSuccessStatus(text) ||
+      (!hasNegatedTerminalLanguage(text) &&
+        /(?:图片|图像)?生成(?:任务)?(?:已)?(?:成功|完成)(?!后)|任务(?:已)?完成(?!后)|(?:image\s+generation|generation\s+task|task)\s+(?:succeeded|successful|completed|finished|done)|^\s*(?:succeeded|successful|completed|finished|done)\s*$/i.test(
+          text,
+        )),
+  );
+}
+
+export function parseLiclickImageTaskPayload(value: unknown): LiclickImageTaskResult {
+  const payload = normalizeAtlasPayload(value);
+  const status = findField(payload, ['status']);
+  if (/failed|failure|error|cancel(?:led|ed)?|失败|错误|取消/i.test(status)) {
+    throw new Error(
+      findField(payload, ['err_msg', 'error', 'message']) || '莉刻图片生成任务失败。',
+    );
+  }
+  const urls = findUniqueImageUrls(payload);
+  return {
+    status,
+    resultUrl: urls[0],
+    resultUrls: urls,
+    terminalWithoutResult: urls.length === 0 && isTerminalSuccessPayload(payload, status),
+    raw: payload,
+  };
+}
+
+export function parseLiclickImageTaskOutput(stdout: string): LiclickImageTaskResult {
+  return parseLiclickImageTaskPayload(parseAtlasPayload(stdout));
 }
 
 function findTaskId(value: unknown) {
@@ -290,7 +532,7 @@ function parseImageSubmissionResult(
   const payload = parseAtlasPayload(submit.stdout);
   const error = findAtlasError(payload);
   if (error) throw new Error(error);
-  const urls = findUrls(payload);
+  const urls = findUniqueImageUrls(payload);
   const taskId = findTaskId(payload);
   if (urls.length === 0 && !taskId) {
     const message = findField(payload, ['err_msg', 'error', 'message', 'result']) || trimOutput(submit.stdout);
@@ -467,19 +709,7 @@ export async function pollLiclickImageTask(
     3 * 60 * 1000,
     atlasContext.atlasHomeDir,
   );
-  const payload = parseAtlasPayload(poll.stdout);
-  const status = findField(payload, ['status']);
-  if (/failed/i.test(status)) {
-    throw new Error(findField(payload, ['err_msg', 'error', 'message']) || '莉刻图片生成任务失败。');
-  }
-  const urls = findUrls(payload);
-  return {
-    status,
-    resultUrl: urls[0],
-    resultUrls: urls,
-    terminalWithoutResult: urls.length === 0 && isTerminalSuccessStatus(status),
-    raw: payload,
-  };
+  return parseLiclickImageTaskOutput(poll.stdout);
 }
 
 export async function submitLiclickImageJob(
@@ -505,7 +735,7 @@ export async function submitLiclickImageJob(
       atlasContext.atlasHomeDir,
     );
     const payload = parseAtlasPayload(submit.stdout);
-    const urls = findUrls(payload);
+    const urls = findUniqueImageUrls(payload);
     const taskId = findTaskId(payload);
     if (urls.length === 0 && !taskId) {
       const message = findField(payload, ['err_msg', 'error', 'message', 'result']) || trimOutput(submit.stdout);

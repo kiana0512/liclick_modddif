@@ -1,11 +1,11 @@
 import { create } from 'zustand';
-import { mockProjects } from '@/mock/mockProjects';
 import type { Capture } from '@/types/capture';
 import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
 import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ModelBoundingBox, SceneObject, Transform } from '@/types/model';
 import type { AssetManifest, Project, ReferenceImage, WorkspaceMode } from '@/types/project';
+import { upsertGenerationByIdentity } from '@/utils/generationIdentity';
 
 export const IMMEDIATE_PROJECT_SAVE_EVENT = 'liclick:immediate-project-save';
 const LOCAL_OBJECT_DELETION_KEY = 'liclick:pending-object-deletions:v1';
@@ -17,10 +17,12 @@ type ProjectStore = {
   setCurrentProject: (projectId: string) => void;
   getCurrentProject: () => Project | undefined;
   replaceCurrentProject: (project: Project) => void;
+  updateProjectById: (projectId: string, patch: Partial<Project>) => void;
   updateCurrentProject: (patch: Partial<Project>) => void;
   setProjectObjects: (objects: SceneObject[]) => void;
   setProjectLayers: (layers: Layer[]) => void;
   setProjectGenerations: (generations: Generation[]) => void;
+  setProjectGenerationsById: (projectId: string, generations: Generation[]) => void;
   setProjectCaptures: (captures: Capture[]) => void;
   setProjectReferences: (references: ReferenceImage[]) => void;
   deleteProjectObject: (objectId: string) => void;
@@ -33,9 +35,15 @@ type ProjectStore = {
   }) => void;
   markDirty: () => void;
   markSaved: (lastSavedAt: string, assetManifest?: AssetManifest) => void;
+  markSavedById: (
+    projectId: string,
+    lastSavedAt: string,
+    assetManifest?: AssetManifest,
+  ) => void;
   updateObjectTransform: (objectId: string, transform: Transform, boundingBox?: ModelBoundingBox) => void;
   addCapture: (capture: Capture) => void;
   addGeneration: (generation: Generation) => void;
+  addGenerationByProjectId: (projectId: string, generation: Generation) => void;
   addBakedTexture: (bakedTexture: BakedTexture) => void;
 };
 
@@ -180,14 +188,9 @@ function updateProject(projects: Project[], projectId: string, patch: Partial<Pr
   );
 }
 
-function upsertGeneration(generations: Generation[], generation: Generation) {
-  const exists = generations.some((item) => item.id === generation.id);
-  return exists ? generations.map((item) => (item.id === generation.id ? generation : item)) : [generation, ...generations];
-}
-
 export const useProjectStore = create<ProjectStore>((set, get) => ({
-  projects: mockProjects.map(applyLocalObjectDeletions),
-  currentProjectId: mockProjects[0]?.id ?? '',
+  projects: [],
+  currentProjectId: '',
   setProjects: (projects) =>
     set((state) => ({
       projects: projects.map(applyLocalObjectDeletions),
@@ -211,6 +214,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           : [projectWithLocalDeletions, ...state.projects],
       };
     }),
+  updateProjectById: (projectId, patch) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, patch),
+    })),
   updateCurrentProject: (patch) =>
     set((state) => ({
       projects: updateProject(state.projects, state.currentProjectId, patch),
@@ -218,6 +225,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   setProjectObjects: (objects) => get().updateCurrentProject({ objects }),
   setProjectLayers: (layers) => get().updateCurrentProject({ layers }),
   setProjectGenerations: (generations) => get().updateCurrentProject({ generations }),
+  setProjectGenerationsById: (projectId, generations) =>
+    get().updateProjectById(projectId, { generations }),
   setProjectCaptures: (captures) => get().updateCurrentProject({ captures }),
   setProjectReferences: (references) => get().updateCurrentProject({ references }),
   deleteProjectObject: (objectId) =>
@@ -231,10 +240,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     }),
   setWorkspaceState: (workspaceState) => get().updateCurrentProject(workspaceState),
   markDirty: () => get().updateCurrentProject({ dirty: true }),
-  markSaved: (lastSavedAt, assetManifest) => {
-    const project = get().getCurrentProject();
+  markSaved: (lastSavedAt, assetManifest) =>
+    get().markSavedById(get().currentProjectId, lastSavedAt, assetManifest),
+  markSavedById: (projectId, lastSavedAt, assetManifest) => {
+    const project = get().projects.find((item) => item.id === projectId);
     if (project) clearLocalObjectDeletions(project.id, project.deletedObjectIds ?? []);
-    get().updateCurrentProject({
+    get().updateProjectById(projectId, {
       lastSavedAt,
       dirty: false,
       deletedObjectIds: [],
@@ -269,11 +280,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       };
     }),
   addGeneration: (generation) =>
+    get().addGenerationByProjectId(get().currentProjectId, generation),
+  addGenerationByProjectId: (projectId, generation) =>
     set((state) => {
-      const project = state.projects.find((item) => item.id === state.currentProjectId);
+      const project = state.projects.find((item) => item.id === projectId);
       return {
-        projects: updateProject(state.projects, state.currentProjectId, {
-          generations: upsertGeneration(project?.generations ?? [], generation),
+        projects: updateProject(state.projects, projectId, {
+          generations: upsertGenerationByIdentity(project?.generations ?? [], generation),
         }),
       };
     }),

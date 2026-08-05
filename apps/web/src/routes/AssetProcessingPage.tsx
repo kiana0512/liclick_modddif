@@ -40,7 +40,7 @@ import {
   downloadVerifiedArtifact,
   getAssetJob,
   getAssetProcessingStatus,
-  submitPreparedRetopologyProcessing,
+  submitRetopologyProcessing,
   submitUvProcessing,
   subscribeAssetJobEvents,
   AssetProcessingHttpError,
@@ -84,8 +84,8 @@ const modeCopy = {
   },
   retopology: {
     eyebrow: 'AI RETOPOLOGY',
-    title: '自动拓扑',
-    description: '导入高模并设置目标面数，严格 QA 通过后自动交付生产级低模。',
+    title: '自动拓扑 V6',
+    description: '导入高模，系统将根据结构、轮廓和交付档位自动确定合理密度，并在八项质量检查通过后发布正式低模。',
     accent: 'blue',
     Icon: Network,
   },
@@ -104,7 +104,9 @@ function fileStem(fileName: string) {
 }
 
 function externalAssetId(mode: AssetProcessingMode, file: File) {
-  return `li3d:${fileStem(file.name)}:${mode}:${createId()}`;
+  return mode === 'retopology'
+    ? `li3d:${fileStem(file.name)}:retopology:v6:${createId()}`
+    : `li3d:${fileStem(file.name)}:${mode}:${createId()}`;
 }
 
 function pendingSubmissionStorageKey(mode: AssetProcessingMode) {
@@ -154,7 +156,7 @@ function submissionErrorMessage(error: unknown, fallback: string) {
     error.status === 422 && error.code === 'ASSET_INPUT_INVALID'
       ? '请修正模型格式、对象或参数后重新提交。'
       : error.code === 'RETOPOLOGY_QUALITY_GATE_FAILED'
-        ? '候选低模未通过轮廓、组件或拓扑硬性检查，未发布为最终模型。'
+        ? '本次候选未通过全部质量门禁，未发布正式低模；请调整高模、参考图或交付档位后重试。'
       : undefined;
   const diagnostics = [
     error.code,
@@ -208,12 +210,12 @@ function primaryArtifacts(artifacts: AssetArtifact[]) {
 function finalRetopologyArtifacts(artifacts: AssetArtifact[]) {
   return artifacts.filter((artifact) => {
     const name = artifactName(artifact);
-    if (!/\.(blend|fbx)$/i.test(name)) return false;
-    const token = artifactToken(artifact);
-    return !/(candidate|baseline|reference|source|current|input|high(?:[_ -]?poly)?|audit|report|manifest|comparison|prompt|plan|events?|diagnostic)/.test(
-      token,
-    );
+    return /_game_low\.(blend|fbx)$/i.test(name);
   });
+}
+
+function retopologyDiagnosticArtifacts(artifacts: AssetArtifact[]) {
+  return artifacts.filter((artifact) => !/\.(blend|fbx)$/i.test(artifactName(artifact)));
 }
 
 const requiredUvArtifactSuffixes = [
@@ -257,30 +259,23 @@ function deliveryContract(mode: AssetProcessingMode, job: AssetJob | undefined, 
   const featured = finalRetopologyArtifacts(artifacts);
   const hasBlend = featured.some((artifact) => /\.blend$/i.test(artifact.filename));
   const hasFbx = featured.some((artifact) => /\.fbx$/i.test(artifact.filename));
-  const qualitySource = {
-    summary: job?.result?.summary,
-    resultQa: job?.result?.qa,
-    qa: job?.qa,
-  };
-  const failedQualityGates = [
-    ['审计', 'audit_passed'],
-    ['拓扑目标', 'topology_goal_met'],
-    ['自动发布', 'automatic_final_promotion_allowed'],
-  ].filter(([, key]) => findSummaryValue(qualitySource, [key]) === false);
+  const deliveryReady = job?.delivery_ready ?? job?.result?.delivery_ready;
+  const artifactsRole = job?.artifacts_role ?? job?.result?.artifacts_role;
   const invalidFinalMetadata = featured.filter((artifact) => !artifactMetadataReady(artifact));
   return {
     ready:
+      deliveryReady === true &&
+      artifactsRole !== 'isolated_diagnostic' &&
       hasBlend &&
       hasFbx &&
-      failedQualityGates.length === 0 &&
       invalidFinalMetadata.length === 0,
     summary:
-      !hasBlend || !hasFbx
-        ? '重拓扑交付缺少 V5 最终 BLEND 或 FBX；候选模型和诊断文件不能作为正式交付。'
-        : failedQualityGates.length > 0
-          ? `重拓扑未通过 V5 质量门：${failedQualityGates.map(([label]) => label).join('、')}。`
+      deliveryReady !== true || artifactsRole === 'isolated_diagnostic'
+        ? 'V6 服务尚未发布正式交付；候选模型和隔离诊断不能作为最终结果。'
+        : !hasBlend || !hasFbx
+          ? '重拓扑交付缺少 V6 正式 BLEND 或 FBX。'
         : invalidFinalMetadata.length > 0
-          ? '最终重拓扑制品缺少 V5 文件名、类型、大小、SHA 或下载地址。'
+          ? '最终重拓扑制品缺少 V6 文件名、类型、大小、SHA 或下载地址。'
           : '',
   };
 }
@@ -324,7 +319,6 @@ function qualityFacts(mode: AssetProcessingMode, job: AssetJob) {
           ['拉伸', ['stretch_ratio', 'max_stretch']],
         ]
       : [
-          ['目标面数', ['target_faces']],
           ['实际面数', ['final_faces', 'final_face_count', 'face_count']],
           ['四边面', ['quad_faces', 'quad_count']],
           ['三角面', ['triangle_faces', 'triangle_count']],
@@ -650,9 +644,9 @@ function serviceUnavailableReason(
   mode: AssetProcessingMode,
   requestError?: string,
 ) {
-  if (loading) return '正在检查 Asset V4 服务，请稍候。';
+  if (loading) return '正在检查资产服务，请稍候。';
   if (requestError) return requestError;
-  if (!status) return requestError || '无法读取 Asset V4 服务状态，请重新检测。';
+  if (!status) return requestError || '无法读取资产服务状态，请重新检测。';
 
   const backendMessage = backendFailureMessage(status);
   const fallback = (message: string) => backendMessage || message;
@@ -679,9 +673,9 @@ function serviceUnavailableReason(
   if (!status.reachable) return fallback('Asset V4 服务当前无法连接。');
   if (!status.authorized) {
     return fallback(
-      status.authorizationMode === 'api-key'
-        ? 'Asset V4 API Key 鉴权未通过。'
-        : '本机 IP 尚未获得 Asset V4 访问权限。',
+      status.authorizationMode === 'bearer'
+        ? '资产服务 Bearer Token 鉴权未通过。'
+        : '本机 IP 尚未获得资产服务访问权限。',
     );
   }
   if (status.capacityCheckPassed !== true) {
@@ -718,7 +712,7 @@ function ReferenceImages({
     const images = Array.from(list).filter((file) => file.type.startsWith('image/'));
     const unique = [...files];
     for (const image of images) {
-      if (unique.length >= 32) break;
+      if (unique.length >= 16) break;
       if (!unique.some((item) => item.name === image.name && item.size === image.size)) unique.push(image);
     }
     onFiles(unique);
@@ -729,7 +723,7 @@ function ReferenceImages({
       <div className="flex items-center justify-between gap-4">
         <div>
           <div className="text-sm font-semibold text-white/76">参考视图</div>
-          <div className="mt-1 text-xs text-white/30">可选，最多 32 张；用于轮廓规划与自动质量核验，不写入几何。</div>
+          <div className="mt-1 text-xs text-white/30">可选，最多 16 张；文件名会与 V6 reference_views 声明严格对应。</div>
         </div>
         <button
           type="button"
@@ -990,7 +984,9 @@ function JobPanel({
   const artifacts = assetJobArtifacts(job);
   const featuredArtifacts =
     mode === 'retopology' ? finalRetopologyArtifacts(artifacts) : primaryArtifacts(artifacts);
-  const diagnosticArtifacts = artifacts.filter((artifact) => !featuredArtifacts.includes(artifact));
+  const diagnosticArtifacts = mode === 'retopology'
+    ? retopologyDiagnosticArtifacts(artifacts)
+    : artifacts.filter((artifact) => !featuredArtifacts.includes(artifact));
   const errorCode = assetJobErrorCode(job);
   const contract = deliveryContract(mode, job, artifacts);
   const deliveryReady = succeeded && contract.ready;
@@ -1099,13 +1095,13 @@ function JobPanel({
               {deliveryReady && <QualitySummary mode={mode} job={job} />}
               <div className="mb-3 flex items-center justify-between">
                 <span className="text-xs font-semibold text-white/62">
-                  {mode === 'uv' ? 'V4 固定交付' : 'V5 最终模型'}
+                  {mode === 'uv' ? 'V4 固定交付' : 'V6 正式模型'}
                 </span>
                 <span className="text-[10px] text-white/26">
                   {mode === 'uv' ? `${artifacts.length}/5 项` : `${featuredArtifacts.length} 项`}
                 </span>
               </div>
-              <ArtifactList mode={mode} job={job} artifacts={featuredArtifacts.length ? featuredArtifacts : artifacts} />
+              <ArtifactList mode={mode} job={job} artifacts={featuredArtifacts} />
               {featuredArtifacts.length > 0 && diagnosticArtifacts.length > 0 && (
                 <details className="group mt-3 rounded-xl border border-white/[0.065] bg-white/[0.018]">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 text-[11px] text-white/34">
@@ -1158,7 +1154,7 @@ function JobPanel({
           <p className="text-xs leading-5 text-white/30">
             {mode === 'uv'
               ? '导入模型并开始后，在这里查看处理进度。'
-              : '导入高模并开始后，在这里查看生成进度。'}
+              : '导入高模并开始后，在这里查看 Agent 生成与八项质量检查进度。'}
           </p>
           <div className="mt-3 flex items-center gap-2 text-[10px] text-white/20">
             <ShieldCheck className={`h-3.5 w-3.5 ${mode === 'uv' ? 'text-emerald-200/50' : 'text-blue-200/50'}`} />
@@ -1387,50 +1383,26 @@ function AutoRetopologyWorkspace({
   setError: (error?: string) => void;
 }) {
   const [highModel, setHighModel] = useState<File>();
-  const [preparing, setPreparing] = useState(false);
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
-  const [targetFaces, setTargetFaces] = useState(500);
-  const [targetFacesInput, setTargetFacesInput] = useState('500');
   const [preserveSharp, setPreserveSharp] = useState(true);
   const [preserveBoundary, setPreserveBoundary] = useState(true);
-  const [requireClosed, setRequireClosed] = useState(false);
+  const [deliveryProfile, setDeliveryProfile] = useState<
+    'next_gen_game_prop' | 'realtime_background_prop' | 'mobile_game_prop'
+  >('next_gen_game_prop');
   const [userRequest, setUserRequest] = useState(
-    '以高模轮廓为形状依据；平面自动降面；曲面、轮廓、孔洞、硬边和组件边界保留必要密度；四边面为主，允许受控三角面，禁止 N-gon。',
+    '保留主要轮廓、开口、支撑关系与关键负空间。',
   );
   const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
 
-  function applyTargetFaces(value: number) {
-    const nextValue = Math.min(5000, Math.max(50, Math.round(value)));
-    setTargetFaces(nextValue);
-    setTargetFacesInput(String(nextValue));
-  }
-
-  function parseTargetFacesInput(value: string) {
-    if (!value.trim()) return undefined;
-    const nextValue = Number(value);
-    return Number.isInteger(nextValue) && nextValue >= 50 && nextValue <= 5000 ? nextValue : undefined;
-  }
-
-  function commitTargetFacesInput() {
-    const nextValue = parseTargetFacesInput(targetFacesInput);
-    applyTargetFaces(nextValue ?? targetFaces);
-  }
-
   async function submit() {
     if (busy || !serviceReady || !highModel) return;
-    const submittedTargetFaces = parseTargetFacesInput(targetFacesInput);
-    if (submittedTargetFaces === undefined) {
-      setError('目标面数必须是 50–5000 之间的整数。');
-      return;
-    }
 
     const fingerprint = JSON.stringify({
       source: [highModel.name, highModel.size, highModel.lastModified],
       references: referenceImages.map((file) => [file.name, file.size, file.lastModified]),
-      targetFaces: submittedTargetFaces,
       preserveSharp,
       preserveBoundary,
-      requireClosed,
+      deliveryProfile,
       userRequest,
     });
     if (submissionKeyRef.current?.fingerprint !== fingerprint) {
@@ -1444,16 +1416,16 @@ function AutoRetopologyWorkspace({
     setError(undefined);
     try {
       const metadata = {
+        api_version: '6.0' as const,
         external_asset_id: submissionKeyRef.current.key,
         options: {
           algorithm: 'agent' as const,
-          topology_style: 'quad_dominant' as const,
-          target_faces: submittedTargetFaces,
-          preserve_sharp: preserveSharp,
-          preserve_boundary: preserveBoundary,
-          render_resolution: 512,
-          max_repair_rounds: 2 as const,
-          require_closed: requireClosed,
+          budget_mode: 'automatic' as const,
+          topology_style: 'mixed_game_ready' as const,
+          preserve_source: true as const,
+          preserve_sharp_edges: preserveSharp,
+          preserve_boundaries: preserveBoundary,
+          delivery_profile: deliveryProfile,
         },
         reference_views: referenceImages.map((file, index) => ({
           filename: file.name,
@@ -1461,13 +1433,11 @@ function AutoRetopologyWorkspace({
         })),
         user_request: userRequest.trim(),
       };
-      setPreparing(true);
-      const submission = await submitPreparedRetopologyProcessing({
+      const submission = await submitRetopologyProcessing({
         highModel,
         referenceImages,
         metadata,
       });
-      setPreparing(false);
       const submissionJobId = assetJobId(submission);
       if (submissionJobId) {
         trackModuleActionOnce('auto_retopology', 'start', submissionJobId);
@@ -1477,14 +1447,13 @@ function AutoRetopologyWorkspace({
         external_asset_id: submission.external_asset_id ?? metadata.external_asset_id,
         progress: 0,
         stage: 'QUEUED',
-        stage_message: '任务已提交，等待 Asset Worker',
+        stage_message: 'Agent 正在分析高模并生成唯一正式候选。',
       });
       clearPendingSubmission('retopology');
       submissionKeyRef.current = undefined;
     } catch (submitError) {
       setError(submissionErrorMessage(submitError, '自动拓扑提交失败。'));
     } finally {
-      setPreparing(false);
       setBusy(false);
     }
   }
@@ -1515,7 +1484,7 @@ function AutoRetopologyWorkspace({
           file={highModel}
           accept=".fbx,.obj,.glb,.gltf,.blend"
           title="高模文件"
-          description="拖入高模，或点击选择；Li3D 会自动准备内部低模基线"
+          description="拖入高模，或点击选择；系统将自动分析结构、轮廓与形变需求"
           extensions="FBX · OBJ · GLB · GLTF · BLEND"
           icon={Box}
           tone="blue"
@@ -1529,57 +1498,22 @@ function AutoRetopologyWorkspace({
         <div className="mb-3">
           <div className="text-[10px] font-semibold tracking-[0.16em] text-blue-200/44">02 · OUTPUT</div>
           <h2 className="mt-1 text-sm font-semibold text-white/76">输出要求</h2>
+          <p className="mt-1.5 text-xs leading-5 text-white/28">系统根据高模结构、轮廓、形变与交付档位自动确定合理密度。</p>
         </div>
 
         <div className="rounded-2xl border border-white/[0.065] bg-black/10 px-4">
-          <SettingLabel label="目标面数" description="范围 50–5000 面，结果会按轮廓复杂度小幅调整">
-            <div className="flex min-w-0 flex-1 items-center justify-end gap-4 sm:min-w-[360px]">
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <span className="text-[10px] tabular-nums text-white/24">50</span>
-                <input
-                  type="range"
-                  min={50}
-                  max={5000}
-                  step={1}
-                  value={targetFaces}
-                  aria-label="目标面数滑块"
-                  aria-valuetext={`${targetFaces} 面`}
-                  onChange={(event) => applyTargetFaces(Number(event.target.value))}
-                  className="h-1.5 min-w-28 flex-1 cursor-pointer appearance-none rounded-full bg-white/[0.08] outline-none [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:cursor-grab [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-100/80 [&::-moz-range-thumb]:bg-blue-400 [&::-moz-range-thumb]:shadow-[0_0_14px_rgba(96,165,250,0.45)] [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:cursor-grab [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-100/80 [&::-webkit-slider-thumb]:bg-blue-400 [&::-webkit-slider-thumb]:shadow-[0_0_14px_rgba(96,165,250,0.45)] active:[&::-moz-range-thumb]:cursor-grabbing active:[&::-webkit-slider-thumb]:cursor-grabbing"
-                  style={{
-                    background: `linear-gradient(to right, rgba(96, 165, 250, 0.82) 0%, rgba(129, 140, 248, 0.72) ${((targetFaces - 50) / 4950) * 100}%, rgba(255, 255, 255, 0.08) ${((targetFaces - 50) / 4950) * 100}%, rgba(255, 255, 255, 0.08) 100%)`,
-                  }}
-                />
-                <span className="text-[10px] tabular-nums text-white/24">5000</span>
-              </div>
-              <label className="flex h-9 items-center rounded-lg border border-blue-300/14 bg-blue-400/[0.06] px-2.5 transition focus-within:border-blue-300/34 focus-within:bg-blue-400/[0.09]">
-                <input
-                  type="number"
-                  min={50}
-                  max={5000}
-                  step={1}
-                  value={targetFacesInput}
-                  aria-label="精确目标面数"
-                  onChange={(event) => {
-                    const nextValue = event.target.value;
-                    setTargetFacesInput(nextValue);
-                    const parsedValue = parseTargetFacesInput(nextValue);
-                    if (parsedValue !== undefined) {
-                      setTargetFaces(parsedValue);
-                    }
-                  }}
-                  onBlur={commitTargetFacesInput}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      commitTargetFacesInput();
-                      event.currentTarget.blur();
-                    }
-                  }}
-                  className="w-14 bg-transparent text-right text-xs font-semibold tabular-nums text-blue-50/85 outline-none"
-                />
-                <span className="ml-1 text-[10px] text-white/32">面</span>
-              </label>
-            </div>
+          <SettingLabel label="交付档位" description="用于自动密度与质量策略选择">
+            <Segment
+              value={deliveryProfile}
+              onChange={setDeliveryProfile}
+              tone="blue"
+              label="交付档位"
+              values={[
+                { value: 'next_gen_game_prop', label: '次世代道具' },
+                { value: 'realtime_background_prop', label: '实时背景' },
+                { value: 'mobile_game_prop', label: '移动端' },
+              ]}
+            />
           </SettingLabel>
         </div>
 
@@ -1591,7 +1525,6 @@ function AutoRetopologyWorkspace({
               <div className="flex flex-wrap gap-2">
                 <MiniSwitch checked={preserveSharp} onChange={setPreserveSharp} label="保留锐边" />
                 <MiniSwitch checked={preserveBoundary} onChange={setPreserveBoundary} label="保留边界" />
-                <MiniSwitch checked={requireClosed} onChange={setRequireClosed} label="必须闭合" />
               </div>
             </SettingLabel>
             <label className="block border-t border-white/[0.055] py-4">
@@ -1625,13 +1558,11 @@ function AutoRetopologyWorkspace({
           className="flex h-14 w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-500 text-sm font-semibold text-white shadow-[0_18px_42px_rgba(37,99,235,.18)] transition hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:translate-y-0"
         >
           {busy ? <LoaderCircle className="h-4.5 w-4.5 animate-spin" /> : <Network className="h-4.5 w-4.5" />}
-          {preparing
-            ? '正在准备模型…'
-            : busy
-              ? '正在提交任务…'
-              : modelReady
-                ? '开始自动拓扑'
-                : '请先导入高模'}
+          {busy
+            ? '正在提交任务…'
+            : modelReady
+              ? '开始自动拓扑'
+              : '请先导入高模'}
         </button>
         <div className="mt-3 flex min-h-4 items-center justify-center gap-2 text-[11px] text-white/24">
           {serviceBlockReason ? (
@@ -1950,7 +1881,7 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
             <Sparkles className="h-3.5 w-3.5" />
             {mode === 'uv'
               ? '源文件不会被覆盖；五项交付物仅在严格 QA 通过后原子发布。'
-              : '源高模不会被覆盖；严格 QA 通过后自动发布最终低模与质量证据。'}
+              : '源高模不会被覆盖；八项质量门禁全部通过后才会发布正式 BLEND 与 FBX。'}
           </span>
         </div>
       </section>

@@ -30,6 +30,7 @@ type LayerStore = {
     generation: Generation,
     capture?: Capture,
     objectId?: string,
+    layerId?: string,
   ) => Layer;
   toggleLayer: (layerId: string) => void;
   setLayerVisibility: (layerIds: string[], visible: boolean) => void;
@@ -108,10 +109,11 @@ function normalizeProjectedLayerName(layer: Layer) {
 }
 
 function normalizeLayer(layer: Layer) {
+  const imageUrl = typeof layer.imageUrl === 'string' ? layer.imageUrl : '';
   return {
     ...layer,
     name: normalizeProjectedLayerName(layer),
-    imageUrl: layer.imageUrl === legacyTransparentImage ? '' : layer.imageUrl,
+    imageUrl: imageUrl === legacyTransparentImage ? '' : imageUrl,
     adjustments: {
       hue: layer.adjustments?.hue ?? 0,
       saturation: layer.adjustments?.saturation ?? 0,
@@ -155,13 +157,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
 
     return layer;
   },
-  addProjectedLayerFromGeneration: (generation, capture, objectId) => {
+  addProjectedLayerFromGeneration: (generation, capture, objectId, layerId) => {
     const cameraViewLabel =
       typeof generation.metadata.cameraViewLabel === 'string'
         ? generation.metadata.cameraViewLabel.trim()
         : '';
     const layer: Layer = {
-      id: uuid(),
+      id: layerId ?? uuid(),
       name: cameraViewLabel
         ? `投射贴图 · ${cameraViewLabel}`
         : generation.prompt

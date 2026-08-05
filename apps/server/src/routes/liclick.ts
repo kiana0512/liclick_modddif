@@ -36,6 +36,9 @@ type GenerationJob = {
   error?: string;
   message?: string;
   pollFailureCount?: number;
+  nextPollAt?: string;
+  recoveryPollIntervalMs?: number;
+  terminalWithoutResultAt?: string;
   pollPromise?: Promise<GenerationJob>;
   promise?: Promise<void>;
 };
@@ -65,7 +68,7 @@ type EditImageJob = {
 
 const generationJobs = new Map<string, GenerationJob>();
 const editImageJobs = new Map<string, EditImageJob>();
-let jobsLoaded = false;
+let jobsLoadPromise: Promise<void> | undefined;
 let writeQueue = Promise.resolve();
 const transientWriteErrorCodes = new Set([
   'UNKNOWN',
@@ -77,6 +80,8 @@ const transientWriteErrorCodes = new Set([
 ]);
 const maxPersistedJobs = 50;
 const maxPersistedStringLength = 2000;
+const terminalResultGraceMs = 5 * 60 * 1000;
+const recoveryPollIntervalMs = 60 * 1000;
 
 function jobsFile() {
   return path.join(serverConfig.workspaceDir, 'generation-jobs.json');
@@ -151,26 +156,58 @@ function isTransientPollingError(error: unknown) {
   );
 }
 
-async function loadGenerationJobs() {
-  if (jobsLoaded) return;
-  jobsLoaded = true;
+async function loadGenerationJobsFromDisk() {
   const file = jobsFile();
-  if (!fs.existsSync(file)) return;
-  const content = await fs.promises.readFile(file, 'utf8').catch(() => '');
+  let content: string;
+  try {
+    content = await fs.promises.readFile(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
   if (!content.trim()) return;
-  const jobs = JSON.parse(content) as GenerationJob[];
-  for (const job of jobs) {
-    job.workflow = job.workflow === 'texture-map' ? 'texture-map' : 'liclick';
+  let jobs: GenerationJob[];
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!Array.isArray(parsed)) throw new Error('Persisted generation jobs must be an array.');
+    jobs = parsed as GenerationJob[];
+  } catch (error) {
+    // A damaged recovery log must not make every LiClick route permanently
+    // unavailable. New jobs will replace it on the next successful save.
+    console.error('[Liclick Generation] Ignoring an invalid generation job log.', error);
+    return;
+  }
+  const normalizedJobs = jobs.map((job) => ({
+    ...job,
+    workflow: job.workflow === 'texture-map' ? ('texture-map' as const) : ('liclick' as const),
+  }));
+  for (const job of normalizedJobs) {
     generationJobs.set(job.id, job);
   }
 }
 
+function loadGenerationJobs() {
+  if (!jobsLoadPromise) {
+    jobsLoadPromise = loadGenerationJobsFromDisk().catch((error: unknown) => {
+      jobsLoadPromise = undefined;
+      throw error;
+    });
+  }
+  return jobsLoadPromise;
+}
+
 async function saveGenerationJobs() {
   await fs.promises.mkdir(serverConfig.workspaceDir, { recursive: true });
-  const jobs = [...generationJobs.values()]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, maxPersistedJobs)
-    .map(getPersistableJob);
+  const sortedJobs = [...generationJobs.values()].sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
+  );
+  const activeJobs = sortedJobs.filter(isActiveJob);
+  const retainedHistory = sortedJobs
+    .filter((job) => !isActiveJob(job))
+    .slice(0, Math.max(0, maxPersistedJobs - activeJobs.length));
+  // Never evict an in-flight job merely because newer terminal history filled
+  // the bounded log; every active job must remain recoverable after restart.
+  const jobs = [...activeJobs, ...retainedHistory].map(getPersistableJob);
   const task = writeQueue
     .then(() => writeJobsFileWithRetry(jobsFile(), `${JSON.stringify(jobs, null, 2)}\n`))
     .catch((error: unknown) => {
@@ -354,37 +391,77 @@ async function applyEditSubmission(job: EditImageJob, submission: LiclickImageSu
 async function pollAndUpdateJob(job: GenerationJob) {
   if (!job.taskId || job.status !== 'running') return job;
   if (job.pollPromise) return job.pollPromise;
+  const nextPollAt = job.nextPollAt ? Date.parse(job.nextPollAt) : Number.NaN;
+  if (Number.isFinite(nextPollAt) && nextPollAt > Date.now()) return job;
   const pollPromise = (async () => {
     try {
       assertJobUsesPersonalLiclickAccount(job);
       const result = await pollLiclickImageTask(job.taskId!, { atlasHomeDir: job.atlasHomeDir });
+      if (job.status !== 'running') return job;
       job.pollFailureCount = 0;
       job.message = undefined;
+      job.nextPollAt = undefined;
       if (result.resultUrl) {
         job.updatedAt = new Date().toISOString();
         job.raw = result.raw;
         job.status = 'succeeded';
         job.resultUrl = result.resultUrl;
         job.resultUrls = result.resultUrls;
+        job.recoveryPollIntervalMs = undefined;
+        job.terminalWithoutResultAt = undefined;
         await saveGenerationJobs();
       } else if (result.terminalWithoutResult) {
-        job.updatedAt = new Date().toISOString();
+        const now = Date.now();
+        const firstSeenAt = job.terminalWithoutResultAt
+          ? Date.parse(job.terminalWithoutResultAt)
+          : Number.NaN;
+        if (Number.isFinite(firstSeenAt) && now - firstSeenAt >= terminalResultGraceMs) {
+          job.status = 'failed';
+          job.error = '莉刻任务已完成，但图片地址在等待同步后仍未返回，请重新生成。';
+          job.message = undefined;
+          job.updatedAt = new Date(now).toISOString();
+          job.nextPollAt = undefined;
+          await saveGenerationJobs();
+          return job;
+        }
+        const terminalMessage = '莉刻任务已完成，图片地址仍在同步，正在继续自动获取。';
+        const shouldPersist = !Number.isFinite(firstSeenAt) || job.message !== terminalMessage;
+        if (!Number.isFinite(firstSeenAt)) {
+          job.terminalWithoutResultAt = new Date(now).toISOString();
+        }
+        job.updatedAt = new Date(now).toISOString();
         job.raw = result.raw;
-        job.status = 'failed';
-        job.error = '莉刻后台任务已结束，但没有返回图片 URL，已停止等待。';
-        await saveGenerationJobs();
+        job.message = terminalMessage;
+        job.nextPollAt = new Date(
+          now + Math.max(10_000, job.recoveryPollIntervalMs ?? 0),
+        ).toISOString();
+        if (shouldPersist) await saveGenerationJobs();
+      } else {
+        job.terminalWithoutResultAt = undefined;
+        if (job.recoveryPollIntervalMs) {
+          job.nextPollAt = new Date(Date.now() + job.recoveryPollIntervalMs).toISOString();
+        }
       }
       return job;
     } catch (error) {
+      if (job.status !== 'running') return job;
       const failureCount = (job.pollFailureCount ?? 0) + 1;
       job.pollFailureCount = failureCount;
-      if (isTransientPollingError(error) && failureCount < 5) {
-        job.message = `生成服务连接波动，正在自动重试（${failureCount}/5）。`;
+      if (isTransientPollingError(error)) {
+        job.message = `生成服务连接波动，正在自动重试（已重试 ${failureCount} 次）。`;
+        const backoffMs = Math.min(
+          recoveryPollIntervalMs,
+          5_000 * 2 ** Math.min(failureCount - 1, 4),
+        );
+        job.nextPollAt = new Date(Date.now() + backoffMs).toISOString();
+        job.updatedAt = new Date().toISOString();
+        await saveGenerationJobs();
         return job;
       }
       job.status = 'failed';
       job.error = getLiclickUserErrorMessage(error, '莉刻图片生成任务失败，请稍后重试。');
       job.message = undefined;
+      job.nextPollAt = undefined;
       job.updatedAt = new Date().toISOString();
       await saveGenerationJobs();
       return job;
@@ -456,8 +533,9 @@ function startGenerationJob(job: GenerationJob) {
         await pollAndUpdateJob(job);
       }
       if (job.status === 'running') {
-        job.status = 'failed';
-        job.error = '等待莉刻图片生成超时，请重新生成。';
+        job.message = '莉刻任务仍在后台，本地已进入低频恢复模式，连接恢复后会继续获取结果。';
+        job.recoveryPollIntervalMs = recoveryPollIntervalMs;
+        job.nextPollAt = new Date(Date.now() + recoveryPollIntervalMs).toISOString();
         job.updatedAt = new Date().toISOString();
         await saveGenerationJobs();
       }
@@ -562,6 +640,42 @@ async function remoteImageToDataUrl(url: string) {
   return `data:${contentType};base64,${buffer.toString('base64')}`;
 }
 
+function getJobListResponse(job: GenerationJob) {
+  const referenceIds = (job.input.references ?? [])
+    .map((reference) => reference.id)
+    .filter((referenceId): referenceId is string => Boolean(referenceId));
+  return {
+    id: job.id,
+    projectId: job.projectId,
+    clientGenerationId: job.input.clientGenerationId,
+    prompt: job.input.prompt,
+    referenceIds,
+    status: job.status === 'submitting' ? 'running' : job.status,
+    resultUrl: job.resultUrl,
+    resultUrls: job.resultUrls,
+    taskId: job.taskId,
+    workflow: job.workflow,
+    model: job.model ?? job.input.model,
+    params: {
+      aspectRatio: job.input.aspectRatio,
+      imageSize: job.input.imageSize,
+      count: job.input.count,
+    },
+    extraParams: job.extraParams,
+    uploadedReferences: job.uploadedReferences,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    error:
+      job.status === 'failed'
+        ? getLiclickUserErrorMessage(
+            job.error,
+            'Liclick image generation failed. Please try again later.',
+          )
+        : undefined,
+    message: job.message,
+  };
+}
+
 const liclickAccountBindingRequiredCode = 'LICLICK_ACCOUNT_BINDING_REQUIRED';
 
 function isLocalComponentMode() {
@@ -615,6 +729,28 @@ export async function handleLiclickRoute(
     request.method === 'GET' &&
     isLiclickRoute &&
     segments[2] === 'generate-image' &&
+    !segments[3]
+  ) {
+    if (!requirePersonalLiclickAccount(response, user)) return true;
+    const projectId = url.searchParams.get('projectId')?.trim();
+    if (!projectId) {
+      sendJson(response, 400, { error: 'projectId is required.' });
+      return true;
+    }
+    const jobs = [...generationJobs.values()]
+      .filter((job) => job.userId === user.id && job.projectId === projectId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    for (const job of jobs) {
+      if (isActiveJob(job)) startGenerationJob(job);
+    }
+    sendJson(response, 200, { jobs: jobs.map(getJobListResponse) });
+    return true;
+  }
+
+  if (
+    request.method === 'GET' &&
+    isLiclickRoute &&
+    segments[2] === 'generate-image' &&
     segments[3]
   ) {
     if (!requirePersonalLiclickAccount(response, user)) return true;
@@ -624,12 +760,11 @@ export async function handleLiclickRoute(
       return true;
     }
     if (job.status === 'running' && job.taskId) {
-      await pollAndUpdateJob(job).catch((error: unknown) => {
+      // Atlas status calls can take minutes. Return the cached state promptly
+      // and refresh it in the background so the browser's 30-second request
+      // does not time out while the remote task has already completed.
+      void pollAndUpdateJob(job).catch((error: unknown) => {
         console.error('[Liclick Generation] Generation polling failed.', error);
-        job.status = 'failed';
-        job.error = getLiclickUserErrorMessage(error, '莉刻图片生成任务失败，请稍后重试。');
-        job.updatedAt = new Date().toISOString();
-        void saveGenerationJobs();
       });
     }
     startGenerationJob(job);
@@ -794,7 +929,15 @@ export async function handleLiclickRoute(
       sendJson(response, 409, { error: 'Generation job id is already owned by another user.' });
       return true;
     }
-    const job = createGenerationJob(jobId, user, { ...input, projectId, workflow });
+    if (
+      existingJob &&
+      (existingJob.projectId !== projectId || existingJob.workflow !== workflow)
+    ) {
+      sendJson(response, 409, { error: 'Generation job id belongs to another project.' });
+      return true;
+    }
+    const job = existingJob ?? createGenerationJob(jobId, user, { ...input, projectId, workflow });
+    if (existingJob) startGenerationJob(existingJob);
     if (job.userId !== user.id) {
       sendJson(response, 403, { error: 'Generation job belongs to another user.' });
       return true;

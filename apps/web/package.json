@@ -7,6 +7,8 @@
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "build": "tsc -b && vite build",
     "build:sites": "tsc -b && vite build && node scripts/prepare-sites-build.mjs",
+    "test:generation-polling": "node scripts/test-generation-polling.mjs",
+    "test:projection-layers": "node scripts/test-projected-layer-visibility.mjs",
     "smoke:sites-auth": "node scripts/smoke-sites-auth.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit"

@@ -2,13 +2,16 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
+import {
+  generationsReferToSameJob,
+  upsertGenerationByIdentity,
+} from '@/utils/generationIdentity';
 
 const generationStorageKeyV1 = 'liclick-generation-state-v1';
 const generationStorageKeyV2 = 'liclick-generation-state-v2';
 
 if (typeof window !== 'undefined') {
   window.localStorage.removeItem(generationStorageKeyV1);
-  window.localStorage.removeItem(generationStorageKeyV2);
 }
 
 type GenerationStore = {
@@ -41,13 +44,6 @@ function isActiveGenerationRunning(generation?: Generation) {
   );
 }
 
-function upsertGeneration(generations: Generation[], generation: Generation) {
-  const exists = generations.some((item) => item.id === generation.id);
-  return exists
-    ? generations.map((item) => (item.id === generation.id ? generation : item))
-    : [generation, ...generations];
-}
-
 export const useGenerationStore = create<GenerationStore>()(
   persist(
     (set) => ({
@@ -58,7 +54,7 @@ export const useGenerationStore = create<GenerationStore>()(
       start: (generation) =>
         set((state) => {
           const generations = generation
-            ? upsertGeneration(state.generations, generation)
+            ? upsertGenerationByIdentity(state.generations, generation)
             : state.generations;
           return {
             generations,
@@ -69,7 +65,7 @@ export const useGenerationStore = create<GenerationStore>()(
       finish: () => set({ isGenerating: false }),
       addGeneration: (generation) =>
         set((state) => {
-          const generations = upsertGeneration(state.generations, generation);
+          const generations = upsertGenerationByIdentity(state.generations, generation);
           return {
             generations,
             currentGeneration: generation,
@@ -79,16 +75,39 @@ export const useGenerationStore = create<GenerationStore>()(
       setLastCapture: (lastCapture) => set({ lastCapture }),
       setGenerations: (generations, projectId) =>
         set((state) => {
-          const pending = state.generations.filter(
-            (generation) =>
-              isPendingGeneration(generation, projectId) &&
-              !generations.some((item) => item.id === generation.id),
+          const persistedPending = state.generations.filter((generation) =>
+            isPendingGeneration(generation, projectId),
           );
-          const nextGenerations = [...pending, ...generations];
+          const mergedGenerations = generations.map((generation) => {
+            const persisted = persistedPending.find((item) =>
+              generationsReferToSameJob(item, generation),
+            );
+            if (!persisted || !isPendingGeneration(generation, projectId)) return generation;
+            return {
+              ...generation,
+              ...persisted,
+              metadata: {
+                ...generation.metadata,
+                ...persisted.metadata,
+              },
+            };
+          });
+          const pendingMissingFromProject = persistedPending.filter(
+            (generation) =>
+              !mergedGenerations.some((item) => generationsReferToSameJob(item, generation)),
+          );
+          const nextGenerations = [...pendingMissingFromProject, ...mergedGenerations];
+          const restoredCurrentGeneration = state.currentGeneration
+            ? nextGenerations.find((generation) =>
+                generationsReferToSameJob(generation, state.currentGeneration),
+              )
+            : undefined;
           return {
             generations: nextGenerations,
-            currentGeneration: nextGenerations[0],
-            isGenerating: state.isGenerating || isActiveGenerationRunning(nextGenerations[0]),
+            currentGeneration: restoredCurrentGeneration ?? nextGenerations[0],
+            isGenerating: nextGenerations.some((generation) =>
+              isActiveGenerationRunning(generation),
+            ),
           };
         }),
       deleteObjectData: (objectId) =>

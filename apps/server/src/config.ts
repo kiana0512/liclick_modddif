@@ -77,7 +77,12 @@ const substanceBakerTextureCacheMb = Number(
 const assetServiceBaseUrl = (
   process.env.ASSET_SERVICE_BASE_URL ?? 'https://10.3.34.11'
 ).replace(/\/$/, '');
-const assetServiceApiKey = process.env.ASSET_SERVICE_API_KEY?.trim() || undefined;
+const assetServiceApiToken =
+  process.env.ASSET_SERVICE_API_TOKEN?.trim() ||
+  // Compatibility with existing deployments while they migrate the secret
+  // name. The value is always sent using the V6 Bearer scheme.
+  process.env.ASSET_SERVICE_API_KEY?.trim() ||
+  undefined;
 const explicitAssetServiceCaCertPath = process.env.ASSET_SERVICE_CA_CERT_PATH?.trim();
 const assetServiceCaCertManaged = !explicitAssetServiceCaCertPath;
 const assetServiceCaCertPath = path.resolve(
@@ -504,7 +509,7 @@ export const serverConfig = {
   substanceBakerApiKey,
   substanceBakerTextureCacheMb,
   assetServiceBaseUrl,
-  assetServiceApiKey,
+  assetServiceApiToken,
   assetServiceCaCertPath,
   assetServiceCaCertManaged,
   assetServiceCaCertExpectedSha256,

@@ -35,6 +35,7 @@ export type AssetJobError = {
 
 export type AssetJob = {
   job_id: string;
+  job_type?: string;
   request_id?: string;
   external_asset_id?: string;
   input_sha256?: string;
@@ -51,8 +52,12 @@ export type AssetJob = {
     last_progress_at?: string;
   };
   artifacts?: AssetArtifact[];
+  artifacts_role?: string;
+  delivery_ready?: boolean;
   result?: {
     artifacts?: AssetArtifact[];
+    artifacts_role?: string;
+    delivery_ready?: boolean;
     qa?: Record<string, unknown>;
     summary?: Record<string, unknown>;
   };
@@ -63,6 +68,7 @@ export type AssetJob = {
 
 export type AssetJobSubmission = {
   job_id: string;
+  job_type?: string;
   request_id?: string;
   external_asset_id?: string;
   input_sha256?: string;
@@ -91,8 +97,8 @@ export type AssetProcessingStatus = {
   capacity?: AssetProcessingCapacity;
   message: string;
   endpoint: string;
-  apiKeyConfigured: boolean;
-  authorizationMode: 'api-key' | 'client-ip';
+  tokenConfigured: boolean;
+  authorizationMode: 'bearer' | 'client-ip';
   tls: {
     rejectUnauthorized: boolean;
     customCaConfigured: boolean;
@@ -183,7 +189,7 @@ function requestHeaders(idempotencyKey?: string) {
 async function submissionFromResponse(response: Response) {
   if (response.status !== 202) {
     const payload = await response.json().catch(() => undefined);
-    const details = errorDetails(payload, `Asset V4 提交协议错误（${response.status}）`);
+    const details = errorDetails(payload, `资产服务提交协议错误（${response.status}）`);
     throw new AssetProcessingHttpError(
       response.status,
       details.message,
@@ -196,7 +202,7 @@ async function submissionFromResponse(response: Response) {
   }
   const payload = await responseJson<unknown>(response);
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new AssetProcessingHttpError(502, 'Asset V4 返回了无效的任务响应。', 'ASSET_PROTOCOL_INVALID');
+    throw new AssetProcessingHttpError(502, '资产服务返回了无效的任务响应。', 'ASSET_PROTOCOL_INVALID');
   }
   const record = payload as Record<string, unknown>;
   if (
@@ -209,7 +215,7 @@ async function submissionFromResponse(response: Response) {
   ) {
     throw new AssetProcessingHttpError(
       502,
-      'Asset V4 任务响应缺少必要字段。',
+      '资产服务任务响应缺少必要字段。',
       'ASSET_PROTOCOL_INVALID',
     );
   }
@@ -290,16 +296,19 @@ export async function submitUvProcessing(input: {
 }
 
 export type RetopologyMetadata = {
+  api_version: '6.0';
   external_asset_id: string;
   options: {
     algorithm: 'agent';
-    topology_style: 'quad_dominant';
-    target_faces: number;
-    preserve_sharp: boolean;
-    preserve_boundary: boolean;
-    render_resolution: number;
-    max_repair_rounds: 0 | 1 | 2;
-    require_closed: boolean;
+    budget_mode: 'automatic';
+    topology_style: 'mixed_game_ready';
+    preserve_source: true;
+    preserve_sharp_edges: boolean;
+    preserve_boundaries: boolean;
+    delivery_profile:
+      | 'next_gen_game_prop'
+      | 'realtime_background_prop'
+      | 'mobile_game_prop';
   };
   reference_views: Array<{
     filename: string;
@@ -308,7 +317,7 @@ export type RetopologyMetadata = {
   user_request: string;
 };
 
-export async function submitPreparedRetopologyProcessing(input: {
+export async function submitRetopologyProcessing(input: {
   highModel: File;
   metadata: RetopologyMetadata;
   referenceImages: File[];
@@ -320,7 +329,7 @@ export async function submitPreparedRetopologyProcessing(input: {
     referenceImageNames: input.referenceImages.map((image) => image.name),
   });
   const body = new FormData();
-  body.set('high_model', input.highModel, wireNames.highModel);
+  body.set('project', input.highModel, wireNames.highModel);
   body.set(
     'metadata',
     JSON.stringify({
@@ -340,18 +349,27 @@ export async function submitPreparedRetopologyProcessing(input: {
     );
   }
   const response = await fetch(
-    `${workspaceApiBase}/api/asset-processing/retopology/prepare-and-process`,
+    `${workspaceApiBase}/api/asset-processing/retopology/process`,
     {
       method: 'POST',
       credentials: 'include',
       headers: {
         ...requestHeaders(externalAssetId),
         'X-LI3D-History-Source-Name': encodeURIComponent(input.highModel.name),
+        'X-LI3D-History-Metadata': encodeURIComponent(JSON.stringify(input.metadata)),
       },
       body,
     },
   );
   const submission = await submissionFromResponse(response);
+  if (submission.job_type !== 'RETOPOLOGY_PROCESS_V2') {
+    throw new AssetProcessingHttpError(
+      502,
+      '资产服务返回的任务不是 V6 自动拓扑任务。',
+      'ASSET_PROTOCOL_INVALID',
+      submission.request_id,
+    );
+  }
   return {
     ...submission,
     external_asset_id: submission.external_asset_id ?? externalAssetId,
@@ -371,7 +389,7 @@ export async function getAssetJob(jobId: string) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new AssetProcessingHttpError(
       502,
-      'Asset V5 返回了无效的任务状态。',
+      '资产服务返回了无效的任务状态。',
       'ASSET_PROTOCOL_INVALID',
     );
   }
@@ -392,7 +410,7 @@ export async function getAssetJob(jobId: string) {
   ) {
     throw new AssetProcessingHttpError(
       502,
-      'Asset V5 任务状态缺少必要字段或包含不受支持的人工复核状态。',
+      '资产服务任务状态缺少必要字段或包含不受支持的人工复核状态。',
       'ASSET_PROTOCOL_INVALID',
     );
   }

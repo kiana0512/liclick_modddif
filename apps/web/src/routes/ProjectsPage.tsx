@@ -5,8 +5,7 @@ import { BrandMark } from '@/components/common/BrandMark';
 import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
 import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
-import { mockProjects } from '@/mock/mockProjects';
-import { useI18nStore, useT } from '@/stores/i18nStore';
+import { useT } from '@/stores/i18nStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -82,7 +81,7 @@ function sortProjects(projects: Project[], sortMode: SortMode) {
   });
 }
 
-function mergeProjectsWithMock(
+function mergeWorkspaceProjects(
   serverProjects: Project[],
   currentProjects: Project[] = [],
   serverProjectsAuthoritative = true,
@@ -90,7 +89,7 @@ function mergeProjectsWithMock(
   const formalProjects = serverProjectsAuthoritative
     ? serverProjects
     : currentProjects.filter((project) => project.workspaceMode === 'local-server');
-  if (formalProjects.length === 0) return mockProjects;
+  if (formalProjects.length === 0) return [];
 
   const merged = new Map<string, Project>();
   const currentProjectById = new Map(currentProjects.map((project) => [project.id, project]));
@@ -289,6 +288,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
   const [pageNotice, setPageNotice] = useState<PageNotice | undefined>();
   const [activeFolderId, setActiveFolderId] = useState<FolderFilter>(undefined);
   const [nameDialog, setNameDialog] = useState<
+    | { type: 'new-project' }
     | { type: 'new-folder' }
     | { type: 'rename-folder'; folder: WorkspaceFolder }
     | { type: 'rename-project'; project: Project }
@@ -308,7 +308,6 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const pushToast = useToastStore((state) => state.pushToast);
-  const language = useI18nStore((state) => state.language);
   const t = useT();
   const visibleProjects = useMemo(() => {
     const filtered =
@@ -325,7 +324,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
       const [projectResult, folderResult] = await Promise.all([listProjects(), listFolders()]);
       setFolders(folderResult.folders);
       setProjects(
-        mergeProjectsWithMock(
+        mergeWorkspaceProjects(
           projectResult.projects.map(projectFromSummary),
           useProjectStore.getState().projects,
         ),
@@ -337,7 +336,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
       setServerState(isAuthRequired ? 'online' : 'offline');
       if (isAuthRequired) {
         setFolders([]);
-        setProjects(mergeProjectsWithMock([], useProjectStore.getState().projects, false));
+        setProjects(mergeWorkspaceProjects([], useProjectStore.getState().projects, false));
         setPageNotice({
           tone: 'warning',
           title: '需要飞书登录',
@@ -447,10 +446,10 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
     }
   }
 
-  async function handleNewProject() {
+  async function handleNewProject(name: string) {
     await runWorkspaceAction(async () => {
       const result = await createProject({
-        name: language === 'zh' ? '未命名项目' : 'Untitled Project',
+        name,
         folderId: typeof activeFolderId === 'string' ? activeFolderId : undefined,
       });
       replaceCurrentProject(result.project);
@@ -475,7 +474,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
           });
           replaceCurrentProject(result.project);
         } catch {
-          // Mock fallback projects can still open while the workspace server is offline.
+          // Keep an already loaded project available if workspace persistence is temporarily offline.
         }
       }
     }
@@ -484,6 +483,18 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
 
   return (
     <main className="li3d-home-surface min-h-screen text-white">
+      {nameDialog?.type === 'new-project' && (
+        <NameDialog
+          title={t('newProject')}
+          placeholder={t('projectName')}
+          confirmLabel={t('create')}
+          onClose={() => setNameDialog(undefined)}
+          onConfirm={(name) => {
+            setNameDialog(undefined);
+            void handleNewProject(name);
+          }}
+        />
+      )}
       {nameDialog?.type === 'new-folder' && (
         <NameDialog
           title={t('createFolder')}
@@ -599,7 +610,12 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
             >
               {t('newFolder')}
             </Button>
-            <Button className="h-10 px-4" icon={<Plus className="h-4 w-4" />} variant="primary" onClick={() => void handleNewProject()}>
+            <Button
+              className="h-10 px-4"
+              icon={<Plus className="h-4 w-4" />}
+              variant="primary"
+              onClick={() => setNameDialog({ type: 'new-project' })}
+            >
               {t('newProject')}
             </Button>
             <UserMenu onLogout={onLogout} />
@@ -668,13 +684,11 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
         <section className="mt-11">
           <div className="mb-4 flex items-center justify-between gap-4">
             <h2 className="text-[19px] font-medium tracking-[-0.01em] text-white/88">{t('projects')}</h2>
-            <SortDropdown value={sortMode} onChange={setSortMode} />
+            {visibleProjects.length > 0 && (
+              <SortDropdown value={sortMode} onChange={setSortMode} />
+            )}
           </div>
-          {visibleProjects.length === 0 ? (
-            <div className="rounded-md border border-white/10 bg-[#1d1d1d]/72 px-4 py-8 text-sm text-white/48">
-              {t('noProjects')}
-            </div>
-          ) : (
+          {visibleProjects.length > 0 && (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {visibleProjects.map((project) => (
                 <ProjectCard

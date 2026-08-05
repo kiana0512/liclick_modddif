@@ -117,6 +117,7 @@ import {
   getWorkspaceHealth,
   isWorkspaceAssetUrl,
   loadProject as loadWorkspaceProject,
+  renameProject as renameWorkspaceProject,
   saveBlobAsset,
   saveDataUrlAsset,
   saveRemoteUrlAsset,
@@ -149,6 +150,7 @@ import type { SceneObject } from '@/types/model';
 import type { Project, ReferenceImage, TextureBakeHandoff } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
+import { generationBelongsToProject } from '@/utils/generationIdentity';
 import { createId } from '@/utils/id';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
@@ -352,7 +354,8 @@ function isLocalRepaintProjectionLayer(layer: Layer) {
 
 function isLocalRepaintLayer(layer: Layer) {
   return (
-    layer.id.startsWith('local-repaint-') || layer.imageUrl.includes('surface-edit:local-repaint')
+    layer.id.startsWith('local-repaint-') ||
+    (layer.imageUrl ?? '').includes('surface-edit:local-repaint')
   );
 }
 
@@ -846,8 +849,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const project = useProjectStore((state) => state.projects.find((item) => item.id === projectId));
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
-  const setWorkspaceState = useProjectStore((state) => state.setWorkspaceState);
-  const markSaved = useProjectStore((state) => state.markSaved);
+  const updateProjectById = useProjectStore((state) => state.updateProjectById);
+  const markSavedById = useProjectStore((state) => state.markSavedById);
   const setObjects = useSceneStore((state) => state.setObjects);
   const objects = useSceneStore((state) => state.objects);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
@@ -876,7 +879,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const mergeLayersIntoUvLayer = useLayerStore((state) => state.mergeLayersIntoUvLayer);
   const generations = useGenerationStore((state) => state.generations);
   const setGenerations = useGenerationStore((state) => state.setGenerations);
-  const setProjectGenerations = useProjectStore((state) => state.setProjectGenerations);
+  const setProjectGenerationsById = useProjectStore(
+    (state) => state.setProjectGenerationsById,
+  );
   const setProjectLayers = useProjectStore((state) => state.setProjectLayers);
   const setProjectReferences = useProjectStore((state) => state.setProjectReferences);
   const references = useReferenceStore((state) => state.references);
@@ -885,6 +890,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
   const dismissToastByDedupeKey = useToastStore((state) => state.dismissToastByDedupeKey);
+  const authStatus = useAuthStore((state) => state.status);
+  const authenticatedUserId = useAuthStore((state) => state.user?.id);
   const t = useT();
   const workspacePanels = useWorkspaceLayoutStore((state) => state.panels);
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
@@ -932,7 +939,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     restoredModelKeyRef.current = undefined;
     modelRestoreRequestRef.current += 1;
     routeProjectLoadRevisionRef.current += 1;
-  }, [projectId]);
+  }, [authenticatedUserId, authStatus, projectId]);
 
   useEffect(
     () => () => {
@@ -946,6 +953,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   );
 
   useEffect(() => {
+    if (authStatus === 'checking') return;
     if (!shouldLoadEditorProjectRoute(projectId)) return;
     const token: EditorProjectLoadToken = {
       projectId,
@@ -992,6 +1000,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     // hydrateProjectStores is intentionally not a dependency; this effect is authoritative per route id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    authenticatedUserId,
+    authStatus,
     projectId,
     pushToast,
     replaceCurrentProject,
@@ -1023,8 +1033,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       skipProjectStoreSyncRef.current.generations = false;
       return;
     }
-    setProjectGenerations(generations);
-  }, [generations, projectId, serverReadyProjectId, setProjectGenerations]);
+    setProjectGenerationsById(
+      projectId,
+      generations.filter((generation) => generationBelongsToProject(generation, projectId)),
+    );
+  }, [generations, projectId, serverReadyProjectId, setProjectGenerationsById]);
 
   useEffect(() => {
     if (serverReadyProjectId !== projectId) return;
@@ -1107,7 +1120,18 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         })
         .catch(async (error) => {
           const authRequired = error instanceof WorkspaceApiError && error.status === 401;
-          const blockedEmptySave = error instanceof WorkspaceApiError && error.status === 409;
+          const saveConflict = error instanceof WorkspaceApiError && error.status === 409;
+          const retryableConflict = Boolean(
+            saveConflict &&
+              (error.message.includes('stale project snapshot') ||
+                error.message.includes('still uploading')),
+          );
+          const blockedEmptySave = saveConflict && !retryableConflict;
+          if (retryableConflict) {
+            setSaveStatus('idle');
+            setAutosaveRetryToken((token) => token + 1);
+            return;
+          }
           const workspaceOnline =
             !authRequired && !blockedEmptySave
               ? await getWorkspaceHealth().then(
@@ -1202,7 +1226,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           : (getStandardProjectThumbnailDataUrl() ?? snapshotProject.thumbnail),
       objects: useSceneStore.getState().objects,
       layers: useLayerStore.getState().layers,
-      generations: useGenerationStore.getState().generations,
+      generations: useGenerationStore
+        .getState()
+        .generations.filter((generation) => generationBelongsToProject(generation, projectId)),
       captures: snapshotProject.captures,
       bakedTextures: snapshotProject.bakedTextures,
       references: useReferenceStore.getState().references,
@@ -1725,7 +1751,13 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   function isPersistableRemoteAssetUrl(url: string) {
     try {
       const parsed = new URL(url);
-      return parsed.protocol === 'https:' && parsed.hostname === 'ai-assets.lilithgames.com';
+      return (
+        parsed.protocol === 'https:' &&
+        new Set([
+          'ai-assets.lilithgames.com',
+          'tsh-aiteam-prod-all.oss-accelerate.aliyuncs.com',
+        ]).has(parsed.hostname)
+      );
     } catch {
       return false;
     }
@@ -1918,8 +1950,29 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       if (!url || isWorkspaceAssetUrl(url)) return url;
       if (url.startsWith('http')) {
         if (!isPersistableRemoteAssetUrl(url)) return url;
-        const result = await saveRemoteUrlAsset({ projectId, category, url, filename });
-        return result.asset.relativePath;
+        try {
+          const result = await saveRemoteUrlAsset({ projectId, category, url, filename });
+          return result.asset.relativePath;
+        } catch (serverDownloadError) {
+          // Some managed desktop environments allow the signed image in the
+          // browser but block direct Node egress. Download it in the renderer
+          // and upload the bytes to the local workspace as a durable fallback.
+          try {
+            const dataUrl = await urlToDataUrl(url);
+            const result = await saveDataUrlWithFallback(dataUrl);
+            return result.asset.relativePath;
+          } catch (browserDownloadError) {
+            const serverMessage =
+              serverDownloadError instanceof Error
+                ? serverDownloadError.message
+                : 'server download failed';
+            const browserMessage =
+              browserDownloadError instanceof Error
+                ? browserDownloadError.message
+                : 'browser download failed';
+            throw new Error(`${serverMessage}; renderer fallback: ${browserMessage}`);
+          }
+        }
       }
       if (url.startsWith('blob:')) {
         const blob = getRegisteredObjectUrlBlob(url);
@@ -2094,7 +2147,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           `保存项目 JSON 失败: ${error instanceof Error ? error.message : 'Unknown error'}`,
         );
       });
-      const latestProject = useProjectStore.getState().getCurrentProject();
+      const latestProject = useProjectStore
+        .getState()
+        .projects.find((project) => project.id === snapshot.id);
       const snapshotUpdatedAt = Date.parse(snapshot.updatedAt);
       const latestUpdatedAt = Date.parse(latestProject?.updatedAt ?? '');
       const sameObjectIds =
@@ -2128,12 +2183,13 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         sameDeletionIntent,
       );
       if (savedLatestSnapshot) {
-        markSaved(
+        markSavedById(
+          snapshot.id,
           result.project.lastSavedAt ?? new Date().toISOString(),
           result.project.assetManifest,
         );
       }
-      setWorkspaceState({
+      updateProjectById(snapshot.id, {
         workspaceMode: 'local-server',
         workspaceName: result.slug,
         lastSavedAt: result.project.lastSavedAt,
@@ -2226,6 +2282,34 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   immediateSaveHandlerRef.current = () => {
     void handleManualSave(false);
   };
+
+  async function handleRenameProject(nextName: string) {
+    if (!project) return;
+    const trimmedName = nextName.trim();
+    if (!trimmedName || trimmedName === project.name) return;
+
+    if (project.workspaceMode !== 'local-server') {
+      updateProjectById(project.id, { name: trimmedName });
+      return;
+    }
+
+    try {
+      const result = await renameWorkspaceProject(project.id, trimmedName);
+      updateProjectById(project.id, {
+        name: result.project.name,
+        workspaceName: result.project.workspaceName,
+        updatedAt: result.project.updatedAt,
+      });
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: t('workspaceActionFailed'),
+        description: error instanceof Error ? error.message : t('renameProject'),
+        dedupeKey: `rename-project:${project.id}`,
+      });
+      throw error;
+    }
+  }
 
   function handleBackToProjects() {
     if (backNavigationPendingRef.current) return;
@@ -2474,8 +2558,35 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       }
       updateCurrentProject({
         objects: useSceneStore.getState().objects,
+        layers: useLayerStore.getState().layers,
         activeObjectId: object.id,
       });
+      if (project?.workspaceMode === 'local-server') {
+        const importedProjectSnapshot = getProjectSnapshot({ refreshThumbnail: false });
+        if (importedProjectSnapshot) {
+          setSaveStatus('saving');
+          try {
+            const result = await saveToWorkspaceServer(importedProjectSnapshot);
+            if (result.savedLatestSnapshot) {
+              setSaveStatus('saved');
+            } else {
+              setSaveStatus('idle');
+              setAutosaveRetryToken((token) => token + 1);
+            }
+          } catch (saveError) {
+            setSaveStatus('failed');
+            pushToast({
+              tone: 'warning',
+              title: '模型已导入，但工程保存失败',
+              description:
+                saveError instanceof Error
+                  ? saveError.message
+                  : '请确认工作区服务在线后再保存。',
+              dedupeKey: `model-import-save-failed:${object.id}`,
+            });
+          }
+        }
+      }
       window.setTimeout(() => {
         const thumbnail = getStandardProjectThumbnailDataUrl();
         if (thumbnail) updateCurrentProject({ thumbnail });
@@ -4744,6 +4855,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       <EditorShell
         projectName={project?.name ?? 'Untitled Project'}
         workspaceLabel={getWorkspaceLabel()}
+        onRenameProject={handleRenameProject}
         onBack={handleBackToProjects}
         workflowSwitcher={
           <div className="flex items-center gap-2">

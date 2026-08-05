@@ -54,13 +54,13 @@ function inspectCaCertificate(): CaCertificateState {
     return {
       available: false,
       integrityValid: false,
-      error: 'Asset V4 CA certificate path is not configured.',
+      error: 'Asset service CA certificate path is not configured.',
     };
   }
   try {
     const resolved = fs.realpathSync(certificatePath);
     if (!fs.statSync(resolved).isFile()) {
-      throw new Error(`Asset V4 CA path is not a file: ${certificatePath}`);
+      throw new Error(`Asset service CA path is not a file: ${certificatePath}`);
     }
     const bytes = fs.readFileSync(resolved);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
@@ -87,7 +87,7 @@ function inspectCaCertificate(): CaCertificateState {
 function safeCaCertificate() {
   const state = inspectCaCertificate();
   if (!state.integrityValid || !state.bytes) {
-    throw new Error(state.error || 'Asset V4 CA certificate is unavailable or invalid.');
+    throw new Error(state.error || 'Asset service CA certificate is unavailable or invalid.');
   }
   return state.bytes;
 }
@@ -146,7 +146,7 @@ function upstreamRequestOptions(
   headers: Record<string, string | number> = {},
 ) {
   if (!serverConfig.assetServiceTlsRejectUnauthorized) {
-    throw new Error('Asset V4 requires TLS certificate verification.');
+    throw new Error('Asset service requires TLS certificate verification.');
   }
   const upstreamUrl = assetServiceUrl(upstreamPath);
   const options: RequestOptions = {
@@ -157,8 +157,8 @@ function upstreamRequestOptions(
     path: `${upstreamUrl.pathname}${upstreamUrl.search}`,
     headers: {
       accept: 'application/json',
-      ...(serverConfig.assetServiceApiKey
-        ? { 'x-api-key': serverConfig.assetServiceApiKey }
+      ...(serverConfig.assetServiceApiToken
+        ? { authorization: `Bearer ${serverConfig.assetServiceApiToken}` }
         : {}),
       ...headers,
     },
@@ -315,8 +315,8 @@ async function probeAssetService() {
         httpStatus: result.statusCode,
         message:
           result.statusCode === 401
-            ? 'Asset V4 API Key 鉴权未通过。'
-            : '本机 IP 尚未获得 Asset V4 访问权限。',
+            ? '资产服务 Bearer Token 鉴权未通过。'
+            : '本机 IP 尚未获得资产服务访问权限。',
       };
     }
     if (!successful) {
@@ -406,8 +406,8 @@ export async function assetProcessingProxyStatus() {
     errorKind: 'errorKind' in probe ? probe.errorKind : undefined,
     httpStatus: 'httpStatus' in probe ? probe.httpStatus : undefined,
     endpoint,
-    apiKeyConfigured: Boolean(serverConfig.assetServiceApiKey),
-    authorizationMode: serverConfig.assetServiceApiKey ? 'api-key' : 'client-ip',
+    tokenConfigured: Boolean(serverConfig.assetServiceApiToken),
+    authorizationMode: serverConfig.assetServiceApiToken ? 'bearer' : 'client-ip',
     tls: {
       rejectUnauthorized: serverConfig.assetServiceTlsRejectUnauthorized,
       customCaConfigured: Boolean(serverConfig.assetServiceCaCertPath),
@@ -500,7 +500,7 @@ export async function proxyAssetProcessingRequest(
       response,
       400,
       'ASSET_IDEMPOTENCY_REQUIRED',
-      '提交 Asset V4 任务时必须提供稳定的 Idempotency-Key。',
+      '提交资产处理任务时必须提供稳定的 Idempotency-Key。',
       requestId,
     );
     return;
@@ -539,7 +539,7 @@ export async function proxyAssetProcessingRequest(
       response,
       503,
       'ASSET_TLS_CONFIGURATION_INVALID',
-      'Asset V4 service configuration is invalid.',
+      'Asset service configuration is invalid.',
       requestId,
     );
     return;
@@ -599,7 +599,7 @@ export async function proxyAssetProcessingRequest(
                 response,
                 502,
                 'ASSET_PROTOCOL_INVALID',
-                'Asset V4 returned an invalid submission response.',
+                'Asset service returned an invalid submission response.',
                 requestId,
               );
             }
@@ -949,7 +949,7 @@ export async function downloadVerifiedAssetArtifact(
         response,
         jobResponse.statusCode,
         'ASSET_ARTIFACT_METADATA_UNAVAILABLE',
-        'Unable to load artifact metadata from Asset V4.',
+        'Unable to load artifact metadata from the asset service.',
         requestId,
       );
       return;
@@ -1078,7 +1078,7 @@ export async function downloadVerifiedAssetArtifact(
           response,
           artifactResponse.statusCode,
           'ASSET_ARTIFACT_DOWNLOAD_FAILED',
-          'Asset V4 artifact download failed.',
+          'Asset service artifact download failed.',
           requestId,
         );
         return;

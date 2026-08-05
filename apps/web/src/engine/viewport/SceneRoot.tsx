@@ -11,6 +11,8 @@ import {
   disposeGeneratedMaterialTree,
   getProjectedLayerSamplerBudget,
   markSparseAlphaBaseTexture,
+  syncProjectedLayerMaterialDisplayState,
+  syncProjectedLayerMaterialDisplayStateInObject,
   syncProjectedLayerMaterialProjection,
   updateProjectedLayerStackMaterial,
   updateUvOverlayPreviewMaterial,
@@ -247,13 +249,14 @@ function isRenderedLocalRepaintLayer(layer: Layer) {
     layer.id.startsWith('local-repaint-') ||
     layer.id.startsWith('content-aware-projected-repair') ||
     layer.generationId === 'texture-map-content-aware-repair' ||
-    layer.imageUrl.includes('surface-edit:local-repaint'),
+    (layer.imageUrl ?? '').includes('surface-edit:local-repaint'),
   );
 }
 
 function isOverlayProjectionPatch(layer: Layer) {
   return Boolean(
-    layer.id.startsWith('local-repaint-') || layer.imageUrl.includes('surface-edit:local-repaint'),
+    layer.id.startsWith('local-repaint-') ||
+      (layer.imageUrl ?? '').includes('surface-edit:local-repaint'),
   );
 }
 
@@ -742,8 +745,17 @@ function ImportedModel({
   const [runtimeVisibilityByLayerId, setRuntimeVisibilityByLayerId] = useState<
     Record<string, { depthUrl: string; normalUrl: string }>
   >({});
+  const [initialProjectedMaterialReady, setInitialProjectedMaterialReady] = useState(false);
+  const projectedTextureArrayBuildRef = useRef<{
+    signature: string;
+    promise: Promise<THREE.ShaderMaterial | undefined>;
+  }>();
   useEffect(() => {
-    if (!texturedRestoreReady) return undefined;
+    // Restore the saved projection stack first. Rebuilding runtime depth/normal
+    // textures changes the material signature; starting it while the first
+    // texture-array upload is still in flight cancels that upload and leaves the
+    // neutral white import material on screen after a refresh.
+    if (!texturedRestoreReady || !initialProjectedMaterialReady) return undefined;
     let cancelled = false;
     const candidates = [
       ...layers,
@@ -805,6 +817,7 @@ function ImportedModel({
     captureById,
     gl,
     importedModel,
+    initialProjectedMaterialReady,
     layers,
     texturedRestoreReady,
     visibleLocalRepaintPreviewLayer,
@@ -881,13 +894,15 @@ function ImportedModel({
       .filter(
         (layer) =>
           layer.type === 'projected' &&
-          layer.visible &&
           layer.imageUrl &&
           layer.camera &&
           (!layer.objectId || layer.objectId === importedObjectId),
       )
-      // Layer order 0 is the top row in the panel. Feed the shader bottom-up
-      // so later overlay evaluations preserve that visible stacking order.
+      // Keep hidden layers resident in the GPU material. Visibility is a layer
+      // opacity uniform, so clicking the eye remains immediate instead of
+      // rebuilding every texture array once the stack grows beyond three.
+      // Layer order 0 is the top row in the panel. Feed the shader bottom-up so
+      // later overlay evaluations preserve that visible stacking order.
       .sort((a, b) => b.order - a.order)
       .map((layer) =>
         liveSurfacePaintPreview?.target === 'projected-mask' &&
@@ -973,6 +988,15 @@ function ImportedModel({
       }),
     [captureById, runtimeVisibilityByLayerId, stablePreviewProjectedLayers],
   );
+  useEffect(() => {
+    // Eye/opacity controls must update the material that is already on screen
+    // synchronously. Texture-array uploads and progressive composition may still
+    // be running in the background; neither is allowed to block these controls.
+    syncProjectedLayerMaterialDisplayStateInObject(
+      importedModel.group,
+      previewProjectionInputs,
+    );
+  }, [importedModel, previewProjectionInputs]);
   const contentAwareUvUnderlayLayer = useMemo(
     () =>
       texturedRestoreReady
@@ -1086,7 +1110,10 @@ function ImportedModel({
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
   );
   const activeProjectedPreviewInput = useMemo(
-    () => previewProjectionInputs.find((layer) => layer.layerId === activeLayerId),
+    () =>
+      previewProjectionInputs.find(
+        (layer) => layer.layerId === activeLayerId && layer.visible,
+      ),
     [activeLayerId, previewProjectionInputs],
   );
   const progressiveBackgroundInputs = useMemo(
@@ -1107,13 +1134,19 @@ function ImportedModel({
             layer.imageUrl,
             layer.maskUrl ?? '',
             layer.depthUrl ?? '',
+            layer.normalUrl ?? '',
             layer.opacity,
+            layer.visible ? 1 : 0,
             layer.strength,
             layer.blendMode,
             layer.useMask ? 1 : 0,
             layer.maskSpace ?? 'projection',
             layer.useDepthCheck ? 1 : 0,
+            layer.depthIsLinearView ? 1 : 0,
+            layer.useNormalCheck ? 1 : 0,
             layer.renderedColor ? 1 : 0,
+            layer.minimumProjectionFacing ?? 0,
+            layer.compositeRole ?? 'normal',
             layer.hue,
             layer.saturation,
             layer.lightness,
@@ -1136,7 +1169,12 @@ function ImportedModel({
     progressiveProjectedPreview.signature.startsWith(`${importedObjectId ?? 'no-object'}:`),
   );
   const visibleProjectedLayerIds = useMemo(
-    () => new Set(previewProjectionInputs.map((layer) => layer.layerId)),
+    () =>
+      new Set(
+        previewProjectionInputs
+          .filter((layer) => layer.visible)
+          .map((layer) => layer.layerId),
+      ),
     [previewProjectionInputs],
   );
   const progressiveBaseLayersStillVisible = Boolean(
@@ -1394,12 +1432,24 @@ function ImportedModel({
   // A same-layer cache may still describe the previous mask revision. Prefer the
   // projected material while a live canvas is attached or the layer is dirty;
   // otherwise the layer row updates but the model keeps showing the stale bake.
+  const hasResidentProjectedLayers = stablePreviewProjectedLayers.length > 0;
+  // Keep the projected shader and its texture arrays resident even when every
+  // projected layer is hidden. Visibility is already represented by each
+  // layer's opacity uniform, so replacing the shader with a white/baked material
+  // at zero visible layers only destroys GPU state and forces an asynchronous
+  // rebuild when an eye is enabled again. It also lets a stale/blank baked cache
+  // win that race and leave the object permanently white.
+  //
+  // Exact baked previews remain useful for legacy stacks that cannot be sampled
+  // as projected layers (for example, records without camera data). A resident
+  // projection stack must stay authoritative for interactive visibility changes.
   const visibleStackHasBakedPreview =
-    Boolean(previewBakedTextureRecord) && !visibleStackNeedsLivePreview;
+    Boolean(previewBakedTextureRecord) &&
+    !visibleStackNeedsLivePreview &&
+    !hasResidentProjectedLayers;
   const canPreviewProjectedLayers =
     !visibleStackHasBakedPreview &&
-    stableVisibleProjectedLayers.length > 0 &&
-    stablePreviewProjectedLayers.length > 0 &&
+    hasResidentProjectedLayers &&
     (displayMode === 'flat' || displayMode === 'pbr');
   const previewLighting = useMemo(
     () =>
@@ -1595,6 +1645,8 @@ function ImportedModel({
       });
       let sharedProjectedMaterial: THREE.ShaderMaterial | undefined;
       let sharedProjectedMaterialRequested = false;
+      let usingSharedTextureArrayBuild = false;
+      let sharedTextureArrayBuildSignature = '';
       const disposedPreviousMaterials = new Set<THREE.Material | THREE.Material[]>();
 
       for (const child of meshes) {
@@ -1704,6 +1756,7 @@ function ImportedModel({
             ...topUvProjectedOverlayInput,
           })
         ) {
+          if (!initialProjectedMaterialReady) setInitialProjectedMaterialReady(true);
           continue;
         }
         if (projectedLayerInput && !sharedProjectedMaterialRequested) {
@@ -1714,16 +1767,57 @@ function ImportedModel({
             ...topUvProjectedOverlayInput,
           };
           try {
-            sharedProjectedMaterial = await createProjectedLayerStackMaterial(
-              projectedMaterialInput,
-              {
-                maxTextureImageUnits: gl.capabilities.maxTextures,
-                renderer: gl,
-                isCancelled: () => cancelled,
-                preferTextureArrays: useProjectedTextureArrayMaterial,
-              },
-            );
+            if (useProjectedTextureArrayMaterial) {
+              usingSharedTextureArrayBuild = true;
+              const textureArrayBuildSignature = [
+                projectedTextureArrayStructureSignature,
+                loadedUvTexture?.uuid ?? '',
+                liveTopUvTexture?.uuid ?? '',
+              ].join('|');
+              sharedTextureArrayBuildSignature = textureArrayBuildSignature;
+              if (
+                projectedTextureArrayBuildRef.current?.signature !== textureArrayBuildSignature
+              ) {
+                projectedTextureArrayBuildRef.current = {
+                  signature: textureArrayBuildSignature,
+                  // Visibility/selection can change while a large array is
+                  // uploading. Keep the structural upload alive across those
+                  // reruns; the latest effect installs it with current uniforms.
+                  promise: createProjectedLayerStackMaterial(projectedMaterialInput, {
+                    maxTextureImageUnits: gl.capabilities.maxTextures,
+                    renderer: gl,
+                    isCancelled: () => false,
+                    preferTextureArrays: true,
+                  }),
+                };
+              }
+              sharedProjectedMaterial =
+                await projectedTextureArrayBuildRef.current.promise;
+              if (sharedProjectedMaterial) {
+                syncProjectedLayerMaterialDisplayState(
+                  sharedProjectedMaterial,
+                  projectedLayerInput.layers,
+                );
+              }
+            } else {
+              sharedProjectedMaterial = await createProjectedLayerStackMaterial(
+                projectedMaterialInput,
+                {
+                  maxTextureImageUnits: gl.capabilities.maxTextures,
+                  renderer: gl,
+                  isCancelled: () => cancelled,
+                  preferTextureArrays: useProjectedTextureArrayMaterial,
+                },
+              );
+            }
           } catch (error) {
+            if (
+              usingSharedTextureArrayBuild &&
+              projectedTextureArrayBuildRef.current?.signature ===
+                sharedTextureArrayBuildSignature
+            ) {
+              projectedTextureArrayBuildRef.current = undefined;
+            }
             if (!useProjectedTextureArrayMaterial || cancelled) throw error;
             console.warn(
               '[Liclick 3D Texture] Projected texture arrays are unavailable; switching the complete visible stack to a bounded fallback.',
@@ -1736,11 +1830,27 @@ function ImportedModel({
         }
         const projectedMaterial = projectedLayerInput ? sharedProjectedMaterial : undefined;
         if (cancelled) {
-          disposeGeneratedMaterialTree(projectedMaterial);
+          // A newer effect may be awaiting the same structural array upload.
+          // Preserve it only while it is still the active shared build.
+          const sharedBuildStillCurrent = Boolean(
+            usingSharedTextureArrayBuild &&
+              projectedTextureArrayBuildRef.current?.signature ===
+                sharedTextureArrayBuildSignature,
+          );
+          if (!sharedBuildStillCurrent) disposeGeneratedMaterialTree(projectedMaterial);
           return;
         }
         child.material =
           projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
+        if (projectedMaterial && !initialProjectedMaterialReady) {
+          setInitialProjectedMaterialReady(true);
+        }
+        if (
+          usingSharedTextureArrayBuild &&
+          projectedTextureArrayBuildRef.current?.signature === sharedTextureArrayBuildSignature
+        ) {
+          projectedTextureArrayBuildRef.current = undefined;
+        }
         if (
           previousMaterial !== child.material &&
           !disposedPreviousMaterials.has(previousMaterial)
@@ -1807,6 +1917,7 @@ function ImportedModel({
     directUvLayer,
     gl,
     importedModel,
+    initialProjectedMaterialReady,
     loadedBakedTexture,
     loadedContentAwareUnderlayTexture,
     loadedUvTexture,

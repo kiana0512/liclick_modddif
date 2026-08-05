@@ -567,7 +567,9 @@ export function LayersPanel({
               onLayerDoubleClick?.(layer);
             }}
             onVisibilityPointerDown={(event) => {
+              if (event.button !== 0) return;
               event.stopPropagation();
+              event.preventDefault();
               beginVisibilityDrag(layer);
             }}
             onVisibilityPointerEnter={() => continueVisibilityDrag(layer.id)}
@@ -887,6 +889,12 @@ function LayerRow({
         type="button"
         onPointerDown={onVisibilityPointerDown}
         onPointerEnter={onVisibilityPointerEnter}
+        onClick={(event) => {
+          // pointerdown owns the visibility gesture. Do not let the following
+          // click select the row and reactivate the layer that was just hidden.
+          event.stopPropagation();
+          event.preventDefault();
+        }}
         data-layer-visibility-id={layer.id}
         className="grid h-8 w-8 shrink-0 place-items-center rounded text-white transition hover:bg-white/10"
         title="Toggle visibility"

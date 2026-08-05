@@ -170,12 +170,37 @@ try {
     assert.equal(result.modelviewJobId, 'mock-modelview-job-1');
     assert.equal(result.modelviewClientId, 'mock-li3d-client');
     assert.equal(result.output?.source, 'modelview-inpaint');
-    const saved = await fetch(result.resultUrl, { headers: { Origin: allowedOrigin } });
+    assert.equal(result.output?.storage, 'project');
+    const saved = await fetch(result.resultUrl, {
+      headers: { Cookie: cookie, Origin: allowedOrigin },
+    });
     assert.equal(saved.status, 200);
     assert.deepEqual(Buffer.from(await saved.arrayBuffer()), resultPng);
   }
 
-  assert.equal(observedRequests.length, 2);
+  const recoveryResponse = await fetch(`${workspaceBaseUrl}/api/modelview/inpaint`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Cookie: cookie,
+      Origin: allowedOrigin,
+    },
+    body: JSON.stringify({
+      ...inpaintPayload,
+      clientGenerationId: 'smoke-generation-recovery',
+      projectId: 'missing-project',
+    }),
+  });
+  assert.equal(recoveryResponse.status, 200);
+  const recoveryResult = await recoveryResponse.json();
+  assert.equal(recoveryResult.output?.storage, 'user-recovery');
+  const recovered = await fetch(recoveryResult.resultUrl, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
+  });
+  assert.equal(recovered.status, 200);
+  assert.deepEqual(Buffer.from(await recovered.arrayBuffer()), resultPng);
+
+  assert.equal(observedRequests.length, 3);
   assert.equal(observedRequests[0].idempotencyKey, observedRequests[1].idempotencyKey);
   assert.equal(observedRequests[0].sha256, observedRequests[1].sha256);
   console.log(

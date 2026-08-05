@@ -39,7 +39,7 @@ const mimeTypes: Record<string, string> = {
 };
 
 const publicWorkspaceFilePattern =
-  /^((?:(?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports)|photoshop-sessions\/[a-f0-9-]+\/revisions))\/(.+)$/i;
+  /^((?:(?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports)|users\/[^/]+\/recoveries\/modelview-inpaint|photoshop-sessions\/[a-f0-9-]+\/revisions))\/(.+)$/i;
 
 function isWithinDirectory(root: string, candidate: string) {
   const relative = path.relative(root, candidate);

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
+import { IMMEDIATE_PROJECT_SAVE_EVENT } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
@@ -134,6 +135,10 @@ export function ReferenceImagePicker({
       setSelectedReferences([pendingImport[0].id]);
     }
     setPendingImport(undefined);
+    // The editor snapshot reads the reference store directly, so this event can
+    // persist the newly imported pixels immediately instead of waiting for the
+    // five-second autosave window (where a refresh would otherwise lose them).
+    window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {

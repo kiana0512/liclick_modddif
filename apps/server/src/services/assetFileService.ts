@@ -1,16 +1,26 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { serverConfig } from '../config.js';
 import type { AssetCategory, SavedAsset } from '../types/asset.js';
 import { findProjectSlug } from './projectFileService.js';
-import { ensureDir, getUserProjectDir, slugify, toWorkspaceUrl } from './workspaceService.js';
+import { writeFileAtomically } from './atomicFileService.js';
+import {
+  ensureDir,
+  getUserDir,
+  getUserProjectDir,
+  slugify,
+  toWorkspaceUrl,
+} from './workspaceService.js';
 
 const allowedCategories: AssetCategory[] = ['models', 'references', 'captures', 'generations', 'layers', 'baked'];
-const maxRemoteAssetBytes = 25 * 1024 * 1024;
+// GPT 2K/4K PNG results can exceed 25 MiB even though they are valid images.
+// The host is HTTPS allowlisted below, so keep the same bounded ceiling used
+// for local binary assets instead of silently leaving a short-lived URL.
+const maxRemoteAssetBytes = 160 * 1024 * 1024;
 export const maxLocalAssetBytes = 160 * 1024 * 1024;
 const allowedRemoteAssetHosts = new Set([
   'ai-assets.lilithgames.com',
+  'tsh-aiteam-prod-all.oss-accelerate.aliyuncs.com',
   ...serverConfig.allowedRemoteAssetHosts,
 ]);
 
@@ -89,7 +99,7 @@ async function writeAsset(input: {
   const relativePath = path.posix.join('assets', input.category, name);
   const absolutePath = path.join(getUserProjectDir(input.userId, slug), 'assets', input.category, name);
   await ensureDir(path.dirname(absolutePath));
-  await fs.writeFile(absolutePath, input.buffer);
+  await writeFileAtomically(absolutePath, input.buffer);
   return {
     category: input.category,
     relativePath,
@@ -118,6 +128,25 @@ export async function saveBinaryAsset(input: {
 }): Promise<SavedAsset | undefined> {
   if (input.buffer.byteLength > maxLocalAssetBytes) throw new Error('Asset is too large.');
   return writeAsset(input);
+}
+
+export async function saveUserRecoveryAsset(input: {
+  userId: string;
+  mime: string;
+  buffer: Buffer;
+  filename: string;
+}): Promise<SavedAsset> {
+  if (input.buffer.byteLength > maxLocalAssetBytes) throw new Error('Asset is too large.');
+  const name = safeAssetName(input.filename, extensionFromMime(input.mime));
+  const relativePath = path.posix.join('recoveries', 'modelview-inpaint', name);
+  const absolutePath = path.join(getUserDir(input.userId), relativePath);
+  await ensureDir(path.dirname(absolutePath));
+  await writeFileAtomically(absolutePath, input.buffer);
+  return {
+    category: 'generations',
+    relativePath,
+    url: toWorkspaceUrl(path.join('users', input.userId, relativePath)),
+  };
 }
 
 export async function saveRemoteImageAsset(input: {
