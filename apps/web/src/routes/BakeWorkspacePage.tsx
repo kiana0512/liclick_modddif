@@ -2042,7 +2042,6 @@ export function BakeWorkspacePage({
                   ready={Boolean(selectedHigh)}
                   icon={Box}
                   tone="violet"
-                  preview={project?.thumbnail}
                   actionLabel={highImporting ? '正在导入…' : selectedHigh ? '替换高模' : '选择高模'}
                   onClick={() => chooseFiles('high')}
                   onFilesDropped={(files) => void handleHighImport(files)}
@@ -2103,7 +2102,6 @@ export function BakeWorkspacePage({
                   }
                   icon={Sparkles}
                   tone="rose"
-                  preview={selectedProjectColor?.imageUrl}
                   actionLabel={materialMapCount > 0 ? '管理贴图' : '导入贴图'}
                   onClick={() => setMaterialDialogOpen(true)}
                   onFilesDropped={handleMaterialImport}
@@ -3215,7 +3213,6 @@ function OneClickAssetCard({
   warning = false,
   icon: Icon,
   tone,
-  preview,
   actionLabel,
   onClick,
   onFilesDropped,
@@ -3230,7 +3227,6 @@ function OneClickAssetCard({
   warning?: boolean;
   icon: LucideIcon;
   tone: 'violet' | 'cyan' | 'rose';
-  preview?: string;
   actionLabel: string;
   onClick: () => void;
   onFilesDropped: (files: File[]) => void;
@@ -3315,13 +3311,6 @@ function OneClickAssetCard({
             </span>
           </span>
         </span>
-      ) : null}
-      {preview ? (
-        <img
-          src={preview}
-          alt=""
-          className="absolute inset-x-0 top-0 h-[132px] w-full object-cover opacity-18 mix-blend-luminosity transition-opacity duration-300 group-hover:opacity-28"
-        />
       ) : null}
       <div className="absolute inset-x-0 top-0 h-[150px] bg-gradient-to-b from-transparent to-[#0d0f1e]" />
       <div className="relative flex h-full flex-col p-5">

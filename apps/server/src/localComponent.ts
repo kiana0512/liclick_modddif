@@ -12,6 +12,7 @@ import { handleLocalLiclickAccountRoute } from './routes/localLiclickAccount.js'
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { handlePhotoshopRoute } from './routes/photoshop.js';
 import { handleProjectsRoute } from './routes/projects.js';
+import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
 import { initializeWorkspace } from './services/workspaceService.js';
 
 const runtimeVersion = '0.1.10';
@@ -37,9 +38,6 @@ const mimeTypes: Record<string, string> = {
   '.fbx': 'application/octet-stream',
   '.obj': 'text/plain',
 };
-
-const publicWorkspaceFilePattern =
-  /^((?:(?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports)|photoshop-sessions\/[a-f0-9-]+\/revisions))\/(.+)$/i;
 
 function isWithinDirectory(root: string, candidate: string) {
   const relative = path.relative(root, candidate);

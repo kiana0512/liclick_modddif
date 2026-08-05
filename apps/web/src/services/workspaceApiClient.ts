@@ -1,7 +1,29 @@
 import type { Project } from '@/types/project';
 import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
+import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getLocalTextureRuntimeApiBase();
+const generationWorkspaceApiBase = getWorkspaceApiBase(
+  import.meta.env.VITE_LICLICK_WORKSPACE_API,
+);
+const maxWorkspaceImageBytes = 160 * 1024 * 1024;
+
+function workspacePathAtBase(url: string, base: string) {
+  try {
+    const baseUrl = new URL(base);
+    const basePath = baseUrl.pathname.replace(/\/$/, '');
+    const candidate = new URL(url, `${baseUrl.origin}${basePath || '/'}`);
+    if (candidate.origin !== baseUrl.origin) return undefined;
+    const workspacePrefix = `${basePath}/workspace/`;
+    if (!candidate.pathname.startsWith(workspacePrefix)) return undefined;
+    return candidate.pathname.slice(basePath.length);
+  } catch {
+    return undefined;
+  }
+}
+
+const trustedGenerationWorkspacePath =
+  /^\/workspace\/(?:(?:(?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports))\/.+|users\/[^/]+\/recoveries\/modelview-inpaint\/[^/]+)$/i;
 
 export class WorkspaceApiError extends Error {
   status: number;
@@ -318,11 +340,35 @@ export async function fileToDataUrl(file: File) {
   });
 }
 
-export async function urlToDataUrl(url: string) {
-  if (url.startsWith('data:')) return url;
-  const response = await fetch(url);
+export function isTrustedGenerationWorkspaceAssetUrl(url?: string) {
+  if (!url) return false;
+  const workspacePath = workspacePathAtBase(url, generationWorkspaceApiBase);
+  return Boolean(workspacePath && trustedGenerationWorkspacePath.test(workspacePath));
+}
+
+export async function urlToBlob(url: string) {
+  const trustedGenerationAsset = isTrustedGenerationWorkspaceAssetUrl(url);
+  const response = await fetch(url, {
+    credentials: trustedGenerationAsset ? 'include' : 'same-origin',
+    redirect: trustedGenerationAsset ? 'error' : 'follow',
+  });
   if (!response.ok) throw new Error(`无法读取资源（${response.status}），请稍后重试。`);
   const blob = await response.blob();
+  if (trustedGenerationAsset) {
+    const contentType = (response.headers.get('content-type') || blob.type).toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      throw new Error('局部重绘结果不是有效图片。');
+    }
+    if (!blob.size || blob.size > maxWorkspaceImageBytes) {
+      throw new Error('局部重绘结果为空或文件过大。');
+    }
+  }
+  return blob;
+}
+
+export async function urlToDataUrl(url: string) {
+  if (url.startsWith('data:')) return url;
+  const blob = await urlToBlob(url);
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
@@ -332,5 +378,5 @@ export async function urlToDataUrl(url: string) {
 }
 
 export function isWorkspaceAssetUrl(url?: string) {
-  return Boolean(url && (url.startsWith(workspaceApiBase) || url.includes('/workspace/')));
+  return Boolean(url && workspacePathAtBase(url, workspaceApiBase));
 }

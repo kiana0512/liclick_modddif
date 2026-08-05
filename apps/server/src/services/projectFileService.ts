@@ -531,8 +531,19 @@ export function resolveProjectAssetUrl(userId: string, slug: string, relativePat
   if (relativePath.startsWith('http')) {
     try {
       const url = new URL(relativePath);
-      if (url.pathname.startsWith('/workspace/')) {
-        return toWorkspaceUrl(decodeURIComponent(url.pathname.slice('/workspace/'.length)));
+      const currentWorkspaceRoot = new URL(toWorkspaceUrl(''));
+      const sameLoopbackEndpoint =
+        ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname) &&
+        ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(currentWorkspaceRoot.hostname) &&
+        url.protocol === currentWorkspaceRoot.protocol &&
+        url.port === currentWorkspaceRoot.port;
+      if (
+        (url.origin === currentWorkspaceRoot.origin || sameLoopbackEndpoint) &&
+        url.pathname.startsWith(currentWorkspaceRoot.pathname)
+      ) {
+        return toWorkspaceUrl(
+          decodeURIComponent(url.pathname.slice(currentWorkspaceRoot.pathname.length)),
+        );
       }
     } catch {
       return relativePath;

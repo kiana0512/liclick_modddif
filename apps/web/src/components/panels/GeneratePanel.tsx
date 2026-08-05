@@ -89,6 +89,7 @@ import {
   saveDataUrlAsset,
   saveProject as saveWorkspaceProject,
   saveRemoteUrlAsset,
+  urlToBlob,
   urlToDataUrl,
   WorkspaceApiError,
   type AssetCategory,
@@ -2214,8 +2215,30 @@ export function GeneratePanel() {
         { signal: abortController.signal },
       );
       if (isCancelledGeneration(pendingGeneration)) return;
+      let localResultUrl = generation.resultUrl;
+      if (localResultUrl) {
+        try {
+          localResultUrl = await persistGeneratedImage(
+            'generations',
+            localResultUrl,
+            `${generationId}.png`,
+            undefined,
+            currentProject.id,
+          );
+        } catch (error) {
+          console.warn('[Liclick 3D Texture] Could not localize repaint result:', error);
+          pushToast({
+            tone: 'warning',
+            title: '局部重绘结果暂未保存到本地',
+            description: '当前结果仍可使用；请保持本地服务在线，项目保存时会自动重试。',
+            dedupeKey: `local-repaint-result-persist:${generationId}`,
+          });
+        }
+      }
+      if (isCancelledGeneration(pendingGeneration)) return;
       syncGeneration({
         ...generation,
+        resultUrl: localResultUrl,
         captureId: generation.captureId ?? capture.id,
         metadata: {
           ...generation.metadata,
@@ -2223,6 +2246,7 @@ export function GeneratePanel() {
           maskUrl: currentPaintMaskDataUrl,
         },
       });
+      await saveGenerationStateBestEffort();
       setGenerateNotice(undefined);
       pushToast({
         tone: 'success',
@@ -2573,11 +2597,10 @@ export function GeneratePanel() {
         });
         return result.asset.url;
       } catch {
-        const dataUrl = await urlToDataUrl(url);
-        const result = await saveDataUrlAsset({
+        const result = await saveBlobAsset({
           projectId: targetProject.id,
           category,
-          dataUrl,
+          blob: await urlToBlob(url),
           filename,
         });
         return result.asset.url;

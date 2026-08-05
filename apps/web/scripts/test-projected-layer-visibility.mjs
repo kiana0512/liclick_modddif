@@ -16,6 +16,9 @@ try {
   const projection = await server.ssrLoadModule(
     '/src/engine/projection/ProjectedLayerMaterial.ts',
   );
+  const repaintActivation = await server.ssrLoadModule(
+    '/src/engine/viewport/localRepaintPreviewActivation.ts',
+  );
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const camera = {
     type: 'perspective',
@@ -151,6 +154,66 @@ try {
     materialWithMissingNormals,
     undefined,
     'A layer requiring normal rejection must stay closed until its normal map is available.',
+  );
+
+  const repaintPreview = {
+    id: 'local-repaint-preview',
+    generationId: 'generation-1',
+    replacementTargetLayerId: 'target-layer-1',
+    maskUrl: 'memory://local-repaint-mask',
+  };
+  const mismatchedActivation = repaintActivation.resolveLocalRepaintPreviewActivation({
+    consumedKey: '',
+    paintTool: 'none',
+    preview: repaintPreview,
+    currentPreview: repaintPreview,
+    currentSource: { generationId: 'generation-2', targetLayerId: 'target-layer-1' },
+    processedLayerIds: [repaintPreview.id],
+  });
+  assert.equal(mismatchedActivation.shouldActivate, false);
+  assert.equal(
+    mismatchedActivation.nextConsumedKey,
+    '',
+    'A source mismatch must not consume the repaint activation key.',
+  );
+
+  const firstActivation = repaintActivation.resolveLocalRepaintPreviewActivation({
+    consumedKey: mismatchedActivation.nextConsumedKey,
+    paintTool: 'none',
+    preview: repaintPreview,
+    currentPreview: repaintPreview,
+    currentSource: { generationId: 'generation-1', targetLayerId: 'target-layer-1' },
+    processedLayerIds: [repaintPreview.id],
+  });
+  assert.equal(firstActivation.shouldActivate, true);
+  const consumedActivation = repaintActivation.resolveLocalRepaintPreviewActivation({
+    consumedKey: firstActivation.nextConsumedKey,
+    paintTool: 'none',
+    preview: repaintPreview,
+    currentPreview: repaintPreview,
+    currentSource: { generationId: 'generation-1', targetLayerId: 'target-layer-1' },
+    processedLayerIds: [repaintPreview.id],
+  });
+  assert.equal(consumedActivation.shouldActivate, false);
+
+  const clearedActivation = repaintActivation.resolveLocalRepaintPreviewActivation({
+    consumedKey: firstActivation.nextConsumedKey,
+    paintTool: 'none',
+    processedLayerIds: [],
+  });
+  assert.equal(clearedActivation.nextConsumedKey, '');
+  const reenteredActivation = repaintActivation.resolveLocalRepaintPreviewActivation({
+    consumedKey: clearedActivation.nextConsumedKey,
+    paintTool: 'none',
+    preview: repaintPreview,
+    currentPreview: repaintPreview,
+    currentSource: { generationId: 'generation-1', targetLayerId: 'target-layer-1' },
+    processedLayerIds: [repaintPreview.id],
+  });
+  assert.equal(
+    reenteredActivation.shouldActivate,
+    true,
+    'The same generation and target must activate again after its preview is cleared.',
   );
 
   stdout.write('Projected-layer visibility regression test passed.\n');

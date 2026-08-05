@@ -293,6 +293,19 @@ try {
     'project.liclick.json',
   );
   const damagedProject = JSON.parse(await fs.readFile(rawProjectPath, 'utf8'));
+  const foreignWorkspaceRecoveryUrl =
+    'http://127.0.0.1:9/workspace/users/atlas-user/recoveries/modelview-inpaint/result.png';
+  damagedProject.generations = [
+    {
+      id: 'foreign-repaint-result',
+      mode: 'inpaint',
+      prompt: 'smoke repaint',
+      referenceIds: [],
+      status: 'succeeded',
+      resultUrl: foreignWorkspaceRecoveryUrl,
+      metadata: { provider: 'modelview-seedvr2', workflow: 'local-repaint' },
+    },
+  ];
   delete damagedProject.layers[0].imageUrl;
   delete damagedProject.layers[0].maskUrl;
   delete damagedProject.layers[0].depthUrl;
@@ -306,6 +319,11 @@ try {
   assert.equal(repairedProject.project.layers[0].imageUrl, layerImageAsset.asset.url);
   assert.equal(repairedProject.project.layers[0].maskUrl, layerMaskAsset.asset.url);
   assert.equal(repairedProject.project.layers[0].depthUrl, layerDepthAsset.asset.url);
+  assert.equal(
+    repairedProject.project.generations[0].resultUrl,
+    foreignWorkspaceRecoveryUrl,
+    'Loading a local project must not rewrite a different workspace origin to this server.',
+  );
 
   const asset = await fetch(uploaded.asset.url, {
     headers: { Cookie: cookie, Origin: allowedOrigin },
@@ -321,6 +339,26 @@ try {
   });
   assert.equal(assetHead.status, 200);
   assert.equal(await assetHead.text(), '');
+
+  const recoveryDirectory = path.join(
+    workspaceDir,
+    'users',
+    loggedIn.user.id,
+    'recoveries',
+    'modelview-inpaint',
+  );
+  await fs.mkdir(recoveryDirectory, { recursive: true });
+  await fs.writeFile(path.join(recoveryDirectory, 'local-repaint-result.png'), 'local-repaint');
+  const recoveryAsset = await fetch(
+    `${baseUrl}/workspace/users/${encodeURIComponent(loggedIn.user.id)}/recoveries/modelview-inpaint/local-repaint-result.png`,
+    { headers: { Cookie: cookie, Origin: allowedOrigin } },
+  );
+  assert.equal(
+    recoveryAsset.status,
+    200,
+    'Local repaint recovery images must remain readable by the owning workspace.',
+  );
+  assert.equal(await recoveryAsset.text(), 'local-repaint');
 
   const privateWorkspaceFile = await fetch(`${baseUrl}/workspace/auth.json`, {
     headers: { Cookie: cookie, Origin: allowedOrigin },
@@ -340,7 +378,7 @@ try {
   assert.equal(deniedAsset.status, 403, 'Workspace assets must reject untrusted Origins.');
 
   await verifyExternalBindRequiresSecret();
-  console.log('Local server smoke passed: auth, safe cancellation, project creation, upload, CORS, HEAD, and workspace isolation.');
+  console.log('Local server smoke passed: auth, safe cancellation, project creation, upload, repaint recovery, CORS, HEAD, and workspace isolation.');
 } catch (error) {
   if (output.trim()) console.error(output.trim());
   throw error;

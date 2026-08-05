@@ -134,6 +134,7 @@ import {
 import {
   fileToDataUrl,
   getWorkspaceHealth,
+  isTrustedGenerationWorkspaceAssetUrl,
   isWorkspaceAssetUrl,
   loadProject as loadWorkspaceProject,
   renameProject as renameWorkspaceProject,
@@ -141,6 +142,7 @@ import {
   saveDataUrlAsset,
   saveRemoteUrlAsset,
   saveProject as saveWorkspaceProject,
+  urlToBlob,
   urlToDataUrl,
   WorkspaceApiError,
 } from '@/services/workspaceApiClient';
@@ -1694,6 +1696,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   }
 
   function isPersistableRemoteAssetUrl(url: string) {
+    if (isTrustedGenerationWorkspaceAssetUrl(url)) return true;
     try {
       const parsed = new URL(url);
       return (
@@ -1903,8 +1906,12 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           // browser but block direct Node egress. Download it in the renderer
           // and upload the bytes to the local workspace as a durable fallback.
           try {
-            const dataUrl = await urlToDataUrl(url);
-            const result = await saveDataUrlWithFallback(dataUrl);
+            const result = await saveBlobAsset({
+              projectId,
+              category,
+              blob: await urlToBlob(url),
+              filename,
+            });
             return result.asset.relativePath;
           } catch (browserDownloadError) {
             const serverMessage =
@@ -4112,9 +4119,24 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       // prepared, so an early gesture cannot be silently queued behind setup.
       setPaintTool('none');
       setLocalRepaintProjectionSource(undefined);
-      const projectionImageUrl = await getLocalRepaintProjectionImage(
-        latestLocalRepaintGeneration.resultUrl,
-      );
+      let projectionImageUrl: string;
+      try {
+        projectionImageUrl = await getLocalRepaintProjectionImage(
+          latestLocalRepaintGeneration.resultUrl,
+        );
+      } catch (error) {
+        if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
+        setLocalRepaintProjectionSource(undefined);
+        setPaintTool('none');
+        const reason = error instanceof Error ? error.message : t('localRepaintFailedHelp');
+        pushToast({
+          tone: 'error',
+          title: '局部重绘结果无法读取',
+          description: `${reason} 请重新生成局部重绘结果后再启用画笔。`,
+          dedupeKey: 'local-repaint-result-unavailable',
+        });
+        return;
+      }
       if (
         localRepaintToolRequestRevisionRef.current !== requestRevision ||
         useSceneStore.getState().paintTool !== 'none'

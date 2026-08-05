@@ -24,6 +24,7 @@ import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
 import { identityTelemetryStorage } from './services/identityTelemetryService.js';
 import { syncTelemetryAggregateToBitable } from './services/feishuPlatformService.js';
+import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
 import { serveWebFrontend } from './services/webFrontendService.js';
 
 const mimeTypes: Record<string, string> = {
@@ -37,9 +38,6 @@ const mimeTypes: Record<string, string> = {
   '.fbx': 'application/octet-stream',
   '.obj': 'text/plain',
 };
-
-const publicWorkspaceFilePattern =
-  /^((?:(?:users\/[^/]+\/projects\/[^/]+|projects\/[^/]+)\/(?:assets|thumbnails|exports)|users\/[^/]+\/recoveries\/modelview-inpaint|photoshop-sessions\/[a-f0-9-]+\/revisions))\/(.+)$/i;
 
 function isWithinDirectory(root: string, candidate: string) {
   const relative = path.relative(root, candidate);

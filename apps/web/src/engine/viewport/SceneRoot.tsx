@@ -46,6 +46,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { Grid } from './Grid';
+import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { ProjectionPreviewLighting } from '@/engine/projection/projectionTypes';
@@ -745,12 +746,17 @@ function ImportedModel({
   const [runtimeVisibilityByLayerId, setRuntimeVisibilityByLayerId] = useState<
     Record<string, { depthUrl: string; normalUrl: string }>
   >({});
+  const [initialProjectedMaterialReady, setInitialProjectedMaterialReady] = useState(false);
   const projectedTextureArrayBuildRef = useRef<{
     signature: string;
     promise: Promise<THREE.ShaderMaterial | undefined>;
   }>();
   useEffect(() => {
-    if (!texturedRestoreReady) return undefined;
+    // Restore the saved projection stack before rebuilding runtime depth and
+    // normal textures. Starting both jobs together changes the material
+    // signature during the first texture-array upload and can strand local
+    // repaint in its disabled preparation state.
+    if (!texturedRestoreReady || !initialProjectedMaterialReady) return undefined;
     let cancelled = false;
     const candidates = [
       ...layers,
@@ -812,6 +818,7 @@ function ImportedModel({
     captureById,
     gl,
     importedModel,
+    initialProjectedMaterialReady,
     layers,
     texturedRestoreReady,
     visibleLocalRepaintPreviewLayer,
@@ -888,11 +895,13 @@ function ImportedModel({
       .filter(
         (layer) =>
           layer.type === 'projected' &&
-          layer.visible &&
           layer.imageUrl &&
           layer.camera &&
           (!layer.objectId || layer.objectId === importedObjectId),
       )
+      // Keep hidden layers resident in the GPU material. Visibility is an
+      // opacity uniform, so toggling an eye must not rebuild the texture array
+      // while a local-repaint preview is being prepared.
       // Layer order 0 is the top row in the panel. Feed the shader bottom-up so
       // later overlay evaluations preserve that visible stacking order.
       .sort((a, b) => b.order - a.order)
@@ -1857,44 +1866,39 @@ function ImportedModel({
       } else {
         lastProjectedTransformRef.current = model.group.matrixWorld.clone();
       }
-      if (
-        projectedLayerInput &&
-        !projectedPreviewOverBudget &&
-        visibleLocalRepaintPreviewLayer &&
-        previewStatus.processedLayerIds.includes(visibleLocalRepaintPreviewLayer.id)
-      ) {
-        const activationKey = [
-          visibleLocalRepaintPreviewLayer.id,
-          visibleLocalRepaintPreviewLayer.generationId ?? '',
-          visibleLocalRepaintPreviewLayer.replacementTargetLayerId ?? '',
-          visibleLocalRepaintPreviewLayer.maskUrl ?? '',
-        ].join('|');
-        if (activatedLocalRepaintPreviewKeyRef.current !== activationKey) {
-          activatedLocalRepaintPreviewKeyRef.current = activationKey;
-          const sceneState = useSceneStore.getState();
-          const currentPreview = sceneState.localRepaintPreviewLayer;
-          const currentSource = sceneState.localRepaintProjectionSource;
-          if (
-            sceneState.paintTool === 'none' &&
-            currentPreview?.id === visibleLocalRepaintPreviewLayer.id &&
-            currentSource?.generationId === visibleLocalRepaintPreviewLayer.generationId &&
-            currentSource?.targetLayerId ===
-              visibleLocalRepaintPreviewLayer.replacementTargetLayerId
-          ) {
-            sceneState.setPaintTool('inpaint-apply');
-          }
-        }
-      }
+      const sceneState = useSceneStore.getState();
+      const activation = resolveLocalRepaintPreviewActivation({
+        consumedKey: activatedLocalRepaintPreviewKeyRef.current,
+        paintTool: sceneState.paintTool,
+        preview: visibleLocalRepaintPreviewLayer,
+        currentPreview: sceneState.localRepaintPreviewLayer,
+        currentSource: sceneState.localRepaintProjectionSource,
+        processedLayerIds:
+          projectedLayerInput && !projectedPreviewOverBudget
+            ? previewStatus.processedLayerIds
+            : [],
+      });
+      activatedLocalRepaintPreviewKeyRef.current = activation.nextConsumedKey;
+      if (activation.shouldActivate) sceneState.setPaintTool('inpaint-apply');
     }
 
-    void applyMaterials().catch((error) => {
-      if (cancelled) return;
-      console.error(
-        '[Liclick 3D Texture] Projected preview failed; keeping the last valid material.',
-        error,
-      );
-      notifyProjectedPreviewFailure(error);
-    });
+    void applyMaterials()
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(
+          '[Liclick 3D Texture] Projected preview failed; keeping the last valid material.',
+          error,
+        );
+        notifyProjectedPreviewFailure(error);
+      })
+      .finally(() => {
+        // The gate means the first material pass has settled, not necessarily
+        // that every optional normal/depth asset succeeded. This preserves the
+        // newer strict visibility policy without deadlocking its runtime repair.
+        if (!cancelled && !initialProjectedMaterialReady) {
+          setInitialProjectedMaterialReady(true);
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -1905,6 +1909,7 @@ function ImportedModel({
     directUvLayer,
     gl,
     importedModel,
+    initialProjectedMaterialReady,
     loadedBakedTexture,
     loadedContentAwareUnderlayTexture,
     loadedUvTexture,

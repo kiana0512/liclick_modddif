@@ -104,6 +104,39 @@ try {
     origin: "http://127.0.0.1:5173",
   };
 
+  const workspaceClient = await server.ssrLoadModule(
+    "/src/services/workspaceApiClient.ts",
+  );
+  const localAssetUrl =
+    "http://127.0.0.1:4618/workspace/users/local-device/projects/demo/assets/generations/result.png";
+  const generationRecoveryUrl =
+    "http://127.0.0.1:4518/workspace/users/atlas-user/recoveries/modelview-inpaint/result.png";
+  assert.equal(workspaceClient.isWorkspaceAssetUrl(localAssetUrl), true);
+  assert.equal(
+    workspaceClient.isWorkspaceAssetUrl(generationRecoveryUrl),
+    false,
+    "A 4518 generation result must not be mistaken for a 4618 local project asset.",
+  );
+  assert.equal(workspaceClient.isTrustedGenerationWorkspaceAssetUrl(generationRecoveryUrl), true);
+  assert.equal(
+    workspaceClient.isTrustedGenerationWorkspaceAssetUrl(
+      "http://127.0.0.1:4518/api/health?next=/workspace/users/x/recoveries/modelview-inpaint/x.png",
+    ),
+    false,
+  );
+  let assetFetch;
+  globalThis.fetch = async (url, init = {}) => {
+    assetFetch = requestRecord(url, init);
+    assetFetch.redirect = init.redirect;
+    return new globalThis.Response(new Uint8Array([137, 80, 78, 71]), {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    });
+  };
+  await workspaceClient.urlToBlob(generationRecoveryUrl);
+  assert.equal(assetFetch.credentials, "include");
+  assert.equal(assetFetch.redirect, "error");
+
   const strategyModule = await server.ssrLoadModule(
     "/src/services/liclickAuthStrategy.ts",
   );
