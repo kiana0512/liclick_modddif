@@ -183,3 +183,41 @@ test('retains a large low-confidence projection region when the scan threshold i
   assert.equal(confidenceAwareResult.stats.hardPixels, lowConfidenceRegion.length);
   assert.equal(confidenceAwareResult.stats.totalPixels, lowConfidenceRegion.length);
 });
+
+test('repairs intra-component UV seam conflicts but rejects incompatible overlaps', async () => {
+  const fixture = createFixture(12, 8);
+  const recoverableSeam = [];
+  const unsafeOverlap = [];
+  for (let x = 2; x <= 7; x += 1) {
+    setAlpha(fixture, x, 2, 0);
+    fixture.conflictMask[indexAt(fixture, x, 2)] = 1;
+    recoverableSeam.push([x, 2]);
+
+    setAlpha(fixture, x, 5, 0);
+    fixture.conflictMask[indexAt(fixture, x, 5)] = 2;
+    unsafeOverlap.push([x, 5]);
+  }
+
+  const result = await buildContentAwareRepairMask({
+    ...fixture,
+    weakGrowPixels: 0,
+    minimumComponentPixels: 4,
+    minimumComponentSpan: 0,
+  });
+
+  assertSelected(result, fixture, recoverableSeam);
+  assertSelected(result, fixture, unsafeOverlap, 0);
+  assert.equal(result.stats.hardPixels, recoverableSeam.length);
+  assert.equal(result.stats.conflictRejectedPixels, unsafeOverlap.length);
+
+  const underlayResult = await buildContentAwareRepairMask({
+    ...fixture,
+    allowConflictedWrites: true,
+    weakGrowPixels: 0,
+    minimumComponentPixels: 4,
+    minimumComponentSpan: 0,
+  });
+  assertSelected(underlayResult, fixture, [...recoverableSeam, ...unsafeOverlap]);
+  assert.equal(underlayResult.stats.hardPixels, recoverableSeam.length + unsafeOverlap.length);
+  assert.equal(underlayResult.stats.conflictRejectedPixels, 0);
+});

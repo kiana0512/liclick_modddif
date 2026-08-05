@@ -8,6 +8,12 @@ export type ContentAwareRepairMaskInput = {
   coreMask: Uint8Array;
   regionIds: Uint32Array;
   conflictMask: Uint8Array;
+  /**
+   * Permit blank cross-surface/component UV overlaps as final-write targets.
+   * This is intended only for a sparse underlay built from an already-resolved
+   * final projection composite. Defaults to false.
+   */
+  allowConflictedWrites?: boolean;
   hardAlphaThreshold?: number;
   weakAlphaThreshold?: number;
   weakGrowPixels?: 0 | 1;
@@ -129,7 +135,12 @@ export async function buildContentAwareRepairMask(
     for (let x = 0; x < input.width; x += 1) {
       const index = rowStart + x;
       const alpha = input.rgba[index * 4 + 3];
-      if (input.conflictMask[index]) {
+      // Intra-component UV-island overlaps (kind 1) are safe final-write
+      // targets: one repaired texel closes both sides of the same physical
+      // skin seam. Cross-component writes require an explicit underlay opt-in.
+      // The caller decides donor policy separately; this function only marks
+      // final-write targets.
+      if (input.conflictMask[index] > 1 && !input.allowConflictedWrites) {
         if (input.coreMask[index] && alpha <= hardAlphaThreshold) {
           conflictRejectedPixels += 1;
         }
@@ -252,7 +263,7 @@ export async function buildContentAwareRepairMask(
         if (
           mask[index] ||
           !input.coreMask[index] ||
-          input.conflictMask[index] ||
+          (input.conflictMask[index] > 1 && !input.allowConflictedWrites) ||
           !input.regionIds[index] ||
           input.rgba[index * 4 + 3] > weakAlphaThreshold
         ) {

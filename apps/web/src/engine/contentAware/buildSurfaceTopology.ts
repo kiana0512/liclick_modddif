@@ -25,7 +25,12 @@ export type ContentAwareSurfaceTopology = {
   coreMask: Uint8Array;
   /** UV-connected island identity. Regular 2D propagation may not cross this boundary. */
   regionIds: Uint32Array;
-  /** UV overlap between incompatible surfaces/components/islands; never sample these texels. */
+  /**
+   * UV overlap classification. `1` is an intra-component UV-island overlap;
+   * `2` is a cross-surface/component overlap. Neither may be sampled. A
+   * deterministic region owner is retained so a sparse underlay repair may
+   * explicitly opt into final writes without using draw-order colour sources.
+   */
   conflictMask: Uint8Array;
   /** Optional stable triangle id, allocated only when includeTriangleIds is requested. */
   triangleIds?: Uint32Array;
@@ -488,7 +493,21 @@ function rasterizeConservativeTriangle(
       if (edgeAB >= -1e-9 && edgeBC >= -1e-9 && edgeCA >= -1e-9) {
         coreMask[pixelIndex] = 1;
       }
-      if (conflictMask[pixelIndex]) continue;
+      const existingConflict = conflictMask[pixelIndex];
+      if (existingConflict) {
+        if (existingConflict > 1) continue;
+        // A recoverable overlap can still be touched later by an unrelated
+        // mesh/material component. Upgrade it to a hard conflict instead of
+        // keeping the first draw-order owner.
+        if (
+          surfaceIds[pixelIndex] !== surfaceId ||
+          componentIds[pixelIndex] !== componentId
+        ) {
+          conflictMask[pixelIndex] = 2;
+          if (triangleIds) triangleIds[pixelIndex] = 0;
+        }
+        continue;
+      }
       const existingSurfaceId = surfaceIds[pixelIndex];
       const existingComponentId = componentIds[pixelIndex];
       const existingRegionId = regionIds[pixelIndex];
@@ -498,13 +517,18 @@ function rasterizeConservativeTriangle(
           existingComponentId !== componentId ||
           existingRegionId !== regionId)
       ) {
-        // A single UV texel cannot safely identify two unrelated model
-        // surfaces. Preserve conservative topology coverage, but make this
-        // texel an explicit non-sampling conflict instead of using draw order.
-        conflictMask[pixelIndex] = 1;
-        surfaceIds[pixelIndex] = 0;
-        componentIds[pixelIndex] = 0;
-        regionIds[pixelIndex] = 0;
+        const sameSurfaceComponent =
+          existingSurfaceId === surfaceId && existingComponentId === componentId;
+        // Adjacent UV islands from one physical component commonly touch in a
+        // texel because the conservative raster has a half-pixel support. The
+        // texel is ambiguous as a donor, but writing one repaired skin colour
+        // there is safe and closes the visible ear/chin seam. Cross-component
+        // overlap remains a hard conflict but retains a deterministic owner
+        // for explicit sparse-underlay writes.
+        conflictMask[pixelIndex] = sameSurfaceComponent ? 1 : 2;
+        if (sameSurfaceComponent) {
+          regionIds[pixelIndex] = Math.min(existingRegionId, regionId);
+        }
         if (triangleIds) triangleIds[pixelIndex] = 0;
         continue;
       }

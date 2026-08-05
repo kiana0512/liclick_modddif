@@ -4250,6 +4250,10 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           coreMask: topology.coreMask,
           regionIds: topology.regionIds,
           conflictMask: topology.conflictMask,
+          // This layer is a sparse underlay below every authored projection.
+          // Imported atlases can overlap between components; those texels are
+          // valid blank targets for this already-composited sparse underlay.
+          allowConflictedWrites: true,
           // The empty-area hatch is visible while aggregate projection
           // confidence is below roughly 12.5%. Treat that as a hard gap; the
           // connected-component filter still rejects isolated raster specks.
@@ -4259,6 +4263,19 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           signal: abortController.signal,
           yieldIntervalMs: 8,
         });
+        console.info(
+          '[Liclick Content Aware] Gap scan',
+          JSON.stringify({
+            resolution: repairResolution,
+            topology: {
+              surfaces: topology.surfaceCount,
+              components: topology.componentCount,
+              regions: topology.regionCount,
+              seams: topology.seamLinkCount,
+            },
+            gaps: detectedGaps.stats,
+          }),
+        );
         if (detectedGaps.stats.totalPixels === 0) {
           setManualBakeProgress(undefined);
           pushToast({
@@ -4281,7 +4298,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
             height: repairResolution,
             rgba: workingImageData.data,
             writeMask: detectedGaps.mask,
-            sourceExclusionMask: topology.conflictMask,
+            // The input is already the final quality-ranked composite of all
+            // six projections. This FBX shares its complete UV atlas between
+            // two surface components, so excluding conflict texels would
+            // exclude every possible donor. The repair engine still excludes
+            // the detected holes plus padding before propagating colour.
             topologyMask: topology.topologyMask,
             topologyRegionIds: topology.regionIds,
             seamLinks: topology.seamLinks,
@@ -4290,7 +4311,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
               Math.min(4, Math.round(repairResolution / 768)),
             ),
             maxDistance: Math.max(64, Math.min(128, Math.round(repairResolution / 16))),
-            minSourceAlpha: 224,
+            // Concave areas such as nostrils, ear roots and the underside of
+            // the chin rarely have an 88%-confidence camera sample. A donor
+            // still has to be above the weak-gap band (64), stay on the same
+            // topology region/seam graph, and cannot come from conflictMask.
+            minSourceAlpha: 64,
             connectivity: 4,
             outputBleedPixels: 4,
             // A fully empty UV strip can see different colours across two
@@ -4313,6 +4338,10 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
                 progress: 0.74 + progress.progress * 0.2,
               }),
           },
+        );
+        console.info(
+          '[Liclick Content Aware] Surface repair',
+          JSON.stringify(repair.stats),
         );
         if (repair.stats.repairedPixels === 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
