@@ -215,6 +215,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         activeProjectJob?: boolean;
         workflow?: 'liclick' | 'texture-map';
         message?: string;
+        startedAt?: string;
       }>(await getTransport(), '/api/liclick/generate-image', {
         method: 'POST',
         body: JSON.stringify({
@@ -251,6 +252,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           uploadedReferences: result.uploadedReferences,
           activeProjectJob: result.activeProjectJob,
           serverMessage: result.message,
+          startedAt: result.startedAt,
           referencePreprocessing: preparedReferences
             .map((reference) => reference.preprocessing)
             .filter((reference): reference is ReferencePreprocessingResult => Boolean(reference)),

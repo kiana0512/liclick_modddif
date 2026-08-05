@@ -80,6 +80,10 @@ import { downloadImageAsset } from '@/utils/downloadImage';
 import { encodeRgbaPngDataUrl } from '@/utils/encodeRgbaPng';
 import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
 import {
+  getGenerationStartedAt,
+  mergeGenerationMetadataPreservingStartedAt,
+} from '@/utils/generationTiming';
+import {
   isWorkspaceAssetUrl,
   saveBlobAsset,
   saveDataUrlAsset,
@@ -441,11 +445,6 @@ function isRunningGeneration(generation?: Generation) {
     !generation.resultUrl &&
     (generation.status === 'queued' || generation.status === 'running'),
   );
-}
-
-function getGenerationStartedAt(generation: Generation) {
-  const startedAt = generation.metadata.startedAt;
-  return typeof startedAt === 'string' ? Date.parse(startedAt) : Number.NaN;
 }
 
 function generationRecoverySignature(generation: Generation | undefined) {
@@ -1908,7 +1907,10 @@ export function GeneratePanel() {
           ...result.value,
           mode: 'multiview',
           metadata: {
-            ...result.value.metadata,
+            ...mergeGenerationMetadataPreservingStartedAt(
+              pending.pendingGeneration.metadata,
+              result.value.metadata,
+            ),
             workflow: 'texture-map',
             objectMatrixWorld,
             materialReferenceId: materialReference.id,

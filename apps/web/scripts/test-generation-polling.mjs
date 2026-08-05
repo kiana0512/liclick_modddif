@@ -36,6 +36,30 @@ try {
     });
 
   const identity = await server.ssrLoadModule('/src/services/localIdentityProofApiClient.ts');
+  const generationTiming = await server.ssrLoadModule('/src/utils/generationTiming.ts');
+
+  const pendingStartedAt = '2026-08-05T01:02:03.000Z';
+  assert.equal(
+    generationTiming.mergeGenerationMetadataPreservingStartedAt(
+      { startedAt: pendingStartedAt, serverSubmitted: false },
+      { serverSubmitted: true },
+    ).startedAt,
+    pendingStartedAt,
+    'Submitting a generation must not reset its elapsed timer when the server omits startedAt.',
+  );
+  const serverStartedAt = '2026-08-05T01:02:04.000Z';
+  assert.equal(
+    generationTiming.mergeGenerationMetadataPreservingStartedAt(
+      { startedAt: pendingStartedAt },
+      { startedAt: serverStartedAt },
+    ).startedAt,
+    serverStartedAt,
+    'A valid server startedAt should take precedence over the pending timestamp.',
+  );
+  assert.equal(
+    generationTiming.getGenerationStartedAt({ metadata: { startedAt: pendingStartedAt } }),
+    Date.parse(pendingStartedAt),
+  );
 
   const timeoutStartedAt = Date.now();
   await assert.rejects(
@@ -59,7 +83,7 @@ try {
     'Effect cleanup must be able to cancel the identity request immediately.',
   );
 
-  stdout.write('Generation polling watchdog regression test passed.\n');
+  stdout.write('Generation polling and timing regression tests passed.\n');
 } finally {
   globalThis.window = originalWindow;
   globalThis.fetch = originalFetch;
