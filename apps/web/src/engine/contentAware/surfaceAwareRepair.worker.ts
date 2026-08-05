@@ -16,12 +16,17 @@ export interface SurfaceRepairWorkerRequest {
   seamLinks?: ArrayBuffer;
   topologyRegionIds?: ArrayBuffer;
   topologyRegionType?: 'int32' | 'uint32';
+  maxSeamCrossings?: number;
   sourcePaddingPixels?: number;
   maxDistance?: number;
   minSourceAlpha?: number;
+  sourceColorOutlierThreshold?: number;
   connectivity?: SurfaceRepairConnectivity;
+  coverageSkirtPixels?: number;
+  coverageSkirtMaxInputAlpha?: number;
   outputBleedPixels?: number;
   requireCompleteComponents?: boolean;
+  dominantSourceColorThreshold?: number;
   lockToDominantSourceRegion?: boolean;
 }
 
@@ -62,12 +67,17 @@ workerScope.onmessage = (event) => {
                 : new Uint32Array(request.topologyRegionIds),
           }
         : {}),
+      maxSeamCrossings: request.maxSeamCrossings,
       sourcePaddingPixels: request.sourcePaddingPixels,
       maxDistance: request.maxDistance,
       minSourceAlpha: request.minSourceAlpha,
+      sourceColorOutlierThreshold: request.sourceColorOutlierThreshold,
       connectivity: request.connectivity,
+      coverageSkirtPixels: request.coverageSkirtPixels,
+      coverageSkirtMaxInputAlpha: request.coverageSkirtMaxInputAlpha,
       outputBleedPixels: request.outputBleedPixels,
       requireCompleteComponents: request.requireCompleteComponents,
+      dominantSourceColorThreshold: request.dominantSourceColorThreshold,
       lockToDominantSourceRegion: request.lockToDominantSourceRegion,
     };
     const result = repairSurfaceTexture(input, {

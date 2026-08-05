@@ -851,7 +851,6 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const addReferences = useReferenceStore((state) => state.addReferences);
   const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
-  const dismissToastByDedupeKey = useToastStore((state) => state.dismissToastByDedupeKey);
   const authStatus = useAuthStore((state) => state.status);
   const authenticatedUserId = useAuthStore((state) => state.user?.id);
   const t = useT();
@@ -2082,77 +2081,62 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   }
 
   async function performWorkspaceServerSave(snapshot: Project) {
-    const slowSaveToastKey = `workspace-save-progress:${snapshot.id}`;
-    const slowSaveTimer = window.setTimeout(() => {
-      pushToast({
-        tone: 'info',
-        title: '正在保存项目资源',
-        description: '图片或模型较多时需要一点时间；可以继续操作，新的修改会自动追加保存。',
-        dedupeKey: slowSaveToastKey,
-        persistent: true,
-      });
-    }, 1500);
-    try {
-      const projectForSave = await prepareProjectForWorkspaceSave(snapshot);
-      const result = await saveWorkspaceProject(projectForSave).catch((error) => {
-        throw new Error(
-          `保存项目 JSON 失败: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        );
-      });
-      const latestProject = useProjectStore
-        .getState()
-        .projects.find((project) => project.id === snapshot.id);
-      const snapshotUpdatedAt = Date.parse(snapshot.updatedAt);
-      const latestUpdatedAt = Date.parse(latestProject?.updatedAt ?? '');
-      const sameObjectIds =
-        latestProject?.objects
-          .map((object) => object.id)
-          .sort()
-          .join('|') ===
-        snapshot.objects
-          .map((object) => object.id)
-          .sort()
-          .join('|');
-      const sameLayerIds =
-        latestProject?.layers
-          .map((layer) => layer.id)
-          .sort()
-          .join('|') ===
-        snapshot.layers
-          .map((layer) => layer.id)
-          .sort()
-          .join('|');
-      const sameDeletionIntent =
-        [...(latestProject?.deletedObjectIds ?? [])].sort().join('|') ===
-        [...(snapshot.deletedObjectIds ?? [])].sort().join('|');
-      const savedLatestSnapshot = Boolean(
-        latestProject?.id === snapshot.id &&
-        Number.isFinite(snapshotUpdatedAt) &&
-        Number.isFinite(latestUpdatedAt) &&
-        latestUpdatedAt <= snapshotUpdatedAt &&
-        sameObjectIds &&
-        sameLayerIds &&
-        sameDeletionIntent,
+    const projectForSave = await prepareProjectForWorkspaceSave(snapshot);
+    const result = await saveWorkspaceProject(projectForSave).catch((error) => {
+      throw new Error(
+        `保存项目 JSON 失败: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
-      if (savedLatestSnapshot) {
-        markSavedById(
-          snapshot.id,
-          result.project.lastSavedAt ?? new Date().toISOString(),
-          result.project.assetManifest,
-        );
-      }
-      updateProjectById(snapshot.id, {
-        workspaceMode: 'local-server',
-        workspaceName: result.slug,
-        lastSavedAt: result.project.lastSavedAt,
-        dirty: !savedLatestSnapshot,
-        assetManifest: result.project.assetManifest,
-      });
-      return { ...result, savedLatestSnapshot };
-    } finally {
-      window.clearTimeout(slowSaveTimer);
-      dismissToastByDedupeKey(slowSaveToastKey);
+    });
+    const latestProject = useProjectStore
+      .getState()
+      .projects.find((project) => project.id === snapshot.id);
+    const snapshotUpdatedAt = Date.parse(snapshot.updatedAt);
+    const latestUpdatedAt = Date.parse(latestProject?.updatedAt ?? '');
+    const sameObjectIds =
+      latestProject?.objects
+        .map((object) => object.id)
+        .sort()
+        .join('|') ===
+      snapshot.objects
+        .map((object) => object.id)
+        .sort()
+        .join('|');
+    const sameLayerIds =
+      latestProject?.layers
+        .map((layer) => layer.id)
+        .sort()
+        .join('|') ===
+      snapshot.layers
+        .map((layer) => layer.id)
+        .sort()
+        .join('|');
+    const sameDeletionIntent =
+      [...(latestProject?.deletedObjectIds ?? [])].sort().join('|') ===
+      [...(snapshot.deletedObjectIds ?? [])].sort().join('|');
+    const savedLatestSnapshot = Boolean(
+      latestProject?.id === snapshot.id &&
+      Number.isFinite(snapshotUpdatedAt) &&
+      Number.isFinite(latestUpdatedAt) &&
+      latestUpdatedAt <= snapshotUpdatedAt &&
+      sameObjectIds &&
+      sameLayerIds &&
+      sameDeletionIntent,
+    );
+    if (savedLatestSnapshot) {
+      markSavedById(
+        snapshot.id,
+        result.project.lastSavedAt ?? new Date().toISOString(),
+        result.project.assetManifest,
+      );
     }
+    updateProjectById(snapshot.id, {
+      workspaceMode: 'local-server',
+      workspaceName: result.slug,
+      lastSavedAt: result.project.lastSavedAt,
+      dirty: !savedLatestSnapshot,
+      assetManifest: result.project.assetManifest,
+    });
+    return { ...result, savedLatestSnapshot };
   }
 
   function saveToWorkspaceServer(snapshot: Project) {
@@ -3341,13 +3325,15 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         preserveTransparentRgb: true,
       });
       const currentLayers = useLayerStore.getState().layers;
-      const layersWithoutPreviousRepair = currentLayers.filter(
+      const previousRepairCount = currentLayers.filter(
         (layer) =>
-          !(isContentAwareRepairLayer(layer) && (!layer.objectId || layer.objectId === objectId)),
-      );
+          isContentAwareRepairLayer(layer) &&
+          (!layer.objectId || layer.objectId === objectId),
+      ).length;
+      const passNumber = previousRepairCount + 1;
       const layer: Layer = {
         id: layerId,
-        name: t('contentAwareRepair'),
+        name: `${t('contentAwareRepair')} ${passNumber}`,
         type: 'uv',
         role: 'content-aware-underlay',
         imageUrl,
@@ -3358,12 +3344,12 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         strength: 1,
         blendMode: 'normal',
         adjustments: { hue: 0, saturation: 0, lightness: 0 },
-        // The layer list is top-to-bottom. Appending this UV texture makes it a
-        // model-wide fallback beneath authored UV and projected layers.
-        order: layersWithoutPreviousRepair.length,
+        // The layer list is top-to-bottom. Every sparse delta pass is appended
+        // below the previous pass so each round remains independently visible.
+        order: currentLayers.length,
         createdAt: new Date().toISOString(),
       };
-      setLayers([...layersWithoutPreviousRepair, layer]);
+      setLayers([...currentLayers, layer]);
       setActiveLayer(layer.id);
       scheduleTexturedThumbnailRefresh(300);
       return layer;
@@ -4238,9 +4224,9 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           progress: 0.04,
         });
         const objectId = importedModel.objectId;
-        const sourceLayerIds = useLayerStore
-          .getState()
-          .layers.filter(
+        const currentLayers = useLayerStore.getState().layers;
+        const sourceLayerIds = currentLayers
+          .filter(
             (layer) =>
               layer.type === 'projected' &&
               layer.visible &&
@@ -4250,6 +4236,13 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
               !isContentAwareRepairLayer(layer),
           )
           .map((layer) => layer.id);
+        const previousRepairLayers = currentLayers.filter(
+          (layer) =>
+            isContentAwareRepairLayer(layer) &&
+            layer.visible &&
+            Boolean(layer.imageUrl) &&
+            (!layer.objectId || layer.objectId === objectId),
+        );
         if (sourceLayerIds.length === 0) {
           throw new Error(t('contentAwareRepairNoSource'));
         }
@@ -4283,15 +4276,38 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
         if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
         const workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
+        const previousRepairImages = await Promise.all(
+          previousRepairLayers.map(async (layer) => ({
+            layer,
+            imageData: await urlToImageData(
+              layer.imageUrl!,
+              repairResolution,
+              repairResolution,
+            ),
+          })),
+        );
+        // Projection remains the front layer. Repair deltas are applied in
+        // authored top-to-bottom order and contribute only where coverage is
+        // still empty, becoming evidence and donors for the next pass.
+        for (const { layer, imageData } of previousRepairImages) {
+          compositeRgbaUnderInPlace(
+            workingImageData.data,
+            imageData.data,
+            layer.opacity,
+          );
+        }
         const topology = await buildContentAwareSurfaceTopology(
           importedModel.group,
           repairResolution,
           repairResolution,
           {
             includeInvisible: false,
+            // A bounded physical-seam bridge can seed a fully blank UV island.
+            // The repair core limits propagation to one seam crossing so colour
+            // cannot cascade through an arbitrary chain of neighbouring islands.
             includeSeamLinks: true,
             seamBandPixels: 1,
-            minimumSeamNormalDot: 0.65,
+            minimumSeamNormalDot: 0.72,
             yieldIntervalMs: 8,
             signal: abortController.signal,
             onProgress: (progress) => {
@@ -4378,26 +4394,32 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
             topologyMask: topology.topologyMask,
             topologyRegionIds: topology.regionIds,
             seamLinks: topology.seamLinks,
+            maxSeamCrossings: 1,
+            // Keep a small donor guard band, but leave enough of the previous
+            // pass available for the next pass to advance progressively.
             sourcePaddingPixels: Math.max(
               2,
               Math.min(4, Math.round(repairResolution / 768)),
             ),
+            // One click advances one bounded surface-distance layer. A later
+            // click starts from the cumulative result and continues farther.
             maxDistance: Math.max(64, Math.min(128, Math.round(repairResolution / 16))),
-            // Concave areas such as nostrils, ear roots and the underside of
-            // the chin rarely have an 88%-confidence camera sample. A donor
-            // still has to be above the weak-gap band (64), stay on the same
-            // topology region/seam graph, and cannot come from conflictMask.
             minSourceAlpha: 64,
+            sourceColorOutlierThreshold: 64,
             connectivity: 4,
+            // Publish one opaque texel only where the composited input is still
+            // empty and inside the same UV region. This closes bilinear-filter
+            // seams without overwriting projections or earlier repair passes.
+            coverageSkirtPixels: 1,
+            coverageSkirtMaxInputAlpha: 32,
             outputBleedPixels: 4,
-            // A fully empty UV strip can see different colours across two
-            // physical seam donors. Pick one dominant donor region for the
-            // complete strip instead of creating white/blue Voronoi bands.
+            // Unify a genuinely flat boundary, but preserve nearest-source
+            // expansion when competing donors contain real colour variation.
             lockToDominantSourceRegion: true,
-            // Keep the previous progressive fill behaviour: a large connected
-            // gap may contain texels beyond the search radius, but reachable
-            // texels must still be published instead of discarding the whole
-            // component and exposing a wide strip of the model base material.
+            dominantSourceColorThreshold: 18,
+            // Publish the reachable band only. Unresolved centres remain gaps
+            // for the next user-triggered repair pass instead of invalidating
+            // the complete pass.
             requireCompleteComponents: false,
           },
           {
@@ -4620,11 +4642,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         sceneState.setTransformMode('select');
         return;
       }
-      const nextPaintTool = shortcutMatches(event, 'texture.brush')
-        ? 'brush'
-        : shortcutMatches(event, 'texture.eraser')
-          ? 'eraser'
-          : undefined;
+      const nextPaintTool = shortcutMatches(event, 'texture.eraser') ? 'eraser' : undefined;
       if (nextPaintTool) {
         event.preventDefault();
         sceneState.setPaintTool(sceneState.paintTool === nextPaintTool ? 'none' : nextPaintTool);
@@ -4676,14 +4694,6 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           return;
         }
 
-        const nextSize = stepBrushSize(state.paintToolSettings.brushSize, 0.5, 256);
-        state.setPaintToolSettings({ brushSize: nextSize });
-        pushToast({
-          tone: 'info',
-          title: `画笔大小 ${nextSize.toFixed(nextSize % 1 ? 1 : 0)}px`,
-          description: '[ / ] 调整大小',
-          dedupeKey: 'brush-size-shortcut',
-        });
         return;
       }
       if (shortcutMatches(event, 'texture.maskAdd')) {
@@ -5036,7 +5046,6 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
               rotate: t('rotate'),
               scale: t('scale'),
               layers: t('layers'),
-              brush: t('brush'),
               eraser: t('eraser'),
               eraserSize: t('eraserSize'),
               eraserHardness: t('eraserHardness'),
@@ -5046,9 +5055,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
               undo: t('undo'),
               redo: t('redo'),
               brushSize: t('brushSize'),
-              brushHardness: t('brushHardness'),
               brushOpacity: t('imageEditBrushOpacity'),
-              brushColor: t('brushColor'),
               resetInpaintRegion: t('resetInpaintRegion'),
               invertInpaintRegion: t('invertInpaintRegion'),
               selectHelp: t('selectToolHelp'),
@@ -5056,7 +5063,6 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
               rotateHelp: t('rotateToolHelp'),
               scaleHelp: t('scaleToolHelp'),
               layersHelp: t('layersToolHelp'),
-              brushHelp: t('brushToolHelp'),
               eraserHelp: t('eraserToolHelp'),
               localRepaintHelp: t('localRepaintToolHelp'),
               inpaintSelectHelp: t('inpaintSelectToolHelp'),

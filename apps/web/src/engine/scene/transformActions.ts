@@ -7,17 +7,25 @@ import type { Transform } from '@/types/model';
 
 export type ObjectViewPreset =
   | 'front'
+  | 'front-top'
+  | 'front-bottom'
   | 'front-left'
   | 'front-left-top'
   | 'front-right'
   | 'front-right-bottom'
   | 'back'
+  | 'back-top'
+  | 'back-bottom'
   | 'back-left'
   | 'back-left-bottom'
   | 'back-right'
   | 'back-right-top'
   | 'left'
+  | 'left-top'
+  | 'left-bottom'
   | 'right'
+  | 'right-top'
+  | 'right-bottom'
   | 'top'
   | 'bottom';
 
@@ -122,6 +130,8 @@ export function focusCameraOrbitOnObjectId(objectId?: string) {
 
 export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
   if (preset === 'back') return new THREE.Vector3(0, 0, -1);
+  if (preset === 'back-top') return new THREE.Vector3(0, 1, -1).normalize();
+  if (preset === 'back-bottom') return new THREE.Vector3(0, -1, -1).normalize();
   if (preset === 'back-left') return new THREE.Vector3(-1, 0, -1).normalize();
   if (preset === 'back-left-bottom')
     return new THREE.Vector3(-1, -Math.SQRT2, -1).normalize();
@@ -132,8 +142,14 @@ export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
   if (preset === 'front-right') return new THREE.Vector3(1, 0, 1).normalize();
   if (preset === 'front-right-bottom')
     return new THREE.Vector3(1, -Math.SQRT2, 1).normalize();
+  if (preset === 'front-top') return new THREE.Vector3(0, 1, 1).normalize();
+  if (preset === 'front-bottom') return new THREE.Vector3(0, -1, 1).normalize();
   if (preset === 'left') return new THREE.Vector3(-1, 0, 0);
+  if (preset === 'left-top') return new THREE.Vector3(-1, 1, 0).normalize();
+  if (preset === 'left-bottom') return new THREE.Vector3(-1, -1, 0).normalize();
   if (preset === 'right') return new THREE.Vector3(1, 0, 0);
+  if (preset === 'right-top') return new THREE.Vector3(1, 1, 0).normalize();
+  if (preset === 'right-bottom') return new THREE.Vector3(1, -1, 0).normalize();
   if (preset === 'top') return new THREE.Vector3(0, 1, 0);
   if (preset === 'bottom') return new THREE.Vector3(0, -1, 0);
   return new THREE.Vector3(0, 0, 1);

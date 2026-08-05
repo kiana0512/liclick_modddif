@@ -165,12 +165,17 @@ export function runSurfaceAwareRepair(
             topologyRegionType: topologyRegionIds instanceof Int32Array ? 'int32' : 'uint32',
           }
         : {}),
+      maxSeamCrossings: copiedInput.maxSeamCrossings,
       sourcePaddingPixels: copiedInput.sourcePaddingPixels,
       maxDistance: copiedInput.maxDistance,
       minSourceAlpha: copiedInput.minSourceAlpha,
+      sourceColorOutlierThreshold: copiedInput.sourceColorOutlierThreshold,
       connectivity: copiedInput.connectivity,
+      coverageSkirtPixels: copiedInput.coverageSkirtPixels,
+      coverageSkirtMaxInputAlpha: copiedInput.coverageSkirtMaxInputAlpha,
       outputBleedPixels: copiedInput.outputBleedPixels,
       requireCompleteComponents: copiedInput.requireCompleteComponents,
+      dominantSourceColorThreshold: copiedInput.dominantSourceColorThreshold,
       lockToDominantSourceRegion: copiedInput.lockToDominantSourceRegion,
     };
     const transfer: Transferable[] = [rgbaBuffer, writeMaskBuffer, topologyMaskBuffer];

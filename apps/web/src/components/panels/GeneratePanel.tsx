@@ -103,17 +103,25 @@ type CameraViewOption = {
   value: ObjectViewPreset;
   labelKey:
     | 'frontView'
+    | 'frontTopView'
+    | 'frontBottomView'
     | 'frontLeftView'
     | 'frontLeftTopView'
     | 'frontRightView'
     | 'frontRightBottomView'
     | 'backView'
+    | 'backTopView'
+    | 'backBottomView'
     | 'backLeftView'
     | 'backLeftBottomView'
     | 'backRightView'
     | 'backRightTopView'
     | 'leftView'
+    | 'leftTopView'
+    | 'leftBottomView'
     | 'rightView'
+    | 'rightTopView'
+    | 'rightBottomView'
     | 'topView'
     | 'bottomView';
 };
@@ -144,9 +152,17 @@ const resolutionToSize = {
 
 const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
   front: { value: 'front', labelKey: 'frontView' },
+  'front-top': { value: 'front-top', labelKey: 'frontTopView' },
+  'front-bottom': { value: 'front-bottom', labelKey: 'frontBottomView' },
   back: { value: 'back', labelKey: 'backView' },
+  'back-top': { value: 'back-top', labelKey: 'backTopView' },
+  'back-bottom': { value: 'back-bottom', labelKey: 'backBottomView' },
   left: { value: 'left', labelKey: 'leftView' },
+  'left-top': { value: 'left-top', labelKey: 'leftTopView' },
+  'left-bottom': { value: 'left-bottom', labelKey: 'leftBottomView' },
   right: { value: 'right', labelKey: 'rightView' },
+  'right-top': { value: 'right-top', labelKey: 'rightTopView' },
+  'right-bottom': { value: 'right-bottom', labelKey: 'rightBottomView' },
   top: { value: 'top', labelKey: 'topView' },
   bottom: { value: 'bottom', labelKey: 'bottomView' },
   'front-left': { value: 'front-left', labelKey: 'frontLeftView' },
@@ -186,18 +202,23 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
   {
     id: 'preset-3',
     label: '预设 3',
-    description: '上、下、左、右、前、后，加左前上、右后上、左后下、右前下 45° 视角',
+    description:
+      '14 个视角：前、后、左、右、上、下、前上、后上、左上、右上、前下、后下、左下、右下 45°',
     views: [
-      'top',
-      'bottom',
-      'left',
-      'right',
       'front',
       'back',
-      'front-left-top',
-      'back-right-top',
-      'back-left-bottom',
-      'front-right-bottom',
+      'left',
+      'right',
+      'top',
+      'bottom',
+      'front-top',
+      'back-top',
+      'left-top',
+      'right-top',
+      'front-bottom',
+      'back-bottom',
+      'left-bottom',
+      'right-bottom',
     ],
   },
 ];
@@ -2006,12 +2027,6 @@ export function GeneratePanel() {
             },
           };
           syncGeneration(completedWithProjection);
-          pushToast({
-            tone: 'success',
-            title: `${String(completed.metadata.cameraViewLabel ?? '当前')}视角已上图层`,
-            description: '已自动扣图并加入右侧图层，可继续人工检查和修改。',
-            dedupeKey: `texture-map-view-complete:${completed.id}`,
-          });
           return { generation: completedWithProjection, projected: true };
         } catch (error) {
           const message =

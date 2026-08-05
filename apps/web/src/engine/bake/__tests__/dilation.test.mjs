@@ -5,7 +5,10 @@ import {
   fillEnclosedUvCoverageGaps,
   padUvIslandGuttersWithTopology,
 } from '../dilation.ts';
-import { getMergeUvPostprocessOptions } from '../../layers/mergeUvComposition.ts';
+import {
+  compositeRgbaUnderInPlace,
+  getMergeUvPostprocessOptions,
+} from '../../layers/mergeUvComposition.ts';
 
 function createImageData(width, height) {
   return {
@@ -352,6 +355,23 @@ test('merge UV options enable enclosed-hole repair without broad topology growth
     uvInteriorHolePixels: 3,
     uvSeamRepairPixels: 4,
   });
+});
+
+test('separate repair deltas compose into one preview underlay', () => {
+  const previousPass = new Uint8ClampedArray([
+    126, 84, 42, 255,
+    0, 0, 0, 0,
+  ]);
+  const nextPass = new Uint8ClampedArray([
+    0, 0, 0, 0,
+    132, 91, 48, 255,
+  ]);
+  const cumulative = new Uint8ClampedArray(8);
+
+  compositeRgbaUnderInPlace(cumulative, previousPass);
+  compositeRgbaUnderInPlace(cumulative, nextPass);
+
+  assert.deepEqual(Array.from(cumulative), [126, 84, 42, 255, 132, 91, 48, 255]);
 });
 
 test('merge UV topology growth closes a narrow open crack without crossing atlas space', () => {

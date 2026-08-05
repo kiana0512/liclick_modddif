@@ -56,7 +56,6 @@ try {
       renderedColor: false,
     };
   });
-
   const material = await projection.createProjectedLayerStackMaterial(
     {
       layers,
@@ -128,6 +127,50 @@ try {
   assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1);
   assert.equal(material.uuid, materialId);
   projection.disposeGeneratedMaterialTree(material);
+
+  const hiddenLayers = layers.map((layer) => ({ ...layer, visible: false }));
+  const whiteMembraneMaterial = await projection.createProjectedLayerStackMaterial(
+    {
+      layers: hiddenLayers,
+      objectId: 'white-membrane-object',
+      currentObjectMatrixWorld: identity,
+      depthTest: true,
+      previewLighting: {
+        enabled: true,
+        exposure: 1,
+        ambientIntensity: 0.5,
+        keyLightIntensity: 1.22,
+        keyLightDirection: [0.35, 0.8, 0.48],
+      },
+    },
+    { maxTextureImageUnits: 64 },
+  );
+  assert(whiteMembraneMaterial, 'Expected the hidden-layer white membrane material.');
+  assert.equal(
+    whiteMembraneMaterial.uniforms.previewLightingEnabled.value,
+    1,
+    'The all-hidden fallback must retain form-defining preview lighting.',
+  );
+  assert.equal(
+    whiteMembraneMaterial.uniforms.showEmptyProjectionHatch.value,
+    0,
+    'The white membrane must not show the empty-projection hatch.',
+  );
+  assert.match(
+    whiteMembraneMaterial.fragmentShader,
+    /baseSurfaceColor \* lighting/,
+    'The white membrane base colour must receive form-defining light and shadow.',
+  );
+  projection.disposeGeneratedMaterialTree(whiteMembraneMaterial);
+
+  const flatWhiteMembraneMaterial = projection.createDisplayModeMaterial('flat', false);
+  assert.equal(flatWhiteMembraneMaterial.emissiveIntensity, 0);
+  assert.equal(
+    flatWhiteMembraneMaterial.emissive.getHexString(),
+    '000000',
+    'The non-projected fallback must not flatten shading with white emission.',
+  );
+  projection.disposeGeneratedMaterialTree(flatWhiteMembraneMaterial);
 
   const missingNormalLayers = layers.map((layer, index) => ({
     ...layer,

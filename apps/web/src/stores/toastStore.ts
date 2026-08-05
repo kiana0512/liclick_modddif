@@ -29,6 +29,13 @@ type ToastStore = {
 
 const dismissTimers = new Map<string, number>();
 
+const toastPriority: Record<ToastTone, number> = {
+  success: 0,
+  info: 1,
+  warning: 2,
+  error: 3,
+};
+
 function clearDismissTimer(id: string) {
   const timer = dismissTimers.get(id);
   if (timer !== undefined) window.clearTimeout(timer);
@@ -49,12 +56,18 @@ export const useToastStore = create<ToastStore>((set, get) => ({
     const existing = toast.dedupeKey
       ? get().toasts.find((item) => item.dedupeKey === toast.dedupeKey)
       : undefined;
+    const activeToast = get().toasts[0];
+    if (
+      !existing &&
+      activeToast &&
+      toastPriority[activeToast.tone] > toastPriority[toast.tone]
+    ) {
+      return;
+    }
     const id = existing?.id ?? createId('toast');
     clearDismissTimer(id);
     if (!existing) {
-      get()
-        .toasts.slice(2)
-        .forEach((item) => clearDismissTimer(item.id));
+      get().toasts.forEach((item) => clearDismissTimer(item.id));
     }
     set((state) => {
       const nextToast = { id, ...toast };
@@ -69,11 +82,9 @@ export const useToastStore = create<ToastStore>((set, get) => ({
           existing.durationMs === nextToast.durationMs &&
           existing.persistent === nextToast.persistent;
         if (unchanged) return state;
-        return {
-          toasts: state.toasts.map((item) => (item.id === id ? nextToast : item)),
-        };
+        return { toasts: [nextToast] };
       }
-      return { toasts: [nextToast, ...state.toasts].slice(0, 3) };
+      return { toasts: [nextToast] };
     });
     if (toast.persistent) return;
     const timer = window.setTimeout(() => {

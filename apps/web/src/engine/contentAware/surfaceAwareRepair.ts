@@ -27,10 +27,12 @@ export interface SurfaceRepairProgress {
 /**
  * A worker-friendly input made exclusively from scalar values and typed arrays.
  *
- * `writeMask` is both the original gap mask and the only area that may be written.
- * `sourceExclusionMask` only controls where colors may be sampled from. It never
- * expands the final output alpha. `topologyMask` must be a conservative raster of
- * model UV coverage so propagation cannot travel through empty texture space.
+ * `writeMask` is the original gap mask and normally the only area that may be
+ * written. `coverageSkirtPixels` may additionally publish a tightly constrained
+ * opaque ring into still-empty input texels inside the same UV region.
+ * `sourceExclusionMask` only controls where colors may be sampled from.
+ * `topologyMask` must be a conservative raster of model UV coverage so propagation
+ * cannot travel through empty texture space.
  *
  * `seamLinks` is an optional flat array of bidirectional pixel-index pairs:
  * `[a0, b0, a1, b1, ...]`. It may bridge UV seams that are disconnected in 2D but
@@ -47,18 +49,41 @@ export interface SurfaceAwareRepairInput {
   topologyMask: SurfaceRepairByteArray;
   seamLinks?: Uint32Array;
   topologyRegionIds?: SurfaceRepairRegionArray;
+  /** Maximum physical UV seam edges a colour may cross. Omit for legacy unlimited traversal. */
+  maxSeamCrossings?: number;
   /** Extra topology-aware pixels around writeMask that cannot be color sources. */
   sourcePaddingPixels?: number;
   /** Maximum surface-graph distance from a valid source. Defaults to 128 pixels. */
   maxDistance?: number;
   /** Minimum source alpha. Defaults to 250 to reject projection feather pixels. */
   minSourceAlpha?: number;
+  /**
+   * Reject a source whose RGB is not supported by at least two thirds of its valid
+   * 8-neighbourhood. Value is the per-channel RMS distance in bytes; zero
+   * disables the filter. This removes thin white/dark projection fringes while
+   * retaining coherent light or dark material regions.
+   */
+  sourceColorOutlierThreshold?: number;
   /** Four-neighbor traversal is safest for disconnected UV islands. */
   connectivity?: SurfaceRepairConnectivity;
+  /**
+   * Opaque antialiasing skirt around successfully repaired texels. It only enters
+   * topology-covered texels in the same UV region whose original input alpha is
+   * at most coverageSkirtMaxInputAlpha. Defaults to zero (disabled).
+   */
+  coverageSkirtPixels?: number;
+  /** Maximum original input alpha that the coverage skirt may replace. */
+  coverageSkirtMaxInputAlpha?: number;
   /** RGB-only atlas padding around the sparse output. Alpha remains zero. */
   outputBleedPixels?: number;
   /** Reject a connected gap component when any of its texels cannot be repaired. */
   requireCompleteComponents?: boolean;
+  /**
+   * When dominant-source locking is enabled, keep nearest-source propagation if
+   * the competing donor colours exceed this per-channel RMS distance. Omit it
+   * to retain unconditional legacy locking.
+   */
+  dominantSourceColorThreshold?: number;
   /**
    * Forces every connected physical gap component to clone from one dominant
    * source texel. The donor region is selected first, then one real texel wins
@@ -73,6 +98,7 @@ export interface SurfaceRepairStats {
   topologyPixels: number;
   requestedPixels: number;
   eligibleSourcePixels: number;
+  sourceColorOutliersRejected: number;
   boundarySourcePixels: number;
   sourcePaddingPixels: number;
   sourceExcludedPixels: number;
@@ -82,6 +108,8 @@ export interface SurfaceRepairStats {
   unresolvedPixels: number;
   maxDistance: number;
   maxDistanceReached: number;
+  coverageSkirtPixels: number;
+  coverageSkirtPixelCount: number;
   outputBleedPixels: number;
   outputBleedPixelCount: number;
   partialComponentsDiscarded: number;
@@ -94,11 +122,11 @@ export interface SurfaceRepairStats {
 
 export interface SurfaceAwareRepairResult {
   /**
-   * A dedicated repair-layer image: transparent outside repairedMask and exact
+    * A dedicated repair-layer image: transparent outside repairedMask and exact
    * cloned source texels inside it. This is not a flattened copy of the source UV.
    */
   filledRgba: Uint8ClampedArray<ArrayBuffer>;
-  /** Final layer/write alpha. It contains only successfully repaired gap pixels. */
+  /** Final layer/write alpha: repaired gap pixels plus the optional constrained skirt. */
   repairedMask: Uint8Array<ArrayBuffer>;
   /** Sampling-only mask, including sourcePaddingPixels. Never use as layer alpha. */
   sourceExclusionMask: Uint8Array<ArrayBuffer>;
@@ -131,12 +159,17 @@ interface NormalizedInput {
   topologyMask: SurfaceRepairByteArray;
   seamLinks?: Uint32Array;
   topologyRegionIds?: SurfaceRepairRegionArray;
+  maxSeamCrossings: number;
   sourcePaddingPixels: number;
   maxDistance: number;
   minSourceAlpha: number;
+  sourceColorOutlierThreshold: number;
   connectivity: SurfaceRepairConnectivity;
+  coverageSkirtPixels: number;
+  coverageSkirtMaxInputAlpha: number;
   outputBleedPixels: number;
   requireCompleteComponents: boolean;
+  dominantSourceColorThreshold?: number;
   lockToDominantSourceRegion: boolean;
 }
 
@@ -200,12 +233,25 @@ function normalizeInput(input: SurfaceAwareRepairInput): NormalizedInput {
     topologyMask: input.topologyMask,
     seamLinks: input.seamLinks,
     topologyRegionIds: input.topologyRegionIds,
+    maxSeamCrossings: clampInteger(input.maxSeamCrossings, 255, 0, 255),
     sourcePaddingPixels: clampInteger(input.sourcePaddingPixels, 8, 0, pixelCount),
     maxDistance: clampInteger(input.maxDistance, 128, 0, pixelCount),
     minSourceAlpha: clampInteger(input.minSourceAlpha, 250, 1, 255),
+    sourceColorOutlierThreshold: clampInteger(
+      input.sourceColorOutlierThreshold,
+      0,
+      0,
+      255,
+    ),
     connectivity: input.connectivity === 8 ? 8 : 4,
+    coverageSkirtPixels: clampInteger(input.coverageSkirtPixels, 0, 0, 4),
+    coverageSkirtMaxInputAlpha: clampInteger(input.coverageSkirtMaxInputAlpha, 0, 0, 255),
     outputBleedPixels: clampInteger(input.outputBleedPixels, 0, 0, 32),
     requireCompleteComponents: input.requireCompleteComponents === true,
+    dominantSourceColorThreshold:
+      input.dominantSourceColorThreshold === undefined
+        ? undefined
+        : clampInteger(input.dominantSourceColorThreshold, 0, 0, 255),
     lockToDominantSourceRegion: input.lockToDominantSourceRegion === true,
   };
 }
@@ -393,6 +439,57 @@ function isBoundarySource(
   return false;
 }
 
+function isBaseEligibleSource(
+  index: number,
+  input: NormalizedInput,
+  exclusion: Uint8Array,
+) {
+  return Boolean(
+    input.topologyMask[index] !== 0 &&
+      input.writeMask[index] === 0 &&
+      exclusion[index] === 0 &&
+      input.rgba[index * 4 + 3] >= input.minSourceAlpha,
+  );
+}
+
+function hasSupportedSourceColor(
+  index: number,
+  input: NormalizedInput,
+  exclusion: Uint8Array,
+) {
+  const threshold = input.sourceColorOutlierThreshold;
+  if (threshold <= 0) return true;
+  const x = index % input.width;
+  const y = Math.floor(index / input.width);
+  const offset = index * 4;
+  const region = input.topologyRegionIds?.[index];
+  const maximumDistanceSquared = threshold * threshold * 3;
+  let comparableNeighbors = 0;
+  let supportingNeighbors = 0;
+
+  for (let direction = 0; direction < EIGHT_NEIGHBOR_X.length; direction += 1) {
+    const nextX = x + EIGHT_NEIGHBOR_X[direction];
+    const nextY = y + EIGHT_NEIGHBOR_Y[direction];
+    if (nextX < 0 || nextY < 0 || nextX >= input.width || nextY >= input.height) continue;
+    const neighbor = nextY * input.width + nextX;
+    if (!isBaseEligibleSource(neighbor, input, exclusion)) continue;
+    if (input.topologyRegionIds && input.topologyRegionIds[neighbor] !== region) continue;
+    comparableNeighbors += 1;
+    const neighborOffset = neighbor * 4;
+    const red = input.rgba[offset] - input.rgba[neighborOffset];
+    const green = input.rgba[offset + 1] - input.rgba[neighborOffset + 1];
+    const blue = input.rgba[offset + 2] - input.rgba[neighborOffset + 2];
+    if (red * red + green * green + blue * blue <= maximumDistanceSquared) {
+      supportingNeighbors += 1;
+    }
+  }
+
+  // Sparse/sliver UV islands may not have a complete pixel neighbourhood.
+  // Keep those sources; otherwise require majority colour support so a thin
+  // matte fringe cannot become a donor for the whole connected repair gap.
+  return comparableNeighbors < 3 || supportingNeighbors * 3 >= comparableNeighbors * 2;
+}
+
 type SourceRegionLockStats = {
   lockedComponents: number;
   reassignedPixels: number;
@@ -451,6 +548,7 @@ function lockGapComponentsToDominantSourceRegion(
     sourceCounts.clear();
     const targetRegion = input.topologyRegionIds[start];
     let spansMultipleTargetRegions = false;
+    let hasUnresolvedOwner = false;
 
     // Gather one physical write component. Regular grid edges stay inside one
     // UV region, while an explicit seam edge may bridge two UV islands that
@@ -467,6 +565,8 @@ function lockGapComponentsToDominantSourceRegion(
         const sourceRegion = input.topologyRegionIds[source];
         if (sourceRegion) donorCounts.set(sourceRegion, (donorCounts.get(sourceRegion) ?? 0) + 1);
         sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
+      } else {
+        hasUnresolvedOwner = true;
       }
 
       const x = index % input.width;
@@ -507,6 +607,14 @@ function lockGapComponentsToDominantSourceRegion(
     }
 
     const componentSize = tail;
+    // Dominant locking is a colour-stabilisation pass, not a way to bypass the
+    // configured propagation radius. Leave incomplete components unresolved so
+    // the later completeness pass can reject the whole coloured-rim/empty-centre
+    // result atomically.
+    if (input.requireCompleteComponents && hasUnresolvedOwner) {
+      report('locking-source-region', 0.85, 0.03, start + 1, input.pixelCount);
+      continue;
+    }
     // A real donor from the target island is always more trustworthy than a
     // foreign seam donor, even if the first global flood let the foreign donor
     // claim more texels. Only a completely empty island needs a foreign choice.
@@ -561,6 +669,36 @@ function lockGapComponentsToDominantSourceRegion(
       continue;
     }
 
+    // Flat-colour gaps benefit from one stable donor, but textured boundaries
+    // must retain Modddif-style multi-source expansion. Measure only donors
+    // which actually won part of this gap in the first propagation pass; this
+    // avoids an unrelated distant texel disabling an otherwise safe flat fill.
+    if (input.dominantSourceColorThreshold !== undefined) {
+      const dominantOffset = dominantSource * 4;
+      const dominantRed = input.rgba[dominantOffset];
+      const dominantGreen = input.rgba[dominantOffset + 1];
+      const dominantBlue = input.rgba[dominantOffset + 2];
+      let weightedSquaredDistance = 0;
+      let weightedChannelCount = 0;
+      for (const [source, count] of sourceCounts) {
+        if (input.topologyRegionIds[source] !== dominantRegion) continue;
+        const sourceOffset = source * 4;
+        const redDelta = input.rgba[sourceOffset] - dominantRed;
+        const greenDelta = input.rgba[sourceOffset + 1] - dominantGreen;
+        const blueDelta = input.rgba[sourceOffset + 2] - dominantBlue;
+        weightedSquaredDistance +=
+          (redDelta * redDelta + greenDelta * greenDelta + blueDelta * blueDelta) * count;
+        weightedChannelCount += count * 3;
+      }
+      const donorColorRms = Math.sqrt(
+        weightedSquaredDistance / Math.max(1, weightedChannelCount),
+      );
+      if (donorColorRms > input.dominantSourceColorThreshold) {
+        report('locking-source-region', 0.85, 0.03, start + 1, input.pixelCount);
+        continue;
+      }
+    }
+
     if (dominantSourceCount < componentSize) lockedComponents += 1;
     for (let queueIndex = 0; queueIndex < componentSize; queueIndex += 1) {
       const index = queue[queueIndex];
@@ -602,11 +740,18 @@ export function repairSurfaceTexture(
   checkAbort();
 
   const seams = buildSeamAdjacency(input);
+  // A bounded seam hop is a donor bridge, not permission to merge complete UV
+  // regions into one colour/completeness decision. This lets a fully blank
+  // island borrow from one true physical neighbour without letting that colour
+  // continue through an arbitrary chain of islands.
+  const componentSeams = input.maxSeamCrossings < 255 ? undefined : seams;
+  const seamCrossings =
+    seams && input.maxSeamCrossings < 255 ? new Uint8Array(input.pixelCount) : undefined;
   const queue = new Uint32Array(input.pixelCount);
   const { exclusion, excludedPixels } = buildSourceExclusionMask(
     input,
     queue,
-    seams,
+    componentSeams,
     checkAbort,
     report,
   );
@@ -618,15 +763,15 @@ export function repairSurfaceTexture(
   let topologyPixels = 0;
   let requestedPixels = 0;
   let eligibleSourcePixels = 0;
+  let sourceColorOutliersRejected = 0;
   for (let index = 0; index < input.pixelCount; index += 1) {
     const inTopology = input.topologyMask[index] !== 0;
     if (inTopology) topologyPixels += 1;
     if (inTopology && input.writeMask[index] !== 0) requestedPixels += 1;
-    const isEligible =
-      inTopology &&
-      input.writeMask[index] === 0 &&
-      exclusion[index] === 0 &&
-      input.rgba[index * 4 + 3] >= input.minSourceAlpha;
+    const baseEligible = isBaseEligibleSource(index, input, exclusion);
+    const colorSupported = baseEligible && hasSupportedSourceColor(index, input, exclusion);
+    const isEligible = baseEligible && colorSupported;
+    if (baseEligible && !colorSupported) sourceColorOutliersRejected += 1;
     if (isEligible) {
       owner[index] = -2;
       eligibleSourcePixels += 1;
@@ -682,6 +827,7 @@ export function repairSurfaceTexture(
           continue;
         }
         owner[neighbor] = source;
+        if (seamCrossings) seamCrossings[neighbor] = seamCrossings[index];
         queue[tail] = neighbor;
         tail += 1;
         addedAtNextDistance = true;
@@ -689,10 +835,13 @@ export function repairSurfaceTexture(
       if (seams) {
         for (let edge = seams.heads[index]; edge >= 0; edge = seams.next[edge]) {
           const neighbor = seams.targets[edge];
+          const nextSeamCrossings = (seamCrossings?.[index] ?? 0) + 1;
+          if (nextSeamCrossings > input.maxSeamCrossings) continue;
           if (owner[neighbor] !== -1 || input.topologyMask[neighbor] === 0) {
             continue;
           }
           owner[neighbor] = source;
+          if (seamCrossings) seamCrossings[neighbor] = nextSeamCrossings;
           queue[tail] = neighbor;
           tail += 1;
           addedAtNextDistance = true;
@@ -718,7 +867,7 @@ export function repairSurfaceTexture(
     owner,
     queue,
     repairedMask,
-    seams,
+    componentSeams,
     checkAbort,
     report,
   );
@@ -770,9 +919,13 @@ export function repairSurfaceTexture(
           queue[tail] = neighbor;
           tail += 1;
         }
-        if (seams) {
-          for (let edge = seams.heads[index]; edge >= 0; edge = seams.next[edge]) {
-            const neighbor = seams.targets[edge];
+        if (componentSeams) {
+          for (
+            let edge = componentSeams.heads[index];
+            edge >= 0;
+            edge = componentSeams.next[edge]
+          ) {
+            const neighbor = componentSeams.targets[edge];
             if (
               repairedMask[neighbor] !== 0 ||
               input.writeMask[neighbor] === 0 ||
@@ -836,11 +989,67 @@ export function repairSurfaceTexture(
     report('writing', 0.88, 0.1, index + 1, input.pixelCount);
   }
 
+  // Close the one-texel alpha gap that texture filtering can expose between a
+  // repaired component and its UV coverage. Unlike atlas RGB bleed, this skirt
+  // is opaque, so it is deliberately conservative: it may only replace texels
+  // that were still effectively empty in the composited input, and it cannot
+  // cross a topology region boundary. Existing projections and previous repair
+  // layers therefore remain untouched.
+  let coverageSkirtPixelCount = 0;
+  head = 0;
+  let coverageSkirtDistance = 0;
+  let coverageSkirtLayerEnd = tail;
+  while (head < tail && coverageSkirtDistance < input.coverageSkirtPixels) {
+    const currentLayerEnd = coverageSkirtLayerEnd;
+    while (head < currentLayerEnd) {
+      const index = queue[head];
+      head += 1;
+      const x = index % input.width;
+      const y = Math.floor(index / input.width);
+      const sourceOffset = index * 4;
+      const seedIndex = owner[index] >= 0 ? owner[index] : index;
+      for (let direction = 0; direction < EIGHT_NEIGHBOR_X.length; direction += 1) {
+        const nextX = x + EIGHT_NEIGHBOR_X[direction];
+        const nextY = y + EIGHT_NEIGHBOR_Y[direction];
+        if (nextX < 0 || nextY < 0 || nextX >= input.width || nextY >= input.height) {
+          continue;
+        }
+        const neighbor = nextY * input.width + nextX;
+        if (
+          repairedMask[neighbor] !== 0 ||
+          input.topologyMask[neighbor] === 0 ||
+          input.rgba[neighbor * 4 + 3] > input.coverageSkirtMaxInputAlpha
+        ) {
+          continue;
+        }
+        if (input.topologyRegionIds) {
+          const seedRegion = input.topologyRegionIds[seedIndex];
+          const targetRegion = input.topologyRegionIds[neighbor];
+          if (!seedRegion || targetRegion !== seedRegion) continue;
+        }
+        const targetOffset = neighbor * 4;
+        filledRgba[targetOffset] = filledRgba[sourceOffset];
+        filledRgba[targetOffset + 1] = filledRgba[sourceOffset + 1];
+        filledRgba[targetOffset + 2] = filledRgba[sourceOffset + 2];
+        filledRgba[targetOffset + 3] = 255;
+        repairedMask[neighbor] = 255;
+        owner[neighbor] = seedIndex;
+        queue[tail] = neighbor;
+        tail += 1;
+        coverageSkirtPixelCount += 1;
+      }
+      if ((head & 0x3fff) === 0) checkAbort();
+    }
+    coverageSkirtLayerEnd = tail;
+    coverageSkirtDistance += 1;
+  }
+
   // Preserve straight-RGBA texture-atlas padding without expanding the layer
   // coverage. The queue is reused, so this adds one byte per texel and no extra
   // pixel-index allocation. Persistence must use the straight-RGBA PNG encoder.
   let outputBleedPixelCount = 0;
   const repairSeedCount = tail;
+  head = 0;
   let bleedDistance = 0;
   let bleedLayerEnd = tail;
   while (head < tail && bleedDistance < input.outputBleedPixels) {
@@ -895,6 +1104,7 @@ export function repairSurfaceTexture(
     topologyPixels,
     requestedPixels,
     eligibleSourcePixels,
+    sourceColorOutliersRejected,
     boundarySourcePixels,
     sourcePaddingPixels: input.sourcePaddingPixels,
     sourceExcludedPixels: excludedPixels,
@@ -904,6 +1114,8 @@ export function repairSurfaceTexture(
     unresolvedPixels: requestedPixels - repairedPixels,
     maxDistance: input.maxDistance,
     maxDistanceReached,
+    coverageSkirtPixels: input.coverageSkirtPixels,
+    coverageSkirtPixelCount,
     outputBleedPixels: input.outputBleedPixels,
     outputBleedPixelCount,
     partialComponentsDiscarded,

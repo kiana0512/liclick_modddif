@@ -12,7 +12,6 @@ import {
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
 const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
-const DEFAULT_FLAT_COLOR = '#f4f5f2';
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
 const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
 const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
@@ -428,12 +427,12 @@ const fragmentShader = `
     return mix(1.0, lit, previewLightingEnabled);
   }
 
-  vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
+  vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor, float lighting) {
     // Keep uncovered texels visually distinct from actual projected content.
     // This is display-only and does not alter the source or baked resolution.
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
-    return mix(baseSurfaceColor, hatchColor, showEmptyProjectionHatch);
+    return mix(baseSurfaceColor * lighting, hatchColor, showEmptyProjectionHatch);
   }
 
   void main() {
@@ -630,7 +629,7 @@ const fragmentShader = `
     // colors while ordinary texture layers still receive preview lighting.
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 emptyPreviewColor = mix(
-      computeProjectionEmptyPreviewColor(baseColor),
+      computeProjectionEmptyPreviewColor(baseColor, lambert),
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
       useBaseMap * baseTexel.a
     );
@@ -1176,12 +1175,12 @@ function buildStackFragmentShader(
     );
   }
 
-  vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
+  vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor, float lighting) {
     // Match the UV-layer empty-area treatment so projection gaps never look
     // like a valid white texture contribution.
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
-    return mix(baseSurfaceColor, hatchColor, showEmptyProjectionHatch);
+    return mix(baseSurfaceColor * lighting, hatchColor, showEmptyProjectionHatch);
   }
 
   float topQuality0 = 0.0;
@@ -1315,11 +1314,11 @@ function buildStackFragmentShader(
     vec3 shadedBase = ${
       features.useBaseMap
         ? `mix(
-      computeProjectionEmptyPreviewColor(baseColor * computeWhiteMembraneLight(normal)),
+      computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal)),
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
       baseTexel.a
     )`
-        : 'computeProjectionEmptyPreviewColor(baseColor * computeWhiteMembraneLight(normal))'
+        : 'computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal))'
     };
     topCoverage0 = 0.0;
     topCoverage1 = 0.0;
@@ -2892,11 +2891,14 @@ export function createDisplayModeMaterial(
     }
     const material = markGeneratedMaterial(
       new THREE.MeshStandardMaterial({
-        color: DEFAULT_FLAT_COLOR,
-        roughness: 0.96,
+        // With no visible texture this is a sculpting-style white membrane,
+        // so preserve lighting contrast instead of lifting every face with an
+        // emissive term and clipping the object into a flat white silhouette.
+        color: DEFAULT_PREVIEW_COLOR,
+        roughness: 0.78,
         metalness: 0,
-        emissive: '#ffffff',
-        emissiveIntensity: 0.04,
+        emissive: '#000000',
+        emissiveIntensity: 0,
       }),
     );
     return material;

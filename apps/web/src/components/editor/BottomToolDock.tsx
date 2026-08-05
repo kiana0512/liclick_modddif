@@ -1,5 +1,4 @@
 import {
-  Brush,
   ChevronUp,
   Eraser,
   Minus,
@@ -41,7 +40,6 @@ type BottomToolDockProps = {
     rotate: string;
     scale: string;
     layers: string;
-    brush: string;
     eraser: string;
     eraserSize: string;
     eraserHardness: string;
@@ -51,9 +49,7 @@ type BottomToolDockProps = {
     undo: string;
     redo: string;
     brushSize: string;
-    brushHardness: string;
     brushOpacity: string;
-    brushColor: string;
     resetInpaintRegion: string;
     invertInpaintRegion: string;
     selectHelp: string;
@@ -61,7 +57,6 @@ type BottomToolDockProps = {
     rotateHelp: string;
     scaleHelp: string;
     layersHelp: string;
-    brushHelp: string;
     eraserHelp: string;
     localRepaintHelp: string;
     inpaintSelectHelp: string;
@@ -82,17 +77,6 @@ const tools: Array<{
 ];
 const selectTool = tools[0];
 
-const paintSwatches = [
-  '#ffffff',
-  '#ff6b4a',
-  '#f7c948',
-  '#56d364',
-  '#3dd6ff',
-  '#8b5cf6',
-  '#f35bce',
-  '#111111',
-];
-
 export function BottomToolDock({
   mode,
   transformMode,
@@ -108,7 +92,7 @@ export function BottomToolDock({
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   const [activeMenu, setActiveMenu] = useState<
-    'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
+    'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
   const paintSettings = useSceneStore((state) => state.paintToolSettings);
   const setPaintSettings = useSceneStore((state) => state.setPaintToolSettings);
@@ -126,6 +110,10 @@ export function BottomToolDock({
     activeMenu === 'inpaint-add' ||
     activeMenu === 'inpaint-subtract' ||
     activeMenu === 'inpaint-apply';
+
+  useEffect(() => {
+    if (isTextureMode && paintTool === 'brush') onPaintToolChange('none');
+  }, [isTextureMode, onPaintToolChange, paintTool]);
 
   function toggleMenu(menu: typeof activeMenu) {
     setActiveMenu((current) => (current === menu ? undefined : menu));
@@ -232,96 +220,6 @@ export function BottomToolDock({
           {selectTool && renderTransformButton(selectTool)}
           {divider}
 
-          <span className="inline-flex">
-            {activeMenu === 'brush' && (
-              <div className="absolute bottom-full left-0 z-50 mb-2 w-[300px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-                <label className="grid gap-1.5 text-[13px] font-semibold">
-                  <span className="flex items-center justify-between">
-                    <span>{labels.brushSize}</span>
-                    <input
-                      value={paintSettings.brushSize.toFixed(1)}
-                      onChange={(event) =>
-                        setPaintSettings({ brushSize: Number(event.target.value) || 1 })
-                      }
-                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                    />
-                  </span>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="80"
-                    step="0.1"
-                    value={paintSettings.brushSize}
-                    onChange={(event) =>
-                      setPaintSettings({ brushSize: Number(event.target.value) })
-                    }
-                    className="w-full accent-[#ff8a68]"
-                  />
-                </label>
-                <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-                  <span className="flex items-center justify-between">
-                    <span>{labels.brushHardness}</span>
-                    <input
-                      value={paintSettings.brushHardness.toFixed(1)}
-                      onChange={(event) =>
-                        setPaintSettings({ brushHardness: Number(event.target.value) || 0 })
-                      }
-                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                    />
-                  </span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="0.5"
-                    value={paintSettings.brushHardness}
-                    onChange={(event) =>
-                      setPaintSettings({ brushHardness: Number(event.target.value) })
-                    }
-                    className="w-full accent-[#ff8a68]"
-                  />
-                </label>
-                <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-                  <span>{labels.brushColor}</span>
-                  <div className="grid grid-cols-[1fr_88px] items-center gap-2">
-                    <div className="flex gap-1.5">
-                      {paintSwatches.map((swatch) => (
-                        <button
-                          key={swatch}
-                          type="button"
-                          className={cn(
-                            'h-6 w-6 rounded-full border border-white/24 shadow-[0_0_0_1px_rgba(0,0,0,0.36)] transition hover:scale-105',
-                            paintSettings.color.toLowerCase() === swatch && 'ring-2 ring-white',
-                          )}
-                          style={{ backgroundColor: swatch }}
-                          onClick={() => setPaintSettings({ color: swatch })}
-                          aria-label={swatch}
-                        />
-                      ))}
-                    </div>
-                    <input
-                      value={paintSettings.color}
-                      onChange={(event) => setPaintSettings({ color: event.target.value })}
-                      className="h-8 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                    />
-                  </div>
-                </label>
-              </div>
-            )}
-            <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="B">
-              <button
-                type="button"
-                className={cn(baseButton, paintTool === 'brush' && activeMaskButton)}
-                onClick={() => {
-                  onPaintToolChange(paintTool === 'brush' ? 'none' : 'brush');
-                  toggleMenu('brush');
-                }}
-                aria-label={labels.brush}
-              >
-                <Brush className="h-4.5 w-4.5" />
-              </button>
-            </IconTooltip>
-          </span>
           <span className="inline-flex">
             {activeMenu === 'eraser' && (
               <div className="absolute bottom-full left-0 z-50 mb-2 w-[284px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
