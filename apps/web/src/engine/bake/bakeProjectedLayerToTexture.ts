@@ -233,8 +233,24 @@ function clampProgress(progress: number) {
   return Math.max(0, Math.min(1, progress));
 }
 
-function fillTransparentTexelsForViewport(imageData: ImageData) {
+const BAKE_PIXELS_PER_YIELD = 32_768;
+
+function yieldToBakeUi() {
+  const browserScheduler = (
+    globalThis as typeof globalThis & {
+      scheduler?: { yield?: () => Promise<void> };
+    }
+  ).scheduler;
+  return browserScheduler?.yield
+    ? browserScheduler.yield()
+    : new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+async function fillTransparentTexelsForViewport(imageData: ImageData) {
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
+    if (offset > 0 && offset % (BAKE_PIXELS_PER_YIELD * 4) === 0) {
+      await yieldToBakeUi();
+    }
     if (imageData.data[offset + 3] !== 0) continue;
     imageData.data[offset] = UNPROJECTED_TEXTURE_FILL[0];
     imageData.data[offset + 1] = UNPROJECTED_TEXTURE_FILL[1];
@@ -243,8 +259,11 @@ function fillTransparentTexelsForViewport(imageData: ImageData) {
   }
 }
 
-function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8Array) {
+async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8Array) {
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
+    if (offset > 0 && offset % (BAKE_PIXELS_PER_YIELD * 4) === 0) {
+      await yieldToBakeUi();
+    }
     if (imageData.data[offset + 3] > MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
     const pixelIndex = offset / 4;
     // `padUvIslandGutters(..., 'rgb-only')` marks filter-only gutter texels
@@ -281,7 +300,7 @@ function isSharpenTarget(
   return coverage ? coverage[pixelIndex] === 1 : true;
 }
 
-function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
+async function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
   if (imageData.width > MAX_CPU_SHARPEN_RESOLUTION || imageData.height > MAX_CPU_SHARPEN_RESOLUTION)
     return;
 
@@ -317,6 +336,7 @@ function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array) {
             : clampByte(original + detail * SHARPEN_AMOUNT);
       }
     }
+    if ((y + 1) % 16 === 0 && y + 1 < height) await yieldToBakeUi();
   }
 }
 
@@ -382,7 +402,7 @@ export async function bakeProjectedLayerToTexture(
   const rasterContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
   if (!rasterContext) throw new Error('Could not read UV bake canvas.');
   const rasterImage = rasterContext.getImageData(0, 0, input.resolution, input.resolution);
-  sharpenCoveredTexels(rasterImage, rasterized.coverage);
+  await sharpenCoveredTexels(rasterImage, rasterized.coverage);
   const seamResult = reconcileUvSeams(rasterImage, importedModel.group, rasterized.coverage);
   if (input.enableDilation) {
     dilateImageData(rasterImage, rasterized.coverage, dilationPixels);
@@ -399,7 +419,7 @@ export async function bakeProjectedLayerToTexture(
     layerIndex: 0,
     layerCount: 1,
   });
-  fillTransparentTexelsForViewport(rasterImage);
+  await fillTransparentTexelsForViewport(rasterImage);
   rasterContext.putImageData(rasterImage, 0, 0);
   input.onProgress?.({
     phase: 'encoding',
@@ -518,13 +538,16 @@ function insertBlendCandidate(
   if (insertAt === 0) composite.winnerLayerIds[pixelIndex] = layerId;
 }
 
-function accumulateQualityBlendLayer(
+async function accumulateQualityBlendLayer(
   composite: QualityBlendStackComposite,
   layer: ImageData,
   qualityMap: Float32Array,
   layerId: string,
 ) {
   for (let pixelIndex = 0, offset = 0; offset < layer.data.length; pixelIndex += 1, offset += 4) {
+    if (pixelIndex > 0 && pixelIndex % BAKE_PIXELS_PER_YIELD === 0) {
+      await yieldToBakeUi();
+    }
     const coverage = layer.data[offset + 3] / 255;
     if (coverage <= COVERAGE_THRESHOLD) continue;
     const quality = Math.max(qualityMap[pixelIndex], coverage * QUALITY_FLOOR_FROM_COVERAGE);
@@ -576,7 +599,7 @@ function applyColorConsistency(qualities: number[], colors: number[][]) {
   }
 }
 
-function writeQualityBlendStackComposite(
+async function writeQualityBlendStackComposite(
   composite: QualityBlendStackComposite,
   output: ImageData,
   preserveCoverageConfidenceAlpha = false,
@@ -591,6 +614,7 @@ function writeQualityBlendStackComposite(
     pixelIndex < composite.coverage.length;
     pixelIndex += 1, offset += 4
   ) {
+    if (pixelIndex > 0 && pixelIndex % 8_192 === 0) await yieldToBakeUi();
     if (!composite.coverage[pixelIndex]) continue;
     const colorOffset = pixelIndex * 3;
     let candidateCount = 0;
@@ -673,13 +697,20 @@ function writeQualityBlendStackComposite(
   return writtenTexels;
 }
 
-function applyOverlayRasters(base: ImageData, coverage: Uint8Array, overlays: OverlayRaster[]) {
+async function applyOverlayRasters(
+  base: ImageData,
+  coverage: Uint8Array,
+  overlays: OverlayRaster[],
+) {
   for (const { imageData, quality: qualityMap } of overlays) {
     for (
       let pixelIndex = 0, offset = 0;
       offset < imageData.data.length;
       pixelIndex += 1, offset += 4
     ) {
+      if (pixelIndex > 0 && pixelIndex % BAKE_PIXELS_PER_YIELD === 0) {
+        await yieldToBakeUi();
+      }
       const layerCoverage = imageData.data[offset + 3] / 255;
       if (layerCoverage <= COVERAGE_THRESHOLD) continue;
       const qualityFade = smoothstep(
@@ -822,7 +853,7 @@ async function validateGpuBakeCoverage(input: {
     if (layer.blendMode === 'overlay') {
       overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
     } else {
-      accumulateQualityBlendLayer(
+      await accumulateQualityBlendLayer(
         qualityBlendComposite,
         layerImageData,
         rasterized.quality,
@@ -830,15 +861,15 @@ async function validateGpuBakeCoverage(input: {
       );
     }
   }
-  writeQualityBlendStackComposite(qualityBlendComposite, referenceComposite);
-  applyOverlayRasters(referenceComposite, qualityBlendComposite.coverage, overlayRasters);
+  await writeQualityBlendStackComposite(qualityBlendComposite, referenceComposite);
+  await applyOverlayRasters(referenceComposite, qualityBlendComposite.coverage, overlayRasters);
   if (input.enableDilation) {
     dilateImageData(referenceComposite, qualityBlendComposite.coverage, input.dilationPixels);
   }
   if (input.outputAlpha !== 'transparent') {
-    fillTransparentTexelsForViewport(referenceComposite);
+    await fillTransparentTexelsForViewport(referenceComposite);
   } else {
-    clearWeakTransparentTexels(referenceComposite);
+    await clearWeakTransparentTexels(referenceComposite);
   }
 
   const gpuCoverage = downsampleCoverage(
@@ -1040,7 +1071,7 @@ export async function bakeVisibleProjectedLayersToTexture(
               quality: raster.quality,
             });
           } else {
-            accumulateQualityBlendLayer(
+            await accumulateQualityBlendLayer(
               qualityBlendComposite,
               layerImageData,
               raster.quality,
@@ -1049,21 +1080,21 @@ export async function bakeVisibleProjectedLayersToTexture(
           }
         }
 
-        const blendWrittenTexels = writeQualityBlendStackComposite(
+        const blendWrittenTexels = await writeQualityBlendStackComposite(
           qualityBlendComposite,
           composite,
           input.preserveCoverageConfidenceAlpha,
         );
-        applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+        await applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
         if (input.outputAlpha === 'transparent') {
-          clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+          await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
         }
         for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
           if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
         }
         if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
         if (input.outputAlpha !== 'transparent') {
-          sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+          await sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
         }
         if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
           const seamResult = reconcileUvSeams(
@@ -1118,8 +1149,8 @@ export async function bakeVisibleProjectedLayersToTexture(
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
           }
         }
-        if (input.outputAlpha !== 'transparent') fillTransparentTexelsForViewport(composite);
-        else clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+        if (input.outputAlpha !== 'transparent') await fillTransparentTexelsForViewport(composite);
+        else await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
         context.putImageData(composite, 0, 0);
 
         input.onProgress?.({
@@ -1246,9 +1277,9 @@ export async function bakeVisibleProjectedLayersToTexture(
         if (!gpuContext) throw new Error('Could not read GPU UV bake canvas.');
         const gpuImage = gpuContext.getImageData(0, 0, input.resolution, input.resolution);
         if (wantsTransparentOutput) {
-          clearWeakTransparentTexels(gpuImage, gpuBake.coverage);
+          await clearWeakTransparentTexels(gpuImage, gpuBake.coverage);
         }
-        if (needsCpuSharpen) sharpenCoveredTexels(gpuImage, gpuBake.coverage);
+        if (needsCpuSharpen) await sharpenCoveredTexels(gpuImage, gpuBake.coverage);
         if (!wantsTransparentOutput || input.repairMissingUvSeams) {
           const seamResult = reconcileUvSeams(
             gpuImage,
@@ -1307,8 +1338,8 @@ export async function bakeVisibleProjectedLayersToTexture(
             );
           }
         }
-        if (needsCpuViewportFill) fillTransparentTexelsForViewport(gpuImage);
-        else if (wantsTransparentOutput) clearWeakTransparentTexels(gpuImage, gpuBake.coverage);
+        if (needsCpuViewportFill) await fillTransparentTexelsForViewport(gpuImage);
+        else if (wantsTransparentOutput) await clearWeakTransparentTexels(gpuImage, gpuBake.coverage);
         gpuContext.putImageData(gpuImage, 0, 0);
         straightRgbaImageData = gpuImage;
       }
@@ -1507,7 +1538,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     if (layer.blendMode === 'overlay') {
       overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
     } else {
-      accumulateQualityBlendLayer(
+      await accumulateQualityBlendLayer(
         qualityBlendComposite,
         layerImageData,
         rasterized.quality,
@@ -1536,14 +1567,14 @@ export async function bakeVisibleProjectedLayersToTexture(
       'No readable projected layers could be baked. Regenerate or re-add the projected layers whose images are missing.',
     );
   }
-  const blendWrittenTexels = writeQualityBlendStackComposite(
+  const blendWrittenTexels = await writeQualityBlendStackComposite(
     qualityBlendComposite,
     composite,
     input.preserveCoverageConfidenceAlpha,
   );
-  applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+  await applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
   if (input.outputAlpha === 'transparent') {
-    clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+    await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
   }
   let writtenTexels = 0;
   for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
@@ -1551,7 +1582,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   }
   if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
   if (input.outputAlpha !== 'transparent') {
-    sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+    await sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
   }
   if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
     const seamResult = reconcileUvSeams(
@@ -1607,9 +1638,9 @@ export async function bakeVisibleProjectedLayersToTexture(
     }
   }
   if (input.outputAlpha !== 'transparent') {
-    fillTransparentTexelsForViewport(composite);
+    await fillTransparentTexelsForViewport(composite);
   } else {
-    clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+    await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
   }
   context.putImageData(composite, 0, 0);
   input.onProgress?.({

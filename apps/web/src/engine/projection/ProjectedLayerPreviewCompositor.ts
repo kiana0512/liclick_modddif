@@ -3,7 +3,9 @@ import { loadProjectedTexture } from './ProjectedLayerMaterial';
 import { buildProjectionMatrixBundle } from './projectionMath';
 import type { ProjectionLayerStackInput } from './projectionTypes';
 
-const TILE_SIZE = 1024;
+// Smaller tiles preserve the exact output resolution while bounding the cost of
+// each individual GPU pass on slower devices.
+const TILE_SIZE = 512;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;

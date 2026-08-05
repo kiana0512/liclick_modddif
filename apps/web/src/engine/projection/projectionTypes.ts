@@ -52,6 +52,8 @@ export type ProjectionLayerInput = {
   hue?: number;
   saturation?: number;
   lightness?: number;
+  normalPreview?: boolean;
+  wirePreview?: boolean;
   previewLighting?: ProjectionPreviewLighting;
 };
 

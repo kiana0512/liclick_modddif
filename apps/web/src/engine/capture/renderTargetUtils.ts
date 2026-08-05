@@ -8,6 +8,13 @@ type RenderSceneToPngOptions = {
   dataTexture?: boolean;
   samples?: number;
   ignoreSceneBackground?: boolean;
+  /**
+   * Runs as soon as the offscreen render and readback have been submitted,
+   * before this function yields while waiting for the pixels. Callers that
+   * temporarily mutate the live scene can restore it here so the viewport
+   * never presents the capture-only materials or visibility state.
+   */
+  onRenderSubmitted?: () => void;
 };
 
 let displayOutputPass: OutputPass | undefined;
@@ -75,6 +82,7 @@ export async function renderSceneToPngUrl(
     request.scene.background = previousBackground;
     request.gl.setRenderTarget(previousTarget);
     request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    options.onRenderSubmitted?.();
     await readbackPromise;
   } finally {
     request.scene.background = previousBackground;

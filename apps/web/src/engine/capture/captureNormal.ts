@@ -43,7 +43,7 @@ export async function captureNormal(
 
   try {
     return {
-      url: await renderSceneToPngUrl(request),
+      url: await renderSceneToPngUrl(request, { onRenderSubmitted: restore }),
       warnings: [],
     };
   } finally {

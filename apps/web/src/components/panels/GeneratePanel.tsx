@@ -434,6 +434,12 @@ function isLocalRepaintGeneration(generation: Generation) {
   return generation.metadata.workflow === 'local-repaint';
 }
 
+function getGenerationChannel(generation: Generation): GenerateTab {
+  if (isTextureMapGeneration(generation)) return 'multiview';
+  if (isLocalRepaintGeneration(generation)) return 'repaint';
+  return 'single';
+}
+
 function generationMatchesTab(generation: Generation, tab: GenerateTab) {
   if (tab === 'multiview') return isTextureMapGeneration(generation);
   if (tab === 'repaint') return isLocalRepaintGeneration(generation);
@@ -620,7 +626,21 @@ export function GeneratePanel() {
   const [capturingCameraViews, setCapturingCameraViews] = useState<Set<string>>(() => new Set());
   const cameraViewPreviewsRef = useRef<CameraViewPreviewMap>({});
   const capturingCameraViewsRef = useRef<Set<string>>(new Set());
-  const [generateNotice, setGenerateNotice] = useState<GenerateNotice | undefined>();
+  const [generateNotices, setGenerateNotices] = useState<
+    Partial<Record<GenerateTab, GenerateNotice>>
+  >({});
+  const generateNotice = generateNotices[tab];
+  const setGenerateNotice = useCallback(
+    (notice: GenerateNotice | undefined) => {
+      setGenerateNotices((current) => {
+        const next = { ...current };
+        if (notice) next[tab] = notice;
+        else delete next[tab];
+        return next;
+      });
+    },
+    [tab],
+  );
   const [cancelConfirmGeneration, setCancelConfirmGeneration] = useState<Generation | undefined>();
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
@@ -708,10 +728,12 @@ export function GeneratePanel() {
     if (authStatus !== 'authenticated' || !usesPersonalLiclickAccount(providerStatus)) return;
     void getPersonalLiclickAccountStatus().catch(() => undefined);
   }, [authStatus, providerStatus]);
-  const submitLockRef = useRef(false);
+  // Each workflow owns its submission lifecycle. A repaint request must not
+  // block texture-map or ordinary image generation (and vice versa).
+  const submitLocksRef = useRef(new Set<GenerateTab>());
   const cancelledGenerationIdsRef = useRef(new Set<string>());
   const generationPollFailureCountsRef = useRef(new Map<string, number>());
-  const comfyGenerationAbortRef = useRef<AbortController | undefined>();
+  const generationAbortControllersRef = useRef(new Map<string, AbortController>());
   const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const tabGenerations = generations.filter((generation) => {
@@ -1031,7 +1053,7 @@ export function GeneratePanel() {
         dedupeKey: `generation-failed:${generationToFail.id}`,
       });
     },
-    [finish, pushToast, syncGeneration, t],
+    [finish, pushToast, setGenerateNotice, syncGeneration, t],
   );
 
   const captureTextureMapCameraView = useCallback(
@@ -1488,7 +1510,8 @@ export function GeneratePanel() {
       generationToCancel.metadata.provider === 'modelview-seedvr2';
     cancelledGenerationIdsRef.current.add(generationToCancel.id);
     cancelledGenerationIdsRef.current.add(jobId);
-    if (isComfyGeneration || isModelviewGeneration) comfyGenerationAbortRef.current?.abort();
+    generationAbortControllersRef.current.get(generationToCancel.id)?.abort();
+    generationAbortControllersRef.current.delete(generationToCancel.id);
     const cancelledGeneration: Generation = {
       ...generationToCancel,
       status: 'failed',
@@ -1503,7 +1526,7 @@ export function GeneratePanel() {
         completedAt: new Date().toISOString(),
       },
     };
-    submitLockRef.current = false;
+    submitLocksRef.current.delete(getGenerationChannel(generationToCancel));
     syncGeneration(cancelledGeneration);
     finish();
     setGenerateNotice({
@@ -2092,7 +2115,7 @@ export function GeneratePanel() {
       });
       return;
     }
-    if (submitLockRef.current || previewIsGenerating) {
+    if (submitLocksRef.current.has('multiview') || previewIsGenerating) {
       pushToast({ tone: 'warning', title: '当前已有生图任务在运行，请完成后再试。' });
       return;
     }
@@ -2104,12 +2127,12 @@ export function GeneratePanel() {
     const materialReference = activeReferences.find(
       (reference) => reference.id === activeSelectedReferenceIds[0],
     );
-    if (!materialReference || submitLockRef.current) return;
+    if (!materialReference || submitLocksRef.current.has('multiview')) return;
     const cubeViews = createCameraViewsForPreset('preset-1', t);
     setSelectedCameraViewPreset('preset-1');
     setCameraViews(cubeViews);
     setActiveCameraViewId(cubeViews[0]?.id ?? '');
-    submitLockRef.current = true;
+    submitLocksRef.current.add('multiview');
     try {
       await handleTextureMapMultiviewGenerate(materialReference, cubeViews);
     } catch (error) {
@@ -2121,20 +2144,21 @@ export function GeneratePanel() {
         dedupeKey: `ai-one-click-failed:${message}`,
       });
     } finally {
-      submitLockRef.current = false;
+      submitLocksRef.current.delete('multiview');
       finish();
     }
   }
 
   async function handleLocalRepaintGenerate() {
     let pendingGeneration: Generation | undefined;
+    let requestAbortController: AbortController | undefined;
     try {
-      if (submitLockRef.current || previewIsGenerating) {
+      if (submitLocksRef.current.has('repaint') || previewIsGenerating) {
         setGenerateNotice({
           tone: 'warning',
-          message: '当前工程已有生图任务在运行，请等待任务完成。',
+          message: '当前工程已有局部重绘任务在运行，请等待该任务完成。',
         });
-        pushToast({ tone: 'warning', title: '当前已有生图任务在运行，请完成后再试。' });
+        pushToast({ tone: 'warning', title: '当前已有局部重绘任务在运行，请完成后再试。' });
         return;
       }
       if (!currentProject || !captureObjectId) throw new Error(t('importModelFirst'));
@@ -2148,7 +2172,7 @@ export function GeneratePanel() {
         });
         return;
       }
-      submitLockRef.current = true;
+      submitLocksRef.current.add('repaint');
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return;
       const objectId = captureObjectId;
       // The selection accumulates camera-specific projections instead of using
@@ -2195,8 +2219,8 @@ export function GeneratePanel() {
         tone: 'info',
         message: '正在把当前视角和蒙版提交到 ModelView 局部重绘。',
       });
-      const abortController = new AbortController();
-      comfyGenerationAbortRef.current = abortController;
+      requestAbortController = new AbortController();
+      generationAbortControllersRef.current.set(generationId, requestAbortController);
       const inputImage = await createComfyInpaintInputImage(
         capture.colorUrl,
         currentPaintMaskDataUrl,
@@ -2212,7 +2236,7 @@ export function GeneratePanel() {
           objectId,
           image: { path: 'input-with-mask.png', dataUrl: inputImage },
         },
-        { signal: abortController.signal },
+        { signal: requestAbortController.signal },
       );
       if (isCancelledGeneration(pendingGeneration)) return;
       let localResultUrl = generation.resultUrl;
@@ -2260,8 +2284,13 @@ export function GeneratePanel() {
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: t('localRepaintFailed'), description: message });
     } finally {
-      comfyGenerationAbortRef.current = undefined;
-      submitLockRef.current = false;
+      if (
+        pendingGeneration &&
+        generationAbortControllersRef.current.get(pendingGeneration.id) === requestAbortController
+      ) {
+        generationAbortControllersRef.current.delete(pendingGeneration.id);
+      }
+      submitLocksRef.current.delete('repaint');
       finish();
     }
   }
@@ -2277,7 +2306,7 @@ export function GeneratePanel() {
     }
     let pendingGeneration: Generation | undefined;
     try {
-      if (submitLockRef.current || previewIsGenerating) {
+      if (submitLocksRef.current.has('single') || previewIsGenerating) {
         setGenerateNotice({
           tone: 'warning',
           message: '当前工程已有莉刻生图任务在运行，完成前不能再次提交。',
@@ -2290,7 +2319,7 @@ export function GeneratePanel() {
         });
         return;
       }
-      submitLockRef.current = true;
+      submitLocksRef.current.add('single');
       if (!(await requirePersonalLiclickAccount())) return;
       const submittedPrompt = buildMultiviewPrompt(prompt);
       const generationId = createId('liclick-image');
@@ -2395,19 +2424,19 @@ export function GeneratePanel() {
         description: message,
       });
     } finally {
-      submitLockRef.current = false;
+      submitLocksRef.current.delete('single');
     }
   }
 
   async function handleTextureMapGenerate() {
     let pendingGeneration: Generation | undefined;
     try {
-      if (submitLockRef.current || previewIsGenerating) {
+      if (submitLocksRef.current.has('multiview') || previewIsGenerating) {
         setGenerateNotice({
           tone: 'warning',
-          message: '当前工程已有莉刻生图任务在运行，完成前不能再次提交。',
+          message: '当前工程已有纹理贴图任务在运行，完成前不能再次提交同类任务。',
         });
-        pushToast({ tone: 'warning', title: '当前已有生图任务在运行，请完成后再试。' });
+        pushToast({ tone: 'warning', title: '当前已有纹理贴图任务在运行，请完成后再试。' });
         return;
       }
       const materialReference = activeReferences.find(
@@ -2426,7 +2455,7 @@ export function GeneratePanel() {
         });
         return;
       }
-      submitLockRef.current = true;
+      submitLocksRef.current.add('multiview');
       if (textureMapViewMode === 'multi-view') {
         await handleTextureMapMultiviewGenerate(materialReference);
         return;
@@ -2557,8 +2586,7 @@ export function GeneratePanel() {
         description: message,
       });
     } finally {
-      comfyGenerationAbortRef.current = undefined;
-      submitLockRef.current = false;
+      submitLocksRef.current.delete('multiview');
     }
   }
 

@@ -2705,7 +2705,12 @@ function SurfacePaintOverlay() {
             clearColor: '#000000',
             clearAlpha: 0,
           },
-          { dataTexture: true, ignoreSceneBackground: true, samples: 0 },
+          {
+            dataTexture: true,
+            ignoreSceneBackground: true,
+            samples: 0,
+            onRenderSubmitted: restoreScene,
+          },
         );
         const projectedImage = await loadImageElement(projectedUrl);
         combinedContext.drawImage(projectedImage, 0, 0, width, height);

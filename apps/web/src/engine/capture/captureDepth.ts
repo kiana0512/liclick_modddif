@@ -68,7 +68,12 @@ export async function captureDepth(request: CapturePassRequest): Promise<Capture
     return {
       url: await renderSceneToPngUrl(
         { ...request, clearColor: '#ffffff', clearAlpha: 1 },
-        { dataTexture: true, samples: 0, ignoreSceneBackground: true },
+        {
+          dataTexture: true,
+          samples: 0,
+          ignoreSceneBackground: true,
+          onRenderSubmitted: restore,
+        },
       ),
       warnings: [],
     };

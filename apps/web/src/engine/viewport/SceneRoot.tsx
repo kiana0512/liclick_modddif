@@ -1476,7 +1476,9 @@ function ImportedModel({
     const interaction = projectedPreviewInteractionRef.current;
     const isInteracting =
       interaction.pointerDown || performance.now() - interaction.lastMovedAt < 140;
-    projectedPreviewCompositorRef.current?.step(isInteracting ? 1.25 : 5, isInteracting ? 1 : 4);
+    // CPU timing around renderer.render() does not include queued GPU work. Cap
+    // operation count too, so background composition cannot flood the GPU queue.
+    projectedPreviewCompositorRef.current?.step(isInteracting ? 1 : 2.5, isInteracting ? 1 : 2);
     if (stableVisibleProjectedLayers.length === 0) {
       lastProjectedTransformRef.current = undefined;
       return;

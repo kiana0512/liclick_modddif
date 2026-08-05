@@ -1038,6 +1038,8 @@ function buildStackFragmentShader(
   uniform vec3 keyLightDirection;
   uniform vec3 baseColor;
   uniform float showEmptyProjectionHatch;
+  uniform float normalPreviewEnabled;
+  uniform float wirePreviewEnabled;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
   varying vec2 vUv;
@@ -1154,8 +1156,24 @@ function buildStackFragmentShader(
   float computePreviewLight(vec3 normal) {
     vec3 lightDir = normalize(keyLightDirection);
     float diffuse = max(dot(normal, lightDir), 0.0);
-    float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
+    // Match the restrained white-membrane response so enabling PBR adds
+    // surface depth without lifting the source texture colours.
+    float lit = clamp(
+      ambientLightIntensity * 0.85 + diffuse * keyLightIntensity * 0.40,
+      0.0,
+      1.1
+    );
     return mix(1.0, lit, previewLightingEnabled);
+  }
+
+  float computeWhiteMembraneLight(vec3 normal) {
+    vec3 lightDir = normalize(keyLightDirection);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    return clamp(
+      ambientLightIntensity * 0.85 + diffuse * keyLightIntensity * 0.40,
+      0.0,
+      1.1
+    );
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor) {
@@ -1297,11 +1315,11 @@ function buildStackFragmentShader(
     vec3 shadedBase = ${
       features.useBaseMap
         ? `mix(
-      computeProjectionEmptyPreviewColor(baseColor),
+      computeProjectionEmptyPreviewColor(baseColor * computeWhiteMembraneLight(normal)),
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
       baseTexel.a
     )`
-        : 'computeProjectionEmptyPreviewColor(baseColor)'
+        : 'computeProjectionEmptyPreviewColor(baseColor * computeWhiteMembraneLight(normal))'
     };
     topCoverage0 = 0.0;
     topCoverage1 = 0.0;
@@ -1375,6 +1393,15 @@ function buildStackFragmentShader(
         ? 'gl_FragDepth = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
         : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
     }
+    if (normalPreviewEnabled > 0.5) {
+      gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
+      return;
+    }
+    mixedColor = mix(
+      mixedColor,
+      baseColor * computeWhiteMembraneLight(normal),
+      wirePreviewEnabled
+    );
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -1546,6 +1573,8 @@ function updateLayerDisplayUniforms(
 export function syncProjectedLayerMaterialDisplayState(
   material: THREE.Material | THREE.Material[] | undefined,
   layers: ProjectionLayerStackInput['layers'],
+  normalPreview = false,
+  wirePreview = false,
 ) {
   const materials = Array.isArray(material) ? material : material ? [material] : [];
   const layerById = new Map(layers.map((layer) => [layer.layerId, layer]));
@@ -1571,6 +1600,12 @@ export function syncProjectedLayerMaterialDisplayState(
         ? 1
         : 0;
     }
+    if (candidate.uniforms.normalPreviewEnabled) {
+      candidate.uniforms.normalPreviewEnabled.value = normalPreview ? 1 : 0;
+    }
+    if (candidate.uniforms.wirePreviewEnabled) {
+      candidate.uniforms.wirePreviewEnabled.value = wirePreview ? 1 : 0;
+    }
     updated = true;
   }
 
@@ -1580,6 +1615,8 @@ export function syncProjectedLayerMaterialDisplayState(
 export function syncProjectedLayerMaterialDisplayStateInObject(
   root: THREE.Object3D,
   layers: ProjectionLayerStackInput['layers'],
+  normalPreview = false,
+  wirePreview = false,
 ) {
   const visited = new Set<THREE.Material>();
   let updated = false;
@@ -1589,7 +1626,13 @@ export function syncProjectedLayerMaterialDisplayStateInObject(
     for (const material of materials) {
       if (visited.has(material)) continue;
       visited.add(material);
-      updated = syncProjectedLayerMaterialDisplayState(material, layers) || updated;
+      updated =
+        syncProjectedLayerMaterialDisplayState(
+          material,
+          layers,
+          normalPreview,
+          wirePreview,
+        ) || updated;
     }
   });
   return updated;
@@ -1651,6 +1694,10 @@ function updateSharedPreviewUniforms(
     )
       ? 1
       : 0;
+  if (material.uniforms.normalPreviewEnabled)
+    material.uniforms.normalPreviewEnabled.value = input.normalPreview ? 1 : 0;
+  if (material.uniforms.wirePreviewEnabled)
+    material.uniforms.wirePreviewEnabled.value = input.wirePreview ? 1 : 0;
   if (material.uniforms.previewLightingEnabled)
     material.uniforms.previewLightingEnabled.value = previewLighting.enabled;
   if (material.uniforms.previewExposure)
@@ -1802,6 +1849,117 @@ function yieldProjectedArrayUploadFrame() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+type ProjectedArrayPreviewSize = {
+  width: number;
+  height: number;
+};
+
+async function packProjectedTextureArrayInWorker(
+  sources: Array<THREE.Texture | undefined>,
+  previewSizes: Array<ProjectedArrayPreviewSize | undefined>,
+  profile: ProjectedTextureProfile,
+  width: number,
+  height: number,
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  if (
+    typeof Worker === 'undefined' ||
+    typeof OffscreenCanvas === 'undefined' ||
+    typeof createImageBitmap === 'undefined'
+  ) {
+    return undefined;
+  }
+
+  const bitmaps = await mapWithConcurrency(sources, 2, async (source) =>
+    source ? createImageBitmap(source.image as ImageBitmapSource) : undefined,
+  );
+  return new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
+    const worker = new Worker(
+      new URL('../../workers/packProjectedTextureArray.worker.ts', import.meta.url),
+      { type: 'module' },
+    );
+    const finish = () => worker.terminate();
+    worker.onmessage = (event: MessageEvent<{ buffer?: ArrayBuffer; error?: string }>) => {
+      finish();
+      if (event.data.error || !event.data.buffer) {
+        reject(new Error(event.data.error ?? 'Projected texture-array worker returned no pixels.'));
+        return;
+      }
+      resolve(new Uint8Array(event.data.buffer));
+    };
+    worker.onerror = (event) => {
+      finish();
+      bitmaps.forEach((bitmap) => bitmap?.close());
+      reject(new Error(event.message || 'Projected texture-array worker failed.'));
+    };
+    const packedSources = bitmaps.map((bitmap, index) => ({
+      bitmap,
+      previewWidth: previewSizes[index]?.width ?? 1,
+      previewHeight: previewSizes[index]?.height ?? 1,
+    }));
+    worker.postMessage(
+      { width, height, profile, sources: packedSources },
+      bitmaps.filter((bitmap): bitmap is ImageBitmap => Boolean(bitmap)),
+    );
+  });
+}
+
+async function packProjectedTextureArrayOnMainThread(
+  sources: Array<THREE.Texture | undefined>,
+  sourceSizes: Array<ProjectedArrayPreviewSize | undefined>,
+  previewSizes: Array<ProjectedArrayPreviewSize | undefined>,
+  profile: ProjectedTextureProfile,
+  width: number,
+  height: number,
+  isCancelled?: () => boolean,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const uploadCanvas = document.createElement('canvas');
+  uploadCanvas.width = width;
+  uploadCanvas.height = height;
+  const uploadContext = uploadCanvas.getContext('2d', {
+    alpha: true,
+    willReadFrequently: true,
+  });
+  if (!uploadContext) throw new Error('Could not prepare projected texture-array upload.');
+  uploadContext.imageSmoothingEnabled = profile !== 'depth' && profile !== 'normal';
+  uploadContext.imageSmoothingQuality = 'high';
+
+  const sliceByteLength = width * height * 4;
+  const textureData = new Uint8Array(sliceByteLength * sources.length);
+  let uploadedPixelsThisFrame = 0;
+  for (let index = 0; index < sources.length; index += 1) {
+    if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+    const source = sources[index];
+    const size = sourceSizes[index];
+    const previewSize = previewSizes[index];
+    if (!source || !size || !previewSize) continue;
+
+    uploadContext.clearRect(0, 0, width, height);
+    uploadContext.drawImage(
+      source.image as CanvasImageSource,
+      0,
+      0,
+      size.width,
+      size.height,
+      0,
+      0,
+      previewSize.width,
+      previewSize.height,
+    );
+    textureData.set(uploadContext.getImageData(0, 0, width, height).data, index * sliceByteLength);
+
+    uploadedPixelsThisFrame += previewSize.width * previewSize.height;
+    if (
+      uploadedPixelsThisFrame >= PROJECTED_ARRAY_FRAME_PIXEL_BUDGET &&
+      index < sources.length - 1
+    ) {
+      uploadedPixelsThisFrame = 0;
+      await yieldProjectedArrayUploadFrame();
+      if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+    }
+  }
+  return textureData;
+}
+
 function clearWebGlErrors(context: WebGL2RenderingContext) {
   while (context.getError() !== context.NO_ERROR) {
     // Clear stale renderer errors so allocation/upload checks only observe this operation.
@@ -1858,56 +2016,38 @@ async function createProjectedTextureArray(
     );
   }
 
-  // Pack the slices on the CPU before creating the GPU array. The previous path
-  // allocated an empty DataArrayTexture and copied existing WebGL textures into
-  // it with copyTextureToTexture(). That copy is driver-sensitive (especially
-  // for sRGB, depth and normal textures) and could leave stale or mismatched
-  // slices as soon as the preview switched to the high-capacity path.
-  const uploadCanvas = document.createElement('canvas');
-  uploadCanvas.width = width;
-  uploadCanvas.height = height;
-  const uploadContext = uploadCanvas.getContext('2d', {
-    alpha: true,
-    willReadFrequently: true,
-  });
-  if (!uploadContext) throw new Error('Could not prepare projected texture-array upload.');
-  uploadContext.imageSmoothingEnabled = profile !== 'depth' && profile !== 'normal';
-  uploadContext.imageSmoothingQuality = 'high';
-
-  const sliceByteLength = width * height * 4;
-  const textureData = new Uint8Array(sliceByteLength * sources.length);
-  let uploadedPixelsThisFrame = 0;
-  for (let index = 0; index < sources.length; index += 1) {
-    if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
-    const source = sources[index];
-    const size = sourceSizes[index];
-    const previewSize = previewSizes[index];
-    if (!source || !size || !previewSize) continue;
-
-    uploadContext.clearRect(0, 0, width, height);
-    uploadContext.drawImage(
-      source.image as CanvasImageSource,
-      0,
-      0,
-      size.width,
-      size.height,
-      0,
-      0,
-      previewSize.width,
-      previewSize.height,
+  // Pixel readback and array packing are CPU-heavy even though the destination
+  // is a GPU texture. Keep that work off the UI thread when worker canvas support
+  // is available, with the old yielding path retained for compatibility.
+  let textureData: Uint8Array<ArrayBuffer> | undefined;
+  try {
+    textureData = await packProjectedTextureArrayInWorker(
+      sources,
+      previewSizes,
+      profile,
+      width,
+      height,
     );
-    textureData.set(uploadContext.getImageData(0, 0, width, height).data, index * sliceByteLength);
-
-    uploadedPixelsThisFrame += previewSize.width * previewSize.height;
-    if (
-      uploadedPixelsThisFrame >= PROJECTED_ARRAY_FRAME_PIXEL_BUDGET &&
-      index < sources.length - 1
-    ) {
-      uploadedPixelsThisFrame = 0;
-      await yieldProjectedArrayUploadFrame();
-      if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
-    }
+  } catch (error) {
+    console.warn(
+      '[Liclick 3D Texture] Projected texture worker unavailable; using the yielding main-thread packer.',
+      error,
+    );
   }
+  textureData ??= await packProjectedTextureArrayOnMainThread(
+    sources,
+    sourceSizes,
+    previewSizes,
+    profile,
+    width,
+    height,
+    isCancelled,
+  );
+  if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+
+  // Separate the transferred CPU buffer from the unavoidable WebGL upload so
+  // input and rendering get an opportunity to present first.
+  await yieldProjectedArrayUploadFrame();
 
   const texture = new THREE.DataArrayTexture(textureData, width, height, sources.length);
   texture.name = `LiclickProjected${profile[0].toUpperCase()}${profile.slice(1)}Array`;
@@ -1923,12 +2063,25 @@ async function createProjectedTextureArray(
   // images remain untouched and export/bake paths still use their full resolution.
   texture.generateMipmaps = false;
   texture.anisotropy = 1;
+  // Allocate the immutable array storage first, then let Three.js upload one
+  // full-quality layer at a time. This uses DataArrayTexture's supported partial
+  // update API and avoids one monolithic 64+ MiB transfer on the render thread.
+  texture.source.dataReady = false;
   texture.needsUpdate = true;
 
   try {
     clearWebGlErrors(context);
     renderer.initTexture(texture);
-    assertNoProjectedArrayWebGlError(context, 'upload');
+    assertNoProjectedArrayWebGlError(context, 'allocation');
+    texture.source.dataReady = true;
+    for (let layerIndex = 0; layerIndex < sources.length; layerIndex += 1) {
+      if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+      texture.addLayerUpdate(layerIndex);
+      texture.needsUpdate = true;
+      renderer.initTexture(texture);
+      assertNoProjectedArrayWebGlError(context, 'upload');
+      if (layerIndex < sources.length - 1) await yieldProjectedArrayUploadFrame();
+    }
     const textureProperties = renderer.properties.get(texture) as {
       __webglTexture?: WebGLTexture;
     };
@@ -1936,6 +2089,7 @@ async function createProjectedTextureArray(
       throw new Error('Could not upload projected texture array storage.');
     }
   } catch (error) {
+    texture.source.dataReady = true;
     texture.dispose();
     throw error;
   }
@@ -2133,6 +2287,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
       showEmptyProjectionHatch: { value: input.visible ? 1 : 0 },
+      normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
+      wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
@@ -2265,6 +2421,8 @@ export async function createProjectedLayerStackMaterial(
     depthBias: { value: input.depthBias ?? 0.025 },
     baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
     showEmptyProjectionHatch: { value: input.layers.some((layer) => layer.visible) ? 1 : 0 },
+    normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
+    wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
     baseMap: { value: input.baseTexture ?? neutralTexture },
     baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
     uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },

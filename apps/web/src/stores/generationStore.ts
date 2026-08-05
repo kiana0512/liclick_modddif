@@ -62,7 +62,12 @@ export const useGenerationStore = create<GenerationStore>()(
             isGenerating: true,
           };
         }),
-      finish: () => set({ isGenerating: false }),
+      finish: () =>
+        set((state) => ({
+          isGenerating: state.generations.some((generation) =>
+            isActiveGenerationRunning(generation),
+          ),
+        })),
       addGeneration: (generation) =>
         set((state) => {
           const generations = upsertGenerationByIdentity(state.generations, generation);

@@ -224,7 +224,7 @@ async function captureClayTarget(passRequest: CapturePassRequest) {
           clearColor: '#f7f7f3',
           clearAlpha: 1,
         },
-        { applyDisplayTransform: true },
+        { applyDisplayTransform: true, onRenderSubmitted: restore },
       ),
       warnings: [],
     };
@@ -243,7 +243,7 @@ async function captureTargetOnly(passRequest: CapturePassRequest) {
           clearColor: '#eeeeec',
           clearAlpha: 1,
         },
-        { applyDisplayTransform: true },
+        { applyDisplayTransform: true, onRenderSubmitted: restore },
       ),
       warnings: [],
     };
