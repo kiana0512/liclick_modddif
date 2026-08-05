@@ -125,3 +125,43 @@ test('competing source pixels inside one donor region cannot split a gap into tw
   assert.equal(result.stats.sourceRegionLockedComponents, 1);
   assert.equal(result.stats.sourceRegionReassignedPixels, 2);
 });
+
+test('dominant-source locking visits one connected gap only once', () => {
+  const width = 64;
+  const rgba = new Uint8ClampedArray(width * 4);
+  const writeMask = new Uint8Array(width);
+  const topologyMask = new Uint8Array(width).fill(1);
+  const topologyRegionIds = new Uint32Array(width).fill(1);
+  setPixel(rgba, 0, [220, 45, 30]);
+  setPixel(rgba, width - 1, [35, 70, 215]);
+  writeMask.fill(255, 1, width - 1);
+
+  const lockingProgress = [];
+  const result = repairSurfaceTexture(
+    {
+      width,
+      height: 1,
+      rgba,
+      writeMask,
+      topologyMask,
+      topologyRegionIds,
+      sourcePaddingPixels: 0,
+      maxDistance: width,
+      minSourceAlpha: 250,
+      connectivity: 4,
+      outputBleedPixels: 0,
+      requireCompleteComponents: false,
+      lockToDominantSourceRegion: true,
+    },
+    {
+      progressStride: 1,
+      onProgress(progress) {
+        if (progress.phase === 'locking-source-region') lockingProgress.push(progress);
+      },
+    },
+  );
+
+  assert.equal(result.stats.repairedPixels, width - 2);
+  assert.equal(lockingProgress.length, 2, 'one component report plus the final phase report');
+  assert.equal(lockingProgress.at(-1).completed, width);
+});

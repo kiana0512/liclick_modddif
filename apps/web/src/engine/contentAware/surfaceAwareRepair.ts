@@ -528,9 +528,6 @@ function lockGapComponentsToDominantSourceRegion(
     }
 
     if (!dominantRegion) {
-      for (let queueIndex = 0; queueIndex < componentSize; queueIndex += 1) {
-        scratchMask[queue[queueIndex]] = 0;
-      }
       report('locking-source-region', 0.85, 0.03, start + 1, input.pixelCount);
       continue;
     }
@@ -560,9 +557,6 @@ function lockGapComponentsToDominantSourceRegion(
     }
 
     if (dominantSource < 0) {
-      for (let queueIndex = 0; queueIndex < componentSize; queueIndex += 1) {
-        scratchMask[queue[queueIndex]] = 0;
-      }
       report('locking-source-region', 0.85, 0.03, start + 1, input.pixelCount);
       continue;
     }
@@ -574,12 +568,17 @@ function lockGapComponentsToDominantSourceRegion(
       if (previousSource < 0) extendedPixels += 1;
       else if (previousSource !== dominantSource) reassignedPixels += 1;
       owner[index] = dominantSource;
-      scratchMask[index] = 0;
       if ((queueIndex & 0x3fff) === 0) checkAbort();
     }
     report('locking-source-region', 0.85, 0.03, start + 1, input.pixelCount);
   }
 
+  // Keep component pixels marked until the outer scan finishes. Clearing a
+  // component immediately makes every later pixel in the same gap start the
+  // complete flood again, turning a large connected repair from O(N) into
+  // O(N²). The buffer is also used by the later completeness/write passes, so
+  // restore it once after every component has been visited exactly once.
+  scratchMask.fill(0);
   report('locking-source-region', 0.85, 0.03, input.pixelCount, input.pixelCount, true);
   return { lockedComponents, reassignedPixels, extendedPixels };
 }
