@@ -384,6 +384,7 @@ export async function handleWebOAuthCallback(
             openId,
             displayName: directoryProfile.name || profile.displayName,
             email: directoryProfile.email ?? profile.email,
+            avatarUrl: directoryProfile.avatarUrl ?? profile.avatarUrl,
             department: directoryProfile.department ?? profile.department,
           };
         }

@@ -1,4 +1,4 @@
-import { getAuthMe, pollFeishuLogin, startFeishuLogin } from './authApiClient';
+import { getAuthMe, getProviderStatus, pollFeishuLogin, startFeishuLogin } from './authApiClient';
 import {
   getIdentityStatus,
   IdentityApiError,
@@ -28,6 +28,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
   popup.opener = null;
 
   try {
+    const providerStatus = await getProviderStatus().catch(() => undefined);
     let identityStatus;
     try {
       identityStatus = await getIdentityStatus();
@@ -53,13 +54,24 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
     }
 
     let started;
-    try {
-      started = await startIdentityBinding();
-    } catch (error) {
-      if (!(error instanceof IdentityApiError && error.status === 404)) throw error;
+    if (providerStatus?.feishuLoginProvider === 'atlas-cli') {
+      // Device-binding start is a browser OAuth endpoint. The local development
+      // server may instead authenticate through the already installed Atlas
+      // CLI/token cache; use the normal auth endpoint and bind the device after
+      // that endpoint has created the Feishu-authenticated browser session.
       started = await startFeishuLogin();
+    } else {
+      try {
+        started = await startIdentityBinding();
+      } catch (error) {
+        if (!(error instanceof IdentityApiError && (error.status === 404 || error.status === 409))) {
+          throw error;
+        }
+        started = await startFeishuLogin();
+      }
     }
     if (started.user) {
+      await getIdentityStatus().catch(() => undefined);
       popup.close();
       return started;
     }
@@ -87,6 +99,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
       await wait(pollIntervalMs);
       const polled = await pollFeishuLogin(loginId);
       if (polled.user) {
+        await getIdentityStatus().catch(() => undefined);
         popup.close();
         return polled;
       }

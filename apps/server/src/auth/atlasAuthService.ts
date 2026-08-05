@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSession, upsertUser } from './sessionService.js';
 import { serverConfig } from '../config.js';
+import { enrichFeishuUserByEmail } from '../services/feishuPlatformService.js';
 import type { AuthUser } from './authTypes.js';
 
 type AtlasCommandResult = {
@@ -408,12 +409,23 @@ export async function getAtlasStatus(homeDir?: string) {
 }
 
 async function createLoggedInSession(homeDir: string, request: IncomingMessage, response: ServerResponse) {
-  const { email, displayName } = getAtlasIdentity(homeDir);
+  const atlasIdentity = getAtlasIdentity(homeDir);
+  const directoryProfile = atlasIdentity.email
+    ? await enrichFeishuUserByEmail(atlasIdentity.email).catch((error) => {
+        console.warn(
+          '[LI3D Atlas profile] Optional Feishu avatar enrichment failed:',
+          error instanceof Error ? error.message : 'unknown error',
+        );
+        return undefined;
+      })
+    : undefined;
+  const email = directoryProfile?.email ?? atlasIdentity.email;
+  const displayName = directoryProfile?.name || atlasIdentity.displayName;
   const user = await upsertUser({
     id: email ? `atlas-${email.toLowerCase()}` : undefined,
     displayName,
     email,
-    avatarUrl: avatarDataUrl(displayName, email),
+    avatarUrl: directoryProfile?.avatarUrl ?? avatarDataUrl(displayName, email),
     authSource: 'feishu-oauth',
     atlasHomeDir: homeDir,
   });

@@ -125,6 +125,17 @@ type ContactUser = {
   email?: string;
   enterprise_email?: string;
   department_ids?: unknown;
+  avatar?: {
+    avatar_72?: string;
+    avatar_240?: string;
+    avatar_640?: string;
+    avatar_origin?: string;
+  };
+};
+
+type ContactUserId = {
+  user_id?: string;
+  email?: string;
 };
 
 type ContactDepartment = {
@@ -142,7 +153,27 @@ export type FeishuDirectoryProfile = {
   email?: string;
   department?: string;
   departmentIds: string[];
+  avatarUrl?: string;
 };
+
+function contactAvatarUrl(user: ContactUser) {
+  const candidates = [
+    user.avatar?.avatar_240,
+    user.avatar?.avatar_640,
+    user.avatar?.avatar_origin,
+    user.avatar?.avatar_72,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    try {
+      const url = new URL(candidate.trim());
+      if (url.protocol === 'https:') return url.toString();
+    } catch {
+      // Ignore malformed avatar URLs and retain the generated avatar fallback.
+    }
+  }
+  return undefined;
+}
 
 async function fetchContactDepartment(departmentId: string, token: string) {
   const config = serverConfig.feishuPlatform.directory;
@@ -237,7 +268,40 @@ export async function enrichFeishuUserByOpenId(
     email,
     department: departmentPaths.length > 0 ? departmentPaths.join('；') : undefined,
     departmentIds,
+    avatarUrl: contactAvatarUrl(user),
   };
+}
+
+export async function enrichFeishuUserByEmail(
+  email: string,
+): Promise<FeishuDirectoryProfile | undefined> {
+  if (!serverConfig.feishuPlatform.directory.enabled) return undefined;
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error('Feishu email has an invalid format.');
+  }
+
+  const token = await getTenantAccessToken();
+  const config = serverConfig.feishuPlatform.directory;
+  const url = new URL(`${config.contactBaseUrl}/users/batch_get_id`);
+  url.searchParams.set('user_id_type', 'open_id');
+  const payload = await requestFeishuJson<FeishuEnvelope>(
+    'contact user ID request',
+    url.toString(),
+    {
+      method: 'POST',
+      headers: bearerHeaders(token),
+      body: JSON.stringify({ emails: [normalizedEmail], include_resigned: false }),
+    },
+  );
+  const data = isObject(payload.data) ? payload.data : undefined;
+  const userList = data && Array.isArray(data.user_list) ? data.user_list : [];
+  const matched = userList.find((candidate): candidate is ContactUserId => {
+    if (!isObject(candidate) || typeof candidate.user_id !== 'string') return false;
+    return typeof candidate.email !== 'string' || candidate.email.trim().toLowerCase() === normalizedEmail;
+  });
+  if (!matched?.user_id) return undefined;
+  return enrichFeishuUserByOpenId(matched.user_id);
 }
 
 export const FEISHU_TELEMETRY_FIELD_NAMES = {

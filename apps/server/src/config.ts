@@ -373,8 +373,12 @@ const feishuBitableSyncEnabled = booleanFlag(
   false,
   'FEISHU_BITABLE_SYNC_ENABLED',
 );
-const feishuPlatformAppId = process.env.FEISHU_OAUTH_CLIENT_ID?.trim() ?? '';
-const feishuPlatformAppSecret = process.env.FEISHU_OAUTH_CLIENT_SECRET?.trim() ?? '';
+const feishuPlatformAppId =
+  process.env.FEISHU_PLATFORM_APP_ID?.trim() || process.env.FEISHU_OAUTH_CLIENT_ID?.trim() || '';
+const feishuPlatformAppSecret =
+  process.env.FEISHU_PLATFORM_APP_SECRET?.trim() ||
+  process.env.FEISHU_OAUTH_CLIENT_SECRET?.trim() ||
+  '';
 const feishuTenantTokenUrl =
   process.env.FEISHU_TENANT_TOKEN_URL?.trim() ||
   'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
@@ -394,8 +398,8 @@ const feishuBitableSyncIntervalMs = positiveNumber(
 
 if (feishuDirectoryEnrichmentEnabled || feishuBitableSyncEnabled) {
   const missingPlatformKeys = [
-    ['FEISHU_OAUTH_CLIENT_ID', feishuPlatformAppId],
-    ['FEISHU_OAUTH_CLIENT_SECRET', feishuPlatformAppSecret],
+    ['FEISHU_PLATFORM_APP_ID or FEISHU_OAUTH_CLIENT_ID', feishuPlatformAppId],
+    ['FEISHU_PLATFORM_APP_SECRET or FEISHU_OAUTH_CLIENT_SECRET', feishuPlatformAppSecret],
   ].flatMap(([name, value]) => (value ? [] : [name]));
   if (missingPlatformKeys.length > 0) {
     throw new Error(

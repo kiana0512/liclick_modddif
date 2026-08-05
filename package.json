@@ -1,7 +1,7 @@
 {
   "name": "liclick-3d-texture",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "type": "module",
   "description": "Liclick 3D Texture - Web AI 3D texture studio foundation.",
   "packageManager": "pnpm@9.15.4",
@@ -11,6 +11,7 @@
     "dev:raw": "corepack pnpm --parallel --filter @liclick/server --filter @liclick/web dev",
     "dev:web": "corepack pnpm --filter @liclick/web dev",
     "dev:server": "corepack pnpm --filter @liclick/server dev",
+    "configure:dev:feishu": "powershell -ExecutionPolicy Bypass -File scripts/configure-windows-dev-feishu.ps1",
     "serve:server": "corepack pnpm --filter @liclick/server serve",
     "workspace:up": "powershell -ExecutionPolicy Bypass -File scripts/start-workspace-server.ps1",
     "lan:web:run": "powershell -ExecutionPolicy Bypass -File scripts/run-windows-lan-web.ps1",

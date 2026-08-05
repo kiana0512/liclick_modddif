@@ -14,7 +14,7 @@ import { handlePhotoshopRoute } from './routes/photoshop.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
 
-const runtimeVersion = '0.1.9';
+const runtimeVersion = '0.1.10';
 const workspaceVersion = '0.6.0';
 const capabilities = [
   'texture-painting',

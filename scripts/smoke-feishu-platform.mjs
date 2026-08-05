@@ -39,6 +39,8 @@ async function main() {
         SESSION_SECRET: 'feishu-platform-config-smoke-only',
         FEISHU_DIRECTORY_ENRICHMENT_ENABLED: 'true',
         FEISHU_BITABLE_SYNC_ENABLED: 'false',
+        FEISHU_PLATFORM_APP_ID: '',
+        FEISHU_PLATFORM_APP_SECRET: '',
         FEISHU_OAUTH_CLIENT_ID: '',
         FEISHU_OAUTH_CLIENT_SECRET: '',
       },
@@ -47,7 +49,7 @@ async function main() {
   assert.notEqual(strictConfigCheck.status, 0, 'Enabled directory integration must require App ID/Secret.');
   assert.match(
     strictConfigCheck.stderr,
-    /required configuration is missing: FEISHU_OAUTH_CLIENT_ID, FEISHU_OAUTH_CLIENT_SECRET/,
+    /required configuration is missing: FEISHU_PLATFORM_APP_ID or FEISHU_OAUTH_CLIENT_ID, FEISHU_PLATFORM_APP_SECRET or FEISHU_OAUTH_CLIENT_SECRET/,
   );
   const strictBitableConfigCheck = spawnSync(
     process.execPath,
@@ -108,6 +110,21 @@ async function main() {
         'Platform calls must use the cached tenant token.',
       );
 
+      if (request.method === 'POST' && url.pathname === '/contact/v3/users/batch_get_id') {
+        assert.equal(url.searchParams.get('user_id_type'), 'open_id');
+        assert.deepEqual(await readJson(request), {
+          emails: ['smoke.user@example.invalid'],
+          include_resigned: false,
+        });
+        sendJson(response, 200, {
+          code: 0,
+          data: {
+            user_list: [{ user_id: 'ou_smoke', email: 'smoke.user@example.invalid' }],
+          },
+        });
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/contact/v3/users/ou_smoke') {
         assert.equal(url.searchParams.get('user_id_type'), 'open_id');
         assert.equal(url.searchParams.get('department_id_type'), 'open_department_id');
@@ -122,6 +139,10 @@ async function main() {
               email: '',
               enterprise_email: 'smoke.user@example.invalid',
               department_ids: ['od_team'],
+              avatar: {
+                avatar_72: 'https://example.invalid/avatar-72.png',
+                avatar_240: 'https://example.invalid/avatar-240.png',
+              },
             },
           },
         });
@@ -295,6 +316,13 @@ async function main() {
       'enterprise_email must be used when email is empty.',
     );
     assert.equal(directoryProfile.department, 'Studio / Team');
+    assert.equal(directoryProfile.avatarUrl, 'https://example.invalid/avatar-240.png');
+
+    const directoryProfileByEmail = await service.enrichFeishuUserByEmail(
+      'SMOKE.USER@example.invalid',
+    );
+    assert.equal(directoryProfileByEmail.openId, 'ou_smoke');
+    assert.equal(directoryProfileByEmail.avatarUrl, 'https://example.invalid/avatar-240.png');
 
     await assert.rejects(
       service.enrichFeishuUserByOpenId('ou_cycle'),

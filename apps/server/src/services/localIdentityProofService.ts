@@ -13,11 +13,41 @@ type VerifiedIdentityResponse = {
   };
 };
 
-function verifierUrl() {
+const developmentFrontendPort = '5173';
+const developmentVerifierPort = '4517';
+const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+function developmentVerifierUrl(request: IncomingMessage) {
+  const origin = request.headers.origin;
+  if (!origin) return undefined;
+  try {
+    const parsed = new URL(origin);
+    if (
+      parsed.protocol !== 'http:' ||
+      parsed.port !== developmentFrontendPort ||
+      !loopbackHosts.has(parsed.hostname) ||
+      !serverConfig.allowedOrigins.includes(parsed.origin)
+    ) {
+      return undefined;
+    }
+    parsed.port = developmentVerifierPort;
+    parsed.pathname = '/api/auth/local-proof/verify';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveLocalIdentityProofVerifierUrl(request: IncomingMessage) {
   const configured = process.env.LICLICK_IDENTITY_PROOF_VERIFIER_URL?.trim();
   const url = configured
     ? new URL(configured)
-    : new URL('/api/auth/local-proof/verify', serverConfig.frontendUrl);
+    : new URL(
+        developmentVerifierUrl(request) ?? '/api/auth/local-proof/verify',
+        serverConfig.frontendUrl,
+      );
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('Local identity proof verifier must use HTTP or HTTPS.');
   }
@@ -38,9 +68,10 @@ export async function verifyLocalIdentityProof(request: IncomingMessage): Promis
       '请先完成飞书登录，再连接本地贴图组件。',
     );
   }
+  const identityVerifierUrl = resolveLocalIdentityProofVerifierUrl(request);
   let response: Response;
   try {
-    response = await fetch(verifierUrl(), {
+    response = await fetch(identityVerifierUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({ proof }),
