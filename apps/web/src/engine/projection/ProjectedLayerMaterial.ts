@@ -89,7 +89,10 @@ const DOMINANCE_BLEND_START = 1.45;
 const DOMINANCE_BLEND_END = 2.6;
 const DOMINANCE_MARGIN_START = 0.05;
 const DOMINANCE_MARGIN_END = 0.2;
+const COLOR_CONSISTENCY_SIGMA = 0.22;
 const COVERAGE_THRESHOLD = 0.02;
+const COVERAGE_FEATHER_END = 0.12;
+const MIN_BLEND_COVERAGE = 0.0001;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
 // Large turns should still receive projection when the capture depth/normal
@@ -595,9 +598,13 @@ const fragmentShader = `
     float angleWeight = computeAngleWeight(ndv, layerStrength);
     float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
-    float projectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * step(${COVERAGE_THRESHOLD.toFixed(2)}, coverage);
+    float softCoverageGate = smoothstep(0.0, ${COVERAGE_FEATHER_END.toFixed(2)}, coverage);
+    float projectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * softCoverageGate;
     float overlayQualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
-    float overlayProjectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * mix(0.75, 1.0, overlayQualityFade) * step(${COVERAGE_THRESHOLD.toFixed(2)}, coverage);
+    // Match UV-bake overlay composition exactly. Coverage already contains the
+    // source mask, capture angle, depth/normal visibility and image-edge fade;
+    // applying another gate here cropped strong frontal data around the nose.
+    float overlayProjectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * mix(0.75, 1.0, overlayQualityFade);
     projectionAlpha = mix(projectionAlpha, overlayProjectionAlpha, projectedBlendModeOverlay);
     // A repair underlay is a fallback texel, not a translucent decal. Hardening
     // its accepted coverage prevents the mask edge from blending with the
@@ -913,7 +920,7 @@ function buildStackFragmentShader(
       float angleWeight = computeAngleWeight(ndv, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
-      if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${COVERAGE_THRESHOLD.toFixed(2)}) {
+      if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
         projectedDepthCoverage = max(projectedDepthCoverage, coverage);
         insertBlendCandidate(texel.rgb, coverage, quality);
       }
@@ -988,8 +995,10 @@ function buildStackFragmentShader(
       float angleWeight = computeAngleWeight(ndv, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
-      if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${COVERAGE_THRESHOLD.toFixed(2)}) {
+      if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
         float qualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
+        // Keep live projected overlays equivalent to applyOverlayRasters in the
+        // UV bake. The shared coverage term still supplies a soft transition.
         float overlayAlpha = clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
         projectedDepthCoverage = max(projectedDepthCoverage, overlayAlpha);
         mixedColor = mix(mixedColor, texel.rgb, overlayAlpha);
@@ -1196,27 +1205,55 @@ function buildStackFragmentShader(
 
   vec3 composeBlendBase(vec3 fallbackColor) {
     float candidateCount =
-      step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage0) +
-      step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage1) +
-      step(${COVERAGE_THRESHOLD.toFixed(2)}, topCoverage2);
+      step(${MIN_BLEND_COVERAGE.toFixed(4)}, topCoverage0) +
+      step(${MIN_BLEND_COVERAGE.toFixed(4)}, topCoverage1) +
+      step(${MIN_BLEND_COVERAGE.toFixed(4)}, topCoverage2);
     if (candidateCount <= 0.5) return fallbackColor;
-    if (candidateCount <= 1.5) return topColor0;
-    float sumStrong =
-      pow(max(topQuality0, 0.0), ${BLEND_POWER.toFixed(1)}) +
-      pow(max(topQuality1, 0.0), ${BLEND_POWER.toFixed(1)}) +
-      pow(max(topQuality2, 0.0), ${BLEND_POWER.toFixed(1)});
+    float coverageConfidence = 1.0 -
+      (1.0 - clamp(topCoverage0, 0.0, 1.0)) *
+      (1.0 - clamp(topCoverage1, 0.0, 1.0)) *
+      (1.0 - clamp(topCoverage2, 0.0, 1.0));
+    float projectionMix = smoothstep(0.0, ${COVERAGE_FEATHER_END.toFixed(2)}, coverageConfidence);
+    if (candidateCount <= 1.5) return mix(fallbackColor, topColor0, projectionMix);
     float sumSoft = topCoverage0 + topCoverage1 + topCoverage2;
     if (sumSoft <= 0.0001) return fallbackColor;
 
-    float w0 = mix(pow(topQuality0, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage0 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
-    float w1 = mix(pow(topQuality1, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage1 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
-    float w2 = mix(pow(topQuality2, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage2 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    // Match the UV compositor's colour-consistency pass before weighting the
+    // top candidates. This makes a grazing side capture lose influence when
+    // its colour disagrees with the stronger frontal samples.
+    float consistencyTotal = topQuality0 + topQuality1 + topQuality2;
+    vec3 consistencyBase =
+      (topColor0 * topQuality0 + topColor1 * topQuality1 + topColor2 * topQuality2) /
+      max(consistencyTotal, 0.000001);
+    vec3 consistencyDiff0 = topColor0 - consistencyBase;
+    vec3 consistencyDiff1 = topColor1 - consistencyBase;
+    vec3 consistencyDiff2 = topColor2 - consistencyBase;
+    float consistencySigmaSquared = ${(
+      COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA
+    ).toFixed(4)};
+    float adjustedQuality0 = topQuality0 * (
+      0.35 + 0.65 * exp(-dot(consistencyDiff0, consistencyDiff0) / consistencySigmaSquared)
+    );
+    float adjustedQuality1 = topQuality1 * (
+      0.35 + 0.65 * exp(-dot(consistencyDiff1, consistencyDiff1) / consistencySigmaSquared)
+    );
+    float adjustedQuality2 = topQuality2 * (
+      0.35 + 0.65 * exp(-dot(consistencyDiff2, consistencyDiff2) / consistencySigmaSquared)
+    );
+    float sumStrong =
+      pow(max(adjustedQuality0, 0.0), ${BLEND_POWER.toFixed(1)}) +
+      pow(max(adjustedQuality1, 0.0), ${BLEND_POWER.toFixed(1)}) +
+      pow(max(adjustedQuality2, 0.0), ${BLEND_POWER.toFixed(1)});
+
+    float w0 = mix(pow(adjustedQuality0, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage0 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    float w1 = mix(pow(adjustedQuality1, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage1 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    float w2 = mix(pow(adjustedQuality2, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage2 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
     vec3 blendedColor = topColor0 * w0 + topColor1 * w1 + topColor2 * w2;
-    float qualityRatio = topQuality0 / max(topQuality1, 0.000001);
+    float qualityRatio = adjustedQuality0 / max(adjustedQuality1, 0.000001);
     float dominance =
       smoothstep(${DOMINANCE_BLEND_START.toFixed(2)}, ${DOMINANCE_BLEND_END.toFixed(2)}, qualityRatio) *
-      smoothstep(${DOMINANCE_MARGIN_START.toFixed(2)}, ${DOMINANCE_MARGIN_END.toFixed(2)}, topQuality0 - topQuality1);
-    return mix(blendedColor, topColor0, dominance);
+      smoothstep(${DOMINANCE_MARGIN_START.toFixed(2)}, ${DOMINANCE_MARGIN_END.toFixed(2)}, adjustedQuality0 - adjustedQuality1);
+    return mix(fallbackColor, mix(blendedColor, topColor0, dominance), projectionMix);
   }
 
   void main() {
@@ -1736,14 +1773,15 @@ type ProjectedTextureArrayBundle = {
   uvScales: THREE.Vector2[];
 };
 
-const PROJECTED_ARRAY_PREVIEW_MEMORY_BUDGET = 96 * 1024 * 1024;
+const PROJECTED_ARRAY_COLOR_MEMORY_BUDGET = 64 * 1024 * 1024;
+const PROJECTED_ARRAY_AUXILIARY_MEMORY_BUDGET = 64 * 1024 * 1024;
 const PROJECTED_ARRAY_MIN_PREVIEW_SIDE = 256;
-// Texture arrays are an interactive GPU preview. A 768px slice keeps six/ten
-// view stacks responsive while bake/export continues to use full-resolution
-// source images. Keeping this below 1K also cuts CPU canvas readback and GPU
-// upload cost by nearly half at the direct-to-array transition.
-const PROJECTED_ARRAY_MAX_PREVIEW_SIDE = 768;
-const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 262_144;
+// Preserve visibility accuracy at 1K while giving the color arrays more detail.
+// Separate budgets avoid multiplying a 1.5K color requirement across masks,
+// depth and normals, keeping the total preview allocation bounded near 128 MiB.
+const PROJECTED_ARRAY_MAX_COLOR_PREVIEW_SIDE = 1536;
+const PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE = 1024;
+const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 786_432;
 
 function getTexturePixelSize(texture: THREE.Texture) {
   const image = texture.image as
@@ -1910,13 +1948,18 @@ async function createProjectedTextureArray(
   };
 }
 
-function getProjectedArrayPreviewSide(renderer: THREE.WebGLRenderer, totalSlices: number) {
+function getProjectedArrayPreviewSide(
+  renderer: THREE.WebGLRenderer,
+  totalSlices: number,
+  memoryBudget: number,
+  maximumSide: number,
+) {
   const budgetSide = Math.floor(
-    Math.sqrt(PROJECTED_ARRAY_PREVIEW_MEMORY_BUDGET / (4 * Math.max(1, totalSlices))),
+    Math.sqrt(memoryBudget / (4 * Math.max(1, totalSlices))),
   );
   return Math.max(
     PROJECTED_ARRAY_MIN_PREVIEW_SIDE,
-    Math.min(renderer.capabilities.maxTextureSize, PROJECTED_ARRAY_MAX_PREVIEW_SIDE, budgetSide),
+    Math.min(renderer.capabilities.maxTextureSize, maximumSide, budgetSide),
   );
 }
 
@@ -1988,7 +2031,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   const normalTexture = input.normalUrl
     ? await loadProjectedTexture(input.normalUrl, THREE.NoColorSpace, 'normal').catch((error) => {
         console.warn(
-          '[Liclick 3D Texture] Could not load projection crease normals; continuing without normal check.',
+          '[Liclick 3D Texture] Could not load projection crease normals; keeping visibility closed.',
           error,
         );
         return neutralNormalTexture;
@@ -2336,7 +2379,7 @@ export async function createProjectedLayerStackMaterial(
         requestedNormal
           ? loadProjectedTexture(layer.normalUrl!, THREE.NoColorSpace, 'normal').catch((error) => {
               console.warn(
-                '[Liclick 3D Texture] Could not load projection crease normals; continuing without normal check.',
+                '[Liclick 3D Texture] Could not load projection crease normals; keeping layer hidden.',
                 error,
               );
               return undefined;
@@ -2361,7 +2404,7 @@ export async function createProjectedLayerStackMaterial(
     // Never reinterpret a masked layer as an unmasked layer. In particular, the
     // renderer-only local repaint preview is created before its first brush
     // upload; a transient mask lookup miss must not reveal its full source image.
-    if (requestedMask && !maskTexture) continue;
+    if ((requestedMask && !maskTexture) || (requestedNormal && !normalTexture)) continue;
     const index = loadedLayers.length;
     const shouldUseMask = requestedMask && Boolean(maskTexture);
     const shouldUseDepth = requestedDepth && Boolean(depthTexture);
@@ -2454,16 +2497,7 @@ export async function createProjectedLayerStackMaterial(
       ...(normalArraySlice >= 0 ? { normalArraySlice } : {}),
     });
   }
-  if (loadedLayers.length !== layers.length) {
-    const loadedLayerIds = new Set(loadedLayers.map((layer) => layer.layerId));
-    const missingLayerIds = layers
-      .filter((layer) => !loadedLayerIds.has(layer.layerId))
-      .map((layer) => layer.layerId);
-    neutralTexture.dispose();
-    throw new Error(
-      `Projected preview kept the previous complete material because core assets are unavailable for: ${missingLayerIds.join(', ')}.`,
-    );
-  }
+  if (loadedLayers.length === 0) return undefined;
   const loadedLiveEraserLayerIndex = input.liveEraserLayerId
     ? loadedLayers.findIndex((layer) => layer.layerId === input.liveEraserLayerId)
     : -1;
@@ -2474,9 +2508,17 @@ export async function createProjectedLayerStackMaterial(
   if (useTextureArrays) {
     const renderer = options.renderer;
     if (!renderer) throw new Error('Projected texture array renderer is unavailable.');
-    const arrayPreviewSide = getProjectedArrayPreviewSide(
+    const projectedArrayPreviewSide = getProjectedArrayPreviewSide(
       renderer,
-      projectedTextures.length + maskTextures.length + depthTextures.length + normalTextures.length,
+      projectedTextures.length,
+      PROJECTED_ARRAY_COLOR_MEMORY_BUDGET,
+      PROJECTED_ARRAY_MAX_COLOR_PREVIEW_SIDE,
+    );
+    const auxiliaryArrayPreviewSide = getProjectedArrayPreviewSide(
+      renderer,
+      maskTextures.length + depthTextures.length + normalTextures.length,
+      PROJECTED_ARRAY_AUXILIARY_MEMORY_BUDGET,
+      PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE,
     );
     try {
       const projectedArray =
@@ -2486,7 +2528,7 @@ export async function createProjectedLayerStackMaterial(
               projectedTextures,
               'image',
               options.isCancelled,
-              arrayPreviewSide,
+              projectedArrayPreviewSide,
             )
           : undefined;
       if (projectedArray) disposableTextures.push(projectedArray.texture);
@@ -2499,7 +2541,7 @@ export async function createProjectedLayerStackMaterial(
             maskTextures,
             'mask',
             options.isCancelled,
-            arrayPreviewSide,
+            auxiliaryArrayPreviewSide,
           )
         : undefined;
       if (maskArray) disposableTextures.push(maskArray.texture);
@@ -2509,7 +2551,7 @@ export async function createProjectedLayerStackMaterial(
             depthTextures,
             'depth',
             options.isCancelled,
-            arrayPreviewSide,
+            auxiliaryArrayPreviewSide,
           )
         : undefined;
       if (depthArray) disposableTextures.push(depthArray.texture);
@@ -2519,7 +2561,7 @@ export async function createProjectedLayerStackMaterial(
             normalTextures,
             'normal',
             options.isCancelled,
-            arrayPreviewSide,
+            auxiliaryArrayPreviewSide,
           )
         : undefined;
       if (normalArray) disposableTextures.push(normalArray.texture);
@@ -2594,11 +2636,7 @@ export async function createProjectedLayerStackMaterial(
   material.userData[PROJECTED_LAYER_SAMPLER_BUDGET_KEY] = samplerBudget;
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
-    // Optional depth/normal resources may degrade to color-only projection.
-    // Keep the requested structural signature so eye/opacity changes still use
-    // the resident material instead of retrying the same failed helper texture
-    // and rebuilding the full array on every interaction.
-    signature: getProjectionLayerStructureSignature(layers, {
+    signature: getProjectionLayerStructureSignature(loadedLayers, {
       useBaseMap: Boolean(input.baseTexture),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture),

@@ -151,3 +151,35 @@ test('defaults reject an isolated texel and an already-aborted signal stays abor
     (error) => error instanceof Error && error.name === 'AbortError',
   );
 });
+
+test('retains a large low-confidence projection region when the scan threshold is raised', async () => {
+  const fixture = createFixture(14, 10);
+  const lowConfidenceRegion = [];
+  for (let y = 2; y <= 7; y += 1) {
+    for (let x = 3; x <= 10; x += 1) {
+      setAlpha(fixture, x, y, 24);
+      lowConfidenceRegion.push([x, y]);
+    }
+  }
+
+  const strictResult = await buildContentAwareRepairMask({
+    ...fixture,
+    hardAlphaThreshold: 8,
+    weakGrowPixels: 0,
+    minimumComponentPixels: 8,
+    minimumComponentSpan: 0,
+  });
+  assert.equal(strictResult.stats.totalPixels, 0);
+
+  const confidenceAwareResult = await buildContentAwareRepairMask({
+    ...fixture,
+    hardAlphaThreshold: 32,
+    weakAlphaThreshold: 64,
+    weakGrowPixels: 1,
+    minimumComponentPixels: 8,
+    minimumComponentSpan: 0,
+  });
+  assertSelected(confidenceAwareResult, fixture, lowConfidenceRegion);
+  assert.equal(confidenceAwareResult.stats.hardPixels, lowConfidenceRegion.length);
+  assert.equal(confidenceAwareResult.stats.totalPixels, lowConfidenceRegion.length);
+});

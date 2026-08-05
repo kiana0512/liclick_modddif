@@ -576,7 +576,11 @@ function applyColorConsistency(qualities: number[], colors: number[][]) {
   }
 }
 
-function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, output: ImageData) {
+function writeQualityBlendStackComposite(
+  composite: QualityBlendStackComposite,
+  output: ImageData,
+  preserveCoverageConfidenceAlpha = false,
+) {
   let writtenTexels = 0;
   const colors = Array.from({ length: TOP_K_BLEND_LAYERS }, () => [0, 0, 0]);
   const coverages = new Array<number>(TOP_K_BLEND_LAYERS).fill(0);
@@ -595,12 +599,21 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
       qualities[slot] = composite.qualities[slot][pixelIndex];
       if (coverages[slot] > COVERAGE_THRESHOLD) candidateCount += 1;
     }
+    const coverageConfidence =
+      1 -
+      coverages.reduce(
+        (remaining, coverage) => remaining * (1 - Math.max(0, Math.min(1, coverage))),
+        1,
+      );
+    const outputAlpha = preserveCoverageConfidenceAlpha
+      ? clampByte(coverageConfidence * 255)
+      : 255;
 
     if (candidateCount === 1) {
       output.data[offset] = composite.colors[0][colorOffset];
       output.data[offset + 1] = composite.colors[0][colorOffset + 1];
       output.data[offset + 2] = composite.colors[0][colorOffset + 2];
-      output.data[offset + 3] = 255;
+      output.data[offset + 3] = outputAlpha;
       writtenTexels += 1;
       continue;
     }
@@ -654,7 +667,7 @@ function writeQualityBlendStackComposite(composite: QualityBlendStackComposite, 
     output.data[offset + 2] = linearToSrgbByte(
       finalBlue * (1 - dominance) + winnerBlue * dominance,
     );
-    output.data[offset + 3] = 255;
+    output.data[offset + 3] = outputAlpha;
     writtenTexels += 1;
   }
   return writtenTexels;
@@ -1039,6 +1052,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         const blendWrittenTexels = writeQualityBlendStackComposite(
           qualityBlendComposite,
           composite,
+          input.preserveCoverageConfidenceAlpha,
         );
         applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
         if (input.outputAlpha === 'transparent') {
@@ -1522,7 +1536,11 @@ export async function bakeVisibleProjectedLayersToTexture(
       'No readable projected layers could be baked. Regenerate or re-add the projected layers whose images are missing.',
     );
   }
-  const blendWrittenTexels = writeQualityBlendStackComposite(qualityBlendComposite, composite);
+  const blendWrittenTexels = writeQualityBlendStackComposite(
+    qualityBlendComposite,
+    composite,
+    input.preserveCoverageConfidenceAlpha,
+  );
   applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
   if (input.outputAlpha === 'transparent') {
     clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);

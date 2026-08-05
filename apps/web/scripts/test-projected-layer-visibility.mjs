@@ -41,7 +41,7 @@ try {
       camera,
       opacity: 1,
       strength: 1,
-      blendMode: 'normal',
+      blendMode: index === 0 ? 'overlay' : 'normal',
       compositeRole: 'normal',
       visible: true,
       hue: 0,
@@ -69,6 +69,36 @@ try {
   assert.deepEqual(
     state.bindings.map((binding) => binding.layerId),
     layers.map((layer) => layer.layerId),
+  );
+  assert.match(
+    material.fragmentShader,
+    /float coverageConfidence = 1\.0 -/,
+    'Projected transitions must preserve a continuous coverage confidence.',
+  );
+  assert.match(
+    material.fragmentShader,
+    /coverage > 0\.0001/,
+    'Low-coverage candidates must fade continuously instead of appearing at a 2% hard edge.',
+  );
+  assert.match(
+    material.fragmentShader,
+    /float overlayAlpha = clamp\(coverage \* mix\(0\.75, 1\.0, qualityFade\), 0\.0, 1\.0\)/,
+    'Live overlays must use the same alpha formula as merged UV overlays.',
+  );
+  assert.match(
+    material.fragmentShader,
+    /vec3 consistencyBase =/,
+    'Live projections must apply the UV compositor colour-consistency pass.',
+  );
+  assert.match(
+    material.fragmentShader,
+    /float adjustedQuality0 = topQuality0/,
+    'Colour-inconsistent side projections must be downweighted before live blending.',
+  );
+  assert.doesNotMatch(
+    material.fragmentShader,
+    /overlayFacingGate|overlayCoverageGate/,
+    'Live overlays must not crop already validated frontal coverage a second time.',
   );
 
   const materialId = material.uuid;
@@ -102,10 +132,10 @@ try {
     useNormalCheck: true,
   }));
   const originalWarn = globalThis.console.warn;
-  let normalFallbackMaterial;
+  let materialWithMissingNormals;
   try {
     globalThis.console.warn = () => undefined;
-    normalFallbackMaterial = await projection.createProjectedLayerStackMaterial(
+    materialWithMissingNormals = await projection.createProjectedLayerStackMaterial(
       {
         layers: missingNormalLayers,
         objectId: 'normal-fallback-object',
@@ -117,27 +147,11 @@ try {
   } finally {
     globalThis.console.warn = originalWarn;
   }
-  assert(normalFallbackMaterial);
   assert.equal(
-    normalFallbackMaterial.userData.liclickProjectedLayerStackState.bindings.length,
-    6,
-    'An unavailable optional normal map must not remove its color projection layer.',
+    materialWithMissingNormals,
+    undefined,
+    'A layer requiring normal rejection must stay closed until its normal map is available.',
   );
-  assert.equal(
-    projection.updateProjectedLayerStackMaterial(normalFallbackMaterial, {
-      layers: missingNormalLayers.map((layer, index) => ({
-        ...layer,
-        visible: index !== 4,
-      })),
-      objectId: 'normal-fallback-object',
-      currentObjectMatrixWorld: identity,
-      depthTest: true,
-    }),
-    true,
-    'Optional visibility fallback must preserve the resident material signature.',
-  );
-  assert.equal(normalFallbackMaterial.uniforms.layerOpacity4.value, 0);
-  projection.disposeGeneratedMaterialTree(normalFallbackMaterial);
 
   stdout.write('Projected-layer visibility regression test passed.\n');
 } finally {

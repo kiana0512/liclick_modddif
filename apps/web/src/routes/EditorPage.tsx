@@ -4193,6 +4193,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           enableDilation: false,
           dilationPixels: 0,
           outputAlpha: 'transparent',
+          // Gap detection needs the same quality-ranked colour as UV merge,
+          // but must retain aggregate coverage confidence in alpha. Otherwise
+          // one weak grazing sample makes an actually empty surface look 100%
+          // filled and the repair tool reports no blank area.
+          preserveCoverageConfidenceAlpha: true,
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
@@ -4245,8 +4250,11 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
           coreMask: topology.coreMask,
           regionIds: topology.regionIds,
           conflictMask: topology.conflictMask,
-          hardAlphaThreshold: 8,
-          weakAlphaThreshold: 24,
+          // The empty-area hatch is visible while aggregate projection
+          // confidence is below roughly 12.5%. Treat that as a hard gap; the
+          // connected-component filter still rejects isolated raster specks.
+          hardAlphaThreshold: 32,
+          weakAlphaThreshold: 64,
           weakGrowPixels: 1,
           signal: abortController.signal,
           yieldIntervalMs: 8,

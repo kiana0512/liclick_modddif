@@ -94,6 +94,12 @@ export interface BakeVisibleProjectedLayersInput {
   maximumDepthError?: number;
   /** Reject weak projected fragments before they can seed dilation. */
   minimumOutputCoverage?: number;
+  /**
+   * Keep aggregate projection confidence in the output alpha instead of
+   * marking every accepted top-three candidate fully opaque. Used by
+   * content-aware gap detection; ordinary merged UV output stays opaque.
+   */
+  preserveCoverageConfidenceAlpha?: boolean;
   /** Keep dilation only where it closes an interior pinhole or narrow crack. */
   constrainDilationToInteriorHoles?: boolean;
   /** Add color padding only outside UV islands to prevent bilinear-filter seams. */

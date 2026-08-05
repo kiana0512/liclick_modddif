@@ -336,22 +336,75 @@ test('topology target mask keeps the frontier fill inside model UVs', () => {
 test('merge UV options enable enclosed-hole repair without broad topology growth', () => {
   assert.deepEqual(getMergeUvPostprocessOptions(512), {
     uvIslandGutterPixels: 2,
-    uvCoverageGapPixels: 0,
+    uvCoverageGapPixels: 2,
     uvInteriorHolePixels: 1,
     uvSeamRepairPixels: 2,
   });
   assert.deepEqual(getMergeUvPostprocessOptions(2048), {
     uvIslandGutterPixels: 4,
-    uvCoverageGapPixels: 0,
+    uvCoverageGapPixels: 4,
     uvInteriorHolePixels: 1,
     uvSeamRepairPixels: 2,
   });
   assert.deepEqual(getMergeUvPostprocessOptions(8192), {
     uvIslandGutterPixels: 8,
-    uvCoverageGapPixels: 0,
-    uvInteriorHolePixels: 2,
+    uvCoverageGapPixels: 8,
+    uvInteriorHolePixels: 3,
     uvSeamRepairPixels: 4,
   });
+});
+
+test('merge UV topology growth closes a narrow open crack without crossing atlas space', () => {
+  const width = 15;
+  const height = 7;
+  const imageData = createImageData(width, height);
+  const coverage = new Uint8Array(width * height);
+  const topology = new Uint8Array(width * height);
+
+  // First island: a covered slab with a two-pixel crack that remains connected
+  // to its top edge, matching the non-enclosed black hairlines seen in a merged
+  // high-poly UV atlas.
+  for (let y = 1; y <= 5; y += 1) {
+    for (let x = 1; x <= 8; x += 1) {
+      const index = y * width + x;
+      topology[index] = 1;
+      if (x === 4 || x === 5) continue;
+      coverage[index] = 1;
+      setPixel(imageData, index, [182, 126, 104, 196]);
+    }
+  }
+
+  // Second island is separated by real atlas space. It must remain untouched.
+  for (let y = 2; y <= 4; y += 1) {
+    for (let x = 11; x <= 13; x += 1) topology[y * width + x] = 1;
+  }
+
+  const mergeOptions = getMergeUvPostprocessOptions(2048);
+  const filled = dilateImageData(
+    imageData,
+    coverage,
+    Math.ceil(mergeOptions.uvCoverageGapPixels / 2),
+    topology,
+    true,
+  );
+
+  assert.ok(filled > 0);
+  for (let y = 1; y <= 5; y += 1) {
+    for (const x of [4, 5]) {
+      const index = y * width + x;
+      assert.equal(coverage[index], 1, 'the open crack must close inside the first island');
+      assert.deepEqual(
+        getPixel(imageData, index),
+        [182, 126, 104, 196],
+        'topology repair must preserve Overlay alpha instead of making an opaque band',
+      );
+    }
+  }
+  for (let y = 2; y <= 4; y += 1) {
+    for (let x = 11; x <= 13; x += 1) {
+      assert.equal(coverage[y * width + x], 0, 'repair must not jump across atlas space');
+    }
+  }
 });
 
 test('opaque UV gutter keeps the historical opaque alpha behavior', () => {
