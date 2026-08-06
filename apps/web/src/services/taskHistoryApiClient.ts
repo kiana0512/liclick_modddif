@@ -82,7 +82,7 @@ function triggerBlobDownload(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
-export async function downloadTaskHistoryOutput(output: TaskHistoryOutput) {
+export async function fetchTaskHistoryOutputBlob(output: TaskHistoryOutput) {
   if (!output.downloadUrl) throw new Error('此历史文件当前不可下载。');
   const response = await fetch(resolvedDownloadUrl(output.downloadUrl), {
     credentials: 'include',
@@ -94,5 +94,9 @@ export async function downloadTaskHistoryOutput(output: TaskHistoryOutput) {
       | undefined;
     throw new Error(payload?.error ?? `历史文件下载失败（${response.status}）。`);
   }
-  triggerBlobDownload(await response.blob(), output.filename);
+  return response.blob();
+}
+
+export async function downloadTaskHistoryOutput(output: TaskHistoryOutput) {
+  triggerBlobDownload(await fetchTaskHistoryOutputBlob(output), output.filename);
 }

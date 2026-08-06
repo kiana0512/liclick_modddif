@@ -223,40 +223,99 @@ function mapBakeWorkspaceAssetUrls(
   return { ...workspace, bakeSets };
 }
 
+function mapPipelineAssetList(
+  assets: unknown,
+  mapUrl: (url?: string) => string | undefined,
+) {
+  if (!Array.isArray(assets)) return assets;
+  return assets.map((asset) => {
+    if (!isRecord(asset) || typeof asset.url !== 'string') return asset;
+    return { ...asset, url: mapUrl(asset.url) };
+  });
+}
+
+/**
+ * Maps only durable pipeline asset URLs while preserving all unknown revision
+ * metadata. The generic return type makes this safe for both strict current
+ * projects and loosely shaped legacy/future project documents.
+ */
+export function mapProjectPipelineAssetUrls<T>(
+  pipeline: T,
+  mapUrl: (url?: string) => string | undefined,
+): T {
+  if (!isRecord(pipeline) || !Array.isArray(pipeline.revisions)) return pipeline;
+  return {
+    ...pipeline,
+    revisions: pipeline.revisions.map((revision) =>
+      isRecord(revision)
+        ? {
+            ...revision,
+            ...(Array.isArray(revision.inputAssets)
+              ? { inputAssets: mapPipelineAssetList(revision.inputAssets, mapUrl) }
+              : {}),
+            ...(Array.isArray(revision.outputAssets)
+              ? { outputAssets: mapPipelineAssetList(revision.outputAssets, mapUrl) }
+              : {}),
+          }
+        : revision,
+    ),
+  } as T;
+}
+
+function forEachPipelineAsset(
+  pipeline: unknown,
+  visit: (asset: Record<string, unknown>) => void,
+) {
+  if (!isRecord(pipeline) || !Array.isArray(pipeline.revisions)) return;
+  pipeline.revisions.forEach((revision) => {
+    if (!isRecord(revision)) return;
+    [revision.inputAssets, revision.outputAssets].forEach((assets) => {
+      if (!Array.isArray(assets)) return;
+      assets.forEach((asset) => {
+        if (isRecord(asset)) visit(asset);
+      });
+    });
+  });
+}
+
 function collectReferencedObjectIds(project: WorkspaceProject) {
   const referenced = new Set<string>();
+  const explicitlyDeleted = new Set(project.deletedObjectIds ?? []);
+  const addReferencedObjectId = (value: unknown) => {
+    const objectId = readString(value);
+    if (objectId && !explicitlyDeleted.has(objectId)) referenced.add(objectId);
+  };
   if (isRecord(project.bakeWorkspace) && isRecord(project.bakeWorkspace.bakeSets)) {
     Object.entries(project.bakeWorkspace.bakeSets).forEach(([objectId, bakeSet]) => {
-      referenced.add(objectId);
+      addReferencedObjectId(objectId);
       if (isRecord(bakeSet)) {
-        const explicitObjectId = readString(bakeSet.objectId);
-        if (explicitObjectId) referenced.add(explicitObjectId);
+        addReferencedObjectId(bakeSet.objectId);
       }
     });
   }
   project.references.forEach((reference) => {
     if (isRecord(reference)) {
-      const objectId = readString(reference.objectId);
-      if (objectId) referenced.add(objectId);
+      addReferencedObjectId(reference.objectId);
     }
   });
   project.layers.forEach((layer) => {
     if (isRecord(layer)) {
-      const objectId = readString(layer.objectId);
-      if (objectId) referenced.add(objectId);
+      addReferencedObjectId(layer.objectId);
     }
   });
   project.captures.forEach((capture) => {
     if (isRecord(capture)) {
-      const objectId = readString(capture.objectId);
-      if (objectId) referenced.add(objectId);
+      addReferencedObjectId(capture.objectId);
     }
   });
   project.generations.forEach((generation) => {
     if (!isRecord(generation) || !isRecord(generation.metadata)) return;
-    const objectId = readString(generation.metadata.objectId);
-    if (objectId) referenced.add(objectId);
+    addReferencedObjectId(generation.metadata.objectId);
   });
+  // Pipeline revisions own historical input/output assets too. Without these
+  // references, a partial client save can incorrectly treat their objects as
+  // orphaned and discard the object metadata required by a later handoff.
+  forEachPipelineAsset(project.pipeline, (asset) => addReferencedObjectId(asset.objectId));
   return referenced;
 }
 
@@ -403,6 +462,9 @@ function normalizeProjectAssetReferences(
         : texture,
     ),
     bakeWorkspace: mapBakeWorkspaceAssetUrls(project.bakeWorkspace, normalizeUrl),
+    ...(project.pipeline === undefined
+      ? {}
+      : { pipeline: mapProjectPipelineAssetUrls(project.pipeline, normalizeUrl) }),
   };
 }
 
@@ -610,6 +672,9 @@ function resolveProjectAssets(
         : texture,
     ),
     bakeWorkspace: mapBakeWorkspaceAssetUrls(project.bakeWorkspace, resolveUrl),
+    ...(project.pipeline === undefined
+      ? {}
+      : { pipeline: mapProjectPipelineAssetUrls(project.pipeline, resolveUrl) }),
   };
 }
 
@@ -674,8 +739,15 @@ async function saveProjectUnlocked(
   const existingProject = rawExistingProject
     ? await repairMissingLayerImageReferences(userId, slug, rawExistingProject)
     : undefined;
-  const explicitDeletionIds = new Set(inputProject.deletedObjectIds ?? []);
-  const deletionAwareInput = applyExplicitObjectDeletions(inputProject);
+  // Older clients do not know about pipeline checkpoints and therefore omit
+  // the field entirely. Treat omission as "leave unchanged"; a current client
+  // can still explicitly clear it by saving an empty pipeline state.
+  const pipelineSafeInput =
+    inputProject.pipeline === undefined && existingProject?.pipeline !== undefined
+      ? { ...inputProject, pipeline: existingProject.pipeline }
+      : inputProject;
+  const explicitDeletionIds = new Set(pipelineSafeInput.deletedObjectIds ?? []);
+  const deletionAwareInput = applyExplicitObjectDeletions(pipelineSafeInput);
   if (existingProject) {
     const incomingUpdatedAt = Date.parse(inputProject.updatedAt);
     const existingUpdatedAt = Date.parse(existingProject.updatedAt);

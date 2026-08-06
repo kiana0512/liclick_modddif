@@ -17,6 +17,37 @@ export type WorkspaceProjectSettings = {
   };
 };
 
+/**
+ * Server-side persistence types deliberately allow additional fields so a
+ * newer web client can append pipeline metadata without an older server
+ * stripping it while saving the project document.
+ */
+export type WorkspaceProjectPipelineAssetReference = {
+  id?: string;
+  kind?: string;
+  name?: string;
+  url?: string;
+  relativePath?: string;
+  objectId?: string;
+  sourceRevisionId?: string;
+  [key: string]: unknown;
+};
+
+export type WorkspaceProjectPipelineRevision = {
+  id?: string;
+  stage?: string;
+  inputAssets?: WorkspaceProjectPipelineAssetReference[];
+  outputAssets?: WorkspaceProjectPipelineAssetReference[];
+  [key: string]: unknown;
+};
+
+export type WorkspaceProjectPipeline = {
+  version?: number;
+  revisions?: WorkspaceProjectPipelineRevision[];
+  staleRevisionIds?: string[];
+  [key: string]: unknown;
+};
+
 export type WorkspaceProject = {
   id: string;
   name: string;
@@ -31,6 +62,7 @@ export type WorkspaceProject = {
   layers: unknown[];
   bakedTextures: unknown[];
   bakeWorkspace?: unknown;
+  pipeline?: WorkspaceProjectPipeline;
   settings: WorkspaceProjectSettings;
   currentMode?: string;
   activeObjectId?: string;

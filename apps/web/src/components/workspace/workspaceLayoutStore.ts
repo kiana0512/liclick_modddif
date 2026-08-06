@@ -4,8 +4,6 @@ import type { DockSide, PanelId, WorkspaceMode, WorkspacePanelState } from './wo
 
 export const defaultWorkspacePanels: WorkspacePanelState[] = [
   { id: 'objects', title: 'Objects', dock: 'left', order: 5, collapsed: false, visible: true, mode: 'all' },
-  { id: 'segments', title: 'Segments', dock: 'left', order: 10, collapsed: false, visible: true, mode: 'segments' },
-  { id: 'quickMask', title: 'Quick Mask', dock: 'left', order: 20, collapsed: false, visible: true, mode: 'segments' },
   { id: 'generate', title: 'Generate', dock: 'left', order: 40, collapsed: true, visible: true, mode: 'texture' },
   {
     id: 'layerAdjustments',
@@ -63,6 +61,77 @@ type WorkspaceLayoutStore = {
   resetWorkspaceLayout: () => void;
   setMode: (mode: WorkspaceMode) => void;
 };
+
+type PersistedWorkspaceLayoutState = Pick<
+  WorkspaceLayoutStore,
+  'mode' | 'dockDensity' | 'panels'
+>;
+
+const workspaceModes = new Set<WorkspaceMode>(['scene', 'texture', 'normal', 'export']);
+const defaultPanelById = new Map(defaultWorkspacePanels.map((panel) => [panel.id, panel]));
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+/**
+ * Keep layouts saved before the segments workspace was removed usable.
+ *
+ * Deleted panels are discarded while the mask painting engine remains
+ * available to local repair tools and keyboard shortcuts.
+ */
+export function migrateWorkspaceLayoutState(
+  persistedState: unknown,
+): PersistedWorkspaceLayoutState {
+  const stored = isRecord(persistedState) ? persistedState : {};
+  const storedPanels = Array.isArray(stored.panels) ? stored.panels : [];
+  const migratedPanels = storedPanels.flatMap((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== 'string') return [];
+    if (candidate.id === 'segments' || candidate.id === 'quickMask') return [];
+    const fallback = defaultPanelById.get(candidate.id as WorkspacePanelState['id']);
+    if (!fallback) return [];
+    let mode = fallback.mode;
+    if (candidate.mode === 'all') mode = 'all';
+    else if (candidate.mode === 'segments') mode = 'texture';
+    else if (
+      typeof candidate.mode === 'string' &&
+      workspaceModes.has(candidate.mode as WorkspaceMode)
+    ) {
+      mode = candidate.mode as WorkspaceMode;
+    }
+    return [
+      {
+        ...fallback,
+        ...candidate,
+        id: fallback.id,
+        title: typeof candidate.title === 'string' ? candidate.title : fallback.title,
+        dock: candidate.dock === 'left' || candidate.dock === 'right' ? candidate.dock : fallback.dock,
+        order: typeof candidate.order === 'number' ? candidate.order : fallback.order,
+        collapsed:
+          typeof candidate.collapsed === 'boolean' ? candidate.collapsed : fallback.collapsed,
+        visible: typeof candidate.visible === 'boolean' ? candidate.visible : fallback.visible,
+        mode,
+      } satisfies WorkspacePanelState,
+    ];
+  });
+  const migratedIds = new Set(migratedPanels.map((panel) => panel.id));
+  const panels = [
+    ...migratedPanels,
+    ...defaultWorkspacePanels
+      .filter((panel) => !migratedIds.has(panel.id))
+      .map((panel) => ({ ...panel })),
+  ];
+  const storedMode = stored.mode === 'segments' ? 'texture' : stored.mode;
+
+  return {
+    mode:
+      typeof storedMode === 'string' && workspaceModes.has(storedMode as WorkspaceMode)
+        ? (storedMode as WorkspaceMode)
+        : 'scene',
+    dockDensity: stored.dockDensity === 'compact' ? 'compact' : 'normal',
+    panels,
+  };
+}
 
 function updatePanel(
   panels: WorkspacePanelState[],
@@ -123,8 +192,14 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutStore>()(
     }),
     {
       name: 'liclick-workspace-layout-v2',
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ mode: state.mode, dockDensity: state.dockDensity, panels: state.panels }),
+      migrate: (persistedState) => migrateWorkspaceLayoutState(persistedState),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...migrateWorkspaceLayoutState(persistedState),
+      }),
     },
   ),
 );

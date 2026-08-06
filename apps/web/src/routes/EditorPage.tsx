@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Flame, Plus } from 'lucide-react';
+import { Download, Network, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -35,9 +35,7 @@ import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel
 import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
 import { ObjectTransformPanel } from '@/components/panels/ObjectTransformPanel';
 import { ObjectsPanel, ObjectsPanelActions } from '@/components/panels/ObjectsPanel';
-import { QuickMaskPanel, QuickMaskPanelActions } from '@/components/panels/QuickMaskPanel';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
-import { SegmentsPanel, SegmentsPanelActions } from '@/components/panels/SegmentsPanel';
 import { ViewportPanel } from '@/components/panels/ViewportPanel';
 import { Button } from '@/components/ui/Button';
 import { WorkspaceModeShell } from '@/components/workspace/WorkspaceModeShell';
@@ -128,6 +126,11 @@ import {
   type EditorProjectLoadToken,
 } from '@/services/editorProjectRouteLoad';
 import { replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
+import {
+  getLatestPipelineStageRevision,
+  markDownstreamPipelineRevisionsStale,
+  publishPipelineRevision,
+} from '@/services/projectPipeline';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
 import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
@@ -182,6 +185,8 @@ import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 type EditorPageProps = {
   projectId: string;
   onBack: () => void;
+  onOpenRetopology: () => void;
+  onOpenUv: () => void;
   onOpenBake: (handoff?: TextureBakeHandoff) => void;
 };
 
@@ -748,7 +753,13 @@ async function restorePersistedLocalRepaintRuntime(
   }
 }
 
-export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
+export function EditorPage({
+  projectId,
+  onBack,
+  onOpenRetopology,
+  onOpenUv,
+  onOpenBake,
+}: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const loadedProjectIdRef = useRef<string>();
@@ -787,7 +798,7 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     'idle',
   );
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
-  const [bakeHighImporting, setBakeHighImporting] = useState(false);
+  const [publishingToRetopology, setPublishingToRetopology] = useState(false);
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const [modelImportBusy, setModelImportBusy] = useState(false);
   const [modelImportProgress, setModelImportProgress] = useState<
@@ -3766,8 +3777,8 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
     }
   }
 
-  async function handleImportBakeHigh() {
-    if (!project || !selectedObjectId || bakeHighImporting) return;
+  async function handlePublishToRetopology() {
+    if (!project || !selectedObjectId || publishingToRetopology) return;
     const sourceObject =
       objects.find((object) => object.id === selectedObjectId) ??
       project.objects.find((object) => object.id === selectedObjectId);
@@ -3775,13 +3786,13 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       pushToast({
         tone: 'warning',
         title: '请先选择模型',
-        description: '选择贴图工作区中的模型后，再导入为烘焙高模。',
-        dedupeKey: 'bake-high-source-missing',
+        description: '选择贴图工作区中的模型后，再传入拓扑。',
+        dedupeKey: 'retopology-source-missing',
       });
       return;
     }
 
-    setBakeHighImporting(true);
+    setPublishingToRetopology(true);
     try {
       const importedSource = useSceneStore
         .getState()
@@ -3815,17 +3826,21 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
       }
 
       const sourceName = importedSource?.sourceFileName ?? sourceObject.name;
+      // A published checkpoint must own a unique immutable asset path. Reusing
+      // the object/name-based path would make a later publish silently rewrite
+      // the model referenced by historical pipeline revisions.
+      const revisionId = createId();
       const saved = await saveBlobAsset({
         projectId: project.id,
         category: 'models',
         blob: sourceBlob,
-        filename: `bake-${sourceObject.id}-high-${sourceName}`,
+        filename: `pipeline-${revisionId}-high-${sourceName}`,
       });
       const currentProject = useProjectStore
         .getState()
         .projects.find((item) => item.id === project.id);
       if (!currentProject) throw new Error('项目状态已更新，请重试。');
-      const nextProject = replaceBakeHighSnapshot(currentProject, {
+      const projectWithHighSnapshot = replaceBakeHighSnapshot(currentProject, {
         objectId: sourceObject.id,
         asset: {
           name: sourceName,
@@ -3835,24 +3850,96 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
         },
         highObject: sourceObject,
       });
+      const previousTextureRevision = getLatestPipelineStageRevision(
+        projectWithHighSnapshot.pipeline,
+        'texture',
+      );
+      const currentPipeline = projectWithHighSnapshot.pipeline
+        ? markDownstreamPipelineRevisionsStale(projectWithHighSnapshot.pipeline, 'texture')
+        : undefined;
+      const timestamp = new Date().toISOString();
+      const highAsset = {
+        id: `${revisionId}:high`,
+        kind: 'high-model' as const,
+        objectId: sourceObject.id,
+        name: sourceName,
+        url: saved.asset.url,
+        relativePath: saved.asset.relativePath,
+        mimeType: sourceBlob.type || 'application/octet-stream',
+      };
+      const baseColorAsset = selectedObjectBaseColor
+        ? {
+            id: `${revisionId}:base-color`,
+            kind: 'base-color' as const,
+            objectId: sourceObject.id,
+            name: selectedObjectBaseColor.name,
+            url: selectedObjectBaseColor.imageUrl,
+            mimeType: 'image/png',
+          }
+        : undefined;
+      const pipeline = publishPipelineRevision(currentPipeline, {
+        id: revisionId,
+        stage: 'texture',
+        sourceMode: 'project',
+        parentRevisionId: previousTextureRevision?.id,
+        inputAssets: [],
+        outputAssets: baseColorAsset ? [highAsset, baseColorAsset] : [highAsset],
+        settings: { objectId: sourceObject.id },
+        status: 'ready',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: timestamp,
+      });
+      const nextProject = {
+        ...projectWithHighSnapshot,
+        pipeline,
+        bakeWorkspace: projectWithHighSnapshot.bakeWorkspace
+          ? {
+              ...projectWithHighSnapshot.bakeWorkspace,
+              bakeSets: {
+                ...projectWithHighSnapshot.bakeWorkspace.bakeSets,
+                [sourceObject.id]: {
+                  // The new texture checkpoint invalidates the operational
+                  // low/cage/output state for this object. Historical outputs
+                  // remain in the append-only pipeline, but Bake must not pair
+                  // them with the newly published high model.
+                  objectId: sourceObject.id,
+                  high:
+                    projectWithHighSnapshot.bakeWorkspace.bakeSets[sourceObject.id]?.high,
+                  highObject:
+                    projectWithHighSnapshot.bakeWorkspace.bakeSets[sourceObject.id]?.highObject,
+                  ...(baseColorAsset
+                    ? {
+                        color: {
+                          name: baseColorAsset.name,
+                          url: baseColorAsset.url,
+                          mimeType: baseColorAsset.mimeType,
+                        },
+                      }
+                    : {}),
+                },
+              },
+            }
+          : projectWithHighSnapshot.bakeWorkspace,
+      };
       const result = await saveWorkspaceProject(nextProject);
       replaceCurrentProject(result.project);
       pushToast({
         tone: 'success',
-        title: '已导入烘焙高模',
-        description: '已创建独立烘焙副本，后续替换不会影响贴图工作区模型。',
-        dedupeKey: 'bake-high-imported',
+        title: '贴图版本已发布',
+        description: '已锁定独立高模与材质快照，正在传入拓扑。',
+        dedupeKey: 'texture-published-to-retopology',
       });
-      onOpenBake({ objectId: sourceObject.id, baseColor: selectedObjectBaseColor });
+      onOpenRetopology();
     } catch (reason) {
       pushToast({
         tone: 'error',
-        title: '导入烘焙高模失败',
+        title: '传入拓扑失败',
         description: reason instanceof Error ? reason.message : '请稍后重试。',
-        dedupeKey: 'bake-high-import-failed',
+        dedupeKey: 'texture-publish-failed',
       });
     } finally {
-      setBakeHighImporting(false);
+      setPublishingToRetopology(false);
     }
   }
 
@@ -4746,28 +4833,6 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
   const panelDefinitions = (
     [
       {
-        id: 'segments',
-        title: t('segments'),
-        dock: 'left',
-        order: 10,
-        collapsed: workspacePanels.find((panel) => panel.id === 'segments')?.collapsed ?? true,
-        visible: true,
-        mode: 'segments',
-        actions: <SegmentsPanelActions />,
-        content: <SegmentsPanel />,
-      },
-      {
-        id: 'quickMask',
-        title: t('quickMask'),
-        dock: 'left',
-        order: 20,
-        collapsed: workspacePanels.find((panel) => panel.id === 'quickMask')?.collapsed ?? true,
-        visible: true,
-        mode: 'segments',
-        actions: <QuickMaskPanelActions />,
-        content: <QuickMaskPanel />,
-      },
-      {
         id: 'objects',
         title: t('objectsPanel'),
         dock: 'left',
@@ -5018,17 +5083,19 @@ export function EditorPage({ projectId, onBack, onOpenBake }: EditorPageProps) {
               compact
               activeModule="texture"
               onOpenTexture={() => undefined}
+              onOpenRetopology={onOpenRetopology}
+              onOpenUv={onOpenUv}
               onOpenBake={() => onOpenBake()}
             />
             <Button
               variant="primary"
               className="h-12 whitespace-nowrap rounded-lg px-4"
-              icon={<Flame className="h-4 w-4" />}
-              disabled={!selectedObjectId || bakeHighImporting}
-              onClick={() => void handleImportBakeHigh()}
-              title="将当前选中模型复制为独立的烘焙高模"
+              icon={<Network className="h-4 w-4" />}
+              disabled={!selectedObjectId || publishingToRetopology}
+              onClick={() => void handlePublishToRetopology()}
+              title="锁定当前模型版本并传入自动拓扑"
             >
-              {bakeHighImporting ? '正在导入…' : '导入烘焙高模'}
+              {publishingToRetopology ? '正在发布…' : '完成并传入拓扑'}
             </Button>
           </div>
         }

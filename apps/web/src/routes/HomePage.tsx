@@ -366,34 +366,6 @@ export function HomePage({
             </button>
           </div>
           <ModuleCard
-            eyebrow="MODEL BAKING"
-            title="模型烘焙"
-            description="完成高低模烘焙与 PBR 贴图输出。"
-            detail="高低模 · PBR · 检查"
-            icon={Flame}
-            accent="orange"
-            visual="bake"
-            badge="云端服务"
-            hoverAction="进入烘焙工作台"
-            telemetryModule="model_baking"
-            onClick={onOpenBake}
-            layout="compact"
-          />
-          <ModuleCard
-            eyebrow="PRODUCTION TOOLS"
-            title="工具箱"
-            description="使用建模与生产辅助工具。"
-            detail="3ds Max · Blender · 独立工具"
-            icon={Wrench}
-            accent="cyan"
-            visual="tools"
-            badge="云端服务"
-            hoverAction="打开工具箱"
-            telemetryModule="toolbox"
-            onClick={onOpenToolbox}
-            layout="compact"
-          />
-          <ModuleCard
             eyebrow="AUTO RETOPOLOGY"
             title="自动拓扑"
             description="高模转生产级低模，优化结构与边流。"
@@ -419,6 +391,34 @@ export function HomePage({
             hoverAction="进入自动展 UV"
             telemetryModule="auto_uv"
             onClick={onOpenUv}
+            layout="compact"
+          />
+          <ModuleCard
+            eyebrow="MODEL BAKING"
+            title="模型烘焙"
+            description="完成高低模烘焙与 PBR 贴图输出。"
+            detail="高低模 · PBR · 检查"
+            icon={Flame}
+            accent="orange"
+            visual="bake"
+            badge="云端服务"
+            hoverAction="进入烘焙工作台"
+            telemetryModule="model_baking"
+            onClick={onOpenBake}
+            layout="compact"
+          />
+          <ModuleCard
+            eyebrow="PRODUCTION TOOLS"
+            title="工具箱"
+            description="使用建模与生产辅助工具。"
+            detail="3ds Max · Blender · 独立工具"
+            icon={Wrench}
+            accent="cyan"
+            visual="tools"
+            badge="云端服务"
+            hoverAction="打开工具箱"
+            telemetryModule="toolbox"
+            onClick={onOpenToolbox}
             layout="compact"
           />
         </div>

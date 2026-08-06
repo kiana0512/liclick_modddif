@@ -3,16 +3,19 @@ import { useQuery } from '@tanstack/react-query';
 import { loadProject } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
 
-export function useWorkflowProject(projectId: string) {
+export function useWorkflowProject(projectId?: string) {
   const cachedProject = useProjectStore((state) =>
-    state.projects.find((project) => project.id === projectId),
+    projectId ? state.projects.find((project) => project.id === projectId) : undefined,
   );
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
 
   const query = useQuery({
     queryKey: ['workflow-project', projectId],
-    queryFn: async () => (await loadProject(projectId)).project,
-    enabled: !cachedProject,
+    queryFn: async () => {
+      if (!projectId) throw new Error('Project id is required.');
+      return (await loadProject(projectId)).project;
+    },
+    enabled: Boolean(projectId) && !cachedProject,
     initialData: cachedProject,
     retry: 1,
     staleTime: 30_000,

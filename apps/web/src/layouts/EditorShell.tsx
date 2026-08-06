@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   ArrowLeft,
-  Boxes,
   Check,
   ChevronDown,
   Download,
@@ -46,7 +45,6 @@ const modeIcons: Record<WorkspaceMode, typeof Palette> = {
   scene: Globe2,
   texture: Palette,
   normal: ScanLine,
-  segments: Boxes,
   export: Download,
 };
 
@@ -166,12 +164,12 @@ export function EditorShell({
     { value: 'scene', label: t('scene') },
     { value: 'texture', label: t('texture') },
     { value: 'normal', label: t('normal') },
-    { value: 'segments', label: t('segments') },
   ];
 
   return (
     <main className="relative h-screen min-h-[680px] overflow-hidden bg-ink text-white">
-      <header className="pointer-events-none absolute left-3 right-32 top-3 z-30 flex flex-wrap items-start justify-start gap-2">
+      <header className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex flex-col items-start gap-2">
+        <div className="flex max-w-full items-start gap-2">
         <div className="pointer-events-auto flex min-w-0 items-center gap-2 rounded-lg border border-white/10 bg-black/42 px-2 py-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
           <Button variant="ghost" className="h-8 w-8 px-0" icon={<ArrowLeft className="h-4 w-4" />} onClick={onBack} />
           <BrandMark compact className="hidden sm:flex" />
@@ -232,7 +230,8 @@ export function EditorShell({
             <div className="text-[11px] text-white/42">{workspaceLabel ?? 'No workspace'}</div>
           </div>
         </div>
-        {workflowSwitcher ? <div className="pointer-events-auto hidden md:block">{workflowSwitcher}</div> : null}
+        {workflowSwitcher ? <div className="pointer-events-auto hidden max-w-[calc(100vw-260px)] overflow-x-auto sm:block">{workflowSwitcher}</div> : null}
+        </div>
         <div className="pointer-events-auto flex flex-wrap items-center justify-start gap-2 rounded-lg border border-white/10 bg-black/42 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
           <div className="flex gap-1 lg:hidden">
             <Button
@@ -331,8 +330,8 @@ export function EditorShell({
         className="relative h-full overflow-hidden bg-[#080914]"
         style={
           {
-            '--workspace-left-top-offset': '84px',
-            '--workspace-right-top-offset': '176px',
+            '--workspace-left-top-offset': '132px',
+            '--workspace-right-top-offset': '132px',
             '--workspace-bottom-offset': '16px',
             '--dock-left-width': dockDensity === 'normal' ? '320px' : '300px',
             '--dock-right-width': dockDensity === 'normal' ? '400px' : '360px',

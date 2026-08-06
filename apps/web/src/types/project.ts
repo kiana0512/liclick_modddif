@@ -51,6 +51,89 @@ export type BakeAssetReference = {
   mimeType?: string;
 };
 
+export type ProjectPipelineStage = 'texture' | 'retopology' | 'uv' | 'bake';
+
+/**
+ * Describes how a stage revision received its primary input. Pipeline revisions
+ * are append-only checkpoints; this value records provenance rather than an
+ * editable UI mode.
+ */
+export type ProjectPipelineRevisionSourceMode =
+  | 'project'
+  | 'handoff'
+  | 'manual'
+  | 'processing-job'
+  | 'system';
+
+export type ProjectPipelineRevisionStatus =
+  | 'draft'
+  | 'queued'
+  | 'running'
+  | 'ready'
+  | 'failed'
+  | 'cancelled'
+  | 'stale';
+
+export type ProjectPipelineAssetKind =
+  | 'model'
+  | 'high-model'
+  | 'low-model'
+  | 'uv-model'
+  | 'base-color'
+  | 'normal'
+  | 'roughness'
+  | 'metallic'
+  | 'cage'
+  | 'report'
+  | 'other';
+
+/** A durable, immutable asset reference used by one pipeline checkpoint. */
+export type ProjectPipelineAssetReference = Readonly<BakeAssetReference & {
+  id: string;
+  kind: ProjectPipelineAssetKind;
+  objectId?: string;
+  sourceRevisionId?: string;
+  sha256?: string;
+  sizeBytes?: number;
+}>;
+
+export type ProjectPipelineSettingValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly ProjectPipelineSettingValue[]
+  | { readonly [key: string]: ProjectPipelineSettingValue };
+
+/**
+ * A published pipeline revision is never edited in place. A later checkpoint
+ * is appended and points back to the revision it was derived from.
+ */
+export type ProjectPipelineRevision = {
+  readonly id: string;
+  readonly stage: ProjectPipelineStage;
+  readonly sourceMode: ProjectPipelineRevisionSourceMode;
+  readonly parentRevisionId?: string;
+  readonly inputAssets: readonly ProjectPipelineAssetReference[];
+  readonly outputAssets: readonly ProjectPipelineAssetReference[];
+  readonly settings: Readonly<Record<string, ProjectPipelineSettingValue>>;
+  readonly status: ProjectPipelineRevisionStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly completedAt?: string;
+};
+
+export type ProjectPipelineState = {
+  readonly version: 1;
+  readonly revisions: readonly ProjectPipelineRevision[];
+  /**
+   * Staleness is an overlay so an upstream rerun never rewrites downstream
+   * revision history. A new downstream revision naturally becomes the latest
+   * usable checkpoint without deleting the older stale entry.
+   */
+  readonly staleRevisionIds?: readonly string[];
+};
+
 export type BakeDraftSettings = {
   engine: 'substance-designer';
   qualityPreset: 'preview' | 'production';
@@ -110,6 +193,12 @@ export type ProjectBakeWorkspace = {
 
 export type TextureBakeHandoff = {
   objectId: string;
+  lowModel?: {
+    name: string;
+    url: string;
+    mimeType?: string;
+    file?: File;
+  };
   baseColor?: {
     name: string;
     imageUrl: string;
@@ -129,6 +218,8 @@ export type Project = {
   layers: Layer[];
   bakedTextures: BakedTexture[];
   bakeWorkspace?: ProjectBakeWorkspace;
+  /** Optional, append-only state for the texture -> retopology -> UV -> bake flow. */
+  pipeline?: ProjectPipelineState;
   workspaceName?: string;
   workspaceMode?: WorkspaceMode;
   folderId?: string | null;

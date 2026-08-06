@@ -24,6 +24,7 @@ import {
   type ChangeEvent,
   type DragEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -31,6 +32,9 @@ import {
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
 import { HistorySidePanel } from '@/components/history/HistorySidePanel';
+import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
+import type { WorkflowNavigation } from '@/features/workflow/workflowTypes';
+import { useWorkflowProject } from '@/features/workflow/useWorkflowProject';
 import {
   assetJobArtifacts,
   assetJobError,
@@ -38,6 +42,7 @@ import {
   assetJobId,
   cancelAssetJob,
   downloadVerifiedArtifact,
+  fetchVerifiedArtifactBlob,
   getAssetJob,
   getAssetProcessingStatus,
   submitRetopologyProcessing,
@@ -60,13 +65,98 @@ import {
   trackModuleActionOnce,
   type TelemetryModule,
 } from '@/services/telemetryClient';
+import {
+  fetchTaskHistoryOutputBlob,
+  type TaskHistoryOutput,
+  type TaskHistoryRecord,
+} from '@/services/taskHistoryApiClient';
+import {
+  getLatestUsablePipelineStageRevision,
+  markDownstreamPipelineRevisionsStale,
+  publishPipelineRevision,
+  resolvePipelineAssetObjectId,
+} from '@/services/projectPipeline';
+import {
+  createProject,
+  saveBlobAsset,
+  saveProject as saveWorkspaceProject,
+} from '@/services/workspaceApiClient';
+import { useProjectStore } from '@/stores/projectStore';
+import type {
+  Project,
+  ProjectPipelineAssetReference,
+  ProjectPipelineStage,
+  TextureBakeHandoff,
+} from '@/types/project';
 import { createId } from '@/utils/id';
 
 type AssetProcessingPageProps = {
   mode: AssetProcessingMode;
+  projectId?: string;
   onBack: () => void;
   onLogout: () => void;
+  navigation: WorkflowNavigation;
+  onContinue: (projectId: string, handoff?: TextureBakeHandoff) => void;
 };
+
+type SubmissionSnapshot = {
+  fingerprint: string;
+  sourceFile: File;
+};
+
+type StoredJobBinding = {
+  jobId: string;
+  fingerprint: string;
+  pipelineInputAssetId?: string;
+  source: {
+    name: string;
+    size: number;
+    type: string;
+    lastModified: number;
+  };
+};
+
+type JobBinding = StoredJobBinding & {
+  sourceFile?: File;
+};
+
+function storedJobBinding(storageKey: string): StoredJobBinding | undefined {
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null') as
+      | StoredJobBinding
+      | null;
+    if (
+      !value?.jobId ||
+      !value.fingerprint ||
+      !value.source?.name ||
+      typeof value.source.size !== 'number' ||
+      typeof value.source.lastModified !== 'number'
+    ) {
+      return undefined;
+    }
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+function fileDescriptor(file: File): StoredJobBinding['source'] {
+  return {
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    lastModified: file.lastModified,
+  };
+}
+
+function matchesFileDescriptor(file: File, descriptor: StoredJobBinding['source']) {
+  return (
+    file.name === descriptor.name &&
+    file.size === descriptor.size &&
+    file.type === descriptor.type &&
+    file.lastModified === descriptor.lastModified
+  );
+}
 
 const terminalStatuses = new Set<AssetJobStatus>([
   'SUCCEEDED',
@@ -93,6 +183,53 @@ const modeCopy = {
 
 function telemetryModuleForMode(mode: AssetProcessingMode): TelemetryModule {
   return mode === 'uv' ? 'auto_uv' : 'auto_retopology';
+}
+
+function pipelineStageForMode(mode: AssetProcessingMode): ProjectPipelineStage {
+  return mode === 'uv' ? 'uv' : 'retopology';
+}
+
+function pipelineParentStageForMode(mode: AssetProcessingMode): ProjectPipelineStage {
+  return mode === 'uv' ? 'retopology' : 'texture';
+}
+
+function preferredPipelineInputAsset(project: Project | undefined, mode: AssetProcessingMode) {
+  if (!project) return undefined;
+  const parentRevision = getLatestUsablePipelineStageRevision(
+    project.pipeline,
+    pipelineParentStageForMode(mode),
+  );
+  const expectedKind = mode === 'uv' ? 'low-model' : 'high-model';
+  const revisionAsset = parentRevision?.outputAssets.find(
+    (asset) => asset.kind === expectedKind || asset.kind === 'model',
+  );
+  if (revisionAsset) return revisionAsset;
+
+  if (mode === 'retopology') {
+    const objectId = project.bakeWorkspace?.selectedObjectId;
+    const high = objectId ? project.bakeWorkspace?.bakeSets[objectId]?.high : undefined;
+    if (high) {
+      return {
+        ...high,
+        id: `legacy-high:${objectId}`,
+        kind: 'high-model' as const,
+        objectId,
+      } satisfies ProjectPipelineAssetReference;
+    }
+  }
+  return undefined;
+}
+
+async function fileFromPipelineAsset(asset: ProjectPipelineAssetReference) {
+  const response = await fetch(asset.url, { credentials: 'include' });
+  if (!response.ok) throw new Error(`读取上游模型失败（${response.status}）`);
+  const blob = await response.blob();
+  return new File([blob], asset.name, {
+    type: asset.mimeType || blob.type || 'application/octet-stream',
+    // A deterministic timestamp lets a restored job prove that the freshly
+    // fetched upstream file is the same published pipeline asset.
+    lastModified: 0,
+  });
 }
 
 function fileStem(fileName: string) {
@@ -970,12 +1107,16 @@ function JobPanel({
   busy,
   error,
   onCancel,
+  onContinue,
+  continueLabel,
 }: {
   mode: AssetProcessingMode;
   job?: AssetJob;
   busy: boolean;
   error?: string;
   onCancel: () => void;
+  onContinue?: (artifact: AssetArtifact) => Promise<void>;
+  continueLabel?: string;
 }) {
   const progress = Math.min(100, Math.max(0, job?.progress ?? 0));
   const succeeded = job?.status === 'SUCCEEDED';
@@ -991,6 +1132,7 @@ function JobPanel({
   const contract = deliveryContract(mode, job, artifacts);
   const deliveryReady = succeeded && contract.ready;
   const [downloadingAll, setDownloadingAll] = useState(false);
+  const [continuing, setContinuing] = useState(false);
   const [deliveryDownloadError, setDeliveryDownloadError] = useState<string>();
 
   async function downloadAllArtifacts() {
@@ -1013,6 +1155,26 @@ function JobPanel({
       );
     } finally {
       setDownloadingAll(false);
+    }
+  }
+
+  async function continueWithFbx() {
+    if (!onContinue || continuing || !deliveryReady) return;
+    const fbxArtifact = featuredArtifacts.find((artifact) => /\.fbx$/i.test(artifact.filename));
+    if (!fbxArtifact) {
+      setDeliveryDownloadError('当前交付中没有可传入下一阶段的 FBX 模型。');
+      return;
+    }
+    setContinuing(true);
+    setDeliveryDownloadError(undefined);
+    try {
+      await onContinue(fbxArtifact);
+    } catch (continueError) {
+      setDeliveryDownloadError(
+        submissionErrorMessage(continueError, '保存项目资产或传入下一阶段失败。'),
+      );
+    } finally {
+      setContinuing(false);
     }
   }
 
@@ -1135,6 +1297,27 @@ function JobPanel({
                       : '下载拓扑 FBX'}
                 </button>
               )}
+              {deliveryReady && onContinue && (
+                <button
+                  type="button"
+                  disabled={continuing || downloadingAll}
+                  onClick={() => void continueWithFbx()}
+                  className={`mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-semibold text-white shadow-lg transition hover:-translate-y-0.5 hover:brightness-110 disabled:cursor-wait disabled:opacity-50 disabled:hover:translate-y-0 ${
+                    mode === 'uv'
+                      ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
+                      : 'bg-gradient-to-r from-blue-600 to-violet-500'
+                  }`}
+                >
+                  {continuing ? (
+                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  {continuing
+                    ? '正在保存并传递…'
+                    : continueLabel ?? (mode === 'uv' ? '保存并传入烘焙' : '保存并传入 UV')}
+                </button>
+              )}
               {deliveryDownloadError && (
                 <div className="mt-3 rounded-lg border border-rose-300/12 bg-rose-400/[0.045] px-3 py-2 text-[10px] leading-4 text-rose-100/56">
                   {deliveryDownloadError}
@@ -1167,6 +1350,9 @@ function JobPanel({
 }
 
 function AutoUvWorkspace({
+  initialAsset,
+  onAssetChange,
+  onSubmissionInputsChange,
   serviceReady,
   serviceBlockReason,
   onJob,
@@ -1174,9 +1360,12 @@ function AutoUvWorkspace({
   busy,
   setError,
 }: {
+  initialAsset?: File;
+  onAssetChange?: (file?: File) => void;
+  onSubmissionInputsChange: () => void;
   serviceReady: boolean;
   serviceBlockReason?: string;
-  onJob: (job: AssetJob) => void;
+  onJob: (job: AssetJob, snapshot: SubmissionSnapshot) => void;
   setBusy: (busy: boolean) => void;
   busy: boolean;
   setError: (error?: string) => void;
@@ -1187,6 +1376,16 @@ function AutoUvWorkspace({
   const [hardEdgeAngle, setHardEdgeAngle] = useState(75);
   const [padding, setPadding] = useState(10);
   const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
+
+  useEffect(() => {
+    if (!initialAsset) return;
+    setAsset(initialAsset);
+  }, [initialAsset]);
+
+  function selectAsset(file?: File) {
+    setAsset(file);
+    onAssetChange?.(file);
+  }
 
   async function submit() {
     if (!asset || busy || !serviceReady) return;
@@ -1219,12 +1418,15 @@ function AutoUvWorkspace({
       });
       const submissionJobId = assetJobId(submission);
       if (submissionJobId) trackModuleActionOnce('auto_uv', 'start', submissionJobId);
-      onJob({
-        ...submission,
-        progress: 0,
-        stage: 'QUEUED',
-        stage_message: '任务已提交，等待 Asset Worker',
-      });
+      onJob(
+        {
+          ...submission,
+          progress: 0,
+          stage: 'QUEUED',
+          stage_message: '任务已提交，等待 Asset Worker',
+        },
+        { fingerprint, sourceFile: asset },
+      );
       clearPendingSubmission('uv');
       submissionKeyRef.current = undefined;
     } catch (submitError) {
@@ -1271,7 +1473,7 @@ function AutoUvWorkspace({
           extensions="FBX · OBJ · GLB · GLTF · BLEND"
           icon={FileBox}
           tone="emerald"
-          onFile={setAsset}
+          onFile={selectAsset}
           disabled={busy}
           horizontal
         />
@@ -1289,7 +1491,10 @@ function AutoUvWorkspace({
               { value: 4096, label: '4K' },
               { value: 8192, label: '8K' },
             ]}
-            onChange={setResolution}
+            onChange={(value) => {
+              onSubmissionInputsChange();
+              setResolution(value);
+            }}
             tone="emerald"
             label="UV 输出尺寸"
           />
@@ -1308,7 +1513,10 @@ function AutoUvWorkspace({
                 { value: 'z-', label: '底' },
                 { value: 'z+', label: '顶' },
               ]}
-              onChange={setHiddenAxis}
+              onChange={(value) => {
+                onSubmissionInputsChange();
+                setHiddenAxis(value);
+              }}
               tone="emerald"
               label="隐藏缝方向"
             />
@@ -1320,7 +1528,10 @@ function AutoUvWorkspace({
                 min={1}
                 max={179}
                 value={hardEdgeAngle}
-                onChange={(event) => setHardEdgeAngle(Number(event.target.value))}
+                onChange={(event) => {
+                  onSubmissionInputsChange();
+                  setHardEdgeAngle(Number(event.target.value));
+                }}
                 className="bake-range w-28 accent-emerald-400"
               />
               <span className="w-10 text-right text-xs font-medium text-white/62">{hardEdgeAngle}°</span>
@@ -1333,7 +1544,10 @@ function AutoUvWorkspace({
                 min={2}
                 max={128}
                 value={padding}
-                onChange={(event) => setPadding(Number(event.target.value))}
+                onChange={(event) => {
+                  onSubmissionInputsChange();
+                  setPadding(Number(event.target.value));
+                }}
                 className="bake-range w-28 accent-emerald-400"
               />
               <span className="w-10 text-right text-xs font-medium text-white/62">{padding}px</span>
@@ -1368,6 +1582,9 @@ function AutoUvWorkspace({
 }
 
 function AutoRetopologyWorkspace({
+  initialAsset,
+  onAssetChange,
+  onSubmissionInputsChange,
   serviceReady,
   serviceBlockReason,
   onJob,
@@ -1375,9 +1592,12 @@ function AutoRetopologyWorkspace({
   busy,
   setError,
 }: {
+  initialAsset?: File;
+  onAssetChange?: (file?: File) => void;
+  onSubmissionInputsChange: () => void;
   serviceReady: boolean;
   serviceBlockReason?: string;
-  onJob: (job: AssetJob) => void;
+  onJob: (job: AssetJob, snapshot: SubmissionSnapshot) => void;
   setBusy: (busy: boolean) => void;
   busy: boolean;
   setError: (error?: string) => void;
@@ -1393,6 +1613,16 @@ function AutoRetopologyWorkspace({
     '保留主要轮廓、开口、支撑关系与关键负空间。',
   );
   const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
+
+  useEffect(() => {
+    if (!initialAsset) return;
+    setHighModel(initialAsset);
+  }, [initialAsset]);
+
+  function selectHighModel(file?: File) {
+    setHighModel(file);
+    onAssetChange?.(file);
+  }
 
   async function submit() {
     if (busy || !serviceReady || !highModel) return;
@@ -1442,13 +1672,16 @@ function AutoRetopologyWorkspace({
       if (submissionJobId) {
         trackModuleActionOnce('auto_retopology', 'start', submissionJobId);
       }
-      onJob({
-        ...submission,
-        external_asset_id: submission.external_asset_id ?? metadata.external_asset_id,
-        progress: 0,
-        stage: 'QUEUED',
-        stage_message: 'Agent 正在分析高模并生成唯一正式候选。',
-      });
+      onJob(
+        {
+          ...submission,
+          external_asset_id: submission.external_asset_id ?? metadata.external_asset_id,
+          progress: 0,
+          stage: 'QUEUED',
+          stage_message: 'Agent 正在分析高模并生成唯一正式候选。',
+        },
+        { fingerprint, sourceFile: highModel },
+      );
       clearPendingSubmission('retopology');
       submissionKeyRef.current = undefined;
     } catch (submitError) {
@@ -1488,7 +1721,7 @@ function AutoRetopologyWorkspace({
           extensions="FBX · OBJ · GLB · GLTF · BLEND"
           icon={Box}
           tone="blue"
-          onFile={setHighModel}
+          onFile={selectHighModel}
           disabled={busy}
           horizontal
         />
@@ -1505,7 +1738,10 @@ function AutoRetopologyWorkspace({
           <SettingLabel label="交付档位" description="用于自动密度与质量策略选择">
             <Segment
               value={deliveryProfile}
-              onChange={setDeliveryProfile}
+              onChange={(value) => {
+                onSubmissionInputsChange();
+                setDeliveryProfile(value);
+              }}
               tone="blue"
               label="交付档位"
               values={[
@@ -1523,8 +1759,22 @@ function AutoRetopologyWorkspace({
           >
             <SettingLabel label="结构约束" description="默认保留锐边和组件边界">
               <div className="flex flex-wrap gap-2">
-                <MiniSwitch checked={preserveSharp} onChange={setPreserveSharp} label="保留锐边" />
-                <MiniSwitch checked={preserveBoundary} onChange={setPreserveBoundary} label="保留边界" />
+                <MiniSwitch
+                  checked={preserveSharp}
+                  onChange={(value) => {
+                    onSubmissionInputsChange();
+                    setPreserveSharp(value);
+                  }}
+                  label="保留锐边"
+                />
+                <MiniSwitch
+                  checked={preserveBoundary}
+                  onChange={(value) => {
+                    onSubmissionInputsChange();
+                    setPreserveBoundary(value);
+                  }}
+                  label="保留边界"
+                />
               </div>
             </SettingLabel>
             <label className="block border-t border-white/[0.055] py-4">
@@ -1534,14 +1784,20 @@ function AutoRetopologyWorkspace({
                 rows={3}
                 disabled={busy}
                 value={userRequest}
-                onChange={(event) => setUserRequest(event.target.value)}
+                onChange={(event) => {
+                  onSubmissionInputsChange();
+                  setUserRequest(event.target.value);
+                }}
                 className="mt-3 w-full resize-none rounded-xl border border-white/[0.075] bg-black/18 px-4 py-3 text-sm leading-6 text-white/64 outline-none transition placeholder:text-white/18 focus:border-blue-300/34"
               />
             </label>
             <div className="border-t border-white/[0.055]">
               <ReferenceImages
                 files={referenceImages}
-                onFiles={setReferenceImages}
+                onFiles={(files) => {
+                  onSubmissionInputsChange();
+                  setReferenceImages(files);
+                }}
                 disabled={busy}
                 embedded
               />
@@ -1579,18 +1835,36 @@ function AutoRetopologyWorkspace({
   );
 }
 
-export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingPageProps) {
+export function AssetProcessingPage({
+  mode,
+  projectId,
+  onBack,
+  onLogout,
+  navigation,
+  onContinue,
+}: AssetProcessingPageProps) {
   const copy = modeCopy[mode];
   const Icon = copy.Icon;
-  const jobStorageKey = `li3d:asset-processing:${mode}:job-id`;
-  const traceStorageKey = `li3d:asset-processing:${mode}:trace`;
+  const storageScope = projectId ?? 'standalone';
+  const jobStorageKey = `li3d:asset-processing:${storageScope}:${mode}:job-id`;
+  const jobBindingStorageKey = `li3d:asset-processing:${storageScope}:${mode}:job-binding`;
+  const traceStorageKey = `li3d:asset-processing:${storageScope}:${mode}:trace`;
+  const { project, isLoading: projectLoading, error: projectError } = useWorkflowProject(projectId);
+  const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
+  const pipelineInputAsset = preferredPipelineInputAsset(project, mode);
+  const hydratedInputRef = useRef('');
+  const [initialAsset, setInitialAsset] = useState<File>();
+  const [inputLoadError, setInputLoadError] = useState<string>();
   const [serviceStatus, setServiceStatus] = useState<AssetProcessingStatus>();
   const [serviceLoading, setServiceLoading] = useState(true);
   const [serviceError, setServiceError] = useState<string>();
   const [serviceCheck, setServiceCheck] = useState(0);
   const serviceRetryAttemptRef = useRef(0);
+  const [jobBinding, setJobBinding] = useState<JobBinding | undefined>(() =>
+    storedJobBinding(jobBindingStorageKey),
+  );
   const [job, setJob] = useState<AssetJob | undefined>(() => {
-    const restoredJobId = window.sessionStorage.getItem(jobStorageKey);
+    const restoredJobId = storedJobBinding(jobBindingStorageKey)?.jobId;
     return restoredJobId
       ? {
           job_id: restoredJobId,
@@ -1605,6 +1879,102 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
   const jobId = job ? assetJobId(job) : '';
   const jobStatus = job?.status;
   const jobActive = Boolean(jobStatus && !terminalStatuses.has(jobStatus));
+
+  const clearJobLineage = useCallback(() => {
+    setJob(undefined);
+    setJobBinding(undefined);
+    setError(undefined);
+    window.sessionStorage.removeItem(jobStorageKey);
+    window.sessionStorage.removeItem(jobBindingStorageKey);
+    window.sessionStorage.removeItem(traceStorageKey);
+    clearPendingSubmission(mode);
+  }, [jobBindingStorageKey, jobStorageKey, mode, traceStorageKey]);
+
+  const invalidateJobForInputChange = useCallback(() => {
+    if (!job && !jobBinding) return;
+    clearJobLineage();
+  }, [clearJobLineage, job, jobBinding]);
+
+  function handleSubmittedJob(nextJob: AssetJob, snapshot: SubmissionSnapshot) {
+    const nextJobId = assetJobId(nextJob);
+    if (!nextJobId) {
+      clearJobLineage();
+      setError('任务提交成功，但响应缺少有效 Job ID。');
+      return;
+    }
+    const binding: JobBinding = {
+      jobId: nextJobId,
+      fingerprint: snapshot.fingerprint,
+      pipelineInputAssetId:
+        pipelineInputAsset && initialAsset === snapshot.sourceFile
+          ? pipelineInputAsset.id
+          : undefined,
+      source: fileDescriptor(snapshot.sourceFile),
+      sourceFile: snapshot.sourceFile,
+    };
+    const storedBinding: StoredJobBinding = {
+      jobId: binding.jobId,
+      fingerprint: binding.fingerprint,
+      pipelineInputAssetId: binding.pipelineInputAssetId,
+      source: binding.source,
+    };
+    window.sessionStorage.setItem(jobStorageKey, nextJobId);
+    window.sessionStorage.setItem(jobBindingStorageKey, JSON.stringify(storedBinding));
+    setJobBinding(binding);
+    setJob(nextJob);
+  }
+
+  useEffect(() => {
+    if (!pipelineInputAsset || hydratedInputRef.current === pipelineInputAsset.id) return;
+    let active = true;
+    setInputLoadError(undefined);
+    void fileFromPipelineAsset(pipelineInputAsset)
+      .then((file) => {
+        if (!active) return;
+        hydratedInputRef.current = pipelineInputAsset.id;
+        setInitialAsset(file);
+      })
+      .catch((reason) => {
+        if (!active) return;
+        setInputLoadError(reason instanceof Error ? reason.message : '无法读取上游模型。');
+      });
+    return () => {
+      active = false;
+    };
+  }, [pipelineInputAsset]);
+
+  useEffect(() => {
+    if (
+      !jobBinding ||
+      !jobBinding.pipelineInputAssetId ||
+      projectLoading
+    ) {
+      return;
+    }
+    if (!pipelineInputAsset) {
+      clearJobLineage();
+      return;
+    }
+    if (pipelineInputAsset.id !== jobBinding.pipelineInputAssetId) {
+      clearJobLineage();
+      return;
+    }
+    if (jobBinding.sourceFile) return;
+    if (!initialAsset) return;
+    if (
+      !matchesFileDescriptor(initialAsset, jobBinding.source)
+    ) {
+      clearJobLineage();
+      return;
+    }
+    setJobBinding((current) => current ? { ...current, sourceFile: initialAsset } : current);
+  }, [
+    clearJobLineage,
+    initialAsset,
+    jobBinding,
+    pipelineInputAsset,
+    projectLoading,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -1648,12 +2018,20 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
   }, [serviceCheck]);
 
   useEffect(() => {
-    if (jobId) {
+    if (jobId && jobBinding?.jobId === jobId) {
+      const storedBinding: StoredJobBinding = {
+        jobId: jobBinding.jobId,
+        fingerprint: jobBinding.fingerprint,
+        pipelineInputAssetId: jobBinding.pipelineInputAssetId,
+        source: jobBinding.source,
+      };
       window.sessionStorage.setItem(jobStorageKey, jobId);
+      window.sessionStorage.setItem(jobBindingStorageKey, JSON.stringify(storedBinding));
     } else {
       window.sessionStorage.removeItem(jobStorageKey);
+      window.sessionStorage.removeItem(jobBindingStorageKey);
     }
-  }, [jobId, jobStorageKey]);
+  }, [jobBinding, jobBindingStorageKey, jobId, jobStorageKey]);
 
   useEffect(() => {
     if (mode !== 'retopology') return;
@@ -1700,7 +2078,9 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
           [403, 404, 410].includes(pollError.status)
         ) {
           window.sessionStorage.removeItem(jobStorageKey);
+          window.sessionStorage.removeItem(jobBindingStorageKey);
           setJob(undefined);
+          setJobBinding(undefined);
           setError('之前的任务记录已失效，可以重新提交。');
           return;
         }
@@ -1714,7 +2094,7 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
       active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [jobId, jobStatus, jobStorageKey]);
+  }, [jobBindingStorageKey, jobId, jobStatus, jobStorageKey]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -1785,6 +2165,230 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
     }
   }
 
+  async function publishOutputToNextStage(input: {
+    jobId: string;
+    outputBlob: Blob;
+    outputName: string;
+    outputSize?: number;
+    outputSha256?: string;
+    sourceFile?: File;
+    usePipelineParent: boolean;
+    historyRecordId?: string;
+  }) {
+    let targetProject = projectId
+      ? useProjectStore.getState().projects.find((item) => item.id === projectId) ?? project
+      : undefined;
+    if (!targetProject) {
+      targetProject = (
+        await createProject({ name: `${fileStem(input.sourceFile?.name ?? input.outputName)} 流程` })
+      ).project;
+      replaceCurrentProject(targetProject);
+    }
+
+    let pipeline = targetProject.pipeline;
+    let parentRevision = input.usePipelineParent
+      ? getLatestUsablePipelineStageRevision(pipeline, pipelineParentStageForMode(mode))
+      : undefined;
+    let inputAssets: ProjectPipelineAssetReference[] = parentRevision
+      ? [...parentRevision.outputAssets]
+      : [];
+    const selectedWorkspaceObjectId = targetProject.bakeWorkspace?.selectedObjectId;
+    const validWorkspaceObjectId =
+      selectedWorkspaceObjectId &&
+      targetProject.bakeWorkspace?.bakeSets[selectedWorkspaceObjectId]
+        ? selectedWorkspaceObjectId
+        : undefined;
+    // A published parent (including an explicitly chosen history result) may
+    // inherit its Bake Set identity. A manually replaced file stays standalone.
+    const inheritedObjectId = input.usePipelineParent
+      ? resolvePipelineAssetObjectId(
+          inputAssets,
+          pipelineInputAsset?.objectId,
+          validWorkspaceObjectId,
+        )
+      : undefined;
+    const modelAssetPaths: string[] = [];
+    const revisionId = createId();
+
+    if (!parentRevision && input.sourceFile) {
+      const sourceSnapshotId = createId();
+      const savedSource = await saveBlobAsset({
+        projectId: targetProject.id,
+        category: 'models',
+        blob: input.sourceFile,
+        filename: `pipeline-${sourceSnapshotId}-source-${mode}-${input.sourceFile.name}`,
+      });
+      const sourceAsset: ProjectPipelineAssetReference = {
+        id: sourceSnapshotId,
+        kind: mode === 'retopology' ? 'high-model' : 'low-model',
+        objectId: inheritedObjectId,
+        name: input.sourceFile.name,
+        url: savedSource.asset.url,
+        relativePath: savedSource.asset.relativePath,
+        mimeType: input.sourceFile.type || 'application/octet-stream',
+        sizeBytes: input.sourceFile.size,
+      };
+      modelAssetPaths.push(savedSource.asset.relativePath ?? savedSource.asset.url);
+
+      // A manually started retopology session still establishes a durable high-model
+      // root, so its later bake stage can resolve the original source without back-writing.
+      if (mode === 'retopology') {
+        const timestamp = new Date().toISOString();
+        const textureRoot = {
+          id: createId(),
+          stage: 'texture' as const,
+          sourceMode: 'manual' as const,
+          inputAssets: [] as ProjectPipelineAssetReference[],
+          outputAssets: [sourceAsset],
+          settings: { entry: 'standalone-retopology' },
+          status: 'ready' as const,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          completedAt: timestamp,
+        };
+        if (pipeline) pipeline = markDownstreamPipelineRevisionsStale(pipeline, 'texture');
+        pipeline = publishPipelineRevision(pipeline, textureRoot);
+        parentRevision = textureRoot;
+        inputAssets = [sourceAsset];
+      } else {
+        inputAssets = [sourceAsset];
+      }
+    }
+
+    const savedOutput = await saveBlobAsset({
+      projectId: targetProject.id,
+      category: 'models',
+      blob: input.outputBlob,
+      // Keep every published artifact on a revision-owned path so rerunning a
+      // stage never rewrites the bytes referenced by historical checkpoints.
+      filename: `pipeline-${revisionId}-output-${input.outputName}`,
+    });
+    modelAssetPaths.push(savedOutput.asset.relativePath ?? savedOutput.asset.url);
+    const objectId = resolvePipelineAssetObjectId(inputAssets, inheritedObjectId);
+    const outputAsset: ProjectPipelineAssetReference = {
+      id: `${revisionId}:output`,
+      kind: mode === 'uv' ? 'uv-model' : 'low-model',
+      objectId,
+      sourceRevisionId: parentRevision?.id,
+      name: input.outputName,
+      url: savedOutput.asset.url,
+      relativePath: savedOutput.asset.relativePath,
+      mimeType: input.outputBlob.type || 'application/octet-stream',
+      sha256: input.outputSha256,
+      sizeBytes: input.outputSize ?? input.outputBlob.size,
+    };
+    const stage = pipelineStageForMode(mode);
+    if (pipeline) pipeline = markDownstreamPipelineRevisionsStale(pipeline, stage);
+    const timestamp = new Date().toISOString();
+    pipeline = publishPipelineRevision(pipeline, {
+      id: revisionId,
+      stage,
+      sourceMode: 'processing-job',
+      parentRevisionId: parentRevision?.id,
+      inputAssets,
+      outputAssets: [outputAsset],
+      settings: {
+        jobId: input.jobId,
+        ...(input.historyRecordId ? { historyRecordId: input.historyRecordId } : {}),
+      },
+      status: 'ready',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      completedAt: timestamp,
+    });
+
+    const previousManifest = targetProject.assetManifest ?? {
+      models: [],
+      references: [],
+      generations: [],
+      captures: [],
+      layers: [],
+      baked: [],
+    };
+    let nextProject: Project = {
+      ...targetProject,
+      pipeline,
+      assetManifest: {
+        ...previousManifest,
+        models: Array.from(new Set([...previousManifest.models, ...modelAssetPaths])),
+      },
+      dirty: true,
+      updatedAt: timestamp,
+    };
+
+    if (mode === 'uv' && objectId && nextProject.bakeWorkspace?.bakeSets[objectId]) {
+      nextProject = {
+        ...nextProject,
+        bakeWorkspace: {
+          ...nextProject.bakeWorkspace,
+          activeStage: 'alignment',
+          selectedObjectId: objectId,
+          bakeSets: {
+            ...nextProject.bakeWorkspace.bakeSets,
+            [objectId]: {
+              ...nextProject.bakeWorkspace.bakeSets[objectId],
+              low: {
+                name: outputAsset.name,
+                url: outputAsset.url,
+                relativePath: outputAsset.relativePath,
+                mimeType: outputAsset.mimeType,
+              },
+            },
+          },
+        },
+      };
+    }
+
+    const savedProject = await saveWorkspaceProject(nextProject);
+    replaceCurrentProject(savedProject.project);
+    const handoff =
+      mode === 'uv' && objectId
+        ? {
+            objectId,
+            lowModel: {
+              name: outputAsset.name,
+              url: outputAsset.url,
+              mimeType: outputAsset.mimeType,
+              file: new File([input.outputBlob], outputAsset.name, {
+                type: outputAsset.mimeType || 'application/octet-stream',
+              }),
+            },
+          }
+        : undefined;
+    onContinue(savedProject.project.id, handoff);
+  }
+
+  async function handleContinue(artifact: AssetArtifact) {
+    const currentJobId = job ? assetJobId(job) : '';
+    if (!currentJobId) throw new Error('当前任务缺少有效 Job ID。');
+    if (jobBinding?.jobId !== currentJobId || !jobBinding.sourceFile) {
+      throw new Error('当前任务的输入快照已失效，请使用当前输入重新提交任务。');
+    }
+    const usesPublishedInput = Boolean(
+      pipelineInputAsset && jobBinding.pipelineInputAssetId === pipelineInputAsset.id,
+    );
+    await publishOutputToNextStage({
+      jobId: currentJobId,
+      outputBlob: await fetchVerifiedArtifactBlob(currentJobId, artifact),
+      outputName: artifact.filename,
+      outputSize: artifact.size_bytes,
+      outputSha256: artifact.sha256,
+      sourceFile: jobBinding.sourceFile,
+      usePipelineParent: usesPublishedInput,
+    });
+  }
+
+  async function handleHistoryContinue(record: TaskHistoryRecord, output: TaskHistoryOutput) {
+    await publishOutputToNextStage({
+      jobId: record.id,
+      outputBlob: await fetchTaskHistoryOutputBlob(output),
+      outputName: output.filename,
+      outputSize: output.sizeBytes,
+      usePipelineParent: Boolean(projectId),
+      historyRecordId: record.id,
+    });
+  }
+
   const serviceReady = Boolean(
     !serviceLoading &&
       !serviceError &&
@@ -1807,8 +2411,11 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-x-hidden text-white">
       <div className={`pointer-events-none absolute right-[7%] top-16 h-[420px] w-[420px] rounded-full blur-[120px] ${pageGlow}`} />
-      <header className="relative z-10 flex h-16 items-center justify-between border-b border-white/[0.055] px-5 sm:px-8">
+      <header className="relative z-10 grid min-h-16 grid-cols-[auto_1fr_auto] items-center gap-4 border-b border-white/[0.055] px-5 py-2 sm:px-8">
         <BrandMark />
+        <div className="hidden justify-self-center md:block">
+          <WorkflowModuleSwitcher {...navigation} compact />
+        </div>
         <UserMenu onLogout={onLogout} />
       </header>
 
@@ -1829,7 +2436,18 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
               <Icon className="h-5 w-5" />
             </span>
             <div>
-              <div className="text-[10px] font-semibold tracking-[0.2em] text-white/30">{copy.eyebrow}</div>
+              <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold tracking-[0.2em] text-white/30">
+                <span>{mode === 'uv' ? '阶段 3' : '阶段 2'} · {copy.eyebrow}</span>
+                <span className={`rounded-full border px-2 py-0.5 tracking-normal ${
+                  projectId
+                    ? 'border-violet-300/16 bg-violet-400/[0.06] text-violet-100/58'
+                    : 'border-white/[0.08] bg-white/[0.035] text-white/38'
+                }`}>
+                  {projectId
+                    ? `项目流程 · ${project?.name ?? (projectLoading ? '载入中' : '未找到项目')}`
+                    : '独立使用'}
+                </span>
+              </div>
               <h1 className="mt-1.5 text-3xl font-semibold tracking-[-0.04em] text-white sm:text-4xl">{copy.title}</h1>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-white/38">{copy.description}</p>
             </div>
@@ -1847,21 +2465,34 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
           />
         </div>
 
+        {(inputLoadError || projectError) && (
+          <div className="mt-5 flex items-start gap-3 rounded-xl border border-amber-300/14 bg-amber-400/[0.05] p-4 text-xs leading-5 text-amber-100/68">
+            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{inputLoadError ?? projectError}；仍可手动导入模型继续使用当前页面。</span>
+          </div>
+        )}
+
         <div className="mt-6 grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
           {mode === 'uv' ? (
             <AutoUvWorkspace
+              initialAsset={initialAsset}
+              onAssetChange={invalidateJobForInputChange}
+              onSubmissionInputsChange={invalidateJobForInputChange}
               serviceReady={serviceReady}
               serviceBlockReason={serviceBlockReason}
-              onJob={setJob}
+              onJob={handleSubmittedJob}
               setBusy={setBusy}
               busy={busy || jobActive}
               setError={setError}
             />
           ) : (
             <AutoRetopologyWorkspace
+              initialAsset={initialAsset}
+              onAssetChange={invalidateJobForInputChange}
+              onSubmissionInputsChange={invalidateJobForInputChange}
               serviceReady={serviceReady}
               serviceBlockReason={serviceBlockReason}
-              onJob={setJob}
+              onJob={handleSubmittedJob}
               setBusy={setBusy}
               busy={busy || jobActive}
               setError={setError}
@@ -1873,6 +2504,8 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
             busy={busy || jobActive}
             error={error}
             onCancel={() => void handleCancel()}
+            onContinue={jobBinding?.sourceFile ? handleContinue : undefined}
+            continueLabel={mode === 'uv' ? '保存并传入烘焙' : '保存并传入 UV'}
           />
         </div>
 
@@ -1886,7 +2519,11 @@ export function AssetProcessingPage({ mode, onBack, onLogout }: AssetProcessingP
         </div>
       </section>
       </div>
-      <HistorySidePanel module={mode} refreshKey={historyRefreshKey} />
+      <HistorySidePanel
+        module={mode}
+        refreshKey={historyRefreshKey}
+        onContinue={handleHistoryContinue}
+      />
     </main>
   );
 }
