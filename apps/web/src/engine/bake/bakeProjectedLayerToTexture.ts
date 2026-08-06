@@ -72,6 +72,15 @@ const SHARPEN_KERNEL = [
   { x: 1, y: 1, weight: 1 },
 ];
 
+function markUvBakePerformancePhase(phase: string) {
+  if (
+    typeof document !== 'undefined' &&
+    document.body.dataset.perfSimulatedViewportInteraction === '1'
+  ) {
+    document.body.dataset.perfUvBakePhase = phase;
+  }
+}
+
 async function fillUvInteriorGapsWithIslandOwnership(
   imageData: ImageData,
   coverage: Uint8Array,
@@ -977,6 +986,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   }));
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
+  const performanceBreakdown: Record<string, number> = {};
   const dilationPixels = getUvDilationPixels(input.resolution, input.dilationPixels);
   input.onProgress?.({
     phase: 'loading-assets',
@@ -991,6 +1001,8 @@ export async function bakeVisibleProjectedLayersToTexture(
   // that same depth + geometric-normal capture immediately before UV baking so
   // merge/export cannot fall back to stale capture depth or extrapolate onto
   // surfaces that were not visible in the projected preview.
+  const runtimeDepthStartedAt = performance.now();
+  markUvBakePerformancePhase('runtime-depth');
   if (renderer && !input.debugIgnoreDepth) {
     const currentProject = useProjectStore.getState().getCurrentProject();
     const captureById = new Map(
@@ -1016,6 +1028,7 @@ export async function bakeVisibleProjectedLayersToTexture(
       }),
     );
   }
+  performanceBreakdown.runtimeDepthMs = performance.now() - runtimeDepthStartedAt;
   const bakeMethod = input.method ?? getDebugUvBakeMethod('gpu');
   if (bakeMethod !== 'cpu' && renderer) {
     try {
@@ -1023,6 +1036,8 @@ export async function bakeVisibleProjectedLayersToTexture(
       const gpuProjectedImageUvFlipY =
         input.gpuProjectedImageUvFlipY ?? getDebugGpuProjectedImageUvFlipY(true);
       if (gpuCompositeMode === 'cpu-parity') {
+        const gpuRasterStartedAt = performance.now();
+        markUvBakePerformancePhase('gpu-raster-readback');
         const gpuBake = await bakeProjectedLayerRastersWithGpu({
           renderer,
           group: importedModel.group,
@@ -1045,6 +1060,7 @@ export async function bakeVisibleProjectedLayersToTexture(
               progress: 0.04 + clampProgress(progress.progress) * 0.84,
             }),
         });
+        performanceBreakdown.gpuRasterAndReadbackMs = performance.now() - gpuRasterStartedAt;
 
         input.onProgress?.({
           phase: 'compositing',
@@ -1070,6 +1086,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         }
 
         let writtenTexels = 0;
+        const qualityAccumulateStartedAt = performance.now();
+        markUvBakePerformancePhase('quality-accumulate');
         for (const raster of gpuBake.rasters) {
           const layerImageData = raster.imageData;
           if (raster.layer.blendMode === 'overlay') {
@@ -1087,7 +1105,11 @@ export async function bakeVisibleProjectedLayersToTexture(
             );
           }
         }
+        performanceBreakdown.qualityAccumulateMs =
+          performance.now() - qualityAccumulateStartedAt;
 
+        const qualityResolveStartedAt = performance.now();
+        markUvBakePerformancePhase('quality-resolve');
         const blendWrittenTexels = await writeQualityBlendStackComposite(
           qualityBlendComposite,
           composite,
@@ -1104,6 +1126,9 @@ export async function bakeVisibleProjectedLayersToTexture(
         if (input.outputAlpha !== 'transparent') {
           await sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
         }
+        performanceBreakdown.qualityResolveMs = performance.now() - qualityResolveStartedAt;
+        const seamStartedAt = performance.now();
+        markUvBakePerformancePhase('seam-reconcile');
         if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
           const seamResult = reconcileUvSeams(
             composite,
@@ -1120,6 +1145,9 @@ export async function bakeVisibleProjectedLayersToTexture(
             );
           }
         }
+        performanceBreakdown.seamReconcileMs = performance.now() - seamStartedAt;
+        const coverageRepairStartedAt = performance.now();
+        markUvBakePerformancePhase('coverage-repair');
         if ((input.uvCoverageGapPixels ?? 0) > 0) {
           const filledPixels = dilateUvCoverageWithinTopology(
             composite,
@@ -1142,9 +1170,12 @@ export async function bakeVisibleProjectedLayersToTexture(
             warnings.push(`Safe enclosed UV-gap repair filled ${filledPixels} texels.`);
           }
         }
+        performanceBreakdown.coverageRepairMs = performance.now() - coverageRepairStartedAt;
         if (input.enableDilation && !input.constrainDilationToInteriorHoles) {
           dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
         }
+        const gutterStartedAt = performance.now();
+        markUvBakePerformancePhase('gutter');
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
           const paddedPixels = padUvIslandGutters(
             composite,
@@ -1157,9 +1188,16 @@ export async function bakeVisibleProjectedLayersToTexture(
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
           }
         }
+        performanceBreakdown.gutterMs = performance.now() - gutterStartedAt;
+        const finalizeStartedAt = performance.now();
+        markUvBakePerformancePhase('finalize-canvas');
         if (input.outputAlpha !== 'transparent') await fillTransparentTexelsForViewport(composite);
         else await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
-        context.putImageData(composite, 0, 0);
+        // Merge callers already consume straight RGBA. Avoid a synchronous
+        // 4K ImageData -> Canvas write followed by an immediate Canvas ->
+        // ImageData readback when encoding is intentionally deferred.
+        if (!input.skipCanvasUpload) context.putImageData(composite, 0, 0);
+        performanceBreakdown.finalizeCanvasMs = performance.now() - finalizeStartedAt;
 
         input.onProgress?.({
           phase: 'encoding',
@@ -1191,6 +1229,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           writtenTexels,
           coverageRatio,
           warnings,
+          performanceBreakdown,
         });
 
         const bakedTexture: BakedTexture = {
@@ -1224,6 +1263,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         return {
           bakedTexture,
           canvas,
+          imageData: composite,
           imageBlob,
           imageUrl,
           report,
