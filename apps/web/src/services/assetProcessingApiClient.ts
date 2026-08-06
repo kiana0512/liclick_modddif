@@ -472,7 +472,7 @@ function retryableArtifactDownloadError(error: unknown) {
   ) && error.code !== 'ASSET_ARTIFACT_SHA_MISMATCH';
 }
 
-async function fetchVerifiedArtifactBlob(jobId: string, artifact: AssetArtifact) {
+export async function fetchVerifiedArtifactBlob(jobId: string, artifact: AssetArtifact) {
   const url = assetArtifactUrl(jobId, artifact);
   if (!url) {
     throw new AssetProcessingHttpError(

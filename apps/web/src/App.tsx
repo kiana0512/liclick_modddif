@@ -6,7 +6,7 @@ import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { getIdentityStatus } from './services/identityApiClient';
 import { initializeTelemetry } from './services/telemetryClient';
-import { listProjects, loadProject } from './services/workspaceApiClient';
+import { createProject, listProjects, loadProject } from './services/workspaceApiClient';
 import { useAuthStore } from './stores/authStore';
 import { useProjectStore } from './stores/projectStore';
 import type { Project, TextureBakeHandoff } from './types/project';
@@ -15,8 +15,8 @@ type RouteState =
   | { name: 'home' }
   | { name: 'projects'; module: 'texture' | 'bake' }
   | { name: 'modelingToolbox' }
-  | { name: 'autoRetopology' }
-  | { name: 'autoUv' }
+  | { name: 'autoRetopology'; projectId?: string }
+  | { name: 'autoUv'; projectId?: string }
   | { name: 'editor'; projectId: string }
   | { name: 'bake'; projectId: string; handoff?: TextureBakeHandoff };
 
@@ -94,6 +94,9 @@ function routeFromPath(pathname: string): RouteState {
     return { name: 'autoUv' };
   }
   if (segments[0] === 'project' && segments[1]) {
+    if (segments[2] === 'texture') return { name: 'editor', projectId: segments[1] };
+    if (segments[2] === 'retopology') return { name: 'autoRetopology', projectId: segments[1] };
+    if (segments[2] === 'uv') return { name: 'autoUv', projectId: segments[1] };
     if (segments[2] === 'bake') return { name: 'bake', projectId: segments[1] };
     // Delivery was removed. Keep old bookmarks useful by redirecting them to baking.
     if (segments[2] === 'delivery') return { name: 'bake', projectId: segments[1] };
@@ -107,17 +110,21 @@ function pathFromRoute(route: RouteState) {
   if (route.name === 'home') path = '/';
   else if (route.name === 'projects') path = route.module === 'texture' ? '/texture' : '/baking';
   else if (route.name === 'modelingToolbox') path = '/tools';
-  else if (route.name === 'autoRetopology') path = '/retopology';
-  else if (route.name === 'autoUv') path = '/uv';
-  else if (route.name === 'editor') path = `/texture/project/${encodeURIComponent(route.projectId)}`;
-  else path = `/baking/project/${encodeURIComponent(route.projectId)}`;
+  else if (route.name === 'autoRetopology') path = route.projectId
+    ? `/project/${encodeURIComponent(route.projectId)}/retopology`
+    : '/retopology';
+  else if (route.name === 'autoUv') path = route.projectId
+    ? `/project/${encodeURIComponent(route.projectId)}/uv`
+    : '/uv';
+  else if (route.name === 'editor') path = `/project/${encodeURIComponent(route.projectId)}/texture`;
+  else path = `/project/${encodeURIComponent(route.projectId)}/bake`;
   return `${appBasePath()}${path}`;
 }
 
 export function App() {
   const [route, setRoute] = useState<RouteState>(() => routeFromPath(window.location.pathname));
   const navigationRevisionRef = useRef(0);
-  const bakeEntryProjectPromiseRef = useRef<Promise<Project | undefined> | null>(null);
+  const entryProjectPromiseRef = useRef<Promise<Project | undefined> | null>(null);
   const textureRouteActive =
     route.name === 'editor' || (route.name === 'projects' && route.module === 'texture');
   const localTextureRuntime = useLocalTextureRuntime(textureRouteActive);
@@ -138,6 +145,51 @@ export function App() {
         commitRoute(nextRoute);
       }
 
+      function openCurrentProjectStage(stage: 'texture' | 'bake') {
+        const requestRevision = ++navigationRevisionRef.current;
+        const projectStore = useProjectStore.getState();
+        const currentProject = projectStore.getCurrentProject();
+        const destination = (project: Project): RouteState =>
+          stage === 'texture'
+            ? { name: 'editor', projectId: project.id }
+            : { name: 'bake', projectId: project.id };
+
+        if (currentProject) {
+          commitRoute(destination(currentProject));
+          return;
+        }
+
+        let pendingProject = entryProjectPromiseRef.current;
+        if (!pendingProject) {
+          pendingProject = resolveBakeEntryProject(undefined, { listProjects, loadProject }).then(
+            async (project) => project ?? (await createProject({ name: '未命名项目' })).project,
+          );
+          entryProjectPromiseRef.current = pendingProject;
+          void pendingProject
+            .finally(() => {
+              if (entryProjectPromiseRef.current === pendingProject) {
+                entryProjectPromiseRef.current = null;
+              }
+            })
+            .catch(() => undefined);
+        }
+
+        void pendingProject
+          .then((project) => {
+            if (navigationRevisionRef.current !== requestRevision) return;
+            if (!project) {
+              commitRoute({ name: 'projects', module: stage });
+              return;
+            }
+            useProjectStore.getState().replaceCurrentProject(project);
+            commitRoute(destination(project));
+          })
+          .catch(() => {
+            if (navigationRevisionRef.current !== requestRevision) return;
+            commitRoute({ name: 'projects', module: stage });
+          });
+      }
+
       return {
         openHome: () => {
           const nextRoute: RouteState = { name: 'home' };
@@ -147,54 +199,18 @@ export function App() {
           const nextRoute: RouteState = { name: 'projects', module: 'texture' };
           navigate(nextRoute);
         },
-        openCurrentBake: () => {
-          const requestRevision = ++navigationRevisionRef.current;
-          const projectStore = useProjectStore.getState();
-          const currentProject = projectStore.getCurrentProject();
-
-          if (currentProject) {
-            commitRoute({ name: 'bake', projectId: currentProject.id });
-            return;
-          }
-
-          let pendingProject = bakeEntryProjectPromiseRef.current;
-          if (!pendingProject) {
-            pendingProject = resolveBakeEntryProject(undefined, { listProjects, loadProject });
-            bakeEntryProjectPromiseRef.current = pendingProject;
-            void pendingProject
-              .finally(() => {
-                if (bakeEntryProjectPromiseRef.current === pendingProject) {
-                  bakeEntryProjectPromiseRef.current = null;
-                }
-              })
-              .catch(() => undefined);
-          }
-
-          void pendingProject
-            .then((project) => {
-              if (navigationRevisionRef.current !== requestRevision) return;
-              if (!project) {
-                commitRoute({ name: 'projects', module: 'bake' });
-                return;
-              }
-              useProjectStore.getState().replaceCurrentProject(project);
-              commitRoute({ name: 'bake', projectId: project.id });
-            })
-            .catch(() => {
-              if (navigationRevisionRef.current !== requestRevision) return;
-              commitRoute({ name: 'projects', module: 'bake' });
-            });
-        },
+        openCurrentTexture: () => openCurrentProjectStage('texture'),
+        openCurrentBake: () => openCurrentProjectStage('bake'),
         openModelingToolbox: () => {
           const nextRoute: RouteState = { name: 'modelingToolbox' };
           navigate(nextRoute);
         },
-        openAutoRetopology: () => {
-          const nextRoute: RouteState = { name: 'autoRetopology' };
+        openAutoRetopology: (projectId?: string) => {
+          const nextRoute: RouteState = { name: 'autoRetopology', projectId };
           navigate(nextRoute);
         },
-        openAutoUv: () => {
-          const nextRoute: RouteState = { name: 'autoUv' };
+        openAutoUv: (projectId?: string) => {
+          const nextRoute: RouteState = { name: 'autoUv', projectId };
           navigate(nextRoute);
         },
         openEditor: (projectId: string) => {
@@ -266,6 +282,8 @@ export function App() {
             <EditorPage
               projectId={route.projectId}
               onBack={navigation.openTextureProjects}
+              onOpenRetopology={() => navigation.openAutoRetopology(route.projectId)}
+              onOpenUv={() => navigation.openAutoUv(route.projectId)}
               onOpenBake={(handoff) => navigation.openBake(route.projectId, handoff)}
             />
           </Suspense>
@@ -283,6 +301,8 @@ export function App() {
             projectId={route.projectId}
             onBack={navigation.openHome}
             onOpenTexture={() => navigation.openEditor(route.projectId)}
+            onOpenRetopology={() => navigation.openAutoRetopology(route.projectId)}
+            onOpenUv={() => navigation.openAutoUv(route.projectId)}
             handoff={route.handoff}
           />
         </Suspense>
@@ -336,7 +356,23 @@ export function App() {
     return (
       <>
         <Suspense fallback={<AppRouteFallback />}>
-          <AutoRetopologyPage onBack={navigation.openHome} onLogout={navigation.openHome} />
+          <AutoRetopologyPage
+            projectId={route.projectId}
+            onBack={navigation.openHome}
+            onLogout={navigation.openHome}
+            navigation={{
+              activeModule: 'retopology',
+              onOpenTexture: route.projectId
+                ? () => navigation.openEditor(route.projectId!)
+                : navigation.openCurrentTexture,
+              onOpenRetopology: () => undefined,
+              onOpenUv: () => navigation.openAutoUv(route.projectId),
+              onOpenBake: route.projectId
+                ? () => navigation.openBake(route.projectId!)
+                : navigation.openCurrentBake,
+            }}
+            onContinue={(projectId) => navigation.openAutoUv(projectId)}
+          />
         </Suspense>
         <ToastHost />
       </>
@@ -347,7 +383,23 @@ export function App() {
     return (
       <>
         <Suspense fallback={<AppRouteFallback />}>
-          <AutoUvPage onBack={navigation.openHome} onLogout={navigation.openHome} />
+          <AutoUvPage
+            projectId={route.projectId}
+            onBack={navigation.openHome}
+            onLogout={navigation.openHome}
+            navigation={{
+              activeModule: 'uv',
+              onOpenTexture: route.projectId
+                ? () => navigation.openEditor(route.projectId!)
+                : navigation.openCurrentTexture,
+              onOpenRetopology: () => navigation.openAutoRetopology(route.projectId),
+              onOpenUv: () => undefined,
+              onOpenBake: route.projectId
+                ? () => navigation.openBake(route.projectId!)
+                : navigation.openCurrentBake,
+            }}
+            onContinue={(projectId, handoff) => navigation.openBake(projectId, handoff)}
+          />
         </Suspense>
         <ToastHost />
       </>
@@ -358,7 +410,7 @@ export function App() {
     <>
       <Suspense fallback={<AppRouteFallback />}>
         <HomePage
-          onOpenTexture={navigation.openTextureProjects}
+          onOpenTexture={navigation.openCurrentTexture}
           onOpenBake={navigation.openCurrentBake}
           onOpenToolbox={navigation.openModelingToolbox}
           onOpenRetopology={navigation.openAutoRetopology}

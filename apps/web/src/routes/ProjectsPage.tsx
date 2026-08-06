@@ -112,6 +112,7 @@ function mergeWorkspaceProjects(
             bakedTextures: currentProject.bakedTextures,
             settings: currentProject.settings,
             bakeWorkspace: currentProject.bakeWorkspace,
+            pipeline: currentProject.pipeline,
             currentMode: currentProject.currentMode,
             activeObjectId: currentProject.activeObjectId,
             activeLayerId: currentProject.activeLayerId,

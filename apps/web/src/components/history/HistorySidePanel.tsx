@@ -7,6 +7,7 @@ import {
   History,
   LoaderCircle,
   RefreshCw,
+  Sparkles,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -90,11 +91,14 @@ function statusPresentation(status: string) {
 function HistoryRecordCard({
   module,
   record,
+  onContinue,
 }: {
   module: TaskHistoryModule;
   record: TaskHistoryRecord;
+  onContinue?: (record: TaskHistoryRecord, output: TaskHistoryOutput) => Promise<void>;
 }) {
   const [downloading, setDownloading] = useState<string>();
+  const [continuing, setContinuing] = useState(false);
   const [downloadError, setDownloadError] = useState<string>();
   const presentation = statusPresentation(record.status);
   const StatusIcon = presentation.Icon;
@@ -102,6 +106,10 @@ function HistoryRecordCard({
   const terminal = ['succeeded', 'success', 'completed', 'complete', 'failed', 'error', 'cancelled', 'canceled'].includes(
     record.status.toLowerCase(),
   );
+  const completed = ['succeeded', 'success', 'completed', 'complete'].includes(
+    record.status.toLowerCase(),
+  );
+  const transferableOutput = record.outputs?.find((output) => /\.fbx$/i.test(output.filename));
 
   async function download(output: TaskHistoryOutput) {
     if (!output.downloadUrl || downloading) return;
@@ -115,6 +123,19 @@ function HistoryRecordCard({
       setDownloadError(error instanceof Error ? error.message : '历史文件下载失败。');
     } finally {
       setDownloading(undefined);
+    }
+  }
+
+  async function continueToNextStage() {
+    if (!onContinue || !transferableOutput || continuing) return;
+    setContinuing(true);
+    setDownloadError(undefined);
+    try {
+      await onContinue(record, transferableOutput);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : '历史任务传入下一流程失败。');
+    } finally {
+      setContinuing(false);
     }
   }
 
@@ -219,6 +240,26 @@ function HistoryRecordCard({
           </div>
         ) : null}
 
+        {completed && transferableOutput && onContinue ? (
+          <button
+            type="button"
+            disabled={continuing || Boolean(downloading)}
+            onClick={() => void continueToNextStage()}
+            className={`inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg text-[10px] font-semibold text-white shadow-lg transition hover:brightness-110 disabled:cursor-wait disabled:opacity-45 ${
+              module === 'uv'
+                ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
+                : 'bg-gradient-to-r from-blue-600 to-violet-500'
+            }`}
+          >
+            {continuing ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            {continuing ? '正在传入…' : module === 'uv' ? '传入烘焙' : '传入 UV'}
+          </button>
+        ) : null}
+
         {downloadError ? (
           <div className="rounded-lg border border-rose-300/12 bg-rose-400/[0.045] px-3 py-2 text-[10px] leading-4 text-rose-100/62">
             {downloadError}
@@ -235,6 +276,7 @@ function PanelContent({
   loading,
   error,
   onRefresh,
+  onContinue,
   onClose,
 }: {
   module: TaskHistoryModule;
@@ -242,6 +284,7 @@ function PanelContent({
   loading: boolean;
   error?: string;
   onRefresh: () => void;
+  onContinue?: (record: TaskHistoryRecord, output: TaskHistoryOutput) => Promise<void>;
   onClose?: () => void;
 }) {
   return (
@@ -319,7 +362,12 @@ function PanelContent({
               </div>
             ) : null}
             {records.map((record) => (
-              <HistoryRecordCard key={record.id} module={module} record={record} />
+              <HistoryRecordCard
+                key={record.id}
+                module={module}
+                record={record}
+                onContinue={onContinue}
+              />
             ))}
           </div>
         )}
@@ -331,9 +379,11 @@ function PanelContent({
 export function HistorySidePanel({
   module,
   refreshKey,
+  onContinue,
 }: {
   module: TaskHistoryModule;
   refreshKey?: string;
+  onContinue?: (record: TaskHistoryRecord, output: TaskHistoryOutput) => Promise<void>;
 }) {
   const [records, setRecords] = useState<TaskHistoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -390,6 +440,7 @@ export function HistorySidePanel({
           loading={loading}
           error={error}
           onRefresh={refresh}
+          onContinue={onContinue}
         />
       </div>
 
@@ -425,6 +476,7 @@ export function HistorySidePanel({
               loading={loading}
               error={error}
               onRefresh={refresh}
+              onContinue={onContinue}
               onClose={() => setDrawerOpen(false)}
             />
           </div>

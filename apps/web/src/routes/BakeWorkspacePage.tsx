@@ -60,6 +60,10 @@ import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import { dehighlightBaseColorFile } from '@/engine/materials/dehighlightBaseColor';
 import { getBakeHighObjects, replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
 import {
+  getLatestUsablePipelineStageRevision,
+  resolvePipelineBakeTargetObjectId,
+} from '@/services/projectPipeline';
+import {
   bakeOutputUrl,
   downloadAllBakeOutputs,
   downloadBakeOutput,
@@ -258,11 +262,15 @@ export function BakeWorkspacePage({
   projectId,
   onBack,
   onOpenTexture,
+  onOpenRetopology,
+  onOpenUv,
   handoff,
 }: {
   projectId: string;
   onBack: () => void;
   onOpenTexture: () => void;
+  onOpenRetopology: () => void;
+  onOpenUv: () => void;
   handoff?: TextureBakeHandoff;
 }) {
   const highInputRef = useRef<HTMLInputElement>(null);
@@ -280,6 +288,9 @@ export function BakeWorkspacePage({
   const restoredJobRef = useRef('');
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const autoLowPairRef = useRef(new Set<string>());
+  const pipelineAssetHydrationRef = useRef('');
+  const pipelineLowRecoveryRef = useRef('');
+  const pendingPipelineLowRef = useRef<File>();
   const { project, isLoading, error } = useWorkflowProject(projectId);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const [highObjectOverrides, setHighObjectOverrides] = useState<Record<string, SceneObject>>({});
@@ -299,11 +310,17 @@ export function BakeWorkspacePage({
     () => (project ? { ...project, objects: highObjects } : undefined),
     [highObjects, project],
   );
-  const [selectedObjectId, setSelectedObjectId] = useState('');
-  const [activeStage, setActiveStage] = useState<BakeStage>('assets');
-  const [viewportMode, setViewportMode] = useState<BakeViewportMode>('high');
+  const [selectedObjectId, setSelectedObjectId] = useState(handoff?.objectId ?? '');
+  const [activeStage, setActiveStage] = useState<BakeStage>(
+    handoff?.lowModel?.file ? 'alignment' : 'assets',
+  );
+  const [viewportMode, setViewportMode] = useState<BakeViewportMode>(
+    handoff?.lowModel?.file ? 'overlay' : 'high',
+  );
   const [viewportResetKey, setViewportResetKey] = useState(0);
-  const [lowFiles, setLowFiles] = useState<Record<string, File>>({});
+  const [lowFiles, setLowFiles] = useState<Record<string, File>>(() =>
+    handoff?.lowModel?.file ? { [handoff.objectId]: handoff.lowModel.file } : {},
+  );
   const [cageFiles, setCageFiles] = useState<Record<string, File>>({});
   const [colorFiles, setColorFiles] = useState<Record<string, File>>({});
   const [roughnessFiles, setRoughnessFiles] = useState<Record<string, File>>({});
@@ -558,7 +575,9 @@ export function BakeWorkspacePage({
     ])
       .then(([low, cage, color, roughness, metallic, normal]) => {
         if (cancelled) return;
-        setLowFiles(low);
+        // Route handoff is newer than the server restore started at mount. Keep
+        // its in-memory low model if both operations finish in the same frame.
+        setLowFiles((current) => ({ ...low, ...current }));
         setCageFiles(cage);
         setColorFiles(color);
         setRoughnessFiles(roughness);
@@ -1279,6 +1298,124 @@ export function BakeWorkspacePage({
     }
   }
 
+  useEffect(() => {
+    if (!project || highObjects.length === 0) return;
+    const uvRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'uv');
+    const lowAsset = uvRevision?.outputAssets.find(
+      (asset) => asset.kind === 'uv-model' || asset.kind === 'low-model',
+    );
+    if (!lowAsset) return;
+
+    const selectedWorkspaceObjectId = project.bakeWorkspace?.selectedObjectId;
+    const targetObjectId = resolvePipelineBakeTargetObjectId(
+      highObjects.map((object) => object.id),
+      lowAsset.objectId,
+      selectedWorkspaceObjectId,
+    );
+    if (!targetObjectId) return;
+    if (lowFiles[targetObjectId] || project.bakeWorkspace?.bakeSets[targetObjectId]?.low) return;
+
+    const recoveryKey = `${project.id}:${lowAsset.id}:${targetObjectId}`;
+    if (pipelineLowRecoveryRef.current === recoveryKey) return;
+    pipelineLowRecoveryRef.current = recoveryKey;
+    let cancelled = false;
+
+    void fetch(lowAsset.url, { credentials: 'include' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`${lowAsset.name} 读取失败（${response.status}）`);
+        const blob = await response.blob();
+        return new File([blob], lowAsset.name, {
+          type: lowAsset.mimeType || blob.type || 'application/octet-stream',
+        });
+      })
+      .then((lowFile) => {
+        if (cancelled) return;
+        const assigned = { [targetObjectId]: lowFile };
+        setSelectedObjectId(targetObjectId);
+        setLowFiles((current) => ({ ...current, ...assigned }));
+        setActiveStage('alignment');
+        setViewportMode('overlay');
+        void persistImportedFiles('low', assigned);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        pipelineLowRecoveryRef.current = '';
+        setBakeError(
+          reason instanceof Error
+            ? `UV 低模自动接入失败：${reason.message}`
+            : 'UV 低模自动接入失败',
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      if (pipelineLowRecoveryRef.current === recoveryKey) {
+        pipelineLowRecoveryRef.current = '';
+      }
+    };
+  }, [highObjects, lowFiles, persistImportedFiles, project]);
+
+  useEffect(() => {
+    if (!project || highObjects.length > 0) return;
+    const textureRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'texture');
+    const uvRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'uv');
+    const highAsset = textureRevision?.outputAssets.find(
+      (asset) => asset.kind === 'high-model' || asset.kind === 'model',
+    );
+    const lowAsset = uvRevision?.outputAssets.find(
+      (asset) => asset.kind === 'uv-model' || asset.kind === 'low-model',
+    );
+    if (!highAsset) return;
+    const hydrationKey = `${project.id}:${highAsset.id}:${lowAsset?.id ?? 'no-low'}`;
+    if (pipelineAssetHydrationRef.current === hydrationKey) return;
+    pipelineAssetHydrationRef.current = hydrationKey;
+    let cancelled = false;
+
+    const readAssetFile = async (asset: NonNullable<typeof highAsset>) => {
+      const response = await fetch(asset.url, { credentials: 'include' });
+      if (!response.ok) throw new Error(`${asset.name} 读取失败（${response.status}）`);
+      const blob = await response.blob();
+      return new File([blob], asset.name, {
+        type: asset.mimeType || blob.type || 'application/octet-stream',
+      });
+    };
+
+    void Promise.all([readAssetFile(highAsset), lowAsset ? readAssetFile(lowAsset) : undefined])
+      .then(([highFile, lowFile]) => {
+        if (cancelled) return;
+        if (lowFile) pendingPipelineLowRef.current = lowFile;
+        void handleHighImport([highFile]);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        pipelineAssetHydrationRef.current = '';
+        setBakeError(
+          reason instanceof Error
+            ? `流程资产自动接入失败：${reason.message}`
+            : '流程资产自动接入失败',
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+    // The hydration key makes this effect idempotent while the import callback
+    // intentionally uses the latest component state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highObjects.length, project]);
+
+  useEffect(() => {
+    const lowFile = pendingPipelineLowRef.current;
+    const high = highObjects[0];
+    if (!lowFile || !high) return;
+    pendingPipelineLowRef.current = undefined;
+    const assigned = { [high.id]: lowFile };
+    setSelectedObjectId(high.id);
+    setLowFiles((current) => ({ ...current, ...assigned }));
+    setActiveStage('alignment');
+    setViewportMode('overlay');
+    void persistImportedFiles('low', assigned);
+  }, [highObjects, persistImportedFiles]);
+
   function openStage(stage: BakeStage) {
     setActiveStage(stage);
     if (stage === 'alignment' && selectedLow) setViewportMode('overlay');
@@ -1586,13 +1723,15 @@ export function BakeWorkspacePage({
     return (
       <WorkflowShell
         projectName={project?.name ?? (isLoading ? '正在载入项目…' : '未找到项目')}
-        eyebrow="MODULE 2 · ONE-CLICK BAKE"
+        eyebrow="阶段 4 · 烘焙"
         onBack={onBack}
         backLabel="返回功能首页"
         connected={!error}
         navigation={{
           activeModule: 'bake',
           onOpenTexture,
+          onOpenRetopology,
+          onOpenUv,
           onOpenBake: () => undefined,
         }}
       >
@@ -2370,12 +2509,14 @@ export function BakeWorkspacePage({
   return (
     <WorkflowShell
       projectName={project?.name ?? (isLoading ? '正在载入项目…' : '未找到项目')}
-      eyebrow="MODULE 2 · PROFESSIONAL BAKE"
+      eyebrow="阶段 4 · 专业烘焙"
       onBack={onBack}
       connected={!error}
       navigation={{
         activeModule: 'bake',
         onOpenTexture,
+        onOpenRetopology,
+        onOpenUv,
         onOpenBake: () => undefined,
       }}
     >
