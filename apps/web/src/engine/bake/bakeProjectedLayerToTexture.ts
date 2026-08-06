@@ -30,6 +30,7 @@ import type {
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
+import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
@@ -236,6 +237,13 @@ function clampProgress(progress: number) {
 const BAKE_PIXELS_PER_YIELD = 32_768;
 
 function yieldToBakeUi() {
+  if (isViewportInteractionBusy()) {
+    // Let the viewport present first, then consume only a bounded CPU slice.
+    // This changes scheduling only; every source pixel is still processed.
+    return new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+    );
+  }
   const browserScheduler = (
     globalThis as typeof globalThis & {
       scheduler?: { yield?: () => Promise<void> };

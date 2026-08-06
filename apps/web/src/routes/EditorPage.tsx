@@ -112,6 +112,10 @@ import {
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import {
+  markPerformanceEvent,
+  startPerformanceSpan,
+} from '@/engine/performance/performanceTimeline';
 import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
@@ -3606,6 +3610,14 @@ export function EditorPage({
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
     }
+    const mergeStartedAt = performance.now();
+    const bakeResolution = resolutionToSize[resolution];
+    const finishMergeSpan = startPerformanceSpan('uv-merge', 'merge-layers-to-uv', {
+      requestedLayerCount: layerIds.length,
+      projectedLayerCount: projectedLayers.length,
+      uvLayerCount: selectedUvLayers.length,
+      resolution: bakeResolution,
+    });
     captureHistory(blankUvLayerId ? '合并选中投影图层到空 UV 图层' : '合并选中投影图层为 UV 图层');
     manualBakeRunningRef.current = true;
     setManualBakeProgress({
@@ -3629,8 +3641,11 @@ export function EditorPage({
             : layer,
           ),
       );
-      const bakeResolution = resolutionToSize[resolution];
       const postprocess = getMergeUvPostprocessOptions(bakeResolution);
+      markPerformanceEvent('uv-merge', 'gpu-bake-start', {
+        layerCount: layersToBake.length,
+        resolution: bakeResolution,
+      });
       const bakeResult =
         layersToBake.length > 0
           ? await bakeVisibleProjectedLayersToTexture({
@@ -3655,6 +3670,10 @@ export function EditorPage({
               onProgress: updateManualBakeProgress,
             })
           : undefined;
+      markPerformanceEvent('uv-merge', 'gpu-bake-complete', {
+        durationMs: performance.now() - mergeStartedAt,
+        coverageRatio: bakeResult?.report.coverageRatio,
+      });
 
       const outputCanvas = bakeResult?.canvas ?? document.createElement('canvas');
       if (!bakeResult) {
@@ -3694,6 +3713,10 @@ export function EditorPage({
         bakeResolution,
         mergedImageData.data,
       );
+      markPerformanceEvent('uv-merge', 'png-encode-complete', {
+        byteLength: mergedImageBlob.size,
+        durationMs: performance.now() - mergeStartedAt,
+      });
       let imageUrl: string;
       if (project.workspaceMode === 'local-server') {
         const filename = `${blankUvLayerId ?? createId('merged-uv-layer')}.png`;
@@ -3732,7 +3755,14 @@ export function EditorPage({
         title: t('mergeComplete'),
         description: `${bakeResolution}px · ${(mergedCoverageRatio * 100).toFixed(1)}%`,
       });
+      finishMergeSpan('end', {
+        coverageRatio: mergedCoverageRatio,
+        outputBytes: mergedImageBlob.size,
+      });
     } catch (error) {
+      finishMergeSpan('error', {
+        message: error instanceof Error ? error.message : String(error),
+      });
       pushToast({
         tone: 'error',
         title: t('autoBakeFailed'),

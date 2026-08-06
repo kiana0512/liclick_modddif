@@ -302,6 +302,7 @@ const fragmentShader = `
   uniform float uvOverlaySaturationShift;
   uniform float uvOverlayLightnessShift;
   uniform float useBaseMap;
+  uniform float baseTextureOpacity;
   uniform sampler2D baseRenderedColorMaskMap;
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
@@ -625,7 +626,8 @@ const fragmentShader = `
       uvOverlaySaturationShift,
       uvOverlayLightnessShift
     );
-    vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, useBaseMap * baseTexel.a);
+    float baseTextureAlpha = useBaseMap * baseTexel.a * baseTextureOpacity;
+    vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, baseTextureAlpha);
     // Local repaint images are captured display colors: they already contain the
     // viewport exposure. LinearToneMapping applies the renderer exposure once more
     // at the end of this shader, so cancel that second exposure for rendered
@@ -634,7 +636,7 @@ const fragmentShader = `
     vec3 emptyPreviewColor = mix(
       computeProjectionEmptyPreviewColor(baseColor, lambert),
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
-      useBaseMap * baseTexel.a
+      baseTextureAlpha
     );
     vec3 projectedDisplayColor = texel.rgb * mix(
       lambert,
@@ -673,7 +675,7 @@ const fragmentShader = `
     // offset tiny so real occlusion is unchanged, while making projected
     // fragments consistently win over an overlapping diagnostic fragment.
     float projectedDepthCoverage = max(
-      max(projectionAlpha, baseTexel.a * useBaseMap),
+      max(projectionAlpha, baseTextureAlpha),
       max(uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity, topUvOverlayAlpha)
     );
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
@@ -1022,6 +1024,7 @@ function buildStackFragmentShader(
   uniform float useLiveEraserMask;
   uniform float liveEraserLayerIndex;
   ${features.useBaseMap ? 'uniform sampler2D baseMap;' : ''}
+  ${features.useBaseMap ? 'uniform float baseTextureOpacity;' : ''}
   ${features.useBaseRenderedColorMaskMap ? 'uniform sampler2D baseRenderedColorMaskMap;' : ''}
   ${features.useUvOverlayMap ? 'uniform sampler2D uvOverlayMap;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayOpacity;' : ''}
@@ -1320,7 +1323,7 @@ function buildStackFragmentShader(
         ? `mix(
       computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal)),
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
-      baseTexel.a
+      baseTexel.a * baseTextureOpacity
     )`
         : 'computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal))'
     };
@@ -1377,7 +1380,7 @@ function buildStackFragmentShader(
     }
     ${
       features.useBaseMap
-        ? 'projectedDepthCoverage = max(projectedDepthCoverage, baseTexel.a);'
+        ? 'projectedDepthCoverage = max(projectedDepthCoverage, baseTexel.a * baseTextureOpacity);'
         : ''
     }
     ${
@@ -1665,6 +1668,12 @@ function updateSharedPreviewUniforms(
   if (material.uniforms.liveEraserLayerIndex)
     material.uniforms.liveEraserLayerIndex.value = liveEraserLayerIndex;
   if (material.uniforms.useBaseMap) material.uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
+  if (material.uniforms.baseTextureOpacity)
+    material.uniforms.baseTextureOpacity.value = THREE.MathUtils.clamp(
+      input.baseTextureOpacity ?? 1,
+      0,
+      1,
+    );
   if (material.uniforms.useBaseRenderedColorMaskMap)
     material.uniforms.useBaseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture
       ? 1
@@ -1800,6 +1809,7 @@ export async function loadProjectedTexture(
   const texturePromise = new THREE.TextureLoader()
     .loadAsync(imageUrl)
     .then((texture) => {
+      texture.userData.liclickProjectedSourceUrl = imageUrl;
       texture.colorSpace = colorSpace;
       texture.flipY = false;
       texture.wrapS = THREE.ClampToEdgeWrapping;
@@ -1859,6 +1869,16 @@ function yieldProjectedArrayUploadFrame() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+async function waitForProjectedArrayUploadWindow(
+  isViewportInteractionBusy?: () => boolean,
+  isCancelled?: () => boolean,
+) {
+  while (isViewportInteractionBusy?.()) {
+    if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+    await yieldProjectedArrayUploadFrame();
+  }
+}
+
 let projectedArrayUploadTail = Promise.resolve();
 
 async function withProjectedArrayUploadLock<T>(task: () => Promise<T>) {
@@ -1887,6 +1907,7 @@ async function packProjectedTextureArrayInWorker(
   profile: ProjectedTextureProfile,
   width: number,
   height: number,
+  isCancelled?: () => boolean,
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
   if (
     typeof Worker === 'undefined' ||
@@ -1896,16 +1917,30 @@ async function packProjectedTextureArrayInWorker(
     return undefined;
   }
 
+  const canDecodeEverySourceInWorker = sources.every(
+    (source) =>
+      !source || typeof source.userData.liclickProjectedSourceUrl === 'string',
+  );
   const decodeConcurrency = Math.max(
     1,
     Math.min(3, Math.floor((navigator.hardwareConcurrency || 4) / 4)),
   );
-  const bitmaps = await mapWithConcurrency(sources, decodeConcurrency, async (source) =>
-    source ? createImageBitmap(source.image as ImageBitmapSource) : undefined,
-  );
+  const bitmaps = canDecodeEverySourceInWorker
+    ? sources.map(() => undefined)
+    : await mapWithConcurrency(sources, decodeConcurrency, async (source) =>
+        source ? createImageBitmap(source.image as ImageBitmapSource) : undefined,
+      );
+  if (isCancelled?.()) {
+    bitmaps.forEach((bitmap) => bitmap?.close());
+    throw new Error('Projected texture array packing was cancelled.');
+  }
   const packedSources = bitmaps.map((bitmap, index) => ({
-      bitmap,
-      previewWidth: previewSizes[index]?.width ?? 1,
+    bitmap,
+    url:
+      typeof sources[index]?.userData.liclickProjectedSourceUrl === 'string'
+        ? (sources[index]?.userData.liclickProjectedSourceUrl as string)
+        : undefined,
+    previewWidth: previewSizes[index]?.width ?? 1,
       previewHeight: previewSizes[index]?.height ?? 1,
   }));
   return packProjectedTextureArrayInPersistentWorker({
@@ -1913,7 +1948,7 @@ async function packProjectedTextureArrayInWorker(
     height,
     profile,
     sources: packedSources,
-  });
+  }, isCancelled);
 }
 
 async function packProjectedTextureArrayOnMainThread(
@@ -1995,6 +2030,7 @@ async function createProjectedTextureArray(
   profile: ProjectedTextureProfile,
   isCancelled?: () => boolean,
   maxPreviewSide = renderer.capabilities.maxTextureSize,
+  isViewportInteractionBusy?: () => boolean,
 ): Promise<ProjectedTextureArrayBundle> {
   if (!renderer.capabilities.isWebGL2) {
     throw new Error('High-capacity projected preview requires WebGL 2 texture arrays.');
@@ -2029,6 +2065,11 @@ async function createProjectedTextureArray(
     );
   }
 
+  // ImageBitmap creation can synchronously force deferred image decode on the
+  // browser main thread. Protect the viewport before *any* array preparation,
+  // not only before the final WebGL upload.
+  await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
+
   // Pixel readback and array packing are CPU-heavy even though the destination
   // is a GPU texture. Keep that work off the UI thread when worker canvas support
   // is available, with the old yielding path retained for compatibility.
@@ -2040,8 +2081,10 @@ async function createProjectedTextureArray(
       profile,
       width,
       height,
+      isCancelled,
     );
   } catch (error) {
+    if (isCancelled?.()) throw error;
     console.warn(
       '[Liclick 3D Texture] Projected texture worker unavailable; using the yielding main-thread packer.',
       error,
@@ -2062,6 +2105,7 @@ async function createProjectedTextureArray(
     // CPU preparation for other profiles continues in parallel. Keep WebGL
     // uploads serialized and yield between slices so input always gets a frame.
     await yieldProjectedArrayUploadFrame();
+    await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
 
     const texture = new THREE.DataArrayTexture(textureData, width, height, sources.length);
     texture.name = `LiclickProjected${profile[0].toUpperCase()}${profile.slice(1)}Array`;
@@ -2087,6 +2131,7 @@ async function createProjectedTextureArray(
       texture.source.dataReady = true;
       for (let layerIndex = 0; layerIndex < sources.length; layerIndex += 1) {
         if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+        await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
         texture.addLayerUpdate(layerIndex);
         texture.needsUpdate = true;
         renderer.initTexture(texture);
@@ -2314,6 +2359,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
       wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
+      baseTextureOpacity: {
+        value: THREE.MathUtils.clamp(input.baseTextureOpacity ?? 1, 0, 1),
+      },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
       uvOverlayOpacity: {
@@ -2378,6 +2426,7 @@ export async function createProjectedLayerStackMaterial(
     maxTextureImageUnits?: number;
     renderer?: THREE.WebGLRenderer;
     isCancelled?: () => boolean;
+    isViewportInteractionBusy?: () => boolean;
     preferTextureArrays?: boolean;
   } = {},
 ) {
@@ -2468,6 +2517,9 @@ export async function createProjectedLayerStackMaterial(
         : -1,
     },
     useBaseMap: { value: input.baseTexture ? 1 : 0 },
+    baseTextureOpacity: {
+      value: THREE.MathUtils.clamp(input.baseTextureOpacity ?? 1, 0, 1),
+    },
     useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
     useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
     uvOverlayOpacity: {
@@ -2531,6 +2583,12 @@ export async function createProjectedLayerStackMaterial(
       normalArraySlice?: number;
     }
   > = [];
+  if (useTextureArrays) {
+    await waitForProjectedArrayUploadWindow(
+      options.isViewportInteractionBusy,
+      options.isCancelled,
+    );
+  }
   const preparedLayers = await mapWithConcurrency(
     layers,
     2,
@@ -2722,6 +2780,7 @@ export async function createProjectedLayerStackMaterial(
               'image',
               options.isCancelled,
               projectedArrayPreviewSide,
+              options.isViewportInteractionBusy,
             )
           : Promise.resolve(undefined),
         maskTextures.length > 0
@@ -2731,6 +2790,7 @@ export async function createProjectedLayerStackMaterial(
               'mask',
               options.isCancelled,
               auxiliaryArrayPreviewSide,
+              options.isViewportInteractionBusy,
             )
           : Promise.resolve(undefined),
         depthTextures.length > 0
@@ -2740,6 +2800,7 @@ export async function createProjectedLayerStackMaterial(
               'depth',
               options.isCancelled,
               auxiliaryArrayPreviewSide,
+              options.isViewportInteractionBusy,
             )
           : Promise.resolve(undefined),
         normalTextures.length > 0
@@ -2749,6 +2810,7 @@ export async function createProjectedLayerStackMaterial(
               'normal',
               options.isCancelled,
               auxiliaryArrayPreviewSide,
+              options.isViewportInteractionBusy,
             )
           : Promise.resolve(undefined),
       ];
@@ -2985,6 +3047,7 @@ const uvOverlayFragmentShader = `
   uniform sampler2D liveUvOverlayMap;
   uniform sampler2D surfaceMaskMap;
   uniform float useBaseMap;
+  uniform float baseTextureOpacity;
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
   uniform float uvOverlayOpacity;
@@ -3075,7 +3138,8 @@ const uvOverlayFragmentShader = `
       liveUvOverlayLightnessShift
     );
     vec4 surfaceMaskTexel = texture2D(surfaceMaskMap, vec2(vUv.x, 1.0 - vUv.y));
-    vec3 baseSurface = mix(baseColor, baseTexel.rgb, useBaseMap * baseTexel.a);
+    float baseTextureAlpha = useBaseMap * baseTexel.a * baseTextureOpacity;
+    vec3 baseSurface = mix(baseColor, baseTexel.rgb, baseTextureAlpha);
     float surfaceMask = mix(1.0, max(surfaceMaskTexel.r, max(surfaceMaskTexel.g, surfaceMaskTexel.b)), useSurfaceMaskMap);
     baseSurface = mix(baseColor, baseSurface, surfaceMask);
     vec3 uvPreviewBase = computeUvEmptyPreviewColor();
@@ -3098,7 +3162,7 @@ const uvOverlayFragmentShader = `
     vec3 litBaseSurface = mix(
       baseColor * lighting,
       baseTexel.rgb * mix(lighting, renderedColorExposureCompensation, baseRenderedColor),
-      useBaseMap * baseTexel.a
+      baseTextureAlpha
     );
     litBaseSurface = mix(baseColor * lighting, litBaseSurface, surfaceMask);
     surfaceColor = mix(litBaseSurface, surfaceColor * lighting, max(overlayAlpha, showEmptyUvChecker * hasUvOverlay));
@@ -3125,6 +3189,7 @@ export type UvOverlayPreviewMaterialInput = {
   liveUvOverlayLightness?: number;
   surfaceMaskTexture?: THREE.Texture;
   baseTexture?: THREE.Texture;
+  baseTextureOpacity?: number;
   baseRenderedColorMaskTexture?: THREE.Texture;
   baseColor?: THREE.ColorRepresentation;
   previewLighting?: ProjectionPreviewLighting;
@@ -3164,6 +3229,9 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
       liveUvOverlayMap: { value: input.liveUvOverlayTexture ?? neutralTexture },
       surfaceMaskMap: { value: input.surfaceMaskTexture ?? neutralTexture },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
+      baseTextureOpacity: {
+        value: THREE.MathUtils.clamp(input.baseTextureOpacity ?? 1, 0, 1),
+      },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
       uvOverlayOpacity: {
@@ -3217,6 +3285,11 @@ export function updateUvOverlayPreviewMaterial(
   uniforms.liveUvOverlayMap.value = input.liveUvOverlayTexture ?? neutralTexture;
   uniforms.surfaceMaskMap.value = input.surfaceMaskTexture ?? neutralTexture;
   uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
+  uniforms.baseTextureOpacity.value = THREE.MathUtils.clamp(
+    input.baseTextureOpacity ?? 1,
+    0,
+    1,
+  );
   uniforms.useBaseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture ? 1 : 0;
   uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
   uniforms.uvOverlayOpacity.value = THREE.MathUtils.clamp(

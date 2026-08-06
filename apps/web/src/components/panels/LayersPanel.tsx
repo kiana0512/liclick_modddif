@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -476,14 +477,17 @@ export function LayersPanel({
   function beginVisibilityDrag(layer: Layer) {
     const nextVisible = !layer.visible;
     const ids = getAffectedLayerIds(layer.id);
-    setLayerVisibility(ids, nextVisible);
+    // The renderer's Zustand subscriber applies the visibility uniform
+    // synchronously. React can reconcile the large layer/editor tree at
+    // transition priority so pointer-driven viewport frames stay responsive.
+    startTransition(() => setLayerVisibility(ids, nextVisible));
     setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
   }
 
   function continueVisibilityDrag(layerId: string) {
     if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
     visibilityDrag.touched.add(layerId);
-    setLayerVisibility([layerId], visibilityDrag.visible);
+    startTransition(() => setLayerVisibility([layerId], visibilityDrag.visible));
     setVisibilityDrag({ visible: visibilityDrag.visible, touched: new Set(visibilityDrag.touched) });
   }
 
@@ -854,6 +858,9 @@ function LayerRow({
   return (
     <div
       role="button"
+      data-layer-id={layer.id}
+      data-layer-type={layer.type}
+      data-layer-role={layer.role ?? ''}
       tabIndex={0}
       draggable
       onClick={onSelect}

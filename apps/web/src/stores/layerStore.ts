@@ -3,12 +3,17 @@ import { v4 as uuid } from 'uuid';
 import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import type { Layer, LayerAdjustments } from '@/types/layer';
+import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { useSceneStore } from './sceneStore';
 
 type LayerStore = {
   layers: Layer[];
   activeProjectedLayerId?: string;
+  projectedPreviewBatchDepth: number;
+  projectedPreviewLayers?: Layer[];
   setLayers: (layers: Layer[]) => void;
+  beginProjectedPreviewBatch: () => void;
+  endProjectedPreviewBatch: () => void;
   addEmptyLayer: () => Layer;
   addUvLayer: (input: {
     name?: string;
@@ -142,10 +147,26 @@ function markVisibleStackNeedsRebake(layers: Layer[]) {
 export const useLayerStore = create<LayerStore>((set, get) => ({
   layers: [],
   activeProjectedLayerId: undefined,
+  projectedPreviewBatchDepth: 0,
+  projectedPreviewLayers: undefined,
   setLayers: (layers) =>
     set({
       layers: withOrder(layers.map(normalizeLayer)),
       activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
+    }),
+  beginProjectedPreviewBatch: () =>
+    set((state) => ({
+      projectedPreviewBatchDepth: state.projectedPreviewBatchDepth + 1,
+      projectedPreviewLayers:
+        state.projectedPreviewBatchDepth === 0 ? state.layers : state.projectedPreviewLayers,
+    })),
+  endProjectedPreviewBatch: () =>
+    set((state) => {
+      const nextDepth = Math.max(0, state.projectedPreviewBatchDepth - 1);
+      return {
+        projectedPreviewBatchDepth: nextDepth,
+        projectedPreviewLayers: nextDepth === 0 ? undefined : state.projectedPreviewLayers,
+      };
     }),
   addEmptyLayer: () => {
     const layer = createEmptyLayer();
@@ -287,7 +308,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     });
     return mergedLayer!;
   },
-  toggleLayer: (layerId) =>
+  toggleLayer: (layerId) => {
+    const target = get().layers.find((layer) => layer.id === layerId);
+    markPerformanceEvent('layers', 'toggle-layer', {
+      layerId,
+      layerType: target?.type,
+      nextVisible: !target?.visible,
+    });
     set((state) => {
       const target = state.layers.find((layer) => layer.id === layerId);
       const nextVisible = !target?.visible;
@@ -299,8 +326,17 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
         activeProjectedLayerId:
           state.activeProjectedLayerId ?? layers.find((layer) => layer.visible)?.id,
       };
-    }),
-  setLayerVisibility: (layerIds, visible) =>
+    });
+  },
+  setLayerVisibility: (layerIds, visible) => {
+    const currentLayers = get().layers;
+    markPerformanceEvent('layers', 'set-layer-visibility', {
+      layerIds,
+      layerTypes: layerIds.map(
+        (layerId) => currentLayers.find((layer) => layer.id === layerId)?.type ?? 'missing',
+      ),
+      visible,
+    });
     set((state) => {
       const layerIdSet = new Set(layerIds);
       const layers = state.layers.map((layer) =>
@@ -314,7 +350,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           ? state.activeProjectedLayerId
           : layers.find((layer) => layer.visible)?.id,
       };
-    }),
+    });
+  },
   setOpacity: (layerId, opacity) =>
     set((state) => ({
       layers: state.layers.map((layer) =>

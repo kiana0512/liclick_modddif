@@ -121,6 +121,18 @@ function pathFromRoute(route: RouteState) {
   return `${appBasePath()}${path}`;
 }
 
+function pathFromRouteWithDiagnostics(route: RouteState) {
+  const path = pathFromRoute(route);
+  const current = new URLSearchParams(window.location.search);
+  const diagnostics = new URLSearchParams();
+  for (const key of ['perfLab', 'perfOrbit']) {
+    const value = current.get(key);
+    if (value !== null) diagnostics.set(key, value);
+  }
+  const query = diagnostics.toString();
+  return query ? `${path}?${query}` : path;
+}
+
 export function App() {
   const [route, setRoute] = useState<RouteState>(() => routeFromPath(window.location.pathname));
   const navigationRevisionRef = useRef(0);
@@ -136,7 +148,7 @@ export function App() {
   const navigation = useMemo(
     () => {
       function commitRoute(nextRoute: RouteState) {
-        window.history.pushState(nextRoute, '', pathFromRoute(nextRoute));
+        window.history.pushState(nextRoute, '', pathFromRouteWithDiagnostics(nextRoute));
         setRoute(nextRoute);
       }
 
@@ -258,7 +270,7 @@ export function App() {
   useEffect(() => {
     const normalizedPath = pathFromRoute(route);
     if (window.location.pathname !== normalizedPath) {
-      window.history.replaceState(route, '', normalizedPath);
+      window.history.replaceState(route, '', pathFromRouteWithDiagnostics(route));
     }
     function handlePopState() {
       navigationRevisionRef.current += 1;

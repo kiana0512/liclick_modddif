@@ -35,6 +35,7 @@ import {
   canCompositeUvLayersInWorker,
   compositeUvLayersInWorker,
 } from '@/engine/layers/uvLayerCompositeWorker';
+import { startPerformanceSpan } from '@/engine/performance/performanceTimeline';
 import {
   canUseLayerStackCache,
   findExactLayerStackTexture,
@@ -212,6 +213,32 @@ function getProjectionCompositeRole(layer: Layer): 'normal' | 'overlay' | 'under
 
 function layerStackPreviewSignature(layers: Layer[]) {
   return layers.map(layerPreviewSignature).join('|');
+}
+
+/**
+ * UV composition depends on the relative UV-layer order, not the absolute row
+ * numbers in the mixed UV/projected layer panel. Adding a projected layer at
+ * the top renumbers every row; including that absolute order made an unchanged
+ * 4K UV stack recomposite once for every arriving projection.
+ */
+function uvLayerStackPreviewSignature(layers: Layer[]) {
+  return [...layers]
+    .sort((left, right) => compareUvLayersForComposition(left, right, 'top-to-bottom'))
+    .map((layer, relativeIndex) =>
+      [
+        relativeIndex,
+        layer.id,
+        layer.imageUrl ?? '',
+        layer.visible ? 1 : 0,
+        layer.opacity,
+        layer.blendMode,
+        layer.adjustments?.hue ?? 0,
+        layer.adjustments?.saturation ?? 0,
+        layer.adjustments?.lightness ?? 0,
+        layer.contentRevision ?? 0,
+      ].join(':'),
+    )
+    .join('|');
 }
 
 function projectedLayerStructureSignature(layer: Layer) {
@@ -413,13 +440,7 @@ function useCompositedUvTexture(layers: Layer[]) {
   }>();
   const currentTextureRef = useRef<THREE.Texture>();
   const layerKey = useMemo(
-    () =>
-      layers
-        .map(
-          (layer) =>
-            `${layer.id}:${layer.imageUrl}:${layer.opacity}:${layer.blendMode}:${layer.order}`,
-        )
-        .join('|'),
+    () => uvLayerStackPreviewSignature(layers),
     [layers],
   );
   const stableLayers = useStableValueBySignature(layers, layerKey);
@@ -455,9 +476,19 @@ function useCompositedUvTexture(layers: Layer[]) {
       setTexture(undefined);
       const previous = currentTextureRef.current;
       currentTextureRef.current = undefined;
-      if (typeof ImageBitmap !== 'undefined' && previous?.image instanceof ImageBitmap)
-        previous.image.close();
-      previous?.dispose();
+      // The material fallback is committed asynchronously. Disposing the
+      // sampler in this same task lets the still-visible old material render a
+      // black frame. Keep it resident through two presentation frames, exactly
+      // like the non-empty -> non-empty double-buffer hand-off below.
+      if (previous) {
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(() => {
+            if (typeof ImageBitmap !== 'undefined' && previous.image instanceof ImageBitmap)
+              previous.image.close();
+            previous.dispose();
+          }),
+        );
+      }
       return undefined;
     }
 
@@ -529,6 +560,11 @@ function useCompositedUvTexture(layers: Layer[]) {
           }
           composing = true;
           const composeStartedAt = performance.now();
+          const finishComposeSpan = startPerformanceSpan('uv-composite', 'compose-uv-stack', {
+            layerCount: sortedSources.length,
+            width,
+            height,
+          });
           document.body.dataset.uvCompositeStatus = 'composing';
           try {
             let nextTexture: THREE.Texture;
@@ -576,8 +612,15 @@ function useCompositedUvTexture(layers: Layer[]) {
               Math.round((performance.now() - composeStartedAt) * 10) / 10,
             );
             document.body.dataset.uvCompositeSize = `${width}x${height}`;
+            finishComposeSpan('end', {
+              backend: document.body.dataset.uvCompositeBackend,
+              durationMs: performance.now() - composeStartedAt,
+            });
           } catch (error) {
             document.body.dataset.uvCompositeStatus = 'error';
+            finishComposeSpan('error', {
+              message: error instanceof Error ? error.message : String(error),
+            });
             if (
               !cancelled &&
               !(error instanceof DOMException && error.name === 'AbortError')
@@ -779,7 +822,7 @@ function ImportedModel({
   showSelectionGlow: boolean;
   workspaceVisible: boolean;
 }) {
-  const { gl, invalidate } = useThree();
+  const { gl, invalidate, camera } = useThree();
   const displayMode = useSceneStore((state) => state.displayMode);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const objectVisible = useSceneStore(
@@ -796,11 +839,17 @@ function ImportedModel({
   const texturedRestoreReady =
     !importedModel.restoreStage || importedModel.restoreStage === 'full';
   const layerRenderSignature = useLayerStore((state) =>
-    importedModelLayerRenderSignature(state.layers, importedModel.objectId),
+    importedModelLayerRenderSignature(
+      state.projectedPreviewLayers ?? state.layers,
+      importedModel.objectId,
+    ),
   );
   const [projectedDisplayRefresh, setProjectedDisplayRefresh] = useState(0);
   const layers = useMemo(
-    () => useLayerStore.getState().layers,
+    () => {
+      const layerState = useLayerStore.getState();
+      return layerState.projectedPreviewLayers ?? layerState.layers;
+    },
     [layerRenderSignature, projectedDisplayRefresh],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
@@ -830,6 +879,7 @@ function ImportedModel({
   const [initialProjectedMaterialReady, setInitialProjectedMaterialReady] = useState(false);
   const projectedTextureArrayBuildRef = useRef<{
     signature: string;
+    cancelled: boolean;
     promise: Promise<THREE.ShaderMaterial | undefined>;
   }>();
   useEffect(() => {
@@ -1133,12 +1183,24 @@ function ImportedModel({
             (layer) =>
               layer.type === 'uv' &&
               layer.role === 'content-aware-underlay' &&
-              layer.visible &&
               Boolean(layer.imageUrl) &&
               (!layer.objectId || layer.objectId === importedObjectId),
           )
         : [],
     [importedObjectId, layers, texturedRestoreReady],
+  );
+  // Content-aware repair normally produces one sparse 4K UV underlay. Keep that
+  // decoded texture and its sampler resident even while its eye is closed. The
+  // eye can then be represented by one opacity uniform instead of tearing down
+  // the base-map shader structure and rebuilding every projected texture array.
+  const residentContentAwareUvUnderlayLayer =
+    contentAwareUvUnderlayLayers.length === 1 ? contentAwareUvUnderlayLayers[0] : undefined;
+  const visibleCompositedContentAwareUvUnderlayLayers = useMemo(
+    () =>
+      residentContentAwareUvUnderlayLayer
+        ? []
+        : contentAwareUvUnderlayLayers.filter((layer) => layer.visible),
+    [contentAwareUvUnderlayLayers, residentContentAwareUvUnderlayLayer],
   );
   const residentDirectUvLayer = useMemo(() => {
     if (!texturedRestoreReady) return undefined;
@@ -1211,7 +1273,12 @@ function ImportedModel({
   );
   const projectedTextureArrayStructureSignature = useMemo(
     () =>
-      `${layerStackPreviewSignature(contentAwareUvUnderlayLayers)}|${previewProjectionInputs
+      `${contentAwareUvUnderlayLayers
+        .map(
+          (layer) =>
+            `${layer.id}:${layer.imageUrl ?? ''}:${layer.contentRevision ?? 0}:${layer.objectId ?? ''}`,
+        )
+        .join('|')}|${previewProjectionInputs
         .map((layer) =>
           [
             layer.layerId,
@@ -1441,13 +1508,25 @@ function ImportedModel({
     [importedObjectId, layers, liveSurfacePaintPreview, texturedRestoreReady],
   );
   const visibleUvLayerSignature = useMemo(
-    () => layerStackPreviewSignature(visibleUvLayers),
+    () => uvLayerStackPreviewSignature(visibleUvLayers),
     [visibleUvLayers],
   );
   const stableVisibleUvLayers = useStableValueBySignature(visibleUvLayers, visibleUvLayerSignature);
-  const loadedContentAwareUnderlayTexture = useCompositedUvTexture(
-    contentAwareUvUnderlayLayers,
+  const residentContentAwareUnderlayTexture = useLoadedPreviewTexture(
+    residentContentAwareUvUnderlayLayer?.imageUrl,
   );
+  const compositedContentAwareUnderlayTexture = useCompositedUvTexture(
+    visibleCompositedContentAwareUvUnderlayLayers,
+  );
+  const loadedContentAwareUnderlayTexture =
+    residentContentAwareUnderlayTexture ?? compositedContentAwareUnderlayTexture;
+  const contentAwareUnderlayOpacity = residentContentAwareUvUnderlayLayer
+    ? residentContentAwareUvUnderlayLayer.visible
+      ? residentContentAwareUvUnderlayLayer.opacity
+      : 0
+    : loadedContentAwareUnderlayTexture
+      ? 1
+      : 0;
   useEffect(() => {
     if (!loadedContentAwareUnderlayTexture) return;
     markSparseAlphaBaseTexture(loadedContentAwareUnderlayTexture);
@@ -1649,6 +1728,28 @@ function ImportedModel({
     if (!importedModel) return;
     let cancelled = false;
     const model = importedModel;
+    const isViewportInteractionBusy = () => {
+      const interaction = projectedPreviewInteractionRef.current;
+      return Boolean(
+        interaction.pointerDown ||
+          performance.now() - interaction.lastMovedAt < 180 ||
+          document.body.dataset.perfSimulatedViewportInteraction === '1',
+      );
+    };
+    const precompileProjectedMaterial = async (material: THREE.ShaderMaterial) => {
+      if (typeof gl.compileAsync !== 'function') return;
+      const compileScene = new THREE.Scene();
+      const compileGeometry = new THREE.BoxGeometry(1, 1, 1);
+      const compileMesh = new THREE.Mesh(compileGeometry, material);
+      compileMesh.frustumCulled = false;
+      compileScene.add(compileMesh);
+      try {
+        await gl.compileAsync(compileScene, camera);
+      } finally {
+        compileGeometry.dispose();
+        compileMesh.removeFromParent();
+      }
+    };
 
     async function applyMaterials() {
       if (model.restoreStage === 'bounds') return;
@@ -1690,7 +1791,7 @@ function ImportedModel({
           materialProjectionInputs.every((layer) => !layer.visible) &&
           (!loadedUvTexture || uvOverlayOpacity <= 0) &&
           !liveTopUvTexture &&
-          !loadedContentAwareUnderlayTexture,
+          (!loadedContentAwareUnderlayTexture || contentAwareUnderlayOpacity <= 0),
       );
       // Keep the projected shader resident when every eye is closed, but turn
       // its neutral fallback into a lit white membrane. The flat workspace
@@ -1715,7 +1816,10 @@ function ImportedModel({
                       activeProgressivePreviewBase.renderedColorMaskTexture,
                   }
                 : loadedContentAwareUnderlayTexture
-                  ? { baseTexture: loadedContentAwareUnderlayTexture }
+                  ? {
+                      baseTexture: loadedContentAwareUnderlayTexture,
+                      baseTextureOpacity: contentAwareUnderlayOpacity,
+                    }
                   : {}),
               uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
               uvOverlaySaturation: directUvLayer
@@ -1872,12 +1976,16 @@ function ImportedModel({
             previewLighting,
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
             ...(loadedContentAwareUnderlayTexture
-              ? { baseTexture: loadedContentAwareUnderlayTexture }
+              ? {
+                  baseTexture: loadedContentAwareUnderlayTexture,
+                  baseTextureOpacity: contentAwareUnderlayOpacity,
+                }
               : {}),
-            ...(bakedTexture ? { baseTexture: bakedTexture } : {}),
+            ...(bakedTexture ? { baseTexture: bakedTexture, baseTextureOpacity: 1 } : {}),
             ...(progressiveBaseOnly && progressivePreviewBase
               ? {
                   baseTexture: progressivePreviewBase.colorTexture,
+                  baseTextureOpacity: 1,
                   baseRenderedColorMaskTexture: progressivePreviewBase.renderedColorMaskTexture,
                 }
               : {}),
@@ -1941,22 +2049,40 @@ function ImportedModel({
               if (
                 projectedTextureArrayBuildRef.current?.signature !== textureArrayBuildSignature
               ) {
-                projectedTextureArrayBuildRef.current = {
+                // A newly arrived projection makes every older structural array
+                // obsolete. Previously those O(1..N) builds all continued to
+                // pack and upload in the background, so a 14-view batch rebuilt
+                // the same slices 105 times and repeatedly blocked presentation.
+                // Display-only reruns retain the same signature and still reuse
+                // the in-flight build.
+                if (projectedTextureArrayBuildRef.current) {
+                  projectedTextureArrayBuildRef.current.cancelled = true;
+                }
+                const nextBuild = {
                   signature: textureArrayBuildSignature,
-                  // Visibility/selection can change while a large array is
-                  // uploading. Keep the structural upload alive across those
-                  // reruns; the latest effect installs it with current uniforms.
-                  promise: createProjectedLayerStackMaterial(projectedMaterialInput, {
-                    maxTextureImageUnits: gl.capabilities.maxTextures,
-                    renderer: gl,
-                    isCancelled: () => false,
-                    preferTextureArrays: true,
-                  }),
+                  cancelled: false,
+                  promise: undefined as unknown as Promise<THREE.ShaderMaterial | undefined>,
                 };
+                nextBuild.promise = createProjectedLayerStackMaterial(projectedMaterialInput, {
+                    maxTextureImageUnits: gl.capabilities.maxTextures,
+                  renderer: gl,
+                  isCancelled: () => nextBuild.cancelled,
+                  isViewportInteractionBusy,
+                  preferTextureArrays: true,
+                  });
+                projectedTextureArrayBuildRef.current = nextBuild;
               }
               sharedProjectedMaterial =
                 await projectedTextureArrayBuildRef.current.promise;
               if (sharedProjectedMaterial) {
+                await precompileProjectedMaterial(sharedProjectedMaterial);
+                if (
+                  projectedTextureArrayBuildRef.current?.signature !==
+                  textureArrayBuildSignature
+                ) {
+                  disposeGeneratedMaterialTree(sharedProjectedMaterial);
+                  return;
+                }
                 syncProjectedLayerMaterialDisplayState(
                   sharedProjectedMaterial,
                   projectedLayerInput.layers,
@@ -1969,6 +2095,7 @@ function ImportedModel({
                   maxTextureImageUnits: gl.capabilities.maxTextures,
                   renderer: gl,
                   isCancelled: () => cancelled,
+                  isViewportInteractionBusy,
                   preferTextureArrays: useProjectedTextureArrayMaterial,
                 },
               );
@@ -2063,6 +2190,7 @@ function ImportedModel({
       cancelled = true;
     };
   }, [
+    camera,
     canPreviewProjectedLayers,
     displayMode,
     directUvLayer,
@@ -2071,6 +2199,7 @@ function ImportedModel({
     initialProjectedMaterialReady,
     loadedBakedTexture,
     loadedContentAwareUnderlayTexture,
+    contentAwareUnderlayOpacity,
     loadedUvTexture,
     gl.capabilities.maxTextures,
     liveProjectedEraserMaskTexture,
@@ -2096,6 +2225,7 @@ function ImportedModel({
     activeProjectedPreviewInput,
     stablePreviewProjectedLayers,
     topUvProjectedOverlayInput,
+    uvOverlayOpacity,
     visibleLocalRepaintPreviewLayer,
     visibleStackHasBakedPreview,
   ]);
