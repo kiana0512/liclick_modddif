@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { CapturePassRequest, SceneMaterialSnapshot } from './captureTypes';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
+import { encodeFlippedGpuReadbackPngInWorker } from './gpuReadbackPngWorker';
 
 type RenderSceneToPngOptions = {
   applyDisplayTransform?: boolean;
@@ -22,15 +23,6 @@ let displayOutputPass: OutputPass | undefined;
 function getDisplayOutputPass() {
   displayOutputPass ??= new OutputPass();
   return displayOutputPass;
-}
-
-function canvasToPngBlob(canvas: HTMLCanvasElement) {
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error('Could not encode capture PNG.'));
-    }, 'image/png');
-  });
 }
 
 export async function renderSceneToPngUrl(
@@ -92,21 +84,12 @@ export async function renderSceneToPngUrl(
     outputTarget?.dispose();
   }
 
-  const canvas = document.createElement('canvas');
-  canvas.width = request.width;
-  canvas.height = request.height;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Could not create 2D canvas context for capture.');
-
-  const imageData = context.createImageData(request.width, request.height);
-  const rowStride = request.width * 4;
-  for (let y = 0; y < request.height; y += 1) {
-    const sourceStart = (request.height - y - 1) * rowStride;
-    const targetStart = y * rowStride;
-    imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowStride), targetStart);
-  }
-  context.putImageData(imageData, 0, 0);
-  return createRegisteredObjectUrl(await canvasToPngBlob(canvas));
+  const png = await encodeFlippedGpuReadbackPngInWorker(
+    pixels,
+    request.width,
+    request.height,
+  );
+  return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
 }
 
 export function applyTargetOnlyMaterial(

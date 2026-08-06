@@ -15,14 +15,14 @@ type WebGpuAdapterLike = {
   requestDevice(): Promise<WebGpuDeviceLike>;
 };
 
-type WebGpuBufferLike = {
+export type WebGpuBufferLike = {
   destroy(): void;
   getMappedRange(): ArrayBuffer;
   mapAsync(mode: number): Promise<void>;
   unmap(): void;
 };
 
-type WebGpuComputePipelineLike = {
+export type WebGpuComputePipelineLike = {
   getBindGroupLayout(index: number): unknown;
 };
 
@@ -43,7 +43,7 @@ type WebGpuCommandEncoderLike = {
   finish(): unknown;
 };
 
-type WebGpuDeviceLike = {
+export type WebGpuDeviceLike = {
   createBindGroup(descriptor: unknown): unknown;
   createBuffer(descriptor: { size: number; usage: number }): WebGpuBufferLike;
   createCommandEncoder(): WebGpuCommandEncoderLike;
@@ -54,6 +54,13 @@ type WebGpuDeviceLike = {
   queue: {
     onSubmittedWorkDone(): Promise<void>;
     submit(commandBuffers: unknown[]): void;
+    writeBuffer(
+      buffer: WebGpuBufferLike,
+      bufferOffset: number,
+      data: ArrayBuffer,
+      dataOffset?: number,
+      size?: number,
+    ): void;
   };
 };
 
@@ -68,6 +75,7 @@ type WebGpuNavigatorLike = Navigator & {
 let capabilityPromise: Promise<GpuComputeBackendCapability> | undefined;
 let runtimePromise: Promise<GpuComputeBackendCapability> | undefined;
 let retainedDevice: WebGpuDeviceLike | undefined;
+let currentRuntimeStatus: GpuComputeBackendCapability | undefined;
 
 const GPU_BUFFER_USAGE_COPY_SRC = 0x0004;
 const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
@@ -225,7 +233,10 @@ async function initializeWebGpuRuntime(): Promise<GpuComputeBackendCapability> {
  * or transfer a full 4K buffer per operation.
  */
 export function prepareGpuComputeBackend() {
-  runtimePromise ??= initializeWebGpuRuntime();
+  runtimePromise ??= initializeWebGpuRuntime().then((status) => {
+    currentRuntimeStatus = status;
+    return status;
+  });
   return runtimePromise;
 }
 
@@ -236,9 +247,25 @@ export async function getRetainedWebGpuDevice() {
     : undefined;
 }
 
+export function recordWebGpuProductionDispatch() {
+  if (!currentRuntimeStatus || currentRuntimeStatus.kind !== 'webgpu') return;
+  currentRuntimeStatus = {
+    ...currentRuntimeStatus,
+    productionDispatches: currentRuntimeStatus.productionDispatches + 1,
+  };
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent<GpuComputeBackendCapability>('liclick-webgpu-status', {
+        detail: currentRuntimeStatus,
+      }),
+    );
+  }
+}
+
 export function resetGpuComputeBackendProbeForTests() {
   retainedDevice?.destroy?.();
   retainedDevice = undefined;
+  currentRuntimeStatus = undefined;
   capabilityPromise = undefined;
   runtimePromise = undefined;
 }

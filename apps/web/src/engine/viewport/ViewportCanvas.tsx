@@ -478,6 +478,24 @@ type UvMergeBenchmarkResult = {
   outputBytes: number;
   coverageRatio: number;
   bakePerformanceBreakdown: Record<string, number>;
+  webGpuComposite?: {
+    enabled: boolean;
+    abEnabled: boolean;
+    dispatches: number;
+    fallbackCount: number;
+    uploadMs: number;
+    computeMs: number;
+    readbackMs: number;
+    totalMs: number;
+    byteMismatches: number;
+    maximumByteDelta: number;
+    chunkMb: number;
+    firstMismatch?: {
+      byteOffset: number;
+      expectedRgba: number[];
+      actualRgba: number[];
+    };
+  };
   protectedFrameP95: number;
   protectedFrameMax: number;
   protectedDroppedFrames: number;
@@ -631,8 +649,17 @@ function PerformanceTestHud() {
     void prepareGpuComputeBackend().then((capability) => {
       if (!cancelled) setComputeBackend(capability);
     });
+    const handleRuntimeStatus = (event: Event) => {
+      if (!cancelled) {
+        setComputeBackend(
+          (event as CustomEvent<GpuComputeBackendCapability>).detail,
+        );
+      }
+    };
+    window.addEventListener('liclick-webgpu-status', handleRuntimeStatus);
     return () => {
       cancelled = true;
+      window.removeEventListener('liclick-webgpu-status', handleRuntimeStatus);
     };
   }, []);
 
@@ -1423,6 +1450,53 @@ function PerformanceTestHud() {
             uvMergeBenchmarkResult
               ? `${(uvMergeBenchmarkResult.outputBytes / 1024 / 1024).toFixed(2)}MB / ${(uvMergeBenchmarkResult.coverageRatio * 100).toFixed(2)}%`
               : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 WebGPU RGBA / A-B"
+          value={
+            uvMergeBenchmarkResult?.webGpuComposite?.enabled
+              ? `${uvMergeBenchmarkResult.webGpuComposite.chunkMb.toFixed(0)}MB · ${uvMergeBenchmarkResult.webGpuComposite.totalMs.toFixed(0)}ms · U/C/R ${uvMergeBenchmarkResult.webGpuComposite.uploadMs.toFixed(0)}/${uvMergeBenchmarkResult.webGpuComposite.computeMs.toFixed(0)}/${uvMergeBenchmarkResult.webGpuComposite.readbackMs.toFixed(0)} · 差异 ${uvMergeBenchmarkResult.webGpuComposite.byteMismatches} · Δ${uvMergeBenchmarkResult.webGpuComposite.maximumByteDelta} · 回退 ${uvMergeBenchmarkResult.webGpuComposite.fallbackCount}`
+              : '未启用'
+          }
+          tone={
+            (uvMergeBenchmarkResult?.webGpuComposite?.byteMismatches ?? 0) === 0
+              ? 'text-emerald-300'
+              : 'text-rose-300'
+          }
+        />
+        <PerformanceMetric
+          label="S4 UV 合成总耗时"
+          value={
+            uvMergeBenchmarkResult
+              ? `${uvMergeBenchmarkResult.uvCompositeDurationMs.toFixed(0)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 WebGPU 阶段最大帧"
+          value={
+            uvMergeBenchmarkResult
+              ? `${(uvMergeBenchmarkResult.phaseFrameMax['uv-underlay-composite'] ?? 0).toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(
+            uvMergeBenchmarkResult?.phaseFrameMax['uv-underlay-composite'] ?? 0,
+            20,
+            33,
+          )}
+        />
+        <PerformanceMetric
+          label="S4 WebGPU 首差异"
+          value={
+            uvMergeBenchmarkResult?.webGpuComposite?.firstMismatch
+              ? `@${uvMergeBenchmarkResult.webGpuComposite.firstMismatch.byteOffset} CPU ${uvMergeBenchmarkResult.webGpuComposite.firstMismatch.expectedRgba.join(',')} / GPU ${uvMergeBenchmarkResult.webGpuComposite.firstMismatch.actualRgba.join(',')}`
+              : '无差异'
+          }
+          tone={
+            uvMergeBenchmarkResult?.webGpuComposite?.firstMismatch
+              ? 'text-rose-300'
+              : 'text-emerald-300'
           }
         />
         <PerformanceMetric label="整机 CPU / 最忙核" value={nativeSnapshot ? `${nativeSnapshot.cpu.overallUtilizationPercent.toFixed(0)}% / ${maximumCore.toFixed(0)}%` : '连接中'} tone={metricTone(maximumCore, 70, 90)} />

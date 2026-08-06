@@ -81,6 +81,11 @@ import {
   isContentAwareUvUnderlay,
   isFlattenableUvMergeSource,
 } from '@/engine/layers/mergeUvComposition';
+import {
+  compositeRgbaUnderWithWebGpu,
+  compositeRgbaUrlUnderWithWebGpu,
+  type WebGpuRgbaCompositeMetrics,
+} from '@/engine/performance/webGpuRgbaComposite';
 import { compareUvLayersForComposition } from '@/engine/layers/uvLayerComposition';
 import {
   applyAlphaFromMask,
@@ -3620,6 +3625,26 @@ export function EditorPage({
     let readbackDurationMs = 0;
     let uvCompositeDurationMs = 0;
     let pngEncodeDurationMs = 0;
+    const webGpuComposite = {
+      enabled:
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('webGpuUv') !== '0',
+      abEnabled:
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('perfWebGpuAb') === '1',
+      dispatches: 0,
+      fallbackCount: 0,
+      uploadMs: 0,
+      computeMs: 0,
+      readbackMs: 0,
+      totalMs: 0,
+      byteMismatches: 0,
+      maximumByteDelta: 0,
+      chunkMb: 0,
+      firstMismatch: undefined as
+        | { byteOffset: number; expectedRgba: number[]; actualRgba: number[] }
+        | undefined,
+    };
     const bakeResolution = resolutionToSize[resolution];
     const finishMergeSpan = startPerformanceSpan('uv-merge', 'merge-layers-to-uv', {
       requestedLayerCount: layerIds.length,
@@ -3719,8 +3744,45 @@ export function EditorPage({
       }
       for (let index = 0; index < selectedUvLayers.length; index += 1) {
         const layer = selectedUvLayers[index];
-        const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
-        compositeRgbaUnderInPlace(mergedImageData.data, source.data, layer.opacity);
+        if (webGpuComposite.enabled) {
+          try {
+            const result = await compositeRgbaUrlUnderWithWebGpu(
+              mergedImageData.data,
+              layer.imageUrl,
+              bakeResolution,
+              bakeResolution,
+              layer.opacity,
+            );
+            const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
+            mergedImageData = new ImageData(result.data, bakeResolution, bakeResolution);
+            webGpuComposite.dispatches += 1;
+            webGpuComposite.uploadMs += metrics.uploadMs;
+            webGpuComposite.computeMs += metrics.computeMs;
+            webGpuComposite.readbackMs += metrics.readbackMs;
+            webGpuComposite.totalMs += metrics.totalMs;
+            webGpuComposite.chunkMb = metrics.chunkBytes / 1024 / 1024;
+            if (result.verification) {
+              webGpuComposite.byteMismatches += result.verification.byteMismatches;
+              webGpuComposite.maximumByteDelta = Math.max(
+                webGpuComposite.maximumByteDelta,
+                result.verification.maximumByteDelta,
+              );
+              webGpuComposite.firstMismatch ??= result.verification.firstMismatch;
+              if (result.verification.usedCpuOutput) webGpuComposite.fallbackCount += 1;
+            }
+          } catch (error) {
+            webGpuComposite.fallbackCount += 1;
+            // The worker owns transferred production buffers. GPU capability
+            // failures are handled by its CPU-worker parity path; only an
+            // unexpected worker crash reaches here and must abort safely.
+            throw new Error(
+              `UV composite worker failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        } else {
+          const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
+          compositeRgbaUnderInPlace(mergedImageData.data, source.data, layer.opacity);
+        }
         setManualBakeProgress({
           title: t('mergeSelectedLayersToUvLayer'),
           detail: t('autoBakePreparing'),
@@ -3761,6 +3823,7 @@ export function EditorPage({
           outputBytes: mergedImageBlob.size,
           coverageRatio: mergedCoverageRatio,
           bakePerformanceBreakdown: bakeResult?.report.performanceBreakdown ?? {},
+          webGpuComposite,
         };
         markPerformanceEvent('uv-merge', 'real-4k-merge-benchmark-complete', result);
         finishMergeSpan('end', result);
@@ -4488,26 +4551,45 @@ export function EditorPage({
         });
         const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
         if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
-        const workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
-        const previousRepairImages = await Promise.all(
-          previousRepairLayers.map(async (layer) => ({
-            layer,
-            imageData: await urlToImageData(
-              layer.imageUrl!,
-              repairResolution,
-              repairResolution,
-            ),
-          })),
-        );
+        let workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
         // Projection remains the front layer. Repair deltas are applied in
         // authored top-to-bottom order and contribute only where coverage is
         // still empty, becoming evidence and donors for the next pass.
-        for (const { layer, imageData } of previousRepairImages) {
-          compositeRgbaUnderInPlace(
-            workingImageData.data,
-            imageData.data,
-            layer.opacity,
-          );
+        for (const layer of previousRepairLayers) {
+          const webGpuCompositeDisabled =
+            typeof window !== 'undefined' &&
+            new URLSearchParams(window.location.search).get('webGpuUv') === '0';
+          if (!webGpuCompositeDisabled) {
+            try {
+              const result = await compositeRgbaUrlUnderWithWebGpu(
+                workingImageData.data,
+                layer.imageUrl!,
+                repairResolution,
+                repairResolution,
+                layer.opacity,
+              );
+              workingImageData = new ImageData(
+                result.data,
+                repairResolution,
+                repairResolution,
+              );
+            } catch (error) {
+              throw new Error(
+                `Repair composite worker failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          } else {
+            const imageData = await urlToImageData(
+              layer.imageUrl!,
+              repairResolution,
+              repairResolution,
+            );
+            compositeRgbaUnderInPlace(
+              workingImageData.data,
+              imageData.data,
+              layer.opacity,
+            );
+          }
         }
         const topology = await buildContentAwareSurfaceTopology(
           importedModel.group,

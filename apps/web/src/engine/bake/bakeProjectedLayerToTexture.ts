@@ -35,6 +35,7 @@ import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
+import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 const MIN_VALID_COVERAGE_RATIO = 0.001;
@@ -1073,9 +1074,10 @@ export async function bakeVisibleProjectedLayersToTexture(
         canvas.height = input.resolution;
         const context = canvas.getContext('2d', { willReadFrequently: true });
         if (!context) throw new Error('Could not create GPU parity UV bake canvas.');
-        const composite = new ImageData(input.resolution, input.resolution);
-        const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
+        let composite: ImageData;
+        let qualityCoverage: Uint8Array;
         const overlayRasters: OverlayRaster[] = [];
+        const normalRasters: Array<{ color: Uint8ClampedArray; quality: Float32Array }> = [];
         const warnings = [...gpuBake.warnings];
         if (layers.length > 1) {
           warnings.push(
@@ -1086,7 +1088,6 @@ export async function bakeVisibleProjectedLayersToTexture(
         }
 
         let writtenTexels = 0;
-        const qualityAccumulateStartedAt = performance.now();
         markUvBakePerformancePhase('quality-accumulate');
         for (const raster of gpuBake.rasters) {
           const layerImageData = raster.imageData;
@@ -1097,43 +1098,61 @@ export async function bakeVisibleProjectedLayersToTexture(
               quality: raster.quality,
             });
           } else {
-            await accumulateQualityBlendLayer(
-              qualityBlendComposite,
-              layerImageData,
-              raster.quality,
-              raster.layer.id,
-            );
+            normalRasters.push({ color: layerImageData.data, quality: raster.quality });
           }
         }
-        performanceBreakdown.qualityAccumulateMs =
-          performance.now() - qualityAccumulateStartedAt;
+        const qualityBlend = await blendProjectedRastersInWorker(
+          normalRasters,
+          input.resolution,
+          input.preserveCoverageConfidenceAlpha ?? false,
+          overlayRasters.map((raster) => ({
+            color: raster.imageData.data,
+            quality: raster.quality,
+          })),
+        );
+        composite = qualityBlend.imageData;
+        qualityCoverage = qualityBlend.coverage;
+        writtenTexels = qualityBlend.writtenTexels;
+        performanceBreakdown.qualityAccumulateMs = qualityBlend.accumulateMs;
+        performanceBreakdown.qualityResolveMs = qualityBlend.resolveMs;
+        performanceBreakdown.qualityOverlayMs = qualityBlend.overlayMs;
+        performanceBreakdown.qualityWorkerTotalMs = qualityBlend.totalMs;
+        if (qualityBlend.verification) {
+          performanceBreakdown.qualityGpuByteMismatches =
+            qualityBlend.verification.byteMismatches;
+          performanceBreakdown.qualityGpuMaximumByteDelta =
+            qualityBlend.verification.maximumByteDelta;
+          performanceBreakdown.qualityGpuAlphaByteMismatches =
+            qualityBlend.verification.alphaByteMismatches;
+        }
+        warnings.push(
+          qualityBlend.backend === 'webgpu-worker'
+            ? qualityBlend.verification?.usedCpuOutput
+              ? `WebGPU quality blend parity rejected ${qualityBlend.verification.byteMismatches} differing bytes; exact Worker CPU output was used.`
+              : qualityBlend.verification?.acceptedGpuOutput
+                ? qualityBlend.verification.byteMismatches === 0
+                  ? 'WebGPU quality blend passed exact Worker CPU byte parity and was published.'
+                  : `WebGPU quality blend calibration accepted ${qualityBlend.verification.byteMismatches} RGB byte differences at maximum delta ${qualityBlend.verification.maximumByteDelta}; alpha was exact and the GPU result was published.`
+                : 'WebGPU quality blend used the adapter-calibrated GPU path.'
+            : 'WebGPU quality blend unavailable; exact Worker CPU output was used.',
+        );
 
         const qualityResolveStartedAt = performance.now();
         markUvBakePerformancePhase('quality-resolve');
-        const blendWrittenTexels = await writeQualityBlendStackComposite(
-          qualityBlendComposite,
-          composite,
-          input.preserveCoverageConfidenceAlpha,
-        );
-        await applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
         if (input.outputAlpha === 'transparent') {
-          await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+          await clearWeakTransparentTexels(composite, qualityCoverage);
         }
-        for (let index = 0; index < qualityBlendComposite.coverage.length; index += 1) {
-          if (qualityBlendComposite.coverage[index]) writtenTexels += 1;
-        }
-        if (writtenTexels === 0) writtenTexels = blendWrittenTexels;
         if (input.outputAlpha !== 'transparent') {
-          await sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
+          await sharpenCoveredTexels(composite, qualityCoverage);
         }
-        performanceBreakdown.qualityResolveMs = performance.now() - qualityResolveStartedAt;
+        performanceBreakdown.qualityPostprocessMs = performance.now() - qualityResolveStartedAt;
         const seamStartedAt = performance.now();
         markUvBakePerformancePhase('seam-reconcile');
         if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
           const seamResult = reconcileUvSeams(
             composite,
             importedModel.group,
-            qualityBlendComposite.coverage,
+            qualityCoverage,
             {
               repairMissingCoverage: input.repairMissingUvSeams,
               bandPixels: input.uvSeamRepairPixels,
@@ -1151,7 +1170,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         if ((input.uvCoverageGapPixels ?? 0) > 0) {
           const filledPixels = dilateUvCoverageWithinTopology(
             composite,
-            qualityBlendComposite.coverage,
+            qualityCoverage,
             importedModel.group,
             Math.ceil((input.uvCoverageGapPixels ?? 0) / 2),
           );
@@ -1162,7 +1181,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         if ((input.uvInteriorHolePixels ?? 0) > 0) {
           const filledPixels = await fillUvInteriorGapsWithIslandOwnership(
             composite,
-            qualityBlendComposite.coverage,
+            qualityCoverage,
             importedModel.group,
             input.uvInteriorHolePixels ?? 0,
           );
@@ -1172,14 +1191,14 @@ export async function bakeVisibleProjectedLayersToTexture(
         }
         performanceBreakdown.coverageRepairMs = performance.now() - coverageRepairStartedAt;
         if (input.enableDilation && !input.constrainDilationToInteriorHoles) {
-          dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
+          dilateImageData(composite, qualityCoverage, dilationPixels);
         }
         const gutterStartedAt = performance.now();
         markUvBakePerformancePhase('gutter');
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
           const paddedPixels = padUvIslandGutters(
             composite,
-            qualityBlendComposite.coverage,
+            qualityCoverage,
             importedModel.group,
             input.uvIslandGutterPixels ?? 0,
             input.outputAlpha === 'transparent',
@@ -1192,7 +1211,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         const finalizeStartedAt = performance.now();
         markUvBakePerformancePhase('finalize-canvas');
         if (input.outputAlpha !== 'transparent') await fillTransparentTexelsForViewport(composite);
-        else await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
+        else await clearWeakTransparentTexels(composite, qualityCoverage);
         // Merge callers already consume straight RGBA. Avoid a synchronous
         // 4K ImageData -> Canvas write followed by an immediate Canvas ->
         // ImageData readback when encoding is intentionally deferred.
