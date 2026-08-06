@@ -43,6 +43,7 @@ export interface BakeReport {
   coverageRatio: number;
   warnings: string[];
   durationMs: number;
+  performanceBreakdown?: Record<string, number>;
 }
 
 export interface BakedTexture {
@@ -118,6 +119,8 @@ export interface BakeVisibleProjectedLayersInput {
   markSourceLayersBaked?: boolean;
   preferBlobOutput?: boolean;
   skipImageEncoding?: boolean;
+  /** Return straight RGBA directly and leave the compatibility canvas untouched. */
+  skipCanvasUpload?: boolean;
   /** Skip CPU seam/dilation passes when a transparent GPU overlay is already final. */
   skipCpuPostprocess?: boolean;
   onProgress?: (progress: BakeProgress) => void;
@@ -126,6 +129,7 @@ export interface BakeVisibleProjectedLayersInput {
 export interface BakeProjectedLayerResult {
   bakedTexture: BakedTexture;
   canvas: HTMLCanvasElement;
+  imageData?: ImageData;
   imageBlob?: Blob;
   imageUrl: string;
   report: BakeReport;

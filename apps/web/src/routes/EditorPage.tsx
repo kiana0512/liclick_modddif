@@ -81,6 +81,11 @@ import {
   isContentAwareUvUnderlay,
   isFlattenableUvMergeSource,
 } from '@/engine/layers/mergeUvComposition';
+import {
+  compositeRgbaUnderWithWebGpu,
+  compositeRgbaUrlUnderWithWebGpu,
+  type WebGpuRgbaCompositeMetrics,
+} from '@/engine/performance/webGpuRgbaComposite';
 import { compareUvLayersForComposition } from '@/engine/layers/uvLayerComposition';
 import {
   applyAlphaFromMask,
@@ -3568,7 +3573,11 @@ export function EditorPage({
     };
   }, [completeLocalRepaintRuntime, localRepaintRuntime, pushToast, updateLocalRepaintRuntime]);
 
-  async function mergeLayersToUvLayer(layerIds: string[], blankUvLayerId?: string) {
+  async function mergeLayersToUvLayer(
+    layerIds: string[],
+    blankUvLayerId?: string,
+    options?: { benchmarkOnly?: boolean },
+  ) {
     const currentImportedModel = useSceneStore.getState().importedModel;
     if (!project || !currentImportedModel) {
       pushToast({ tone: 'error', title: t('autoBakeFailed'), description: t('importModelFirst') });
@@ -3611,6 +3620,31 @@ export function EditorPage({
       return;
     }
     const mergeStartedAt = performance.now();
+    const benchmarkOnly = options?.benchmarkOnly === true;
+    let gpuBakeDurationMs = 0;
+    let readbackDurationMs = 0;
+    let uvCompositeDurationMs = 0;
+    let pngEncodeDurationMs = 0;
+    const webGpuComposite = {
+      enabled:
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('webGpuUv') !== '0',
+      abEnabled:
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('perfWebGpuAb') === '1',
+      dispatches: 0,
+      fallbackCount: 0,
+      uploadMs: 0,
+      computeMs: 0,
+      readbackMs: 0,
+      totalMs: 0,
+      byteMismatches: 0,
+      maximumByteDelta: 0,
+      chunkMb: 0,
+      firstMismatch: undefined as
+        | { byteOffset: number; expectedRgba: number[]; actualRgba: number[] }
+        | undefined,
+    };
     const bakeResolution = resolutionToSize[resolution];
     const finishMergeSpan = startPerformanceSpan('uv-merge', 'merge-layers-to-uv', {
       requestedLayerCount: layerIds.length,
@@ -3618,7 +3652,11 @@ export function EditorPage({
       uvLayerCount: selectedUvLayers.length,
       resolution: bakeResolution,
     });
-    captureHistory(blankUvLayerId ? '合并选中投影图层到空 UV 图层' : '合并选中投影图层为 UV 图层');
+    if (!benchmarkOnly) {
+      captureHistory(
+        blankUvLayerId ? '合并选中投影图层到空 UV 图层' : '合并选中投影图层为 UV 图层',
+      );
+    }
     manualBakeRunningRef.current = true;
     setManualBakeProgress({
       title: t('mergeSelectedLayersToUvLayer'),
@@ -3646,6 +3684,7 @@ export function EditorPage({
         layerCount: layersToBake.length,
         resolution: bakeResolution,
       });
+      const gpuBakeStartedAt = performance.now();
       const bakeResult =
         layersToBake.length > 0
           ? await bakeVisibleProjectedLayersToTexture({
@@ -3667,9 +3706,11 @@ export function EditorPage({
               commitToProject: false,
               markSourceLayersBaked: false,
               skipImageEncoding: true,
+              skipCanvasUpload: true,
               onProgress: updateManualBakeProgress,
             })
           : undefined;
+      gpuBakeDurationMs = performance.now() - gpuBakeStartedAt;
       markPerformanceEvent('uv-merge', 'gpu-bake-complete', {
         durationMs: performance.now() - mergeStartedAt,
         coverageRatio: bakeResult?.report.coverageRatio,
@@ -3680,43 +3721,114 @@ export function EditorPage({
         outputCanvas.width = bakeResolution;
         outputCanvas.height = bakeResolution;
       }
-      const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
-      if (!outputContext) throw new Error('Could not create merged UV canvas.');
-      const mergedImageData = outputContext.getImageData(
-        0,
-        0,
-        bakeResolution,
-        bakeResolution,
-      );
+      const readbackStartedAt = performance.now();
+      let mergedImageData = bakeResult?.imageData;
+      if (!mergedImageData) {
+        const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
+        if (!outputContext) throw new Error('Could not create merged UV canvas.');
+        mergedImageData = outputContext.getImageData(
+          0,
+          0,
+          bakeResolution,
+          bakeResolution,
+        );
+      }
+      readbackDurationMs = performance.now() - readbackStartedAt;
 
       // Flatten selected UV sources underneath projection coverage. This is
       // the step that used to be silently skipped, causing a selected content-
       // aware repair layer to disappear after merge.
+      const uvCompositeStartedAt = performance.now();
+      if (document.body.dataset.perfSimulatedViewportInteraction === '1') {
+        document.body.dataset.perfUvBakePhase = 'uv-underlay-composite';
+      }
       for (let index = 0; index < selectedUvLayers.length; index += 1) {
         const layer = selectedUvLayers[index];
-        const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
-        compositeRgbaUnderInPlace(mergedImageData.data, source.data, layer.opacity);
+        if (webGpuComposite.enabled) {
+          try {
+            const result = await compositeRgbaUrlUnderWithWebGpu(
+              mergedImageData.data,
+              layer.imageUrl,
+              bakeResolution,
+              bakeResolution,
+              layer.opacity,
+            );
+            const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
+            mergedImageData = new ImageData(result.data, bakeResolution, bakeResolution);
+            webGpuComposite.dispatches += 1;
+            webGpuComposite.uploadMs += metrics.uploadMs;
+            webGpuComposite.computeMs += metrics.computeMs;
+            webGpuComposite.readbackMs += metrics.readbackMs;
+            webGpuComposite.totalMs += metrics.totalMs;
+            webGpuComposite.chunkMb = metrics.chunkBytes / 1024 / 1024;
+            if (result.verification) {
+              webGpuComposite.byteMismatches += result.verification.byteMismatches;
+              webGpuComposite.maximumByteDelta = Math.max(
+                webGpuComposite.maximumByteDelta,
+                result.verification.maximumByteDelta,
+              );
+              webGpuComposite.firstMismatch ??= result.verification.firstMismatch;
+              if (result.verification.usedCpuOutput) webGpuComposite.fallbackCount += 1;
+            }
+          } catch (error) {
+            webGpuComposite.fallbackCount += 1;
+            // The worker owns transferred production buffers. GPU capability
+            // failures are handled by its CPU-worker parity path; only an
+            // unexpected worker crash reaches here and must abort safely.
+            throw new Error(
+              `UV composite worker failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        } else {
+          const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
+          compositeRgbaUnderInPlace(mergedImageData.data, source.data, layer.opacity);
+        }
         setManualBakeProgress({
           title: t('mergeSelectedLayersToUvLayer'),
           detail: t('autoBakePreparing'),
           progress: 0.9 + ((index + 1) / Math.max(1, selectedUvLayers.length)) * 0.06,
         });
       }
+      uvCompositeDurationMs = performance.now() - uvCompositeStartedAt;
       const mergedCoverageRatio =
         bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedImageData.data);
 
       // Encode straight RGBA directly. Canvas PNG export is allowed to erase
       // RGB beneath alpha=0, which would destroy the transparent UV gutter and
       // reintroduce dark/white seams at bilinear-filter boundaries.
+      const pngEncodeStartedAt = performance.now();
+      if (document.body.dataset.perfSimulatedViewportInteraction === '1') {
+        document.body.dataset.perfUvBakePhase = 'png-encode';
+      }
       const mergedImageBlob = await encodeRgbaPngBlob(
         bakeResolution,
         bakeResolution,
         mergedImageData.data,
       );
+      pngEncodeDurationMs = performance.now() - pngEncodeStartedAt;
       markPerformanceEvent('uv-merge', 'png-encode-complete', {
         byteLength: mergedImageBlob.size,
         durationMs: performance.now() - mergeStartedAt,
       });
+      if (benchmarkOnly) {
+        const result = {
+          resolution: bakeResolution,
+          projectedLayerCount: projectedLayers.length,
+          uvLayerCount: selectedUvLayers.length,
+          gpuBakeDurationMs,
+          readbackDurationMs,
+          uvCompositeDurationMs,
+          pngEncodeDurationMs,
+          totalDurationMs: performance.now() - mergeStartedAt,
+          outputBytes: mergedImageBlob.size,
+          coverageRatio: mergedCoverageRatio,
+          bakePerformanceBreakdown: bakeResult?.report.performanceBreakdown ?? {},
+          webGpuComposite,
+        };
+        markPerformanceEvent('uv-merge', 'real-4k-merge-benchmark-complete', result);
+        finishMergeSpan('end', result);
+        return result;
+      }
       let imageUrl: string;
       if (project.workspaceMode === 'local-server') {
         const filename = `${blankUvLayerId ?? createId('merged-uv-layer')}.png`;
@@ -3769,6 +3881,7 @@ export function EditorPage({
         description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
       });
     } finally {
+      delete document.body.dataset.perfUvBakePhase;
       manualBakeRunningRef.current = false;
       manualBakeProgressTimerRef.current = window.setTimeout(
         () => setManualBakeProgress(undefined),
@@ -3776,6 +3889,52 @@ export function EditorPage({
       );
     }
   }
+
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has('perfLab')) return;
+    const target = window as typeof window & {
+      LiclickPerfUvMerge?: {
+        run: () => Promise<unknown>;
+      };
+    };
+    target.LiclickPerfUvMerge = {
+      run: async () => {
+        const state = useLayerStore.getState();
+        const currentObjectId =
+          useSceneStore.getState().selectedObjectId ?? useSceneStore.getState().importedModel?.objectId;
+        const projectedIds = state.layers
+          .filter(
+            (layer) =>
+              layer.type === 'projected' &&
+              Boolean(layer.imageUrl && layer.camera) &&
+              (!currentObjectId || !layer.objectId || layer.objectId === currentObjectId),
+          )
+          .slice(0, 14)
+          .map((layer) => layer.id);
+        const repairIds = state.layers
+          .filter(
+            (layer) =>
+              layer.role === 'content-aware-underlay' &&
+              Boolean(layer.imageUrl) &&
+              (!currentObjectId || !layer.objectId || layer.objectId === currentObjectId),
+          )
+          .slice(0, 1)
+          .map((layer) => layer.id);
+        if (projectedIds.length < 14) {
+          throw new Error(`当前对象只有 ${projectedIds.length} 个可用投影图层，需要 14 个。`);
+        }
+        if (repairIds.length < 1) {
+          throw new Error('当前对象没有可用的内容识别修补图层。');
+        }
+        return mergeLayersToUvLayer([...projectedIds, ...repairIds], undefined, {
+          benchmarkOnly: true,
+        });
+      },
+    };
+    return () => {
+      delete target.LiclickPerfUvMerge;
+    };
+  });
 
   async function handlePublishToRetopology() {
     if (!project || !selectedObjectId || publishingToRetopology) return;
@@ -4392,26 +4551,45 @@ export function EditorPage({
         });
         const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
         if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
-        const workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
-        const previousRepairImages = await Promise.all(
-          previousRepairLayers.map(async (layer) => ({
-            layer,
-            imageData: await urlToImageData(
-              layer.imageUrl!,
-              repairResolution,
-              repairResolution,
-            ),
-          })),
-        );
+        let workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
         // Projection remains the front layer. Repair deltas are applied in
         // authored top-to-bottom order and contribute only where coverage is
         // still empty, becoming evidence and donors for the next pass.
-        for (const { layer, imageData } of previousRepairImages) {
-          compositeRgbaUnderInPlace(
-            workingImageData.data,
-            imageData.data,
-            layer.opacity,
-          );
+        for (const layer of previousRepairLayers) {
+          const webGpuCompositeDisabled =
+            typeof window !== 'undefined' &&
+            new URLSearchParams(window.location.search).get('webGpuUv') === '0';
+          if (!webGpuCompositeDisabled) {
+            try {
+              const result = await compositeRgbaUrlUnderWithWebGpu(
+                workingImageData.data,
+                layer.imageUrl!,
+                repairResolution,
+                repairResolution,
+                layer.opacity,
+              );
+              workingImageData = new ImageData(
+                result.data,
+                repairResolution,
+                repairResolution,
+              );
+            } catch (error) {
+              throw new Error(
+                `Repair composite worker failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          } else {
+            const imageData = await urlToImageData(
+              layer.imageUrl!,
+              repairResolution,
+              repairResolution,
+            );
+            compositeRgbaUnderInPlace(
+              workingImageData.data,
+              imageData.data,
+              layer.opacity,
+            );
+          }
         }
         const topology = await buildContentAwareSurfaceTopology(
           importedModel.group,

@@ -5,6 +5,11 @@ import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBak
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import {
+  convertFinalGpuReadbackInWorker,
+  convertLayerGpuReadbackInWorker,
+  convertQualityGpuReadbackInWorker,
+} from './gpuReadbackConversionWorker';
 
 const NDV_HARD_REJECT = -0.35;
 const NDV_COVERAGE_START = -0.62;
@@ -1255,24 +1260,6 @@ function runGpuPostprocess(input: {
   return { target: current, ownedTargets };
 }
 
-const GPU_READBACK_ROWS_PER_YIELD = 64;
-
-function yieldDuringGpuReadbackConversion() {
-  if (isViewportInteractionBusy()) {
-    return new Promise<void>((resolve) =>
-      window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-    );
-  }
-  const browserScheduler = (
-    globalThis as typeof globalThis & {
-      scheduler?: { yield?: () => Promise<void> };
-    }
-  ).scheduler;
-  return browserScheduler?.yield
-    ? browserScheduler.yield()
-    : new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-}
-
 function waitForSharedRendererBakeSlot() {
   if (!isViewportInteractionBusy()) return Promise.resolve();
   // R3F owns this WebGL context. During an active drag, allow its onscreen
@@ -1290,63 +1277,7 @@ async function readRenderTargetToImageData(
 ) {
   const pixels = new Uint8Array(resolution * resolution * 4);
   await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
-
-  const imageData = new ImageData(resolution, resolution);
-  const coverage = new Uint8Array(resolution * resolution);
-  const rowLength = resolution * 4;
-  let coveredPixels = 0;
-  for (let y = 0; y < resolution; y += 1) {
-    const sourceY = resolution - 1 - y;
-    const sourceStart = sourceY * rowLength;
-    const targetStart = y * rowLength;
-    for (let x = 0; x < resolution; x += 1) {
-      const pixelIndex = y * resolution + x;
-      const sourceOffset = sourceStart + x * 4;
-      const targetOffset = targetStart + x * 4;
-      let red = pixels[sourceOffset];
-      let green = pixels[sourceOffset + 1];
-      let blue = pixels[sourceOffset + 2];
-      const alphaByte = pixels[sourceOffset + 3];
-      if (outputAlpha === 'transparent' && alphaByte <= MIN_TRANSPARENT_OUTPUT_ALPHA) {
-        imageData.data[targetOffset] = 0;
-        imageData.data[targetOffset + 1] = 0;
-        imageData.data[targetOffset + 2] = 0;
-        imageData.data[targetOffset + 3] = 0;
-        continue;
-      }
-      if (alphaByte > 0) {
-        if (alphaByte < 255) {
-          const alpha = alphaByte / 255;
-          red = Math.min(255, Math.round(red / alpha));
-          green = Math.min(255, Math.round(green / alpha));
-          blue = Math.min(255, Math.round(blue / alpha));
-        }
-        imageData.data[targetOffset] = red;
-        imageData.data[targetOffset + 1] = green;
-        imageData.data[targetOffset + 2] = blue;
-        // Transparent bake output must retain the projected coverage. Forcing
-        // every surviving sample opaque turns a small feathered patch into a
-        // solid UV island when this direct GPU path is selected.
-        imageData.data[targetOffset + 3] = alphaByte;
-        coverage[pixelIndex] = 1;
-        coveredPixels += 1;
-      } else if (outputAlpha === 'opaque-viewport') {
-        imageData.data[targetOffset] = UNPROJECTED_TEXTURE_FILL[0];
-        imageData.data[targetOffset + 1] = UNPROJECTED_TEXTURE_FILL[1];
-        imageData.data[targetOffset + 2] = UNPROJECTED_TEXTURE_FILL[2];
-        imageData.data[targetOffset + 3] = 255;
-      } else {
-        imageData.data[targetOffset] = 0;
-        imageData.data[targetOffset + 1] = 0;
-        imageData.data[targetOffset + 2] = 0;
-        imageData.data[targetOffset + 3] = 0;
-      }
-    }
-    if ((y + 1) % GPU_READBACK_ROWS_PER_YIELD === 0 && y + 1 < resolution) {
-      await yieldDuringGpuReadbackConversion();
-    }
-  }
-  return { imageData, coverage, coveredPixels };
+  return convertFinalGpuReadbackInWorker(pixels, resolution, outputAlpha);
 }
 
 async function readRenderTargetToLayerImageData(
@@ -1356,42 +1287,7 @@ async function readRenderTargetToLayerImageData(
 ) {
   const pixels = new Uint8Array(resolution * resolution * 4);
   await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
-
-  const imageData = new ImageData(resolution, resolution);
-  const coverage = new Uint8Array(resolution * resolution);
-  const rowLength = resolution * 4;
-  let coveredPixels = 0;
-  for (let y = 0; y < resolution; y += 1) {
-    const sourceY = resolution - 1 - y;
-    const sourceStart = sourceY * rowLength;
-    const targetStart = y * rowLength;
-    for (let x = 0; x < resolution; x += 1) {
-      const pixelIndex = y * resolution + x;
-      const sourceOffset = sourceStart + x * 4;
-      const targetOffset = targetStart + x * 4;
-      let red = pixels[sourceOffset];
-      let green = pixels[sourceOffset + 1];
-      let blue = pixels[sourceOffset + 2];
-      const alphaByte = pixels[sourceOffset + 3];
-      if (alphaByte <= 0) continue;
-      if (alphaByte < 255) {
-        const alpha = alphaByte / 255;
-        red = Math.min(255, Math.round(red / alpha));
-        green = Math.min(255, Math.round(green / alpha));
-        blue = Math.min(255, Math.round(blue / alpha));
-      }
-      imageData.data[targetOffset] = red;
-      imageData.data[targetOffset + 1] = green;
-      imageData.data[targetOffset + 2] = blue;
-      imageData.data[targetOffset + 3] = alphaByte;
-      coverage[pixelIndex] = 1;
-      coveredPixels += 1;
-    }
-    if ((y + 1) % GPU_READBACK_ROWS_PER_YIELD === 0 && y + 1 < resolution) {
-      await yieldDuringGpuReadbackConversion();
-    }
-  }
-  return { imageData, coverage, coveredPixels };
+  return convertLayerGpuReadbackInWorker(pixels, resolution);
 }
 
 async function readRenderTargetAlphaToFloat(
@@ -1401,20 +1297,7 @@ async function readRenderTargetAlphaToFloat(
 ) {
   const pixels = new Uint8Array(resolution * resolution * 4);
   await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
-
-  const quality = new Float32Array(resolution * resolution);
-  const rowLength = resolution * 4;
-  for (let y = 0; y < resolution; y += 1) {
-    const sourceY = resolution - 1 - y;
-    const sourceStart = sourceY * rowLength;
-    for (let x = 0; x < resolution; x += 1) {
-      quality[y * resolution + x] = pixels[sourceStart + x * 4 + 3] / 255;
-    }
-    if ((y + 1) % GPU_READBACK_ROWS_PER_YIELD === 0 && y + 1 < resolution) {
-      await yieldDuringGpuReadbackConversion();
-    }
-  }
-  return quality;
+  return convertQualityGpuReadbackInWorker(pixels, resolution);
 }
 
 type RendererStateSnapshot = {

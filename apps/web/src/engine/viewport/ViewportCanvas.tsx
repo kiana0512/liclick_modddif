@@ -59,6 +59,10 @@ import {
   type PerformanceTimelineEvent,
 } from '@/engine/performance/performanceTimeline';
 import {
+  prepareGpuComputeBackend,
+  type GpuComputeBackendCapability,
+} from '@/engine/performance/gpuComputeBackend';
+import {
   getNativePerformanceSnapshot,
   type NativePerformanceSnapshot,
 } from '@/services/nativePerformanceClient';
@@ -445,7 +449,7 @@ function PerformanceAutoOrbit({ enabled }: { enabled: boolean }) {
   return null;
 }
 
-type PerformanceFrameSample = { unixMs: number; durationMs: number };
+type PerformanceFrameSample = { unixMs: number; durationMs: number; phase?: string };
 type PerformanceLongTaskSample = { unixMs: number; durationMs: number };
 type ProjectedLayerRampResult = {
   protectedFrameP95: number;
@@ -456,6 +460,48 @@ type ProjectedLayerRampResult = {
   publishDroppedFrames: number;
 };
 
+type LayerToggleScenarioResult = ProjectedLayerRampResult & {
+  scenario: 'projected' | 'content-aware' | 'uv-projected';
+  operations: number;
+  durationMs: number;
+};
+
+type UvMergeBenchmarkResult = {
+  resolution: number;
+  projectedLayerCount: number;
+  uvLayerCount: number;
+  gpuBakeDurationMs: number;
+  readbackDurationMs: number;
+  uvCompositeDurationMs: number;
+  pngEncodeDurationMs: number;
+  totalDurationMs: number;
+  outputBytes: number;
+  coverageRatio: number;
+  bakePerformanceBreakdown: Record<string, number>;
+  webGpuComposite?: {
+    enabled: boolean;
+    abEnabled: boolean;
+    dispatches: number;
+    fallbackCount: number;
+    uploadMs: number;
+    computeMs: number;
+    readbackMs: number;
+    totalMs: number;
+    byteMismatches: number;
+    maximumByteDelta: number;
+    chunkMb: number;
+    firstMismatch?: {
+      byteOffset: number;
+      expectedRgba: number[];
+      actualRgba: number[];
+    };
+  };
+  protectedFrameP95: number;
+  protectedFrameMax: number;
+  protectedDroppedFrames: number;
+  phaseFrameMax: Record<string, number>;
+};
+
 type PerformanceLabWindowApi = {
   clear: () => void;
   exportReport: () => void;
@@ -464,6 +510,11 @@ type PerformanceLabWindowApi = {
     durationMs: number;
     restored: boolean;
   }>;
+  runLayerToggleScenario: (
+    scenario: 'projected' | 'content-aware' | 'uv-projected',
+    options?: { intervalMs?: number },
+  ) => Promise<LayerToggleScenarioResult>;
+  runUvMergeBenchmark: () => Promise<UvMergeBenchmarkResult>;
   snapshot: () => {
     metrics: PerformanceHudMetrics;
     native?: NativePerformanceSnapshot;
@@ -553,6 +604,7 @@ function PerformanceTestHud() {
   const [collapsed, setCollapsed] = useState(false);
   const [nativeSnapshot, setNativeSnapshot] = useState<NativePerformanceSnapshot>();
   const [nativeError, setNativeError] = useState<string>();
+  const [computeBackend, setComputeBackend] = useState<GpuComputeBackendCapability>();
   const [recentEvents, setRecentEvents] = useState<PerformanceTimelineEvent[]>([]);
   const [frameHistory, setFrameHistory] = useState<number[]>([]);
   const [cpuHistory, setCpuHistory] = useState<number[]>([]);
@@ -564,7 +616,17 @@ function PerformanceTestHud() {
   }>({ running: false, current: 0, total: 14 });
   const [projectedLayerRampResult, setProjectedLayerRampResult] =
     useState<ProjectedLayerRampResult>();
+  const [layerToggleScenario, setLayerToggleScenario] = useState<{
+    running: boolean;
+    scenario?: 'projected' | 'content-aware' | 'uv-projected';
+  }>({ running: false });
+  const [layerToggleScenarioResult, setLayerToggleScenarioResult] =
+    useState<LayerToggleScenarioResult>();
+  const [uvMergeBenchmarkRunning, setUvMergeBenchmarkRunning] = useState(false);
+  const [uvMergeBenchmarkResult, setUvMergeBenchmarkResult] =
+    useState<UvMergeBenchmarkResult>();
   const projectedLayerRampRunningRef = useRef(false);
+  const layerToggleScenarioRunningRef = useRef(false);
   const frameSamplesRef = useRef<PerformanceFrameSample[]>([]);
   const longTaskSamplesRef = useRef<PerformanceLongTaskSample[]>([]);
   const nativeSamplesRef = useRef<NativePerformanceSnapshot[]>([]);
@@ -581,6 +643,25 @@ function PerformanceTestHud() {
     gpuP95: 0,
     gpuSamples: 0,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    void prepareGpuComputeBackend().then((capability) => {
+      if (!cancelled) setComputeBackend(capability);
+    });
+    const handleRuntimeStatus = (event: Event) => {
+      if (!cancelled) {
+        setComputeBackend(
+          (event as CustomEvent<GpuComputeBackendCapability>).detail,
+        );
+      }
+    };
+    window.addEventListener('liclick-webgpu-status', handleRuntimeStatus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('liclick-webgpu-status', handleRuntimeStatus);
+    };
+  }, []);
 
   useEffect(() => {
     setPerformanceTimelineEnabled(true);
@@ -610,7 +691,11 @@ function PerformanceTestHud() {
       if (duration > 0 && duration < 1000) {
         frameTimes.push(duration);
         if (frameTimes.length > 600) frameTimes.splice(0, 120);
-        frameSamplesRef.current.push({ unixMs: Date.now(), durationMs: duration });
+        frameSamplesRef.current.push({
+          unixMs: Date.now(),
+          durationMs: duration,
+          phase: document.body.dataset.perfUvBakePhase,
+        });
         if (frameSamplesRef.current.length > 7_200) frameSamplesRef.current.splice(0, 1_200);
       }
       animationFrame = window.requestAnimationFrame(sampleFrame);
@@ -706,6 +791,8 @@ function PerformanceTestHud() {
     setGpuHistory([]);
     setRecentEvents([]);
     setProjectedLayerRampResult(undefined);
+    setLayerToggleScenarioResult(undefined);
+    setUvMergeBenchmarkResult(undefined);
   }, []);
 
   const exportReport = useCallback(() => {
@@ -903,18 +990,246 @@ function PerformanceTestHud() {
     [clearReport],
   );
 
+  const runLayerToggleScenario = useCallback(
+    async (
+      scenario: 'projected' | 'content-aware' | 'uv-projected',
+      options?: { intervalMs?: number },
+    ): Promise<LayerToggleScenarioResult> => {
+      if (layerToggleScenarioRunningRef.current || projectedLayerRampRunningRef.current) {
+        throw new Error('已有性能压测正在运行。');
+      }
+      const initialState = useLayerStore.getState();
+      const originalLayers = initialState.layers;
+      const originalActiveLayerId = initialState.activeProjectedLayerId;
+      const selectedObjectId = useSceneStore.getState().selectedObjectId;
+      const targetLayers = originalLayers.filter((layer) => {
+        if (selectedObjectId && layer.objectId && layer.objectId !== selectedObjectId) return false;
+        return scenario === 'projected' || scenario === 'uv-projected'
+          ? layer.type === 'projected' && Boolean(layer.imageUrl && layer.camera)
+          : layer.role === 'content-aware-underlay' && Boolean(layer.imageUrl);
+      });
+      const targets =
+        scenario === 'projected' || scenario === 'uv-projected'
+          ? targetLayers.slice(0, 14)
+          : targetLayers.slice(0, 1);
+      const uvTarget =
+        scenario === 'uv-projected'
+          ? originalLayers.find(
+              (layer) =>
+                (!selectedObjectId || !layer.objectId || layer.objectId === selectedObjectId) &&
+                layer.type === 'uv' &&
+                layer.role !== 'content-aware-underlay' &&
+                Boolean(layer.imageUrl),
+            )
+          : undefined;
+      const requiredCount = scenario === 'content-aware' ? 1 : 14;
+      if (targets.length < requiredCount) {
+        throw new Error(
+          scenario === 'projected' || scenario === 'uv-projected'
+            ? `当前对象只有 ${targets.length} 个可用投影图层，需要 14 个。`
+            : '当前对象没有可用的内容识别修补图层。',
+        );
+      }
+      if (scenario === 'uv-projected' && !uvTarget) {
+        throw new Error('当前对象没有可用的普通 UV 图层。');
+      }
+
+      const intervalMs = Math.max(50, Math.min(1_000, options?.intervalMs ?? 100));
+      const waitForFrame = () =>
+        new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const wait = (durationMs: number) =>
+        new Promise<void>((resolve) => window.setTimeout(resolve, durationMs));
+      const summarizeFrames = (samples: PerformanceFrameSample[]) => {
+        const durations = samples.map((sample) => sample.durationMs);
+        return {
+          p95: percentile(durations, 0.95),
+          max: durations.length > 0 ? Math.max(...durations) : 0,
+          dropped:
+            durations.length > 0
+              ? (durations.filter((duration) => duration > 20).length / durations.length) * 100
+              : 0,
+        };
+      };
+      const ids = targets.map((layer) => layer.id);
+      const iterations = scenario === 'projected' ? 1 : 7;
+      const operations =
+        scenario === 'uv-projected' ? iterations * 4 : ids.length * iterations * 2;
+      const startedAt = performance.now();
+      let simulatedInteraction = false;
+
+      layerToggleScenarioRunningRef.current = true;
+      setLayerToggleScenario({ running: true, scenario });
+      try {
+        useLayerStore.getState().setLayerVisibility(ids, false);
+        if (uvTarget) useLayerStore.getState().setLayerVisibility([uvTarget.id], true);
+        await waitForFrame();
+        await waitForFrame();
+        await wait(700);
+        clearReport();
+        document.body.dataset.perfSimulatedViewportInteraction = '1';
+        simulatedInteraction = true;
+        const endScenario = startPerformanceSpan('layers', `real-4k-${scenario}-toggle-scenario`, {
+          layerCount: ids.length,
+          operations,
+          intervalMs,
+          viewportWidth: viewportTelemetry.width,
+          viewportHeight: viewportTelemetry.height,
+        });
+
+        for (let iteration = 0; iteration < iterations; iteration += 1) {
+          if (scenario === 'uv-projected' && uvTarget) {
+            useLayerStore.getState().setLayerVisibility([uvTarget.id], false);
+            useLayerStore.getState().setLayerVisibility(ids, true);
+            await wait(intervalMs);
+            useLayerStore.getState().setLayerVisibility(ids, false);
+            useLayerStore.getState().setLayerVisibility([uvTarget.id], true);
+            await wait(intervalMs);
+          } else {
+            for (const id of ids) {
+              useLayerStore.getState().setLayerVisibility([id], true);
+              await wait(intervalMs);
+            }
+            for (const id of [...ids].reverse()) {
+              useLayerStore.getState().setLayerVisibility([id], false);
+              await wait(intervalMs);
+            }
+          }
+        }
+        await waitForFrame();
+        await waitForFrame();
+        await wait(700);
+        const protectedSummary = summarizeFrames(frameSamplesRef.current);
+        markPerformanceEvent('interaction', `real-4k-${scenario}-protected-window`, {
+          frameP95: protectedSummary.p95,
+          frameMax: protectedSummary.max,
+          droppedFrames: protectedSummary.dropped,
+          operations,
+        });
+
+        const publishFrameStart = frameSamplesRef.current.length;
+        delete document.body.dataset.perfSimulatedViewportInteraction;
+        simulatedInteraction = false;
+        markPerformanceEvent('interaction', `real-4k-${scenario}-simulated-pointer-release`);
+        await wait(2_000);
+        const publishSummary = summarizeFrames(frameSamplesRef.current.slice(publishFrameStart));
+        const result: LayerToggleScenarioResult = {
+          scenario,
+          operations,
+          durationMs: performance.now() - startedAt,
+          protectedFrameP95: protectedSummary.p95,
+          protectedFrameMax: protectedSummary.max,
+          protectedDroppedFrames: protectedSummary.dropped,
+          publishFrameP95: publishSummary.p95,
+          publishFrameMax: publishSummary.max,
+          publishDroppedFrames: publishSummary.dropped,
+        };
+        setLayerToggleScenarioResult(result);
+        endScenario('end', result);
+        return result;
+      } catch (error) {
+        markPerformanceEvent(
+          'layers',
+          `real-4k-${scenario}-toggle-scenario`,
+          { message: error instanceof Error ? error.message : String(error) },
+          'error',
+        );
+        throw error;
+      } finally {
+        if (simulatedInteraction) delete document.body.dataset.perfSimulatedViewportInteraction;
+        useLayerStore.getState().setLayers(originalLayers);
+        if (originalActiveLayerId) useLayerStore.getState().setActiveLayer(originalActiveLayerId);
+        layerToggleScenarioRunningRef.current = false;
+        setLayerToggleScenario({ running: false });
+        markPerformanceEvent('layers', `real-4k-${scenario}-original-stack-restored`, {
+          layerCount: originalLayers.length,
+        });
+      }
+    },
+    [clearReport],
+  );
+
+  const runUvMergeBenchmark = useCallback(async (): Promise<UvMergeBenchmarkResult> => {
+    if (
+      layerToggleScenarioRunningRef.current ||
+      projectedLayerRampRunningRef.current ||
+      uvMergeBenchmarkRunning
+    ) {
+      throw new Error('已有性能压测正在运行。');
+    }
+    const target = window as typeof window & {
+      LiclickPerfUvMerge?: { run: () => Promise<unknown> };
+    };
+    if (!target.LiclickPerfUvMerge) throw new Error('S4 合成基准尚未就绪。');
+    const summarizeFrames = (samples: PerformanceFrameSample[]) => {
+      const durations = samples.map((sample) => sample.durationMs);
+      return {
+        p95: percentile(durations, 0.95),
+        max: durations.length > 0 ? Math.max(...durations) : 0,
+        dropped:
+          durations.length > 0
+            ? (durations.filter((duration) => duration > 20).length / durations.length) * 100
+            : 0,
+      };
+    };
+    setUvMergeBenchmarkRunning(true);
+    clearReport();
+    document.body.dataset.perfSimulatedViewportInteraction = '1';
+    const finishScenario = startPerformanceSpan('uv-merge', 'real-4k-merge-protected-scenario');
+    try {
+      const mergeResult = (await target.LiclickPerfUvMerge.run()) as Omit<
+        UvMergeBenchmarkResult,
+        'protectedFrameP95' | 'protectedFrameMax' | 'protectedDroppedFrames'
+      >;
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const protectedSummary = summarizeFrames(frameSamplesRef.current);
+      const phaseFrameMax: Record<string, number> = {};
+      frameSamplesRef.current.forEach((sample) => {
+        const phase = sample.phase ?? 'unattributed';
+        phaseFrameMax[phase] = Math.max(phaseFrameMax[phase] ?? 0, sample.durationMs);
+      });
+      const result: UvMergeBenchmarkResult = {
+        ...mergeResult,
+        protectedFrameP95: protectedSummary.p95,
+        protectedFrameMax: protectedSummary.max,
+        protectedDroppedFrames: protectedSummary.dropped,
+        phaseFrameMax,
+      };
+      setUvMergeBenchmarkResult(result);
+      finishScenario('end', result);
+      return result;
+    } catch (error) {
+      finishScenario('error', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      delete document.body.dataset.perfSimulatedViewportInteraction;
+      setUvMergeBenchmarkRunning(false);
+    }
+  }, [clearReport, uvMergeBenchmarkRunning]);
+
   useEffect(() => {
     const target = window as typeof window & { LiclickPerfLab?: PerformanceLabWindowApi };
     target.LiclickPerfLab = {
       clear: clearReport,
       exportReport,
       runProjectedLayerRamp,
+      runLayerToggleScenario,
+      runUvMergeBenchmark,
       snapshot: () => ({ metrics, native: nativeSnapshot, events: getPerformanceTimelineEvents() }),
     };
     return () => {
       delete target.LiclickPerfLab;
     };
-  }, [clearReport, exportReport, metrics, nativeSnapshot, runProjectedLayerRamp]);
+  }, [
+    clearReport,
+    exportReport,
+    metrics,
+    nativeSnapshot,
+    runLayerToggleScenario,
+    runProjectedLayerRamp,
+    runUvMergeBenchmark,
+  ]);
 
   const gpu = nativeSnapshot?.gpu.adapters[0];
   const maximumCore = Math.max(0, ...(nativeSnapshot?.cpu.cores.map((core) => core.utilizationPercent) ?? []));
@@ -954,6 +1269,46 @@ function PerformanceTestHud() {
             {projectedLayerRamp.running
               ? `真实上图 ${projectedLayerRamp.current}/${projectedLayerRamp.total}`
               : '0→14 真实上图'}
+          </button>
+          <button
+            type="button"
+            disabled={projectedLayerRamp.running || layerToggleScenario.running}
+            onClick={() => void runLayerToggleScenario('uv-projected')}
+            className="rounded bg-amber-400/20 px-2 py-1 text-[11px] text-amber-200 transition hover:bg-amber-400/30 disabled:cursor-wait disabled:opacity-55"
+          >
+            {layerToggleScenario.running && layerToggleScenario.scenario === 'uv-projected'
+              ? 'S5 切换中…'
+              : 'S5 · UV/投影切换'}
+          </button>
+          <button
+            type="button"
+            disabled={projectedLayerRamp.running || layerToggleScenario.running}
+            onClick={() => void runLayerToggleScenario('projected')}
+            className="rounded bg-sky-400/20 px-2 py-1 text-[11px] text-sky-200 transition hover:bg-sky-400/30 disabled:cursor-wait disabled:opacity-55"
+          >
+            {layerToggleScenario.running && layerToggleScenario.scenario === 'projected'
+              ? 'S2 开关中…'
+              : 'S2 · 14 层开关'}
+          </button>
+          <button
+            type="button"
+            disabled={projectedLayerRamp.running || layerToggleScenario.running}
+            onClick={() => void runLayerToggleScenario('content-aware')}
+            className="rounded bg-violet-400/20 px-2 py-1 text-[11px] text-violet-200 transition hover:bg-violet-400/30 disabled:cursor-wait disabled:opacity-55"
+          >
+            {layerToggleScenario.running && layerToggleScenario.scenario === 'content-aware'
+              ? 'S3 开关中…'
+              : 'S3 · 修补开关'}
+          </button>
+          <button
+            type="button"
+            disabled={
+              projectedLayerRamp.running || layerToggleScenario.running || uvMergeBenchmarkRunning
+            }
+            onClick={() => void runUvMergeBenchmark()}
+            className="rounded bg-emerald-400/20 px-2 py-1 text-[11px] text-emerald-200 transition hover:bg-emerald-400/30 disabled:cursor-wait disabled:opacity-55"
+          >
+            {uvMergeBenchmarkRunning ? 'S4 合成中…' : 'S4 · 4K 合成'}
           </button>
           <button type="button" onClick={clearReport} className="rounded px-2 py-1 text-[11px] text-white/55 transition hover:bg-white/10 hover:text-white">清空</button>
           <button type="button" onClick={exportReport} className="rounded bg-liclick-pink/25 px-2 py-1 text-[11px] text-liclick-pink transition hover:bg-liclick-pink/35">导出 JSON</button>
@@ -1019,8 +1374,146 @@ function PerformanceTestHud() {
           }
           tone={metricTone(projectedLayerRampResult?.publishFrameMax ?? 0, 33, 80)}
         />
+        <PerformanceMetric
+          label={
+            layerToggleScenarioResult?.scenario === 'content-aware'
+              ? 'S3 修补保护 P95 / 最大'
+              : layerToggleScenarioResult?.scenario === 'uv-projected'
+                ? 'S5 切换保护 P95 / 最大'
+                : 'S2 图层保护 P95 / 最大'
+          }
+          value={
+            layerToggleScenarioResult
+              ? `${layerToggleScenarioResult.protectedFrameP95.toFixed(1)} / ${layerToggleScenarioResult.protectedFrameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(layerToggleScenarioResult?.protectedFrameP95 ?? 0, 20, 33)}
+        />
+        <PerformanceMetric
+          label="S2/S3/S5 松手发布 P95 / 最大"
+          value={
+            layerToggleScenarioResult
+              ? `${layerToggleScenarioResult.publishFrameP95.toFixed(1)} / ${layerToggleScenarioResult.publishFrameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(layerToggleScenarioResult?.publishFrameMax ?? 0, 33, 80)}
+        />
+        <PerformanceMetric
+          label="S4 合成保护 P95 / 最大"
+          value={
+            uvMergeBenchmarkResult
+              ? `${uvMergeBenchmarkResult.protectedFrameP95.toFixed(1)} / ${uvMergeBenchmarkResult.protectedFrameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(uvMergeBenchmarkResult?.protectedFrameMax ?? 0, 33, 80)}
+        />
+        <PerformanceMetric
+          label="S4 GPU / 读回 / 编码"
+          value={
+            uvMergeBenchmarkResult
+              ? `${uvMergeBenchmarkResult.gpuBakeDurationMs.toFixed(0)} / ${uvMergeBenchmarkResult.readbackDurationMs.toFixed(0)} / ${uvMergeBenchmarkResult.pngEncodeDurationMs.toFixed(0)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 深度 / 光栅读回 / 质量混合"
+          value={
+            uvMergeBenchmarkResult
+              ? `${(uvMergeBenchmarkResult.bakePerformanceBreakdown.runtimeDepthMs ?? 0).toFixed(0)} / ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.gpuRasterAndReadbackMs ?? 0).toFixed(0)} / ${((uvMergeBenchmarkResult.bakePerformanceBreakdown.qualityAccumulateMs ?? 0) + (uvMergeBenchmarkResult.bakePerformanceBreakdown.qualityResolveMs ?? 0)).toFixed(0)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 接缝 / 补洞 / Gutter"
+          value={
+            uvMergeBenchmarkResult
+              ? `${(uvMergeBenchmarkResult.bakePerformanceBreakdown.seamReconcileMs ?? 0).toFixed(0)} / ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.coverageRepairMs ?? 0).toFixed(0)} / ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.gutterMs ?? 0).toFixed(0)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 最卡阶段 / 最大帧"
+          value={
+            uvMergeBenchmarkResult
+              ? (() => {
+                  const slowest = Object.entries(uvMergeBenchmarkResult.phaseFrameMax).sort(
+                    (left, right) => right[1] - left[1],
+                  )[0];
+                  return slowest ? `${slowest[0]} · ${slowest[1].toFixed(1)}ms` : '无样本';
+                })()
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 输出 / 覆盖率"
+          value={
+            uvMergeBenchmarkResult
+              ? `${(uvMergeBenchmarkResult.outputBytes / 1024 / 1024).toFixed(2)}MB / ${(uvMergeBenchmarkResult.coverageRatio * 100).toFixed(2)}%`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 WebGPU RGBA / A-B"
+          value={
+            uvMergeBenchmarkResult?.webGpuComposite?.enabled
+              ? `${uvMergeBenchmarkResult.webGpuComposite.chunkMb.toFixed(0)}MB · ${uvMergeBenchmarkResult.webGpuComposite.totalMs.toFixed(0)}ms · U/C/R ${uvMergeBenchmarkResult.webGpuComposite.uploadMs.toFixed(0)}/${uvMergeBenchmarkResult.webGpuComposite.computeMs.toFixed(0)}/${uvMergeBenchmarkResult.webGpuComposite.readbackMs.toFixed(0)} · 差异 ${uvMergeBenchmarkResult.webGpuComposite.byteMismatches} · Δ${uvMergeBenchmarkResult.webGpuComposite.maximumByteDelta} · 回退 ${uvMergeBenchmarkResult.webGpuComposite.fallbackCount}`
+              : '未启用'
+          }
+          tone={
+            (uvMergeBenchmarkResult?.webGpuComposite?.byteMismatches ?? 0) === 0
+              ? 'text-emerald-300'
+              : 'text-rose-300'
+          }
+        />
+        <PerformanceMetric
+          label="S4 UV 合成总耗时"
+          value={
+            uvMergeBenchmarkResult
+              ? `${uvMergeBenchmarkResult.uvCompositeDurationMs.toFixed(0)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 WebGPU 阶段最大帧"
+          value={
+            uvMergeBenchmarkResult
+              ? `${(uvMergeBenchmarkResult.phaseFrameMax['uv-underlay-composite'] ?? 0).toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(
+            uvMergeBenchmarkResult?.phaseFrameMax['uv-underlay-composite'] ?? 0,
+            20,
+            33,
+          )}
+        />
+        <PerformanceMetric
+          label="S4 WebGPU 首差异"
+          value={
+            uvMergeBenchmarkResult?.webGpuComposite?.firstMismatch
+              ? `@${uvMergeBenchmarkResult.webGpuComposite.firstMismatch.byteOffset} CPU ${uvMergeBenchmarkResult.webGpuComposite.firstMismatch.expectedRgba.join(',')} / GPU ${uvMergeBenchmarkResult.webGpuComposite.firstMismatch.actualRgba.join(',')}`
+              : '无差异'
+          }
+          tone={
+            uvMergeBenchmarkResult?.webGpuComposite?.firstMismatch
+              ? 'text-rose-300'
+              : 'text-emerald-300'
+          }
+        />
         <PerformanceMetric label="整机 CPU / 最忙核" value={nativeSnapshot ? `${nativeSnapshot.cpu.overallUtilizationPercent.toFixed(0)}% / ${maximumCore.toFixed(0)}%` : '连接中'} tone={metricTone(maximumCore, 70, 90)} />
         <PerformanceMetric label="GPU / 显存" value={gpu ? `${gpu.utilizationGpuPercent?.toFixed(0) ?? 'N/A'}% / ${gpu.memoryUsedMb?.toFixed(0) ?? 'N/A'}MB` : '不可用'} />
+        <PerformanceMetric
+          label="阶段 4 WebGPU 运行态"
+          value={
+            computeBackend
+              ? `${computeBackend.kind} · ${computeBackend.runtimeStatus} · 验证 ${computeBackend.selfTestDispatches} / 生产 ${computeBackend.productionDispatches}`
+              : '探测中'
+          }
+          tone={
+            computeBackend?.kind === 'webgpu' && computeBackend.runtimeStatus === 'ready'
+              ? 'text-emerald-300'
+              : 'text-amber-300'
+          }
+        />
         <PerformanceMetric label="系统内存" value={nativeSnapshot ? `${nativeSnapshot.memory.usedPercent.toFixed(0)}% · ${nativeSnapshot.memory.usedMb.toFixed(0)}MB` : '连接中'} tone={metricTone(nativeSnapshot?.memory.usedPercent ?? 0, 75, 88)} />
         <PerformanceMetric
           label="GPU P95 / 16.7ms 预算"

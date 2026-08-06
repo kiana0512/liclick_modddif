@@ -1,5 +1,8 @@
 # Li3D 视口流畅度标准测试流程（Windows + 浏览器统一采集）
 
+阶段 1–5 的实现、WebGPU 覆盖范围、阶段 5 实测和后续路线见
+[`LI3D_PERFORMANCE_OPTIMIZATION_PHASES_1_TO_5.zh-CN.md`](./LI3D_PERFORMANCE_OPTIMIZATION_PHASES_1_TO_5.zh-CN.md)。
+
 ## 1. 测试目标
 
 唯一最高优先级是持续出帧：模型连续旋转时，生成、图层开关、内容识别修补、UV 合成不得让视口停止响应。优化不得降低贴图分辨率、像素质量、投影精度或模型质量。
