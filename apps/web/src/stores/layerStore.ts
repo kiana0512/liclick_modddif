@@ -297,8 +297,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       return {
         layers,
         activeProjectedLayerId:
-          layers.find((layer) => layer.id === layerId && layer.visible)?.id ??
-          layers.find((layer) => layer.visible)?.id,
+          state.activeProjectedLayerId ?? layers.find((layer) => layer.visible)?.id,
       };
     }),
   setLayerVisibility: (layerIds, visible) =>
@@ -307,12 +306,11 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       const layers = state.layers.map((layer) =>
         layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
       );
-      const activeStillVisible = layers.some(
-        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
-      );
       return {
         layers,
-        activeProjectedLayerId: activeStillVisible
+        activeProjectedLayerId: layers.some(
+          (layer) => layer.id === state.activeProjectedLayerId,
+        )
           ? state.activeProjectedLayerId
           : layers.find((layer) => layer.visible)?.id,
       };

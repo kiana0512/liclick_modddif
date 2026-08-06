@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type {
+  ProjectionLayerDisplayInput,
   ProjectionLayerInput,
   ProjectionLayerStackInput,
   ProjectionPreviewLighting,
@@ -1552,7 +1553,7 @@ function updateLayerUniforms(
 function updateLayerDisplayUniforms(
   material: THREE.ShaderMaterial,
   binding: ProjectedLayerUniformBinding,
-  layer: ProjectionLayerStackInput['layers'][number],
+  layer: ProjectionLayerDisplayInput,
 ) {
   const opacityUniform = material.uniforms[binding.opacityUniform];
   if (opacityUniform) opacityUniform.value = layer.visible ? layer.opacity : 0;
@@ -1574,7 +1575,7 @@ function updateLayerDisplayUniforms(
  */
 export function syncProjectedLayerMaterialDisplayState(
   material: THREE.Material | THREE.Material[] | undefined,
-  layers: ProjectionLayerStackInput['layers'],
+  layers: ProjectionLayerDisplayInput[],
   normalPreview = false,
   wirePreview = false,
 ) {
@@ -1616,7 +1617,7 @@ export function syncProjectedLayerMaterialDisplayState(
 
 export function syncProjectedLayerMaterialDisplayStateInObject(
   root: THREE.Object3D,
-  layers: ProjectionLayerStackInput['layers'],
+  layers: ProjectionLayerDisplayInput[],
   normalPreview = false,
   wirePreview = false,
 ) {
@@ -1826,6 +1827,7 @@ export async function loadProjectedTexture(
 type ProjectedTextureArrayBundle = {
   texture: THREE.DataArrayTexture;
   uvScales: THREE.Vector2[];
+  uploadYieldCount: number;
 };
 
 const PROJECTED_ARRAY_COLOR_MEMORY_BUDGET = 64 * 1024 * 1024;
@@ -1857,6 +1859,23 @@ function yieldProjectedArrayUploadFrame() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+let projectedArrayUploadTail = Promise.resolve();
+
+async function withProjectedArrayUploadLock<T>(task: () => Promise<T>) {
+  const previous = projectedArrayUploadTail;
+  let release: () => void = () => {};
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  projectedArrayUploadTail = previous.then(() => current);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
 type ProjectedArrayPreviewSize = {
   width: number;
   height: number;
@@ -1878,8 +1897,8 @@ async function packProjectedTextureArrayInWorker(
   }
 
   const decodeConcurrency = Math.max(
-    2,
-    Math.min(6, Math.floor((navigator.hardwareConcurrency || 4) / 2)),
+    1,
+    Math.min(3, Math.floor((navigator.hardwareConcurrency || 4) / 4)),
   );
   const bitmaps = await mapWithConcurrency(sources, decodeConcurrency, async (source) =>
     source ? createImageBitmap(source.image as ImageBitmapSource) : undefined,
@@ -2039,61 +2058,72 @@ async function createProjectedTextureArray(
   );
   if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
 
-  // Separate the transferred CPU buffer from the unavoidable WebGL upload so
-  // input and rendering get an opportunity to present first.
-  await yieldProjectedArrayUploadFrame();
+  return withProjectedArrayUploadLock(async () => {
+    // CPU preparation for other profiles continues in parallel. Keep WebGL
+    // uploads serialized and yield between slices so input always gets a frame.
+    await yieldProjectedArrayUploadFrame();
 
-  const texture = new THREE.DataArrayTexture(textureData, width, height, sources.length);
-  texture.name = `LiclickProjected${profile[0].toUpperCase()}${profile.slice(1)}Array`;
-  texture.colorSpace = profile === 'image' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  texture.flipY = false;
-  texture.wrapS = THREE.ClampToEdgeWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter =
-    profile === 'depth' || profile === 'normal' ? THREE.NearestFilter : THREE.LinearFilter;
-  texture.magFilter =
-    profile === 'depth' || profile === 'normal' ? THREE.NearestFilter : THREE.LinearFilter;
-  // Array previews are memory-bound. Avoid a 33% mip-chain surcharge; the source
-  // images remain untouched and export/bake paths still use their full resolution.
-  texture.generateMipmaps = false;
-  texture.anisotropy = 1;
-  // Allocate the immutable array storage first, then let Three.js upload one
-  // full-quality layer at a time. This uses DataArrayTexture's supported partial
-  // update API and avoids one monolithic 64+ MiB transfer on the render thread.
-  texture.source.dataReady = false;
-  texture.needsUpdate = true;
+    const texture = new THREE.DataArrayTexture(textureData, width, height, sources.length);
+    texture.name = `LiclickProjected${profile[0].toUpperCase()}${profile.slice(1)}Array`;
+    texture.colorSpace = profile === 'image' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    texture.flipY = false;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.minFilter =
+      profile === 'depth' || profile === 'normal' ? THREE.NearestFilter : THREE.LinearFilter;
+    texture.magFilter =
+      profile === 'depth' || profile === 'normal' ? THREE.NearestFilter : THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.anisotropy = 1;
+    texture.source.dataReady = false;
+    texture.needsUpdate = true;
+    let uploadedPixelsThisFrame = 0;
+    let uploadYieldCount = 0;
 
-  try {
-    clearWebGlErrors(context);
-    renderer.initTexture(texture);
-    assertNoProjectedArrayWebGlError(context, 'allocation');
-    texture.source.dataReady = true;
-    for (let layerIndex = 0; layerIndex < sources.length; layerIndex += 1) {
-      if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
-      texture.addLayerUpdate(layerIndex);
-      texture.needsUpdate = true;
+    try {
+      clearWebGlErrors(context);
       renderer.initTexture(texture);
-      assertNoProjectedArrayWebGlError(context, 'upload');
-      if (layerIndex < sources.length - 1) await yieldProjectedArrayUploadFrame();
+      assertNoProjectedArrayWebGlError(context, 'allocation');
+      texture.source.dataReady = true;
+      for (let layerIndex = 0; layerIndex < sources.length; layerIndex += 1) {
+        if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+        texture.addLayerUpdate(layerIndex);
+        texture.needsUpdate = true;
+        renderer.initTexture(texture);
+        assertNoProjectedArrayWebGlError(context, 'upload');
+        uploadedPixelsThisFrame += width * height;
+        if (
+          uploadedPixelsThisFrame >= PROJECTED_ARRAY_FRAME_PIXEL_BUDGET &&
+          layerIndex < sources.length - 1
+        ) {
+          uploadedPixelsThisFrame = 0;
+          uploadYieldCount += 1;
+          await yieldProjectedArrayUploadFrame();
+        }
+      }
+      const textureProperties = renderer.properties.get(texture) as {
+        __webglTexture?: WebGLTexture;
+      };
+      if (!textureProperties.__webglTexture) {
+        throw new Error('Could not upload projected texture array storage.');
+      }
+    } catch (error) {
+      texture.source.dataReady = true;
+      texture.dispose();
+      throw error;
     }
-    const textureProperties = renderer.properties.get(texture) as {
-      __webglTexture?: WebGLTexture;
-    };
-    if (!textureProperties.__webglTexture) {
-      throw new Error('Could not upload projected texture array storage.');
-    }
-  } catch (error) {
-    texture.source.dataReady = true;
-    texture.dispose();
-    throw error;
-  }
 
-  return {
-    texture,
-    uvScales: previewSizes.map(
-      (size) => new THREE.Vector2((size?.width ?? 1) / width, (size?.height ?? 1) / height),
-    ),
-  };
+    return {
+      texture,
+      uvScales: previewSizes.map(
+        (size) => new THREE.Vector2(
+          (size?.width ?? 1) / width,
+          (size?.height ?? 1) / height,
+        ),
+      ),
+      uploadYieldCount,
+    };
+  });
 }
 
 function getProjectedArrayPreviewSide(
@@ -2678,51 +2708,78 @@ export async function createProjectedLayerStackMaterial(
       PROJECTED_ARRAY_AUXILIARY_MEMORY_BUDGET,
       PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE,
     );
+    const arrayPipelineStartedAt = performance.now();
+    if (typeof document !== 'undefined') {
+      document.body.dataset.projectedArrayPipelineMode = 'parallel-prepare-serial-upload';
+      document.body.dataset.projectedArrayPipelineStatus = 'building';
+    }
     try {
-      const projectedArray =
+      const arrayBuildPromises: Promise<ProjectedTextureArrayBundle | undefined>[] = [
         projectedTextures.length > 0
-          ? await createProjectedTextureArray(
+          ? createProjectedTextureArray(
               renderer,
               projectedTextures,
               'image',
               options.isCancelled,
               projectedArrayPreviewSide,
             )
-          : undefined;
-      if (projectedArray) disposableTextures.push(projectedArray.texture);
-      const hasMasks = maskTextures.length > 0;
-      const hasDepths = depthTextures.length > 0;
-      const hasNormals = normalTextures.length > 0;
-      const maskArray = hasMasks
-        ? await createProjectedTextureArray(
-            renderer,
-            maskTextures,
-            'mask',
-            options.isCancelled,
-            auxiliaryArrayPreviewSide,
-          )
-        : undefined;
-      if (maskArray) disposableTextures.push(maskArray.texture);
-      const depthArray = hasDepths
-        ? await createProjectedTextureArray(
-            renderer,
-            depthTextures,
-            'depth',
-            options.isCancelled,
-            auxiliaryArrayPreviewSide,
-          )
-        : undefined;
-      if (depthArray) disposableTextures.push(depthArray.texture);
-      const normalArray = hasNormals
-        ? await createProjectedTextureArray(
-            renderer,
-            normalTextures,
-            'normal',
-            options.isCancelled,
-            auxiliaryArrayPreviewSide,
-          )
-        : undefined;
-      if (normalArray) disposableTextures.push(normalArray.texture);
+          : Promise.resolve(undefined),
+        maskTextures.length > 0
+          ? createProjectedTextureArray(
+              renderer,
+              maskTextures,
+              'mask',
+              options.isCancelled,
+              auxiliaryArrayPreviewSide,
+            )
+          : Promise.resolve(undefined),
+        depthTextures.length > 0
+          ? createProjectedTextureArray(
+              renderer,
+              depthTextures,
+              'depth',
+              options.isCancelled,
+              auxiliaryArrayPreviewSide,
+            )
+          : Promise.resolve(undefined),
+        normalTextures.length > 0
+          ? createProjectedTextureArray(
+              renderer,
+              normalTextures,
+              'normal',
+              options.isCancelled,
+              auxiliaryArrayPreviewSide,
+            )
+          : Promise.resolve(undefined),
+      ];
+      const arrayBuildResults = await Promise.allSettled(arrayBuildPromises);
+      const failedBuild = arrayBuildResults.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failedBuild) {
+        for (const result of arrayBuildResults) {
+          if (result.status === 'fulfilled') result.value?.texture.dispose();
+        }
+        throw failedBuild.reason;
+      }
+      const [projectedArray, maskArray, depthArray, normalArray] = arrayBuildResults.map(
+        (result) => (result.status === 'fulfilled' ? result.value : undefined),
+      );
+      for (const bundle of [projectedArray, maskArray, depthArray, normalArray]) {
+        if (bundle) disposableTextures.push(bundle.texture);
+      }
+      if (typeof document !== 'undefined') {
+        document.body.dataset.projectedArrayPipelineStatus = 'ready';
+        document.body.dataset.projectedArrayPipelineDurationMs = (
+          performance.now() - arrayPipelineStartedAt
+        ).toFixed(1);
+        document.body.dataset.projectedArrayUploadYieldCount = String(
+          [projectedArray, maskArray, depthArray, normalArray].reduce(
+            (total, bundle) => total + (bundle?.uploadYieldCount ?? 0),
+            0,
+          ),
+        );
+      }
       if (projectedArray) uniforms.projectedMaps = { value: projectedArray.texture };
       if (maskArray) uniforms.maskMaps = { value: maskArray.texture };
       if (depthArray) uniforms.depthMaps = { value: depthArray.texture };
@@ -2768,6 +2825,9 @@ export async function createProjectedLayerStackMaterial(
       // immediately to the single/direct material path. Disposing shared sources
       // here can invalidate that next material after the array swap has completed.
     } catch (error) {
+      if (typeof document !== 'undefined') {
+        document.body.dataset.projectedArrayPipelineStatus = 'error';
+      }
       for (const texture of disposableTextures) texture.dispose();
       throw error;
     }

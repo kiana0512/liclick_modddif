@@ -67,6 +67,17 @@ export type ProjectionPreviewLighting = {
   keyLightDirection: [number, number, number];
 };
 
+export type ProjectionLayerDisplayInput = Pick<
+  ProjectionLayerInput,
+  | 'layerId'
+  | 'opacity'
+  | 'strength'
+  | 'visible'
+  | 'hue'
+  | 'saturation'
+  | 'lightness'
+>;
+
 export type ProjectionLayerStackInput = Omit<
   ProjectionLayerInput,
   | 'layerId'

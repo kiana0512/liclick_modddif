@@ -52,7 +52,10 @@ import { Grid } from './Grid';
 import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
-import type { ProjectionPreviewLighting } from '@/engine/projection/projectionTypes';
+import type {
+  ProjectionLayerDisplayInput,
+  ProjectionPreviewLighting,
+} from '@/engine/projection/projectionTypes';
 import type { Layer } from '@/types/layer';
 
 const RESOLUTION_TO_SIZE = {
@@ -209,6 +212,67 @@ function getProjectionCompositeRole(layer: Layer): 'normal' | 'overlay' | 'under
 
 function layerStackPreviewSignature(layers: Layer[]) {
   return layers.map(layerPreviewSignature).join('|');
+}
+
+function projectedLayerStructureSignature(layer: Layer) {
+  return [
+    layer.id,
+    layer.type,
+    layer.imageUrl ?? '',
+    layer.maskUrl ?? '',
+    layer.maskSpace ?? '',
+    layer.depthUrl ?? '',
+    layer.depthEncoding ?? '',
+    layer.normalUrl ?? '',
+    layer.objectId ?? '',
+    layer.generationId ?? '',
+    layer.captureId ?? '',
+    layer.replacementTargetLayerId ?? '',
+    layer.renderedColor ? 1 : 0,
+    layer.minimumProjectionFacing ?? 0,
+    layer.blendMode,
+    layer.role ?? '',
+    layer.order,
+    layer.contentRevision ?? 0,
+    stableNumberListSignature(layer.objectMatrixWorld),
+    cameraSignature(layer),
+  ].join(':');
+}
+
+function importedModelLayerRenderSignature(layers: Layer[], objectId: string) {
+  return layers
+    .filter((layer) => !layer.objectId || layer.objectId === objectId)
+    .map((layer) =>
+      layer.type === 'projected'
+        ? projectedLayerStructureSignature(layer)
+        : layerPreviewSignature(layer),
+    )
+    .join('|');
+}
+
+function projectedLayerDisplaySignature(layers: Layer[], objectId: string) {
+  return layers
+    .filter(
+      (layer) =>
+        layer.type === 'projected' && (!layer.objectId || layer.objectId === objectId),
+    )
+    .map(
+      (layer) =>
+        `${layer.id}:${Number(layer.visible)}:${layer.opacity}:${layer.strength ?? 1}:${layer.adjustments?.hue ?? 0}:${layer.adjustments?.saturation ?? 0}:${layer.adjustments?.lightness ?? 0}`,
+    )
+    .join('|');
+}
+
+function toProjectionLayerDisplayInput(layer: Layer): ProjectionLayerDisplayInput {
+  return {
+    layerId: layer.id,
+    opacity: layer.opacity,
+    strength: layer.strength,
+    visible: layer.visible,
+    hue: (layer.adjustments?.hue ?? 0) / 100,
+    saturation: (layer.adjustments?.saturation ?? 0) / 100,
+    lightness: (layer.adjustments?.lightness ?? 0) / 100,
+  };
 }
 
 function useStableValueBySignature<T>(value: T, signature: string) {
@@ -514,7 +578,10 @@ function useCompositedUvTexture(layers: Layer[]) {
             document.body.dataset.uvCompositeSize = `${width}x${height}`;
           } catch (error) {
             document.body.dataset.uvCompositeStatus = 'error';
-            if (!cancelled)
+            if (
+              !cancelled &&
+              !(error instanceof DOMException && error.name === 'AbortError')
+            )
               console.warn('[Liclick 3D Texture] Could not composite UV layer stack:', error);
           } finally {
             composing = false;
@@ -712,7 +779,7 @@ function ImportedModel({
   showSelectionGlow: boolean;
   workspaceVisible: boolean;
 }) {
-  const { gl } = useThree();
+  const { gl, invalidate } = useThree();
   const displayMode = useSceneStore((state) => state.displayMode);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const objectVisible = useSceneStore(
@@ -728,7 +795,14 @@ function ImportedModel({
   const resolution = useSettingsStore((state) => state.resolution);
   const texturedRestoreReady =
     !importedModel.restoreStage || importedModel.restoreStage === 'full';
-  const layers = useLayerStore((state) => state.layers);
+  const layerRenderSignature = useLayerStore((state) =>
+    importedModelLayerRenderSignature(state.layers, importedModel.objectId),
+  );
+  const [projectedDisplayRefresh, setProjectedDisplayRefresh] = useState(0);
+  const layers = useMemo(
+    () => useLayerStore.getState().layers,
+    [layerRenderSignature, projectedDisplayRefresh],
+  );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const visibleLocalRepaintPreviewLayer = useMemo(() => {
@@ -1004,6 +1078,54 @@ function ImportedModel({
       previewProjectionInputs,
     );
   }, [importedModel, previewProjectionInputs]);
+  useEffect(() => {
+    let idleRefreshTimer: number | undefined;
+    let cancelled = false;
+    const unsubscribe = useLayerStore.subscribe((state, previousState) => {
+      if (
+        projectedLayerDisplaySignature(state.layers, importedModel.objectId) ===
+        projectedLayerDisplaySignature(previousState.layers, importedModel.objectId)
+      )
+        return;
+      const startedAt = performance.now();
+      const displayLayers = state.layers
+        .filter(
+          (layer) =>
+            layer.type === 'projected' &&
+            (!layer.objectId || layer.objectId === importedModel.objectId),
+        )
+        .map(toProjectionLayerDisplayInput);
+      if (
+        visibleLocalRepaintPreviewLayer?.type === 'projected' &&
+        !displayLayers.some((layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id)
+      ) {
+        displayLayers.push(toProjectionLayerDisplayInput(visibleLocalRepaintPreviewLayer));
+      }
+      syncProjectedLayerMaterialDisplayStateInObject(importedModel.group, displayLayers);
+      invalidate();
+      document.body.dataset.projectedDisplayPath = 'uniform';
+      document.body.dataset.projectedDisplayUniformMs = String(
+        Math.round((performance.now() - startedAt) * 100) / 100,
+      );
+
+      if (idleRefreshTimer !== undefined) window.clearTimeout(idleRefreshTimer);
+      idleRefreshTimer = window.setTimeout(() => {
+        const refresh = () => {
+          if (!cancelled) setProjectedDisplayRefresh((revision) => revision + 1);
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(refresh, { timeout: 1400 });
+        } else {
+          window.requestAnimationFrame(refresh);
+        }
+      }, 650);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      if (idleRefreshTimer !== undefined) window.clearTimeout(idleRefreshTimer);
+    };
+  }, [importedModel, invalidate, visibleLocalRepaintPreviewLayer]);
   const contentAwareUvUnderlayLayers = useMemo(
     () =>
       texturedRestoreReady

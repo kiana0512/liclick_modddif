@@ -8,13 +8,47 @@ type CompositeUvResponse =
   | { id: number; error: string };
 
 type PendingComposite = {
+  id: number;
+  layers: CompositeUvLayerInput[];
   resolve: (bitmap: ImageBitmap) => void;
   reject: (error: Error) => void;
 };
 
 let worker: Worker | undefined;
 let nextRequestId = 1;
-const pending = new Map<number, PendingComposite>();
+let activeComposite: PendingComposite | undefined;
+let queuedComposite: PendingComposite | undefined;
+let replacedCompositeCount = 0;
+
+function abortError() {
+  return new DOMException('Superseded by a newer UV composition.', 'AbortError');
+}
+
+function releaseTaskBitmaps(task: PendingComposite) {
+  task.layers.forEach(({ bitmap }) => bitmap.close());
+}
+
+function updateQueueProbe() {
+  document.body.dataset.uvCompositeQueueDepth = String(
+    Number(Boolean(activeComposite)) + Number(Boolean(queuedComposite)),
+  );
+  document.body.dataset.uvCompositeReplacedCount = String(replacedCompositeCount);
+}
+
+function dispatchNextComposite() {
+  if (activeComposite || !queuedComposite) {
+    updateQueueProbe();
+    return;
+  }
+  const task = queuedComposite;
+  queuedComposite = undefined;
+  activeComposite = task;
+  updateQueueProbe();
+  getWorker().postMessage(
+    { id: task.id, layers: task.layers },
+    { transfer: task.layers.map(({ bitmap }) => bitmap) },
+  );
+}
 
 function getWorker() {
   if (worker) return worker;
@@ -22,24 +56,26 @@ function getWorker() {
     type: 'module',
   });
   worker.onmessage = (event: MessageEvent<CompositeUvResponse>) => {
-    const request = pending.get(event.data.id);
-    if (!request) {
+    const request = activeComposite;
+    if (!request || request.id !== event.data.id) {
       if ('bitmap' in event.data) event.data.bitmap.close();
       return;
     }
-    pending.delete(event.data.id);
+    activeComposite = undefined;
     if ('error' in event.data) {
       request.reject(new Error(event.data.error));
-      return;
+    } else {
+      request.resolve(event.data.bitmap);
     }
-    request.resolve(event.data.bitmap);
+    dispatchNextComposite();
   };
   worker.onerror = (event) => {
     const error = new Error(event.message || 'UV composition worker failed.');
-    pending.forEach(({ reject }) => reject(error));
-    pending.clear();
+    activeComposite?.reject(error);
+    activeComposite = undefined;
     worker?.terminate();
     worker = undefined;
+    dispatchNextComposite();
   };
   return worker;
 }
@@ -55,10 +91,13 @@ export function canCompositeUvLayersInWorker() {
 export function compositeUvLayersInWorker(layers: CompositeUvLayerInput[]) {
   const id = nextRequestId++;
   return new Promise<ImageBitmap>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    getWorker().postMessage(
-      { id, layers },
-      { transfer: layers.map(({ bitmap }) => bitmap) },
-    );
+    const task = { id, layers, resolve, reject };
+    if (queuedComposite) {
+      releaseTaskBitmaps(queuedComposite);
+      queuedComposite.reject(abortError());
+      replacedCompositeCount += 1;
+    }
+    queuedComposite = task;
+    dispatchNextComposite();
   });
 }
