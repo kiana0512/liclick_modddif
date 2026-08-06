@@ -10,6 +10,7 @@ import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './
 import { handleLocalLiclickRoute } from './routes/localLiclick.js';
 import { handleLocalLiclickAccountRoute } from './routes/localLiclickAccount.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
+import { handlePerformanceRoute } from './routes/performance.js';
 import { handlePhotoshopRoute } from './routes/photoshop.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
@@ -25,6 +26,7 @@ const capabilities = [
   'photoshop-bridge',
   'atlas-personal-auth',
   'liclick-generation',
+  'performance-telemetry',
 ] as const;
 
 const mimeTypes: Record<string, string> = {
@@ -129,6 +131,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   )
     return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/performance') && (await handlePerformanceRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/photoshop') && (await handlePhotoshopRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/projects') && (await handleAssetsRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/projects') && (await handleExportRoute(request, response, url))) return;

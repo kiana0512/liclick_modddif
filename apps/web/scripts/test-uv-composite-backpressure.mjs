@@ -79,7 +79,7 @@ try {
   await latest;
   assert.equal(globalThis.document.body.dataset.uvCompositeQueueDepth, '0');
   assert.equal(globalThis.document.body.dataset.uvCompositeReplacedCount, '1');
-  process.stdout.write('UV composition backpressure regression test passed.\n');
+  globalThis.console.log('UV composition backpressure regression test passed.');
 } finally {
   await server.close();
 }

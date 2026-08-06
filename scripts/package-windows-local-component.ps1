@@ -258,6 +258,7 @@ function Prepare-Staging {
       "photoshop-bridge",
       "atlas-personal-auth",
       "liclick-generation"
+      "performance-telemetry"
     )
     excludes = @("electron-launcher", "web-homepage", "comfyui", "ai-models", "baking", "retopology", "auto-uv")
     frontendUrl = ([System.Uri]$FrontendUrl).GetLeftPart([System.UriPartial]::Authority)

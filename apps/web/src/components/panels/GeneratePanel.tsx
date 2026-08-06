@@ -1990,6 +1990,13 @@ export function GeneratePanel() {
     });
     await saveGenerationStateBestEffort();
 
+    // Generation/network/persistence may finish one view at a time, but a
+    // different projected-layer count requires a different shader and texture
+    // array. Keep the last valid viewport material resident throughout the
+    // batch and publish the complete stack once. Layer rows and durable project
+    // saves still progress normally.
+    useLayerStore.getState().beginProjectedPreviewBatch();
+    try {
     const completionResults = await Promise.allSettled(
       submittedGenerations.map(async (generation) => {
         const completed = await waitForLiclickGeneration(generation);
@@ -2098,6 +2105,9 @@ export function GeneratePanel() {
       } catch (error) {
         console.error('[Liclick 3D Texture] Could not recover missing projected view:', error);
       }
+    }
+    } finally {
+      useLayerStore.getState().endProjectedPreviewBatch();
     }
     const completedGenerationIds = new Set(completedGenerations.map((generation) => generation.id));
     projectedGenerationCount = useLayerStore

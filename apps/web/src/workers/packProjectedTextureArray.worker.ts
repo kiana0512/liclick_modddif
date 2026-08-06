@@ -4,6 +4,7 @@ type ProjectedTextureProfile = 'image' | 'mask' | 'depth' | 'normal';
 
 type PackedSource = {
   bitmap?: ImageBitmap;
+  url?: string;
   previewWidth: number;
   previewHeight: number;
 };
@@ -23,7 +24,7 @@ const workerScope = self as unknown as {
   postMessage(message: PackResponse, transfer?: Transferable[]): void;
 };
 
-workerScope.onmessage = (event) => {
+workerScope.onmessage = async (event) => {
   const { id, width, height, profile, sources } = event.data;
   const sliceByteLength = width * height * 4;
   const textureData = new Uint8Array(sliceByteLength * sources.length);
@@ -40,14 +41,22 @@ workerScope.onmessage = (event) => {
 
     for (let index = 0; index < sources.length; index += 1) {
       const source = sources[index];
-      if (!source.bitmap) continue;
+      let bitmap = source.bitmap;
+      if (!bitmap && source.url) {
+        const response = await fetch(source.url);
+        if (!response.ok) {
+          throw new Error(`Could not fetch projected texture (${response.status}).`);
+        }
+        bitmap = await createImageBitmap(await response.blob());
+      }
+      if (!bitmap) continue;
       context.clearRect(0, 0, width, height);
       context.drawImage(
-        source.bitmap,
+        bitmap,
         0,
         0,
-        source.bitmap.width,
-        source.bitmap.height,
+        bitmap.width,
+        bitmap.height,
         0,
         0,
         source.previewWidth,
@@ -57,7 +66,7 @@ workerScope.onmessage = (event) => {
         context.getImageData(0, 0, width, height).data,
         index * sliceByteLength,
       );
-      source.bitmap.close();
+      bitmap.close();
     }
 
     workerScope.postMessage({ id, buffer: textureData.buffer }, [textureData.buffer]);

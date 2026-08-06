@@ -2,6 +2,7 @@ type ProjectedTextureProfile = 'image' | 'mask' | 'depth' | 'normal';
 
 type PackedSource = {
   bitmap?: ImageBitmap;
+  url?: string;
   previewWidth: number;
   previewHeight: number;
 };
@@ -21,6 +22,7 @@ type PackTask = {
   resolve: (pixels: Uint8Array<ArrayBuffer>) => void;
   reject: (error: Error) => void;
   startedAt: number;
+  isCancelled?: () => boolean;
 };
 
 type WorkerSlot = {
@@ -64,7 +66,9 @@ function createWorkerSlot(): WorkerSlot {
     const task = slot.task;
     if (!task || task.id !== event.data.id) return;
     slot.task = undefined;
-    if ('error' in event.data) {
+    if (task.isCancelled?.()) {
+      task.reject(new Error('Projected texture-array worker task was superseded.'));
+    } else if ('error' in event.data) {
       task.reject(new Error(event.data.error));
     } else {
       if (typeof document !== 'undefined') {
@@ -95,7 +99,12 @@ function dispatchQueuedPacks() {
   ensureWorkerPool();
   for (const slot of slots) {
     if (slot.task) continue;
-    const task = queue.shift();
+    let task = queue.shift();
+    while (task?.isCancelled?.()) {
+      task.input.sources.forEach((source) => source.bitmap?.close());
+      task.reject(new Error('Projected texture-array worker task was superseded.'));
+      task = queue.shift();
+    }
     if (!task) break;
     slot.task = task;
     try {
@@ -114,10 +123,13 @@ function dispatchQueuedPacks() {
   updateWorkerProbe(queue.length > 0 || slots.some((slot) => slot.task) ? 'packing' : 'ready');
 }
 
-export function packProjectedTextureArrayInPersistentWorker(input: PackInput) {
+export function packProjectedTextureArrayInPersistentWorker(
+  input: PackInput,
+  isCancelled?: () => boolean,
+) {
   const id = nextRequestId++;
   return new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
-    queue.push({ id, input, resolve, reject, startedAt: performance.now() });
+    queue.push({ id, input, resolve, reject, startedAt: performance.now(), isCancelled });
     dispatchQueuedPacks();
   });
 }

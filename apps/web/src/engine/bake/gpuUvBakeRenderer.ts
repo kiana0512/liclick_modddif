@@ -4,6 +4,7 @@ import { collectUvSeamPairs, type UvSeamEdgeRecord } from './uvSeamReconciliatio
 import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
+import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 
 const NDV_HARD_REJECT = -0.35;
 const NDV_COVERAGE_START = -0.62;
@@ -1257,6 +1258,11 @@ function runGpuPostprocess(input: {
 const GPU_READBACK_ROWS_PER_YIELD = 64;
 
 function yieldDuringGpuReadbackConversion() {
+  if (isViewportInteractionBusy()) {
+    return new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+    );
+  }
   const browserScheduler = (
     globalThis as typeof globalThis & {
       scheduler?: { yield?: () => Promise<void> };
@@ -1265,6 +1271,15 @@ function yieldDuringGpuReadbackConversion() {
   return browserScheduler?.yield
     ? browserScheduler.yield()
     : new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+function waitForSharedRendererBakeSlot() {
+  if (!isViewportInteractionBusy()) return Promise.resolve();
+  // R3F owns this WebGL context. During an active drag, allow its onscreen
+  // frame to submit before issuing the next offscreen 4K bake pass.
+  return new Promise<void>((resolve) =>
+    window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+  );
 }
 
 async function readRenderTargetToImageData(
@@ -1523,6 +1538,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       bakeScene.bakeMeshes.forEach((mesh) => {
         mesh.material = coverageMaterial;
       });
+      await waitForSharedRendererBakeSlot();
       setBakeRenderTargetState(renderer, colorTarget, resolution);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
@@ -1554,6 +1570,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       bakeScene.bakeMeshes.forEach((mesh) => {
         mesh.material = qualityMaterial;
       });
+      await waitForSharedRendererBakeSlot();
       setBakeRenderTargetState(renderer, qualityTarget, resolution);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);

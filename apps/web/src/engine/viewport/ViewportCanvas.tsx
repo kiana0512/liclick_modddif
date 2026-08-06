@@ -50,6 +50,18 @@ import {
   applyTargetOnlyMaterial,
   renderSceneToPngUrl,
 } from '@/engine/capture/renderTargetUtils';
+import {
+  clearPerformanceTimelineEvents,
+  getPerformanceTimelineEvents,
+  markPerformanceEvent,
+  setPerformanceTimelineEnabled,
+  startPerformanceSpan,
+  type PerformanceTimelineEvent,
+} from '@/engine/performance/performanceTimeline';
+import {
+  getNativePerformanceSnapshot,
+  type NativePerformanceSnapshot,
+} from '@/services/nativePerformanceClient';
 
 type SurfacePaintTarget = {
   objectId: string;
@@ -402,6 +414,7 @@ function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
 type PerformanceHudMetrics = {
   fps: number;
   frameP95: number;
+  frameMax: number;
   droppedFrames: number;
   paintP95: number;
   paintMax: number;
@@ -412,6 +425,104 @@ type PerformanceHudMetrics = {
   heapUsedMb?: number;
   heapLimitMb?: number;
 };
+
+function isPerformanceInstrumentationEnabled() {
+  if (useSettingsStore.getState().performanceTestModeEnabled) return true;
+  return (
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('perfLab') === '1'
+  );
+}
+
+function PerformanceAutoOrbit({ enabled }: { enabled: boolean }) {
+  const { camera } = useThree();
+  useFrame((_state, delta) => {
+    if (!enabled) return;
+    camera.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), delta * 0.32);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+  });
+  return null;
+}
+
+type PerformanceFrameSample = { unixMs: number; durationMs: number };
+type PerformanceLongTaskSample = { unixMs: number; durationMs: number };
+type ProjectedLayerRampResult = {
+  protectedFrameP95: number;
+  protectedFrameMax: number;
+  protectedDroppedFrames: number;
+  publishFrameP95: number;
+  publishFrameMax: number;
+  publishDroppedFrames: number;
+};
+
+type PerformanceLabWindowApi = {
+  clear: () => void;
+  exportReport: () => void;
+  runProjectedLayerRamp: (options?: { intervalMs?: number }) => Promise<{
+    added: number;
+    durationMs: number;
+    restored: boolean;
+  }>;
+  snapshot: () => {
+    metrics: PerformanceHudMetrics;
+    native?: NativePerformanceSnapshot;
+    events: PerformanceTimelineEvent[];
+  };
+};
+
+function Sparkline({ values, color }: { values: number[]; color: string }) {
+  const width = 220;
+  const height = 46;
+  const maximum = Math.max(1, ...values);
+  const points = values
+    .map((value, index) => {
+      const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * width;
+      const y = height - (value / maximum) * (height - 3) - 1.5;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-12 w-full" preserveAspectRatio="none">
+      <path d={`M0 ${height - 1}H${width}`} stroke="rgba(255,255,255,.10)" />
+      <polyline fill="none" stroke={color} strokeWidth="2" points={points} />
+    </svg>
+  );
+}
+
+function buildPerformanceAnalysis(
+  metrics: PerformanceHudMetrics,
+  nativeSnapshot?: NativePerformanceSnapshot,
+) {
+  const findings: string[] = [];
+  const gpu = nativeSnapshot?.gpu.adapters[0];
+  const maximumCore = Math.max(
+    0,
+    ...(nativeSnapshot?.cpu.cores.map((core) => core.utilizationPercent) ?? []),
+  );
+  if (metrics.frameP95 > 20 || metrics.frameMax > 50) {
+    findings.push(`出帧不稳定：P95 ${metrics.frameP95.toFixed(1)}ms，最大 ${metrics.frameMax.toFixed(1)}ms。`);
+  }
+  if (metrics.cpuLongTaskPercent > 5) {
+    findings.push(`浏览器主线程长任务占比 ${metrics.cpuLongTaskPercent.toFixed(1)}%，优先排查同步 JS、像素读回和 React 提交。`);
+  }
+  if (
+    nativeSnapshot &&
+    nativeSnapshot.cpu.overallUtilizationPercent < 45 &&
+    maximumCore > 80 &&
+    metrics.cpuLongTaskPercent > 2
+  ) {
+    findings.push(`疑似单核瓶颈：整机 CPU ${nativeSnapshot.cpu.overallUtilizationPercent.toFixed(0)}%，最忙逻辑核 ${maximumCore.toFixed(0)}%。`);
+  }
+  if ((gpu?.utilizationGpuPercent ?? 0) > 85 && metrics.gpuP95 > 14) {
+    findings.push(`疑似 GPU 帧预算受限：GPU ${gpu?.utilizationGpuPercent?.toFixed(0)}%，GPU P95 ${metrics.gpuP95.toFixed(1)}ms。`);
+  }
+  if ((nativeSnapshot?.memory.usedPercent ?? 0) > 85) {
+    findings.push(`系统内存压力较高：${nativeSnapshot?.memory.usedPercent.toFixed(0)}%。`);
+  }
+  if (findings.length === 0) findings.push('当前窗口未检出明确瓶颈；请运行完整场景并导出报告。');
+  return findings;
+}
 
 function metricTone(value: number, good: number, warning: number, higherIsBetter = false) {
   const goodValue = higherIsBetter ? value >= good : value <= good;
@@ -440,9 +551,28 @@ function PerformanceMetric({
 
 function PerformanceTestHud() {
   const [collapsed, setCollapsed] = useState(false);
+  const [nativeSnapshot, setNativeSnapshot] = useState<NativePerformanceSnapshot>();
+  const [nativeError, setNativeError] = useState<string>();
+  const [recentEvents, setRecentEvents] = useState<PerformanceTimelineEvent[]>([]);
+  const [frameHistory, setFrameHistory] = useState<number[]>([]);
+  const [cpuHistory, setCpuHistory] = useState<number[]>([]);
+  const [gpuHistory, setGpuHistory] = useState<number[]>([]);
+  const [projectedLayerRamp, setProjectedLayerRamp] = useState<{
+    running: boolean;
+    current: number;
+    total: number;
+  }>({ running: false, current: 0, total: 14 });
+  const [projectedLayerRampResult, setProjectedLayerRampResult] =
+    useState<ProjectedLayerRampResult>();
+  const projectedLayerRampRunningRef = useRef(false);
+  const frameSamplesRef = useRef<PerformanceFrameSample[]>([]);
+  const longTaskSamplesRef = useRef<PerformanceLongTaskSample[]>([]);
+  const nativeSamplesRef = useRef<NativePerformanceSnapshot[]>([]);
+  const recordingStartedAtRef = useRef(Date.now());
   const [metrics, setMetrics] = useState<PerformanceHudMetrics>({
     fps: 0,
     frameP95: 0,
+    frameMax: 0,
     droppedFrames: 0,
     paintP95: 0,
     paintMax: 0,
@@ -453,17 +583,22 @@ function PerformanceTestHud() {
   });
 
   useEffect(() => {
+    setPerformanceTimelineEnabled(true);
     let animationFrame = 0;
     let previousFrameAt = performance.now();
-    let cpuWindowStartedAt = previousFrameAt;
-    let longTaskDuration = 0;
     const frameTimes: number[] = [];
     const observer =
       typeof PerformanceObserver !== 'undefined' &&
       PerformanceObserver.supportedEntryTypes.includes('longtask')
         ? new PerformanceObserver((list) => {
             list.getEntries().forEach((entry) => {
-              longTaskDuration += entry.duration;
+              longTaskSamplesRef.current.push({
+                unixMs: Date.now() - Math.max(0, performance.now() - entry.startTime),
+                durationMs: entry.duration,
+              });
+              if (longTaskSamplesRef.current.length > 2_000) {
+                longTaskSamplesRef.current.splice(0, 400);
+              }
             });
           })
         : undefined;
@@ -474,17 +609,23 @@ function PerformanceTestHud() {
       previousFrameAt = now;
       if (duration > 0 && duration < 1000) {
         frameTimes.push(duration);
-        if (frameTimes.length > 240) frameTimes.shift();
+        if (frameTimes.length > 600) frameTimes.splice(0, 120);
+        frameSamplesRef.current.push({ unixMs: Date.now(), durationMs: duration });
+        if (frameSamplesRef.current.length > 7_200) frameSamplesRef.current.splice(0, 1_200);
       }
       animationFrame = window.requestAnimationFrame(sampleFrame);
     };
     animationFrame = window.requestAnimationFrame(sampleFrame);
 
     const updateTimer = window.setInterval(() => {
-      const now = performance.now();
-      const cpuWindowDuration = Math.max(1, now - cpuWindowStartedAt);
       const averageFrame =
         frameTimes.reduce((sum, value) => sum + value, 0) / Math.max(1, frameTimes.length);
+      const reportFrameTimes = frameSamplesRef.current.map((sample) => sample.durationMs);
+      const recordedLongTaskDuration = longTaskSamplesRef.current.reduce(
+        (sum, sample) => sum + sample.durationMs,
+        0,
+      );
+      const recordedDuration = Math.max(1, Date.now() - recordingStartedAtRef.current);
       const paintSamples = surfacePaintPerfSamples.slice(-240);
       const gpuSamples = gpuFrameTimeSamples.slice(-120);
       const memory = (
@@ -494,30 +635,290 @@ function PerformanceTestHud() {
       ).memory;
       setMetrics({
         fps: averageFrame > 0 ? 1000 / averageFrame : 0,
-        frameP95: percentile(frameTimes, 0.95),
+        frameP95: percentile(reportFrameTimes, 0.95),
+        frameMax: reportFrameTimes.length > 0 ? Math.max(...reportFrameTimes) : 0,
         droppedFrames:
-          frameTimes.length > 0
-            ? (frameTimes.filter((value) => value > 20).length / frameTimes.length) * 100
+          reportFrameTimes.length > 0
+            ? (reportFrameTimes.filter((value) => value > 20).length / reportFrameTimes.length) * 100
             : 0,
         paintP95: percentile(paintSamples, 0.95),
         paintMax: paintSamples.length > 0 ? Math.max(...paintSamples) : 0,
         paintSamples: paintSamples.length,
-        cpuLongTaskPercent: Math.min(100, (longTaskDuration / cpuWindowDuration) * 100),
+        cpuLongTaskPercent: Math.min(100, (recordedLongTaskDuration / recordedDuration) * 100),
         gpuP95: percentile(gpuSamples, 0.95),
         gpuSamples: gpuSamples.length,
         heapUsedMb: memory ? memory.usedJSHeapSize / 1024 / 1024 : undefined,
         heapLimitMb: memory ? memory.jsHeapSizeLimit / 1024 / 1024 : undefined,
       });
-      longTaskDuration = 0;
-      cpuWindowStartedAt = now;
+      setFrameHistory(frameTimes.slice(-120));
+      setRecentEvents(getPerformanceTimelineEvents().slice(-12).reverse());
     }, 500);
 
     return () => {
       window.cancelAnimationFrame(animationFrame);
       window.clearInterval(updateTimer);
       observer?.disconnect();
+      setPerformanceTimelineEnabled(false);
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let activeController: AbortController | undefined;
+    const sampleNative = async () => {
+      activeController?.abort();
+      activeController = new AbortController();
+      try {
+        const snapshot = await getNativePerformanceSnapshot(activeController.signal);
+        if (disposed) return;
+        nativeSamplesRef.current.push(snapshot);
+        if (nativeSamplesRef.current.length > 600) nativeSamplesRef.current.splice(0, 100);
+        setNativeSnapshot(snapshot);
+        setCpuHistory((values) => [...values.slice(-119), snapshot.cpu.overallUtilizationPercent]);
+        setGpuHistory((values) => [
+          ...values.slice(-119),
+          snapshot.gpu.adapters[0]?.utilizationGpuPercent ?? 0,
+        ]);
+        setNativeError(undefined);
+      } catch (error) {
+        if (!disposed && !(error instanceof DOMException && error.name === 'AbortError')) {
+          setNativeError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+    void sampleNative();
+    const timer = window.setInterval(() => void sampleNative(), 1_000);
+    return () => {
+      disposed = true;
+      activeController?.abort();
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const clearReport = useCallback(() => {
+    frameSamplesRef.current = [];
+    longTaskSamplesRef.current = [];
+    nativeSamplesRef.current = [];
+    recordingStartedAtRef.current = Date.now();
+    clearPerformanceTimelineEvents();
+    setFrameHistory([]);
+    setCpuHistory([]);
+    setGpuHistory([]);
+    setRecentEvents([]);
+    setProjectedLayerRampResult(undefined);
+  }, []);
+
+  const exportReport = useCallback(() => {
+    const report = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      page: { url: window.location.href, title: document.title },
+      browser: { userAgent: navigator.userAgent, logicalProcessorCount: navigator.hardwareConcurrency },
+      currentMetrics: metrics,
+      analysis: buildPerformanceAnalysis(metrics, nativeSnapshot),
+      frames: frameSamplesRef.current,
+      longTasks: longTaskSamplesRef.current,
+      nativeSamples: nativeSamplesRef.current,
+      events: getPerformanceTimelineEvents(),
+      viewport: { ...viewportTelemetry },
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `liclick-performance-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  }, [metrics, nativeSnapshot]);
+
+  const runProjectedLayerRamp = useCallback(
+    async (options?: { intervalMs?: number }) => {
+      if (projectedLayerRampRunningRef.current) {
+        throw new Error('0→14 投影图层压测已经在运行。');
+      }
+      const initialState = useLayerStore.getState();
+      const originalLayers = initialState.layers;
+      const originalActiveLayerId = initialState.activeProjectedLayerId;
+      const selectedObjectId = useSceneStore.getState().selectedObjectId;
+      const projectedLayers = originalLayers
+        .filter(
+          (layer) =>
+            layer.type === 'projected' &&
+            Boolean(layer.imageUrl && layer.camera) &&
+            (!selectedObjectId || !layer.objectId || layer.objectId === selectedObjectId),
+        )
+        .slice(0, 14);
+      if (projectedLayers.length < 14) {
+        throw new Error(`当前对象只有 ${projectedLayers.length} 个可用真实投影图层，需要 14 个。`);
+      }
+
+      const projectedIds = new Set(projectedLayers.map((layer) => layer.id));
+      const buildStack = (count: number) => {
+        const enabledIds = new Set(projectedLayers.slice(0, count).map((layer) => layer.id));
+        return originalLayers.filter(
+          (layer) => !projectedIds.has(layer.id) || enabledIds.has(layer.id),
+        );
+      };
+      const intervalMs = Math.max(50, Math.min(2_000, options?.intervalMs ?? 220));
+      const waitForFrame = () =>
+        new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const wait = (durationMs: number) =>
+        new Promise<void>((resolve) => window.setTimeout(resolve, durationMs));
+      const startedAt = performance.now();
+      let restored = false;
+      let previewBatchOpen = false;
+      let simulatedInteraction = false;
+
+      const summarizeFrames = (samples: PerformanceFrameSample[]) => {
+        const durations = samples.map((sample) => sample.durationMs);
+        return {
+          p95: percentile(durations, 0.95),
+          max: durations.length > 0 ? Math.max(...durations) : 0,
+          dropped:
+            durations.length > 0
+              ? (durations.filter((duration) => duration > 20).length / durations.length) * 100
+              : 0,
+        };
+      };
+
+      projectedLayerRampRunningRef.current = true;
+      setProjectedLayerRamp({ running: true, current: 0, total: projectedLayers.length });
+      try {
+        useLayerStore.getState().setLayers(buildStack(0));
+        await waitForFrame();
+        await waitForFrame();
+        await wait(900);
+
+        clearReport();
+        useLayerStore.getState().beginProjectedPreviewBatch();
+        previewBatchOpen = true;
+        const endRamp = startPerformanceSpan('projection', 'real-4k-ramp-0-to-14', {
+          count: projectedLayers.length,
+          intervalMs,
+          selectedObjectId,
+          viewportWidth: viewportTelemetry.width,
+          viewportHeight: viewportTelemetry.height,
+        });
+        markPerformanceEvent('projection', 'real-4k-ramp-zero-ready', {
+          preservedLayerCount: buildStack(0).length,
+        });
+
+        for (let index = 0; index < projectedLayers.length; index += 1) {
+          await waitForFrame();
+          const mutationStartedAt = performance.now();
+          useLayerStore.getState().setLayers(buildStack(index + 1));
+          const mutationDurationMs = performance.now() - mutationStartedAt;
+          const layer = projectedLayers[index];
+          markPerformanceEvent('projection', 'real-4k-projector-published', {
+            index: index + 1,
+            total: projectedLayers.length,
+            layerId: layer.id,
+            layerName: layer.name,
+            imageUrlKind: layer.imageUrl.startsWith('data:') ? 'data-url' : 'asset-url',
+            mutationDurationMs,
+          });
+          setProjectedLayerRamp({
+            running: true,
+            current: index + 1,
+            total: projectedLayers.length,
+          });
+          await wait(intervalMs);
+        }
+        markPerformanceEvent('projection', 'real-4k-ramp-atomic-preview-publish', {
+          count: projectedLayers.length,
+        });
+        document.body.dataset.perfSimulatedViewportInteraction = '1';
+        simulatedInteraction = true;
+        useLayerStore.getState().endProjectedPreviewBatch();
+        previewBatchOpen = false;
+        await waitForFrame();
+        await waitForFrame();
+        // Give worker preparation time to reach the GPU upload gate while the
+        // deterministic orbit represents a continuously held viewport gesture.
+        await wait(1_000);
+        const protectedSummary = summarizeFrames(frameSamplesRef.current);
+        markPerformanceEvent('interaction', 'real-4k-ramp-protected-window', {
+          frameP95: protectedSummary.p95,
+          frameMax: protectedSummary.max,
+          droppedFrames: protectedSummary.dropped,
+        });
+
+        const publishFrameStart = frameSamplesRef.current.length;
+        delete document.body.dataset.perfSimulatedViewportInteraction;
+        simulatedInteraction = false;
+        markPerformanceEvent('interaction', 'real-4k-ramp-simulated-pointer-release');
+        await wait(2_400);
+        const publishSummary = summarizeFrames(
+          frameSamplesRef.current.slice(publishFrameStart),
+        );
+        setProjectedLayerRampResult({
+          protectedFrameP95: protectedSummary.p95,
+          protectedFrameMax: protectedSummary.max,
+          protectedDroppedFrames: protectedSummary.dropped,
+          publishFrameP95: publishSummary.p95,
+          publishFrameMax: publishSummary.max,
+          publishDroppedFrames: publishSummary.dropped,
+        });
+        markPerformanceEvent('projection', 'real-4k-ramp-post-release-publish-window', {
+          frameP95: publishSummary.p95,
+          frameMax: publishSummary.max,
+          droppedFrames: publishSummary.dropped,
+        });
+        endRamp('end', { added: projectedLayers.length });
+        return {
+          added: projectedLayers.length,
+          durationMs: performance.now() - startedAt,
+          restored: true,
+        };
+      } catch (error) {
+        markPerformanceEvent(
+          'projection',
+          'real-4k-ramp-0-to-14',
+          { message: error instanceof Error ? error.message : String(error) },
+          'error',
+        );
+        throw error;
+      } finally {
+        if (simulatedInteraction) {
+          delete document.body.dataset.perfSimulatedViewportInteraction;
+        }
+        if (previewBatchOpen) useLayerStore.getState().endProjectedPreviewBatch();
+        // The last test stack normally equals the original stack. Always restore the
+        // exact objects and active layer so interrupted/partial runs cannot edit a project.
+        useLayerStore.getState().setLayers(originalLayers);
+        if (originalActiveLayerId) useLayerStore.getState().setActiveLayer(originalActiveLayerId);
+        restored = true;
+        projectedLayerRampRunningRef.current = false;
+        setProjectedLayerRamp({
+          running: false,
+          current: projectedLayers.length,
+          total: projectedLayers.length,
+        });
+        markPerformanceEvent('projection', 'real-4k-ramp-original-stack-restored', {
+          layerCount: originalLayers.length,
+          restored,
+        });
+      }
+    },
+    [clearReport],
+  );
+
+  useEffect(() => {
+    const target = window as typeof window & { LiclickPerfLab?: PerformanceLabWindowApi };
+    target.LiclickPerfLab = {
+      clear: clearReport,
+      exportReport,
+      runProjectedLayerRamp,
+      snapshot: () => ({ metrics, native: nativeSnapshot, events: getPerformanceTimelineEvents() }),
+    };
+    return () => {
+      delete target.LiclickPerfLab;
+    };
+  }, [clearReport, exportReport, metrics, nativeSnapshot, runProjectedLayerRamp]);
+
+  const gpu = nativeSnapshot?.gpu.adapters[0];
+  const maximumCore = Math.max(0, ...(nativeSnapshot?.cpu.cores.map((core) => core.utilizationPercent) ?? []));
+  const analysis = buildPerformanceAnalysis(metrics, nativeSnapshot);
 
   if (collapsed) {
     return (
@@ -526,32 +927,40 @@ function PerformanceTestHud() {
         onClick={() => setCollapsed(false)}
         className="absolute bottom-20 right-4 z-[28] rounded-md border border-liclick-pink/55 bg-black/78 px-3 py-2 text-xs font-semibold text-white shadow-xl backdrop-blur-md transition hover:bg-black/90"
       >
-        性能测试 · {metrics.fps.toFixed(0)} FPS
+        性能实验室 · {metrics.fps.toFixed(0)} FPS · P95 {metrics.frameP95.toFixed(1)}ms
       </button>
     );
   }
 
   return (
-    <section className="absolute bottom-20 left-1/2 z-[28] w-[min(94vw,980px)] -translate-x-1/2 rounded-lg border border-white/16 bg-[#0b0b10]/92 p-2.5 text-white shadow-[0_18px_55px_rgba(0,0,0,0.48)] backdrop-blur-xl">
+    <section className="absolute bottom-16 left-1/2 z-[28] max-h-[72vh] w-[min(96vw,1180px)] -translate-x-1/2 overflow-auto rounded-lg border border-white/16 bg-[#0b0b10]/94 p-2.5 text-white shadow-[0_18px_55px_rgba(0,0,0,0.48)] backdrop-blur-xl">
       <div className="mb-2 flex items-center justify-between gap-3 px-0.5">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${viewportTelemetry.contextLost ? 'bg-rose-400' : 'bg-emerald-400'}`}
           />
-          <span className="shrink-0 text-xs font-semibold">性能测试</span>
+          <span className="shrink-0 text-xs font-semibold">Li3D 性能实验室</span>
           <span className="truncate text-[10px] text-white/38" title={viewportTelemetry.gpuName}>
             {viewportTelemetry.gpuName}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => setCollapsed(true)}
-          className="rounded px-2 py-1 text-[11px] text-white/55 transition hover:bg-white/10 hover:text-white"
-        >
-          收起
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled={projectedLayerRamp.running}
+            onClick={() => void runProjectedLayerRamp()}
+            className="rounded bg-cyan-400/20 px-2 py-1 text-[11px] text-cyan-200 transition hover:bg-cyan-400/30 disabled:cursor-wait disabled:opacity-55"
+          >
+            {projectedLayerRamp.running
+              ? `真实上图 ${projectedLayerRamp.current}/${projectedLayerRamp.total}`
+              : '0→14 真实上图'}
+          </button>
+          <button type="button" onClick={clearReport} className="rounded px-2 py-1 text-[11px] text-white/55 transition hover:bg-white/10 hover:text-white">清空</button>
+          <button type="button" onClick={exportReport} className="rounded bg-liclick-pink/25 px-2 py-1 text-[11px] text-liclick-pink transition hover:bg-liclick-pink/35">导出 JSON</button>
+          <button type="button" onClick={() => setCollapsed(true)} className="rounded px-2 py-1 text-[11px] text-white/55 transition hover:bg-white/10 hover:text-white">收起</button>
+        </div>
       </div>
-      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
+      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6 lg:grid-cols-8">
         <PerformanceMetric
           label="FPS"
           value={metrics.fps.toFixed(0)}
@@ -562,6 +971,7 @@ function PerformanceTestHud() {
           value={`${metrics.frameP95.toFixed(1)} ms`}
           tone={metricTone(metrics.frameP95, 20, 33)}
         />
+        <PerformanceMetric label="帧耗时最大" value={`${metrics.frameMax.toFixed(1)} ms`} tone={metricTone(metrics.frameMax, 33, 80)} />
         <PerformanceMetric
           label="掉帧率 (>20ms)"
           value={`${metrics.droppedFrames.toFixed(0)}%`}
@@ -591,6 +1001,27 @@ function PerformanceTestHud() {
           value={`${metrics.cpuLongTaskPercent.toFixed(1)}%`}
           tone={metricTone(metrics.cpuLongTaskPercent, 5, 20)}
         />
+        <PerformanceMetric
+          label="0→14 旋转保护 P95 / 最大"
+          value={
+            projectedLayerRampResult
+              ? `${projectedLayerRampResult.protectedFrameP95.toFixed(1)} / ${projectedLayerRampResult.protectedFrameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(projectedLayerRampResult?.protectedFrameP95 ?? 0, 20, 33)}
+        />
+        <PerformanceMetric
+          label="松手发布 P95 / 最大"
+          value={
+            projectedLayerRampResult
+              ? `${projectedLayerRampResult.publishFrameP95.toFixed(1)} / ${projectedLayerRampResult.publishFrameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(projectedLayerRampResult?.publishFrameMax ?? 0, 33, 80)}
+        />
+        <PerformanceMetric label="整机 CPU / 最忙核" value={nativeSnapshot ? `${nativeSnapshot.cpu.overallUtilizationPercent.toFixed(0)}% / ${maximumCore.toFixed(0)}%` : '连接中'} tone={metricTone(maximumCore, 70, 90)} />
+        <PerformanceMetric label="GPU / 显存" value={gpu ? `${gpu.utilizationGpuPercent?.toFixed(0) ?? 'N/A'}% / ${gpu.memoryUsedMb?.toFixed(0) ?? 'N/A'}MB` : '不可用'} />
+        <PerformanceMetric label="系统内存" value={nativeSnapshot ? `${nativeSnapshot.memory.usedPercent.toFixed(0)}% · ${nativeSnapshot.memory.usedMb.toFixed(0)}MB` : '连接中'} tone={metricTone(nativeSnapshot?.memory.usedPercent ?? 0, 75, 88)} />
         <PerformanceMetric
           label="GPU P95 / 16.7ms 预算"
           value={
@@ -629,6 +1060,51 @@ function PerformanceTestHud() {
               : 'text-white'
           }
         />
+      </div>
+      <div className="mt-2 grid gap-2 lg:grid-cols-[1.2fr_1fr_1fr]">
+        <div className="rounded border border-white/10 bg-white/[0.035] p-2">
+          <div className="mb-1 flex justify-between text-[10px] text-white/45"><span>帧耗时（最近 120 帧）</span><span>{metrics.frameP95.toFixed(1)}ms P95</span></div>
+          <Sparkline values={frameHistory} color="#ef5ad8" />
+        </div>
+        <div className="rounded border border-white/10 bg-white/[0.035] p-2">
+          <div className="mb-1 flex justify-between text-[10px] text-white/45"><span>整机 CPU</span><span>{nativeSnapshot?.cpu.overallUtilizationPercent.toFixed(0) ?? 0}%</span></div>
+          <Sparkline values={cpuHistory} color="#58d6ff" />
+        </div>
+        <div className="rounded border border-white/10 bg-white/[0.035] p-2">
+          <div className="mb-1 flex justify-between text-[10px] text-white/45"><span>GPU</span><span>{gpu?.utilizationGpuPercent?.toFixed(0) ?? 0}%</span></div>
+          <Sparkline values={gpuHistory} color="#70e39b" />
+        </div>
+      </div>
+      <div className="mt-2 grid gap-2 lg:grid-cols-[1.05fr_1.2fr_1fr]">
+        <div className="rounded border border-white/10 bg-white/[0.035] p-2">
+          <div className="mb-2 text-[10px] font-semibold text-white/55">逻辑处理器实时热力图</div>
+          <div className="grid grid-cols-8 gap-1">
+            {nativeSnapshot?.cpu.cores.map((core) => (
+              <div key={core.logicalIndex} title={`L${core.logicalIndex} · ${core.utilizationPercent.toFixed(1)}% · ${core.speedMHz}MHz`} className="rounded px-1 py-1 text-center font-mono text-[9px] text-white" style={{ backgroundColor: `rgba(239,90,216,${0.08 + core.utilizationPercent / 115})` }}>
+                L{core.logicalIndex}<br />{core.utilizationPercent.toFixed(0)}%
+              </div>
+            )) ?? <span className="text-[10px] text-white/35">等待原生采集器</span>}
+          </div>
+          <div className="mt-1 text-[9px] text-white/30">{nativeSnapshot?.cpu.model ?? nativeError ?? '连接中'} · {nativeSnapshot?.cpu.efficiencyClassAvailable ? '已识别能效等级' : '当前系统未提供 P/E 分类，仍按逻辑核精确采样'}</div>
+        </div>
+        <div className="rounded border border-white/10 bg-white/[0.035] p-2">
+          <div className="mb-2 text-[10px] font-semibold text-white/55">统一事件时间轴</div>
+          <div className="max-h-32 space-y-1 overflow-auto font-mono text-[9px]">
+            {recentEvents.map((event) => (
+              <div key={event.id} className="grid grid-cols-[62px_80px_1fr_58px] gap-1 text-white/55">
+                <span>{new Date(event.unixMs).toLocaleTimeString([], { hour12: false })}</span><span>{event.category}</span><span className="truncate text-white/75">{event.name}</span><span className={event.phase === 'error' ? 'text-rose-300' : 'text-white/45'}>{event.durationMs === undefined ? event.phase : `${event.durationMs.toFixed(1)}ms`}</span>
+              </div>
+            ))}
+            {recentEvents.length === 0 && <div className="text-white/30">等待图层、UV 合成或交互事件</div>}
+          </div>
+        </div>
+        <div className="rounded border border-white/10 bg-white/[0.035] p-2">
+          <div className="mb-2 text-[10px] font-semibold text-white/55">自动分析</div>
+          <ul className="space-y-1 text-[10px] leading-4 text-white/60">
+            {analysis.map((finding) => <li key={finding}>• {finding}</li>)}
+          </ul>
+          <div className="mt-2 border-t border-white/10 pt-2 text-[9px] text-white/35">原生 1Hz · 面板 2Hz · rAF 仅写环形缓冲 · {nativeSnapshot?.gpu.source ?? nativeError ?? '采集器连接中'}</div>
+        </div>
       </div>
     </section>
   );
@@ -4555,7 +5031,7 @@ function SurfacePaintOverlay() {
           needsRebake: batch.layer.target === 'projected-mask',
         });
         useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
-        if (useSettingsStore.getState().performanceTestModeEnabled) {
+        if (isPerformanceInstrumentationEnabled()) {
           console.info('[Liclick Eraser Refinement]', {
             strokes: snapshots.length,
             resolution: `${bakeResult.canvas.width}x${bakeResult.canvas.height}`,
@@ -4849,7 +5325,7 @@ function SurfacePaintOverlay() {
         // the projected plane. This keeps continuous feedback through the
         // pointer-up handoff instead of flashing back to the old texture.
         finishProjectedPreview();
-        if (useSettingsStore.getState().performanceTestModeEnabled) {
+        if (isPerformanceInstrumentationEnabled()) {
           console.info('[Liclick Paint Commit]', {
             tool: draft.paintOperation,
             target: layer.target,
@@ -5044,7 +5520,7 @@ function SurfacePaintOverlay() {
       };
       lastStrokeTelemetry = snapshot;
       strokeTelemetryRef.current = undefined;
-      if (useSettingsStore.getState().performanceTestModeEnabled) {
+      if (isPerformanceInstrumentationEnabled()) {
         console.info('[Liclick Paint Stroke]', { tool: paintTool, ...snapshot });
       }
     };
@@ -5440,7 +5916,21 @@ export function ViewportCanvas({
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const paintTool = useSceneStore((state) => state.paintTool);
   const exposure = useSettingsStore((state) => state.exposure);
-  const performanceTestModeEnabled = useSettingsStore((state) => state.performanceTestModeEnabled);
+  const storedPerformanceTestModeEnabled = useSettingsStore(
+    (state) => state.performanceTestModeEnabled,
+  );
+  const [queryPerformanceLabOverride] = useState<boolean | undefined>(() => {
+    if (typeof window === 'undefined') return undefined;
+    const queryValue = new URLSearchParams(window.location.search).get('perfLab');
+    return queryValue === '1' ? true : queryValue === '0' ? false : undefined;
+  });
+  const performanceTestModeEnabled =
+    queryPerformanceLabOverride ?? storedPerformanceTestModeEnabled;
+  const [performanceAutoOrbitEnabled] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('perfOrbit') === '1',
+  );
   const t = useT();
 
   useEffect(() => () => window.clearTimeout(captureFrameTimerRef.current), []);
@@ -5546,6 +6036,7 @@ export function ViewportCanvas({
         <Suspense fallback={null}>
           <RendererSettings />
           <ViewportPerformanceProbe enabled={performanceTestModeEnabled} />
+          <PerformanceAutoOrbit enabled={performanceAutoOrbitEnabled} />
           <AcceleratedSceneRoot sceneOverlay={sceneOverlay} />
           <SurfacePaintOverlay />
         </Suspense>

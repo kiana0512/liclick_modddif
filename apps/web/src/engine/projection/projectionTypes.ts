@@ -17,6 +17,8 @@ export type ProjectionLayerInput = {
   objectMatrixWorld?: number[];
   currentObjectMatrixWorld?: number[];
   baseTexture?: THREE.Texture;
+  /** Runtime visibility/opacity for a resident base texture; does not change shader structure. */
+  baseTextureOpacity?: number;
   baseRenderedColorMaskTexture?: THREE.Texture;
   uvOverlayTexture?: THREE.Texture;
   /** Runtime visibility/opacity for a resident UV overlay; does not change shader structure. */
