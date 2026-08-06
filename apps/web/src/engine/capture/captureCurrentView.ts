@@ -68,6 +68,14 @@ function getTargetBounds(scene: THREE.Scene, objectId: string) {
   scene.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     if (object.userData.liclickObjectId !== objectId) return;
+    if (
+      object.userData.liclickRestorePlaceholder ||
+      object.userData.liclickViewportHelper ||
+      object.userData.liclickPaintOverlay ||
+      object.userData.liclickSelectionGlow ||
+      object.userData.liclickWireframeOverlay
+    )
+      return;
     box.expandByObject(object);
     found = true;
   });
@@ -86,7 +94,7 @@ async function getTargetBoundsWhenReady(scene: THREE.Scene, objectId: string) {
   // Switching objects updates the Zustand selection before React Three Fiber has
   // necessarily attached the new model group to the viewport scene. Wait through
   // the short reconciliation window instead of capturing with the previous ID.
-  for (let attempt = 0; attempt < 24; attempt += 1) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
     const targetBounds = getTargetBounds(scene, objectId);
     if (targetBounds) return targetBounds;
     await waitForViewportFrame();

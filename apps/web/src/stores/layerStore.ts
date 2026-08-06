@@ -14,7 +14,12 @@ type LayerStore = {
   setLayers: (layers: Layer[]) => void;
   beginProjectedPreviewBatch: () => void;
   endProjectedPreviewBatch: () => void;
-  addEmptyLayer: () => Layer;
+  addEmptyLayer: (input?: {
+    name?: string;
+    objectId?: string;
+    role?: Layer['role'];
+    generationId?: string;
+  }) => Layer;
   addUvLayer: (input: {
     name?: string;
     imageUrl: string;
@@ -60,13 +65,20 @@ type LayerStore = {
 const legacyTransparentImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
 
-function createEmptyLayer(objectId = useSceneStore.getState().selectedObjectId): Layer {
+function createEmptyLayer(input: {
+  name?: string;
+  objectId?: string;
+  role?: Layer['role'];
+  generationId?: string;
+} = {}): Layer {
   return {
     id: uuid(),
-    name: 'New layer',
+    name: input.name ?? 'New layer',
     type: 'uv',
+    role: input.role,
     imageUrl: '',
-    objectId,
+    objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
+    generationId: input.generationId,
     visible: true,
     opacity: 1,
     strength: 1,
@@ -83,7 +95,7 @@ function ensureSelectedObjectHasLayer(layers: Layer[]) {
     (layer) => !layer.objectId || layer.objectId === selectedObjectId,
   );
   if (hasLayerForSelectedObject) return layers;
-  return [createEmptyLayer(selectedObjectId), ...layers];
+  return [createEmptyLayer({ objectId: selectedObjectId }), ...layers];
 }
 
 function withOrder(layers: Layer[]) {
@@ -168,8 +180,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
         projectedPreviewLayers: nextDepth === 0 ? undefined : state.projectedPreviewLayers,
       };
     }),
-  addEmptyLayer: () => {
-    const layer = createEmptyLayer();
+  addEmptyLayer: (input) => {
+    const layer = createEmptyLayer(input);
 
     set((state) => ({
       layers: withOrder([layer, ...state.layers]),

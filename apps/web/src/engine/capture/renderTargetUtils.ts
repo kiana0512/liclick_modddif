@@ -104,6 +104,14 @@ export function applyTargetOnlyMaterial(
   scene.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     if (object.userData.liclickObjectId !== objectId) return;
+    if (
+      object.userData.liclickRestorePlaceholder ||
+      object.userData.liclickViewportHelper ||
+      object.userData.liclickPaintOverlay ||
+      object.userData.liclickSelectionGlow ||
+      object.userData.liclickWireframeOverlay
+    )
+      return;
     targetMeshes.add(object);
     let parent: THREE.Object3D | null = object.parent;
     while (parent) {

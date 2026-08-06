@@ -23,6 +23,16 @@ export type ReferenceImage = {
   height: number;
   isPrimary: boolean;
   objectId?: string;
+  /**
+   * Texture reference images are stored as a durable single-view/multiview
+   * pair. Legacy projects omit these fields and are treated as one
+   * single-view group per image.
+   */
+  referenceGroupId?: string;
+  referenceRole?: 'single-view' | 'multi-view';
+  derivedFromReferenceId?: string;
+  referenceSource?: 'uploaded' | 'generated';
+  generationId?: string;
 };
 
 export type ProjectSettings = {

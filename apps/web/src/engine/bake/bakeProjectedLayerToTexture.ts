@@ -1074,8 +1074,6 @@ export async function bakeVisibleProjectedLayersToTexture(
         canvas.height = input.resolution;
         const context = canvas.getContext('2d', { willReadFrequently: true });
         if (!context) throw new Error('Could not create GPU parity UV bake canvas.');
-        let composite: ImageData;
-        let qualityCoverage: Uint8Array;
         const overlayRasters: OverlayRaster[] = [];
         const normalRasters: Array<{ color: Uint8ClampedArray; quality: Float32Array }> = [];
         const warnings = [...gpuBake.warnings];
@@ -1110,8 +1108,8 @@ export async function bakeVisibleProjectedLayersToTexture(
             quality: raster.quality,
           })),
         );
-        composite = qualityBlend.imageData;
-        qualityCoverage = qualityBlend.coverage;
+        const composite = qualityBlend.imageData;
+        const qualityCoverage = qualityBlend.coverage;
         writtenTexels = qualityBlend.writtenTexels;
         performanceBreakdown.qualityAccumulateMs = qualityBlend.accumulateMs;
         performanceBreakdown.qualityResolveMs = qualityBlend.resolveMs;

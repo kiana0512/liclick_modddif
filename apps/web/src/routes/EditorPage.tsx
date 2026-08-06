@@ -48,7 +48,9 @@ import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjected
 import {
   buildContentAwareRepairMask,
   buildContentAwareSurfaceTopology,
+  CONTENT_AWARE_REPAIR_REQUEST_EVENT,
   runSurfaceAwareRepair,
+  type ContentAwareRepairRequestDetail,
 } from '@/engine/contentAware';
 import {
   clearDebugUvBakeMethod,
@@ -109,6 +111,7 @@ import {
   maskToBlob,
 } from '@/engine/localRepaint/maskUtils';
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
+import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import {
   focusCameraOrbitOnObjectId,
@@ -4280,26 +4283,29 @@ export function EditorPage({
         });
         return;
       }
-      const targetLayerId = useLayerStore.getState().activeProjectedLayerId;
-      const targetLayer = useLayerStore
-        .getState()
-        .layers.find((layer) => layer.id === targetLayerId);
-      if (!targetLayer) {
-        setLocalRepaintProjectionSource(undefined);
-        setPaintTool('none');
-        pushToast({
-          tone: 'warning',
-          title: '请选择可用于局部重绘的图层',
-          description: '点击图层面板右上角的“＋”，新建并选中空白图层后再进行局部重绘。',
-          action: {
-            label: '新建图层',
-            icon: 'add-layer',
-            onClick: addLocalRepaintDestinationLayer,
-          },
-          dedupeKey: 'local-repaint-destination-layer-required',
-        });
-        return;
-      }
+      const preferredObjectId = selectedObjectId ?? importedModel.objectId;
+      const latestLocalRepaintGeneration = generations.find(
+        (generation) =>
+          generation.resultUrl &&
+          generation.status === 'succeeded' &&
+          isLocalRepaintGeneration(generation) &&
+          (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+          (!generation.metadata.objectId || generation.metadata.objectId === preferredObjectId),
+      );
+      const generationCapture = latestLocalRepaintGeneration
+        ? (project.captures.find(
+            (capture) => capture.id === latestLocalRepaintGeneration.captureId,
+          ) ??
+          useProjectStore
+            .getState()
+            .getCurrentProject()
+            ?.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId))
+        : undefined;
+      const objectId = preferredObjectId;
+      const { layer: targetLayer } = ensureLocalRepaintSessionLayer({
+        objectId,
+        generationId: latestLocalRepaintGeneration?.id,
+      });
       if (!paintMaskHasContent || !paintMaskDataUrl) {
         pushToast({
           tone: 'warning',
@@ -4309,13 +4315,6 @@ export function EditorPage({
         });
         return;
       }
-      const latestLocalRepaintGeneration = generations.find(
-        (generation) =>
-          generation.resultUrl &&
-          generation.status === 'succeeded' &&
-          isLocalRepaintGeneration(generation) &&
-          (!generation.metadata.projectId || generation.metadata.projectId === projectId),
-      );
       if (!latestLocalRepaintGeneration?.resultUrl) {
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
@@ -4327,13 +4326,6 @@ export function EditorPage({
         });
         return;
       }
-      const generationCapture =
-        project.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId) ??
-        useProjectStore
-          .getState()
-          .getCurrentProject()
-          ?.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId);
-      const objectId = selectedObjectId ?? generationCapture?.objectId ?? importedModel.objectId;
       if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
@@ -4477,15 +4469,22 @@ export function EditorPage({
     t,
   ]);
 
-  const handleContentAwareRepairFromToolbar = useCallback(() => {
+  const runContentAwareRepair = useCallback(async (requestedObjectId?: string) => {
     if (contentAwareRepairRunningRef.current) return;
     contentAwareRepairRunningRef.current = true;
-    void (async () => {
-      const abortController = new AbortController();
-      contentAwareRepairAbortControllerRef.current = abortController;
-      try {
-        const viewportRuntime = useSceneStore.getState().viewport;
-        if (!viewportRuntime || !importedModel) {
+    const abortController = new AbortController();
+    contentAwareRepairAbortControllerRef.current = abortController;
+    try {
+        const sceneState = useSceneStore.getState();
+        const viewportRuntime = sceneState.viewport;
+        const targetModel = requestedObjectId
+          ? sceneState.importedModels.find((model) => model.objectId === requestedObjectId)
+          : (sceneState.selectedObjectId
+              ? sceneState.importedModels.find(
+                  (model) => model.objectId === sceneState.selectedObjectId,
+                )
+              : undefined) ?? sceneState.importedModel;
+        if (!viewportRuntime || !targetModel) {
           pushToast({
             tone: 'warning',
             title: t('viewportUnavailable'),
@@ -4499,7 +4498,7 @@ export function EditorPage({
           detail: t('contentAwareRepairScanning'),
           progress: 0.04,
         });
-        const objectId = importedModel.objectId;
+        const objectId = targetModel.objectId;
         const currentLayers = useLayerStore.getState().layers;
         const sourceLayerIds = currentLayers
           .filter(
@@ -4592,7 +4591,7 @@ export function EditorPage({
           }
         }
         const topology = await buildContentAwareSurfaceTopology(
-          importedModel.group,
+          targetModel.group,
           repairResolution,
           repairResolution,
           {
@@ -4752,7 +4751,7 @@ export function EditorPage({
           description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px`,
           dedupeKey: `content-aware-repair:${repairLayer.id}`,
         });
-      } catch (error) {
+    } catch (error) {
         if (
           (error instanceof Error && error.name === 'AbortError') ||
           contentAwareRepairAbortControllerRef.current !== abortController
@@ -4765,7 +4764,7 @@ export function EditorPage({
           title: t('localRepaintFailed'),
           description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
         });
-      } finally {
+    } finally {
         if (contentAwareRepairAbortControllerRef.current === abortController) {
           contentAwareRepairRunningRef.current = false;
           contentAwareRepairAbortControllerRef.current = undefined;
@@ -4774,9 +4773,31 @@ export function EditorPage({
             1200,
           );
         }
-      }
-    })();
-  }, [addUvContentAwareRepairLayer, captureHistory, importedModel, pushToast, setProjectLayers, t]);
+    }
+  }, [addUvContentAwareRepairLayer, captureHistory, pushToast, setProjectLayers, t]);
+
+  const handleContentAwareRepairFromToolbar = useCallback(() => {
+    void runContentAwareRepair();
+  }, [runContentAwareRepair]);
+
+  useEffect(() => {
+    const handleAutomaticContentAwareRepair = (event: Event) => {
+      const request = (event as CustomEvent<ContentAwareRepairRequestDetail>).detail;
+      if (!request || request.source !== 'multiview-texture') return;
+      if (request.projectId && request.projectId !== projectId) return;
+      request.handled = true;
+      void runContentAwareRepair(request.objectId).then(request.resolve, request.reject);
+    };
+    window.addEventListener(
+      CONTENT_AWARE_REPAIR_REQUEST_EVENT,
+      handleAutomaticContentAwareRepair,
+    );
+    return () =>
+      window.removeEventListener(
+        CONTENT_AWARE_REPAIR_REQUEST_EVENT,
+        handleAutomaticContentAwareRepair,
+      );
+  }, [projectId, runContentAwareRepair]);
 
   useEffect(() => {
     function isEditingText(target: EventTarget | null) {
