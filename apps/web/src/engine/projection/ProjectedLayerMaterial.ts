@@ -4,6 +4,7 @@ import type {
   ProjectionLayerStackInput,
   ProjectionPreviewLighting,
 } from './projectionTypes';
+import { packProjectedTextureArrayInPersistentWorker } from './projectedTextureArrayWorker';
 import { buildProjectionMatrixBundle } from './projectionMath';
 import {
   getLiveProjectedCanvasTexture,
@@ -303,6 +304,7 @@ const fragmentShader = `
   uniform sampler2D baseRenderedColorMaskMap;
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
+  uniform float uvOverlayOpacity;
   uniform float useTopUvOverlayMap;
   uniform float topUvOverlayOpacity;
   uniform float topUvOverlayRenderedColor;
@@ -642,7 +644,7 @@ const fragmentShader = `
     mixedColor = mix(
       mixedColor,
       uvOverlayTexel.rgb * lambert,
-      uvOverlayTexel.a * useUvOverlayMap
+      uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity
     );
     vec4 topUvOverlayTexel = texture2D(topUvOverlayMap, vUv);
     topUvOverlayTexel.rgb = applyHsvAdjustments(
@@ -671,7 +673,7 @@ const fragmentShader = `
     // fragments consistently win over an overlapping diagnostic fragment.
     float projectedDepthCoverage = max(
       max(projectionAlpha, baseTexel.a * useBaseMap),
-      max(uvOverlayTexel.a * useUvOverlayMap, topUvOverlayAlpha)
+      max(uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity, topUvOverlayAlpha)
     );
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
     gl_FragDepthEXT = clamp(
@@ -1021,6 +1023,7 @@ function buildStackFragmentShader(
   ${features.useBaseMap ? 'uniform sampler2D baseMap;' : ''}
   ${features.useBaseRenderedColorMaskMap ? 'uniform sampler2D baseRenderedColorMaskMap;' : ''}
   ${features.useUvOverlayMap ? 'uniform sampler2D uvOverlayMap;' : ''}
+  ${features.useUvOverlayMap ? 'uniform float uvOverlayOpacity;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayHueShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlaySaturationShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayLightnessShift;' : ''}
@@ -1352,7 +1355,7 @@ function buildStackFragmentShader(
         ? `mixedColor = mix(
       mixedColor,
       uvOverlayTexel.rgb * lambert,
-      uvOverlayTexel.a
+      uvOverlayTexel.a * uvOverlayOpacity
     );`
         : ''
     }
@@ -1378,7 +1381,7 @@ function buildStackFragmentShader(
     }
     ${
       features.useUvOverlayMap
-        ? 'projectedDepthCoverage = max(projectedDepthCoverage, uvOverlayTexel.a);'
+        ? 'projectedDepthCoverage = max(projectedDepthCoverage, uvOverlayTexel.a * uvOverlayOpacity);'
         : ''
     }
     ${
@@ -1667,6 +1670,12 @@ function updateSharedPreviewUniforms(
       : 0;
   if (material.uniforms.useUvOverlayMap)
     material.uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  if (material.uniforms.uvOverlayOpacity)
+    material.uniforms.uvOverlayOpacity.value = THREE.MathUtils.clamp(
+      input.uvOverlayOpacity ?? 1,
+      0,
+      1,
+    );
   if (material.uniforms.useTopUvOverlayMap)
     material.uniforms.useTopUvOverlayMap.value = input.topUvOverlayTexture ? 1 : 0;
   if (material.uniforms.topUvOverlayOpacity)
@@ -1868,37 +1877,23 @@ async function packProjectedTextureArrayInWorker(
     return undefined;
   }
 
-  const bitmaps = await mapWithConcurrency(sources, 2, async (source) =>
+  const decodeConcurrency = Math.max(
+    2,
+    Math.min(6, Math.floor((navigator.hardwareConcurrency || 4) / 2)),
+  );
+  const bitmaps = await mapWithConcurrency(sources, decodeConcurrency, async (source) =>
     source ? createImageBitmap(source.image as ImageBitmapSource) : undefined,
   );
-  return new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
-    const worker = new Worker(
-      new URL('../../workers/packProjectedTextureArray.worker.ts', import.meta.url),
-      { type: 'module' },
-    );
-    const finish = () => worker.terminate();
-    worker.onmessage = (event: MessageEvent<{ buffer?: ArrayBuffer; error?: string }>) => {
-      finish();
-      if (event.data.error || !event.data.buffer) {
-        reject(new Error(event.data.error ?? 'Projected texture-array worker returned no pixels.'));
-        return;
-      }
-      resolve(new Uint8Array(event.data.buffer));
-    };
-    worker.onerror = (event) => {
-      finish();
-      bitmaps.forEach((bitmap) => bitmap?.close());
-      reject(new Error(event.message || 'Projected texture-array worker failed.'));
-    };
-    const packedSources = bitmaps.map((bitmap, index) => ({
+  const packedSources = bitmaps.map((bitmap, index) => ({
       bitmap,
       previewWidth: previewSizes[index]?.width ?? 1,
       previewHeight: previewSizes[index]?.height ?? 1,
-    }));
-    worker.postMessage(
-      { width, height, profile, sources: packedSources },
-      bitmaps.filter((bitmap): bitmap is ImageBitmap => Boolean(bitmap)),
-    );
+  }));
+  return packProjectedTextureArrayInPersistentWorker({
+    width,
+    height,
+    profile,
+    sources: packedSources,
   });
 }
 
@@ -2291,6 +2286,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+      uvOverlayOpacity: {
+        value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
+      },
       useTopUvOverlayMap: { value: input.topUvOverlayTexture ? 1 : 0 },
       topUvOverlayOpacity: { value: input.topUvOverlayOpacity ?? 1 },
       topUvOverlayRenderedColor: { value: input.topUvOverlayRenderedColor ? 1 : 0 },
@@ -2442,6 +2440,9 @@ export async function createProjectedLayerStackMaterial(
     useBaseMap: { value: input.baseTexture ? 1 : 0 },
     useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
     useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+    uvOverlayOpacity: {
+      value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
+    },
     useTopUvOverlayMap: { value: input.topUvOverlayTexture ? 1 : 0 },
     topUvOverlayOpacity: { value: input.topUvOverlayOpacity ?? 1 },
     topUvOverlayRenderedColor: { value: input.topUvOverlayRenderedColor ? 1 : 0 },
@@ -2926,6 +2927,7 @@ const uvOverlayFragmentShader = `
   uniform float useBaseMap;
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
+  uniform float uvOverlayOpacity;
   uniform float useLiveUvOverlayMap;
   uniform float liveUvOverlayOpacity;
   uniform float liveUvOverlayRenderedColor;
@@ -3017,9 +3019,12 @@ const uvOverlayFragmentShader = `
     float surfaceMask = mix(1.0, max(surfaceMaskTexel.r, max(surfaceMaskTexel.g, surfaceMaskTexel.b)), useSurfaceMaskMap);
     baseSurface = mix(baseColor, baseSurface, surfaceMask);
     vec3 uvPreviewBase = computeUvEmptyPreviewColor();
-    float overlayAlpha = overlayTexel.a * useUvOverlayMap;
+    float overlayAlpha = overlayTexel.a * useUvOverlayMap * uvOverlayOpacity;
     float liveOverlayAlpha = liveOverlayTexel.a * useLiveUvOverlayMap * liveUvOverlayOpacity;
-    float hasUvOverlay = max(useUvOverlayMap, useLiveUvOverlayMap);
+    float hasUvOverlay = max(
+      useUvOverlayMap * step(0.0001, uvOverlayOpacity),
+      useLiveUvOverlayMap * step(0.0001, liveUvOverlayOpacity)
+    );
     vec3 surfaceColor = mix(baseSurface, uvPreviewBase, hasUvOverlay * showEmptyUvChecker);
     surfaceColor = mix(surfaceColor, overlayTexel.rgb, overlayAlpha);
     float remainingTransparency = (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
@@ -3048,6 +3053,7 @@ export type UvOverlayPreviewMaterialInput = {
   displayMode: string;
   selected: boolean;
   uvOverlayTexture?: THREE.Texture;
+  uvOverlayOpacity?: number;
   uvOverlayHue?: number;
   uvOverlaySaturation?: number;
   uvOverlayLightness?: number;
@@ -3100,6 +3106,9 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+      uvOverlayOpacity: {
+        value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
+      },
       useLiveUvOverlayMap: { value: input.liveUvOverlayTexture ? 1 : 0 },
       liveUvOverlayOpacity: { value: THREE.MathUtils.clamp(input.liveUvOverlayOpacity ?? 1, 0, 1) },
       liveUvOverlayRenderedColor: { value: input.liveUvOverlayRenderedColor ? 1 : 0 },
@@ -3150,6 +3159,11 @@ export function updateUvOverlayPreviewMaterial(
   uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
   uniforms.useBaseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture ? 1 : 0;
   uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  uniforms.uvOverlayOpacity.value = THREE.MathUtils.clamp(
+    input.uvOverlayOpacity ?? 1,
+    0,
+    1,
+  );
   uniforms.useLiveUvOverlayMap.value = input.liveUvOverlayTexture ? 1 : 0;
   uniforms.liveUvOverlayOpacity.value = THREE.MathUtils.clamp(
     input.liveUvOverlayOpacity ?? 1,

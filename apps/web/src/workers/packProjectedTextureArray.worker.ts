@@ -9,13 +9,14 @@ type PackedSource = {
 };
 
 type PackRequest = {
+  id: number;
   width: number;
   height: number;
   profile: ProjectedTextureProfile;
   sources: PackedSource[];
 };
 
-type PackResponse = { buffer: ArrayBuffer } | { error: string };
+type PackResponse = { id: number; buffer: ArrayBuffer } | { id: number; error: string };
 
 const workerScope = self as unknown as {
   onmessage: ((event: MessageEvent<PackRequest>) => void) | null;
@@ -23,7 +24,7 @@ const workerScope = self as unknown as {
 };
 
 workerScope.onmessage = (event) => {
-  const { width, height, profile, sources } = event.data;
+  const { id, width, height, profile, sources } = event.data;
   const sliceByteLength = width * height * 4;
   const textureData = new Uint8Array(sliceByteLength * sources.length);
 
@@ -59,10 +60,11 @@ workerScope.onmessage = (event) => {
       source.bitmap.close();
     }
 
-    workerScope.postMessage({ buffer: textureData.buffer }, [textureData.buffer]);
+    workerScope.postMessage({ id, buffer: textureData.buffer }, [textureData.buffer]);
   } catch (error) {
     sources.forEach((source) => source.bitmap?.close());
     workerScope.postMessage({
+      id,
       error: error instanceof Error ? error.message : 'Could not pack projected textures.',
     });
   }

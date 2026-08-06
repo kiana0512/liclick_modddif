@@ -19,6 +19,8 @@ export type ProjectionLayerInput = {
   baseTexture?: THREE.Texture;
   baseRenderedColorMaskTexture?: THREE.Texture;
   uvOverlayTexture?: THREE.Texture;
+  /** Runtime visibility/opacity for a resident UV overlay; does not change shader structure. */
+  uvOverlayOpacity?: number;
   uvOverlayHue?: number;
   uvOverlaySaturation?: number;
   uvOverlayLightness?: number;

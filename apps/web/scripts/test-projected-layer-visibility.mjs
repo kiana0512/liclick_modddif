@@ -3,6 +3,7 @@ import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
+import * as THREE from 'three';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const server = await createServer({
@@ -56,12 +57,21 @@ try {
       renderedColor: false,
     };
   });
+  const residentUvTexture = new THREE.DataTexture(
+    new Uint8Array([255, 255, 255, 255]),
+    1,
+    1,
+    THREE.RGBAFormat,
+  );
+  residentUvTexture.needsUpdate = true;
   const material = await projection.createProjectedLayerStackMaterial(
     {
       layers,
       objectId: 'regression-object',
       currentObjectMatrixWorld: identity,
       depthTest: true,
+      uvOverlayTexture: residentUvTexture,
+      uvOverlayOpacity: 1,
     },
     { maxTextureImageUnits: 64 },
   );
@@ -126,7 +136,23 @@ try {
   assert.equal(material.uniforms.layerOpacity2.value, 1);
   assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1);
   assert.equal(material.uuid, materialId);
+  assert.equal(
+    projection.updateProjectedLayerStackMaterial(material, {
+      layers,
+      objectId: 'regression-object',
+      currentObjectMatrixWorld: identity,
+      depthTest: true,
+      uvOverlayTexture: residentUvTexture,
+      uvOverlayOpacity: 0,
+    }),
+    true,
+    'Closing a resident UV eye must update uniforms without rebuilding the shader.',
+  );
+  assert.equal(material.uniforms.uvOverlayOpacity.value, 0);
+  assert.equal(material.uniforms.useUvOverlayMap.value, 1);
+  assert.equal(material.uuid, materialId, 'UV visibility must not replace the GPU material.');
   projection.disposeGeneratedMaterialTree(material);
+  residentUvTexture.dispose();
 
   const hiddenLayers = layers.map((layer) => ({ ...layer, visible: false }));
   const whiteMembraneMaterial = await projection.createProjectedLayerStackMaterial(

@@ -32,6 +32,10 @@ import {
   getVisibleUvLayerStack,
 } from '@/engine/layers/uvLayerComposition';
 import {
+  canCompositeUvLayersInWorker,
+  compositeUvLayersInWorker,
+} from '@/engine/layers/uvLayerCompositeWorker';
+import {
   canUseLayerStackCache,
   findExactLayerStackTexture,
   getProjectedLayerStackSignature,
@@ -290,7 +294,9 @@ function useLoadedPreviewTexture(imageUrl?: string) {
       return undefined;
     }
     let cancelled = false;
-    setLoadedTexture(undefined);
+    // Keep the last valid GPU texture visible while the replacement decodes.
+    // Clearing here produced the one-frame black/white flash during repaint,
+    // image replacement and UV composition hand-offs.
     loadPreviewTexture(imageUrl)
       .then((texture) => {
         if (cancelled) return;
@@ -299,7 +305,6 @@ function useLoadedPreviewTexture(imageUrl?: string) {
       .catch((error) => {
         if (cancelled) return;
         console.warn('[Liclick 3D Texture] Could not load texture for viewport preview:', error);
-        setLoadedTexture(undefined);
       });
     return () => {
       cancelled = true;
@@ -339,10 +344,10 @@ function loadImageElement(url: string) {
 function useCompositedUvTexture(layers: Layer[]) {
   const [texture, setTexture] = useState<THREE.Texture>();
   const runtimeRef = useRef<{
-    texture: THREE.CanvasTexture;
-    draw: () => void;
+    refresh: () => void;
     liveRevisions: Map<string, number>;
   }>();
+  const currentTextureRef = useRef<THREE.Texture>();
   const layerKey = useMemo(
     () =>
       layers
@@ -366,20 +371,57 @@ function useCompositedUvTexture(layers: Layer[]) {
       changed = true;
     });
     if (!changed) return;
-    runtime.draw();
-    runtime.texture.needsUpdate = true;
+    runtime.refresh();
   });
+
+  useEffect(
+    () => () => {
+      const current = currentTextureRef.current;
+      currentTextureRef.current = undefined;
+      if (typeof ImageBitmap !== 'undefined' && current?.image instanceof ImageBitmap)
+        current.image.close();
+      current?.dispose();
+    },
+    [],
+  );
 
   useEffect(() => {
     const uvLayers = stableLayers.filter((layer) => layer.visible && layer.imageUrl);
     if (uvLayers.length === 0) {
       setTexture(undefined);
+      const previous = currentTextureRef.current;
+      currentTextureRef.current = undefined;
+      if (typeof ImageBitmap !== 'undefined' && previous?.image instanceof ImageBitmap)
+        previous.image.close();
+      previous?.dispose();
       return undefined;
     }
 
     let cancelled = false;
-    let nextTexture: THREE.CanvasTexture | undefined;
-    setTexture(undefined);
+    let composing = false;
+    let composeAgain = false;
+
+    const publishTexture = (nextTexture: THREE.Texture) => {
+      if (cancelled) {
+        if (typeof ImageBitmap !== 'undefined' && nextTexture.image instanceof ImageBitmap)
+          nextTexture.image.close();
+        nextTexture.dispose();
+        return;
+      }
+      const previous = currentTextureRef.current;
+      currentTextureRef.current = nextTexture;
+      setTexture(nextTexture);
+      if (!previous || previous === nextTexture) return;
+      // Retire the old GPU resource only after React/Three has committed the
+      // replacement. This is the double buffer that removes the black frame.
+      window.requestAnimationFrame(() =>
+        window.requestAnimationFrame(() => {
+          if (typeof ImageBitmap !== 'undefined' && previous.image instanceof ImageBitmap)
+            previous.image.close();
+          previous.dispose();
+        }),
+      );
+    };
 
     void Promise.all(
       uvLayers.map(async (layer) => {
@@ -413,58 +455,94 @@ function useCompositedUvTexture(layers: Layer[]) {
         // eraser work must never trade the user's texture resolution for viewport speed.
         const width = sourceWidth;
         const height = sourceHeight;
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext('2d');
-        if (!context) throw new Error('Could not create UV layer composite canvas.');
-        const draw = () => {
-          context.clearRect(0, 0, width, height);
-          [...sources]
-            .sort((left, right) =>
-              compareUvLayersForComposition(left.layer, right.layer, 'bottom-to-top'),
-            )
-            .forEach(({ layer, source }) => {
-              context.save();
-              context.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
-              context.globalCompositeOperation = 'source-over';
-              context.drawImage(source, 0, 0, width, height);
-              context.restore();
-            });
+        const sortedSources = [...sources].sort((left, right) =>
+          compareUvLayersForComposition(left.layer, right.layer, 'bottom-to-top'),
+        );
+        const compose = async () => {
+          if (composing) {
+            composeAgain = true;
+            return;
+          }
+          composing = true;
+          const composeStartedAt = performance.now();
+          document.body.dataset.uvCompositeStatus = 'composing';
+          try {
+            let nextTexture: THREE.Texture;
+            if (canCompositeUvLayersInWorker()) {
+              document.body.dataset.uvCompositeBackend = 'worker';
+              const bitmaps = await Promise.all(
+                sortedSources.map(async ({ layer, source }) => ({
+                  bitmap: await createImageBitmap(source),
+                  opacity: layer.opacity,
+                })),
+              );
+              const bitmap = await compositeUvLayersInWorker(bitmaps);
+              nextTexture = new THREE.Texture(bitmap);
+            } else {
+              document.body.dataset.uvCompositeBackend = 'main-thread-fallback';
+              const canvas = document.createElement('canvas');
+              canvas.width = width;
+              canvas.height = height;
+              const context = canvas.getContext('2d');
+              if (!context) throw new Error('Could not create UV layer composite canvas.');
+              context.clearRect(0, 0, width, height);
+              sortedSources.forEach(({ layer, source }) => {
+                context.save();
+                context.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
+                context.globalCompositeOperation = 'source-over';
+                context.drawImage(source, 0, 0, width, height);
+                context.restore();
+              });
+              nextTexture = new THREE.CanvasTexture(canvas);
+            }
+            nextTexture.colorSpace = THREE.SRGBColorSpace;
+            nextTexture.flipY = !(
+              typeof ImageBitmap !== 'undefined' && nextTexture.image instanceof ImageBitmap
+            );
+            nextTexture.wrapS = THREE.ClampToEdgeWrapping;
+            nextTexture.wrapT = THREE.ClampToEdgeWrapping;
+            nextTexture.minFilter = THREE.LinearFilter;
+            nextTexture.magFilter = THREE.LinearFilter;
+            nextTexture.generateMipmaps = false;
+            nextTexture.anisotropy = 8;
+            nextTexture.needsUpdate = true;
+            publishTexture(nextTexture);
+            document.body.dataset.uvCompositeStatus = 'ready';
+            document.body.dataset.uvCompositeDurationMs = String(
+              Math.round((performance.now() - composeStartedAt) * 10) / 10,
+            );
+            document.body.dataset.uvCompositeSize = `${width}x${height}`;
+          } catch (error) {
+            document.body.dataset.uvCompositeStatus = 'error';
+            if (!cancelled)
+              console.warn('[Liclick 3D Texture] Could not composite UV layer stack:', error);
+          } finally {
+            composing = false;
+            if (composeAgain && !cancelled) {
+              composeAgain = false;
+              void compose();
+            }
+          }
         };
-        draw();
-
-        nextTexture = new THREE.CanvasTexture(canvas);
-        nextTexture.colorSpace = THREE.SRGBColorSpace;
-        nextTexture.flipY = true;
-        nextTexture.wrapS = THREE.ClampToEdgeWrapping;
-        nextTexture.wrapT = THREE.ClampToEdgeWrapping;
-        nextTexture.minFilter = THREE.LinearFilter;
-        nextTexture.magFilter = THREE.LinearFilter;
-        nextTexture.generateMipmaps = false;
-        nextTexture.anisotropy = 8;
-        nextTexture.needsUpdate = true;
-        runtimeRef.current = {
-          texture: nextTexture,
-          draw,
+        const runtime = {
+          refresh: () => void compose(),
           liveRevisions: new Map(
             sources.flatMap(({ liveUrl, liveRevision }) =>
               liveUrl && liveRevision !== undefined ? [[liveUrl, liveRevision] as const] : [],
             ),
           ),
         };
-        setTexture(nextTexture);
+        runtimeRef.current = runtime;
+        void compose();
       })
       .catch((error) => {
         if (cancelled) return;
         console.warn('[Liclick 3D Texture] Could not composite UV layer stack:', error);
-        setTexture(undefined);
       });
 
     return () => {
       cancelled = true;
-      if (runtimeRef.current?.texture === nextTexture) runtimeRef.current = undefined;
-      nextTexture?.dispose();
+      runtimeRef.current = undefined;
     };
   }, [layerKey, stableLayers]);
 
@@ -940,6 +1018,18 @@ function ImportedModel({
         : [],
     [importedObjectId, layers, texturedRestoreReady],
   );
+  const residentDirectUvLayer = useMemo(() => {
+    if (!texturedRestoreReady) return undefined;
+    const candidates = layers.filter(
+      (layer) =>
+        layer.type === 'uv' &&
+        layer.role !== 'content-aware-underlay' &&
+        layer.role !== 'local-repaint-overlay' &&
+        Boolean(layer.imageUrl) &&
+        (!layer.objectId || layer.objectId === importedObjectId),
+    );
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }, [importedObjectId, layers, texturedRestoreReady]);
   const hasVisibleUvOverlay = useMemo(
     () =>
       texturedRestoreReady &&
@@ -953,16 +1043,19 @@ function ImportedModel({
       ),
     [importedObjectId, layers, texturedRestoreReady],
   );
+  // Keep one finished UV texture and its shader sampler resident. Its eye switch
+  // becomes a uniform update instead of a texture reload and shader recompile.
+  const hasResidentUvOverlaySampler = Boolean(residentDirectUvLayer) || hasVisibleUvOverlay;
   const directProjectedSamplerBudget = useMemo(
     () =>
       getProjectedLayerSamplerBudget(previewProjectionInputs, gl.capabilities.maxTextures, {
         useBaseMap: contentAwareUvUnderlayLayers.length > 0,
-        useUvOverlayMap: hasVisibleUvOverlay,
+        useUvOverlayMap: hasResidentUvOverlaySampler,
       }),
     [
       contentAwareUvUnderlayLayers.length,
       gl.capabilities.maxTextures,
-      hasVisibleUvOverlay,
+      hasResidentUvOverlaySampler,
       previewProjectionInputs,
     ],
   );
@@ -970,13 +1063,13 @@ function ImportedModel({
     () =>
       getProjectedLayerSamplerBudget(previewProjectionInputs, gl.capabilities.maxTextures, {
         useBaseMap: contentAwareUvUnderlayLayers.length > 0,
-        useUvOverlayMap: hasVisibleUvOverlay,
+        useUvOverlayMap: hasResidentUvOverlaySampler,
         useTextureArrays: true,
       }),
     [
       contentAwareUvUnderlayLayers.length,
       gl.capabilities.maxTextures,
-      hasVisibleUvOverlay,
+      hasResidentUvOverlaySampler,
       previewProjectionInputs,
     ],
   );
@@ -1120,9 +1213,9 @@ function ImportedModel({
       getProjectedLayerSamplerBudget(progressiveIncrementalInputs, gl.capabilities.maxTextures, {
         useBaseMap: true,
         useBaseRenderedColorMaskMap: true,
-        useUvOverlayMap: hasVisibleUvOverlay,
+        useUvOverlayMap: hasResidentUvOverlaySampler,
       }),
-    [gl.capabilities.maxTextures, hasVisibleUvOverlay, progressiveIncrementalInputs],
+    [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, progressiveIncrementalInputs],
   );
   const progressiveIncrementalPreviewReady = Boolean(
     canUseProgressiveUvFallback &&
@@ -1301,8 +1394,18 @@ function ImportedModel({
   );
   // A single UV layer is already a finished UV-space texture. Sample it directly
   // and adjust it with shader uniforms instead of rebuilding a full-resolution canvas.
-  const directUvLayer = nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] : undefined;
-  const compositedUvLayers = directUvLayer ? [] : nonLiveUvLayers;
+  const directUvLayer = residentDirectUvLayer ??
+    (nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] : undefined);
+  const compositedUvLayers = directUvLayer
+    ? nonLiveUvLayers.filter((layer) => layer.id !== directUvLayer.id)
+    : nonLiveUvLayers;
+  const uvOverlayOpacity = directUvLayer
+    ? directUvLayer.visible
+      ? directUvLayer.opacity
+      : 0
+    : compositedUvLayers.length > 0
+      ? 1
+      : 0;
   const compositedUvTexture = useCompositedUvTexture(compositedUvLayers);
   const directUvTexture = useLoadedPreviewTexture(directUvLayer?.imageUrl);
   const loadedUvTexture = directUvTexture ?? compositedUvTexture;
@@ -1463,7 +1566,7 @@ function ImportedModel({
       const showWhiteMembrane = Boolean(
         materialProjectionInputs.length > 0 &&
           materialProjectionInputs.every((layer) => !layer.visible) &&
-          !loadedUvTexture &&
+          (!loadedUvTexture || uvOverlayOpacity <= 0) &&
           !liveTopUvTexture &&
           !loadedContentAwareUnderlayTexture,
       );
@@ -1499,6 +1602,7 @@ function ImportedModel({
               uvOverlayLightness: directUvLayer
                 ? (directUvLayer.adjustments?.lightness ?? 0) / 100
                 : 0,
+              uvOverlayOpacity,
               depthTest: true,
               enableBackfaceCulling: true,
               edgeFeather: 0.004,
@@ -1621,6 +1725,7 @@ function ImportedModel({
             ...(loadedUvTexture
               ? {
                   uvOverlayTexture: loadedUvTexture,
+                  uvOverlayOpacity,
                   uvOverlayHue: directUvLayer ? (directUvLayer.adjustments?.hue ?? 0) / 100 : 0,
                   uvOverlaySaturation: directUvLayer
                     ? (directUvLayer.adjustments?.saturation ?? 0) / 100
