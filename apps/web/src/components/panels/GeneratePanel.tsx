@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   Banana,
   Bot,
+  ChevronDown,
   Download,
   ImagePlus,
   Layers,
@@ -98,7 +99,8 @@ import {
 type GenerateTab = 'single' | 'multiview' | 'repaint';
 type GenerateMode = 'visible' | 'upscale';
 type TextureMapViewMode = 'single-view' | 'multi-view';
-type CameraViewPresetId = 'preset-1' | 'preset-2' | 'preset-3';
+type CameraViewPresetId = 'preset-2' | 'preset-3';
+type CameraViewPresetSelection = CameraViewPresetId | 'custom';
 type CameraViewOption = {
   value: ObjectViewPreset;
   labelKey:
@@ -177,15 +179,9 @@ const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
 
 const cameraViewPresets: CameraViewPresetDefinition[] = [
   {
-    id: 'preset-1',
-    label: '预设 1',
-    description: '6 个正交视角：前、后、左、右、上、下',
-    views: ['front', 'back', 'left', 'right', 'top', 'bottom'],
-  },
-  {
     id: 'preset-2',
-    label: '预设 2',
-    description: '6 个正交视角，加左前、右前、左后、右后',
+    label: '预设 2 · 10 视角（默认）',
+    description: '10 个视角：前、后、左、右、上、下、左前、右前、左后、右后',
     views: [
       'front',
       'back',
@@ -201,7 +197,7 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
   },
   {
     id: 'preset-3',
-    label: '预设 3',
+    label: '预设 3 · 14 视角',
     description:
       '14 个视角：前、后、左、右、上、下、前上、后上、左上、右上、前下、后下、左下、右下 45°',
     views: [
@@ -636,9 +632,9 @@ export function GeneratePanel() {
     previewUrl: string;
   }>();
   const [selectedCameraViewPreset, setSelectedCameraViewPreset] =
-    useState<CameraViewPresetId | null>('preset-1');
+    useState<CameraViewPresetSelection>('preset-2');
   const [cameraViews, setCameraViews] = useState<CameraViewItem[]>(() =>
-    createCameraViewsForPreset('preset-1', t),
+    createCameraViewsForPreset('preset-2', t),
   );
   const [activeCameraViewId, setActiveCameraViewId] = useState('front');
   const [aiOneClickConfirmOpen, setAiOneClickConfirmOpen] = useState(false);
@@ -683,7 +679,9 @@ export function GeneratePanel() {
     : isLocalRepaintTab
       ? localRepaintPrompt
       : liclickPrompt;
-  const imageModel = generationSettings.model as LiclickImageModel;
+  const imageModel = isTextureMapTab
+    ? ('gpt-image-2' as LiclickImageModel)
+    : (generationSettings.model as LiclickImageModel);
   const aspectRatio = generationSettings.aspectRatio as LiclickAspectRatio;
   const imageSize = generationSettings.imageSize as LiclickImageSize;
   const count = generationSettings.count;
@@ -1437,7 +1435,12 @@ export function GeneratePanel() {
     setActiveCameraViewId(view.id);
   }
 
-  function handleCameraViewPresetSelect(presetId: CameraViewPresetId) {
+  function handleCameraViewPresetSelect(selection: CameraViewPresetSelection) {
+    if (selection === 'custom') {
+      setSelectedCameraViewPreset('custom');
+      return;
+    }
+    const presetId = selection;
     const nextViews = createCameraViewsForPreset(presetId, t);
     cameraViewPreviewsRef.current = {};
     capturingCameraViewsRef.current = new Set();
@@ -1449,7 +1452,7 @@ export function GeneratePanel() {
   }
 
   function handleDeleteCameraView(viewId: string) {
-    setSelectedCameraViewPreset(null);
+    setSelectedCameraViewPreset('custom');
     setCameraViews((current) => current.filter((view) => view.id !== viewId));
     setCameraViewPreviews((current) => {
       const next = { ...current };
@@ -1484,7 +1487,7 @@ export function GeneratePanel() {
       viewDirection: [x / length, y / length, z / length],
       viewUp: [viewport.camera.up.x, viewport.camera.up.y, viewport.camera.up.z],
     };
-    setSelectedCameraViewPreset(null);
+    setSelectedCameraViewPreset('custom');
     setCameraViews((current) => [...current, nextView]);
     setActiveCameraViewId(id);
     pushToast({ tone: 'success', title: '已添加当前 MVP 视角' });
@@ -2143,8 +2146,8 @@ export function GeneratePanel() {
       (reference) => reference.id === activeSelectedReferenceIds[0],
     );
     if (!materialReference || submitLocksRef.current.has('multiview')) return;
-    const cubeViews = createCameraViewsForPreset('preset-1', t);
-    setSelectedCameraViewPreset('preset-1');
+    const cubeViews = createCameraViewsForPreset('preset-2', t);
+    setSelectedCameraViewPreset('preset-2');
     setCameraViews(cubeViews);
     setActiveCameraViewId(cubeViews[0]?.id ?? '');
     submitLocksRef.current.add('multiview');
@@ -3157,7 +3160,7 @@ export function GeneratePanel() {
           onChange={setTab}
           className="mb-2"
         />
-        {!isLocalRepaintTab && (
+        {tab === 'single' && (
           <div
             className="mb-2 grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
             role="radiogroup"
@@ -3318,54 +3321,36 @@ export function GeneratePanel() {
                     <button
                       type="button"
                       className="grid h-7 w-7 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
-                      title="AI 一键生成六面贴图并上色"
-                      aria-label="AI 一键生成六面贴图并上色"
+                      title="AI 一键生成默认 10 视角贴图并上色"
+                      aria-label="AI 一键生成默认 10 视角贴图并上色"
                       onClick={requestAiOneClickTextureMap}
                     >
                       <Sparkles className="h-4 w-4" />
                     </button>
-                    <button
-                      type="button"
-                      className="grid h-7 w-7 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
-                      title={t('addCameraView')}
-                      aria-label={t('addCameraView')}
-                      onClick={handleAddCurrentCameraView}
-                    >
-                      <Plus className="h-4 w-4" />
-                    </button>
                   </div>
                 </div>
-                <div
-                  className="grid grid-cols-3 gap-1 rounded-md border border-white/10 bg-black/24 p-1"
-                  role="radiogroup"
-                  aria-label="模型方向预设"
-                >
-                  {cameraViewPresets.map((preset) => {
-                    const selected = selectedCameraViewPreset === preset.id;
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        title={preset.description}
-                        className={`grid min-h-10 place-items-center rounded px-1 py-1 text-[11px] font-semibold leading-4 transition ${
-                          selected
-                            ? 'bg-white text-black shadow-sm'
-                            : 'text-white/62 hover:bg-white/10 hover:text-white'
-                        }`}
-                        onClick={() => handleCameraViewPresetSelect(preset.id)}
-                      >
-                        <span>{preset.label}</span>
-                        <span className={selected ? 'text-black/56' : 'text-white/38'}>
-                          {preset.views.length} 视角
-                        </span>
-                      </button>
-                    );
-                  })}
+                <div className="relative">
+                  <select
+                    value={selectedCameraViewPreset}
+                    className="h-10 w-full appearance-none rounded-md border border-white/14 bg-black/30 px-3 pr-9 text-xs font-semibold text-white/88 outline-none transition hover:border-white/28 focus:border-liclick-pink"
+                    aria-label="多视图预设"
+                    onChange={(event) =>
+                      handleCameraViewPresetSelect(
+                        event.target.value as CameraViewPresetSelection,
+                      )
+                    }
+                  >
+                    {cameraViewPresets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                    <option value="custom">自定义预设 · {cameraViews.length} 视角</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/55" />
                 </div>
                 <p className="px-0.5 text-[11px] leading-4 text-white/45">
-                  {selectedCameraViewPreset
+                  {selectedCameraViewPreset !== 'custom'
                     ? getCameraViewPresetDefinition(selectedCameraViewPreset).description
                     : `自定义组合：${cameraViews.length} 个视角`}
                 </p>
@@ -3402,6 +3387,15 @@ export function GeneratePanel() {
                       </button>
                     </div>
                   ))}
+                  <button
+                    type="button"
+                    className="group grid h-[76px] place-items-center rounded-md border border-dashed border-white/18 bg-white/[0.025] text-white/48 transition hover:border-liclick-pink/72 hover:bg-liclick-pink/10 hover:text-liclick-pink focus:border-liclick-pink focus:outline-none focus:ring-2 focus:ring-liclick-pink/24"
+                    title={t('addCameraView')}
+                    aria-label={t('addCameraView')}
+                    onClick={handleAddCurrentCameraView}
+                  >
+                    <Plus className="h-8 w-8 transition-transform group-hover:scale-110" />
+                  </button>
                 </div>
               </section>
             )}
@@ -3516,7 +3510,7 @@ export function GeneratePanel() {
                   <div className="text-sm font-semibold text-liclick-pink">
                     AI 一键生成贴图并上色
                   </div>
-                  <div className="mt-1 text-lg font-bold">确认生成六个标准面？</div>
+                  <div className="mt-1 text-lg font-bold">确认生成默认 10 个视角？</div>
                 </div>
                 <button
                   type="button"
