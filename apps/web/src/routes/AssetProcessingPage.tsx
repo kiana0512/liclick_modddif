@@ -30,9 +30,8 @@ import {
   useState,
 } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
-import { BrandMark } from '@/components/common/BrandMark';
 import { HistorySidePanel } from '@/components/history/HistorySidePanel';
-import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
+import { WorkflowShell } from '@/features/workflow/WorkflowShell';
 import type { WorkflowNavigation } from '@/features/workflow/workflowTypes';
 import { useWorkflowProject } from '@/features/workflow/useWorkflowProject';
 import {
@@ -102,6 +101,10 @@ type AssetProcessingPageProps = {
 type SubmissionSnapshot = {
   fingerprint: string;
   sourceFile: File;
+  sourceFiles?: File[];
+  batchId?: string;
+  childJobs?: Array<{ jobId: string; sourceName: string }>;
+  submissionFailures?: Array<{ sourceName: string; error: string }>;
 };
 
 type StoredJobBinding = {
@@ -114,10 +117,20 @@ type StoredJobBinding = {
     type: string;
     lastModified: number;
   };
+  sources?: Array<{
+    name: string;
+    size: number;
+    type: string;
+    lastModified: number;
+  }>;
+  batchId?: string;
+  childJobs?: Array<{ jobId: string; sourceName: string }>;
+  submissionFailures?: Array<{ sourceName: string; error: string }>;
 };
 
 type JobBinding = StoredJobBinding & {
   sourceFile?: File;
+  sourceFiles?: File[];
 };
 
 function storedJobBinding(storageKey: string): StoredJobBinding | undefined {
@@ -240,10 +253,23 @@ function fileStem(fileName: string) {
     .slice(0, 72) || 'asset';
 }
 
-function externalAssetId(mode: AssetProcessingMode, file: File) {
+// The remote Asset V4 contract caps external_asset_id and Idempotency-Key at
+// 128 characters. Keep the batch identity comfortably below that limit so a
+// child suffix can be added without depending on the source filename length.
+const maximumReusableSubmissionIdentityLength = 96;
+
+function validSubmissionIdentity(value: string | undefined): value is string {
+  return Boolean(
+    value &&
+      value.length <= maximumReusableSubmissionIdentityLength &&
+      /^[\x21-\x7e]+$/.test(value),
+  );
+}
+
+function externalAssetId(mode: AssetProcessingMode) {
   return mode === 'retopology'
-    ? `li3d:${fileStem(file.name)}:retopology:v6:${createId()}`
-    : `li3d:${fileStem(file.name)}:${mode}:${createId()}`;
+    ? `li3d-retopology-v6-${createId()}`
+    : `li3d-${mode}-${createId()}`;
 }
 
 function pendingSubmissionStorageKey(mode: AssetProcessingMode) {
@@ -252,7 +278,6 @@ function pendingSubmissionStorageKey(mode: AssetProcessingMode) {
 
 function stableSubmissionKey(
   mode: AssetProcessingMode,
-  file: File,
   fingerprint: string,
 ) {
   const storageKey = pendingSubmissionStorageKey(mode);
@@ -261,13 +286,16 @@ function stableSubmissionKey(
       fingerprint?: string;
       key?: string;
     } | null;
-    if (stored?.fingerprint === fingerprint && stored.key) {
+    if (
+      stored?.fingerprint === fingerprint &&
+      validSubmissionIdentity(stored.key)
+    ) {
       return { fingerprint, key: stored.key };
     }
   } catch {
     // Invalid stale state is replaced below.
   }
-  const pending = { fingerprint, key: externalAssetId(mode, file) };
+  const pending = { fingerprint, key: externalAssetId(mode) };
   try {
     window.sessionStorage.setItem(storageKey, JSON.stringify(pending));
   } catch {
@@ -324,6 +352,76 @@ function jobStatusLabel(status?: AssetJobStatus) {
     FAILED: '处理失败',
     CANCELLED: '已取消',
   }[status];
+}
+
+function aggregateRetopologyBatchJob(
+  batchId: string,
+  children: Array<{ job: AssetJob; sourceName: string }>,
+): AssetJob {
+  const active = children.filter(({ job }) => !terminalStatuses.has(job.status));
+  const succeeded = children.filter(({ job }) => job.status === 'SUCCEEDED');
+  const failed = children.filter(({ job }) => job.status === 'FAILED');
+  const cancelled = children.filter(({ job }) => job.status === 'CANCELLED');
+  const allTerminal = active.length === 0;
+  const status: AssetJobStatus = !allTerminal
+    ? active.some(({ job }) => job.status === 'RUNNING' || job.status === 'CLAIMED')
+      ? 'RUNNING'
+      : 'QUEUED'
+    : succeeded.length > 0
+      ? 'SUCCEEDED'
+      : failed.length > 0
+        ? 'FAILED'
+        : cancelled.length > 0
+          ? 'CANCELLED'
+          : 'FAILED';
+  const progress = children.length > 0
+    ? children.reduce((sum, { job }) => sum + (Number(job.progress) || 0), 0) / children.length
+    : 0;
+  const artifacts = succeeded.flatMap(({ job, sourceName }) =>
+    assetJobArtifacts(job).map((artifact) => ({
+      ...artifact,
+      source_job_id: assetJobId(job),
+      source_name: sourceName,
+    })),
+  );
+  const partialFailureSummary = failed.length > 0
+    ? `${failed.length} 个模型处理失败，其余模型已继续完成。`
+    : undefined;
+  return {
+    job_id: batchId,
+    job_type: 'RETOPOLOGY_BATCH',
+    status,
+    progress,
+    stage: allTerminal ? 'BATCH_COMPLETE' : 'BATCH_RUNNING',
+    stage_message: allTerminal
+      ? `${succeeded.length}/${children.length} 个模型已交付${failed.length ? `，${failed.length} 个失败` : ''}`
+      : `正在独立处理 ${children.length} 个模型 · 已完成 ${succeeded.length}`,
+    artifacts,
+    artifacts_role: 'batch_delivery',
+    delivery_ready: allTerminal && succeeded.length > 0,
+    ...(partialFailureSummary
+      ? { error: { code: 'RETOPOLOGY_BATCH_PARTIAL_FAILURE', summary: partialFailureSummary } }
+      : {}),
+  };
+}
+
+function failedRetopologySubmissionChild(
+  batchId: string,
+  failure: { sourceName: string; error: string },
+  index: number,
+) {
+  return {
+    sourceName: failure.sourceName,
+    job: {
+      job_id: `${batchId}:submission-failed:${index}`,
+      job_type: 'RETOPOLOGY_PROCESS_V2',
+      status: 'FAILED' as const,
+      progress: 100,
+      stage: 'SUBMISSION_FAILED',
+      stage_message: '模型提交失败',
+      error: { code: 'RETOPOLOGY_SUBMISSION_FAILED', summary: failure.error },
+    },
+  };
 }
 
 function artifactName(artifact: AssetArtifact) {
@@ -550,7 +648,7 @@ function FileDropCard({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
       }}
       onDrop={handleDrop}
-      className={`group relative overflow-hidden rounded-2xl border text-left outline-none transition duration-200 ${
+      className={`group relative w-full min-w-0 max-w-full overflow-hidden rounded-2xl border text-left outline-none transition duration-200 ${
         horizontal
           ? 'min-h-[108px] p-4'
           : compact
@@ -573,7 +671,7 @@ function FileDropCard({
       />
       <div className="pointer-events-none absolute -right-14 -top-16 h-52 w-52 rounded-full border border-current opacity-[0.06]" />
       {horizontal ? (
-        <div className="relative flex min-h-[74px] items-center gap-4 pr-1">
+        <div className="relative flex min-h-[74px] w-full min-w-0 items-center gap-4 overflow-hidden pr-1">
           <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-current/20 bg-black/18">
             {file ? <Check className="h-5 w-5" /> : <Icon className="h-5 w-5" />}
           </span>
@@ -674,6 +772,124 @@ function SettingLabel({
         {description && <div className="mt-1 text-xs leading-5 text-white/30">{description}</div>}
       </div>
       <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function MultiFbxDropCard({
+  files,
+  onFiles,
+  disabled = false,
+}: {
+  files: File[];
+  onFiles: (files: File[]) => void;
+  disabled?: boolean;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const [fileError, setFileError] = useState<string>();
+
+  function addFiles(input: FileList | File[]) {
+    const incoming = Array.from(input);
+    const invalid = incoming.find((file) => !/\.fbx$/i.test(file.name));
+    if (invalid) {
+      setFileError(`${invalid.name} 不是 FBX 文件；拓扑批次仅接收 FBX。`);
+      return;
+    }
+    const next = [...files];
+    const keys = new Set(files.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
+    for (const file of incoming) {
+      const key = `${file.name}:${file.size}:${file.lastModified}`;
+      if (!keys.has(key)) {
+        keys.add(key);
+        next.push(file);
+      }
+    }
+    if (next.length > 20) {
+      setFileError('单次最多提交 20 个 FBX。');
+      return;
+    }
+    setFileError(undefined);
+    onFiles(next);
+  }
+
+  return (
+    <div
+      onDragEnter={(event) => {
+        event.preventDefault();
+        if (!disabled) setDragging(true);
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        if (!disabled && event.dataTransfer.files.length) addFiles(event.dataTransfer.files);
+      }}
+      className={`min-w-0 overflow-hidden rounded-2xl border transition ${
+        dragging
+          ? 'border-blue-200/55 bg-blue-400/[0.09]'
+          : 'border-blue-300/24 bg-blue-400/[0.055]'
+      } ${disabled ? 'opacity-55' : ''}`}
+    >
+      <label className="relative flex min-h-[104px] cursor-pointer items-center gap-4 p-4">
+        <input
+          type="file"
+          multiple
+          accept=".fbx"
+          disabled={disabled}
+          aria-label="选择多个高模 FBX"
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-[0.01] disabled:cursor-not-allowed"
+          onChange={(event) => {
+            if (event.target.files?.length) addFiles(event.target.files);
+            event.target.value = '';
+          }}
+        />
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-blue-200/20 bg-black/18 text-blue-100">
+          {files.length ? <Check className="h-5 w-5" /> : <Box className="h-5 w-5" />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-white">高模 FBX</span>
+          <span className="mt-1 block text-xs leading-5 text-white/38">
+            点击或拖入多个 FBX；每个模型将作为独立任务处理
+          </span>
+          <span className="mt-1 block text-[10px] tracking-wide text-white/25">
+            {files.length ? `已选择 ${files.length} 个模型 · 可继续追加` : 'FBX · 单次最多 20 个'}
+          </span>
+          {fileError ? <span className="mt-2 block text-xs text-rose-200/72">{fileError}</span> : null}
+        </span>
+      </label>
+
+      {files.length ? (
+        <div className="grid gap-1.5 border-t border-white/[0.055] bg-black/10 p-3 sm:grid-cols-2">
+          {files.map((file, index) => (
+            <div
+              key={`${file.name}:${file.size}:${file.lastModified}`}
+              className="flex min-w-0 items-center gap-2 rounded-lg border border-white/[0.065] bg-black/15 px-2.5 py-2"
+            >
+              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-blue-400/10 text-[10px] font-semibold text-blue-100/70">
+                {index + 1}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[11px] font-medium text-white/64" title={file.name}>
+                  {file.name}
+                </span>
+                <span className="mt-0.5 block text-[9px] text-white/24">{formatBytes(file.size)}</span>
+              </span>
+              <button
+                type="button"
+                disabled={disabled}
+                aria-label={`移除 ${file.name}`}
+                onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))}
+                className="relative z-10 grid h-7 w-7 shrink-0 place-items-center rounded-md text-white/34 transition hover:bg-rose-400/10 hover:text-rose-100"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1058,6 +1274,7 @@ function ArtifactList({
               <span className="block truncate text-xs font-medium text-white/68" title={artifactName(artifact)}>{artifactName(artifact)}</span>
               <span className="mt-0.5 block text-[10px] text-white/26">
                 {[
+                  artifact.source_name,
                   artifact.kind,
                   formatBytes(artifact.size_bytes),
                   isVerified
@@ -1129,6 +1346,9 @@ function JobPanel({
     ? retopologyDiagnosticArtifacts(artifacts)
     : artifacts.filter((artifact) => !featuredArtifacts.includes(artifact));
   const errorCode = assetJobErrorCode(job);
+  const displayedError = succeeded
+    ? assetJobError(job)
+    : (error ?? assetJobError(job));
   const contract = deliveryContract(mode, job, artifacts);
   const deliveryReady = succeeded && contract.ready;
   const [downloadingAll, setDownloadingAll] = useState(false);
@@ -1141,13 +1361,15 @@ function JobPanel({
     setDownloadingAll(true);
     setDeliveryDownloadError(undefined);
     try {
-      const fbxArtifact = featuredArtifacts.find((artifact) =>
+      const fbxArtifacts = featuredArtifacts.filter((artifact) =>
         /\.fbx$/i.test(artifact.filename),
       );
-      if (!fbxArtifact) {
+      if (fbxArtifacts.length === 0) {
         throw new Error('当前交付中没有可下载的 FBX 模型。');
       }
-      await downloadVerifiedArtifact(jobId, fbxArtifact);
+      for (const fbxArtifact of fbxArtifacts) {
+        await downloadVerifiedArtifact(jobId, fbxArtifact);
+      }
       trackModuleAction(telemetryModuleForMode(mode), 'download');
     } catch (artifactError) {
       setDeliveryDownloadError(
@@ -1179,7 +1401,7 @@ function JobPanel({
   }
 
   return (
-    <aside className="rounded-2xl border border-white/[0.075] bg-[#111321]/82 p-4 shadow-[0_20px_60px_rgba(0,0,0,.2)] lg:sticky lg:top-6 lg:self-start">
+    <aside className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/[0.075] bg-[#111321]/82 p-4 shadow-[0_20px_60px_rgba(0,0,0,.2)] lg:sticky lg:top-6 lg:self-start">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/22">TASK STATUS</div>
@@ -1219,11 +1441,11 @@ function JobPanel({
             </div>
           </div>
 
-          {(failed || error || assetJobError(job)) && (
+          {(failed || displayedError) && (
             <div className="mt-5 rounded-xl border border-rose-300/14 bg-rose-400/[0.055] p-4 text-xs leading-5 text-rose-100/66">
               <div className="flex items-start gap-3">
               <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{error ?? assetJobError(job) ?? '任务未通过严格 QA，请检查输入后重试。'}</span>
+                <span>{displayedError ?? '任务未通过严格 QA，请检查输入后重试。'}</span>
               </div>
               {(errorCode || assetJobId(job)) && (
                 <div className="mt-2 pl-7 text-[10px] text-rose-100/35">
@@ -1294,7 +1516,9 @@ function JobPanel({
                     ? '正在校验并下载…'
                     : mode === 'uv'
                       ? '下载 UV FBX'
-                      : '下载拓扑 FBX'}
+                      : featuredArtifacts.filter((artifact) => /\.fbx$/i.test(artifact.filename)).length > 1
+                        ? '下载全部拓扑 FBX'
+                        : '下载拓扑 FBX'}
                 </button>
               )}
               {deliveryReady && onContinue && (
@@ -1389,6 +1613,7 @@ function AutoUvWorkspace({
 
   async function submit() {
     if (!asset || busy || !serviceReady) return;
+    onSubmissionInputsChange();
     setBusy(true);
     setError(undefined);
     try {
@@ -1399,8 +1624,11 @@ function AutoUvWorkspace({
         hardEdgeAngle,
         padding,
       });
-      if (submissionKeyRef.current?.fingerprint !== fingerprint) {
-        submissionKeyRef.current = stableSubmissionKey('uv', asset, fingerprint);
+      if (
+        submissionKeyRef.current?.fingerprint !== fingerprint ||
+        !validSubmissionIdentity(submissionKeyRef.current?.key)
+      ) {
+        submissionKeyRef.current = stableSubmissionKey('uv', fingerprint);
       }
       const submission = await submitUvProcessing({
         asset,
@@ -1449,7 +1677,7 @@ function AutoUvWorkspace({
   }[hiddenAxis];
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/[0.075] bg-[#111321]/80">
+    <section className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/[0.075] bg-[#111321]/80">
       <div className="flex items-center justify-between gap-4 border-b border-white/[0.055] px-5 py-4">
         <div>
           <div className="text-[10px] font-semibold tracking-[0.16em] text-emerald-200/44">01 · PREPARE</div>
@@ -1464,7 +1692,7 @@ function AutoUvWorkspace({
         </span>
       </div>
 
-      <fieldset disabled={busy} className="space-y-4 p-5 disabled:opacity-55">
+      <fieldset disabled={busy} className="min-w-0 space-y-4 overflow-hidden p-5 disabled:opacity-55">
         <FileDropCard
           file={asset}
           accept=".fbx,.obj,.glb,.gltf,.blend"
@@ -1478,7 +1706,7 @@ function AutoUvWorkspace({
           horizontal
         />
 
-        <div className="flex flex-col justify-between gap-3 rounded-2xl border border-white/[0.065] bg-black/10 px-4 py-3.5 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 max-w-full flex-col justify-between gap-3 overflow-hidden rounded-2xl border border-white/[0.065] bg-black/10 px-4 py-3.5 sm:flex-row sm:items-center">
           <div>
             <div className="text-sm font-medium text-white/70">输出尺寸</div>
             <div className="mt-1 text-[11px] text-white/26">2K 适合大多数生产模型</div>
@@ -1602,7 +1830,7 @@ function AutoRetopologyWorkspace({
   busy: boolean;
   setError: (error?: string) => void;
 }) {
-  const [highModel, setHighModel] = useState<File>();
+  const [highModels, setHighModels] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
   const [preserveSharp, setPreserveSharp] = useState(true);
   const [preserveBoundary, setPreserveBoundary] = useState(true);
@@ -1616,72 +1844,119 @@ function AutoRetopologyWorkspace({
 
   useEffect(() => {
     if (!initialAsset) return;
-    setHighModel(initialAsset);
+    setHighModels([initialAsset]);
   }, [initialAsset]);
 
-  function selectHighModel(file?: File) {
-    setHighModel(file);
-    onAssetChange?.(file);
+  function selectHighModels(files: File[]) {
+    setHighModels(files);
+    onAssetChange?.(files[0]);
   }
 
   async function submit() {
-    if (busy || !serviceReady || !highModel) return;
+    if (busy || !serviceReady || highModels.length === 0) return;
+    onSubmissionInputsChange();
 
     const fingerprint = JSON.stringify({
-      source: [highModel.name, highModel.size, highModel.lastModified],
+      sources: highModels.map((file) => [file.name, file.size, file.lastModified]),
       references: referenceImages.map((file) => [file.name, file.size, file.lastModified]),
       preserveSharp,
       preserveBoundary,
       deliveryProfile,
       userRequest,
     });
-    if (submissionKeyRef.current?.fingerprint !== fingerprint) {
-      submissionKeyRef.current = stableSubmissionKey(
-        'retopology',
-        highModel,
-        fingerprint,
-      );
+    if (
+      submissionKeyRef.current?.fingerprint !== fingerprint ||
+      !validSubmissionIdentity(submissionKeyRef.current?.key)
+    ) {
+      submissionKeyRef.current = stableSubmissionKey('retopology', fingerprint);
     }
     setBusy(true);
     setError(undefined);
     try {
-      const metadata = {
-        api_version: '6.0' as const,
-        external_asset_id: submissionKeyRef.current.key,
-        options: {
-          algorithm: 'agent' as const,
-          budget_mode: 'automatic' as const,
-          topology_style: 'mixed_game_ready' as const,
-          preserve_source: true as const,
-          preserve_sharp_edges: preserveSharp,
-          preserve_boundaries: preserveBoundary,
-          delivery_profile: deliveryProfile,
-        },
-        reference_views: referenceImages.map((file, index) => ({
-          filename: file.name,
-          view: inferReferenceView(file.name, index),
-        })),
-        user_request: userRequest.trim(),
-      };
-      const submission = await submitRetopologyProcessing({
-        highModel,
-        referenceImages,
-        metadata,
-      });
-      const submissionJobId = assetJobId(submission);
-      if (submissionJobId) {
-        trackModuleActionOnce('auto_retopology', 'start', submissionJobId);
+      const batchId = submissionKeyRef.current.key;
+      const settled = await Promise.allSettled(
+        highModels.map(async (highModel, index) => {
+          const metadata = {
+            api_version: '6.0' as const,
+            external_asset_id: `${batchId}-item-${index + 1}`,
+            options: {
+              algorithm: 'agent' as const,
+              budget_mode: 'automatic' as const,
+              topology_style: 'mixed_game_ready' as const,
+              preserve_source: true as const,
+              preserve_sharp_edges: preserveSharp,
+              preserve_boundaries: preserveBoundary,
+              delivery_profile: deliveryProfile,
+            },
+            reference_views: referenceImages.map((file, referenceIndex) => ({
+              filename: file.name,
+              view: inferReferenceView(file.name, referenceIndex),
+            })),
+            user_request: userRequest.trim(),
+          };
+          const submission = await submitRetopologyProcessing({
+            highModel,
+            referenceImages,
+            metadata,
+            batch: { id: batchId, index, size: highModels.length },
+          });
+          return { highModel, submission };
+        }),
+      );
+      const submitted = settled.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      );
+      const submissionFailures = settled.flatMap((result, index) =>
+        result.status === 'rejected'
+          ? [{
+              sourceName: highModels[index]?.name ?? `模型 ${index + 1}`,
+              error: submissionErrorMessage(result.reason, '自动拓扑提交失败。'),
+            }]
+          : [],
+      );
+      if (submitted.length === 0) {
+        const firstFailure = settled.find((result) => result.status === 'rejected');
+        throw firstFailure?.status === 'rejected'
+          ? firstFailure.reason
+          : new Error('没有模型成功提交。');
       }
-      onJob(
-        {
+      trackModuleActionOnce('auto_retopology', 'start', batchId);
+      const childJobs = submitted.map(({ highModel, submission }) => ({
+        jobId: assetJobId(submission),
+        sourceName: highModel.name,
+      }));
+      const queuedChildren = submitted.map(({ highModel, submission }) => ({
+        sourceName: highModel.name,
+        job: {
           ...submission,
-          external_asset_id: submission.external_asset_id ?? metadata.external_asset_id,
+          status: 'QUEUED' as const,
           progress: 0,
           stage: 'QUEUED',
           stage_message: 'Agent 正在分析高模并生成唯一正式候选。',
         },
-        { fingerprint, sourceFile: highModel },
+      }));
+      onJob(
+        aggregateRetopologyBatchJob(
+          batchId,
+          [
+            ...queuedChildren,
+            ...submissionFailures.map((failure, index) =>
+              failedRetopologySubmissionChild(batchId, failure, index),
+            ),
+          ],
+        ),
+        {
+          fingerprint,
+          sourceFile: highModels[0],
+          sourceFiles: highModels,
+          batchId,
+          childJobs,
+          submissionFailures,
+        },
       );
+      if (submissionFailures.length > 0) {
+        setError(`${submissionFailures.length} 个模型提交失败，其余 ${submitted.length} 个模型已继续处理。`);
+      }
       clearPendingSubmission('retopology');
       submissionKeyRef.current = undefined;
     } catch (submitError) {
@@ -1691,13 +1966,13 @@ function AutoRetopologyWorkspace({
     }
   }
 
-  const modelReady = Boolean(highModel);
+  const modelReady = highModels.length > 0;
   const submitBlockReason =
     serviceBlockReason ??
     (!modelReady ? '请先导入需要拓扑的高模。' : undefined);
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/[0.075] bg-[#111321]/80">
+    <section className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/[0.075] bg-[#111321]/80">
       <div className="flex items-center justify-between gap-4 border-b border-white/[0.055] px-5 py-4">
         <div>
           <div className="text-[10px] font-semibold tracking-[0.16em] text-blue-200/44">01 · PREPARE</div>
@@ -1708,23 +1983,12 @@ function AutoRetopologyWorkspace({
             ? 'border-blue-300/16 bg-blue-400/[0.06] text-blue-100/68'
             : 'border-white/[0.07] bg-white/[0.025] text-white/30'
         }`}>
-          {modelReady ? '模型已就绪' : '等待模型'}
+          {modelReady ? `${highModels.length} 个模型已就绪` : '等待模型'}
         </span>
       </div>
 
       <fieldset disabled={busy} className="p-5 disabled:opacity-55">
-        <FileDropCard
-          file={highModel}
-          accept=".fbx,.obj,.glb,.gltf,.blend"
-          title="高模文件"
-          description="拖入高模，或点击选择；系统将自动分析结构、轮廓与形变需求"
-          extensions="FBX · OBJ · GLB · GLTF · BLEND"
-          icon={Box}
-          tone="blue"
-          onFile={selectHighModel}
-          disabled={busy}
-          horizontal
-        />
+        <MultiFbxDropCard files={highModels} onFiles={selectHighModels} disabled={busy} />
 
         <div className="my-5 h-px bg-white/[0.055]" />
 
@@ -1817,7 +2081,9 @@ function AutoRetopologyWorkspace({
           {busy
             ? '正在提交任务…'
             : modelReady
-              ? '开始自动拓扑'
+              ? highModels.length > 1
+                ? `开始处理 ${highModels.length} 个模型`
+                : '开始自动拓扑'
               : '请先导入高模'}
         </button>
         <div className="mt-3 flex min-h-4 items-center justify-center gap-2 text-[11px] text-white/24">
@@ -1879,6 +2145,31 @@ export function AssetProcessingPage({
   const jobId = job ? assetJobId(job) : '';
   const jobStatus = job?.status;
   const jobActive = Boolean(jobStatus && !terminalStatuses.has(jobStatus));
+  const batchId = jobBinding?.batchId;
+  const batchChildJobs = jobBinding?.childJobs;
+  const batchSubmissionFailures = jobBinding?.submissionFailures;
+
+  const fetchBoundJob = useCallback(async () => {
+    if (mode === 'retopology' && batchId && batchChildJobs?.length) {
+      const children = await Promise.all(
+        batchChildJobs.map(async (child) => ({
+          sourceName: child.sourceName,
+          job: await getAssetJob(child.jobId),
+        })),
+      );
+      return aggregateRetopologyBatchJob(
+        batchId,
+        [
+          ...children,
+          ...(batchSubmissionFailures ?? []).map((failure, index) =>
+            failedRetopologySubmissionChild(batchId, failure, index),
+          ),
+        ],
+      );
+    }
+    if (!jobId) throw new Error('当前任务缺少有效 Job ID。');
+    return getAssetJob(jobId);
+  }, [batchChildJobs, batchId, batchSubmissionFailures, jobId, mode]);
 
   const clearJobLineage = useCallback(() => {
     setJob(undefined);
@@ -1911,12 +2202,27 @@ export function AssetProcessingPage({
           : undefined,
       source: fileDescriptor(snapshot.sourceFile),
       sourceFile: snapshot.sourceFile,
+      ...(snapshot.sourceFiles
+        ? {
+            sources: snapshot.sourceFiles.map(fileDescriptor),
+            sourceFiles: snapshot.sourceFiles,
+          }
+        : {}),
+      ...(snapshot.batchId ? { batchId: snapshot.batchId } : {}),
+      ...(snapshot.childJobs ? { childJobs: snapshot.childJobs } : {}),
+      ...(snapshot.submissionFailures?.length
+        ? { submissionFailures: snapshot.submissionFailures }
+        : {}),
     };
     const storedBinding: StoredJobBinding = {
       jobId: binding.jobId,
       fingerprint: binding.fingerprint,
       pipelineInputAssetId: binding.pipelineInputAssetId,
       source: binding.source,
+      ...(binding.sources ? { sources: binding.sources } : {}),
+      ...(binding.batchId ? { batchId: binding.batchId } : {}),
+      ...(binding.childJobs ? { childJobs: binding.childJobs } : {}),
+      ...(binding.submissionFailures ? { submissionFailures: binding.submissionFailures } : {}),
     };
     window.sessionStorage.setItem(jobStorageKey, nextJobId);
     window.sessionStorage.setItem(jobBindingStorageKey, JSON.stringify(storedBinding));
@@ -2024,6 +2330,12 @@ export function AssetProcessingPage({
         fingerprint: jobBinding.fingerprint,
         pipelineInputAssetId: jobBinding.pipelineInputAssetId,
         source: jobBinding.source,
+        ...(jobBinding.sources ? { sources: jobBinding.sources } : {}),
+        ...(jobBinding.batchId ? { batchId: jobBinding.batchId } : {}),
+        ...(jobBinding.childJobs ? { childJobs: jobBinding.childJobs } : {}),
+        ...(jobBinding.submissionFailures
+          ? { submissionFailures: jobBinding.submissionFailures }
+          : {}),
       };
       window.sessionStorage.setItem(jobStorageKey, jobId);
       window.sessionStorage.setItem(jobBindingStorageKey, JSON.stringify(storedBinding));
@@ -2064,7 +2376,7 @@ export function AssetProcessingPage({
 
     async function poll() {
       try {
-        const next = await getAssetJob(jobId);
+        const next = await fetchBoundJob();
         if (!active) return;
         setError(undefined);
         setJob(next);
@@ -2094,7 +2406,7 @@ export function AssetProcessingPage({
       active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [jobBindingStorageKey, jobId, jobStatus, jobStorageKey]);
+  }, [fetchBoundJob, jobBindingStorageKey, jobId, jobStatus, jobStorageKey]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -2110,13 +2422,13 @@ export function AssetProcessingPage({
       }
       refreshing = true;
       try {
-        const next = await getAssetJob(jobId);
+        const next = await fetchBoundJob();
         if (!active) return;
         setError(undefined);
         setJob(next);
         if (terminalStatuses.has(next.status)) {
           active = false;
-          unsubscribe();
+          unsubscribers.forEach((unsubscribe) => unsubscribe());
           return;
         }
       } catch {
@@ -2131,14 +2443,19 @@ export function AssetProcessingPage({
       }
     };
 
-    const unsubscribe = subscribeAssetJobEvents(jobId, () => {
-      void refreshFromServer();
-    });
+    const signalJobIds = mode === 'retopology' && batchChildJobs?.length
+      ? batchChildJobs.map((child) => child.jobId)
+      : [jobId];
+    const unsubscribers = signalJobIds.map((signalJobId) =>
+      subscribeAssetJobEvents(signalJobId, () => {
+        void refreshFromServer();
+      }),
+    );
     return () => {
       active = false;
-      unsubscribe();
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [jobId]);
+  }, [batchChildJobs, fetchBoundJob, jobId, mode]);
 
   useEffect(() => {
     if (!jobId || !jobStatus) return;
@@ -2155,7 +2472,22 @@ export function AssetProcessingPage({
     if (!jobId) return;
     setBusy(true);
     try {
-      const payload = await cancelAssetJob(jobId);
+      const payload = mode === 'retopology' && batchId && batchChildJobs?.length
+        ? aggregateRetopologyBatchJob(
+            batchId,
+            [
+              ...await Promise.all(
+                batchChildJobs.map(async (child) => ({
+                  sourceName: child.sourceName,
+                  job: await cancelAssetJob(child.jobId),
+                })),
+              ),
+              ...(batchSubmissionFailures ?? []).map((failure, index) =>
+                failedRetopologySubmissionChild(batchId, failure, index),
+              ),
+            ],
+          )
+        : await cancelAssetJob(jobId);
       setError(undefined);
       setJob(payload);
     } catch (cancelError) {
@@ -2409,28 +2741,28 @@ export function AssetProcessingPage({
   const historyRefreshKey = `${jobId}:${jobStatus ?? 'idle'}`;
 
   return (
-    <main className="li3d-home-surface relative min-h-screen overflow-x-hidden text-white">
+    <WorkflowShell
+      projectName={project?.name ?? (projectLoading ? '正在载入项目…' : '独立使用')}
+      eyebrow={`${mode === 'uv' ? '阶段 3' : '阶段 2'} · ${copy.title}`}
+      onBack={onBack}
+      backLabel="返回功能首页"
+      connected={serviceReady}
+      navigation={navigation}
+      headerActions={<UserMenu onLogout={onLogout} />}
+    >
+      <div className="workflow-scrollbar relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#080914] pt-[82px] text-white 2xl:pr-[264px] min-[1720px]:pr-[344px]">
       <div className={`pointer-events-none absolute right-[7%] top-16 h-[420px] w-[420px] rounded-full blur-[120px] ${pageGlow}`} />
-      <header className="relative z-10 grid min-h-16 grid-cols-[auto_1fr_auto] items-center gap-4 border-b border-white/[0.055] px-5 py-2 sm:px-8">
-        <BrandMark />
-        <div className="hidden justify-self-center md:block">
-          <WorkflowModuleSwitcher {...navigation} compact />
-        </div>
-        <UserMenu onLogout={onLogout} />
-      </header>
-
-      <div className="2xl:pr-[264px] min-[1720px]:pr-[344px]">
-      <section className="relative z-[1] mx-auto w-full max-w-[1280px] px-5 pb-16 pt-6 sm:px-8">
+      <section className="relative z-[1] mx-auto w-full max-w-[1180px] px-6 pb-16 pt-10 lg:px-10 lg:pt-14">
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-2 text-sm text-white/42 transition hover:text-white"
+          className="hidden items-center gap-2 text-sm text-white/42 transition hover:text-white"
         >
           <ArrowLeft className="h-4 w-4" />
           返回功能首页
         </button>
 
-        <div className="mt-6 flex flex-col justify-between gap-5 lg:flex-row lg:items-center">
+        <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-center">
           <div className="flex items-start gap-4">
             <span className={`mt-0.5 grid h-11 w-11 shrink-0 place-items-center rounded-xl border ${iconStyle}`}>
               <Icon className="h-5 w-5" />
@@ -2472,7 +2804,7 @@ export function AssetProcessingPage({
           </div>
         )}
 
-        <div className="mt-6 grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="mt-6 grid min-w-0 max-w-full items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_280px]">
           {mode === 'uv' ? (
             <AutoUvWorkspace
               initialAsset={initialAsset}
@@ -2524,7 +2856,7 @@ export function AssetProcessingPage({
         refreshKey={historyRefreshKey}
         onContinue={handleHistoryContinue}
       />
-    </main>
+    </WorkflowShell>
   );
 }
 

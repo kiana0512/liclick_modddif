@@ -113,7 +113,25 @@ function submissionHistory(
       metadata = undefined;
     }
   }
-  return { mode, sourceName, parameters: historyParameters(mode, metadata) };
+  const batchId = mode === 'retopology'
+    ? decodedHistoryHeader(request, 'x-li3d-history-batch-id', 240)
+    : undefined;
+  const rawBatchIndex = Number(request.headers['x-li3d-history-batch-index']);
+  const rawBatchSize = Number(request.headers['x-li3d-history-batch-size']);
+  const batchIndex = batchId && Number.isInteger(rawBatchIndex) && rawBatchIndex >= 0
+    ? rawBatchIndex
+    : undefined;
+  const batchSize = batchId && Number.isInteger(rawBatchSize) && rawBatchSize > 0 && rawBatchSize <= 100
+    ? rawBatchSize
+    : undefined;
+  return {
+    mode,
+    sourceName,
+    parameters: historyParameters(mode, metadata),
+    ...(batchId ? { batchId } : {}),
+    ...(batchIndex !== undefined ? { batchIndex } : {}),
+    ...(batchSize !== undefined ? { batchSize } : {}),
+  };
 }
 
 export async function handleAssetProcessingRoute(

@@ -4,6 +4,7 @@ export type LayerType = 'uv' | 'projected' | 'patch' | 'normal';
 export type LayerRole =
   | 'base-color'
   | 'merged-uv'
+  | 'local-repaint-draft'
   | 'local-repaint-overlay'
   | 'content-aware-underlay';
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';

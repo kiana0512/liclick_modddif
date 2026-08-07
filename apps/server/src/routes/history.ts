@@ -204,6 +204,84 @@ function assetHistoryRecord(
   };
 }
 
+function batchHistoryRecord(
+  records: Array<AssetJobHistoryRecord & { jobId: string }>,
+): HistoryRecord {
+  const ordered = [...records].sort((left, right) =>
+    (left.batchIndex ?? Number.MAX_SAFE_INTEGER) -
+    (right.batchIndex ?? Number.MAX_SAFE_INTEGER),
+  );
+  const children = ordered.map((record) => assetHistoryRecord('retopology', record));
+  const active = children.filter((child) => !['succeeded', 'failed', 'cancelled'].includes(child.status));
+  const succeeded = children.filter((child) => child.status === 'succeeded');
+  const failed = children.filter((child) => child.status === 'failed');
+  const status = active.length > 0
+    ? active.some((child) => child.status === 'running') ? 'running' : 'queued'
+    : succeeded.length > 0
+      ? 'succeeded'
+      : failed.length > 0
+        ? 'failed'
+        : 'cancelled';
+  const total = Math.max(ordered[0]?.batchSize ?? 0, ordered.length);
+  const missingSubmissions = Math.max(0, total - ordered.length);
+  const firstSource = ordered[0]?.sourceName ?? '未命名模型.fbx';
+  const sourceName = total > 1 ? `${total} 个模型 · ${firstSource}` : firstSource;
+  const progress = children.length > 0
+    ? children.reduce((sum, child) => sum + child.progress, 0) / children.length
+    : 0;
+  const finishedAt = active.length === 0
+    ? children.map((child) => child.finishedAt).filter((value): value is string => Boolean(value)).sort().at(-1)
+    : undefined;
+  const errors = ordered.flatMap((record, index) =>
+    record.error ? [`${record.sourceName ?? `模型 ${index + 1}`}：${record.error}`] : [],
+  );
+  if (missingSubmissions > 0) {
+    errors.push(`${missingSubmissions} 个模型未能成功提交，其他模型已继续处理。`);
+  }
+  return {
+    id: ordered[0]?.batchId ?? ordered[0]?.jobId ?? 'retopology-batch',
+    module: 'retopology',
+    sourceName,
+    status,
+    progress,
+    createdAt: children.map((child) => child.createdAt).sort()[0] ?? new Date().toISOString(),
+    ...(finishedAt ? { finishedAt } : {}),
+    parameters: [
+      { label: '模型数量', value: `${total} 个独立 FBX` },
+      { label: '任务进度', value: `${succeeded.length} 成功 · ${failed.length + missingSubmissions} 失败 · ${active.length} 处理中` },
+      ...(ordered[0]?.parameters ?? []),
+    ],
+    outputs: children.flatMap((child, index) =>
+      child.outputs.map((output) => ({
+        ...output,
+        id: `${child.id}:${output.id}`,
+        label: `${ordered[index]?.sourceName ?? `模型 ${index + 1}`} · ${output.label}`,
+      }))),
+    ...(errors.length ? { error: errors.join('；') } : {}),
+  };
+}
+
+export function groupedAssetHistoryRecords(
+  module: AssetHistoryMode,
+  records: Array<AssetJobHistoryRecord & { jobId: string }>,
+  limit: number,
+) {
+  if (module !== 'retopology') {
+    return records.map((record) => assetHistoryRecord(module, record)).slice(0, limit);
+  }
+  const groups = new Map<string, Array<AssetJobHistoryRecord & { jobId: string }>>();
+  for (const record of records) {
+    const key = record.batchId ? `batch:${record.batchId}` : `job:${record.jobId}`;
+    const group = groups.get(key) ?? [];
+    group.push(record);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => group[0]?.batchId ? batchHistoryRecord(group) : assetHistoryRecord(module, group[0]))
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, limit);
+}
+
 async function refreshedAssetHistory(
   userId: string,
   module: AssetHistoryMode,
@@ -226,7 +304,7 @@ async function refreshedAssetHistory(
       // offline or its retention window has expired.
     }
   }));
-  return listAssetJobHistory(userId, module, limit);
+  return listAssetJobHistory(userId, module, module === 'retopology' ? 100 : limit);
 }
 
 export async function handleHistoryRoute(
@@ -250,7 +328,11 @@ export async function handleHistoryRoute(
   const limit = Math.min(100, Math.max(1, Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 30));
   const records = module === 'bake'
     ? listNormalBakeJobs(user.id, limit).map((job) => bakeHistoryRecord(job, user.id))
-    : (await refreshedAssetHistory(user.id, module, limit)).map((record) => assetHistoryRecord(module, record));
+    : groupedAssetHistoryRecords(
+        module,
+        await refreshedAssetHistory(user.id, module, limit),
+        limit,
+      );
   sendJson(response, 200, { records });
   return true;
 }

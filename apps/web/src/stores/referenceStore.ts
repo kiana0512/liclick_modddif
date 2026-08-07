@@ -14,6 +14,10 @@ function asProjectReference(reference: ReferenceImage): ReferenceImage {
   return projectReference;
 }
 
+function isSelectableReference(reference: ReferenceImage) {
+  return reference.referenceRole !== 'multi-view';
+}
+
 type ReferenceStore = {
   references: ReferenceImage[];
   selectedReferenceIds: string[];
@@ -37,7 +41,9 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
       const nextReferences = withoutLegacyMockReferences(references).map(asProjectReference);
       return {
         references: nextReferences,
-        selectedReferenceIds: nextReferences.filter((reference) => reference.isPrimary).map((reference) => reference.id),
+        selectedReferenceIds: nextReferences
+          .filter((reference) => reference.isPrimary)
+          .map((reference) => reference.id),
       };
     }),
   addReferences: (references, selectionBehavior = 'select-new') =>
@@ -47,7 +53,7 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
         selectionBehavior === 'clear-all'
           ? []
           : [
-              ...projectReferences.map((reference) => reference.id),
+              ...projectReferences.filter(isSelectableReference).map((reference) => reference.id),
               ...state.selectedReferenceIds,
             ];
       return {
@@ -60,6 +66,9 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
     }),
   setSelectedReferences: (referenceIds) =>
     set((state) => {
+      // Paired reference groups may contain only a multi-view image. Explicit
+      // group selection therefore accepts every stored reference, while the
+      // generic reference toggler still hides generated multi-view helpers.
       const availableIds = new Set(state.references.map((reference) => reference.id));
       const selectedReferenceIds = referenceIds.filter((id, index) => availableIds.has(id) && referenceIds.indexOf(id) === index);
       return {
@@ -72,6 +81,8 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
     }),
   toggleReference: (referenceId, selectionMode = 'multiple') =>
     set((state) => {
+      const target = state.references.find((reference) => reference.id === referenceId);
+      if (!target || !isSelectableReference(target)) return state;
       const selectedReferenceIds =
         selectionMode === 'single'
           ? state.selectedReferenceIds.includes(referenceId)

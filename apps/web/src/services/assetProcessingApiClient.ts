@@ -25,6 +25,9 @@ export type AssetArtifact = {
   size_bytes: number;
   sha256: string;
   download_url: string;
+  /** Added locally when several independent jobs are displayed as one batch. */
+  source_job_id?: string;
+  source_name?: string;
 };
 
 export type AssetJobError = {
@@ -321,6 +324,11 @@ export async function submitRetopologyProcessing(input: {
   highModel: File;
   metadata: RetopologyMetadata;
   referenceImages: File[];
+  batch?: {
+    id: string;
+    index: number;
+    size: number;
+  };
 }) {
   const externalAssetId = await stableAsciiAssetIdentity(input.metadata.external_asset_id);
   const wireNames = retopologyWireFileNames({
@@ -357,6 +365,13 @@ export async function submitRetopologyProcessing(input: {
         ...requestHeaders(externalAssetId),
         'X-LI3D-History-Source-Name': encodeURIComponent(input.highModel.name),
         'X-LI3D-History-Metadata': encodeURIComponent(JSON.stringify(input.metadata)),
+        ...(input.batch
+          ? {
+              'X-LI3D-History-Batch-ID': encodeURIComponent(input.batch.id),
+              'X-LI3D-History-Batch-Index': String(input.batch.index),
+              'X-LI3D-History-Batch-Size': String(input.batch.size),
+            }
+          : {}),
       },
       body,
     },
@@ -445,8 +460,9 @@ function artifactIdentifier(artifact: AssetArtifact) {
 export function assetArtifactUrl(jobId: string, artifact: AssetArtifact) {
   const artifactId = artifactIdentifier(artifact);
   if (!artifactId) return undefined;
+  const sourceJobId = artifact.source_job_id ?? jobId;
   return (
-    `${workspaceApiBase}/api/asset-processing/jobs/${encodeURIComponent(jobId)}` +
+    `${workspaceApiBase}/api/asset-processing/jobs/${encodeURIComponent(sourceJobId)}` +
     `/artifacts/${encodeURIComponent(artifactId)}`
   );
 }

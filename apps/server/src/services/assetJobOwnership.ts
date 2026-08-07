@@ -30,12 +30,18 @@ export type AssetJobHistoryRecord = {
   progress?: number;
   error?: string;
   artifacts?: AssetHistoryArtifact[];
+  batchId?: string;
+  batchIndex?: number;
+  batchSize?: number;
 };
 
 export type AssetHistoryRegistration = {
   mode: AssetHistoryMode;
   sourceName: string;
   parameters: AssetHistoryParameter[];
+  batchId?: string;
+  batchIndex?: number;
+  batchSize?: number;
 };
 
 type AssetJobOwnershipDatabase = {
@@ -140,6 +146,15 @@ function sanitizeStoredRecord(value: unknown): AssetJobHistoryRecord | undefined
   const progress = Number.isFinite(rawProgress) ? Math.min(100, Math.max(0, rawProgress)) : undefined;
   const error = cleanText(record.error, 1_000);
   const artifacts = sanitizeArtifacts(record.artifacts);
+  const batchId = cleanText(record.batchId, 240);
+  const rawBatchIndex = Number(record.batchIndex);
+  const rawBatchSize = Number(record.batchSize);
+  const batchIndex = Number.isInteger(rawBatchIndex) && rawBatchIndex >= 0
+    ? rawBatchIndex
+    : undefined;
+  const batchSize = Number.isInteger(rawBatchSize) && rawBatchSize > 0 && rawBatchSize <= 100
+    ? rawBatchSize
+    : undefined;
   return {
     userId,
     createdAt,
@@ -152,6 +167,9 @@ function sanitizeStoredRecord(value: unknown): AssetJobHistoryRecord | undefined
     ...(progress !== undefined ? { progress } : {}),
     ...(error ? { error } : {}),
     ...(artifacts.length ? { artifacts } : {}),
+    ...(batchId ? { batchId } : {}),
+    ...(batchIndex !== undefined ? { batchIndex } : {}),
+    ...(batchSize !== undefined ? { batchSize } : {}),
   };
 }
 
@@ -201,6 +219,13 @@ export async function registerAssetJobOwner(
     const now = new Date().toISOString();
     const sourceName = cleanSourceName(registration?.sourceName);
     const parameters = sanitizeAssetHistoryParameters(registration?.parameters);
+    const batchId = cleanText(registration?.batchId, 240);
+    const batchIndex = Number.isInteger(registration?.batchIndex) && registration!.batchIndex! >= 0
+      ? registration!.batchIndex
+      : undefined;
+    const batchSize = Number.isInteger(registration?.batchSize) && registration!.batchSize! > 0 && registration!.batchSize! <= 100
+      ? registration!.batchSize
+      : undefined;
     return {
       jobs: {
         ...database.jobs,
@@ -213,6 +238,9 @@ export async function registerAssetJobOwner(
                 mode: registration.mode,
                 ...(sourceName ? { sourceName } : {}),
                 parameters,
+                ...(batchId ? { batchId } : {}),
+                ...(batchIndex !== undefined ? { batchIndex } : {}),
+                ...(batchSize !== undefined ? { batchSize } : {}),
               }
             : {}),
         },

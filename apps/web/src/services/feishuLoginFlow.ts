@@ -8,6 +8,7 @@ import {
 type FeishuLoginFlowOptions = {
   timeoutMs?: number;
   pollIntervalMs?: number;
+  forceReauthorize?: boolean;
   onStatus?: (message: string) => void;
   onLoginStarted?: (login: { loginId: string; redirectUrl?: string }) => void;
 };
@@ -40,7 +41,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
 
     if (identityStatus?.ambiguous) {
       options.onStatus?.('这台设备绑定过多个账号，需要重新完成飞书授权。');
-    } else if (identityStatus?.bound) {
+    } else if (identityStatus?.bound && !options.forceReauthorize) {
       const current = await getAuthMe().catch(() => undefined);
       if (current?.authenticated && current.user) {
         popup.close();
