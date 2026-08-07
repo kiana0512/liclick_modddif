@@ -284,7 +284,9 @@ function projectedLayerDisplaySignature(layers: Layer[], objectId: string) {
   return layers
     .filter(
       (layer) =>
-        layer.type === 'projected' && (!layer.objectId || layer.objectId === objectId),
+        layer.type === 'projected' &&
+        !isOverlayProjectionPatch(layer) &&
+        (!layer.objectId || layer.objectId === objectId),
     )
     .map(
       (layer) =>
@@ -865,13 +867,15 @@ function ImportedModel({
   const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
+  const localRepaintPreviewLayerId = useSceneStore(
+    (state) => state.localRepaintPreviewLayer?.id,
+  );
   const texturedRestoreReady =
     !importedModel.restoreStage || importedModel.restoreStage === 'full';
-  const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const layerRenderSignature = useLayerStore((state) =>
     importedModelLayerRenderSignature(
       (state.projectedPreviewLayers ?? state.layers).filter(
-        (layer) => layer.id !== localRepaintPreviewLayer?.id,
+        (layer) => layer.id !== localRepaintPreviewLayerId,
       ),
       importedModel.objectId,
     ),
@@ -880,20 +884,20 @@ function ImportedModel({
   const layers = useMemo(
     () => {
       const layerState = useLayerStore.getState();
-      return layerState.projectedPreviewLayers ?? layerState.layers;
+      return (layerState.projectedPreviewLayers ?? layerState.layers).filter(
+        (layer) => layer.id !== localRepaintPreviewLayerId,
+      );
     },
-    [layerRenderSignature, projectedDisplayRefresh],
+    [layerRenderSignature, localRepaintPreviewLayerId, projectedDisplayRefresh],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
-  const visibleLocalRepaintPreviewLayer = useMemo(() => {
-    if (!localRepaintPreviewLayer?.visible) return undefined;
-    const storedLayer = layers.find((layer) => layer.id === localRepaintPreviewLayer.id);
-    // Once the renderer-only repaint preview has a matching row in the layer
-    // stack, that row is authoritative. Otherwise hiding the row leaves the
-    // duplicate live preview visible on the model.
-    if (storedLayer && !storedLayer.visible) return undefined;
-    return localRepaintPreviewLayer;
-  }, [layers, localRepaintPreviewLayer]);
+  // SurfacePaintOverlay owns the renderer-only local repaint preview as a
+  // transparent, precompiled mesh overlay. Never insert that temporary layer
+  // into the 14-layer projected stack: doing so rebuilt every texture array and
+  // left valid brush input invisible while a multi-second shader compiled.
+  // Persisted repaint rows remain in `layers` and rejoin the ordinary stack
+  // after the live session is cleared.
+  const visibleLocalRepaintPreviewLayer = useMemo<Layer | undefined>(() => undefined, []);
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
     state.currentProjectId
@@ -1173,6 +1177,7 @@ function ImportedModel({
         .filter(
           (layer) =>
             layer.type === 'projected' &&
+            !isOverlayProjectionPatch(layer) &&
             (!layer.objectId || layer.objectId === importedModel.objectId),
         )
         .map(toProjectionLayerDisplayInput);
@@ -1610,8 +1615,7 @@ function ImportedModel({
     )
       return undefined;
     const hasLiveLocalRepaintStroke = Boolean(
-      visibleLocalRepaintPreviewLayer &&
-      stableVisibleProjectedLayers.some((layer) => layer.id === visibleLocalRepaintPreviewLayer.id),
+      localRepaintPreviewLayerId,
     );
     // Keep the accumulated local-repaint UV canvas resident while the next
     // projected stroke is being drawn. Moving it back into the ordinary UV
@@ -1627,9 +1631,14 @@ function ImportedModel({
       (topOrder, layer) => Math.min(topOrder, layer.order),
       Number.POSITIVE_INFINITY,
     );
+    // A baked local-repaint layer is a literal rendered-color replacement and
+    // must stay above the older projected stack. Sending it back into the base
+    // UV compositor places it underneath every projection, so the layer preview
+    // contains the patch while the model appears unchanged.
+    if (isRenderedLocalRepaintLayer(topLayer)) return topLayer;
     if (!hasLiveLocalRepaintStroke && topLayer.order >= topProjectedOrder) return undefined;
     return topLayer;
-  }, [stableVisibleProjectedLayers, stableVisibleUvLayers, visibleLocalRepaintPreviewLayer]);
+  }, [localRepaintPreviewLayerId, stableVisibleProjectedLayers, stableVisibleUvLayers]);
   const nonLiveUvLayers = useMemo(
     () =>
       liveTopUvLayer
@@ -1805,6 +1814,14 @@ function ImportedModel({
     };
 
     async function applyMaterials() {
+      if (typeof document !== 'undefined') {
+        const previousRevision = Number(
+          document.body.dataset.projectedBackgroundMaterialRevision ?? '0',
+        );
+        document.body.dataset.projectedBackgroundMaterialRevision = String(
+          previousRevision + 1,
+        );
+      }
       if (model.restoreStage === 'bounds') return;
       if (model.restoreStage === 'outline') {
         const outlineMaterial = createFlatPreviewMaterial(undefined, false);

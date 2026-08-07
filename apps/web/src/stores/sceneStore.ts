@@ -30,6 +30,8 @@ export type LocalRepaintProjectionSource = {
   autoActivate?: boolean;
   allowedMaskUrl: string;
   depthUrl?: string;
+  depthEncoding?: 'linear-view';
+  normalUrl?: string;
   objectId?: string;
   objectMatrixWorld?: number[];
   camera: SerializedCamera;

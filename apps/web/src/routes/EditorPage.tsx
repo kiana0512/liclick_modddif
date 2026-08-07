@@ -410,8 +410,10 @@ function isMatchingLocalRepaintProjectionLayer(
   generationId: string | undefined,
   captureId: string | undefined,
   objectId: string,
+  targetLayerId: string | undefined,
 ) {
   if (!isLocalRepaintProjectionLayer(layer)) return false;
+  if (targetLayerId) return layer.replacementTargetLayerId === targetLayerId;
   if (generationId) return layer.generationId === generationId;
   if (captureId) return layer.captureId === captureId;
   return !layer.objectId || layer.objectId === objectId;
@@ -422,10 +424,19 @@ function collapseLocalRepaintProjectionLayers(
   generationId: string | undefined,
   captureId: string | undefined,
   objectId: string,
+  targetLayerId: string | undefined,
 ) {
   let keptLocalRepaintLayer = false;
   return layers.filter((layer) => {
-    if (!isMatchingLocalRepaintProjectionLayer(layer, generationId, captureId, objectId))
+    if (
+      !isMatchingLocalRepaintProjectionLayer(
+        layer,
+        generationId,
+        captureId,
+        objectId,
+        targetLayerId,
+      )
+    )
       return true;
     if (keptLocalRepaintLayer) return false;
     keptLocalRepaintLayer = true;
@@ -4334,7 +4345,17 @@ export function EditorPage({
     // is still selecting the mask.
     if (!generationCapture?.camera) return undefined;
     const objectId = selectedObjectId ?? generationCapture.objectId ?? importedModel.objectId;
-    const targetLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
+    const targetLayer =
+      layers.find(
+        (layer) =>
+          layer.id === activeProjectedLayerId &&
+          isLocalRepaintDestinationLayer(layer, objectId),
+      ) ??
+      layers.find(
+        (layer) =>
+          (layer.role === 'local-repaint-draft' || layer.role === 'local-repaint-overlay') &&
+          isLocalRepaintDestinationLayer(layer, objectId),
+      );
     if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) return undefined;
     const generationMaskUrl =
       typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
@@ -4372,6 +4393,8 @@ export function EditorPage({
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
           depthUrl: generationCapture.depthUrl,
+          depthEncoding: generationCapture.depthEncoding,
+          normalUrl: generationCapture.normalUrl,
           objectId,
           objectMatrixWorld:
             getGenerationObjectMatrixWorld(latestLocalRepaintGeneration) ??
@@ -4419,12 +4442,6 @@ export function EditorPage({
     setLocalRepaintProjectionSource,
     t,
   ]);
-
-  const addLocalRepaintDestinationLayer = useCallback(() => {
-    captureHistory('创建局部重绘空白图层');
-    useLayerStore.getState().addEmptyLayer();
-    setProjectLayers(useLayerStore.getState().layers);
-  }, [captureHistory, setProjectLayers]);
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
@@ -4476,15 +4493,6 @@ export function EditorPage({
         objectId,
         generationId: latestLocalRepaintGeneration?.id,
       });
-      if (!paintMaskHasContent || !paintMaskDataUrl) {
-        pushToast({
-          tone: 'warning',
-          title: t('localRepaintMaskMissing'),
-          description: t('inpaintSelectToolHelp'),
-          dedupeKey: 'local-repaint-mask-missing',
-        });
-        return;
-      }
       if (!latestLocalRepaintGeneration?.resultUrl) {
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
@@ -4499,18 +4507,7 @@ export function EditorPage({
       if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
-        pushToast({
-          tone: 'warning',
-          title: '请选择可用于局部重绘的图层',
-          description:
-            '请选择空白 UV 图层或已有局部重绘图层。也可以点击下方按钮直接新建图层。',
-          action: {
-            label: '新建图层',
-            icon: 'add-layer',
-            onClick: addLocalRepaintDestinationLayer,
-          },
-          dedupeKey: 'local-repaint-destination-layer-required',
-        });
+        console.warn('[Liclick 3D Texture] Could not prepare the internal local repaint layer.');
         return;
       }
       const cameraState = generationCapture?.camera ?? getCurrentCameraSnapshot();
@@ -4528,6 +4525,20 @@ export function EditorPage({
         typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
           ? latestLocalRepaintGeneration.metadata.maskUrl
           : paintMaskDataUrl;
+      // Applying an already generated repaint must use the mask archived with
+      // that generation. The transient viewport selection is intentionally not
+      // guaranteed to survive reloads, tool changes, or a long generation job.
+      // Requiring it here left the toolbar visually focused but still in Select,
+      // so every apparent brush stroke was silently ignored.
+      if (!generationMaskUrl) {
+        pushToast({
+          tone: 'warning',
+          title: t('localRepaintMaskMissing'),
+          description: t('inpaintSelectToolHelp'),
+          dedupeKey: 'local-repaint-mask-missing',
+        });
+        return;
+      }
       const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
       if (
         preparedSource?.generationId === latestLocalRepaintGeneration.id &&
@@ -4604,25 +4615,22 @@ export function EditorPage({
         useSceneStore.getState().paintTool !== 'none'
       )
         return;
-      const currentTargetLayer = useLayerStore
+      let currentTargetLayer = useLayerStore
         .getState()
         .layers.find((layer) => layer.id === targetLayer.id);
       if (!isLocalRepaintDestinationLayer(currentTargetLayer, objectId)) {
-        clearPrewarmProgress();
-        setLocalRepaintProjectionSource(undefined);
-        setPaintTool('none');
-        pushToast({
-          tone: 'warning',
-          title: '局部重绘目标图层已变化',
-          description: '请选择空白 UV 图层或已有局部重绘图层，然后再次启用局部重绘。',
-          action: {
-            label: '新建图层',
-            icon: 'add-layer',
-            onClick: addLocalRepaintDestinationLayer,
-          },
-          dedupeKey: 'local-repaint-destination-layer-changed',
-        });
-        return;
+        const recoveredTarget = ensureLocalRepaintSessionLayer({
+          objectId,
+          generationId: latestLocalRepaintGeneration.id,
+        }).layer;
+        if (!isLocalRepaintDestinationLayer(recoveredTarget, objectId)) {
+          clearPrewarmProgress();
+          setLocalRepaintProjectionSource(undefined);
+          setPaintTool('none');
+          console.warn('[Liclick 3D Texture] Could not recover the internal local repaint layer.');
+          return;
+        }
+        currentTargetLayer = recoveredTarget;
       }
       const nameSource = latestLocalRepaintGeneration.prompt.trim();
       const currentLayers = useLayerStore.getState().layers;
@@ -4631,6 +4639,7 @@ export function EditorPage({
         latestLocalRepaintGeneration.id,
         captureId,
         objectId,
+        currentTargetLayer.id,
       );
       if (collapsedLayers.length !== currentLayers.length) {
         setLayers(collapsedLayers);
@@ -4642,6 +4651,8 @@ export function EditorPage({
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,
         depthUrl: generationCapture?.depthUrl,
+        depthEncoding: generationCapture?.depthEncoding,
+        normalUrl: generationCapture?.normalUrl,
         objectId,
         objectMatrixWorld:
           getGenerationObjectMatrixWorld(latestLocalRepaintGeneration) ??
@@ -4651,18 +4662,11 @@ export function EditorPage({
         captureId,
         name: nameSource ? `${t('localRepaint')}: ${nameSource.slice(0, 20)}` : t('localRepaint'),
         targetLayerId: currentTargetLayer.id,
-        targetLayerType: currentTargetLayer.type,
+        targetLayerType: 'uv',
         targetLayerName: currentTargetLayer.name,
-      });
-      pushToast({
-        tone: 'info',
-        title: t('localRepaint'),
-        description: `正在准备绘制图层：${currentTargetLayer.name}。准备完成后会自动进入局部重绘。`,
-        dedupeKey: `local-repaint-apply-source:${latestLocalRepaintGeneration.id}`,
       });
     })();
   }, [
-    addLocalRepaintDestinationLayer,
     generations,
     getCurrentCameraSnapshot,
     getLocalRepaintProjectionImage,

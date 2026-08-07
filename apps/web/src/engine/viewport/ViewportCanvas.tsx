@@ -36,6 +36,11 @@ import {
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import {
+  createProjectedLayerMaterial,
+  disposeGeneratedMaterialTree,
+  syncProjectedLayerMaterialProjection,
+} from '@/engine/projection/ProjectedLayerMaterial';
+import {
   clearLiveSurfacePaintPreview,
   publishLiveSurfacePaintPreview,
 } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
@@ -176,6 +181,7 @@ const MAX_INPAINT_PROJECTION_SNAPSHOTS = 12;
 // feedback cannot be covered by a paint preview or any texture-layer material.
 const PAINT_STROKE_PREVIEW_RENDER_ORDER = 1000;
 const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1_000_000_000;
+const LOCAL_REPAINT_OVERLAY_RENDER_ORDER = INPAINT_MASK_OVERLAY_RENDER_ORDER - 1;
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
 const automaticFadeBrushStampCache = new Map<number, HTMLCanvasElement>();
@@ -505,6 +511,11 @@ type LocalRepaintSimulationCoreResult = {
   activationToFirstVisibleMs: number;
   liveFeedbackP95: number;
   liveFeedbackMax: number;
+  gpuVisiblePixels: number;
+  gpuMaxAlpha: number;
+  gpuSceneChangedPixels: number;
+  gpuSceneMaxDelta: number;
+  projectedBackgroundRebuilds: number;
   uvCommit: LocalRepaintUvCommitReport;
   totalDurationMs: number;
 };
@@ -2288,6 +2299,20 @@ type LocalRepaintCompositeState = {
   benchmarkFalloffPixels?: Uint8ClampedArray;
 };
 
+type LocalRepaintGpuOverlayState = {
+  sourceKey: string;
+  layerId: string;
+  material: THREE.ShaderMaterial;
+  root: THREE.Group;
+  meshes: THREE.Mesh[];
+};
+
+function disposeLocalRepaintGpuOverlay(state: LocalRepaintGpuOverlayState | undefined) {
+  if (!state) return;
+  state.root.removeFromParent();
+  disposeGeneratedMaterialTree(state.material);
+}
+
 function createLocalRepaintFalloffCanvas(
   allowedMaskImage: HTMLImageElement | undefined,
   width: number,
@@ -2884,19 +2909,13 @@ function isMatchingLocalRepaintUvMergeLayer(
   );
 }
 
-function addEmptyLocalRepaintDestinationLayer() {
-  useEditorHistoryStore.getState().capture('创建局部重绘空白图层');
-  useLayerStore.getState().addEmptyLayer();
-  useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
-}
-
 function isMatchingLocalRepaintProjectionLayer(
   layer: Layer,
   source: LocalRepaintProjectionSource,
   objectId: string,
 ) {
   if (!isLocalRepaintProjectionLayer(layer)) return false;
-  if (source.targetLayerId && layer.replacementTargetLayerId !== source.targetLayerId) return false;
+  if (source.targetLayerId) return layer.replacementTargetLayerId === source.targetLayerId;
   if (source.generationId) return layer.generationId === source.generationId;
   if (source.captureId) return layer.captureId === source.captureId;
   return !layer.objectId || layer.objectId === (source.objectId ?? objectId);
@@ -3333,7 +3352,7 @@ function getPaintHistoryTileBounds(
 }
 
 function SurfacePaintOverlay() {
-  const { gl, camera, scene } = useThree();
+  const { gl, camera, scene, invalidate } = useThree();
   const cursorOverlayRef = useRef<SVGSVGElement>();
   const cursorCircleRef = useRef<SVGCircleElement>();
   const layerRef = useRef<UvPaintLayer>();
@@ -3382,6 +3401,13 @@ function SurfacePaintOverlay() {
   }>();
   const [localRepaintAssetsRevision, setLocalRepaintAssetsRevision] = useState(0);
   const localRepaintCompositeRef = useRef<LocalRepaintCompositeState>();
+  const localRepaintGpuOverlayRef = useRef<LocalRepaintGpuOverlayState>();
+  const clearLocalRepaintGpuOverlay = useCallback(() => {
+    disposeLocalRepaintGpuOverlay(localRepaintGpuOverlayRef.current);
+    localRepaintGpuOverlayRef.current = undefined;
+    delete document.body.dataset.localRepaintOverlayReady;
+    delete document.body.dataset.localRepaintOverlayCompileDurationMs;
+  }, []);
   const paintTool = useSceneStore((state) => state.paintTool);
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
   const paintMaskInvertRevision = useSceneStore((state) => state.paintMaskInvertRevision);
@@ -4229,9 +4255,10 @@ function SurfacePaintOverlay() {
         window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
       localRepaintUvScheduleFrameRef.current = undefined;
       localRepaintUvCommitRevisionRef.current += 1;
+      clearLocalRepaintGpuOverlay();
       useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     },
-    [],
+    [clearLocalRepaintGpuOverlay],
   );
 
   useEffect(() => {
@@ -4247,6 +4274,7 @@ function SurfacePaintOverlay() {
     delete document.body.dataset.localRepaintGpuReadyTarget;
     delete document.body.dataset.localRepaintGpuErrorGeneration;
     delete document.body.dataset.localRepaintGpuErrorTarget;
+    clearLocalRepaintGpuOverlay();
     localRepaintSourceImageRef.current = undefined;
     localRepaintCompositeRef.current = undefined;
     setLocalRepaintAssetsRevision(0);
@@ -4343,7 +4371,7 @@ function SurfacePaintOverlay() {
     return () => {
       cancelled = true;
     };
-  }, [localRepaintProjectionSource]);
+  }, [clearLocalRepaintGpuOverlay, localRepaintProjectionSource]);
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -4877,6 +4905,142 @@ function SurfacePaintOverlay() {
     [localRepaintProjectionSource],
   );
 
+  const ensureLocalRepaintGpuOverlay = useCallback(
+    async (
+      model: SurfacePaintTarget,
+      source: LocalRepaintProjectionSource,
+      composite: LocalRepaintCompositeState,
+    ) => {
+      const sourceKey = createLocalRepaintSourceKey(source, model.objectId);
+      const currentOverlay = localRepaintGpuOverlayRef.current;
+      if (
+        currentOverlay?.sourceKey === sourceKey &&
+        currentOverlay.layerId === composite.layerId
+      ) {
+        return currentOverlay;
+      }
+
+      clearLocalRepaintGpuOverlay();
+      const previewImageUrl = localRepaintSourceImageRef.current?.previewImageUrl;
+      if (!previewImageUrl) return undefined;
+      model.group.updateMatrixWorld(true);
+      const exposure = useSettingsStore.getState().exposure;
+      const compileStartedAt = performance.now();
+      const material = await createProjectedLayerMaterial({
+        layerId: composite.layerId,
+        imageUrl: previewImageUrl,
+        maskUrl: composite.maskUrl,
+        maskSpace: 'projection',
+        depthUrl: source.depthUrl,
+        depthIsLinearView: source.depthEncoding === 'linear-view',
+        normalUrl: source.normalUrl,
+        camera: source.camera,
+        objectId: source.objectId ?? model.objectId,
+        objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
+        currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
+        opacity: 1,
+        strength: 1,
+        blendMode: 'normal',
+        compositeRole: 'overlay',
+        visible: true,
+        depthTest: true,
+        useMask: true,
+        useDepthCheck: Boolean(source.depthUrl),
+        useNormalCheck: Boolean(source.normalUrl),
+        renderedColor: true,
+        transparentProjectionOnly: true,
+        minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
+        enableBackfaceCulling: true,
+        edgeFeather: 0.004,
+        depthBias: 0.025,
+        previewLighting: {
+          enabled: false,
+          exposure,
+          ambientIntensity: 1,
+          keyLightIntensity: 0,
+          keyLightDirection: [0, 1, 0],
+        },
+      });
+
+      const currentSource = useSceneStore.getState().localRepaintProjectionSource;
+      if (
+        localRepaintCompositeRef.current !== composite ||
+        !currentSource ||
+        createLocalRepaintSourceKey(currentSource, model.objectId) !== sourceKey
+      ) {
+        disposeGeneratedMaterialTree(material);
+        return undefined;
+      }
+
+      const targets: THREE.Mesh[] = [];
+      model.group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        if (
+          child.userData.liclickPaintOverlay ||
+          child.userData.liclickViewportHelper ||
+          child.userData.liclickSelectionGlow ||
+          child.userData.liclickWireframeOverlay ||
+          !child.geometry.getAttribute('position')
+        )
+          return;
+        targets.push(child);
+      });
+      const root = new THREE.Group();
+      root.name = 'Liclick Live Local Repaint GPU Overlay';
+      root.userData.liclickPaintOverlay = true;
+      root.userData.liclickLocalRepaintGpuOverlay = true;
+      root.matrixAutoUpdate = false;
+      const inverseRoot = model.group.matrixWorld.clone().invert();
+      const meshes = targets.map((target) => {
+        const overlay = new THREE.Mesh(target.geometry, material);
+        overlay.name = `Liclick Live Local Repaint - ${target.name || target.uuid}`;
+        overlay.userData.liclickPaintOverlay = true;
+        overlay.userData.liclickLocalRepaintGpuOverlay = true;
+        overlay.frustumCulled = target.frustumCulled;
+        overlay.renderOrder = LOCAL_REPAINT_OVERLAY_RENDER_ORDER;
+        overlay.matrix.copy(inverseRoot.clone().multiply(target.matrixWorld));
+        overlay.matrixAutoUpdate = false;
+        overlay.raycast = () => undefined;
+        root.add(overlay);
+        return overlay;
+      });
+      // Keep the live renderer layer as a stable sibling tree. Attaching it as
+      // an unmanaged child of a reconciled model mesh allowed later material
+      // commits to detach it even though the brush mask continued updating.
+      model.group.add(root);
+      // This renderer-only tree is the active brush feedback, not a regular
+      // persisted layer. A legacy hidden projected row may share its stable id;
+      // inheriting that row's visibility turns valid mask uploads into a fully
+      // transparent material and makes the result appear to flicker. While the
+      // apply tool is active, feedback is unconditionally visible and topmost.
+      meshes.forEach((mesh) => {
+        mesh.visible = true;
+      });
+      material.uniforms.layerOpacity.value = 1;
+      const overlayState: LocalRepaintGpuOverlayState = {
+        sourceKey,
+        layerId: composite.layerId,
+        material,
+        root,
+        meshes,
+      };
+      localRepaintGpuOverlayRef.current = overlayState;
+      syncProjectedLayerMaterialProjection(model.group);
+      if (typeof gl.compileAsync === 'function') await gl.compileAsync(scene, camera);
+      if (localRepaintGpuOverlayRef.current !== overlayState) {
+        disposeLocalRepaintGpuOverlay(overlayState);
+        return undefined;
+      }
+      document.body.dataset.localRepaintOverlayReady = '1';
+      document.body.dataset.localRepaintOverlayCompileDurationMs = (
+        performance.now() - compileStartedAt
+      ).toFixed(1);
+      invalidate();
+      return overlayState;
+    },
+    [camera, clearLocalRepaintGpuOverlay, gl, invalidate, scene],
+  );
+
   // The target layer is bound when the user enters apply mode. Never mutate it
   // from a pointer event: doing so resets decoded assets and rebuilds materials
   // in the middle of the first stroke, which makes feedback arrive seconds late.
@@ -4925,11 +5089,33 @@ function SurfacePaintOverlay() {
         reportLocalRepaintPrewarmProgress(0.76, '上传透明 Alpha 蒙版');
         gl.initTexture(composite.maskTexture);
         await waitForFrame();
-        reportLocalRepaintPrewarmProgress(0.88, '编译局部重绘材质');
-        await gl.compileAsync(scene, camera);
+        reportLocalRepaintPrewarmProgress(0.88, '编译独立局部重绘覆盖层');
+        const overlay = await ensureLocalRepaintGpuOverlay(model, source, composite);
+        if (!overlay) {
+          const latestSource = resolveLocalRepaintStrokeSource();
+          const superseded =
+            cancelled ||
+            localRepaintCompositeRef.current !== composite ||
+            !latestSource ||
+            createLocalRepaintSourceKey(latestSource, model.objectId) !==
+              createLocalRepaintSourceKey(source, model.objectId);
+          // Source binding can legitimately advance while an older shader is
+          // compiling (for example when S6 reuses the newest generation). The
+          // newer effect owns readiness; do not surface this cancellation as a
+          // GPU failure or transiently replace its progress with an error.
+          if (superseded) return;
+          throw new Error('局部重绘透明覆盖层未能完成。');
+        }
         await waitForFrame();
       } catch (error) {
-        console.warn('[Liclick 3D Texture] Local repaint GPU prewarm was incomplete:', error);
+        console.warn('[Liclick 3D Texture] Local repaint GPU prewarm failed:', error);
+        document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
+        document.body.dataset.localRepaintGpuErrorTarget = source.targetLayerId ?? '';
+        reportLocalRepaintPrewarmProgress(1, '局部重绘 GPU 覆盖层准备失败，请重试', {
+          done: true,
+          failed: true,
+        });
+        return;
       }
       if (cancelled) return;
       const sceneState = useSceneStore.getState();
@@ -4965,13 +5151,12 @@ function SurfacePaintOverlay() {
     };
   }, [
     ensureLiveLocalRepaintComposite,
+    ensureLocalRepaintGpuOverlay,
     getTargetModel,
     gl,
-    camera,
     localRepaintAssetsRevision,
     localRepaintProjectionSource,
     resolveLocalRepaintStrokeSource,
-    scene,
   ]);
 
   const hasLocalRepaintSourceContent = useCallback(
@@ -5262,6 +5447,29 @@ function SurfacePaintOverlay() {
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
           mergeLocalRepaintScratchPatch(composite, projectionBounds);
+          if (isPerformanceInstrumentationEnabled()) {
+            const sampleX = THREE.MathUtils.clamp(
+              Math.floor(localRepaintUv.x * composite.maskCanvas.width),
+              0,
+              composite.maskCanvas.width - 1,
+            );
+            const sampleY = THREE.MathUtils.clamp(
+              Math.floor(localRepaintUv.y * composite.maskCanvas.height),
+              0,
+              composite.maskCanvas.height - 1,
+            );
+            const maskPixel = composite.maskContext.getImageData(sampleX, sampleY, 1, 1).data;
+            const falloffContext = composite.falloffCanvas.getContext('2d', {
+              willReadFrequently: true,
+            });
+            const falloffPixel = falloffContext?.getImageData(sampleX, sampleY, 1, 1).data;
+            document.body.dataset.localRepaintLastApply = JSON.stringify({
+              uv: [localRepaintUv.x, localRepaintUv.y],
+              pixel: [sampleX, sampleY],
+              mask: [...maskPixel],
+              falloff: falloffPixel ? [...falloffPixel] : undefined,
+            });
+          }
           // This mask is an interaction-only 1024px coverage texture. Upload it
           // on the same RAF as the stamp so
           // every accepted sample has immediate visual feedback. paintAt already
@@ -5439,6 +5647,19 @@ function SurfacePaintOverlay() {
     (composite: LocalRepaintCompositeState, sourceKey: string, commitRevision: number) => {
       if (localRepaintHandoffFrameRef.current !== undefined)
         window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
+      const sceneStateAtCommit = useSceneStore.getState();
+      if (
+        sceneStateAtCommit.paintTool === 'inpaint-apply' &&
+        localRepaintCompositeRef.current === composite &&
+        localRepaintCompositeRef.current.sourceKey === sourceKey
+      ) {
+        // The projected live mask remains authoritative for the entire apply
+        // session. Clearing it 160ms after pointer-up created a blank interval
+        // (or a permanent blank when the UV patch sat below projected layers),
+        // so users saw the layer thumbnail update but never the model.
+        localRepaintHandoffFrameRef.current = undefined;
+        return;
+      }
       const startedAt = performance.now();
       const finish = () => {
         const sceneState = useSceneStore.getState();
@@ -5620,18 +5841,7 @@ function SurfacePaintOverlay() {
         const sceneState = useSceneStore.getState();
         sceneState.setLocalRepaintProjectionSource(undefined);
         sceneState.setPaintTool('none');
-        pushToast({
-          tone: 'warning',
-          title: '请选择可用于局部重绘的图层',
-          description:
-            '请选择空白 UV 图层或已有局部重绘图层；普通非空图层不能直接接收局部重绘。',
-          action: {
-            label: '新建图层',
-            icon: 'add-layer',
-            onClick: addEmptyLocalRepaintDestinationLayer,
-          },
-          dedupeKey: 'local-repaint-destination-layer-required',
-        });
+        console.warn('[Liclick 3D Texture] The internal local repaint layer is unavailable.');
         return;
       }
       const mergeLayerId = currentMergeLayer.id;
@@ -6406,6 +6616,78 @@ function SurfacePaintOverlay() {
     }
   }, []);
 
+  const probeLocalRepaintGpuOutput = useCallback(() => {
+    const overlay = localRepaintGpuOverlayRef.current;
+    if (!overlay || overlay.meshes.length === 0)
+      return { visiblePixels: 0, maxAlpha: 0, sceneChangedPixels: 0, sceneMaxDelta: 0 };
+    overlay.root.updateWorldMatrix(true, true);
+    const probeScene = new THREE.Scene();
+    const probeMeshes = overlay.meshes.map((mesh) => {
+      const probeMesh = new THREE.Mesh(mesh.geometry, overlay.material);
+      probeMesh.matrix.copy(mesh.matrixWorld);
+      probeMesh.matrixAutoUpdate = false;
+      probeMesh.frustumCulled = false;
+      probeScene.add(probeMesh);
+      return probeMesh;
+    });
+    const size = 256;
+    const target = new THREE.WebGLRenderTarget(size, size, {
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      depthBuffer: true,
+      stencilBuffer: false,
+    });
+    const previousTarget = gl.getRenderTarget();
+    const previousClearColor = gl.getClearColor(new THREE.Color()).clone();
+    const previousClearAlpha = gl.getClearAlpha();
+    const pixels = new Uint8Array(size * size * 4);
+    const sceneWithOverlay = new Uint8Array(size * size * 4);
+    const sceneWithoutOverlay = new Uint8Array(size * size * 4);
+    const previousOverlayVisibility = overlay.root.visible;
+    try {
+      gl.setRenderTarget(target);
+      gl.setClearColor(0x000000, 0);
+      gl.clear(true, true, false);
+      gl.render(probeScene, camera);
+      gl.readRenderTargetPixels(target, 0, 0, size, size, pixels);
+      overlay.root.visible = true;
+      gl.clear(true, true, false);
+      gl.render(scene, camera);
+      gl.readRenderTargetPixels(target, 0, 0, size, size, sceneWithOverlay);
+      overlay.root.visible = false;
+      gl.clear(true, true, false);
+      gl.render(scene, camera);
+      gl.readRenderTargetPixels(target, 0, 0, size, size, sceneWithoutOverlay);
+    } finally {
+      overlay.root.visible = previousOverlayVisibility;
+      gl.setRenderTarget(previousTarget);
+      gl.setClearColor(previousClearColor, previousClearAlpha);
+      probeMeshes.forEach((mesh) => mesh.removeFromParent());
+      target.dispose();
+    }
+    let visiblePixels = 0;
+    let maxAlpha = 0;
+    for (let offset = 3; offset < pixels.length; offset += 4) {
+      const alpha = pixels[offset];
+      if (alpha > 2) visiblePixels += 1;
+      if (alpha > maxAlpha) maxAlpha = alpha;
+    }
+    let sceneChangedPixels = 0;
+    let sceneMaxDelta = 0;
+    for (let offset = 0; offset < sceneWithOverlay.length; offset += 4) {
+      const delta = Math.max(
+        Math.abs(sceneWithOverlay[offset] - sceneWithoutOverlay[offset]),
+        Math.abs(sceneWithOverlay[offset + 1] - sceneWithoutOverlay[offset + 1]),
+        Math.abs(sceneWithOverlay[offset + 2] - sceneWithoutOverlay[offset + 2]),
+      );
+      if (delta > 1) sceneChangedPixels += 1;
+      if (delta > sceneMaxDelta) sceneMaxDelta = delta;
+    }
+    const result = { visiblePixels, maxAlpha, sceneChangedPixels, sceneMaxDelta };
+    document.body.dataset.localRepaintGpuProbe = JSON.stringify(result);
+    return result;
+  }, [camera, gl, scene]);
+
   useEffect(() => {
     const target = window as typeof window & {
       LiclickPerfLocalRepaint?: LocalRepaintPerformanceApi;
@@ -6470,7 +6752,14 @@ function SurfacePaintOverlay() {
         let candidateCount = 0;
         let activationStartedAt = 0;
         let activationReadyMs = 0;
+        let projectedBackgroundRevisionAtReady = 0;
         let firstApplyVisibleAt = 0;
+        let gpuProbe = {
+          visiblePixels: 0,
+          maxAlpha: 0,
+          sceneChangedPixels: 0,
+          sceneMaxDelta: 0,
+        };
 
         const scaleSimulationHit = (hit: UvPaintHit, scale = 2.15): UvPaintHit => ({
           ...hit,
@@ -6588,6 +6877,10 @@ function SurfacePaintOverlay() {
           }
           if (tool === 'inpaint-apply' && localRepaintCompositeRef.current) {
             scheduleTextureUpdate(localRepaintCompositeRef.current.maskTexture);
+            if (gpuProbe.visiblePixels === 0) {
+              await waitForFrame();
+              gpuProbe = probeLocalRepaintGpuOutput();
+            }
           }
           isPaintingRef.current = false;
           lastPaintActivityAtRef.current = performance.now();
@@ -6659,6 +6952,9 @@ function SurfacePaintOverlay() {
           if (!source || !sourceImageState?.image) {
             throw new Error('现成局部生图已绑定，但投影图片预热超时。');
           }
+          projectedBackgroundRevisionAtReady = Number(
+            document.body.dataset.projectedBackgroundMaterialRevision ?? '0',
+          );
           sourceWidth = sourceImageState.image.naturalWidth || sourceImageState.image.width;
           sourceHeight = sourceImageState.image.naturalHeight || sourceImageState.image.height;
           document.body.dataset.perfLocalRepaintPhase = 's6-interaction-apply-prepare';
@@ -6683,6 +6979,43 @@ function SurfacePaintOverlay() {
           }
           const applyDurationMs = performance.now() - applyStartedAt;
           if (applySamples === 0) throw new Error('现有生图在当前视角没有可应用的蒙版像素。');
+          if (gpuProbe.visiblePixels === 0 || gpuProbe.maxAlpha === 0) {
+            const overlay = localRepaintGpuOverlayRef.current;
+            const maskMap = overlay?.material.uniforms.maskMap?.value as THREE.Texture | undefined;
+            throw new Error(
+              `S6 GPU 覆盖层没有输出任何可见像素。${JSON.stringify({
+                applySamples,
+                lastApply: document.body.dataset.localRepaintLastApply,
+                overlayReady: document.body.dataset.localRepaintOverlayReady,
+                rootAttached: Boolean(overlay?.root.parent),
+                rootVisible: overlay?.root.visible,
+                meshCount: overlay?.meshes.length ?? 0,
+                visibleMeshes: overlay?.meshes.filter((mesh) => mesh.visible).length ?? 0,
+                layerOpacity: overlay?.material.uniforms.layerOpacity?.value,
+                maskTextureShared: maskMap === localRepaintCompositeRef.current?.maskTexture,
+                maskTextureVersion: maskMap?.version,
+                maskTextureSize: maskMap?.image
+                  ? [maskMap.image.width ?? 0, maskMap.image.height ?? 0]
+                  : undefined,
+              })}`,
+            );
+          }
+          if (gpuProbe.sceneChangedPixels === 0 || gpuProbe.sceneMaxDelta === 0) {
+            throw new Error('S6 最终模型帧在覆盖层开关前后没有像素变化。');
+          }
+          const projectedBackgroundRebuilds = Math.max(
+            0,
+            Number(document.body.dataset.projectedBackgroundMaterialRevision ?? '0') -
+              projectedBackgroundRevisionAtReady,
+          );
+          document.body.dataset.localRepaintProjectedBackgroundRebuilds = String(
+            projectedBackgroundRebuilds,
+          );
+          if (projectedBackgroundRebuilds > 0) {
+            throw new Error(
+              `S6 局部重绘期间背景投影材质被重建 ${projectedBackgroundRebuilds} 次。`,
+            );
+          }
 
           delete document.body.dataset.perfSimulatedViewportInteraction;
           document.body.dataset.perfLocalRepaintPhase = 's6-publish-idle-gate';
@@ -6725,6 +7058,11 @@ function SurfacePaintOverlay() {
               firstApplyVisibleAt > 0 ? firstApplyVisibleAt - activationStartedAt : 0,
             liveFeedbackP95: percentile(sortedFeedback, 0.95),
             liveFeedbackMax: sortedFeedback.length > 0 ? Math.max(...sortedFeedback) : 0,
+            gpuVisiblePixels: gpuProbe.visiblePixels,
+            gpuMaxAlpha: gpuProbe.maxAlpha,
+            gpuSceneChangedPixels: gpuProbe.sceneChangedPixels,
+            gpuSceneMaxDelta: gpuProbe.sceneMaxDelta,
+            projectedBackgroundRebuilds,
             uvCommit,
             totalDurationMs: performance.now() - startedAt,
           };
@@ -6752,6 +7090,7 @@ function SurfacePaintOverlay() {
     getTargetModel,
     gl.domElement,
     paintAt,
+    probeLocalRepaintGpuOutput,
     raycastModel,
     resolveLocalRepaintStrokeSource,
     scheduleTextureUpdate,

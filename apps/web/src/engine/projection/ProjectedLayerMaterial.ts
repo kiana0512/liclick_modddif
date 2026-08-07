@@ -23,6 +23,7 @@ const PROJECTED_LAYER_STACK_STATE_KEY = 'liclickProjectedLayerStackState';
 const PROJECTED_PROGRAM_RESIDENT_ANCHOR_FLAG = 'liclickProjectedProgramResidentAnchor';
 const UV_OVERLAY_PREVIEW_MATERIAL_FLAG = 'liclickUvOverlayPreviewMaterial';
 const PROJECTED_LAYER_SAMPLER_BUDGET_KEY = 'liclickProjectedLayerSamplerBudget';
+const LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG = 'liclickLiveLocalRepaintOverlayMaterial';
 export const PROJECTED_LAYER_MATERIAL_USER_DATA_KEY = 'liclickProjectedLayerProjectionData';
 export type ProjectedLayerProjectionData = {
   layers: Array<{
@@ -284,6 +285,7 @@ const fragmentShader = `
   uniform float layerOpacity;
   uniform float layerStrength;
   uniform float projectedIsRenderedColor;
+  uniform float transparentProjectionOnly;
   uniform float minimumProjectionFacing;
   uniform float projectedBlendModeOverlay;
   uniform float projectedCompositeUnderlay;
@@ -646,6 +648,35 @@ const fragmentShader = `
       renderedColorExposureCompensation,
       projectedIsRenderedColor
     );
+    if (transparentProjectionOnly > 0.5) {
+      // Local repaint is the authored final replacement, not another Top-K
+      // candidate. Keep geometric visibility gates, but never attenuate it
+      // with the background projection quality weight.
+      float literalReplacementAlpha = clamp(
+        inside * backfaceAlpha * alphaCoverage * coverage,
+        0.0,
+        1.0
+      );
+      float projectedDepthPriority = step(
+        ${COVERAGE_THRESHOLD.toFixed(2)},
+        literalReplacementAlpha
+      );
+      // The projected background already biases accepted fragments by 0.000006.
+      // Make the final repaint pass decisively closer so duplicate geometry
+      // cannot z-fight with the background while the camera moves.
+      gl_FragDepthEXT = clamp(
+        gl_FragCoord.z + mix(0.000006, -0.000080, projectedDepthPriority),
+        0.0,
+        1.0
+      );
+      gl_FragColor = vec4(
+        clamp(projectedDisplayColor, 0.0, 1.0),
+        literalReplacementAlpha
+      );
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
     vec3 mixedColor = mix(emptyPreviewColor, projectedDisplayColor, projectionAlpha);
     mixedColor = mix(
       mixedColor,
@@ -1598,6 +1629,11 @@ export function syncProjectedLayerMaterialDisplayState(
 
   for (const candidate of materials) {
     if (!(candidate instanceof THREE.ShaderMaterial)) continue;
+    // The live local-repaint material is renderer-owned and intentionally sits
+    // outside the persisted projection stack. A legacy layer can reuse the same
+    // stable id while hidden; applying ordinary eye/opacity controls here would
+    // turn valid realtime brush feedback transparent between store updates.
+    if (candidate.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG]) continue;
     const state = candidate.userData[PROJECTED_LAYER_STACK_STATE_KEY] as
       | ProjectedLayerMaterialState
       | undefined;
@@ -2427,6 +2463,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       layerOpacity: { value: input.visible ? input.opacity : 0 },
       layerStrength: { value: input.strength ?? 1 },
       projectedIsRenderedColor: { value: input.renderedColor ? 1 : 0 },
+      transparentProjectionOnly: { value: input.transparentProjectionOnly ? 1 : 0 },
       minimumProjectionFacing: {
         value: THREE.MathUtils.clamp(input.minimumProjectionFacing ?? 0, 0, 0.99),
       },
@@ -2483,8 +2520,17 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       keyLightDirection: { value: previewLighting.keyLightDirection },
     },
     toneMapped: true,
+    transparent: Boolean(input.transparentProjectionOnly),
+    depthWrite: !input.transparentProjectionOnly,
+    polygonOffset: Boolean(input.transparentProjectionOnly),
+    polygonOffsetFactor: input.transparentProjectionOnly ? -16 : 0,
+    polygonOffsetUnits: input.transparentProjectionOnly ? -16 : 0,
+    depthFunc: THREE.LessEqualDepth,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
+  if (input.transparentProjectionOnly) {
+    material.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG] = true;
+  }
   material.userData[DISPOSABLE_TEXTURES_KEY] = [
     neutralTexture,
     neutralNormalTexture,

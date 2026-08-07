@@ -122,6 +122,38 @@ try {
     'Live overlays must not crop already validated frontal coverage a second time.',
   );
 
+  const liveRepaintOverlay = await projection.createProjectedLayerMaterial({
+    ...layers[0],
+    layerId: 'local-repaint-live-overlay',
+    transparentProjectionOnly: true,
+    renderedColor: true,
+    useMask: false,
+    depthTest: true,
+  });
+  assert.equal(liveRepaintOverlay.transparent, true);
+  assert.equal(liveRepaintOverlay.depthWrite, false);
+  assert.equal(liveRepaintOverlay.depthFunc, THREE.LessEqualDepth);
+  assert.equal(liveRepaintOverlay.polygonOffsetFactor, -16);
+  assert.equal(liveRepaintOverlay.polygonOffsetUnits, -16);
+  assert.equal(liveRepaintOverlay.uniforms.transparentProjectionOnly.value, 1);
+  assert.match(
+    liveRepaintOverlay.fragmentShader,
+    /literalReplacementAlpha/,
+    'The live repaint overlay must keep rejected pixels transparent instead of replacing the model material.',
+  );
+  assert.match(
+    liveRepaintOverlay.fragmentShader,
+    /mix\(0\.000006, -0\.000080, projectedDepthPriority\)/,
+    'The final repaint pass must have deterministic depth priority above the projected background.',
+  );
+  projection.syncProjectedLayerMaterialDisplayState(liveRepaintOverlay, []);
+  assert.equal(
+    liveRepaintOverlay.uniforms.layerOpacity.value,
+    1,
+    'Persisted layer visibility reconciliation must not hide renderer-owned repaint feedback.',
+  );
+  projection.disposeGeneratedMaterialTree(liveRepaintOverlay);
+
   const materialId = material.uuid;
   const withThirdLayerHidden = layers.map((layer, index) => ({
     ...layer,
