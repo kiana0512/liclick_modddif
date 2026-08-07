@@ -93,6 +93,7 @@ import {
 
 type GenerateTab = 'multiview' | 'repaint';
 type TextureViewMode = 'single' | 'multi';
+type TexturePreviewMode = TextureViewMode | 'repaint';
 type GenerateChannel = GenerateTab | 'single';
 type GenerateMode = 'visible' | 'upscale';
 type TexturePipelineProgress = {
@@ -654,6 +655,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
+  const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
     sourceUrl: string;
@@ -790,30 +792,46 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
     [importedModel, importedModels, selectedObjectId],
   );
   const captureObjectId = captureModel?.objectId;
-  const latestLocalRepaintGenerationId = useMemo(
-    () =>
-      generations.find((generation) => {
-        if (
-          generation.status !== 'succeeded' ||
-          !generation.resultUrl ||
-          !isLocalRepaintGeneration(generation)
-        )
-          return false;
-        const generationProjectId =
-          typeof generation.metadata.projectId === 'string'
-            ? generation.metadata.projectId
-            : undefined;
-        const generationObjectId =
-          typeof generation.metadata.objectId === 'string'
-            ? generation.metadata.objectId
-            : undefined;
-        return (
-          (!currentProjectId || !generationProjectId || generationProjectId === currentProjectId) &&
-          (!captureObjectId || !generationObjectId || generationObjectId === captureObjectId)
-        );
-      })?.id,
-    [captureObjectId, currentProjectId, generations],
-  );
+  const latestLocalRepaintGeneration = useMemo(() => {
+    const projectCandidates = generations.filter((generation) => {
+      if (
+        generation.status !== 'succeeded' ||
+        !generation.resultUrl ||
+        !isLocalRepaintGeneration(generation)
+      )
+        return false;
+      const generationProjectId =
+        typeof generation.metadata.projectId === 'string'
+          ? generation.metadata.projectId
+          : undefined;
+      return !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
+    });
+    const exactObjectCandidates = captureObjectId
+      ? projectCandidates.filter((generation) => generation.metadata.objectId === captureObjectId)
+      : projectCandidates;
+    const candidates =
+      captureObjectId && exactObjectCandidates.length === 0
+        ? projectCandidates.filter((generation) => !generation.metadata.objectId)
+        : exactObjectCandidates;
+    return candidates.reduce<Generation | undefined>((latestGeneration, generation) => {
+      if (!latestGeneration) return generation;
+      const recencyTimestamp = (item: Generation) => {
+        const completedAt = item.metadata.completedAt;
+        const completedTimestamp =
+          typeof completedAt === 'string' ? Date.parse(completedAt) : Number.NaN;
+        const startedTimestamp = getGenerationStartedAt(item);
+        return Number.isFinite(completedTimestamp)
+          ? completedTimestamp
+          : Number.isFinite(startedTimestamp)
+            ? startedTimestamp
+            : Number.NEGATIVE_INFINITY;
+      };
+      return recencyTimestamp(generation) > recencyTimestamp(latestGeneration)
+        ? generation
+        : latestGeneration;
+    }, undefined);
+  }, [captureObjectId, currentProjectId, generations]);
+  const latestLocalRepaintGenerationId = latestLocalRepaintGeneration?.id;
   const ensureLocalRepaintSessionLayer = useCallback(
     (generationId = latestLocalRepaintGenerationId) => {
       if (!currentProjectId || !captureObjectId) return undefined;
@@ -920,32 +938,40 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       : undefined);
   const previewGeneration = activeProjectGeneration ?? tabGenerations[0];
   const previewIsGenerating = isRunningGeneration(previewGeneration);
-  const previewFailed = previewGeneration?.status === 'failed';
-  const previewCancelled = previewGeneration?.metadata.cancelled === true;
+  const displayedPreviewGeneration =
+    isTextureMapTab && texturePreviewMode === 'repaint'
+      ? latestLocalRepaintGeneration
+      : previewGeneration;
+  const displayedPreviewIsGenerating = isRunningGeneration(displayedPreviewGeneration);
+  const displayedPreviewFailed = displayedPreviewGeneration?.status === 'failed';
+  const displayedPreviewCancelled = displayedPreviewGeneration?.metadata.cancelled === true;
   const canCancelGeneration = Boolean(activeWorkflowGeneration);
-  const previewRawResultUrl = previewGeneration?.resultUrl;
-  const previewCapture = previewGeneration?.captureId
-    ? lastCapture?.id === previewGeneration.captureId
+  const previewRawResultUrl = displayedPreviewGeneration?.resultUrl;
+  const previewCapture = displayedPreviewGeneration?.captureId
+    ? lastCapture?.id === displayedPreviewGeneration.captureId
       ? lastCapture
-      : currentProject?.captures.find((capture) => capture.id === previewGeneration.captureId)
-    : previewGeneration &&
-        isLocalRepaintGeneration(previewGeneration) &&
+      : currentProject?.captures.find(
+          (capture) => capture.id === displayedPreviewGeneration.captureId,
+        )
+    : displayedPreviewGeneration &&
+        isLocalRepaintGeneration(displayedPreviewGeneration) &&
         lastCapture &&
-        (!previewGeneration.metadata.objectId ||
-          previewGeneration.metadata.objectId === lastCapture.objectId)
+        (!displayedPreviewGeneration.metadata.objectId ||
+          displayedPreviewGeneration.metadata.objectId === lastCapture.objectId)
       ? lastCapture
       : undefined;
   const capturePreviewMaskUrl =
-    previewGeneration &&
-    (isLocalRepaintGeneration(previewGeneration) || isTextureMapGeneration(previewGeneration))
+    displayedPreviewGeneration &&
+    (isLocalRepaintGeneration(displayedPreviewGeneration) ||
+      isTextureMapGeneration(displayedPreviewGeneration))
       ? previewCapture?.maskUrl
       : undefined;
-  const previewProcessingMode = previewGeneration
-    ? isLocalRepaintGeneration(previewGeneration)
+  const previewProcessingMode = displayedPreviewGeneration
+    ? isLocalRepaintGeneration(displayedPreviewGeneration)
       ? capturePreviewMaskUrl
         ? 'capture-mask'
         : 'dark-background'
-      : isTextureMapGeneration(previewGeneration)
+      : isTextureMapGeneration(displayedPreviewGeneration)
         ? capturePreviewMaskUrl
           ? 'capture-mask'
           : undefined
@@ -2592,21 +2618,21 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           maskUrl: currentPaintMaskDataUrl,
           paintMaskRevision: currentPaintMaskRevision,
+          completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },
       };
       syncGeneration(completedGeneration);
       if (completedGeneration.resultUrl) {
         ensureLocalRepaintSessionLayer(completedGeneration.id);
-        await addLocalGenerationAsSingleReference(completedGeneration, capture);
       }
       await saveGenerationStateBestEffort();
       setGenerateNotice(undefined);
-      setTextureViewMode('single');
+      setTexturePreviewMode('repaint');
       setTab('multiview');
       pushToast({
         tone: 'success',
         title: '局部生图已生成',
-        description: '结果已加入单视图参考图，可继续生成纹理或用于局部重绘。',
+        description: '结果已显示在重绘效果图中。',
       });
     } catch (error) {
       if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return;
@@ -2627,62 +2653,6 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
   }
 
   handleLocalRepaintGenerateRef.current = handleLocalRepaintGenerate;
-
-  async function addLocalGenerationAsSingleReference(generation: Generation, capture: Capture) {
-    if (!generation.resultUrl) return undefined;
-    const latestReferences = useReferenceStore.getState().references;
-    const existingReference = latestReferences.find(
-      (reference) =>
-        reference.generationId === generation.id && reference.referenceRole !== 'multi-view',
-    );
-    if (existingReference) {
-      useReferenceStore.getState().setSelectedReferences([existingReference.id]);
-      return existingReference;
-    }
-
-    let width = capture.width;
-    let height = capture.height;
-    try {
-      const size = await getImageSize(generation.resultUrl);
-      width = size.width || width;
-      height = size.height || height;
-    } catch (error) {
-      console.warn('[Liclick 3D Texture] Could not read local generation size:', error);
-    }
-
-    const referenceId = createId('reference');
-    const generatedReference: ReferenceImage = {
-      id: referenceId,
-      name: `局部生图 ${latestReferences.filter((reference) => reference.referenceSource === 'generated').length + 1}`,
-      url: generation.resultUrl,
-      width,
-      height,
-      isPrimary: true,
-      referenceGroupId: createId('reference-group'),
-      referenceRole: 'single-view',
-      referenceSource: 'generated',
-      generationId: generation.id,
-    };
-    const nextReferences = [
-      generatedReference,
-      ...latestReferences.map((reference) => ({ ...reference, isPrimary: false })),
-    ];
-    useReferenceStore.getState().setReferences(nextReferences);
-    useReferenceStore.getState().setSelectedReferences([referenceId]);
-    setProjectReferences(nextReferences);
-    try {
-      await saveCriticalProjectState({ references: nextReferences });
-    } catch (error) {
-      console.warn('[Liclick 3D Texture] Could not persist local generation reference:', error);
-      pushToast({
-        tone: 'warning',
-        title: '单视图已加入，项目保存稍后重试',
-        description: error instanceof Error ? error.message : '本地资产服务暂不可用。',
-        dedupeKey: `local-generation-reference-save:${generation.id}`,
-      });
-    }
-    return generatedReference;
-  }
 
   async function persistPairedMultiviewReference(
     singleReference: ReferenceImage,
@@ -3397,20 +3367,22 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
   }
 
   async function handleAddProjectedLayer() {
-    if (!previewGeneration) return;
-    await addGenerationAsProjectedLayer(previewGeneration);
+    if (!displayedPreviewGeneration) return;
+    await addGenerationAsProjectedLayer(displayedPreviewGeneration);
   }
 
   async function handleDownloadGenerationImage() {
-    if (!previewGeneration?.resultUrl) return;
-    const kind = isTextureMapGeneration(previewGeneration) ? 'texture_map' : 'liclick_generation';
+    if (!displayedPreviewGeneration?.resultUrl) return;
+    const kind = isTextureMapGeneration(displayedPreviewGeneration)
+      ? 'texture_map'
+      : 'liclick_generation';
     const downloaded = await downloadImageAsset(
-      previewResultUrl ?? previewGeneration.resultUrl,
-      `liclick_${kind}_${previewGeneration.id}`,
+      previewResultUrl ?? displayedPreviewGeneration.resultUrl,
+      `liclick_${kind}_${displayedPreviewGeneration.id}`,
     );
     if (!downloaded) return;
     trackModuleAction(
-      isLocalRepaintGeneration(previewGeneration) ? 'local_repaint' : 'texture_painting',
+      isLocalRepaintGeneration(displayedPreviewGeneration) ? 'local_repaint' : 'texture_painting',
       'download',
     );
   }
@@ -3493,23 +3465,25 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       >
         {isTextureMapTab && (
           <div data-texture-onboarding="single-view">
-            <SegmentedControl<TextureViewMode>
-              value={textureViewMode}
+            <SegmentedControl<TexturePreviewMode>
+              value={texturePreviewMode}
               options={[
                 { value: 'multi', label: '多视图' },
                 { value: 'single', label: '单视图' },
+                { value: 'repaint', label: '重绘效果图' },
               ]}
               onChange={(value) => {
-                setTextureViewMode(value);
+                setTexturePreviewMode(value);
+                if (value !== 'repaint') setTextureViewMode(value);
               }}
               className="mb-2"
             />
           </div>
         )}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/10 bg-black/24">
-          {(!isTextureMapTab || textureViewMode === 'single') && (
+          {(!isTextureMapTab || texturePreviewMode !== 'multi') && (
             <div className="generate-preview-adaptive relative shrink-0 overflow-hidden bg-[#1b1b1b]">
-              {previewGeneration?.resultUrl ? (
+              {displayedPreviewGeneration?.resultUrl ? (
                 <button
                   type="button"
                   className="h-full w-full cursor-zoom-in"
@@ -3519,17 +3493,24 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
                   style={checkerBackgroundStyle}
                 >
                   <img
-                    src={previewResultUrl ?? previewGeneration.resultUrl}
+                    src={previewResultUrl ?? displayedPreviewGeneration.resultUrl}
                     alt=""
                     className="h-full w-full object-contain"
                   />
                 </button>
+              ) : isTextureMapTab && texturePreviewMode === 'repaint' ? (
+                <div className="grid h-full w-full place-items-center px-5 text-center">
+                  <div className="grid gap-1">
+                    <div className="text-sm font-semibold text-white/72">暂无重绘效果图</div>
+                    <div className="text-xs text-white/42">完成局部重绘生图后将在这里显示。</div>
+                  </div>
+                </div>
               ) : (
                 <div className="h-full w-full bg-[#1b1b1b]" />
               )}
-              {previewGeneration?.resultUrl && (
+              {displayedPreviewGeneration?.resultUrl && (
                 <div className="absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 bg-black/68 p-1 shadow-xl backdrop-blur-sm">
-                  {isTextureMapGeneration(previewGeneration) && (
+                  {isTextureMapGeneration(displayedPreviewGeneration) && (
                     <button
                       type="button"
                       className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
@@ -3560,22 +3541,22 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
                   </button>
                 </div>
               )}
-              {previewIsGenerating && previewGeneration && (
+              {displayedPreviewIsGenerating && displayedPreviewGeneration && (
                 <div className="absolute inset-0 grid place-items-center bg-black/62 text-white backdrop-blur-[2px]">
                   <GenerationProgressStatus
-                    generation={previewGeneration}
+                    generation={displayedPreviewGeneration}
                     title={t('generating')}
                   />
                 </div>
               )}
-              {previewFailed && !previewIsGenerating && (
+              {displayedPreviewFailed && !displayedPreviewIsGenerating && (
                 <div className="absolute inset-0 grid place-items-center bg-rose-950/28 px-4 text-center text-white">
                   <div className="grid gap-1">
                     <div className="text-sm font-semibold">
-                      {previewCancelled ? '已终止' : '生成失败'}
+                      {displayedPreviewCancelled ? '已终止' : '生成失败'}
                     </div>
                     <div className="text-xs text-white/66">
-                      {previewCancelled
+                      {displayedPreviewCancelled
                         ? '当前生成任务已停止等待，本次结果已丢弃。'
                         : '请检查提示词、参考图或模型要求后重试。'}
                     </div>
@@ -3586,7 +3567,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           )}
 
           <div className="generate-content-adaptive scrollbar-none flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2.5 pt-2.5">
-            {isTextureMapTab && textureViewMode === 'multi' && (
+            {isTextureMapTab && texturePreviewMode === 'multi' && (
               <section className="generate-multiview-adaptive order-1 grid shrink-0 content-start gap-2">
                 <div className="grid grid-cols-3 gap-2" role="tablist" aria-label="多视图预设">
                   {cameraViewPresetOptions.map((option) => {
@@ -3788,7 +3769,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         )}
       {portalRoot &&
         previewImageOpen &&
-        previewGeneration?.resultUrl &&
+        displayedPreviewGeneration?.resultUrl &&
         createPortal(
           <button
             type="button"
@@ -3797,7 +3778,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
             aria-label={t('close')}
           >
             <img
-              src={previewResultUrl ?? previewGeneration.resultUrl}
+              src={previewResultUrl ?? displayedPreviewGeneration.resultUrl}
               alt=""
               className="max-h-[92vh] max-w-[94vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
               style={checkerBackgroundStyle}

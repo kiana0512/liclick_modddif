@@ -14,7 +14,7 @@ type VerifiedIdentityResponse = {
 };
 
 const developmentFrontendPort = '5173';
-const developmentVerifierPort = '4517';
+const developmentVerifierPort = '4518';
 const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
 function developmentVerifierUrl(request: IncomingMessage) {
