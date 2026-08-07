@@ -2302,13 +2302,16 @@ type LocalRepaintCompositeState = {
 type LocalRepaintGpuOverlayState = {
   sourceKey: string;
   layerId: string;
+  visibilityLayerId?: string;
   material: THREE.ShaderMaterial;
   root: THREE.Group;
   meshes: THREE.Mesh[];
+  unsubscribeVisibility: () => void;
 };
 
 function disposeLocalRepaintGpuOverlay(state: LocalRepaintGpuOverlayState | undefined) {
   if (!state) return;
+  state.unsubscribeVisibility();
   state.root.removeFromParent();
   disposeGeneratedMaterialTree(state.material);
 }
@@ -3406,6 +3409,7 @@ function SurfacePaintOverlay() {
     disposeLocalRepaintGpuOverlay(localRepaintGpuOverlayRef.current);
     localRepaintGpuOverlayRef.current = undefined;
     delete document.body.dataset.localRepaintOverlayReady;
+    delete document.body.dataset.localRepaintOverlayVisible;
     delete document.body.dataset.localRepaintOverlayCompileDurationMs;
   }, []);
   const paintTool = useSceneStore((state) => state.paintTool);
@@ -5008,21 +5012,45 @@ function SurfacePaintOverlay() {
       // an unmanaged child of a reconciled model mesh allowed later material
       // commits to detach it even though the brush mask continued updating.
       model.group.add(root);
-      // This renderer-only tree is the active brush feedback, not a regular
-      // persisted layer. A legacy hidden projected row may share its stable id;
-      // inheriting that row's visibility turns valid mask uploads into a fully
-      // transparent material and makes the result appear to flicker. While the
-      // apply tool is active, feedback is unconditionally visible and topmost.
-      meshes.forEach((mesh) => {
-        mesh.visible = true;
+      // The generated overlay has its own runtime id, while the row the user
+      // sees is the stable UV destination. Follow only that row's visibility:
+      // ordinary projected-stack reconciliation is intentionally blocked from
+      // touching this renderer-owned material, but an explicit eye click must
+      // still hide both the live projection and the persisted UV result.
+      // The visible first-row result owns the eye control. Its replacement
+      // target is an implementation-only UV layer hidden from the panel, so
+      // listening to targetLayerId would miss the user's click entirely.
+      const visibilityLayerId = composite.layerId;
+      const readVisibility = (layers = useLayerStore.getState().layers) =>
+        visibilityLayerId
+          ? (layers.find((layer) => layer.id === visibilityLayerId)?.visible ?? true)
+          : true;
+      let lastVisibility: boolean | undefined;
+      const applyVisibility = (visible: boolean) => {
+        if (visible === lastVisibility) return;
+        lastVisibility = visible;
+        root.visible = visible;
+        meshes.forEach((mesh) => {
+          mesh.visible = visible;
+        });
+        material.uniforms.layerOpacity.value = visible ? 1 : 0;
+        document.body.dataset.localRepaintOverlayVisible = visible ? '1' : '0';
+        invalidate();
+      };
+      applyVisibility(readVisibility());
+      const unsubscribeVisibility = useLayerStore.subscribe((state, previousState) => {
+        const visible = readVisibility(state.layers);
+        if (visible === readVisibility(previousState.layers)) return;
+        applyVisibility(visible);
       });
-      material.uniforms.layerOpacity.value = 1;
       const overlayState: LocalRepaintGpuOverlayState = {
         sourceKey,
         layerId: composite.layerId,
+        visibilityLayerId,
         material,
         root,
         meshes,
+        unsubscribeVisibility,
       };
       localRepaintGpuOverlayRef.current = overlayState;
       syncProjectedLayerMaterialProjection(model.group);

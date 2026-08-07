@@ -221,6 +221,39 @@ type OpacityDrag = {
   y: number;
 };
 
+function isLocalRepaintVisibilityLayer(layer: Layer) {
+  return Boolean(
+    layer.role === 'local-repaint-draft' ||
+      layer.role === 'local-repaint-overlay' ||
+      layer.id.startsWith('local-repaint-projection') ||
+      layer.id.startsWith('local-repaint-brush-projection') ||
+      layer.id.startsWith('local-repaint-uv-merge'),
+  );
+}
+
+/**
+ * One local repaint result is represented by a visible projected row and an
+ * implementation-only UV destination. Eye gestures must update both in one
+ * store transaction or the remaining representation keeps the effect visible.
+ */
+function expandLocalRepaintVisibilityIds(layers: Layer[], layerIds: string[]) {
+  const expanded = new Set(layerIds);
+  for (const layerId of layerIds) {
+    const layer = layers.find((item) => item.id === layerId);
+    if (!layer || !isLocalRepaintVisibilityLayer(layer)) continue;
+    if (layer.replacementTargetLayerId) expanded.add(layer.replacementTargetLayerId);
+    layers.forEach((candidate) => {
+      if (
+        isLocalRepaintVisibilityLayer(candidate) &&
+        candidate.replacementTargetLayerId === layer.id
+      ) {
+        expanded.add(candidate.id);
+      }
+    });
+  }
+  return [...expanded];
+}
+
 const checkerStyle = {
   backgroundColor: '#d6d6d6',
   backgroundImage:
@@ -363,8 +396,15 @@ export function LayersPanel({
       if (!layerId) return;
       setVisibilityDrag((current) => {
         if (!current || current.touched.has(layerId)) return current;
-        setLayerVisibility([layerId], current.visible);
-        return { visible: current.visible, touched: new Set([...current.touched, layerId]) };
+        const affectedIds = expandLocalRepaintVisibilityIds(
+          useLayerStore.getState().layers,
+          [layerId],
+        );
+        setLayerVisibility(affectedIds, current.visible);
+        return {
+          visible: current.visible,
+          touched: new Set([...current.touched, ...affectedIds]),
+        };
       });
     };
     window.addEventListener('pointermove', continueFromPointer);
@@ -577,7 +617,11 @@ export function LayersPanel({
   }
 
   function getAffectedLayerIds(layerId: string) {
-    return selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+    const selectedIds =
+      selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1
+        ? selectedLayerIds
+        : [layerId];
+    return expandLocalRepaintVisibilityIds(layers, selectedIds);
   }
 
   function beginVisibilityDrag(layer: Layer) {
@@ -592,8 +636,9 @@ export function LayersPanel({
 
   function continueVisibilityDrag(layerId: string) {
     if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
-    visibilityDrag.touched.add(layerId);
-    startTransition(() => setLayerVisibility([layerId], visibilityDrag.visible));
+    const affectedIds = expandLocalRepaintVisibilityIds(layers, [layerId]);
+    affectedIds.forEach((id) => visibilityDrag.touched.add(id));
+    startTransition(() => setLayerVisibility(affectedIds, visibilityDrag.visible));
     setVisibilityDrag({ visible: visibilityDrag.visible, touched: new Set(visibilityDrag.touched) });
   }
 
