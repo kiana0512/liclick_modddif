@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/common/cn';
 import { useDragInteractionStore } from '@/stores/dragInteractionStore';
 import { useWorkspaceLayoutStore } from './workspaceLayoutStore';
@@ -14,6 +14,7 @@ type WorkspaceDockProps = {
 
 export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: WorkspaceDockProps) {
   const [isDropTarget, setIsDropTarget] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mode = useWorkspaceLayoutStore((state) => state.mode);
   const togglePanelCollapsed = useWorkspaceLayoutStore((state) => state.togglePanelCollapsed);
   const reorderPanel = useWorkspaceLayoutStore((state) => state.reorderPanel);
@@ -26,11 +27,35 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
     (panel) => panel.mode === 'all' || panel.mode === mode,
   );
   const allPanelsCollapsed = matchingPanels.length > 0 && matchingPanels.every((panel) => panel.collapsed);
+  const generatePanelExpanded = matchingPanels.some(
+    (panel) => panel.id === 'generate' && !panel.collapsed,
+  );
+
+  useEffect(() => {
+    if (side !== 'left' || !generatePanelExpanded) return;
+    const frame = window.requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [generatePanelExpanded, side]);
 
   if (matchingPanels.length === 0) return null;
 
   return (
     <aside
+      style={
+        side === 'left' && generatePanelExpanded
+          ? {
+              bottom: 'calc(var(--workspace-bottom-offset) + 76px)',
+              height:
+                'calc(100% - var(--workspace-left-top-offset) - var(--workspace-bottom-offset) - 76px)',
+              maxHeight:
+                'calc(100% - var(--workspace-left-top-offset) - var(--workspace-bottom-offset) - 76px)',
+            }
+          : undefined
+      }
       onDragEnter={(event) => {
         if (!isPanelDragging) return;
         event.preventDefault();
@@ -64,9 +89,14 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
       )}
     >
       <div
+        ref={scrollContainerRef}
         className={cn(
           'scrollbar-none pointer-events-auto flex max-h-full flex-col gap-2 overflow-x-hidden rounded-lg p-1 overscroll-contain',
-          allPanelsCollapsed ? 'overflow-y-visible' : 'overflow-y-auto',
+          side === 'left' && generatePanelExpanded
+            ? 'overflow-y-hidden'
+            : allPanelsCollapsed
+              ? 'overflow-y-visible'
+              : 'overflow-y-auto',
         )}
         onWheel={(event) => {
           if (allPanelsCollapsed) return;
@@ -78,7 +108,12 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
           return (
             <div
               key={panel.id}
-              className={cn('pointer-events-auto', !activeInMode && 'hidden')}
+              className={cn(
+                'pointer-events-auto',
+                side === 'left' && generatePanelExpanded && panel.id !== 'generate' && 'shrink-0',
+                side === 'left' && generatePanelExpanded && panel.id === 'generate' && 'min-h-0 flex-1',
+                !activeInMode && 'hidden',
+              )}
               aria-hidden={!activeInMode}
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => {
@@ -97,6 +132,10 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
                 title={panel.title}
                 collapsed={panel.collapsed}
                 actions={panel.actions}
+                className={cn(
+                  side === 'left' && generatePanelExpanded && panel.id === 'generate' &&
+                    'h-full min-h-0',
+                )}
                 onToggleCollapsed={() => togglePanelCollapsed(panel.id)}
               >
                 {panel.content}

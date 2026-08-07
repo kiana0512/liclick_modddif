@@ -125,86 +125,92 @@ export function ViewportPanel() {
         </div>
       </ViewportRow>
 
-      {displayMode === 'pbr' && (
-        <>
-          <ViewportRow icon={<Circle className="h-4 w-4" />} tooltipLabel={t('environment')}>
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
-              <select
-                value={pbrEnvironmentPreset}
-                onChange={(event) => setEnvironmentPreset(event.target.value as typeof environmentPreset)}
-                aria-label={t('environment')}
-                className="h-7 min-w-0 flex-1 rounded-md border border-white/18 bg-white px-3 text-[13px] text-[#181820] outline-none"
-              >
-                {environmentOptions
-                  .filter((option) => option.value !== 'color')
-                  .map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {t(option.labelKey)}
-                    </option>
-                  ))}
-              </select>
-            </div>
-          </ViewportRow>
-          <PbrSlider
-            icon={<SunMedium className="h-4 w-4" />}
-            value={exposure}
-            min={0.7}
-            max={1.8}
-            step={0.01}
-            label={t('exposure')}
-            inputValue={exposure}
-            inputMin={0.7}
-            inputMax={1.8}
-            inputStep={0.01}
-            inputSuffix="x"
-            onChange={setExposure}
-          />
-          <PbrSlider
-            icon={<SlidersHorizontal className="h-4 w-4" />}
-            value={pbrEnvironmentIntensity}
-            min={0}
-            max={1.2}
-            step={0.01}
-            label={t('environment')}
-            inputValue={pbrEnvironmentIntensity * 100}
-            inputMin={0}
-            inputMax={120}
-            inputStep={1}
-            inputSuffix="%"
-            onInputCommit={(value) => setPbrEnvironmentIntensity(value / 100)}
-            onChange={setPbrEnvironmentIntensity}
-          />
-          <PbrSlider
-            icon={<SunMedium className="h-4 w-4" />}
-            value={pbrKeyLightIntensity}
-            min={0}
-            max={2.4}
-            step={0.01}
-            label={t('lightIntensity')}
-            inputValue={pbrKeyLightIntensity * 100}
-            inputMin={0}
-            inputMax={240}
-            inputStep={1}
-            inputSuffix="%"
-            onInputCommit={(value) => setPbrKeyLightIntensity(value / 100)}
-            onChange={setPbrKeyLightIntensity}
-          />
-          <PbrSlider
-            icon={<SlidersHorizontal className="h-4 w-4" />}
-            value={pbrLightAzimuth}
-            min={-180}
-            max={180}
-            step={1}
-            label={t('lightDirection')}
-            inputValue={pbrLightAzimuth}
-            inputMin={-180}
-            inputMax={180}
-            inputStep={1}
-            inputSuffix="°"
-            onChange={setPbrLightAzimuth}
-          />
-        </>
-      )}
+      <div
+        className={cn(
+          'space-y-1 transition-opacity duration-150',
+          displayMode === 'pbr' ? 'visible opacity-100' : 'invisible pointer-events-none opacity-0',
+        )}
+        aria-hidden={displayMode !== 'pbr'}
+      >
+        <ViewportRow icon={<Circle className="h-4 w-4" />} tooltipLabel={t('environment')}>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <select
+              value={pbrEnvironmentPreset}
+              onChange={(event) =>
+                setEnvironmentPreset(event.target.value as typeof environmentPreset)
+              }
+              aria-label={t('environment')}
+              className="h-7 min-w-0 flex-1 rounded-md border border-white/18 bg-white px-3 text-[13px] text-[#181820] outline-none"
+            >
+              {environmentOptions
+                .filter((option) => option.value !== 'color')
+                .map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {t(option.labelKey)}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </ViewportRow>
+        <PbrSlider
+          icon={<SunMedium className="h-4 w-4" />}
+          value={exposure}
+          min={0.7}
+          max={1.8}
+          step={0.01}
+          label={t('exposure')}
+          inputValue={exposure}
+          inputMin={0.7}
+          inputMax={1.8}
+          inputStep={0.01}
+          inputSuffix="x"
+          onChange={setExposure}
+        />
+        <PbrSlider
+          icon={<SlidersHorizontal className="h-4 w-4" />}
+          value={pbrEnvironmentIntensity}
+          min={0}
+          max={1.2}
+          step={0.01}
+          label={t('environment')}
+          inputValue={pbrEnvironmentIntensity * 100}
+          inputMin={0}
+          inputMax={120}
+          inputStep={1}
+          inputSuffix="%"
+          onInputCommit={(value) => setPbrEnvironmentIntensity(value / 100)}
+          onChange={setPbrEnvironmentIntensity}
+        />
+        <PbrSlider
+          icon={<SunMedium className="h-4 w-4" />}
+          value={pbrKeyLightIntensity}
+          min={0}
+          max={2.4}
+          step={0.01}
+          label={t('lightIntensity')}
+          inputValue={pbrKeyLightIntensity * 100}
+          inputMin={0}
+          inputMax={240}
+          inputStep={1}
+          inputSuffix="%"
+          onInputCommit={(value) => setPbrKeyLightIntensity(value / 100)}
+          onChange={setPbrKeyLightIntensity}
+        />
+        <PbrSlider
+          icon={<SlidersHorizontal className="h-4 w-4" />}
+          value={pbrLightAzimuth}
+          min={-180}
+          max={180}
+          step={1}
+          label={t('lightDirection')}
+          inputValue={pbrLightAzimuth}
+          inputMin={-180}
+          inputMax={180}
+          inputStep={1}
+          inputSuffix="°"
+          onChange={setPbrLightAzimuth}
+        />
+      </div>
     </div>
   );
 }

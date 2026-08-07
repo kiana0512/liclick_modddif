@@ -1,17 +1,18 @@
 import { createPortal } from 'react-dom';
-import { useMemo, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent } from 'react';
 import {
   AlertTriangle,
   Check,
+  Copy,
+  Eye,
   ImagePlus,
   LoaderCircle,
   Maximize2,
+  MoreHorizontal,
   Minus,
   Plus,
-  RefreshCw,
   Sparkles,
   Trash2,
-  Upload,
   X,
 } from 'lucide-react';
 import { IMMEDIATE_PROJECT_SAVE_EVENT } from '@/stores/projectStore';
@@ -31,11 +32,8 @@ type ReferenceGroupPickerProps = {
   onGenerateMultiview: (singleReference: ReferenceImage) => void;
 };
 
-type ReferenceGroup = {
-  id: string;
-  single?: ReferenceImage;
-  multiview?: ReferenceImage;
-};
+const SINGLE_REFERENCE_EXAMPLE_URL = '/examples/reference-single.png';
+const MULTIVIEW_REFERENCE_EXAMPLE_URL = '/examples/reference-multiview.jpg';
 
 function referenceRole(reference: ReferenceImage) {
   return reference.referenceRole ?? 'single-view';
@@ -88,164 +86,15 @@ function imageFilesFromDrop(event: ReactDragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.files).filter(isImageFile);
 }
 
-function CompactImageSlot({
-  title,
-  reference,
-  inputId,
-  emptyLabel,
-  disabled,
-  generating,
-  generationFailed,
-  generationError,
-  canGenerate,
-  onFile,
-  onPreview,
-  onGenerate,
-}: {
-  title: string;
-  reference?: ReferenceImage;
-  inputId: string;
-  emptyLabel: string;
-  disabled?: boolean;
-  generating?: boolean;
-  generationFailed?: boolean;
-  generationError?: string;
-  canGenerate?: boolean;
-  onFile: (file: File) => void;
-  onPreview: (reference: ReferenceImage) => void;
-  onGenerate?: () => void;
-}) {
-  const [dragActive, setDragActive] = useState(false);
-
-  function handleDragEnter(event: ReactDragEvent<HTMLDivElement>) {
-    if (disabled || !isFileDrag(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setDragActive(true);
-  }
-
-  function handleDragOver(event: ReactDragEvent<HTMLDivElement>) {
-    if (disabled || !isFileDrag(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = 'copy';
-    setDragActive(true);
-  }
-
-  function handleDragLeave(event: ReactDragEvent<HTMLDivElement>) {
-    const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
-    setDragActive(false);
-  }
-
-  function handleDrop(event: ReactDragEvent<HTMLDivElement>) {
-    if (disabled) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setDragActive(false);
-    const file = imageFilesFromDrop(event)[0];
-    if (file) onFile(file);
-  }
-
-  return (
-    <div
-      className={`group/slot relative min-w-0 overflow-hidden rounded-lg border bg-[#11111b] transition ${dragActive ? 'border-liclick-pink bg-liclick-pink/10 shadow-[0_0_0_1px_rgba(238,72,197,0.32),0_0_22px_rgba(238,72,197,0.16)]' : 'border-white/11'}`}
-      onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      <input
-        id={inputId}
-        type="file"
-        accept="image/*"
-        disabled={disabled}
-        className="hidden"
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) onFile(file);
-          event.currentTarget.value = '';
-        }}
-      />
-      {reference ? (
-        <div className="relative h-[64px]" style={checkerboardStyle()}>
-          <img src={reference.url} alt={reference.name} draggable={false} className="h-full w-full object-contain" />
-          <span className="absolute left-1.5 top-1.5 rounded bg-black/72 px-1.5 py-0.5 text-[10px] font-semibold text-white/86">
-            {title}
-          </span>
-          <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition group-hover/slot:opacity-100">
-            {canGenerate && onGenerate ? (
-              <button
-                type="button"
-                disabled={disabled || generating}
-                className="grid h-6 w-6 place-items-center rounded bg-black/72 text-liclick-pink hover:bg-black/90 disabled:opacity-50"
-                title={generationFailed ? generationError ?? '重新生成多视图' : '重新生成多视图'}
-                onClick={onGenerate}
-              >
-                {generating ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="grid h-6 w-6 place-items-center rounded bg-black/72 text-white/72 hover:bg-black/90 hover:text-white"
-              title="放大预览"
-              onClick={() => onPreview(reference)}
-            >
-              <Maximize2 className="h-3 w-3" />
-            </button>
-            <label
-              htmlFor={inputId}
-              className="grid h-6 cursor-pointer place-items-center rounded bg-black/72 px-1.5 text-[9px] text-white/72 hover:bg-black/90 hover:text-white"
-            >
-              替换
-            </label>
-          </div>
-        </div>
-      ) : (
-        <div className="relative flex h-[64px] items-center justify-center">
-          <span className="absolute left-1.5 top-1.5 text-[9px] font-semibold text-white/42">{title}</span>
-          <div className="flex items-center gap-1.5 pt-2">
-            <label
-              htmlFor={inputId}
-              title={emptyLabel}
-              className={`flex h-7 cursor-pointer items-center gap-1 rounded-md border border-white/10 px-2 text-[9px] font-semibold transition ${disabled ? 'cursor-not-allowed text-white/22' : 'text-white/55 hover:border-white/24 hover:bg-white/[0.05] hover:text-white'}`}
-            >
-              <Upload className="h-3 w-3" />上传
-            </label>
-            {canGenerate && onGenerate ? (
-              <button
-                type="button"
-                disabled={disabled || generating}
-                title={generationError ?? '根据单视图自动生成多视图'}
-                className={`flex h-7 items-center gap-1 rounded-md border px-2 text-[9px] font-semibold transition ${generationFailed ? 'border-rose-300/20 bg-rose-400/8 text-rose-100' : 'border-liclick-pink/20 bg-liclick-pink/8 text-liclick-pink hover:bg-liclick-pink/15'} disabled:cursor-not-allowed disabled:opacity-55`}
-                onClick={onGenerate}
-              >
-                {generating ? <LoaderCircle className="h-3 w-3 animate-spin" /> : generationFailed ? <AlertTriangle className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
-                {generating ? '生成中' : generationFailed ? '重试' : '生成'}
-              </button>
-            ) : null}
-          </div>
-        </div>
-      )}
-      {dragActive ? (
-        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-[#100c19]/88 backdrop-blur-[2px]">
-          <span className="grid justify-items-center gap-1 text-[10px] font-semibold text-liclick-pink">
-            <ImagePlus className="h-5 w-5" />
-            松开上传到{title}
-          </span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function EmptyUploadTarget({
   title,
+  exampleUrl,
   disabled,
   onClick,
   onFiles,
 }: {
   title: string;
+  exampleUrl: string;
   disabled?: boolean;
   onClick: () => void;
   onFiles: (files: File[]) => void;
@@ -293,7 +142,15 @@ function EmptyUploadTarget({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <span className="grid justify-items-center gap-1.5 text-[10px] font-semibold">
+      <img
+        src={exampleUrl}
+        alt=""
+        aria-hidden="true"
+        draggable={false}
+        className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-40 grayscale"
+      />
+      <span className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/82 via-black/36 to-black/24" />
+      <span className="relative z-10 grid justify-items-center gap-1.5 text-[10px] font-semibold">
         <ImagePlus className="h-5 w-5" />
         {dragActive ? `松开上传到${title}` : `上传${title}`}
         {!dragActive ? <span className="font-normal text-white/28">可选</span> : null}
@@ -374,20 +231,34 @@ export function ReferenceGroupPicker({
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const addSingleInputRef = useRef<HTMLInputElement>(null);
   const addMultiviewInputRef = useRef<HTMLInputElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+  const referenceMenuRef = useRef<HTMLDivElement>(null);
   const [uploadError, setUploadError] = useState<string>();
   const [previewReference, setPreviewReference] = useState<ReferenceImage>();
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [openReferenceMenuId, setOpenReferenceMenuId] = useState<string>();
+  const [referenceMenuPosition, setReferenceMenuPosition] = useState({ left: 8, top: 8 });
+  const [containerDragActive, setContainerDragActive] = useState(false);
 
-  const groups = useMemo(() => {
-    const byId = new Map<string, ReferenceGroup>();
-    references.forEach((reference) => {
-      const id = referenceGroupId(reference);
-      const group = byId.get(id) ?? { id };
-      if (referenceRole(reference) === 'multi-view') group.multiview = reference;
-      else group.single = reference;
-      byId.set(id, group);
-    });
-    return Array.from(byId.values());
-  }, [references]);
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const closeMenu = (event: PointerEvent) => {
+      if (!addMenuRef.current?.contains(event.target as Node)) setAddMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', closeMenu);
+    return () => window.removeEventListener('pointerdown', closeMenu);
+  }, [addMenuOpen]);
+
+  useEffect(() => {
+    if (!openReferenceMenuId) return;
+    const closeMenu = (event: PointerEvent) => {
+      if (!referenceMenuRef.current?.contains(event.target as Node)) {
+        setOpenReferenceMenuId(undefined);
+      }
+    };
+    window.addEventListener('pointerdown', closeMenu);
+    return () => window.removeEventListener('pointerdown', closeMenu);
+  }, [openReferenceMenuId]);
 
   async function imageFromFile(
     file: File,
@@ -429,50 +300,71 @@ export function ReferenceGroupPicker({
     dispatchImmediateSave();
   }
 
-  async function replaceSlot(group: ReferenceGroup, role: 'single-view' | 'multi-view', file: File) {
-    if (!isImageFile(file)) return;
-    const existing = role === 'single-view' ? group.single : group.multiview;
-    const replacement = await imageFromFile(file, {
-      referenceGroupId: group.id,
-      referenceRole: role,
-      derivedFromReferenceId: role === 'multi-view' ? group.single?.id : undefined,
-    });
-    if (existing) replacement.id = existing.id;
-    const groupIsSelected = [group.single?.id, group.multiview?.id].some(
-      (id) => id && selectedReferenceIds.includes(id),
-    );
-    replacement.isPrimary = groupIsSelected;
-    let next = references
-      .filter((reference) => reference.id !== existing?.id)
-      .filter(
-        (reference) =>
-          !(
-            role === 'single-view' &&
-            referenceRole(reference) === 'multi-view' &&
-            referenceGroupId(reference) === group.id &&
-            reference.referenceSource === 'generated'
-          ),
-      );
-    next = [replacement, ...next].map((reference) => ({
+  function selectReference(reference: ReferenceImage) {
+    setSelectedReferences([reference.id]);
+    setOpenReferenceMenuId(undefined);
+    dispatchImmediateSave();
+  }
+
+  function duplicateReference(reference: ReferenceImage) {
+    const duplicatedId = createId('reference');
+    const duplicated: ReferenceImage = {
       ...reference,
-      isPrimary: groupIsSelected ? reference.id === replacement.id : reference.isPrimary,
-    }));
+      id: duplicatedId,
+      name: `${reference.name} 副本`,
+      isPrimary: true,
+      referenceGroupId: createId('reference-group'),
+      derivedFromReferenceId: undefined,
+      generationId: undefined,
+      referenceSource: 'uploaded',
+    };
+    const next = [
+      duplicated,
+      ...references.map((item) => ({ ...item, isPrimary: false })),
+    ];
     setReferences(next);
-    setSelectedReferences([replacement.id]);
+    setSelectedReferences([duplicatedId]);
+    setOpenReferenceMenuId(undefined);
     dispatchImmediateSave();
   }
 
-  function selectGroup(group: ReferenceGroup) {
-    const selection = group.single ?? group.multiview;
-    if (selection) setSelectedReferences([selection.id]);
+  function deleteReference(reference: ReferenceImage) {
+    const next = references.filter((item) => item.id !== reference.id);
+    const wasSelected = selectedReferenceIds.includes(reference.id);
+    const fallback = wasSelected ? next[0] : undefined;
+    const nextSelectedIds = wasSelected
+      ? fallback
+        ? [fallback.id]
+        : []
+      : selectedReferenceIds.filter((id) => next.some((item) => item.id === id));
+    setReferences(
+      next.map((item) => ({
+        ...item,
+        isPrimary: nextSelectedIds.includes(item.id),
+      })),
+    );
+    setSelectedReferences(nextSelectedIds);
+    setOpenReferenceMenuId(undefined);
+    dispatchImmediateSave();
   }
 
-  function deleteGroup(group: ReferenceGroup) {
-    const next = references.filter((reference) => referenceGroupId(reference) !== group.id);
-    const nextReference = next[0];
-    setReferences(next.map((reference) => ({ ...reference, isPrimary: reference.id === nextReference?.id })));
-    setSelectedReferences(nextReference ? [nextReference.id] : []);
-    dispatchImmediateSave();
+  function generateMultiviewFor(reference: ReferenceImage) {
+    const sourceReference =
+      referenceRole(reference) === 'single-view'
+        ? reference
+        : references.find(
+            (item) =>
+              referenceRole(item) === 'single-view' &&
+              referenceGroupId(item) === referenceGroupId(reference),
+          );
+    if (!sourceReference) {
+      setUploadError('该多视图没有关联的单视图，无法再次生成多视图。');
+      setOpenReferenceMenuId(undefined);
+      return;
+    }
+    setSelectedReferences([sourceReference.id]);
+    setOpenReferenceMenuId(undefined);
+    onGenerateMultiview(sourceReference);
   }
 
   function handleAddInput(event: ChangeEvent<HTMLInputElement>, role: 'single-view' | 'multi-view') {
@@ -480,88 +372,268 @@ export function ReferenceGroupPicker({
     event.currentTarget.value = '';
   }
 
+  function handleContainerDragEnter(event: ReactDragEvent<HTMLDivElement>) {
+    if (disabled || !isFileDrag(event)) return;
+    event.preventDefault();
+    setContainerDragActive(true);
+  }
+
+  function handleContainerDragOver(event: ReactDragEvent<HTMLDivElement>) {
+    if (disabled || !isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setContainerDragActive(true);
+  }
+
+  function handleContainerDragLeave(event: ReactDragEvent<HTMLDivElement>) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setContainerDragActive(false);
+  }
+
+  function handleContainerDrop(
+    event: ReactDragEvent<HTMLDivElement>,
+    role: 'single-view' | 'multi-view',
+  ) {
+    if (disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setContainerDragActive(false);
+    const files = imageFilesFromDrop(event);
+    if (files.length) void addReferenceFiles(files, role);
+  }
+
   return (
-    <div className="grid gap-2">
+    <div
+      className="relative grid gap-2"
+      onDragEnter={handleContainerDragEnter}
+      onDragOver={handleContainerDragOver}
+      onDragLeave={handleContainerDragLeave}
+    >
       <input ref={addSingleInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(event) => handleAddInput(event, 'single-view')} />
       <input ref={addMultiviewInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(event) => handleAddInput(event, 'multi-view')} />
 
-      {groups.length === 0 ? (
-        <div className="grid grid-cols-2 gap-2 rounded-lg border border-dashed border-white/14 bg-black/18 p-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-white/88">参考图</span>
+        <div ref={addMenuRef} className="relative flex items-center gap-1.5">
+          <span className="text-[9px] font-normal text-white/30">单图 / 多视图任选</span>
+          <button
+            type="button"
+            disabled={disabled}
+            className={`grid h-6 w-6 place-items-center rounded-md transition disabled:cursor-not-allowed disabled:opacity-35 ${
+              addMenuOpen
+                ? 'bg-liclick-pink/16 text-liclick-pink'
+                : 'text-white/45 hover:bg-white/[0.055] hover:text-white'
+            }`}
+            title="添加参考图"
+            aria-label="添加参考图"
+            aria-haspopup="menu"
+            aria-expanded={addMenuOpen}
+            onClick={() => setAddMenuOpen((open) => !open)}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          {addMenuOpen ? (
+            <div
+              role="menu"
+              className="absolute right-0 top-8 z-30 grid w-32 gap-1 rounded-lg bg-[#171322] p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.55)]"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] font-semibold text-white/72 transition hover:bg-white/[0.065] hover:text-white"
+                onClick={() => {
+                  setAddMenuOpen(false);
+                  addSingleInputRef.current?.click();
+                }}
+              >
+                <ImagePlus className="h-3.5 w-3.5 text-liclick-pink" />添加单视图
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] font-semibold text-white/72 transition hover:bg-white/[0.065] hover:text-white"
+                onClick={() => {
+                  setAddMenuOpen(false);
+                  addMultiviewInputRef.current?.click();
+                }}
+              >
+                <ImagePlus className="h-3.5 w-3.5 text-liclick-pink" />添加多视图
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {references.length === 0 ? (
+        <div className="grid grid-cols-2 gap-2 rounded-lg bg-black/18 p-2">
           <EmptyUploadTarget
             title="单视图"
+            exampleUrl={SINGLE_REFERENCE_EXAMPLE_URL}
             disabled={disabled}
             onClick={() => addSingleInputRef.current?.click()}
             onFiles={(files) => void addReferenceFiles(files, 'single-view')}
           />
           <EmptyUploadTarget
             title="多视图"
+            exampleUrl={MULTIVIEW_REFERENCE_EXAMPLE_URL}
             disabled={disabled}
             onClick={() => addMultiviewInputRef.current?.click()}
             onFiles={(files) => void addReferenceFiles(files, 'multi-view')}
           />
         </div>
       ) : (
-        groups.map((group, index) => {
-          const selected = [group.single?.id, group.multiview?.id].some(
-            (id) => id && selectedReferenceIds.includes(id),
-          );
-          const state = generationState?.groupId === group.id ? generationState : undefined;
-          return (
-            <section
-              key={group.id}
-              className={`py-1.5 transition ${selected ? 'bg-liclick-pink/[0.045]' : 'hover:bg-white/[0.018]'}`}
-            >
-              <div className="flex h-7 items-center justify-between gap-2 px-1">
-                <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11px] font-semibold text-white/76" onClick={() => selectGroup(group)}>
-                  <span className={`grid h-4 w-4 place-items-center rounded-full border ${selected ? 'border-liclick-pink bg-liclick-pink text-white' : 'border-white/22 text-transparent'}`}>
-                    <Check className="h-2.5 w-2.5" />
-                  </span>
-                  参考图 {index + 1}
-                </button>
-                <button type="button" className="grid h-6 w-6 place-items-center rounded text-white/35 transition hover:bg-rose-400/12 hover:text-rose-200" onClick={() => deleteGroup(group)} title="删除参考图">
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-2 px-1">
-                <CompactImageSlot
-                  title="单视图"
-                  reference={group.single}
-                  inputId={`single-reference-${group.id}`}
-                  emptyLabel="上传单视图"
+        <div className="grid grid-cols-3 gap-2 px-0.5 py-1">
+          {references.map((reference) => {
+            const selected = selectedReferenceIds.includes(reference.id);
+            const role = referenceRole(reference);
+            const state =
+              generationState?.groupId === referenceGroupId(reference)
+                ? generationState
+                : undefined;
+            const menuOpen = openReferenceMenuId === reference.id;
+            return (
+              <div
+                key={reference.id}
+                className="group/reference relative min-w-0"
+              >
+                <button
+                  type="button"
                   disabled={disabled}
-                  onFile={(file) => void replaceSlot(group, 'single-view', file)}
-                  onPreview={setPreviewReference}
-                />
-                <CompactImageSlot
-                  title="多视图"
-                  reference={group.multiview}
-                  inputId={`multi-reference-${group.id}`}
-                  emptyLabel="上传多视图"
-                  disabled={disabled || state?.status === 'generating'}
-                  generating={state?.status === 'generating'}
-                  generationFailed={state?.status === 'failed'}
-                  generationError={state?.error}
-                  canGenerate={Boolean(group.single)}
-                  onFile={(file) => void replaceSlot(group, 'multi-view', file)}
-                  onPreview={setPreviewReference}
-                  onGenerate={group.single ? () => onGenerateMultiview(group.single!) : undefined}
-                />
+                  className={`relative block aspect-square w-full overflow-hidden rounded-lg bg-[#101019] transition disabled:cursor-not-allowed disabled:opacity-55 ${
+                    selected
+                      ? 'shadow-[0_0_0_2px_rgba(238,72,197,0.92),0_0_18px_rgba(238,72,197,0.18)]'
+                      : 'shadow-[0_0_0_1px_rgba(255,255,255,0.08)] hover:shadow-[0_0_0_1px_rgba(255,255,255,0.22)]'
+                  }`}
+                  style={checkerboardStyle()}
+                  onClick={() => selectReference(reference)}
+                  title={`选中${role === 'multi-view' ? '多视图' : '单视图'}`}
+                >
+                  <img
+                    src={reference.url}
+                    alt={reference.name}
+                    draggable={false}
+                    className="h-full w-full object-contain"
+                  />
+                  <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-semibold text-white/82">
+                    {role === 'multi-view' ? '多视图' : '单视图'}
+                  </span>
+                  {selected ? (
+                    <span className="absolute left-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-liclick-pink text-white shadow-[0_0_10px_rgba(238,72,197,0.65)]">
+                      <Check className="h-2.5 w-2.5" />
+                    </span>
+                  ) : null}
+                  {state?.status === 'generating' ? (
+                    <span className="absolute inset-0 grid place-items-center bg-black/58 text-liclick-pink backdrop-blur-[1px]">
+                      <LoaderCircle className="h-5 w-5 animate-spin" />
+                    </span>
+                  ) : null}
+                  {state?.status === 'failed' ? (
+                    <span className="absolute bottom-1 right-1 grid h-5 w-5 place-items-center rounded-full bg-rose-950/90 text-rose-200" title={state.error ?? '生成失败'}>
+                      <AlertTriangle className="h-3 w-3" />
+                    </span>
+                  ) : null}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={disabled}
+                  className={`absolute right-1.5 top-1.5 z-20 grid h-6 w-6 place-items-center rounded-full bg-black/64 text-white transition duration-150 disabled:hidden ${
+                    menuOpen
+                      ? 'opacity-100 shadow-[0_0_14px_rgba(238,72,197,0.48)]'
+                      : 'opacity-0 group-hover/reference:opacity-100 focus-visible:opacity-100'
+                  }`}
+                  aria-label="图片功能"
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  title="图片功能"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (openReferenceMenuId === reference.id) {
+                      setOpenReferenceMenuId(undefined);
+                      return;
+                    }
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const menuWidth = 144;
+                    const menuHeight = 174;
+                    const left = Math.max(
+                      8,
+                      Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+                    );
+                    const belowTop = rect.bottom + 6;
+                    const top =
+                      belowTop + menuHeight <= window.innerHeight - 8
+                        ? belowTop
+                        : Math.max(8, rect.top - menuHeight - 6);
+                    setReferenceMenuPosition({ left, top });
+                    setOpenReferenceMenuId(reference.id);
+                  }}
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5 drop-shadow-[0_0_5px_rgba(255,255,255,0.9)]" />
+                </button>
+
+                {menuOpen && typeof document !== 'undefined' ? createPortal(
+                  <div
+                    ref={referenceMenuRef}
+                    role="menu"
+                    className="fixed z-[190] grid w-36 gap-0.5 rounded-lg border border-white/10 bg-[#191720] p-1.5 shadow-[0_14px_42px_rgba(0,0,0,0.68)]"
+                    style={referenceMenuPosition}
+                  >
+                    <button type="button" role="menuitem" className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] text-white/78 transition hover:bg-white/[0.07] hover:text-white" onClick={() => selectReference(reference)}>
+                      <Check className="h-3.5 w-3.5 text-liclick-pink" />选中该图片
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={state?.status === 'generating'}
+                      className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] text-white/78 transition hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => generateMultiviewFor(reference)}
+                    >
+                      {state?.status === 'generating' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-liclick-pink" /> : <Sparkles className="h-3.5 w-3.5 text-liclick-pink" />}
+                      {state?.status === 'generating' ? '正在生成' : '生成多视图'}
+                    </button>
+                    <button type="button" role="menuitem" className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] text-white/78 transition hover:bg-white/[0.07] hover:text-white" onClick={() => { setPreviewReference(reference); setOpenReferenceMenuId(undefined); }}>
+                      <Eye className="h-3.5 w-3.5" />预览图
+                    </button>
+                    <button type="button" role="menuitem" className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] text-white/78 transition hover:bg-white/[0.07] hover:text-white" onClick={() => duplicateReference(reference)}>
+                      <Copy className="h-3.5 w-3.5" />复制新副本
+                    </button>
+                    <button type="button" role="menuitem" className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] text-rose-200/82 transition hover:bg-rose-400/10 hover:text-rose-100" onClick={() => deleteReference(reference)}>
+                      <Trash2 className="h-3.5 w-3.5" />删除
+                    </button>
+                  </div>,
+                  document.body,
+                ) : null}
               </div>
-            </section>
-          );
-        })
+            );
+          })}
+        </div>
       )}
 
-      <div className="grid grid-cols-2 gap-1.5">
-        <button type="button" disabled={disabled} className="flex h-7 items-center justify-center gap-1 rounded-md border border-dashed border-white/13 text-[10px] font-semibold text-white/45 transition hover:border-white/26 hover:bg-white/[0.035] hover:text-white disabled:cursor-not-allowed disabled:opacity-45" onClick={() => addSingleInputRef.current?.click()}>
-          <Plus className="h-3 w-3" />新增单视图
-        </button>
-        <button type="button" disabled={disabled} className="flex h-7 items-center justify-center gap-1 rounded-md border border-dashed border-white/13 text-[10px] font-semibold text-white/45 transition hover:border-white/26 hover:bg-white/[0.035] hover:text-white disabled:cursor-not-allowed disabled:opacity-45" onClick={() => addMultiviewInputRef.current?.click()}>
-          <Plus className="h-3 w-3" />新增多视图
-        </button>
-      </div>
       {uploadError ? <p className="text-[10px] text-rose-200/72">{uploadError}</p> : null}
       {previewReference ? <ImagePreviewDialog reference={previewReference} onClose={() => setPreviewReference(undefined)} /> : null}
+      {containerDragActive ? (
+        <div className="absolute inset-0 z-40 grid grid-cols-2 overflow-hidden rounded-lg bg-[#0b0912]/92 p-2 backdrop-blur-sm">
+          <div
+            className="grid place-items-center rounded-l-lg bg-liclick-pink/[0.055] text-liclick-pink transition hover:bg-liclick-pink/12"
+            onDragOver={handleContainerDragOver}
+            onDrop={(event) => handleContainerDrop(event, 'single-view')}
+          >
+            <span className="grid justify-items-center gap-1.5 text-[10px] font-semibold">
+              <ImagePlus className="h-5 w-5" />拖入为单视图
+            </span>
+          </div>
+          <div
+            className="grid place-items-center rounded-r-lg bg-violet-400/[0.055] text-violet-200 transition hover:bg-violet-400/12"
+            onDragOver={handleContainerDragOver}
+            onDrop={(event) => handleContainerDrop(event, 'multi-view')}
+          >
+            <span className="grid justify-items-center gap-1.5 text-[10px] font-semibold">
+              <ImagePlus className="h-5 w-5" />拖入为多视图
+            </span>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -75,6 +75,104 @@ button {
   scrollbar-width: thin;
 }
 
+.workflow-horizontal-scrollbar {
+  scrollbar-color: rgba(238, 77, 214, 0.72) rgba(255, 255, 255, 0.08);
+  scrollbar-width: thin;
+}
+
+.workflow-horizontal-scrollbar::-webkit-scrollbar {
+  height: 8px;
+}
+
+.workflow-horizontal-scrollbar::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.workflow-horizontal-scrollbar::-webkit-scrollbar-thumb {
+  min-width: 42px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(238, 77, 214, 0.82), rgba(139, 92, 246, 0.82));
+  background-clip: padding-box;
+}
+
+.workflow-horizontal-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, rgba(255, 92, 207, 0.96), rgba(157, 112, 255, 0.96));
+  background-clip: padding-box;
+}
+
+.generate-panel-adaptive {
+  --generate-preview-height: 220px;
+  --generate-prompt-height: 100px;
+  --generate-camera-height: 76px;
+  --generate-camera-width: 92px;
+  --generate-content-gap: 12px;
+}
+
+.generate-preview-adaptive {
+  height: var(--generate-preview-height);
+  min-height: var(--generate-preview-height);
+  max-height: 240px;
+}
+
+.generate-multiview-adaptive {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.generate-prompt-adaptive {
+  height: var(--generate-prompt-height);
+  min-height: var(--generate-prompt-height);
+  max-height: 110px;
+}
+
+.generate-camera-card-adaptive {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+.generate-content-adaptive {
+  gap: var(--generate-content-gap);
+  padding-bottom: 12px;
+}
+
+@media (max-height: 1100px) {
+  .generate-panel-adaptive {
+    --generate-preview-height: 180px;
+    --generate-prompt-height: 90px;
+    --generate-camera-height: 56px;
+    --generate-camera-width: 84px;
+    --generate-content-gap: 10px;
+  }
+}
+
+@media (max-height: 900px) {
+  .generate-panel-adaptive {
+    --generate-preview-height: 144px;
+    --generate-prompt-height: 74px;
+    --generate-camera-height: 40px;
+    --generate-camera-width: 78px;
+    --generate-content-gap: 8px;
+  }
+}
+
+@media (max-height: 760px) {
+  .generate-panel-adaptive {
+    --generate-preview-height: 112px;
+    --generate-prompt-height: 60px;
+    --generate-camera-height: 30px;
+    --generate-camera-width: 72px;
+    --generate-content-gap: 6px;
+  }
+
+  .generate-camera-preset {
+    min-height: 40px;
+  }
+}
+
 @media (max-width: 430px) {
   .li3d-brand-copy {
     display: none;
