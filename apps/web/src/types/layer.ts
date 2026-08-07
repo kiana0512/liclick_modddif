@@ -34,6 +34,10 @@ export type Layer = {
   generationId?: string;
   captureId?: string;
   replacementTargetLayerId?: string;
+  /** Original generated view retained for non-destructive local repaint saves. */
+  localRepaintSourceUrl?: string;
+  /** Cumulative projection-space brush alpha retained without RGBA readback. */
+  localRepaintMaskUrl?: string;
   renderedColor?: boolean;
   /** Minimum absolute face-on cosine accepted by projection; 0 disables the guard. */
   minimumProjectionFacing?: number;

@@ -20,6 +20,25 @@ const cacheByRenderer = new WeakMap<
   THREE.WebGLRenderer,
   Map<string, Promise<RuntimeProjectionVisibility>>
 >();
+const renderTailByRenderer = new WeakMap<THREE.WebGLRenderer, Promise<void>>();
+
+async function withRuntimeVisibilityRenderLock<T>(
+  renderer: THREE.WebGLRenderer,
+  task: () => Promise<T>,
+) {
+  const previous = renderTailByRenderer.get(renderer) ?? Promise.resolve();
+  let release: () => void = () => {};
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  renderTailByRenderer.set(renderer, previous.then(() => current));
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
 
 function stableNumbers(values?: number[]) {
   return values?.map((value) => value.toFixed(6)).join(',') ?? '';
@@ -242,7 +261,9 @@ export function createRuntimeProjectionDepth(request: RuntimeProjectionDepthRequ
   const key = createCacheKey(request);
   const cached = cache.get(key);
   if (cached) return cached;
-  const promise = renderRuntimeProjectionDepth(request).catch((error) => {
+  const promise = withRuntimeVisibilityRenderLock(request.renderer, () =>
+    renderRuntimeProjectionDepth(request),
+  ).catch((error) => {
     cache?.delete(key);
     throw error;
   });

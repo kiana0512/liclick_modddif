@@ -156,6 +156,10 @@ function markVisibleStackNeedsRebake(layers: Layer[]) {
   );
 }
 
+function isLocalRepaintRuntimeLayer(layer: Layer) {
+  return Boolean(layer.replacementTargetLayerId) && !layer.isBaked;
+}
+
 export const useLayerStore = create<LayerStore>((set, get) => ({
   layers: [],
   activeProjectedLayerId: undefined,
@@ -500,22 +504,32 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     }),
   deleteLayer: (layerId) =>
     set((state) => {
+      const removedLayer = state.layers.find((layer) => layer.id === layerId);
       const layers = ensureSelectedObjectHasLayer(
         state.layers.filter((layer) => layer.id !== layerId),
       );
+      const orderedLayers = withOrder(layers);
       return {
-        layers: markVisibleStackNeedsRebake(withOrder(layers)),
+        layers: removedLayer && isLocalRepaintRuntimeLayer(removedLayer)
+          ? orderedLayers
+          : markVisibleStackNeedsRebake(orderedLayers),
         activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),
   deleteLayers: (layerIds) =>
     set((state) => {
       const layerIdSet = new Set(layerIds);
+      const removedLayers = state.layers.filter((layer) => layerIdSet.has(layer.id));
       const layers = ensureSelectedObjectHasLayer(
         state.layers.filter((layer) => !layerIdSet.has(layer.id)),
       );
+      const orderedLayers = withOrder(layers);
+      const removesOnlyLocalRepaintLayers =
+        removedLayers.length > 0 && removedLayers.every(isLocalRepaintRuntimeLayer);
       return {
-        layers: markVisibleStackNeedsRebake(withOrder(layers)),
+        layers: removesOnlyLocalRepaintLayers
+          ? orderedLayers
+          : markVisibleStackNeedsRebake(orderedLayers),
         activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),

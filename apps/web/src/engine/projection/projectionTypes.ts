@@ -48,6 +48,8 @@ export type ProjectionLayerInput = {
   useDepthCheck?: boolean;
   useNormalCheck?: boolean;
   renderedColor?: boolean;
+  /** Render only accepted projection pixels and keep all other fragments transparent. */
+  transparentProjectionOnly?: boolean;
   /** Reject projected fragments below this absolute geometric face-on cosine. */
   minimumProjectionFacing?: number;
   enableBackfaceCulling?: boolean;
@@ -74,6 +76,7 @@ export type ProjectionLayerDisplayInput = Pick<
   | 'layerId'
   | 'opacity'
   | 'strength'
+  | 'blendMode'
   | 'visible'
   | 'hue'
   | 'saturation'
@@ -102,6 +105,7 @@ export type ProjectionLayerStackInput = Omit<
   | 'useDepthCheck'
   | 'useNormalCheck'
   | 'renderedColor'
+  | 'transparentProjectionOnly'
   | 'minimumProjectionFacing'
 > & {
   layers: Array<

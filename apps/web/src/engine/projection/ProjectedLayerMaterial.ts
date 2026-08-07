@@ -8,10 +8,11 @@ import type {
 import { packProjectedTextureArrayInPersistentWorker } from './projectedTextureArrayWorker';
 import { buildProjectionMatrixBundle } from './projectionMath';
 import {
-  getLiveProjectedCanvasTexture,
+  getLiveProjectedTexture,
   isLiveProjectedCanvasUrl,
 } from './liveProjectedCanvasTextureRegistry';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
+import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 
 const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
@@ -19,8 +20,10 @@ const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
 const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
 const DISPOSED_MATERIAL_FLAG = 'liclickDisposedMaterial';
 const PROJECTED_LAYER_STACK_STATE_KEY = 'liclickProjectedLayerStackState';
+const PROJECTED_PROGRAM_RESIDENT_ANCHOR_FLAG = 'liclickProjectedProgramResidentAnchor';
 const UV_OVERLAY_PREVIEW_MATERIAL_FLAG = 'liclickUvOverlayPreviewMaterial';
 const PROJECTED_LAYER_SAMPLER_BUDGET_KEY = 'liclickProjectedLayerSamplerBudget';
+const LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG = 'liclickLiveLocalRepaintOverlayMaterial';
 export const PROJECTED_LAYER_MATERIAL_USER_DATA_KEY = 'liclickProjectedLayerProjectionData';
 export type ProjectedLayerProjectionData = {
   layers: Array<{
@@ -128,6 +131,7 @@ type ProjectedLayerUniformBinding = {
   hueUniform: string;
   saturationUniform: string;
   lightnessUniform: string;
+  overlayUniform?: string;
 };
 
 type ProjectedLayerMaterialState = {
@@ -281,6 +285,7 @@ const fragmentShader = `
   uniform float layerOpacity;
   uniform float layerStrength;
   uniform float projectedIsRenderedColor;
+  uniform float transparentProjectionOnly;
   uniform float minimumProjectionFacing;
   uniform float projectedBlendModeOverlay;
   uniform float projectedCompositeUnderlay;
@@ -643,6 +648,35 @@ const fragmentShader = `
       renderedColorExposureCompensation,
       projectedIsRenderedColor
     );
+    if (transparentProjectionOnly > 0.5) {
+      // Local repaint is the authored final replacement, not another Top-K
+      // candidate. Keep geometric visibility gates, but never attenuate it
+      // with the background projection quality weight.
+      float literalReplacementAlpha = clamp(
+        inside * backfaceAlpha * alphaCoverage * coverage,
+        0.0,
+        1.0
+      );
+      float projectedDepthPriority = step(
+        ${COVERAGE_THRESHOLD.toFixed(2)},
+        literalReplacementAlpha
+      );
+      // The projected background already biases accepted fragments by 0.000006.
+      // Make the final repaint pass decisively closer so duplicate geometry
+      // cannot z-fight with the background while the camera moves.
+      gl_FragDepthEXT = clamp(
+        gl_FragCoord.z + mix(0.000006, -0.000080, projectedDepthPriority),
+        0.0,
+        1.0
+      );
+      gl_FragColor = vec4(
+        clamp(projectedDisplayColor, 0.0, 1.0),
+        literalReplacementAlpha
+      );
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
     vec3 mixedColor = mix(emptyPreviewColor, projectedDisplayColor, projectionAlpha);
     mixedColor = mix(
       mixedColor,
@@ -854,13 +888,13 @@ function buildStackFragmentShader(
   uniform float hueShift${index};
   uniform float saturationShift${index};
   uniform float lightnessShift${index};
+  uniform float layerOverlayMode${index};
 `,
   ).join('');
 
   const buildCandidateEvaluations = (role: 'normal' | 'underlay') =>
     Array.from({ length: layerCount }, (_, index) =>
-      (layers[index].compositeRole ??
-        (layers[index].blendMode === 'overlay' ? 'overlay' : 'normal')) !== role
+      (layers[index].compositeRole ?? 'normal') !== role
         ? ''
         : `
     if (layerOpacity${index} > 0.0001) {
@@ -926,7 +960,11 @@ function buildStackFragmentShader(
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
       if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
         projectedDepthCoverage = max(projectedDepthCoverage, coverage);
-        insertBlendCandidate(texel.rgb, coverage, quality);
+        ${
+          role === 'normal'
+            ? `if (layerOverlayMode${index} < 0.5) insertBlendCandidate(texel.rgb, coverage, quality);`
+            : 'insertBlendCandidate(texel.rgb, coverage, quality);'
+        }
       }
     }
 `,
@@ -935,10 +973,10 @@ function buildStackFragmentShader(
   const blendEvaluations = buildCandidateEvaluations('normal');
 
   const overlayEvaluations = Array.from({ length: layerCount }, (_, index) =>
-    layers[index].blendMode !== 'overlay'
+    (layers[index].compositeRole ?? 'normal') !== 'normal'
       ? ''
       : `
-    if (layerOpacity${index} > 0.0001) {
+    if (layerOverlayMode${index} > 0.5 && layerOpacity${index} > 0.0001) {
       vec4 captureWorldPosition = objectMatrixDelta${index} * vec4(vWorldPosition, 1.0);
       vec3 captureWorldNormal = normalize(objectNormalDelta${index} * vWorldNormal);
       vec4 projected = projectorMatrix${index} * captureWorldPosition;
@@ -1516,7 +1554,6 @@ function getProjectionLayerStructureSignature(
           layer.useNormalCheck ? 1 : 0,
           layer.renderedColor ? 1 : 0,
           layer.minimumProjectionFacing ?? 0,
-          layer.blendMode ?? 'normal',
           layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
           getLayerCameraSignature(layer.camera),
@@ -1568,6 +1605,10 @@ function updateLayerDisplayUniforms(
   if (saturationUniform) saturationUniform.value = layer.saturation ?? 0;
   const lightnessUniform = material.uniforms[binding.lightnessUniform];
   if (lightnessUniform) lightnessUniform.value = layer.lightness ?? 0;
+  if (binding.overlayUniform) {
+    const overlayUniform = material.uniforms[binding.overlayUniform];
+    if (overlayUniform) overlayUniform.value = layer.blendMode === 'overlay' ? 1 : 0;
+  }
 }
 
 /**
@@ -1588,6 +1629,11 @@ export function syncProjectedLayerMaterialDisplayState(
 
   for (const candidate of materials) {
     if (!(candidate instanceof THREE.ShaderMaterial)) continue;
+    // The live local-repaint material is renderer-owned and intentionally sits
+    // outside the persisted projection stack. A legacy layer can reuse the same
+    // stable id while hidden; applying ordinary eye/opacity controls here would
+    // turn valid realtime brush feedback transparent between store updates.
+    if (candidate.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG]) continue;
     const state = candidate.userData[PROJECTED_LAYER_STACK_STATE_KEY] as
       | ProjectedLayerMaterialState
       | undefined;
@@ -1799,7 +1845,7 @@ export async function loadProjectedTexture(
   profile: ProjectedTextureProfile = 'image',
 ) {
   if (isLiveProjectedCanvasUrl(imageUrl)) {
-    const liveTexture = getLiveProjectedCanvasTexture(imageUrl, colorSpace);
+    const liveTexture = getLiveProjectedTexture(imageUrl, colorSpace);
     if (liveTexture) return liveTexture;
   }
   const cacheKey = getProjectedTextureCacheKey(imageUrl, colorSpace, profile);
@@ -1838,6 +1884,9 @@ type ProjectedTextureArrayBundle = {
   texture: THREE.DataArrayTexture;
   uvScales: THREE.Vector2[];
   uploadYieldCount: number;
+  allocationDurationMs: number;
+  uploadDurationMs: number;
+  maximumStripeDurationMs: number;
 };
 
 const PROJECTED_ARRAY_COLOR_MEMORY_BUDGET = 64 * 1024 * 1024;
@@ -1848,7 +1897,10 @@ const PROJECTED_ARRAY_MIN_PREVIEW_SIDE = 256;
 // depth and normals, keeping the total preview allocation bounded near 128 MiB.
 const PROJECTED_ARRAY_MAX_COLOR_PREVIEW_SIDE = 1536;
 const PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE = 1024;
-const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 786_432;
+// Upload at most 1 MiB of RGBA texels before yielding presentation back to the
+// viewport. Source/export resolution is unchanged; only transfer scheduling is
+// split more finely because interaction stability outranks completion time.
+const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 262_144;
 
 function getTexturePixelSize(texture: THREE.Texture) {
   const image = texture.image as
@@ -2024,6 +2076,78 @@ function assertNoProjectedArrayWebGlError(
   }
 }
 
+async function uploadProjectedTextureArrayInStripes(input: {
+  context: WebGL2RenderingContext;
+  texture: WebGLTexture;
+  textureData: Uint8Array<ArrayBuffer>;
+  width: number;
+  height: number;
+  layerCount: number;
+  isCancelled?: () => boolean;
+  isViewportInteractionBusy?: () => boolean;
+}) {
+  const rowsPerStripe = Math.max(
+    1,
+    Math.min(
+      input.height,
+      Math.floor(PROJECTED_ARRAY_FRAME_PIXEL_BUDGET / Math.max(1, input.width)),
+    ),
+  );
+  let uploadYieldCount = 0;
+  let uploadDurationMs = 0;
+  let maximumStripeDurationMs = 0;
+
+  for (let layerIndex = 0; layerIndex < input.layerCount; layerIndex += 1) {
+    for (let firstRow = 0; firstRow < input.height; firstRow += rowsPerStripe) {
+      if (input.isCancelled?.()) {
+        throw new Error('Projected texture array upload was cancelled.');
+      }
+      await yieldProjectedArrayUploadFrame();
+      await waitForProjectedArrayUploadWindow(
+        input.isViewportInteractionBusy,
+        input.isCancelled,
+      );
+
+      const rowCount = Math.min(rowsPerStripe, input.height - firstRow);
+      const firstByte =
+        (layerIndex * input.width * input.height + firstRow * input.width) * 4;
+      const lastByte = firstByte + input.width * rowCount * 4;
+      const previousActiveTexture = input.context.getParameter(
+        input.context.ACTIVE_TEXTURE,
+      ) as number;
+      const previousBinding = input.context.getParameter(
+        input.context.TEXTURE_BINDING_2D_ARRAY,
+      ) as WebGLTexture | null;
+      try {
+        const stripeStartedAt = performance.now();
+        input.context.bindTexture(input.context.TEXTURE_2D_ARRAY, input.texture);
+        input.context.texSubImage3D(
+          input.context.TEXTURE_2D_ARRAY,
+          0,
+          0,
+          firstRow,
+          layerIndex,
+          input.width,
+          rowCount,
+          1,
+          input.context.RGBA,
+          input.context.UNSIGNED_BYTE,
+          input.textureData.subarray(firstByte, lastByte),
+        );
+        assertNoProjectedArrayWebGlError(input.context, 'upload');
+        const stripeDurationMs = performance.now() - stripeStartedAt;
+        uploadDurationMs += stripeDurationMs;
+        maximumStripeDurationMs = Math.max(maximumStripeDurationMs, stripeDurationMs);
+      } finally {
+        input.context.activeTexture(previousActiveTexture);
+        input.context.bindTexture(input.context.TEXTURE_2D_ARRAY, previousBinding);
+      }
+      uploadYieldCount += 1;
+    }
+  }
+  return { uploadYieldCount, uploadDurationMs, maximumStripeDurationMs };
+}
+
 async function createProjectedTextureArray(
   renderer: THREE.WebGLRenderer,
   sources: Array<THREE.Texture | undefined>,
@@ -2121,37 +2245,49 @@ async function createProjectedTextureArray(
     texture.anisotropy = 1;
     texture.source.dataReady = false;
     texture.needsUpdate = true;
-    let uploadedPixelsThisFrame = 0;
     let uploadYieldCount = 0;
+    let allocationDurationMs = 0;
+    let uploadDurationMs = 0;
+    let maximumStripeDurationMs = 0;
 
     try {
       clearWebGlErrors(context);
+      const allocationStartedAt = performance.now();
       renderer.initTexture(texture);
+      allocationDurationMs = performance.now() - allocationStartedAt;
       assertNoProjectedArrayWebGlError(context, 'allocation');
-      texture.source.dataReady = true;
-      for (let layerIndex = 0; layerIndex < sources.length; layerIndex += 1) {
-        if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
-        await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
-        texture.addLayerUpdate(layerIndex);
-        texture.needsUpdate = true;
-        renderer.initTexture(texture);
-        assertNoProjectedArrayWebGlError(context, 'upload');
-        uploadedPixelsThisFrame += width * height;
-        if (
-          uploadedPixelsThisFrame >= PROJECTED_ARRAY_FRAME_PIXEL_BUDGET &&
-          layerIndex < sources.length - 1
-        ) {
-          uploadedPixelsThisFrame = 0;
-          uploadYieldCount += 1;
-          await yieldProjectedArrayUploadFrame();
-        }
-      }
       const textureProperties = renderer.properties.get(texture) as {
         __webglTexture?: WebGLTexture;
       };
       if (!textureProperties.__webglTexture) {
         throw new Error('Could not upload projected texture array storage.');
       }
+      const uploadStats = await uploadProjectedTextureArrayInStripes({
+        context,
+        texture: textureProperties.__webglTexture,
+        textureData,
+        width,
+        height,
+        layerCount: sources.length,
+        isCancelled,
+        isViewportInteractionBusy,
+      });
+      uploadYieldCount = uploadStats.uploadYieldCount;
+      uploadDurationMs = uploadStats.uploadDurationMs;
+      maximumStripeDurationMs = uploadStats.maximumStripeDurationMs;
+      markPerformanceEvent('projection', 'projected-array-gpu-transfer', {
+        profile,
+        width,
+        height,
+        layerCount: sources.length,
+        allocationDurationMs,
+        uploadDurationMs,
+        maximumStripeDurationMs,
+        uploadYieldCount,
+      });
+      // Keep Three's allocated version authoritative. Setting dataReady without
+      // incrementing texture.version prevents a second monolithic re-upload.
+      texture.source.dataReady = true;
     } catch (error) {
       texture.source.dataReady = true;
       texture.dispose();
@@ -2167,6 +2303,9 @@ async function createProjectedTextureArray(
         ),
       ),
       uploadYieldCount,
+      allocationDurationMs,
+      uploadDurationMs,
+      maximumStripeDurationMs,
     };
   });
 }
@@ -2324,6 +2463,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       layerOpacity: { value: input.visible ? input.opacity : 0 },
       layerStrength: { value: input.strength ?? 1 },
       projectedIsRenderedColor: { value: input.renderedColor ? 1 : 0 },
+      transparentProjectionOnly: { value: input.transparentProjectionOnly ? 1 : 0 },
       minimumProjectionFacing: {
         value: THREE.MathUtils.clamp(input.minimumProjectionFacing ?? 0, 0, 0.99),
       },
@@ -2380,8 +2520,17 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       keyLightDirection: { value: previewLighting.keyLightDirection },
     },
     toneMapped: true,
+    transparent: Boolean(input.transparentProjectionOnly),
+    depthWrite: !input.transparentProjectionOnly,
+    polygonOffset: Boolean(input.transparentProjectionOnly),
+    polygonOffsetFactor: input.transparentProjectionOnly ? -16 : 0,
+    polygonOffsetUnits: input.transparentProjectionOnly ? -16 : 0,
+    depthFunc: THREE.LessEqualDepth,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
+  if (input.transparentProjectionOnly) {
+    material.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG] = true;
+  }
   material.userData[DISPOSABLE_TEXTURES_KEY] = [
     neutralTexture,
     neutralNormalTexture,
@@ -2404,6 +2553,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
         hueUniform: 'hueShift',
         saturationUniform: 'saturationShift',
         lightnessUniform: 'lightnessShift',
+        overlayUniform: 'projectedBlendModeOverlay',
       },
     ],
     usesTextureArrays: false,
@@ -2727,6 +2877,10 @@ export async function createProjectedLayerStackMaterial(
     uniforms[`hueShift${index}`] = { value: layer.hue ?? 0 };
     uniforms[`saturationShift${index}`] = { value: layer.saturation ?? 0 };
     uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
+    uniforms[`layerOverlayMode${index}`] = {
+      value:
+        (layer.compositeRole ?? 'normal') === 'normal' && layer.blendMode === 'overlay' ? 1 : 0,
+    };
     captureObjectMatrices.push(captureObjectMatrixWorld);
     projectedArraySlices.push(projectedArraySlice);
     maskArraySlices.push(maskArraySlice);
@@ -2841,6 +2995,27 @@ export async function createProjectedLayerStackMaterial(
             0,
           ),
         );
+        document.body.dataset.projectedArrayAllocationDurationMs = [
+          projectedArray,
+          maskArray,
+          depthArray,
+          normalArray,
+        ]
+          .reduce((total, bundle) => total + (bundle?.allocationDurationMs ?? 0), 0)
+          .toFixed(1);
+        document.body.dataset.projectedArrayUploadDurationMs = [
+          projectedArray,
+          maskArray,
+          depthArray,
+          normalArray,
+        ]
+          .reduce((total, bundle) => total + (bundle?.uploadDurationMs ?? 0), 0)
+          .toFixed(1);
+        document.body.dataset.projectedArrayMaximumStripeDurationMs = Math.max(
+          ...[projectedArray, maskArray, depthArray, normalArray].map(
+            (bundle) => bundle?.maximumStripeDurationMs ?? 0,
+          ),
+        ).toFixed(1);
       }
       if (projectedArray) uniforms.projectedMaps = { value: projectedArray.texture };
       if (maskArray) uniforms.maskMaps = { value: maskArray.texture };
@@ -2935,6 +3110,7 @@ export async function createProjectedLayerStackMaterial(
       hueUniform: `hueShift${index}`,
       saturationUniform: `saturationShift${index}`,
       lightnessUniform: `lightnessShift${index}`,
+      overlayUniform: `layerOverlayMode${index}`,
     })),
     usesTextureArrays: useTextureArrays,
   } satisfies ProjectedLayerMaterialState;
@@ -2953,9 +3129,59 @@ function markGeneratedMaterial<T extends THREE.Material>(material: T) {
   return material;
 }
 
+// WebGL releases a linked shader program when the last material that references
+// it is disposed. Rebuilding a large projected stack then forces the browser and
+// driver to compile the same unrolled shader again, producing a 100-200 ms
+// presentation gap. Keep a tiny, texture-free LRU of compiled material anchors:
+// the real 4K/array resources are still disposed immediately, while Three's
+// already-linked program remains resident for the next structural transition.
+const maximumResidentProjectedPrograms = 3;
+const residentProjectedProgramAnchors: THREE.ShaderMaterial[] = [];
+
+function retainProjectedProgram(material: THREE.ShaderMaterial) {
+  const disposableTextures = material.userData[DISPOSABLE_TEXTURES_KEY] as
+    | THREE.Texture[]
+    | undefined;
+  disposableTextures?.forEach((texture) => texture.dispose());
+  material.userData[DISPOSABLE_TEXTURES_KEY] = [];
+
+  const matchingAnchorIndex = residentProjectedProgramAnchors.findIndex(
+    (candidate) =>
+      candidate.vertexShader === material.vertexShader &&
+      candidate.fragmentShader === material.fragmentShader,
+  );
+  if (matchingAnchorIndex >= 0) {
+    material.userData[DISPOSED_MATERIAL_FLAG] = true;
+    material.dispose();
+    const matchingAnchor = residentProjectedProgramAnchors.splice(
+      matchingAnchorIndex,
+      1,
+    )[0];
+    residentProjectedProgramAnchors.push(matchingAnchor);
+    return;
+  }
+
+  material.userData[PROJECTED_PROGRAM_RESIDENT_ANCHOR_FLAG] = true;
+  residentProjectedProgramAnchors.push(material);
+  while (residentProjectedProgramAnchors.length > maximumResidentProjectedPrograms) {
+    const retiredAnchor = residentProjectedProgramAnchors.shift();
+    if (!retiredAnchor) break;
+    retiredAnchor.userData[DISPOSED_MATERIAL_FLAG] = true;
+    retiredAnchor.dispose();
+  }
+}
+
 function disposeGeneratedMaterial(material: THREE.Material) {
   if (!material.userData[GENERATED_MATERIAL_FLAG]) return;
   if (material.userData[DISPOSED_MATERIAL_FLAG]) return;
+  if (material.userData[PROJECTED_PROGRAM_RESIDENT_ANCHOR_FLAG]) return;
+  if (
+    material instanceof THREE.ShaderMaterial &&
+    material.userData[PROJECTED_LAYER_STACK_STATE_KEY]
+  ) {
+    retainProjectedProgram(material);
+    return;
+  }
   material.userData[DISPOSED_MATERIAL_FLAG] = true;
   const textures = material.userData[DISPOSABLE_TEXTURES_KEY] as THREE.Texture[] | undefined;
   textures?.forEach((texture) => texture.dispose());

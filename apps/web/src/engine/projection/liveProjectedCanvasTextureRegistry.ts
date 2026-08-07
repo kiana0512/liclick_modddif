@@ -13,10 +13,18 @@ type LiveCanvasEntry = {
   };
 };
 
+type LiveImageEntry = {
+  image: HTMLImageElement;
+  texture: THREE.Texture;
+  revision: number;
+  flipY: boolean;
+};
+
 const liveCanvasTextures = new Map<string, LiveCanvasEntry>();
+const liveImageTextures = new Map<string, LiveImageEntry>();
 
 function configureTexture(
-  texture: THREE.CanvasTexture,
+  texture: THREE.Texture,
   colorSpace: THREE.ColorSpace,
   flipY: boolean,
 ) {
@@ -48,6 +56,8 @@ export function registerLiveProjectedCanvasTexture(
   const existing = liveCanvasTextures.get(url);
   if (existing?.canvas === canvas) return url;
   existing?.texture.dispose();
+  liveImageTextures.get(url)?.texture.dispose();
+  liveImageTextures.delete(url);
   const texture = new THREE.CanvasTexture(canvas);
   const flipY = options.flipY ?? false;
   configureTexture(texture, colorSpace, flipY);
@@ -62,12 +72,48 @@ export function registerLiveProjectedCanvasTexture(
   return url;
 }
 
+export function registerLiveProjectedImageTexture(
+  id: string,
+  image: HTMLImageElement,
+  colorSpace: THREE.ColorSpace = THREE.NoColorSpace,
+  options: { flipY?: boolean } = {},
+) {
+  const url = createLiveProjectedCanvasUrl(id);
+  const existing = liveImageTextures.get(url);
+  if (existing?.image === image) return url;
+  existing?.texture.dispose();
+  liveCanvasTextures.get(url)?.texture.dispose();
+  liveCanvasTextures.delete(url);
+  const texture = new THREE.Texture(image);
+  const flipY = options.flipY ?? false;
+  configureTexture(texture, colorSpace, flipY);
+  liveImageTextures.set(url, {
+    image,
+    texture,
+    revision: (existing?.revision ?? -1) + 1,
+    flipY,
+  });
+  return url;
+}
+
 export function getLiveProjectedCanvasTexture(
   url: string,
   colorSpace: THREE.ColorSpace = THREE.NoColorSpace,
   options: { flipY?: boolean } = {},
 ) {
   const entry = liveCanvasTextures.get(url);
+  if (!entry) return undefined;
+  entry.flipY = options.flipY ?? entry.flipY;
+  configureTexture(entry.texture, colorSpace, entry.flipY);
+  return entry.texture;
+}
+
+export function getLiveProjectedTexture(
+  url: string,
+  colorSpace: THREE.ColorSpace = THREE.NoColorSpace,
+  options: { flipY?: boolean } = {},
+) {
+  const entry = liveCanvasTextures.get(url) ?? liveImageTextures.get(url);
   if (!entry) return undefined;
   entry.flipY = options.flipY ?? entry.flipY;
   configureTexture(entry.texture, colorSpace, entry.flipY);
@@ -109,4 +155,11 @@ export function getLiveProjectedCanvasBlob(url: string) {
   });
   entry.encodedPng = { revision, promise };
   return promise;
+}
+
+export function getLiveProjectedTextureSourceState(url: string) {
+  const canvasEntry = liveCanvasTextures.get(url);
+  if (canvasEntry) return { source: canvasEntry.canvas, revision: canvasEntry.revision };
+  const imageEntry = liveImageTextures.get(url);
+  return imageEntry ? { source: imageEntry.image, revision: imageEntry.revision } : undefined;
 }

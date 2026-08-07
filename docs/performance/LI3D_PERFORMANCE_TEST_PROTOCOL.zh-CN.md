@@ -3,6 +3,9 @@
 阶段 1–5 的实现、WebGPU 覆盖范围、阶段 5 实测和后续路线见
 [`LI3D_PERFORMANCE_OPTIMIZATION_PHASES_1_TO_5.zh-CN.md`](./LI3D_PERFORMANCE_OPTIMIZATION_PHASES_1_TO_5.zh-CN.md)。
 
+阶段 6 的驻留缓存、投影数组提交调度、4K 回归结果与独立 WebGPU 光栅路线见
+[`LI3D_PERFORMANCE_OPTIMIZATION_PHASE_6.zh-CN.md`](./LI3D_PERFORMANCE_OPTIMIZATION_PHASE_6.zh-CN.md)。
+
 ## 1. 测试目标
 
 唯一最高优先级是持续出帧：模型连续旋转时，生成、图层开关、内容识别修补、UV 合成不得让视口停止响应。优化不得降低贴图分辨率、像素质量、投影精度或模型质量。
@@ -49,7 +52,7 @@ Windows 正式发行版由 `LIclick 3D Texture Local Component` 安装器携带�
 2. 2K 和 4K 各测一组；不能动态降低分辨率或 DPR 来通过测试。
 3. Chrome/Edge 版本、显卡驱动、电源模式、窗口尺寸保持一致。
 4. 关闭录屏、系统更新和无关 GPU 程序；保留真实 Li3D 本地组件与后端。
-5. 首次加载只用于预热；等模型、14 张图和 shader 全部加载后再开始记录。
+5. 首次加载只用于预热；等模型、14 张图、修补层和 shader 全部加载后再开始记录。页面刷新后必须先确认对象列表出现目标 FBX、视口三角形计数稳定且 S4 按钮可用，再额外等待至少 3 个稳定采样周期；禁止在模型异步恢复期间启动 S4，否则覆盖率样本无效。
 6. 每个场景运行 3 次，报告中使用中位数，同时保留最差一次的最大帧时间。
 7. 每次点击“清空”后等待 2 秒，收起面板，再执行场景；完成后等待 2 秒再展开读取结果。
 
