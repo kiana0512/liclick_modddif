@@ -237,8 +237,19 @@ function extractFirstUrl(text: string) {
   return text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
 }
 
+function sanitizeAtlasLoginMessage(text: string) {
+  return trimOutput(
+    text
+      .replace(/https?:\/\/[^\s"'<>]+/g, '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join('\n'),
+  );
+}
+
 function loginMessage(login: PendingAtlasLogin, fallback: string) {
-  return trimOutput(`${login.stderr}\n${login.stdout}`) || fallback;
+  return sanitizeAtlasLoginMessage(`${login.stderr}\n${login.stdout}`) || fallback;
 }
 
 function cancelPendingAtlasLogins() {
@@ -264,16 +275,20 @@ function startAtlasLoginProcess() {
     };
     pendingAtlasLogins.set(id, login);
 
-    const child = spawn('node', [script, 'gateway', 'login'], {
-      cwd: process.cwd(),
-      env: atlasEnv(homeDir, {
-        // Many CLI browser openers print the URL when BROWSER is echo.
-        // If atlas-skillhub opens a browser directly, polling still catches the token file once it is written.
-        BROWSER: process.env.ATLAS_BROWSER ?? 'echo',
-      }),
-      shell: false,
-      windowsHide: true,
-    });
+    const child = spawn(
+      atlasNodePath(),
+      [script, 'gateway', 'login', '--token-file', atlasTokenFile(homeDir)],
+      {
+        cwd: process.cwd(),
+        env: atlasEnv(homeDir, {
+          // Many CLI browser openers print the URL when BROWSER is echo.
+          // If atlas-skillhub opens a browser directly, polling still catches the token file once it is written.
+          BROWSER: process.env.ATLAS_BROWSER ?? 'echo',
+        }),
+        shell: false,
+        windowsHide: true,
+      },
+    );
     login.child = child;
 
     child.stdout.on('data', (chunk) => {

@@ -1847,8 +1847,9 @@ export function GeneratePanel() {
   }
 
   async function requirePersonalLiclickAccount() {
-    const wasAuthenticated = useAuthStore.getState().status === 'authenticated';
-    if (!(await requireFeishuLogin())) return false;
+    if (!(await requireFeishuLogin())) {
+      throw new Error('未完成飞书登录，无法使用莉刻生图服务。');
+    }
     let activeProviderStatus = useAuthStore.getState().providerStatus;
     try {
       // Atlas credentials can expire independently from the browser session.
@@ -1864,7 +1865,7 @@ export function GeneratePanel() {
         description: message,
         dedupeKey: 'liclick-auth-strategy-unavailable',
       });
-      return false;
+      throw new Error(message);
     }
     const authStrategy = resolveLiclickAuthStrategy(activeProviderStatus);
     // The local build follows 7515224: its Atlas session owns both identity
@@ -1919,7 +1920,7 @@ export function GeneratePanel() {
           description: message,
           dedupeKey: 'liclick-atlas-credential-refresh-failed',
         });
-        return false;
+        throw new Error(message);
       }
     }
     if (authStrategy !== 'personal-local-component') {
@@ -1931,17 +1932,12 @@ export function GeneratePanel() {
         description: message,
         dedupeKey: 'liclick-auth-strategy-unresolved',
       });
-      return false;
-    }
-    if (!wasAuthenticated) {
-      setGenerateNotice({
-        tone: 'info',
-        message: '飞书登录已完成。请再次点击生成，以绑定此电脑上的个人莉刻账号。',
-      });
-      return false;
+      throw new Error(message);
     }
     const authenticatedUser = useAuthStore.getState().user;
-    if (!authenticatedUser) return false;
+    if (!authenticatedUser) {
+      throw new Error('飞书登录已完成，但没有读取到当前用户，请刷新页面后重试。');
+    }
     const expectedEmail = authenticatedUser.email?.trim();
     if (
       isPersonalLiclickAccountForEmail(
@@ -1987,7 +1983,7 @@ export function GeneratePanel() {
         description: message,
         dedupeKey: 'liclick-account-binding-failed',
       });
-      return false;
+      throw error instanceof Error ? error : new Error(message);
     }
   }
 
@@ -2063,7 +2059,7 @@ export function GeneratePanel() {
   ) {
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     if (requestedViews.length === 0) throw new Error('请先添加至少一个模型视角。');
-    if (!(await requirePersonalLiclickAccount())) return;
+    await requirePersonalLiclickAccount();
     const objectId = captureObjectId;
     const object = objects.find((item) => item.id === objectId);
     const texturePrompt = buildTextureMapPrompt(prompt);
@@ -2628,9 +2624,7 @@ export function GeneratePanel() {
     let pendingGeneration: Generation | undefined;
     setReferenceGroupGenerationState({ groupId, status: 'generating' });
     try {
-      if (!(await requirePersonalLiclickAccount())) {
-        throw new Error('未完成莉刻账号绑定，无法生成多视图。');
-      }
+      await requirePersonalLiclickAccount();
       const submittedPrompt = buildMultiviewPrompt(liclickPrompt);
       const generationId = createId('reference-multiview');
       pendingGeneration = {
