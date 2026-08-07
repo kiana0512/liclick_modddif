@@ -35,7 +35,10 @@ import {
   canCompositeUvLayersInWorker,
   compositeUvLayersInWorker,
 } from '@/engine/layers/uvLayerCompositeWorker';
-import { startPerformanceSpan } from '@/engine/performance/performanceTimeline';
+import {
+  markPerformanceEvent,
+  startPerformanceSpan,
+} from '@/engine/performance/performanceTimeline';
 import {
   canUseLayerStackCache,
   findExactLayerStackTexture,
@@ -68,6 +71,7 @@ const RESOLUTION_TO_SIZE = {
 
 const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const MAX_IMAGE_ELEMENT_CACHE_SIZE = 32;
+const MAX_COMPOSITED_UV_TEXTURE_CACHE_SIZE = 3;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
 const PROJECTED_PREVIEW_LIMIT_TOAST_KEY = 'projected-preview:sampler-limit';
@@ -157,7 +161,7 @@ function cameraSignature(layer: Layer) {
   ].join('/');
 }
 
-function layerPreviewSignature(layer: Layer) {
+function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
   return [
     layer.id,
     layer.type,
@@ -165,7 +169,7 @@ function layerPreviewSignature(layer: Layer) {
     layer.maskUrl ?? '',
     layer.depthUrl ?? '',
     layer.visible ? 1 : 0,
-    layer.order,
+    relativeOrder,
     layer.opacity,
     layer.strength ?? 1,
     layer.blendMode,
@@ -241,7 +245,7 @@ function uvLayerStackPreviewSignature(layers: Layer[]) {
     .join('|');
 }
 
-function projectedLayerStructureSignature(layer: Layer) {
+function projectedLayerStructureSignature(layer: Layer, relativeOrder = layer.order) {
   return [
     layer.id,
     layer.type,
@@ -257,9 +261,8 @@ function projectedLayerStructureSignature(layer: Layer) {
     layer.replacementTargetLayerId ?? '',
     layer.renderedColor ? 1 : 0,
     layer.minimumProjectionFacing ?? 0,
-    layer.blendMode,
     layer.role ?? '',
-    layer.order,
+    relativeOrder,
     layer.contentRevision ?? 0,
     stableNumberListSignature(layer.objectMatrixWorld),
     cameraSignature(layer),
@@ -269,10 +272,10 @@ function projectedLayerStructureSignature(layer: Layer) {
 function importedModelLayerRenderSignature(layers: Layer[], objectId: string) {
   return layers
     .filter((layer) => !layer.objectId || layer.objectId === objectId)
-    .map((layer) =>
+    .map((layer, relativeOrder) =>
       layer.type === 'projected'
-        ? projectedLayerStructureSignature(layer)
-        : layerPreviewSignature(layer),
+        ? projectedLayerStructureSignature(layer, relativeOrder)
+        : layerPreviewSignature(layer, relativeOrder),
     )
     .join('|');
 }
@@ -285,7 +288,7 @@ function projectedLayerDisplaySignature(layers: Layer[], objectId: string) {
     )
     .map(
       (layer) =>
-        `${layer.id}:${Number(layer.visible)}:${layer.opacity}:${layer.strength ?? 1}:${layer.adjustments?.hue ?? 0}:${layer.adjustments?.saturation ?? 0}:${layer.adjustments?.lightness ?? 0}`,
+        `${layer.id}:${Number(layer.visible)}:${layer.opacity}:${layer.strength ?? 1}:${layer.blendMode}:${layer.adjustments?.hue ?? 0}:${layer.adjustments?.saturation ?? 0}:${layer.adjustments?.lightness ?? 0}`,
     )
     .join('|');
 }
@@ -295,6 +298,7 @@ function toProjectionLayerDisplayInput(layer: Layer): ProjectionLayerDisplayInpu
     layerId: layer.id,
     opacity: layer.opacity,
     strength: layer.strength,
+    blendMode: layer.blendMode,
     visible: layer.visible,
     hue: (layer.adjustments?.hue ?? 0) / 100,
     saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -439,6 +443,7 @@ function useCompositedUvTexture(layers: Layer[]) {
     liveRevisions: Map<string, number>;
   }>();
   const currentTextureRef = useRef<THREE.Texture>();
+  const textureCacheRef = useRef(new Map<string, THREE.Texture>());
   const layerKey = useMemo(
     () => uvLayerStackPreviewSignature(layers),
     [layers],
@@ -461,11 +466,15 @@ function useCompositedUvTexture(layers: Layer[]) {
 
   useEffect(
     () => () => {
-      const current = currentTextureRef.current;
+      const textures = new Set(textureCacheRef.current.values());
+      if (currentTextureRef.current) textures.add(currentTextureRef.current);
+      textureCacheRef.current.clear();
       currentTextureRef.current = undefined;
-      if (typeof ImageBitmap !== 'undefined' && current?.image instanceof ImageBitmap)
-        current.image.close();
-      current?.dispose();
+      textures.forEach((cachedTexture) => {
+        if (typeof ImageBitmap !== 'undefined' && cachedTexture.image instanceof ImageBitmap)
+          cachedTexture.image.close();
+        cachedTexture.dispose();
+      });
     },
     [],
   );
@@ -474,27 +483,53 @@ function useCompositedUvTexture(layers: Layer[]) {
     const uvLayers = stableLayers.filter((layer) => layer.visible && layer.imageUrl);
     if (uvLayers.length === 0) {
       setTexture(undefined);
-      const previous = currentTextureRef.current;
+      // Keep finished composites resident. Visibility toggles are frequent and
+      // must not turn into a 4K ImageBitmap -> Worker -> GPU upload round trip.
+      // The bounded cache owns retirement instead of this empty-state branch.
       currentTextureRef.current = undefined;
-      // The material fallback is committed asynchronously. Disposing the
-      // sampler in this same task lets the still-visible old material render a
-      // black frame. Keep it resident through two presentation frames, exactly
-      // like the non-empty -> non-empty double-buffer hand-off below.
-      if (previous) {
-        window.requestAnimationFrame(() =>
-          window.requestAnimationFrame(() => {
-            if (typeof ImageBitmap !== 'undefined' && previous.image instanceof ImageBitmap)
-              previous.image.close();
-            previous.dispose();
-          }),
-        );
-      }
+      return undefined;
+    }
+
+    const containsLiveCanvas = uvLayers.some((layer) =>
+      Boolean(getLiveProjectedCanvasState(layer.imageUrl)),
+    );
+    const cachedTexture = containsLiveCanvas ? undefined : textureCacheRef.current.get(layerKey);
+    if (cachedTexture) {
+      textureCacheRef.current.delete(layerKey);
+      textureCacheRef.current.set(layerKey, cachedTexture);
+      currentTextureRef.current = cachedTexture;
+      setTexture(cachedTexture);
+      document.body.dataset.uvCompositeStatus = 'cached';
+      document.body.dataset.uvCompositeBackend = 'resident-gpu-cache';
+      document.body.dataset.uvCompositeDurationMs = '0';
       return undefined;
     }
 
     let cancelled = false;
     let composing = false;
     let composeAgain = false;
+
+    const retireTexture = (retiredTexture: THREE.Texture) => {
+      window.requestAnimationFrame(() =>
+        window.requestAnimationFrame(() => {
+          if (typeof ImageBitmap !== 'undefined' && retiredTexture.image instanceof ImageBitmap)
+            retiredTexture.image.close();
+          retiredTexture.dispose();
+        }),
+      );
+    };
+
+    const trimTextureCache = () => {
+      while (textureCacheRef.current.size > MAX_COMPOSITED_UV_TEXTURE_CACHE_SIZE) {
+        const oldestKey = textureCacheRef.current.keys().next().value as string | undefined;
+        if (!oldestKey) break;
+        const oldestTexture = textureCacheRef.current.get(oldestKey);
+        textureCacheRef.current.delete(oldestKey);
+        if (oldestTexture && oldestTexture !== currentTextureRef.current) {
+          retireTexture(oldestTexture);
+        }
+      }
+    };
 
     const publishTexture = (nextTexture: THREE.Texture) => {
       if (cancelled) {
@@ -503,19 +538,13 @@ function useCompositedUvTexture(layers: Layer[]) {
         nextTexture.dispose();
         return;
       }
-      const previous = currentTextureRef.current;
+      const replacedForKey = textureCacheRef.current.get(layerKey);
+      textureCacheRef.current.delete(layerKey);
+      textureCacheRef.current.set(layerKey, nextTexture);
       currentTextureRef.current = nextTexture;
       setTexture(nextTexture);
-      if (!previous || previous === nextTexture) return;
-      // Retire the old GPU resource only after React/Three has committed the
-      // replacement. This is the double buffer that removes the black frame.
-      window.requestAnimationFrame(() =>
-        window.requestAnimationFrame(() => {
-          if (typeof ImageBitmap !== 'undefined' && previous.image instanceof ImageBitmap)
-            previous.image.close();
-          previous.dispose();
-        }),
-      );
+      trimTextureCache();
+      if (replacedForKey && replacedForKey !== nextTexture) retireTexture(replacedForKey);
     };
 
     void Promise.all(
@@ -838,9 +867,12 @@ function ImportedModel({
   const resolution = useSettingsStore((state) => state.resolution);
   const texturedRestoreReady =
     !importedModel.restoreStage || importedModel.restoreStage === 'full';
+  const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const layerRenderSignature = useLayerStore((state) =>
     importedModelLayerRenderSignature(
-      state.projectedPreviewLayers ?? state.layers,
+      (state.projectedPreviewLayers ?? state.layers).filter(
+        (layer) => layer.id !== localRepaintPreviewLayer?.id,
+      ),
       importedModel.objectId,
     ),
   );
@@ -853,7 +885,6 @@ function ImportedModel({
     [layerRenderSignature, projectedDisplayRefresh],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
-  const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const visibleLocalRepaintPreviewLayer = useMemo(() => {
     if (!localRepaintPreviewLayer?.visible) return undefined;
     const storedLayer = layers.find((layer) => layer.id === localRepaintPreviewLayer.id);
@@ -1321,11 +1352,24 @@ function ImportedModel({
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
   );
   const activeProjectedPreviewInput = useMemo(
-    () =>
-      previewProjectionInputs.find(
+    () => {
+      // A live repaint is the latency-sensitive foreground patch. Keep it on a
+      // dedicated sampler and out of the packed background texture array even
+      // before its persistent layer row exists. Otherwise the first stop event
+      // changes the active row, repacks 14 background slices and produces a
+      // 200ms+ frame. The direct path also samples the native generated image
+      // instead of the array's memory-budget preview size.
+      if (visibleLocalRepaintPreviewLayer?.visible) {
+        const liveRepaintInput = previewProjectionInputs.find(
+          (layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id,
+        );
+        if (liveRepaintInput) return liveRepaintInput;
+      }
+      return previewProjectionInputs.find(
         (layer) => layer.layerId === activeLayerId && layer.visible,
-      ),
-    [activeLayerId, previewProjectionInputs],
+      );
+    },
+    [activeLayerId, previewProjectionInputs, visibleLocalRepaintPreviewLayer],
   );
   const progressiveBackgroundInputs = useMemo(
     () =>
@@ -1743,9 +1787,18 @@ function ImportedModel({
       const compileMesh = new THREE.Mesh(compileGeometry, material);
       compileMesh.frustumCulled = false;
       compileScene.add(compileMesh);
+      const compileStartedAt = performance.now();
       try {
         await gl.compileAsync(compileScene, camera);
       } finally {
+        const compileDurationMs = performance.now() - compileStartedAt;
+        if (typeof document !== 'undefined') {
+          document.body.dataset.projectedMaterialCompileDurationMs =
+            compileDurationMs.toFixed(1);
+        }
+        markPerformanceEvent('projection', 'projected-material-precompile', {
+          durationMs: compileDurationMs,
+        });
         compileGeometry.dispose();
         compileMesh.removeFromParent();
       }

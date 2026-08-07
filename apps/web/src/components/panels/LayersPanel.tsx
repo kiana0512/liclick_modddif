@@ -32,7 +32,10 @@ import {
 } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
-import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import {
+  getLiveProjectedCanvasState,
+  getLiveProjectedTextureSourceState,
+} from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
@@ -55,19 +58,39 @@ type RenameState = {
 
 function LayerThumbnail({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const liveCanvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
+  const liveSource = getLiveProjectedTextureSourceState(layer.imageUrl)?.source;
+  const liveMaskCanvas = layer.maskUrl
+    ? getLiveProjectedCanvasState(layer.maskUrl)?.canvas
+    : undefined;
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !liveCanvas) return;
+    if (!canvas || !liveSource) return;
     const context = canvas.getContext('2d');
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(liveCanvas, 0, 0, canvas.width, canvas.height);
-  }, [layer.contentRevision, liveCanvas]);
+    context.drawImage(liveSource, 0, 0, canvas.width, canvas.height);
+    if (layer.replacementTargetLayerId && liveMaskCanvas) {
+      context.save();
+      context.globalCompositeOperation = 'destination-in';
+      context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
+      context.restore();
+    }
+  }, [layer.contentRevision, liveSource, liveMaskCanvas, layer.replacementTargetLayerId]);
 
-  if (liveCanvas) return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
+  if (liveSource) return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
   if (!layer.imageUrl) return null;
+  const localRepaintMaskStyle =
+    layer.replacementTargetLayerId && layer.maskUrl
+      ? {
+          WebkitMaskImage: `url("${layer.maskUrl}")`,
+          maskImage: `url("${layer.maskUrl}")`,
+          WebkitMaskSize: '100% 100%',
+          maskSize: '100% 100%',
+          WebkitMaskRepeat: 'no-repeat',
+          maskRepeat: 'no-repeat',
+        }
+      : undefined;
   return (
     <img
       src={layer.imageUrl}
@@ -75,6 +98,7 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
       loading="lazy"
       decoding="async"
       className="h-full w-full object-cover"
+      style={localRepaintMaskStyle}
       draggable={false}
     />
   );
@@ -82,40 +106,103 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
 
 function LayerPreviewImage({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const liveCanvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
+  const liveSource = getLiveProjectedTextureSourceState(layer.imageUrl)?.source;
+  const liveMaskCanvas = layer.maskUrl
+    ? getLiveProjectedCanvasState(layer.maskUrl)?.canvas
+    : undefined;
   const maxPreviewDimension = 1600;
-  const scale = liveCanvas
-    ? Math.min(1, maxPreviewDimension / Math.max(liveCanvas.width, liveCanvas.height, 1))
+  const sourceWidth = liveSource
+    ? 'naturalWidth' in liveSource
+      ? liveSource.naturalWidth
+      : liveSource.width
     : 1;
-  const width = liveCanvas ? Math.max(1, Math.round(liveCanvas.width * scale)) : 1;
-  const height = liveCanvas ? Math.max(1, Math.round(liveCanvas.height * scale)) : 1;
+  const sourceHeight = liveSource
+    ? 'naturalHeight' in liveSource
+      ? liveSource.naturalHeight
+      : liveSource.height
+    : 1;
+  const scale = liveSource
+    ? Math.min(1, maxPreviewDimension / Math.max(sourceWidth, sourceHeight, 1))
+    : 1;
+  const width = liveSource ? Math.max(1, Math.round(sourceWidth * scale)) : 1;
+  const height = liveSource ? Math.max(1, Math.round(sourceHeight * scale)) : 1;
+  const isLocalRepaintPreview = Boolean(layer.replacementTargetLayerId);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !liveCanvas) return;
+    if (!canvas || !liveSource) return;
     const context = canvas.getContext('2d');
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(liveCanvas, 0, 0, canvas.width, canvas.height);
-  }, [height, layer.contentRevision, liveCanvas, width]);
+    context.drawImage(liveSource, 0, 0, canvas.width, canvas.height);
+    if (layer.replacementTargetLayerId && liveMaskCanvas) {
+      context.save();
+      context.globalCompositeOperation = 'destination-in';
+      context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
+      context.restore();
+    }
+  }, [
+    height,
+    layer.contentRevision,
+    layer.replacementTargetLayerId,
+    liveSource,
+    liveMaskCanvas,
+    width,
+  ]);
 
-  if (liveCanvas) {
-    return (
+  if (liveSource) {
+    const preview = (
       <canvas
         ref={canvasRef}
         width={width}
         height={height}
-        className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+        className="block max-h-[88vh] max-w-[92vw] object-contain"
       />
     );
+    return isLocalRepaintPreview ? (
+      <div
+        className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+        style={checkerStyle}
+      >
+        {preview}
+      </div>
+    ) : (
+      <div className="overflow-hidden rounded-md border border-white/16 bg-[#181818] shadow-2xl">
+        {preview}
+      </div>
+    );
   }
-  return (
+  const localRepaintMaskStyle =
+    layer.replacementTargetLayerId && layer.maskUrl
+      ? {
+          WebkitMaskImage: `url("${layer.maskUrl}")`,
+          maskImage: `url("${layer.maskUrl}")`,
+          WebkitMaskSize: '100% 100%',
+          maskSize: '100% 100%',
+          WebkitMaskRepeat: 'no-repeat',
+          maskRepeat: 'no-repeat',
+        }
+      : undefined;
+  const preview = (
     <img
       src={layer.imageUrl}
       alt=""
-      className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+      className="block max-h-[88vh] max-w-[92vw] object-contain"
+      style={localRepaintMaskStyle}
       draggable={false}
     />
+  );
+  return isLocalRepaintPreview ? (
+    <div
+      className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+      style={checkerStyle}
+    >
+      {preview}
+    </div>
+  ) : (
+    <div className="overflow-hidden rounded-md border border-white/16 bg-[#181818] shadow-2xl">
+      {preview}
+    </div>
   );
 }
 
@@ -393,11 +480,15 @@ export function LayersPanel({
     if (ids.length === 0) return;
     captureHistory(`删除图层：${describeLayerSelection(ids)}`);
     const sceneState = useSceneStore.getState();
-    const deletesLiveLocalRepaint = Boolean(
-      sceneState.localRepaintPreviewLayer &&
-        ids.includes(sceneState.localRepaintPreviewLayer.id),
+    const latestLayers = useLayerStore.getState().layers;
+    const deletesLocalRepaint = ids.some((id) =>
+      latestLayers.some((layer) => layer.id === id && Boolean(layer.replacementTargetLayerId)),
     );
-    if (deletesLiveLocalRepaint) {
+    if (deletesLocalRepaint) {
+      // Hide the renderer inputs synchronously so the very next frame reflects
+      // deletion. Row removal and resource disposal can reconcile one frame
+      // later without blocking camera input or rebuilding the 14-layer stack.
+      setLayerVisibility(ids, false);
       // The local-repaint row has a renderer-only twin backed by a live canvas.
       // Deleting the persisted row must also end that live session, otherwise
       // SurfacePaintOverlay republishes the orphaned projection after deletion.
@@ -405,12 +496,19 @@ export function LayersPanel({
       sceneState.setLocalRepaintProjectionSource(undefined);
       sceneState.setPaintTool('none');
       sceneState.clearPaintMask();
+      setMenu(undefined);
+      setSelectedLayerIds([]);
+      setLastSelectedLayerId(undefined);
+      window.requestAnimationFrame(() => {
+        startTransition(() => deleteLayers(ids));
+      });
+      return;
     }
     deleteLayers(ids);
     setMenu(undefined);
     setSelectedLayerIds([]);
     setLastSelectedLayerId(undefined);
-  }, [captureHistory, deleteLayers, describeLayerSelection, layerIdSet]);
+  }, [captureHistory, deleteLayers, describeLayerSelection, layerIdSet, setLayerVisibility]);
 
   useEffect(() => {
     const handleDeleteKey = (event: KeyboardEvent) => {

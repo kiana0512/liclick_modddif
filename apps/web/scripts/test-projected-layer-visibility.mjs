@@ -170,6 +170,17 @@ try {
   );
   assert.equal(material.uuid, materialId, 'UV visibility must not replace the GPU material.');
   projection.disposeGeneratedMaterialTree(material);
+  assert.equal(
+    material.userData.liclickProjectedProgramResidentAnchor,
+    true,
+    'Retired projected shaders must remain as texture-free program anchors.',
+  );
+  projection.disposeGeneratedMaterialTree(material);
+  assert.notEqual(
+    material.userData.liclickDisposedMaterial,
+    true,
+    'Repeated mesh disposal must not evict a resident shader anchor.',
+  );
   residentUvTexture.dispose();
   residentContentAwareTexture.dispose();
 

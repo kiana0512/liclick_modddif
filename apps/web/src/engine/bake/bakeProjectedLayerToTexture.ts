@@ -7,6 +7,7 @@ import {
   fillEnclosedUvCoverageGapsWithinTopology,
   getUvDilationPixels,
   padUvIslandGutters,
+  padUvIslandGuttersWithTopology,
 } from './dilation';
 import {
   bakeProjectedLayerRastersWithGpu,
@@ -36,6 +37,10 @@ import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
+import {
+  rasterizeUvTopologyMaskWithWebGpu,
+  type WebGpuUvTopologyRasterResult,
+} from './webGpuUvTopologyRaster';
 
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 const MIN_VALID_COVERAGE_RATIO = 0.001;
@@ -988,6 +993,53 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   const performanceBreakdown: Record<string, number> = {};
+  let uvGutterTopologyPromise:
+    | Promise<WebGpuUvTopologyRasterResult | undefined>
+    | undefined;
+  const getUvGutterTopology = () => {
+    if ((input.uvIslandGutterPixels ?? 0) <= 0) return Promise.resolve(undefined);
+    uvGutterTopologyPromise ??= rasterizeUvTopologyMaskWithWebGpu(
+      importedModel.group,
+      input.resolution,
+      input.resolution,
+    )
+      .then((result) => {
+        performanceBreakdown.uvTopologySerializeMs = result.serializeMs;
+        performanceBreakdown.uvTopologyGpuMs = result.gpuMs;
+        performanceBreakdown.uvTopologyCpuGoldMs = result.cpuGoldMs;
+        performanceBreakdown.uvTopologyWorkerTotalMs = result.totalMs;
+        performanceBreakdown.uvTopologyGpuAccepted = result.gpuAccepted ? 1 : 0;
+        performanceBreakdown.uvTopologyGpuMismatchedPixels = result.mismatchedPixels;
+        performanceBreakdown.uvTopologyGpuCalibrationPixels =
+          result.rawMismatchedPixels;
+        performanceBreakdown.uvTopologyGpuMaximumDifference = result.maximumDifference;
+        if (typeof document !== 'undefined') {
+          document.body.dataset.perfUvTopologyBackend = result.backend;
+          document.body.dataset.perfUvTopologyGpuAccepted = result.gpuAccepted ? '1' : '0';
+          document.body.dataset.perfUvTopologyGpuMismatches = String(
+            result.mismatchedPixels,
+          );
+          document.body.dataset.perfUvTopologyGpuCalibrationPixels = String(
+            result.rawMismatchedPixels,
+          );
+          document.body.dataset.perfUvTopologyTotalMs = result.totalMs.toFixed(1);
+        }
+        return result;
+      })
+      .catch((error) => {
+        performanceBreakdown.uvTopologyGpuAccepted = 0;
+        console.warn(
+          '[Liclick 3D Texture] Worker WebGPU UV topology unavailable; using the compatibility raster.',
+          error,
+        );
+        if (typeof document !== 'undefined') {
+          document.body.dataset.perfUvTopologyBackend = 'compatibility-main-thread';
+          document.body.dataset.perfUvTopologyGpuAccepted = '0';
+        }
+        return undefined;
+      });
+    return uvGutterTopologyPromise;
+  };
   const dilationPixels = getUvDilationPixels(input.resolution, input.dilationPixels);
   input.onProgress?.({
     phase: 'loading-assets',
@@ -1074,8 +1126,6 @@ export async function bakeVisibleProjectedLayersToTexture(
         canvas.height = input.resolution;
         const context = canvas.getContext('2d', { willReadFrequently: true });
         if (!context) throw new Error('Could not create GPU parity UV bake canvas.');
-        let composite: ImageData;
-        let qualityCoverage: Uint8Array;
         const overlayRasters: OverlayRaster[] = [];
         const normalRasters: Array<{ color: Uint8ClampedArray; quality: Float32Array }> = [];
         const warnings = [...gpuBake.warnings];
@@ -1110,8 +1160,8 @@ export async function bakeVisibleProjectedLayersToTexture(
             quality: raster.quality,
           })),
         );
-        composite = qualityBlend.imageData;
-        qualityCoverage = qualityBlend.coverage;
+        const composite = qualityBlend.imageData;
+        const qualityCoverage = qualityBlend.coverage;
         writtenTexels = qualityBlend.writtenTexels;
         performanceBreakdown.qualityAccumulateMs = qualityBlend.accumulateMs;
         performanceBreakdown.qualityResolveMs = qualityBlend.resolveMs;
@@ -1196,13 +1246,22 @@ export async function bakeVisibleProjectedLayersToTexture(
         const gutterStartedAt = performance.now();
         markUvBakePerformancePhase('gutter');
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
-          const paddedPixels = padUvIslandGutters(
-            composite,
-            qualityCoverage,
-            importedModel.group,
-            input.uvIslandGutterPixels ?? 0,
-            input.outputAlpha === 'transparent',
-          );
+          const topology = await getUvGutterTopology();
+          const paddedPixels = topology
+            ? padUvIslandGuttersWithTopology(
+                composite,
+                qualityCoverage,
+                topology.mask,
+                input.uvIslandGutterPixels ?? 0,
+                input.outputAlpha === 'transparent',
+              )
+            : padUvIslandGutters(
+                composite,
+                qualityCoverage,
+                importedModel.group,
+                input.uvIslandGutterPixels ?? 0,
+                input.outputAlpha === 'transparent',
+              );
           if (paddedPixels > 0) {
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
           }
@@ -1392,13 +1451,22 @@ export async function bakeVisibleProjectedLayersToTexture(
         if (input.enableDilation && !input.constrainDilationToInteriorHoles)
           dilateImageData(gpuImage, gpuBake.coverage, dilationPixels);
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
-          const paddedPixels = padUvIslandGutters(
-            gpuImage,
-            gpuBake.coverage,
-            importedModel.group,
-            input.uvIslandGutterPixels ?? 0,
-            wantsTransparentOutput,
-          );
+          const topology = await getUvGutterTopology();
+          const paddedPixels = topology
+            ? padUvIslandGuttersWithTopology(
+                gpuImage,
+                gpuBake.coverage,
+                topology.mask,
+                input.uvIslandGutterPixels ?? 0,
+                wantsTransparentOutput,
+              )
+            : padUvIslandGutters(
+                gpuImage,
+                gpuBake.coverage,
+                importedModel.group,
+                input.uvIslandGutterPixels ?? 0,
+                wantsTransparentOutput,
+              );
           if (paddedPixels > 0) {
             gpuBake.warnings.push(
               `UV-island gutter padding added ${paddedPixels} filter-only texels.`,
@@ -1693,13 +1761,22 @@ export async function bakeVisibleProjectedLayersToTexture(
     dilateImageData(composite, qualityBlendComposite.coverage, dilationPixels);
   }
   if ((input.uvIslandGutterPixels ?? 0) > 0) {
-    const paddedPixels = padUvIslandGutters(
-      composite,
-      qualityBlendComposite.coverage,
-      importedModel.group,
-      input.uvIslandGutterPixels ?? 0,
-      input.outputAlpha === 'transparent',
-    );
+    const topology = await getUvGutterTopology();
+    const paddedPixels = topology
+      ? padUvIslandGuttersWithTopology(
+          composite,
+          qualityBlendComposite.coverage,
+          topology.mask,
+          input.uvIslandGutterPixels ?? 0,
+          input.outputAlpha === 'transparent',
+        )
+      : padUvIslandGutters(
+          composite,
+          qualityBlendComposite.coverage,
+          importedModel.group,
+          input.uvIslandGutterPixels ?? 0,
+          input.outputAlpha === 'transparent',
+        );
     if (paddedPixels > 0) {
       warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
     }

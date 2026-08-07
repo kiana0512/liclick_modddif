@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Network, Plus } from 'lucide-react';
 import * as THREE from 'three';
@@ -1008,7 +1008,11 @@ export function EditorPage({
       setLayers(storedProject!.layers);
       return;
     }
-    setProjectLayers(layers);
+    // The layer store is the renderer's immediate source of truth. Mirroring a
+    // large stack into the project snapshot may reconcile most of the editor,
+    // so keep that secondary UI work interruptible while the viewport presents
+    // the already-published GPU result.
+    startTransition(() => setProjectLayers(layers));
   }, [layers, projectId, serverReadyProjectId, setLayers, setProjectLayers]);
 
   useEffect(() => {
@@ -1088,7 +1092,11 @@ export function EditorPage({
     window.clearTimeout(autosaveTimerRef.current);
     setSaveStatus('idle');
     const runAutosave = () => {
-      if (suppressProjectLayerSyncRef.current > 0) {
+      const viewportBusy =
+        isViewportInteractionBusy(1_200) ||
+        document.body.dataset.perfAutoOrbit === '1' ||
+        document.body.dataset.perfSimulatedViewportInteraction === '1';
+      if (suppressProjectLayerSyncRef.current > 0 || viewportBusy) {
         autosaveTimerRef.current = window.setTimeout(runAutosave, 1000);
         return;
       }
@@ -2055,14 +2063,16 @@ export function EditorPage({
       });
     }
     for (const layer of projectForSave.layers) {
+      const persistedImageSource = layer.localRepaintSourceUrl ?? layer.imageUrl;
+      const persistedMaskSource = layer.localRepaintMaskUrl ?? layer.maskUrl;
       persistenceTasks.push(async () => {
         layer.imageUrl =
-          (await persistOptionalAsset(layer.imageUrl, 'layers', `${layer.id}.png`)) ??
-          layer.imageUrl;
+          (await persistOptionalAsset(persistedImageSource, 'layers', `${layer.id}.png`)) ??
+          persistedImageSource;
       });
       persistenceTasks.push(async () => {
         layer.maskUrl = await persistOptionalAsset(
-          layer.maskUrl,
+          persistedMaskSource,
           'layers',
           `${layer.id}-mask.png`,
           undefined,
@@ -2096,6 +2106,11 @@ export function EditorPage({
     // Asset contents and filenames are unchanged; only independent I/O is
     // bounded-parallel so a project with many images does not save serially.
     await mapWithConcurrency(persistenceTasks, 3, (task) => task());
+    projectForSave.layers.forEach((layer) => {
+      if (!layer.localRepaintSourceUrl && !layer.localRepaintMaskUrl) return;
+      layer.localRepaintSourceUrl = layer.imageUrl;
+      layer.localRepaintMaskUrl = layer.maskUrl;
+    });
 
     return projectForSave;
   }
@@ -4230,12 +4245,12 @@ export function EditorPage({
   const getLocalRepaintProjectionImage = useCallback((resultUrl: string) => {
     const cached = localRepaintProjectionImageCacheRef.current.get(resultUrl);
     if (cached) return cached;
-    // Keep the complete ComfyUI frame available to the apply brush. The
-    // generation mask describes what was sent to inpaint, but must not discard
-    // valid returned pixels that the user may want to paint elsewhere in view.
-    const promise = resultUrl.startsWith('http')
-      ? urlToDataUrl(resultUrl)
-      : Promise.resolve(resultUrl);
+    // The generation result is already a browser-loadable asset URL. Converting
+    // a 2K/4K response to base64 duplicated the download, copied every byte on
+    // the main thread and accounted for most of the observed 3-5 second cold
+    // activation. Keep the original URL; the viewport image loader uses CORS
+    // and the persisted layer already stores this same asset.
+    const promise = Promise.resolve(resultUrl);
     localRepaintProjectionImageCacheRef.current.set(resultUrl, promise);
     promise.catch(() => {
       if (localRepaintProjectionImageCacheRef.current.get(resultUrl) === promise) {
@@ -4243,6 +4258,39 @@ export function EditorPage({
       }
     });
     return promise;
+  }, []);
+
+  useEffect(() => {
+    const handleLocalRepaintPrewarmProgress = (event: Event) => {
+      const detail = (
+        event as CustomEvent<
+          AutoBakeProgress & { done?: boolean; dismissAfterMs?: number }
+        >
+      ).detail;
+      if (!detail) return;
+      window.clearTimeout(manualBakeProgressTimerRef.current);
+      setManualBakeProgress({
+        title: detail.title,
+        detail: detail.detail,
+        progress: detail.progress,
+        indeterminate: detail.indeterminate,
+      });
+      if (detail.done) {
+        manualBakeProgressTimerRef.current = window.setTimeout(
+          () => setManualBakeProgress(undefined),
+          detail.dismissAfterMs ?? 450,
+        );
+      }
+    };
+    window.addEventListener(
+      'liclick:local-repaint-prewarm-progress',
+      handleLocalRepaintPrewarmProgress,
+    );
+    return () =>
+      window.removeEventListener(
+        'liclick:local-repaint-prewarm-progress',
+        handleLocalRepaintPrewarmProgress,
+      );
   }, []);
 
   useEffect(() => {
@@ -4262,6 +4310,113 @@ export function EditorPage({
     });
   }, [generations, getLocalRepaintProjectionImage, projectId]);
 
+  useEffect(() => {
+    if (!project || !importedModel || paintTool === 'inpaint-apply') return undefined;
+    const latestLocalRepaintGeneration = generations.find(
+      (generation) =>
+        generation.resultUrl &&
+        generation.status === 'succeeded' &&
+        isLocalRepaintGeneration(generation) &&
+        (!generation.metadata.projectId || generation.metadata.projectId === projectId),
+    );
+    if (!latestLocalRepaintGeneration?.resultUrl) return undefined;
+    const generationCapture =
+      project.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId) ??
+      useProjectStore
+        .getState()
+        .getCurrentProject()
+        ?.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId);
+    // Background staging must use the exact generation camera. Falling back to
+    // a moving viewport here would prewarm the wrong projection while the user
+    // is still selecting the mask.
+    if (!generationCapture?.camera) return undefined;
+    const objectId = selectedObjectId ?? generationCapture.objectId ?? importedModel.objectId;
+    const targetLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
+    if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) return undefined;
+    const generationMaskUrl =
+      typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
+        ? latestLocalRepaintGeneration.metadata.maskUrl
+        : paintMaskDataUrl;
+    if (!generationMaskUrl) return undefined;
+    const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
+    if (
+      preparedSource?.generationId === latestLocalRepaintGeneration.id &&
+      preparedSource.allowedMaskUrl === generationMaskUrl &&
+      preparedSource.objectId === objectId &&
+      preparedSource.targetLayerId === targetLayer.id
+    )
+      return undefined;
+
+    let cancelled = false;
+    let idleId: number | undefined;
+    let timeoutId: number | undefined;
+    const stage = async () => {
+      const startedAt = performance.now();
+      try {
+        const projectionImageUrl = await getLocalRepaintProjectionImage(
+          latestLocalRepaintGeneration.resultUrl!,
+        );
+        if (cancelled) return;
+        const currentTarget = useLayerStore
+          .getState()
+          .layers.find((layer) => layer.id === targetLayer.id);
+        if (!isLocalRepaintDestinationLayer(currentTarget, objectId)) return;
+        importedModel.group.updateMatrixWorld(true);
+        const nameSource = latestLocalRepaintGeneration.prompt.trim();
+        setLocalRepaintProjectionSource({
+          imageUrl: projectionImageUrl,
+          persistentImageUrl: latestLocalRepaintGeneration.resultUrl,
+          autoActivate: false,
+          allowedMaskUrl: generationMaskUrl,
+          depthUrl: generationCapture.depthUrl,
+          objectId,
+          objectMatrixWorld:
+            getGenerationObjectMatrixWorld(latestLocalRepaintGeneration) ??
+            importedModel.group.matrixWorld.toArray(),
+          camera: generationCapture.camera,
+          generationId: latestLocalRepaintGeneration.id,
+          captureId: generationCapture.id,
+          name: nameSource
+            ? `${t('localRepaint')}: ${nameSource.slice(0, 20)}`
+            : t('localRepaint'),
+          targetLayerId: currentTarget.id,
+          targetLayerType: currentTarget.type,
+          targetLayerName: currentTarget.name,
+        });
+        markPerformanceEvent('local-repaint', 'background-source-stage', {
+          durationMs: performance.now() - startedAt,
+        });
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[Liclick 3D Texture] Could not stage local repaint source:', error);
+        }
+      }
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(() => void stage(), { timeout: 500 });
+    } else {
+      timeoutId = window.setTimeout(() => void stage(), 0);
+    }
+    return () => {
+      cancelled = true;
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [
+    activeProjectedLayerId,
+    generations,
+    getLocalRepaintProjectionImage,
+    importedModel,
+    layers,
+    paintMaskDataUrl,
+    paintTool,
+    project,
+    projectId,
+    selectedObjectId,
+    setLocalRepaintProjectionSource,
+    t,
+  ]);
+
   const addLocalRepaintDestinationLayer = useCallback(() => {
     captureHistory('创建局部重绘空白图层');
     useLayerStore.getState().addEmptyLayer();
@@ -4271,6 +4426,21 @@ export function EditorPage({
   const handleLocalRepaintFromToolbar = useCallback(() => {
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
     localRepaintToolRequestRevisionRef.current = requestRevision;
+    const showPrewarmProgress = (detail: string, progress: number) => {
+      document.body.dataset.localRepaintPrewarmProgressRequested = '1';
+      window.clearTimeout(manualBakeProgressTimerRef.current);
+      setManualBakeProgress({
+        title: '正在准备局部重绘',
+        detail,
+        progress,
+        indeterminate: false,
+      });
+    };
+    const clearPrewarmProgress = () => {
+      delete document.body.dataset.localRepaintPrewarmProgressRequested;
+      window.clearTimeout(manualBakeProgressTimerRef.current);
+      setManualBakeProgress(undefined);
+    };
     void (async () => {
       if (!project || !importedModel) {
         pushToast({
@@ -4373,14 +4543,51 @@ export function EditorPage({
         preparedSource.objectId === objectId &&
         preparedSource.targetLayerId === targetLayer.id
       ) {
-        setPaintTool('inpaint-apply');
+        const isGpuReady = () =>
+          document.body.dataset.localRepaintGpuReadyGeneration ===
+            latestLocalRepaintGeneration.id &&
+          document.body.dataset.localRepaintGpuReadyTarget === targetLayer.id;
+        const hasGpuError = () =>
+          document.body.dataset.localRepaintGpuErrorGeneration ===
+            latestLocalRepaintGeneration.id &&
+          document.body.dataset.localRepaintGpuErrorTarget === targetLayer.id;
+        if (isGpuReady()) {
+          clearPrewarmProgress();
+          setPaintTool('inpaint-apply');
+          return;
+        }
+        // The user clicked while background staging was still finishing. Block
+        // strokes, but keep the decoded source/material job alive instead of
+        // restarting it. In the common warm case this branch is never entered.
+        setPaintTool('none');
+        showPrewarmProgress('复用后台 GPU 预热任务', 0.2);
+        while (
+          localRepaintToolRequestRevisionRef.current === requestRevision &&
+          !isGpuReady() &&
+          !hasGpuError()
+        ) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+        if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
+        if (isGpuReady()) {
+          clearPrewarmProgress();
+          setPaintTool('inpaint-apply');
+        } else {
+          clearPrewarmProgress();
+          pushToast({
+            tone: 'error',
+            title: '局部重绘 GPU 准备失败',
+            description: '高清结果或蒙版无法上传，请再次点击局部重绘重试。',
+            dedupeKey: 'local-repaint-gpu-prewarm-failed',
+          });
+        }
         return;
       }
       // A new ComfyUI result is a fresh interactive session. Keep painting
       // disabled while its lightweight source and renderer material are being
       // prepared, so an early gesture cannot be silently queued behind setup.
       setPaintTool('none');
-      setLocalRepaintProjectionSource(undefined);
+      showPrewarmProgress('读取高清生成结果', 0.06);
       let projectionImageUrl: string;
       try {
         projectionImageUrl = await getLocalRepaintProjectionImage(
@@ -4388,6 +4595,7 @@ export function EditorPage({
         );
       } catch (error) {
         if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
+        clearPrewarmProgress();
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
         const reason = error instanceof Error ? error.message : t('localRepaintFailedHelp');
@@ -4408,6 +4616,7 @@ export function EditorPage({
         .getState()
         .layers.find((layer) => layer.id === targetLayer.id);
       if (!isLocalRepaintDestinationLayer(currentTargetLayer, objectId)) {
+        clearPrewarmProgress();
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
         pushToast({
@@ -4437,6 +4646,8 @@ export function EditorPage({
       }
       setLocalRepaintProjectionSource({
         imageUrl: projectionImageUrl,
+        persistentImageUrl: latestLocalRepaintGeneration.resultUrl,
+        autoActivate: true,
         allowedMaskUrl: generationMaskUrl,
         depthUrl: generationCapture?.depthUrl,
         objectId,
@@ -4476,6 +4687,43 @@ export function EditorPage({
     setProjectLayers,
     t,
   ]);
+
+  useEffect(() => {
+    const target = window as typeof window & {
+      LiclickPerfLocalRepaintSource?: {
+        prepareLatestGeneratedSource: () => Promise<void>;
+      };
+    };
+    target.LiclickPerfLocalRepaintSource = {
+      prepareLatestGeneratedSource: async () => {
+        const wait = (durationMs: number) =>
+          new Promise<void>((resolve) => window.setTimeout(resolve, durationMs));
+        const maskDeadline = performance.now() + 15_000;
+        while (performance.now() < maskDeadline) {
+          const sceneState = useSceneStore.getState();
+          if (sceneState.paintMaskHasContent && sceneState.paintMaskDataUrl) break;
+          await wait(40);
+        }
+        const maskState = useSceneStore.getState();
+        if (!maskState.paintMaskHasContent || !maskState.paintMaskDataUrl) {
+          throw new Error('S6 蒙版编码超时，未进入现成生图绑定阶段。');
+        }
+        handleLocalRepaintFromToolbar();
+        const sourceDeadline = performance.now() + 25_000;
+        while (performance.now() < sourceDeadline) {
+          const sceneState = useSceneStore.getState();
+          if (sceneState.localRepaintProjectionSource && sceneState.paintTool === 'inpaint-apply') {
+            return;
+          }
+          await wait(50);
+        }
+        throw new Error('S6 绑定现成局部生图超时，请检查生成记录或目标图层。');
+      },
+    };
+    return () => {
+      delete target.LiclickPerfLocalRepaintSource;
+    };
+  }, [handleLocalRepaintFromToolbar]);
 
   const handleContentAwareRepairFromToolbar = useCallback(() => {
     if (contentAwareRepairRunningRef.current) return;

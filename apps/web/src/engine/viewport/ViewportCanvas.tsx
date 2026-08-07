@@ -29,8 +29,10 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 import {
   getLiveProjectedCanvasState,
   getLiveProjectedCanvasTexture,
+  getLiveProjectedTexture,
   markLiveProjectedCanvasTextureUpdated,
   registerLiveProjectedCanvasTexture,
+  registerLiveProjectedImageTexture,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import {
@@ -137,13 +139,21 @@ const UV_TEXTURE_RESOLUTION = {
 } as const;
 const PAINT_HISTORY_TILE_SIZE = 256;
 const PROJECTION_PAINT_MAX_SIZE = 512;
-const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 288;
-const LOCAL_REPAINT_PREVIEW_MAX_SIZE = 512;
+// The generated source is sampled at its native resolution. Only the brush
+// coverage is dynamic; a 1024px mask keeps soft edges crisp without uploading
+// the multi-megapixel color source again on every pointer frame.
+const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 1024;
 // Keep brush interaction on the lightweight projected preview, then promote the
 // accumulated result to the selected UV resolution once the editor is idle.
 // New paint input invalidates the queued commit, so the expensive pass never
 // competes with an active stroke.
-const LOCAL_REPAINT_INTERACTIVE_UV_BAKE_ENABLED = true;
+// Keep local repaint non-destructive while the user is interacting. The full
+// resolution source plus its live mask are persisted as a projected layer and
+// are rasterized into UV space by the existing export/explicit-merge path.
+// Performing that 4K conversion after every brush burst rebuilt the whole
+// projected stack and uploaded a new 4K viewport texture, producing 200-400ms
+// presentation stalls even though the brush itself remained inside budget.
+const LOCAL_REPAINT_INTERACTIVE_UV_BAKE_ENABLED = false;
 const LOCAL_REPAINT_HIGH_RES_IDLE_MS = 3000;
 const LOCAL_REPAINT_HANDOFF_DURATION_MS = 160;
 const PROJECTED_ERASER_HIGH_RES_IDLE_MS = 1800;
@@ -441,7 +451,7 @@ function isPerformanceInstrumentationEnabled() {
 function PerformanceAutoOrbit({ enabled }: { enabled: boolean }) {
   const { camera } = useThree();
   useFrame((_state, delta) => {
-    if (!enabled) return;
+    if (!enabled && document.body.dataset.perfAutoOrbit !== '1') return;
     camera.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), delta * 0.32);
     camera.lookAt(0, 0, 0);
     camera.updateMatrixWorld();
@@ -464,6 +474,58 @@ type LayerToggleScenarioResult = ProjectedLayerRampResult & {
   scenario: 'projected' | 'content-aware' | 'uv-projected';
   operations: number;
   durationMs: number;
+};
+
+type LocalRepaintUvCommitReport = {
+  mode: 'interactive-uv' | 'deferred-export';
+  revision: number;
+  resolution: number;
+  maskSnapshotMs: number;
+  idleWaitMs: number;
+  gpuBakeMs: number;
+  mergeAndPublishMs: number;
+  totalMs: number;
+  coveredPixels: number;
+  coverageRatio: number;
+  bakePerformanceBreakdown: Record<string, number>;
+};
+
+type LocalRepaintSimulationCoreResult = {
+  sourceWidth: number;
+  sourceHeight: number;
+  candidateCount: number;
+  maskAddSamples: number;
+  maskSubtractSamples: number;
+  maskRestoreSamples: number;
+  applyStrokes: number;
+  applySamples: number;
+  maskDurationMs: number;
+  applyDurationMs: number;
+  activationReadyMs: number;
+  activationToFirstVisibleMs: number;
+  liveFeedbackP95: number;
+  liveFeedbackMax: number;
+  uvCommit: LocalRepaintUvCommitReport;
+  totalDurationMs: number;
+};
+
+type LocalRepaintBenchmarkResult = LocalRepaintSimulationCoreResult & {
+  protectedFrameP95: number;
+  protectedFrameMax: number;
+  protectedDroppedFrames: number;
+  publishFrameP95: number;
+  publishFrameMax: number;
+  publishDroppedFrames: number;
+  heapDeltaMb: number;
+  phaseFrameMax: Record<string, number>;
+};
+
+type LocalRepaintPerformanceApi = {
+  run: () => Promise<LocalRepaintSimulationCoreResult>;
+};
+
+type LocalRepaintSourcePerformanceApi = {
+  prepareLatestGeneratedSource: () => Promise<void>;
 };
 
 type UvMergeBenchmarkResult = {
@@ -515,6 +577,7 @@ type PerformanceLabWindowApi = {
     options?: { intervalMs?: number },
   ) => Promise<LayerToggleScenarioResult>;
   runUvMergeBenchmark: () => Promise<UvMergeBenchmarkResult>;
+  runLocalRepaintBenchmark: () => Promise<LocalRepaintBenchmarkResult>;
   snapshot: () => {
     metrics: PerformanceHudMetrics;
     native?: NativePerformanceSnapshot;
@@ -625,6 +688,9 @@ function PerformanceTestHud() {
   const [uvMergeBenchmarkRunning, setUvMergeBenchmarkRunning] = useState(false);
   const [uvMergeBenchmarkResult, setUvMergeBenchmarkResult] =
     useState<UvMergeBenchmarkResult>();
+  const [localRepaintBenchmarkRunning, setLocalRepaintBenchmarkRunning] = useState(false);
+  const [localRepaintBenchmarkResult, setLocalRepaintBenchmarkResult] =
+    useState<LocalRepaintBenchmarkResult>();
   const projectedLayerRampRunningRef = useRef(false);
   const layerToggleScenarioRunningRef = useRef(false);
   const frameSamplesRef = useRef<PerformanceFrameSample[]>([]);
@@ -694,7 +760,9 @@ function PerformanceTestHud() {
         frameSamplesRef.current.push({
           unixMs: Date.now(),
           durationMs: duration,
-          phase: document.body.dataset.perfUvBakePhase,
+          phase:
+            document.body.dataset.perfLocalRepaintPhase ??
+            document.body.dataset.perfUvBakePhase,
         });
         if (frameSamplesRef.current.length > 7_200) frameSamplesRef.current.splice(0, 1_200);
       }
@@ -793,6 +861,7 @@ function PerformanceTestHud() {
     setProjectedLayerRampResult(undefined);
     setLayerToggleScenarioResult(undefined);
     setUvMergeBenchmarkResult(undefined);
+    setLocalRepaintBenchmarkResult(undefined);
   }, []);
 
   const exportReport = useCallback(() => {
@@ -1208,6 +1277,91 @@ function PerformanceTestHud() {
     }
   }, [clearReport, uvMergeBenchmarkRunning]);
 
+  const runLocalRepaintBenchmark = useCallback(
+    async (): Promise<LocalRepaintBenchmarkResult> => {
+      if (
+        projectedLayerRampRunningRef.current ||
+        layerToggleScenarioRunningRef.current ||
+        uvMergeBenchmarkRunning ||
+        localRepaintBenchmarkRunning
+      ) {
+        throw new Error('已有性能压测正在运行。');
+      }
+      const target = window as typeof window & {
+        LiclickPerfLocalRepaint?: LocalRepaintPerformanceApi;
+      };
+      if (!target.LiclickPerfLocalRepaint) {
+        throw new Error('S6 局部重绘模拟器尚未就绪。');
+      }
+      const summarizeFrames = (samples: PerformanceFrameSample[]) => {
+        const durations = samples.map((sample) => sample.durationMs);
+        return {
+          p95: percentile(durations, 0.95),
+          max: durations.length > 0 ? Math.max(...durations) : 0,
+          dropped:
+            durations.length > 0
+              ? (durations.filter((duration) => duration > 20).length / durations.length) * 100
+              : 0,
+        };
+      };
+      const memory = (
+        performance as Performance & { memory?: { usedJSHeapSize: number } }
+      ).memory;
+      const heapStartedBytes = memory?.usedJSHeapSize ?? 0;
+      setLocalRepaintBenchmarkRunning(true);
+      clearReport();
+      document.body.dataset.perfAutoOrbit = '1';
+      const finishScenario = startPerformanceSpan(
+        'local-repaint',
+        's6-full-local-repaint-scenario',
+      );
+      try {
+        const coreResult = await target.LiclickPerfLocalRepaint.run();
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        const protectedFrames = frameSamplesRef.current.filter((sample) =>
+          sample.phase?.startsWith('s6-interaction'),
+        );
+        const publishFrames = frameSamplesRef.current.filter(
+          (sample) => sample.phase?.startsWith('s6-publish'),
+        );
+        const protectedSummary = summarizeFrames(protectedFrames);
+        const publishSummary = summarizeFrames(publishFrames);
+        const phaseFrameMax: Record<string, number> = {};
+        frameSamplesRef.current.forEach((sample) => {
+          const phase = sample.phase ?? 'unattributed';
+          phaseFrameMax[phase] = Math.max(phaseFrameMax[phase] ?? 0, sample.durationMs);
+        });
+        const heapFinishedBytes = memory?.usedJSHeapSize ?? heapStartedBytes;
+        const result: LocalRepaintBenchmarkResult = {
+          ...coreResult,
+          protectedFrameP95: protectedSummary.p95,
+          protectedFrameMax: protectedSummary.max,
+          protectedDroppedFrames: protectedSummary.dropped,
+          publishFrameP95: publishSummary.p95,
+          publishFrameMax: publishSummary.max,
+          publishDroppedFrames: publishSummary.dropped,
+          heapDeltaMb: (heapFinishedBytes - heapStartedBytes) / 1024 / 1024,
+          phaseFrameMax,
+        };
+        setLocalRepaintBenchmarkResult(result);
+        finishScenario('end', result);
+        return result;
+      } catch (error) {
+        finishScenario('error', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        delete document.body.dataset.perfAutoOrbit;
+        delete document.body.dataset.perfSimulatedViewportInteraction;
+        delete document.body.dataset.perfLocalRepaintPhase;
+        setLocalRepaintBenchmarkRunning(false);
+      }
+    },
+    [clearReport, localRepaintBenchmarkRunning, uvMergeBenchmarkRunning],
+  );
+
   useEffect(() => {
     const target = window as typeof window & { LiclickPerfLab?: PerformanceLabWindowApi };
     target.LiclickPerfLab = {
@@ -1216,6 +1370,7 @@ function PerformanceTestHud() {
       runProjectedLayerRamp,
       runLayerToggleScenario,
       runUvMergeBenchmark,
+      runLocalRepaintBenchmark,
       snapshot: () => ({ metrics, native: nativeSnapshot, events: getPerformanceTimelineEvents() }),
     };
     return () => {
@@ -1228,6 +1383,7 @@ function PerformanceTestHud() {
     nativeSnapshot,
     runLayerToggleScenario,
     runProjectedLayerRamp,
+    runLocalRepaintBenchmark,
     runUvMergeBenchmark,
   ]);
 
@@ -1303,12 +1459,28 @@ function PerformanceTestHud() {
           <button
             type="button"
             disabled={
-              projectedLayerRamp.running || layerToggleScenario.running || uvMergeBenchmarkRunning
+              projectedLayerRamp.running ||
+              layerToggleScenario.running ||
+              uvMergeBenchmarkRunning ||
+              localRepaintBenchmarkRunning
             }
             onClick={() => void runUvMergeBenchmark()}
             className="rounded bg-emerald-400/20 px-2 py-1 text-[11px] text-emerald-200 transition hover:bg-emerald-400/30 disabled:cursor-wait disabled:opacity-55"
           >
             {uvMergeBenchmarkRunning ? 'S4 合成中…' : 'S4 · 4K 合成'}
+          </button>
+          <button
+            type="button"
+            disabled={
+              projectedLayerRamp.running ||
+              layerToggleScenario.running ||
+              uvMergeBenchmarkRunning ||
+              localRepaintBenchmarkRunning
+            }
+            onClick={() => void runLocalRepaintBenchmark()}
+            className="rounded bg-fuchsia-400/20 px-2 py-1 text-[11px] text-fuchsia-200 transition hover:bg-fuchsia-400/30 disabled:cursor-wait disabled:opacity-55"
+          >
+            {localRepaintBenchmarkRunning ? 'S6 重绘中…' : 'S6 · 完整局部重绘'}
           </button>
           <button type="button" onClick={clearReport} className="rounded px-2 py-1 text-[11px] text-white/55 transition hover:bg-white/10 hover:text-white">清空</button>
           <button type="button" onClick={exportReport} className="rounded bg-liclick-pink/25 px-2 py-1 text-[11px] text-liclick-pink transition hover:bg-liclick-pink/35">导出 JSON</button>
@@ -1355,6 +1527,92 @@ function PerformanceTestHud() {
           label="CPU 长任务占比"
           value={`${metrics.cpuLongTaskPercent.toFixed(1)}%`}
           tone={metricTone(metrics.cpuLongTaskPercent, 5, 20)}
+        />
+        <PerformanceMetric
+          label="S6 交互 P95 / 最大"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.protectedFrameP95.toFixed(1)} / ${localRepaintBenchmarkResult.protectedFrameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(localRepaintBenchmarkResult?.protectedFrameMax ?? 0, 20, 33)}
+        />
+        <PerformanceMetric
+          label="S6 停笔发布 P95 / 最大"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.publishFrameP95.toFixed(1)} / ${localRepaintBenchmarkResult.publishFrameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(localRepaintBenchmarkResult?.publishFrameMax ?? 0, 33, 80)}
+        />
+        <PerformanceMetric
+          label="S6 实时反馈 P95 / 最大"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.liveFeedbackP95.toFixed(1)} / ${localRepaintBenchmarkResult.liveFeedbackMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(localRepaintBenchmarkResult?.liveFeedbackP95 ?? 0, 20, 33)}
+        />
+        <PerformanceMetric
+          label="S6 按钮3就绪 / 首笔可见"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.activationReadyMs.toFixed(1)} / ${localRepaintBenchmarkResult.activationToFirstVisibleMs.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(localRepaintBenchmarkResult?.activationToFirstVisibleMs ?? 0, 100, 250)}
+        />
+        <PerformanceMetric
+          label="S6 持久化 / 空闲等待 / 发布"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.uvCommit.mode === 'deferred-export' ? '高清源+Alpha' : '即时UV'} / ${localRepaintBenchmarkResult.uvCommit.idleWaitMs.toFixed(0)} / ${localRepaintBenchmarkResult.uvCommit.mergeAndPublishMs.toFixed(0)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S6 蒙版 / 应用样本"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.maskAddSamples}+${localRepaintBenchmarkResult.maskSubtractSamples}+${localRepaintBenchmarkResult.maskRestoreSamples} / ${localRepaintBenchmarkResult.applySamples}`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S6 源图 / 候选 / 内存"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.sourceWidth}×${localRepaintBenchmarkResult.sourceHeight} / ${localRepaintBenchmarkResult.candidateCount} / ${localRepaintBenchmarkResult.heapDeltaMb.toFixed(0)}MB`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S6 最慢阶段 / 最大帧"
+          value={
+            localRepaintBenchmarkResult
+              ? (() => {
+                  const slowest = Object.entries(localRepaintBenchmarkResult.phaseFrameMax).sort(
+                    (left, right) => right[1] - left[1],
+                  )[0];
+                  return slowest ? `${slowest[0]} / ${slowest[1].toFixed(1)}ms` : '无采样';
+                })()
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S6 发布慢段 / 最大帧"
+          value={
+            localRepaintBenchmarkResult
+              ? (() => {
+                  const slowest = Object.entries(localRepaintBenchmarkResult.phaseFrameMax)
+                    .filter(([phase]) => phase.startsWith('s6-publish'))
+                    .sort((left, right) => right[1] - left[1])[0];
+                  return slowest ? `${slowest[0]} / ${slowest[1].toFixed(1)}ms` : '无采样';
+                })()
+              : '等待压测'
+          }
         />
         <PerformanceMetric
           label="0→14 旋转保护 P95 / 最大"
@@ -1429,6 +1687,20 @@ function PerformanceTestHud() {
             uvMergeBenchmarkResult
               ? `${(uvMergeBenchmarkResult.bakePerformanceBreakdown.seamReconcileMs ?? 0).toFixed(0)} / ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.coverageRepairMs ?? 0).toFixed(0)} / ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.gutterMs ?? 0).toFixed(0)}ms`
               : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S4 WebGPU 拓扑光栅"
+          value={
+            uvMergeBenchmarkResult
+              ? `${uvMergeBenchmarkResult.bakePerformanceBreakdown.uvTopologyGpuAccepted === 1 ? 'GPU' : '兼容'} · ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.uvTopologyWorkerTotalMs ?? 0).toFixed(0)}ms · 校准 ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.uvTopologyGpuCalibrationPixels ?? 0).toFixed(0)} · 最终差异 ${(uvMergeBenchmarkResult.bakePerformanceBreakdown.uvTopologyGpuMismatchedPixels ?? 0).toFixed(0)}`
+              : '等待压测'
+          }
+          tone={
+            uvMergeBenchmarkResult?.bakePerformanceBreakdown.uvTopologyGpuAccepted === 1 &&
+            (uvMergeBenchmarkResult?.bakePerformanceBreakdown.uvTopologyGpuMismatchedPixels ?? 0) === 0
+              ? 'text-emerald-300'
+              : 'text-amber-300'
           }
         />
         <PerformanceMetric
@@ -2013,6 +2285,7 @@ type LocalRepaintCompositeState = {
   projectorViewMatrix: THREE.Matrix4;
   projectorViewNormalMatrix: THREE.Matrix3;
   restoredMaskUrl?: string;
+  benchmarkFalloffPixels?: Uint8ClampedArray;
 };
 
 function createLocalRepaintFalloffCanvas(
@@ -2554,28 +2827,24 @@ function loadImageElement(url: string) {
   });
 }
 
-function createLocalRepaintPreviewCanvas(image: HTMLImageElement) {
-  const sourceWidth = image.naturalWidth || image.width;
-  const sourceHeight = image.naturalHeight || image.height;
-  if (
-    sourceWidth <= 0 ||
-    sourceHeight <= 0 ||
-    Math.max(sourceWidth, sourceHeight) <= LOCAL_REPAINT_PREVIEW_MAX_SIZE
-  )
-    return undefined;
-  const scale = LOCAL_REPAINT_PREVIEW_MAX_SIZE / Math.max(sourceWidth, sourceHeight);
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
-  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
-  const context = canvas.getContext('2d');
-  if (!context) return undefined;
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = 'high';
-  // The 4K source is already decoded here. Creating a resized ImageBitmap can
-  // take seconds on some Windows GPU/driver combinations and delayed the first
-  // apply-brush click. A single 512px canvas draw is deterministic and cheap.
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas;
+function reportLocalRepaintPrewarmProgress(
+  progress: number,
+  detail: string,
+  options: { done?: boolean; failed?: boolean } = {},
+) {
+  if (document.body.dataset.localRepaintPrewarmProgressRequested !== '1') return;
+  window.dispatchEvent(
+    new CustomEvent('liclick:local-repaint-prewarm-progress', {
+      detail: {
+        title: options.failed ? '局部重绘准备失败' : '正在准备局部重绘',
+        detail,
+        progress,
+        done: options.done,
+        dismissAfterMs: options.failed ? 4_000 : 450,
+      },
+    }),
+  );
+  if (options.done) delete document.body.dataset.localRepaintPrewarmProgressRequested;
 }
 
 function createLocalRepaintSourceKey(source: LocalRepaintProjectionSource, objectId: string) {
@@ -3094,9 +3363,11 @@ function SurfacePaintOverlay() {
   const pointerListenerGenerationRef = useRef(0);
   const localRepaintUvCommitRevisionRef = useRef(0);
   const localRepaintUvCommitChainRef = useRef(Promise.resolve());
+  const localRepaintLastCommitReportRef = useRef<LocalRepaintUvCommitReport>();
   const localRepaintUvScheduleFrameRef = useRef<number>();
   const localRepaintHandoffFrameRef = useRef<number>();
   const localRepaintPreviewTextureIdRef = useRef(createId('local-repaint-source-preview'));
+  const inpaintMaskPrewarmObjectIdRef = useRef<string>();
   const paintPreviewRevisionRef = useRef(0);
   const maskDirtyRef = useRef(false);
   const maskHasContentRef = useRef(false);
@@ -3578,6 +3849,89 @@ function SurfacePaintOverlay() {
     [archiveCurrentInpaintProjection, camera, getUvPaintLayer, gl.domElement],
   );
 
+  useEffect(() => {
+    if (!canUseSurfacePaint || paintTool !== 'none') return undefined;
+    const model = getTargetModel();
+    if (!model || inpaintMaskPrewarmObjectIdRef.current === model.objectId) return undefined;
+    let cancelled = false;
+    let idleId: number | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let frameId: number | undefined;
+    const waitForFrame = () =>
+      new Promise<void>((resolve) => {
+        frameId = window.requestAnimationFrame(() => resolve());
+      });
+    const prepare = async () => {
+      if (cancelled) return;
+      if (isPaintingRef.current || document.body.dataset.perfSimulatedViewportInteraction === '1') {
+        timeoutId = setTimeout(() => void prepare(), 250);
+        return;
+      }
+      const layer = getUvPaintLayer(model);
+      syncInpaintMaskProjection(model);
+      const meshes: THREE.Mesh[] = [];
+      model.group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        if (
+          child.userData.liclickPaintOverlay ||
+          child.userData.liclickViewportHelper ||
+          child.userData.liclickSelectionGlow ||
+          child.userData.liclickWireframeOverlay ||
+          !child.geometry.getAttribute('position')
+        )
+          return;
+        meshes.push(child);
+      });
+      for (let index = 0; index < meshes.length; index += 1) {
+        ensureOverlayForMesh(layer, meshes[index]);
+        if ((index + 1) % 3 === 0) await waitForFrame();
+        if (cancelled) return;
+      }
+      try {
+        gl.initTexture(layer.projectionTexture);
+        layer.overlayMeshes.forEach((mesh) => {
+          if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
+        });
+        await gl.compileAsync(scene, camera);
+      } catch (error) {
+        console.warn('[Liclick 3D Texture] Selection mask GPU prewarm was incomplete:', error);
+      } finally {
+        if (useSceneStore.getState().paintTool === 'none') {
+          layer.overlayMeshes.forEach((mesh) => {
+            if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = false;
+          });
+        }
+      }
+      if (!cancelled) {
+        inpaintMaskPrewarmObjectIdRef.current = model.objectId;
+        markPerformanceEvent('local-repaint', 'selection-mask-overlay-prewarm', {
+          meshCount: meshes.length,
+        });
+      }
+    };
+    if ('requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(() => void prepare(), { timeout: 2_000 });
+    } else {
+      timeoutId = setTimeout(() => void prepare(), 600);
+    }
+    return () => {
+      cancelled = true;
+      if (idleId !== undefined && 'cancelIdleCallback' in window) window.cancelIdleCallback(idleId);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
+    };
+  }, [
+    camera,
+    canUseSurfacePaint,
+    ensureOverlayForMesh,
+    getTargetModel,
+    getUvPaintLayer,
+    gl,
+    paintTool,
+    scene,
+    syncInpaintMaskProjection,
+  ]);
+
   useFrame(() => {
     const model = getTargetModel();
     const layer = layerRef.current;
@@ -3888,12 +4242,16 @@ function SurfacePaintOverlay() {
     if (localRepaintUvScheduleFrameRef.current !== undefined)
       window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
     localRepaintUvScheduleFrameRef.current = undefined;
-    useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     const source = localRepaintProjectionSource;
+    delete document.body.dataset.localRepaintGpuReadyGeneration;
+    delete document.body.dataset.localRepaintGpuReadyTarget;
+    delete document.body.dataset.localRepaintGpuErrorGeneration;
+    delete document.body.dataset.localRepaintGpuErrorTarget;
     localRepaintSourceImageRef.current = undefined;
     localRepaintCompositeRef.current = undefined;
     setLocalRepaintAssetsRevision(0);
     if (!source) {
+      useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
       return undefined;
     }
 
@@ -3946,18 +4304,16 @@ function SurfacePaintOverlay() {
     ])
       .then(([sourceImage, allowedMaskImage]) => {
         if (cancelled) return;
-        // Retain the original ComfyUI result for the background UV bake. Do not
-        // prime its 4K GPU texture while entering the brush; only the 512px proxy
-        // belongs to the interactive material.
-        const previewCanvas = createLocalRepaintPreviewCanvas(sourceImage);
-        if (cancelled) return;
-        const previewImageUrl = previewCanvas
-          ? registerLiveProjectedCanvasTexture(
-              localRepaintPreviewTextureIdRef.current,
-              previewCanvas,
-              THREE.SRGBColorSpace,
-            )
-          : source.imageUrl;
+        reportLocalRepaintPrewarmProgress(0.4, '高清图与透明蒙版已解码');
+        // Register the decoded image itself as the dedicated foreground texture.
+        // Copying 2K/4K pixels through a full-size 2D canvas blocked the main
+        // thread and duplicated memory before the same pixels reached GPU.
+        const previewImageUrl = registerLiveProjectedImageTexture(
+          localRepaintPreviewTextureIdRef.current,
+          sourceImage,
+          THREE.SRGBColorSpace,
+        );
+        reportLocalRepaintPrewarmProgress(0.56, '准备 GPU 原生纹理');
         localRepaintSourceImageRef.current = {
           url: source.imageUrl,
           image: sourceImage,
@@ -3966,6 +4322,9 @@ function SurfacePaintOverlay() {
         };
         localRepaintCompositeRef.current = undefined;
         setLocalRepaintAssetsRevision((revision) => revision + 1);
+        // Do not enable button 3 yet. The effect below publishes its empty
+        // projection, uploads both immutable source and mutable mask textures,
+        // and compiles the material before the first user stroke is accepted.
       })
       .catch((error) => {
         console.warn(
@@ -3974,6 +4333,12 @@ function SurfacePaintOverlay() {
         );
         localRepaintSourceImageRef.current = undefined;
         localRepaintCompositeRef.current = undefined;
+        document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
+        document.body.dataset.localRepaintGpuErrorTarget = source.targetLayerId ?? '';
+        reportLocalRepaintPrewarmProgress(1, '无法读取高清结果或蒙版，请重试', {
+          done: true,
+          failed: true,
+        });
       });
     return () => {
       cancelled = true;
@@ -4479,7 +4844,9 @@ function SurfacePaintOverlay() {
         visible: true,
         opacity: 1,
         strength: 1,
-        blendMode: 'overlay',
+        // Local repaint is a literal source replacement inside the authored
+        // brush alpha, not Photoshop's contrast-changing Overlay blend mode.
+        blendMode: 'normal',
         adjustments: { hue: 0, saturation: 0, lightness: 0 },
         order: 0,
         createdAt: existingLayer?.createdAt ?? new Date().toISOString(),
@@ -4514,30 +4881,83 @@ function SurfacePaintOverlay() {
   // from a pointer event: doing so resets decoded assets and rebuilds materials
   // in the middle of the first stroke, which makes feedback arrive seconds late.
   const resolveLocalRepaintStrokeSource = useCallback(
-    () => localRepaintProjectionSource,
-    [localRepaintProjectionSource],
+    // Read at gesture start instead of closing over the render that installed a
+    // benchmark/pointer handler. A source can finish GPU prewarming between two
+    // renders; the first valid stroke must bind that newest source immediately.
+    () => useSceneStore.getState().localRepaintProjectionSource,
+    [],
   );
 
   useEffect(() => {
     if (!localRepaintProjectionSource || localRepaintAssetsRevision <= 0) return undefined;
     let cancelled = false;
+    reportLocalRepaintPrewarmProgress(0.08, '读取高清生成结果');
     let timeoutId: number | undefined;
-    const prepare = () => {
+    let frameId: number | undefined;
+    const waitForFrame = () =>
+      new Promise<void>((resolve) => {
+        frameId = window.requestAnimationFrame(() => resolve());
+      });
+    const prepare = async () => {
       if (cancelled) return;
       if (isPaintingRef.current) {
-        timeoutId = window.setTimeout(prepare, 80);
+        timeoutId = window.setTimeout(() => void prepare(), 80);
         return;
       }
       const model = getTargetModel();
       if (!model || !localRepaintSourceImageRef.current) return;
       const source = resolveLocalRepaintStrokeSource();
-      if (source) ensureLiveLocalRepaintComposite(model, source);
+      if (!source) return;
+      const startedAt = performance.now();
+      const composite = ensureLiveLocalRepaintComposite(model, source);
+      if (!composite) return;
+      try {
+        reportLocalRepaintPrewarmProgress(0.64, '上传高清颜色纹理');
+        const sourceTexture = getLiveProjectedTexture(
+          localRepaintSourceImageRef.current.previewImageUrl,
+          THREE.SRGBColorSpace,
+          { flipY: false },
+        );
+        // Upload immutable color and empty coverage before accepting input. The
+        // first painted frame must contain only a tiny mask update, never image
+        // decode, texture allocation or shader compilation.
+        if (sourceTexture) gl.initTexture(sourceTexture);
+        reportLocalRepaintPrewarmProgress(0.76, '上传透明 Alpha 蒙版');
+        gl.initTexture(composite.maskTexture);
+        await waitForFrame();
+        reportLocalRepaintPrewarmProgress(0.88, '编译局部重绘材质');
+        await gl.compileAsync(scene, camera);
+        await waitForFrame();
+      } catch (error) {
+        console.warn('[Liclick 3D Texture] Local repaint GPU prewarm was incomplete:', error);
+      }
+      if (cancelled) return;
+      const sceneState = useSceneStore.getState();
+      const currentSource = sceneState.localRepaintProjectionSource;
+      document.body.dataset.localRepaintGpuReadyGeneration = source.generationId ?? '';
+      document.body.dataset.localRepaintGpuReadyTarget = source.targetLayerId ?? '';
+      reportLocalRepaintPrewarmProgress(1, 'GPU 已就绪，可以立即涂抹', { done: true });
+      if (
+        source.autoActivate !== false &&
+        sceneState.paintTool === 'none' &&
+        currentSource?.generationId === source.generationId &&
+        currentSource?.targetLayerId === source.targetLayerId
+      ) {
+        sceneState.setPaintTool('inpaint-apply');
+      }
+      markPerformanceEvent('local-repaint', 'gpu-source-mask-material-prewarm', {
+        sourceWidth: localRepaintSourceImageRef.current.image.naturalWidth,
+        sourceHeight: localRepaintSourceImageRef.current.image.naturalHeight,
+        maskWidth: composite.maskCanvas.width,
+        maskHeight: composite.maskCanvas.height,
+        durationMs: performance.now() - startedAt,
+      });
     };
     // Publish the empty lightweight projection on the very next frame. Waiting
     // for requestIdleCallback left shader/material creation until the first
     // brush gesture on busy scenes, so a valid stroke could remain invisible
     // for several frames while the projected material was being prepared.
-    const frameId = window.requestAnimationFrame(prepare);
+    frameId = window.requestAnimationFrame(() => void prepare());
     return () => {
       cancelled = true;
       if (frameId !== undefined) window.cancelAnimationFrame(frameId);
@@ -4546,9 +4966,12 @@ function SurfacePaintOverlay() {
   }, [
     ensureLiveLocalRepaintComposite,
     getTargetModel,
+    gl,
+    camera,
     localRepaintAssetsRevision,
     localRepaintProjectionSource,
     resolveLocalRepaintStrokeSource,
+    scene,
   ]);
 
   const hasLocalRepaintSourceContent = useCallback(
@@ -4587,7 +5010,10 @@ function SurfacePaintOverlay() {
       // bundle up on the high-frequency path.
       const layer = strokePaintTool === 'inpaint-apply' ? undefined : getUvPaintLayer(result.model);
       const previousSample = lastSampleRef.current;
-      const usesProjectionStroke = isInpaintMode || isLocalRepaintApplyMode;
+      const usesProjectionStroke =
+        strokePaintTool === 'inpaint-add' ||
+        strokePaintTool === 'inpaint-subtract' ||
+        strokePaintTool === 'inpaint-apply';
       const fromUv = usesProjectionStroke ? undefined : getStrokeSourceUv(result);
       if (!usesProjectionStroke && !fromUv && previousSample && strokeTelemetryRef.current) {
         strokeTelemetryRef.current.continuityBreaks += 1;
@@ -4595,7 +5021,12 @@ function SurfacePaintOverlay() {
       // Selection masks use the current viewport, while local repaint is
       // rasterized below in the generated image's capture-camera coordinates.
       const previousScreenUv = lastSampleRef.current?.screenUv;
-      const fromScreenUv = isInpaintMode ? previousScreenUv : fromUv ? previousScreenUv : undefined;
+      const fromScreenUv =
+        strokePaintTool === 'inpaint-add' || strokePaintTool === 'inpaint-subtract'
+          ? previousScreenUv
+          : fromUv
+            ? previousScreenUv
+            : undefined;
       let localRepaintUv: THREE.Vector2 | undefined;
       if (strokePaintTool === 'brush') {
         if (!layer) return;
@@ -4831,7 +5262,8 @@ function SurfacePaintOverlay() {
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
           mergeLocalRepaintScratchPatch(composite, projectionBounds);
-          // This mask is only 288px. Upload it on the same RAF as the stamp so
+          // This mask is an interaction-only 1024px coverage texture. Upload it
+          // on the same RAF as the stamp so
           // every accepted sample has immediate visual feedback. paintAt already
           // runs at most once per display frame for projected strokes, so setting
           // needsUpdate directly does not add duplicate uploads and avoids
@@ -4886,14 +5318,14 @@ function SurfacePaintOverlay() {
     ],
   );
 
-  const commitMaskIfDirty = useCallback(() => {
+  const commitMaskIfDirty = useCallback((forceMaskCommit = false) => {
     if (!maskDirtyRef.current) return;
     const layer = layerRef.current;
     maskDirtyRef.current = false;
     // Applying a generated repaint must not rewrite and re-encode the original
     // selection mask after every stroke. That full-canvas readback was the main
     // source of the button-3 input lag.
-    if (isLocalRepaintApplyMode) return;
+    if (isLocalRepaintApplyMode && !forceMaskCommit) return;
     const hasContent = Boolean(layer && maskHasContentRef.current);
     const revision = paintMaskCommitRevisionRef.current + 1;
     paintMaskCommitRevisionRef.current = revision;
@@ -4913,11 +5345,12 @@ function SurfacePaintOverlay() {
 
   const beginStrokeHistory = useCallback(
     (result: UvPaintHit, strokePaintTool = paintTool) => {
-      const target = isInpaintMode
-        ? 'mask'
-        : isLocalRepaintApplyMode
-          ? 'apply-local-repaint'
-          : 'paint';
+      const target =
+        strokePaintTool === 'inpaint-add' || strokePaintTool === 'inpaint-subtract'
+          ? 'mask'
+          : strokePaintTool === 'inpaint-apply'
+            ? 'apply-local-repaint'
+            : 'paint';
       // Invalidate an older high-resolution handoff as soon as a new gesture
       // begins, rather than waiting for pointer-up. The live 512px proxy remains
       // authoritative until the newest accumulated mask receives its 4K bake.
@@ -5081,62 +5514,99 @@ function SurfacePaintOverlay() {
       source: LocalRepaintProjectionSource,
       composite: LocalRepaintCompositeState,
     ) => {
+      const commitRevision = localRepaintUvCommitRevisionRef.current + 1;
+      localRepaintUvCommitRevisionRef.current = commitRevision;
+      const queueStartedAt = performance.now();
       if (!LOCAL_REPAINT_INTERACTIVE_UV_BAKE_ENABLED) {
-        const layerState = useLayerStore.getState();
-        const currentLayers = layerState.layers;
-        const existingProjectionLayer = currentLayers.find((item) =>
-          isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
-        );
-        const previewLayer = useSceneStore.getState().localRepaintPreviewLayer;
-        const persistedLayer: Layer = {
-          ...(previewLayer?.id === composite.layerId ? previewLayer : existingProjectionLayer),
-          id: composite.layerId,
-          name: source.targetLayerName
-            ? `${source.targetLayerName} · 局部替换`
-            : (source.name ?? 'Local repaint brush'),
-          type: 'projected',
-          // The renderer preview uses a downscaled source image, but persistence
-          // keeps the original result. Export will sample this image and the
-          // lightweight live mask when it performs the final-resolution UV bake.
-          imageUrl: source.imageUrl,
-          maskUrl: composite.maskUrl,
-          depthUrl: source.depthUrl,
-          objectId: source.objectId ?? model.objectId,
-          objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
-          camera: source.camera,
-          generationId: source.generationId,
-          captureId: source.captureId,
-          replacementTargetLayerId: source.targetLayerId,
-          renderedColor: true,
-          minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
-          isBaked: false,
-          needsRebake: true,
-          visible: true,
-          opacity: 1,
-          strength: 1,
-          blendMode: 'overlay',
-          adjustments: existingProjectionLayer?.adjustments ?? {
-            hue: 0,
-            saturation: 0,
-            lightness: 0,
-          },
-          order: 0,
-          contentRevision: (existingProjectionLayer?.contentRevision ?? 0) + 1,
-          createdAt: existingProjectionLayer?.createdAt ?? new Date().toISOString(),
+        const persistProjectedResult = async () => {
+          const canCommit = await waitForPaintCommitIdle(
+            () =>
+              localRepaintUvCommitRevisionRef.current !== commitRevision ||
+              localRepaintCompositeRef.current?.sourceKey !== composite.sourceKey,
+          );
+          if (!canCommit || isPaintingRef.current) return;
+          const publishStartedAt = performance.now();
+          document.body.dataset.perfLocalRepaintPhase = 's6-publish-deferred-export';
+          const layerState = useLayerStore.getState();
+          const currentLayers = layerState.layers;
+          const existingProjectionLayer = currentLayers.find((item) =>
+            isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
+          );
+          const previewLayer = useSceneStore.getState().localRepaintPreviewLayer;
+          const persistedLayer: Layer = {
+            ...(previewLayer?.id === composite.layerId ? previewLayer : existingProjectionLayer),
+            id: composite.layerId,
+            name: source.targetLayerName
+              ? `${source.targetLayerName} · 局部替换`
+              : (source.name ?? 'Local repaint brush'),
+            type: 'projected',
+            // Keep color and alpha as separate GPU-native assets. Building a
+            // full RGBA canvas looked synchronous but Chromium deferred a
+            // 70-260ms flush until its first thumbnail/readback. The renderer,
+            // export and masked layer thumbnail all consume this exact pair.
+            imageUrl:
+              localRepaintSourceImageRef.current?.previewImageUrl ?? source.imageUrl,
+            maskUrl: composite.maskUrl,
+            depthUrl: source.depthUrl,
+            objectId: source.objectId ?? model.objectId,
+            objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
+            camera: source.camera,
+            generationId: source.generationId,
+            captureId: source.captureId,
+            replacementTargetLayerId: source.targetLayerId,
+            localRepaintSourceUrl: source.persistentImageUrl ?? source.imageUrl,
+            localRepaintMaskUrl: composite.maskUrl,
+            renderedColor: true,
+            minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
+            isBaked: false,
+            needsRebake: true,
+            visible: true,
+            opacity: 1,
+            strength: 1,
+            blendMode: 'normal',
+            adjustments: existingProjectionLayer?.adjustments ?? {
+              hue: 0,
+              saturation: 0,
+              lightness: 0,
+            },
+            order: 0,
+            contentRevision: (existingProjectionLayer?.contentRevision ?? 0) + 1,
+            createdAt: existingProjectionLayer?.createdAt ?? new Date().toISOString(),
+          };
+          const retainedLayers = currentLayers.filter(
+            (item) =>
+              item.id !== persistedLayer.id &&
+              !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
+          );
+          layerState.setLayers([persistedLayer, ...retainedLayers]);
+          // setLayers already selects the first visible row. EditorPage owns the
+          // single layer-store -> project-store synchronization effect; doing
+          // both writes again here caused two full editor/project renders on the
+          // first idle frame after a stroke.
+          const report: LocalRepaintUvCommitReport = {
+            mode: 'deferred-export',
+            revision: commitRevision,
+            resolution: Math.min(UV_TEXTURE_RESOLUTION[textureResolutionSetting], 4096),
+            maskSnapshotMs: 0,
+            idleWaitMs: performance.now() - queueStartedAt,
+            gpuBakeMs: 0,
+            mergeAndPublishMs: performance.now() - publishStartedAt,
+            totalMs: performance.now() - queueStartedAt,
+            coveredPixels: 0,
+            coverageRatio: 0,
+            bakePerformanceBreakdown: {},
+          };
+          localRepaintLastCommitReportRef.current = report;
+          markPerformanceEvent('local-repaint', 's6-uv-commit-complete', report);
         };
-        const retainedLayers = currentLayers.filter(
-          (item) =>
-            item.id !== persistedLayer.id &&
-            !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
-        );
-        layerState.setLayers([persistedLayer, ...retainedLayers]);
-        useLayerStore.getState().setActiveLayer(persistedLayer.id);
-        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        const queuedCommit = localRepaintUvCommitChainRef.current.then(persistProjectedResult);
+        localRepaintUvCommitChainRef.current = queuedCommit.catch((error) => {
+          if (localRepaintUvCommitRevisionRef.current !== commitRevision) return;
+          console.warn('[Liclick 3D Texture] Could not persist local repaint projection:', error);
+        });
         return;
       }
 
-      const commitRevision = localRepaintUvCommitRevisionRef.current + 1;
-      localRepaintUvCommitRevisionRef.current = commitRevision;
       const sourceKey = composite.sourceKey;
       const previewLayerId = composite.layerId;
       const currentLayers = useLayerStore.getState().layers;
@@ -5168,12 +5638,14 @@ function SurfacePaintOverlay() {
       // The mask contains only strokes that have not reached UV yet. Freeze it
       // synchronously, then keep drawing into the live canvas while this snapshot
       // is processed in the serialized background queue.
+      const maskSnapshotStartedAt = performance.now();
       const maskSnapshot = copyCanvasRect(composite.maskCanvas, {
         x: 0,
         y: 0,
         width: composite.maskCanvas.width,
         height: composite.maskCanvas.height,
       });
+      const maskSnapshotMs = performance.now() - maskSnapshotStartedAt;
 
       const commitUvStroke = async () => {
         const canCommit = await waitForPaintCommitIdle(
@@ -5188,6 +5660,7 @@ function SurfacePaintOverlay() {
           isPaintingRef.current
         )
           return;
+        const idleWaitMs = performance.now() - queueStartedAt;
 
         const maskSnapshotUrl = registerLiveProjectedCanvasTexture(
           `local-repaint-uv-mask:${previewLayerId}:${commitRevision}`,
@@ -5212,7 +5685,7 @@ function SurfacePaintOverlay() {
           visible: true,
           opacity: 1,
           strength: 1,
-          blendMode: 'overlay',
+          blendMode: 'normal',
           adjustments: { hue: 0, saturation: 0, lightness: 0 },
           order: 0,
           createdAt: new Date().toISOString(),
@@ -5226,6 +5699,8 @@ function SurfacePaintOverlay() {
           4096,
         ) as UvBakeResolution;
         const bakeResolutionScale = bakeResolution / 1024;
+        document.body.dataset.perfLocalRepaintPhase = 's6-publish-gpu-bake';
+        const gpuBakeStartedAt = performance.now();
         const { bakeVisibleProjectedLayersToTexture } =
           await import('@/engine/bake/bakeProjectedLayerToTexture');
         const bakeResult = await bakeVisibleProjectedLayersToTexture({
@@ -5257,6 +5732,7 @@ function SurfacePaintOverlay() {
           skipImageEncoding: true,
           skipCpuPostprocess: true,
         });
+        const gpuBakeMs = performance.now() - gpuBakeStartedAt;
         if (bakeResult.report.coveredPixels <= 0) {
           throw new Error('局部重绘没有生成有效 UV 像素，已保留实时预览，请重新绘制。');
         }
@@ -5272,6 +5748,8 @@ function SurfacePaintOverlay() {
         )
           return;
 
+        document.body.dataset.perfLocalRepaintPhase = 's6-publish-merge-upload';
+        const mergeAndPublishStartedAt = performance.now();
         const layerState = useLayerStore.getState();
         const latestLayers = layerState.layers;
         const existingMergeLayers = latestLayers.filter((item) =>
@@ -5397,6 +5875,22 @@ function SurfacePaintOverlay() {
         // result, then fade it away. This makes the resolution handoff visible
         // as a refinement instead of a one-frame texture swap.
         handoffLocalRepaintPreview(composite, sourceKey, commitRevision);
+        const mergeAndPublishMs = performance.now() - mergeAndPublishStartedAt;
+        const report: LocalRepaintUvCommitReport = {
+          mode: 'interactive-uv',
+          revision: commitRevision,
+          resolution: bakeResolution,
+          maskSnapshotMs,
+          idleWaitMs,
+          gpuBakeMs,
+          mergeAndPublishMs,
+          totalMs: performance.now() - queueStartedAt,
+          coveredPixels: bakeResult.report.coveredPixels,
+          coverageRatio: bakeResult.report.coverageRatio,
+          bakePerformanceBreakdown: bakeResult.report.performanceBreakdown ?? {},
+        };
+        localRepaintLastCommitReportRef.current = report;
+        markPerformanceEvent('local-repaint', 's6-uv-commit-complete', report);
       };
 
       const queuedCommit = localRepaintUvCommitChainRef.current.then(commitUvStroke);
@@ -5911,6 +6405,359 @@ function SurfacePaintOverlay() {
       maskHasContentRef.current = afterMaskHasContent;
     }
   }, []);
+
+  useEffect(() => {
+    const target = window as typeof window & {
+      LiclickPerfLocalRepaint?: LocalRepaintPerformanceApi;
+    };
+    const waitForFrame = () =>
+      new Promise<number>((resolve) => window.requestAnimationFrame(resolve));
+    const wait = (durationMs: number) =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, durationMs));
+
+    target.LiclickPerfLocalRepaint = {
+      run: async () => {
+        const startedAt = performance.now();
+        const originalPaintTool = useSceneStore.getState().paintTool;
+        const originalMaskSettings = useSceneStore.getState().paintMaskSettings;
+        let source = useSceneStore.getState().localRepaintProjectionSource;
+        let sourceImageState = localRepaintSourceImageRef.current;
+        const model = getTargetModel();
+        if (!model) throw new Error('S6 需要一个已加载并选中的模型。');
+        const layerState = useLayerStore.getState();
+        const belongsToModel = (layer: Layer) =>
+          !layer.objectId || layer.objectId === model.objectId;
+        const isValidDestination = (layer: Layer | undefined): layer is Layer =>
+          Boolean(
+            layer &&
+              layer.type === 'uv' &&
+              belongsToModel(layer) &&
+              (!layer.imageUrl || layer.role === 'local-repaint-overlay'),
+          );
+        let activeLayer = layerState.layers.find(
+          (layer) => layer.id === layerState.activeProjectedLayerId,
+        );
+        if (!isValidDestination(activeLayer)) {
+          activeLayer = layerState.layers.find(
+            (layer) => layer.id === source?.targetLayerId && isValidDestination(layer),
+          );
+        }
+        if (!isValidDestination(activeLayer)) {
+          activeLayer = layerState.layers.find(
+            (layer) => isValidDestination(layer) && !layer.imageUrl,
+          );
+        }
+        if (!isValidDestination(activeLayer)) {
+          activeLayer = useLayerStore.getState().addEmptyLayer();
+          useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        }
+        useLayerStore.getState().setActiveLayer(activeLayer.id);
+        // Every S6 run represents a fresh button-1 selection. Reusing the prior
+        // run's projected mask archives another camera snapshot and measures
+        // growing test debris rather than a normal user flow.
+        useSceneStore.getState().clearPaintMask();
+        await waitForFrame();
+        await waitForFrame();
+
+        let sourceWidth = 0;
+        let sourceHeight = 0;
+        const feedbackSamples: number[] = [];
+        const initialCommitRevision = localRepaintLastCommitReportRef.current?.revision ?? 0;
+        let maskAddSamples = 0;
+        let maskSubtractSamples = 0;
+        let maskRestoreSamples = 0;
+        let applySamples = 0;
+        let candidateCount = 0;
+        let activationStartedAt = 0;
+        let activationReadyMs = 0;
+        let firstApplyVisibleAt = 0;
+
+        const scaleSimulationHit = (hit: UvPaintHit, scale = 2.15): UvPaintHit => ({
+          ...hit,
+          worldRadius: hit.worldRadius * scale,
+          textureRadius: Math.min(INPAINT_BRUSH_MAX_TEXTURE_RADIUS, hit.textureRadius * scale),
+          uvBrush: scaleBrushTransform(hit.uvBrush, scale),
+          screenBrush: scaleBrushTransform(hit.screenBrush, scale),
+          screenBrushRadiusPx: hit.screenBrushRadiusPx * scale,
+        });
+
+        const scanCandidates = async (requireGeneratedSource: boolean) => {
+          model.group.updateMatrixWorld(true);
+          const composite =
+            requireGeneratedSource && source
+              ? ensureLiveLocalRepaintComposite(model, source)
+              : undefined;
+          if (requireGeneratedSource && !composite) return [];
+          const falloffContext = composite?.falloffCanvas.getContext('2d', {
+            willReadFrequently: true,
+          });
+          const falloffPixels = composite
+            ? (composite.benchmarkFalloffPixels ??=
+                falloffContext?.getImageData(
+                  0,
+                  0,
+                  composite.falloffCanvas.width,
+                  composite.falloffCanvas.height,
+                ).data)
+            : undefined;
+          const rect = gl.domElement.getBoundingClientRect();
+          const candidates: UvPaintHit[] = [];
+          for (let row = 0; row < 15; row += 1) {
+            for (let column = 0; column < 19; column += 1) {
+              const clientX = rect.left + rect.width * (0.12 + (column / 18) * 0.76);
+              const clientY = rect.top + rect.height * (0.1 + (row / 14) * 0.8);
+              const hit = raycastModel({ clientX, clientY }, rect);
+              if (!hit || !(hit.hit.object instanceof THREE.Mesh) || !hit.hit.face) continue;
+              if (!requireGeneratedSource) {
+                candidates.push(scaleSimulationHit(hit));
+                continue;
+              }
+              if (
+                !composite ||
+                !isLocalRepaintSurfaceFacingProjector(
+                  composite,
+                  hit.hit.object,
+                  hit.hit.face,
+                  hit.hit.point,
+                )
+              ) {
+                continue;
+              }
+              const projectedUv = projectWorldPointToLocalRepaintUv(
+                hit.hit.point,
+                composite.worldToSourceClip,
+              );
+              if (!projectedUv) continue;
+              const falloffX = THREE.MathUtils.clamp(
+                Math.floor(projectedUv.x * composite.falloffCanvas.width),
+                0,
+                composite.falloffCanvas.width - 1,
+              );
+              const falloffY = THREE.MathUtils.clamp(
+                Math.floor(projectedUv.y * composite.falloffCanvas.height),
+                0,
+                composite.falloffCanvas.height - 1,
+              );
+              const falloffOffset =
+                (falloffY * composite.falloffCanvas.width + falloffX) * 4;
+              if (
+                falloffPixels &&
+                Math.max(
+                  falloffPixels[falloffOffset],
+                  falloffPixels[falloffOffset + 1],
+                  falloffPixels[falloffOffset + 2],
+                  falloffPixels[falloffOffset + 3],
+                ) < 12
+              ) {
+                continue;
+              }
+              candidates.push(scaleSimulationHit(hit));
+            }
+            // The benchmark must not manufacture its own long task while it
+            // searches the model. Real users provide these points over many
+            // pointer frames, so mirror that scheduling here as well.
+            if ((row + 1) % 3 === 0) await waitForFrame();
+          }
+          candidateCount = Math.max(candidateCount, candidates.length);
+          return candidates;
+        };
+
+        const runStroke = async (
+          tool: 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply',
+          hits: UvPaintHit[],
+        ) => {
+          if (hits.length === 0) return 0;
+          const strokeStartedAt = performance.now();
+          isPaintingRef.current = true;
+          lastPaintActivityAtRef.current = strokeStartedAt;
+          lastUvRef.current = undefined;
+          lastSampleRef.current = undefined;
+          lastPointerClientRef.current = undefined;
+          if (tool !== 'inpaint-apply') syncInpaintMaskProjection(hits[0].model);
+          beginStrokeHistory(hits[0], tool);
+          for (const hit of hits) {
+            const sampleStartedAt = performance.now();
+            lastPaintActivityAtRef.current = sampleStartedAt;
+            paintAt(hit, 0.82, tool);
+            recordSurfacePaintPerf(performance.now() - sampleStartedAt);
+            const frameAt = await waitForFrame();
+            feedbackSamples.push(frameAt - sampleStartedAt);
+            if (tool === 'inpaint-apply' && firstApplyVisibleAt === 0) {
+              firstApplyVisibleAt = frameAt;
+            }
+          }
+          if (tool === 'inpaint-apply' && localRepaintCompositeRef.current) {
+            scheduleTextureUpdate(localRepaintCompositeRef.current.maskTexture);
+          }
+          isPaintingRef.current = false;
+          lastPaintActivityAtRef.current = performance.now();
+          lastUvRef.current = undefined;
+          lastSampleRef.current = undefined;
+          lastPointerClientRef.current = undefined;
+          commitPaintStroke();
+          commitStrokeHistory();
+          if (tool !== 'inpaint-apply') commitMaskIfDirty(true);
+          markPerformanceEvent('local-repaint', `s6-${tool}-stroke`, {
+            samples: hits.length,
+            durationMs: performance.now() - strokeStartedAt,
+          });
+          return hits.length;
+        };
+
+        document.body.dataset.perfSimulatedViewportInteraction = '1';
+        try {
+          useSceneStore.getState().setPaintMaskSettings({
+            brushSize: Math.max(originalMaskSettings.brushSize, 36),
+            brushOpacity: 100,
+          });
+          useSceneStore.getState().setPaintTool('inpaint-add');
+          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-mask-add';
+          await waitForFrame();
+          await waitForFrame();
+          const initialCandidates = await scanCandidates(false);
+          if (initialCandidates.length < 8) {
+            throw new Error(
+              `当前相机只找到 ${initialCandidates.length} 个可重绘采样点；请把模型转回生成图片对应视角。`,
+            );
+          }
+          const maskStartedAt = performance.now();
+          const maskPath = initialCandidates.slice(0, Math.min(48, initialCandidates.length));
+          maskAddSamples += await runStroke('inpaint-add', maskPath);
+
+          useSceneStore.getState().setPaintTool('inpaint-subtract');
+          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-mask-subtract';
+          await waitForFrame();
+          const subtractPath = maskPath.slice(
+            Math.floor(maskPath.length * 0.35),
+            Math.max(Math.floor(maskPath.length * 0.35) + 4, Math.floor(maskPath.length * 0.62)),
+          );
+          maskSubtractSamples += await runStroke('inpaint-subtract', subtractPath);
+
+          useSceneStore.getState().setPaintTool('inpaint-add');
+          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-mask-restore';
+          await waitForFrame();
+          maskRestoreSamples += await runStroke('inpaint-add', subtractPath);
+          const maskDurationMs = performance.now() - maskStartedAt;
+
+          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-source-bind';
+          const sourceController = (
+            window as typeof window & {
+              LiclickPerfLocalRepaintSource?: LocalRepaintSourcePerformanceApi;
+            }
+          ).LiclickPerfLocalRepaintSource;
+          if (!sourceController) throw new Error('S6 现成生图绑定器尚未就绪。');
+          activationStartedAt = performance.now();
+          await sourceController.prepareLatestGeneratedSource();
+          activationReadyMs = performance.now() - activationStartedAt;
+          const sourceReadyDeadline = performance.now() + 20_000;
+          while (performance.now() < sourceReadyDeadline) {
+            source = useSceneStore.getState().localRepaintProjectionSource;
+            sourceImageState = localRepaintSourceImageRef.current;
+            if (source && sourceImageState?.image) break;
+            await wait(40);
+          }
+          if (!source || !sourceImageState?.image) {
+            throw new Error('现成局部生图已绑定，但投影图片预热超时。');
+          }
+          sourceWidth = sourceImageState.image.naturalWidth || sourceImageState.image.width;
+          sourceHeight = sourceImageState.image.naturalHeight || sourceImageState.image.height;
+          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-apply-prepare';
+          await waitForFrame();
+          await waitForFrame();
+          const applyStartedAt = performance.now();
+          const applyStrokes = 6;
+          for (let strokeIndex = 0; strokeIndex < applyStrokes; strokeIndex += 1) {
+            document.body.dataset.perfLocalRepaintPhase =
+              strokeIndex === 0
+                ? 's6-interaction-apply-cold'
+                : 's6-interaction-apply-hot';
+            const candidates = await scanCandidates(true);
+            if (candidates.length < 4) continue;
+            const startIndex = (strokeIndex * 5) % candidates.length;
+            const strokeHits = Array.from(
+              { length: Math.min(10, candidates.length) },
+              (_, index) => candidates[(startIndex + index) % candidates.length],
+            );
+            applySamples += await runStroke('inpaint-apply', strokeHits);
+            await wait(70);
+          }
+          const applyDurationMs = performance.now() - applyStartedAt;
+          if (applySamples === 0) throw new Error('现有生图在当前视角没有可应用的蒙版像素。');
+
+          delete document.body.dataset.perfSimulatedViewportInteraction;
+          document.body.dataset.perfLocalRepaintPhase = 's6-publish-idle-gate';
+          markPerformanceEvent('local-repaint', 's6-interaction-complete', {
+            maskAddSamples,
+            maskSubtractSamples,
+            maskRestoreSamples,
+            applySamples,
+          });
+          const reportDeadline = performance.now() + 45_000;
+          let uvCommit = localRepaintLastCommitReportRef.current;
+          while ((!uvCommit || uvCommit.revision <= initialCommitRevision) && performance.now() < reportDeadline) {
+            await wait(100);
+            uvCommit = localRepaintLastCommitReportRef.current;
+          }
+          if (!uvCommit || uvCommit.revision <= initialCommitRevision) {
+            throw new Error('S6 等待局部重绘持久化超时；请检查目标图层和控制台错误。');
+          }
+          // Project persistence and material reconciliation can schedule work
+          // after the layer-store write has resolved. Keep the benchmark phase
+          // open long enough to catch those late frames instead of reporting a
+          // clean result seconds before an asynchronous upload stalls orbiting.
+          document.body.dataset.perfLocalRepaintPhase = 's6-publish-settle';
+          const settleDeadline = performance.now() + 4_000;
+          while (performance.now() < settleDeadline) await waitForFrame();
+          const sortedFeedback = [...feedbackSamples].sort((a, b) => a - b);
+          const result: LocalRepaintSimulationCoreResult = {
+            sourceWidth,
+            sourceHeight,
+            candidateCount,
+            maskAddSamples,
+            maskSubtractSamples,
+            maskRestoreSamples,
+            applyStrokes,
+            applySamples,
+            maskDurationMs,
+            applyDurationMs,
+            activationReadyMs,
+            activationToFirstVisibleMs:
+              firstApplyVisibleAt > 0 ? firstApplyVisibleAt - activationStartedAt : 0,
+            liveFeedbackP95: percentile(sortedFeedback, 0.95),
+            liveFeedbackMax: sortedFeedback.length > 0 ? Math.max(...sortedFeedback) : 0,
+            uvCommit,
+            totalDurationMs: performance.now() - startedAt,
+          };
+          markPerformanceEvent('local-repaint', 's6-simulation-complete', result);
+          return result;
+        } finally {
+          delete document.body.dataset.perfSimulatedViewportInteraction;
+          delete document.body.dataset.perfLocalRepaintPhase;
+          useSceneStore.getState().setPaintMaskSettings(originalMaskSettings);
+          useSceneStore.getState().setPaintTool(originalPaintTool);
+          isPaintingRef.current = false;
+          setOrbitControlsEnabled(true);
+        }
+      },
+    };
+    return () => {
+      delete target.LiclickPerfLocalRepaint;
+    };
+  }, [
+    beginStrokeHistory,
+    commitMaskIfDirty,
+    commitPaintStroke,
+    commitStrokeHistory,
+    ensureLiveLocalRepaintComposite,
+    getTargetModel,
+    gl.domElement,
+    paintAt,
+    raycastModel,
+    resolveLocalRepaintStrokeSource,
+    scheduleTextureUpdate,
+    setOrbitControlsEnabled,
+    syncInpaintMaskProjection,
+  ]);
 
   useEffect(() => {
     const canvas = gl.domElement;

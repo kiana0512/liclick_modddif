@@ -74,6 +74,7 @@ export type ProjectionLayerDisplayInput = Pick<
   | 'layerId'
   | 'opacity'
   | 'strength'
+  | 'blendMode'
   | 'visible'
   | 'hue'
   | 'saturation'

@@ -24,6 +24,10 @@ export type PaintToolMode =
 
 export type LocalRepaintProjectionSource = {
   imageUrl: string;
+  /** Original server/project URL used by autosave without data-URL readback. */
+  persistentImageUrl?: string;
+  /** Background source staging must not switch tools without an explicit click. */
+  autoActivate?: boolean;
   allowedMaskUrl: string;
   depthUrl?: string;
   objectId?: string;

@@ -2,7 +2,14 @@ export type PerformanceTimelineEvent = {
   id: number;
   unixMs: number;
   monotonicMs: number;
-  category: 'interaction' | 'layers' | 'uv-composite' | 'uv-merge' | 'projection' | 'system';
+  category:
+    | 'interaction'
+    | 'layers'
+    | 'uv-composite'
+    | 'uv-merge'
+    | 'projection'
+    | 'local-repaint'
+    | 'system';
   name: string;
   phase: 'instant' | 'start' | 'end' | 'error';
   durationMs?: number;
