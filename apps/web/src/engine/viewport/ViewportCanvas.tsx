@@ -4131,7 +4131,7 @@ function SurfacePaintOverlay() {
     const layerVisible = overlay.visibilityLayerId
       ? (useLayerStore
           .getState()
-          .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? false)
+          .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? true)
       : true;
     const visibilityChanged = setLocalRepaintGpuOverlayVisibility(
         overlay,
@@ -4529,7 +4529,11 @@ function SurfacePaintOverlay() {
       const previousClearColor = gl.getClearColor(new THREE.Color()).clone();
       const previousClearAlpha = gl.getClearAlpha();
       const previousAutoClear = gl.autoClear;
-      const startedAt = performance.now();
+      const finishDepthCapture = startPerformanceSpan(
+        'local-repaint',
+        'selection-projector-depth-capture',
+        { width, height },
+      );
       try {
         gl.autoClear = true;
         gl.setRenderTarget(target);
@@ -4538,13 +4542,14 @@ function SurfacePaintOverlay() {
         gl.render(scene, camera);
         layer.maskDepthReady = true;
         bindInpaintDepthTarget(layer.maskMaterial, target, true);
-        markPerformanceEvent('local-repaint', 'selection-projector-depth-capture', {
-          width,
-          height,
-          durationMs: performance.now() - startedAt,
-        });
+        finishDepthCapture('end', { width, height });
         invalidate();
         return true;
+      } catch (error) {
+        finishDepthCapture('error', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
       } finally {
         restoreScene();
         depthMaterial.dispose();
@@ -5222,10 +5227,16 @@ function SurfacePaintOverlay() {
       layer.projectionCanvas.width,
       layer.projectionCanvas.height,
     );
-    layer.maskMaterial.uniforms.projectionReady.value = 0;
-    layer.maskProjectionReady = false;
-    layer.maskDepthReady = false;
-    bindInpaintDepthTarget(layer.maskMaterial, layer.maskDepthTarget, false);
+    // Clearing a completed task only removes its pixels. The projector camera
+    // and depth target are still valid for the same view, so keep them warm for
+    // the next task instead of rebuilding GPU depth synchronously on its first
+    // pointer-down. Camera movement invalidates and refreshes this cache through
+    // syncInpaintMaskProjection independently.
+    bindInpaintDepthTarget(
+      layer.maskMaterial,
+      layer.maskDepthTarget,
+      layer.maskDepthReady,
+    );
     layer.inpaintSnapshots.forEach((snapshot) => {
       snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
       snapshot.texture.dispose();
@@ -5778,7 +5789,7 @@ function SurfacePaintOverlay() {
         const layerVisible = currentOverlay.visibilityLayerId
           ? (useLayerStore
               .getState()
-              .layers.find((layer) => layer.id === currentOverlay.visibilityLayerId)?.visible ?? false)
+              .layers.find((layer) => layer.id === currentOverlay.visibilityLayerId)?.visible ?? true)
           : true;
         const visible = isLocalRepaintOverlayVisible(
           useSceneStore.getState().displayMode,
@@ -5899,7 +5910,7 @@ function SurfacePaintOverlay() {
       const visibilityLayerId = composite.layerId;
       const readVisibility = (layers = useLayerStore.getState().layers) =>
         visibilityLayerId
-          ? (layers.find((layer) => layer.id === visibilityLayerId)?.visible ?? false)
+          ? (layers.find((layer) => layer.id === visibilityLayerId)?.visible ?? true)
           : true;
       let lastVisibility: boolean | undefined;
       const applyVisibility = (layerVisible: boolean) => {
@@ -6262,6 +6273,7 @@ function SurfacePaintOverlay() {
         // Publish the CanvasTexture in this same frame so pen feedback follows
         // the nib instead of waiting for a second requestAnimationFrame.
         layer.projectionTexture.needsUpdate = true;
+        invalidate();
         if (strokeDraftRef.current?.target === 'mask') {
           strokeDraftRef.current.bounds = unionDirtyRect(
             strokeDraftRef.current.bounds,
@@ -6286,6 +6298,7 @@ function SurfacePaintOverlay() {
           255,
         );
         layer.projectionTexture.needsUpdate = true;
+        invalidate();
         if (strokeDraftRef.current?.target === 'mask') {
           strokeDraftRef.current.bounds = unionDirtyRect(
             strokeDraftRef.current.bounds,
@@ -8465,7 +8478,7 @@ function SurfacePaintOverlay() {
           const layerVisible = overlay.visibilityLayerId
             ? (useLayerStore
                 .getState()
-                .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? false)
+                .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? true)
             : true;
           const visible = isLocalRepaintOverlayVisible(
             useSceneStore.getState().displayMode,
