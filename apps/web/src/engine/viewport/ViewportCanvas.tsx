@@ -68,6 +68,10 @@ import {
   type PerformanceTimelineEvent,
 } from '@/engine/performance/performanceTimeline';
 import {
+  sumDurationSamples,
+  summarizeDurationSamples,
+} from '@/engine/performance/performanceLabMetrics';
+import {
   prepareGpuComputeBackend,
   type GpuComputeBackendCapability,
 } from '@/engine/performance/gpuComputeBackend';
@@ -446,6 +450,9 @@ type PerformanceHudMetrics = {
   gpuSamples: number;
   heapUsedMb?: number;
   heapLimitMb?: number;
+  samplerP95: number;
+  samplerMax: number;
+  samplerSamples: number;
 };
 
 function isPerformanceInstrumentationEnabled() {
@@ -456,11 +463,13 @@ function isPerformanceInstrumentationEnabled() {
   );
 }
 
+const performanceAutoOrbitAxis = new THREE.Vector3(0, 1, 0);
+
 function PerformanceAutoOrbit({ enabled }: { enabled: boolean }) {
   const { camera } = useThree();
   useFrame((_state, delta) => {
     if (!enabled && document.body.dataset.perfAutoOrbit !== '1') return;
-    camera.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), delta * 0.32);
+    camera.position.applyAxisAngle(performanceAutoOrbitAxis, delta * 0.32);
     camera.lookAt(0, 0, 0);
     camera.updateMatrixWorld();
   });
@@ -518,6 +527,10 @@ type LocalRepaintSimulationCoreResult = {
   gpuSceneChangedPixels: number;
   gpuSceneMaxDelta: number;
   projectedBackgroundRebuilds: number;
+  firstGeneratedCandidateScanMs: number;
+  falloffReadMs: number;
+  candidateRaycastMs: number;
+  candidateFilterMs: number;
   uvCommit: LocalRepaintUvCommitReport;
   totalDurationMs: number;
 };
@@ -709,6 +722,7 @@ function PerformanceTestHud() {
   const frameSamplesRef = useRef<PerformanceFrameSample[]>([]);
   const longTaskSamplesRef = useRef<PerformanceLongTaskSample[]>([]);
   const nativeSamplesRef = useRef<NativePerformanceSnapshot[]>([]);
+  const samplerOverheadSamplesRef = useRef<PerformanceLongTaskSample[]>([]);
   const recordingStartedAtRef = useRef(Date.now());
   const [metrics, setMetrics] = useState<PerformanceHudMetrics>({
     fps: 0,
@@ -721,6 +735,9 @@ function PerformanceTestHud() {
     cpuLongTaskPercent: 0,
     gpuP95: 0,
     gpuSamples: 0,
+    samplerP95: 0,
+    samplerMax: 0,
+    samplerSamples: 0,
   });
 
   useEffect(() => {
@@ -768,6 +785,15 @@ function PerformanceTestHud() {
       const duration = now - previousFrameAt;
       previousFrameAt = now;
       if (duration > 0 && duration < 1000) {
+        if (duration > 100) {
+          document.body.dataset.perfLastLongFrame = JSON.stringify({
+            unixMs: Date.now(),
+            durationMs: duration,
+            phase:
+              document.body.dataset.perfLocalRepaintPhase ??
+              document.body.dataset.perfUvBakePhase,
+          });
+        }
         frameTimes.push(duration);
         if (frameTimes.length > 600) frameTimes.splice(0, 120);
         frameSamplesRef.current.push({
@@ -784,16 +810,15 @@ function PerformanceTestHud() {
     animationFrame = window.requestAnimationFrame(sampleFrame);
 
     const updateTimer = window.setInterval(() => {
+      const samplerStartedAt = performance.now();
       const averageFrame =
         frameTimes.reduce((sum, value) => sum + value, 0) / Math.max(1, frameTimes.length);
-      const reportFrameTimes = frameSamplesRef.current.map((sample) => sample.durationMs);
-      const recordedLongTaskDuration = longTaskSamplesRef.current.reduce(
-        (sum, sample) => sum + sample.durationMs,
-        0,
-      );
+      const frameSummary = summarizeDurationSamples(frameSamplesRef.current, 20);
+      const recordedLongTaskDuration = sumDurationSamples(longTaskSamplesRef.current);
       const recordedDuration = Math.max(1, Date.now() - recordingStartedAtRef.current);
       const paintSamples = surfacePaintPerfSamples.slice(-240);
       const gpuSamples = gpuFrameTimeSamples.slice(-120);
+      const samplerSummary = summarizeDurationSamples(samplerOverheadSamplesRef.current, 0.3);
       const memory = (
         performance as Performance & {
           memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
@@ -801,12 +826,9 @@ function PerformanceTestHud() {
       ).memory;
       setMetrics({
         fps: averageFrame > 0 ? 1000 / averageFrame : 0,
-        frameP95: percentile(reportFrameTimes, 0.95),
-        frameMax: reportFrameTimes.length > 0 ? Math.max(...reportFrameTimes) : 0,
-        droppedFrames:
-          reportFrameTimes.length > 0
-            ? (reportFrameTimes.filter((value) => value > 20).length / reportFrameTimes.length) * 100
-            : 0,
+        frameP95: frameSummary.p95,
+        frameMax: frameSummary.maximum,
+        droppedFrames: frameSummary.aboveThresholdPercent,
         paintP95: percentile(paintSamples, 0.95),
         paintMax: paintSamples.length > 0 ? Math.max(...paintSamples) : 0,
         paintSamples: paintSamples.length,
@@ -815,9 +837,19 @@ function PerformanceTestHud() {
         gpuSamples: gpuSamples.length,
         heapUsedMb: memory ? memory.usedJSHeapSize / 1024 / 1024 : undefined,
         heapLimitMb: memory ? memory.jsHeapSizeLimit / 1024 / 1024 : undefined,
+        samplerP95: samplerSummary.p95,
+        samplerMax: samplerSummary.maximum,
+        samplerSamples: samplerSummary.count,
       });
       setFrameHistory(frameTimes.slice(-120));
       setRecentEvents(getPerformanceTimelineEvents().slice(-12).reverse());
+      samplerOverheadSamplesRef.current.push({
+        unixMs: Date.now(),
+        durationMs: performance.now() - samplerStartedAt,
+      });
+      if (samplerOverheadSamplesRef.current.length > 240) {
+        samplerOverheadSamplesRef.current.splice(0, 48);
+      }
     }, 500);
 
     return () => {
@@ -865,6 +897,7 @@ function PerformanceTestHud() {
     frameSamplesRef.current = [];
     longTaskSamplesRef.current = [];
     nativeSamplesRef.current = [];
+    samplerOverheadSamplesRef.current = [];
     recordingStartedAtRef.current = Date.now();
     clearPerformanceTimelineEvents();
     setFrameHistory([]);
@@ -1542,6 +1575,11 @@ function PerformanceTestHud() {
           tone={metricTone(metrics.cpuLongTaskPercent, 5, 20)}
         />
         <PerformanceMetric
+          label={`采集计算 P95 / 最大 · ${metrics.samplerSamples}`}
+          value={`${metrics.samplerP95.toFixed(2)} / ${metrics.samplerMax.toFixed(2)}ms`}
+          tone={metricTone(metrics.samplerP95, 0.3, 1)}
+        />
+        <PerformanceMetric
           label="S6 交互 P95 / 最大"
           value={
             localRepaintBenchmarkResult
@@ -1598,6 +1636,22 @@ function PerformanceTestHud() {
           value={
             localRepaintBenchmarkResult
               ? `${localRepaintBenchmarkResult.sourceWidth}×${localRepaintBenchmarkResult.sourceHeight} / ${localRepaintBenchmarkResult.candidateCount} / ${localRepaintBenchmarkResult.heapDeltaMb.toFixed(0)}MB`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S6 冷扫描 / 蒙版读取"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.firstGeneratedCandidateScanMs.toFixed(1)} / ${localRepaintBenchmarkResult.falloffReadMs.toFixed(1)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S6 射线 / 候选过滤"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.candidateRaycastMs.toFixed(1)} / ${localRepaintBenchmarkResult.candidateFilterMs.toFixed(1)}ms`
               : '等待压测'
           }
         />
@@ -5167,6 +5221,15 @@ function SurfacePaintOverlay() {
           throw new Error('局部重绘透明覆盖层未能完成。');
         }
         await waitForFrame();
+        const readyOverlay = await ensureLocalRepaintGpuOverlay(model, source, composite);
+        if (
+          !readyOverlay ||
+          readyOverlay.material.userData.liclickDisposedMaterial === true ||
+          readyOverlay.root.parent !== model.group ||
+          localRepaintGpuOverlayRef.current !== readyOverlay
+        ) {
+          throw new Error('局部重绘透明覆盖层在就绪发布前失去绑定。');
+        }
       } catch (error) {
         console.warn('[Liclick 3D Texture] Local repaint GPU prewarm failed:', error);
         document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
@@ -6818,6 +6881,10 @@ function SurfacePaintOverlay() {
         let activationStartedAt = 0;
         let activationReadyMs = 0;
         let projectedBackgroundRevisionAtReady = 0;
+        let firstGeneratedCandidateScanMs = 0;
+        let falloffReadMs = 0;
+        let candidateRaycastMs = 0;
+        let candidateFilterMs = 0;
         let firstApplyVisibleAt = 0;
         let gpuProbe = {
           visiblePixels: 0,
@@ -6836,6 +6903,7 @@ function SurfacePaintOverlay() {
         });
 
         const scanCandidates = async (requireGeneratedSource: boolean) => {
+          const scanStartedAt = performance.now();
           model.group.updateMatrixWorld(true);
           const composite =
             requireGeneratedSource && source
@@ -6845,6 +6913,7 @@ function SurfacePaintOverlay() {
           const falloffContext = composite?.falloffCanvas.getContext('2d', {
             willReadFrequently: true,
           });
+          const falloffReadStartedAt = performance.now();
           const falloffPixels = composite
             ? (composite.benchmarkFalloffPixels ??=
                 falloffContext?.getImageData(
@@ -6854,13 +6923,19 @@ function SurfacePaintOverlay() {
                   composite.falloffCanvas.height,
                 ).data)
             : undefined;
+          const currentFalloffReadMs = performance.now() - falloffReadStartedAt;
+          falloffReadMs += currentFalloffReadMs;
           const rect = gl.domElement.getBoundingClientRect();
           const candidates: UvPaintHit[] = [];
+          let currentRaycastMs = 0;
+          let yieldedMs = 0;
           for (let row = 0; row < 15; row += 1) {
             for (let column = 0; column < 19; column += 1) {
               const clientX = rect.left + rect.width * (0.12 + (column / 18) * 0.76);
               const clientY = rect.top + rect.height * (0.1 + (row / 14) * 0.8);
+              const raycastStartedAt = performance.now();
               const hit = raycastModel({ clientX, clientY }, rect);
+              currentRaycastMs += performance.now() - raycastStartedAt;
               if (!hit || !(hit.hit.object instanceof THREE.Mesh) || !hit.hit.face) continue;
               if (!requireGeneratedSource) {
                 candidates.push(scaleSimulationHit(hit));
@@ -6910,7 +6985,20 @@ function SurfacePaintOverlay() {
             // The benchmark must not manufacture its own long task while it
             // searches the model. Real users provide these points over many
             // pointer frames, so mirror that scheduling here as well.
-            if ((row + 1) % 3 === 0) await waitForFrame();
+            if ((row + 1) % 3 === 0) {
+              const yieldStartedAt = performance.now();
+              await waitForFrame();
+              yieldedMs += performance.now() - yieldStartedAt;
+            }
+          }
+          const currentScanMs = performance.now() - scanStartedAt - yieldedMs;
+          candidateRaycastMs += currentRaycastMs;
+          candidateFilterMs += Math.max(
+            0,
+            currentScanMs - currentRaycastMs - currentFalloffReadMs,
+          );
+          if (requireGeneratedSource && firstGeneratedCandidateScanMs === 0) {
+            firstGeneratedCandidateScanMs = currentScanMs;
           }
           candidateCount = Math.max(candidateCount, candidates.length);
           return candidates;
@@ -7128,6 +7216,10 @@ function SurfacePaintOverlay() {
             gpuSceneChangedPixels: gpuProbe.sceneChangedPixels,
             gpuSceneMaxDelta: gpuProbe.sceneMaxDelta,
             projectedBackgroundRebuilds,
+            firstGeneratedCandidateScanMs,
+            falloffReadMs,
+            candidateRaycastMs,
+            candidateFilterMs,
             uvCommit,
             totalDurationMs: performance.now() - startedAt,
           };

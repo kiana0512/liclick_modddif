@@ -21,6 +21,14 @@ const cacheByRenderer = new WeakMap<
   Map<string, Promise<RuntimeProjectionVisibility>>
 >();
 const renderTailByRenderer = new WeakMap<THREE.WebGLRenderer, Promise<void>>();
+const visibilityMaterialsByRenderer = new WeakMap<
+  THREE.WebGLRenderer,
+  {
+    depth: THREE.ShaderMaterial;
+    normal: THREE.ShaderMaterial;
+  }
+>();
+const visibilityProgramWarmupByRenderer = new WeakMap<THREE.WebGLRenderer, Promise<void>>();
 
 async function withRuntimeVisibilityRenderLock<T>(
   renderer: THREE.WebGLRenderer,
@@ -75,7 +83,7 @@ function createCamera(snapshot: SerializedCamera) {
   return camera;
 }
 
-function createLinearViewDepthMaterial(camera: SerializedCamera) {
+function createLinearViewDepthMaterial(camera: Pick<SerializedCamera, 'near' | 'far'>) {
   return new THREE.ShaderMaterial({
     uniforms: {
       captureNear: { value: camera.near },
@@ -160,6 +168,61 @@ function createGeometricViewNormalMaterial() {
   });
 }
 
+function getRuntimeVisibilityMaterials(
+  renderer: THREE.WebGLRenderer,
+  camera: Pick<SerializedCamera, 'near' | 'far'>,
+) {
+  let materials = visibilityMaterialsByRenderer.get(renderer);
+  if (!materials) {
+    materials = {
+      depth: createLinearViewDepthMaterial(camera),
+      normal: createGeometricViewNormalMaterial(),
+    };
+    materials.depth.name = 'Liclick Runtime Projection Linear Depth';
+    materials.normal.name = 'Liclick Runtime Projection Geometric Normal';
+    visibilityMaterialsByRenderer.set(renderer, materials);
+  }
+  materials.depth.uniforms.captureNear.value = camera.near;
+  materials.depth.uniforms.captureFar.value = camera.far;
+  return materials;
+}
+
+export function prepareRuntimeProjectionVisibilityMaterials(renderer: THREE.WebGLRenderer) {
+  const cached = visibilityProgramWarmupByRenderer.get(renderer);
+  if (cached) return cached;
+  const promise = (async () => {
+    if (typeof renderer.compileAsync !== 'function') return;
+    const materials = getRuntimeVisibilityMaterials(renderer, { near: 0.1, far: 100 });
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.position.z = 3;
+    camera.updateMatrixWorld(true);
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const depthMesh = new THREE.Mesh(geometry, materials.depth);
+    const normalMesh = new THREE.Mesh(geometry, materials.normal);
+    normalMesh.position.x = 2;
+    scene.add(depthMesh, normalMesh);
+    const startedAt = performance.now();
+    try {
+      await renderer.compileAsync(scene, camera);
+      if (typeof document !== 'undefined') {
+        document.body.dataset.runtimeProjectionVisibilityProgramWarmupMs = (
+          performance.now() - startedAt
+        ).toFixed(1);
+      }
+    } finally {
+      depthMesh.removeFromParent();
+      normalMesh.removeFromParent();
+      geometry.dispose();
+    }
+  })().catch((error) => {
+    visibilityProgramWarmupByRenderer.delete(renderer);
+    throw error;
+  });
+  visibilityProgramWarmupByRenderer.set(renderer, promise);
+  return promise;
+}
+
 function cloneVisibilityGeometry(group: THREE.Group) {
   const originalUserData: Array<{ object: THREE.Object3D; userData: Record<string, unknown> }> = [];
   group.traverse((object) => {
@@ -187,8 +250,12 @@ function cloneVisibilityGeometry(group: THREE.Group) {
 }
 
 async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthRequest) {
+  const totalStartedAt = performance.now();
+  await prepareRuntimeProjectionVisibilityMaterials(request.renderer);
   request.group.updateMatrixWorld(true);
+  const cloneStartedAt = performance.now();
   const clone = cloneVisibilityGeometry(request.group);
+  const cloneMs = performance.now() - cloneStartedAt;
   const captureRootMatrix = request.captureObjectMatrixWorld?.length === 16
     ? new THREE.Matrix4().fromArray(request.captureObjectMatrixWorld)
     : request.group.matrixWorld.clone();
@@ -197,8 +264,10 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
   clone.matrixWorld.copy(captureRootMatrix);
   clone.matrixWorldAutoUpdate = true;
 
-  const depthMaterial = createLinearViewDepthMaterial(request.camera);
-  const normalMaterial = createGeometricViewNormalMaterial();
+  const { depth: depthMaterial, normal: normalMaterial } = getRuntimeVisibilityMaterials(
+    request.renderer,
+    request.camera,
+  );
   clone.traverse((object) => {
     if (object.userData.liclickPaintOverlay) {
       object.visible = false;
@@ -213,8 +282,13 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
   scene.add(clone);
   scene.updateMatrixWorld(true);
   const camera = createCamera(request.camera);
+  let depthSubmitMs = 0;
+  let depthTotalMs = 0;
+  let normalSubmitMs = 0;
+  let normalTotalMs = 0;
   try {
-    const depthUrl = await renderSceneToPngUrl(
+    const depthStartedAt = performance.now();
+    const depthPromise = renderSceneToPngUrl(
       {
         gl: request.renderer,
         scene,
@@ -227,10 +301,14 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
       },
       { dataTexture: true, samples: 0, ignoreSceneBackground: true },
     );
+    depthSubmitMs = performance.now() - depthStartedAt;
+    const depthUrl = await depthPromise;
+    depthTotalMs = performance.now() - depthStartedAt;
     clone.traverse((object) => {
       if (object instanceof THREE.Mesh && object.visible) object.material = normalMaterial;
     });
-    const normalUrl = await renderSceneToPngUrl(
+    const normalStartedAt = performance.now();
+    const normalPromise = renderSceneToPngUrl(
       {
         gl: request.renderer,
         scene,
@@ -244,10 +322,36 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
       },
       { dataTexture: true, samples: 0, ignoreSceneBackground: true },
     );
+    normalSubmitMs = performance.now() - normalStartedAt;
+    const normalUrl = await normalPromise;
+    normalTotalMs = performance.now() - normalStartedAt;
     return { depthUrl, normalUrl };
   } finally {
-    depthMaterial.dispose();
-    normalMaterial.dispose();
+    if (typeof document !== 'undefined') {
+      const report = {
+        cloneMs,
+        depthSubmitMs,
+        depthTotalMs,
+        normalSubmitMs,
+        normalTotalMs,
+        totalMs: performance.now() - totalStartedAt,
+      };
+      document.body.dataset.runtimeProjectionVisibilityLastTiming = JSON.stringify(report);
+      document.body.dataset.runtimeProjectionVisibilityLastCompletedUnixMs = String(Date.now());
+      const previousMaximum = Number(
+        document.body.dataset.runtimeProjectionVisibilityMaximumSynchronousMs ?? '0',
+      );
+      document.body.dataset.runtimeProjectionVisibilityMaximumSynchronousMs = Math.max(
+        previousMaximum,
+        cloneMs,
+        depthSubmitMs,
+        normalSubmitMs,
+      ).toFixed(1);
+      document.body.dataset.runtimeProjectionVisibilityMaximumTotalMs = Math.max(
+        Number(document.body.dataset.runtimeProjectionVisibilityMaximumTotalMs ?? '0'),
+        report.totalMs,
+      ).toFixed(1);
+    }
     scene.remove(clone);
   }
 }

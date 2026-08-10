@@ -26,7 +26,10 @@ import {
   getLiveProjectedCanvasTexture,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { useLiveSurfacePaintPreview } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
-import { createRuntimeProjectionDepth } from '@/engine/projection/createRuntimeProjectionDepth';
+import {
+  createRuntimeProjectionDepth,
+  prepareRuntimeProjectionVisibilityMaterials,
+} from '@/engine/projection/createRuntimeProjectionDepth';
 import {
   compareUvLayersForComposition,
   getVisibleUvLayerStack,
@@ -58,6 +61,7 @@ import { ObjectTransformControls } from './ObjectTransformControls';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type {
   ProjectionLayerDisplayInput,
+  ProjectionLayerStackInput,
   ProjectionPreviewLighting,
 } from '@/engine/projection/projectionTypes';
 import type { Layer } from '@/types/layer';
@@ -917,6 +921,28 @@ function ImportedModel({
     cancelled: boolean;
     promise: Promise<THREE.ShaderMaterial | undefined>;
   }>();
+  const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
+  useEffect(() => {
+    let cancelled = false;
+    const prepare = async () => {
+      await waitForProjectionVisibilityIdle(0);
+      if (cancelled) return;
+      try {
+        await prepareRuntimeProjectionVisibilityMaterials(gl);
+      } catch (error) {
+        if (!cancelled) {
+          console.warn(
+            '[Liclick 3D Texture] Runtime projection visibility material warmup was incomplete:',
+            error,
+          );
+        }
+      }
+    };
+    void prepare();
+    return () => {
+      cancelled = true;
+    };
+  }, [gl]);
   useEffect(() => {
     // Restore the saved projection stack before rebuilding runtime depth and
     // normal textures. Starting both jobs together changes the material
@@ -939,6 +965,21 @@ function ImportedModel({
     if (candidates.length === 0) return undefined;
 
     void (async () => {
+      const waitForInteractionIdle = async () => {
+        while (!cancelled) {
+          const interaction = projectedPreviewInteractionRef.current;
+          const paintTool = useSceneStore.getState().paintTool;
+          const busy =
+            interaction.pointerDown ||
+            performance.now() - interaction.lastMovedAt < 180 ||
+            document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+            paintTool === 'inpaint-add' ||
+            paintTool === 'inpaint-subtract' ||
+            paintTool === 'inpaint-apply';
+          if (!busy) return;
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+      };
       const completedVisibility: Record<string, { depthUrl: string; normalUrl: string }> = {};
       for (let index = 0; index < candidates.length; index += 1) {
         const layer = candidates[index];
@@ -946,6 +987,7 @@ function ImportedModel({
         // Rebuild the sharper runtime depth/crease-normal pair after the model
         // and its textures have had time to present, yielding between layers.
         await waitForProjectionVisibilityIdle(index === 0 ? 1000 : 32);
+        await waitForInteractionIdle();
         if (cancelled) return;
         try {
           const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
@@ -972,6 +1014,12 @@ function ImportedModel({
         }
       }
       if (cancelled || Object.keys(completedVisibility).length === 0) return;
+      // Runtime depth/normal refinement is a background quality upgrade. Never
+      // publish it while a brush or camera gesture is active: doing so replaces
+      // and recompiles the complete projected material beside the live repaint
+      // overlay, which can turn an otherwise hot first stroke into a long frame.
+      await waitForInteractionIdle();
+      if (cancelled) return;
       setRuntimeVisibilityByLayerId((current) => ({
         ...current,
         ...completedVisibility,
@@ -1049,7 +1097,6 @@ function ImportedModel({
   const lastProjectedSamplerWarningRef = useRef('');
   const activatedLocalRepaintPreviewKeyRef = useRef('');
   const projectedPreviewCompositorRef = useRef<ProjectedLayerPreviewCompositor>();
-  const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   const [progressiveProjectedPreview, setProgressiveProjectedPreview] =
     useState<ProjectedPreviewComposite>();
   const [failedProjectedTextureArraySignature, setFailedProjectedTextureArraySignature] =
@@ -1781,16 +1828,34 @@ function ImportedModel({
     if (!importedModel) return;
     let cancelled = false;
     const model = importedModel;
+    const markProjectedBackgroundMaterialCommit = () => {
+      if (typeof document === 'undefined') return;
+      const previousRevision = Number(
+        document.body.dataset.projectedBackgroundMaterialRevision ?? '0',
+      );
+      document.body.dataset.projectedBackgroundMaterialRevision = String(previousRevision + 1);
+    };
     const isViewportInteractionBusy = () => {
       const interaction = projectedPreviewInteractionRef.current;
+      const paintTool = useSceneStore.getState().paintTool;
       return Boolean(
         interaction.pointerDown ||
           performance.now() - interaction.lastMovedAt < 180 ||
-          document.body.dataset.perfSimulatedViewportInteraction === '1',
+          document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+          paintTool === 'inpaint-add' ||
+          paintTool === 'inpaint-subtract' ||
+          paintTool === 'inpaint-apply',
       );
     };
+    const waitForViewportInteractionIdle = async () => {
+      while (!cancelled && isViewportInteractionBusy()) {
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      }
+    };
     const precompileProjectedMaterial = async (material: THREE.ShaderMaterial) => {
-      if (typeof gl.compileAsync !== 'function') return;
+      if (typeof gl.compileAsync !== 'function') return false;
+      await waitForViewportInteractionIdle();
+      if (cancelled) return false;
       const compileScene = new THREE.Scene();
       const compileGeometry = new THREE.BoxGeometry(1, 1, 1);
       const compileMesh = new THREE.Mesh(compileGeometry, material);
@@ -1804,6 +1869,7 @@ function ImportedModel({
         if (typeof document !== 'undefined') {
           document.body.dataset.projectedMaterialCompileDurationMs =
             compileDurationMs.toFixed(1);
+          document.body.dataset.projectedMaterialCompileCompletedUnixMs = String(Date.now());
         }
         markPerformanceEvent('projection', 'projected-material-precompile', {
           durationMs: compileDurationMs,
@@ -1811,30 +1877,30 @@ function ImportedModel({
         compileGeometry.dispose();
         compileMesh.removeFromParent();
       }
+      // A newer React effect may supersede this material while the driver is
+      // compiling it. The material must not be committed in that case, but the
+      // successfully linked program is still valid and should remain resident
+      // for the newer effect's structurally identical material.
+      return true;
     };
 
     async function applyMaterials() {
-      if (typeof document !== 'undefined') {
-        const previousRevision = Number(
-          document.body.dataset.projectedBackgroundMaterialRevision ?? '0',
-        );
-        document.body.dataset.projectedBackgroundMaterialRevision = String(
-          previousRevision + 1,
-        );
-      }
       if (model.restoreStage === 'bounds') return;
       if (model.restoreStage === 'outline') {
         const outlineMaterial = createFlatPreviewMaterial(undefined, false);
         const disposedMaterials = new Set<THREE.Material | THREE.Material[]>();
+        let materialChanged = false;
         model.group.traverse((child) => {
           if (!(child instanceof THREE.Mesh) || child.userData.liclickPaintOverlay) return;
           const previousMaterial = child.material;
           child.material = outlineMaterial;
+          if (previousMaterial !== outlineMaterial) materialChanged = true;
           if (previousMaterial !== outlineMaterial && !disposedMaterials.has(previousMaterial)) {
             disposedMaterials.add(previousMaterial);
             disposeGeneratedMaterialTree(previousMaterial);
           }
         });
+        if (materialChanged) markProjectedBackgroundMaterialCommit();
         model.group.userData.liclickProjectedPreviewStatus = {
           mode: 'outline',
           ready: false,
@@ -1984,6 +2050,7 @@ function ImportedModel({
       let sharedProjectedMaterialRequested = false;
       let usingSharedTextureArrayBuild = false;
       let sharedTextureArrayBuildSignature = '';
+      let materialChanged = false;
       const disposedPreviousMaterials = new Set<THREE.Material | THREE.Material[]>();
 
       for (const child of meshes) {
@@ -2102,7 +2169,7 @@ function ImportedModel({
         }
         if (projectedLayerInput && !sharedProjectedMaterialRequested) {
           sharedProjectedMaterialRequested = true;
-          const projectedMaterialInput = {
+          const projectedMaterialInput: ProjectionLayerStackInput = {
             ...projectedLayerInput,
             ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
             ...topUvProjectedOverlayInput,
@@ -2187,6 +2254,7 @@ function ImportedModel({
             return;
           }
         }
+        await waitForViewportInteractionIdle();
         const projectedMaterial = projectedLayerInput ? sharedProjectedMaterial : undefined;
         if (cancelled) {
           // A newer effect may be awaiting the same structural array upload.
@@ -2201,6 +2269,7 @@ function ImportedModel({
         }
         child.material =
           projectedMaterial ?? createDisplayModeMaterial(displayMode, selected, bakedTexture);
+        if (previousMaterial !== child.material) materialChanged = true;
         if (
           usingSharedTextureArrayBuild &&
           projectedTextureArrayBuildRef.current?.signature === sharedTextureArrayBuildSignature
@@ -2215,6 +2284,7 @@ function ImportedModel({
           disposeGeneratedMaterialTree(previousMaterial);
         }
       }
+      if (materialChanged) markProjectedBackgroundMaterialCommit();
       syncProjectedLayerMaterialProjection(model.group);
       useToastStore.getState().dismissToastByDedupeKey(PROJECTED_PREVIEW_FAILURE_TOAST_KEY);
       if (lastProjectedTransformRef.current) {

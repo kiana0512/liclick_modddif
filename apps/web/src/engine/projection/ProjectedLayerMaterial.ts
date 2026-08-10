@@ -1921,6 +1921,42 @@ function yieldProjectedArrayUploadFrame() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+async function waitForProjectedArrayGpuFence(
+  renderer: THREE.WebGLRenderer,
+  isCancelled?: () => boolean,
+) {
+  const context = renderer.getContext();
+  if (
+    typeof WebGL2RenderingContext === 'undefined' ||
+    !(context instanceof WebGL2RenderingContext)
+  )
+    return;
+  const sync = context.fenceSync(context.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  if (!sync) return;
+  const startedAt = performance.now();
+  let polls = 0;
+  try {
+    context.flush();
+    while (!isCancelled?.()) {
+      const status = context.clientWaitSync(sync, 0, 0);
+      if (status === context.ALREADY_SIGNALED || status === context.CONDITION_SATISFIED) break;
+      if (status === context.WAIT_FAILED) {
+        throw new Error('Projected texture array GPU fence wait failed.');
+      }
+      polls += 1;
+      await yieldProjectedArrayUploadFrame();
+    }
+  } finally {
+    context.deleteSync(sync);
+    if (typeof document !== 'undefined') {
+      document.body.dataset.projectedArrayGpuFenceWaitMs = (
+        performance.now() - startedAt
+      ).toFixed(1);
+      document.body.dataset.projectedArrayGpuFencePolls = String(polls);
+    }
+  }
+}
+
 async function waitForProjectedArrayUploadWindow(
   isViewportInteractionBusy?: () => boolean,
   isCancelled?: () => boolean,
@@ -2981,6 +3017,22 @@ export async function createProjectedLayerStackMaterial(
       const [projectedArray, maskArray, depthArray, normalArray] = arrayBuildResults.map(
         (result) => (result.status === 'fulfilled' ? result.value : undefined),
       );
+      // texSubImage3D completion is asynchronous. Without an explicit fence the
+      // first real viewport draw becomes the driver's implicit synchronization
+      // point and can block for hundreds of milliseconds even though every CPU
+      // upload slice stayed within budget. Drain that queue through non-blocking
+      // rAF polling before the material is eligible for presentation.
+      await waitForProjectedArrayGpuFence(renderer, options.isCancelled);
+      if (options.isCancelled?.()) {
+        for (const bundle of [projectedArray, maskArray, depthArray, normalArray]) {
+          bundle?.texture.dispose();
+        }
+        for (const texture of disposableTextures) texture.dispose();
+        if (typeof document !== 'undefined') {
+          document.body.dataset.projectedArrayPipelineStatus = 'cancelled';
+        }
+        return undefined;
+      }
       for (const bundle of [projectedArray, maskArray, depthArray, normalArray]) {
         if (bundle) disposableTextures.push(bundle.texture);
       }
@@ -2989,6 +3041,7 @@ export async function createProjectedLayerStackMaterial(
         document.body.dataset.projectedArrayPipelineDurationMs = (
           performance.now() - arrayPipelineStartedAt
         ).toFixed(1);
+        document.body.dataset.projectedArrayPipelineReadyUnixMs = String(Date.now());
         document.body.dataset.projectedArrayUploadYieldCount = String(
           [projectedArray, maskArray, depthArray, normalArray].reduce(
             (total, bundle) => total + (bundle?.uploadYieldCount ?? 0),

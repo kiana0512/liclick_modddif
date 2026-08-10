@@ -12,6 +12,7 @@
     "test:liclick-auth-separation": "node scripts/test-liclick-auth-separation.mjs",
     "test:model-import-progress": "node scripts/test-model-import-progress.mjs",
     "test:model-placement-camera-focus": "node scripts/test-model-placement-camera-focus.mjs",
+    "test:performance-lab-metrics": "node scripts/test-performance-lab-metrics.mjs",
     "test:project-thumbnail-policy": "node scripts/test-project-thumbnail-policy.mjs",
     "test:projection-layers": "node scripts/test-projected-layer-visibility.mjs",
     "test:uv-composite-backpressure": "node scripts/test-uv-composite-backpressure.mjs",
