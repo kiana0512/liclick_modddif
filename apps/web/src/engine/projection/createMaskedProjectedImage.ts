@@ -704,9 +704,16 @@ function getMaskedProjectedWorker() {
   return worker;
 }
 
-function processMaskedProjectedImageInWorker(source: ImageData, mask?: ImageData) {
+function processMaskedProjectedImageInWorker(
+  source: ImageData,
+  mask?: ImageData,
+  mode: 'cutout' | 'projection-alpha-only' = 'cutout',
+) {
   const worker = getMaskedProjectedWorker();
   if (!worker) {
+    if (mode === 'projection-alpha-only') {
+      return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
+    }
     const cutout = removeSolidBackground(source);
     if (!mask) return Promise.resolve(cutout);
     return Promise.resolve(applyProjectedAlphaMask(alignCutoutToProjectionMask(cutout, mask), mask));
@@ -729,6 +736,7 @@ function processMaskedProjectedImageInWorker(source: ImageData, mask?: ImageData
         id,
         source: { width: source.width, height: source.height, data: sourceBuffer },
         mask: maskPayload,
+        mode,
       },
       transfer,
     );
@@ -761,5 +769,15 @@ export async function createProjectionMaskedImage(imageUrl: string, projectionMa
     loadImageData(imageUrl, maxCutoutDimension),
     loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
   ]);
-  return imageDataToPngUrl(applyProjectedAlphaMask(sourceImage, projectionMask));
+  return imageDataToPngUrl(
+    await processMaskedProjectedImageInWorker(
+      sourceImage,
+      projectionMask,
+      'projection-alpha-only',
+    ),
+  );
+}
+
+export function prewarmMaskedProjectedImageWorker() {
+  return Boolean(getMaskedProjectedWorker());
 }

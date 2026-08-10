@@ -21,7 +21,6 @@ const MAX_STRENGTH_FOR_ANGLE = 3;
 const SHARPEN_AMOUNT = 0.24;
 const SHARPEN_DETAIL_THRESHOLD = 5 / 255;
 const MAX_GPU_SHARPEN_RESOLUTION = 4096;
-const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
 const MIN_CAPTURE_FACE_ON = 0.01;
@@ -34,7 +33,6 @@ const FACE_ON_VISIBILITY_FULL = 0.06;
 const MIN_CAPTURE_NORMAL_AGREEMENT = 0.72;
 const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 const PROJECTION_FACING_FEATHER = 0.08;
-const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
 
 type GpuLayerStackBakeInput = {

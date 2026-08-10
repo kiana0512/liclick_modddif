@@ -1270,7 +1270,14 @@ export async function bakeVisibleProjectedLayersToTexture(
         const finalizeStartedAt = performance.now();
         markUvBakePerformancePhase('finalize-canvas');
         if (input.outputAlpha !== 'transparent') await fillTransparentTexelsForViewport(composite);
-        else await clearWeakTransparentTexels(composite, qualityCoverage);
+        else {
+          // Keep the exact cleanup in-place and yield every bounded chunk. A
+          // worker round-trip transferred ~84 MiB (RGBA + coverage) back to the
+          // UI and made the delivery of that message a 550ms browser frame.
+          // In-place chunking preserves every byte while avoiding the second
+          // full-size allocation, transfer, ImageData wrap, and following GC.
+          await clearWeakTransparentTexels(composite, qualityCoverage);
+        }
         // Merge callers already consume straight RGBA. Avoid a synchronous
         // 4K ImageData -> Canvas write followed by an immediate Canvas ->
         // ImageData readback when encoding is intentionally deferred.

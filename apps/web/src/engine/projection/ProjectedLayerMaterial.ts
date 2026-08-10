@@ -1992,10 +1992,24 @@ export async function loadProjectedTexture(
 
   const texturePromise = new THREE.TextureLoader()
     .loadAsync(imageUrl)
-    .then((texture) => {
+    .then(async (texture) => {
       texture.userData.liclickProjectedSourceUrl = imageUrl;
       texture.colorSpace = colorSpace;
       texture.flipY = false;
+      if (
+        (profile === 'image' || profile === 'mask') &&
+        typeof createImageBitmap === 'function' &&
+        texture.image
+      ) {
+        try {
+          texture.image = await createImageBitmap(texture.image as ImageBitmapSource, {
+            imageOrientation: 'none',
+            premultiplyAlpha: 'none',
+          });
+        } catch {
+          // TextureLoader remains the compatibility source.
+        }
+      }
       texture.wrapS = THREE.ClampToEdgeWrapping;
       texture.wrapT = THREE.ClampToEdgeWrapping;
       texture.minFilter =
@@ -2018,6 +2032,27 @@ export async function loadProjectedTexture(
   return texturePromise;
 }
 
+async function loadProjectedTextureWithRetry(
+  imageUrl: string,
+  colorSpace: THREE.ColorSpace = THREE.SRGBColorSpace,
+  profile: ProjectedTextureProfile = 'image',
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await loadProjectedTexture(imageUrl, colorSpace, profile);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, attempt === 0 ? 80 : 200),
+        );
+      }
+    }
+  }
+  throw lastError;
+}
+
 type ProjectedTextureArrayBundle = {
   texture: THREE.DataArrayTexture;
   uvScales: THREE.Vector2[];
@@ -2038,7 +2073,12 @@ const PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE = 1024;
 // Upload at most 1 MiB of RGBA texels before yielding presentation back to the
 // viewport. Source/export resolution is unchanged; only transfer scheduling is
 // split more finely because interaction stability outranks completion time.
-const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 262_144;
+// A 262K budget limited a 14-layer stack to one ~2ms stripe per animation
+// frame, turning the complete arrays into ~140 mandatory waits (~2.5s) despite
+// ample headroom. One full 1536px colour-preview slice measured below 10ms on
+// the performance-lab GPU, so publish one exact slice per frame. Auxiliary
+// 1024px depth/mask/normal slices remain smaller than this same bound.
+const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 1536 * 1536;
 
 function getTexturePixelSize(texture: THREE.Texture) {
   const image = texture.image as
@@ -2099,10 +2139,13 @@ async function waitForProjectedArrayUploadWindow(
   isViewportInteractionBusy?: () => boolean,
   isCancelled?: () => boolean,
 ) {
-  while (isViewportInteractionBusy?.()) {
-    if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
-    await yieldProjectedArrayUploadFrame();
-  }
+  if (!isViewportInteractionBusy?.()) return;
+  if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+  // A bounded stripe is safe during interaction (measured <=3.3ms). The old
+  // unbounded while-loop paused the complete 14-layer upload until pointer-up,
+  // leaving the white/bootstrap membrane visible for the whole gesture. Yield
+  // once to let input present, then submit one bounded stripe this frame.
+  await yieldProjectedArrayUploadFrame();
 }
 
 let projectedArrayUploadTail = Promise.resolve();
@@ -2921,7 +2964,7 @@ export async function createProjectedLayerStackMaterial(
       const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
       const requestedNormal = Boolean(layer.useNormalCheck && layer.normalUrl);
       const [texture, maskTexture, depthTexture, normalTexture] = await Promise.all([
-        loadProjectedTexture(layer.imageUrl).catch((error) => {
+        loadProjectedTextureWithRetry(layer.imageUrl).catch((error) => {
           console.warn(
             '[Liclick 3D Texture] Could not load projected layer image; skipping layer in live preview.',
             error,
@@ -2929,7 +2972,7 @@ export async function createProjectedLayerStackMaterial(
           return undefined;
         }),
         requestedMask
-          ? loadProjectedTexture(layer.maskUrl!, THREE.NoColorSpace, 'mask').catch((error) => {
+          ? loadProjectedTextureWithRetry(layer.maskUrl!, THREE.NoColorSpace, 'mask').catch((error) => {
               console.warn(
                 '[Liclick 3D Texture] Could not load projected layer mask; keeping layer hidden.',
                 error,

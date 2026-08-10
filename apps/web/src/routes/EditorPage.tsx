@@ -65,7 +65,10 @@ import {
   getLiveProjectedCanvasBlob,
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
-import { createProjectionMaskedImage } from '@/engine/projection/createMaskedProjectedImage';
+import {
+  createProjectionMaskedImage,
+  prewarmMaskedProjectedImageWorker,
+} from '@/engine/projection/createMaskedProjectedImage';
 import { syncProjectedLayerMaterialProjection } from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import {
@@ -85,7 +88,6 @@ import {
   isFlattenableUvMergeSource,
 } from '@/engine/layers/mergeUvComposition';
 import {
-  compositeRgbaUnderWithWebGpu,
   compositeRgbaUrlUnderWithWebGpu,
   type WebGpuRgbaCompositeMetrics,
 } from '@/engine/performance/webGpuRgbaComposite';
@@ -113,6 +115,7 @@ import {
 } from '@/engine/localRepaint/maskUtils';
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
+import { prewarmPreviewTextures } from '@/engine/viewport/previewTextureCache';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
@@ -387,6 +390,9 @@ function isLocalRepaintProjectionLayer(layer: Layer) {
 function isLocalRepaintLayer(layer: Layer) {
   return (
     layer.id.startsWith('local-repaint-') ||
+    (layer.type === 'uv' && Boolean(layer.renderedColor)) ||
+    layer.role === 'local-repaint-overlay' ||
+    layer.role === 'local-repaint-draft' ||
     (layer.imageUrl ?? '').includes('surface-edit:local-repaint')
   );
 }
@@ -970,6 +976,12 @@ export function EditorPage({
     },
     [],
   );
+
+  useEffect(() => {
+    // Merge UV can include a local-repaint projection. Load its alpha worker
+    // during idle editor time, not in the S4/user click frame.
+    prewarmMaskedProjectedImageWorker();
+  }, []);
 
   useEffect(() => {
     if (authStatus === 'checking') return;
@@ -1701,6 +1713,33 @@ export function EditorPage({
     skipProjectStoreSyncRef.current.references = true;
     setObjects(projectToHydrate.objects.filter((object) => object.format !== 'primitive'));
     setLayers(projectToHydrate.layers);
+    const visibleTextureLayers = projectToHydrate.layers.filter(
+      (layer) => layer.visible && Boolean(layer.imageUrl),
+    );
+    document.body.dataset.textureRestoreHydrated = '1';
+    document.body.dataset.textureRestoreHydratedMs = performance.now().toFixed(1);
+    document.body.dataset.textureRestoreExpectedLayers = String(visibleTextureLayers.length);
+    document.body.dataset.textureRestoreExpectedUvLayers = String(
+      visibleTextureLayers.filter((layer) => layer.type === 'uv').length,
+    );
+    document.body.dataset.textureRestoreExpectedProjectedLayers = String(
+      visibleTextureLayers.filter((layer) => layer.type === 'projected').length,
+    );
+    document.body.dataset.textureRestoreExpectedLocalRepaintLayers = String(
+      visibleTextureLayers.filter(
+        (layer) =>
+          isLocalRepaintLayer(layer) ||
+          Boolean(layer.localRepaintSourceUrl || layer.localRepaintMaskUrl),
+      ).length,
+    );
+    // Start UV decode as soon as project JSON arrives, in parallel with model
+    // download/parse. SceneRoot consumes the same shared promises and textures,
+    // so this is real work pulled forward rather than a duplicate preload.
+    void prewarmPreviewTextures(
+      visibleTextureLayers
+        .filter((layer) => layer.type === 'uv')
+        .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : [])),
+    );
     setGenerations(projectToHydrate.generations, projectToHydrate.id);
     setReferences(projectToHydrate.references);
     void restoreProjectModel(projectToHydrate).then(() => {
@@ -1833,7 +1872,11 @@ export function EditorPage({
           object,
           model: {
             ...applySavedObjectToLoadedModel(loaded, object),
-            restoreStage: 'outline' as const,
+            // The active object is the user's first meaningful screen. Its
+            // layers are already hydrated, so publish its textured model in one
+            // atomic step instead of deliberately showing an outline and then
+            // waiting in the background texture queue.
+            restoreStage: object.id === activeObjectId ? ('full' as const) : ('outline' as const),
           },
         };
       } catch (error) {
@@ -1879,6 +1922,10 @@ export function EditorPage({
       }
       restoredModelByObjectId.set(result.object.id, result.model);
       publishRestoreProgress();
+      if (result.model.restoreStage === 'full' && result.object.id === activeObjectId) {
+        document.body.dataset.textureRestoreModelFull = '1';
+        document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
+      }
       window.requestAnimationFrame(() => disposeProjectModelBoundsPlaceholder(placeholder));
       queueFullTextureRestore(result.object.id);
     }
@@ -3936,9 +3983,11 @@ export function EditorPage({
         if (projectedIds.length < 14) {
           throw new Error(`当前对象只有 ${projectedIds.length} 个可用投影图层，需要 14 个。`);
         }
-        if (repairIds.length < 1) {
-          throw new Error('当前对象没有可用的内容识别修补图层。');
-        }
+        // A repair underlay is optional in the real merge command. Requiring
+        // one only in S4 made a perfectly valid 14-projection project unable to
+        // quantify its 4K merge (and looked like a frozen benchmark button).
+        document.body.dataset.perfUvMergeProjectedCount = String(projectedIds.length);
+        document.body.dataset.perfUvMergeRepairCount = String(repairIds.length);
         return mergeLayersToUvLayer([...projectedIds, ...repairIds], undefined, {
           benchmarkOnly: true,
         });
@@ -4281,11 +4330,20 @@ export function EditorPage({
       'liclick:local-repaint-prewarm-progress',
       handleLocalRepaintPrewarmProgress,
     );
-    return () =>
+    window.addEventListener(
+      'liclick:projected-preview-progress',
+      handleLocalRepaintPrewarmProgress,
+    );
+    return () => {
       window.removeEventListener(
         'liclick:local-repaint-prewarm-progress',
         handleLocalRepaintPrewarmProgress,
       );
+      window.removeEventListener(
+        'liclick:projected-preview-progress',
+        handleLocalRepaintPrewarmProgress,
+      );
+    };
   }, []);
 
   useEffect(() => {
@@ -4430,6 +4488,15 @@ export function EditorPage({
       });
       return;
     }
+    const clickedAt = performance.now();
+    document.body.dataset.localRepaintButton2ClickedAt = clickedAt.toFixed(1);
+    document.body.dataset.perfLocalRepaintPhase = 'button2-click-response';
+    window.requestAnimationFrame((frameAt) => {
+      document.body.dataset.localRepaintButton2ResponseMs = (frameAt - clickedAt).toFixed(1);
+      if (document.body.dataset.perfLocalRepaintPhase === 'button2-click-response') {
+        delete document.body.dataset.perfLocalRepaintPhase;
+      }
+    });
     setPaintTool('none');
     showPanel('generate');
     setPanelCollapsed('generate', false);

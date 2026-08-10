@@ -59,6 +59,11 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 import { Grid } from './Grid';
 import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
 import { ObjectTransformControls } from './ObjectTransformControls';
+import {
+  loadPreviewTexture,
+  residentPreviewTextureCache,
+  uploadPreviewTextureInStripes,
+} from './previewTextureCache';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type {
   ProjectionLayerDisplayInput,
@@ -74,12 +79,9 @@ const RESOLUTION_TO_SIZE = {
   '8K': 8192,
 } as const;
 
-const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const MAX_IMAGE_ELEMENT_CACHE_SIZE = 32;
 const MAX_COMPOSITED_UV_TEXTURE_CACHE_SIZE = 3;
 const MAX_RESIDENT_UV_TOGGLE_TEXTURES = 2;
-const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
-const residentPreviewTextureCache = new Map<string, THREE.Texture>();
 const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
 const PROJECTED_PREVIEW_LIMIT_TOAST_KEY = 'projected-preview:sampler-limit';
 const PROJECTED_PREVIEW_FAILURE_TOAST_KEY = 'projected-preview:failure';
@@ -199,6 +201,43 @@ function isRenderedLocalRepaintLayer(layer: Layer) {
     layer.id.startsWith('content-aware-projected-repair') ||
     layer.generationId === 'texture-map-content-aware-repair' ||
     (layer.imageUrl ?? '').includes('surface-edit:local-repaint'),
+  );
+}
+
+function reportProjectedPreviewProgress(
+  progress: number,
+  detail: string,
+  options: { done?: boolean; failed?: boolean; layerCount?: number } = {},
+) {
+  if (typeof window === 'undefined') return;
+  if (progress <= 0.12) {
+    document.body.dataset.projectedPreviewProgressStartedUnixMs = String(Date.now());
+  }
+  if (options.done && !options.failed) {
+    const startedAt = Number(
+      document.body.dataset.projectedPreviewProgressStartedUnixMs ?? Date.now(),
+    );
+    document.body.dataset.projectedPreviewReadyLatencyMs = String(
+      Math.max(0, Date.now() - startedAt),
+    );
+  }
+  document.body.dataset.projectedPreviewProgress = progress.toFixed(3);
+  document.body.dataset.projectedPreviewProgressDetail = detail;
+  window.dispatchEvent(
+    new CustomEvent('liclick:projected-preview-progress', {
+      detail: {
+        title: options.failed
+          ? '投影贴图加载失败'
+          : options.done
+            ? '投影贴图已就绪'
+            : '正在加载投影贴图',
+        detail,
+        progress,
+        done: options.done,
+        dismissAfterMs: options.failed ? 4_000 : 500,
+        layerCount: options.layerCount,
+      },
+    }),
   );
 }
 
@@ -367,48 +406,6 @@ function useStableValueBySignature<T>(value: T, signature: string) {
   return stableRef.current.value;
 }
 
-function trimBakedTextureCache() {
-  while (bakedTextureCache.size > MAX_PREVIEW_TEXTURE_CACHE_SIZE) {
-    const oldestKey = bakedTextureCache.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    const texturePromise = bakedTextureCache.get(oldestKey);
-    bakedTextureCache.delete(oldestKey);
-    residentPreviewTextureCache.delete(oldestKey);
-    void texturePromise?.then((texture) => texture.dispose()).catch(() => undefined);
-  }
-}
-
-function loadPreviewTexture(imageUrl: string) {
-  const cached = bakedTextureCache.get(imageUrl);
-  if (cached) {
-    bakedTextureCache.delete(imageUrl);
-    bakedTextureCache.set(imageUrl, cached);
-    return cached;
-  }
-  const loadStartedAt = performance.now();
-  document.body.dataset.previewTextureLoadStartedUnixMs = String(Date.now());
-  const texturePromise = new THREE.TextureLoader().loadAsync(imageUrl).then((texture) => {
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.flipY = true;
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.generateMipmaps = false;
-    texture.anisotropy = 8;
-    texture.needsUpdate = true;
-    residentPreviewTextureCache.set(imageUrl, texture);
-    document.body.dataset.previewTextureLoadReadyUnixMs = String(Date.now());
-    document.body.dataset.previewTextureLoadDurationMs = (
-      performance.now() - loadStartedAt
-    ).toFixed(1);
-    return texture;
-  });
-  bakedTextureCache.set(imageUrl, texturePromise);
-  trimBakedTextureCache();
-  return texturePromise;
-}
-
 export function getPreviewLighting(input: {
   displayMode: string;
   environmentPreset: 'color' | 'studio' | 'soft' | 'dark';
@@ -443,6 +440,7 @@ export function getPreviewLighting(input: {
 
 function useLoadedPreviewTexture(imageUrl?: string, options?: { preserveWhenEmpty?: boolean }) {
   const [loadedTexture, setLoadedTexture] = useState<THREE.Texture>();
+  const { gl } = useThree();
 
   useEffect(() => {
     if (!imageUrl) {
@@ -453,19 +451,34 @@ function useLoadedPreviewTexture(imageUrl?: string, options?: { preserveWhenEmpt
     // Keep the last valid GPU texture visible while the replacement decodes.
     // Clearing here produced the one-frame black/white flash during repaint,
     // image replacement and UV composition hand-offs.
-    loadPreviewTexture(imageUrl)
-      .then((texture) => {
-        if (cancelled) return;
-        setLoadedTexture(texture);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.warn('[Liclick 3D Texture] Could not load texture for viewport preview:', error);
-      });
+    void (async () => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
+        try {
+          const texture = await loadPreviewTexture(imageUrl);
+          await uploadPreviewTextureInStripes(gl, texture);
+          if (!cancelled) setLoadedTexture(texture);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (attempt < 2) {
+            await new Promise<void>((resolve) =>
+              window.setTimeout(resolve, attempt === 0 ? 80 : 200),
+            );
+          }
+        }
+      }
+      if (!cancelled) {
+        console.warn(
+          '[Liclick 3D Texture] Could not load texture for viewport preview:',
+          lastError,
+        );
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [imageUrl, options?.preserveWhenEmpty]);
+  }, [gl, imageUrl, options?.preserveWhenEmpty]);
 
   return loadedTexture;
 }
@@ -987,6 +1000,12 @@ function ImportedModel({
   const residentProjectedMaterialRef = useRef<THREE.ShaderMaterial>();
   const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   useEffect(() => {
+    if (stableResidentUvToggleLayers.length === 0) {
+      document.body.dataset.residentUvToggleTextureCount = '0';
+      document.body.dataset.residentUvTogglePrewarmMs = '0.0';
+      document.body.dataset.residentUvToggleReady = '1';
+      return;
+    }
     let cancelled = false;
     const prepare = async () => {
       await waitForProjectionVisibilityIdle(0);
@@ -1173,17 +1192,33 @@ function ImportedModel({
     useState('');
   const previewProjectedLayers = useMemo(() => {
     if (!texturedRestoreReady) return [];
-    const storedLayers = layers
+    const projectedCandidates = layers
       .filter(
         (layer) =>
           layer.type === 'projected' &&
           layer.imageUrl &&
           layer.camera &&
           (!layer.objectId || layer.objectId === importedObjectId),
-      )
-      // Keep hidden layers resident in the GPU material. Visibility is an
-      // opacity uniform, so toggling an eye must not rebuild the texture array
-      // while a local-repaint preview is being prepared.
+      );
+    const coldVisibleCandidates = projectedCandidates
+      .filter((layer) => layer.visible)
+      .sort((left, right) => left.order - right.order);
+    const coldLocalRepaintCandidates = coldVisibleCandidates.filter(
+      (layer) =>
+        isRenderedLocalRepaintLayer(layer) ||
+        Boolean(layer.localRepaintSourceUrl || layer.localRepaintMaskUrl),
+    );
+    const residentCandidates = initialProjectedMaterialReady
+      ? projectedCandidates
+      : coldLocalRepaintCandidates.length > 0
+        ? coldLocalRepaintCandidates
+        : coldVisibleCandidates.slice(0, 1);
+    const storedLayers = residentCandidates
+      // Cold restore presents visible layers first. Only after that atomic
+      // material is on screen do hidden layers join the resident GPU material;
+      // otherwise fourteen hidden projections can block the only visible local
+      // repaint result for many seconds after refresh. When no repaint exists,
+      // the top visible projection is the first meaningful preview.
       // Layer order 0 is the top row in the panel. Feed the shader bottom-up so
       // later overlay evaluations preserve that visible stacking order.
       .sort((a, b) => b.order - a.order)
@@ -1212,6 +1247,7 @@ function ImportedModel({
     ];
   }, [
     importedObjectId,
+    initialProjectedMaterialReady,
     layers,
     liveSurfacePaintPreview,
     texturedRestoreReady,
@@ -1439,15 +1475,35 @@ function ImportedModel({
     let cancelled = false;
     const startedAt = performance.now();
     const warm = async () => {
-      for (const layer of stableResidentUvToggleLayers) {
-        if (!layer.imageUrl) continue;
-        const texture = await loadPreviewTexture(layer.imageUrl);
+      // Decode independent UV assets together. The previous serial loop made
+      // two 4K layers pay the full network/decode latency back-to-back.
+      const textures = await Promise.all(
+        stableResidentUvToggleLayers.map(async (layer) => {
+          if (!layer.imageUrl) return undefined;
+          let lastError: unknown;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              return await loadPreviewTexture(layer.imageUrl);
+            } catch (error) {
+              lastError = error;
+              if (attempt < 2) {
+                await new Promise<void>((resolve) =>
+                  window.setTimeout(resolve, attempt === 0 ? 80 : 200),
+                );
+              }
+            }
+          }
+          throw lastError;
+        }),
+      );
+      for (const texture of textures) {
+        if (!texture) continue;
         if (cancelled) return;
         // Spread bounded 4K uploads across frames so prewarming never turns
         // into one long main-thread/GPU submission spike.
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
         if (cancelled) return;
-        gl.initTexture(texture);
+        await uploadPreviewTextureInStripes(gl, texture);
       }
       document.body.dataset.residentUvToggleTextureCount = String(
         stableResidentUvToggleLayers.length,
@@ -1466,19 +1522,6 @@ function ImportedModel({
       cancelled = true;
     };
   }, [gl, residentUvToggleSignature, stableResidentUvToggleLayers]);
-  const hasVisibleUvOverlay = useMemo(
-    () =>
-      texturedRestoreReady &&
-      layers.some(
-        (layer) =>
-          layer.type === 'uv' &&
-          layer.role !== 'content-aware-underlay' &&
-          layer.visible &&
-          Boolean(layer.imageUrl) &&
-          (!layer.objectId || layer.objectId === importedObjectId),
-      ),
-    [importedObjectId, layers, texturedRestoreReady],
-  );
   // Keep one finished UV texture and its shader sampler resident. Its eye switch
   // becomes a uniform update instead of a texture reload and shader recompile.
   const hasResidentUvOverlaySampler = Boolean(
@@ -1893,6 +1936,11 @@ function ImportedModel({
   const loadedUvTexture = directUvLayer
     ? directUvTexture
     : (compositedUvTexture ?? directUvTexture);
+  useEffect(() => {
+    if (!loadedUvTexture) return;
+    document.body.dataset.textureRestoreUvReady = '1';
+    document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
+  }, [loadedUvTexture]);
   const visibleResidentUvKey = useMemo(
     () =>
       residentUvVisibilityKey(
@@ -1931,6 +1979,14 @@ function ImportedModel({
         : undefined,
     [liveTopUvLayer, loadedStaticTopUvTexture],
   );
+  useEffect(() => {
+    if (!liveTopUvTexture) return;
+    // Rendered local-repaint patches intentionally bypass the base UV
+    // compositor and are shown as a top projected overlay. They are still UV
+    // layers in persisted project data, so count this path as restored too.
+    document.body.dataset.textureRestoreUvReady = '1';
+    document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
+  }, [liveTopUvTexture]);
   const topUvProjectedOverlayInput = useMemo(
     () =>
       liveTopUvTexture && liveTopUvLayer
@@ -2062,6 +2118,15 @@ function ImportedModel({
     if (!importedModel) return;
     let cancelled = false;
     const model = importedModel;
+    if (
+      stableVisibleProjectedLayers.length === 0 &&
+      Number(document.body.dataset.projectedPreviewProgress ?? '1') < 1
+    ) {
+      reportProjectedPreviewProgress(1, '已按图层眼睛状态隐藏投影结果', {
+        done: true,
+        layerCount: 0,
+      });
+    }
     const markProjectedBackgroundMaterialCommit = () => {
       if (typeof document === 'undefined') return;
       const previousRevision = Number(
@@ -2094,7 +2159,6 @@ function ImportedModel({
     };
     const precompileProjectedMaterial = async (material: THREE.ShaderMaterial) => {
       if (typeof gl.compileAsync !== 'function') return false;
-      await waitForViewportInteractionIdle();
       if (cancelled) return false;
       const compileScene = new THREE.Scene();
       const compileGeometry = new THREE.BoxGeometry(1, 1, 1);
@@ -2680,6 +2744,16 @@ function ImportedModel({
                   cancelled: false,
                   promise: undefined as unknown as Promise<THREE.ShaderMaterial | undefined>,
                 };
+                const visibleLayerCount = projectedMaterialInput.layers.filter(
+                  (layer) => layer.visible,
+                ).length;
+                if (visibleLayerCount > 0) {
+                  reportProjectedPreviewProgress(
+                    0.12,
+                    `正在准备 ${visibleLayerCount} 个可见层（${projectedMaterialInput.layers.length} 层驻留）`,
+                    { layerCount: visibleLayerCount },
+                  );
+                }
                 markProjectedMaterialBuild();
                 nextBuild.promise = createProjectedLayerStackMaterial(projectedMaterialInput, {
                     maxTextureImageUnits: gl.capabilities.maxTextures,
@@ -2693,7 +2767,24 @@ function ImportedModel({
               sharedProjectedMaterial =
                 await projectedTextureArrayBuildRef.current.promise;
               if (sharedProjectedMaterial) {
+                const visibleLayerCount = projectedMaterialInput.layers.filter(
+                  (layer) => layer.visible,
+                ).length;
+                if (visibleLayerCount > 0) {
+                  reportProjectedPreviewProgress(
+                    0.86,
+                    `GPU 纹理已上传，正在编译 ${visibleLayerCount} 个可见层`,
+                    { layerCount: visibleLayerCount },
+                  );
+                }
                 await precompileProjectedMaterial(sharedProjectedMaterial);
+                if (visibleLayerCount > 0) {
+                  reportProjectedPreviewProgress(
+                    0.96,
+                    '材质已就绪，正在按图层眼睛状态发布',
+                    { layerCount: visibleLayerCount },
+                  );
+                }
                 if (
                   projectedTextureArrayBuildRef.current?.signature !==
                   textureArrayBuildSignature
@@ -2734,11 +2825,23 @@ function ImportedModel({
               '[Liclick 3D Texture] Projected texture arrays are unavailable; switching the complete visible stack to a bounded fallback.',
               error,
             );
+            const visibleLayerCount = projectedLayerInput.layers.filter(
+              (layer) => layer.visible,
+            ).length;
+            if (visibleLayerCount > 0) {
+              reportProjectedPreviewProgress(
+                1,
+                error instanceof Error ? error.message : '投影纹理加载失败，请重试',
+                { done: true, failed: true, layerCount: visibleLayerCount },
+              );
+            }
             setFailedProjectedTextureArraySignature(projectedTextureArrayStructureSignature);
             return;
           }
         }
-        if (!reusedResidentProjectedMaterial) await waitForViewportInteractionIdle();
+        if (!reusedResidentProjectedMaterial && !usingSharedTextureArrayBuild) {
+          await waitForViewportInteractionIdle();
+        }
         const projectedMaterial = projectedLayerInput ? sharedProjectedMaterial : undefined;
         if (cancelled) {
           // A newer effect may be awaiting the same structural array upload.
@@ -2774,6 +2877,41 @@ function ImportedModel({
         markProjectedBackgroundMaterialCommit();
         if (sharedProjectedMaterial) {
           document.body.dataset.projectedFinalMaterialReadyUnixMs = String(Date.now());
+          document.body.dataset.textureRestoreProjectedReady = '1';
+          document.body.dataset.textureRestoreProjectedReadyMs = performance.now().toFixed(1);
+          const stackState = sharedProjectedMaterial.userData
+            .liclickProjectedLayerStackState as
+            | { bindings?: Array<{ layerId?: string }> }
+            | undefined;
+          const loadedLayerIds = new Set(
+            stackState?.bindings?.flatMap((binding) =>
+              binding.layerId ? [binding.layerId] : [],
+            ) ?? [],
+          );
+          document.body.dataset.textureRestoreLoadedProjectedLayers = String(
+            loadedLayerIds.size,
+          );
+          const expectedLocalRepaintIds = stablePreviewProjectedLayers
+            .filter(
+              (layer) =>
+                isRenderedLocalRepaintLayer(layer) ||
+                Boolean(layer.localRepaintSourceUrl || layer.localRepaintMaskUrl),
+            )
+            .map((layer) => layer.id);
+          document.body.dataset.textureRestoreLoadedLocalRepaintLayers = String(
+            expectedLocalRepaintIds.filter((layerId) => loadedLayerIds.has(layerId)).length,
+          );
+          const visibleLoadedLayerCount =
+            projectedLayerInput?.layers.filter(
+              (layer) => layer.visible && loadedLayerIds.has(layer.layerId),
+            ).length ?? 0;
+          if (visibleLoadedLayerCount > 0) {
+            reportProjectedPreviewProgress(
+              1,
+              `${visibleLoadedLayerCount} 个可见投影图层已显示`,
+              { done: true, layerCount: visibleLoadedLayerCount },
+            );
+          }
         }
       }
       syncProjectedLayerMaterialProjection(model.group);

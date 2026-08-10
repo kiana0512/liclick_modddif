@@ -17,6 +17,10 @@ import {
 } from '@/engine/localRepaint/resultPreviewUtils';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import {
+  createComfyInpaintInputInWorker,
+  prewarmComfyInpaintInputWorker,
+} from '@/engine/localRepaint/comfyInpaintInputWorker';
+import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
 } from '@/engine/scene/transformActions';
@@ -587,6 +591,32 @@ async function createComfyInpaintInputImage(
     loadImageElement(sourceUrl),
     loadImageElement(maskUrl),
   ]);
+  const workerStartedAt = performance.now();
+  try {
+    const result = await createComfyInpaintInputInWorker({
+      source: sourceImage,
+      mask: maskImage,
+      width,
+      height,
+    });
+    document.body.dataset.localRepaintButton2InputWorkerMs = result.processMs.toFixed(1);
+    document.body.dataset.localRepaintButton2InputTotalMs = (
+      performance.now() - workerStartedAt
+    ).toFixed(1);
+    document.body.dataset.localRepaintButton2InputBackend = 'worker';
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () =>
+        typeof reader.result === 'string'
+          ? resolve(reader.result)
+          : reject(new Error('无法读取局部重绘输入图。'));
+      reader.onerror = () => reject(reader.error ?? new Error('无法读取局部重绘输入图。'));
+      reader.readAsDataURL(result.blob);
+    });
+  } catch (error) {
+    document.body.dataset.localRepaintButton2InputBackend = 'main-thread-fallback';
+    console.warn('[Liclick 3D Texture] Inpaint input worker failed; using fallback.', error);
+  }
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -680,6 +710,36 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
   const handledLocalImageGenerationRequestKeyRef = useRef(0);
   const handleLocalRepaintGenerateRef = useRef<() => Promise<void>>(async () => undefined);
 
+  useEffect(() => {
+    // Start the module worker while the user is painting. Button 2 can then
+    // transfer its 2K source/mask immediately instead of compiling worker code
+    // in the click frame.
+    prewarmComfyInpaintInputWorker();
+    const target = window as typeof window & {
+      LiclickPerfLocalRepaintButton2?: {
+        prepareInput: (
+          sourceUrl: string,
+          maskUrl: string,
+          width: number,
+          height: number,
+        ) => Promise<{ totalMs: number; workerMs: number }>;
+      };
+    };
+    target.LiclickPerfLocalRepaintButton2 = {
+      prepareInput: async (sourceUrl, maskUrl, width, height) => {
+        const startedAt = performance.now();
+        await createComfyInpaintInputImage(sourceUrl, maskUrl, width, height);
+        return {
+          totalMs: performance.now() - startedAt,
+          workerMs: Number(document.body.dataset.localRepaintButton2InputWorkerMs ?? '0'),
+        };
+      },
+    };
+    return () => {
+      delete target.LiclickPerfLocalRepaintButton2;
+    };
+  }, []);
+
   const updateTexturePipelineProgress = useCallback((progress: number, label: string) => {
     setTexturePipelineProgress((current) => ({
       active: true,
@@ -751,7 +811,6 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
     : (generationSettings.model as LiclickImageModel);
   const aspectRatio = generationSettings.aspectRatio as LiclickAspectRatio;
   const imageSize = generationSettings.imageSize as LiclickImageSize;
-  const count = generationSettings.count;
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
   const references = useReferenceStore((state) => state.references);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
@@ -2521,16 +2580,28 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       submitLocksRef.current.add('repaint');
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return;
       const objectId = captureObjectId;
+      setGenerateNotice({ tone: 'info', message: '正在准备当前蒙版与视角。' });
+      // Commit the button state and progress text before any GPU capture work.
+      // This guarantees an immediate visual response even on a cold renderer.
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       // The selection accumulates camera-specific projections instead of using
       // model UVs. Reproject their union from the current camera immediately
       // before submission so it matches the captured frame.
+      document.body.dataset.perfLocalRepaintPhase = 'button2-mask-capture';
+      const maskCaptureStartedAt = performance.now();
       const currentPaintMaskDataUrl =
         (await useSceneStore.getState().paintMaskCapture?.()) ?? paintMaskDataUrl;
+      document.body.dataset.localRepaintButton2MaskCaptureMs = (
+        performance.now() - maskCaptureStartedAt
+      ).toFixed(1);
       if (!currentPaintMaskDataUrl) throw new Error(t('localRepaintMaskMissing'));
       useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
       const currentPaintMaskRevision = useSceneStore.getState().paintMaskRevision;
       const maskSize = await getImageSize(currentPaintMaskDataUrl);
       if (!maskSize.width || !maskSize.height) throw new Error('无法读取当前局部重绘蒙版尺寸。');
+      document.body.dataset.perfLocalRepaintPhase = 'button2-view-capture';
+      const viewCaptureStartedAt = performance.now();
       const capture = await captureCurrentView({
         objectId,
         resolution: 2048,
@@ -2538,6 +2609,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         colorMode: 'target-only',
         aspect: maskSize.width / maskSize.height,
       });
+      document.body.dataset.localRepaintButton2ViewCaptureMs = (
+        performance.now() - viewCaptureStartedAt
+      ).toFixed(1);
       setLastCapture(capture);
       addProjectCapture(capture);
       const submittedPrompt = prompt.trim();
@@ -2569,12 +2643,18 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       });
       requestAbortController = new AbortController();
       generationAbortControllersRef.current.set(generationId, requestAbortController);
+      document.body.dataset.perfLocalRepaintPhase = 'button2-input-worker';
+      const inputStartedAt = performance.now();
       const inputImage = await createComfyInpaintInputImage(
         capture.colorUrl,
         currentPaintMaskDataUrl,
         capture.width,
         capture.height,
       );
+      document.body.dataset.localRepaintButton2InputTotalMs = (
+        performance.now() - inputStartedAt
+      ).toFixed(1);
+      delete document.body.dataset.perfLocalRepaintPhase;
       const generation = await createModelviewApiClient().generateInpaint(
         {
           clientGenerationId: generationId,
@@ -2641,6 +2721,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: t('localRepaintFailed'), description: message });
     } finally {
+      if (document.body.dataset.perfLocalRepaintPhase?.startsWith('button2-')) {
+        delete document.body.dataset.perfLocalRepaintPhase;
+      }
       if (
         pendingGeneration &&
         generationAbortControllersRef.current.get(pendingGeneration.id) === requestAbortController

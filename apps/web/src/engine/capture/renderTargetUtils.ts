@@ -18,6 +18,14 @@ type RenderSceneToPngOptions = {
   onRenderSubmitted?: () => void;
 };
 
+type RenderScenePass = {
+  /**
+   * Applies the material/visibility state for one accumulation pass and returns
+   * a restorer. The restorer runs immediately after renderer submission.
+   */
+  prepare: () => () => void;
+};
+
 let displayOutputPass: OutputPass | undefined;
 
 function getDisplayOutputPass() {
@@ -82,6 +90,79 @@ export async function renderSceneToPngUrl(
     request.gl.setClearColor(previousClearColor, previousClearAlpha);
     sceneTarget.dispose();
     outputTarget?.dispose();
+  }
+
+  const png = await encodeFlippedGpuReadbackPngInWorker(
+    pixels,
+    request.width,
+    request.height,
+  );
+  return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
+}
+
+/**
+ * Renders several material passes into one target and performs exactly one GPU
+ * readback + PNG encode. This is used by the accumulated repaint selection:
+ * reading/encoding every archived camera projection separately made button 2
+ * scale linearly to multi-second stalls.
+ */
+export async function renderScenePassesToPngUrl(
+  request: CapturePassRequest,
+  passes: RenderScenePass[],
+  options: Pick<
+    RenderSceneToPngOptions,
+    'dataTexture' | 'ignoreSceneBackground' | 'onRenderSubmitted'
+  > = {},
+) {
+  const target = new THREE.WebGLRenderTarget(request.width, request.height, {
+    samples: 0,
+    colorSpace: options.dataTexture ? THREE.NoColorSpace : THREE.SRGBColorSpace,
+  });
+  const previousTarget = request.gl.getRenderTarget();
+  const previousClearColor = new THREE.Color();
+  request.gl.getClearColor(previousClearColor);
+  const previousClearAlpha = request.gl.getClearAlpha();
+  const previousBackground = request.scene.background;
+  const previousAutoClear = request.gl.autoClear;
+  const pixels = new Uint8Array(request.width * request.height * 4);
+  try {
+    if (options.ignoreSceneBackground) request.scene.background = null;
+    request.gl.autoClear = false;
+    request.gl.setRenderTarget(target);
+    request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
+    request.gl.clear(true, true, true);
+    for (let index = 0; index < passes.length; index += 1) {
+      const restore = passes[index].prepare();
+      try {
+        request.gl.render(request.scene, request.camera);
+      } finally {
+        restore();
+      }
+      // Every pass uses the same viewer camera but a different projector. Keep
+      // accumulated colour while allowing the next projection to rasterize the
+      // same front-most surface again.
+      if (index + 1 < passes.length) request.gl.clearDepth();
+    }
+    const readbackPromise = request.gl.readRenderTargetPixelsAsync(
+      target,
+      0,
+      0,
+      request.width,
+      request.height,
+      pixels,
+    );
+    request.scene.background = previousBackground;
+    request.gl.setRenderTarget(previousTarget);
+    request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    request.gl.autoClear = previousAutoClear;
+    options.onRenderSubmitted?.();
+    await readbackPromise;
+  } finally {
+    request.scene.background = previousBackground;
+    request.gl.setRenderTarget(previousTarget);
+    request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    request.gl.autoClear = previousAutoClear;
+    target.dispose();
   }
 
   const png = await encodeFlippedGpuReadbackPngInWorker(

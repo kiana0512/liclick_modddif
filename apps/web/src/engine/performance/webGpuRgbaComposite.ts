@@ -4,7 +4,10 @@ import {
   subscribeViewportInteraction,
 } from '@/engine/viewport/viewportInteractionState';
 
-const INTERACTIVE_CHUNK_BYTES = 4 * 1024 * 1024;
+// Smaller submissions keep the render queue available to the viewport during
+// 4K UV composition. This changes scheduling only; every RGBA byte is still
+// processed and the existing CPU/GPU parity check remains exact.
+const INTERACTIVE_CHUNK_BYTES = 1 * 1024 * 1024;
 const IDLE_CHUNK_BYTES = 8 * 1024 * 1024;
 
 export type WebGpuRgbaCompositeMetrics = {
