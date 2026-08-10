@@ -22,9 +22,9 @@ import {
 } from '@/engine/scene/transformActions';
 import {
   ReferenceGroupPicker,
-  referenceGroupId,
   type ReferenceGroupGenerationState,
 } from '@/components/panels/ReferenceGroupPicker';
+import { referenceGroupId } from '@/components/panels/referenceGroupUtils';
 import { devLogin } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { createModelviewApiClient } from '@/services/modelviewApiClient';
@@ -751,7 +751,6 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
     : (generationSettings.model as LiclickImageModel);
   const aspectRatio = generationSettings.aspectRatio as LiclickAspectRatio;
   const imageSize = generationSettings.imageSize as LiclickImageSize;
-  const count = generationSettings.count;
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
   const references = useReferenceStore((state) => state.references);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
@@ -1392,7 +1391,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         return next;
       });
     };
-  }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, viewport]);
+  }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, setGenerateNotice, viewport]);
 
   useEffect(() => {
     const generationToPoll = activeReferenceGeneration ?? previewGeneration;
@@ -1599,6 +1598,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
     markGenerationFailed,
     previewGeneration,
     pushToast,
+    setGenerateNotice,
     syncGeneration,
   ]);
 
@@ -1659,6 +1659,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           error: message,
         });
       });
+  // The persistence helper deliberately reads the latest Zustand snapshots so
+  // a completed background job cannot write a stale reference collection.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id, generations, pushToast, references]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {

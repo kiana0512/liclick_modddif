@@ -29,9 +29,70 @@ function createAbortError() {
   return new DOMException('Surface-aware repair was cancelled.', 'AbortError');
 }
 
-function copyRegionIds(regionIds: SurfaceRepairRegionArray | undefined) {
+type CopyableRepairArray = Uint8Array | Uint8ClampedArray | Uint32Array | Int32Array;
+
+const COOPERATIVE_COPY_CHUNK_BYTES = 1024 * 1024;
+
+function yieldToViewportFrame() {
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    return new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  return new Promise<void>((resolve) =>
+    window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+  );
+}
+
+async function copyArrayCooperatively<T extends CopyableRepairArray>(
+  source: T,
+  create: (length: number) => T,
+  signal?: AbortSignal,
+) {
+  const output = create(source.length);
+  const chunkElements = Math.max(
+    1,
+    Math.floor(COOPERATIVE_COPY_CHUNK_BYTES / source.BYTES_PER_ELEMENT),
+  );
+  const setOutput = output.set.bind(output) as (
+    array: ArrayLike<number>,
+    offset?: number,
+  ) => void;
+  for (let offset = 0; offset < source.length; offset += chunkElements) {
+    if (signal?.aborted) throw createAbortError();
+    const end = Math.min(source.length, offset + chunkElements);
+    setOutput(source.subarray(offset, end), offset);
+    if (end < source.length) {
+      // Topology buffers can exceed 20 MB at 2K. Copy them in bounded slices
+      // so preparing a Worker request never turns into one visible long frame.
+      await yieldToViewportFrame();
+    }
+  }
+  return output;
+}
+
+/**
+ * Copies a large RGBA surface without monopolising one display frame. Content
+ * repair uses this for its immutable projection-bake cache before compositing
+ * prior sparse repair layers into a working buffer.
+ */
+export async function copyRepairRgbaCooperatively(
+  source: Uint8ClampedArray<ArrayBufferLike>,
+  signal?: AbortSignal,
+): Promise<Uint8ClampedArray<ArrayBuffer>> {
+  return (await copyArrayCooperatively(
+    source,
+    (length) => new Uint8ClampedArray(length),
+    signal,
+  )) as Uint8ClampedArray<ArrayBuffer>;
+}
+
+async function copyRegionIds(
+  regionIds: SurfaceRepairRegionArray | undefined,
+  signal?: AbortSignal,
+) {
   if (!regionIds) return undefined;
-  return regionIds instanceof Int32Array ? new Int32Array(regionIds) : new Uint32Array(regionIds);
+  return regionIds instanceof Int32Array
+    ? copyArrayCooperatively(regionIds, (length) => new Int32Array(length), signal)
+    : copyArrayCooperatively(regionIds, (length) => new Uint32Array(length), signal);
 }
 
 function canTransferWholeView(value: ArrayBufferView) {
@@ -43,25 +104,77 @@ function canTransferWholeView(value: ArrayBufferView) {
 }
 
 /** Cached topology inputs are copied; explicitly disposable image inputs may transfer directly. */
-function copyInput(
+async function copyInput(
   input: SurfaceAwareRepairInput,
   options: RunSurfaceAwareRepairOptions,
-): SurfaceAwareRepairInput {
+) : Promise<SurfaceAwareRepairInput> {
   const transferRgba = options.transferOwnership?.rgba && canTransferWholeView(input.rgba);
   const transferWriteMask =
     options.transferOwnership?.writeMask && canTransferWholeView(input.writeMask);
   return {
     ...input,
-    rgba: transferRgba ? input.rgba : new Uint8ClampedArray(input.rgba),
-    writeMask: transferWriteMask ? input.writeMask : new Uint8Array(input.writeMask),
-    topologyMask: new Uint8Array(input.topologyMask),
+    rgba: transferRgba
+      ? input.rgba
+      : await copyArrayCooperatively(
+          input.rgba instanceof Uint8ClampedArray
+            ? input.rgba
+            : new Uint8ClampedArray(
+                input.rgba.buffer,
+                input.rgba.byteOffset,
+                input.rgba.byteLength,
+              ),
+          (length) => new Uint8ClampedArray(length),
+          options.signal,
+        ),
+    writeMask: transferWriteMask
+      ? input.writeMask
+      : await copyArrayCooperatively(
+          input.writeMask instanceof Uint8Array
+            ? input.writeMask
+            : new Uint8Array(
+                input.writeMask.buffer,
+                input.writeMask.byteOffset,
+                input.writeMask.byteLength,
+              ),
+          (length) => new Uint8Array(length),
+          options.signal,
+        ),
+    topologyMask: await copyArrayCooperatively(
+      input.topologyMask instanceof Uint8Array
+        ? input.topologyMask
+        : new Uint8Array(
+            input.topologyMask.buffer,
+            input.topologyMask.byteOffset,
+            input.topologyMask.byteLength,
+          ),
+      (length) => new Uint8Array(length),
+      options.signal,
+    ),
     ...(input.sourceExclusionMask
-      ? { sourceExclusionMask: new Uint8Array(input.sourceExclusionMask) }
+      ? {
+          sourceExclusionMask: await copyArrayCooperatively(
+            input.sourceExclusionMask instanceof Uint8Array
+              ? input.sourceExclusionMask
+              : new Uint8Array(
+                  input.sourceExclusionMask.buffer,
+                  input.sourceExclusionMask.byteOffset,
+                  input.sourceExclusionMask.byteLength,
+                ),
+            (length) => new Uint8Array(length),
+            options.signal,
+          ),
+        }
       : { sourceExclusionMask: undefined }),
     ...(input.seamLinks
-      ? { seamLinks: new Uint32Array(input.seamLinks) }
+      ? {
+          seamLinks: await copyArrayCooperatively(
+            input.seamLinks,
+            (length) => new Uint32Array(length),
+            options.signal,
+          ),
+        }
       : { seamLinks: undefined }),
-    topologyRegionIds: copyRegionIds(input.topologyRegionIds),
+    topologyRegionIds: await copyRegionIds(input.topologyRegionIds, options.signal),
   };
 }
 
@@ -81,12 +194,12 @@ function runOnMainThread(
  * Runs surface-aware repair off the editor thread. Inputs remain attached by
  * default; callers may opt short-lived RGBA/write buffers into zero-copy transfer.
  */
-export function runSurfaceAwareRepair(
+export async function runSurfaceAwareRepair(
   input: SurfaceAwareRepairInput,
   options: RunSurfaceAwareRepairOptions = {},
 ): Promise<SurfaceAwareRepairResult> {
   if (options.signal?.aborted) return Promise.reject(createAbortError());
-  const copiedInput = copyInput(input, options);
+  const copiedInput = await copyInput(input, options);
   if (options.useWorker === false || typeof Worker === 'undefined') {
     return runOnMainThread(copiedInput, options);
   }

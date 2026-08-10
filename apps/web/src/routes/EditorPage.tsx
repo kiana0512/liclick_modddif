@@ -46,9 +46,11 @@ import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import { getProjectedLayerStackSignature } from '@/engine/bake/layerStackCache';
 import {
   buildContentAwareRepairMask,
   buildContentAwareSurfaceTopology,
+  copyRepairRgbaCooperatively,
   CONTENT_AWARE_REPAIR_REQUEST_EVENT,
   runSurfaceAwareRepair,
   type ContentAwareRepairRequestDetail,
@@ -85,7 +87,6 @@ import {
   isFlattenableUvMergeSource,
 } from '@/engine/layers/mergeUvComposition';
 import {
-  compositeRgbaUnderWithWebGpu,
   compositeRgbaUrlUnderWithWebGpu,
   type WebGpuRgbaCompositeMetrics,
 } from '@/engine/performance/webGpuRgbaComposite';
@@ -219,7 +220,22 @@ const resolutionToSize = {
 
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
-const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
+// Content repair is a final texture layer, so it follows the selected
+// 1K/2K/4K/8K quality exactly. Performance is protected by cached projection
+// evidence/topology, cooperative scans/copies, GPU bake/readback, and Worker
+// propagation rather than by silently reducing the selected resolution.
+const CONTENT_AWARE_UV_MAX_RESOLUTION = 8192;
+
+type ContentAwareProjectionEvidenceCache = {
+  key: string;
+  resolution: UvBakeResolution;
+  rgba: Uint8ClampedArray;
+};
+
+// A single immutable entry is enough for iterative repair: every pass uses the
+// same authored projection stack, then composites the growing sparse repair
+// underlays into a private working copy. Replacing the entry bounds 8K memory.
+let contentAwareProjectionEvidenceCache: ContentAwareProjectionEvidenceCache | undefined;
 
 async function waitForProjectRestoreIdle(timeoutMs = 800) {
   while (isViewportInteractionBusy()) {
@@ -851,7 +867,6 @@ export function EditorPage({
   const paintTool = useSceneStore((state) => state.paintTool);
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
   const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
-  const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
   const paintMaskRevision = useSceneStore((state) => state.paintMaskRevision);
   const setLocalRepaintProjectionSource = useSceneStore(
     (state) => state.setLocalRepaintProjectionSource,
@@ -4664,7 +4679,6 @@ export function EditorPage({
     getLocalRepaintProjectionImage,
     importedModel,
     paintMaskDataUrl,
-    paintMaskHasContent,
     project,
     projectId,
     pushToast,
@@ -4719,6 +4733,14 @@ export function EditorPage({
       contentAwareRepairRunningRef.current = true;
       const abortController = new AbortController();
       contentAwareRepairAbortControllerRef.current = abortController;
+      const repairStartedAt = performance.now();
+      const repairTimings: Record<string, number> = {};
+      let previousStageAt = repairStartedAt;
+      const finishRepairStage = (stage: string) => {
+        const completedAt = performance.now();
+        repairTimings[stage] = completedAt - previousStageAt;
+        previousStageAt = completedAt;
+      };
       try {
         const sceneState = useSceneStore.getState();
         const viewportRuntime = sceneState.viewport;
@@ -4745,7 +4767,7 @@ export function EditorPage({
         });
         const objectId = targetModel.objectId;
         const currentLayers = useLayerStore.getState().layers;
-        const sourceLayerIds = currentLayers
+        const sourceLayers = currentLayers
           .filter(
             (layer) =>
               layer.type === 'projected' &&
@@ -4754,8 +4776,8 @@ export function EditorPage({
               (!layer.objectId || layer.objectId === objectId) &&
               !isLocalRepaintLayer(layer) &&
               !isContentAwareRepairLayer(layer),
-          )
-          .map((layer) => layer.id);
+          );
+        const sourceLayerIds = sourceLayers.map((layer) => layer.id);
         const previousRepairLayers = currentLayers.filter(
           (layer) =>
             isContentAwareRepairLayer(layer) &&
@@ -4770,32 +4792,87 @@ export function EditorPage({
           resolutionToSize[useSettingsStore.getState().resolution],
           CONTENT_AWARE_UV_MAX_RESOLUTION,
         ) as UvBakeResolution;
-        const bakeResult = await bakeVisibleProjectedLayersToTexture({
-          objectId,
-          layerIds: sourceLayerIds,
-          resolution: repairResolution,
-          enableBackfaceCulling: true,
-          enableDilation: false,
-          dilationPixels: 0,
-          outputAlpha: 'transparent',
-          // Gap detection needs the same quality-ranked colour as UV merge,
-          // but must retain aggregate coverage confidence in alpha. Otherwise
-          // one weak grazing sample makes an actually empty surface look 100%
-          // filled and the repair tool reports no blank area.
-          preserveCoverageConfidenceAlpha: true,
-          commitToProject: false,
-          markSourceLayersBaked: false,
-          skipImageEncoding: true,
-          onProgress: (progress) =>
-            setManualBakeProgress({
-              title: t('contentAwareRepair'),
-              detail: t('contentAwareRepairScanning'),
-              progress: 0.04 + progress.progress * 0.54,
-            }),
-        });
-        const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
-        if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
-        let workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
+        const projectionEvidenceKey = [
+          getProjectedLayerStackSignature(
+            useProjectStore.getState().currentProjectId,
+            objectId,
+            repairResolution,
+            sourceLayers,
+            {
+              method: 'gpu',
+              outputAlpha: 'transparent',
+              enableDilation: false,
+              dilationPixels: 0,
+            },
+          ),
+          'backface:1',
+          'coverage-confidence-alpha:v1',
+        ].join('|');
+        const cachedProjectionEvidence =
+          contentAwareProjectionEvidenceCache?.key === projectionEvidenceKey &&
+          contentAwareProjectionEvidenceCache.resolution === repairResolution
+            ? contentAwareProjectionEvidenceCache
+            : undefined;
+        const projectionEvidenceCacheHit = Boolean(cachedProjectionEvidence);
+        let workingImageData: ImageData;
+        if (cachedProjectionEvidence) {
+          setManualBakeProgress({
+            title: t('contentAwareRepair'),
+            detail: t('contentAwareRepairScanning'),
+            progress: 0.56,
+          });
+          workingImageData = new ImageData(
+            await copyRepairRgbaCooperatively(
+              cachedProjectionEvidence.rgba,
+              abortController.signal,
+            ),
+            repairResolution,
+            repairResolution,
+          );
+        } else {
+          const bakeResult = await bakeVisibleProjectedLayersToTexture({
+            objectId,
+            layerIds: sourceLayerIds,
+            resolution: repairResolution,
+            enableBackfaceCulling: true,
+            enableDilation: false,
+            dilationPixels: 0,
+            outputAlpha: 'transparent',
+            // Gap detection needs the same quality-ranked colour as UV merge,
+            // but must retain aggregate coverage confidence in alpha. Otherwise
+            // one weak grazing sample makes an actually empty surface look 100%
+            // filled and the repair tool reports no blank area.
+            preserveCoverageConfidenceAlpha: true,
+            commitToProject: false,
+            markSourceLayersBaked: false,
+            skipImageEncoding: true,
+            onProgress: (progress) =>
+              setManualBakeProgress({
+                title: t('contentAwareRepair'),
+                detail: t('contentAwareRepairScanning'),
+                progress: 0.04 + progress.progress * 0.54,
+              }),
+          });
+          const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
+          if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
+          const bakedImageData = bakeContext.getImageData(
+            0,
+            0,
+            repairResolution,
+            repairResolution,
+          );
+          const immutableEvidence = await copyRepairRgbaCooperatively(
+            bakedImageData.data,
+            abortController.signal,
+          );
+          contentAwareProjectionEvidenceCache = {
+            key: projectionEvidenceKey,
+            resolution: repairResolution,
+            rgba: immutableEvidence,
+          };
+          workingImageData = bakedImageData;
+        }
+        finishRepairStage('projection-bake');
         // Projection remains the front layer. Repair deltas are applied in
         // authored top-to-bottom order and contribute only where coverage is
         // still empty, becoming evidence and donors for the next pass.
@@ -4827,6 +4904,7 @@ export function EditorPage({
             compositeRgbaUnderInPlace(workingImageData.data, imageData.data, layer.opacity);
           }
         }
+        finishRepairStage('previous-repair-composite');
         const topology = await buildContentAwareSurfaceTopology(
           targetModel.group,
           repairResolution,
@@ -4839,6 +4917,11 @@ export function EditorPage({
             includeSeamLinks: true,
             seamBandPixels: 1,
             minimumSeamNormalDot: 0.72,
+            // Keep ordinary propagation on smooth regions, but permit exactly
+            // one explicit physical-seam hop around a structural corner. The
+            // repair stage's maxSeamCrossings=1 and dominant-source lock below
+            // prevent this relaxed bridge from cascading through the model.
+            minimumSeamBridgeNormalDot: -0.12,
             yieldIntervalMs: 8,
             signal: abortController.signal,
             onProgress: (progress) => {
@@ -4861,6 +4944,7 @@ export function EditorPage({
             },
           },
         );
+        finishRepairStage('topology');
         const detectedGaps = await buildContentAwareRepairMask({
           width: repairResolution,
           height: repairResolution,
@@ -4882,6 +4966,7 @@ export function EditorPage({
           signal: abortController.signal,
           yieldIntervalMs: 8,
         });
+        finishRepairStage('gap-scan');
         console.info(
           '[Liclick Content Aware] Gap scan',
           JSON.stringify({
@@ -4896,6 +4981,16 @@ export function EditorPage({
           }),
         );
         if (detectedGaps.stats.totalPixels === 0) {
+          console.info(
+            '[Liclick Content Aware] Pipeline timing',
+            JSON.stringify({
+              resolution: repairResolution,
+              projectionEvidenceCacheHit,
+              totalMs: performance.now() - repairStartedAt,
+              stages: repairTimings,
+              outcome: 'no-gaps',
+            }),
+          );
           setManualBakeProgress(undefined);
           pushToast({
             tone: 'info',
@@ -4961,7 +5056,11 @@ export function EditorPage({
               }),
           },
         );
-        console.info('[Liclick Content Aware] Surface repair', JSON.stringify(repair.stats));
+        finishRepairStage('surface-propagation');
+        console.info(
+          '[Liclick Content Aware] Surface repair',
+          JSON.stringify(repair.stats),
+        );
         if (repair.stats.repairedPixels === 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
         }
@@ -4975,6 +5074,16 @@ export function EditorPage({
         });
         captureHistory('创建独立内容识别 UV 修补图层');
         const repairLayer = await addUvContentAwareRepairLayer(repairTexture, objectId);
+        finishRepairStage('persist-and-publish');
+        console.info(
+          '[Liclick Content Aware] Pipeline timing',
+          JSON.stringify({
+            resolution: repairResolution,
+            projectionEvidenceCacheHit,
+            totalMs: performance.now() - repairStartedAt,
+            stages: repairTimings,
+          }),
+        );
         setProjectLayers(useLayerStore.getState().layers);
         pushToast({
           tone: 'success',
@@ -4989,6 +5098,7 @@ export function EditorPage({
         ) {
           return;
         }
+        console.error('[Liclick Content Aware] Repair failed', error);
         setManualBakeProgress(undefined);
         pushToast({
           tone: 'error',

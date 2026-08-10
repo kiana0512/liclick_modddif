@@ -55,6 +55,13 @@ export type BuildContentAwareSurfaceTopologyOptions = {
   seamBandPixels?: number;
   /** Prevents a hard geometric edge from becoming a texture sampling bridge. */
   minimumSeamNormalDot?: number;
+  /**
+   * Minimum normal agreement for an explicit, bounded physical-seam bridge.
+   * This is intentionally independent from minimumSeamNormalDot: regular UV
+   * propagation must stay on a smooth surface, while a repair may cross one
+   * real shared edge to reach a blank face around a structural corner.
+   */
+  minimumSeamBridgeNormalDot?: number;
   /** Main-thread work budget before yielding back to rendering/input. */
   yieldIntervalMs?: number;
   signal?: AbortSignal;
@@ -98,6 +105,7 @@ const UV_EQUALITY_EPSILON = 1e-7;
 const MAX_CACHE_ENTRIES_PER_ROOT = 2;
 const DEFAULT_YIELD_INTERVAL_MS = 8;
 const DEFAULT_MINIMUM_SEAM_NORMAL_DOT = 0.35;
+const DEFAULT_MINIMUM_SEAM_BRIDGE_NORMAL_DOT = DEFAULT_MINIMUM_SEAM_NORMAL_DOT;
 
 let topologyCache = new WeakMap<THREE.Object3D, Map<string, ContentAwareSurfaceTopology>>();
 
@@ -112,18 +120,31 @@ function throwIfAborted(signal?: AbortSignal) {
   throw error;
 }
 
+function yieldToViewportFrame() {
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    return new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  return new Promise<void>((resolve) =>
+    window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+  );
+}
+
 class CooperativeScheduler {
   private lastYieldAt = now();
+  private readonly intervalMs: number;
+  private readonly signal?: AbortSignal;
 
-  constructor(
-    private readonly intervalMs: number,
-    private readonly signal?: AbortSignal,
-  ) {}
+  constructor(intervalMs: number, signal?: AbortSignal) {
+    this.intervalMs = intervalMs;
+    this.signal = signal;
+  }
 
   async checkpoint(force = false) {
     throwIfAborted(this.signal);
     if (!force && now() - this.lastYieldAt < this.intervalMs) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // Resume only after the next visible frame. setTimeout(0) alone can run
+    // several 8ms topology slices before rAF and visibly halve orbit FPS.
+    await yieldToViewportFrame();
     this.lastYieldAt = now();
     throwIfAborted(this.signal);
   }
@@ -260,6 +281,13 @@ function collectMeshSources(root: THREE.Object3D, includeInvisible: boolean) {
   let triangleCount = 0;
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh) || (!includeInvisible && !object.visible)) return;
+    if (
+      object.userData.liclickPaintOverlay ||
+      object.userData.liclickViewportHelper ||
+      object.userData.liclickSelectionGlow ||
+      object.userData.liclickWireframeOverlay
+    )
+      return;
     const geometry = object.geometry;
     const position = geometry.getAttribute('position');
     const uv = geometry.getAttribute('uv');
@@ -293,6 +321,7 @@ async function analyzeMesh(
   scheduler: CooperativeScheduler,
   includeSeamLinks: boolean,
   minimumSeamNormalDot: number,
+  minimumSeamBridgeNormalDot: number,
   completedBeforeMesh: number,
   totalTriangles: number,
   onProgress?: (progress: ContentAwareTopologyProgress) => void,
@@ -360,6 +389,14 @@ async function analyzeMesh(
         encodedEdge,
         minimumSeamNormalDot,
       );
+      const normalsCanBridge =
+        normalsAreCompatible ||
+        seamNormalsAreCompatible(
+          source,
+          firstEncodedEdge,
+          encodedEdge,
+          minimumSeamBridgeNormalDot,
+        );
       const uvEdgesEquivalent = uvEdgesAreEquivalent(source, firstEncodedEdge, encodedEdge);
       // Coincident shells and hard geometric edges can live in one Mesh and
       // material slot. Keeping them in separate components prevents the regular
@@ -370,7 +407,7 @@ async function analyzeMesh(
           union(regionParent, regionRank, firstTriangle, triangle);
         }
       }
-      if (includeSeamLinks && normalsAreCompatible && !uvEdgesEquivalent) {
+      if (includeSeamLinks && normalsCanBridge && !uvEdgesEquivalent) {
         source.seamEdgePairs.push(firstEncodedEdge, encodedEdge);
       }
     }
@@ -736,7 +773,13 @@ async function buildSeamLinks(
           const firstSurface = surfaceIds[firstIndex];
           if (!firstSurface || firstSurface !== surfaceIds[secondIndex]) continue;
           const firstComponent = componentIds[firstIndex];
-          if (!firstComponent || firstComponent !== componentIds[secondIndex]) continue;
+          const secondComponent = componentIds[secondIndex];
+          if (!firstComponent || !secondComponent) continue;
+          // Smooth UV seams normally remain in one component. A deliberately
+          // relaxed bridge may connect two hard-edge components of the same
+          // mesh/material surface; keeping the component ids distinct is what
+          // prevents ordinary 2D propagation while this explicit link remains
+          // bounded by maxSeamCrossings in the repair pass.
           const low = Math.min(firstIndex, secondIndex);
           const high = Math.max(firstIndex, secondIndex);
           const key = low * pixelCount + high;
@@ -773,15 +816,25 @@ function createCacheKey(
   includeTriangleIds: boolean,
   seamBandPixels: number,
   minimumSeamNormalDot: number,
+  minimumSeamBridgeNormalDot: number,
 ) {
   const parts = [
     `${width}x${height}`,
     includeInvisible ? 'all' : 'visible',
-    includeSeamLinks ? `seams:${seamBandPixels}:${minimumSeamNormalDot}` : 'no-seams',
+    includeSeamLinks
+      ? `seams:${seamBandPixels}:${minimumSeamNormalDot}:${minimumSeamBridgeNormalDot}`
+      : 'no-seams',
     includeTriangleIds ? 'triangles' : 'no-triangles',
   ];
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh) || (!includeInvisible && !object.visible)) return;
+    if (
+      object.userData.liclickPaintOverlay ||
+      object.userData.liclickViewportHelper ||
+      object.userData.liclickSelectionGlow ||
+      object.userData.liclickWireframeOverlay
+    )
+      return;
     const geometry = object.geometry;
     const groups = geometry.groups
       .map(
@@ -855,6 +908,13 @@ export async function buildContentAwareSurfaceTopology(
     -1,
     Math.min(1, options.minimumSeamNormalDot ?? DEFAULT_MINIMUM_SEAM_NORMAL_DOT),
   );
+  const minimumSeamBridgeNormalDot = Math.max(
+    -1,
+    Math.min(
+      minimumSeamNormalDot,
+      options.minimumSeamBridgeNormalDot ?? DEFAULT_MINIMUM_SEAM_BRIDGE_NORMAL_DOT,
+    ),
+  );
   const cacheKey = createCacheKey(
     root,
     width,
@@ -864,6 +924,7 @@ export async function buildContentAwareSurfaceTopology(
     includeTriangleIds,
     seamBandPixels,
     minimumSeamNormalDot,
+    minimumSeamBridgeNormalDot,
   );
   const cached = topologyCache.get(root)?.get(cacheKey);
   if (cached) {
@@ -893,6 +954,7 @@ export async function buildContentAwareSurfaceTopology(
       scheduler,
       includeSeamLinks,
       minimumSeamNormalDot,
+      minimumSeamBridgeNormalDot,
       analyzedTriangles,
       triangleCount,
       options.onProgress,

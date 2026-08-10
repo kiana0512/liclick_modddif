@@ -60,6 +60,15 @@ function throwIfAborted(signal?: AbortSignal) {
   throw error;
 }
 
+function yieldToViewportFrame() {
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    return new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  return new Promise<void>((resolve) =>
+    window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+  );
+}
+
 function now() {
   return typeof performance === 'undefined' ? Date.now() : performance.now();
 }
@@ -123,7 +132,7 @@ export async function buildContentAwareRepairMask(
   const checkpoint = async () => {
     throwIfAborted(input.signal);
     if (now() - lastYieldAt < yieldIntervalMs) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await yieldToViewportFrame();
     lastYieldAt = now();
     throwIfAborted(input.signal);
   };

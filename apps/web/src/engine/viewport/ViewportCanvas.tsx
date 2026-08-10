@@ -49,6 +49,10 @@ import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { SceneRoot } from './SceneRoot';
 import { CameraController } from './CameraController';
 import { ViewCube } from './ViewCube';
+import {
+  isViewportInteractionBusy,
+  subscribeViewportInteraction,
+} from './viewportInteractionState';
 import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
@@ -1320,6 +1324,17 @@ function PerformanceTestHud() {
         performance as Performance & { memory?: { usedJSHeapSize: number } }
       ).memory;
       const heapStartedBytes = memory?.usedJSHeapSize ?? 0;
+      const originalLayerState = useLayerStore.getState();
+      const originalLayers = originalLayerState.layers;
+      const originalActiveLayerId = originalLayerState.activeProjectedLayerId;
+      const originalSceneState = useSceneStore.getState();
+      const originalPaintTool = originalSceneState.paintTool;
+      const originalPaintMaskSettings = originalSceneState.paintMaskSettings;
+      const originalPaintMaskDataUrl = originalSceneState.paintMaskDataUrl;
+      const originalPaintMaskHasContent = originalSceneState.paintMaskHasContent;
+      const originalPaintMaskCapture = originalSceneState.paintMaskCapture;
+      const originalLocalRepaintSource = originalSceneState.localRepaintProjectionSource;
+      const originalLocalRepaintPreview = originalSceneState.localRepaintPreviewLayer;
       setLocalRepaintBenchmarkRunning(true);
       clearReport();
       document.body.dataset.perfAutoOrbit = '1';
@@ -1368,6 +1383,24 @@ function PerformanceTestHud() {
         delete document.body.dataset.perfAutoOrbit;
         delete document.body.dataset.perfSimulatedViewportInteraction;
         delete document.body.dataset.perfLocalRepaintPhase;
+        // S6 is a diagnostic transaction, not an editor command. Restore the
+        // exact authored stack and selection even when generation, GPU compile,
+        // persistence, or the benchmark itself fails. This prevents a synthetic
+        // "局部重绘 · 局部替换" row (and its temporary destination layer) from
+        // becoming resident in the user's project after a test run.
+        useLayerStore.getState().setLayers(originalLayers);
+        useLayerStore.setState({ activeProjectedLayerId: originalActiveLayerId });
+        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        const restoredSceneState = useSceneStore.getState();
+        restoredSceneState.setLocalRepaintProjectionSource(originalLocalRepaintSource);
+        restoredSceneState.setLocalRepaintPreviewLayer(originalLocalRepaintPreview);
+        restoredSceneState.setPaintMaskDataUrl(
+          originalPaintMaskDataUrl,
+          originalPaintMaskHasContent,
+        );
+        restoredSceneState.setPaintMaskCapture(originalPaintMaskCapture);
+        restoredSceneState.setPaintMaskSettings(originalPaintMaskSettings);
+        restoredSceneState.setPaintTool(originalPaintTool);
         setLocalRepaintBenchmarkRunning(false);
       }
     },
@@ -1917,6 +1950,9 @@ type UvPaintLayer = {
   maskContext: CanvasRenderingContext2D;
   maskTexture: THREE.CanvasTexture;
   maskMaterial: THREE.ShaderMaterial;
+  /** Front-most model depth from the camera that owns projectionCanvas. */
+  maskDepthTarget?: THREE.WebGLRenderTarget;
+  maskDepthValid: boolean;
   maskProjectorMatrix: THREE.Matrix4;
   maskProjectorObjectMatrix: THREE.Matrix4;
   maskProjectorPositionLocal: THREE.Vector3;
@@ -1929,6 +1965,7 @@ type UvPaintLayer = {
 type InpaintMaskProjectionSnapshot = {
   texture: THREE.CanvasTexture;
   material: THREE.ShaderMaterial;
+  depthTarget?: THREE.WebGLRenderTarget;
   projectorMatrix: THREE.Matrix4;
   projectorObjectMatrix: THREE.Matrix4;
   projectorPositionLocal: THREE.Vector3;
@@ -2549,7 +2586,12 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
   return new THREE.ShaderMaterial({
     uniforms: {
       maskMap: { value: maskTexture },
+      projectorDepthMap: { value: maskTexture },
+      projectorDepthSize: { value: new THREE.Vector2(1, 1) },
+      useProjectorDepth: { value: 0 },
       projectorMatrix: { value: new THREE.Matrix4() },
+      objectMatrixDelta: { value: new THREE.Matrix4() },
+      objectNormalDelta: { value: new THREE.Matrix3() },
       projectorPosition: { value: new THREE.Vector3() },
       projectionReady: { value: 0 },
       stripeColor: { value: new THREE.Color('#d6703e') },
@@ -2560,21 +2602,27 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
     },
     vertexShader: `
       uniform mat4 projectorMatrix;
+      uniform mat4 objectMatrixDelta;
+      uniform mat3 objectNormalDelta;
       uniform vec3 projectorPosition;
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
 
       void main() {
         vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vec3 worldNormal = normalize(mat3(modelMatrix) * normal);
-        vec3 projectorDirection = normalize(projectorPosition - worldPosition.xyz);
-        vProjectedPosition = projectorMatrix * worldPosition;
+        vec4 captureWorldPosition = objectMatrixDelta * worldPosition;
+        vec3 worldNormal = normalize(objectNormalDelta * normalize(mat3(modelMatrix) * normal));
+        vec3 projectorDirection = normalize(projectorPosition - captureWorldPosition.xyz);
+        vProjectedPosition = projectorMatrix * captureWorldPosition;
         vProjectorFacing = dot(worldNormal, projectorDirection);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
       uniform sampler2D maskMap;
+      uniform sampler2D projectorDepthMap;
+      uniform vec2 projectorDepthSize;
+      uniform float useProjectorDepth;
       uniform float projectionReady;
       uniform vec3 stripeColor;
       uniform float stripeOpacity;
@@ -2584,11 +2632,27 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
 
+      #include <packing>
+
       void main() {
         if (projectionReady < 0.5) discard;
         if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
         vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
         if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
+        vec2 depthUv = ndc.xy * 0.5 + 0.5;
+        float capturedDepth = unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv));
+        // Depth silhouettes are not antialiased. If the exact texel is clear,
+        // consult its nearest neighbours so a sub-pixel edge cannot expose a
+        // second surface behind the one hit by the brush ray.
+        if (capturedDepth >= 0.999999) {
+          vec2 depthTexel = 1.0 / max(projectorDepthSize, vec2(1.0));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv + vec2(depthTexel.x, 0.0))));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv - vec2(depthTexel.x, 0.0))));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv + vec2(0.0, depthTexel.y))));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv - vec2(0.0, depthTexel.y))));
+        }
+        float projectedDepth = ndc.z * 0.5 + 0.5;
+        if (useProjectorDepth > 0.5 && projectedDepth > capturedDepth + 0.00075) discard;
         vec2 maskUv = ndc.xy * 0.5 + 0.5;
         maskUv.y = 1.0 - maskUv.y;
         vec4 maskTexel = texture2D(maskMap, maskUv);
@@ -2710,13 +2774,18 @@ function updateInpaintProjectionCamera(
     const uniforms = material.uniforms;
     (uniforms.projectorMatrix.value as THREE.Matrix4).copy(layer.maskProjectorMatrix);
     (uniforms.projectorPosition.value as THREE.Vector3).setFromMatrixPosition(camera.matrixWorld);
+    if (uniforms.objectMatrixDelta) {
+      (uniforms.objectMatrixDelta.value as THREE.Matrix4).identity();
+      (uniforms.objectNormalDelta.value as THREE.Matrix3).identity();
+    }
     uniforms.projectionReady.value = 1;
   });
 }
 
 const inpaintProjectorComparisonScratch = new THREE.Matrix4();
 const inpaintObjectMatrixInverseScratch = new THREE.Matrix4();
-const inpaintAdjustedProjectorScratch = new THREE.Matrix4();
+const inpaintObjectMatrixDeltaScratch = new THREE.Matrix4();
+const inpaintObjectNormalDeltaScratch = new THREE.Matrix3();
 
 function updateInpaintMaterialForObject(
   material: THREE.ShaderMaterial,
@@ -2727,16 +2796,24 @@ function updateInpaintMaterialForObject(
 ) {
   object.updateMatrixWorld(true);
   inpaintObjectMatrixInverseScratch.copy(object.matrixWorld).invert();
-  inpaintAdjustedProjectorScratch
-    .copy(projectorMatrix)
-    .multiply(projectorObjectMatrix)
+  inpaintObjectMatrixDeltaScratch
+    .copy(projectorObjectMatrix)
     .multiply(inpaintObjectMatrixInverseScratch);
-  (material.uniforms.projectorMatrix.value as THREE.Matrix4).copy(
-    inpaintAdjustedProjectorScratch,
-  );
+  inpaintObjectNormalDeltaScratch.getNormalMatrix(inpaintObjectMatrixDeltaScratch);
+  (material.uniforms.projectorMatrix.value as THREE.Matrix4).copy(projectorMatrix);
+  if (material.uniforms.objectMatrixDelta) {
+    (material.uniforms.objectMatrixDelta.value as THREE.Matrix4).copy(
+      inpaintObjectMatrixDeltaScratch,
+    );
+  }
+  if (material.uniforms.objectNormalDelta) {
+    (material.uniforms.objectNormalDelta.value as THREE.Matrix3).copy(
+      inpaintObjectNormalDeltaScratch,
+    );
+  }
   (material.uniforms.projectorPosition.value as THREE.Vector3)
     .copy(projectorPositionLocal)
-    .applyMatrix4(object.matrixWorld);
+    .applyMatrix4(projectorObjectMatrix);
   material.uniforms.projectionReady.value = 1;
 }
 
@@ -2762,10 +2839,12 @@ function disposeUvPaintLayer(layer?: UvPaintLayer) {
   layer.projectionTexture.dispose();
   layer.maskTexture.dispose();
   layer.maskMaterial.dispose();
+  layer.maskDepthTarget?.dispose();
   layer.inpaintSnapshots.forEach((snapshot) => {
     snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
     snapshot.texture.dispose();
     snapshot.material.dispose();
+    snapshot.depthTarget?.dispose();
   });
 }
 
@@ -2773,34 +2852,58 @@ function createInpaintMaskCaptureMaterial(maskTexture: THREE.CanvasTexture) {
   return new THREE.ShaderMaterial({
     uniforms: {
       maskMap: { value: maskTexture },
+      projectorDepthMap: { value: maskTexture },
+      projectorDepthSize: { value: new THREE.Vector2(1, 1) },
+      useProjectorDepth: { value: 0 },
       projectorMatrix: { value: new THREE.Matrix4() },
+      objectMatrixDelta: { value: new THREE.Matrix4() },
+      objectNormalDelta: { value: new THREE.Matrix3() },
       projectorPosition: { value: new THREE.Vector3() },
       projectionReady: { value: 1 },
     },
     vertexShader: `
       uniform mat4 projectorMatrix;
+      uniform mat4 objectMatrixDelta;
+      uniform mat3 objectNormalDelta;
       uniform vec3 projectorPosition;
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
 
       void main() {
         vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vec3 worldNormal = normalize(mat3(modelMatrix) * normal);
-        vec3 projectorDirection = normalize(projectorPosition - worldPosition.xyz);
-        vProjectedPosition = projectorMatrix * worldPosition;
+        vec4 captureWorldPosition = objectMatrixDelta * worldPosition;
+        vec3 worldNormal = normalize(objectNormalDelta * normalize(mat3(modelMatrix) * normal));
+        vec3 projectorDirection = normalize(projectorPosition - captureWorldPosition.xyz);
+        vProjectedPosition = projectorMatrix * captureWorldPosition;
         vProjectorFacing = dot(worldNormal, projectorDirection);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
       uniform sampler2D maskMap;
+      uniform sampler2D projectorDepthMap;
+      uniform vec2 projectorDepthSize;
+      uniform float useProjectorDepth;
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
+
+      #include <packing>
 
       void main() {
         if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
         vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
         if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
+        vec2 depthUv = ndc.xy * 0.5 + 0.5;
+        float capturedDepth = unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv));
+        if (capturedDepth >= 0.999999) {
+          vec2 depthTexel = 1.0 / max(projectorDepthSize, vec2(1.0));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv + vec2(depthTexel.x, 0.0))));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv - vec2(depthTexel.x, 0.0))));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv + vec2(0.0, depthTexel.y))));
+          capturedDepth = min(capturedDepth, unpackRGBAToDepth(texture2D(projectorDepthMap, depthUv - vec2(0.0, depthTexel.y))));
+        }
+        float projectedDepth = ndc.z * 0.5 + 0.5;
+        if (useProjectorDepth > 0.5 && projectedDepth > capturedDepth + 0.00075) discard;
         vec2 maskUv = ndc.xy * 0.5 + 0.5;
         maskUv.y = 1.0 - maskUv.y;
         vec4 maskTexel = texture2D(maskMap, maskUv);
@@ -2815,6 +2918,76 @@ function createInpaintMaskCaptureMaterial(maskTexture: THREE.CanvasTexture) {
     side: THREE.DoubleSide,
     toneMapped: false,
   });
+}
+
+function configureInpaintProjectorDepth(
+  material: THREE.ShaderMaterial,
+  target?: THREE.WebGLRenderTarget,
+) {
+  const uniforms = material.uniforms;
+  uniforms.useProjectorDepth.value = target ? 1 : 0;
+  uniforms.projectorDepthMap.value = target?.texture ?? uniforms.maskMap.value;
+  (uniforms.projectorDepthSize.value as THREE.Vector2).set(
+    target?.width ?? 1,
+    target?.height ?? 1,
+  );
+}
+
+function createInpaintProjectorDepthMaterial() {
+  const material = new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking,
+    side: THREE.DoubleSide,
+  });
+  material.toneMapped = false;
+  return material;
+}
+
+function captureInpaintProjectorDepth(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.Camera,
+  objectId: string,
+  width: number,
+  height: number,
+  depthMaterial: THREE.MeshDepthMaterial,
+  reusableTarget?: THREE.WebGLRenderTarget,
+) {
+  const ownsTarget = !reusableTarget;
+  const target =
+    reusableTarget ??
+    new THREE.WebGLRenderTarget(width, height, {
+      depthBuffer: true,
+      stencilBuffer: false,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      generateMipmaps: false,
+    });
+  if (target.width !== width || target.height !== height) target.setSize(width, height);
+  target.texture.colorSpace = THREE.NoColorSpace;
+
+  const restoreScene = applyTargetOnlyMaterial(scene, objectId, () => depthMaterial);
+  const previousTarget = renderer.getRenderTarget();
+  const previousAutoClear = renderer.autoClear;
+  const previousClearColor = renderer.getClearColor(new THREE.Color()).clone();
+  const previousClearAlpha = renderer.getClearAlpha();
+  try {
+    camera.updateMatrixWorld(true);
+    renderer.setRenderTarget(target);
+    renderer.autoClear = true;
+    // Packed depth uses opaque white for the far plane/background.
+    renderer.setClearColor(0xffffff, 1);
+    renderer.clear(true, true, true);
+    renderer.render(scene, camera);
+  } catch (error) {
+    if (ownsTarget) target.dispose();
+    throw error;
+  } finally {
+    renderer.setRenderTarget(previousTarget);
+    renderer.autoClear = previousAutoClear;
+    renderer.setClearColor(previousClearColor, previousClearAlpha);
+    restoreScene();
+  }
+  return target;
 }
 
 function hasCanvasAlpha(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) {
@@ -3391,6 +3564,8 @@ function SurfacePaintOverlay() {
   const localRepaintHandoffFrameRef = useRef<number>();
   const localRepaintPreviewTextureIdRef = useRef(createId('local-repaint-source-preview'));
   const inpaintMaskPrewarmObjectIdRef = useRef<string>();
+  const inpaintDepthPrewarmTimerRef = useRef<number>();
+  const [inpaintProjectorDepthMaterial] = useState(createInpaintProjectorDepthMaterial);
   const paintPreviewRevisionRef = useRef(0);
   const maskDirtyRef = useRef(false);
   const maskHasContentRef = useRef(false);
@@ -3656,6 +3831,7 @@ function SurfacePaintOverlay() {
         maskContext: mask.context,
         maskTexture,
         maskMaterial,
+        maskDepthValid: false,
         maskProjectorMatrix: new THREE.Matrix4(),
         maskProjectorObjectMatrix: new THREE.Matrix4(),
         maskProjectorPositionLocal: new THREE.Vector3(),
@@ -3808,6 +3984,7 @@ function SurfacePaintOverlay() {
       const snapshot: InpaintMaskProjectionSnapshot = {
         texture,
         material,
+        depthTarget: layer.maskDepthTarget,
         projectorMatrix: layer.maskProjectorMatrix.clone(),
         projectorObjectMatrix: layer.maskProjectorObjectMatrix.clone(),
         projectorPositionLocal: layer.maskProjectorPositionLocal.clone(),
@@ -3820,6 +3997,11 @@ function SurfacePaintOverlay() {
         snapshot.projectorPositionLocal,
         model.group,
       );
+      configureInpaintProjectorDepth(material, snapshot.depthTarget);
+      // Ownership moves to the archived projection. The next camera projector
+      // captures its own front-surface depth before accepting a brush sample.
+      layer.maskDepthTarget = undefined;
+      layer.maskDepthValid = false;
       model.group.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
         if (
@@ -3845,6 +4027,7 @@ function SurfacePaintOverlay() {
         expired?.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
         expired?.texture.dispose();
         expired?.material.dispose();
+        expired?.depthTarget?.dispose();
       }
 
       layer.projectionContext.clearRect(
@@ -3865,6 +4048,11 @@ function SurfacePaintOverlay() {
       if (!hasInpaintProjectionCameraChanged(layer, camera)) return layer;
 
       archiveCurrentInpaintProjection(layer, model);
+      // If the current projection was empty, retain the allocated render target
+      // and refresh its pixels at stroke start. Reallocating the 512px depth
+      // attachment while the viewport is rotating caused a 100ms+ cold frame.
+      layer.maskDepthValid = false;
+      configureInpaintProjectorDepth(layer.maskMaterial);
       const rect = gl.domElement.getBoundingClientRect();
       resizeProjectionCanvas(layer, rect.width / Math.max(rect.height, 1), false);
       updateInpaintProjectionCamera(layer, camera, model.group);
@@ -3879,6 +4067,85 @@ function SurfacePaintOverlay() {
     },
     [archiveCurrentInpaintProjection, camera, getUvPaintLayer, gl.domElement],
   );
+
+  useEffect(
+    () => () => {
+      inpaintProjectorDepthMaterial.dispose();
+    },
+    [inpaintProjectorDepthMaterial],
+  );
+
+  const prewarmInpaintProjectorDepth = useCallback(
+    (model: SurfacePaintTarget, layer: UvPaintLayer) => {
+      if (
+        (layer.maskDepthTarget && layer.maskDepthValid) ||
+        isPaintingRef.current ||
+        isViewportInteractionBusy() ||
+        document.body.dataset.perfSimulatedViewportInteraction === '1'
+      ) {
+        return false;
+      }
+      const startedAt = performance.now();
+      try {
+        layer.maskDepthTarget = captureInpaintProjectorDepth(
+          gl,
+          scene,
+          camera,
+          model.objectId,
+          layer.projectionCanvas.width,
+          layer.projectionCanvas.height,
+          inpaintProjectorDepthMaterial,
+          layer.maskDepthTarget,
+        );
+        layer.maskDepthValid = true;
+        configureInpaintProjectorDepth(layer.maskMaterial, layer.maskDepthTarget);
+        markPerformanceEvent('local-repaint', 'selection-depth-prewarm', {
+          durationMs: performance.now() - startedAt,
+          width: layer.projectionCanvas.width,
+          height: layer.projectionCanvas.height,
+        });
+        return true;
+      } catch (error) {
+        layer.maskDepthValid = false;
+        configureInpaintProjectorDepth(layer.maskMaterial);
+        console.warn('[Liclick 3D Texture] Selection depth prewarm was incomplete:', error);
+        return false;
+      }
+    },
+    [camera, gl, inpaintProjectorDepthMaterial, scene],
+  );
+
+  useEffect(() => {
+    if (!isInpaintMode) return undefined;
+    let disposed = false;
+    const schedule = () => {
+      if (inpaintDepthPrewarmTimerRef.current !== undefined) {
+        window.clearTimeout(inpaintDepthPrewarmTimerRef.current);
+      }
+      inpaintDepthPrewarmTimerRef.current = window.setTimeout(() => {
+        inpaintDepthPrewarmTimerRef.current = undefined;
+        if (disposed) return;
+        if (isPaintingRef.current || isViewportInteractionBusy()) {
+          schedule();
+          return;
+        }
+        const model = getTargetModel();
+        if (!model) return;
+        const layer = syncInpaintMaskProjection(model);
+        prewarmInpaintProjectorDepth(model, layer);
+      }, 220);
+    };
+    schedule();
+    const unsubscribe = subscribeViewportInteraction(schedule);
+    return () => {
+      disposed = true;
+      unsubscribe();
+      if (inpaintDepthPrewarmTimerRef.current !== undefined) {
+        window.clearTimeout(inpaintDepthPrewarmTimerRef.current);
+        inpaintDepthPrewarmTimerRef.current = undefined;
+      }
+    };
+  }, [getTargetModel, isInpaintMode, prewarmInpaintProjectorDepth, syncInpaintMaskProjection]);
 
   useEffect(() => {
     if (!canUseSurfacePaint || paintTool !== 'none') return undefined;
@@ -3920,6 +4187,7 @@ function SurfacePaintOverlay() {
       }
       try {
         gl.initTexture(layer.projectionTexture);
+        prewarmInpaintProjectorDepth(model, layer);
         layer.overlayMeshes.forEach((mesh) => {
           if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
         });
@@ -3959,6 +4227,7 @@ function SurfacePaintOverlay() {
     getUvPaintLayer,
     gl,
     paintTool,
+    prewarmInpaintProjectorDepth,
     scene,
     syncInpaintMaskProjection,
   ]);
@@ -4004,6 +4273,7 @@ function SurfacePaintOverlay() {
     const sources = [
       ...layer.inpaintSnapshots.map((snapshot) => ({
         texture: snapshot.texture,
+        depthTarget: snapshot.depthTarget,
         projectorMatrix: snapshot.projectorMatrix,
         projectorObjectMatrix: snapshot.projectorObjectMatrix,
         projectorPositionLocal: snapshot.projectorPositionLocal,
@@ -4012,6 +4282,7 @@ function SurfacePaintOverlay() {
         ? [
             {
               texture: layer.projectionTexture,
+              depthTarget: layer.maskDepthTarget,
               projectorMatrix: layer.maskProjectorMatrix,
               projectorObjectMatrix: layer.maskProjectorObjectMatrix,
               projectorPositionLocal: layer.maskProjectorPositionLocal,
@@ -4046,6 +4317,7 @@ function SurfacePaintOverlay() {
         source.projectorPositionLocal,
         model.group,
       );
+      configureInpaintProjectorDepth(captureMaterial, source.depthTarget);
       const restoreScene = applyTargetOnlyMaterial(scene, model.objectId, () => captureMaterial);
       try {
         const projectedUrl = await renderSceneToPngUrl(
@@ -4112,12 +4384,34 @@ function SurfacePaintOverlay() {
         snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
         snapshot.texture.dispose();
         snapshot.material.dispose();
+        snapshot.depthTarget?.dispose();
       });
       layer.inpaintSnapshots = [];
+      layer.maskDepthTarget?.dispose();
+      layer.maskDepthTarget = undefined;
+      layer.maskDepthValid = false;
 
       const viewportRect = gl.domElement.getBoundingClientRect();
       resizeProjectionCanvas(layer, viewportRect.width / Math.max(viewportRect.height, 1), true);
       updateInpaintProjectionCamera(layer, camera, model.group);
+      try {
+        layer.maskDepthTarget = captureInpaintProjectorDepth(
+          gl,
+          scene,
+          camera,
+          model.objectId,
+          layer.projectionCanvas.width,
+          layer.projectionCanvas.height,
+          inpaintProjectorDepthMaterial,
+          layer.maskDepthTarget,
+        );
+        layer.maskDepthValid = true;
+        configureInpaintProjectorDepth(layer.maskMaterial, layer.maskDepthTarget);
+      } catch (error) {
+        layer.maskDepthValid = false;
+        configureInpaintProjectorDepth(layer.maskMaterial);
+        console.warn('[Liclick 3D Texture] Could not capture inverted-mask surface depth.', error);
+      }
       ensureInpaintMaskOverlaysForModel(layer, model);
 
       if (combinedMaskUrl) {
@@ -4182,9 +4476,12 @@ function SurfacePaintOverlay() {
     ensureInpaintMaskOverlaysForModel,
     getTargetModel,
     getUvPaintLayer,
+    gl,
     gl.domElement,
+    inpaintProjectorDepthMaterial,
     paintMaskInvertRevision,
     pushToast,
+    scene,
     setPaintMaskDataUrl,
   ]);
 
@@ -4390,10 +4687,15 @@ function SurfacePaintOverlay() {
     );
     layer.maskMaterial.uniforms.projectionReady.value = 0;
     layer.maskProjectionReady = false;
+    layer.maskDepthTarget?.dispose();
+    layer.maskDepthTarget = undefined;
+    layer.maskDepthValid = false;
+    configureInpaintProjectorDepth(layer.maskMaterial);
     layer.inpaintSnapshots.forEach((snapshot) => {
       snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
       snapshot.texture.dispose();
       snapshot.material.dispose();
+      snapshot.depthTarget?.dispose();
     });
     layer.inpaintSnapshots = [];
     scheduleTextureUpdate(layer.maskTexture);
@@ -5544,8 +5846,6 @@ function SurfacePaintOverlay() {
       getStrokeSourceUv,
       getUvPaintLayer,
       hasLocalRepaintSourceContent,
-      isInpaintMode,
-      isLocalRepaintApplyMode,
       paintTool,
       paintMaskSettings.brushOpacity,
       paintToolSettings.brushHardness,
@@ -5611,6 +5911,29 @@ function SurfacePaintOverlay() {
           : undefined;
       if (target === 'mask') {
         if (!layer) return;
+        if (!layer.maskDepthTarget || !layer.maskDepthValid) {
+          try {
+            layer.maskDepthTarget = captureInpaintProjectorDepth(
+              gl,
+              scene,
+              camera,
+              result.model.objectId,
+              layer.projectionCanvas.width,
+              layer.projectionCanvas.height,
+              inpaintProjectorDepthMaterial,
+              layer.maskDepthTarget,
+            );
+            layer.maskDepthValid = true;
+            configureInpaintProjectorDepth(layer.maskMaterial, layer.maskDepthTarget);
+          } catch (error) {
+            layer.maskDepthValid = false;
+            configureInpaintProjectorDepth(layer.maskMaterial);
+            console.warn(
+              '[Liclick 3D Texture] Could not capture selection front-surface depth.',
+              error,
+            );
+          }
+        }
         ensureInpaintMaskOverlaysForModel(layer, result.model);
         layer.overlayMeshes.forEach((mesh) => {
           if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
@@ -5661,14 +5984,14 @@ function SurfacePaintOverlay() {
     [
       getUvPaintLayer,
       camera,
-      gl.domElement,
+      gl,
       ensureInpaintMaskOverlaysForModel,
       ensureLiveLocalRepaintComposite,
-      isInpaintMode,
-      isLocalRepaintApplyMode,
+      inpaintProjectorDepthMaterial,
       paintTool,
       paintToolSettings.color,
       resolveLocalRepaintStrokeSource,
+      scene,
     ],
   );
 

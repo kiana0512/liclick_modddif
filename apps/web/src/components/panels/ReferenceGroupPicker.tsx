@@ -7,7 +7,6 @@ import {
   Eye,
   ImagePlus,
   LoaderCircle,
-  Maximize2,
   MoreHorizontal,
   Minus,
   Plus,
@@ -19,6 +18,7 @@ import { IMMEDIATE_PROJECT_SAVE_EVENT } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
+import { referenceGroupId } from './referenceGroupUtils';
 
 export type ReferenceGroupGenerationState = {
   groupId: string;
@@ -37,10 +37,6 @@ const MULTIVIEW_REFERENCE_EXAMPLE_URL = '/examples/reference-multiview.jpg';
 
 function referenceRole(reference: ReferenceImage) {
   return reference.referenceRole ?? 'single-view';
-}
-
-export function referenceGroupId(reference: ReferenceImage) {
-  return reference.referenceGroupId ?? reference.id;
 }
 
 function fileToDataUrl(file: File) {

@@ -888,6 +888,9 @@ function ImportedModel({
         (layer) => layer.id !== localRepaintPreviewLayerId,
       );
     },
+    // Both revisions intentionally invalidate this snapshot even though the
+    // current values are read atomically from the Zustand store above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [layerRenderSignature, localRepaintPreviewLayerId, projectedDisplayRefresh],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
