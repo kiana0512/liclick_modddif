@@ -1,4 +1,5 @@
 import { getLocalTextureRuntimeApiBase } from '@/services/localTextureRuntimeClient';
+import { urlToBlob } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
 import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
@@ -130,21 +131,31 @@ export async function loadImageData(
     sourceHeight = liveCanvasState.canvas.height;
   } else {
     const image = new Image();
-    image.crossOrigin = 'anonymous';
     image.decoding = 'async';
-    image.src = resolvedUrl;
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () =>
-        reject(
-          new Error(
-            `Could not load ${label} for baking (${describeUrlKind(url)}). ` +
-              (url.startsWith('blob:')
-                ? 'The temporary blob URL is no longer available; regenerate or re-add this layer.'
-                : 'Check that the workspace asset exists and the workspace server is running.'),
-          ),
-        );
-    });
+    let fetchedObjectUrl: string | undefined;
+    try {
+      if (/^https?:/i.test(resolvedUrl)) {
+        fetchedObjectUrl = URL.createObjectURL(await urlToBlob(resolvedUrl));
+        image.src = fetchedObjectUrl;
+      } else {
+        image.crossOrigin = 'anonymous';
+        image.src = resolvedUrl;
+      }
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () =>
+          reject(
+            new Error(
+              `Could not load ${label} for baking (${describeUrlKind(url)}). ` +
+                (url.startsWith('blob:')
+                  ? 'The temporary blob URL is no longer available; regenerate or re-add this layer.'
+                  : 'Check that the workspace asset exists and the workspace server is running.'),
+            ),
+          );
+      });
+    } finally {
+      if (fetchedObjectUrl) URL.revokeObjectURL(fetchedObjectUrl);
+    }
     source = image;
     sourceWidth = image.naturalWidth || image.width;
     sourceHeight = image.naturalHeight || image.height;

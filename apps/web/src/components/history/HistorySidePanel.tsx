@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Box,
   CheckCircle2,
   ChevronDown,
   Clock3,
@@ -10,7 +11,8 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { renderHistoryModelThumbnail } from '@/features/workflow/modelPreviewAssets';
 import {
   downloadTaskHistoryOutput,
   getTaskHistory,
@@ -270,6 +272,143 @@ function HistoryRecordCard({
   );
 }
 
+function RetopologyOutputThumbnail({ output }: { output: TaskHistoryOutput }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [imageUrl, setImageUrl] = useState<string>();
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '160px' },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!visible || imageUrl || failed) return;
+    let active = true;
+    void renderHistoryModelThumbnail(output)
+      .then((url) => {
+        if (active) setImageUrl(url);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [failed, imageUrl, output, visible]);
+
+  return (
+    <div ref={containerRef} className="absolute inset-0 grid place-items-center overflow-hidden bg-[#292b34]">
+      {imageUrl ? (
+        <img src={imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+      ) : failed ? (
+        <Box className="h-8 w-8 stroke-[1.25] text-white/22" />
+      ) : (
+        <LoaderCircle className="h-5 w-5 animate-spin text-white/24" />
+      )}
+    </div>
+  );
+}
+
+function RetopologyHistoryGrid({
+  records,
+  selectedOutputId,
+  onSelect,
+}: {
+  records: TaskHistoryRecord[];
+  selectedOutputId?: string;
+  onSelect?: (record: TaskHistoryRecord, output?: TaskHistoryOutput) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      {records.map((record) => {
+        const presentation = statusPresentation(record.status);
+        const StatusIcon = presentation.Icon;
+        const normalized = record.status.toLowerCase();
+        const completed = ['succeeded', 'success', 'completed', 'complete'].includes(normalized);
+        const terminal = completed || ['failed', 'error', 'cancelled', 'canceled'].includes(normalized);
+        const outputs = (record.outputs ?? []).filter((output) => /\.fbx$/i.test(output.filename));
+        const progress = Math.min(100, Math.max(0, Number(record.progress) || 0));
+        return (
+          <section key={record.id} className="min-w-0">
+            <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+              <div className="min-w-0">
+                <p className="truncate text-[11px] font-semibold text-white/62" title={record.sourceName}>
+                  {record.sourceName || '未命名模型'}
+                </p>
+                <p className="mt-0.5 text-[9px] text-white/24">{formatDate(record.finishedAt ?? record.createdAt)}</p>
+              </div>
+              <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[9px] ${presentation.className}`}>
+                <StatusIcon className={`h-3 w-3 ${!terminal && normalized !== 'queued' ? 'animate-spin' : ''}`} />
+                {presentation.label}
+              </span>
+            </div>
+
+            {completed && outputs.length > 0 ? (
+              <div className="grid grid-cols-3 gap-2">
+                {outputs.map((output, index) => (
+                  <button
+                    key={output.id}
+                    type="button"
+                    onClick={() => onSelect?.(record, output)}
+                    className={`group relative aspect-square min-w-0 overflow-hidden rounded-xl border text-left transition ${
+                      selectedOutputId === output.id
+                        ? 'border-blue-300/55 ring-1 ring-blue-300/30'
+                        : 'border-white/[0.07] hover:border-white/22'
+                    }`}
+                  >
+                    <RetopologyOutputThumbnail output={output} />
+                    <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent px-2 pb-2 pt-7">
+                      <span className="block truncate text-[10px] font-medium text-white/78" title={output.filename}>
+                        {outputs.length > 1 ? `模型 ${index + 1}` : '拓扑结果'}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onSelect?.(record)}
+                className="relative flex aspect-[1.6] w-full items-center justify-center overflow-hidden rounded-xl border border-white/[0.07] bg-[#242630] transition hover:border-white/18"
+              >
+                <div className="text-center">
+                  <StatusIcon className={`mx-auto h-6 w-6 text-white/30 ${!terminal && normalized !== 'queued' ? 'animate-spin' : ''}`} />
+                  <p className="mt-2 text-[10px] text-white/42">{presentation.label}</p>
+                </div>
+                {!terminal ? (
+                  <div className="absolute inset-x-3 bottom-3 h-1 overflow-hidden rounded-full bg-white/[0.07]">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-blue-500 to-violet-400 transition-[width]"
+                      style={{ width: `${Math.max(3, progress)}%` }}
+                    />
+                  </div>
+                ) : null}
+              </button>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function PanelContent({
   module,
   records,
@@ -277,6 +416,8 @@ function PanelContent({
   error,
   onRefresh,
   onContinue,
+  selectedOutputId,
+  onSelect,
   onClose,
 }: {
   module: TaskHistoryModule;
@@ -285,6 +426,8 @@ function PanelContent({
   error?: string;
   onRefresh: () => void;
   onContinue?: (record: TaskHistoryRecord, output: TaskHistoryOutput) => Promise<void>;
+  selectedOutputId?: string;
+  onSelect?: (record: TaskHistoryRecord, output?: TaskHistoryOutput) => void;
   onClose?: () => void;
 }) {
   return (
@@ -361,14 +504,20 @@ function PanelContent({
                 刷新失败，当前显示上次读取的记录。
               </div>
             ) : null}
-            {records.map((record) => (
-              <HistoryRecordCard
-                key={record.id}
-                module={module}
-                record={record}
-                onContinue={onContinue}
+            {module === 'retopology' ? (
+              <RetopologyHistoryGrid
+                records={records}
+                selectedOutputId={selectedOutputId}
+                onSelect={onSelect}
               />
-            ))}
+            ) : records.map((record) => (
+                <HistoryRecordCard
+                  key={record.id}
+                  module={module}
+                  record={record}
+                  onContinue={onContinue}
+                />
+              ))}
           </div>
         )}
       </div>
@@ -379,11 +528,17 @@ function PanelContent({
 export function HistorySidePanel({
   module,
   refreshKey,
+  activeTask,
   onContinue,
+  selectedOutputId,
+  onSelect,
 }: {
   module: TaskHistoryModule;
   refreshKey?: string;
+  activeTask?: Pick<TaskHistoryRecord, 'id' | 'status' | 'progress'>;
   onContinue?: (record: TaskHistoryRecord, output: TaskHistoryOutput) => Promise<void>;
+  selectedOutputId?: string;
+  onSelect?: (record: TaskHistoryRecord, output?: TaskHistoryOutput) => void;
 }) {
   const [records, setRecords] = useState<TaskHistoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -430,17 +585,31 @@ export function HistorySidePanel({
       ).length,
     [records],
   );
+  const displayedRecords = useMemo(() => {
+    if (!activeTask?.id) return records;
+    return records.map((record) =>
+      record.id === activeTask.id
+        ? {
+            ...record,
+            status: activeTask.status,
+            progress: Math.min(100, Math.max(0, Number(activeTask.progress) || 0)),
+          }
+        : record,
+    );
+  }, [activeTask, records]);
 
   return (
     <>
       <div className="fixed bottom-4 right-4 top-20 z-40 hidden w-60 2xl:block min-[1720px]:w-80">
         <PanelContent
           module={module}
-          records={records}
+          records={displayedRecords}
           loading={loading}
           error={error}
           onRefresh={refresh}
           onContinue={onContinue}
+          selectedOutputId={selectedOutputId}
+          onSelect={onSelect}
         />
       </div>
 
@@ -472,11 +641,13 @@ export function HistorySidePanel({
           >
             <PanelContent
               module={module}
-              records={records}
+              records={displayedRecords}
               loading={loading}
               error={error}
               onRefresh={refresh}
               onContinue={onContinue}
+              selectedOutputId={selectedOutputId}
+              onSelect={onSelect}
               onClose={() => setDrawerOpen(false)}
             />
           </div>

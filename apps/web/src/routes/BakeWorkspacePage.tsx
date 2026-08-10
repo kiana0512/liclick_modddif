@@ -58,6 +58,7 @@ import {
 } from '@/engine/scene/transformActions';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import { dehighlightBaseColorFile } from '@/engine/materials/dehighlightBaseColor';
+import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
 import { getBakeHighObjects, replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
 import {
   getLatestUsablePipelineStageRevision,
@@ -79,7 +80,7 @@ import {
   trackModuleAction,
   trackModuleActionOnce,
 } from '@/services/telemetryClient';
-import { saveBlobAsset, saveProject } from '@/services/workspaceApiClient';
+import { saveBlobAsset, saveProject, urlToBlob } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { shortcutMatches } from '@/stores/shortcutStore';
@@ -694,9 +695,14 @@ export function BakeWorkspacePage({
   const loadSelectedBaseColorFile = useCallback(async () => {
     if (selectedColor) return selectedColor;
     if (!selectedProjectColor?.imageUrl) throw new Error('Base Color 烘焙需要高模颜色贴图。');
-    const response = await fetch(selectedProjectColor.imageUrl, { credentials: 'include' });
-    if (!response.ok) throw new Error(`读取高模颜色贴图失败（${response.status}）。`);
-    const blob = await response.blob();
+    const resolvedUrl = resolveImageAssetUrl(selectedProjectColor.imageUrl);
+    let blob: Blob;
+    try {
+      blob = await urlToBlob(resolvedUrl);
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : '未知错误';
+      throw new Error(`读取高模颜色贴图失败：${detail}`);
+    }
     return new File([blob], `${fileStem(selectedHigh?.name ?? 'high')}_BaseColor.png`, {
       type: blob.type || 'image/png',
     });
