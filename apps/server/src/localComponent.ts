@@ -16,7 +16,7 @@ import { handleProjectsRoute } from './routes/projects.js';
 import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
 import { initializeWorkspace } from './services/workspaceService.js';
 
-const runtimeVersion = '0.1.10';
+const runtimeVersion = '0.1.11';
 const workspaceVersion = '0.6.0';
 const capabilities = [
   'texture-painting',

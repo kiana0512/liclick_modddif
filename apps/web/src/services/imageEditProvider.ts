@@ -1,6 +1,6 @@
 import type { ProviderStatus } from './authApiClient';
 import { invalidateCachedPersonalLiclickAccountStatus } from './liclickAccountApiClient';
-import { getLocalIdentityProof } from './localIdentityProofApiClient';
+import { fetchWithLocalIdentityProof } from './localIdentityProofApiClient';
 import { resolveLiclickTransport, type LiclickTransport } from './liclickTransport';
 
 export interface ImageEditProvider {
@@ -93,21 +93,25 @@ async function requestJson<T>(
 ) {
   const { timeoutMs = 30_000, headers, signal, ...fetchInit } = init;
   const requestHeaders = new Headers(headers);
-  if (transport.requiresIdentityProof) {
-    requestHeaders.set('x-li3d-identity-proof', await getLocalIdentityProof());
-  }
   const controller = new AbortController();
   const abortFromSignal = () => controller.abort();
   if (signal?.aborted) controller.abort();
   signal?.addEventListener('abort', abortFromSignal, { once: true });
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${transport.baseUrl}${path}`, {
+    const requestUrl = `${transport.baseUrl}${path}`;
+    const requestInit = {
       ...fetchInit,
       signal: controller.signal,
       credentials: transport.credentials,
       headers: requestHeaders,
-    });
+    } satisfies RequestInit;
+    const response = transport.requiresIdentityProof
+      ? await fetchWithLocalIdentityProof(requestUrl, requestInit, {
+          signal: controller.signal,
+          timeoutMs,
+        })
+      : await fetch(requestUrl, requestInit);
     const payload = (await response.json().catch(() => undefined)) as T | undefined;
     if (!response.ok) {
       const errorCode =

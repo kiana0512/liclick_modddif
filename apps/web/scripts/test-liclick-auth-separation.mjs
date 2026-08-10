@@ -276,6 +276,35 @@ try {
   assert.equal(requests[1].headers["x-li3d-identity-proof"], "proof-1");
 
   requests = [];
+  let issuedProofCount = 0;
+  let localGenerationAttempts = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const request = requestRecord(url, init);
+    requests.push(request);
+    if (request.url.endsWith("/api/auth/local-proof")) {
+      issuedProofCount += 1;
+      return jsonResponse({ proof: `retry-proof-${issuedProofCount}` });
+    }
+    localGenerationAttempts += 1;
+    if (localGenerationAttempts === 1) {
+      return jsonResponse(
+        {
+          code: "INVALID_LOCAL_IDENTITY_PROOF",
+          error: "本地身份证明无效、已使用或已过期。",
+        },
+        401,
+      );
+    }
+    return jsonResponse({ id: "retried-job", status: "running" }, 202);
+  };
+  await createLiclickApiClient({
+    providerStatus: webProvider,
+  }).generateTextureSingleView(generationInput);
+  assert.equal(requests.length, 4);
+  assert.equal(requests[1].headers["x-li3d-identity-proof"], "retry-proof-1");
+  assert.equal(requests[3].headers["x-li3d-identity-proof"], "retry-proof-2");
+
+  requests = [];
   globalThis.fetch = async (url, init = {}) => {
     requests.push(requestRecord(url, init));
     return jsonResponse({ id: "atlas-edit", status: "running" });

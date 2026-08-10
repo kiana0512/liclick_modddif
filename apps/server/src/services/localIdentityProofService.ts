@@ -25,11 +25,17 @@ function developmentVerifierUrl(request: IncomingMessage) {
     if (
       parsed.protocol !== 'http:' ||
       parsed.port !== developmentFrontendPort ||
-      !loopbackHosts.has(parsed.hostname) ||
-      !serverConfig.allowedOrigins.includes(parsed.origin)
+      !loopbackHosts.has(parsed.hostname)
     ) {
       return undefined;
     }
+    // The local component and the workspace service intentionally have
+    // different CORS allowlists. Requiring the 4618 process to repeat the
+    // 4518 web server's origin policy made a valid localhost:5173 request fall
+    // back to the component's own frontend URL, where every proof is unknown
+    // and therefore returned 401. The component is bound to loopback and this
+    // branch accepts only the fixed Vite development port; issuance still
+    // requires the authenticated 4518 HttpOnly session cookie.
     parsed.port = developmentVerifierPort;
     parsed.pathname = '/api/auth/local-proof/verify';
     parsed.search = '';

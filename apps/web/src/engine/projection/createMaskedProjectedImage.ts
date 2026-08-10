@@ -509,7 +509,7 @@ function growForegroundBleed(image: ImageData, radius: number) {
   return output;
 }
 
-function removeSolidBackground(image: ImageData, options: CutoutOptions = defaultOptions) {
+export function removeSolidBackground(image: ImageData, options: CutoutOptions = defaultOptions) {
   const { maybeBackground, bgRgb } = createBackgroundCandidateMask(image, options);
   const connectedBackground = floodBackground(maybeBackground, image.width, image.height);
   let foreground = new Uint8Array(connectedBackground.length);
@@ -559,7 +559,7 @@ async function imageDataToPngUrl(imageData: ImageData) {
   return createRegisteredObjectUrl(blob);
 }
 
-function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
+export function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
   const output = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
   for (let y = 0; y < image.height; y += 1) {
     const v = image.height <= 1 ? 0 : y / (image.height - 1);
@@ -612,7 +612,7 @@ function getContentBounds(
   return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
 }
 
-function alignCutoutToProjectionMask(cutout: ImageData, projectionMask: ImageData) {
+export function alignCutoutToProjectionMask(cutout: ImageData, projectionMask: ImageData) {
   const sourceBounds = getContentBounds(cutout, (offset) => cutout.data[offset + 3]);
   const targetBounds = getContentBounds(projectionMask, (offset) => {
     const luminance =
@@ -623,14 +623,20 @@ function alignCutoutToProjectionMask(cutout: ImageData, projectionMask: ImageDat
   });
   if (!sourceBounds || !targetBounds) return cutout;
 
-  const sourceCanvas = document.createElement('canvas');
+  const sourceCanvas =
+    typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(cutout.width, cutout.height)
+      : document.createElement('canvas');
   sourceCanvas.width = cutout.width;
   sourceCanvas.height = cutout.height;
   const sourceContext = sourceCanvas.getContext('2d');
   if (!sourceContext) return cutout;
   sourceContext.putImageData(cutout, 0, 0);
 
-  const outputCanvas = document.createElement('canvas');
+  const outputCanvas =
+    typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(projectionMask.width, projectionMask.height)
+      : document.createElement('canvas');
   outputCanvas.width = projectionMask.width;
   outputCanvas.height = projectionMask.height;
   const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
@@ -654,13 +660,93 @@ function alignCutoutToProjectionMask(cutout: ImageData, projectionMask: ImageDat
   return outputContext.getImageData(0, 0, outputCanvas.width, outputCanvas.height);
 }
 
+type MaskedProjectedWorkerResponse = {
+  id: number;
+  width?: number;
+  height?: number;
+  data?: ArrayBuffer;
+  error?: string;
+};
+
+let maskedProjectedWorker: Worker | undefined;
+let maskedProjectedRequestId = 0;
+const maskedProjectedRequests = new Map<
+  number,
+  { resolve: (image: ImageData) => void; reject: (error: Error) => void }
+>();
+
+function getMaskedProjectedWorker() {
+  if (maskedProjectedWorker) return maskedProjectedWorker;
+  if (typeof Worker === 'undefined') return undefined;
+  const worker = new Worker(new URL('./maskedProjectedImage.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+  worker.addEventListener('message', (event: MessageEvent<MaskedProjectedWorkerResponse>) => {
+    const pending = maskedProjectedRequests.get(event.data.id);
+    if (!pending) return;
+    maskedProjectedRequests.delete(event.data.id);
+    if (event.data.error || !event.data.data || !event.data.width || !event.data.height) {
+      pending.reject(new Error(event.data.error || 'Projected image worker returned no pixels.'));
+      return;
+    }
+    pending.resolve(
+      new ImageData(new Uint8ClampedArray(event.data.data), event.data.width, event.data.height),
+    );
+  });
+  worker.addEventListener('error', (event) => {
+    const error = new Error(event.message || 'Projected image worker failed.');
+    for (const pending of maskedProjectedRequests.values()) pending.reject(error);
+    maskedProjectedRequests.clear();
+    worker.terminate();
+    maskedProjectedWorker = undefined;
+  });
+  maskedProjectedWorker = worker;
+  return worker;
+}
+
+function processMaskedProjectedImageInWorker(source: ImageData, mask?: ImageData) {
+  const worker = getMaskedProjectedWorker();
+  if (!worker) {
+    const cutout = removeSolidBackground(source);
+    if (!mask) return Promise.resolve(cutout);
+    return Promise.resolve(applyProjectedAlphaMask(alignCutoutToProjectionMask(cutout, mask), mask));
+  }
+  const id = ++maskedProjectedRequestId;
+  const sourceBuffer = source.data.buffer as ArrayBuffer;
+  const transfer: Transferable[] = [sourceBuffer];
+  let maskPayload:
+    | { width: number; height: number; data: ArrayBuffer }
+    | undefined;
+  if (mask) {
+    const maskBuffer = mask.data.buffer as ArrayBuffer;
+    maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
+    transfer.push(maskBuffer);
+  }
+  return new Promise<ImageData>((resolve, reject) => {
+    maskedProjectedRequests.set(id, { resolve, reject });
+    worker.postMessage(
+      {
+        id,
+        source: { width: source.width, height: source.height, data: sourceBuffer },
+        mask: maskPayload,
+      },
+      transfer,
+    );
+  });
+}
+
 export async function createMaskedProjectedImage(imageUrl: string, projectionMaskUrl?: string) {
   const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
-  const cutout = removeSolidBackground(sourceImage);
-  if (!projectionMaskUrl) return imageDataToPngUrl(cutout);
-  const projectionMask = await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask');
-  const aligned = alignCutoutToProjectionMask(cutout, projectionMask);
-  return imageDataToPngUrl(applyProjectedAlphaMask(aligned, projectionMask));
+  const projectionMask = projectionMaskUrl
+    ? await loadImageData(
+        projectionMaskUrl,
+        maxCutoutDimension,
+        'local repaint projection mask',
+      )
+    : undefined;
+  return imageDataToPngUrl(
+    await processMaskedProjectedImageInWorker(sourceImage, projectionMask),
+  );
 }
 
 /**

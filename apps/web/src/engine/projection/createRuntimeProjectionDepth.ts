@@ -9,6 +9,7 @@ type RuntimeProjectionDepthRequest = {
   captureObjectMatrixWorld?: number[];
   width: number;
   height: number;
+  waitForViewportIdle?: () => Promise<void>;
 };
 
 export type RuntimeProjectionVisibility = {
@@ -304,6 +305,12 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
     depthSubmitMs = performance.now() - depthStartedAt;
     const depthUrl = await depthPromise;
     depthTotalMs = performance.now() - depthStartedAt;
+    // Depth and geometric-normal captures are both authoritative 1024px
+    // quality passes, but they do not need to occupy consecutive frames.
+    // Yield once and honour viewport interaction before submitting the second
+    // pass so an eye/mode/camera action cannot be trapped behind both GPU jobs.
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await request.waitForViewportIdle?.();
     clone.traverse((object) => {
       if (object instanceof THREE.Mesh && object.visible) object.material = normalMaterial;
     });

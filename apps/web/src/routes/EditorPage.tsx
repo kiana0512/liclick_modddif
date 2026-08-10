@@ -1023,6 +1023,7 @@ export function EditorPage({
       skipProjectStoreSyncRef.current.layers = false;
       return;
     }
+    if (document.body.dataset.perfSuppressProjectLayerSync === '1') return;
     if (suppressProjectLayerSyncRef.current > 0) return;
     const storedProject = useProjectStore.getState().projects.find((item) => item.id === projectId);
     if (import.meta.hot && layers.length === 0 && (storedProject?.layers.length ?? 0) > 0) {

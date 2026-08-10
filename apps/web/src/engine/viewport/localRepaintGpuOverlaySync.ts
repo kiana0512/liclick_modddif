@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { ProjectionPreviewLighting } from '@/engine/projection/projectionTypes';
 
 export type LocalRepaintGpuOverlayBinding = {
   material: THREE.ShaderMaterial;
@@ -12,6 +13,37 @@ export type LocalRepaintGpuOverlaySyncInput = {
   maskTexture: THREE.Texture;
   visible: boolean;
 };
+
+export function isLocalRepaintOverlayVisible(displayMode: string, layerVisible: boolean) {
+  return layerVisible && (displayMode === 'pbr' || displayMode === 'flat');
+}
+
+export function syncLocalRepaintGpuOverlayLighting(
+  overlay: Pick<LocalRepaintGpuOverlayBinding, 'material'>,
+  lighting: ProjectionPreviewLighting,
+) {
+  const uniforms = overlay.material.uniforms;
+  let updated = false;
+  const syncNumber = (name: string, value: number) => {
+    const uniform = uniforms[name];
+    if (!uniform || uniform.value === value) return;
+    uniform.value = value;
+    updated = true;
+  };
+  syncNumber('previewLightingEnabled', lighting.enabled ? 1 : 0);
+  syncNumber('previewExposure', lighting.exposure);
+  syncNumber('ambientLightIntensity', lighting.ambientIntensity);
+  syncNumber('keyLightIntensity', lighting.keyLightIntensity);
+  const direction = uniforms.keyLightDirection?.value;
+  if (direction instanceof THREE.Vector3) {
+    const [x, y, z] = lighting.keyLightDirection;
+    if (direction.x !== x || direction.y !== y || direction.z !== z) {
+      direction.set(x, y, z);
+      updated = true;
+    }
+  }
+  return updated;
+}
 
 /**
  * Keeps the latency-sensitive repaint overlay attached to the current model and

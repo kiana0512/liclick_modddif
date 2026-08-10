@@ -2,7 +2,7 @@ import type { GenerateTextureInput, Generation } from '@/types/generation';
 import type { ReferenceImage } from '@/types/project';
 import type { ProviderStatus } from './authApiClient';
 import { invalidateCachedPersonalLiclickAccountStatus } from './liclickAccountApiClient';
-import { getLocalIdentityProof } from './localIdentityProofApiClient';
+import { fetchWithLocalIdentityProof } from './localIdentityProofApiClient';
 import { resolveLiclickTransport, type LiclickTransport } from './liclickTransport';
 import { getUserFacingGenerationError } from './generationErrorMessage';
 import {
@@ -133,23 +133,21 @@ async function requestJson<T>(
   const requestHeaders = new Headers(headers);
   let response: Response;
   try {
-    if (transport.requiresIdentityProof) {
-      requestHeaders.set(
-        'x-li3d-identity-proof',
-        await getLocalIdentityProof({
-          signal: controller.signal,
-          timeoutMs: Math.min(timeoutMs, 8_000),
-        }),
-      );
-    }
     if (fetchInit.body && !requestHeaders.has('content-type'))
       requestHeaders.set('content-type', 'application/json');
-    response = await fetch(`${transport.baseUrl}${path}`, {
+    const requestUrl = `${transport.baseUrl}${path}`;
+    const requestInit = {
       ...fetchInit,
       signal: controller.signal,
       credentials: transport.credentials,
       headers: requestHeaders,
-    });
+    } satisfies RequestInit;
+    response = transport.requiresIdentityProof
+      ? await fetchWithLocalIdentityProof(requestUrl, requestInit, {
+          signal: controller.signal,
+          timeoutMs: Math.min(timeoutMs, 8_000),
+        })
+      : await fetch(requestUrl, requestInit);
   } catch (error) {
     if (callerSignal?.aborted) throw error;
     if (timedOut || (error instanceof DOMException && error.name === 'AbortError')) {

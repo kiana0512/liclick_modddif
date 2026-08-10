@@ -267,6 +267,21 @@ const vertexShader = `
   }
 `;
 
+function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPreviewLighting) {
+  // Reuse the original sculpting-style import material for every texture-empty
+  // state. It preserves the same highlights, shadows and edge definition and
+  // removes the separate grey/self-lit fallback that drifted visually.
+  const material = new THREE.MeshStandardMaterial({
+    color: DEFAULT_PREVIEW_COLOR,
+    roughness: 0.78,
+    metalness: 0,
+    emissive: '#000000',
+    emissiveIntensity: 0,
+  });
+  material.name = 'LiclickWhiteMembranePreview';
+  return markGeneratedMaterial(material);
+}
+
 const fragmentShader = `
   uniform sampler2D projectedMap;
   uniform sampler2D baseMap;
@@ -434,6 +449,22 @@ const fragmentShader = `
     float diffuse = max(dot(normal, lightDir), 0.0);
     float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
     return mix(1.0, lit, previewLightingEnabled);
+  }
+
+  float computeWhiteMembraneLight(vec3 normal) {
+    vec3 lightDir = normalize(keyLightDirection);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float oppositeFill = max(dot(normal, -lightDir), 0.0);
+    float skyFill = normal.y * 0.5 + 0.5;
+    return clamp(
+      0.34 +
+      ambientLightIntensity * 0.38 +
+      diffuse * keyLightIntensity * 0.52 +
+      oppositeFill * 0.055 +
+      skyFill * 0.085,
+      0.42,
+      1.18
+    );
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor, float lighting) {
@@ -639,7 +670,7 @@ const fragmentShader = `
     // colors while ordinary texture layers still receive preview lighting.
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 emptyPreviewColor = mix(
-      computeProjectionEmptyPreviewColor(baseColor, lambert),
+      computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(captureWorldNormal)),
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
       baseTextureAlpha
     );
@@ -1213,10 +1244,16 @@ function buildStackFragmentShader(
   float computeWhiteMembraneLight(vec3 normal) {
     vec3 lightDir = normalize(keyLightDirection);
     float diffuse = max(dot(normal, lightDir), 0.0);
+    float oppositeFill = max(dot(normal, -lightDir), 0.0);
+    float skyFill = normal.y * 0.5 + 0.5;
     return clamp(
-      ambientLightIntensity * 0.85 + diffuse * keyLightIntensity * 0.40,
-      0.0,
-      1.1
+      0.34 +
+      ambientLightIntensity * 0.38 +
+      diffuse * keyLightIntensity * 0.52 +
+      oppositeFill * 0.055 +
+      skyFill * 0.085,
+      0.42,
+      1.18
     );
   }
 
@@ -1431,21 +1468,38 @@ function buildStackFragmentShader(
         ? 'projectedDepthCoverage = max(projectedDepthCoverage, topUvOverlayAlpha);'
         : ''
     }
+    if (normalPreviewEnabled > 0.5) {
+      ${
+        features.useTextureArrays
+          ? 'gl_FragDepth = gl_FragCoord.z;'
+          : 'gl_FragDepthEXT = gl_FragCoord.z;'
+      }
+      gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
+      return;
+    }
+    if (wirePreviewEnabled > 0.5) {
+      // Wireframe is a geometry diagnostic. Its depth must never depend on UV
+      // visibility or projected-layer coverage, otherwise an eye toggle can
+      // hide the topology overlay even though the geometry did not change.
+      ${
+        features.useTextureArrays
+          ? 'gl_FragDepth = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
+          : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
+      }
+      gl_FragColor = vec4(
+        clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0),
+        1.0
+      );
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
     ${
       features.useTextureArrays
         ? 'gl_FragDepth = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
         : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
     }
-    if (normalPreviewEnabled > 0.5) {
-      gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
-      return;
-    }
-    mixedColor = mix(
-      mixedColor,
-      baseColor * computeWhiteMembraneLight(normal),
-      wirePreviewEnabled
-    );
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -1622,6 +1676,7 @@ export function syncProjectedLayerMaterialDisplayState(
   layers: ProjectionLayerDisplayInput[],
   normalPreview = false,
   wirePreview = false,
+  previewLighting?: ProjectionPreviewLighting,
 ) {
   const materials = Array.isArray(material) ? material : material ? [material] : [];
   const layerById = new Map(layers.map((layer) => [layer.layerId, layer]));
@@ -1658,6 +1713,40 @@ export function syncProjectedLayerMaterialDisplayState(
     if (candidate.uniforms.wirePreviewEnabled) {
       candidate.uniforms.wirePreviewEnabled.value = wirePreview ? 1 : 0;
     }
+    if (previewLighting) {
+      const hasProjectedColor = state.bindings.some((binding) => {
+        const opacity = candidate.uniforms[binding.opacityUniform]?.value;
+        return typeof opacity === 'number' && opacity > 0;
+      });
+      const hasUvColor =
+        Number(candidate.uniforms.useUvOverlayMap?.value ?? 0) > 0 &&
+        Number(candidate.uniforms.uvOverlayOpacity?.value ?? 0) > 0;
+      const hasTopUvColor =
+        Number(candidate.uniforms.useTopUvOverlayMap?.value ?? 0) > 0 &&
+        Number(candidate.uniforms.topUvOverlayOpacity?.value ?? 0) > 0;
+      const hasBaseColor =
+        Number(candidate.uniforms.useBaseMap?.value ?? 0) > 0 &&
+        Number(candidate.uniforms.baseTextureOpacity?.value ?? 0) > 0;
+      const whiteMembrane =
+        !normalPreview &&
+        !wirePreview &&
+        !hasProjectedColor &&
+        !hasUvColor &&
+        !hasTopUvColor &&
+        !hasBaseColor;
+      if (candidate.uniforms.previewLightingEnabled) {
+        candidate.uniforms.previewLightingEnabled.value =
+          previewLighting.enabled || whiteMembrane ? 1 : 0;
+      }
+      if (candidate.uniforms.previewExposure)
+        candidate.uniforms.previewExposure.value = previewLighting.exposure;
+      if (candidate.uniforms.ambientLightIntensity)
+        candidate.uniforms.ambientLightIntensity.value = previewLighting.ambientIntensity;
+      if (candidate.uniforms.keyLightIntensity)
+        candidate.uniforms.keyLightIntensity.value = previewLighting.keyLightIntensity;
+      if (candidate.uniforms.keyLightDirection)
+        candidate.uniforms.keyLightDirection.value.copy(previewLighting.keyLightDirection);
+    }
     updated = true;
   }
 
@@ -1669,6 +1758,7 @@ export function syncProjectedLayerMaterialDisplayStateInObject(
   layers: ProjectionLayerDisplayInput[],
   normalPreview = false,
   wirePreview = false,
+  previewLighting?: ProjectionPreviewLighting,
 ) {
   const visited = new Set<THREE.Material>();
   let updated = false;
@@ -1684,7 +1774,51 @@ export function syncProjectedLayerMaterialDisplayStateInObject(
           layers,
           normalPreview,
           wirePreview,
+          previewLighting,
         ) || updated;
+    }
+  });
+  return updated;
+}
+
+export function syncProjectedLayerResidentTextureVisibilityInObject(
+  root: THREE.Object3D,
+  input: {
+    uvOverlayTexture?: THREE.Texture;
+    uvOverlayOpacity: number;
+    topUvOverlayOpacity: number;
+    baseTextureOpacity: number;
+  },
+) {
+  const visited = new Set<THREE.Material>();
+  let updated = false;
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (visited.has(material)) continue;
+      visited.add(material);
+      if (!(material instanceof THREE.ShaderMaterial)) continue;
+      if (!material.userData[PROJECTED_LAYER_STACK_STATE_KEY]) continue;
+      if (
+        input.uvOverlayTexture &&
+        material.uniforms.uvOverlayMap &&
+        material.uniforms.uvOverlayMap.value !== input.uvOverlayTexture
+      ) {
+        material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
+        updated = true;
+      }
+      const values = [
+        ['uvOverlayOpacity', input.uvOverlayOpacity],
+        ['topUvOverlayOpacity', input.topUvOverlayOpacity],
+        ['baseTextureOpacity', input.baseTextureOpacity],
+      ] as const;
+      for (const [name, value] of values) {
+        const uniform = material.uniforms[name];
+        if (!uniform || uniform.value === value) continue;
+        uniform.value = value;
+        updated = true;
+      }
     }
   });
   return updated;
@@ -3255,6 +3389,7 @@ export function createDisplayModeMaterial(
   displayMode: string,
   selected: boolean,
   bakedTexture?: THREE.Texture,
+  previewLighting?: ProjectionPreviewLighting,
 ) {
   if (bakedTexture) {
     bakedTexture.colorSpace = THREE.SRGBColorSpace;
@@ -3269,13 +3404,15 @@ export function createDisplayModeMaterial(
   }
   if (displayMode === 'normal') return markGeneratedMaterial(new THREE.MeshNormalMaterial());
   if (displayMode === 'wire') {
-    return markGeneratedMaterial(
+    const material = markGeneratedMaterial(
       new THREE.MeshStandardMaterial({
         color: DEFAULT_WIRE_COLOR,
         roughness: 0.94,
         metalness: 0,
       }),
     );
+    material.name = 'LiclickWirePreview';
+    return material;
   }
   if (displayMode === 'flat') {
     if (bakedTexture) {
@@ -3291,20 +3428,10 @@ export function createDisplayModeMaterial(
         }),
       );
     }
-    const material = markGeneratedMaterial(
-      new THREE.MeshStandardMaterial({
-        // With no visible texture this is a sculpting-style white membrane,
-        // so preserve lighting contrast instead of lifting every face with an
-        // emissive term and clipping the object into a flat white silhouette.
-        color: DEFAULT_PREVIEW_COLOR,
-        roughness: 0.78,
-        metalness: 0,
-        emissive: '#000000',
-        emissiveIntensity: 0,
-      }),
-    );
-    return material;
+    return createWhiteMembranePreviewMaterial(previewLighting);
   }
+
+  if (!bakedTexture) return createWhiteMembranePreviewMaterial(previewLighting);
 
   const material = markGeneratedMaterial(
     new THREE.MeshStandardMaterial({
@@ -3392,6 +3519,22 @@ const uvOverlayFragmentShader = `
     return mix(1.0, lit, previewLightingEnabled);
   }
 
+  float computeWhiteMembraneLight(vec3 normal) {
+    vec3 lightDir = normalize(keyLightDirection);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float oppositeFill = max(dot(normal, -lightDir), 0.0);
+    float skyFill = normal.y * 0.5 + 0.5;
+    return clamp(
+      0.34 +
+      ambientLightIntensity * 0.38 +
+      diffuse * keyLightIntensity * 0.52 +
+      oppositeFill * 0.055 +
+      skyFill * 0.085,
+      0.42,
+      1.18
+    );
+  }
+
   vec3 computeUvEmptyPreviewColor() {
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
@@ -3399,7 +3542,14 @@ const uvOverlayFragmentShader = `
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
-    float lambert = computePreviewLight(normal);
+    float hasAnyColor = max(
+      useBaseMap * step(0.0001, baseTextureOpacity),
+      max(
+        useUvOverlayMap * step(0.0001, uvOverlayOpacity),
+        useLiveUvOverlayMap * step(0.0001, liveUvOverlayOpacity)
+      )
+    );
+    float lambert = mix(computeWhiteMembraneLight(normal), computePreviewLight(normal), hasAnyColor);
     vec4 baseTexel = texture2D(baseMap, vUv);
     float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
     vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
@@ -3698,8 +3848,10 @@ export function createFlatPreviewMaterial(
   originalMaterial: THREE.Material | THREE.Material[] | undefined,
   selected: boolean,
   bakedTexture?: THREE.Texture,
+  previewLighting?: ProjectionPreviewLighting,
 ) {
-  if (!originalMaterial) return createDisplayModeMaterial('flat', selected, bakedTexture);
+  if (!originalMaterial)
+    return createDisplayModeMaterial('flat', selected, bakedTexture, previewLighting);
   return Array.isArray(originalMaterial)
     ? originalMaterial.map((material) => prepareSingleFlatMaterial(material, bakedTexture))
     : prepareSingleFlatMaterial(originalMaterial, bakedTexture);
@@ -3709,8 +3861,10 @@ export function createPbrPreviewMaterial(
   originalMaterial: THREE.Material | THREE.Material[] | undefined,
   selected: boolean,
   bakedTexture?: THREE.Texture,
+  previewLighting?: ProjectionPreviewLighting,
 ) {
-  if (!originalMaterial) return createDisplayModeMaterial('pbr', selected, bakedTexture);
+  if (!originalMaterial)
+    return createDisplayModeMaterial('pbr', selected, bakedTexture, previewLighting);
   return Array.isArray(originalMaterial)
     ? originalMaterial.map((material) => prepareSinglePreviewMaterial(material, bakedTexture))
     : prepareSinglePreviewMaterial(originalMaterial, bakedTexture);

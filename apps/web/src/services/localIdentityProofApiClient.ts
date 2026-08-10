@@ -13,6 +13,14 @@ type LocalIdentityProofRequestOptions = {
   timeoutMs?: number;
 };
 
+async function isRejectedOneTimeProof(response: Response) {
+  if (response.status !== 401) return false;
+  const payload = (await response.clone().json().catch(() => undefined)) as
+    | { code?: string }
+    | undefined;
+  return payload?.code === 'INVALID_LOCAL_IDENTITY_PROOF';
+}
+
 export async function getLocalIdentityProof(
   options: LocalIdentityProofRequestOptions = {},
 ) {
@@ -52,4 +60,25 @@ export async function getLocalIdentityProof(
     throw new Error(payload?.error || '请先完成飞书登录，再连接本地贴图组件。');
   }
   return payload.proof;
+}
+
+/**
+ * A local identity proof is intentionally single-use. If a component request
+ * reaches the verifier after a transient retry/replay consumed that proof,
+ * obtain a brand-new proof and replay the original request exactly once. This
+ * repairs the bridge without logging out a still-valid Feishu browser session.
+ */
+export async function fetchWithLocalIdentityProof(
+  input: string | URL,
+  init: RequestInit,
+  proofOptions: LocalIdentityProofRequestOptions = {},
+) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers = new Headers(init.headers);
+    headers.set('x-li3d-identity-proof', await getLocalIdentityProof(proofOptions));
+    const response = await fetch(input, { ...init, headers });
+    if (attempt === 0 && (await isRejectedOneTimeProof(response))) continue;
+    return response;
+  }
+  throw new Error('无法刷新本地飞书身份证明，请重试。');
 }

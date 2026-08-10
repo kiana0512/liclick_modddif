@@ -46,10 +46,14 @@ import {
   publishLiveSurfacePaintPreview,
 } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
-import { SceneRoot } from './SceneRoot';
+import { getPreviewLighting, SceneRoot } from './SceneRoot';
 import { CameraController } from './CameraController';
 import { ViewCube } from './ViewCube';
-import { syncLocalRepaintGpuOverlayBinding } from './localRepaintGpuOverlaySync';
+import {
+  isLocalRepaintOverlayVisible,
+  syncLocalRepaintGpuOverlayBinding,
+  syncLocalRepaintGpuOverlayLighting,
+} from './localRepaintGpuOverlaySync';
 import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
@@ -180,6 +184,16 @@ const LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-projection';
 const LEGACY_LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-brush-projection';
 const LOCAL_REPAINT_UV_MERGE_LAYER_ID_PREFIX = 'local-repaint-uv-merge';
 const LOCAL_REPAINT_UV_MERGE_LAYER_NAME = '局部重绘合并层';
+
+function isRendererOwnedLocalRepaintLayer(layer: Layer) {
+  return Boolean(
+    layer.id.startsWith('local-repaint-') ||
+      layer.role === 'local-repaint-overlay' ||
+      layer.role === 'local-repaint-draft' ||
+      (layer.imageUrl ?? '').includes('surface-edit:local-repaint'),
+  );
+}
+
 const MAX_INPAINT_PROJECTION_SNAPSHOTS = 12;
 // Paint feedback is an editor overlay, not part of the texture layer stack.
 // Keep it above projected textures, topology wireframes and selection helpers.
@@ -493,6 +507,18 @@ type LayerToggleScenarioResult = ProjectedLayerRampResult & {
   durationMs: number;
 };
 
+type ViewportLayerStressResult = {
+  operations: number;
+  durationMs: number;
+  frameP95: number;
+  frameMax: number;
+  droppedFrames: number;
+  projectedBackgroundRebuilds: number;
+  modeStateMismatches: number;
+  overlayVisibilityMismatches: number;
+  phaseFrameMax?: Record<string, number>;
+};
+
 type LocalRepaintUvCommitReport = {
   mode: 'interactive-uv' | 'deferred-export';
   revision: number;
@@ -526,6 +552,7 @@ type LocalRepaintSimulationCoreResult = {
   gpuMaxAlpha: number;
   gpuSceneChangedPixels: number;
   gpuSceneMaxDelta: number;
+  gpuProbeDurationMs: number;
   projectedBackgroundRebuilds: number;
   firstGeneratedCandidateScanMs: number;
   falloffReadMs: number;
@@ -604,6 +631,7 @@ type PerformanceLabWindowApi = {
   ) => Promise<LayerToggleScenarioResult>;
   runUvMergeBenchmark: () => Promise<UvMergeBenchmarkResult>;
   runLocalRepaintBenchmark: () => Promise<LocalRepaintBenchmarkResult>;
+  runViewportLayerStressScenario: () => Promise<ViewportLayerStressResult>;
   snapshot: () => {
     metrics: PerformanceHudMetrics;
     native?: NativePerformanceSnapshot;
@@ -717,6 +745,9 @@ function PerformanceTestHud() {
   const [localRepaintBenchmarkRunning, setLocalRepaintBenchmarkRunning] = useState(false);
   const [localRepaintBenchmarkResult, setLocalRepaintBenchmarkResult] =
     useState<LocalRepaintBenchmarkResult>();
+  const [viewportLayerStressRunning, setViewportLayerStressRunning] = useState(false);
+  const [viewportLayerStressResult, setViewportLayerStressResult] =
+    useState<ViewportLayerStressResult>();
   const projectedLayerRampRunningRef = useRef(false);
   const layerToggleScenarioRunningRef = useRef(false);
   const frameSamplesRef = useRef<PerformanceFrameSample[]>([]);
@@ -791,7 +822,8 @@ function PerformanceTestHud() {
             durationMs: duration,
             phase:
               document.body.dataset.perfLocalRepaintPhase ??
-              document.body.dataset.perfUvBakePhase,
+              document.body.dataset.perfUvBakePhase ??
+              document.body.dataset.perfViewportStressPhase,
           });
         }
         frameTimes.push(duration);
@@ -801,7 +833,8 @@ function PerformanceTestHud() {
           durationMs: duration,
           phase:
             document.body.dataset.perfLocalRepaintPhase ??
-            document.body.dataset.perfUvBakePhase,
+            document.body.dataset.perfUvBakePhase ??
+            document.body.dataset.perfViewportStressPhase,
         });
         if (frameSamplesRef.current.length > 7_200) frameSamplesRef.current.splice(0, 1_200);
       }
@@ -1408,6 +1441,71 @@ function PerformanceTestHud() {
     [clearReport, localRepaintBenchmarkRunning, uvMergeBenchmarkRunning],
   );
 
+  const runViewportLayerStressScenario = useCallback(async () => {
+    if (
+      projectedLayerRampRunningRef.current ||
+      layerToggleScenarioRunningRef.current ||
+      uvMergeBenchmarkRunning ||
+      localRepaintBenchmarkRunning ||
+      viewportLayerStressRunning
+    ) {
+      throw new Error('已有性能压测正在运行。');
+    }
+    const target = window as typeof window & {
+      LiclickPerfViewportStress?: { run: () => Promise<ViewportLayerStressResult> };
+    };
+    if (!target.LiclickPerfViewportStress) throw new Error('S7 暴力切换模拟器尚未就绪。');
+    const summarizeFrames = (samples: PerformanceFrameSample[]) => {
+      const durations = samples.map((sample) => sample.durationMs);
+      return {
+        p95: percentile(durations, 0.95),
+        max: durations.length > 0 ? Math.max(...durations) : 0,
+        dropped:
+          durations.length > 0
+            ? (durations.filter((duration) => duration > 20).length / durations.length) * 100
+            : 0,
+      };
+    };
+    setViewportLayerStressRunning(true);
+    document.body.dataset.perfViewportStressMeasuring = '1';
+    clearReport();
+    try {
+      // Let the diagnostics panel finish its own reset render before measuring.
+      // Otherwise the first React/HUD commit is falsely attributed to a viewport
+      // mode switch and can dominate the scenario's maximum-frame metric.
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      frameSamplesRef.current = [];
+      const coreResult = await target.LiclickPerfViewportStress.run();
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const summary = summarizeFrames(frameSamplesRef.current);
+      const phaseFrameMax: Record<string, number> = {};
+      frameSamplesRef.current.forEach((sample) => {
+        const phase = sample.phase ?? 'unattributed';
+        phaseFrameMax[phase] = Math.max(phaseFrameMax[phase] ?? 0, sample.durationMs);
+      });
+      document.body.dataset.perfViewportStressPhaseMax = JSON.stringify(phaseFrameMax);
+      const result = {
+        ...coreResult,
+        frameP95: summary.p95,
+        frameMax: summary.max,
+        droppedFrames: summary.dropped,
+        phaseFrameMax,
+      };
+      setViewportLayerStressResult(result);
+      return result;
+    } finally {
+      delete document.body.dataset.perfViewportStressMeasuring;
+      setViewportLayerStressRunning(false);
+    }
+  }, [
+    clearReport,
+    localRepaintBenchmarkRunning,
+    uvMergeBenchmarkRunning,
+    viewportLayerStressRunning,
+  ]);
+
   useEffect(() => {
     const target = window as typeof window & { LiclickPerfLab?: PerformanceLabWindowApi };
     target.LiclickPerfLab = {
@@ -1417,6 +1515,7 @@ function PerformanceTestHud() {
       runLayerToggleScenario,
       runUvMergeBenchmark,
       runLocalRepaintBenchmark,
+      runViewportLayerStressScenario,
       snapshot: () => ({ metrics, native: nativeSnapshot, events: getPerformanceTimelineEvents() }),
     };
     return () => {
@@ -1430,6 +1529,7 @@ function PerformanceTestHud() {
     runLayerToggleScenario,
     runProjectedLayerRamp,
     runLocalRepaintBenchmark,
+    runViewportLayerStressScenario,
     runUvMergeBenchmark,
   ]);
 
@@ -1528,6 +1628,20 @@ function PerformanceTestHud() {
           >
             {localRepaintBenchmarkRunning ? 'S6 重绘中…' : 'S6 · 完整局部重绘'}
           </button>
+          <button
+            type="button"
+            disabled={
+              projectedLayerRamp.running ||
+              layerToggleScenario.running ||
+              uvMergeBenchmarkRunning ||
+              localRepaintBenchmarkRunning ||
+              viewportLayerStressRunning
+            }
+            onClick={() => void runViewportLayerStressScenario()}
+            className="rounded bg-orange-400/20 px-2 py-1 text-[11px] text-orange-200 transition hover:bg-orange-400/30 disabled:cursor-wait disabled:opacity-55"
+          >
+            {viewportLayerStressRunning ? 'S7 暴力切换中…' : 'S7 · 视口/图层暴力切换'}
+          </button>
           <button type="button" onClick={clearReport} className="rounded px-2 py-1 text-[11px] text-white/55 transition hover:bg-white/10 hover:text-white">清空</button>
           <button type="button" onClick={exportReport} className="rounded bg-liclick-pink/25 px-2 py-1 text-[11px] text-liclick-pink transition hover:bg-liclick-pink/35">导出 JSON</button>
           <button type="button" onClick={() => setCollapsed(true)} className="rounded px-2 py-1 text-[11px] text-white/55 transition hover:bg-white/10 hover:text-white">收起</button>
@@ -1578,6 +1692,31 @@ function PerformanceTestHud() {
           label={`采集计算 P95 / 最大 · ${metrics.samplerSamples}`}
           value={`${metrics.samplerP95.toFixed(2)} / ${metrics.samplerMax.toFixed(2)}ms`}
           tone={metricTone(metrics.samplerP95, 0.3, 1)}
+        />
+        <PerformanceMetric
+          label="S7 P95 / 最大帧"
+          value={
+            viewportLayerStressResult
+              ? `${viewportLayerStressResult.frameP95.toFixed(1)} / ${viewportLayerStressResult.frameMax.toFixed(1)}ms`
+              : '等待压测'
+          }
+          tone={metricTone(viewportLayerStressResult?.frameP95 ?? 0, 20, 33)}
+        />
+        <PerformanceMetric
+          label="S7 重建 / 状态错误 / 覆盖错误"
+          value={
+            viewportLayerStressResult
+              ? `${viewportLayerStressResult.projectedBackgroundRebuilds} / ${viewportLayerStressResult.modeStateMismatches} / ${viewportLayerStressResult.overlayVisibilityMismatches}`
+              : '等待压测'
+          }
+          tone={
+            viewportLayerStressResult &&
+            (viewportLayerStressResult.projectedBackgroundRebuilds > 0 ||
+              viewportLayerStressResult.modeStateMismatches > 0 ||
+              viewportLayerStressResult.overlayVisibilityMismatches > 0)
+              ? 'text-rose-300'
+              : 'text-emerald-300'
+          }
         />
         <PerformanceMetric
           label="S6 交互 P95 / 最大"
@@ -1652,6 +1791,14 @@ function PerformanceTestHud() {
           value={
             localRepaintBenchmarkResult
               ? `${localRepaintBenchmarkResult.candidateRaycastMs.toFixed(1)} / ${localRepaintBenchmarkResult.candidateFilterMs.toFixed(1)}ms`
+              : '等待压测'
+          }
+        />
+        <PerformanceMetric
+          label="S6 GPU 质量验证 / 最大帧"
+          value={
+            localRepaintBenchmarkResult
+              ? `${localRepaintBenchmarkResult.gpuProbeDurationMs.toFixed(1)} / ${(localRepaintBenchmarkResult.phaseFrameMax['s6-quality-gpu-probe'] ?? 0).toFixed(1)}ms`
               : '等待压测'
           }
         />
@@ -2370,6 +2517,30 @@ function disposeLocalRepaintGpuOverlay(state: LocalRepaintGpuOverlayState | unde
   state.unsubscribeVisibility();
   state.root.removeFromParent();
   disposeGeneratedMaterialTree(state.material);
+}
+
+function setLocalRepaintGpuOverlayVisibility(
+  state: LocalRepaintGpuOverlayState,
+  visible: boolean,
+) {
+  let changed = false;
+  if (state.root.visible !== visible) {
+    state.root.visible = visible;
+    changed = true;
+  }
+  for (const mesh of state.meshes) {
+    if (mesh.visible === visible) continue;
+    mesh.visible = visible;
+    changed = true;
+  }
+  const opacity = state.material.uniforms.layerOpacity;
+  const expectedOpacity = visible ? 1 : 0;
+  if (opacity && opacity.value !== expectedOpacity) {
+    opacity.value = expectedOpacity;
+    changed = true;
+  }
+  document.body.dataset.localRepaintOverlayVisible = visible ? '1' : '0';
+  return changed;
 }
 
 function createLocalRepaintFalloffCanvas(
@@ -3461,6 +3632,7 @@ function SurfacePaintOverlay() {
   const [localRepaintAssetsRevision, setLocalRepaintAssetsRevision] = useState(0);
   const localRepaintCompositeRef = useRef<LocalRepaintCompositeState>();
   const localRepaintGpuOverlayRef = useRef<LocalRepaintGpuOverlayState>();
+  const viewportLayerStressRunningRef = useRef(false);
   const clearLocalRepaintGpuOverlay = useCallback(() => {
     disposeLocalRepaintGpuOverlay(localRepaintGpuOverlayRef.current);
     localRepaintGpuOverlayRef.current = undefined;
@@ -3469,12 +3641,18 @@ function SurfacePaintOverlay() {
     delete document.body.dataset.localRepaintOverlayCompileDurationMs;
   }, []);
   const paintTool = useSceneStore((state) => state.paintTool);
+  const displayMode = useSceneStore((state) => state.displayMode);
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
   const paintMaskInvertRevision = useSceneStore((state) => state.paintMaskInvertRevision);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
   const textureResolutionSetting = useSettingsStore((state) => state.resolution);
+  const environmentPreset = useSettingsStore((state) => state.environmentPreset);
+  const exposure = useSettingsStore((state) => state.exposure);
+  const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
+  const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
+  const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
   const setPaintMaskDataUrl = useSceneStore((state) => state.setPaintMaskDataUrl);
   const setPaintMaskCapture = useSceneStore((state) => state.setPaintMaskCapture);
@@ -3490,7 +3668,18 @@ function SurfacePaintOverlay() {
   const t = useT();
   const isInpaintMode = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
   const isLocalRepaintApplyMode = paintTool === 'inpaint-apply';
-  const shouldShowInpaintMask = isInpaintMode || (paintTool === 'none' && paintMaskHasContent);
+  const shouldShowColorPaintOverlays = isLocalRepaintOverlayVisible(displayMode, true);
+  const shouldShowInpaintMask =
+    shouldShowColorPaintOverlays &&
+    (isInpaintMode || (paintTool === 'none' && paintMaskHasContent));
+  const localRepaintPreviewLighting = getPreviewLighting({
+    displayMode,
+    environmentPreset,
+    exposure,
+    pbrEnvironmentIntensity,
+    pbrKeyLightIntensity,
+    pbrLightAzimuth,
+  });
   const enabled =
     paintTool === 'brush' || paintTool === 'eraser' || isInpaintMode || isLocalRepaintApplyMode;
   const texturePaintReady = Boolean(importedModel || selectedObjectId);
@@ -3503,6 +3692,366 @@ function SurfacePaintOverlay() {
         ? activePaintLayer.type === 'uv' || activePaintLayer.type === 'projected'
         : true),
   );
+
+  const runViewportLayerStressScenario = useCallback(
+    async (): Promise<ViewportLayerStressResult> => {
+      if (
+        viewportLayerStressRunningRef.current
+      ) {
+        throw new Error('已有性能压测正在运行。');
+      }
+      const layerState = useLayerStore.getState();
+      const sceneState = useSceneStore.getState();
+      const settingsState = useSettingsStore.getState();
+      const originalLayers = layerState.layers;
+      const originalActiveLayerId = layerState.activeProjectedLayerId;
+      const originalDisplayMode = sceneState.displayMode;
+      const originalLighting = {
+        exposure: settingsState.exposure,
+        pbrEnvironmentIntensity: settingsState.pbrEnvironmentIntensity,
+        pbrKeyLightIntensity: settingsState.pbrKeyLightIntensity,
+        pbrLightAzimuth: settingsState.pbrLightAzimuth,
+        environmentPreset: settingsState.environmentPreset,
+      };
+      const selectedObjectId = sceneState.selectedObjectId;
+      const ordinaryTargets = originalLayers.filter(
+        (layer) =>
+          Boolean(layer.imageUrl) &&
+          (!selectedObjectId || !layer.objectId || layer.objectId === selectedObjectId),
+      );
+      // The renderer-owned local repaint overlay can be controlled by a draft
+      // row whose image lives in the live texture registry instead of
+      // `layer.imageUrl`. Include that eye row explicitly; otherwise the S7
+      // "all off" step leaves the overlay enabled and fails to reproduce the
+      // user's actual panel workflow.
+      const overlayVisibilityLayerId = localRepaintGpuOverlayRef.current?.visibilityLayerId;
+      const overlayVisibilityLayer = overlayVisibilityLayerId
+        ? originalLayers.find((layer) => layer.id === overlayVisibilityLayerId)
+        : undefined;
+      const targets = overlayVisibilityLayer &&
+          !ordinaryTargets.some((layer) => layer.id === overlayVisibilityLayer.id)
+        ? [...ordinaryTargets, overlayVisibilityLayer]
+        : ordinaryTargets;
+      if (targets.length === 0) throw new Error('当前对象没有可切换的纹理图层。');
+
+      const targetIds = targets.map((layer) => layer.id);
+      const waitForFrame = () =>
+        new Promise<number>((resolve) => window.requestAnimationFrame(resolve));
+      const wait = (durationMs: number) =>
+        new Promise<void>((resolve) => window.setTimeout(resolve, durationMs));
+      const modeMismatchDetails: string[] = [];
+      const overlayMismatchDetails: Array<{
+        phase: string;
+        actual?: string;
+        expected: '0' | '1';
+        visibilityLayerId?: string;
+        visibilityLayerPresent: boolean;
+        visibilityLayerVisible?: boolean;
+        includedInTargets: boolean;
+      }> = [];
+      const recordOverlayMismatch = (expected: '0' | '1', actual?: string) => {
+        const visibilityLayerId = localRepaintGpuOverlayRef.current?.visibilityLayerId;
+        const visibilityLayer = visibilityLayerId
+          ? useLayerStore.getState().layers.find((layer) => layer.id === visibilityLayerId)
+          : undefined;
+        overlayMismatchDetails.push({
+          phase: document.body.dataset.perfViewportStressPhase ?? 'unknown',
+          actual,
+          expected,
+          visibilityLayerId,
+          visibilityLayerPresent: Boolean(visibilityLayer),
+          visibilityLayerVisible: visibilityLayer?.visible,
+          includedInTargets: Boolean(
+            visibilityLayerId && targetIds.includes(visibilityLayerId),
+          ),
+        });
+      };
+      const inspectModeState = (
+        expectedMode: 'pbr' | 'flat' | 'normal' | 'wire',
+        expectedSurfaceColor?: boolean,
+      ) => {
+        let mismatches = 0;
+        const visitedMaterials = new Set<THREE.Material>();
+        for (const model of useSceneStore.getState().importedModels) {
+          let modelUsesSurfaceColorMaterial = false;
+          let modelUsesCanonicalWhiteMaterial = false;
+          let modelUsesNormalMaterial = false;
+          let modelUsesWireMaterial = false;
+          model.group.traverse((child) => {
+            if (!(child instanceof THREE.Mesh)) return;
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            for (const material of materials) {
+              if (material.name === 'LiclickWhiteMembranePreview') {
+                modelUsesCanonicalWhiteMaterial = true;
+              }
+              if (material instanceof THREE.MeshNormalMaterial) {
+                modelUsesNormalMaterial = true;
+              }
+              if (material.name === 'LiclickWirePreview') {
+                modelUsesWireMaterial = true;
+              }
+              if (material.userData.liclickProjectedBootstrap === true) {
+                modelUsesSurfaceColorMaterial = true;
+              }
+              if (visitedMaterials.has(material)) continue;
+              visitedMaterials.add(material);
+              if (!(material instanceof THREE.ShaderMaterial)) continue;
+              // The renderer-owned local repaint overlay deliberately does not
+              // participate in normal/wire rendering. Its visibility is checked
+              // separately below, so it must not be counted as a mode mismatch.
+              if (material.userData.liclickLiveLocalRepaintOverlayMaterial) continue;
+              if (!material.userData.liclickProjectedLayerStackState) continue;
+              const projectedState = material.userData.liclickProjectedLayerStackState as {
+                bindings?: Array<{ opacityUniform: string }>;
+              };
+              const hasProjectedContribution = Boolean(
+                projectedState.bindings?.some(
+                  (binding) =>
+                    Number(material.uniforms[binding.opacityUniform]?.value ?? 0) > 0.0001,
+                ),
+              );
+              const hasResidentTextureContribution =
+                (Number(material.uniforms.useUvOverlayMap?.value ?? 0) > 0 &&
+                  Number(material.uniforms.uvOverlayOpacity?.value ?? 0) > 0.0001) ||
+                (Number(material.uniforms.useTopUvOverlayMap?.value ?? 0) > 0 &&
+                  Number(material.uniforms.topUvOverlayOpacity?.value ?? 0) > 0.0001) ||
+                (Number(material.uniforms.useBaseMap?.value ?? 0) > 0 &&
+                  Number(material.uniforms.baseTextureOpacity?.value ?? 0) > 0.0001);
+              if (hasProjectedContribution || hasResidentTextureContribution) {
+                modelUsesSurfaceColorMaterial = true;
+              }
+              if (material.uniforms.normalPreviewEnabled) {
+                const normal = Number(material.uniforms.normalPreviewEnabled.value ?? 0) > 0.5;
+                if (normal !== (expectedMode === 'normal')) mismatches += 1;
+              }
+              if (material.uniforms.wirePreviewEnabled) {
+                const wire = Number(material.uniforms.wirePreviewEnabled.value ?? 0) > 0.5;
+                if (wire !== (expectedMode === 'wire')) mismatches += 1;
+              }
+            }
+          });
+          if (expectedMode === 'normal' && !modelUsesNormalMaterial) mismatches += 1;
+          if (expectedMode === 'wire' && !modelUsesWireMaterial) mismatches += 1;
+          if (
+            expectedSurfaceColor !== undefined &&
+            (expectedMode === 'pbr' || expectedMode === 'flat')
+          ) {
+            if (expectedSurfaceColor && !modelUsesSurfaceColorMaterial) {
+              mismatches += 1;
+              if (modeMismatchDetails.length < 100)
+                modeMismatchDetails.push(
+                  `${document.body.dataset.perfViewportStressPhase ?? 'unknown'}:missing-color`,
+                );
+            }
+            if (!expectedSurfaceColor && !modelUsesCanonicalWhiteMaterial) {
+              mismatches += 1;
+              if (modeMismatchDetails.length < 100)
+                modeMismatchDetails.push(
+                  `${document.body.dataset.perfViewportStressPhase ?? 'unknown'}:stale-color`,
+                );
+            }
+          }
+        }
+        if (
+          expectedMode === 'wire' &&
+          Number(document.body.dataset.topologyWireframeMeshCount ?? '0') <= 0
+        )
+          mismatches += 1;
+        return mismatches;
+      };
+
+      const modes = ['pbr', 'normal', 'wire', 'flat', 'wire', 'pbr'] as const;
+      const startedAt = performance.now();
+      const backgroundRevisionAtStart = Number(
+        document.body.dataset.projectedMaterialBuildRevision ?? '0',
+      );
+      let operations = 0;
+      let modeStateMismatches = 0;
+      let overlayVisibilityMismatches = 0;
+      viewportLayerStressRunningRef.current = true;
+      document.body.dataset.perfAutoOrbit = '1';
+      document.body.dataset.perfSimulatedViewportInteraction = '1';
+      document.body.dataset.perfSuppressProjectLayerSync = '1';
+      document.body.dataset.perfViewportStressPhase = 's7-viewport-layer-stress';
+      const finishScenario = startPerformanceSpan(
+        'interaction',
+        's7-viewport-layer-stress-scenario',
+        { layerCount: targetIds.length },
+      );
+      try {
+        for (let cycle = 0; cycle < 2; cycle += 1) {
+          for (const mode of modes) {
+            document.body.dataset.perfViewportStressPhase = `s7-${mode}-mode`;
+            useSceneStore.getState().setDisplayMode(mode);
+            operations += 1;
+            await waitForFrame();
+            await waitForFrame();
+            modeStateMismatches += inspectModeState(mode);
+
+            document.body.dataset.perfViewportStressPhase = `s7-${mode}-all-off`;
+            useLayerStore.getState().setLayerVisibility(targetIds, false);
+            operations += targetIds.length;
+            await waitForFrame();
+            modeStateMismatches += inspectModeState(mode, false);
+            const overlayHidden = document.body.dataset.localRepaintOverlayVisible;
+            if (overlayHidden === '1') {
+              overlayVisibilityMismatches += 1;
+              recordOverlayMismatch('0', overlayHidden);
+            }
+
+            for (const [targetIndex, id] of targetIds.entries()) {
+              const targetLayer = targets.find((layer) => layer.id === id);
+              // Local repaint is renderer-owned: it intentionally sits outside
+              // the resident projected stack and has its own visibility probe.
+              // Requiring the main stack to expose colour for this target alone
+              // reports a false failure even when the overlay is correct.
+              const expectsMainSurfaceColor =
+                targetLayer && !isRendererOwnedLocalRepaintLayer(targetLayer)
+                  ? true
+                  : undefined;
+              const targetKind = `${targetIndex}-${targetLayer?.type ?? 'unknown'}-${targetLayer?.role ?? 'normal'}`;
+              document.body.dataset.perfViewportStressPhase = `s7-${mode}-${targetKind}-layer-on`;
+              useLayerStore.getState().setLayerVisibility([id], true);
+              operations += 1;
+              await wait(12);
+              modeStateMismatches += inspectModeState(mode, expectsMainSurfaceColor);
+              document.body.dataset.perfViewportStressPhase = `s7-${mode}-${targetKind}-layer-off`;
+              useLayerStore.getState().setLayerVisibility([id], false);
+              operations += 1;
+              await wait(12);
+              modeStateMismatches += inspectModeState(mode, false);
+            }
+
+            document.body.dataset.perfViewportStressPhase = `s7-${mode}-all-on`;
+            useLayerStore.getState().setLayerVisibility(targetIds, true);
+            operations += targetIds.length;
+            await waitForFrame();
+            modeStateMismatches += inspectModeState(mode, true);
+            const overlayVisible = document.body.dataset.localRepaintOverlayVisible;
+            const overlayVisibilityLayerId =
+              localRepaintGpuOverlayRef.current?.visibilityLayerId;
+            const overlayVisibilityLayer = overlayVisibilityLayerId
+              ? useLayerStore
+                  .getState()
+                  .layers.find((layer) => layer.id === overlayVisibilityLayerId)
+              : undefined;
+            // An orphaned renderer overlay must remain hidden even in a colour
+            // mode. Only an existing, visible eye row authorizes it to render.
+            const expectedOverlayVisible =
+              (mode === 'pbr' || mode === 'flat') && overlayVisibilityLayer?.visible
+                ? '1'
+                : '0';
+            if (
+              overlayVisible !== undefined &&
+              overlayVisible !== expectedOverlayVisible
+            ) {
+              overlayVisibilityMismatches += 1;
+              recordOverlayMismatch(expectedOverlayVisible, overlayVisible);
+            }
+
+            if (mode === 'pbr') {
+              document.body.dataset.perfViewportStressPhase = 's7-pbr-lighting';
+              const settings = useSettingsStore.getState();
+              settings.setEnvironmentPreset(cycle % 2 === 0 ? 'dark' : 'soft');
+              settings.setExposure(cycle % 2 === 0 ? 0.72 : 1.28);
+              settings.setPbrEnvironmentIntensity(cycle % 2 === 0 ? 0.2 : 0.82);
+              settings.setPbrKeyLightIntensity(cycle % 2 === 0 ? 0.55 : 1.45);
+              settings.setPbrLightAzimuth(cycle % 2 === 0 ? -120 : 135);
+              operations += 5;
+              await waitForFrame();
+              await waitForFrame();
+            }
+          }
+        }
+        const backgroundRevisionAtEnd = Number(
+          document.body.dataset.projectedMaterialBuildRevision ?? '0',
+        );
+        const result: ViewportLayerStressResult = {
+          operations,
+          durationMs: performance.now() - startedAt,
+          frameP95: 0,
+          frameMax: 0,
+          droppedFrames: 0,
+          projectedBackgroundRebuilds: Math.max(
+            0,
+            backgroundRevisionAtEnd - backgroundRevisionAtStart,
+          ),
+          modeStateMismatches,
+          overlayVisibilityMismatches,
+        };
+        document.body.dataset.perfViewportStressMismatchDetails =
+          JSON.stringify(modeMismatchDetails);
+        document.body.dataset.perfViewportStressOverlayMismatchDetails =
+          JSON.stringify(overlayMismatchDetails);
+        finishScenario(
+          modeStateMismatches === 0 && overlayVisibilityMismatches === 0 ? 'end' : 'error',
+          result,
+        );
+        return result;
+      } catch (error) {
+        finishScenario('error', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        useLayerStore.getState().setLayers(originalLayers);
+        if (originalActiveLayerId)
+          useLayerStore.getState().setActiveLayer(originalActiveLayerId);
+        useSceneStore.getState().setDisplayMode(originalDisplayMode);
+        const settings = useSettingsStore.getState();
+        settings.setExposure(originalLighting.exposure);
+        settings.setPbrEnvironmentIntensity(originalLighting.pbrEnvironmentIntensity);
+        settings.setPbrKeyLightIntensity(originalLighting.pbrKeyLightIntensity);
+        settings.setPbrLightAzimuth(originalLighting.pbrLightAzimuth);
+        settings.setEnvironmentPreset(originalLighting.environmentPreset);
+        delete document.body.dataset.perfAutoOrbit;
+        delete document.body.dataset.perfSimulatedViewportInteraction;
+        delete document.body.dataset.perfSuppressProjectLayerSync;
+        delete document.body.dataset.perfViewportStressPhase;
+        viewportLayerStressRunningRef.current = false;
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const target = window as typeof window & {
+      LiclickPerfViewportStress?: { run: () => Promise<ViewportLayerStressResult> };
+    };
+    target.LiclickPerfViewportStress = { run: runViewportLayerStressScenario };
+    return () => {
+      delete target.LiclickPerfViewportStress;
+    };
+  }, [runViewportLayerStressScenario]);
+
+  useEffect(() => {
+    const overlay = localRepaintGpuOverlayRef.current;
+    if (!overlay) return;
+    const layerVisible = overlay.visibilityLayerId
+      ? (useLayerStore
+          .getState()
+          .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? false)
+      : true;
+    const visibilityChanged = setLocalRepaintGpuOverlayVisibility(
+        overlay,
+        isLocalRepaintOverlayVisible(displayMode, layerVisible),
+      );
+    const lightingChanged = syncLocalRepaintGpuOverlayLighting(
+      overlay,
+      localRepaintPreviewLighting,
+    );
+    if (visibilityChanged || lightingChanged) {
+      invalidate();
+    }
+  }, [
+    displayMode,
+    environmentPreset,
+    exposure,
+    invalidate,
+    pbrEnvironmentIntensity,
+    pbrKeyLightIntensity,
+    pbrLightAzimuth,
+  ]);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -3935,15 +4484,22 @@ function SurfacePaintOverlay() {
         overlay.visible = false;
       });
       layer.overlayMeshes.forEach((mesh) => {
-        if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
+        if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = shouldShowInpaintMask;
       });
       return layer;
     },
-    [archiveCurrentInpaintProjection, camera, getUvPaintLayer, gl.domElement],
+    [
+      archiveCurrentInpaintProjection,
+      camera,
+      getUvPaintLayer,
+      gl.domElement,
+      shouldShowInpaintMask,
+    ],
   );
 
   useEffect(() => {
-    if (!canUseSurfacePaint || paintTool !== 'none') return undefined;
+    if (!canUseSurfacePaint || paintTool !== 'none' || !shouldShowColorPaintOverlays)
+      return undefined;
     const model = getTargetModel();
     if (!model || inpaintMaskPrewarmObjectIdRef.current === model.objectId) return undefined;
     let cancelled = false;
@@ -4438,7 +4994,11 @@ function SurfacePaintOverlay() {
     return () => {
       cancelled = true;
     };
-  }, [clearLocalRepaintGpuOverlay, localRepaintProjectionSource]);
+  }, [
+    clearLocalRepaintGpuOverlay,
+    localRepaintProjectionSource,
+    shouldShowColorPaintOverlays,
+  ]);
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -4470,13 +5030,18 @@ function SurfacePaintOverlay() {
     if (!layer) return;
     layer.overlayMeshes.forEach((mesh) => {
       if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = shouldShowInpaintMask;
+      if (mesh.userData.liclickPaintStrokePreview) {
+        mesh.visible =
+          shouldShowColorPaintOverlays &&
+          layer.paintPreviewMaterial.uniforms.projectionReady.value > 0.5;
+      }
     });
     layer.inpaintSnapshots.forEach((snapshot) => {
       snapshot.overlayMeshes.forEach((mesh) => {
         mesh.visible = shouldShowInpaintMask;
       });
     });
-  }, [paintTool, shouldShowInpaintMask]);
+  }, [paintTool, shouldShowColorPaintOverlays, shouldShowInpaintMask]);
 
   useEffect(() => {
     if (!isInpaintMode) return;
@@ -4492,9 +5057,15 @@ function SurfacePaintOverlay() {
       overlay.visible = false;
     });
     layer.overlayMeshes.forEach((mesh) => {
-      if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
+      if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = shouldShowInpaintMask;
     });
-  }, [ensureInpaintMaskOverlaysForModel, getTargetModel, isInpaintMode, syncInpaintMaskProjection]);
+  }, [
+    ensureInpaintMaskOverlaysForModel,
+    getTargetModel,
+    isInpaintMode,
+    shouldShowInpaintMask,
+    syncInpaintMaskProjection,
+  ]);
 
   const getBrushWorldRadius = useCallback(
     (
@@ -4932,7 +5503,7 @@ function SurfacePaintOverlay() {
         generationId: localRepaintSource.generationId,
         captureId: localRepaintSource.captureId,
         replacementTargetLayerId: localRepaintSource.targetLayerId,
-        renderedColor: true,
+        renderedColor: false,
         minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
         isBaked: false,
         needsRebake: true,
@@ -4989,11 +5560,15 @@ function SurfacePaintOverlay() {
         const sourceTexture = previewImageUrl
           ? getLiveProjectedTexture(previewImageUrl, THREE.SRGBColorSpace, { flipY: false })
           : undefined;
-        const visible = currentOverlay.visibilityLayerId
+        const layerVisible = currentOverlay.visibilityLayerId
           ? (useLayerStore
               .getState()
-              .layers.find((layer) => layer.id === currentOverlay.visibilityLayerId)?.visible ?? true)
+              .layers.find((layer) => layer.id === currentOverlay.visibilityLayerId)?.visible ?? false)
           : true;
+        const visible = isLocalRepaintOverlayVisible(
+          useSceneStore.getState().displayMode,
+          layerVisible,
+        );
         if (
           syncLocalRepaintGpuOverlayBinding(currentOverlay, {
             modelGroup: model.group,
@@ -5014,7 +5589,6 @@ function SurfacePaintOverlay() {
       const previewImageUrl = localRepaintSourceImageRef.current?.previewImageUrl;
       if (!previewImageUrl) return undefined;
       model.group.updateMatrixWorld(true);
-      const exposure = useSettingsStore.getState().exposure;
       const compileStartedAt = performance.now();
       const material = await createProjectedLayerMaterial({
         layerId: composite.layerId,
@@ -5037,19 +5611,20 @@ function SurfacePaintOverlay() {
         useMask: true,
         useDepthCheck: Boolean(source.depthUrl),
         useNormalCheck: Boolean(source.normalUrl),
-        renderedColor: true,
+        renderedColor: false,
         transparentProjectionOnly: true,
         minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
         enableBackfaceCulling: true,
         edgeFeather: 0.004,
         depthBias: 0.025,
-        previewLighting: {
-          enabled: false,
-          exposure,
-          ambientIntensity: 1,
-          keyLightIntensity: 0,
-          keyLightDirection: [0, 1, 0],
-        },
+        previewLighting: getPreviewLighting({
+          displayMode: useSceneStore.getState().displayMode,
+          environmentPreset: useSettingsStore.getState().environmentPreset,
+          exposure: useSettingsStore.getState().exposure,
+          pbrEnvironmentIntensity: useSettingsStore.getState().pbrEnvironmentIntensity,
+          pbrKeyLightIntensity: useSettingsStore.getState().pbrKeyLightIntensity,
+          pbrLightAzimuth: useSettingsStore.getState().pbrLightAzimuth,
+        }),
       });
 
       const currentSource = useSceneStore.getState().localRepaintProjectionSource;
@@ -5109,10 +5684,14 @@ function SurfacePaintOverlay() {
       const visibilityLayerId = composite.layerId;
       const readVisibility = (layers = useLayerStore.getState().layers) =>
         visibilityLayerId
-          ? (layers.find((layer) => layer.id === visibilityLayerId)?.visible ?? true)
+          ? (layers.find((layer) => layer.id === visibilityLayerId)?.visible ?? false)
           : true;
       let lastVisibility: boolean | undefined;
-      const applyVisibility = (visible: boolean) => {
+      const applyVisibility = (layerVisible: boolean) => {
+        const visible = isLocalRepaintOverlayVisible(
+          useSceneStore.getState().displayMode,
+          layerVisible,
+        );
         if (visible === lastVisibility) return;
         lastVisibility = visible;
         root.visible = visible;
@@ -5712,7 +6291,7 @@ function SurfacePaintOverlay() {
         if (!layer) return;
         ensureInpaintMaskOverlaysForModel(layer, result.model);
         layer.overlayMeshes.forEach((mesh) => {
-          if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
+          if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = shouldShowInpaintMask;
         });
       }
       if (target === 'paint') {
@@ -5905,7 +6484,7 @@ function SurfacePaintOverlay() {
             replacementTargetLayerId: source.targetLayerId,
             localRepaintSourceUrl: source.persistentImageUrl ?? source.imageUrl,
             localRepaintMaskUrl: composite.maskUrl,
-            renderedColor: true,
+            renderedColor: false,
             minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
             isBaked: false,
             needsRebake: true,
@@ -6018,7 +6597,7 @@ function SurfacePaintOverlay() {
           generationId: source.generationId,
           captureId: source.captureId,
           replacementTargetLayerId: source.targetLayerId,
-          renderedColor: true,
+          renderedColor: false,
           minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
           visible: true,
           opacity: 1,
@@ -6186,7 +6765,7 @@ function SurfacePaintOverlay() {
           generationId: source.generationId,
           captureId: source.captureId,
           replacementTargetLayerId: source.targetLayerId,
-          renderedColor: true,
+          renderedColor: false,
           visible: true,
           opacity: 1,
           strength: 1,
@@ -6885,6 +7464,7 @@ function SurfacePaintOverlay() {
         let falloffReadMs = 0;
         let candidateRaycastMs = 0;
         let candidateFilterMs = 0;
+        let gpuProbeDurationMs = 0;
         let firstApplyVisibleAt = 0;
         let gpuProbe = {
           visiblePixels: 0,
@@ -7031,8 +7611,24 @@ function SurfacePaintOverlay() {
           if (tool === 'inpaint-apply' && localRepaintCompositeRef.current) {
             scheduleTextureUpdate(localRepaintCompositeRef.current.maskTexture);
             if (gpuProbe.visiblePixels === 0) {
-              await waitForFrame();
-              gpuProbe = probeLocalRepaintGpuOutput();
+              const interactionPhase = document.body.dataset.perfLocalRepaintPhase;
+              document.body.dataset.perfLocalRepaintPhase = 's6-quality-gpu-probe';
+              const probeStartedAt = performance.now();
+              try {
+                await waitForFrame();
+                gpuProbe = probeLocalRepaintGpuOutput();
+                // Frame telemetry is finalized by the next rAF callback. Keep
+                // the quality phase active through that callback so the three
+                // synchronous readbacks cannot be misreported as brush latency.
+                await waitForFrame();
+              } finally {
+                gpuProbeDurationMs += performance.now() - probeStartedAt;
+                if (interactionPhase) {
+                  document.body.dataset.perfLocalRepaintPhase = interactionPhase;
+                } else {
+                  delete document.body.dataset.perfLocalRepaintPhase;
+                }
+              }
             }
           }
           isPaintingRef.current = false;
@@ -7135,6 +7731,42 @@ function SurfacePaintOverlay() {
           if (gpuProbe.visiblePixels === 0 || gpuProbe.maxAlpha === 0) {
             const overlay = localRepaintGpuOverlayRef.current;
             const maskMap = overlay?.material.uniforms.maskMap?.value as THREE.Texture | undefined;
+            const diagnosticUniformNames = [
+              'useDepthCheck',
+              'useNormalCheck',
+              'minimumProjectionFacing',
+              'enableBackfaceCulling',
+              'useMask',
+            ] as const;
+            const originalDiagnosticValues = overlay
+              ? Object.fromEntries(
+                  diagnosticUniformNames.map((name) => [
+                    name,
+                    overlay.material.uniforms[name]?.value,
+                  ]),
+                )
+              : undefined;
+            let relaxedVisibilityProbe:
+              | ReturnType<typeof probeLocalRepaintGpuOutput>
+              | undefined;
+            let unmaskedProbe: ReturnType<typeof probeLocalRepaintGpuOutput> | undefined;
+            if (overlay && originalDiagnosticValues) {
+              try {
+                overlay.material.uniforms.useDepthCheck.value = 0;
+                overlay.material.uniforms.useNormalCheck.value = 0;
+                overlay.material.uniforms.minimumProjectionFacing.value = 0;
+                overlay.material.uniforms.enableBackfaceCulling.value = 0;
+                relaxedVisibilityProbe = probeLocalRepaintGpuOutput();
+                overlay.material.uniforms.useMask.value = 0;
+                unmaskedProbe = probeLocalRepaintGpuOutput();
+              } finally {
+                diagnosticUniformNames.forEach((name) => {
+                  const uniform = overlay.material.uniforms[name];
+                  if (uniform) uniform.value = originalDiagnosticValues[name];
+                });
+                invalidate();
+              }
+            }
             throw new Error(
               `S6 GPU 覆盖层没有输出任何可见像素。${JSON.stringify({
                 applySamples,
@@ -7150,6 +7782,9 @@ function SurfacePaintOverlay() {
                 maskTextureSize: maskMap?.image
                   ? [maskMap.image.width ?? 0, maskMap.image.height ?? 0]
                   : undefined,
+                diagnosticUniforms: originalDiagnosticValues,
+                relaxedVisibilityProbe,
+                unmaskedProbe,
               })}`,
             );
           }
@@ -7215,6 +7850,7 @@ function SurfacePaintOverlay() {
             gpuMaxAlpha: gpuProbe.maxAlpha,
             gpuSceneChangedPixels: gpuProbe.sceneChangedPixels,
             gpuSceneMaxDelta: gpuProbe.sceneMaxDelta,
+            gpuProbeDurationMs,
             projectedBackgroundRebuilds,
             firstGeneratedCandidateScanMs,
             falloffReadMs,
@@ -7600,11 +8236,15 @@ function SurfacePaintOverlay() {
           const sourceTexture = previewImageUrl
             ? getLiveProjectedTexture(previewImageUrl, THREE.SRGBColorSpace, { flipY: false })
             : undefined;
-          const visible = overlay.visibilityLayerId
+          const layerVisible = overlay.visibilityLayerId
             ? (useLayerStore
                 .getState()
-                .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? true)
+                .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? false)
             : true;
+          const visible = isLocalRepaintOverlayVisible(
+            useSceneStore.getState().displayMode,
+            layerVisible,
+          );
           if (
             syncLocalRepaintGpuOverlayBinding(overlay, {
               modelGroup: result.model.group,

@@ -2,7 +2,7 @@ import {
   checkLocalTextureRuntime,
   getLocalTextureRuntimeApiBase,
 } from './localTextureRuntimeClient';
-import { getLocalIdentityProof } from './localIdentityProofApiClient';
+import { fetchWithLocalIdentityProof } from './localIdentityProofApiClient';
 
 const personalLiclickCapability = 'atlas-personal-auth';
 
@@ -82,7 +82,6 @@ async function requestLocalJson<T>(
 ) {
   const { timeoutMs = 30_000, headers, ...fetchInit } = init;
   const requestHeaders = new Headers(headers);
-  requestHeaders.set('x-li3d-identity-proof', await getLocalIdentityProof());
   if (fetchInit.body && !requestHeaders.has('content-type')) {
     requestHeaders.set('content-type', 'application/json');
   }
@@ -90,13 +89,17 @@ async function requestLocalJson<T>(
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
-    response = await fetch(`${getLocalTextureRuntimeApiBase()}${path}`, {
-      ...fetchInit,
-      cache: 'no-store',
-      credentials: 'omit',
-      headers: requestHeaders,
-      signal: controller.signal,
-    });
+    response = await fetchWithLocalIdentityProof(
+      `${getLocalTextureRuntimeApiBase()}${path}`,
+      {
+        ...fetchInit,
+        cache: 'no-store',
+        credentials: 'omit',
+        headers: requestHeaders,
+        signal: controller.signal,
+      },
+      { signal: controller.signal, timeoutMs: Math.min(timeoutMs, 8_000) },
+    );
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new LocalLiclickAccountApiError('本地贴图组件响应超时，请确认组件仍在运行。');

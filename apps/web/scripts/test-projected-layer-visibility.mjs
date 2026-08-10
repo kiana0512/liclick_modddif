@@ -179,6 +179,15 @@ try {
   overlayRoot.visible = false;
   overlayMesh.visible = false;
   detachedMesh.visible = false;
+  assert.equal(repaintOverlaySync.isLocalRepaintOverlayVisible('pbr', true), true);
+  assert.equal(repaintOverlaySync.isLocalRepaintOverlayVisible('flat', true), true);
+  assert.equal(repaintOverlaySync.isLocalRepaintOverlayVisible('normal', true), false);
+  assert.equal(repaintOverlaySync.isLocalRepaintOverlayVisible('wire', true), false);
+  assert.equal(
+    repaintOverlaySync.isLocalRepaintOverlayVisible('pbr', false),
+    false,
+    'A hidden repaint layer must remain hidden in a colour display mode.',
+  );
   assert.equal(
     repaintOverlaySync.syncLocalRepaintGpuOverlayBinding(
       { material: overlayMaterial, root: overlayRoot, meshes: [overlayMesh, detachedMesh] },
@@ -342,12 +351,11 @@ try {
   projection.disposeGeneratedMaterialTree(whiteMembraneMaterial);
 
   const flatWhiteMembraneMaterial = projection.createDisplayModeMaterial('flat', false);
+  assert.equal(flatWhiteMembraneMaterial.name, 'LiclickWhiteMembranePreview');
+  assert(flatWhiteMembraneMaterial instanceof THREE.MeshStandardMaterial);
+  assert.equal(flatWhiteMembraneMaterial.roughness, 0.78);
+  assert.equal(flatWhiteMembraneMaterial.metalness, 0);
   assert.equal(flatWhiteMembraneMaterial.emissiveIntensity, 0);
-  assert.equal(
-    flatWhiteMembraneMaterial.emissive.getHexString(),
-    '000000',
-    'The non-projected fallback must not flatten shading with white emission.',
-  );
   projection.disposeGeneratedMaterialTree(flatWhiteMembraneMaterial);
 
   const missingNormalLayers = layers.map((layer, index) => ({
