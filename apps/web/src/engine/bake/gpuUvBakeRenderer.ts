@@ -343,9 +343,10 @@ const fragmentShader = `
     float ndv = dot(captureWorldNormal, projectorViewDir);
     float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
     if (useDepthCheck < 0.5 && enableBackfaceCulling > 0.5 && frontFacing < 0.5) discard;
+    float visibilityBackedNdv = mix(ndv, abs(ndv), useDepthCheck);
     float angleCoverage = mix(
       smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv),
-      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv),
+      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, visibilityBackedNdv),
       useDepthCheck
     );
     if (angleCoverage <= 0.0001) discard;
@@ -467,7 +468,7 @@ const fragmentShader = `
     texel.rgb = applyHsvAdjustments(texel.rgb);
     float sourceAlpha = texel.a * maskCoverage;
     if (sourceAlpha < 0.01) discard;
-    float angleWeight = computeAngleWeight(ndv, layerStrength);
+    float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
     float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
     if (coverage <= max(0.025, minimumOutputCoverage)) discard;

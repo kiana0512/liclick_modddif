@@ -627,14 +627,18 @@ const fragmentShader = `
     texel.rgb = applyHsvAdjustments(texel.rgb, hueShift, saturationShift, lightnessShift);
     float sourceAlpha = texel.a * maskAlpha;
     float alphaCoverage = step(0.01, sourceAlpha);
+    // Capture depth is the visibility authority. Imported/scanned meshes often
+    // contain locally flipped normals; using signed N·V after accepting the
+    // depth match turns those otherwise visible triangles into hard dead zones.
+    float visibilityBackedNdv = mix(ndv, abs(ndv), useDepthCheck);
     float angleCoverage = mix(
       smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv),
-      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv),
+      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, visibilityBackedNdv),
       useDepthCheck
     );
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
     float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
-    float angleWeight = computeAngleWeight(ndv, layerStrength);
+    float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
     float softCoverageGate = smoothstep(0.0, ${COVERAGE_FEATHER_END.toFixed(2)}, coverage);
@@ -981,12 +985,12 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesDepth(index)
-          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv)`
+          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
-      float angleWeight = computeAngleWeight(ndv, layerStrength${index});
+      float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
       if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
@@ -1060,12 +1064,12 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesDepth(index)
-          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv)`
+          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
-      float angleWeight = computeAngleWeight(ndv, layerStrength${index});
+      float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
       if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {

@@ -172,10 +172,11 @@ const LOCAL_REPAINT_INTERACTIVE_UV_BAKE_ENABLED = false;
 const LOCAL_REPAINT_HIGH_RES_IDLE_MS = 3000;
 const LOCAL_REPAINT_HANDOFF_DURATION_MS = 160;
 const PROJECTED_ERASER_HIGH_RES_IDLE_MS = 1800;
-// Stop projection before a surface becomes so foreshortened that a few source
-// pixels stretch into visible scan lines. 0.31 is about 72 degrees from face-on;
-// the shared 0.08 cosine feather starts fading at roughly 67 degrees.
-const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.31;
+// Depth is authoritative for generated local repaint sources. Keep only a
+// near-grazing fallback guard for legacy sources without capture depth; a high
+// face-on threshold creates permanent brush dead zones on curved/hard-edge
+// geometry even though those pixels are visibly present in the generated view.
+const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.02;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -5823,7 +5824,12 @@ function SurfacePaintOverlay() {
         maskSpace: 'projection',
         depthUrl: source.depthUrl,
         depthIsLinearView: source.depthEncoding === 'linear-view',
-        normalUrl: source.normalUrl,
+        // Capture normals are smooth-shaded for image generation, while this
+        // material evaluates flat derivative normals. Comparing the two clips
+        // valid curved and low-poly regions into permanent paint dead zones.
+        // Capture depth already provides exact front-surface visibility and is
+        // sufficient to prevent projection-through without the false rejects.
+        normalUrl: undefined,
         camera: source.camera,
         objectId: source.objectId ?? model.objectId,
         objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
@@ -5836,7 +5842,7 @@ function SurfacePaintOverlay() {
         depthTest: true,
         useMask: true,
         useDepthCheck: Boolean(source.depthUrl),
-        useNormalCheck: Boolean(source.normalUrl),
+        useNormalCheck: false,
         renderedColor: false,
         transparentProjectionOnly: true,
         minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
@@ -6313,12 +6319,13 @@ function SurfacePaintOverlay() {
           composite &&
           result.hit.object instanceof THREE.Mesh &&
           result.hit.face &&
-          isLocalRepaintSurfaceFacingProjector(
-            composite,
-            result.hit.object,
-            result.hit.face,
-            result.hit.point,
-          );
+          (Boolean(draft?.localRepaintSource?.depthUrl) ||
+            isLocalRepaintSurfaceFacingProjector(
+              composite,
+              result.hit.object,
+              result.hit.face,
+              result.hit.point,
+            ));
         localRepaintUv = composite
           ? projectWorldPointToLocalRepaintUv(result.hit.point, composite.worldToSourceClip)
           : undefined;
@@ -7641,6 +7648,18 @@ function SurfacePaintOverlay() {
         let sourceImageState = localRepaintSourceImageRef.current;
         const model = getTargetModel();
         if (!model) throw new Error('S6 需要一个已加载并选中的模型。');
+        const viewportControls = useSceneStore.getState().viewport?.controls;
+        const originalBenchmarkCamera = {
+          position: camera.position.clone(),
+          quaternion: camera.quaternion.clone(),
+          projectionMatrix: camera.projectionMatrix.clone(),
+          projectionMatrixInverse: camera.projectionMatrixInverse.clone(),
+          near: camera.near,
+          far: camera.far,
+          zoom: camera.zoom,
+          fov: camera instanceof THREE.PerspectiveCamera ? camera.fov : undefined,
+          target: viewportControls?.target.clone(),
+        };
         const layerState = useLayerStore.getState();
         const belongsToModel = (layer: Layer) =>
           !layer.objectId || layer.objectId === model.objectId;
@@ -7940,6 +7959,22 @@ function SurfacePaintOverlay() {
           sourceWidth = sourceImageState.image.naturalWidth || sourceImageState.image.width;
           sourceHeight = sourceImageState.image.naturalHeight || sourceImageState.image.height;
           document.body.dataset.perfLocalRepaintPhase = 's6-interaction-apply-prepare';
+          // S6 validates the generated task in its own capture space. Depending
+          // on the user's current orbit made valid depth rejection on another
+          // side look like a repaint dead zone and produced non-repeatable QA.
+          camera.position.fromArray(source.camera.position);
+          camera.quaternion.fromArray(source.camera.quaternion);
+          camera.near = source.camera.near;
+          camera.far = source.camera.far;
+          camera.zoom = source.camera.zoom;
+          if (camera instanceof THREE.PerspectiveCamera && source.camera.fov !== undefined) {
+            camera.fov = source.camera.fov;
+          }
+          camera.projectionMatrix.fromArray(source.camera.projectionMatrix);
+          camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+          camera.updateMatrixWorld(true);
+          viewportControls?.target.fromArray(source.camera.target);
+          invalidate();
           await waitForFrame();
           await waitForFrame();
           const applyStartedAt = performance.now();
@@ -8095,6 +8130,25 @@ function SurfacePaintOverlay() {
           markPerformanceEvent('local-repaint', 's6-simulation-complete', result);
           return result;
         } finally {
+          camera.position.copy(originalBenchmarkCamera.position);
+          camera.quaternion.copy(originalBenchmarkCamera.quaternion);
+          camera.near = originalBenchmarkCamera.near;
+          camera.far = originalBenchmarkCamera.far;
+          camera.zoom = originalBenchmarkCamera.zoom;
+          if (
+            camera instanceof THREE.PerspectiveCamera &&
+            originalBenchmarkCamera.fov !== undefined
+          ) {
+            camera.fov = originalBenchmarkCamera.fov;
+          }
+          camera.projectionMatrix.copy(originalBenchmarkCamera.projectionMatrix);
+          camera.projectionMatrixInverse.copy(originalBenchmarkCamera.projectionMatrixInverse);
+          camera.updateMatrixWorld(true);
+          if (viewportControls && originalBenchmarkCamera.target) {
+            viewportControls.target.copy(originalBenchmarkCamera.target);
+            viewportControls.update();
+          }
+          invalidate();
           delete document.body.dataset.perfSimulatedViewportInteraction;
           delete document.body.dataset.perfLocalRepaintPhase;
           useSceneStore.getState().setPaintMaskSettings(originalMaskSettings);
@@ -8109,12 +8163,14 @@ function SurfacePaintOverlay() {
     };
   }, [
     beginStrokeHistory,
+    camera,
     commitMaskIfDirty,
     commitPaintStroke,
     commitStrokeHistory,
     ensureLiveLocalRepaintComposite,
     getTargetModel,
     gl.domElement,
+    invalidate,
     paintAt,
     probeLocalRepaintGpuOutput,
     raycastModel,
@@ -8502,12 +8558,13 @@ function SurfacePaintOverlay() {
           composite &&
           result.hit.object instanceof THREE.Mesh &&
           result.hit.face &&
-          isLocalRepaintSurfaceFacingProjector(
-            composite,
-            result.hit.object,
-            result.hit.face,
-            result.hit.point,
-          );
+          (Boolean(source?.depthUrl) ||
+            isLocalRepaintSurfaceFacingProjector(
+              composite,
+              result.hit.object,
+              result.hit.face,
+              result.hit.point,
+            ));
         const projectedUv =
           composite && surfaceFacesProjector
             ? projectWorldPointToLocalRepaintUv(

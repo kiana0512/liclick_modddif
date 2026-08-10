@@ -258,9 +258,10 @@ const candidateFragmentShader = `
     vec3 viewDirection = normalize(projectorPosition - captureWorldPosition.xyz);
     float ndv = dot(captureWorldNormal, viewDirection);
     if (useDepthCheck < 0.5 && ndv < -0.35) discard;
+    float visibilityBackedNdv = mix(ndv, abs(ndv), useDepthCheck);
     float angleCoverage = mix(
       smoothstep(-0.62, -0.18, ndv),
-      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, ndv),
+      smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, visibilityBackedNdv),
       useDepthCheck
     );
     float projectedDepth = ndc.z * 0.5 + 0.5;
@@ -359,7 +360,7 @@ const candidateFragmentShader = `
     float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
     if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
     float strength = clamp(layerStrength, 0.25, 3.0);
-    float angleWeight = smoothstep(0.02, 0.25, ndv) * pow(clamp(ndv, 0.0, 1.0), 4.0 / strength);
+    float angleWeight = smoothstep(0.02, 0.25, visibilityBackedNdv) * pow(clamp(visibilityBackedNdv, 0.0, 1.0), 4.0 / strength);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, edgeFade(uv, 0.035));
     float score = max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)});
     candidateColor = vec4(texel.rgb, score);
