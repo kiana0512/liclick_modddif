@@ -195,6 +195,12 @@ function isRendererOwnedLocalRepaintLayer(layer: Layer) {
 }
 
 const MAX_INPAINT_PROJECTION_SNAPSHOTS = 12;
+// Selection strokes are authored in projector space. A matching GPU depth
+// snapshot prevents the same screen-space stamp from landing on every surface
+// along that projector ray. The capture is refreshed only after the camera
+// settles (or synchronously before the first stamp), never per pointer sample.
+const INPAINT_DEPTH_CAPTURE_DELAY_MS = 80;
+const INPAINT_DEPTH_EPSILON = 0.00002;
 // Paint feedback is an editor overlay, not part of the texture layer stack.
 // Keep it above projected textures, topology wireframes and selection helpers.
 // The inpaint selection must be the final model-space overlay so its striped
@@ -2123,6 +2129,8 @@ type UvPaintLayer = {
   maskProjectorObjectMatrix: THREE.Matrix4;
   maskProjectorPositionLocal: THREE.Vector3;
   maskProjectionReady: boolean;
+  maskDepthTarget?: THREE.WebGLRenderTarget;
+  maskDepthReady: boolean;
   inpaintSnapshots: InpaintMaskProjectionSnapshot[];
   overlayMeshes: THREE.Mesh[];
   overlayTargets: Set<THREE.Mesh>;
@@ -2134,6 +2142,7 @@ type InpaintMaskProjectionSnapshot = {
   projectorMatrix: THREE.Matrix4;
   projectorObjectMatrix: THREE.Matrix4;
   projectorPositionLocal: THREE.Vector3;
+  depthTarget?: THREE.WebGLRenderTarget;
   overlayMeshes: THREE.Mesh[];
 };
 
@@ -2771,10 +2780,81 @@ async function bakeProjectedEraserStrokesToUv(input: {
   });
 }
 
+function createInpaintDepthTarget(width: number, height: number) {
+  const target = new THREE.WebGLRenderTarget(width, height, {
+    format: THREE.RGBAFormat,
+    type: THREE.UnsignedByteType,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: true,
+    stencilBuffer: false,
+    samples: 0,
+  });
+  const depthTexture = new THREE.DepthTexture(width, height, THREE.UnsignedIntType);
+  depthTexture.format = THREE.DepthFormat;
+  depthTexture.minFilter = THREE.NearestFilter;
+  depthTexture.magFilter = THREE.NearestFilter;
+  depthTexture.generateMipmaps = false;
+  target.depthTexture = depthTexture;
+  target.texture.generateMipmaps = false;
+  return target;
+}
+
+function bindInpaintDepthTarget(
+  material: THREE.ShaderMaterial,
+  target: THREE.WebGLRenderTarget | undefined,
+  ready = Boolean(target),
+) {
+  material.uniforms.occlusionDepthMap.value = target?.depthTexture ?? null;
+  (material.uniforms.occlusionDepthTexelSize.value as THREE.Vector2).set(
+    target ? 1 / Math.max(1, target.width) : 1,
+    target ? 1 / Math.max(1, target.height) : 1,
+  );
+  material.uniforms.occlusionDepthReady.value = ready && target?.depthTexture ? 1 : 0;
+}
+
+const inpaintDepthShader = `
+  uniform sampler2D occlusionDepthMap;
+  uniform vec2 occlusionDepthTexelSize;
+  uniform float occlusionDepthReady;
+  uniform float occlusionDepthEpsilon;
+
+  bool isProjectorSurfaceVisible(vec2 projectorUv, float projectedDepth) {
+    if (occlusionDepthReady < 0.5) return true;
+    float farthestDepth = 0.0;
+    float validSamples = 0.0;
+    vec2 offsets[5];
+    offsets[0] = vec2(0.0);
+    offsets[1] = vec2(occlusionDepthTexelSize.x, 0.0);
+    offsets[2] = vec2(-occlusionDepthTexelSize.x, 0.0);
+    offsets[3] = vec2(0.0, occlusionDepthTexelSize.y);
+    offsets[4] = vec2(0.0, -occlusionDepthTexelSize.y);
+    for (int index = 0; index < 5; index++) {
+      float capturedDepth = texture2D(
+        occlusionDepthMap,
+        clamp(projectorUv + offsets[index], vec2(0.0), vec2(1.0))
+      ).r;
+      // Ignore background neighbors at silhouettes. Taking the farthest valid
+      // surface sample avoids false rejection on a sloped triangle without
+      // allowing the clear-depth value to reopen the projector ray.
+      if (capturedDepth < 0.999999) {
+        farthestDepth = max(farthestDepth, capturedDepth);
+        validSamples += 1.0;
+      }
+    }
+    if (validSamples < 0.5) return false;
+    return projectedDepth <= farthestDepth + occlusionDepthEpsilon;
+  }
+`;
+
 function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
   return new THREE.ShaderMaterial({
     uniforms: {
       maskMap: { value: maskTexture },
+      occlusionDepthMap: { value: null },
+      occlusionDepthTexelSize: { value: new THREE.Vector2(1, 1) },
+      occlusionDepthReady: { value: 0 },
+      occlusionDepthEpsilon: { value: INPAINT_DEPTH_EPSILON },
       projectorMatrix: { value: new THREE.Matrix4() },
       projectorPosition: { value: new THREE.Vector3() },
       projectionReady: { value: 0 },
@@ -2809,13 +2889,16 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
       uniform float stripeWidth;
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
+      ${inpaintDepthShader}
 
       void main() {
         if (projectionReady < 0.5) discard;
         if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
         vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
         if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
-        vec2 maskUv = ndc.xy * 0.5 + 0.5;
+        vec2 projectorUv = ndc.xy * 0.5 + 0.5;
+        if (!isProjectorSurfaceVisible(projectorUv, ndc.z * 0.5 + 0.5)) discard;
+        vec2 maskUv = projectorUv;
         maskUv.y = 1.0 - maskUv.y;
         vec4 maskTexel = texture2D(maskMap, maskUv);
         float maskAlpha = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
@@ -2932,6 +3015,8 @@ function updateInpaintProjectionCamera(
     .setFromMatrixPosition(camera.matrixWorld)
     .applyMatrix4(inpaintObjectMatrixInverseScratch.copy(object.matrixWorld).invert());
   layer.maskProjectionReady = true;
+  layer.maskDepthReady = false;
+  bindInpaintDepthTarget(layer.maskMaterial, layer.maskDepthTarget, false);
   [layer.maskMaterial, layer.paintPreviewMaterial].forEach((material) => {
     const uniforms = material.uniforms;
     (uniforms.projectorMatrix.value as THREE.Matrix4).copy(layer.maskProjectorMatrix);
@@ -2988,17 +3073,26 @@ function disposeUvPaintLayer(layer?: UvPaintLayer) {
   layer.projectionTexture.dispose();
   layer.maskTexture.dispose();
   layer.maskMaterial.dispose();
+  layer.maskDepthTarget?.dispose();
   layer.inpaintSnapshots.forEach((snapshot) => {
     snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
     snapshot.texture.dispose();
     snapshot.material.dispose();
+    snapshot.depthTarget?.dispose();
   });
 }
 
-function createInpaintMaskCaptureMaterial(maskTexture: THREE.CanvasTexture) {
-  return new THREE.ShaderMaterial({
+function createInpaintMaskCaptureMaterial(
+  maskTexture: THREE.CanvasTexture,
+  depthTarget?: THREE.WebGLRenderTarget,
+) {
+  const material = new THREE.ShaderMaterial({
     uniforms: {
       maskMap: { value: maskTexture },
+      occlusionDepthMap: { value: null },
+      occlusionDepthTexelSize: { value: new THREE.Vector2(1, 1) },
+      occlusionDepthReady: { value: 0 },
+      occlusionDepthEpsilon: { value: INPAINT_DEPTH_EPSILON },
       projectorMatrix: { value: new THREE.Matrix4() },
       projectorPosition: { value: new THREE.Vector3() },
       projectionReady: { value: 1 },
@@ -3022,12 +3116,15 @@ function createInpaintMaskCaptureMaterial(maskTexture: THREE.CanvasTexture) {
       uniform sampler2D maskMap;
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
+      ${inpaintDepthShader}
 
       void main() {
         if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
         vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
         if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
-        vec2 maskUv = ndc.xy * 0.5 + 0.5;
+        vec2 projectorUv = ndc.xy * 0.5 + 0.5;
+        if (!isProjectorSurfaceVisible(projectorUv, ndc.z * 0.5 + 0.5)) discard;
+        vec2 maskUv = projectorUv;
         maskUv.y = 1.0 - maskUv.y;
         vec4 maskTexel = texture2D(maskMap, maskUv);
         float coverage = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
@@ -3041,6 +3138,8 @@ function createInpaintMaskCaptureMaterial(maskTexture: THREE.CanvasTexture) {
     side: THREE.DoubleSide,
     toneMapped: false,
   });
+  bindInpaintDepthTarget(material, depthTarget);
+  return material;
 }
 
 function hasCanvasAlpha(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) {
@@ -3617,6 +3716,8 @@ function SurfacePaintOverlay() {
   const localRepaintHandoffFrameRef = useRef<number>();
   const localRepaintPreviewTextureIdRef = useRef(createId('local-repaint-source-preview'));
   const inpaintMaskPrewarmObjectIdRef = useRef<string>();
+  const inpaintDepthCaptureTimerRef = useRef<number>();
+  const inpaintDepthCaptureFrameRef = useRef<number>();
   const paintPreviewRevisionRef = useRef(0);
   const maskDirtyRef = useRef(false);
   const maskHasContentRef = useRef(false);
@@ -4264,6 +4365,7 @@ function SurfacePaintOverlay() {
         maskProjectorObjectMatrix: new THREE.Matrix4(),
         maskProjectorPositionLocal: new THREE.Vector3(),
         maskProjectionReady: false,
+        maskDepthReady: false,
         inpaintSnapshots: [],
         overlayMeshes: [],
         overlayTargets: new Set(),
@@ -4396,6 +4498,101 @@ function SurfacePaintOverlay() {
     [scheduleTextureUpdate],
   );
 
+  const captureInpaintProjectionDepth = useCallback(
+    (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+      if (
+        layerRef.current !== layer ||
+        layer.objectId !== model.objectId ||
+        hasInpaintProjectionCameraChanged(layer, camera)
+      )
+        return false;
+      const width = Math.max(1, layer.projectionCanvas.width);
+      const height = Math.max(1, layer.projectionCanvas.height);
+      if (
+        !layer.maskDepthTarget ||
+        layer.maskDepthTarget.width !== width ||
+        layer.maskDepthTarget.height !== height
+      ) {
+        layer.maskDepthTarget?.dispose();
+        layer.maskDepthTarget = createInpaintDepthTarget(width, height);
+      }
+      const target = layer.maskDepthTarget;
+      const depthMaterial = new THREE.MeshDepthMaterial({
+        depthPacking: THREE.BasicDepthPacking,
+        side: THREE.DoubleSide,
+      });
+      depthMaterial.colorWrite = false;
+      depthMaterial.depthTest = true;
+      depthMaterial.depthWrite = true;
+      const restoreScene = applyTargetOnlyMaterial(scene, model.objectId, () => depthMaterial);
+      const previousTarget = gl.getRenderTarget();
+      const previousClearColor = gl.getClearColor(new THREE.Color()).clone();
+      const previousClearAlpha = gl.getClearAlpha();
+      const previousAutoClear = gl.autoClear;
+      const startedAt = performance.now();
+      try {
+        gl.autoClear = true;
+        gl.setRenderTarget(target);
+        gl.setClearColor('#ffffff', 1);
+        gl.clear(true, true, true);
+        gl.render(scene, camera);
+        layer.maskDepthReady = true;
+        bindInpaintDepthTarget(layer.maskMaterial, target, true);
+        markPerformanceEvent('local-repaint', 'selection-projector-depth-capture', {
+          width,
+          height,
+          durationMs: performance.now() - startedAt,
+        });
+        invalidate();
+        return true;
+      } finally {
+        restoreScene();
+        depthMaterial.dispose();
+        gl.setRenderTarget(previousTarget);
+        gl.setClearColor(previousClearColor, previousClearAlpha);
+        gl.autoClear = previousAutoClear;
+      }
+    },
+    [camera, gl, invalidate, scene],
+  );
+
+  const scheduleInpaintProjectionDepth = useCallback(
+    (layer: UvPaintLayer, model: SurfacePaintTarget, immediate = false) => {
+      if (inpaintDepthCaptureTimerRef.current !== undefined) {
+        window.clearTimeout(inpaintDepthCaptureTimerRef.current);
+        inpaintDepthCaptureTimerRef.current = undefined;
+      }
+      if (inpaintDepthCaptureFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(inpaintDepthCaptureFrameRef.current);
+        inpaintDepthCaptureFrameRef.current = undefined;
+      }
+      const capture = () => {
+        inpaintDepthCaptureFrameRef.current = undefined;
+        if (isPaintingRef.current || hasInpaintProjectionCameraChanged(layer, camera)) return false;
+        return captureInpaintProjectionDepth(layer, model);
+      };
+      if (immediate) return capture();
+      inpaintDepthCaptureTimerRef.current = window.setTimeout(() => {
+        inpaintDepthCaptureTimerRef.current = undefined;
+        inpaintDepthCaptureFrameRef.current = window.requestAnimationFrame(capture);
+      }, INPAINT_DEPTH_CAPTURE_DELAY_MS);
+      return false;
+    },
+    [camera, captureInpaintProjectionDepth],
+  );
+
+  useEffect(
+    () => () => {
+      if (inpaintDepthCaptureTimerRef.current !== undefined) {
+        window.clearTimeout(inpaintDepthCaptureTimerRef.current);
+      }
+      if (inpaintDepthCaptureFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(inpaintDepthCaptureFrameRef.current);
+      }
+    },
+    [],
+  );
+
   const archiveCurrentInpaintProjection = useCallback(
     (layer: UvPaintLayer, model: SurfacePaintTarget) => {
       if (!currentProjectionHasContentRef.current) return;
@@ -4422,8 +4619,15 @@ function SurfacePaintOverlay() {
         projectorMatrix: layer.maskProjectorMatrix.clone(),
         projectorObjectMatrix: layer.maskProjectorObjectMatrix.clone(),
         projectorPositionLocal: layer.maskProjectorPositionLocal.clone(),
+        depthTarget: layer.maskDepthReady ? layer.maskDepthTarget : undefined,
         overlayMeshes: [],
       };
+      bindInpaintDepthTarget(material, snapshot.depthTarget);
+      if (snapshot.depthTarget) {
+        layer.maskDepthTarget = undefined;
+        layer.maskDepthReady = false;
+        bindInpaintDepthTarget(layer.maskMaterial, undefined, false);
+      }
       updateInpaintMaterialForObject(
         material,
         snapshot.projectorMatrix,
@@ -4456,6 +4660,7 @@ function SurfacePaintOverlay() {
         expired?.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
         expired?.texture.dispose();
         expired?.material.dispose();
+        expired?.depthTarget?.dispose();
       }
 
       layer.projectionContext.clearRect(
@@ -4479,6 +4684,7 @@ function SurfacePaintOverlay() {
       const rect = gl.domElement.getBoundingClientRect();
       resizeProjectionCanvas(layer, rect.width / Math.max(rect.height, 1), false);
       updateInpaintProjectionCamera(layer, camera, model.group);
+      scheduleInpaintProjectionDepth(layer, model);
       layer.paintPreviewMaterial.uniforms.projectionReady.value = 0;
       layer.paintPreviewOverlays.forEach((overlay) => {
         overlay.visible = false;
@@ -4493,6 +4699,7 @@ function SurfacePaintOverlay() {
       camera,
       getUvPaintLayer,
       gl.domElement,
+      scheduleInpaintProjectionDepth,
       shouldShowInpaintMask,
     ],
   );
@@ -4625,6 +4832,7 @@ function SurfacePaintOverlay() {
         projectorMatrix: snapshot.projectorMatrix,
         projectorObjectMatrix: snapshot.projectorObjectMatrix,
         projectorPositionLocal: snapshot.projectorPositionLocal,
+        depthTarget: snapshot.depthTarget,
       })),
       ...(currentProjectionHasContentRef.current
         ? [
@@ -4633,6 +4841,7 @@ function SurfacePaintOverlay() {
               projectorMatrix: layer.maskProjectorMatrix,
               projectorObjectMatrix: layer.maskProjectorObjectMatrix,
               projectorPositionLocal: layer.maskProjectorPositionLocal,
+              depthTarget: layer.maskDepthReady ? layer.maskDepthTarget : undefined,
             },
           ]
         : []),
@@ -4656,7 +4865,7 @@ function SurfacePaintOverlay() {
     if (!combinedContext) throw new Error('Could not create the combined inpaint mask.');
 
     for (const source of sources) {
-      const captureMaterial = createInpaintMaskCaptureMaterial(source.texture);
+      const captureMaterial = createInpaintMaskCaptureMaterial(source.texture, source.depthTarget);
       updateInpaintMaterialForObject(
         captureMaterial,
         source.projectorMatrix,
@@ -4730,12 +4939,14 @@ function SurfacePaintOverlay() {
         snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
         snapshot.texture.dispose();
         snapshot.material.dispose();
+        snapshot.depthTarget?.dispose();
       });
       layer.inpaintSnapshots = [];
 
       const viewportRect = gl.domElement.getBoundingClientRect();
       resizeProjectionCanvas(layer, viewportRect.width / Math.max(viewportRect.height, 1), true);
       updateInpaintProjectionCamera(layer, camera, model.group);
+      scheduleInpaintProjectionDepth(layer, model);
       ensureInpaintMaskOverlaysForModel(layer, model);
 
       if (combinedMaskUrl) {
@@ -4803,6 +5014,7 @@ function SurfacePaintOverlay() {
     gl.domElement,
     paintMaskInvertRevision,
     pushToast,
+    scheduleInpaintProjectionDepth,
     setPaintMaskDataUrl,
   ]);
 
@@ -5012,10 +5224,13 @@ function SurfacePaintOverlay() {
     );
     layer.maskMaterial.uniforms.projectionReady.value = 0;
     layer.maskProjectionReady = false;
+    layer.maskDepthReady = false;
+    bindInpaintDepthTarget(layer.maskMaterial, layer.maskDepthTarget, false);
     layer.inpaintSnapshots.forEach((snapshot) => {
       snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
       snapshot.texture.dispose();
       snapshot.material.dispose();
+      snapshot.depthTarget?.dispose();
     });
     layer.inpaintSnapshots = [];
     scheduleTextureUpdate(layer.maskTexture);
@@ -7595,7 +7810,12 @@ function SurfacePaintOverlay() {
           lastUvRef.current = undefined;
           lastSampleRef.current = undefined;
           lastPointerClientRef.current = undefined;
-          if (tool !== 'inpaint-apply') syncInpaintMaskProjection(hits[0].model);
+          if (tool !== 'inpaint-apply') {
+            const maskLayer = syncInpaintMaskProjection(hits[0].model);
+            if (!maskLayer.maskDepthReady) {
+              scheduleInpaintProjectionDepth(maskLayer, hits[0].model, true);
+            }
+          }
           beginStrokeHistory(hits[0], tool);
           for (const hit of hits) {
             const sampleStartedAt = performance.now();
@@ -7888,6 +8108,7 @@ function SurfacePaintOverlay() {
     resolveLocalRepaintStrokeSource,
     scheduleTextureUpdate,
     setOrbitControlsEnabled,
+    scheduleInpaintProjectionDepth,
     syncInpaintMaskProjection,
   ]);
 
@@ -8203,7 +8424,12 @@ function SurfacePaintOverlay() {
       // background. stopImmediatePropagation is necessary because both input
       // systems have native listeners on this same canvas element.
       if (!result) return;
-      if (isInpaintMode) syncInpaintMaskProjection(result.model);
+      if (isInpaintMode) {
+        const maskLayer = syncInpaintMaskProjection(result.model);
+        if (!maskLayer.maskDepthReady) {
+          scheduleInpaintProjectionDepth(maskLayer, result.model, true);
+        }
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
 
@@ -8398,6 +8624,7 @@ function SurfacePaintOverlay() {
     raycastModel,
     resolveLocalRepaintStrokeSource,
     setOrbitControlsEnabled,
+    scheduleInpaintProjectionDepth,
     syncInpaintMaskProjection,
     canUseSurfacePaint,
     updateCursor,
