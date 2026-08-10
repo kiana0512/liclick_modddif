@@ -5,15 +5,6 @@ import type { DockSide, PanelId, WorkspaceMode, WorkspacePanelState } from './wo
 export const defaultWorkspacePanels: WorkspacePanelState[] = [
   { id: 'objects', title: 'Objects', dock: 'left', order: 5, collapsed: false, visible: true, mode: 'all' },
   { id: 'generate', title: 'Generate', dock: 'left', order: 40, collapsed: true, visible: true, mode: 'texture' },
-  {
-    id: 'layerAdjustments',
-    title: 'Layer Adjustments',
-    dock: 'right',
-    order: 10,
-    collapsed: true,
-    visible: true,
-    mode: 'texture',
-  },
   { id: 'viewport', title: 'Viewport', dock: 'right', order: 20, collapsed: true, visible: true, mode: 'all' },
   { id: 'referenceImages', title: 'Reference Images', dock: 'right', order: 30, collapsed: false, visible: true, mode: 'scene' },
   {

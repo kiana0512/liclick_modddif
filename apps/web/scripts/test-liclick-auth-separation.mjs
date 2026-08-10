@@ -21,7 +21,12 @@ const atlasProvider = {
   feishuOAuthEnabled: true,
   feishuConfigured: true,
   feishuLoginProvider: "atlas-cli",
+  atlasLoginMode: "service-token",
   missingConfigKeys: [],
+};
+const interactiveAtlasProvider = {
+  ...atlasProvider,
+  atlasLoginMode: "interactive",
 };
 const webProvider = {
   ...atlasProvider,
@@ -148,6 +153,10 @@ try {
 
   assert.equal(resolveLiclickAuthStrategy(atlasProvider), "atlas-workspace");
   assert.equal(
+    resolveLiclickAuthStrategy(interactiveAtlasProvider),
+    "personal-local-component",
+  );
+  assert.equal(
     resolveLiclickAuthStrategy(webProvider),
     "personal-local-component",
   );
@@ -173,6 +182,12 @@ try {
   });
   assert.equal(atlasTransport.baseUrl.includes("4517"), false);
   assert.deepEqual(getLiclickTransportForProvider(webProvider), {
+    kind: "local-component",
+    baseUrl: "http://127.0.0.1:4618",
+    credentials: "omit",
+    requiresIdentityProof: true,
+  });
+  assert.deepEqual(getLiclickTransportForProvider(interactiveAtlasProvider), {
     kind: "local-component",
     baseUrl: "http://127.0.0.1:4618",
     credentials: "omit",

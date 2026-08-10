@@ -21,6 +21,7 @@ import {
   MIN_PAINT_MASK_BRUSH_SIZE,
   useSceneStore,
   type LocalRepaintProjectionSource,
+  type PaintToolMode,
 } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -3374,7 +3375,7 @@ function SurfacePaintOverlay() {
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
   const pointerCancelRecoveryTimerRef = useRef<number>();
-  const strokePaintToolRef = useRef<'brush' | 'eraser'>();
+  const strokePaintToolRef = useRef<PaintToolMode>();
   const lastPaintActivityAtRef = useRef(0);
   const strokeTelemetryRef = useRef<StrokeTelemetrySnapshot & { startedAt: number }>();
   const strokeDraftRef = useRef<PaintStrokeDraft>();
@@ -7459,7 +7460,9 @@ function SurfacePaintOverlay() {
         event.pointerType === 'pen' &&
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
-      const isPaintButton = event.button === 0 || penEraserContact;
+      const rightMaskEraseContact = isInpaintMode && event.button === 2;
+      const isPaintButton =
+        event.button === 0 || penEraserContact || rightMaskEraseContact;
       const result = raycastModel(event);
 
       // Navigation buttons must reach the camera controls even when the drag
@@ -7556,11 +7559,12 @@ function SurfacePaintOverlay() {
       lastSampleRef.current = undefined;
       const pressure = getPointerPressure(event);
       const strokePaintTool =
-        penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
+        rightMaskEraseContact
+          ? 'inpaint-subtract'
+          : penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
           ? 'eraser'
           : paintTool;
-      strokePaintToolRef.current =
-        strokePaintTool === 'brush' || strokePaintTool === 'eraser' ? strokePaintTool : undefined;
+      strokePaintToolRef.current = strokePaintTool;
       lastPointerClientRef.current = { x: event.clientX, y: event.clientY, pressure };
       strokeTelemetryRef.current = {
         endReason: 'pointerup',
@@ -7592,8 +7596,12 @@ function SurfacePaintOverlay() {
       cursorCircleRef.current?.setAttribute('visibility', 'hidden');
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
+    const handleContextMenu = (event: MouseEvent) => {
+      if (isInpaintMode) event.preventDefault();
+    };
     canvas.addEventListener('pointermove', handlePointerMove, true);
     canvas.addEventListener('pointerdown', handlePointerDown, true);
+    canvas.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('pointerup', handlePointerUp, true);
     window.addEventListener('pointercancel', handlePointerCancel, true);
     canvas.addEventListener('lostpointercapture', handleLostPointerCapture);
@@ -7601,6 +7609,7 @@ function SurfacePaintOverlay() {
     return () => {
       canvas.removeEventListener('pointermove', handlePointerMove, true);
       canvas.removeEventListener('pointerdown', handlePointerDown, true);
+      canvas.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('pointerup', handlePointerUp, true);
       window.removeEventListener('pointercancel', handlePointerCancel, true);
       canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);

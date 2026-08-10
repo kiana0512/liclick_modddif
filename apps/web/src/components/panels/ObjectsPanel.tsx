@@ -27,10 +27,7 @@ import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
-import {
-  IMMEDIATE_PROJECT_SAVE_EVENT,
-  useProjectStore,
-} from '@/stores/projectStore';
+import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
@@ -82,7 +79,7 @@ function countObjectStats(model?: ModelLoadResult): ObjectStats {
     triangles: 0,
     materials: 0,
     uvMeshes: 0,
-    dimensions: model ? [...model.boundingBox.size] as [number, number, number] : undefined,
+    dimensions: model ? ([...model.boundingBox.size] as [number, number, number]) : undefined,
   };
   if (!model) return stats;
   model.group.updateMatrixWorld(true);
@@ -96,7 +93,9 @@ function countObjectStats(model?: ModelLoadResult): ObjectStats {
     if (!position) return;
     stats.meshes += 1;
     stats.vertices += position.count;
-    stats.triangles += geometry.index ? Math.floor(geometry.index.count / 3) : Math.floor(position.count / 3);
+    stats.triangles += geometry.index
+      ? Math.floor(geometry.index.count / 3)
+      : Math.floor(position.count / 3);
     if (geometry.getAttribute('uv')) stats.uvMeshes += 1;
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     materials.forEach((material) => materialIds.add(material.uuid));
@@ -218,7 +217,11 @@ export function ObjectsPanel() {
     const object = objects.find((item) => item.id === objectId);
     const model = getImportedModelForObject(objectId);
     if (!object || !model) {
-      pushToast({ tone: 'warning', title: t('objectDuplicateFailed'), description: t('objectRuntimeModelMissing') });
+      pushToast({
+        tone: 'warning',
+        title: t('objectDuplicateFailed'),
+        description: t('objectRuntimeModelMissing'),
+      });
       return;
     }
     captureHistory(`${t('objectDuplicateHistory')}：${object.name}`);
@@ -226,7 +229,11 @@ export function ObjectsPanel() {
     setImportedModel(duplicated.result, duplicated.object);
     const scene = useSceneStore.getState();
     updateCurrentProject({ objects: scene.objects, activeObjectId: duplicated.object.id });
-    pushToast({ tone: 'success', title: t('objectDuplicated'), description: duplicated.object.name });
+    pushToast({
+      tone: 'success',
+      title: t('objectDuplicated'),
+      description: duplicated.object.name,
+    });
   }
 
   async function handleDownloadObject(objectId: string) {
@@ -234,12 +241,20 @@ export function ObjectsPanel() {
     const model = getImportedModelForObject(objectId);
     const object = objects.find((item) => item.id === objectId);
     if (!project || !model || !object) {
-      pushToast({ tone: 'warning', title: t('objectDownloadUnavailable'), description: t('objectRuntimeModelMissing') });
+      pushToast({
+        tone: 'warning',
+        title: t('objectDownloadUnavailable'),
+        description: t('objectRuntimeModelMissing'),
+      });
       return;
     }
     try {
       const exporter = new GLTFExporter();
-      const result = await exporter.parseAsync(model.group.clone(true), { binary: true, onlyVisible: true, embedImages: true });
+      const result = await exporter.parseAsync(model.group.clone(true), {
+        binary: true,
+        onlyVisible: true,
+        embedImages: true,
+      });
       const buffer = result instanceof ArrayBuffer ? result : JSON.stringify(result);
       const blob = new Blob([buffer], { type: 'model/gltf-binary' });
       downloadBlob(blob, getExportFilename(project.name, object.name || 'object', 'glb'));
@@ -260,7 +275,10 @@ export function ObjectsPanel() {
     const spaceBelow = window.innerHeight - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
     const openAbove = spaceBelow < menuHeight && spaceAbove > spaceBelow;
-    const availableHeight = Math.max(180, Math.min(menuHeight, openAbove ? spaceAbove - 6 : spaceBelow - 6));
+    const availableHeight = Math.max(
+      180,
+      Math.min(menuHeight, openAbove ? spaceAbove - 6 : spaceBelow - 6),
+    );
     const y = openAbove ? rect.top - availableHeight - 6 : rect.bottom + 6;
     setMenu({
       objectId,
@@ -272,14 +290,20 @@ export function ObjectsPanel() {
 
   if (objects.length === 0) {
     return (
-      <div className="grid min-h-48 place-items-center text-sm font-semibold text-white/48">
+      <div
+        data-texture-onboarding="import-model"
+        className="grid min-h-48 place-items-center text-sm font-semibold text-white/48"
+      >
         {t('noImportedModel')}
       </div>
     );
   }
 
   return (
-    <div className="min-h-48 overflow-hidden rounded-md border border-white/24">
+    <div
+      data-texture-onboarding="import-model"
+      className="max-h-40 overflow-y-auto overflow-x-hidden rounded-md border border-white/24 overscroll-contain"
+    >
       {objects.map((object) => {
         const selected = selectedObjectId === object.id;
         return (
@@ -293,7 +317,8 @@ export function ObjectsPanel() {
             }}
             className={cn(
               'flex h-10 w-full items-center gap-2 border-b border-white/24 bg-black/82 px-2 text-left transition hover:bg-white/[0.06]',
-              selected && 'border-liclick-pink bg-liclick-pink/12 text-white shadow-[inset_0_0_0_1px_rgba(255,92,207,0.44)]',
+              selected &&
+                'border-liclick-pink bg-liclick-pink/12 text-white shadow-[inset_0_0_0_1px_rgba(255,92,207,0.44)]',
               !object.visible && 'opacity-48',
             )}
           >
@@ -307,7 +332,11 @@ export function ObjectsPanel() {
               title={t('toggleVisibility')}
               aria-label={t('toggleVisibility')}
             >
-              {object.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-white/45" />}
+              {object.visible ? (
+                <Eye className="h-4 w-4" />
+              ) : (
+                <EyeOff className="h-4 w-4 text-white/45" />
+              )}
             </button>
             <Box className="h-4 w-4 shrink-0 text-liclick-pink" />
             <div className="min-w-0 flex-1">
@@ -570,19 +599,34 @@ function ObjectMenu({
     >
       <div className="truncate px-2 pb-2 text-white/86">{object.name}</div>
       <div className="mb-1 h-px bg-white/24" />
-      <MenuButton onClick={() => run(() => onDialog('statistics'))} icon={<BarChart3 className="h-4 w-4" />}>
+      <MenuButton
+        onClick={() => run(() => onDialog('statistics'))}
+        icon={<BarChart3 className="h-4 w-4" />}
+      >
         {t('objectMenuStatistics')}
       </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('download'))} icon={<Download className="h-4 w-4" />}>
+      <MenuButton
+        onClick={() => run(() => onDialog('download'))}
+        icon={<Download className="h-4 w-4" />}
+      >
         {t('objectMenuDownload')}
       </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('simplify'))} icon={<Scissors className="h-4 w-4" />}>
+      <MenuButton
+        onClick={() => run(() => onDialog('simplify'))}
+        icon={<Scissors className="h-4 w-4" />}
+      >
         {t('objectMenuSimplify')}
       </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('recreateUv'))} icon={<UnfoldHorizontal className="h-4 w-4" />}>
+      <MenuButton
+        onClick={() => run(() => onDialog('recreateUv'))}
+        icon={<UnfoldHorizontal className="h-4 w-4" />}
+      >
         {t('objectMenuRecreateUv')}
       </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('references'))} icon={<Image className="h-4 w-4" />}>
+      <MenuButton
+        onClick={() => run(() => onDialog('references'))}
+        icon={<Image className="h-4 w-4" />}
+      >
         {t('objectMenuViewReferenceImage')}
       </MenuButton>
       <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
@@ -631,7 +675,10 @@ function ObjectDialog({
             : t('objectMenuViewReferenceImage');
 
   return (
-    <div className="fixed inset-0 z-[96] grid place-items-center bg-black/52 px-4 backdrop-blur-sm" onPointerDown={onClose}>
+    <div
+      className="fixed inset-0 z-[96] grid place-items-center bg-black/52 px-4 backdrop-blur-sm"
+      onPointerDown={onClose}
+    >
       <section
         className="max-h-[82vh] w-full max-w-xl overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
         onPointerDown={(event) => event.stopPropagation()}
@@ -673,10 +720,18 @@ function StatisticsDialogBody({ object, stats }: { object: SceneObject; stats: O
         <StatTile label={t('objectMaterials')} value={formatNumber(stats.materials)} />
       </div>
       <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs leading-6 text-white/72">
-        <div>{t('format')}: {object.format.toUpperCase()}</div>
-        <div>{t('objectUvMeshes')}: {formatNumber(stats.uvMeshes)}</div>
-        <div>{t('objectDimensions')}: {dimensions}</div>
-        <div className="truncate">{t('objectSource')}: {object.sourcePath ?? t('objectRuntimeSource')}</div>
+        <div>
+          {t('format')}: {object.format.toUpperCase()}
+        </div>
+        <div>
+          {t('objectUvMeshes')}: {formatNumber(stats.uvMeshes)}
+        </div>
+        <div>
+          {t('objectDimensions')}: {dimensions}
+        </div>
+        <div className="truncate">
+          {t('objectSource')}: {object.sourcePath ?? t('objectRuntimeSource')}
+        </div>
       </div>
     </div>
   );
@@ -708,7 +763,11 @@ function SimplifyDialogBody({ stats }: { stats: ObjectStats }) {
           .replace('{triangles}', formatNumber(stats.triangles))
           .replace('{vertices}', formatNumber(stats.vertices))}
       </div>
-      <button type="button" disabled className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38">
+      <button
+        type="button"
+        disabled
+        className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38"
+      >
         {t('objectSimplifyComingSoon')}
       </button>
     </div>
@@ -721,9 +780,14 @@ function RecreateUvDialogBody({ object }: { object: SceneObject }) {
     <div className="grid gap-3 text-sm leading-6 text-white/72">
       <p>{t('objectRecreateUvHelp')}</p>
       <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs">
-        {t('objectUvSets')}: {object.uvSets.length > 0 ? object.uvSets.join(', ') : t('objectUvNoneDetected')}
+        {t('objectUvSets')}:{' '}
+        {object.uvSets.length > 0 ? object.uvSets.join(', ') : t('objectUvNoneDetected')}
       </div>
-      <button type="button" disabled className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38">
+      <button
+        type="button"
+        disabled
+        className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38"
+      >
         {t('objectUvServiceMissing')}
       </button>
     </div>
@@ -733,16 +797,29 @@ function RecreateUvDialogBody({ object }: { object: SceneObject }) {
 function ReferencesDialogBody({ references }: { references: ReferenceImage[] }) {
   const t = useT();
   if (references.length === 0) {
-    return <div className="rounded-md border border-white/12 bg-black/24 p-4 text-sm text-white/58">{t('objectNoReferenceImages')}</div>;
+    return (
+      <div className="rounded-md border border-white/12 bg-black/24 p-4 text-sm text-white/58">
+        {t('objectNoReferenceImages')}
+      </div>
+    );
   }
   return (
     <div className="grid grid-cols-3 gap-3">
       {references.map((reference) => (
-        <div key={reference.id} className="overflow-hidden rounded-md border border-white/14 bg-black/24">
+        <div
+          key={reference.id}
+          className="overflow-hidden rounded-md border border-white/14 bg-black/24"
+        >
           <div className="aspect-square bg-[#333]">
-            <img src={reference.url} alt={reference.name} className="h-full w-full object-contain" />
+            <img
+              src={reference.url}
+              alt={reference.name}
+              className="h-full w-full object-contain"
+            />
           </div>
-          <div className="truncate px-2 py-1 text-xs font-semibold text-white/72">{reference.name}</div>
+          <div className="truncate px-2 py-1 text-xs font-semibold text-white/72">
+            {reference.name}
+          </div>
         </div>
       ))}
     </div>
@@ -752,13 +829,23 @@ function ReferencesDialogBody({ references }: { references: ReferenceImage[] }) 
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-white/12 bg-black/24 p-3">
-      <div className="text-[11px] font-semibold uppercase tracking-normal text-white/42">{label}</div>
+      <div className="text-[11px] font-semibold uppercase tracking-normal text-white/42">
+        {label}
+      </div>
       <div className="mt-1 text-lg font-semibold text-white">{value}</div>
     </div>
   );
 }
 
-function MenuButton({ children, icon, onClick }: { children: ReactNode; icon?: ReactNode; onClick: () => void }) {
+function MenuButton({
+  children,
+  icon,
+  onClick,
+}: {
+  children: ReactNode;
+  icon?: ReactNode;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"

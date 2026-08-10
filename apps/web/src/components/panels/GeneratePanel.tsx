@@ -1,19 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  Check,
-  ChevronDown,
-  Download,
-  Layers,
-  Maximize2,
-  Plus,
-  Sparkles,
-  Square,
-  X,
-} from 'lucide-react';
+import { Download, Layers, Maximize2, Plus, Sparkles, Square, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import {
   captureCurrentNormalPreview,
   captureCurrentView,
@@ -24,9 +15,7 @@ import {
   createCaptureMaskedPreview,
   createSubjectFilledPreview,
 } from '@/engine/localRepaint/resultPreviewUtils';
-import {
-  ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer,
-} from '@/engine/localRepaint/sessionLayer';
+import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
@@ -103,8 +92,15 @@ import {
 } from '@/services/workspaceApiClient';
 
 type GenerateTab = 'multiview' | 'repaint';
+type TextureViewMode = 'single' | 'multi';
+type TexturePreviewMode = TextureViewMode | 'repaint';
 type GenerateChannel = GenerateTab | 'single';
 type GenerateMode = 'visible' | 'upscale';
+type TexturePipelineProgress = {
+  active: boolean;
+  progress: number;
+  label: string;
+};
 type CameraViewPresetId = 'preset-1' | 'preset-2';
 type CameraViewPresetSelection = CameraViewPresetId | 'custom';
 type CameraViewOption = {
@@ -276,12 +272,7 @@ function createPresetCameraViewItem(option: CameraViewOption, label: string): Ca
     value: option.value,
     label,
     viewDirection,
-    viewUp:
-      option.value === 'top'
-        ? [0, 0, -1]
-        : option.value === 'bottom'
-          ? [0, 0, 1]
-          : [0, 1, 0],
+    viewUp: option.value === 'top' ? [0, 0, -1] : option.value === 'bottom' ? [0, 0, 1] : [0, 1, 0],
   };
 }
 
@@ -321,9 +312,9 @@ function CameraViewThumbnail({
 }) {
   const normalUrl = preview?.normalUrl;
   return (
-    <span className="relative block h-full w-full overflow-hidden rounded-[inherit] bg-[#252528]">
+    <span className="relative grid h-full w-full place-items-center overflow-hidden rounded-[inherit] bg-[#303033]">
       {normalUrl ? (
-        <img src={normalUrl} alt="" className="h-full w-full object-contain" />
+        <img src={normalUrl} alt="" className="h-full w-full object-contain mix-blend-screen" />
       ) : (
         <span className="absolute inset-0 bg-[radial-gradient(circle_at_45%_34%,rgba(255,255,255,0.16),transparent_30%),linear-gradient(135deg,rgba(82,255,163,0.18),rgba(71,126,255,0.2))]" />
       )}
@@ -656,9 +647,15 @@ function getImportedModelMatrixWorld(objectId?: string) {
   return model.group.matrixWorld.toArray();
 }
 
-export function GeneratePanel() {
+type GeneratePanelProps = {
+  localImageGenerationRequestKey?: number;
+};
+
+export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePanelProps) {
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
+  const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
+  const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
     sourceUrl: string;
@@ -670,37 +667,49 @@ export function GeneratePanel() {
   const [cameraViews, setCameraViews] = useState<CameraViewItem[]>(() =>
     createCameraViewsForPreset('preset-1', t),
   );
-  const activeCameraViewPresetOption =
-    cameraViewPresetOptions.find((option) => option.id === selectedCameraViewPreset) ??
-    cameraViewPresetOptions[0];
-  const [cameraViewPresetMenuOpen, setCameraViewPresetMenuOpen] = useState(false);
-  const cameraViewPresetMenuRef = useRef<HTMLDivElement>(null);
   const [activeCameraViewId, setActiveCameraViewId] = useState('front');
-  const [aiOneClickConfirmOpen, setAiOneClickConfirmOpen] = useState(false);
   const [referenceGroupGenerationState, setReferenceGroupGenerationState] =
     useState<ReferenceGroupGenerationState>();
+  const [texturePipelineProgress, setTexturePipelineProgress] = useState<TexturePipelineProgress>();
   const [cameraViewPreviews, setCameraViewPreviews] = useState<CameraViewPreviewMap>({});
   const [capturingCameraViews, setCapturingCameraViews] = useState<Set<string>>(() => new Set());
   const cameraViewPreviewsRef = useRef<CameraViewPreviewMap>({});
   const capturingCameraViewsRef = useRef<Set<string>>(new Set());
+  const [pendingLocalImageGenerationRequestKey, setPendingLocalImageGenerationRequestKey] =
+    useState(0);
+  const handledLocalImageGenerationRequestKeyRef = useRef(0);
+  const handleLocalRepaintGenerateRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const updateTexturePipelineProgress = useCallback((progress: number, label: string) => {
+    setTexturePipelineProgress((current) => ({
+      active: true,
+      progress: Math.max(current?.active ? current.progress : 0, Math.min(100, progress)),
+      label,
+    }));
+  }, []);
 
   useEffect(() => {
-    if (!cameraViewPresetMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!cameraViewPresetMenuRef.current?.contains(event.target as Node)) {
-        setCameraViewPresetMenuOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setCameraViewPresetMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [cameraViewPresetMenuOpen]);
+    if (
+      !localImageGenerationRequestKey ||
+      localImageGenerationRequestKey === handledLocalImageGenerationRequestKeyRef.current
+    )
+      return;
+    setTab('repaint');
+    setPendingLocalImageGenerationRequestKey(localImageGenerationRequestKey);
+  }, [localImageGenerationRequestKey]);
+
+  useEffect(() => {
+    if (
+      tab !== 'repaint' ||
+      !pendingLocalImageGenerationRequestKey ||
+      pendingLocalImageGenerationRequestKey === handledLocalImageGenerationRequestKeyRef.current
+    )
+      return;
+    handledLocalImageGenerationRequestKeyRef.current = pendingLocalImageGenerationRequestKey;
+    setPendingLocalImageGenerationRequestKey(0);
+    void handleLocalRepaintGenerateRef.current();
+  }, [pendingLocalImageGenerationRequestKey, tab]);
+
   const [generateNotices, setGenerateNotices] = useState<
     Partial<Record<GenerateTab, GenerateNotice>>
   >({});
@@ -783,30 +792,46 @@ export function GeneratePanel() {
     [importedModel, importedModels, selectedObjectId],
   );
   const captureObjectId = captureModel?.objectId;
-  const latestLocalRepaintGenerationId = useMemo(
-    () =>
-      generations.find((generation) => {
-        if (
-          generation.status !== 'succeeded' ||
-          !generation.resultUrl ||
-          !isLocalRepaintGeneration(generation)
-        )
-          return false;
-        const generationProjectId =
-          typeof generation.metadata.projectId === 'string'
-            ? generation.metadata.projectId
-            : undefined;
-        const generationObjectId =
-          typeof generation.metadata.objectId === 'string'
-            ? generation.metadata.objectId
-            : undefined;
-        return (
-          (!currentProjectId || !generationProjectId || generationProjectId === currentProjectId) &&
-          (!captureObjectId || !generationObjectId || generationObjectId === captureObjectId)
-        );
-      })?.id,
-    [captureObjectId, currentProjectId, generations],
-  );
+  const latestLocalRepaintGeneration = useMemo(() => {
+    const projectCandidates = generations.filter((generation) => {
+      if (
+        generation.status !== 'succeeded' ||
+        !generation.resultUrl ||
+        !isLocalRepaintGeneration(generation)
+      )
+        return false;
+      const generationProjectId =
+        typeof generation.metadata.projectId === 'string'
+          ? generation.metadata.projectId
+          : undefined;
+      return !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
+    });
+    const exactObjectCandidates = captureObjectId
+      ? projectCandidates.filter((generation) => generation.metadata.objectId === captureObjectId)
+      : projectCandidates;
+    const candidates =
+      captureObjectId && exactObjectCandidates.length === 0
+        ? projectCandidates.filter((generation) => !generation.metadata.objectId)
+        : exactObjectCandidates;
+    return candidates.reduce<Generation | undefined>((latestGeneration, generation) => {
+      if (!latestGeneration) return generation;
+      const recencyTimestamp = (item: Generation) => {
+        const completedAt = item.metadata.completedAt;
+        const completedTimestamp =
+          typeof completedAt === 'string' ? Date.parse(completedAt) : Number.NaN;
+        const startedTimestamp = getGenerationStartedAt(item);
+        return Number.isFinite(completedTimestamp)
+          ? completedTimestamp
+          : Number.isFinite(startedTimestamp)
+            ? startedTimestamp
+            : Number.NEGATIVE_INFINITY;
+      };
+      return recencyTimestamp(generation) > recencyTimestamp(latestGeneration)
+        ? generation
+        : latestGeneration;
+    }, undefined);
+  }, [captureObjectId, currentProjectId, generations]);
+  const latestLocalRepaintGenerationId = latestLocalRepaintGeneration?.id;
   const ensureLocalRepaintSessionLayer = useCallback(
     (generationId = latestLocalRepaintGenerationId) => {
       if (!currentProjectId || !captureObjectId) return undefined;
@@ -843,7 +868,8 @@ export function GeneratePanel() {
     () =>
       activeReferences.find(
         (reference) =>
-          selectedReferenceGroupId === referenceGroupId(reference) && !isMultiviewReference(reference),
+          selectedReferenceGroupId === referenceGroupId(reference) &&
+          !isMultiviewReference(reference),
       ),
     [activeReferences, selectedReferenceGroupId],
   );
@@ -851,7 +877,8 @@ export function GeneratePanel() {
     () =>
       activeReferences.find(
         (reference) =>
-          selectedReferenceGroupId === referenceGroupId(reference) && isMultiviewReference(reference),
+          selectedReferenceGroupId === referenceGroupId(reference) &&
+          isMultiviewReference(reference),
       ),
     [activeReferences, selectedReferenceGroupId],
   );
@@ -874,6 +901,12 @@ export function GeneratePanel() {
   const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pairedGenerationPersistenceRef = useRef(new Set<string>());
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
+  const dockDensity = useWorkspaceLayoutStore((state) => state.dockDensity);
+  const generatePanelExpanded = useWorkspaceLayoutStore(
+    (state) =>
+      state.mode === 'texture' &&
+      state.panels.some((panel) => panel.id === 'generate' && !panel.collapsed && panel.visible),
+  );
   const tabGenerations = generations.filter((generation) => {
     const projectId =
       typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
@@ -905,32 +938,40 @@ export function GeneratePanel() {
       : undefined);
   const previewGeneration = activeProjectGeneration ?? tabGenerations[0];
   const previewIsGenerating = isRunningGeneration(previewGeneration);
-  const previewFailed = previewGeneration?.status === 'failed';
-  const previewCancelled = previewGeneration?.metadata.cancelled === true;
+  const displayedPreviewGeneration =
+    isTextureMapTab && texturePreviewMode === 'repaint'
+      ? latestLocalRepaintGeneration
+      : previewGeneration;
+  const displayedPreviewIsGenerating = isRunningGeneration(displayedPreviewGeneration);
+  const displayedPreviewFailed = displayedPreviewGeneration?.status === 'failed';
+  const displayedPreviewCancelled = displayedPreviewGeneration?.metadata.cancelled === true;
   const canCancelGeneration = Boolean(activeWorkflowGeneration);
-  const previewRawResultUrl = previewGeneration?.resultUrl;
-  const previewCapture = previewGeneration?.captureId
-    ? lastCapture?.id === previewGeneration.captureId
+  const previewRawResultUrl = displayedPreviewGeneration?.resultUrl;
+  const previewCapture = displayedPreviewGeneration?.captureId
+    ? lastCapture?.id === displayedPreviewGeneration.captureId
       ? lastCapture
-      : currentProject?.captures.find((capture) => capture.id === previewGeneration.captureId)
-    : previewGeneration &&
-        isLocalRepaintGeneration(previewGeneration) &&
+      : currentProject?.captures.find(
+          (capture) => capture.id === displayedPreviewGeneration.captureId,
+        )
+    : displayedPreviewGeneration &&
+        isLocalRepaintGeneration(displayedPreviewGeneration) &&
         lastCapture &&
-        (!previewGeneration.metadata.objectId ||
-          previewGeneration.metadata.objectId === lastCapture.objectId)
+        (!displayedPreviewGeneration.metadata.objectId ||
+          displayedPreviewGeneration.metadata.objectId === lastCapture.objectId)
       ? lastCapture
       : undefined;
   const capturePreviewMaskUrl =
-    previewGeneration &&
-    (isLocalRepaintGeneration(previewGeneration) || isTextureMapGeneration(previewGeneration))
+    displayedPreviewGeneration &&
+    (isLocalRepaintGeneration(displayedPreviewGeneration) ||
+      isTextureMapGeneration(displayedPreviewGeneration))
       ? previewCapture?.maskUrl
       : undefined;
-  const previewProcessingMode = previewGeneration
-    ? isLocalRepaintGeneration(previewGeneration)
+  const previewProcessingMode = displayedPreviewGeneration
+    ? isLocalRepaintGeneration(displayedPreviewGeneration)
       ? capturePreviewMaskUrl
         ? 'capture-mask'
         : 'dark-background'
-      : isTextureMapGeneration(previewGeneration)
+      : isTextureMapGeneration(displayedPreviewGeneration)
         ? capturePreviewMaskUrl
           ? 'capture-mask'
           : undefined
@@ -1074,19 +1115,19 @@ export function GeneratePanel() {
       const workspaceResultUrl = [projectGeneration?.resultUrl, storeGeneration?.resultUrl].find(
         (url): url is string => typeof url === 'string' && isWorkspaceAssetUrl(url),
       );
-      const resultUrl = workspaceResultUrl ?? existing?.resultUrl ?? fallback?.resultUrl ?? job.resultUrl;
+      const resultUrl =
+        workspaceResultUrl ?? existing?.resultUrl ?? fallback?.resultUrl ?? job.resultUrl;
       const status = resultUrl ? ('succeeded' as const) : job.status;
       const generation: Generation = {
         id: existing?.id ?? fallback?.id ?? job.clientGenerationId ?? job.id,
         mode: existing?.mode ?? fallback?.mode ?? 'single',
         prompt: existing?.prompt || fallback?.prompt || job.prompt,
         negativePrompt: existing?.negativePrompt ?? fallback?.negativePrompt,
-        referenceIds:
-          existing?.referenceIds.length
-            ? existing.referenceIds
-            : fallback?.referenceIds.length
-              ? fallback.referenceIds
-              : job.referenceIds,
+        referenceIds: existing?.referenceIds.length
+          ? existing.referenceIds
+          : fallback?.referenceIds.length
+            ? fallback.referenceIds
+            : job.referenceIds,
         captureId: existing?.captureId ?? fallback?.captureId,
         resultUrl,
         status,
@@ -1117,7 +1158,8 @@ export function GeneratePanel() {
         },
       };
       const nextSignature = generationRecoverySignature(generation);
-      const needsPersist = Boolean(generation.resultUrl) && !isWorkspaceAssetUrl(generation.resultUrl);
+      const needsPersist =
+        Boolean(generation.resultUrl) && !isWorkspaceAssetUrl(generation.resultUrl);
       if (
         generationRecoverySignature(projectGeneration) === nextSignature &&
         generationRecoverySignature(storeGeneration) === nextSignature
@@ -1165,10 +1207,7 @@ export function GeneratePanel() {
         if (cancelled) return;
         // Older local components do not expose project-level recovery. The
         // regular single-job poll remains available in that case.
-        retry =
-          !(error instanceof LiclickApiError) ||
-          error.status === 429 ||
-          error.status >= 500;
+        retry = !(error instanceof LiclickApiError) || error.status === 429 || error.status >= 500;
       } finally {
         inFlight = false;
         if (!cancelled && retry) scheduleReconcile();
@@ -1554,7 +1593,14 @@ export function GeneratePanel() {
       window.removeEventListener('online', wakePolling);
       document.removeEventListener('visibilitychange', wakePolling);
     };
-  }, [activeReferenceGeneration, dismissToastByDedupeKey, markGenerationFailed, previewGeneration, pushToast, syncGeneration]);
+  }, [
+    activeReferenceGeneration,
+    dismissToastByDedupeKey,
+    markGenerationFailed,
+    previewGeneration,
+    pushToast,
+    syncGeneration,
+  ]);
 
   useEffect(() => {
     const completedReferenceGeneration = generations.find((generation) => {
@@ -1577,10 +1623,9 @@ export function GeneratePanel() {
         (!currentProject?.id || !projectId || projectId === currentProject.id) &&
         Boolean(
           sourceReferenceId &&
-            references.some(
-              (reference) =>
-                reference.id === sourceReferenceId && !isMultiviewReference(reference),
-            ),
+          references.some(
+            (reference) => reference.id === sourceReferenceId && !isMultiviewReference(reference),
+          ),
         ) &&
         !references.some((reference) => reference.generationId === generation.id) &&
         !pairedGenerationPersistenceRef.current.has(generation.id)
@@ -1649,7 +1694,6 @@ export function GeneratePanel() {
     setSelectedCameraViewPreset(selection);
     setCameraViews(nextViews);
     setActiveCameraViewId(nextViews[0]?.id ?? '');
-    setCameraViewPresetMenuOpen(false);
   }
 
   function handleDeleteCameraView(viewId: string) {
@@ -1694,6 +1738,23 @@ export function GeneratePanel() {
     pushToast({ tone: 'success', title: '已添加当前 MVP 视角' });
   }
 
+  function getCurrentTextureCameraView(): CameraViewItem {
+    if (!captureObjectId) throw new Error(t('importModelFirst'));
+    const viewport = useSceneStore.getState().viewport;
+    if (!viewport) throw new Error(t('viewportUnavailable'));
+    const target = viewport.controls?.target;
+    const x = viewport.camera.position.x - (target?.x ?? 0);
+    const y = viewport.camera.position.y - (target?.y ?? 0);
+    const z = viewport.camera.position.z - (target?.z ?? 0);
+    const length = Math.hypot(x, y, z) || 1;
+    return {
+      id: createId('single-camera-view'),
+      label: '当前视角',
+      viewDirection: [x / length, y / length, z / length],
+      viewUp: [viewport.camera.up.x, viewport.camera.up.y, viewport.camera.up.z],
+    };
+  }
+
   function getGenerationJobId(generation: Generation) {
     const taskId =
       typeof generation.metadata.taskId === 'string' ? generation.metadata.taskId : undefined;
@@ -1731,8 +1792,7 @@ export function GeneratePanel() {
     const isTextureMap = isTextureMapGeneration(generationToCancel);
     const isLocalRepaint = isLocalRepaintGeneration(generationToCancel);
     const isComfyGeneration = generationToCancel.metadata.provider === 'comfyui-local';
-    const isModelviewGeneration =
-      generationToCancel.metadata.provider === 'modelview-seedvr2';
+    const isModelviewGeneration = generationToCancel.metadata.provider === 'modelview-seedvr2';
     cancelledGenerationIdsRef.current.add(generationToCancel.id);
     cancelledGenerationIdsRef.current.add(jobId);
     generationAbortControllersRef.current.get(generationToCancel.id)?.abort();
@@ -1897,9 +1957,7 @@ export function GeneratePanel() {
           result.authMode ?? 'feishu-oauth',
           result.providerStatus ?? activeProviderStatus,
         );
-        const refreshedProviderStatus = await useAuthStore
-          .getState()
-          .refreshProviderStatus();
+        const refreshedProviderStatus = await useAuthStore.getState().refreshProviderStatus();
         if (refreshedProviderStatus.atlas?.valid === false) {
           throw new Error('飞书 / Atlas 授权尚未生效，请完成授权后重试。');
         }
@@ -1909,10 +1967,7 @@ export function GeneratePanel() {
         });
         return true;
       } catch (error) {
-        const message = getUserFacingGenerationError(
-          error,
-          '生图凭证恢复失败，请重新授权后再试。',
-        );
+        const message = getUserFacingGenerationError(error, '生图凭证恢复失败，请重新授权后再试。');
         setGenerateNotice({ tone: 'error', message });
         pushToast({
           tone: 'error',
@@ -1944,7 +1999,8 @@ export function GeneratePanel() {
         getCachedPersonalLiclickAccountStatus(),
         authenticatedUser.authSource === 'dev-mock' ? undefined : expectedEmail,
       )
-    ) return true;
+    )
+      return true;
 
     try {
       setGenerateNotice({
@@ -1974,8 +2030,7 @@ export function GeneratePanel() {
       });
       return true;
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : '个人莉刻账号绑定失败，请重新尝试。';
+      const message = error instanceof Error ? error.message : '个人莉刻账号绑定失败，请重新尝试。';
       setGenerateNotice({ tone: 'error', message });
       pushToast({
         tone: 'error',
@@ -1989,12 +2044,18 @@ export function GeneratePanel() {
 
   async function getTextureMapMultiviewCaptures(views: CameraViewItem[]) {
     const captures: Partial<Record<string, Capture>> = {};
-    for (const view of views) {
+    for (let index = 0; index < views.length; index += 1) {
+      const view = views[index];
+      if (!view) continue;
       if (captures[view.id]) continue;
       setCapturingCameraViews((current) => new Set([...current, view.id]));
       try {
         const capture = await captureTextureMapCameraView(view, { setAsLastCapture: false });
         captures[view.id] = capture;
+        updateTexturePipelineProgress(
+          20 + ((index + 1) / Math.max(1, views.length)) * 18,
+          `多视角快照 ${index + 1}/${views.length}`,
+        );
       } finally {
         setCapturingCameraViews((current) => {
           const next = new Set(current);
@@ -2056,16 +2117,21 @@ export function GeneratePanel() {
   async function handleTextureMapMultiviewGenerate(
     materialReference: ReferenceImage,
     requestedViews: CameraViewItem[] = cameraViews,
+    requestedViewMode: TextureViewMode = 'multi',
   ) {
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     if (requestedViews.length === 0) throw new Error('请先添加至少一个模型视角。');
+    const isMultiviewRequest = requestedViewMode === 'multi';
     await requirePersonalLiclickAccount();
     const objectId = captureObjectId;
     const object = objects.find((item) => item.id === objectId);
     const texturePrompt = buildTextureMapPrompt(prompt);
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
+    updateTexturePipelineProgress(20, '准备多视角快照');
     const capturedViews = await getTextureMapMultiviewCaptures(requestedViews);
-    if (capturedViews.length === 0) throw new Error('无法捕获多视图模型方向。');
+    if (capturedViews.length === 0) {
+      throw new Error(isMultiviewRequest ? '无法捕获多视图模型方向。' : '无法捕获当前单视图。');
+    }
     if (!currentProject) throw new Error('当前工程尚未加载完成。');
     // Persist the entire camera batch before any remote job starts. Adding the
     // captures one-by-one leaves them vulnerable to an overlapping editor save
@@ -2090,9 +2156,12 @@ export function GeneratePanel() {
       ...view,
       capture: persistedCapturesById.get(view.capture.id) ?? view.capture,
     }));
+    updateTexturePipelineProgress(40, '提交纹理任务');
     setGenerateNotice({
       tone: 'info',
-      message: `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`,
+      message: isMultiviewRequest
+        ? `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`
+        : '正在提交当前单视图纹理贴图任务。',
     });
 
     const client = createLiclickApiClient({ onReferencePreprocessed: notifyReferencePreprocessed });
@@ -2109,7 +2178,7 @@ export function GeneratePanel() {
       };
       const pendingGeneration: Generation = {
         id: generationId,
-        mode: 'multiview',
+        mode: isMultiviewRequest ? 'multiview' : 'single',
         prompt: texturePrompt,
         referenceIds: [modelViewReference.id, materialReference.id],
         captureId: capture.id,
@@ -2124,7 +2193,7 @@ export function GeneratePanel() {
           objectMatrixWorld,
           materialReferenceId: materialReference.id,
           modelViewReferenceId: modelViewReference.id,
-          multiview: true,
+          multiview: isMultiviewRequest,
           autoProjectExpected: true,
           cameraView,
           cameraViewId: viewId,
@@ -2155,7 +2224,9 @@ export function GeneratePanel() {
     } catch (error) {
       const message = getUserFacingGenerationError(
         error,
-        '多视图相机数据保存失败，任务尚未提交，请稍后重试。',
+        isMultiviewRequest
+          ? '多视图相机数据保存失败，任务尚未提交，请稍后重试。'
+          : '当前单视图数据保存失败，任务尚未提交，请稍后重试。',
       );
       pendingGenerations.forEach(({ pendingGeneration }) => {
         syncGeneration(createFailedGeneration(pendingGeneration, message));
@@ -2191,6 +2262,7 @@ export function GeneratePanel() {
         }),
       ),
     );
+    updateTexturePipelineProgress(46, '生成纹理贴图');
 
     const completedGenerations: Generation[] = [];
     let projectedGenerationCount = 0;
@@ -2201,7 +2273,7 @@ export function GeneratePanel() {
       if (result.status === 'fulfilled') {
         const submittedGeneration: Generation = {
           ...result.value,
-          mode: 'multiview',
+          mode: isMultiviewRequest ? 'multiview' : 'single',
           metadata: {
             ...mergeGenerationMetadataPreservingStartedAt(
               pending.pendingGeneration.metadata,
@@ -2211,7 +2283,7 @@ export function GeneratePanel() {
             objectMatrixWorld,
             materialReferenceId: materialReference.id,
             modelViewReferenceId: pending.modelViewReference.id,
-            multiview: true,
+            multiview: isMultiviewRequest,
             autoProjectExpected: true,
             cameraView: pending.cameraView,
             cameraViewId: pending.viewId,
@@ -2248,129 +2320,144 @@ export function GeneratePanel() {
     // saves still progress normally.
     useLayerStore.getState().beginProjectedPreviewBatch();
     try {
-    const completionResults = await Promise.allSettled(
-      submittedGenerations.map(async (generation) => {
-        const completed = await waitForLiclickGeneration(generation);
-        syncGeneration(completed);
-        const completedProjectId =
-          typeof completed.metadata.projectId === 'string'
-            ? completed.metadata.projectId
-            : currentProject?.id;
-        if (
-          completedProjectId &&
-          useProjectStore.getState().currentProjectId !== completedProjectId
-        ) {
-          return { generation: completed, projected: false };
+      let completedTextureViewCount = 0;
+      const completionResults = await Promise.allSettled(
+        submittedGenerations.map(async (generation) => {
+          try {
+            const completed = await waitForLiclickGeneration(generation);
+            syncGeneration(completed);
+            const completedProjectId =
+              typeof completed.metadata.projectId === 'string'
+                ? completed.metadata.projectId
+                : currentProject?.id;
+            if (
+              completedProjectId &&
+              useProjectStore.getState().currentProjectId !== completedProjectId
+            ) {
+              return { generation: completed, projected: false };
+            }
+            const exactCapture = pendingGenerations.find(
+              (pending) =>
+                pending.generationId === completed.id || pending.capture.id === completed.captureId,
+            )?.capture;
+            try {
+              const projectedLayer = await addGenerationAsProjectedLayer(completed, {
+                automatic: true,
+                capture: exactCapture,
+              });
+              if (!projectedLayer) {
+                return { generation: completed, projected: false };
+              }
+              const completedWithProjection: Generation = {
+                ...completed,
+                metadata: {
+                  ...completed.metadata,
+                  autoProjectExpected: true,
+                  projectedLayerId: projectedLayer.id,
+                  projectionCommittedAt: new Date().toISOString(),
+                  projectionError: undefined,
+                },
+              };
+              syncGeneration(completedWithProjection);
+              return { generation: completedWithProjection, projected: true };
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : '生成已完成，但自动投影失败。';
+              const completedWithProjectionError: Generation = {
+                ...completed,
+                metadata: { ...completed.metadata, projectionError: message },
+              };
+              syncGeneration(completedWithProjectionError);
+              pushToast({
+                tone: 'warning',
+                title: `${String(completed.metadata.cameraViewLabel ?? '当前')}视角已生成，等待重新投影`,
+                description: message,
+                dedupeKey: `texture-map-view-projection-failed:${completed.id}`,
+              });
+              return { generation: completedWithProjectionError, projected: false };
+            }
+          } finally {
+            completedTextureViewCount += 1;
+            updateTexturePipelineProgress(
+              46 + (completedTextureViewCount / Math.max(1, submittedGenerations.length)) * 40,
+              `纹理生成与投影 ${completedTextureViewCount}/${submittedGenerations.length}`,
+            );
+          }
+        }),
+      );
+      completionResults.forEach((result, index) => {
+        const submitted = submittedGenerations[index];
+        if (!submitted) return;
+        if (result.status === 'fulfilled') {
+          completedGenerations.push(result.value.generation);
+          if (result.value.projected) projectedGenerationCount += 1;
+        } else {
+          syncGeneration(
+            createFailedGeneration(
+              submitted,
+              result.reason instanceof Error
+                ? result.reason.message
+                : isMultiviewRequest
+                  ? '多视角纹理贴图任务失败。'
+                  : '当前单视图纹理贴图任务失败。',
+            ),
+          );
         }
+      });
+
+      // Validate the batch against the actual layer store, not only fulfilled
+      // promises. A concurrent editor save may have refreshed the store while a
+      // view was persisting; retry every completed generation that still has no
+      // durable projected layer before declaring the batch complete.
+      for (let index = 0; index < completedGenerations.length; index += 1) {
+        const generation = completedGenerations[index];
+        if (!generation?.resultUrl || generation.status !== 'succeeded') continue;
+        const existingLayer = useLayerStore
+          .getState()
+          .layers.find((layer) => layer.generationId === generation.id);
+        if (existingLayer) continue;
         const exactCapture = pendingGenerations.find(
           (pending) =>
-            pending.generationId === completed.id || pending.capture.id === completed.captureId,
+            pending.generationId === generation.id || pending.capture.id === generation.captureId,
         )?.capture;
         try {
-          const projectedLayer = await addGenerationAsProjectedLayer(completed, {
+          const recoveredLayer = await addGenerationAsProjectedLayer(generation, {
             automatic: true,
             capture: exactCapture,
           });
-          if (!projectedLayer) {
-            return { generation: completed, projected: false };
-          }
-          const completedWithProjection: Generation = {
-            ...completed,
+          if (!recoveredLayer) continue;
+          const recoveredGeneration: Generation = {
+            ...generation,
             metadata: {
-              ...completed.metadata,
+              ...generation.metadata,
               autoProjectExpected: true,
-              projectedLayerId: projectedLayer.id,
+              projectedLayerId: recoveredLayer.id,
               projectionCommittedAt: new Date().toISOString(),
               projectionError: undefined,
             },
           };
-          syncGeneration(completedWithProjection);
-          return { generation: completedWithProjection, projected: true };
+          completedGenerations[index] = recoveredGeneration;
+          syncGeneration(recoveredGeneration);
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : '生成已完成，但自动投影失败。';
-          const completedWithProjectionError: Generation = {
-            ...completed,
-            metadata: { ...completed.metadata, projectionError: message },
-          };
-          syncGeneration(completedWithProjectionError);
-          pushToast({
-            tone: 'warning',
-            title: `${String(completed.metadata.cameraViewLabel ?? '当前')}视角已生成，等待重新投影`,
-            description: message,
-            dedupeKey: `texture-map-view-projection-failed:${completed.id}`,
-          });
-          return { generation: completedWithProjectionError, projected: false };
+          console.error('[Liclick 3D Texture] Could not recover missing projected view:', error);
         }
-      }),
-    );
-    completionResults.forEach((result, index) => {
-      const submitted = submittedGenerations[index];
-      if (!submitted) return;
-      if (result.status === 'fulfilled') {
-        completedGenerations.push(result.value.generation);
-        if (result.value.projected) projectedGenerationCount += 1;
-      } else {
-        syncGeneration(
-          createFailedGeneration(
-            submitted,
-            result.reason instanceof Error ? result.reason.message : '多视角纹理贴图任务失败。',
-          ),
-        );
       }
-    });
-
-    // Validate the batch against the actual layer store, not only fulfilled
-    // promises. A concurrent editor save may have refreshed the store while a
-    // view was persisting; retry every completed generation that still has no
-    // durable projected layer before declaring the batch complete.
-    for (let index = 0; index < completedGenerations.length; index += 1) {
-      const generation = completedGenerations[index];
-      if (!generation?.resultUrl || generation.status !== 'succeeded') continue;
-      const existingLayer = useLayerStore
-        .getState()
-        .layers.find((layer) => layer.generationId === generation.id);
-      if (existingLayer) continue;
-      const exactCapture = pendingGenerations.find(
-        (pending) =>
-          pending.generationId === generation.id || pending.capture.id === generation.captureId,
-      )?.capture;
-      try {
-        const recoveredLayer = await addGenerationAsProjectedLayer(generation, {
-          automatic: true,
-          capture: exactCapture,
-        });
-        if (!recoveredLayer) continue;
-        const recoveredGeneration: Generation = {
-          ...generation,
-          metadata: {
-            ...generation.metadata,
-            autoProjectExpected: true,
-            projectedLayerId: recoveredLayer.id,
-            projectionCommittedAt: new Date().toISOString(),
-            projectionError: undefined,
-          },
-        };
-        completedGenerations[index] = recoveredGeneration;
-        syncGeneration(recoveredGeneration);
-      } catch (error) {
-        console.error('[Liclick 3D Texture] Could not recover missing projected view:', error);
-      }
-    }
     } finally {
       useLayerStore.getState().endProjectedPreviewBatch();
     }
     const completedGenerationIds = new Set(completedGenerations.map((generation) => generation.id));
     projectedGenerationCount = useLayerStore
       .getState()
-      .layers.filter((layer) => layer.generationId && completedGenerationIds.has(layer.generationId))
-      .length;
+      .layers.filter(
+        (layer) => layer.generationId && completedGenerationIds.has(layer.generationId),
+      ).length;
     await saveGenerationStateBestEffort();
 
     if (projectedGenerationCount > 0) {
+      updateTexturePipelineProgress(90, '内容识别补缝');
       setGenerateNotice({
         tone: 'info',
-        message: '多视图贴图已投影，正在自动执行内容识别修补。',
+        message: '纹理贴图已投影，正在自动执行内容识别修补。',
       });
       try {
         await requestContentAwareRepair({
@@ -2379,15 +2466,18 @@ export function GeneratePanel() {
           objectId,
           batchId: completedGenerations.map((generation) => generation.id).join(':'),
         });
+        updateTexturePipelineProgress(100, '补缝完成');
       } catch (error) {
+        updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
         pushToast({
           tone: 'warning',
           title: '纹理贴图已生成，自动修补未完成',
-          description:
-            error instanceof Error ? error.message : '可以稍后手动执行内容识别修补。',
+          description: error instanceof Error ? error.message : '可以稍后手动执行内容识别修补。',
           dedupeKey: `texture-map-auto-repair:${currentProject.id}:${objectId}`,
         });
       }
+    } else {
+      updateTexturePipelineProgress(100, '纹理生成完成');
     }
 
     setGenerateNotice(undefined);
@@ -2396,36 +2486,13 @@ export function GeneratePanel() {
       title: completedGenerations.length > 0 ? t('textureMapGenerated') : t('textureMapFailed'),
       description:
         completedGenerations.length > 0
-          ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
-          : '多视图纹理贴图任务提交失败。',
+          ? isMultiviewRequest
+            ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
+            : `单视图纹理贴图已生成并自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
+          : isMultiviewRequest
+            ? '多视图纹理贴图任务提交失败。'
+            : '单视图纹理贴图任务提交失败。',
     });
-  }
-
-  function requestAiOneClickTextureMap() {
-    if (!selectedSingleReference && !selectedMultiviewReference) {
-      pushToast({
-        tone: 'warning',
-        title: 'AI 一键生成贴图',
-        description: '请至少上传并选择一张单视图或多视图参考图。',
-        dedupeKey: 'ai-one-click-reference-required',
-      });
-      return;
-    }
-    if (submitLocksRef.current.has('multiview') || previewIsGenerating) {
-      pushToast({ tone: 'warning', title: '当前已有生图任务在运行，请完成后再试。' });
-      return;
-    }
-    setAiOneClickConfirmOpen(true);
-  }
-
-  async function confirmAiOneClickTextureMap() {
-    setAiOneClickConfirmOpen(false);
-    if ((!selectedSingleReference && !selectedMultiviewReference) || submitLocksRef.current.has('multiview')) return;
-    const cubeViews = createCameraViewsForPreset('preset-1', t);
-    setSelectedCameraViewPreset('preset-1');
-    setCameraViews(cubeViews);
-    setActiveCameraViewId(cubeViews[0]?.id ?? '');
-    await handleTextureMapGenerate(cubeViews);
   }
 
   async function handleLocalRepaintGenerate() {
@@ -2461,6 +2528,7 @@ export function GeneratePanel() {
         (await useSceneStore.getState().paintMaskCapture?.()) ?? paintMaskDataUrl;
       if (!currentPaintMaskDataUrl) throw new Error(t('localRepaintMaskMissing'));
       useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
+      const currentPaintMaskRevision = useSceneStore.getState().paintMaskRevision;
       const maskSize = await getImageSize(currentPaintMaskDataUrl);
       if (!maskSize.width || !maskSize.height) throw new Error('无法读取当前局部重绘蒙版尺寸。');
       const capture = await captureCurrentView({
@@ -2487,6 +2555,7 @@ export function GeneratePanel() {
           clientGenerationId: generationId,
           projectId: currentProject.id,
           objectId,
+          paintMaskRevision: currentPaintMaskRevision,
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
@@ -2544,9 +2613,12 @@ export function GeneratePanel() {
         resultUrl: localResultUrl,
         captureId: generation.captureId ?? capture.id,
         metadata: {
+          ...pendingGeneration.metadata,
           ...generation.metadata,
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           maskUrl: currentPaintMaskDataUrl,
+          paintMaskRevision: currentPaintMaskRevision,
+          completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },
       };
       syncGeneration(completedGeneration);
@@ -2555,10 +2627,12 @@ export function GeneratePanel() {
       }
       await saveGenerationStateBestEffort();
       setGenerateNotice(undefined);
+      setTexturePreviewMode('repaint');
+      setTab('multiview');
       pushToast({
         tone: 'success',
-        title: '局部重绘图已生成',
-        description: '现在点击底部按钮 3，再刷哪里就替换哪里。',
+        title: '局部生图已生成',
+        description: '结果已显示在重绘效果图中。',
       });
     } catch (error) {
       if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return;
@@ -2577,6 +2651,8 @@ export function GeneratePanel() {
       finish();
     }
   }
+
+  handleLocalRepaintGenerateRef.current = handleLocalRepaintGenerate;
 
   async function persistPairedMultiviewReference(
     singleReference: ReferenceImage,
@@ -2738,10 +2814,16 @@ export function GeneratePanel() {
       await handleLocalRepaintGenerate();
       return;
     }
-    await handleTextureMapGenerate();
+    await handleTextureMapGenerate(
+      textureViewMode === 'multi' ? cameraViews : undefined,
+      textureViewMode,
+    );
   }
 
-  async function handleTextureMapGenerate(requestedViews: CameraViewItem[] = cameraViews) {
+  async function handleTextureMapGenerate(
+    requestedViews: CameraViewItem[] | undefined = undefined,
+    requestedViewMode: TextureViewMode = textureViewMode,
+  ) {
     try {
       if (submitLocksRef.current.has('multiview') || previewIsGenerating) {
         setGenerateNotice({
@@ -2765,6 +2847,7 @@ export function GeneratePanel() {
         return;
       }
       submitLocksRef.current.add('multiview');
+      setTexturePipelineProgress({ active: true, progress: 3, label: '检查参考图' });
       let materialReference = selectedMultiviewReference;
       if (!materialReference) {
         if (!selectedSingleReference) throw new Error('当前参考图没有可用的单视图或多视图。');
@@ -2772,13 +2855,23 @@ export function GeneratePanel() {
           tone: 'info',
           message: '第 1/2 步：当前参考图缺少多视图，正在自动生成并写回。',
         });
+        updateTexturePipelineProgress(6, '生成多视图参考');
         materialReference = await generatePairedMultiviewReference(selectedSingleReference);
+        updateTexturePipelineProgress(18, '多视图参考已就绪');
+      } else {
+        updateTexturePipelineProgress(18, '多视图参考已就绪');
       }
       setGenerateNotice({
         tone: 'info',
-        message: '第 2/2 步：多视图已就绪，正在生成纹理贴图。',
+        message:
+          requestedViewMode === 'multi'
+            ? '第 2/2 步：多视图已就绪，正在生成纹理贴图。'
+            : '多视图已就绪，正在生成当前单视角纹理贴图。',
       });
-      await handleTextureMapMultiviewGenerate(materialReference, requestedViews);
+      const resolvedViews =
+        requestedViews ??
+        (requestedViewMode === 'single' ? [getCurrentTextureCameraView()] : cameraViews);
+      await handleTextureMapMultiviewGenerate(materialReference, resolvedViews, requestedViewMode);
     } catch (error) {
       console.error('[Liclick 3D Texture] Texture map generation failed:', error);
       const message = getUserFacingGenerationError(error, '纹理贴图生成失败，请稍后重试。');
@@ -2793,8 +2886,12 @@ export function GeneratePanel() {
         title: t('textureMapFailed'),
         description: message,
       });
+      setTexturePipelineProgress(undefined);
     } finally {
       submitLocksRef.current.delete('multiview');
+      setTexturePipelineProgress((current) =>
+        current?.progress === 100 ? { ...current, active: false } : current,
+      );
     }
   }
 
@@ -2957,7 +3054,9 @@ export function GeneratePanel() {
     const targetProjectId = currentProject?.id;
     if (!targetProjectId) return;
     let result: Awaited<ReturnType<typeof saveWorkspaceProject>> | undefined;
-    let savedProjectSnapshot: ReturnType<typeof useProjectStore.getState>['projects'][number] | undefined;
+    let savedProjectSnapshot:
+      | ReturnType<typeof useProjectStore.getState>['projects'][number]
+      | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const projectState = useProjectStore.getState();
       const project = projectState.projects.find((item) => item.id === targetProjectId);
@@ -3076,7 +3175,9 @@ export function GeneratePanel() {
     }
     const projectCaptures =
       useProjectStore.getState().projects.find((project) => project.id === targetProjectId)
-        ?.captures ?? currentProject?.captures ?? [];
+        ?.captures ??
+      currentProject?.captures ??
+      [];
     const generationCapture =
       options.capture?.id === generation.captureId
         ? options.capture
@@ -3182,9 +3283,7 @@ export function GeneratePanel() {
     }
     const currentExisting = useLayerStore
       .getState()
-      .layers.find(
-        (layer) => layer.id === layerId || layer.generationId === generation.id,
-      );
+      .layers.find((layer) => layer.id === layerId || layer.generationId === generation.id);
     // A manual replacement may target a layer that the user deleted while its
     // files were saving. New automatic layers have not entered the store yet,
     // so they can be committed safely only after every asset is durable.
@@ -3268,222 +3367,253 @@ export function GeneratePanel() {
   }
 
   async function handleAddProjectedLayer() {
-    if (!previewGeneration) return;
-    await addGenerationAsProjectedLayer(previewGeneration);
+    if (!displayedPreviewGeneration) return;
+    await addGenerationAsProjectedLayer(displayedPreviewGeneration);
   }
 
   async function handleDownloadGenerationImage() {
-    if (!previewGeneration?.resultUrl) return;
-    const kind = isTextureMapGeneration(previewGeneration) ? 'texture_map' : 'liclick_generation';
+    if (!displayedPreviewGeneration?.resultUrl) return;
+    const kind = isTextureMapGeneration(displayedPreviewGeneration)
+      ? 'texture_map'
+      : 'liclick_generation';
     const downloaded = await downloadImageAsset(
-      previewResultUrl ?? previewGeneration.resultUrl,
-      `liclick_${kind}_${previewGeneration.id}`,
+      previewResultUrl ?? displayedPreviewGeneration.resultUrl,
+      `liclick_${kind}_${displayedPreviewGeneration.id}`,
     );
     if (!downloaded) return;
     trackModuleAction(
-      isLocalRepaintGeneration(previewGeneration) ? 'local_repaint' : 'texture_painting',
+      isLocalRepaintGeneration(displayedPreviewGeneration) ? 'local_repaint' : 'texture_painting',
       'download',
     );
   }
 
+  const generateAction = (
+    <div
+      data-texture-onboarding="generate-texture"
+      className={`bg-[#0c0c15]/98 p-2 shadow-[0_-16px_42px_rgba(0,0,0,0.68)] backdrop-blur-xl ${
+        canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : ''
+      }`}
+    >
+      <Button
+        className={`relative h-12 w-full overflow-hidden text-base ${
+          texturePipelineProgress?.active && tab === 'multiview' ? 'disabled:opacity-100' : ''
+        }`}
+        variant="primary"
+        disabled={
+          (tab === 'multiview' && texturePipelineProgress?.active) ||
+          previewIsGenerating ||
+          displayedReferenceGroupGenerationState?.status === 'generating'
+        }
+        onClick={handleGenerate}
+        icon={<Sparkles className="relative z-10 h-4 w-4" />}
+        style={
+          texturePipelineProgress?.active && tab === 'multiview'
+            ? {
+                backgroundColor: '#25182f',
+                backgroundImage:
+                  'linear-gradient(90deg, rgba(242,76,193,0.96), rgba(132,81,255,0.98)), linear-gradient(90deg, #25182f, #322044)',
+                backgroundPosition: 'left top, left top',
+                backgroundRepeat: 'no-repeat',
+                backgroundSize: `${texturePipelineProgress.progress}% 100%, 100% 100%`,
+                transition: 'background-size 500ms ease, filter 200ms ease',
+              }
+            : undefined
+        }
+      >
+        <span className="relative z-10">
+          {texturePipelineProgress?.active && tab === 'multiview'
+            ? `${texturePipelineProgress.label} · ${Math.round(texturePipelineProgress.progress)}%`
+            : previewIsGenerating
+              ? t('generating')
+              : tab === 'multiview'
+                ? t('generateTextureMap')
+                : tab === 'repaint'
+                  ? '局部生图'
+                  : t('generateImage')}
+        </span>
+      </Button>
+      {canCancelGeneration && (
+        <Button
+          className="h-12 w-full px-0"
+          variant="danger"
+          onClick={cancelCurrentGeneration}
+          title={
+            isTextureMapTab
+              ? '终止纹理贴图生成'
+              : isLocalRepaintTab
+                ? '终止局部重绘生成'
+                : '终止莉刻生图'
+          }
+          aria-label={
+            isTextureMapTab
+              ? '终止纹理贴图生成'
+              : isLocalRepaintTab
+                ? '终止局部重绘生成'
+                : '终止莉刻生图'
+          }
+          icon={<Square className="h-4 w-4 fill-current" />}
+        />
+      )}
+    </div>
+  );
+
   return (
     <>
-      <Panel title={t('generatePanel')}>
-        <SegmentedControl
-          value={tab}
-          options={[
-            { value: 'multiview', label: t('multiview') },
-            { value: 'repaint', label: t('localRepaint') },
-          ]}
-          onChange={setTab}
-          className="mb-2"
-        />
-        <div className="overflow-hidden rounded-md border border-white/10 bg-black/24">
-          <div className="relative h-[240px] overflow-hidden bg-[#1b1b1b]">
-            {previewGeneration?.resultUrl ? (
-              <button
-                type="button"
-                className="h-full w-full cursor-zoom-in"
-                onClick={() => setPreviewImageOpen(true)}
-                aria-label={t('view')}
-                title={t('view')}
-                style={checkerBackgroundStyle}
-              >
-                <img
-                  src={previewResultUrl ?? previewGeneration.resultUrl}
-                  alt=""
-                  className="h-full w-full object-contain"
-                />
-              </button>
-            ) : (
-              <div className="h-full w-full bg-[#1b1b1b]" />
-            )}
-            {previewGeneration?.resultUrl && (
-              <div className="absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 bg-black/68 p-1 shadow-xl backdrop-blur-sm">
-                {isTextureMapGeneration(previewGeneration) && (
-                  <button
-                    type="button"
-                    className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
-                    title={t('addAsProjectedLayer')}
-                    aria-label={t('addAsProjectedLayer')}
-                    onClick={handleAddProjectedLayer}
-                  >
-                    <Layers className="h-4 w-4" />
-                  </button>
-                )}
+      <Panel
+        title={t('generatePanel')}
+        className="generate-panel-adaptive flex h-full min-h-0 flex-col overflow-hidden"
+      >
+        {isTextureMapTab && (
+          <div data-texture-onboarding="single-view">
+            <SegmentedControl<TexturePreviewMode>
+              value={texturePreviewMode}
+              options={[
+                { value: 'multi', label: '多视图' },
+                { value: 'single', label: '单视图' },
+                { value: 'repaint', label: '重绘效果图' },
+              ]}
+              onChange={(value) => {
+                setTexturePreviewMode(value);
+                if (value !== 'repaint') setTextureViewMode(value);
+              }}
+              className="mb-2"
+            />
+          </div>
+        )}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/10 bg-black/24">
+          {(!isTextureMapTab || texturePreviewMode !== 'multi') && (
+            <div className="generate-preview-adaptive relative shrink-0 overflow-hidden bg-[#1b1b1b]">
+              {displayedPreviewGeneration?.resultUrl ? (
                 <button
                   type="button"
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
-                  title={t('downloadImage')}
-                  aria-label={t('downloadImage')}
-                  onClick={() => void handleDownloadGenerationImage()}
-                >
-                  <Download className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
-                  title={t('view')}
-                  aria-label={t('view')}
+                  className="h-full w-full cursor-zoom-in"
                   onClick={() => setPreviewImageOpen(true)}
+                  aria-label={t('view')}
+                  title={t('view')}
+                  style={checkerBackgroundStyle}
                 >
-                  <Maximize2 className="h-4 w-4" />
+                  <img
+                    src={previewResultUrl ?? displayedPreviewGeneration.resultUrl}
+                    alt=""
+                    className="h-full w-full object-contain"
+                  />
                 </button>
-              </div>
-            )}
-            {previewIsGenerating && previewGeneration && (
-              <div className="absolute inset-0 grid place-items-center bg-black/62 text-white backdrop-blur-[2px]">
-                <GenerationProgressStatus generation={previewGeneration} title={t('generating')} />
-              </div>
-            )}
-            {previewFailed && !previewIsGenerating && (
-              <div className="absolute inset-0 grid place-items-center bg-rose-950/28 px-4 text-center text-white">
-                <div className="grid gap-1">
-                  <div className="text-sm font-semibold">
-                    {previewCancelled ? '已终止' : '生成失败'}
-                  </div>
-                  <div className="text-xs text-white/66">
-                    {previewCancelled
-                      ? '当前生成任务已停止等待，本次结果已丢弃。'
-                      : '请检查提示词、参考图或模型要求后重试。'}
+              ) : isTextureMapTab && texturePreviewMode === 'repaint' ? (
+                <div className="grid h-full w-full place-items-center px-5 text-center">
+                  <div className="grid gap-1">
+                    <div className="text-sm font-semibold text-white/72">暂无重绘效果图</div>
+                    <div className="text-xs text-white/42">完成局部重绘生图后将在这里显示。</div>
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-3 p-2.5">
-            {isTextureMapTab && (
-              <section className="grid gap-2">
-                <div className="flex items-center justify-between gap-2 text-sm font-semibold text-white/88">
-                  <span>{t('cameraViews')}</span>
-                  <div className="flex items-center gap-1">
+              ) : (
+                <div className="h-full w-full bg-[#1b1b1b]" />
+              )}
+              {displayedPreviewGeneration?.resultUrl && (
+                <div className="absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 bg-black/68 p-1 shadow-xl backdrop-blur-sm">
+                  {isTextureMapGeneration(displayedPreviewGeneration) && (
                     <button
                       type="button"
-                      className="grid h-7 w-7 place-items-center rounded-md text-white/72 transition hover:bg-white/10 hover:text-white"
-                      title="AI 一键生成默认 10 视角贴图并上色"
-                      aria-label="AI 一键生成默认 10 视角贴图并上色"
-                      onClick={requestAiOneClickTextureMap}
+                      className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
+                      title={t('addAsProjectedLayer')}
+                      aria-label={t('addAsProjectedLayer')}
+                      onClick={handleAddProjectedLayer}
                     >
-                      <Sparkles className="h-4 w-4" />
+                      <Layers className="h-4 w-4" />
                     </button>
-                  </div>
-                </div>
-                <div
-                  ref={cameraViewPresetMenuRef}
-                  className={`overflow-hidden rounded-lg border bg-[#10101b] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] transition-colors ${
-                    cameraViewPresetMenuOpen
-                      ? 'border-liclick-pink/55'
-                      : 'border-white/14 hover:border-white/25'
-                  }`}
-                >
+                  )}
                   <button
                     type="button"
-                    className="flex min-h-12 w-full items-center justify-between gap-3 bg-transparent px-3 text-left outline-none transition hover:bg-white/[0.035] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-liclick-pink/35"
-                    aria-label="多视图预设"
-                    aria-haspopup="listbox"
-                    aria-expanded={cameraViewPresetMenuOpen}
-                    onClick={() => setCameraViewPresetMenuOpen((open) => !open)}
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
+                    title={t('downloadImage')}
+                    aria-label={t('downloadImage')}
+                    onClick={() => void handleDownloadGenerationImage()}
                   >
-                    <span className="min-w-0">
-                      <span className="block truncate text-xs font-semibold text-white/92">
-                        {activeCameraViewPresetOption.title}
-                      </span>
-                      <span className="mt-0.5 block text-[10px] font-medium text-white/45">
-                        {selectedCameraViewPreset === 'custom'
-                          ? `${cameraViews.length} 个视角`
-                          : activeCameraViewPresetOption.detail}
-                      </span>
-                    </span>
-                    <ChevronDown
-                      className={`h-4 w-4 shrink-0 text-white/42 transition-transform ${
-                        cameraViewPresetMenuOpen ? 'rotate-180 text-liclick-pink' : ''
-                      }`}
-                    />
+                    <Download className="h-4 w-4" />
                   </button>
-                  {cameraViewPresetMenuOpen && (
-                    <div
-                      role="listbox"
-                      aria-label="多视图预设选项"
-                      className="grid gap-1 border-t border-white/10 bg-[#090912] p-1.5"
-                    >
-                      {cameraViewPresetOptions.map((option) => {
-                        const selected = selectedCameraViewPreset === option.id;
-                        return (
-                          <button
-                            key={option.id}
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            className={`flex min-h-11 w-full items-center justify-between gap-3 rounded-md border px-2.5 py-2 text-left transition ${
-                              selected
-                                ? 'border-liclick-pink/35 bg-liclick-pink/10'
-                                : 'border-transparent bg-transparent hover:border-white/10 hover:bg-white/[0.045]'
-                            }`}
-                            onClick={() => handleCameraViewPresetSelect(option.id)}
-                          >
-                            <span className="min-w-0">
-                              <span
-                                className={`block text-xs font-semibold ${
-                                  selected ? 'text-white' : 'text-white/78'
-                                }`}
-                              >
-                                {option.title}
-                              </span>
-                              <span className="mt-0.5 block text-[10px] text-white/42">
-                                {option.detail}
-                              </span>
-                            </span>
-                            <span
-                              className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border ${
-                                selected
-                                  ? 'border-liclick-pink/60 bg-liclick-pink/16 text-liclick-pink'
-                                  : 'border-white/14 text-transparent'
-                              }`}
-                            >
-                              <Check className="h-3 w-3" />
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
+                    title={t('view')}
+                    aria-label={t('view')}
+                    onClick={() => setPreviewImageOpen(true)}
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </button>
                 </div>
-                <p className="px-0.5 text-[11px] leading-4 text-white/45">
-                  {selectedCameraViewPreset !== 'custom'
-                    ? getCameraViewPresetDefinition(selectedCameraViewPreset).description
-                    : `自定义组合：${cameraViews.length} 个视角；基础为前、后、左、右、上、下`}
-                </p>
-                <div className="grid grid-cols-3 gap-2">
+              )}
+              {displayedPreviewIsGenerating && displayedPreviewGeneration && (
+                <div className="absolute inset-0 grid place-items-center bg-black/62 text-white backdrop-blur-[2px]">
+                  <GenerationProgressStatus
+                    generation={displayedPreviewGeneration}
+                    title={t('generating')}
+                  />
+                </div>
+              )}
+              {displayedPreviewFailed && !displayedPreviewIsGenerating && (
+                <div className="absolute inset-0 grid place-items-center bg-rose-950/28 px-4 text-center text-white">
+                  <div className="grid gap-1">
+                    <div className="text-sm font-semibold">
+                      {displayedPreviewCancelled ? '已终止' : '生成失败'}
+                    </div>
+                    <div className="text-xs text-white/66">
+                      {displayedPreviewCancelled
+                        ? '当前生成任务已停止等待，本次结果已丢弃。'
+                        : '请检查提示词、参考图或模型要求后重试。'}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="generate-content-adaptive scrollbar-none flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2.5 pt-2.5">
+            {isTextureMapTab && texturePreviewMode === 'multi' && (
+              <section className="generate-multiview-adaptive order-1 grid shrink-0 content-start gap-2">
+                <div className="grid grid-cols-3 gap-2" role="tablist" aria-label="多视图预设">
+                  {cameraViewPresetOptions.map((option) => {
+                    const selected = selectedCameraViewPreset === option.id;
+                    const viewCount =
+                      option.id === 'preset-1'
+                        ? 10
+                        : option.id === 'preset-2'
+                          ? 14
+                          : selectedCameraViewPreset === 'custom'
+                            ? cameraViews.length
+                            : customCameraViewPreset.views.length;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={selected}
+                        className={`generate-camera-preset min-h-10 min-w-0 rounded-md px-1.5 py-1 text-[10px] font-semibold leading-3 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-liclick-pink/35 ${
+                          selected
+                            ? 'bg-white text-[#17131f] shadow-sm'
+                            : 'bg-[#10101b] text-white/62 hover:bg-white/[0.065] hover:text-white'
+                        }`}
+                        onClick={() => handleCameraViewPresetSelect(option.id)}
+                      >
+                        <span className="block truncate">{option.title}</span>
+                        <span
+                          className={`mt-0.5 block truncate text-[9px] font-normal ${
+                            selected ? 'text-[#17131f]/58' : 'text-white/38'
+                          }`}
+                        >
+                          {viewCount} 视角
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="grid grid-cols-3 gap-2 pb-1">
                   {cameraViews.map((view) => (
-                    <div key={view.id} className="group relative h-[76px]">
+                    <div
+                      key={view.id}
+                      className="generate-camera-card-adaptive group relative min-w-0"
+                    >
                       <button
                         type="button"
-                        className={`h-full w-full overflow-hidden rounded-md border p-0.5 transition ${
-                          activeCameraViewId === view.id
-                            ? 'border-[#ff8a68] bg-[#ff8a68]/18 shadow-[0_0_0_2px_rgba(255,138,104,0.28)]'
-                            : 'border-white/10 bg-white/[0.045] hover:border-white/28 hover:bg-white/10'
-                        }`}
+                        className="h-full w-full overflow-hidden rounded-lg bg-transparent"
                         onClick={() => handleCameraViewSelect(view)}
                         title={view.label}
                         aria-label={view.label}
@@ -3492,13 +3622,10 @@ export function GeneratePanel() {
                           preview={cameraViewPreviews[view.id]}
                           loading={capturingCameraViews.has(view.id)}
                         />
-                        <span className="pointer-events-none absolute bottom-1 left-1 z-10 rounded bg-black/68 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-white/88 shadow">
-                          {view.label}
-                        </span>
                       </button>
                       <button
                         type="button"
-                        className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full border border-white/16 bg-black/72 text-white/72 opacity-0 shadow transition hover:bg-red-500 hover:text-white group-hover:opacity-100 focus:opacity-100"
+                        className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-black/72 text-white/72 opacity-0 shadow transition hover:bg-red-500 hover:text-white group-hover:opacity-100 focus:opacity-100"
                         title={`删除${view.label}视角`}
                         aria-label={`删除${view.label}视角`}
                         onClick={() => handleDeleteCameraView(view.id)}
@@ -3509,19 +3636,21 @@ export function GeneratePanel() {
                   ))}
                   <button
                     type="button"
-                    className="group grid h-[76px] place-items-center rounded-md border border-dashed border-white/18 bg-white/[0.025] text-white/48 transition hover:border-liclick-pink/72 hover:bg-liclick-pink/10 hover:text-liclick-pink focus:border-liclick-pink focus:outline-none focus:ring-2 focus:ring-liclick-pink/24"
+                    className="generate-camera-card-adaptive group grid place-items-center overflow-hidden rounded-lg bg-[#303033] text-liclick-pink transition hover:bg-[#3a3a3e] focus:outline-none focus:ring-2 focus:ring-liclick-pink/30"
                     title={t('addCameraView')}
                     aria-label={t('addCameraView')}
                     onClick={handleAddCurrentCameraView}
                   >
-                    <Plus className="h-8 w-8 transition-transform group-hover:scale-110" />
+                    <Plus className="h-7 w-7 transition-transform group-hover:scale-110" />
                   </button>
                 </div>
               </section>
             )}
 
-            <label className="grid gap-1.5 text-xs font-semibold text-white/82">
-              <span>{isTextureMapTab ? '纹理提示词' : t('prompt')}</span>
+            <label className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
+              <span className="text-sm font-semibold text-white/88">
+                {isTextureMapTab ? '纹理提示词' : t('prompt')}
+              </span>
               <textarea
                 value={prompt}
                 onChange={(event) =>
@@ -3533,16 +3662,15 @@ export function GeneratePanel() {
                         : { liclickPrompt: event.target.value },
                   )
                 }
-                className="h-[104px] w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
+                className="generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
               />
             </label>
 
             {isTextureMapTab && (
-              <section className="grid gap-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-white/88">参考图</span>
-                  <span className="text-[9px] font-normal text-white/30">单图 / 多视图任选</span>
-                </div>
+              <section
+                data-texture-onboarding="reference-images"
+                className="order-2 grid shrink-0 gap-2"
+              >
                 <ReferenceGroupPicker
                   disabled={
                     previewIsGenerating ||
@@ -3560,7 +3688,7 @@ export function GeneratePanel() {
               <div
                 role={generateNotice.tone === 'error' ? 'alert' : 'status'}
                 aria-live="polite"
-                className={`rounded-md border px-2.5 py-2 text-xs leading-5 ${
+                className={`order-4 shrink-0 rounded-md border px-2.5 py-2 text-xs leading-5 ${
                   generateNotice.tone === 'error'
                     ? 'border-rose-300/32 bg-rose-400/12 text-rose-50'
                     : generateNotice.tone === 'warning'
@@ -3571,93 +3699,18 @@ export function GeneratePanel() {
                 {generateNotice.message}
               </div>
             )}
-
-            <div className={canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : undefined}>
-              <Button
-                className="h-12 w-full text-base"
-                variant="primary"
-                disabled={
-                  previewIsGenerating ||
-                  displayedReferenceGroupGenerationState?.status === 'generating'
-                }
-                onClick={handleGenerate}
-                icon={<Sparkles className="h-4 w-4" />}
-              >
-                {previewIsGenerating
-                  ? t('generating')
-                  : tab === 'multiview'
-                    ? t('generateTextureMap')
-                    : tab === 'repaint'
-                      ? '局部生图'
-                      : t('generateImage')}
-              </Button>
-              {canCancelGeneration && (
-                <Button
-                  className="h-12 w-full px-0"
-                  variant="danger"
-                  onClick={cancelCurrentGeneration}
-                  title={
-                    isTextureMapTab
-                      ? '终止纹理贴图生成'
-                      : isLocalRepaintTab
-                        ? '终止局部重绘生成'
-                        : '终止莉刻生图'
-                  }
-                  aria-label={
-                    isTextureMapTab
-                      ? '终止纹理贴图生成'
-                      : isLocalRepaintTab
-                        ? '终止局部重绘生成'
-                        : '终止莉刻生图'
-                  }
-                  icon={<Square className="h-4 w-4 fill-current" />}
-                />
-              )}
-            </div>
           </div>
         </div>
       </Panel>
       {portalRoot &&
-        aiOneClickConfirmOpen &&
+        generatePanelExpanded &&
         createPortal(
-          <div className="fixed inset-0 z-[145] grid place-items-center bg-black/62 px-4 backdrop-blur-sm">
-            <div className="w-full max-w-[440px] rounded-lg border border-white/16 bg-[#151520] p-4 text-white shadow-2xl">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-liclick-pink">
-                    AI 一键生成贴图并上色
-                  </div>
-                  <div className="mt-1 text-lg font-bold">确认生成默认 10 个视角？</div>
-                </div>
-                <button
-                  type="button"
-                  className="grid h-8 w-8 place-items-center rounded-md text-white/70 transition hover:bg-white/10 hover:text-white"
-                  onClick={() => setAiOneClickConfirmOpen(false)}
-                  aria-label={t('close')}
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <p className="mt-3 text-sm leading-6 text-white/72">
-                将自动拍摄正面、背面、左面、右面、顶面和底面，分别提交纹理贴图任务。每张完成后会立即自动扣图并加入右侧图层，之后可人工检查和修改。
-              </p>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <Button
-                  variant="secondary"
-                  className="h-10"
-                  onClick={() => setAiOneClickConfirmOpen(false)}
-                >
-                  取消
-                </Button>
-                <Button
-                  className="h-10"
-                  onClick={() => void confirmAiOneClickTextureMap()}
-                  icon={<Sparkles className="h-4 w-4" />}
-                >
-                  确认并开始
-                </Button>
-              </div>
-            </div>
+          <div
+            className={`pointer-events-auto fixed bottom-4 left-4 z-[90] hidden overflow-hidden rounded-lg lg:block ${
+              dockDensity === 'normal' ? 'w-[312px]' : 'w-[292px]'
+            }`}
+          >
+            {generateAction}
           </div>,
           portalRoot,
         )}
@@ -3716,7 +3769,7 @@ export function GeneratePanel() {
         )}
       {portalRoot &&
         previewImageOpen &&
-        previewGeneration?.resultUrl &&
+        displayedPreviewGeneration?.resultUrl &&
         createPortal(
           <button
             type="button"
@@ -3725,7 +3778,7 @@ export function GeneratePanel() {
             aria-label={t('close')}
           >
             <img
-              src={previewResultUrl ?? previewGeneration.resultUrl}
+              src={previewResultUrl ?? displayedPreviewGeneration.resultUrl}
               alt=""
               className="max-h-[92vh] max-w-[94vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
               style={checkerBackgroundStyle}

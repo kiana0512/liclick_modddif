@@ -1,9 +1,10 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Network, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
+import { TextureOnboardingTour } from '@/components/editor/TextureOnboardingTour';
 import { PhotoshopEditSessionPanel } from '@/features/photoshop/PhotoshopEditSessionPanel';
 import {
   frontProjectThumbnailCapture,
@@ -113,10 +114,7 @@ import {
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
-import {
-  focusCameraOrbitOnObjectId,
-  setCameraToObjectView,
-} from '@/engine/scene/transformActions';
+import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
@@ -142,10 +140,7 @@ import {
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
 import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
-import {
-  hasTrackedModuleAction,
-  trackModuleActionOnce,
-} from '@/services/telemetryClient';
+import { hasTrackedModuleAction, trackModuleActionOnce } from '@/services/telemetryClient';
 import {
   fileToDataUrl,
   getWorkspaceHealth,
@@ -448,11 +443,7 @@ function isLocalRepaintDestinationLayer(
   layer: Layer | undefined,
   objectId: string,
 ): layer is Layer & { type: 'uv' } {
-  if (
-    !layer ||
-    layer.type !== 'uv' ||
-    (layer.objectId && layer.objectId !== objectId)
-  )
+  if (!layer || layer.type !== 'uv' || (layer.objectId && layer.objectId !== objectId))
     return false;
   if (!layer.imageUrl) return true;
   return layer.role === 'local-repaint-overlay';
@@ -820,9 +811,9 @@ export function EditorPage({
   const [publishingToRetopology, setPublishingToRetopology] = useState(false);
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const [modelImportBusy, setModelImportBusy] = useState(false);
-  const [modelImportProgress, setModelImportProgress] = useState<
-    AutoBakeProgress | undefined
-  >();
+  const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
+  const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
+  const [modelImportProgress, setModelImportProgress] = useState<AutoBakeProgress | undefined>();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
   const [photoshopEditBusy, setPhotoshopEditBusy] = useState(false);
   const photoshopEditSessionRef = useRef<PhotoshopSession>();
@@ -861,6 +852,7 @@ export function EditorPage({
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
   const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
+  const paintMaskRevision = useSceneStore((state) => state.paintMaskRevision);
   const setLocalRepaintProjectionSource = useSceneStore(
     (state) => state.setLocalRepaintProjectionSource,
   );
@@ -875,9 +867,7 @@ export function EditorPage({
   const mergeLayersIntoUvLayer = useLayerStore((state) => state.mergeLayersIntoUvLayer);
   const generations = useGenerationStore((state) => state.generations);
   const setGenerations = useGenerationStore((state) => state.setGenerations);
-  const setProjectGenerationsById = useProjectStore(
-    (state) => state.setProjectGenerationsById,
-  );
+  const setProjectGenerationsById = useProjectStore((state) => state.setProjectGenerationsById);
   const setProjectLayers = useProjectStore((state) => state.setProjectLayers);
   const setProjectReferences = useProjectStore((state) => state.setProjectReferences);
   const references = useReferenceStore((state) => state.references);
@@ -899,6 +889,33 @@ export function EditorPage({
   const canUndo = useEditorHistoryStore((state) => state.past.length > 0);
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
   const activeLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
+  const localRepaintGenerationReady = useMemo(() => {
+    const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
+    return generations.some(
+      (generation) =>
+        generation.status === 'succeeded' &&
+        Boolean(generation.resultUrl) &&
+        isLocalRepaintGeneration(generation) &&
+        generation.metadata.paintMaskRevision === paintMaskRevision &&
+        (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+        (!preferredObjectId ||
+          !generation.metadata.objectId ||
+          generation.metadata.objectId === preferredObjectId),
+    );
+  }, [generations, importedModel?.objectId, paintMaskRevision, projectId, selectedObjectId]);
+  const localImageGenerationRunning = useMemo(() => {
+    const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
+    return generations.some(
+      (generation) =>
+        (generation.status === 'queued' || generation.status === 'running') &&
+        isLocalRepaintGeneration(generation) &&
+        generation.metadata.paintMaskRevision === paintMaskRevision &&
+        (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+        (!preferredObjectId ||
+          !generation.metadata.objectId ||
+          generation.metadata.objectId === preferredObjectId),
+    );
+  }, [generations, importedModel?.objectId, paintMaskRevision, projectId, selectedObjectId]);
   const activeBakedTexture = project?.bakedTextures.find(
     (texture) => texture.id === activeLayer?.bakedTextureId,
   );
@@ -981,10 +998,7 @@ export function EditorPage({
         setRouteProjectStatus('idle');
       })
       .catch(() => {
-        if (
-          token.revision !== routeProjectLoadRevisionRef.current ||
-          token.projectId !== projectId
-        )
+        if (token.revision !== routeProjectLoadRevisionRef.current || token.projectId !== projectId)
           return;
         setRouteProjectStatus('missing');
         pushToast({
@@ -1001,14 +1015,7 @@ export function EditorPage({
     };
     // hydrateProjectStores is intentionally not a dependency; this effect is authoritative per route id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    authenticatedUserId,
-    authStatus,
-    projectId,
-    pushToast,
-    replaceCurrentProject,
-    t,
-  ]);
+  }, [authenticatedUserId, authStatus, projectId, pushToast, replaceCurrentProject, t]);
 
   useEffect(() => {
     if (serverReadyProjectId !== projectId) return;
@@ -1058,8 +1065,6 @@ export function EditorPage({
     if (!activeProjectedLayerId) return;
     showPanel('layers');
     setPanelCollapsed('layers', false);
-    showPanel('layerAdjustments');
-    setPanelCollapsed('layerAdjustments', false);
   }, [activeProjectedLayerId, setPanelCollapsed, showPanel]);
 
   useEffect(() => {
@@ -1133,8 +1138,8 @@ export function EditorPage({
           const saveConflict = error instanceof WorkspaceApiError && error.status === 409;
           const retryableConflict = Boolean(
             saveConflict &&
-              (error.message.includes('stale project snapshot') ||
-                error.message.includes('still uploading')),
+            (error.message.includes('stale project snapshot') ||
+              error.message.includes('still uploading')),
           );
           const blockedEmptySave = saveConflict && !retryableConflict;
           if (retryableConflict) {
@@ -2550,14 +2555,8 @@ export function EditorPage({
         }
       }
       if (!isCurrentImport()) return false;
-      onProgress?.(
-        { phase: 'persisting', phaseProgress: 1 },
-        t('modelImportSavingFile'),
-      );
-      onProgress?.(
-        { phase: 'registering', phaseProgress: 0.15 },
-        t('modelImportAddingToScene'),
-      );
+      onProgress?.({ phase: 'persisting', phaseProgress: 1 }, t('modelImportSavingFile'));
+      onProgress?.({ phase: 'registering', phaseProgress: 0.15 }, t('modelImportAddingToScene'));
       setImportedModel(loaded.result, object);
       if (importedBaseColorUrl) {
         addUvLayer({
@@ -2572,10 +2571,7 @@ export function EditorPage({
         layers: useLayerStore.getState().layers,
         activeObjectId: object.id,
       });
-      onProgress?.(
-        { phase: 'registering', phaseProgress: 0.55 },
-        t('modelImportSavingProject'),
-      );
+      onProgress?.({ phase: 'registering', phaseProgress: 0.55 }, t('modelImportSavingProject'));
       if (project?.workspaceMode === 'local-server') {
         const importedProjectSnapshot = getProjectSnapshot({ refreshThumbnail: false });
         if (importedProjectSnapshot) {
@@ -2594,19 +2590,14 @@ export function EditorPage({
               tone: 'warning',
               title: '模型已导入，但工程保存失败',
               description:
-                saveError instanceof Error
-                  ? saveError.message
-                  : '请确认工作区服务在线后再保存。',
+                saveError instanceof Error ? saveError.message : '请确认工作区服务在线后再保存。',
               dedupeKey: `model-import-save-failed:${object.id}`,
             });
           }
         }
       }
       if (!isCurrentImport()) return false;
-      onProgress?.(
-        { phase: 'registering', phaseProgress: 0.9 },
-        t('modelImportSavingProject'),
-      );
+      onProgress?.({ phase: 'registering', phaseProgress: 0.9 }, t('modelImportSavingProject'));
       window.setTimeout(() => {
         const thumbnail = getStandardProjectThumbnailDataUrl();
         if (thumbnail) updateCurrentProject({ thumbnail });
@@ -3099,8 +3090,7 @@ export function EditorPage({
   async function generateLocalRepaint(input: LocalRepaintGenerateInput) {
     if (!localRepaintRuntime) throw new Error(t('localRepaintUnavailable'));
     const authState = useAuthStore.getState();
-    const providerStatus =
-      authState.providerStatus ?? (await authState.refreshProviderStatus());
+    const providerStatus = authState.providerStatus ?? (await authState.refreshProviderStatus());
     const authStrategy = resolveLiclickAuthStrategy(providerStatus);
     if (authStrategy === 'unresolved') {
       throw new Error('无法确认当前登录方式，请刷新页面或重新登录后再试。');
@@ -3376,8 +3366,7 @@ export function EditorPage({
       const currentLayers = useLayerStore.getState().layers;
       const previousRepairCount = currentLayers.filter(
         (layer) =>
-          isContentAwareRepairLayer(layer) &&
-          (!layer.objectId || layer.objectId === objectId),
+          isContentAwareRepairLayer(layer) && (!layer.objectId || layer.objectId === objectId),
       ).length;
       const passNumber = previousRepairCount + 1;
       const layer: Layer = {
@@ -3617,27 +3606,25 @@ export function EditorPage({
     const selectedLayers = layerIds
       .map((layerId) => currentLayers.find((item) => item.id === layerId))
       .filter((layer): layer is Layer => Boolean(layer && layer.id !== blankUvLayerId));
-    const projectedLayers = selectedLayers
-      .filter((layer): layer is Layer =>
-        Boolean(
-          layer.type === 'projected' &&
-          layer.imageUrl &&
-          layer.camera &&
-          (!layer.objectId || layer.objectId === objectId),
-        ),
-      );
+    const projectedLayers = selectedLayers.filter((layer): layer is Layer =>
+      Boolean(
+        layer.type === 'projected' &&
+        layer.imageUrl &&
+        layer.camera &&
+        (!layer.objectId || layer.objectId === objectId),
+      ),
+    );
     const selectedUvLayers = selectedLayers
       .filter(
         (layer) =>
-          isFlattenableUvMergeSource(layer) &&
-          (!layer.objectId || layer.objectId === objectId),
+          isFlattenableUvMergeSource(layer) && (!layer.objectId || layer.objectId === objectId),
       )
       .sort((left, right) => {
         // Repair is always a sparse underlay, irrespective of incidental list
         // order. Ordinary merged UV color stays above it, while new projection
         // pixels remain the front-most authored result.
-        const underlayOrder = Number(isContentAwareUvUnderlay(left)) -
-          Number(isContentAwareUvUnderlay(right));
+        const underlayOrder =
+          Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right));
         if (underlayOrder !== 0) return underlayOrder;
         return compareUvLayersForComposition(left, right, 'top-to-bottom');
       });
@@ -3706,7 +3693,7 @@ export function EditorPage({
                 maskUrl: undefined,
               }
             : layer,
-          ),
+        ),
       );
       const postprocess = getMergeUvPostprocessOptions(bakeResolution);
       markPerformanceEvent('uv-merge', 'gpu-bake-start', {
@@ -3755,12 +3742,7 @@ export function EditorPage({
       if (!mergedImageData) {
         const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
         if (!outputContext) throw new Error('Could not create merged UV canvas.');
-        mergedImageData = outputContext.getImageData(
-          0,
-          0,
-          bakeResolution,
-          bakeResolution,
-        );
+        mergedImageData = outputContext.getImageData(0, 0, bakeResolution, bakeResolution);
       }
       readbackDurationMs = performance.now() - readbackStartedAt;
 
@@ -3930,7 +3912,8 @@ export function EditorPage({
       run: async () => {
         const state = useLayerStore.getState();
         const currentObjectId =
-          useSceneStore.getState().selectedObjectId ?? useSceneStore.getState().importedModel?.objectId;
+          useSceneStore.getState().selectedObjectId ??
+          useSceneStore.getState().importedModel?.objectId;
         const projectedIds = state.layers
           .filter(
             (layer) =>
@@ -3987,8 +3970,8 @@ export function EditorPage({
         .importedModels.find((model) => model.objectId === sourceObject.id);
       const sourceUrls = Array.from(
         new Set(
-          [importedSource?.objectUrl, sourceObject.sourcePath].filter(
-            (value): value is string => Boolean(value),
+          [importedSource?.objectUrl, sourceObject.sourcePath].filter((value): value is string =>
+            Boolean(value),
           ),
         ),
       );
@@ -4092,8 +4075,7 @@ export function EditorPage({
                   // remain in the append-only pipeline, but Bake must not pair
                   // them with the newly published high model.
                   objectId: sourceObject.id,
-                  high:
-                    projectWithHighSnapshot.bakeWorkspace.bakeSets[sourceObject.id]?.high,
+                  high: projectWithHighSnapshot.bakeWorkspace.bakeSets[sourceObject.id]?.high,
                   highObject:
                     projectWithHighSnapshot.bakeWorkspace.bakeSets[sourceObject.id]?.highObject,
                   ...(baseColorAsset
@@ -4277,9 +4259,7 @@ export function EditorPage({
   useEffect(() => {
     const handleLocalRepaintPrewarmProgress = (event: Event) => {
       const detail = (
-        event as CustomEvent<
-          AutoBakeProgress & { done?: boolean; dismissAfterMs?: number }
-        >
+        event as CustomEvent<AutoBakeProgress & { done?: boolean; dismissAfterMs?: number }>
       ).detail;
       if (!detail) return;
       window.clearTimeout(manualBakeProgressTimerRef.current);
@@ -4348,8 +4328,7 @@ export function EditorPage({
     const targetLayer =
       layers.find(
         (layer) =>
-          layer.id === activeProjectedLayerId &&
-          isLocalRepaintDestinationLayer(layer, objectId),
+          layer.id === activeProjectedLayerId && isLocalRepaintDestinationLayer(layer, objectId),
       ) ??
       layers.find(
         (layer) =>
@@ -4402,9 +4381,7 @@ export function EditorPage({
           camera: generationCapture.camera,
           generationId: latestLocalRepaintGeneration.id,
           captureId: generationCapture.id,
-          name: nameSource
-            ? `${t('localRepaint')}: ${nameSource.slice(0, 20)}`
-            : t('localRepaint'),
+          name: nameSource ? `${t('localRepaint')}: ${nameSource.slice(0, 20)}` : t('localRepaint'),
           targetLayerId: currentTarget.id,
           targetLayerType: currentTarget.type,
           targetLayerName: currentTarget.name,
@@ -4442,6 +4419,21 @@ export function EditorPage({
     setLocalRepaintProjectionSource,
     t,
   ]);
+
+  const handleLocalImageGenerationFromToolbar = useCallback(() => {
+    if (!project || !importedModel) {
+      pushToast({
+        tone: 'warning',
+        title: t('localRepaintUnavailable'),
+        description: t('importModelFirst'),
+      });
+      return;
+    }
+    setPaintTool('none');
+    showPanel('generate');
+    setPanelCollapsed('generate', false);
+    setLocalImageGenerationRequestKey((current) => current + 1);
+  }, [importedModel, project, pushToast, setPaintTool, setPanelCollapsed, showPanel, t]);
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
@@ -4721,21 +4713,22 @@ export function EditorPage({
     };
   }, [handleLocalRepaintFromToolbar]);
 
-  const runContentAwareRepair = useCallback(async (requestedObjectId?: string) => {
-    if (contentAwareRepairRunningRef.current) return;
-    contentAwareRepairRunningRef.current = true;
-    const abortController = new AbortController();
-    contentAwareRepairAbortControllerRef.current = abortController;
-    try {
+  const runContentAwareRepair = useCallback(
+    async (requestedObjectId?: string) => {
+      if (contentAwareRepairRunningRef.current) return;
+      contentAwareRepairRunningRef.current = true;
+      const abortController = new AbortController();
+      contentAwareRepairAbortControllerRef.current = abortController;
+      try {
         const sceneState = useSceneStore.getState();
         const viewportRuntime = sceneState.viewport;
         const targetModel = requestedObjectId
           ? sceneState.importedModels.find((model) => model.objectId === requestedObjectId)
-          : (sceneState.selectedObjectId
+          : ((sceneState.selectedObjectId
               ? sceneState.importedModels.find(
                   (model) => model.objectId === sceneState.selectedObjectId,
                 )
-              : undefined) ?? sceneState.importedModel;
+              : undefined) ?? sceneState.importedModel);
         if (!viewportRuntime || !targetModel) {
           pushToast({
             tone: 'warning',
@@ -4819,11 +4812,7 @@ export function EditorPage({
                 repairResolution,
                 layer.opacity,
               );
-              workingImageData = new ImageData(
-                result.data,
-                repairResolution,
-                repairResolution,
-              );
+              workingImageData = new ImageData(result.data, repairResolution, repairResolution);
             } catch (error) {
               throw new Error(
                 `Repair composite worker failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -4835,11 +4824,7 @@ export function EditorPage({
               repairResolution,
               repairResolution,
             );
-            compositeRgbaUnderInPlace(
-              workingImageData.data,
-              imageData.data,
-              layer.opacity,
-            );
+            compositeRgbaUnderInPlace(workingImageData.data, imageData.data, layer.opacity);
           }
         }
         const topology = await buildContentAwareSurfaceTopology(
@@ -4943,10 +4928,7 @@ export function EditorPage({
             maxSeamCrossings: 1,
             // Keep a small donor guard band, but leave enough of the previous
             // pass available for the next pass to advance progressively.
-            sourcePaddingPixels: Math.max(
-              2,
-              Math.min(4, Math.round(repairResolution / 768)),
-            ),
+            sourcePaddingPixels: Math.max(2, Math.min(4, Math.round(repairResolution / 768))),
             // One click advances one bounded surface-distance layer. A later
             // click starts from the cumulative result and continues farther.
             maxDistance: Math.max(64, Math.min(128, Math.round(repairResolution / 16))),
@@ -4979,10 +4961,7 @@ export function EditorPage({
               }),
           },
         );
-        console.info(
-          '[Liclick Content Aware] Surface repair',
-          JSON.stringify(repair.stats),
-        );
+        console.info('[Liclick Content Aware] Surface repair', JSON.stringify(repair.stats));
         if (repair.stats.repairedPixels === 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
         }
@@ -5003,7 +4982,7 @@ export function EditorPage({
           description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px`,
           dedupeKey: `content-aware-repair:${repairLayer.id}`,
         });
-    } catch (error) {
+      } catch (error) {
         if (
           (error instanceof Error && error.name === 'AbortError') ||
           contentAwareRepairAbortControllerRef.current !== abortController
@@ -5016,7 +4995,7 @@ export function EditorPage({
           title: t('localRepaintFailed'),
           description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
         });
-    } finally {
+      } finally {
         if (contentAwareRepairAbortControllerRef.current === abortController) {
           contentAwareRepairRunningRef.current = false;
           contentAwareRepairAbortControllerRef.current = undefined;
@@ -5025,8 +5004,10 @@ export function EditorPage({
             1200,
           );
         }
-    }
-  }, [addUvContentAwareRepairLayer, captureHistory, pushToast, setProjectLayers, t]);
+      }
+    },
+    [addUvContentAwareRepairLayer, captureHistory, pushToast, setProjectLayers, t],
+  );
 
   const handleContentAwareRepairFromToolbar = useCallback(() => {
     void runContentAwareRepair();
@@ -5040,10 +5021,7 @@ export function EditorPage({
       request.handled = true;
       void runContentAwareRepair(request.objectId).then(request.resolve, request.reject);
     };
-    window.addEventListener(
-      CONTENT_AWARE_REPAIR_REQUEST_EVENT,
-      handleAutomaticContentAwareRepair,
-    );
+    window.addEventListener(CONTENT_AWARE_REPAIR_REQUEST_EVENT, handleAutomaticContentAwareRepair);
     return () =>
       window.removeEventListener(
         CONTENT_AWARE_REPAIR_REQUEST_EVENT,
@@ -5318,18 +5296,7 @@ export function EditorPage({
         collapsed: workspacePanels.find((panel) => panel.id === 'generate')?.collapsed ?? true,
         visible: true,
         mode: 'texture',
-        content: <GeneratePanel />,
-      },
-      {
-        id: 'layerAdjustments',
-        title: t('layerAdjustments'),
-        dock: 'right',
-        order: 10,
-        collapsed:
-          workspacePanels.find((panel) => panel.id === 'layerAdjustments')?.collapsed ?? true,
-        visible: true,
-        mode: 'texture',
-        content: <LayerAdjustmentsPanel />,
+        content: <GeneratePanel localImageGenerationRequestKey={localImageGenerationRequestKey} />,
       },
       {
         id: 'viewport',
@@ -5380,18 +5347,27 @@ export function EditorPage({
           <LayersPanelActions
             onContentAwareRepair={handleContentAwareRepairFromToolbar}
             onMergeVisibleProjectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
+            adjustmentsOpen={layerAdjustmentsOpen}
+            onToggleAdjustments={() => setLayerAdjustmentsOpen((open) => !open)}
           />
         ),
         content: (
-          <LayersPanel
-            onLayerImageEdit={openLayerImageEdit}
-            onLayerImageReplace={(layer, file) => void replaceLayerImage(layer, file)}
-            onLayerLocalRepaint={(layer) => void openLayerLocalRepaint(layer)}
-            onMergeSelectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
-            onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
-              void mergeLayersToUvLayer(layerIds, blankUvLayerId)
-            }
-          />
+          <div className="space-y-2">
+            {layerAdjustmentsOpen && (
+              <div className="rounded-md border border-white/16 bg-white/[0.035] p-2">
+                <LayerAdjustmentsPanel />
+              </div>
+            )}
+            <LayersPanel
+              onLayerImageEdit={openLayerImageEdit}
+              onLayerImageReplace={(layer, file) => void replaceLayerImage(layer, file)}
+              onLayerLocalRepaint={(layer) => void openLayerLocalRepaint(layer)}
+              onMergeSelectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
+              onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
+                void mergeLayersToUvLayer(layerIds, blankUvLayerId)
+              }
+            />
+          </div>
         ),
       },
       {
@@ -5583,7 +5559,10 @@ export function EditorPage({
             paintTool={paintTool}
             onTransformModeChange={setTransformMode}
             onPaintToolChange={setPaintTool}
+            onLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalRepaint={handleLocalRepaintFromToolbar}
+            localImageGenerationRunning={localImageGenerationRunning}
+            canLocalRepaint={localRepaintGenerationReady}
             canUndo={canUndo}
             canRedo={canRedo}
             onUndo={undo}
@@ -5629,6 +5608,7 @@ export function EditorPage({
         }
         panels={panelDefinitions}
       />
+      <TextureOnboardingTour projectId={project.id} projectCreatedAt={project.createdAt} />
       {localRepaintRuntime && localRepaintVisible && (
         <LocalRepaintDialog
           mode={localRepaintRuntime.mode}

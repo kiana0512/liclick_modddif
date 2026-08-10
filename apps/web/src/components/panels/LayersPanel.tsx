@@ -25,6 +25,7 @@ import {
   PencilLine,
   Plus,
   Scissors,
+  SlidersHorizontal,
   TextCursorInput,
   Trash2,
   Upload,
@@ -891,14 +892,22 @@ export function LayersPanel({
 type LayersPanelActionsProps = {
   onContentAwareRepair?: () => void;
   onMergeVisibleProjectedToUvLayer?: (layerIds: string[]) => void;
+  adjustmentsOpen?: boolean;
+  onToggleAdjustments?: () => void;
 };
 
-export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProjectedToUvLayer }: LayersPanelActionsProps = {}) {
+export function LayersPanelActions({
+  onContentAwareRepair,
+  onMergeVisibleProjectedToUvLayer,
+  adjustmentsOpen = false,
+  onToggleAdjustments,
+}: LayersPanelActionsProps = {}) {
   const t = useT();
   const layers = useLayerStore((state) => state.layers);
   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
   const pushToast = useToastStore((state) => state.pushToast);
 
@@ -946,6 +955,14 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
         }}
       >
         <PaintBucket className="h-4 w-4" />
+      </LayerHeaderButton>
+      <LayerHeaderButton
+        title={t('layerAdjustments')}
+        active={adjustmentsOpen}
+        disabled={!activeProjectedLayerId || !onToggleAdjustments}
+        onClick={onToggleAdjustments}
+      >
+        <SlidersHorizontal className="h-4 w-4" />
       </LayerHeaderButton>
       <LayerHeaderButton title={`${t('addLayer')} (Ctrl+Shift+N)`} onClick={handleAddLayer}>
         <Plus className="h-4 w-4" />
@@ -1350,11 +1367,13 @@ function LayerHeaderButton({
   children,
   onClick,
   disabled,
+  active,
 }: {
   title: string;
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  active?: boolean;
 }) {
   return (
     <button
@@ -1363,7 +1382,10 @@ function LayerHeaderButton({
       disabled={disabled}
       title={title}
       aria-label={title}
-      className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
+      className={cn(
+        'grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35',
+        active && 'bg-liclick-pink/18 text-liclick-pink',
+      )}
     >
       {children}
     </button>
