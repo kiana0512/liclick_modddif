@@ -20,6 +20,9 @@ try {
   const repaintActivation = await server.ssrLoadModule(
     '/src/engine/viewport/localRepaintPreviewActivation.ts',
   );
+  const repaintOverlaySync = await server.ssrLoadModule(
+    '/src/engine/viewport/localRepaintGpuOverlaySync.ts',
+  );
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const camera = {
     type: 'perspective',
@@ -153,6 +156,93 @@ try {
     'Persisted layer visibility reconciliation must not hide renderer-owned repaint feedback.',
   );
   projection.disposeGeneratedMaterialTree(liveRepaintOverlay);
+
+  const staleSourceTexture = new THREE.Texture();
+  const currentSourceTexture = new THREE.Texture();
+  const staleMaskTexture = new THREE.Texture();
+  const currentMaskTexture = new THREE.Texture();
+  const staleParent = new THREE.Group();
+  const currentModelGroup = new THREE.Group();
+  const overlayRoot = new THREE.Group();
+  const overlayMesh = new THREE.Mesh(new THREE.BufferGeometry());
+  const detachedMesh = new THREE.Mesh(new THREE.BufferGeometry());
+  overlayRoot.add(overlayMesh);
+  staleParent.add(overlayRoot);
+  staleParent.add(detachedMesh);
+  const overlayMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      projectedMap: { value: staleSourceTexture },
+      maskMap: { value: staleMaskTexture },
+      layerOpacity: { value: 0 },
+    },
+  });
+  overlayRoot.visible = false;
+  overlayMesh.visible = false;
+  detachedMesh.visible = false;
+  assert.equal(
+    repaintOverlaySync.syncLocalRepaintGpuOverlayBinding(
+      { material: overlayMaterial, root: overlayRoot, meshes: [overlayMesh, detachedMesh] },
+      {
+        modelGroup: currentModelGroup,
+        sourceTexture: currentSourceTexture,
+        maskTexture: currentMaskTexture,
+        visible: true,
+      },
+    ),
+    true,
+    'A stale repaint overlay must repair its model attachment and live texture bindings.',
+  );
+  assert.equal(overlayRoot.parent, currentModelGroup);
+  assert.equal(overlayMesh.parent, overlayRoot);
+  assert.equal(detachedMesh.parent, overlayRoot);
+  assert.equal(overlayMaterial.uniforms.projectedMap.value, currentSourceTexture);
+  assert.equal(overlayMaterial.uniforms.maskMap.value, currentMaskTexture);
+  assert.equal(overlayMaterial.uniforms.layerOpacity.value, 1);
+  assert.equal(overlayRoot.visible, true);
+  assert.equal(overlayMesh.visible, true);
+  assert.equal(detachedMesh.visible, true);
+  assert.equal(
+    repaintOverlaySync.syncLocalRepaintGpuOverlayBinding(
+      { material: overlayMaterial, root: overlayRoot, meshes: [overlayMesh, detachedMesh] },
+      {
+        modelGroup: currentModelGroup,
+        sourceTexture: currentSourceTexture,
+        maskTexture: currentMaskTexture,
+        visible: true,
+      },
+    ),
+    false,
+    'A healthy repaint overlay must stay on the zero-work hot path.',
+  );
+  const replacementTextures = [];
+  for (let replacementIndex = 0; replacementIndex < 50; replacementIndex += 1) {
+    const replacementSourceTexture = new THREE.Texture();
+    const replacementMaskTexture = new THREE.Texture();
+    replacementTextures.push(replacementSourceTexture, replacementMaskTexture);
+    assert.equal(
+      repaintOverlaySync.syncLocalRepaintGpuOverlayBinding(
+        { material: overlayMaterial, root: overlayRoot, meshes: [overlayMesh, detachedMesh] },
+        {
+          modelGroup: currentModelGroup,
+          sourceTexture: replacementSourceTexture,
+          maskTexture: replacementMaskTexture,
+          visible: true,
+        },
+      ),
+      true,
+      `Live repaint texture replacement ${replacementIndex + 1} must repair the overlay binding.`,
+    );
+    assert.equal(overlayMaterial.uniforms.projectedMap.value, replacementSourceTexture);
+    assert.equal(overlayMaterial.uniforms.maskMap.value, replacementMaskTexture);
+  }
+  overlayMaterial.dispose();
+  overlayMesh.geometry.dispose();
+  detachedMesh.geometry.dispose();
+  staleSourceTexture.dispose();
+  currentSourceTexture.dispose();
+  staleMaskTexture.dispose();
+  currentMaskTexture.dispose();
+  replacementTextures.forEach((texture) => texture.dispose());
 
   const materialId = material.uuid;
   const withThirdLayerHidden = layers.map((layer, index) => ({

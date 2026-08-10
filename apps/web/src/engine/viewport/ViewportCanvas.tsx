@@ -48,6 +48,7 @@ import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { SceneRoot } from './SceneRoot';
 import { CameraController } from './CameraController';
 import { ViewCube } from './ViewCube';
+import { syncLocalRepaintGpuOverlayBinding } from './localRepaintGpuOverlaySync';
 import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
@@ -3747,17 +3748,24 @@ function SurfacePaintOverlay() {
 
   useEffect(() => () => disposeUvPaintLayer(layerRef.current), []);
 
-  const scheduleTextureUpdate = useCallback((texture: THREE.CanvasTexture) => {
-    dirtyTexturesRef.current.add(texture);
-    if (textureUpdateFrameRef.current !== undefined) return;
-    textureUpdateFrameRef.current = window.requestAnimationFrame(() => {
-      textureUpdateFrameRef.current = undefined;
-      dirtyTexturesRef.current.forEach((dirtyTexture) => {
-        dirtyTexture.needsUpdate = true;
+  const scheduleTextureUpdate = useCallback(
+    (texture: THREE.CanvasTexture) => {
+      dirtyTexturesRef.current.add(texture);
+      if (textureUpdateFrameRef.current !== undefined) return;
+      textureUpdateFrameRef.current = window.requestAnimationFrame(() => {
+        textureUpdateFrameRef.current = undefined;
+        dirtyTexturesRef.current.forEach((dirtyTexture) => {
+          dirtyTexture.needsUpdate = true;
+        });
+        dirtyTexturesRef.current.clear();
+        // CanvasTexture.needsUpdate only schedules an upload. Explicitly request
+        // the matching viewport frame as well so a stationary camera cannot
+        // leave the model one frame behind the layer thumbnail.
+        invalidate();
       });
-      dirtyTexturesRef.current.clear();
-    });
-  }, []);
+    },
+    [invalidate],
+  );
 
   const scheduleProjectionTextureUpdate = useCallback(
     (texture: THREE.CanvasTexture, immediate = false, maxFps = 30) => {
@@ -4919,8 +4927,31 @@ function SurfacePaintOverlay() {
       const currentOverlay = localRepaintGpuOverlayRef.current;
       if (
         currentOverlay?.sourceKey === sourceKey &&
-        currentOverlay.layerId === composite.layerId
+        currentOverlay.layerId === composite.layerId &&
+        currentOverlay.material.userData.liclickDisposedMaterial !== true
       ) {
+        const previewImageUrl = localRepaintSourceImageRef.current?.previewImageUrl;
+        const sourceTexture = previewImageUrl
+          ? getLiveProjectedTexture(previewImageUrl, THREE.SRGBColorSpace, { flipY: false })
+          : undefined;
+        const visible = currentOverlay.visibilityLayerId
+          ? (useLayerStore
+              .getState()
+              .layers.find((layer) => layer.id === currentOverlay.visibilityLayerId)?.visible ?? true)
+          : true;
+        if (
+          syncLocalRepaintGpuOverlayBinding(currentOverlay, {
+            modelGroup: model.group,
+            sourceTexture,
+            maskTexture: composite.maskTexture,
+            visible,
+          })
+        ) {
+          const repairRevision =
+            Number(document.body.dataset.localRepaintOverlayRepairRevision ?? '0') + 1;
+          document.body.dataset.localRepaintOverlayRepairRevision = String(repairRevision);
+          invalidate();
+        }
         return currentOverlay;
       }
 
@@ -5505,6 +5536,10 @@ function SurfacePaintOverlay() {
           // needsUpdate directly does not add duplicate uploads and avoids
           // scheduling the actual texture change one frame later.
           composite.maskTexture.needsUpdate = true;
+          // The viewport currently renders continuously, but this explicit
+          // invalidation makes realtime repaint independent of that policy and
+          // closes the intermittent thumbnail-only update race.
+          invalidate();
         }
       }
 
@@ -5550,6 +5585,7 @@ function SurfacePaintOverlay() {
       paintToolSettings.brushHardness,
       paintToolSettings.color,
       paintToolSettings.eraserHardness,
+      invalidate,
       scheduleTextureUpdate,
     ],
   );
@@ -7458,6 +7494,36 @@ function SurfacePaintOverlay() {
         const composite = source
           ? (preparedComposite ?? ensureLiveLocalRepaintComposite(result.model, source))
           : undefined;
+        const overlay = localRepaintGpuOverlayRef.current;
+        if (
+          source &&
+          composite &&
+          overlay?.sourceKey === createLocalRepaintSourceKey(source, result.model.objectId) &&
+          overlay.layerId === composite.layerId
+        ) {
+          const previewImageUrl = localRepaintSourceImageRef.current?.previewImageUrl;
+          const sourceTexture = previewImageUrl
+            ? getLiveProjectedTexture(previewImageUrl, THREE.SRGBColorSpace, { flipY: false })
+            : undefined;
+          const visible = overlay.visibilityLayerId
+            ? (useLayerStore
+                .getState()
+                .layers.find((layer) => layer.id === overlay.visibilityLayerId)?.visible ?? true)
+            : true;
+          if (
+            syncLocalRepaintGpuOverlayBinding(overlay, {
+              modelGroup: result.model.group,
+              sourceTexture,
+              maskTexture: composite.maskTexture,
+              visible,
+            })
+          ) {
+            const repairRevision =
+              Number(document.body.dataset.localRepaintOverlayRepairRevision ?? '0') + 1;
+            document.body.dataset.localRepaintOverlayRepairRevision = String(repairRevision);
+            invalidate();
+          }
+        }
         const surfaceFacesProjector =
           composite &&
           result.hit.object instanceof THREE.Mesh &&
@@ -7581,6 +7647,7 @@ function SurfacePaintOverlay() {
     ensureLiveLocalRepaintComposite,
     gl,
     hasLocalRepaintSourceContent,
+    invalidate,
     isInpaintMode,
     isLocalRepaintApplyMode,
     paintAt,
