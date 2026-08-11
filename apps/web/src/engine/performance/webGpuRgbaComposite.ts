@@ -35,6 +35,11 @@ export type WebGpuRgbaCompositeResult = {
   };
 };
 
+export type WebGpuRgbaCompositePngResult = Omit<WebGpuRgbaCompositeResult, 'data'> & {
+  blob: Blob;
+  encodeMs: number;
+};
+
 type CompositeRequest = {
   type: 'composite';
   id: number;
@@ -48,6 +53,7 @@ type CompositeRequest = {
   interactive: boolean;
   interactiveChunkBytes: number;
   idleChunkBytes: number;
+  encodePng?: boolean;
 };
 
 type BudgetRequest = { type: 'budget'; interactive: boolean };
@@ -57,14 +63,18 @@ type CompositeResponse =
   | {
       type: 'result';
       id: number;
-      output: ArrayBuffer;
+      output?: ArrayBuffer;
+      pngBlob?: Blob;
+      encodeMs?: number;
       metrics: WebGpuRgbaCompositeMetrics;
       verification?: WebGpuRgbaCompositeResult['verification'];
     }
   | { type: 'error'; id: number; message: string };
 
 type PendingComposite = {
-  resolve: (result: WebGpuRgbaCompositeResult) => void;
+  resolve: (
+    result: WebGpuRgbaCompositeResult | WebGpuRgbaCompositePngResult,
+  ) => void;
   reject: (error: Error) => void;
 };
 
@@ -127,11 +137,22 @@ function getWorker() {
       return;
     }
     if (event.data.metrics.backend === 'webgpu-worker') recordWebGpuProductionDispatch();
-    request.resolve({
-      data: new Uint8ClampedArray(event.data.output),
-      metrics: event.data.metrics,
-      verification: event.data.verification,
-    });
+    if (event.data.pngBlob) {
+      request.resolve({
+        blob: event.data.pngBlob,
+        encodeMs: event.data.encodeMs ?? 0,
+        metrics: event.data.metrics,
+        verification: event.data.verification,
+      });
+    } else if (event.data.output) {
+      request.resolve({
+        data: new Uint8ClampedArray(event.data.output),
+        metrics: event.data.metrics,
+        verification: event.data.verification,
+      });
+    } else {
+      request.reject(new Error('WebGPU composite worker returned no output.'));
+    }
   };
   worker.onerror = (event) => {
     failAllPending(event.message || 'WebGPU composite worker failed.');
@@ -203,7 +224,11 @@ export function compositeRgbaUnderWithWebGpu(
   };
 
   return new Promise<WebGpuRgbaCompositeResult>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    pending.set(id, {
+      resolve: (result) =>
+        'data' in result ? resolve(result) : reject(new Error('Expected RGBA worker output.')),
+      reject,
+    });
     maintainInteractionHeartbeat();
     getWorker().postMessage(request, [frontBuffer, underlayBuffer]);
   });
@@ -256,7 +281,54 @@ export function compositeRgbaUrlUnderWithWebGpu(
     idleChunkBytes: requestedChunkBytes ?? IDLE_CHUNK_BYTES,
   };
   return new Promise<WebGpuRgbaCompositeResult>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    pending.set(id, {
+      resolve: (result) =>
+        'data' in result ? resolve(result) : reject(new Error('Expected RGBA worker output.')),
+      reject,
+    });
+    maintainInteractionHeartbeat();
+    getWorker().postMessage(request, [frontBuffer]);
+  });
+}
+
+/** Final underlay pass plus byte-identical PNG encoding in one worker. This
+ * avoids returning a 64MB 4K RGBA buffer to the UI only to transfer it to a
+ * second encoder worker immediately afterwards. */
+export function compositeRgbaUrlUnderAndEncodePngWithWebGpu(
+  front: Uint8Array | Uint8ClampedArray,
+  underlayUrl: string,
+  width: number,
+  height: number,
+  opacity = 1,
+) {
+  if (front.length !== width * height * 4) {
+    return Promise.reject(new RangeError('RGBA buffer dimensions do not match.'));
+  }
+  const id = nextRequestId++;
+  const frontBuffer = transferableBuffer(front);
+  const requestedChunkBytes = getRequestedChunkBytes();
+  const request: CompositeRequest = {
+    type: 'composite',
+    id,
+    front: frontBuffer,
+    underlayUrl,
+    width,
+    height,
+    opacity: Math.max(0, Math.min(1, opacity)),
+    verify:
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('perfWebGpuAb') === '1',
+    interactive: isInteractionProtected(),
+    interactiveChunkBytes: requestedChunkBytes ?? INTERACTIVE_CHUNK_BYTES,
+    idleChunkBytes: requestedChunkBytes ?? IDLE_CHUNK_BYTES,
+    encodePng: true,
+  };
+  return new Promise<WebGpuRgbaCompositePngResult>((resolve, reject) => {
+    pending.set(id, {
+      resolve: (result) =>
+        'blob' in result ? resolve(result) : reject(new Error('Expected PNG worker output.')),
+      reject,
+    });
     maintainInteractionHeartbeat();
     getWorker().postMessage(request, [frontBuffer]);
   });

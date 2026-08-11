@@ -4,11 +4,12 @@ import type { SerializedCamera } from '@/types/capture';
 
 type RuntimeProjectionDepthRequest = {
   renderer: THREE.WebGLRenderer;
-  group: THREE.Group;
+  group: THREE.Object3D;
   camera: SerializedCamera;
   captureObjectMatrixWorld?: number[];
   width: number;
   height: number;
+  includeNormal?: boolean;
   waitForViewportIdle?: () => Promise<void>;
 };
 
@@ -61,6 +62,7 @@ function createCacheKey(request: RuntimeProjectionDepthRequest) {
     stableNumbers(request.camera.viewMatrix),
     stableNumbers(request.camera.projectionMatrix),
     stableNumbers(request.captureObjectMatrixWorld),
+    request.includeNormal === false ? 'depth-only' : 'depth-normal',
   ].join(':');
 }
 
@@ -224,7 +226,7 @@ export function prepareRuntimeProjectionVisibilityMaterials(renderer: THREE.WebG
   return promise;
 }
 
-function cloneVisibilityGeometry(group: THREE.Group) {
+function cloneVisibilityGeometry(group: THREE.Object3D) {
   const originalUserData: Array<{ object: THREE.Object3D; userData: Record<string, unknown> }> = [];
   group.traverse((object) => {
     originalUserData.push({ object, userData: object.userData });
@@ -305,6 +307,7 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
     depthSubmitMs = performance.now() - depthStartedAt;
     const depthUrl = await depthPromise;
     depthTotalMs = performance.now() - depthStartedAt;
+    if (request.includeNormal === false) return { depthUrl, normalUrl: '' };
     // Depth and geometric-normal captures are both authoritative 1024px
     // quality passes, but they do not need to occupy consecutive frames.
     // Yield once and honour viewport interaction before submitting the second

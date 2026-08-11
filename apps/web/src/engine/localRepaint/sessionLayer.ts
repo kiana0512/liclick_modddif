@@ -1,5 +1,6 @@
 import { useLayerStore } from '@/stores/layerStore';
 import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
+import { useSceneStore } from '@/stores/sceneStore';
 import type { Layer } from '@/types/layer';
 
 export type LocalRepaintSessionLayerResult = {
@@ -102,6 +103,17 @@ export function ensureLocalRepaintSessionLayer(input: {
       );
     useLayerStore.getState().setLayers(nextLayers);
     mutated = true;
+  }
+
+  const activeRuntimeResult = visibleResultId
+    ? useLayerStore.getState().layers.find((item) => item.id === visibleResultId)
+    : undefined;
+  if (activeRuntimeResult) {
+    // Hand the previous persisted result to the renderer-owned overlay before
+    // the new source is prepared. Otherwise it briefly re-enters the main
+    // projected array as a 15th layer and forces a full background rebuild on
+    // every repaint round after the first.
+    useSceneStore.getState().setLocalRepaintPreviewLayer(activeRuntimeResult);
   }
 
   if (mutated) {

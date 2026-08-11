@@ -108,4 +108,3 @@ export async function renderHistoryModelThumbnail(output: TaskHistoryOutput, siz
   request.catch(() => thumbnailCache.delete(key));
   return request;
 }
-

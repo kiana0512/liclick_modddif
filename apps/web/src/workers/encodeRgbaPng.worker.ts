@@ -1,4 +1,4 @@
-import { encodeRgbaPngBytes } from '@/utils/encodeRgbaPngCore';
+import { encodeRgbaPngBytesChunked } from '@/utils/encodeRgbaPngCore';
 
 type EncodeRgbaPngRequest = {
   width: number;
@@ -7,7 +7,7 @@ type EncodeRgbaPngRequest = {
 };
 
 type EncodeRgbaPngResponse = {
-  png?: ArrayBuffer;
+  blob?: Blob;
   error?: string;
 };
 
@@ -16,13 +16,16 @@ const workerScope = self as unknown as {
   postMessage(message: EncodeRgbaPngResponse, transfer: Transferable[]): void;
 };
 
-workerScope.onmessage = (event) => {
+workerScope.onmessage = async (event) => {
   try {
     const { width, height, rgba } = event.data;
-    const png = encodeRgbaPngBytes(width, height, new Uint8ClampedArray(rgba));
-    const pngBuffer = new ArrayBuffer(png.byteLength);
-    new Uint8Array(pngBuffer).set(png);
-    workerScope.postMessage({ png: pngBuffer }, [pngBuffer]);
+    const png = await encodeRgbaPngBytesChunked(
+      width,
+      height,
+      new Uint8ClampedArray(rgba),
+      () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+    );
+    workerScope.postMessage({ blob: new Blob([png], { type: 'image/png' }) }, []);
   } catch (error) {
     workerScope.postMessage(
       { error: error instanceof Error ? error.message : 'Could not encode PNG.' },

@@ -1,9 +1,9 @@
 type ComposeResponse =
-  | { id: number; png: ArrayBuffer; processMs: number }
+  | { id: number; dataUrl: string; processMs: number }
   | { id: number; error: string };
 
 type PendingCompose = {
-  resolve: (result: { blob: Blob; processMs: number }) => void;
+  resolve: (result: { dataUrl: string; processMs: number }) => void;
   reject: (error: Error) => void;
 };
 
@@ -24,7 +24,7 @@ function getWorker() {
       request.reject(new Error(event.data.error));
     } else {
       request.resolve({
-        blob: new Blob([event.data.png], { type: 'image/png' }),
+        dataUrl: event.data.dataUrl,
         processMs: event.data.processMs,
       });
     }
@@ -63,7 +63,7 @@ export async function createComfyInpaintInputInWorker(input: {
     createImageBitmap(input.mask),
   ]);
   const id = nextRequestId++;
-  return new Promise<{ blob: Blob; processMs: number }>((resolve, reject) => {
+  return new Promise<{ dataUrl: string; processMs: number }>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     try {
       getWorker().postMessage(

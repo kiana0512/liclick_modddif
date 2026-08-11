@@ -1,7 +1,6 @@
-type CompositeUvLayerInput = {
-  bitmap: ImageBitmap;
-  opacity: number;
-};
+type CompositeUvLayerInput =
+  | { bitmap: ImageBitmap; opacity: number }
+  | { imageUrl: string; opacity: number };
 
 type CompositeUvResponse =
   | { id: number; bitmap: ImageBitmap; width: number; height: number }
@@ -25,7 +24,9 @@ function abortError() {
 }
 
 function releaseTaskBitmaps(task: PendingComposite) {
-  task.layers.forEach(({ bitmap }) => bitmap.close());
+  task.layers.forEach((layer) => {
+    if ('bitmap' in layer) layer.bitmap.close();
+  });
 }
 
 function updateQueueProbe() {
@@ -46,7 +47,11 @@ function dispatchNextComposite() {
   updateQueueProbe();
   getWorker().postMessage(
     { id: task.id, layers: task.layers },
-    { transfer: task.layers.map(({ bitmap }) => bitmap) },
+    {
+      transfer: task.layers.flatMap((layer) =>
+        'bitmap' in layer ? [layer.bitmap] : [],
+      ),
+    },
   );
 }
 
@@ -100,4 +105,10 @@ export function compositeUvLayersInWorker(layers: CompositeUvLayerInput[]) {
     queuedComposite = task;
     dispatchNextComposite();
   });
+}
+
+export function compositeUvLayerUrlsInWorker(
+  layers: Array<{ imageUrl: string; opacity: number }>,
+) {
+  return compositeUvLayersInWorker(layers);
 }

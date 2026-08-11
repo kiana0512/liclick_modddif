@@ -93,6 +93,7 @@ import {
   isFlattenableUvMergeSource,
 } from '@/engine/layers/mergeUvComposition';
 import {
+  compositeRgbaUrlUnderAndEncodePngWithWebGpu,
   compositeRgbaUrlUnderWithWebGpu,
   type WebGpuRgbaCompositeMetrics,
 } from '@/engine/performance/webGpuRgbaComposite';
@@ -1880,11 +1881,13 @@ export function EditorPage({
           object,
           model: {
             ...applySavedObjectToLoadedModel(loaded, object),
-            // The active object is the user's first meaningful screen. Its
-            // layers are already hydrated, so publish its textured model in one
-            // atomic step instead of deliberately showing an outline and then
-            // waiting in the background texture queue.
-            restoreStage: object.id === activeObjectId ? ('full' as const) : ('outline' as const),
+            // Always admit parsed geometry through the lightweight outline
+            // stage first. Publishing the active FBX with its original material
+            // stack made Chromium upload/compile those temporary assets in the
+            // same frame that the exact 4K UV became ready (measured 500ms+).
+            // The final textured stage is still atomic and pixel-identical; the
+            // queue below waits for its exact UV upload before flipping stages.
+            restoreStage: 'outline' as const,
           },
         };
       } catch (error) {
@@ -1899,11 +1902,36 @@ export function EditorPage({
         if (restoreRequest !== modelRestoreRequestRef.current) return;
         const outlineModel = restoredModelByObjectId.get(objectId);
         if (!outlineModel || outlineModel.restoreStage !== 'outline') return;
+        if (objectId === activeObjectId) {
+          const exactVisibleUvUrls = projectToRestore.layers
+            .filter(
+              (layer) =>
+                layer.type === 'uv' &&
+                layer.visible &&
+                Boolean(layer.imageUrl) &&
+                (!layer.objectId || layer.objectId === objectId),
+            )
+            .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : []));
+          if (exactVisibleUvUrls.length > 0) {
+            await prewarmPreviewTextures(exactVisibleUvUrls);
+          }
+          // Guarantee that the outline material has replaced and disposed the
+          // imported temporary material stack before the final stage is
+          // admitted. Two presentation turns are bounded and avoid a single
+          // monolithic restore frame without delaying background downloads.
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+        if (restoreRequest !== modelRestoreRequestRef.current) return;
         restoredModelByObjectId.set(objectId, {
           ...outlineModel,
           restoreStage: 'full',
         });
         publishRestoreProgress();
+        if (objectId === activeObjectId) {
+          document.body.dataset.textureRestoreModelFull = '1';
+          document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
+        }
         // Let image decoding and the first lightweight texture-array slices run
         // before admitting the next model's complete material stack.
         await waitForProjectRestoreIdle(1200);
@@ -1930,10 +1958,6 @@ export function EditorPage({
       }
       restoredModelByObjectId.set(result.object.id, result.model);
       publishRestoreProgress();
-      if (result.model.restoreStage === 'full' && result.object.id === activeObjectId) {
-        document.body.dataset.textureRestoreModelFull = '1';
-        document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
-      }
       window.requestAnimationFrame(() => disposeProjectModelBoundsPlaceholder(placeholder));
       queueFullTextureRestore(result.object.id);
     }
@@ -3460,8 +3484,28 @@ export function EditorPage({
         order: currentLayers.length,
         createdAt: new Date().toISOString(),
       };
+      setManualBakeProgress({
+        title: t('contentAwareRepair'),
+        detail: '修补结果已生成，正在分帧上传完整纹理到 GPU',
+        progress: 0.985,
+      });
+      const previewResults = await prewarmPreviewTextures([imageUrl]);
+      const previewReady = previewResults.some((result) => result.status === 'fulfilled');
+      if (!previewReady) {
+        throw new Error('内容识别修补纹理未能完成 GPU 预热；未发布不完整图层。');
+      }
+      // Atomic publish: the visible eye and sampler weight are committed only
+      // after the exact sparse PNG has decoded and finished its striped upload.
+      // This prevents both the first-frame white fallback and a permanently
+      // invisible result that used to recover only after toggling the eye.
       setLayers([...currentLayers, layer]);
       setActiveLayer(layer.id);
+      document.body.dataset.contentAwareAtomicPublish = JSON.stringify({
+        layerId,
+        textureReady: true,
+        eyeVisible: true,
+        publishedAt: performance.now(),
+      });
       scheduleTexturedThumbnailRefresh(300);
       return layer;
     },
@@ -3714,6 +3758,8 @@ export function EditorPage({
     let readbackDurationMs = 0;
     let uvCompositeDurationMs = 0;
     let pngEncodeDurationMs = 0;
+    let previewPrewarmDurationMs = 0;
+    let previewPrewarmReady = false;
     const webGpuComposite = {
       enabled:
         typeof window !== 'undefined' &&
@@ -3817,12 +3863,14 @@ export function EditorPage({
         if (!outputContext) throw new Error('Could not create merged UV canvas.');
         mergedImageData = outputContext.getImageData(0, 0, bakeResolution, bakeResolution);
       }
+      let mergedRgba = mergedImageData.data;
       readbackDurationMs = performance.now() - readbackStartedAt;
 
       // Flatten selected UV sources underneath projection coverage. This is
       // the step that used to be silently skipped, causing a selected content-
       // aware repair layer to disappear after merge.
       const uvCompositeStartedAt = performance.now();
+      let mergedImageBlob: Blob | undefined;
       if (document.body.dataset.perfSimulatedViewportInteraction === '1') {
         document.body.dataset.perfUvBakePhase = 'uv-underlay-composite';
       }
@@ -3830,15 +3878,32 @@ export function EditorPage({
         const layer = selectedUvLayers[index];
         if (webGpuComposite.enabled) {
           try {
-            const result = await compositeRgbaUrlUnderWithWebGpu(
-              mergedImageData.data,
-              layer.imageUrl,
-              bakeResolution,
-              bakeResolution,
-              layer.opacity,
-            );
+            const isFinalUnderlay = index === selectedUvLayers.length - 1;
+            if (isFinalUnderlay && document.body.dataset.perfSimulatedViewportInteraction === '1') {
+              document.body.dataset.perfUvBakePhase = 'uv-underlay-composite-encode';
+            }
+            const result = isFinalUnderlay
+              ? await compositeRgbaUrlUnderAndEncodePngWithWebGpu(
+                  mergedRgba,
+                  layer.imageUrl,
+                  bakeResolution,
+                  bakeResolution,
+                  layer.opacity,
+                )
+              : await compositeRgbaUrlUnderWithWebGpu(
+                  mergedRgba,
+                  layer.imageUrl,
+                  bakeResolution,
+                  bakeResolution,
+                  layer.opacity,
+                );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
-            mergedImageData = new ImageData(result.data, bakeResolution, bakeResolution);
+            if ('blob' in result) {
+              mergedImageBlob = result.blob;
+              pngEncodeDurationMs = result.encodeMs;
+            } else {
+              mergedRgba = result.data;
+            }
             webGpuComposite.dispatches += 1;
             webGpuComposite.uploadMs += metrics.uploadMs;
             webGpuComposite.computeMs += metrics.computeMs;
@@ -3865,7 +3930,7 @@ export function EditorPage({
           }
         } else {
           const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
-          compositeRgbaUnderInPlace(mergedImageData.data, source.data, layer.opacity);
+          compositeRgbaUnderInPlace(mergedRgba, source.data, layer.opacity);
         }
         setManualBakeProgress({
           title: t('mergeSelectedLayersToUvLayer'),
@@ -3873,9 +3938,10 @@ export function EditorPage({
           progress: 0.9 + ((index + 1) / Math.max(1, selectedUvLayers.length)) * 0.06,
         });
       }
-      uvCompositeDurationMs = performance.now() - uvCompositeStartedAt;
+      uvCompositeDurationMs =
+        performance.now() - uvCompositeStartedAt - pngEncodeDurationMs;
       const mergedCoverageRatio =
-        bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedImageData.data);
+        bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedRgba);
 
       // Encode straight RGBA directly. Canvas PNG export is allowed to erase
       // RGB beneath alpha=0, which would destroy the transparent UV gutter and
@@ -3884,17 +3950,34 @@ export function EditorPage({
       if (document.body.dataset.perfSimulatedViewportInteraction === '1') {
         document.body.dataset.perfUvBakePhase = 'png-encode';
       }
-      const mergedImageBlob = await encodeRgbaPngBlob(
-        bakeResolution,
-        bakeResolution,
-        mergedImageData.data,
-      );
-      pngEncodeDurationMs = performance.now() - pngEncodeStartedAt;
+      if (!mergedImageBlob) {
+        mergedImageBlob = await encodeRgbaPngBlob(
+          bakeResolution,
+          bakeResolution,
+          mergedRgba,
+          { transferOwnership: true },
+        );
+        pngEncodeDurationMs = performance.now() - pngEncodeStartedAt;
+      }
       markPerformanceEvent('uv-merge', 'png-encode-complete', {
         byteLength: mergedImageBlob.size,
         durationMs: performance.now() - mergeStartedAt,
       });
       if (benchmarkOnly) {
+        // The production handoff keeps projected layers visible until this
+        // exact final PNG is decoded and uploaded. Exercise the same full-size
+        // path in S4 so a white-membrane regression is measured, not hidden.
+        document.body.dataset.perfUvBakePhase = 'preview-texture-prewarm';
+        const previewUrl = URL.createObjectURL(mergedImageBlob);
+        const previewPrewarmStartedAt = performance.now();
+        try {
+          const previewResults = await prewarmPreviewTextures([previewUrl]);
+          previewPrewarmReady = previewResults.some((result) => result.status === 'fulfilled');
+          if (!previewPrewarmReady) throw new Error('4K UV preview texture prewarm failed.');
+        } finally {
+          previewPrewarmDurationMs = performance.now() - previewPrewarmStartedAt;
+          URL.revokeObjectURL(previewUrl);
+        }
         const result = {
           resolution: bakeResolution,
           projectedLayerCount: projectedLayers.length,
@@ -3903,6 +3986,8 @@ export function EditorPage({
           readbackDurationMs,
           uvCompositeDurationMs,
           pngEncodeDurationMs,
+          previewPrewarmDurationMs,
+          previewPrewarmReady,
           totalDurationMs: performance.now() - mergeStartedAt,
           outputBytes: mergedImageBlob.size,
           coverageRatio: mergedCoverageRatio,
@@ -3927,10 +4012,27 @@ export function EditorPage({
       } else {
         imageUrl = await blobToDataUrl(mergedImageBlob);
       }
+      setManualBakeProgress({
+        title: t('mergeSelectedLayersToUvLayer'),
+        detail: '正在把最终 4K UV 纹理分帧上传到 GPU，原贴图会保持显示',
+        progress: 0.985,
+      });
+      const previewPrewarmStartedAt = performance.now();
+      const previewResults = await prewarmPreviewTextures([imageUrl]);
+      previewPrewarmDurationMs = performance.now() - previewPrewarmStartedAt;
+      previewPrewarmReady = previewResults.some((result) => result.status === 'fulfilled');
+      if (!previewPrewarmReady) {
+        throw new Error('最终 UV 纹理未能完成 GPU 预热；已保留原图层，未执行切换。');
+      }
+      setManualBakeProgress({
+        title: t('mergeSelectedLayersToUvLayer'),
+        detail: '最终纹理已就绪，正在同步图层眼睛状态',
+        progress: 0.995,
+      });
       const renderedColorSources = selectedLayers.filter(
         (layer) => !isContentAwareUvUnderlay(layer),
       );
-      mergeLayersIntoUvLayer({
+      const mergedLayer = mergeLayersIntoUvLayer({
         // Every source that actually contributed to this PNG is consumed. A
         // selected repair layer no longer remains as an apparently enabled but
         // visually disconnected layer after the projected sources are hidden.
@@ -3943,6 +4045,16 @@ export function EditorPage({
         renderedColor:
           renderedColorSources.length > 0 &&
           renderedColorSources.every((layer) => Boolean(layer.renderedColor)),
+      });
+      document.body.dataset.uvMergeAtomicHandoff = JSON.stringify({
+        mergedLayerId: mergedLayer.id,
+        mergedVisible: mergedLayer.visible,
+        sourceLayerCount: consumedLayerIds.length,
+        hiddenSourceCount: useLayerStore
+          .getState()
+          .layers.filter((layer) => consumedLayerIds.includes(layer.id) && !layer.visible).length,
+        previewPrewarmReady,
+        previewPrewarmDurationMs,
       });
       setProjectLayers(useLayerStore.getState().layers);
       scheduleTexturedThumbnailRefresh(350);
@@ -3964,6 +4076,7 @@ export function EditorPage({
         title: t('autoBakeFailed'),
         description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
       });
+      if (benchmarkOnly) throw error;
     } finally {
       delete document.body.dataset.perfUvBakePhase;
       manualBakeRunningRef.current = false;
@@ -3991,6 +4104,7 @@ export function EditorPage({
           .filter(
             (layer) =>
               layer.type === 'projected' &&
+              !isLocalRepaintProjectionLayer(layer) &&
               Boolean(layer.imageUrl && layer.camera) &&
               (!currentObjectId || !layer.objectId || layer.objectId === currentObjectId),
           )
@@ -4421,7 +4535,14 @@ export function EditorPage({
   }, [generations, getLocalRepaintProjectionImage, projectId]);
 
   useEffect(() => {
-    if (!project || !importedModel || paintTool === 'inpaint-apply') return undefined;
+    if (
+      !project ||
+      !importedModel ||
+      paintTool === 'inpaint-apply' ||
+      document.body.dataset.localRepaintPrewarmProgressRequested === '1' ||
+      document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
+    )
+      return undefined;
     const latestLocalRepaintGeneration = generations.find(
       (generation) =>
         generation.resultUrl &&
@@ -4460,7 +4581,6 @@ export function EditorPage({
     const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
     if (
       preparedSource?.generationId === latestLocalRepaintGeneration.id &&
-      preparedSource.allowedMaskUrl === generationMaskUrl &&
       preparedSource.objectId === objectId &&
       preparedSource.targetLayerId === targetLayer.id
     )
@@ -4475,7 +4595,12 @@ export function EditorPage({
         const projectionImageUrl = await getLocalRepaintProjectionImage(
           latestLocalRepaintGeneration.resultUrl!,
         );
-        if (cancelled) return;
+        if (
+          cancelled ||
+          document.body.dataset.localRepaintPrewarmProgressRequested === '1' ||
+          document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
+        )
+          return;
         const currentTarget = useLayerStore
           .getState()
           .layers.find((layer) => layer.id === targetLayer.id);
@@ -4638,10 +4763,15 @@ export function EditorPage({
       }
       importedModel.group.updateMatrixWorld(true);
       const captureId = generationCapture?.id ?? latestLocalRepaintGeneration.captureId;
+      const benchmarkMaskUrl =
+        document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
+          ? useSceneStore.getState().paintMaskDataUrl
+          : undefined;
       const generationMaskUrl =
-        typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
+        benchmarkMaskUrl ??
+        (typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
           ? latestLocalRepaintGeneration.metadata.maskUrl
-          : paintMaskDataUrl;
+          : paintMaskDataUrl);
       // Applying an already generated repaint must use the mask archived with
       // that generation. The transient viewport selection is intentionally not
       // guaranteed to survive reloads, tool changes, or a long generation job.
@@ -4814,21 +4944,26 @@ export function EditorPage({
         const maskDeadline = performance.now() + 15_000;
         while (performance.now() < maskDeadline) {
           const sceneState = useSceneStore.getState();
-          if (sceneState.paintMaskHasContent && sceneState.paintMaskDataUrl) break;
+          if (sceneState.paintMaskHasContent) break;
           await wait(40);
         }
         const maskState = useSceneStore.getState();
-        if (!maskState.paintMaskHasContent || !maskState.paintMaskDataUrl) {
+        if (!maskState.paintMaskHasContent) {
           throw new Error('S6 蒙版编码超时，未进入现成生图绑定阶段。');
         }
-        handleLocalRepaintFromToolbar();
-        const sourceDeadline = performance.now() + 25_000;
-        while (performance.now() < sourceDeadline) {
-          const sceneState = useSceneStore.getState();
-          if (sceneState.localRepaintProjectionSource && sceneState.paintTool === 'inpaint-apply') {
-            return;
+        document.body.dataset.perfUseCurrentLocalRepaintMask = '1';
+        try {
+          handleLocalRepaintFromToolbar();
+          const sourceDeadline = performance.now() + 25_000;
+          while (performance.now() < sourceDeadline) {
+            const sceneState = useSceneStore.getState();
+            if (sceneState.localRepaintProjectionSource && sceneState.paintTool === 'inpaint-apply') {
+              return;
+            }
+            await wait(50);
           }
-          await wait(50);
+        } finally {
+          delete document.body.dataset.perfUseCurrentLocalRepaintMask;
         }
         throw new Error('S6 绑定现成局部生图超时，请检查生成记录或目标图层。');
       },
@@ -4842,6 +4977,20 @@ export function EditorPage({
     async (requestedObjectId?: string) => {
       if (contentAwareRepairRunningRef.current) return;
       contentAwareRepairRunningRef.current = true;
+      const repairRunStartedAt = performance.now();
+      const reportRepairRunState = (
+        status: 'running' | 'complete' | 'no-gaps' | 'error' | 'cancelled',
+        phase: string,
+        detail: Record<string, unknown> = {},
+      ) => {
+        document.body.dataset.contentAwareRepairRun = JSON.stringify({
+          status,
+          phase,
+          durationMs: Math.round((performance.now() - repairRunStartedAt) * 10) / 10,
+          ...detail,
+        });
+      };
+      reportRepairRunState('running', 'prepare');
       const abortController = new AbortController();
       contentAwareRepairAbortControllerRef.current = abortController;
       try {
@@ -4918,6 +5067,10 @@ export function EditorPage({
               progress: 0.04 + progress.progress * 0.54,
             }),
         });
+        reportRepairRunState('running', 'projection-bake-ready', {
+          resolution: repairResolution,
+          sourceLayerCount: sourceLayerIds.length,
+        });
         const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
         if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
         let workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
@@ -4986,6 +5139,10 @@ export function EditorPage({
             },
           },
         );
+        reportRepairRunState('running', 'topology-ready', {
+          componentCount: topology.componentCount,
+          seamLinkCount: topology.seamLinkCount,
+        });
         const detectedGaps = await buildContentAwareRepairMask({
           width: repairResolution,
           height: repairResolution,
@@ -5021,6 +5178,7 @@ export function EditorPage({
           }),
         );
         if (detectedGaps.stats.totalPixels === 0) {
+          reportRepairRunState('no-gaps', 'gap-scan-complete');
           setManualBakeProgress(undefined);
           pushToast({
             tone: 'info',
@@ -5086,6 +5244,9 @@ export function EditorPage({
               }),
           },
         );
+        reportRepairRunState('running', 'repair-worker-ready', {
+          repairedPixels: repair.stats.repairedPixels,
+        });
         console.info('[Liclick Content Aware] Surface repair', JSON.stringify(repair.stats));
         if (repair.stats.repairedPixels === 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
@@ -5101,6 +5262,10 @@ export function EditorPage({
         captureHistory('创建独立内容识别 UV 修补图层');
         const repairLayer = await addUvContentAwareRepairLayer(repairTexture, objectId);
         setProjectLayers(useLayerStore.getState().layers);
+        reportRepairRunState('complete', 'atomic-publish', {
+          layerId: repairLayer.id,
+          repairedPixels: repair.stats.repairedPixels,
+        });
         pushToast({
           tone: 'success',
           title: t('contentAwareFillComplete'),
@@ -5112,8 +5277,12 @@ export function EditorPage({
           (error instanceof Error && error.name === 'AbortError') ||
           contentAwareRepairAbortControllerRef.current !== abortController
         ) {
+          reportRepairRunState('cancelled', 'cancelled');
           return;
         }
+        reportRepairRunState('error', 'failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
         setManualBakeProgress(undefined);
         pushToast({
           tone: 'error',
