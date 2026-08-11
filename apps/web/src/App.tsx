@@ -125,7 +125,7 @@ function pathFromRouteWithDiagnostics(route: RouteState) {
   const path = pathFromRoute(route);
   const current = new URLSearchParams(window.location.search);
   const diagnostics = new URLSearchParams();
-  for (const key of ['perfLab', 'perfOrbit']) {
+  for (const key of ['perfLab', 'perfOrbit', 'perfWebGpuAb', 'perfWebGpuChunkMb', 'webGpuUv']) {
     const value = current.get(key);
     if (value !== null) diagnostics.set(key, value);
   }

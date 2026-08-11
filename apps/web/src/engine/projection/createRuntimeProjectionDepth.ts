@@ -54,9 +54,34 @@ function stableNumbers(values?: number[]) {
   return values?.map((value) => value.toFixed(6)).join(',') ?? '';
 }
 
+function geometryVersion(group: THREE.Object3D) {
+  const parts: string[] = [];
+  group.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const geometry = object.geometry;
+    const position = geometry.getAttribute('position');
+    const normal = geometry.getAttribute('normal');
+    const index = geometry.getIndex();
+    parts.push(
+      [
+        object.uuid,
+        geometry.uuid,
+        position?.count ?? 0,
+        position?.version ?? 0,
+        normal?.count ?? 0,
+        normal?.version ?? 0,
+        index?.count ?? 0,
+        index?.version ?? 0,
+      ].join('/'),
+    );
+  });
+  return parts.join('|');
+}
+
 function createCacheKey(request: RuntimeProjectionDepthRequest) {
   return [
     request.group.uuid,
+    geometryVersion(request.group),
     request.width,
     request.height,
     stableNumbers(request.camera.viewMatrix),

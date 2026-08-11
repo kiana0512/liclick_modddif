@@ -28,6 +28,40 @@ type RenderScenePass = {
 
 let displayOutputPass: OutputPass | undefined;
 
+type SharedRendererState = {
+  target: THREE.WebGLRenderTarget | null;
+  clearColor: THREE.Color;
+  clearAlpha: number;
+  viewport: THREE.Vector4;
+  scissor: THREE.Vector4;
+  scissorTest: boolean;
+  autoClear: boolean;
+  xrEnabled: boolean;
+};
+
+function captureSharedRendererState(gl: THREE.WebGLRenderer): SharedRendererState {
+  return {
+    target: gl.getRenderTarget(),
+    clearColor: gl.getClearColor(new THREE.Color()),
+    clearAlpha: gl.getClearAlpha(),
+    viewport: gl.getViewport(new THREE.Vector4()),
+    scissor: gl.getScissor(new THREE.Vector4()),
+    scissorTest: gl.getScissorTest(),
+    autoClear: gl.autoClear,
+    xrEnabled: gl.xr.enabled,
+  };
+}
+
+function restoreSharedRendererState(gl: THREE.WebGLRenderer, state: SharedRendererState) {
+  gl.setRenderTarget(state.target);
+  gl.setClearColor(state.clearColor, state.clearAlpha);
+  gl.setViewport(state.viewport);
+  gl.setScissor(state.scissor);
+  gl.setScissorTest(state.scissorTest);
+  gl.autoClear = state.autoClear;
+  gl.xr.enabled = state.xrEnabled;
+}
+
 function getDisplayOutputPass() {
   displayOutputPass ??= new OutputPass();
   return displayOutputPass;
@@ -52,10 +86,7 @@ export async function renderSceneToPngUrl(
       })
     : undefined;
   const readTarget = outputTarget ?? sceneTarget;
-  const previousTarget = request.gl.getRenderTarget();
-  const previousClearColor = new THREE.Color();
-  request.gl.getClearColor(previousClearColor);
-  const previousClearAlpha = request.gl.getClearAlpha();
+  const previousRendererState = captureSharedRendererState(request.gl);
   const previousBackground = request.scene.background;
   const pixels = new Uint8Array(request.width * request.height * 4);
   try {
@@ -80,14 +111,12 @@ export async function renderSceneToPngUrl(
     // The async PBO read owns the submitted frame. Restore the shared renderer
     // before waiting so React Three Fiber can keep drawing the viewport.
     request.scene.background = previousBackground;
-    request.gl.setRenderTarget(previousTarget);
-    request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    restoreSharedRendererState(request.gl, previousRendererState);
     options.onRenderSubmitted?.();
     await readbackPromise;
   } finally {
     request.scene.background = previousBackground;
-    request.gl.setRenderTarget(previousTarget);
-    request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    restoreSharedRendererState(request.gl, previousRendererState);
     sceneTarget.dispose();
     outputTarget?.dispose();
   }
@@ -118,12 +147,8 @@ export async function renderScenePassesToPngUrl(
     samples: 0,
     colorSpace: options.dataTexture ? THREE.NoColorSpace : THREE.SRGBColorSpace,
   });
-  const previousTarget = request.gl.getRenderTarget();
-  const previousClearColor = new THREE.Color();
-  request.gl.getClearColor(previousClearColor);
-  const previousClearAlpha = request.gl.getClearAlpha();
+  const previousRendererState = captureSharedRendererState(request.gl);
   const previousBackground = request.scene.background;
-  const previousAutoClear = request.gl.autoClear;
   const pixels = new Uint8Array(request.width * request.height * 4);
   try {
     if (options.ignoreSceneBackground) request.scene.background = null;
@@ -152,16 +177,12 @@ export async function renderScenePassesToPngUrl(
       pixels,
     );
     request.scene.background = previousBackground;
-    request.gl.setRenderTarget(previousTarget);
-    request.gl.setClearColor(previousClearColor, previousClearAlpha);
-    request.gl.autoClear = previousAutoClear;
+    restoreSharedRendererState(request.gl, previousRendererState);
     options.onRenderSubmitted?.();
     await readbackPromise;
   } finally {
     request.scene.background = previousBackground;
-    request.gl.setRenderTarget(previousTarget);
-    request.gl.setClearColor(previousClearColor, previousClearAlpha);
-    request.gl.autoClear = previousAutoClear;
+    restoreSharedRendererState(request.gl, previousRendererState);
     target.dispose();
   }
 

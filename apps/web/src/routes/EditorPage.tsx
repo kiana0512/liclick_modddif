@@ -135,6 +135,11 @@ import {
   markPerformanceEvent,
   startPerformanceSpan,
 } from '@/engine/performance/performanceTimeline';
+import {
+  cancelHeavyTasks,
+  scheduleHeavyTask,
+  type HeavyTaskContext,
+} from '@/engine/performance/heavyTaskScheduler';
 import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
@@ -193,7 +198,7 @@ import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
 import type { Project, ReferenceImage, TextureBakeHandoff } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
-import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
+import { encodeRgbaPngBlob, encodeRgbaPngObjectUrl } from '@/utils/encodeRgbaPng';
 import { generationBelongsToProject } from '@/utils/generationIdentity';
 import { createId } from '@/utils/id';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
@@ -3439,6 +3444,12 @@ export function EditorPage({
           });
         }
       }
+      // Do not remove the projected patch until the exact UV replacement has
+      // decoded and completed its full striped GPU upload.
+      const previewResults = await prewarmPreviewTextures([imageUrl]);
+      if (!previewResults.some((result) => result.status === 'fulfilled')) {
+        throw new Error('UV repair texture prewarm failed; the projected patch was preserved.');
+      }
       setLayers(previousLayers);
       releaseProjectLayerSyncSuppression();
       const uvLayer = addUvLayer({
@@ -3459,7 +3470,12 @@ export function EditorPage({
   }
 
   const addUvContentAwareRepairLayer = useCallback(
-    async (imageData: ImageData, objectId: string, temporary = false) => {
+    async (
+      imageData: ImageData,
+      objectId: string,
+      temporary = false,
+      signal?: AbortSignal,
+    ) => {
       const layerId = createId('content-aware-uv-repair');
       const imageUrl = temporary
         ? await blobToDataUrl(
@@ -3468,6 +3484,10 @@ export function EditorPage({
         : await persistLayerImage(imageData, `${layerId}.png`, {
             preserveTransparentRgb: true,
           });
+      if (signal?.aborted) {
+        if (imageUrl.startsWith('blob:')) URL.revokeObjectURL(imageUrl);
+        throw new DOMException('Content-aware repair was superseded.', 'AbortError');
+      }
       const currentLayers = useLayerStore.getState().layers;
       const previousRepairCount = currentLayers.filter(
         (layer) =>
@@ -3502,11 +3522,20 @@ export function EditorPage({
       if (!previewReady) {
         throw new Error('内容识别修补纹理未能完成 GPU 预热；未发布不完整图层。');
       }
+      if (signal?.aborted) {
+        releasePreviewTexture(imageUrl);
+        if (imageUrl.startsWith('blob:')) URL.revokeObjectURL(imageUrl);
+        throw new DOMException('Content-aware repair was superseded.', 'AbortError');
+      }
       // Atomic publish: the visible eye and sampler weight are committed only
       // after the exact sparse PNG has decoded and finished its striped upload.
       // This prevents both the first-frame white fallback and a permanently
       // invisible result that used to recover only after toggling the eye.
-      setLayers([...currentLayers, layer]);
+      // Re-read at the atomic boundary. Eye/mode changes made while the PNG was
+      // encoding or uploading are authoritative and must never be overwritten
+      // by the stale snapshot used to calculate the pass number.
+      const publishLayers = useLayerStore.getState().layers;
+      setLayers([...publishLayers, { ...layer, order: publishLayers.length }]);
       setActiveLayer(layer.id);
       document.body.dataset.contentAwareAtomicPublish = JSON.stringify({
         layerId,
@@ -3716,10 +3745,10 @@ export function EditorPage({
     };
   }, [completeLocalRepaintRuntime, localRepaintRuntime, pushToast, updateLocalRepaintRuntime]);
 
-  async function mergeLayersToUvLayer(
+  async function executeMergeLayersToUvLayer(
     layerIds: string[],
     blankUvLayerId?: string,
-    options?: { benchmarkOnly?: boolean },
+    options?: { benchmarkOnly?: boolean; taskContext?: HeavyTaskContext },
   ) {
     const currentImportedModel = useSceneStore.getState().importedModel;
     if (!project || !currentImportedModel) {
@@ -3849,10 +3878,16 @@ export function EditorPage({
               commitToProject: false,
               markSourceLayersBaked: false,
               skipImageEncoding: true,
+              // The CPU-parity bake already returns the authoritative straight
+              // RGBA bytes consumed below. Writing the same 64 MiB into a
+              // throwaway canvas caused a 450ms main-thread frame.
               skipCanvasUpload: true,
               onProgress: updateManualBakeProgress,
             })
           : undefined;
+      if (options?.taskContext?.signal.aborted) {
+        throw new DOMException('UV merge was superseded.', 'AbortError');
+      }
       gpuBakeDurationMs = performance.now() - gpuBakeStartedAt;
       markPerformanceEvent('uv-merge', 'gpu-bake-complete', {
         durationMs: performance.now() - mergeStartedAt,
@@ -3879,6 +3914,8 @@ export function EditorPage({
       // aware repair layer to disappear after merge.
       const uvCompositeStartedAt = performance.now();
       let mergedImageBlob: Blob | undefined;
+      let mergedImageUrl: string | undefined;
+      let mergedOutputBytes = 0;
       if (document.body.dataset.perfSimulatedViewportInteraction === '1') {
         document.body.dataset.perfUvBakePhase = 'uv-underlay-composite';
       }
@@ -3895,19 +3932,22 @@ export function EditorPage({
                   mergedRgba,
                   layer.imageUrl,
                   bakeResolution,
-                  bakeResolution,
-                  layer.opacity,
-                )
+                   bakeResolution,
+                   layer.opacity,
+                   options?.taskContext?.signal,
+                 )
               : await compositeRgbaUrlUnderWithWebGpu(
                   mergedRgba,
                   layer.imageUrl,
                   bakeResolution,
-                  bakeResolution,
-                  layer.opacity,
-                );
+                   bakeResolution,
+                   layer.opacity,
+                   options?.taskContext?.signal,
+                 );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
-            if ('blob' in result) {
-              mergedImageBlob = result.blob;
+            if ('url' in result) {
+              mergedImageUrl = result.url;
+              mergedOutputBytes = result.byteLength;
               pngEncodeDurationMs = result.encodeMs;
             } else {
               mergedRgba = result.data;
@@ -3945,6 +3985,10 @@ export function EditorPage({
           detail: t('autoBakePreparing'),
           progress: 0.9 + ((index + 1) / Math.max(1, selectedUvLayers.length)) * 0.06,
         });
+        if (options?.taskContext?.signal.aborted) {
+          if (mergedImageUrl) URL.revokeObjectURL(mergedImageUrl);
+          throw new DOMException('UV merge was superseded.', 'AbortError');
+        }
       }
       uvCompositeDurationMs =
         performance.now() - uvCompositeStartedAt - pngEncodeDurationMs;
@@ -3958,17 +4002,19 @@ export function EditorPage({
       if (document.body.dataset.perfSimulatedViewportInteraction === '1') {
         document.body.dataset.perfUvBakePhase = 'png-encode';
       }
-      if (!mergedImageBlob) {
-        mergedImageBlob = await encodeRgbaPngBlob(
+      if (!mergedImageBlob && !mergedImageUrl) {
+        const encoded = await encodeRgbaPngObjectUrl(
           bakeResolution,
           bakeResolution,
           mergedRgba,
           { transferOwnership: true },
         );
+        mergedImageUrl = encoded.url;
+        mergedOutputBytes = encoded.byteLength;
         pngEncodeDurationMs = performance.now() - pngEncodeStartedAt;
       }
       markPerformanceEvent('uv-merge', 'png-encode-complete', {
-        byteLength: mergedImageBlob.size,
+        byteLength: mergedOutputBytes || mergedImageBlob?.size || 0,
         durationMs: performance.now() - mergeStartedAt,
       });
       if (benchmarkOnly) {
@@ -3976,7 +4022,7 @@ export function EditorPage({
         // exact final PNG is decoded and uploaded. Exercise the same full-size
         // path in S4 so a white-membrane regression is measured, not hidden.
         document.body.dataset.perfUvBakePhase = 'preview-texture-prewarm';
-        const previewUrl = URL.createObjectURL(mergedImageBlob);
+        const previewUrl = mergedImageUrl ?? URL.createObjectURL(mergedImageBlob!);
         const previewPrewarmStartedAt = performance.now();
         try {
           const previewResults = await prewarmPreviewTextures([previewUrl]);
@@ -4001,7 +4047,7 @@ export function EditorPage({
           previewPrewarmDurationMs,
           previewPrewarmReady,
           totalDurationMs: performance.now() - mergeStartedAt,
-          outputBytes: mergedImageBlob.size,
+          outputBytes: mergedOutputBytes || mergedImageBlob?.size || 0,
           coverageRatio: mergedCoverageRatio,
           bakePerformanceBreakdown: bakeResult?.report.performanceBreakdown ?? {},
           webGpuComposite,
@@ -4013,16 +4059,18 @@ export function EditorPage({
       let imageUrl: string;
       if (project.workspaceMode === 'local-server') {
         const filename = `${blankUvLayerId ?? createId('merged-uv-layer')}.png`;
+        const uploadBlob = mergedImageBlob ?? (await (await fetch(mergedImageUrl!)).blob());
         imageUrl = (
           await saveBlobAsset({
             projectId: project.id,
             category: 'layers',
-            blob: mergedImageBlob,
+            blob: uploadBlob,
             filename,
           })
         ).asset.url;
+        if (mergedImageUrl) URL.revokeObjectURL(mergedImageUrl);
       } else {
-        imageUrl = await blobToDataUrl(mergedImageBlob);
+        imageUrl = mergedImageUrl ?? URL.createObjectURL(mergedImageBlob!);
       }
       setManualBakeProgress({
         title: t('mergeSelectedLayersToUvLayer'),
@@ -4035,6 +4083,9 @@ export function EditorPage({
       previewPrewarmReady = previewResults.some((result) => result.status === 'fulfilled');
       if (!previewPrewarmReady) {
         throw new Error('最终 UV 纹理未能完成 GPU 预热；已保留原图层，未执行切换。');
+      }
+      if (options?.taskContext?.signal.aborted) {
+        throw new DOMException('UV merge was superseded.', 'AbortError');
       }
       setManualBakeProgress({
         title: t('mergeSelectedLayersToUvLayer'),
@@ -4069,6 +4120,10 @@ export function EditorPage({
         previewPrewarmDurationMs,
       });
       setProjectLayers(useLayerStore.getState().layers);
+      options?.taskContext?.markFirstResult({
+        layerId: mergedLayer.id,
+        previewPrewarmDurationMs,
+      });
       scheduleTexturedThumbnailRefresh(350);
       pushToast({
         tone: 'success',
@@ -4077,7 +4132,7 @@ export function EditorPage({
       });
       finishMergeSpan('end', {
         coverageRatio: mergedCoverageRatio,
-        outputBytes: mergedImageBlob.size,
+        outputBytes: mergedOutputBytes || mergedImageBlob?.size || 0,
       });
     } catch (error) {
       finishMergeSpan('error', {
@@ -4098,6 +4153,34 @@ export function EditorPage({
         1600,
       );
     }
+  }
+
+  function mergeLayersToUvLayer(
+    layerIds: string[],
+    blankUvLayerId?: string,
+    options?: { benchmarkOnly?: boolean },
+  ) {
+    const benchmarkOnly = options?.benchmarkOnly === true;
+    return scheduleHeavyTask({
+      key: 'full-resolution-texture',
+      label: '4k-uv-merge',
+      priority: 'user-visible',
+      replace: !benchmarkOnly,
+      onQueued: () =>
+        setManualBakeProgress({
+          title: t('mergeSelectedLayersToUvLayer'),
+          detail: '任务已排队，视口交互保持可用',
+          progress: 0.01,
+        }),
+      run: (taskContext) =>
+        executeMergeLayersToUvLayer(layerIds, blankUvLayerId, {
+          benchmarkOnly,
+          taskContext,
+        }),
+    }).catch((error) => {
+      if (!benchmarkOnly && error instanceof Error && error.name === 'AbortError') return undefined;
+      throw error;
+    });
   }
 
   useEffect(() => {
@@ -4989,10 +5072,10 @@ export function EditorPage({
     };
   }, [handleLocalRepaintFromToolbar]);
 
-  const runContentAwareRepair = useCallback(
+  const executeContentAwareRepair = useCallback(
     async (
       requestedObjectId?: string,
-      options?: { benchmarkOnly?: boolean },
+      options?: { benchmarkOnly?: boolean; taskContext?: HeavyTaskContext },
     ) => {
       const benchmarkOnly = options?.benchmarkOnly === true;
       if (contentAwareRepairRunningRef.current) return;
@@ -5028,6 +5111,8 @@ export function EditorPage({
       };
       reportRepairRunState('running', 'prepare');
       const abortController = new AbortController();
+      const abortFromScheduler = () => abortController.abort();
+      options?.taskContext?.signal.addEventListener('abort', abortFromScheduler, { once: true });
       contentAwareRepairAbortControllerRef.current = abortController;
       try {
         const sceneState = useSceneStore.getState();
@@ -5129,6 +5214,7 @@ export function EditorPage({
                 repairResolution,
                 repairResolution,
                 layer.opacity,
+                abortController.signal,
               );
               workingImageData = new ImageData(result.data, repairResolution, repairResolution);
             } catch (error) {
@@ -5307,6 +5393,7 @@ export function EditorPage({
           repairTexture,
           objectId,
           benchmarkOnly,
+          abortController.signal,
         );
         if (!benchmarkOnly) setProjectLayers(useLayerStore.getState().layers);
         reportRepairRunState('complete', 'atomic-publish', {
@@ -5314,6 +5401,7 @@ export function EditorPage({
           repairedPixels: repair.stats.repairedPixels,
           outputChecksum: repair.stats.outputChecksum,
         });
+        options?.taskContext?.markFirstResult({ layerId: repairLayer.id });
         if (!benchmarkOnly) {
           pushToast({
             tone: 'success',
@@ -5343,6 +5431,7 @@ export function EditorPage({
         }
         if (benchmarkOnly) throw error;
       } finally {
+        options?.taskContext?.signal.removeEventListener('abort', abortFromScheduler);
         delete document.body.dataset.perfUvBakePhase;
         if (contentAwareRepairAbortControllerRef.current === abortController) {
           contentAwareRepairRunningRef.current = false;
@@ -5355,6 +5444,30 @@ export function EditorPage({
       }
     },
     [addUvContentAwareRepairLayer, captureHistory, pushToast, setProjectLayers, t],
+  );
+
+  const runContentAwareRepair = useCallback(
+    (requestedObjectId?: string, options?: { benchmarkOnly?: boolean }) => {
+      const benchmarkOnly = options?.benchmarkOnly === true;
+      return scheduleHeavyTask({
+        key: 'full-resolution-texture',
+        label: 'content-aware-repair',
+        priority: 'user-visible',
+        replace: !benchmarkOnly,
+        onQueued: () =>
+          setManualBakeProgress({
+            title: t('contentAwareRepair'),
+            detail: '任务已排队，视口交互保持可用',
+            progress: 0.01,
+          }),
+        run: (taskContext) =>
+          executeContentAwareRepair(requestedObjectId, { benchmarkOnly, taskContext }),
+      }).catch((error) => {
+        if (!benchmarkOnly && error instanceof Error && error.name === 'AbortError') return;
+        throw error;
+      });
+    },
+    [executeContentAwareRepair, t],
   );
 
   useEffect(() => {

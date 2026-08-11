@@ -1734,19 +1734,11 @@ function ImportedModel({
       cancelled = true;
     };
   }, [gl, residentUvToggleSignature, stableResidentUvToggleLayers]);
-  // Keep one finished UV texture and its shader sampler resident. Its eye switch
-  // becomes a uniform update instead of a texture reload and shader recompile.
-  const hasResidentUvOverlaySampler = Boolean(
-    texturedRestoreReady &&
-      layers.some(
-        (layer) =>
-          layer.type === 'uv' &&
-          layer.role !== 'content-aware-underlay' &&
-          layer.role !== 'local-repaint-overlay' &&
-          Boolean(layer.imageUrl) &&
-          (!layer.objectId || layer.objectId === importedObjectId),
-      ),
-  );
+  // Reserve the UV handoff sampler in the initial projected material. The first
+  // projected-to-UV conversion can then bind its already-uploaded texture and
+  // hide the source projections in one commit, without compiling a replacement
+  // shader whose placeholder sampler would be visible as a white membrane.
+  const hasResidentUvOverlaySampler = true;
   const directProjectedSamplerBudget = useMemo(
     () =>
       getProjectedLayerSamplerBudget(previewProjectionInputs, gl.capabilities.maxTextures, {
@@ -2411,13 +2403,9 @@ function ImportedModel({
     importedModel?.objectId ?? '',
     importedModel?.restoreStage ?? '',
     projectedTextureArrayStructureSignature,
-    stableResidentUvToggleLayers
-      .map(
-        (layer) =>
-          `${layer.id}:${layer.imageUrl ?? ''}:${layer.contentRevision ?? 0}:${layer.objectId ?? ''}`,
-      )
-      .join('|'),
-    loadedContentAwareUnderlayTexture ? 'content-ready' : 'content-pending',
+    // Base and UV samplers are reserved from the first build. Their texture,
+    // opacity and eye-state changes are uniform-only and must never invalidate
+    // the 4K projected material structure during an atomic publication.
     liveProjectedEraserMaskTexture?.uuid ?? '',
     liveTopUvLayer
       ? `${liveTopUvLayer.id}:${liveTopUvLayer.imageUrl ?? ''}:${liveTopUvLayer.contentRevision ?? 0}`
@@ -2600,7 +2588,12 @@ function ImportedModel({
       // uniforms. Keep its full-resolution texture arrays resident across
       // display-mode and eye-state changes; replacing it here discarded GPU
       // state and made the next colour frame wait for an async rebuild.
-      const bypassProjectedMaterial = showGeometryOnlyDisplay && !hasResidentProjectionInputs;
+      // An empty colour stack must use the exact same MeshStandardMaterial as
+      // the initial model state. Keeping the projected shader and merely
+      // zeroing its samplers produced a brighter, low-contrast white membrane
+      // because that shader has a separate lighting equation.
+      const bypassProjectedMaterial =
+        showWhiteMembrane || (showGeometryOnlyDisplay && !hasResidentProjectionInputs);
       const activeProgressivePreviewBase = showWhiteMembrane
         ? undefined
         : progressivePreviewBase;

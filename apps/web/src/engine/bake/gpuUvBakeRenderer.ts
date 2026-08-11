@@ -1427,6 +1427,52 @@ type RendererStateSnapshot = {
   pixelRatio: number;
 };
 
+let isolatedUvBakeRenderer: THREE.WebGLRenderer | undefined;
+let isolatedUvBakeRendererUnavailable = false;
+
+/**
+ * Keeps the mandatory DPR=1 UV raster pipeline off the visible viewport
+ * renderer. WebGLRenderer.setPixelRatio() resizes and clears its canvas even
+ * when all subsequent drawing targets a WebGLRenderTarget; doing that on the
+ * React Three Fiber renderer produces a visible flash. Geometry and source
+ * pixels remain identical, while the detached renderer owns only bake GPU
+ * resources and can be reused by every serialized full-resolution task.
+ */
+export function getIsolatedUvBakeRenderer(viewportRenderer: THREE.WebGLRenderer) {
+  if (!isolatedUvBakeRenderer && !isolatedUvBakeRendererUnavailable) {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      isolatedUvBakeRenderer = new THREE.WebGLRenderer({
+        canvas,
+        alpha: true,
+        antialias: false,
+        powerPreference: 'high-performance',
+        preserveDrawingBuffer: false,
+      });
+      isolatedUvBakeRenderer.setPixelRatio(1);
+    } catch (error) {
+      isolatedUvBakeRendererUnavailable = true;
+      console.warn(
+        '[Liclick 3D Texture] Isolated UV bake renderer unavailable; using the viewport renderer.',
+        error,
+      );
+    }
+  }
+  const renderer = isolatedUvBakeRenderer ?? viewportRenderer;
+  renderer.outputColorSpace = viewportRenderer.outputColorSpace;
+  renderer.toneMapping = viewportRenderer.toneMapping;
+  renderer.toneMappingExposure = viewportRenderer.toneMappingExposure;
+  renderer.sortObjects = viewportRenderer.sortObjects;
+  renderer.localClippingEnabled = viewportRenderer.localClippingEnabled;
+  if (typeof document !== 'undefined') {
+    document.body.dataset.perfUvBakeRenderer =
+      renderer === viewportRenderer ? 'shared-fallback' : 'isolated';
+  }
+  return renderer;
+}
+
 function captureRendererState(renderer: THREE.WebGLRenderer): RendererStateSnapshot {
   return {
     target: renderer.getRenderTarget(),
@@ -1670,11 +1716,8 @@ export async function bakeProjectedLayerStackWithGpu(
   };
 
   try {
-    setBakeRenderTargetState(renderer, renderTarget, resolution);
-    renderer.setClearColor(0x000000, 0);
-    renderer.clear(true, true, true);
-
     const bakeScene = createBakeScene(meshes);
+    let renderTargetInitialized = false;
     for (const [layerIndex, layer] of input.layers.entries()) {
       input.onProgress?.({
         phase: 'loading-assets',
@@ -1703,7 +1746,15 @@ export async function bakeProjectedLayerStackWithGpu(
         mesh.material = material;
       });
       reportProgress(layer, layerIndex, true);
+      // Never leave the shared viewport renderer bound to the 4K bake target
+      // across asset loads, striped uploads, rAF yields or progress callbacks.
+      // Those awaits let React Three Fiber render a visible frame.
       setBakeRenderTargetState(renderer, renderTarget, resolution);
+      if (!renderTargetInitialized) {
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, true, true);
+        renderTargetInitialized = true;
+      }
       renderer.render(bakeScene.scene, camera);
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
