@@ -241,7 +241,7 @@ export function ViewCube() {
   const hoveredVertexStyle = hoveredTarget?.edges.length === 2 ? vertexMarkerStyle(hoveredTarget.direction) : undefined;
 
   return (
-    <div className="absolute right-4 top-4 z-50 grid h-32 w-32 place-items-start justify-items-center">
+    <div className="absolute right-4 top-4 z-10 grid h-32 w-32 place-items-start justify-items-center">
       <div
         className={cn(
           'z-10 max-w-[7.5rem] rounded px-1.5 py-0.5 text-[8px] font-black uppercase tracking-normal shadow-[0_3px_12px_rgba(0,0,0,0.3)] transition-colors',

@@ -26,11 +26,18 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { HistorySidePanel } from '@/components/history/HistorySidePanel';
+import {
+  AssetModelViewport,
+  type AssetModelPreviewSource,
+  type AssetModelPreviewStats,
+} from '@/features/workflow/AssetModelViewport';
+import { getHistoryModelFile } from '@/features/workflow/modelPreviewAssets';
 import { WorkflowShell } from '@/features/workflow/WorkflowShell';
 import type { WorkflowNavigation } from '@/features/workflow/workflowTypes';
 import { useWorkflowProject } from '@/features/workflow/useWorkflowProject';
@@ -65,6 +72,7 @@ import {
   type TelemetryModule,
 } from '@/services/telemetryClient';
 import {
+  downloadTaskHistoryOutput,
   fetchTaskHistoryOutputBlob,
   type TaskHistoryOutput,
   type TaskHistoryRecord,
@@ -105,6 +113,13 @@ type SubmissionSnapshot = {
   batchId?: string;
   childJobs?: Array<{ jobId: string; sourceName: string }>;
   submissionFailures?: Array<{ sourceName: string; error: string }>;
+};
+
+type RetopologyResultPreview = {
+  source: AssetModelPreviewSource;
+  artifact?: AssetArtifact;
+  record?: TaskHistoryRecord;
+  output?: TaskHistoryOutput;
 };
 
 type StoredJobBinding = {
@@ -188,7 +203,7 @@ const modeCopy = {
   retopology: {
     eyebrow: 'AI RETOPOLOGY',
     title: '自动拓扑 V6',
-    description: '导入高模，系统将根据结构、轮廓和交付档位自动确定合理密度，并在八项质量检查通过后发布正式低模。',
+    description: '导入高模，系统自动分析结构与轮廓、生成生产级低模，并在八项质量检查通过后发布。',
     accent: 'blue',
     Icon: Network,
   },
@@ -779,12 +794,17 @@ function SettingLabel({
 function MultiFbxDropCard({
   files,
   onFiles,
+  selectedIndex,
+  onSelect,
   disabled = false,
 }: {
   files: File[];
   onFiles: (files: File[]) => void;
+  selectedIndex?: number;
+  onSelect?: (index: number) => void;
   disabled?: boolean;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [fileError, setFileError] = useState<string>();
 
@@ -814,6 +834,18 @@ function MultiFbxDropCard({
 
   return (
     <div
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={files.length ? '继续添加高模 FBX' : '选择多个高模 FBX'}
+      onClick={(event) => {
+        if (!disabled && !(event.target as HTMLElement).closest('button')) inputRef.current?.click();
+      }}
+      onKeyDown={(event) => {
+        if (!disabled && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          inputRef.current?.click();
+        }
+      }}
       onDragEnter={(event) => {
         event.preventDefault();
         if (!disabled) setDragging(true);
@@ -827,46 +859,50 @@ function MultiFbxDropCard({
         setDragging(false);
         if (!disabled && event.dataTransfer.files.length) addFiles(event.dataTransfer.files);
       }}
-      className={`min-w-0 overflow-hidden rounded-2xl border transition ${
+      className={`min-w-0 overflow-hidden rounded-xl outline-none transition focus-visible:ring-1 focus-visible:ring-blue-200/55 ${
         dragging
-          ? 'border-blue-200/55 bg-blue-400/[0.09]'
-          : 'border-blue-300/24 bg-blue-400/[0.055]'
+          ? 'bg-blue-400/[0.09] ring-1 ring-blue-200/55'
+          : 'bg-transparent'
       } ${disabled ? 'opacity-55' : ''}`}
     >
-      <label className="relative flex min-h-[104px] cursor-pointer items-center gap-4 p-4">
-        <input
-          type="file"
-          multiple
-          accept=".fbx"
-          disabled={disabled}
-          aria-label="选择多个高模 FBX"
-          className="absolute inset-0 h-full w-full cursor-pointer opacity-[0.01] disabled:cursor-not-allowed"
-          onChange={(event) => {
-            if (event.target.files?.length) addFiles(event.target.files);
-            event.target.value = '';
-          }}
-        />
-        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-blue-200/20 bg-black/18 text-blue-100">
-          {files.length ? <Check className="h-5 w-5" /> : <Box className="h-5 w-5" />}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold text-white">高模 FBX</span>
-          <span className="mt-1 block text-xs leading-5 text-white/38">
-            点击或拖入多个 FBX；每个模型将作为独立任务处理
-          </span>
-          <span className="mt-1 block text-[10px] tracking-wide text-white/25">
-            {files.length ? `已选择 ${files.length} 个模型 · 可继续追加` : 'FBX · 单次最多 20 个'}
-          </span>
-          {fileError ? <span className="mt-2 block text-xs text-rose-200/72">{fileError}</span> : null}
-        </span>
-      </label>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept=".fbx"
+        disabled={disabled}
+        aria-hidden="true"
+        tabIndex={-1}
+        className="hidden"
+        onChange={(event) => {
+          if (event.target.files?.length) addFiles(event.target.files);
+          event.target.value = '';
+        }}
+      />
 
       {files.length ? (
-        <div className="grid gap-1.5 border-t border-white/[0.055] bg-black/10 p-3 sm:grid-cols-2">
+        <div className="workflow-scrollbar grid max-h-[238px] gap-2 overflow-y-auto">
           {files.map((file, index) => (
             <div
+              role="button"
+              tabIndex={0}
               key={`${file.name}:${file.size}:${file.lastModified}`}
-              className="flex min-w-0 items-center gap-2 rounded-lg border border-white/[0.065] bg-black/15 px-2.5 py-2"
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect?.(index);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onSelect?.(index);
+                }
+              }}
+              className={`flex min-w-0 items-center gap-2 rounded-xl border px-3 py-3 text-left transition ${
+                selectedIndex === index
+                  ? 'border-blue-300/32 bg-blue-400/[0.07]'
+                  : 'border-white/[0.065] bg-black/15 hover:border-white/14 hover:bg-white/[0.035]'
+              }`}
             >
               <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-blue-400/10 text-[10px] font-semibold text-blue-100/70">
                 {index + 1}
@@ -881,7 +917,10 @@ function MultiFbxDropCard({
                 type="button"
                 disabled={disabled}
                 aria-label={`移除 ${file.name}`}
-                onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFiles(files.filter((_, fileIndex) => fileIndex !== index));
+                }}
                 className="relative z-10 grid h-7 w-7 shrink-0 place-items-center rounded-md text-white/34 transition hover:bg-rose-400/10 hover:text-rose-100"
               >
                 <X className="h-3.5 w-3.5" />
@@ -889,35 +928,14 @@ function MultiFbxDropCard({
             </div>
           ))}
         </div>
-      ) : null}
+      ) : (
+        <div className="flex min-h-24 cursor-pointer items-center justify-center gap-3 p-4 text-white/38">
+          <Box className="h-5 w-5 text-blue-100/70" />
+          <span className="text-sm font-medium">点击或拖入 FBX</span>
+        </div>
+      )}
+      {fileError ? <div className="px-3 pb-3 text-xs text-rose-200/72">{fileError}</div> : null}
     </div>
-  );
-}
-
-function MiniSwitch({
-  checked,
-  onChange,
-  label,
-}: {
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`inline-flex h-8 items-center gap-2 rounded-full border px-2.5 text-xs transition ${
-        checked
-          ? 'border-blue-300/24 bg-blue-400/10 text-blue-100/78'
-          : 'border-white/10 bg-white/[0.035] text-white/38'
-      }`}
-    >
-      <span className={`h-2 w-2 rounded-full ${checked ? 'bg-blue-300' : 'bg-white/20'}`} />
-      {label}
-    </button>
   );
 }
 
@@ -1678,7 +1696,7 @@ function AutoUvWorkspace({
 
   return (
     <section className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/[0.075] bg-[#111321]/80">
-      <div className="flex items-center justify-between gap-4 border-b border-white/[0.055] px-5 py-4">
+      <div className="border-b border-white/[0.055] px-5 py-4">
         <div>
           <div className="text-[10px] font-semibold tracking-[0.16em] text-emerald-200/44">01 · PREPARE</div>
           <h2 className="mt-1 text-sm font-semibold text-white/76">模型与输出</h2>
@@ -1809,9 +1827,95 @@ function AutoUvWorkspace({
   );
 }
 
+function RetopologyStatusViewport({
+  status,
+  progress,
+  message,
+  error,
+  loadingResult = false,
+  onCancel,
+}: {
+  status: string;
+  progress: number;
+  message?: string;
+  error?: string;
+  loadingResult?: boolean;
+  onCancel?: () => void;
+}) {
+  const normalized = status.toLowerCase();
+  const failed = ['failed', 'error'].includes(normalized);
+  const cancelled = ['cancelled', 'canceled'].includes(normalized);
+  const queued = ['queued', 'claimed', 'waiting', 'pending'].includes(normalized);
+  const completed = ['succeeded', 'success', 'completed', 'complete'].includes(normalized);
+  const active = !failed && !cancelled && !completed;
+  const safeProgress = Math.min(100, Math.max(0, Number(progress) || 0));
+  const title = loadingResult
+    ? '正在载入拓扑结果'
+    : failed
+      ? '处理失败'
+      : cancelled
+        ? '任务已取消'
+        : queued
+          ? '排队中'
+          : '正在处理';
+
+  return (
+    <div className="relative grid h-full min-h-[480px] place-items-center overflow-hidden bg-[#0b0d15]">
+      <div className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] [background-size:38px_38px] [mask-image:linear-gradient(to_bottom,transparent,black_30%,black_75%,transparent)]" />
+      <div className={`relative w-[min(360px,calc(100%-40px))] rounded-3xl border p-8 text-center shadow-[0_28px_90px_rgba(0,0,0,.42)] ${
+        failed
+          ? 'border-rose-300/14 bg-[#241a24]'
+          : 'border-white/[0.075] bg-[#242630]'
+      }`}>
+        <span className={`mx-auto grid h-12 w-12 place-items-center rounded-2xl ${
+          failed ? 'bg-rose-400/10 text-rose-200' : 'bg-blue-400/10 text-blue-100/72'
+        }`}>
+          {failed ? (
+            <TriangleAlert className="h-5 w-5" />
+          ) : cancelled ? (
+            <X className="h-5 w-5" />
+          ) : (
+            <Box className={`h-5 w-5 ${active || loadingResult ? 'animate-pulse' : ''}`} />
+          )}
+        </span>
+        <h2 className="mt-4 text-lg font-semibold text-white/76">{title}</h2>
+        <p className="mt-2 text-xs leading-5 text-white/36">
+          {error ?? message ?? (queued ? '任务正在等待可用 Worker。' : '模型处理完成后将自动显示拓扑结果。')}
+        </p>
+        {!failed && !cancelled ? (
+          <div className="mt-6">
+            <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-blue-500 to-violet-400 transition-[width] duration-500"
+                style={{ width: `${loadingResult ? 100 : Math.max(3, safeProgress)}%` }}
+              />
+            </div>
+            <div className="mt-2 text-right text-[10px] tabular-nums text-white/30">
+              {loadingResult ? '正在准备预览' : `${Math.round(safeProgress)}%`}
+            </div>
+          </div>
+        ) : null}
+        {onCancel && active ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="mt-6 inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 px-5 text-xs text-white/46 transition hover:bg-white/[0.06] hover:text-white/78"
+          >
+            <X className="h-3.5 w-3.5" />
+            取消任务
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function AutoRetopologyWorkspace({
   initialAsset,
   onAssetChange,
+  onModelsChange,
+  selectedModelIndex,
+  onSelectedModelIndexChange,
   onSubmissionInputsChange,
   serviceReady,
   serviceBlockReason,
@@ -1822,6 +1926,9 @@ function AutoRetopologyWorkspace({
 }: {
   initialAsset?: File;
   onAssetChange?: (file?: File) => void;
+  onModelsChange?: (files: File[]) => void;
+  selectedModelIndex: number;
+  onSelectedModelIndexChange: (index: number) => void;
   onSubmissionInputsChange: () => void;
   serviceReady: boolean;
   serviceBlockReason?: string;
@@ -1831,24 +1938,24 @@ function AutoRetopologyWorkspace({
   setError: (error?: string) => void;
 }) {
   const [highModels, setHighModels] = useState<File[]>([]);
-  const [referenceImages, setReferenceImages] = useState<File[]>([]);
-  const [preserveSharp, setPreserveSharp] = useState(true);
-  const [preserveBoundary, setPreserveBoundary] = useState(true);
-  const [deliveryProfile, setDeliveryProfile] = useState<
-    'next_gen_game_prop' | 'realtime_background_prop' | 'mobile_game_prop'
-  >('next_gen_game_prop');
-  const [userRequest, setUserRequest] = useState(
-    '保留主要轮廓、开口、支撑关系与关键负空间。',
-  );
+  const referenceImages: File[] = [];
+  const preserveSharp = true;
+  const preserveBoundary = true;
+  const deliveryProfile = 'next_gen_game_prop' as const;
+  const userRequest = '保留主要轮廓、开口、支撑关系与关键负空间。';
   const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
 
   useEffect(() => {
     if (!initialAsset) return;
     setHighModels([initialAsset]);
-  }, [initialAsset]);
+    onModelsChange?.([initialAsset]);
+    onSelectedModelIndexChange(0);
+  }, [initialAsset, onModelsChange, onSelectedModelIndexChange]);
 
   function selectHighModels(files: File[]) {
     setHighModels(files);
+    onModelsChange?.(files);
+    onSelectedModelIndexChange(Math.min(selectedModelIndex, Math.max(0, files.length - 1)));
     onAssetChange?.(files[0]);
   }
 
@@ -1977,97 +2084,20 @@ function AutoRetopologyWorkspace({
         <div>
           <div className="text-[10px] font-semibold tracking-[0.16em] text-blue-200/44">01 · PREPARE</div>
           <h2 className="mt-1 text-sm font-semibold text-white/76">导入高模</h2>
+          <p className="mt-1.5 text-xs leading-5 text-white/30">
+            点击或拖入多个 FBX；每个模型将作为独立任务处理 · 单次最多 20 个
+          </p>
         </div>
-        <span className={`rounded-full border px-3 py-1.5 text-[11px] ${
-          modelReady
-            ? 'border-blue-300/16 bg-blue-400/[0.06] text-blue-100/68'
-            : 'border-white/[0.07] bg-white/[0.025] text-white/30'
-        }`}>
-          {modelReady ? `${highModels.length} 个模型已就绪` : '等待模型'}
-        </span>
       </div>
 
       <fieldset disabled={busy} className="p-5 disabled:opacity-55">
-        <MultiFbxDropCard files={highModels} onFiles={selectHighModels} disabled={busy} />
-
-        <div className="my-5 h-px bg-white/[0.055]" />
-
-        <div className="mb-3">
-          <div className="text-[10px] font-semibold tracking-[0.16em] text-blue-200/44">02 · OUTPUT</div>
-          <h2 className="mt-1 text-sm font-semibold text-white/76">输出要求</h2>
-          <p className="mt-1.5 text-xs leading-5 text-white/28">系统根据高模结构、轮廓、形变与交付档位自动确定合理密度。</p>
-        </div>
-
-        <div className="rounded-2xl border border-white/[0.065] bg-black/10 px-4">
-          <SettingLabel label="交付档位" description="用于自动密度与质量策略选择">
-            <Segment
-              value={deliveryProfile}
-              onChange={(value) => {
-                onSubmissionInputsChange();
-                setDeliveryProfile(value);
-              }}
-              tone="blue"
-              label="交付档位"
-              values={[
-                { value: 'next_gen_game_prop', label: '次世代道具' },
-                { value: 'realtime_background_prop', label: '实时背景' },
-                { value: 'mobile_game_prop', label: '移动端' },
-              ]}
-            />
-          </SettingLabel>
-        </div>
-
-        <div className="mt-4">
-          <AdvancedSection
-            hint={`锐边${preserveSharp ? '保留' : '关闭'} · 边界${preserveBoundary ? '保留' : '关闭'} · 参考图 ${referenceImages.length} 张`}
-          >
-            <SettingLabel label="结构约束" description="默认保留锐边和组件边界">
-              <div className="flex flex-wrap gap-2">
-                <MiniSwitch
-                  checked={preserveSharp}
-                  onChange={(value) => {
-                    onSubmissionInputsChange();
-                    setPreserveSharp(value);
-                  }}
-                  label="保留锐边"
-                />
-                <MiniSwitch
-                  checked={preserveBoundary}
-                  onChange={(value) => {
-                    onSubmissionInputsChange();
-                    setPreserveBoundary(value);
-                  }}
-                  label="保留边界"
-                />
-              </div>
-            </SettingLabel>
-            <label className="block border-t border-white/[0.055] py-4">
-              <span className="text-xs font-medium text-white/52">补充要求</span>
-              <span className="mt-1 block text-[10px] text-white/24">用于生成规划与自动严格 QA。</span>
-              <textarea
-                rows={3}
-                disabled={busy}
-                value={userRequest}
-                onChange={(event) => {
-                  onSubmissionInputsChange();
-                  setUserRequest(event.target.value);
-                }}
-                className="mt-3 w-full resize-none rounded-xl border border-white/[0.075] bg-black/18 px-4 py-3 text-sm leading-6 text-white/64 outline-none transition placeholder:text-white/18 focus:border-blue-300/34"
-              />
-            </label>
-            <div className="border-t border-white/[0.055]">
-              <ReferenceImages
-                files={referenceImages}
-                onFiles={(files) => {
-                  onSubmissionInputsChange();
-                  setReferenceImages(files);
-                }}
-                disabled={busy}
-                embedded
-              />
-            </div>
-          </AdvancedSection>
-        </div>
+        <MultiFbxDropCard
+          files={highModels}
+          onFiles={selectHighModels}
+          selectedIndex={selectedModelIndex}
+          onSelect={onSelectedModelIndexChange}
+          disabled={busy}
+        />
       </fieldset>
 
       <div className="border-t border-white/[0.055] p-5">
@@ -2142,12 +2172,37 @@ export function AssetProcessingPage({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [retopologyInputFiles, setRetopologyInputFiles] = useState<File[]>([]);
+  const [selectedRetopologyInputIndex, setSelectedRetopologyInputIndex] = useState(0);
+  const [retopologyResultPreview, setRetopologyResultPreview] = useState<RetopologyResultPreview>();
+  const [retopologyPreviewRecord, setRetopologyPreviewRecord] = useState<TaskHistoryRecord>();
+  const [retopologyPreviewLoading, setRetopologyPreviewLoading] = useState(false);
+  const [retopologyPreviewError, setRetopologyPreviewError] = useState<string>();
+  const [retopologyPreviewStats, setRetopologyPreviewStats] = useState<AssetModelPreviewStats>();
+  const [retopologyPreviewAction, setRetopologyPreviewAction] = useState<
+    'download' | 'continue'
+  >();
+  const previewRequestRef = useRef(0);
+  const handleRetopologyPreviewStats = useCallback((stats?: AssetModelPreviewStats) => {
+    setRetopologyPreviewStats(stats);
+  }, []);
   const jobId = job ? assetJobId(job) : '';
   const jobStatus = job?.status;
   const jobActive = Boolean(jobStatus && !terminalStatuses.has(jobStatus));
   const batchId = jobBinding?.batchId;
   const batchChildJobs = jobBinding?.childJobs;
   const batchSubmissionFailures = jobBinding?.submissionFailures;
+
+  const handleRetopologyModelsChange = useCallback((files: File[]) => {
+    previewRequestRef.current += 1;
+    setRetopologyInputFiles(files);
+    setInitialAsset((current) => (current && !files.includes(current) ? undefined : current));
+    setRetopologyResultPreview(undefined);
+    setRetopologyPreviewRecord(undefined);
+    setRetopologyPreviewError(undefined);
+    setRetopologyPreviewLoading(false);
+    setRetopologyPreviewStats(undefined);
+  }, []);
 
   const fetchBoundJob = useCallback(async () => {
     if (mode === 'retopology' && batchId && batchChildJobs?.length) {
@@ -2187,6 +2242,13 @@ export function AssetProcessingPage({
   }, [clearJobLineage, job, jobBinding]);
 
   function handleSubmittedJob(nextJob: AssetJob, snapshot: SubmissionSnapshot) {
+    if (mode === 'retopology') {
+      previewRequestRef.current += 1;
+      setRetopologyResultPreview(undefined);
+      setRetopologyPreviewRecord(undefined);
+      setRetopologyPreviewError(undefined);
+      setRetopologyPreviewLoading(false);
+    }
     const nextJobId = assetJobId(nextJob);
     if (!nextJobId) {
       clearJobLineage();
@@ -2721,6 +2783,141 @@ export function AssetProcessingPage({
     });
   }
 
+  const handleRetopologyHistorySelect = useCallback(
+    (record: TaskHistoryRecord, output?: TaskHistoryOutput) => {
+      if (mode !== 'retopology') return;
+      const requestId = previewRequestRef.current + 1;
+      previewRequestRef.current = requestId;
+      setRetopologyPreviewRecord(record);
+      setRetopologyResultPreview(undefined);
+      setRetopologyPreviewError(undefined);
+      if (!output) {
+        setRetopologyPreviewLoading(false);
+        return;
+      }
+      setRetopologyPreviewLoading(true);
+      void getHistoryModelFile(output)
+        .then((file) => {
+          if (previewRequestRef.current !== requestId) return;
+          setRetopologyResultPreview({
+            source: {
+              key: `history:${record.id}:${output.id}`,
+              file,
+              label: output.filename,
+              kind: 'result',
+            },
+            record,
+            output,
+          });
+        })
+        .catch((reason: unknown) => {
+          if (previewRequestRef.current !== requestId) return;
+          setRetopologyPreviewError(
+            reason instanceof Error ? reason.message : '无法加载这条历史记录的拓扑模型。',
+          );
+        })
+        .finally(() => {
+          if (previewRequestRef.current === requestId) setRetopologyPreviewLoading(false);
+        });
+    },
+    [mode],
+  );
+
+  useEffect(() => {
+    if (mode !== 'retopology' || job?.status !== 'SUCCEEDED' || retopologyPreviewRecord) return;
+    const artifact = finalRetopologyArtifacts(assetJobArtifacts(job)).find((item) =>
+      /\.fbx$/i.test(item.filename),
+    );
+    if (!artifact || !jobId) return;
+    const sourceKey = `job:${jobId}:${artifact.filename}`;
+    if (retopologyResultPreview?.source.key === sourceKey) return;
+    const requestId = previewRequestRef.current + 1;
+    previewRequestRef.current = requestId;
+    setRetopologyPreviewLoading(true);
+    setRetopologyPreviewError(undefined);
+    void fetchVerifiedArtifactBlob(jobId, artifact)
+      .then((blob) => {
+        if (previewRequestRef.current !== requestId) return;
+        const file = new File([blob], artifact.filename, {
+          type: blob.type || 'application/octet-stream',
+        });
+        setRetopologyResultPreview({
+          source: {
+            key: sourceKey,
+            file,
+            label: artifact.filename,
+            kind: 'result',
+          },
+          artifact,
+        });
+      })
+      .catch((reason: unknown) => {
+        if (previewRequestRef.current !== requestId) return;
+        setRetopologyPreviewError(
+          reason instanceof Error ? reason.message : '拓扑结果加载失败。',
+        );
+      })
+      .finally(() => {
+        if (previewRequestRef.current === requestId) setRetopologyPreviewLoading(false);
+      });
+  }, [job, jobId, mode, retopologyPreviewRecord, retopologyResultPreview?.source.key]);
+
+  const retopologyInputPreview = useMemo<AssetModelPreviewSource | undefined>(() => {
+    const file = retopologyInputFiles[selectedRetopologyInputIndex];
+    if (!file) return undefined;
+    return {
+      key: `input:${file.name}:${file.size}:${file.lastModified}`,
+      file,
+      label: file.name,
+      kind: 'high',
+    };
+  }, [retopologyInputFiles, selectedRetopologyInputIndex]);
+
+  async function handleRetopologyPreviewDownload() {
+    if (!retopologyResultPreview || retopologyPreviewAction) return;
+    setRetopologyPreviewAction('download');
+    setError(undefined);
+    try {
+      if (retopologyResultPreview.output) {
+        await downloadTaskHistoryOutput(retopologyResultPreview.output);
+      } else if (retopologyResultPreview.artifact && jobId) {
+        await downloadVerifiedArtifact(jobId, retopologyResultPreview.artifact);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '模型下载失败。');
+    } finally {
+      setRetopologyPreviewAction(undefined);
+    }
+  }
+
+  async function handleRetopologyPreviewContinue() {
+    if (!retopologyResultPreview || retopologyPreviewAction) return;
+    setRetopologyPreviewAction('continue');
+    setError(undefined);
+    try {
+      if (retopologyResultPreview.record && retopologyResultPreview.output) {
+        await handleHistoryContinue(
+          retopologyResultPreview.record,
+          retopologyResultPreview.output,
+        );
+      } else if (retopologyResultPreview.artifact) {
+        await handleContinue(retopologyResultPreview.artifact);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '传入 UV 失败。');
+    } finally {
+      setRetopologyPreviewAction(undefined);
+    }
+  }
+
+  function handleOpenUvFromRetopology() {
+    if (retopologyResultPreview) {
+      void handleRetopologyPreviewContinue();
+      return;
+    }
+    navigation.onOpenUv();
+  }
+
   const serviceReady = Boolean(
     !serviceLoading &&
       !serviceError &&
@@ -2739,6 +2936,50 @@ export function AssetProcessingPage({
     ? 'border-emerald-300/18 bg-emerald-400/[0.075] text-emerald-100'
     : 'border-blue-300/18 bg-blue-400/[0.075] text-blue-100';
   const historyRefreshKey = `${jobId}:${jobStatus ?? 'idle'}`;
+  const retopologyViewportContent: ReactNode = retopologyPreviewRecord ? (
+    retopologyPreviewLoading ? (
+      <RetopologyStatusViewport status="processing" progress={100} loadingResult />
+    ) : retopologyPreviewError ? (
+      <RetopologyStatusViewport
+        status="failed"
+        progress={retopologyPreviewRecord.progress}
+        error={retopologyPreviewError}
+      />
+    ) : retopologyResultPreview ? (
+      <AssetModelViewport
+        source={retopologyResultPreview.source}
+        onStats={handleRetopologyPreviewStats}
+      />
+    ) : (
+      <RetopologyStatusViewport
+        status={retopologyPreviewRecord.status}
+        progress={retopologyPreviewRecord.progress}
+        error={retopologyPreviewRecord.error}
+        message={retopologyPreviewRecord.sourceName}
+      />
+    )
+  ) : job && job.status !== 'SUCCEEDED' ? (
+    <RetopologyStatusViewport
+      status={job.status}
+      progress={job.progress}
+      message={job.stage_message}
+      error={assetJobError(job) ?? error}
+      onCancel={jobActive ? () => void handleCancel() : undefined}
+    />
+  ) : retopologyPreviewLoading ? (
+    <RetopologyStatusViewport status="processing" progress={100} loadingResult />
+  ) : retopologyPreviewError ? (
+    <RetopologyStatusViewport
+      status="failed"
+      progress={job?.progress ?? 0}
+      error={retopologyPreviewError}
+    />
+  ) : (
+    <AssetModelViewport
+      source={retopologyResultPreview?.source ?? retopologyInputPreview}
+      onStats={handleRetopologyPreviewStats}
+    />
+  );
 
   return (
     <WorkflowShell
@@ -2747,9 +2988,87 @@ export function AssetProcessingPage({
       onBack={onBack}
       backLabel="返回功能首页"
       connected={serviceReady}
-      navigation={navigation}
+      navigation={
+        mode === 'retopology'
+          ? { ...navigation, onOpenUv: handleOpenUvFromRetopology }
+          : navigation
+      }
       headerActions={<UserMenu onLogout={onLogout} />}
     >
+      {mode === 'retopology' ? (
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-[#080914] pt-[82px] text-white">
+          <div className="absolute bottom-0 left-0 right-0 top-[82px] 2xl:right-[264px] min-[1720px]:right-[344px]">
+            {retopologyViewportContent}
+          </div>
+
+          <div className="workflow-scrollbar absolute bottom-5 left-5 top-[102px] z-20 w-[320px] overflow-y-auto rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,.4)]">
+            <AutoRetopologyWorkspace
+              initialAsset={initialAsset}
+              onAssetChange={invalidateJobForInputChange}
+              onModelsChange={handleRetopologyModelsChange}
+              selectedModelIndex={selectedRetopologyInputIndex}
+              onSelectedModelIndexChange={setSelectedRetopologyInputIndex}
+              onSubmissionInputsChange={invalidateJobForInputChange}
+              serviceReady={serviceReady}
+              serviceBlockReason={serviceBlockReason}
+              onJob={handleSubmittedJob}
+              setBusy={setBusy}
+              busy={busy || jobActive}
+              setError={setError}
+            />
+          </div>
+
+          <div className="absolute right-5 top-[102px] z-20 2xl:right-[284px] min-[1720px]:right-[364px]">
+            <ServiceBadge
+              status={serviceStatus}
+              loading={serviceLoading}
+              error={serviceError}
+              onRetry={() => {
+                serviceRetryAttemptRef.current = 0;
+                setServiceLoading(true);
+                setServiceError(undefined);
+                setServiceCheck((value) => value + 1);
+              }}
+            />
+          </div>
+
+          {retopologyResultPreview ? (
+            <div className="absolute bottom-5 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-white/[0.09] bg-[#090a12]/92 p-1.5 shadow-[0_16px_50px_rgba(0,0,0,.5)] backdrop-blur-xl 2xl:-translate-x-[calc(50%+132px)] min-[1720px]:-translate-x-[calc(50%+172px)]">
+              <div className="flex h-9 items-center gap-2 border-r border-white/[0.08] px-3 text-[11px] tabular-nums text-white/42">
+                <span>面 {retopologyPreviewStats?.triangles.toLocaleString('zh-CN') ?? '—'}</span>
+                <span className="text-white/16">·</span>
+                <span>点 {retopologyPreviewStats?.vertices.toLocaleString('zh-CN') ?? '—'}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleRetopologyPreviewDownload()}
+                disabled={Boolean(retopologyPreviewAction)}
+                className="inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs text-white/58 transition hover:bg-white/[0.07] hover:text-white disabled:opacity-35"
+              >
+                {retopologyPreviewAction === 'download' ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                下载当前模型
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleRetopologyPreviewContinue()}
+                disabled={Boolean(retopologyPreviewAction)}
+                className="inline-flex h-9 items-center gap-2 rounded-lg bg-gradient-to-r from-blue-500 to-violet-500 px-4 text-xs font-semibold text-white shadow-[0_10px_28px_rgba(79,70,229,.22)] transition hover:brightness-110 disabled:opacity-35"
+              >
+                {retopologyPreviewAction === 'continue' ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                传入 UV
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
       <div className="workflow-scrollbar relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#080914] pt-[82px] text-white 2xl:pr-[264px] min-[1720px]:pr-[344px]">
       <div className={`pointer-events-none absolute right-[7%] top-16 h-[420px] w-[420px] rounded-full blur-[120px] ${pageGlow}`} />
       <section className="relative z-[1] mx-auto w-full max-w-[1180px] px-6 pb-16 pt-10 lg:px-10 lg:pt-14">
@@ -2804,8 +3123,8 @@ export function AssetProcessingPage({
           </div>
         )}
 
-        <div className="mt-6 grid min-w-0 max-w-full items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_280px]">
-          {mode === 'uv' ? (
+        {mode === 'uv' ? (
+          <div className="mt-6 grid min-w-0 max-w-full items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_280px]">
             <AutoUvWorkspace
               initialAsset={initialAsset}
               onAssetChange={invalidateJobForInputChange}
@@ -2817,19 +3136,6 @@ export function AssetProcessingPage({
               busy={busy || jobActive}
               setError={setError}
             />
-          ) : (
-            <AutoRetopologyWorkspace
-              initialAsset={initialAsset}
-              onAssetChange={invalidateJobForInputChange}
-              onSubmissionInputsChange={invalidateJobForInputChange}
-              serviceReady={serviceReady}
-              serviceBlockReason={serviceBlockReason}
-              onJob={handleSubmittedJob}
-              setBusy={setBusy}
-              busy={busy || jobActive}
-              setError={setError}
-            />
-          )}
           <JobPanel
             mode={mode}
             job={job}
@@ -2839,7 +3145,98 @@ export function AssetProcessingPage({
             onContinue={jobBinding?.sourceFile ? handleContinue : undefined}
             continueLabel={mode === 'uv' ? '保存并传入烘焙' : '保存并传入 UV'}
           />
-        </div>
+          </div>
+        ) : (
+          <div className="mt-6 grid min-w-0 max-w-full items-stretch gap-4 xl:grid-cols-[330px_minmax(0,1fr)]">
+            <AutoRetopologyWorkspace
+              initialAsset={initialAsset}
+              onAssetChange={invalidateJobForInputChange}
+              onModelsChange={handleRetopologyModelsChange}
+              selectedModelIndex={selectedRetopologyInputIndex}
+              onSelectedModelIndexChange={setSelectedRetopologyInputIndex}
+              onSubmissionInputsChange={invalidateJobForInputChange}
+              serviceReady={serviceReady}
+              serviceBlockReason={serviceBlockReason}
+              onJob={handleSubmittedJob}
+              setBusy={setBusy}
+              busy={busy || jobActive}
+              setError={setError}
+            />
+            <div className="relative min-h-[560px] overflow-hidden rounded-2xl">
+              {retopologyPreviewRecord ? (
+                retopologyPreviewLoading ? (
+                  <RetopologyStatusViewport status="processing" progress={100} loadingResult />
+                ) : retopologyPreviewError ? (
+                  <RetopologyStatusViewport
+                    status="failed"
+                    progress={retopologyPreviewRecord.progress}
+                    error={retopologyPreviewError}
+                  />
+                ) : retopologyResultPreview ? (
+                  <AssetModelViewport source={retopologyResultPreview.source} />
+                ) : (
+                  <RetopologyStatusViewport
+                    status={retopologyPreviewRecord.status}
+                    progress={retopologyPreviewRecord.progress}
+                    error={retopologyPreviewRecord.error}
+                    message={retopologyPreviewRecord.sourceName}
+                  />
+                )
+              ) : job && job.status !== 'SUCCEEDED' ? (
+                <RetopologyStatusViewport
+                  status={job.status}
+                  progress={job.progress}
+                  message={job.stage_message}
+                  error={assetJobError(job) ?? error}
+                  onCancel={jobActive ? () => void handleCancel() : undefined}
+                />
+              ) : retopologyPreviewLoading ? (
+                <RetopologyStatusViewport status="processing" progress={100} loadingResult />
+              ) : retopologyPreviewError ? (
+                <RetopologyStatusViewport
+                  status="failed"
+                  progress={job?.progress ?? 0}
+                  error={retopologyPreviewError}
+                />
+              ) : (
+                <AssetModelViewport
+                  source={retopologyResultPreview?.source ?? retopologyInputPreview}
+                />
+              )}
+
+              {retopologyResultPreview ? (
+                <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-white/[0.09] bg-[#090a12]/92 p-1.5 shadow-[0_16px_50px_rgba(0,0,0,.5)] backdrop-blur-xl">
+                  <button
+                    type="button"
+                    onClick={() => void handleRetopologyPreviewDownload()}
+                    disabled={Boolean(retopologyPreviewAction)}
+                    className="inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs text-white/58 transition hover:bg-white/[0.07] hover:text-white disabled:opacity-35"
+                  >
+                    {retopologyPreviewAction === 'download' ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    下载当前模型
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleRetopologyPreviewContinue()}
+                    disabled={Boolean(retopologyPreviewAction)}
+                    className="inline-flex h-9 items-center gap-2 rounded-lg bg-gradient-to-r from-blue-500 to-violet-500 px-4 text-xs font-semibold text-white shadow-[0_10px_28px_rgba(79,70,229,.22)] transition hover:brightness-110 disabled:opacity-35"
+                  >
+                    {retopologyPreviewAction === 'continue' ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                    传入 UV
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )}
 
         <div className="mt-6 border-t border-white/[0.045] pt-4 text-[11px] text-white/20">
           <span className="inline-flex items-center gap-2">
@@ -2851,10 +3248,18 @@ export function AssetProcessingPage({
         </div>
       </section>
       </div>
+      )}
       <HistorySidePanel
         module={mode}
         refreshKey={historyRefreshKey}
+        activeTask={job ? {
+          id: jobId,
+          status: job.status,
+          progress: job.progress,
+        } : undefined}
         onContinue={handleHistoryContinue}
+        selectedOutputId={retopologyResultPreview?.output?.id}
+        onSelect={mode === 'retopology' ? handleRetopologyHistorySelect : undefined}
       />
     </WorkflowShell>
   );

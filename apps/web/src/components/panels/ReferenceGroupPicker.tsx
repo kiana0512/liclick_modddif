@@ -19,6 +19,10 @@ import { IMMEDIATE_PROJECT_SAVE_EVENT } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
+import {
+  ReferenceImportDialog,
+  type ReferenceImportRole,
+} from '@/components/panels/ReferenceImportDialog';
 
 export type ReferenceGroupGenerationState = {
   groupId: string;
@@ -229,25 +233,14 @@ export function ReferenceGroupPicker({
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
   const setReferences = useReferenceStore((state) => state.setReferences);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
-  const addSingleInputRef = useRef<HTMLInputElement>(null);
-  const addMultiviewInputRef = useRef<HTMLInputElement>(null);
-  const addMenuRef = useRef<HTMLDivElement>(null);
+  const addInputRef = useRef<HTMLInputElement>(null);
   const referenceMenuRef = useRef<HTMLDivElement>(null);
   const [uploadError, setUploadError] = useState<string>();
+  const [pendingImport, setPendingImport] = useState<ReferenceImage[]>();
   const [previewReference, setPreviewReference] = useState<ReferenceImage>();
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [openReferenceMenuId, setOpenReferenceMenuId] = useState<string>();
   const [referenceMenuPosition, setReferenceMenuPosition] = useState({ left: 8, top: 8 });
   const [containerDragActive, setContainerDragActive] = useState(false);
-
-  useEffect(() => {
-    if (!addMenuOpen) return;
-    const closeMenu = (event: PointerEvent) => {
-      if (!addMenuRef.current?.contains(event.target as Node)) setAddMenuOpen(false);
-    };
-    window.addEventListener('pointerdown', closeMenu);
-    return () => window.removeEventListener('pointerdown', closeMenu);
-  }, [addMenuOpen]);
 
   useEffect(() => {
     if (!openReferenceMenuId) return;
@@ -260,10 +253,7 @@ export function ReferenceGroupPicker({
     return () => window.removeEventListener('pointerdown', closeMenu);
   }, [openReferenceMenuId]);
 
-  async function imageFromFile(
-    file: File,
-    fields: Pick<ReferenceImage, 'referenceGroupId' | 'referenceRole' | 'derivedFromReferenceId'>,
-  ): Promise<ReferenceImage> {
+  async function imageFromFile(file: File): Promise<ReferenceImage> {
     const url = await fileToDataUrl(file);
     const size = await getImageSize(url);
     return {
@@ -274,28 +264,35 @@ export function ReferenceGroupPicker({
       height: size.height,
       isPrimary: false,
       referenceSource: 'uploaded',
-      ...fields,
     };
   }
 
-  async function addReferenceFiles(files: File[], role: 'single-view' | 'multi-view') {
+  async function queueReferenceFiles(files: File[]) {
     const imageFiles = files.filter(isImageFile);
     if (!imageFiles.length) {
       setUploadError('请选择图片文件。');
       return;
     }
-    const created = await Promise.all(
-      imageFiles.map(async (file) => {
-        const groupId = createId('reference-group');
-        return imageFromFile(file, { referenceGroupId: groupId, referenceRole: role });
-      }),
-    );
+    const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
+    setPendingImport(created);
+    setUploadError(undefined);
+  }
+
+  function confirmReferenceFiles(role: ReferenceImportRole) {
+    if (!pendingImport?.length) return;
+    const created = pendingImport.map((reference) => ({
+      ...reference,
+      referenceGroupId: createId('reference-group'),
+      referenceRole: role,
+      referenceSource: 'uploaded' as const,
+    }));
     const next = [
       ...created.map((reference, index) => ({ ...reference, isPrimary: index === 0 })),
       ...references.map((reference) => ({ ...reference, isPrimary: false })),
     ];
     setReferences(next);
     if (created[0]) setSelectedReferences([created[0].id]);
+    setPendingImport(undefined);
     setUploadError(undefined);
     dispatchImmediateSave();
   }
@@ -367,8 +364,8 @@ export function ReferenceGroupPicker({
     onGenerateMultiview(sourceReference);
   }
 
-  function handleAddInput(event: ChangeEvent<HTMLInputElement>, role: 'single-view' | 'multi-view') {
-    if (event.target.files?.length) void addReferenceFiles(Array.from(event.target.files), role);
+  function handleAddInput(event: ChangeEvent<HTMLInputElement>) {
+    if (event.target.files?.length) void queueReferenceFiles(Array.from(event.target.files));
     event.currentTarget.value = '';
   }
 
@@ -391,16 +388,13 @@ export function ReferenceGroupPicker({
     setContainerDragActive(false);
   }
 
-  function handleContainerDrop(
-    event: ReactDragEvent<HTMLDivElement>,
-    role: 'single-view' | 'multi-view',
-  ) {
+  function handleContainerDrop(event: ReactDragEvent<HTMLElement>) {
     if (disabled) return;
     event.preventDefault();
     event.stopPropagation();
     setContainerDragActive(false);
     const files = imageFilesFromDrop(event);
-    if (files.length) void addReferenceFiles(files, role);
+    if (files.length) void queueReferenceFiles(files);
   }
 
   return (
@@ -410,58 +404,22 @@ export function ReferenceGroupPicker({
       onDragOver={handleContainerDragOver}
       onDragLeave={handleContainerDragLeave}
     >
-      <input ref={addSingleInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(event) => handleAddInput(event, 'single-view')} />
-      <input ref={addMultiviewInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(event) => handleAddInput(event, 'multi-view')} />
+      <input ref={addInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleAddInput} />
 
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-semibold text-white/88">参考图</span>
-        <div ref={addMenuRef} className="relative flex items-center gap-1.5">
+        <div className="relative flex items-center gap-1.5">
           <span className="text-[9px] font-normal text-white/30">单图 / 多视图任选</span>
           <button
             type="button"
             disabled={disabled}
-            className={`grid h-6 w-6 place-items-center rounded-md transition disabled:cursor-not-allowed disabled:opacity-35 ${
-              addMenuOpen
-                ? 'bg-liclick-pink/16 text-liclick-pink'
-                : 'text-white/45 hover:bg-white/[0.055] hover:text-white'
-            }`}
+            className="grid h-6 w-6 place-items-center rounded-md text-white/45 transition hover:bg-white/[0.055] hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
             title="添加参考图"
             aria-label="添加参考图"
-            aria-haspopup="menu"
-            aria-expanded={addMenuOpen}
-            onClick={() => setAddMenuOpen((open) => !open)}
+            onClick={() => addInputRef.current?.click()}
           >
             <Plus className="h-4 w-4" />
           </button>
-          {addMenuOpen ? (
-            <div
-              role="menu"
-              className="absolute right-0 top-8 z-30 grid w-32 gap-1 rounded-lg bg-[#171322] p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.55)]"
-            >
-              <button
-                type="button"
-                role="menuitem"
-                className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] font-semibold text-white/72 transition hover:bg-white/[0.065] hover:text-white"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  addSingleInputRef.current?.click();
-                }}
-              >
-                <ImagePlus className="h-3.5 w-3.5 text-liclick-pink" />添加单视图
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] font-semibold text-white/72 transition hover:bg-white/[0.065] hover:text-white"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  addMultiviewInputRef.current?.click();
-                }}
-              >
-                <ImagePlus className="h-3.5 w-3.5 text-liclick-pink" />添加多视图
-              </button>
-            </div>
-          ) : null}
         </div>
       </div>
 
@@ -471,15 +429,15 @@ export function ReferenceGroupPicker({
             title="单视图"
             exampleUrl={SINGLE_REFERENCE_EXAMPLE_URL}
             disabled={disabled}
-            onClick={() => addSingleInputRef.current?.click()}
-            onFiles={(files) => void addReferenceFiles(files, 'single-view')}
+            onClick={() => addInputRef.current?.click()}
+            onFiles={(files) => void queueReferenceFiles(files)}
           />
           <EmptyUploadTarget
             title="多视图"
             exampleUrl={MULTIVIEW_REFERENCE_EXAMPLE_URL}
             disabled={disabled}
-            onClick={() => addMultiviewInputRef.current?.click()}
-            onFiles={(files) => void addReferenceFiles(files, 'multi-view')}
+            onClick={() => addInputRef.current?.click()}
+            onFiles={(files) => void queueReferenceFiles(files)}
           />
         </div>
       ) : (
@@ -612,24 +570,24 @@ export function ReferenceGroupPicker({
 
       {uploadError ? <p className="text-[10px] text-rose-200/72">{uploadError}</p> : null}
       {previewReference ? <ImagePreviewDialog reference={previewReference} onClose={() => setPreviewReference(undefined)} /> : null}
+      {pendingImport ? (
+        <ReferenceImportDialog
+          references={pendingImport}
+          onImport={confirmReferenceFiles}
+          onClose={() => setPendingImport(undefined)}
+        />
+      ) : null}
       {containerDragActive ? (
-        <div className="absolute inset-0 z-40 grid grid-cols-2 overflow-hidden rounded-lg bg-[#0b0912]/92 p-2 backdrop-blur-sm">
+        <div
+          className="absolute inset-0 z-40 grid place-items-center overflow-hidden rounded-lg bg-[#0b0912]/92 p-2 text-liclick-pink backdrop-blur-sm"
+          onDragOver={handleContainerDragOver}
+          onDrop={handleContainerDrop}
+        >
           <div
-            className="grid place-items-center rounded-l-lg bg-liclick-pink/[0.055] text-liclick-pink transition hover:bg-liclick-pink/12"
-            onDragOver={handleContainerDragOver}
-            onDrop={(event) => handleContainerDrop(event, 'single-view')}
+            className="grid place-items-center rounded-lg bg-liclick-pink/[0.055] px-8 py-5"
           >
             <span className="grid justify-items-center gap-1.5 text-[10px] font-semibold">
-              <ImagePlus className="h-5 w-5" />拖入为单视图
-            </span>
-          </div>
-          <div
-            className="grid place-items-center rounded-r-lg bg-violet-400/[0.055] text-violet-200 transition hover:bg-violet-400/12"
-            onDragOver={handleContainerDragOver}
-            onDrop={(event) => handleContainerDrop(event, 'multi-view')}
-          >
-            <span className="grid justify-items-center gap-1.5 text-[10px] font-semibold">
-              <ImagePlus className="h-5 w-5" />拖入为多视图
+              <ImagePlus className="h-5 w-5" />松开后选择图片用途
             </span>
           </div>
         </div>

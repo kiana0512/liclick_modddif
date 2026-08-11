@@ -3,6 +3,7 @@ import { FBXLoader, TGALoader } from 'three-stdlib';
 import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } from './modelImportTypes';
 import { yieldForModelImportProgressPaint } from './modelImportProgress';
 import { summarizeLoadedGroup } from './modelLoadUtils';
+import { applyFbxModelVisibility } from './fbxVisibility';
 
 const LEGACY_EMBEDDED_PNG_NAME = new TextEncoder().encode('liclick_image_0_png');
 
@@ -54,6 +55,7 @@ export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedM
     options.onProgress?.({ phase: 'parsing' });
     await yieldForModelImportProgressPaint();
     fbx = loader.parse(repairLegacyEmbeddedTextureFileNames(options.sourceBuffer), '');
+    applyFbxModelVisibility(fbx, options.sourceBuffer);
   } else {
     options.onProgress?.({ phase: 'reading', phaseProgress: 0 });
     fbx = await loader.loadAsync(options.sourceUrl, (event) => {

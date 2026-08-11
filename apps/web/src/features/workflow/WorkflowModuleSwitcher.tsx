@@ -1,4 +1,4 @@
-import { Box, ChevronRight, Flame, Map, Network } from 'lucide-react';
+import { Box, ChevronRight, Flame, LoaderCircle, Map, Network } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import type { WorkflowModule, WorkflowNavigation } from './workflowTypes';
 
@@ -21,7 +21,8 @@ export function WorkflowModuleSwitcher({
   onOpenUv,
   onOpenBake,
   compact = false,
-}: WorkflowNavigation & { compact?: boolean }) {
+  pendingModule,
+}: WorkflowNavigation & { compact?: boolean; pendingModule?: WorkflowModule }) {
   const handlers: Record<WorkflowModule, () => void> = {
     texture: onOpenTexture,
     retopology: onOpenRetopology,
@@ -36,6 +37,7 @@ export function WorkflowModuleSwitcher({
     >
       {modules.map(({ id, label, shortLabel, icon: Icon }, index) => {
         const active = activeModule === id;
+        const pending = pendingModule === id;
         return (
           <div key={id} className="flex items-center gap-1">
             <button
@@ -46,10 +48,16 @@ export function WorkflowModuleSwitcher({
                   'bg-gradient-to-r from-liclick-pink to-liclick-purple text-white shadow-glow',
               )}
               onClick={handlers[id]}
+              disabled={pending}
+              aria-busy={pending || undefined}
               aria-current={active ? 'page' : undefined}
               title={label}
             >
-              <Icon className="h-4 w-4" aria-hidden="true" />
+              {pending ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Icon className="h-4 w-4" aria-hidden="true" />
+              )}
               <span className={cn(compact && 'hidden xl:inline')}>{compact ? shortLabel : label}</span>
             </button>
             {index < modules.length - 1 ? (

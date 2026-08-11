@@ -1,6 +1,6 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Network, Plus } from 'lucide-react';
+import { Download, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -37,6 +37,10 @@ import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel
 import { ObjectTransformPanel } from '@/components/panels/ObjectTransformPanel';
 import { ObjectsPanel, ObjectsPanelActions } from '@/components/panels/ObjectsPanel';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
+import {
+  ReferenceImportDialog,
+  type ReferenceImportRole,
+} from '@/components/panels/ReferenceImportDialog';
 import { ViewportPanel } from '@/components/panels/ViewportPanel';
 import { Button } from '@/components/ui/Button';
 import { WorkspaceModeShell } from '@/components/workspace/WorkspaceModeShell';
@@ -46,6 +50,7 @@ import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
 import {
   buildContentAwareRepairMask,
   buildContentAwareSurfaceTopology,
@@ -821,6 +826,7 @@ export function EditorPage({
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
   const [modelImportProgress, setModelImportProgress] = useState<AutoBakeProgress | undefined>();
+  const [pendingReferenceImport, setPendingReferenceImport] = useState<ReferenceImage[]>();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
   const [photoshopEditBusy, setPhotoshopEditBusy] = useState(false);
   const photoshopEditSessionRef = useRef<PhotoshopSession>();
@@ -880,6 +886,7 @@ export function EditorPage({
   const references = useReferenceStore((state) => state.references);
   const setReferences = useReferenceStore((state) => state.setReferences);
   const addReferences = useReferenceStore((state) => state.addReferences);
+  const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const resolution = useSettingsStore((state) => state.resolution);
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
@@ -930,14 +937,15 @@ export function EditorPage({
     activeLayer?.type === 'uv' && activeLayer.imageUrl
       ? activeLayer.imageUrl
       : activeBakedTexture?.imageUrl;
-  const selectedObjectBakedColor = [...(project?.bakedTextures ?? [])]
+  const currentTextureObjectId = selectedObjectId ?? importedModel?.objectId;
+  const currentObjectBakedColor = [...(project?.bakedTextures ?? [])]
     .reverse()
-    .find((texture) => texture.objectId === selectedObjectId && Boolean(texture.imageUrl));
-  const selectedObjectBaseColor =
-    activeLayer?.objectId === selectedObjectId && activeColorTextureUrl
+    .find((texture) => texture.objectId === currentTextureObjectId && Boolean(texture.imageUrl));
+  const currentObjectBaseColor =
+    activeLayer?.objectId === currentTextureObjectId && activeColorTextureUrl
       ? { name: activeLayer?.name ?? 'BaseColor', imageUrl: activeColorTextureUrl }
-      : selectedObjectBakedColor?.imageUrl
-        ? { name: 'BaseColor', imageUrl: selectedObjectBakedColor.imageUrl }
+      : currentObjectBakedColor?.imageUrl
+        ? { name: 'BaseColor', imageUrl: currentObjectBakedColor.imageUrl }
         : undefined;
   const normalLayer = layers.find(
     (layer) =>
@@ -2782,14 +2790,7 @@ export function EditorPage({
           isPrimary: true,
         });
       }
-      addReferences(importedReferences, importedReferences.length > 1 ? 'clear-all' : 'select-new');
-      const nextReferences = useReferenceStore.getState().references;
-      setProjectReferences(nextReferences);
-      pushToast({
-        tone: 'success',
-        title: '参考图已添加',
-        description: '已添加到当前项目。',
-      });
+      setPendingReferenceImport(importedReferences);
     } catch (error) {
       console.error('[Liclick 3D Texture] Import references failed:', error);
       pushToast({
@@ -2798,6 +2799,30 @@ export function EditorPage({
         description: error instanceof Error ? error.message : '图片文件无法读取。',
       });
     }
+  }
+
+  function confirmReferenceImageImport(role: ReferenceImportRole) {
+    if (!pendingReferenceImport?.length) return;
+    const classifiedReferences = pendingReferenceImport.map((reference, index) => ({
+      ...reference,
+      isPrimary: index === 0,
+      referenceGroupId: createId('reference-group'),
+      referenceRole: role,
+      referenceSource: 'uploaded' as const,
+    }));
+    addReferences(
+      classifiedReferences,
+      classifiedReferences.length > 1 ? 'clear-all' : 'select-new',
+    );
+    setSelectedReferences([classifiedReferences[0].id]);
+    setProjectReferences(useReferenceStore.getState().references);
+    setPendingReferenceImport(undefined);
+    window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+    pushToast({
+      tone: 'success',
+      title: role === 'single-view' ? '已传入单视图' : '已传入多视图',
+      description: `已添加 ${classifiedReferences.length} 张参考图。`,
+    });
   }
 
   async function handleLoadProject(file: File) {
@@ -4113,10 +4138,20 @@ export function EditorPage({
   });
 
   async function handlePublishToRetopology() {
-    if (!project || !selectedObjectId || publishingToRetopology) return;
+    if (!project || publishingToRetopology) return;
+    const sourceObjectId = selectedObjectId ?? importedModel?.objectId;
+    if (!sourceObjectId) {
+      pushToast({
+        tone: 'warning',
+        title: '请先导入模型',
+        description: '贴图工作区中没有可传入拓扑的模型。',
+        dedupeKey: 'retopology-source-missing',
+      });
+      return;
+    }
     const sourceObject =
-      objects.find((object) => object.id === selectedObjectId) ??
-      project.objects.find((object) => object.id === selectedObjectId);
+      objects.find((object) => object.id === sourceObjectId) ??
+      project.objects.find((object) => object.id === sourceObjectId);
     if (!sourceObject) {
       pushToast({
         tone: 'warning',
@@ -4171,6 +4206,27 @@ export function EditorPage({
         blob: sourceBlob,
         filename: `pipeline-${revisionId}-high-${sourceName}`,
       });
+      let savedBaseColor:
+        | { asset: { url: string; relativePath: string } }
+        | undefined;
+      let savedBaseColorMimeType = 'image/png';
+      if (currentObjectBaseColor) {
+        const colorUrl = currentObjectBaseColor.imageUrl;
+        const liveCanvasBlob = isLiveProjectedCanvasUrl(colorUrl)
+          ? await getLiveProjectedCanvasBlob(colorUrl)
+          : undefined;
+        const colorBlob =
+          liveCanvasBlob ??
+          getRegisteredObjectUrlBlob(colorUrl) ??
+          (await urlToBlob(resolveImageAssetUrl(colorUrl)));
+        savedBaseColorMimeType = colorBlob.type || 'image/png';
+        savedBaseColor = await saveBlobAsset({
+          projectId: project.id,
+          category: 'baked',
+          blob: colorBlob,
+          filename: `pipeline-${revisionId}-base-color.png`,
+        });
+      }
       const currentProject = useProjectStore
         .getState()
         .projects.find((item) => item.id === project.id);
@@ -4202,14 +4258,15 @@ export function EditorPage({
         relativePath: saved.asset.relativePath,
         mimeType: sourceBlob.type || 'application/octet-stream',
       };
-      const baseColorAsset = selectedObjectBaseColor
+      const baseColorAsset = currentObjectBaseColor
         ? {
             id: `${revisionId}:base-color`,
             kind: 'base-color' as const,
             objectId: sourceObject.id,
-            name: selectedObjectBaseColor.name,
-            url: selectedObjectBaseColor.imageUrl,
-            mimeType: 'image/png',
+            name: currentObjectBaseColor.name,
+            url: savedBaseColor!.asset.url,
+            relativePath: savedBaseColor!.asset.relativePath,
+            mimeType: savedBaseColorMimeType,
           }
         : undefined;
       const pipeline = publishPipelineRevision(currentPipeline, {
@@ -5742,26 +5799,15 @@ export function EditorPage({
         onRenameProject={handleRenameProject}
         onBack={handleBackToProjects}
         workflowSwitcher={
-          <div className="flex items-center gap-2">
-            <WorkflowModuleSwitcher
-              compact
-              activeModule="texture"
-              onOpenTexture={() => undefined}
-              onOpenRetopology={onOpenRetopology}
-              onOpenUv={onOpenUv}
-              onOpenBake={() => onOpenBake()}
-            />
-            <Button
-              variant="primary"
-              className="h-12 whitespace-nowrap rounded-lg px-4"
-              icon={<Network className="h-4 w-4" />}
-              disabled={!selectedObjectId || publishingToRetopology}
-              onClick={() => void handlePublishToRetopology()}
-              title="锁定当前模型版本并传入自动拓扑"
-            >
-              {publishingToRetopology ? '正在发布…' : '完成并传入拓扑'}
-            </Button>
-          </div>
+          <WorkflowModuleSwitcher
+            compact
+            activeModule="texture"
+            pendingModule={publishingToRetopology ? 'retopology' : undefined}
+            onOpenTexture={() => undefined}
+            onOpenRetopology={() => void handlePublishToRetopology()}
+            onOpenUv={onOpenUv}
+            onOpenBake={() => onOpenBake()}
+          />
         }
         exportMenu={
           <ExportMenu
@@ -5846,6 +5892,13 @@ export function EditorPage({
         panels={panelDefinitions}
       />
       <TextureOnboardingTour projectId={project.id} projectCreatedAt={project.createdAt} />
+      {pendingReferenceImport ? (
+        <ReferenceImportDialog
+          references={pendingReferenceImport}
+          onImport={confirmReferenceImageImport}
+          onClose={() => setPendingReferenceImport(undefined)}
+        />
+      ) : null}
       {localRepaintRuntime && localRepaintVisible && (
         <LocalRepaintDialog
           mode={localRepaintRuntime.mode}
