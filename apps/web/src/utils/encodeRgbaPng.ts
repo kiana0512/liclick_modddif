@@ -28,17 +28,25 @@ function encodeRgbaPngInWorker(
   width: number,
   height: number,
   rgba: Uint8Array | Uint8ClampedArray,
+  transferOwnership: boolean,
 ) {
-  const rgbaBuffer = new ArrayBuffer(rgba.byteLength);
-  new Uint8Array(rgbaBuffer).set(new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
-  return new Promise<ArrayBuffer>((resolve, reject) => {
+  const canTransferSource =
+    transferOwnership &&
+    rgba.buffer instanceof ArrayBuffer &&
+    rgba.byteOffset === 0 &&
+    rgba.byteLength === rgba.buffer.byteLength;
+  const rgbaBuffer = canTransferSource ? rgba.buffer : new ArrayBuffer(rgba.byteLength);
+  if (!canTransferSource) {
+    new Uint8Array(rgbaBuffer).set(new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
+  }
+  return new Promise<Blob>((resolve, reject) => {
     const worker = new Worker(new URL('../workers/encodeRgbaPng.worker.ts', import.meta.url), {
       type: 'module',
     });
     const finish = () => worker.terminate();
-    worker.onmessage = (event: MessageEvent<{ png?: ArrayBuffer; error?: string }>) => {
+    worker.onmessage = (event: MessageEvent<{ blob?: Blob; error?: string }>) => {
       finish();
-      if (event.data.png) resolve(event.data.png);
+      if (event.data.blob) resolve(event.data.blob);
       else reject(new Error(event.data.error ?? 'Could not encode PNG in the worker.'));
     };
     worker.onerror = (event) => {
@@ -72,17 +80,34 @@ export async function encodeRgbaPngBlob(
   width: number,
   height: number,
   rgba: Uint8Array | Uint8ClampedArray,
+  options: { transferOwnership?: boolean } = {},
 ) {
-  let pngBuffer: ArrayBuffer;
+  let pngBlob: Blob;
   if (typeof Worker === 'undefined') {
-    pngBuffer = await encodeRgbaPngOnMainThread(width, height, rgba);
+    pngBlob = new Blob([await encodeRgbaPngOnMainThread(width, height, rgba)], {
+      type: 'image/png',
+    });
   } else {
     try {
-      pngBuffer = await encodeRgbaPngInWorker(width, height, rgba);
+      pngBlob = await encodeRgbaPngInWorker(
+        width,
+        height,
+        rgba,
+        options.transferOwnership === true,
+      );
     } catch (error) {
+      if (options.transferOwnership) {
+        throw new Error(
+          `PNG worker failed after the final RGBA handoff: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
       console.warn('[Liclick 3D Texture] PNG worker failed; using main-thread fallback.', error);
-      pngBuffer = await encodeRgbaPngOnMainThread(width, height, rgba);
+      pngBlob = new Blob([await encodeRgbaPngOnMainThread(width, height, rgba)], {
+        type: 'image/png',
+      });
     }
   }
-  return new Blob([pngBuffer], { type: 'image/png' });
+  return pngBlob;
 }

@@ -1,3 +1,5 @@
+import { encodeRgbaPngBytesChunked } from '@/utils/encodeRgbaPngCore';
+
 export {};
 
 const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
@@ -76,6 +78,7 @@ type CompositeRequest = {
   interactive: boolean;
   interactiveChunkBytes: number;
   idleChunkBytes: number;
+  encodePng?: boolean;
 };
 
 type NormalizedCompositeRequest = CompositeRequest & { underlay: ArrayBuffer };
@@ -99,7 +102,9 @@ type WorkerResponse =
   | {
       type: 'result';
       id: number;
-      output: ArrayBuffer;
+      output?: ArrayBuffer;
+      pngBlob?: Blob;
+      encodeMs?: number;
       metrics: CompositeMetrics;
       verification?: CompositeVerification;
     }
@@ -521,14 +526,36 @@ scope.onmessage = (event) => {
         result.metrics.backend === 'webgpu-worker'
           ? verifyGpuOutput(normalizedRequest, result.output)
           : { output: result.output };
-      const response: WorkerResponse = {
-        type: 'result',
-        id: request.id,
-        output: verified.output,
-        metrics: result.metrics,
-        verification: verified.verification,
-      };
-      scope.postMessage(response, [verified.output]);
+      if (request.encodePng) {
+        if (!request.width || !request.height) {
+          throw new Error('PNG output dimensions are missing.');
+        }
+        const encodeStartedAt = performance.now();
+        const encoded = await encodeRgbaPngBytesChunked(
+          request.width,
+          request.height,
+          new Uint8ClampedArray(verified.output),
+          () => wait(0),
+        );
+        const response: WorkerResponse = {
+          type: 'result',
+          id: request.id,
+          pngBlob: new Blob([encoded], { type: 'image/png' }),
+          encodeMs: performance.now() - encodeStartedAt,
+          metrics: result.metrics,
+          verification: verified.verification,
+        };
+        scope.postMessage(response);
+      } else {
+        const response: WorkerResponse = {
+          type: 'result',
+          id: request.id,
+          output: verified.output,
+          metrics: result.metrics,
+          verification: verified.verification,
+        };
+        scope.postMessage(response, [verified.output]);
+      }
     } catch (error) {
       const response: WorkerResponse = {
         type: 'error',

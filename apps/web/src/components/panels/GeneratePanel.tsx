@@ -604,15 +604,7 @@ async function createComfyInpaintInputImage(
       performance.now() - workerStartedAt
     ).toFixed(1);
     document.body.dataset.localRepaintButton2InputBackend = 'worker';
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () =>
-        typeof reader.result === 'string'
-          ? resolve(reader.result)
-          : reject(new Error('无法读取局部重绘输入图。'));
-      reader.onerror = () => reject(reader.error ?? new Error('无法读取局部重绘输入图。'));
-      reader.readAsDataURL(result.blob);
-    });
+    return result.dataUrl;
   } catch (error) {
     document.body.dataset.localRepaintButton2InputBackend = 'main-thread-fallback';
     console.warn('[Liclick 3D Texture] Inpaint input worker failed; using fallback.', error);
@@ -2567,7 +2559,8 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         return;
       }
       if (!currentProject || !captureObjectId) throw new Error(t('importModelFirst'));
-      if (!paintMaskHasContent || !paintMaskDataUrl) {
+      const liveMaskCapture = useSceneStore.getState().paintMaskCapture;
+      if (!paintMaskHasContent && !paintMaskDataUrl && !liveMaskCapture) {
         setGenerateNotice({ tone: 'warning', message: t('localRepaintMaskMissing') });
         pushToast({
           tone: 'warning',
@@ -2595,7 +2588,16 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       document.body.dataset.localRepaintButton2MaskCaptureMs = (
         performance.now() - maskCaptureStartedAt
       ).toFixed(1);
-      if (!currentPaintMaskDataUrl) throw new Error(t('localRepaintMaskMissing'));
+      if (!currentPaintMaskDataUrl) {
+        setGenerateNotice({ tone: 'warning', message: t('localRepaintMaskMissing') });
+        pushToast({
+          tone: 'warning',
+          title: t('localRepaintMaskMissing'),
+          description: t('inpaintSelectToolHelp'),
+          dedupeKey: 'generate-local-repaint-mask-required',
+        });
+        return;
+      }
       useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
       const currentPaintMaskRevision = useSceneStore.getState().paintMaskRevision;
       const maskSize = await getImageSize(currentPaintMaskDataUrl);
@@ -2616,6 +2618,21 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       addProjectCapture(capture);
       const submittedPrompt = prompt.trim();
       const generationId = createId('local-repaint');
+      // `renderScenePassesToPngUrl` intentionally returns a fast Blob URL for
+      // immediate submission. A Blob URL dies on reload, so persist the exact
+      // lossless mask in parallel and archive that durable URL with the finished
+      // generation. This prevents repeated background staging failures after a
+      // refresh without adding latency in front of the model request.
+      const persistedPaintMaskUrlPromise = persistGeneratedImage(
+        'generations',
+        currentPaintMaskDataUrl,
+        `${generationId}-mask.png`,
+        undefined,
+        currentProject.id,
+      ).catch((error) => {
+        console.warn('[Liclick 3D Texture] Could not persist local repaint mask:', error);
+        return currentPaintMaskDataUrl;
+      });
       pendingGeneration = {
         id: generationId,
         mode: 'inpaint',
@@ -2688,6 +2705,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         }
       }
       if (isCancelledGeneration(pendingGeneration)) return;
+      const persistedPaintMaskUrl = await persistedPaintMaskUrlPromise;
       const completedGeneration: Generation = {
         ...generation,
         resultUrl: localResultUrl,
@@ -2696,7 +2714,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           ...pendingGeneration.metadata,
           ...generation.metadata,
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
-          maskUrl: currentPaintMaskDataUrl,
+          maskUrl: persistedPaintMaskUrl,
           paintMaskRevision: currentPaintMaskRevision,
           completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },

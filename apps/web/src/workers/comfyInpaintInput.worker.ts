@@ -9,8 +9,18 @@ type ComposeRequest = {
 };
 
 type ComposeResponse =
-  | { id: number; png: ArrayBuffer; processMs: number }
+  | { id: number; dataUrl: string; processMs: number }
   | { id: number; error: string };
+
+function encodePngDataUrl(bytes: Uint8Array) {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, Math.min(bytes.length, offset + chunkSize));
+    binary += String.fromCharCode(...chunk);
+  }
+  return `data:image/png;base64,${btoa(binary)}`;
+}
 
 self.onmessage = (event: MessageEvent<ComposeRequest>) => {
   const { id, source, mask, width, height } = event.data;
@@ -55,14 +65,12 @@ self.onmessage = (event: MessageEvent<ComposeRequest>) => {
     }
 
     const encoded = encodeRgbaPngBytes(width, height, sourcePixels.data);
-    const png = new ArrayBuffer(encoded.byteLength);
-    new Uint8Array(png).set(encoded);
     const response: ComposeResponse = {
       id,
-      png,
+      dataUrl: encodePngDataUrl(encoded),
       processMs: performance.now() - startedAt,
     };
-    self.postMessage(response, { transfer: [png] });
+    self.postMessage(response);
   } catch (error) {
     const response: ComposeResponse = {
       id,

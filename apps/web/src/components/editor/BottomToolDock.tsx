@@ -109,8 +109,8 @@ export function BottomToolDock({
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
-  const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
+  const paintMaskCapture = useSceneStore((state) => state.paintMaskCapture);
   const pushToast = useToastStore((state) => state.pushToast);
   const baseButton =
     'grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:border-white/22 hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/45 disabled:cursor-not-allowed disabled:opacity-42';
@@ -127,7 +127,11 @@ export function BottomToolDock({
   const divider = <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />;
   const isTextureMode = mode === 'texture';
   const isMaskPaintTool = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
-  const hasUsablePaintMask = paintMaskHasContent && Boolean(paintMaskDataUrl);
+  // The live mask is authoritative. Pointer-up intentionally defers its
+  // lossless PNG snapshot until step 2 so drawing never blocks on a full-canvas
+  // encode; requiring that deferred URL here would permanently lock step 2.
+  // The submit path captures and validates the exact mask before the request.
+  const hasUsablePaintMask = paintMaskHasContent || Boolean(paintMaskCapture);
   const localRepaintReady = hasUsablePaintMask && canLocalRepaint;
   const inpaintMenuVisible =
     activeMenu === 'inpaint-add' ||

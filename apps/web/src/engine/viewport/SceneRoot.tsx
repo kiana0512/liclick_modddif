@@ -37,6 +37,7 @@ import {
 } from '@/engine/layers/uvLayerComposition';
 import {
   canCompositeUvLayersInWorker,
+  compositeUvLayerUrlsInWorker,
   compositeUvLayersInWorker,
 } from '@/engine/layers/uvLayerCompositeWorker';
 import {
@@ -81,7 +82,7 @@ const RESOLUTION_TO_SIZE = {
 
 const MAX_IMAGE_ELEMENT_CACHE_SIZE = 32;
 const MAX_COMPOSITED_UV_TEXTURE_CACHE_SIZE = 3;
-const MAX_RESIDENT_UV_TOGGLE_TEXTURES = 2;
+const MAX_RESIDENT_UV_TOGGLE_TEXTURES = 3;
 const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
 const PROJECTED_PREVIEW_LIMIT_TOAST_KEY = 'projected-preview:sampler-limit';
 const PROJECTED_PREVIEW_FAILURE_TOAST_KEY = 'projected-preview:failure';
@@ -351,6 +352,7 @@ function projectedLayerStructureSignature(layer: Layer, relativeOrder = layer.or
     layer.replacementTargetLayerId ?? '',
     layer.renderedColor ? 1 : 0,
     layer.minimumProjectionFacing ?? 0,
+    layer.blendMode,
     layer.role ?? '',
     relativeOrder,
     layer.contentRevision ?? 0,
@@ -671,13 +673,27 @@ function useCompositedUvTexture(layers: Layer[]) {
             let nextTexture: THREE.Texture;
             if (canCompositeUvLayersInWorker()) {
               document.body.dataset.uvCompositeBackend = 'worker';
-              const bitmaps = await Promise.all(
-                sortedSources.map(async ({ layer, source }) => ({
-                  bitmap: await createImageBitmap(source),
-                  opacity: layer.opacity,
-                })),
+              const staticSources = sortedSources.every(
+                ({ layer, liveUrl }) => !liveUrl && Boolean(layer.imageUrl),
               );
-              const bitmap = await compositeUvLayersInWorker(bitmaps);
+              const bitmap = staticSources
+                ? await compositeUvLayerUrlsInWorker(
+                    sortedSources.map(({ layer }) => ({
+                      imageUrl: layer.imageUrl!,
+                      opacity: layer.opacity,
+                    })),
+                  )
+                : await compositeUvLayersInWorker(
+                    await Promise.all(
+                      sortedSources.map(async ({ layer, source }) => ({
+                        bitmap: await createImageBitmap(source),
+                        opacity: layer.opacity,
+                      })),
+                    ),
+                  );
+              document.body.dataset.uvCompositeDecodeBackend = staticSources
+                ? 'worker-fetch-image-bitmap'
+                : 'main-thread-live-bitmap';
               nextTexture = new THREE.Texture(bitmap);
             } else {
               document.body.dataset.uvCompositeBackend = 'main-thread-fallback';
@@ -849,7 +865,14 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   return <primitive object={indicator.lines} />;
 }
 
-function TopologyWireframeOverlay({ object }: { object: THREE.Object3D }) {
+function TopologyWireframeOverlay({
+  object,
+  visible,
+}: {
+  object: THREE.Object3D;
+  visible: boolean;
+}) {
+  const { gl, camera } = useThree();
   const overlay = useMemo(() => {
     const group = new THREE.Group();
     group.name = 'Liclick Topology Wireframe Overlay';
@@ -895,8 +918,11 @@ function TopologyWireframeOverlay({ object }: { object: THREE.Object3D }) {
       group.add(wireMesh);
     });
 
+    group.visible = visible;
     return { group, material };
   }, [object]);
+
+  overlay.group.visible = visible;
 
   useFrame(() => {
     overlay.group.matrix.compose(object.position, object.quaternion, object.scale);
@@ -906,13 +932,34 @@ function TopologyWireframeOverlay({ object }: { object: THREE.Object3D }) {
   useEffect(
     () => {
       document.body.dataset.topologyWireframeMeshCount = String(overlay.group.children.length);
+      document.body.dataset.topologyWireframeReady = '0';
+      let cancelled = false;
+      const compileScene = new THREE.Scene();
+      const compileGeometry = new THREE.BoxGeometry(1, 1, 1);
+      const compileMesh = new THREE.Mesh(compileGeometry, overlay.material);
+      compileScene.add(compileMesh);
+      const compile = async () => {
+        if (typeof gl.compileAsync === 'function') {
+          await gl.compileAsync(compileScene, camera);
+        } else {
+          gl.compile(compileScene, camera);
+        }
+        if (!cancelled) document.body.dataset.topologyWireframeReady = '1';
+      };
+      void compile().catch(() => {
+        if (!cancelled) document.body.dataset.topologyWireframeReady = 'error';
+      });
       return () => {
+        cancelled = true;
+        compileGeometry.dispose();
+        compileMesh.removeFromParent();
         delete document.body.dataset.topologyWireframeMeshCount;
+        delete document.body.dataset.topologyWireframeReady;
         overlay.group.removeFromParent();
         overlay.material.dispose();
       };
     },
-    [overlay],
+    [camera, gl, overlay],
   );
 
   return <primitive object={overlay.group} />;
@@ -951,28 +998,23 @@ function ImportedModel({
     !importedModel.restoreStage || importedModel.restoreStage === 'full';
   const layerRenderSignature = useLayerStore((state) =>
     importedModelLayerRenderSignature(
-      (state.projectedPreviewLayers ?? state.layers).filter(
-        (layer) => layer.id !== localRepaintPreviewLayerId,
-      ),
+      state.projectedPreviewLayers ?? state.layers,
       importedModel.objectId,
     ),
   );
   const layers = useMemo(
     () => {
       const layerState = useLayerStore.getState();
-      return (layerState.projectedPreviewLayers ?? layerState.layers).filter(
-        (layer) => layer.id !== localRepaintPreviewLayerId,
-      );
+      return layerState.projectedPreviewLayers ?? layerState.layers;
     },
-    [layerRenderSignature, localRepaintPreviewLayerId, uvVisibilityRenderRevision],
+    [layerRenderSignature, uvVisibilityRenderRevision],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
-  // SurfacePaintOverlay owns the renderer-only local repaint preview as a
-  // transparent, precompiled mesh overlay. Never insert that temporary layer
-  // into the 14-layer projected stack: doing so rebuilt every texture array and
-  // left valid brush input invisible while a multi-second shader compiled.
-  // Persisted repaint rows remain in `layers` and rejoin the ordinary stack
-  // after the live session is cleared.
+  // SurfacePaintOverlay owns the renderer-only local repaint preview. Keep an
+  // already-persisted repaint row resident in the projected texture array and
+  // mute it by uniform while the overlay is active. Removing/reinserting that
+  // row rebuilt every 4K array on each task boundary; a resident zero-opacity
+  // binding hands off in one frame and preserves the exact stored pixels.
   const visibleLocalRepaintPreviewLayer = useMemo<Layer | undefined>(() => undefined, []);
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
@@ -988,11 +1030,14 @@ function ImportedModel({
     Record<string, { depthUrl: string; normalUrl: string }>
   >({});
   const [initialProjectedMaterialReady, setInitialProjectedMaterialReady] = useState(false);
+  const [initialProjectedMaterialColdReady, setInitialProjectedMaterialColdReady] =
+    useState(false);
   const projectedTextureArrayBuildRef = useRef<{
     signature: string;
     cancelled: boolean;
     promise: Promise<THREE.ShaderMaterial | undefined>;
   }>();
+  const committedProjectedMaterialStructureRef = useRef('');
   // The authoritative projected material stays fully resident while geometry-only
   // or empty-layer views temporarily present the canonical white membrane. This
   // makes those views exact MeshStandardMaterial renders without paying a rebuild
@@ -1294,7 +1339,7 @@ function ImportedModel({
           compositeRole: getProjectionCompositeRole(layer),
           // Keep the projection visible while the exact runtime visibility pass
           // is preparing. The stored depth (when present) remains a valid fallback.
-          visible: layer.visible,
+          visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
           hue: (layer.adjustments?.hue ?? 0) / 100,
           saturation: (layer.adjustments?.saturation ?? 0) / 100,
           lightness: (layer.adjustments?.lightness ?? 0) / 100,
@@ -1305,8 +1350,78 @@ function ImportedModel({
           minimumProjectionFacing: layer.minimumProjectionFacing,
         };
       }),
-    [captureById, runtimeVisibilityByLayerId, stablePreviewProjectedLayers],
+    [
+      captureById,
+      localRepaintPreviewLayerId,
+      runtimeVisibilityByLayerId,
+      stablePreviewProjectedLayers,
+    ],
   );
+  useEffect(() => {
+    if (!initialProjectedMaterialColdReady || initialProjectedMaterialReady) return undefined;
+    const residentProjectedLayerCount = layers.filter(
+      (layer) =>
+        layer.type === 'projected' &&
+        layer.imageUrl &&
+        (!layer.objectId || layer.objectId === importedObjectId),
+    ).length;
+    if (residentProjectedLayerCount <= previewProjectedLayers.length) {
+      setInitialProjectedMaterialReady(true);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let idleHandle: number | undefined;
+    const earliestPromotionAt = performance.now() + 750;
+    reportProjectedPreviewProgress(
+      0.985,
+      `当前可见贴图已显示，正在后台预热 ${residentProjectedLayerCount} 个图层`,
+      { layerCount: previewProjectedLayers.filter((layer) => layer.visible).length },
+    );
+
+    const promoteWhenIdle = () => {
+      if (cancelled) return;
+      const interaction = projectedPreviewInteractionRef.current;
+      const paintTool = useSceneStore.getState().paintTool;
+      const interactionBusy = Boolean(
+        interaction.pointerDown ||
+          performance.now() - interaction.lastMovedAt < 250 ||
+          document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+          document.body.dataset.perfViewportStressMeasuring === '1' ||
+          paintTool === 'inpaint-add' ||
+          paintTool === 'inpaint-subtract' ||
+          paintTool === 'inpaint-apply',
+      );
+      if (interactionBusy || performance.now() < earliestPromotionAt) {
+        retryTimer = window.setTimeout(promoteWhenIdle, 120);
+        return;
+      }
+      const commitPromotion = () => {
+        if (!cancelled) setInitialProjectedMaterialReady(true);
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        idleHandle = window.requestIdleCallback(commitPromotion, { timeout: 1500 });
+      } else {
+        retryTimer = (window as Window).setTimeout(commitPromotion, 0);
+      }
+    };
+    retryTimer = window.setTimeout(promoteWhenIdle, 120);
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      if (idleHandle !== undefined && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleHandle);
+      }
+    };
+  }, [
+    importedObjectId,
+    initialProjectedMaterialColdReady,
+    initialProjectedMaterialReady,
+    layers,
+    previewProjectedLayers,
+  ]);
   useEffect(() => {
     const unsubscribe = useLayerStore.subscribe((state, previousState) => {
       if (
@@ -1352,6 +1467,10 @@ function ImportedModel({
       const visibleContentAwareUvLayers = objectUvLayers.filter(
         (layer) => layer.visible && layer.role === 'content-aware-underlay',
       );
+      const residentContentAwareTexture =
+        visibleContentAwareUvLayers.length === 1
+          ? residentPreviewTextureCache.get(visibleContentAwareUvLayers[0].imageUrl ?? '')
+          : undefined;
       const residentSingleUvTexture =
         visibleOrdinaryUvLayers.length === 1
           ? residentPreviewTextureCache.get(visibleOrdinaryUvLayers[0].imageUrl ?? '')
@@ -1372,15 +1491,16 @@ function ImportedModel({
       }
       syncProjectedLayerResidentTextureVisibilityInObject(importedModel.group, {
         ...(residentUvTexture ? { uvOverlayTexture: residentUvTexture } : {}),
+        ...(residentContentAwareTexture
+          ? { baseTexture: residentContentAwareTexture }
+          : {}),
         uvOverlayOpacity:
           visibleOrdinaryUvLayers.length === 1 ? visibleOrdinaryUvLayers[0].opacity : visibleOrdinaryUvLayers.length > 1 ? 1 : 0,
         topUvOverlayOpacity: visibleLocalRepaintUvLayers[0]?.opacity ?? 0,
         baseTextureOpacity:
-          visibleContentAwareUvLayers.length === 1
+          residentContentAwareTexture && visibleContentAwareUvLayers.length === 1
             ? visibleContentAwareUvLayers[0].opacity
-            : visibleContentAwareUvLayers.length > 1
-              ? 1
-              : 0,
+            : 0,
       });
       syncProjectedLayerMaterialDisplayStateInObject(
         importedModel.group,
@@ -1595,6 +1715,8 @@ function ImportedModel({
             layer.useMask ? 1 : 0,
             layer.useDepthCheck ? 1 : 0,
             layer.useNormalCheck ? 1 : 0,
+            layer.blendMode ?? 'normal',
+            layer.compositeRole ?? 'normal',
             layer.objectMatrixWorld?.join(',') ?? '',
             layer.camera.viewMatrix?.join(',') ?? '',
             layer.camera.projectionMatrix?.join(',') ?? '',
@@ -1838,17 +1960,60 @@ function ImportedModel({
   );
   const loadedContentAwareUnderlayTexture =
     residentContentAwareUnderlayTexture ?? compositedContentAwareUnderlayTexture;
-  const contentAwareUnderlayOpacity = residentContentAwareUvUnderlayLayer
+  const requestedContentAwareUnderlayOpacity = residentContentAwareUvUnderlayLayer
     ? residentContentAwareUvUnderlayLayer.visible
       ? residentContentAwareUvUnderlayLayer.opacity
       : 0
-    : loadedContentAwareUnderlayTexture
+    : visibleCompositedContentAwareUvUnderlayLayers.length > 0
       ? 1
       : 0;
+  // Never publish the base sampler weight before its exact texture is resident.
+  // The shader's reserved sampler is intentionally backed by a white fallback;
+  // exposing it early produces the white-membrane frame and makes an eye toggle
+  // appear to "fix" the layer after the asynchronous decode completes.
+  const contentAwareUnderlayOpacity = loadedContentAwareUnderlayTexture
+    ? requestedContentAwareUnderlayOpacity
+    : 0;
   useEffect(() => {
-    if (!loadedContentAwareUnderlayTexture) return;
-    markSparseAlphaBaseTexture(loadedContentAwareUnderlayTexture);
-  }, [loadedContentAwareUnderlayTexture]);
+    if (loadedContentAwareUnderlayTexture) {
+      markSparseAlphaBaseTexture(loadedContentAwareUnderlayTexture);
+    }
+    const visibleContentAwareLayers = contentAwareUvUnderlayLayers.filter(
+      (layer) => layer.visible,
+    );
+    const state = {
+      layerIds: visibleContentAwareLayers.map((layer) => layer.id),
+      visibleLayerCount: visibleContentAwareLayers.length,
+      eyeVisible: visibleContentAwareLayers.length > 0,
+      textureReady: Boolean(loadedContentAwareUnderlayTexture),
+      requestedOpacity: requestedContentAwareUnderlayOpacity,
+      effectiveOpacity: contentAwareUnderlayOpacity,
+      safe: Boolean(loadedContentAwareUnderlayTexture) || contentAwareUnderlayOpacity === 0,
+      atMs: Math.round(performance.now() * 10) / 10,
+    };
+    document.body.dataset.contentAwareUnderlayState = JSON.stringify(state);
+    let history: typeof state[] = [];
+    try {
+      history = JSON.parse(document.body.dataset.contentAwareUnderlayHistory ?? '[]') as typeof state[];
+    } catch {
+      history = [];
+    }
+    const previous = history.at(-1);
+    if (
+      !previous ||
+      previous.visibleLayerCount !== state.visibleLayerCount ||
+      previous.textureReady !== state.textureReady ||
+      previous.effectiveOpacity !== state.effectiveOpacity
+    ) {
+      history.push(state);
+      document.body.dataset.contentAwareUnderlayHistory = JSON.stringify(history.slice(-16));
+    }
+  }, [
+    contentAwareUvUnderlayLayers,
+    contentAwareUnderlayOpacity,
+    loadedContentAwareUnderlayTexture,
+    requestedContentAwareUnderlayOpacity,
+  ]);
   const exactBakedTextureRecord = useMemo(() => {
     const expectedResolution = RESOLUTION_TO_SIZE[resolution];
     const cacheKey = getProjectedLayerStackSignature(
@@ -1930,12 +2095,50 @@ function ImportedModel({
       ? 1
       : 0;
   const compositedUvTexture = useCompositedUvTexture(compositedUvLayers);
+  const residentAllVisibleUvLayers = useMemo(
+    () =>
+      stableResidentUvToggleLayers.length > 1
+        ? stableResidentUvToggleLayers.map((layer) =>
+            layer.visible ? layer : { ...layer, visible: true },
+          )
+        : [],
+    [stableResidentUvToggleLayers],
+  );
+  const residentAllVisibleUvKey = useMemo(
+    () => residentUvVisibilityKey(residentAllVisibleUvLayers),
+    [residentAllVisibleUvLayers],
+  );
+  const residentAllVisibleUvTexture = useCompositedUvTexture(residentAllVisibleUvLayers);
   const directUvTexture = useLoadedPreviewTexture(directUvLayer?.imageUrl, {
     preserveWhenEmpty: true,
   });
   const loadedUvTexture = directUvLayer
     ? directUvTexture
     : (compositedUvTexture ?? directUvTexture);
+  useEffect(() => {
+    if (stableResidentUvToggleLayers.length <= 1) {
+      document.body.dataset.residentUvCombinationReady = '1';
+      return;
+    }
+    document.body.dataset.residentUvCombinationReady = '0';
+    if (!residentAllVisibleUvTexture || !residentAllVisibleUvKey) return;
+    let cancelled = false;
+    void uploadPreviewTextureInStripes(gl, residentAllVisibleUvTexture).then(() => {
+      if (cancelled) return;
+      const cache = residentUvPresentationCacheRef.current;
+      cache.delete(residentAllVisibleUvKey);
+      cache.set(residentAllVisibleUvKey, residentAllVisibleUvTexture);
+      document.body.dataset.residentUvCombinationReady = '1';
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    gl,
+    residentAllVisibleUvKey,
+    residentAllVisibleUvTexture,
+    stableResidentUvToggleLayers.length,
+  ]);
   useEffect(() => {
     if (!loadedUvTexture) return;
     document.body.dataset.textureRestoreUvReady = '1';
@@ -2069,6 +2272,10 @@ function ImportedModel({
     // synchronously. This includes the lit white-membrane fallback: an empty
     // layer stack must retain form without waiting for an async material pass.
     syncProjectedLayerResidentTextureVisibilityInObject(importedModel.group, {
+      ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+      ...(loadedContentAwareUnderlayTexture
+        ? { baseTexture: loadedContentAwareUnderlayTexture }
+        : {}),
       uvOverlayOpacity,
       topUvOverlayOpacity: liveTopUvLayer?.visible ? liveTopUvLayer.opacity : 0,
       baseTextureOpacity: contentAwareUnderlayOpacity,
@@ -2087,6 +2294,7 @@ function ImportedModel({
     importedModel,
     invalidate,
     liveTopUvLayer,
+    loadedContentAwareUnderlayTexture,
     previewLighting,
     previewProjectionInputs,
     uvOverlayOpacity,
@@ -2114,8 +2322,49 @@ function ImportedModel({
     }
   });
 
+  const projectedMaterialStructureKey = [
+    importedModel?.objectId ?? '',
+    importedModel?.restoreStage ?? '',
+    projectedTextureArrayStructureSignature,
+    stableResidentUvToggleLayers
+      .map(
+        (layer) =>
+          `${layer.id}:${layer.imageUrl ?? ''}:${layer.contentRevision ?? 0}:${layer.objectId ?? ''}`,
+      )
+      .join('|'),
+    loadedContentAwareUnderlayTexture ? 'content-ready' : 'content-pending',
+    liveProjectedEraserMaskTexture?.uuid ?? '',
+    liveTopUvLayer
+      ? `${liveTopUvLayer.id}:${liveTopUvLayer.imageUrl ?? ''}:${liveTopUvLayer.contentRevision ?? 0}`
+      : '',
+    // surfaceMaskTexture belongs exclusively to the non-projected UV/flat
+    // material paths below. Including its UUID in the resident projected key
+    // rebuilt all 4K projection arrays whenever button 3 selected a masked
+    // layer, even though the projected shader never consumes this texture.
+    useProjectedTextureArrays ? 'array' : 'direct',
+    textureArrayCompositionFallbackRequired ? 'fallback' : 'exact',
+  ].join('|');
+
   useEffect(() => {
     if (!importedModel) return;
+    let hasResidentProjectedMaterial = false;
+    importedModel.group.traverse((child) => {
+      if (hasResidentProjectedMaterial || !(child instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      hasResidentProjectedMaterial = materials.some((material) =>
+        material.name.startsWith('LiclickProjectedLayerStack:'),
+      );
+    });
+    if (
+      hasResidentProjectedMaterial &&
+      committedProjectedMaterialStructureRef.current === projectedMaterialStructureKey
+    ) {
+      // Visibility, opacity, lighting and display-mode changes are already
+      // applied synchronously by the resident-uniform effects/subscription.
+      // Do not let those presentation-only changes enter the async material
+      // builder and race a second 4K texture-array upload.
+      return;
+    }
     let cancelled = false;
     const model = importedModel;
     if (
@@ -2138,14 +2387,39 @@ function ImportedModel({
       if (typeof document === 'undefined') return;
       const previousRevision = Number(document.body.dataset.projectedMaterialBuildRevision ?? '0');
       document.body.dataset.projectedMaterialBuildRevision = String(previousRevision + 1);
+      const buildReason = {
+        unixMs: Date.now(),
+        revision: previousRevision + 1,
+        phase: document.body.dataset.perfLocalRepaintPhase,
+        displayMode,
+        previewLayerCount: previewProjectionInputs.length,
+        residentLayerCount: stablePreviewProjectedLayers.length,
+        useTextureArrays: useProjectedTextureArrays,
+        fallback: textureArrayCompositionFallbackRequired,
+      };
+      document.body.dataset.projectedMaterialBuildReason = JSON.stringify(buildReason);
+      if (document.body.dataset.perfLocalRepaintMeasuring === '1') {
+        let history: typeof buildReason[] = [];
+        try {
+          history = JSON.parse(document.body.dataset.projectedMaterialBuildHistory ?? '[]') as typeof history;
+        } catch {
+          history = [];
+        }
+        history.push(buildReason);
+        document.body.dataset.projectedMaterialBuildHistory = JSON.stringify(history.slice(-8));
+      }
     };
     const isViewportInteractionBusy = () => {
       const interaction = projectedPreviewInteractionRef.current;
       const paintTool = useSceneStore.getState().paintTool;
+      const localRepaintPhase = document.body.dataset.perfLocalRepaintPhase;
+      const simulatedInteractionIsPrewarm =
+        localRepaintPhase === 's6-interaction-source-bind';
       return Boolean(
         interaction.pointerDown ||
           performance.now() - interaction.lastMovedAt < 180 ||
-          document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+          (document.body.dataset.perfSimulatedViewportInteraction === '1' &&
+            !simulatedInteractionIsPrewarm) ||
           document.body.dataset.perfViewportStressMeasuring === '1' ||
           paintTool === 'inpaint-add' ||
           paintTool === 'inpaint-subtract' ||
@@ -2234,18 +2508,25 @@ function ImportedModel({
           (!loadedContentAwareUnderlayTexture || contentAwareUnderlayOpacity <= 0),
       );
       const showGeometryOnlyDisplay = displayMode === 'normal' || displayMode === 'wire';
-      const bypassProjectedMaterial = showWhiteMembrane || showGeometryOnlyDisplay;
+      const hasResidentProjectionInputs = Boolean(
+        canPreviewProjectedLayers && materialProjectionInputs.length > 0,
+      );
+      // The projected shader already owns white-membrane, normal and wire
+      // uniforms. Keep its full-resolution texture arrays resident across
+      // display-mode and eye-state changes; replacing it here discarded GPU
+      // state and made the next colour frame wait for an async rebuild.
+      const bypassProjectedMaterial = showGeometryOnlyDisplay && !hasResidentProjectionInputs;
       const activeProgressivePreviewBase = showWhiteMembrane
         ? undefined
         : progressivePreviewBase;
       const projectedLayerInput =
-        !bypassProjectedMaterial &&
-        canPreviewProjectedLayers &&
-        materialProjectionInputs.length > 0
+        hasResidentProjectionInputs
           ? {
               layers: materialProjectionInputs,
               objectId: model.objectId,
               currentObjectMatrixWorld: model.group.matrixWorld.toArray(),
+              reserveBaseMapSampler: contentAwareUvUnderlayLayers.length > 0,
+              reserveUvOverlaySampler: hasResidentUvOverlaySampler,
               ...(activeProgressivePreviewBase
                 ? {
                     baseTexture: activeProgressivePreviewBase.colorTexture,
@@ -2792,12 +3073,65 @@ function ImportedModel({
                   disposeGeneratedMaterialTree(sharedProjectedMaterial);
                   return;
                 }
+                const latestLayerState = useLayerStore.getState();
+                const latestDisplayLayers = latestLayerState.layers
+                  .filter(
+                    (layer) =>
+                      layer.type === 'projected' &&
+                      !isOverlayProjectionPatch(layer) &&
+                      (!layer.objectId || layer.objectId === importedModel.objectId),
+                  )
+                  .map(toProjectionLayerDisplayInput);
+                const latestDisplayMode = useSceneStore.getState().displayMode;
                 syncProjectedLayerMaterialDisplayState(
                   sharedProjectedMaterial,
-                  projectedLayerInput.layers,
-                  displayMode === 'normal',
-                  displayMode === 'wire',
+                  latestDisplayLayers,
+                  latestDisplayMode === 'normal',
+                  latestDisplayMode === 'wire',
                 );
+                const latestObjectUvLayers = latestLayerState.layers.filter(
+                  (layer) =>
+                    layer.type === 'uv' &&
+                    Boolean(layer.imageUrl) &&
+                    (!layer.objectId || layer.objectId === importedModel.objectId),
+                );
+                const latestOrdinaryUvLayers = latestObjectUvLayers.filter(
+                  (layer) =>
+                    layer.visible &&
+                    layer.role !== 'content-aware-underlay' &&
+                    layer.role !== 'local-repaint-overlay' &&
+                    layer.role !== 'local-repaint-draft',
+                );
+                const latestContentAwareLayers = latestObjectUvLayers.filter(
+                  (layer) => layer.visible && layer.role === 'content-aware-underlay',
+                );
+                const latestResidentContentAwareTexture =
+                  latestContentAwareLayers.length === 1
+                    ? residentPreviewTextureCache.get(
+                        latestContentAwareLayers[0].imageUrl ?? '',
+                      )
+                    : undefined;
+                if (sharedProjectedMaterial.uniforms.uvOverlayOpacity) {
+                  sharedProjectedMaterial.uniforms.uvOverlayOpacity.value =
+                    latestOrdinaryUvLayers.length === 1
+                      ? latestOrdinaryUvLayers[0].opacity
+                      : latestOrdinaryUvLayers.length > 1
+                        ? 1
+                        : 0;
+                }
+                if (sharedProjectedMaterial.uniforms.baseTextureOpacity) {
+                  if (
+                    latestResidentContentAwareTexture &&
+                    sharedProjectedMaterial.uniforms.baseTexture
+                  ) {
+                    sharedProjectedMaterial.uniforms.baseTexture.value =
+                      latestResidentContentAwareTexture;
+                  }
+                  sharedProjectedMaterial.uniforms.baseTextureOpacity.value =
+                    latestResidentContentAwareTexture && latestContentAwareLayers.length === 1
+                      ? latestContentAwareLayers[0].opacity
+                      : 0;
+                }
               }
             } else {
               markProjectedMaterialBuild();
@@ -2915,6 +3249,15 @@ function ImportedModel({
         }
       }
       syncProjectedLayerMaterialProjection(model.group);
+      const presentsProjectedMaterial = meshes.some((mesh) => {
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        return materials.some((material) =>
+          material.name.startsWith('LiclickProjectedLayerStack:'),
+        );
+      });
+      committedProjectedMaterialStructureRef.current = presentsProjectedMaterial
+        ? projectedMaterialStructureKey
+        : '';
       useToastStore.getState().dismissToastByDedupeKey(PROJECTED_PREVIEW_FAILURE_TOAST_KEY);
       if (lastProjectedTransformRef.current) {
         lastProjectedTransformRef.current.copy(model.group.matrixWorld);
@@ -2951,7 +3294,7 @@ function ImportedModel({
         // that every optional normal/depth asset succeeded. This preserves the
         // newer strict visibility policy without deadlocking its runtime repair.
         if (!cancelled && !initialProjectedMaterialReady) {
-          setInitialProjectedMaterialReady(true);
+          setInitialProjectedMaterialColdReady(true);
         }
       });
 
@@ -2980,6 +3323,7 @@ function ImportedModel({
     previewBakedTextureRecord,
     previewProjectionInputs,
     previewProjectedLayerSignature,
+    projectedMaterialStructureKey,
     progressiveProjectedPreview,
     progressiveProjectedPreviewReady,
     progressiveIncrementalInputs,
@@ -3015,8 +3359,11 @@ function ImportedModel({
           selectObject(importedModel.objectId);
         }}
       />
-      {importedModel.restoreStage !== 'bounds' && displayMode === 'wire' && (
-        <TopologyWireframeOverlay object={importedModel.group} />
+      {importedModel.restoreStage !== 'bounds' && (
+        <TopologyWireframeOverlay
+          object={importedModel.group}
+          visible={displayMode === 'wire'}
+        />
       )}
       {texturedRestoreReady &&
         showSelectionGlow &&
@@ -3091,9 +3438,17 @@ export function SceneRoot() {
         />
       ))}
       <ObjectTransformControls />
-      {!hasProgressiveRestore && (
-        <ContactShadows position={[0, -0.02, 0]} opacity={0.22} scale={8} blur={2.4} />
-      )}
+      {/* Keep the exact contact-shadow pipeline mounted while progressive
+          geometry is restoring. Mounting it only at the final texture handoff
+          compiled its render target and shader in that same presentation frame
+          (measured ~80ms). Zero opacity preserves the lightweight restore view;
+          the final 0.22/blur 2.4 result is unchanged. */}
+      <ContactShadows
+        position={[0, -0.02, 0]}
+        opacity={hasProgressiveRestore ? 0 : 0.22}
+        scale={8}
+        blur={2.4}
+      />
     </group>
   );
 }

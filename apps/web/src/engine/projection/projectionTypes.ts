@@ -17,10 +17,14 @@ export type ProjectionLayerInput = {
   objectMatrixWorld?: number[];
   currentObjectMatrixWorld?: number[];
   baseTexture?: THREE.Texture;
+  /** Compile the base-map branch before its resident texture finishes decoding. */
+  reserveBaseMapSampler?: boolean;
   /** Runtime visibility/opacity for a resident base texture; does not change shader structure. */
   baseTextureOpacity?: number;
   baseRenderedColorMaskTexture?: THREE.Texture;
   uvOverlayTexture?: THREE.Texture;
+  /** Compile the UV-overlay branch before its resident texture finishes decoding. */
+  reserveUvOverlaySampler?: boolean;
   /** Runtime visibility/opacity for a resident UV overlay; does not change shader structure. */
   uvOverlayOpacity?: number;
   uvOverlayHue?: number;

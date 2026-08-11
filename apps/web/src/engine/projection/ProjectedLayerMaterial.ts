@@ -929,7 +929,8 @@ function buildStackFragmentShader(
 
   const buildCandidateEvaluations = (role: 'normal' | 'underlay') =>
     Array.from({ length: layerCount }, (_, index) =>
-      (layers[index].compositeRole ?? 'normal') !== role
+      (layers[index].compositeRole ?? 'normal') !== role ||
+      (role === 'normal' && layers[index].blendMode === 'overlay')
         ? ''
         : `
     if (layerOpacity${index} > 0.0001) {
@@ -995,11 +996,7 @@ function buildStackFragmentShader(
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
       if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
         projectedDepthCoverage = max(projectedDepthCoverage, coverage);
-        ${
-          role === 'normal'
-            ? `if (layerOverlayMode${index} < 0.5) insertBlendCandidate(texel.rgb, coverage, quality);`
-            : 'insertBlendCandidate(texel.rgb, coverage, quality);'
-        }
+        insertBlendCandidate(texel.rgb, coverage, quality);
       }
     }
 `,
@@ -1008,10 +1005,11 @@ function buildStackFragmentShader(
   const blendEvaluations = buildCandidateEvaluations('normal');
 
   const overlayEvaluations = Array.from({ length: layerCount }, (_, index) =>
-    (layers[index].compositeRole ?? 'normal') !== 'normal'
+    (layers[index].compositeRole ?? 'normal') !== 'normal' ||
+    layers[index].blendMode !== 'overlay'
       ? ''
       : `
-    if (layerOverlayMode${index} > 0.5 && layerOpacity${index} > 0.0001) {
+    if (layerOpacity${index} > 0.0001) {
       vec4 captureWorldPosition = objectMatrixDelta${index} * vec4(vWorldPosition, 1.0);
       vec3 captureWorldNormal = normalize(objectNormalDelta${index} * vWorldNormal);
       vec4 projected = projectorMatrix${index} * captureWorldPosition;
@@ -1361,6 +1359,32 @@ function buildStackFragmentShader(
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
+    // Geometry diagnostics do not depend on any projected/UV texel. Exit
+    // before the 14-layer array, visibility and colour-composite work so an
+    // eye toggle in normal/wire mode cannot stall on discarded sampling.
+    if (normalPreviewEnabled > 0.5) {
+      ${
+        features.useTextureArrays
+          ? 'gl_FragDepth = gl_FragCoord.z;'
+          : 'gl_FragDepthEXT = gl_FragCoord.z;'
+      }
+      gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
+      return;
+    }
+    if (wirePreviewEnabled > 0.5) {
+      ${
+        features.useTextureArrays
+          ? 'gl_FragDepth = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
+          : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
+      }
+      gl_FragColor = vec4(
+        clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0),
+        1.0
+      );
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
     float lambert = computePreviewLight(normal);
     vec4 liveEraserMaskTexel = texture2D(
       liveEraserMaskMap,
@@ -1471,32 +1495,6 @@ function buildStackFragmentShader(
       features.useTopUvOverlayMap
         ? 'projectedDepthCoverage = max(projectedDepthCoverage, topUvOverlayAlpha);'
         : ''
-    }
-    if (normalPreviewEnabled > 0.5) {
-      ${
-        features.useTextureArrays
-          ? 'gl_FragDepth = gl_FragCoord.z;'
-          : 'gl_FragDepthEXT = gl_FragCoord.z;'
-      }
-      gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
-      return;
-    }
-    if (wirePreviewEnabled > 0.5) {
-      // Wireframe is a geometry diagnostic. Its depth must never depend on UV
-      // visibility or projected-layer coverage, otherwise an eye toggle can
-      // hide the topology overlay even though the geometry did not change.
-      ${
-        features.useTextureArrays
-          ? 'gl_FragDepth = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
-          : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
-      }
-      gl_FragColor = vec4(
-        clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0),
-        1.0
-      );
-      #include <tonemapping_fragment>
-      #include <colorspace_fragment>
-      return;
     }
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
     ${
@@ -1612,6 +1610,7 @@ function getProjectionLayerStructureSignature(
           layer.useNormalCheck ? 1 : 0,
           layer.renderedColor ? 1 : 0,
           layer.minimumProjectionFacing ?? 0,
+          layer.blendMode ?? 'normal',
           layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
           getLayerCameraSignature(layer.camera),
@@ -1789,6 +1788,7 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
   root: THREE.Object3D,
   input: {
     uvOverlayTexture?: THREE.Texture;
+    baseTexture?: THREE.Texture;
     uvOverlayOpacity: number;
     topUvOverlayOpacity: number;
     baseTextureOpacity: number;
@@ -1803,7 +1803,13 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
       if (visited.has(material)) continue;
       visited.add(material);
       if (!(material instanceof THREE.ShaderMaterial)) continue;
-      if (!material.userData[PROJECTED_LAYER_STACK_STATE_KEY]) continue;
+      if (material.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG]) continue;
+      if (
+        !material.uniforms.uvOverlayOpacity &&
+        !material.uniforms.topUvOverlayOpacity &&
+        !material.uniforms.baseTextureOpacity
+      )
+        continue;
       if (
         input.uvOverlayTexture &&
         material.uniforms.uvOverlayMap &&
@@ -1811,6 +1817,22 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
       ) {
         material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
         updated = true;
+      }
+      if (input.uvOverlayTexture && material.uniforms.useUvOverlayMap) {
+        if (Number(material.uniforms.useUvOverlayMap.value ?? 0) !== 1) updated = true;
+        material.uniforms.useUvOverlayMap.value = 1;
+      }
+      if (
+        input.baseTexture &&
+        material.uniforms.baseMap &&
+        material.uniforms.baseMap.value !== input.baseTexture
+      ) {
+        material.uniforms.baseMap.value = input.baseTexture;
+        updated = true;
+      }
+      if (input.baseTexture && material.uniforms.useBaseMap) {
+        if (Number(material.uniforms.useBaseMap.value ?? 0) !== 1) updated = true;
+        material.uniforms.useBaseMap.value = 1;
       }
       const values = [
         ['uvOverlayOpacity', input.uvOverlayOpacity],
@@ -1931,9 +1953,9 @@ export function updateProjectedLayerStackMaterial(
   if (
     state.signature !==
     getProjectionLayerStructureSignature(layers, {
-      useBaseMap: Boolean(input.baseTexture),
+      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
       useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays: state.usesTextureArrays,
     })
@@ -1990,8 +2012,41 @@ export async function loadProjectedTexture(
   const cachedTexture = projectedTextureCache.get(cacheKey);
   if (cachedTexture) return cachedTexture;
 
-  const texturePromise = new THREE.TextureLoader()
-    .loadAsync(imageUrl)
+  const texturePromise = (async () => {
+    let texture: THREE.Texture;
+    try {
+      // TextureLoader resolves after HTMLImageElement load, but Chromium may
+      // still defer the expensive pixel decode until the first canvas/WebGL
+      // consumer. Restoring a resident 14-layer stack then bunches every 4K
+      // decode into one 400-600ms main-thread frame. Fetching the exact blob and
+      // decoding to ImageBitmap makes that work asynchronous and leaves the
+      // source dimensions/pixels unchanged. Keep TextureLoader only as the CORS
+      // compatibility path.
+      if (typeof createImageBitmap !== 'function') {
+        throw new Error('ImageBitmap is unavailable.');
+      }
+      const response = await fetch(imageUrl, { credentials: 'same-origin' });
+      if (!response.ok) {
+        throw new Error(`Projected texture request failed (${response.status}).`);
+      }
+      const bitmap = await createImageBitmap(await response.blob(), {
+        imageOrientation: 'none',
+        premultiplyAlpha: 'none',
+      });
+      texture = new THREE.Texture(bitmap);
+      texture.flipY = false;
+      if (typeof document !== 'undefined') {
+        document.body.dataset.projectedTextureDecodeBackend = 'image-bitmap';
+      }
+    } catch {
+      texture = await new THREE.TextureLoader().loadAsync(imageUrl);
+      texture.flipY = false;
+      if (typeof document !== 'undefined') {
+        document.body.dataset.projectedTextureDecodeBackend = 'texture-loader-fallback';
+      }
+    }
+    return texture;
+  })()
     .then(async (texture) => {
       texture.userData.liclickProjectedSourceUrl = imageUrl;
       texture.colorSpace = colorSpace;
@@ -1999,7 +2054,8 @@ export async function loadProjectedTexture(
       if (
         (profile === 'image' || profile === 'mask') &&
         typeof createImageBitmap === 'function' &&
-        texture.image
+        texture.image &&
+        !(typeof ImageBitmap !== 'undefined' && texture.image instanceof ImageBitmap)
       ) {
         try {
           texture.image = await createImageBitmap(texture.image as ImageBitmapSource, {
@@ -2755,9 +2811,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   ];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
     signature: getProjectionLayerStructureSignature([materialLayer], {
-      useBaseMap: Boolean(input.baseTexture),
+      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
       useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
     }),
     bindings: [
@@ -2801,9 +2857,9 @@ export async function createProjectedLayerStackMaterial(
   if (layers.length === 0) return undefined;
   const maxTextureImageUnits = options.maxTextureImageUnits ?? Number.POSITIVE_INFINITY;
   const samplerFeatures = {
-    useBaseMap: Boolean(input.baseTexture),
+    useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
     useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-    useUvOverlayMap: Boolean(input.uvOverlayTexture),
+    useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
     useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
   };
   const directSamplerBudget = getProjectedLayerSamplerBudget(
@@ -3312,9 +3368,9 @@ export async function createProjectedLayerStackMaterial(
     name: `LiclickProjectedLayerStack:${loadedLayers.map((layer) => layer.layerId).join(',')}`,
     vertexShader,
     fragmentShader: buildStackFragmentShader(loadedLayers, {
-      useBaseMap: Boolean(input.baseTexture),
+      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
       useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays,
     }),
@@ -3326,9 +3382,9 @@ export async function createProjectedLayerStackMaterial(
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
     signature: getProjectionLayerStructureSignature(loadedLayers, {
-      useBaseMap: Boolean(input.baseTexture),
+      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture),
+      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
       useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays,
     }),
