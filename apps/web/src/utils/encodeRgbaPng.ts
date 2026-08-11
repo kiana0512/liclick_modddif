@@ -24,11 +24,77 @@ async function encodeRgbaPngOnMainThread(
   return pngBuffer;
 }
 
+type PngWorkerResult = Blob | { url: string; byteLength: number };
+type PngWorkerPending = {
+  resolve: (result: PngWorkerResult) => void;
+  reject: (error: Error) => void;
+};
+
+let pngEncodeWorker: Worker | undefined;
+let nextPngWorkerRequestId = 1;
+const pngWorkerPending = new Map<number, PngWorkerPending>();
+
+function getPngEncodeWorker() {
+  if (pngEncodeWorker) return pngEncodeWorker;
+  const worker = new Worker(new URL('../workers/encodeRgbaPng.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+  worker.onmessage = (
+    event: MessageEvent<{
+      id: number;
+      blob?: Blob;
+      url?: string;
+      byteLength?: number;
+      error?: string;
+    }>,
+  ) => {
+    const pending = pngWorkerPending.get(event.data.id);
+    if (!pending) return;
+    pngWorkerPending.delete(event.data.id);
+    if (event.data.blob) pending.resolve(event.data.blob);
+    else if (event.data.url) {
+      pending.resolve({ url: event.data.url, byteLength: event.data.byteLength ?? 0 });
+    } else {
+      pending.reject(new Error(event.data.error ?? 'Could not encode PNG in the worker.'));
+    }
+  };
+  worker.onerror = (event) => {
+    for (const pending of pngWorkerPending.values()) {
+      pending.reject(new Error(event.message || 'Could not run the PNG encoding worker.'));
+    }
+    pngWorkerPending.clear();
+    worker.terminate();
+    if (pngEncodeWorker === worker) pngEncodeWorker = undefined;
+  };
+  pngEncodeWorker = worker;
+  return worker;
+}
+
+export function releaseEncodedPngObjectUrl(url: string) {
+  URL.revokeObjectURL(url);
+  pngEncodeWorker?.postMessage({ type: 'revoke-object-url', url });
+}
+
 function encodeRgbaPngInWorker(
   width: number,
   height: number,
   rgba: Uint8Array | Uint8ClampedArray,
   transferOwnership: boolean,
+  output: 'blob',
+): Promise<Blob>;
+function encodeRgbaPngInWorker(
+  width: number,
+  height: number,
+  rgba: Uint8Array | Uint8ClampedArray,
+  transferOwnership: boolean,
+  output: 'object-url',
+): Promise<{ url: string; byteLength: number }>;
+function encodeRgbaPngInWorker(
+  width: number,
+  height: number,
+  rgba: Uint8Array | Uint8ClampedArray,
+  transferOwnership: boolean,
+  output: 'blob' | 'object-url',
 ) {
   const canTransferSource =
     transferOwnership &&
@@ -39,21 +105,13 @@ function encodeRgbaPngInWorker(
   if (!canTransferSource) {
     new Uint8Array(rgbaBuffer).set(new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
   }
-  return new Promise<Blob>((resolve, reject) => {
-    const worker = new Worker(new URL('../workers/encodeRgbaPng.worker.ts', import.meta.url), {
-      type: 'module',
-    });
-    const finish = () => worker.terminate();
-    worker.onmessage = (event: MessageEvent<{ blob?: Blob; error?: string }>) => {
-      finish();
-      if (event.data.blob) resolve(event.data.blob);
-      else reject(new Error(event.data.error ?? 'Could not encode PNG in the worker.'));
-    };
-    worker.onerror = (event) => {
-      finish();
-      reject(new Error(event.message || 'Could not run the PNG encoding worker.'));
-    };
-    worker.postMessage({ width, height, rgba: rgbaBuffer }, [rgbaBuffer]);
+  return new Promise<Blob | { url: string; byteLength: number }>((resolve, reject) => {
+    const id = nextPngWorkerRequestId++;
+    pngWorkerPending.set(id, { resolve, reject });
+    getPngEncodeWorker().postMessage(
+      { type: 'encode', id, width, height, rgba: rgbaBuffer, output },
+      [rgbaBuffer],
+    );
   });
 }
 
@@ -94,6 +152,7 @@ export async function encodeRgbaPngBlob(
         height,
         rgba,
         options.transferOwnership === true,
+        'blob',
       );
     } catch (error) {
       if (options.transferOwnership) {
@@ -110,4 +169,27 @@ export async function encodeRgbaPngBlob(
     }
   }
   return pngBlob;
+}
+
+/** Encodes and creates the Blob URL in the worker. The UI receives no Blob and
+ * never clones or base64-expands the finished PNG. */
+export async function encodeRgbaPngObjectUrl(
+  width: number,
+  height: number,
+  rgba: Uint8Array | Uint8ClampedArray,
+  options: { transferOwnership?: boolean } = {},
+) {
+  if (typeof Worker !== 'undefined') {
+    return encodeRgbaPngInWorker(
+      width,
+      height,
+      rgba,
+      options.transferOwnership === true,
+      'object-url',
+    );
+  }
+  const blob = new Blob([await encodeRgbaPngOnMainThread(width, height, rgba)], {
+    type: 'image/png',
+  });
+  return { url: URL.createObjectURL(blob), byteLength: blob.size };
 }

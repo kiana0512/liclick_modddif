@@ -12,6 +12,7 @@ import {
 import {
   bakeProjectedLayerRastersWithGpu,
   bakeProjectedLayerStackWithGpu,
+  getIsolatedUvBakeRenderer,
   type GpuLayerSourceSize,
 } from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
@@ -1049,23 +1050,42 @@ export async function bakeVisibleProjectedLayersToTexture(
   });
 
   const gpuFallbackWarnings: string[] = [];
-  const renderer = useSceneStore.getState().viewport?.gl;
+  const viewportRenderer = useSceneStore.getState().viewport?.gl;
   // The live viewport builds visibility from the current model pose. Rebuild
   // that same depth + geometric-normal capture immediately before UV baking so
   // merge/export cannot fall back to stale capture depth or extrapolate onto
   // surfaces that were not visible in the projected preview.
   const runtimeDepthStartedAt = performance.now();
   markUvBakePerformancePhase('runtime-depth');
-  if (renderer && !input.debugIgnoreDepth) {
+  if (viewportRenderer && !input.debugIgnoreDepth) {
     const currentProject = useProjectStore.getState().getCurrentProject();
     const captureById = new Map(
       currentProject?.captures.map((capture) => [capture.id, capture] as const) ?? [],
     );
+    importedModel.group.updateMatrixWorld(true);
+    const currentObjectMatrixWorld = importedModel.group.matrixWorld.toArray();
+    const matrixMatches = (captured?: number[]) =>
+      captured?.length === 16 &&
+      captured.every(
+        (value, index) => Math.abs(value - currentObjectMatrixWorld[index]) <= 1e-6,
+      );
+    let reusedVisibilityLayerCount = 0;
+    let regeneratedVisibilityLayerCount = 0;
     layers = await Promise.all(
       layers.map(async (layer) => {
+        if (
+          layer.depthUrl &&
+          layer.normalUrl &&
+          layer.depthEncoding === 'linear-view' &&
+          matrixMatches(layer.objectMatrixWorld)
+        ) {
+          reusedVisibilityLayerCount += 1;
+          return layer;
+        }
+        regeneratedVisibilityLayerCount += 1;
         const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
         const visibility = await createRuntimeProjectionDepth({
-          renderer,
+          renderer: viewportRenderer,
           group: importedModel.group,
           camera: layer.camera!,
           captureObjectMatrixWorld: layer.objectMatrixWorld,
@@ -1080,11 +1100,14 @@ export async function bakeVisibleProjectedLayersToTexture(
         };
       }),
     );
+    performanceBreakdown.runtimeDepthReusedLayers = reusedVisibilityLayerCount;
+    performanceBreakdown.runtimeDepthRegeneratedLayers = regeneratedVisibilityLayerCount;
   }
   performanceBreakdown.runtimeDepthMs = performance.now() - runtimeDepthStartedAt;
   const bakeMethod = input.method ?? getDebugUvBakeMethod('gpu');
-  if (bakeMethod !== 'cpu' && renderer) {
+  if (bakeMethod !== 'cpu' && viewportRenderer) {
     try {
+      const renderer = getIsolatedUvBakeRenderer(viewportRenderer);
       const gpuCompositeMode = input.gpuCompositeMode ?? 'cpu-parity';
       const gpuProjectedImageUvFlipY =
         input.gpuProjectedImageUvFlipY ?? getDebugGpuProjectedImageUvFlipY(true);
@@ -1268,20 +1291,17 @@ export async function bakeVisibleProjectedLayersToTexture(
         }
         performanceBreakdown.gutterMs = performance.now() - gutterStartedAt;
         const finalizeStartedAt = performance.now();
-        markUvBakePerformancePhase('finalize-canvas');
+        markUvBakePerformancePhase('finalize-cleanup');
         if (input.outputAlpha !== 'transparent') await fillTransparentTexelsForViewport(composite);
         else {
-          // Keep the exact cleanup in-place and yield every bounded chunk. A
-          // worker round-trip transferred ~84 MiB (RGBA + coverage) back to the
-          // UI and made the delivery of that message a 550ms browser frame.
-          // In-place chunking preserves every byte while avoiding the second
-          // full-size allocation, transfer, ImageData wrap, and following GC.
           await clearWeakTransparentTexels(composite, qualityCoverage);
         }
+        markUvBakePerformancePhase('finalize-canvas-upload');
         // Merge callers already consume straight RGBA. Avoid a synchronous
         // 4K ImageData -> Canvas write followed by an immediate Canvas ->
         // ImageData readback when encoding is intentionally deferred.
         if (!input.skipCanvasUpload) context.putImageData(composite, 0, 0);
+        markUvBakePerformancePhase('finalize-complete');
         performanceBreakdown.finalizeCanvasMs = performance.now() - finalizeStartedAt;
 
         input.onProgress?.({

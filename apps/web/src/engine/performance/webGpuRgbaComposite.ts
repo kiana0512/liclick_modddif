@@ -36,7 +36,8 @@ export type WebGpuRgbaCompositeResult = {
 };
 
 export type WebGpuRgbaCompositePngResult = Omit<WebGpuRgbaCompositeResult, 'data'> & {
-  blob: Blob;
+  url: string;
+  byteLength: number;
   encodeMs: number;
 };
 
@@ -58,13 +59,15 @@ type CompositeRequest = {
 
 type BudgetRequest = { type: 'budget'; interactive: boolean };
 type ReleaseRequest = { type: 'release' };
+type CancelRequest = { type: 'cancel'; id: number };
 
 type CompositeResponse =
   | {
       type: 'result';
       id: number;
       output?: ArrayBuffer;
-      pngBlob?: Blob;
+      pngUrl?: string;
+      pngByteLength?: number;
       encodeMs?: number;
       metrics: WebGpuRgbaCompositeMetrics;
       verification?: WebGpuRgbaCompositeResult['verification'];
@@ -76,6 +79,7 @@ type PendingComposite = {
     result: WebGpuRgbaCompositeResult | WebGpuRgbaCompositePngResult,
   ) => void;
   reject: (error: Error) => void;
+  cleanup?: () => void;
 };
 
 let worker: Worker | undefined;
@@ -117,7 +121,10 @@ function maintainInteractionHeartbeat() {
 }
 
 function failAllPending(message: string) {
-  for (const request of pending.values()) request.reject(new Error(message));
+  for (const request of pending.values()) {
+    request.cleanup?.();
+    request.reject(new Error(message));
+  }
   pending.clear();
   maintainInteractionHeartbeat();
 }
@@ -131,15 +138,17 @@ function getWorker() {
     const request = pending.get(event.data.id);
     if (!request) return;
     pending.delete(event.data.id);
+    request.cleanup?.();
     maintainInteractionHeartbeat();
     if (event.data.type === 'error') {
       request.reject(new Error(event.data.message));
       return;
     }
     if (event.data.metrics.backend === 'webgpu-worker') recordWebGpuProductionDispatch();
-    if (event.data.pngBlob) {
+    if (event.data.pngUrl) {
       request.resolve({
-        blob: event.data.pngBlob,
+        url: event.data.pngUrl,
+        byteLength: event.data.pngByteLength ?? 0,
         encodeMs: event.data.encodeMs ?? 0,
         metrics: event.data.metrics,
         verification: event.data.verification,
@@ -161,6 +170,32 @@ function getWorker() {
   };
   stopInteractionSubscription = subscribeViewportInteraction(postBudgetState);
   return worker;
+}
+
+function registerPending(
+  id: number,
+  request: PendingComposite,
+  signal?: AbortSignal,
+) {
+  if (signal?.aborted) {
+    request.reject(new DOMException('RGBA composite was cancelled.', 'AbortError'));
+    return false;
+  }
+  if (signal) {
+    const abort = () => {
+      if (pending.get(id) !== request) return;
+      pending.delete(id);
+      const message: CancelRequest = { type: 'cancel', id };
+      worker?.postMessage(message);
+      maintainInteractionHeartbeat();
+      request.reject(new DOMException('RGBA composite was cancelled.', 'AbortError'));
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    request.cleanup = () => signal.removeEventListener('abort', abort);
+  }
+  pending.set(id, request);
+  maintainInteractionHeartbeat();
+  return true;
 }
 
 function transferableBuffer(source: Uint8Array | Uint8ClampedArray) {
@@ -242,6 +277,7 @@ export function compositeRgbaUrlUnderWithWebGpu(
   width: number,
   height: number,
   opacity = 1,
+  signal?: AbortSignal,
 ) {
   if (front.length !== width * height * 4) {
     return Promise.reject(new RangeError('RGBA buffer dimensions do not match.'));
@@ -281,12 +317,12 @@ export function compositeRgbaUrlUnderWithWebGpu(
     idleChunkBytes: requestedChunkBytes ?? IDLE_CHUNK_BYTES,
   };
   return new Promise<WebGpuRgbaCompositeResult>((resolve, reject) => {
-    pending.set(id, {
+    const requestState: PendingComposite = {
       resolve: (result) =>
         'data' in result ? resolve(result) : reject(new Error('Expected RGBA worker output.')),
       reject,
-    });
-    maintainInteractionHeartbeat();
+    };
+    if (!registerPending(id, requestState, signal)) return;
     getWorker().postMessage(request, [frontBuffer]);
   });
 }
@@ -300,6 +336,7 @@ export function compositeRgbaUrlUnderAndEncodePngWithWebGpu(
   width: number,
   height: number,
   opacity = 1,
+  signal?: AbortSignal,
 ) {
   if (front.length !== width * height * 4) {
     return Promise.reject(new RangeError('RGBA buffer dimensions do not match.'));
@@ -324,12 +361,12 @@ export function compositeRgbaUrlUnderAndEncodePngWithWebGpu(
     encodePng: true,
   };
   return new Promise<WebGpuRgbaCompositePngResult>((resolve, reject) => {
-    pending.set(id, {
+    const requestState: PendingComposite = {
       resolve: (result) =>
-        'blob' in result ? resolve(result) : reject(new Error('Expected PNG worker output.')),
+        'url' in result ? resolve(result) : reject(new Error('Expected PNG worker output.')),
       reject,
-    });
-    maintainInteractionHeartbeat();
+    };
+    if (!registerPending(id, requestState, signal)) return;
     getWorker().postMessage(request, [frontBuffer]);
   });
 }

@@ -825,7 +825,6 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
     },
     [addProjectGenerationByProjectId, currentProjectId],
   );
-  const addProjectCapture = useProjectStore((state) => state.addCapture);
   const setProjectLayers = useProjectStore((state) => state.setProjectLayers);
   const setProjectReferences = useProjectStore((state) => state.setProjectReferences);
   const addProjectedLayerFromGeneration = useLayerStore(
@@ -2615,7 +2614,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         performance.now() - viewCaptureStartedAt
       ).toFixed(1);
       setLastCapture(capture);
-      addProjectCapture(capture);
+      // captureCurrentView already archives the exact capture in projectStore.
+      // Writing it a second time duplicated a large four-pass capture record and
+      // forced avoidable subscribers/renders at the hottest point of button 2.
       const submittedPrompt = prompt.trim();
       const generationId = createId('local-repaint');
       // `renderScenePassesToPngUrl` intentionally returns a fast Blob URL for
@@ -2739,6 +2740,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: t('localRepaintFailed'), description: message });
     } finally {
+      delete document.body.dataset.localRepaintGenerationBusy;
       if (document.body.dataset.perfLocalRepaintPhase?.startsWith('button2-')) {
         delete document.body.dataset.perfLocalRepaintPhase;
       }

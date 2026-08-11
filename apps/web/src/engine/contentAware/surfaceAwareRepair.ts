@@ -117,6 +117,8 @@ export interface SurfaceRepairStats {
   sourceRegionLockedComponents: number;
   sourceRegionReassignedPixels: number;
   sourceRegionExtendedPixels: number;
+  /** FNV-1a over the final sparse RGBA bytes for deterministic A/B validation. */
+  outputChecksum: number;
   elapsedMs: number;
 }
 
@@ -1099,6 +1101,14 @@ export function repairSurfaceTexture(
     repairedMask[queue[queueIndex]] = 0;
   }
 
+  let outputChecksum = 0x811c9dc5;
+  for (let offset = 0; offset < filledRgba.length; offset += 1) {
+    outputChecksum ^= filledRgba[offset];
+    outputChecksum = Math.imul(outputChecksum, 0x01000193);
+    if ((offset & 0xfffff) === 0) checkAbort();
+  }
+  outputChecksum >>>= 0;
+
   const stats: SurfaceRepairStats = {
     pixelCount: input.pixelCount,
     topologyPixels,
@@ -1123,6 +1133,7 @@ export function repairSurfaceTexture(
     sourceRegionLockedComponents: sourceRegionLock.lockedComponents,
     sourceRegionReassignedPixels: sourceRegionLock.reassignedPixels,
     sourceRegionExtendedPixels: sourceRegionLock.extendedPixels,
+    outputChecksum,
     elapsedMs: now() - startedAt,
   };
   report('complete', 1, 0, 1, 1, true);

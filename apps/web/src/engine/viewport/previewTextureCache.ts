@@ -4,7 +4,10 @@ const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 export const residentPreviewTextureCache = new Map<string, THREE.Texture>();
 const previewTextureUploadPromises = new WeakMap<THREE.Texture, Promise<void>>();
-const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 1024 * 1024;
+// One megapixel bounds each exact RGBA upload submission to 4MB. The 2MP
+// schedule still produced repeatable 33ms frames while the model auto-rotated;
+// this changes only pacing, never dimensions, filtering or pixel bytes.
+const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 1 * 1024 * 1024;
 let registeredPreviewRenderer: THREE.WebGLRenderer | undefined;
 
 export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | undefined) {
@@ -118,6 +121,20 @@ export async function prewarmPreviewTextures(imageUrls: string[]) {
   return results;
 }
 
+export function releasePreviewTexture(imageUrl: string) {
+  const texturePromise = bakedTextureCache.get(imageUrl);
+  bakedTextureCache.delete(imageUrl);
+  residentPreviewTextureCache.delete(imageUrl);
+  void texturePromise
+    ?.then((texture) => {
+      if (typeof ImageBitmap !== 'undefined' && texture.image instanceof ImageBitmap) {
+        texture.image.close();
+      }
+      texture.dispose();
+    })
+    .catch(() => undefined);
+}
+
 export function uploadPreviewTextureInStripes(
   renderer: THREE.WebGLRenderer,
   texture: THREE.Texture,
@@ -153,19 +170,30 @@ export function uploadPreviewTextureInStripes(
     const properties = renderer.properties.get(texture) as { __webglTexture?: WebGLTexture };
     const webGlTexture = properties.__webglTexture;
     if (!webGlTexture) throw new Error('Could not allocate the UV preview texture.');
-    const previousActiveTexture = context.getParameter(context.ACTIVE_TEXTURE) as number;
-    const previousBinding = context.getParameter(context.TEXTURE_BINDING_2D) as WebGLTexture | null;
-    const previousFlipY = context.getParameter(context.UNPACK_FLIP_Y_WEBGL) as boolean;
-    const previousPremultiply = context.getParameter(
-      context.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
-    ) as boolean;
     try {
-      context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, 0);
-      context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+      // Most preview bitmaps are pre-oriented and use flipY=false. Bake
+      // textures may intentionally retain flipY=true; preserve that exact
+      // sampling contract while still splitting the upload into stripes.
       for (let y = 0; y < image.height; y += rowsPerStripe) {
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        // React Three Fiber may have rendered during the rAF above. Reassert
+        // only the upload-local unpack state immediately before touching GL;
+        // never leave it or our raw texture binding live across a frame.
+        const frameActiveTexture = context.getParameter(context.ACTIVE_TEXTURE) as number;
+        const frameBinding = context.getParameter(
+          context.TEXTURE_BINDING_2D,
+        ) as WebGLTexture | null;
+        const frameFlipY = context.getParameter(context.UNPACK_FLIP_Y_WEBGL) as boolean;
+        const framePremultiply = context.getParameter(
+          context.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
+        ) as boolean;
+        context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, 0);
+        context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
         const rowCount = Math.min(rowsPerStripe, image.height - y);
-        const stripe = await createImageBitmap(image, 0, y, image.width, rowCount);
+        const stripe = await createImageBitmap(image, 0, y, image.width, rowCount, {
+          imageOrientation: texture.flipY ? 'flipY' : 'none',
+          premultiplyAlpha: 'none',
+        });
         try {
           const stripeStartedAt = performance.now();
           context.bindTexture(context.TEXTURE_2D, webGlTexture);
@@ -173,7 +201,7 @@ export function uploadPreviewTextureInStripes(
             context.TEXTURE_2D,
             0,
             0,
-            y,
+            texture.flipY ? image.height - y - rowCount : y,
             context.RGBA,
             context.UNSIGNED_BYTE,
             stripe,
@@ -181,6 +209,13 @@ export function uploadPreviewTextureInStripes(
           maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
         } finally {
           stripe.close();
+          context.activeTexture(frameActiveTexture);
+          context.bindTexture(context.TEXTURE_2D, frameBinding);
+          context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, Number(frameFlipY));
+          context.pixelStorei(
+            context.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
+            Number(framePremultiply),
+          );
         }
       }
       texture.source.dataReady = true;
@@ -196,14 +231,6 @@ export function uploadPreviewTextureInStripes(
       texture.source.dataReady = true;
       texture.needsUpdate = true;
       throw error;
-    } finally {
-      context.activeTexture(previousActiveTexture);
-      context.bindTexture(context.TEXTURE_2D, previousBinding);
-      context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, Number(previousFlipY));
-      context.pixelStorei(
-        context.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
-        Number(previousPremultiply),
-      );
     }
   })();
   previewTextureUploadPromises.set(texture, upload);

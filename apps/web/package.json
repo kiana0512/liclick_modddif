@@ -9,6 +9,7 @@
     "build:sites": "tsc -b && vite build && node scripts/prepare-sites-build.mjs",
     "test:bake-entry-project": "node scripts/test-bake-entry-project.mjs",
     "test:generation-polling": "node scripts/test-generation-polling.mjs",
+    "test:heavy-task-scheduler": "node scripts/test-heavy-task-scheduler.mjs",
     "test:liclick-auth-separation": "node scripts/test-liclick-auth-separation.mjs",
     "test:model-import-progress": "node scripts/test-model-import-progress.mjs",
     "test:model-placement-camera-focus": "node scripts/test-model-placement-camera-focus.mjs",

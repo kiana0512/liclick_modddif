@@ -6,6 +6,10 @@ import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath'
 import type { Layer } from '@/types/layer';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import {
+  residentPreviewTextureCache,
+  uploadPreviewTextureInStripes,
+} from '@/engine/viewport/previewTextureCache';
+import {
   convertFinalGpuReadbackInWorker,
   convertLayerGpuReadbackInWorker,
   convertQualityGpuReadbackInWorker,
@@ -727,6 +731,36 @@ async function loadLayerTextureFromCpuImageData(input: {
   magFilter: THREE.MagnificationTextureFilter;
   flipY: boolean;
 }) {
+  const resident = residentPreviewTextureCache.get(input.url);
+  const residentImage = resident?.image as
+    | (TexImageSource & {
+        width?: number;
+        height?: number;
+        naturalWidth?: number;
+        naturalHeight?: number;
+      })
+    | undefined;
+  const residentWidth = residentImage?.naturalWidth ?? residentImage?.width ?? 0;
+  const residentHeight = residentImage?.naturalHeight ?? residentImage?.height ?? 0;
+  if (
+    resident &&
+    residentImage &&
+    residentWidth > 0 &&
+    residentHeight > 0 &&
+    Math.max(residentWidth, residentHeight) <= input.resolution
+  ) {
+    // Viewport prewarm already owns this exact decoded source. Clone only the
+    // lightweight Three texture descriptor and preserve the resident image's
+    // physical orientation; the bitmap remains owned by the resident cache.
+    const texture = prepareTexture(
+      new THREE.Texture(residentImage),
+      input.minFilter,
+      input.magFilter,
+      resident.flipY,
+    );
+    texture.userData.liclickSharedResidentBitmap = true;
+    return texture;
+  }
   const imageData = await loadImageData(input.url, input.resolution, input.label);
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
@@ -734,12 +768,51 @@ async function loadLayerTextureFromCpuImageData(input: {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error(`Could not create texture canvas for ${input.label}.`);
   context.putImageData(imageData, 0, 0);
+  const bitmap =
+    typeof createImageBitmap === 'function' ? await createImageBitmap(canvas) : undefined;
   return prepareTexture(
-    new THREE.CanvasTexture(canvas),
+    bitmap ? new THREE.Texture(bitmap) : new THREE.CanvasTexture(canvas),
     input.minFilter,
     input.magFilter,
     input.flipY,
   );
+}
+
+async function stageLayerTexturesForGpu(
+  renderer: THREE.WebGLRenderer,
+  textures: Iterable<THREE.Texture>,
+) {
+  let maximumUploadMs = 0;
+  for (const texture of new Set(textures)) {
+    // Give the onscreen renderer one presentation opportunity before every
+    // full-resolution asset upload. ImageBitmap sources use exact striped
+    // texSubImage2D uploads; compatibility sources still remain one asset per
+    // frame instead of four consecutive uploads inside the bake draw.
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await waitForSharedRendererBakeSlot();
+    const startedAt = performance.now();
+    await uploadPreviewTextureInStripes(renderer, texture);
+    maximumUploadMs = Math.max(maximumUploadMs, performance.now() - startedAt);
+  }
+  if (typeof document !== 'undefined') {
+    document.body.dataset.uvBakeMaximumStagedTextureUploadMs = Math.max(
+      Number(document.body.dataset.uvBakeMaximumStagedTextureUploadMs ?? '0'),
+      maximumUploadMs,
+    ).toFixed(1);
+  }
+}
+
+function disposeLayerTextures(textures: Iterable<THREE.Texture>) {
+  for (const texture of new Set(textures)) {
+    const image = texture.image;
+    texture.dispose();
+    if (
+      texture.userData.liclickSharedResidentBitmap !== true &&
+      typeof ImageBitmap !== 'undefined' &&
+      image instanceof ImageBitmap
+    )
+      image.close();
+  }
 }
 
 async function loadLayerTexturesWithOptions(
@@ -1268,14 +1341,59 @@ function waitForSharedRendererBakeSlot() {
   );
 }
 
+// Eight 8 MiB stripes for a 4K RGBA target keep each driver readback bounded.
+// The smaller transfer is intentionally retained: stress testing showed a
+// 100.1ms maximum frame versus 433.6ms at 32 MiB, with identical pixels.
+const GPU_READBACK_STRIPE_BYTES = 8 * 1024 * 1024;
+
+async function readRenderTargetPixelsInStripes(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  resolution: number,
+) {
+  const pixels = new Uint8Array(resolution * resolution * 4);
+  const rowsPerStripe = Math.max(
+    1,
+    Math.min(resolution, Math.floor(GPU_READBACK_STRIPE_BYTES / (resolution * 4))),
+  );
+  let maximumStripeMs = 0;
+  const startedAt = performance.now();
+  for (let y = 0; y < resolution; y += rowsPerStripe) {
+    if (y > 0) {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    }
+    const rowCount = Math.min(rowsPerStripe, resolution - y);
+    const stripe = new Uint8Array(resolution * rowCount * 4);
+    const stripeStartedAt = performance.now();
+    await renderer.readRenderTargetPixelsAsync(
+      target,
+      0,
+      y,
+      resolution,
+      rowCount,
+      stripe,
+    );
+    maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
+    pixels.set(stripe, y * resolution * 4);
+  }
+  if (typeof document !== 'undefined') {
+    document.body.dataset.uvBakeReadbackStripeRows = String(rowsPerStripe);
+    document.body.dataset.uvBakeReadbackStripeCount = String(
+      Math.ceil(resolution / rowsPerStripe),
+    );
+    document.body.dataset.uvBakeReadbackMaximumStripeMs = maximumStripeMs.toFixed(1);
+    document.body.dataset.uvBakeReadbackTotalMs = (performance.now() - startedAt).toFixed(1);
+  }
+  return pixels;
+}
+
 async function readRenderTargetToImageData(
   renderer: THREE.WebGLRenderer,
   target: THREE.WebGLRenderTarget,
   resolution: number,
   outputAlpha: 'opaque-viewport' | 'transparent' = 'opaque-viewport',
 ) {
-  const pixels = new Uint8Array(resolution * resolution * 4);
-  await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
+  const pixels = await readRenderTargetPixelsInStripes(renderer, target, resolution);
   return convertFinalGpuReadbackInWorker(pixels, resolution, outputAlpha);
 }
 
@@ -1284,8 +1402,7 @@ async function readRenderTargetToLayerImageData(
   target: THREE.WebGLRenderTarget,
   resolution: number,
 ) {
-  const pixels = new Uint8Array(resolution * resolution * 4);
-  await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
+  const pixels = await readRenderTargetPixelsInStripes(renderer, target, resolution);
   return convertLayerGpuReadbackInWorker(pixels, resolution);
 }
 
@@ -1294,8 +1411,7 @@ async function readRenderTargetAlphaToFloat(
   target: THREE.WebGLRenderTarget,
   resolution: number,
 ) {
-  const pixels = new Uint8Array(resolution * resolution * 4);
-  await renderer.readRenderTargetPixelsAsync(target, 0, 0, resolution, resolution, pixels);
+  const pixels = await readRenderTargetPixelsInStripes(renderer, target, resolution);
   return convertQualityGpuReadbackInWorker(pixels, resolution);
 }
 
@@ -1310,6 +1426,52 @@ type RendererStateSnapshot = {
   xrEnabled: boolean;
   pixelRatio: number;
 };
+
+let isolatedUvBakeRenderer: THREE.WebGLRenderer | undefined;
+let isolatedUvBakeRendererUnavailable = false;
+
+/**
+ * Keeps the mandatory DPR=1 UV raster pipeline off the visible viewport
+ * renderer. WebGLRenderer.setPixelRatio() resizes and clears its canvas even
+ * when all subsequent drawing targets a WebGLRenderTarget; doing that on the
+ * React Three Fiber renderer produces a visible flash. Geometry and source
+ * pixels remain identical, while the detached renderer owns only bake GPU
+ * resources and can be reused by every serialized full-resolution task.
+ */
+export function getIsolatedUvBakeRenderer(viewportRenderer: THREE.WebGLRenderer) {
+  if (!isolatedUvBakeRenderer && !isolatedUvBakeRendererUnavailable) {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      isolatedUvBakeRenderer = new THREE.WebGLRenderer({
+        canvas,
+        alpha: true,
+        antialias: false,
+        powerPreference: 'high-performance',
+        preserveDrawingBuffer: false,
+      });
+      isolatedUvBakeRenderer.setPixelRatio(1);
+    } catch (error) {
+      isolatedUvBakeRendererUnavailable = true;
+      console.warn(
+        '[Liclick 3D Texture] Isolated UV bake renderer unavailable; using the viewport renderer.',
+        error,
+      );
+    }
+  }
+  const renderer = isolatedUvBakeRenderer ?? viewportRenderer;
+  renderer.outputColorSpace = viewportRenderer.outputColorSpace;
+  renderer.toneMapping = viewportRenderer.toneMapping;
+  renderer.toneMappingExposure = viewportRenderer.toneMappingExposure;
+  renderer.sortObjects = viewportRenderer.sortObjects;
+  renderer.localClippingEnabled = viewportRenderer.localClippingEnabled;
+  if (typeof document !== 'undefined') {
+    document.body.dataset.perfUvBakeRenderer =
+      renderer === viewportRenderer ? 'shared-fallback' : 'isolated';
+  }
+  return renderer;
+}
 
 function captureRendererState(renderer: THREE.WebGLRenderer): RendererStateSnapshot {
   return {
@@ -1405,6 +1567,7 @@ export async function bakeProjectedLayerRastersWithGpu(
         inputTextureFlipY: input.inputTextureFlipY ?? true,
       });
       sourceSizes.push(textures.sourceSizes);
+      await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
 
       const coverageMaterial = createLayerMaterial({
         group: input.group,
@@ -1463,7 +1626,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       previousState = captureRendererState(renderer);
       qualityMaterial.dispose();
 
-      textures.disposableTextures.forEach((texture) => texture.dispose());
+      disposeLayerTextures(textures.disposableTextures);
       rasters.push({
         layer,
         imageData: layerRaster.imageData,
@@ -1553,11 +1716,8 @@ export async function bakeProjectedLayerStackWithGpu(
   };
 
   try {
-    setBakeRenderTargetState(renderer, renderTarget, resolution);
-    renderer.setClearColor(0x000000, 0);
-    renderer.clear(true, true, true);
-
     const bakeScene = createBakeScene(meshes);
+    let renderTargetInitialized = false;
     for (const [layerIndex, layer] of input.layers.entries()) {
       input.onProgress?.({
         phase: 'loading-assets',
@@ -1570,6 +1730,7 @@ export async function bakeProjectedLayerStackWithGpu(
         inputTextureFlipY: input.inputTextureFlipY ?? true,
       });
       sourceSizes.push(textures.sourceSizes);
+      await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
       const material = createLayerMaterial({
         group: input.group,
         layer,
@@ -1585,12 +1746,20 @@ export async function bakeProjectedLayerStackWithGpu(
         mesh.material = material;
       });
       reportProgress(layer, layerIndex, true);
+      // Never leave the shared viewport renderer bound to the 4K bake target
+      // across asset loads, striped uploads, rAF yields or progress callbacks.
+      // Those awaits let React Three Fiber render a visible frame.
       setBakeRenderTargetState(renderer, renderTarget, resolution);
+      if (!renderTargetInitialized) {
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, true, true);
+        renderTargetInitialized = true;
+      }
       renderer.render(bakeScene.scene, camera);
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
       material.dispose();
-      textures.disposableTextures.forEach((texture) => texture.dispose());
+      disposeLayerTextures(textures.disposableTextures);
       // The editor render loop can run at this await. Restore the onscreen target
       // and viewport first so UV baking can never leak into the main viewport.
       restoreRendererState(renderer, previousState);

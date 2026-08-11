@@ -13,8 +13,8 @@ const INTERACTIVE_GPU_PAUSE_MS = 8;
 
 type GpuBuffer = {
   destroy(): void;
-  getMappedRange(): ArrayBuffer;
-  mapAsync(mode: number): Promise<void>;
+  getMappedRange(offset?: number, size?: number): ArrayBuffer;
+  mapAsync(mode: number, offset?: number, size?: number): Promise<void>;
   unmap(): void;
 };
 
@@ -86,6 +86,7 @@ type NormalizedCompositeRequest = CompositeRequest & { underlay: ArrayBuffer };
 type WorkerRequest =
   | CompositeRequest
   | { type: 'budget'; interactive: boolean }
+  | { type: 'cancel'; id: number }
   | { type: 'release' };
 
 type CompositeMetrics = {
@@ -103,7 +104,8 @@ type WorkerResponse =
       type: 'result';
       id: number;
       output?: ArrayBuffer;
-      pngBlob?: Blob;
+      pngUrl?: string;
+      pngByteLength?: number;
       encodeMs?: number;
       metrics: CompositeMetrics;
       verification?: CompositeVerification;
@@ -139,6 +141,7 @@ let interactive = false;
 let devicePromise: Promise<GpuDevice | undefined> | undefined;
 let resources: CompositeResources | undefined;
 let workQueue: Promise<void> = Promise.resolve();
+const cancelledRequestIds = new Set<number>();
 
 const shaderSource = `
   struct Params {
@@ -204,6 +207,12 @@ function activeChunkBytes(request: CompositeRequest) {
       (interactive ? request.interactiveChunkBytes : request.idleChunkBytes) / 256,
     ) * 256,
   );
+}
+
+function throwIfCancelled(request: CompositeRequest) {
+  if (cancelledRequestIds.has(request.id)) {
+    throw new DOMException('RGBA composite was cancelled.', 'AbortError');
+  }
 }
 
 async function getDevice() {
@@ -275,6 +284,7 @@ async function uploadInBudgetedChunks(
   request: NormalizedCompositeRequest,
 ) {
   for (let offset = 0; offset < source.byteLength; ) {
+    throwIfCancelled(request);
     const size = Math.min(activeChunkBytes(request), source.byteLength - offset);
     device.queue.writeBuffer(target, offset, source, offset, size);
     offset += size;
@@ -299,6 +309,7 @@ async function computeInBudgetedChunks(
   });
   const totalPixels = target.byteLength / 4;
   for (let firstPixel = 0; firstPixel < totalPixels; ) {
+    throwIfCancelled(request);
     const pixelCount = Math.min(activeChunkBytes(request) / 4, totalPixels - firstPixel);
     const totalWorkgroups = Math.ceil(pixelCount / WORKGROUP_SIZE);
     const workgroupsPerRow = Math.min(256, totalWorkgroups);
@@ -327,16 +338,26 @@ async function copyToReadbackInBudgetedChunks(
   target: CompositeResources,
   request: NormalizedCompositeRequest,
 ) {
+  const output = new ArrayBuffer(target.byteLength);
+  const outputBytes = new Uint8Array(output);
+  // Mapping the complete 64MiB result in one operation can stall Chromium's
+  // compositor even though this code runs in a worker. Map bounded 8MiB ranges
+  // and copy them into worker-owned memory before PNG encoding.
+  const readbackChunkBytes = Math.max(activeChunkBytes(request), 8 * 1024 * 1024);
   for (let offset = 0; offset < target.byteLength; ) {
-    const size = Math.min(activeChunkBytes(request), target.byteLength - offset);
+    throwIfCancelled(request);
+    const size = Math.min(readbackChunkBytes, target.byteLength - offset);
     const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(target.front, offset, target.readback, offset, size);
     device.queue.submit([encoder.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    await target.readback.mapAsync(GPU_MAP_MODE_READ, offset, size);
+    outputBytes.set(new Uint8Array(target.readback.getMappedRange(offset, size)), offset);
+    target.readback.unmap();
     offset += size;
-    if (interactive) await device.queue.onSubmittedWorkDone();
     if (offset < target.byteLength) await yieldGpuBudget();
   }
-  await device.queue.onSubmittedWorkDone();
+  return output;
 }
 
 function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number) {
@@ -424,10 +445,7 @@ async function runComposite(rawRequest: CompositeRequest) {
     await computeInBudgetedChunks(device, target, request.opacity, request);
     const computeMs = performance.now() - computeStartedAt;
     const readbackStartedAt = performance.now();
-    await copyToReadbackInBudgetedChunks(device, target, request);
-    await target.readback.mapAsync(GPU_MAP_MODE_READ);
-    const output = target.readback.getMappedRange().slice(0);
-    target.readback.unmap();
+    const output = await copyToReadbackInBudgetedChunks(device, target, request);
     const readbackMs = performance.now() - readbackStartedAt;
     return {
       output,
@@ -511,12 +529,17 @@ scope.onmessage = (event) => {
     interactive = request.interactive;
     return;
   }
+  if (request.type === 'cancel') {
+    cancelledRequestIds.add(request.id);
+    return;
+  }
   if (request.type === 'release') {
     destroyResources();
     return;
   }
   workQueue = workQueue.then(async () => {
     try {
+      throwIfCancelled(request);
       const normalizedRequest: NormalizedCompositeRequest = {
         ...request,
         underlay: await loadUnderlayInWorker(request),
@@ -527,20 +550,46 @@ scope.onmessage = (event) => {
           ? verifyGpuOutput(normalizedRequest, result.output)
           : { output: result.output };
       if (request.encodePng) {
+        throwIfCancelled(request);
         if (!request.width || !request.height) {
           throw new Error('PNG output dimensions are missing.');
         }
         const encodeStartedAt = performance.now();
-        const encoded = await encodeRgbaPngBytesChunked(
-          request.width,
-          request.height,
-          new Uint8ClampedArray(verified.output),
-          () => wait(0),
-        );
+        let pngBlob: Blob;
+        if (interactive && typeof OffscreenCanvas !== 'undefined') {
+          const canvas = new OffscreenCanvas(request.width, request.height);
+          const context = canvas.getContext('2d', { alpha: true });
+          if (!context) throw new Error('Could not create interactive PNG canvas.');
+          context.putImageData(
+            new ImageData(
+              new Uint8ClampedArray(verified.output),
+              request.width,
+              request.height,
+            ),
+            0,
+            0,
+          );
+          pngBlob = await canvas.convertToBlob({ type: 'image/png' });
+        } else {
+          const encoded = await encodeRgbaPngBytesChunked(
+            request.width,
+            request.height,
+            new Uint8ClampedArray(verified.output),
+            async () => {
+              throwIfCancelled(request);
+              await wait(0);
+            },
+          );
+          pngBlob = new Blob([encoded], { type: 'image/png' });
+        }
+        throwIfCancelled(request);
         const response: WorkerResponse = {
           type: 'result',
           id: request.id,
-          pngBlob: new Blob([encoded], { type: 'image/png' }),
+          // Keep both the encoded bytes and Blob construction in this worker;
+          // the UI receives only a lightweight handle and scalar metadata.
+          pngUrl: URL.createObjectURL(pngBlob),
+          pngByteLength: pngBlob.size,
           encodeMs: performance.now() - encodeStartedAt,
           metrics: result.metrics,
           verification: verified.verification,
@@ -563,6 +612,8 @@ scope.onmessage = (event) => {
         message: error instanceof Error ? error.message : String(error),
       };
       scope.postMessage(response);
+    } finally {
+      cancelledRequestIds.delete(request.id);
     }
   });
 };

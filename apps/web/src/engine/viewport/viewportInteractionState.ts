@@ -26,6 +26,8 @@ export function markViewportInteractionEnd() {
 export function isViewportInteractionBusy(quietWindowMs = 180) {
   return (
     activePointerCount > 0 ||
+    (typeof document !== 'undefined' &&
+      document.body.dataset.localRepaintGenerationBusy === '1') ||
     (lastInteractionAt > 0 && performance.now() - lastInteractionAt < quietWindowMs)
   );
 }
