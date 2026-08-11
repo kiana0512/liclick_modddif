@@ -1,6 +1,6 @@
 import { getLocalTextureRuntimeApiBase } from '@/services/localTextureRuntimeClient';
 import { useProjectStore } from '@/stores/projectStore';
-import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { getLiveProjectedTextureSourceState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 export type ImageSample = [number, number, number, number];
 const COLOR_ALPHA_REJECT_THRESHOLD = 3;
@@ -110,9 +110,9 @@ export async function loadImageData(
   maxDimension = Number.POSITIVE_INFINITY,
   label = 'projected layer image',
 ): Promise<ImageData> {
-  const liveCanvasState = getLiveProjectedCanvasState(url);
-  const resolvedUrl = liveCanvasState
-    ? `${url}#${liveCanvasState.revision}`
+  const liveTextureState = getLiveProjectedTextureSourceState(url);
+  const resolvedUrl = liveTextureState
+    ? `${url}#${liveTextureState.revision}`
     : resolveImageAssetUrl(url);
   if (!resolvedUrl) throw new Error(`Could not load ${label}: image URL is empty.`);
   const cacheKey = getImageDataCacheKey(url, resolvedUrl, maxDimension);
@@ -124,10 +124,16 @@ export async function loadImageData(
   let source: CanvasImageSource;
   let sourceWidth: number;
   let sourceHeight: number;
-  if (liveCanvasState) {
-    source = liveCanvasState.canvas;
-    sourceWidth = liveCanvasState.canvas.width;
-    sourceHeight = liveCanvasState.canvas.height;
+  if (liveTextureState) {
+    source = liveTextureState.source;
+    sourceWidth =
+      liveTextureState.source instanceof HTMLImageElement
+        ? liveTextureState.source.naturalWidth || liveTextureState.source.width
+        : liveTextureState.source.width;
+    sourceHeight =
+      liveTextureState.source instanceof HTMLImageElement
+        ? liveTextureState.source.naturalHeight || liveTextureState.source.height
+        : liveTextureState.source.height;
   } else {
     const image = new Image();
     image.crossOrigin = 'anonymous';
