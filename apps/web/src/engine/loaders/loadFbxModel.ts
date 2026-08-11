@@ -3,7 +3,7 @@ import { FBXLoader, TGALoader } from 'three-stdlib';
 import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } from './modelImportTypes';
 import { yieldForModelImportProgressPaint } from './modelImportProgress';
 import { summarizeLoadedGroup } from './modelLoadUtils';
-import { applyFbxModelVisibility } from './fbxVisibility';
+import { applyFbxModelVisibility, readFbxMetadata } from './fbxVisibility';
 
 const LEGACY_EMBEDDED_PNG_NAME = new TextEncoder().encode('liclick_image_0_png');
 
@@ -50,12 +50,14 @@ function createFbxLoadingManager(resourceFiles: File[]) {
 
 export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new FBXLoader(createFbxLoadingManager(options.resourceFiles ?? []));
+  const sourceMetadata = options.sourceBuffer ? readFbxMetadata(options.sourceBuffer) : undefined;
+  const sourceUnitScaleFactor = sourceMetadata?.unitScaleFactor ?? 1;
   let fbx;
   if (options.sourceBuffer) {
     options.onProgress?.({ phase: 'parsing' });
     await yieldForModelImportProgressPaint();
     fbx = loader.parse(repairLegacyEmbeddedTextureFileNames(options.sourceBuffer), '');
-    applyFbxModelVisibility(fbx, options.sourceBuffer);
+    applyFbxModelVisibility(fbx, options.sourceBuffer, sourceMetadata?.visibilityByModelId);
   } else {
     options.onProgress?.({ phase: 'reading', phaseProgress: 0 });
     fbx = await loader.loadAsync(options.sourceUrl, (event) => {
@@ -79,6 +81,7 @@ export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedM
     objectUrl: options.sourceUrl,
     normalizeOptions: options.normalizeOptions,
   });
+  result.sourceUnitScaleFactor = sourceUnitScaleFactor;
   options.onProgress?.({ phase: 'materials', phaseProgress: 1 });
 
   return {
@@ -96,6 +99,7 @@ export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedM
       boundingBox: result.boundingBox,
       originalBoundingBox: result.originalBoundingBox,
       importNormalizationTransform: result.importNormalizationTransform,
+      sourceUnitScaleFactor,
       userTransform: {
         position: result.importNormalizationTransform.position,
         rotation: [0, 0, 0],

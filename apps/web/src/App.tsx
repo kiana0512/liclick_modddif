@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { TextureRuntimeGate } from './components/runtime/TextureRuntimeGate';
 import { resolveBakeEntryProject } from './features/workflow/resolveBakeEntryProject';
+import { requiresTextureUvMergeBeforeBake } from './features/workflow/selectBakeBaseColor';
 import { useLocalTextureRuntime } from './hooks/useLocalTextureRuntime';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
@@ -17,7 +18,12 @@ type RouteState =
   | { name: 'modelingToolbox' }
   | { name: 'autoRetopology'; projectId?: string }
   | { name: 'autoUv'; projectId?: string }
-  | { name: 'editor'; projectId: string }
+  | {
+      name: 'editor';
+      projectId: string;
+      continueToBake?: boolean;
+      bakeHandoff?: TextureBakeHandoff;
+    }
   | { name: 'bake'; projectId: string; handoff?: TextureBakeHandoff };
 
 const HomePage = lazy(() =>
@@ -157,6 +163,20 @@ export function App() {
         commitRoute(nextRoute);
       }
 
+      function bakeDestination(
+        project: Project,
+        handoff?: TextureBakeHandoff,
+      ): RouteState {
+        return requiresTextureUvMergeBeforeBake(project, handoff)
+          ? {
+              name: 'editor',
+              projectId: project.id,
+              continueToBake: true,
+              bakeHandoff: handoff,
+            }
+          : { name: 'bake', projectId: project.id, handoff };
+      }
+
       function openCurrentProjectStage(stage: 'texture' | 'bake') {
         const requestRevision = ++navigationRevisionRef.current;
         const projectStore = useProjectStore.getState();
@@ -164,7 +184,7 @@ export function App() {
         const destination = (project: Project): RouteState =>
           stage === 'texture'
             ? { name: 'editor', projectId: project.id }
-            : { name: 'bake', projectId: project.id };
+            : bakeDestination(project);
 
         if (currentProject) {
           commitRoute(destination(currentProject));
@@ -202,6 +222,28 @@ export function App() {
           });
       }
 
+
+      function openProjectBake(projectId: string, handoff?: TextureBakeHandoff) {
+        const requestRevision = ++navigationRevisionRef.current;
+        const cachedProject = useProjectStore
+          .getState()
+          .projects.find((project) => project.id === projectId);
+        if (cachedProject) {
+          commitRoute(bakeDestination(cachedProject, handoff));
+          return;
+        }
+        void loadProject(projectId)
+          .then(({ project }) => {
+            if (navigationRevisionRef.current !== requestRevision) return;
+            useProjectStore.getState().replaceCurrentProject(project);
+            commitRoute(bakeDestination(project, handoff));
+          })
+          .catch(() => {
+            if (navigationRevisionRef.current !== requestRevision) return;
+            commitRoute({ name: 'projects', module: 'bake' });
+          });
+      }
+
       return {
         openHome: () => {
           const nextRoute: RouteState = { name: 'home' };
@@ -230,8 +272,7 @@ export function App() {
           navigate(nextRoute);
         },
         openBake: (projectId: string, handoff?: TextureBakeHandoff) => {
-          const nextRoute: RouteState = { name: 'bake', projectId, handoff };
-          navigate(nextRoute);
+          openProjectBake(projectId, handoff);
         },
       };
     },
@@ -297,6 +338,8 @@ export function App() {
               onOpenRetopology={() => navigation.openAutoRetopology(route.projectId)}
               onOpenUv={() => navigation.openAutoUv(route.projectId)}
               onOpenBake={(handoff) => navigation.openBake(route.projectId, handoff)}
+              autoOpenBake={route.continueToBake}
+              pendingBakeHandoff={route.bakeHandoff}
             />
           </Suspense>
         </TextureRuntimeGate>

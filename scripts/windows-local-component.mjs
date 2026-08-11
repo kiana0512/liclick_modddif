@@ -5,7 +5,14 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const installRoot = path.resolve(scriptDir, '..');
-const nodeExecutable = path.join(installRoot, 'node', 'node.exe');
+const bundledNodeExecutable = path.join(installRoot, 'node', 'node.exe');
+// Packaged installs carry their own Node runtime. A source checkout does not,
+// so let the same launcher run with the Node executable that started it. This
+// keeps the Windows startup entry pinned to the active checkout instead of an
+// older packaged copy that can silently reclaim port 4618.
+const nodeExecutable = fs.existsSync(bundledNodeExecutable)
+  ? bundledNodeExecutable
+  : process.execPath;
 const serverEntry = path.join(installRoot, 'apps', 'server', 'dist', 'localComponent.js');
 const dataRoot = path.join(
   process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? installRoot, 'AppData', 'Local'),
@@ -52,14 +59,15 @@ async function probeHealth() {
         payload?.ok === true &&
         payload?.capabilities?.includes('texture-painting') &&
         payload?.capabilities?.includes('atlas-personal-auth') &&
-        payload?.capabilities?.includes('liclick-generation'),
+        payload?.capabilities?.includes('liclick-generation') &&
+        payload?.capabilities?.includes('performance-telemetry'),
     };
   } catch {
     return { reachable: false, compatible: false };
   }
 }
 
-if (!fs.existsSync(nodeExecutable)) {
+if (!nodeExecutable || !fs.existsSync(nodeExecutable)) {
   throw new Error(`Bundled Node runtime is missing: ${nodeExecutable}`);
 }
 if (!fs.existsSync(serverEntry)) {
@@ -69,46 +77,48 @@ ensureDirectories();
 const frontendUrl = getFrontendUrl();
 
 let health = await probeHealth();
-if (health.compatible) process.exit(0);
+if (!health.compatible) {
+  // Give a previous local component a brief moment to finish shutting down before
+  // reporting a genuine collision on the dedicated standalone-component port.
+  for (let attempt = 0; health.reachable && attempt < 4; attempt += 1) {
+    await delay(1_000);
+    health = await probeHealth();
+    if (health.compatible) break;
+  }
+  if (health.reachable && !health.compatible) {
+    throw new Error(`Port ${localComponentPort} is occupied by another application.`);
+  }
 
-// Give a previous local component a brief moment to finish shutting down before
-// reporting a genuine collision on the dedicated standalone-component port.
-for (let attempt = 0; health.reachable && attempt < 4; attempt += 1) {
-  await delay(1_000);
-  health = await probeHealth();
-  if (health.compatible) process.exit(0);
+  if (!health.compatible) {
+    const stdout = fs.openSync(path.join(logsDir, 'local-component.log'), 'a');
+    const stderr = fs.openSync(path.join(logsDir, 'local-component-error.log'), 'a');
+    const child = spawn(nodeExecutable, [serverEntry], {
+      cwd: installRoot,
+      detached: true,
+      windowsHide: true,
+      stdio: ['ignore', stdout, stderr],
+      env: {
+        ...process.env,
+        LICLICK_LOCAL_COMPONENT_MODE: '1',
+        LICLICK_WORKSPACE_PORT: localComponentPort,
+        SERVER_HOST: '127.0.0.1',
+        LICLICK_WORKSPACE_DIR: workspaceDir,
+        LICLICK_LOCAL_SETTINGS_PATH: path.join(workspaceDir, 'config', 'local-settings.json'),
+        LICLICK_PUBLIC_WORKSPACE_URL: `http://127.0.0.1:${localComponentPort}`,
+        LICLICK_FRONTEND_URL: frontendUrl,
+        LICLICK_ALLOWED_ORIGINS: frontendUrl,
+        LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: 'false',
+        ATLAS_TOKEN_FILE: path.join(credentialsDir, 'atlas.json'),
+        ATLAS_GATEWAY_URL: 'https://atlas-ai-gateway.lilithgames.com',
+        ATLAS_IDAAS_SSO_URL: 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62',
+        ATLAS_IDAAS_ENTERPRISE_ID: 'lilith',
+        LICLICK_WINDOWS_HIDE: '1',
+      },
+    });
+
+    fs.writeFileSync(pidFile, `${child.pid}\n`, 'utf8');
+    child.unref();
+    fs.closeSync(stdout);
+    fs.closeSync(stderr);
+  }
 }
-if (health.reachable) {
-  throw new Error(`Port ${localComponentPort} is occupied by another application.`);
-}
-
-const stdout = fs.openSync(path.join(logsDir, 'local-component.log'), 'a');
-const stderr = fs.openSync(path.join(logsDir, 'local-component-error.log'), 'a');
-const child = spawn(nodeExecutable, [serverEntry], {
-  cwd: installRoot,
-  detached: true,
-  windowsHide: true,
-  stdio: ['ignore', stdout, stderr],
-  env: {
-    ...process.env,
-    LICLICK_LOCAL_COMPONENT_MODE: '1',
-    LICLICK_WORKSPACE_PORT: localComponentPort,
-    SERVER_HOST: '127.0.0.1',
-    LICLICK_WORKSPACE_DIR: workspaceDir,
-    LICLICK_LOCAL_SETTINGS_PATH: path.join(workspaceDir, 'config', 'local-settings.json'),
-    LICLICK_PUBLIC_WORKSPACE_URL: `http://127.0.0.1:${localComponentPort}`,
-    LICLICK_FRONTEND_URL: frontendUrl,
-    LICLICK_ALLOWED_ORIGINS: frontendUrl,
-    LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: 'false',
-    ATLAS_TOKEN_FILE: path.join(credentialsDir, 'atlas.json'),
-    ATLAS_GATEWAY_URL: 'https://atlas-ai-gateway.lilithgames.com',
-    ATLAS_IDAAS_SSO_URL: 'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62',
-    ATLAS_IDAAS_ENTERPRISE_ID: 'lilith',
-    LICLICK_WINDOWS_HIDE: '1',
-  },
-});
-
-fs.writeFileSync(pidFile, `${child.pid}\n`, 'utf8');
-child.unref();
-fs.closeSync(stdout);
-fs.closeSync(stderr);

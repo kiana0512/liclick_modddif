@@ -7,6 +7,7 @@
     "dev": "node scripts/dev-server.mjs",
     "serve": "node dist/index.js",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
+    "test:bake-artifact-plan": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-bake-artifact-plan.mjs",
     "test:pipeline-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-project-pipeline-persistence.mjs",
     "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
     "lint": "eslint src",

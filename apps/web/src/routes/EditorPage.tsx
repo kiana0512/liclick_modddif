@@ -141,6 +141,12 @@ import {
   type HeavyTaskContext,
 } from '@/engine/performance/heavyTaskScheduler';
 import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
+import {
+  findMergedUvBakeLayer,
+  findVisibleProjectedLayerIdsForBake,
+  isBakeMergeModelReady,
+  selectBakeBaseColor,
+} from '@/features/workflow/selectBakeBaseColor';
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
 import {
@@ -209,6 +215,8 @@ type EditorPageProps = {
   onOpenRetopology: () => void;
   onOpenUv: () => void;
   onOpenBake: (handoff?: TextureBakeHandoff) => void;
+  autoOpenBake?: boolean;
+  pendingBakeHandoff?: TextureBakeHandoff;
 };
 
 declare global {
@@ -790,6 +798,8 @@ export function EditorPage({
   onOpenRetopology,
   onOpenUv,
   onOpenBake,
+  autoOpenBake = false,
+  pendingBakeHandoff,
 }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
@@ -812,6 +822,7 @@ export function EditorPage({
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
+  const automaticBakeEntryRef = useRef<string>();
   const modelImportRunningRef = useRef(false);
   const modelImportRevisionRef = useRef(0);
   const modelImportProgressTimerRef = useRef<number>();
@@ -830,6 +841,8 @@ export function EditorPage({
   );
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
   const [publishingToRetopology, setPublishingToRetopology] = useState(false);
+  const publishingToBakeRef = useRef(false);
+  const [publishingToBake, setPublishingToBake] = useState(false);
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const [modelImportBusy, setModelImportBusy] = useState(false);
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
@@ -947,15 +960,10 @@ export function EditorPage({
       ? activeLayer.imageUrl
       : activeBakedTexture?.imageUrl;
   const currentTextureObjectId = selectedObjectId ?? importedModel?.objectId;
-  const currentObjectBakedColor = [...(project?.bakedTextures ?? [])]
-    .reverse()
-    .find((texture) => texture.objectId === currentTextureObjectId && Boolean(texture.imageUrl));
-  const currentObjectBaseColor =
-    activeLayer?.objectId === currentTextureObjectId && activeColorTextureUrl
-      ? { name: activeLayer?.name ?? 'BaseColor', imageUrl: activeColorTextureUrl }
-      : currentObjectBakedColor?.imageUrl
-        ? { name: 'BaseColor', imageUrl: currentObjectBakedColor.imageUrl }
-        : undefined;
+  const currentObjectBaseColor = selectBakeBaseColor(
+    project ? { layers, bakedTextures: project.bakedTextures } : undefined,
+    currentTextureObjectId,
+  );
   const normalLayer = layers.find(
     (layer) =>
       layer.type === 'normal' &&
@@ -3748,14 +3756,20 @@ export function EditorPage({
   async function executeMergeLayersToUvLayer(
     layerIds: string[],
     blankUvLayerId?: string,
-    options?: { benchmarkOnly?: boolean; taskContext?: HeavyTaskContext },
+    options?: {
+      benchmarkOnly?: boolean;
+      objectId?: string;
+      suppressErrorToast?: boolean;
+      taskContext?: HeavyTaskContext;
+      throwOnError?: boolean;
+    },
   ) {
     const currentImportedModel = useSceneStore.getState().importedModel;
     if (!project || !currentImportedModel) {
       pushToast({ tone: 'error', title: t('autoBakeFailed'), description: t('importModelFirst') });
       return;
     }
-    const objectId = selectedObjectId ?? currentImportedModel.objectId;
+    const objectId = options?.objectId ?? selectedObjectId ?? currentImportedModel.objectId;
     const currentLayers = useLayerStore.getState().layers;
     const selectedLayers = layerIds
       .map((layerId) => currentLayers.find((item) => item.id === layerId))
@@ -4134,16 +4148,19 @@ export function EditorPage({
         coverageRatio: mergedCoverageRatio,
         outputBytes: mergedOutputBytes || mergedImageBlob?.size || 0,
       });
+      return mergedLayer;
     } catch (error) {
       finishMergeSpan('error', {
         message: error instanceof Error ? error.message : String(error),
       });
-      pushToast({
-        tone: 'error',
-        title: t('autoBakeFailed'),
-        description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
-      });
-      if (benchmarkOnly) throw error;
+      if (!options?.suppressErrorToast) {
+        pushToast({
+          tone: 'error',
+          title: t('autoBakeFailed'),
+          description: error instanceof Error ? error.message : t('autoBakeFailedHelp'),
+        });
+      }
+      if (benchmarkOnly || options?.throwOnError) throw error;
     } finally {
       delete document.body.dataset.perfUvBakePhase;
       releaseWebGpuRgbaCompositeResources();
@@ -4158,7 +4175,12 @@ export function EditorPage({
   function mergeLayersToUvLayer(
     layerIds: string[],
     blankUvLayerId?: string,
-    options?: { benchmarkOnly?: boolean },
+    options?: {
+      benchmarkOnly?: boolean;
+      objectId?: string;
+      suppressErrorToast?: boolean;
+      throwOnError?: boolean;
+    },
   ) {
     const benchmarkOnly = options?.benchmarkOnly === true;
     return scheduleHeavyTask({
@@ -4175,13 +4197,155 @@ export function EditorPage({
       run: (taskContext) =>
         executeMergeLayersToUvLayer(layerIds, blankUvLayerId, {
           benchmarkOnly,
+          objectId: options?.objectId,
+          suppressErrorToast: options?.suppressErrorToast,
           taskContext,
+          throwOnError: options?.throwOnError,
         }),
     }).catch((error) => {
       if (!benchmarkOnly && error instanceof Error && error.name === 'AbortError') return undefined;
       throw error;
     });
   }
+
+  async function handleOpenBake(requestedHandoff?: TextureBakeHandoff) {
+    if (publishingToBakeRef.current || manualBakeRunningRef.current) return;
+    const objectId = requestedHandoff?.objectId ?? selectedObjectId ?? importedModel?.objectId;
+    if (!project || !objectId) {
+      pushToast({
+        tone: 'warning',
+        title: '请先导入模型',
+        description: '贴图工作区中没有可传入烘焙的模型。',
+        dedupeKey: 'bake-source-missing',
+      });
+      return;
+    }
+
+    publishingToBakeRef.current = true;
+    setPublishingToBake(true);
+    try {
+      let mergedLayer = findMergedUvBakeLayer(useLayerStore.getState().layers, objectId);
+      if (!mergedLayer) {
+        const visibleProjectedLayerIds = findVisibleProjectedLayerIdsForBake(
+          useLayerStore.getState().layers,
+          objectId,
+        );
+        if (visibleProjectedLayerIds.length === 0) {
+          pushToast({
+            tone: 'warning',
+            title: '没有可合并的投影图层',
+            description: '请先生成并显示至少一个投影图层，再传入烘焙。',
+            dedupeKey: 'bake-merged-uv-missing',
+          });
+          return;
+        }
+        pushToast({
+          tone: 'info',
+          title: '进入烘焙前需要合并 UV',
+          description: '正在自动合并当前对象的可见投影图层，完成后将进入烘焙界面。',
+          dedupeKey: 'bake-auto-merge-uv',
+        });
+        const mergeResult = await mergeLayersToUvLayer(visibleProjectedLayerIds, undefined, {
+          objectId,
+          suppressErrorToast: true,
+          throwOnError: true,
+        });
+        if (mergeResult && 'type' in mergeResult && mergeResult.type === 'uv') {
+          mergedLayer = mergeResult;
+        }
+        mergedLayer = findMergedUvBakeLayer(useLayerStore.getState().layers, objectId);
+      }
+      if (!mergedLayer?.imageUrl) {
+        throw new Error('自动合并 UV 图层未生成有效贴图，请稍后重试。');
+      }
+
+      // Entering the bake route unmounts the texture editor immediately. The
+      // normal five-second autosave therefore cannot be relied on to retain a
+      // UV merge that was just created above. Persist the complete layer stack
+      // first so returning to Texture (or entering Bake again) reuses the same
+      // merged UV layer instead of baking all projected layers a second time.
+      if (project.workspaceMode === 'local-server') {
+        window.clearTimeout(autosaveTimerRef.current);
+        window.clearTimeout(manualBakeProgressTimerRef.current);
+        setManualBakeProgress({
+          title: '正在保存合并 UV 图层',
+          detail: '保存后再次进入烘焙将直接复用这一层。',
+          progress: 0.998,
+        });
+        setSaveStatus('saving');
+
+        const saveMergedLayer = async () => {
+          const snapshot = getProjectSnapshot({ refreshThumbnail: false });
+          if (!snapshot) throw new Error('无法读取当前贴图项目。');
+          const result = await saveToWorkspaceServer(snapshot);
+          const persisted = result.project.layers.some(
+            (layer) =>
+              layer.id === mergedLayer.id &&
+              layer.type === 'uv' &&
+              layer.role === 'merged-uv' &&
+              Boolean(layer.imageUrl),
+          );
+          return { result, persisted };
+        };
+
+        let saved = await saveMergedLayer();
+        if (!saved.persisted) saved = await saveMergedLayer();
+        if (!saved.persisted) throw new Error('合并 UV 图层未能保存到贴图项目。');
+        setSaveStatus(saved.result.savedLatestSnapshot ? 'saved' : 'idle');
+      }
+
+      onOpenBake({
+        ...requestedHandoff,
+        objectId,
+        baseColor: { name: mergedLayer.name, imageUrl: mergedLayer.imageUrl },
+      });
+    } catch (error) {
+      setSaveStatus('failed');
+      pushToast({
+        tone: 'error',
+        title: '传入烘焙失败',
+        description:
+          error instanceof Error ? error.message : '保存合并 UV 图层失败，请稍后重试。',
+        dedupeKey: 'bake-merged-uv-persist-failed',
+      });
+    } finally {
+      publishingToBakeRef.current = false;
+      setPublishingToBake(false);
+    }
+  }
+
+  useEffect(() => {
+    if (
+      !autoOpenBake ||
+      !project ||
+      !importedModel ||
+      serverReadyProjectId !== projectId
+    )
+      return;
+    const objectId = pendingBakeHandoff?.objectId ?? importedModel.objectId;
+    const sceneState = useSceneStore.getState();
+    const targetModel = sceneState.importedModels.find((model) => model.objectId === objectId);
+    if (!sceneState.viewport || !isBakeMergeModelReady(targetModel, objectId)) return;
+    if (sceneState.importedModel?.objectId !== objectId) {
+      sceneState.setActiveImportedModel(objectId);
+      return;
+    }
+    const requestKey = `${projectId}:${objectId}`;
+    if (automaticBakeEntryRef.current === requestKey) return;
+    automaticBakeEntryRef.current = requestKey;
+    void handleOpenBake(pendingBakeHandoff);
+    // handleOpenBake reads the latest Zustand stores when this one-shot route
+    // continuation fires; rerunning it on every render would duplicate a merge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    autoOpenBake,
+    importedModel,
+    pendingBakeHandoff,
+    project,
+    projectId,
+    serverReadyProjectId,
+    viewport,
+  ]);
 
   useEffect(() => {
     if (!new URLSearchParams(window.location.search).has('perfLab')) return;
@@ -6005,11 +6169,13 @@ export function EditorPage({
           <WorkflowModuleSwitcher
             compact
             activeModule="texture"
-            pendingModule={publishingToRetopology ? 'retopology' : undefined}
+            pendingModule={
+              publishingToRetopology ? 'retopology' : publishingToBake ? 'bake' : undefined
+            }
             onOpenTexture={() => undefined}
             onOpenRetopology={() => void handlePublishToRetopology()}
             onOpenUv={onOpenUv}
-            onOpenBake={() => onOpenBake()}
+            onOpenBake={() => void handleOpenBake()}
           />
         }
         exportMenu={

@@ -13,6 +13,10 @@ import {
   englishSafeFilename,
   englishSafeStem,
 } from './modelFilenameService.js';
+import {
+  bakeArtifactChannel,
+  selectBakeArtifactFileNames,
+} from './bakeArtifactPlan.js';
 
 export type BakeChannelId =
   | 'baseColor'
@@ -186,16 +190,30 @@ const fullProfileArtifactFiles = [
   'baker.log',
 ] as const;
 
-const artifactChannelMap: Record<string, BakeChannelId | undefined> = {
-  'asset_base_color.png': 'baseColor',
-  'asset_roughness.png': 'roughness',
-  'asset_metallic.png': 'metallic',
-  'asset_ao.png': 'ambientOcclusion',
-  'asset_world_normal.png': 'worldNormal',
-  'asset_curvature.png': 'curvature',
-  'asset_thickness.png': 'thickness',
-  'asset_position.png': 'position',
-};
+const artifactDownloadConcurrency = 3;
+
+async function mapWithConcurrency<T>(
+  values: readonly T[],
+  concurrency: number,
+  worker: (value: T, index: number) => Promise<void>,
+) {
+  let nextIndex = 0;
+  let firstError: unknown;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (nextIndex < values.length && firstError === undefined) {
+        const index = nextIndex;
+        nextIndex += 1;
+        try {
+          await worker(values[index], index);
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    }),
+  );
+  if (firstError !== undefined) throw firstError;
+}
 
 function crc32(data: Buffer) {
   let crc = 0xffffffff;
@@ -699,63 +717,36 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     }
   }
 
-  const downloaded: Array<{ artifact: RemoteArtifact; data: Buffer }> = [];
-  for (const artifact of artifacts) {
-    const safeName = safeFileName(artifact.filename, `artifact-${artifact.id}`);
-    const cachedPath = path.join(job.directory, 'output', safeName);
-    if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size === artifact.size_bytes) {
-      const cachedData = fs.readFileSync(cachedPath);
-      const cachedSha = createHash('sha256').update(cachedData).digest('hex');
-      if (cachedSha === artifact.sha256.toLowerCase()) {
-        downloaded.push({ artifact, data: cachedData });
-        continue;
-      }
-    }
-    const response = await requestRemote(artifact.download_url, {
-      timeoutMs: 300_000,
-      maxBytes: 512 * 1024 * 1024,
-      headers: { accept: artifact.content_type || 'application/octet-stream' },
-    });
-    ensureRemoteSuccess(response);
-    const declaredSha = artifact.sha256.toLowerCase();
-    const headerValue = response.headers['x-artifact-sha256'];
-    const headerSha = (
-      Array.isArray(headerValue) ? headerValue[0] : (headerValue ?? '')
-    ).toLowerCase();
-    const actualSha = createHash('sha256').update(response.body).digest('hex');
-    if (!/^[a-f0-9]{64}$/.test(declaredSha)) {
-      throw new Error(`${artifact.filename} 的远端 SHA-256 格式无效。`);
-    }
-    if ((headerSha && headerSha !== declaredSha) || actualSha !== declaredSha) {
-      throw new Error(`${artifact.filename} 的 SHA-256 校验失败。`);
-    }
-    if (response.body.length !== artifact.size_bytes) {
-      throw new Error(`${artifact.filename} 的下载尺寸与 artifacts 清单不一致。`);
-    }
-    downloaded.push({ artifact, data: response.body });
-  }
-
-  fs.mkdirSync(path.join(job.directory, 'output'), { recursive: true });
+  const selectedArtifactNames = new Set(
+    selectBakeArtifactFileNames({
+      availableFileNames: artifacts.map((artifact) => artifact.filename),
+      channels: job.settings.channels,
+      normalOrientation: job.settings.normalOrientation,
+      generateRoughnessFromBakedBaseColor:
+        job.settings.generateRoughnessFromBakedBaseColor,
+    }),
+  );
+  const artifactsToDownload = artifacts.filter((artifact) =>
+    selectedArtifactNames.has(artifact.filename),
+  );
+  const outputDirectory = path.join(job.directory, 'output');
+  await fs.promises.mkdir(outputDirectory, { recursive: true });
   const outputs: NonNullable<NormalBakeJob['outputs']> = {};
-  for (const { artifact, data } of downloaded) {
+  const saveDownloadedArtifact = async (
+    artifact: RemoteArtifact,
+    data: Buffer,
+    alreadyPersisted = false,
+  ) => {
     const safeName = safeFileName(artifact.filename, `artifact-${artifact.id}`);
-    const channel =
-      artifact.filename ===
-      (job.settings.normalOrientation === 'opengl' ? 'asset_normal_gl.png' : 'asset_normal_dx.png')
-        ? 'normal'
-        : artifactChannelMap[artifact.filename];
+    const channel = bakeArtifactChannel(artifact.filename, job.settings.normalOrientation);
     if (!channel || !job.settings.channels.includes(channel)) {
-      // Keep the tiny remote report/log for diagnostics, but do not persist every
-      // remote asset PNG. Selected channels are stored once under their stable
-      // public file names below; retaining both copies previously doubled large
-      // bake histories and also kept channels the user did not request.
-      if (!artifact.filename.startsWith('asset_')) {
-        fs.writeFileSync(path.join(job.directory, 'output', safeName), data);
+      if (!alreadyPersisted && !artifact.filename.startsWith('asset_')) {
+        await fs.promises.writeFile(path.join(outputDirectory, safeName), data);
       }
-      continue;
+      return;
     }
     const localPath = job.outputPaths[channel];
-    fs.writeFileSync(localPath, data);
+    if (!alreadyPersisted) await fs.promises.writeFile(localPath, data);
     const dimensions = pngSize(localPath);
     if (
       dimensions.width !== job.settings.resolution ||
@@ -770,7 +761,71 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
       ...dimensions,
       url: `/api/bake/jobs/${job.id}/output/${channel}`,
     };
+  };
+  let completedDownloads = 0;
+  const recordCompletedDownload = () => {
+    completedDownloads += 1;
+    job.progress = Math.max(
+      job.progress,
+      95 + Math.floor((completedDownloads / Math.max(1, artifactsToDownload.length)) * 2),
+    );
+    if (job.remote) {
+      job.remote.stageMessage = `正在下载所需产物 ${completedDownloads}/${artifactsToDownload.length}`;
+    }
+    persist(job);
+  };
+  if (job.remote) {
+    job.remote.stage = 'downloading-artifacts';
+    job.remote.stageMessage = `正在下载所需产物 0/${artifactsToDownload.length}`;
   }
+  persist(job);
+  await mapWithConcurrency(
+    artifactsToDownload,
+    artifactDownloadConcurrency,
+    async (artifact) => {
+      const safeName = safeFileName(artifact.filename, `artifact-${artifact.id}`);
+      const cachedChannel = bakeArtifactChannel(
+        artifact.filename,
+        job.settings.normalOrientation,
+      );
+      const cachedPath =
+        cachedChannel && job.settings.channels.includes(cachedChannel)
+          ? job.outputPaths[cachedChannel]
+          : path.join(outputDirectory, safeName);
+      if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size === artifact.size_bytes) {
+        const cachedData = await fs.promises.readFile(cachedPath);
+        const cachedSha = createHash('sha256').update(cachedData).digest('hex');
+        if (cachedSha === artifact.sha256.toLowerCase()) {
+          await saveDownloadedArtifact(artifact, cachedData, true);
+          recordCompletedDownload();
+          return;
+        }
+      }
+      const response = await requestRemote(artifact.download_url, {
+        timeoutMs: 300_000,
+        maxBytes: 512 * 1024 * 1024,
+        headers: { accept: artifact.content_type || 'application/octet-stream' },
+      });
+      ensureRemoteSuccess(response);
+      const declaredSha = artifact.sha256.toLowerCase();
+      const headerValue = response.headers['x-artifact-sha256'];
+      const headerSha = (
+        Array.isArray(headerValue) ? headerValue[0] : (headerValue ?? '')
+      ).toLowerCase();
+      const actualSha = createHash('sha256').update(response.body).digest('hex');
+      if (!/^[a-f0-9]{64}$/.test(declaredSha)) {
+        throw new Error(`${artifact.filename} 的远端 SHA-256 格式无效。`);
+      }
+      if ((headerSha && headerSha !== declaredSha) || actualSha !== declaredSha) {
+        throw new Error(`${artifact.filename} 的 SHA-256 校验失败。`);
+      }
+      if (response.body.length !== artifact.size_bytes) {
+        throw new Error(`${artifact.filename} 的下载尺寸与 artifacts 清单不一致。`);
+      }
+      await saveDownloadedArtifact(artifact, response.body);
+      recordCompletedDownload();
+    },
+  );
 
   if (job.settings.generateRoughnessFromBakedBaseColor) {
     const bakedBaseColorPath = job.outputPaths.baseColor;

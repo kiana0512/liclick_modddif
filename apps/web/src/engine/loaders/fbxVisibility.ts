@@ -8,6 +8,7 @@ class BinaryFbxVisibilityReader {
   private readonly decoder = new TextDecoder();
   private offset = 0;
   private readonly visibilityByModelId = new Map<number, number>();
+  private unitScaleFactor?: number;
 
   constructor(source: ArrayBuffer) {
     this.source = source;
@@ -16,7 +17,10 @@ class BinaryFbxVisibilityReader {
 
   read() {
     if (this.source.byteLength < 27 || this.readStringAt(0, 20) !== FBX_BINARY_HEADER) {
-      return this.visibilityByModelId;
+      return {
+        visibilityByModelId: this.visibilityByModelId,
+        unitScaleFactor: this.unitScaleFactor,
+      };
     }
     this.offset = 23;
     const version = this.readUint32();
@@ -24,10 +28,13 @@ class BinaryFbxVisibilityReader {
     while (this.offset < this.source.byteLength) {
       if (!this.readNode(wideOffsets)) break;
     }
-    return this.visibilityByModelId;
+    return {
+      visibilityByModelId: this.visibilityByModelId,
+      unitScaleFactor: this.unitScaleFactor,
+    };
   }
 
-  private readNode(wideOffsets: boolean, parentModelId?: number) {
+  private readNode(wideOffsets: boolean, parentModelId?: number, insideGlobalSettings = false) {
     const headerSize = wideOffsets ? 25 : 13;
     if (this.offset + headerSize > this.source.byteLength) return false;
 
@@ -50,6 +57,7 @@ class BinaryFbxVisibilityReader {
 
     const modelId =
       name === 'Model' && typeof properties[0] === 'number' ? properties[0] : parentModelId;
+    const isGlobalSettingsNode = insideGlobalSettings || name === 'GlobalSettings';
     if (
       name === 'P' &&
       modelId !== undefined &&
@@ -58,10 +66,20 @@ class BinaryFbxVisibilityReader {
     ) {
       this.visibilityByModelId.set(modelId, properties[4]);
     }
+    if (
+      name === 'P' &&
+      isGlobalSettingsNode &&
+      properties[0] === 'UnitScaleFactor' &&
+      typeof properties[4] === 'number' &&
+      Number.isFinite(properties[4]) &&
+      properties[4] > 0
+    ) {
+      this.unitScaleFactor = properties[4];
+    }
 
     while (this.offset < endOffset) {
       const beforeChild = this.offset;
-      if (!this.readNode(wideOffsets, modelId)) break;
+      if (!this.readNode(wideOffsets, modelId, isGlobalSettingsNode)) break;
       if (this.offset <= beforeChild) break;
     }
     this.offset = endOffset;
@@ -182,7 +200,7 @@ function findClosingBrace(source: string, openBrace: number) {
   return source.length;
 }
 
-function readAsciiFbxVisibility(source: ArrayBuffer) {
+function readAsciiFbxMetadata(source: ArrayBuffer) {
   const text = new TextDecoder().decode(source);
   const visibilityByModelId = new Map<number, number>();
   const modelPattern = /Model:\s*(-?\d+)\s*,[^{]*\{/g;
@@ -196,17 +214,42 @@ function readAsciiFbxVisibility(source: ArrayBuffer) {
     if (visibility) visibilityByModelId.set(Number(match[1]), Number(visibility[1]));
     modelPattern.lastIndex = closeBrace + 1;
   }
-  return visibilityByModelId;
+  const globalSettingsMatch = /GlobalSettings\s*:\s*\{/g.exec(text);
+  let unitScaleFactor: number | undefined;
+  if (globalSettingsMatch) {
+    const openBrace = text.indexOf('{', globalSettingsMatch.index);
+    const closeBrace = findClosingBrace(text, openBrace);
+    const body = text.slice(openBrace + 1, closeBrace);
+    const unitScale = body.match(
+      /P:\s*"UnitScaleFactor"\s*,\s*"double"\s*,\s*"Number"\s*,\s*"[^"\r\n]*"\s*,\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/,
+    );
+    const parsed = unitScale ? Number(unitScale[1]) : undefined;
+    if (parsed !== undefined && Number.isFinite(parsed) && parsed > 0) unitScaleFactor = parsed;
+  }
+  return { visibilityByModelId, unitScaleFactor };
+}
+
+export function readFbxMetadata(source: ArrayBuffer) {
+  const header = new TextDecoder().decode(new Uint8Array(source, 0, Math.min(20, source.byteLength)));
+  if (header === FBX_BINARY_HEADER) return new BinaryFbxVisibilityReader(source).read();
+  return readAsciiFbxMetadata(source);
 }
 
 export function readFbxModelVisibility(source: ArrayBuffer) {
-  const header = new TextDecoder().decode(new Uint8Array(source, 0, Math.min(20, source.byteLength)));
-  if (header === FBX_BINARY_HEADER) return new BinaryFbxVisibilityReader(source).read();
-  return readAsciiFbxVisibility(source);
+  return readFbxMetadata(source).visibilityByModelId;
 }
 
-export function applyFbxModelVisibility(root: THREE.Object3D, source: ArrayBuffer) {
-  const visibilityByModelId = readFbxModelVisibility(source);
+/** FBX stores its physical unit as centimeters per file unit. */
+export function readFbxUnitScaleFactor(source: ArrayBuffer) {
+  return readFbxMetadata(source).unitScaleFactor ?? 1;
+}
+
+export function applyFbxModelVisibility(
+  root: THREE.Object3D,
+  source: ArrayBuffer,
+  knownVisibility = readFbxModelVisibility(source),
+) {
+  const visibilityByModelId = knownVisibility;
   let hiddenObjectCount = 0;
   root.traverse((object) => {
     const modelId = (object as THREE.Object3D & { ID?: number }).ID;

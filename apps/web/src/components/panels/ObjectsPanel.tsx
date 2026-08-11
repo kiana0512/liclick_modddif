@@ -7,12 +7,10 @@ import {
   Download,
   Eye,
   EyeOff,
-  Image,
   LocateFixed,
   MoreVertical,
   Pencil,
   Plus,
-  Scissors,
   Trash2,
   UnfoldHorizontal,
 } from 'lucide-react';
@@ -32,7 +30,6 @@ import { useSceneStore } from '@/stores/sceneStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { SceneObject } from '@/types/model';
-import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
 
 type ObjectMenuState = {
@@ -49,10 +46,7 @@ type RenameState = {
 
 type ObjectDialogState =
   | { type: 'statistics'; objectId: string }
-  | { type: 'download'; objectId: string }
-  | { type: 'simplify'; objectId: string }
-  | { type: 'recreateUv'; objectId: string }
-  | { type: 'references'; objectId: string };
+  | { type: 'download'; objectId: string };
 
 type ObjectStats = {
   meshes: number;
@@ -148,7 +142,6 @@ export function ObjectsPanel() {
   const deleteObject = useSceneStore((state) => state.deleteObject);
   const deleteProjectObject = useProjectStore((state) => state.deleteProjectObject);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
-  const currentProject = useProjectStore((state) => state.getCurrentProject());
   const setProjectObjects = useProjectStore((state) => state.setProjectObjects);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
@@ -270,7 +263,7 @@ export function ObjectsPanel() {
 
   function openObjectMenu(objectId: string, rect: DOMRect) {
     const menuWidth = 208;
-    const menuHeight = 392;
+    const menuHeight = 280;
     const margin = 8;
     const spaceBelow = window.innerHeight - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
@@ -379,7 +372,6 @@ export function ObjectsPanel() {
             state={dialog}
             object={objects.find((object) => object.id === dialog.objectId)}
             model={getImportedModelForObject(dialog.objectId)}
-            references={currentProject?.references ?? []}
             onClose={() => setDialog(undefined)}
             onDownload={() => void handleDownloadObject(dialog.objectId)}
           />,
@@ -611,24 +603,6 @@ function ObjectMenu({
       >
         {t('objectMenuDownload')}
       </MenuButton>
-      <MenuButton
-        onClick={() => run(() => onDialog('simplify'))}
-        icon={<Scissors className="h-4 w-4" />}
-      >
-        {t('objectMenuSimplify')}
-      </MenuButton>
-      <MenuButton
-        onClick={() => run(() => onDialog('recreateUv'))}
-        icon={<UnfoldHorizontal className="h-4 w-4" />}
-      >
-        {t('objectMenuRecreateUv')}
-      </MenuButton>
-      <MenuButton
-        onClick={() => run(() => onDialog('references'))}
-        icon={<Image className="h-4 w-4" />}
-      >
-        {t('objectMenuViewReferenceImage')}
-      </MenuButton>
       <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
         {t('duplicate')}
       </MenuButton>
@@ -649,14 +623,12 @@ function ObjectDialog({
   state,
   object,
   model,
-  references,
   onClose,
   onDownload,
 }: {
   state: ObjectDialogState;
   object?: SceneObject;
   model?: ModelLoadResult;
-  references: ReferenceImage[];
   onClose: () => void;
   onDownload: () => void;
 }) {
@@ -666,13 +638,7 @@ function ObjectDialog({
   const title =
     state.type === 'statistics'
       ? t('objectMenuStatistics')
-      : state.type === 'download'
-        ? t('objectMenuDownload')
-        : state.type === 'simplify'
-          ? t('objectMenuSimplify')
-          : state.type === 'recreateUv'
-            ? t('objectMenuRecreateUv')
-            : t('objectMenuViewReferenceImage');
+      : t('objectMenuDownload');
 
   return (
     <div
@@ -699,9 +665,6 @@ function ObjectDialog({
         <div className="max-h-[calc(82vh-48px)] overflow-auto p-4">
           {state.type === 'statistics' && <StatisticsDialogBody object={object} stats={stats} />}
           {state.type === 'download' && <DownloadDialogBody onDownload={onDownload} />}
-          {state.type === 'simplify' && <SimplifyDialogBody stats={stats} />}
-          {state.type === 'recreateUv' && <RecreateUvDialogBody object={object} />}
-          {state.type === 'references' && <ReferencesDialogBody references={references} />}
         </div>
       </section>
     </div>
@@ -749,79 +712,6 @@ function DownloadDialogBody({ onDownload }: { onDownload: () => void }) {
       >
         {t('objectDownloadGlb')}
       </button>
-    </div>
-  );
-}
-
-function SimplifyDialogBody({ stats }: { stats: ObjectStats }) {
-  const t = useT();
-  return (
-    <div className="grid gap-3 text-sm leading-6 text-white/72">
-      <p>{t('objectSimplifyHelp')}</p>
-      <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs">
-        {t('objectSimplifyBudget')
-          .replace('{triangles}', formatNumber(stats.triangles))
-          .replace('{vertices}', formatNumber(stats.vertices))}
-      </div>
-      <button
-        type="button"
-        disabled
-        className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38"
-      >
-        {t('objectSimplifyComingSoon')}
-      </button>
-    </div>
-  );
-}
-
-function RecreateUvDialogBody({ object }: { object: SceneObject }) {
-  const t = useT();
-  return (
-    <div className="grid gap-3 text-sm leading-6 text-white/72">
-      <p>{t('objectRecreateUvHelp')}</p>
-      <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs">
-        {t('objectUvSets')}:{' '}
-        {object.uvSets.length > 0 ? object.uvSets.join(', ') : t('objectUvNoneDetected')}
-      </div>
-      <button
-        type="button"
-        disabled
-        className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38"
-      >
-        {t('objectUvServiceMissing')}
-      </button>
-    </div>
-  );
-}
-
-function ReferencesDialogBody({ references }: { references: ReferenceImage[] }) {
-  const t = useT();
-  if (references.length === 0) {
-    return (
-      <div className="rounded-md border border-white/12 bg-black/24 p-4 text-sm text-white/58">
-        {t('objectNoReferenceImages')}
-      </div>
-    );
-  }
-  return (
-    <div className="grid grid-cols-3 gap-3">
-      {references.map((reference) => (
-        <div
-          key={reference.id}
-          className="overflow-hidden rounded-md border border-white/14 bg-black/24"
-        >
-          <div className="aspect-square bg-[#333]">
-            <img
-              src={reference.url}
-              alt={reference.name}
-              className="h-full w-full object-contain"
-            />
-          </div>
-          <div className="truncate px-2 py-1 text-xs font-semibold text-white/72">
-            {reference.name}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }

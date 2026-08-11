@@ -21,6 +21,8 @@ export type ModelLoadResult = {
   boundingBox: ModelBoundingBox;
   originalBoundingBox: ModelBoundingBox;
   importNormalizationTransform: ImportNormalizationTransform;
+  /** Physical centimeters represented by one source-space unit. */
+  sourceUnitScaleFactor?: number;
   childMeshCount: number;
   warnings: string[];
   restoreStage?: 'bounds' | 'outline' | 'full';

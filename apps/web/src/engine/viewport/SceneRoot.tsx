@@ -125,18 +125,6 @@ function projectionPreviewCopy() {
   return translations[useI18nStore.getState().language];
 }
 
-function notifyProjectedPreviewLimit(required: number, available: number) {
-  const copy = projectionPreviewCopy();
-  useToastStore.getState().pushToast({
-    tone: 'warning',
-    title: copy.projectedPreviewLimit,
-    description: copy.projectedPreviewLimitHelp
-      .replace('{required}', String(required))
-      .replace('{available}', String(available)),
-    dedupeKey: PROJECTED_PREVIEW_LIMIT_TOAST_KEY,
-  });
-}
-
 function notifyProjectedPreviewFailure(_error: unknown) {
   const copy = projectionPreviewCopy();
   const toastStore = useToastStore.getState();
@@ -2663,12 +2651,19 @@ function ImportedModel({
         const warningKey = `${projectedSamplerBudget.required}/${projectedSamplerBudget.available}:${previewProjectedLayerSignature}`;
         if (lastProjectedSamplerWarningRef.current !== warningKey) {
           lastProjectedSamplerWarningRef.current = warningKey;
+          // Keep the last valid preview and record the hardware limit for
+          // diagnostics, but do not interrupt normal painting with a warning
+          // toast. The progressive compositor can recover on a later frame.
+          const toastStore = useToastStore.getState();
+          if (
+            toastStore.toasts.some(
+              (toast) => toast.dedupeKey === PROJECTED_PREVIEW_LIMIT_TOAST_KEY,
+            )
+          ) {
+            toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_LIMIT_TOAST_KEY);
+          }
           console.warn(
             `[Liclick 3D Texture] Projected preview kept the last valid material because ${projectedSamplerBudget.required} fragment texture units exceed the device limit of ${projectedSamplerBudget.available}.`,
-          );
-          notifyProjectedPreviewLimit(
-            projectedSamplerBudget.required,
-            projectedSamplerBudget.available,
           );
         }
       } else {

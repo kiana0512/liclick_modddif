@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
-import { applyFbxModelVisibility, readFbxModelVisibility } from '../fbxVisibility.ts';
+import {
+  applyFbxModelVisibility,
+  readFbxModelVisibility,
+  readFbxUnitScaleFactor,
+} from '../fbxVisibility.ts';
 
 function asciiBuffer(text) {
   return new TextEncoder().encode(text).buffer;
@@ -59,13 +63,33 @@ function buildBinaryNode(node, startOffset) {
   return Buffer.concat([header, name, ...properties, ...children, Buffer.alloc(13)]);
 }
 
-function binaryFbx(modelId, visibility) {
+function binaryFbx(modelId, visibility, unitScaleFactor = 1) {
   const header = Buffer.alloc(27);
   header.write('Kaydara FBX Binary  ', 0, 'binary');
   header[20] = 0;
   header[21] = 0x1a;
   header[22] = 0;
   header.writeUInt32LE(7400, 23);
+  const globalSettings = buildBinaryNode(
+    {
+      name: 'GlobalSettings',
+      properties: [],
+      children: [
+        {
+          name: 'Properties70',
+          properties: [],
+          children: [
+            {
+              name: 'P',
+              properties: ['UnitScaleFactor', 'double', 'Number', '', unitScaleFactor],
+              children: [],
+            },
+          ],
+        },
+      ],
+    },
+    header.length,
+  );
   const model = buildBinaryNode(
     {
       name: 'Model',
@@ -84,9 +108,9 @@ function binaryFbx(modelId, visibility) {
         },
       ],
     },
-    header.length,
+    header.length + globalSettings.length,
   );
-  const result = Buffer.concat([header, model, Buffer.alloc(13)]);
+  const result = Buffer.concat([header, globalSettings, model, Buffer.alloc(13)]);
   return result.buffer.slice(result.byteOffset, result.byteOffset + result.byteLength);
 }
 
@@ -113,6 +137,31 @@ Objects: {
 
 test('reads object visibility from binary FBX nodes', () => {
   assert.deepEqual([...readFbxModelVisibility(binaryFbx(987654, 0))], [[987654, 0]]);
+});
+
+test('reads physical unit scale from ASCII FBX global settings', () => {
+  const source = asciiBuffer(`
+GlobalSettings: {
+  Properties70: {
+    P: "UnitScaleFactor", "double", "Number", "",100
+  }
+}`);
+
+  assert.equal(readFbxUnitScaleFactor(source), 100);
+});
+
+test('reads physical unit scale from binary FBX global settings', () => {
+  assert.equal(readFbxUnitScaleFactor(binaryFbx(987654, 1, 100)), 100);
+});
+
+test('uses centimeters as the fallback for missing or invalid FBX unit metadata', () => {
+  assert.equal(readFbxUnitScaleFactor(asciiBuffer('Objects: {}')), 1);
+  assert.equal(
+    readFbxUnitScaleFactor(
+      asciiBuffer('GlobalSettings: { Properties70: { P: "UnitScaleFactor", "double", "Number", "",0 } }'),
+    ),
+    1,
+  );
 });
 
 test('applies FBX visibility to loader objects by model id', () => {

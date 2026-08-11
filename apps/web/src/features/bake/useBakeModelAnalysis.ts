@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
+import { canonicalizeFbxBoundingBox } from './bakeModelAlignment';
 import type { ModelBoundingBox } from '@/types/model';
 
 export type BakeModelFileInput = { objectId: string; file: File };
@@ -11,6 +12,7 @@ export type BakeModelInfo = {
   uvSets: string[];
   childMeshCount: number;
   warnings: string[];
+  sourceUnitScaleFactor?: number;
 };
 
 export type BakeModelAnalysis = {
@@ -30,16 +32,25 @@ function disposeLoadedRoot(root: THREE.Object3D) {
 }
 
 async function inspectModel({ objectId, file }: BakeModelFileInput) {
-  const loaded = await loadModelFromFile(file, { normalize: false, ground: false, targetMaxDimension: 3 });
+  const loaded = await loadModelFromFile(file, {
+    normalize: false,
+    ground: false,
+    targetMaxDimension: 3,
+    recenter: false,
+  });
   try {
     return {
       objectId,
       info: {
         name: loaded.object.name,
-        boundingBox: loaded.result.originalBoundingBox,
+        boundingBox: canonicalizeFbxBoundingBox(
+          loaded.result.originalBoundingBox,
+          loaded.result.sourceUnitScaleFactor,
+        ),
         uvSets: loaded.object.uvSets,
         childMeshCount: loaded.result.childMeshCount,
         warnings: loaded.result.warnings,
+        sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
       } satisfies BakeModelInfo,
     };
   } finally {

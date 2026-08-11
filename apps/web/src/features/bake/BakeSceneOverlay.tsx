@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import type { SceneObject, Transform } from '@/types/model';
+import { bakeOverlayScale } from './bakeModelAlignment';
 
 export type BakeViewportMode = 'high' | 'overlay' | 'cage';
 
 type OverlaySource = {
   root: THREE.Group;
   sourceUrl: string;
+  sourceUnitScaleFactor?: number;
 };
 
 function disposeObject(root: THREE.Object3D) {
@@ -28,9 +30,18 @@ function useOverlaySource(file?: File) {
     setSource(undefined);
     if (!file) return;
 
-    void loadModelFromFile(file, { normalize: false, ground: false, targetMaxDimension: 3 })
+    void loadModelFromFile(file, {
+      normalize: false,
+      ground: false,
+      targetMaxDimension: 3,
+      recenter: false,
+    })
       .then((loaded) => {
-        loadedSource = { root: loaded.root, sourceUrl: loaded.sourceUrl };
+        loadedSource = {
+          root: loaded.root,
+          sourceUrl: loaded.sourceUrl,
+          sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
+        };
         if (cancelled) {
           disposeObject(loaded.root);
           if (loaded.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(loaded.sourceUrl);
@@ -90,13 +101,23 @@ function cloneForOverlay(root: THREE.Group, style: 'low' | 'cage', cageDistance 
   return clone;
 }
 
-function OverlayModel({ root, transform }: { root: THREE.Group; transform: Transform }) {
+function OverlayModel({
+  root,
+  transform,
+  highUnitScaleFactor,
+  sourceUnitScaleFactor,
+}: {
+  root: THREE.Group;
+  transform: Transform;
+  highUnitScaleFactor?: number;
+  sourceUnitScaleFactor?: number;
+}) {
   return (
     <primitive
       object={root}
       position={transform.position}
       rotation={transform.rotation}
-      scale={transform.scale}
+      scale={bakeOverlayScale(transform.scale, highUnitScaleFactor, sourceUnitScaleFactor)}
     />
   );
 }
@@ -141,8 +162,22 @@ export function BakeSceneOverlay({
   if (mode === 'high') return null;
   return (
     <group name="module-2-bake-overlay">
-      {lowOverlay ? <OverlayModel root={lowOverlay} transform={highObject.transform} /> : null}
-      {mode === 'cage' && cageOverlay ? <OverlayModel root={cageOverlay} transform={highObject.transform} /> : null}
+      {lowOverlay ? (
+        <OverlayModel
+          root={lowOverlay}
+          transform={highObject.transform}
+          highUnitScaleFactor={highObject.sourceUnitScaleFactor}
+          sourceUnitScaleFactor={lowSource?.sourceUnitScaleFactor}
+        />
+      ) : null}
+      {mode === 'cage' && cageOverlay ? (
+        <OverlayModel
+          root={cageOverlay}
+          transform={highObject.transform}
+          highUnitScaleFactor={highObject.sourceUnitScaleFactor}
+          sourceUnitScaleFactor={(cageSource ?? lowSource)?.sourceUnitScaleFactor}
+        />
+      ) : null}
     </group>
   );
 }

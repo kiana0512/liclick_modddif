@@ -13,7 +13,6 @@ import {
   Map as MapIcon,
   Network,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkles,
   TriangleAlert,
   UploadCloud,
@@ -37,6 +36,7 @@ import {
   type AssetModelPreviewSource,
   type AssetModelPreviewStats,
 } from '@/features/workflow/AssetModelViewport';
+import { AssetUvLayoutPreview } from '@/features/workflow/AssetUvLayoutPreview';
 import { getHistoryModelFile } from '@/features/workflow/modelPreviewAssets';
 import { WorkflowShell } from '@/features/workflow/WorkflowShell';
 import type { WorkflowNavigation } from '@/features/workflow/workflowTypes';
@@ -771,26 +771,6 @@ function FileDropCard({
   );
 }
 
-function SettingLabel({
-  label,
-  description,
-  children,
-}: {
-  label: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col justify-between gap-3 border-b border-white/[0.055] py-4 last:border-0 sm:flex-row sm:items-center">
-      <div>
-        <div className="text-sm font-medium text-white/76">{label}</div>
-        {description && <div className="mt-1 text-xs leading-5 text-white/30">{description}</div>}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
-
 function MultiFbxDropCard({
   files,
   onFiles,
@@ -976,30 +956,6 @@ function Segment<T extends string | number>({
         );
       })}
     </div>
-  );
-}
-
-function AdvancedSection({
-  title = '高级设置',
-  hint,
-  children,
-}: {
-  title?: string;
-  hint?: string;
-  children: ReactNode;
-}) {
-  return (
-    <details className="group rounded-2xl border border-white/[0.07] bg-[#111321]/72">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 outline-none">
-        <span className="inline-flex items-center gap-2 text-sm font-medium text-white/58">
-          <SlidersHorizontal className="h-4 w-4 text-white/34" />
-          {title}
-          {hint && <span className="text-xs font-normal text-white/24">{hint}</span>}
-        </span>
-        <ChevronDown className="h-4 w-4 text-white/28 transition group-open:rotate-180" />
-      </summary>
-      <div className="border-t border-white/[0.055] px-5 pb-1">{children}</div>
-    </details>
   );
 }
 
@@ -1614,9 +1570,9 @@ function AutoUvWorkspace({
 }) {
   const [asset, setAsset] = useState<File>();
   const [resolution, setResolution] = useState<1024 | 2048 | 4096 | 8192>(2048);
-  const [hiddenAxis, setHiddenAxis] = useState<'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | 'auto'>('y+');
-  const [hardEdgeAngle, setHardEdgeAngle] = useState(75);
-  const [padding, setPadding] = useState(10);
+  const hiddenAxis = 'y+' as const;
+  const hardEdgeAngle = 75;
+  const padding = 10;
   const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
 
   useEffect(() => {
@@ -1684,15 +1640,6 @@ function AutoUvWorkspace({
 
   const submitBlockReason =
     serviceBlockReason ?? (!asset ? '请先导入一个需要展开 UV 的模型。' : undefined);
-  const hiddenAxisLabel = {
-    auto: '自动切缝',
-    'x-': '左侧缝',
-    'x+': '右侧缝',
-    'y-': '前侧缝',
-    'y+': '后侧缝',
-    'z-': '底部缝',
-    'z+': '顶部缝',
-  }[hiddenAxis];
 
   return (
     <section className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-white/[0.075] bg-[#111321]/80">
@@ -1746,60 +1693,6 @@ function AutoUvWorkspace({
           />
         </div>
 
-        <AdvancedSection hint={`${hiddenAxisLabel} · ${hardEdgeAngle}° · ${padding}px`}>
-          <SettingLabel label="切缝朝向" description="优先将切缝放到不易观察的一侧">
-            <Segment
-              value={hiddenAxis}
-              values={[
-                { value: 'auto', label: '自动' },
-                { value: 'x-', label: '左' },
-                { value: 'x+', label: '右' },
-                { value: 'y-', label: '前' },
-                { value: 'y+', label: '后' },
-                { value: 'z-', label: '底' },
-                { value: 'z+', label: '顶' },
-              ]}
-              onChange={(value) => {
-                onSubmissionInputsChange();
-                setHiddenAxis(value);
-              }}
-              tone="emerald"
-              label="隐藏缝方向"
-            />
-          </SettingLabel>
-          <SettingLabel label="硬边阈值" description="超过该角度的边会切开，减少烘焙伪影">
-            <label className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1}
-                max={179}
-                value={hardEdgeAngle}
-                onChange={(event) => {
-                  onSubmissionInputsChange();
-                  setHardEdgeAngle(Number(event.target.value));
-                }}
-                className="bake-range w-28 accent-emerald-400"
-              />
-              <span className="w-10 text-right text-xs font-medium text-white/62">{hardEdgeAngle}°</span>
-            </label>
-          </SettingLabel>
-          <SettingLabel label="UV 间距" description="以输出贴图像素计">
-            <label className="flex items-center gap-3">
-              <input
-                type="range"
-                min={2}
-                max={128}
-                value={padding}
-                onChange={(event) => {
-                  onSubmissionInputsChange();
-                  setPadding(Number(event.target.value));
-                }}
-                className="bake-range w-28 accent-emerald-400"
-              />
-              <span className="w-10 text-right text-xs font-medium text-white/62">{padding}px</span>
-            </label>
-          </SettingLabel>
-        </AdvancedSection>
       </fieldset>
 
       <div className="border-t border-white/[0.055] p-5">
@@ -3071,7 +2964,7 @@ export function AssetProcessingPage({
       ) : (
       <div className="workflow-scrollbar relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#080914] pt-[82px] text-white 2xl:pr-[264px] min-[1720px]:pr-[344px]">
       <div className={`pointer-events-none absolute right-[7%] top-16 h-[420px] w-[420px] rounded-full blur-[120px] ${pageGlow}`} />
-      <section className="relative z-[1] mx-auto w-full max-w-[1180px] px-6 pb-16 pt-10 lg:px-10 lg:pt-14">
+      <section className="relative z-[1] mx-auto w-full max-w-[1600px] px-6 pb-16 pt-10 lg:px-10 lg:pt-14">
         <button
           type="button"
           onClick={onBack}
@@ -3124,7 +3017,7 @@ export function AssetProcessingPage({
         )}
 
         {mode === 'uv' ? (
-          <div className="mt-6 grid min-w-0 max-w-full items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_280px]">
+          <div className="mt-6 grid min-w-0 max-w-full items-stretch gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_280px] xl:grid-cols-[minmax(520px,1fr)_280px_minmax(360px,0.82fr)]">
             <AutoUvWorkspace
               initialAsset={initialAsset}
               onAssetChange={invalidateJobForInputChange}
@@ -3145,6 +3038,15 @@ export function AssetProcessingPage({
             onContinue={jobBinding?.sourceFile ? handleContinue : undefined}
             continueLabel={mode === 'uv' ? '保存并传入烘焙' : '保存并传入 UV'}
           />
+          {job?.status === 'SUCCEEDED' ? (
+            <div className="min-h-[560px] lg:col-span-2 xl:col-span-1">
+              <AssetUvLayoutPreview
+                job={job}
+                busy={false}
+                error={assetJobError(job) ?? error}
+              />
+            </div>
+          ) : null}
           </div>
         ) : (
           <div className="mt-6 grid min-w-0 max-w-full items-stretch gap-4 xl:grid-cols-[330px_minmax(0,1fr)]">

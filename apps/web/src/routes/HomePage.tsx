@@ -422,9 +422,6 @@ export function HomePage({
             layout="compact"
           />
         </div>
-        <p className="mt-4 text-center text-[11px] leading-5 text-white/28">
-          使用统计仅记录模块入口和次数，不上传作品、提示词或文件路径。
-        </p>
       </section>
     </main>
   );

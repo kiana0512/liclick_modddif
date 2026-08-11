@@ -48,8 +48,13 @@ import {
   type BakeModelFileInput,
 } from '@/features/bake/useBakeModelAnalysis';
 import { BakeSceneOverlay, type BakeViewportMode } from '@/features/bake/BakeSceneOverlay';
+import { canonicalizeFbxBoundingBox } from '@/features/bake/bakeModelAlignment';
 import { WorkflowShell } from '@/features/workflow/WorkflowShell';
 import { ModuleOneReadonlyViewport } from '@/features/workflow/ModuleOneReadonlyViewport';
+import {
+  hasWorkflowBakeBaseColor,
+  selectBakeBaseColor,
+} from '@/features/workflow/selectBakeBaseColor';
 import { useWorkflowProject } from '@/features/workflow/useWorkflowProject';
 import {
   focusCameraOrbitOnObjectId,
@@ -580,7 +585,14 @@ export function BakeWorkspacePage({
         // its in-memory low model if both operations finish in the same frame.
         setLowFiles((current) => ({ ...low, ...current }));
         setCageFiles(cage);
-        setColorFiles(color);
+        setColorFiles(
+          Object.fromEntries(
+            Object.entries(color).filter(
+              ([objectId]) =>
+                !hasWorkflowBakeBaseColor(project.layers, objectId, handoff),
+            ),
+          ),
+        );
         setRoughnessFiles(roughness);
         setMetallicFiles(metallic);
         setNormalFiles(normal);
@@ -597,7 +609,7 @@ export function BakeWorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [handoff?.objectId, project]);
+  }, [handoff, project]);
 
   useEffect(() => {
     if (handoff?.objectId && selectedObjectId !== handoff.objectId) {
@@ -655,20 +667,7 @@ export function BakeWorkspacePage({
   const selectedHigh =
     highObjects.find((object) => object.id === selectedObjectId) ?? highObjects[0];
   const projectColorForObject = useCallback(
-    (objectId: string) => {
-      if (handoff?.objectId === objectId && handoff.baseColor?.imageUrl) {
-        return handoff.baseColor;
-      }
-      const baked = [...(project?.bakedTextures ?? [])]
-        .reverse()
-        .find((item) => item.objectId === objectId && Boolean(item.imageUrl));
-      if (baked) return { name: '模块 1 已烘焙 Base Color', imageUrl: baked.imageUrl };
-      const layer = project?.layers.find(
-        (item) => item.objectId === objectId && item.visible && Boolean(item.imageUrl),
-      );
-      if (layer) return { name: layer.name, imageUrl: layer.imageUrl };
-      return undefined;
-    },
+    (objectId: string) => selectBakeBaseColor(project, objectId, handoff),
     [handoff, project?.bakedTextures, project?.layers],
   );
 
@@ -933,7 +932,10 @@ export function BakeWorkspacePage({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [activeStage, bakeJob?.id, currentDraftSettings, persistProjectUpdate, selectedHigh]);
-  const highBox = selectedHigh?.originalBoundingBox ?? selectedHigh?.boundingBox;
+  const highSourceBox = selectedHigh?.originalBoundingBox ?? selectedHigh?.boundingBox;
+  const highBox = highSourceBox
+    ? canonicalizeFbxBoundingBox(highSourceBox, selectedHigh?.sourceUnitScaleFactor)
+    : undefined;
   const lowBox = selectedLowInfo?.boundingBox;
   const highSize = maxDimension(highBox);
   const lowSize = maxDimension(lowBox);
@@ -2457,6 +2459,8 @@ export function BakeWorkspacePage({
                               <img
                                 src={outputUrl}
                                 alt={outputLabel}
+                                loading="lazy"
+                                decoding="async"
                                 className="h-full w-full object-cover"
                               />
                             ) : (
@@ -3095,6 +3099,7 @@ export function BakeWorkspacePage({
                         <img
                           src={selectedResultUrl}
                           alt={`${channelLabels[selectedResultChannel]} 烘焙贴图`}
+                          decoding="async"
                           className={cn(
                             'aspect-square w-full object-contain',
                             selectedResultChannel === 'normal' ? 'bg-[#777f]' : 'bg-black/30',

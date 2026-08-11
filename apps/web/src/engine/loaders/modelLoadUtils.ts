@@ -52,6 +52,7 @@ export function summarizeLoadedGroup(input: {
     normalize: input.normalizeOptions?.normalize ?? true,
     ground: input.normalizeOptions?.ground ?? true,
     targetMaxDimension: input.normalizeOptions?.targetMaxDimension ?? 3,
+    recenter: input.normalizeOptions?.recenter ?? true,
   });
 
   const materialNames = new Set<string>();
