@@ -23,6 +23,9 @@ try {
   const repaintOverlaySync = await server.ssrLoadModule(
     '/src/engine/viewport/localRepaintGpuOverlaySync.ts',
   );
+  const renderedLayerColor = await server.ssrLoadModule(
+    '/src/engine/viewport/renderedLayerColor.ts',
+  );
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const camera = {
     type: 'perspective',
@@ -60,6 +63,22 @@ try {
       renderedColor: false,
     };
   });
+  assert.equal(
+    renderedLayerColor.usesUnlitRenderedColor({
+      id: 'local-repaint-projection-legacy',
+      renderedColor: false,
+    }),
+    true,
+    'Legacy repaint layers must not receive viewport lighting a second time.',
+  );
+  assert.equal(
+    renderedLayerColor.usesUnlitRenderedColor({
+      id: 'ordinary-uv-layer',
+      renderedColor: false,
+    }),
+    false,
+    'Ordinary albedo layers must continue to receive viewport lighting.',
+  );
   const residentUvTexture = new THREE.DataTexture(
     new Uint8Array([255, 255, 255, 255]),
     1,

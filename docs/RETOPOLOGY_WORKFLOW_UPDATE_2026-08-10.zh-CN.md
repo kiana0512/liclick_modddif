@@ -145,9 +145,45 @@
 - [AssetProcessingPage.tsx](../apps/web/src/routes/AssetProcessingPage.tsx)
 - [AssetModelViewport.tsx](../apps/web/src/features/workflow/AssetModelViewport.tsx)
 
-## 10. 验证结果
+## 10. 自动烘焙实时投射纹理修复
+
+修复局部重绘图层在视窗中显示正常、但自动烘焙提示 `Could not load projected layer image for baking (relative URL)` 的问题。
+
+- 自动烘焙采样器同时支持实时 Canvas 与实时 Image 纹理。
+- 不再将 `liclick-live-projected-canvas:` 内存纹理误判为普通相对 URL。
+- 自动保存时可将两类实时纹理统一编码为 PNG 并固化到项目资源。
+- 贴图传入拓扑时同样支持固化实时 Image 类型的 Base Color。
+- 增加实时图片采样与 PNG 固化测试。
+
+主要文件：
+
+- [imageSampler.ts](../apps/web/src/engine/bake/imageSampler.ts)
+- [liveProjectedCanvasTextureRegistry.ts](../apps/web/src/engine/projection/liveProjectedCanvasTextureRegistry.ts)
+- [EditorPage.tsx](../apps/web/src/routes/EditorPage.tsx)
+- [liveProjectedCanvasTextureRegistry.test.mjs](../apps/web/src/engine/projection/__tests__/liveProjectedCanvasTextureRegistry.test.mjs)
+
+## 11. 局部重绘颜色一致性修复
+
+修复局部重绘生成图应用到模型后整体变暗、与生成完成时的参考效果图颜色不一致的问题。
+
+- 局部重绘生成图统一按已经包含视窗光照和曝光的最终显示颜色处理。
+- 实时 GPU 投影、保存后的投影图层以及转为 UV 后的覆盖层使用相同颜色语义。
+- 避免生成图在模型视窗中再次乘以环境光和主光，消除二次光照造成的暗化。
+- 兼容旧项目：即使历史局部重绘层保存了 `renderedColor: false`，也会依据图层 ID、角色和资源标识自动恢复正确显示。
+- 增加普通基础色图层与旧版局部重绘层的颜色语义回归测试。
+
+主要文件：
+
+- [ViewportCanvas.tsx](../apps/web/src/engine/viewport/ViewportCanvas.tsx)
+- [SceneRoot.tsx](../apps/web/src/engine/viewport/SceneRoot.tsx)
+- [renderedLayerColor.ts](../apps/web/src/engine/viewport/renderedLayerColor.ts)
+- [test-projected-layer-visibility.mjs](../apps/web/scripts/test-projected-layer-visibility.mjs)
+
+## 12. 验证结果
 
 - FBX 可见性与凹面预览相关测试共 6 项，全部通过。
 - Web TypeScript 类型检查通过。
 - Web 生产构建通过。
 - 实际界面完成“导入高模 → 删除当前高模 → 中央视窗清空”流程验证。
+- 使用项目 `424` 的临时副本完成 2048px 可见投射层合并，成功生成“合并 UV 图层”，未再出现相对 URL 错误；验证副本随后已删除。
+- 局部重绘颜色语义回归测试通过，确认旧版局部重绘层跳过二次视窗光照，普通基础色图层仍保留正常光照。

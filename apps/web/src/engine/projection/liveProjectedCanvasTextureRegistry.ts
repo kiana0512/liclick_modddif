@@ -7,10 +7,7 @@ type LiveCanvasEntry = {
   texture: THREE.CanvasTexture;
   revision: number;
   flipY: boolean;
-  encodedPng?: {
-    revision: number;
-    promise: Promise<Blob>;
-  };
+  encodedPng?: EncodedPng;
 };
 
 type LiveImageEntry = {
@@ -18,6 +15,12 @@ type LiveImageEntry = {
   texture: THREE.Texture;
   revision: number;
   flipY: boolean;
+  encodedPng?: EncodedPng;
+};
+
+type EncodedPng = {
+  revision: number;
+  promise: Promise<Blob>;
 };
 
 const liveCanvasTextures = new Map<string, LiveCanvasEntry>();
@@ -142,19 +145,46 @@ function canvasToPngBlob(canvas: HTMLCanvasElement) {
   });
 }
 
-export function getLiveProjectedCanvasBlob(url: string) {
-  const entry = liveCanvasTextures.get(url);
-  if (!entry) return undefined;
-  if (entry.encodedPng?.revision === entry.revision) return entry.encodedPng.promise;
+function imageToPngBlob(image: HTMLImageElement) {
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  if (!width || !height) return Promise.reject(new Error('The live projected image is empty.'));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return Promise.reject(new Error('Could not encode the live projected image.'));
+  context.drawImage(image, 0, 0, width, height);
+  return canvasToPngBlob(canvas);
+}
 
+function getEncodedPng(
+  entry: { revision: number; encodedPng?: EncodedPng },
+  encode: () => Promise<Blob>,
+) {
+  if (entry.encodedPng?.revision === entry.revision) return entry.encodedPng.promise;
   const revision = entry.revision;
-  const promise = canvasToPngBlob(entry.canvas).catch((error) => {
-    const latest = liveCanvasTextures.get(url);
-    if (latest?.encodedPng?.promise === promise) latest.encodedPng = undefined;
+  const promise = encode().catch((error) => {
+    if (entry.encodedPng?.promise === promise) entry.encodedPng = undefined;
     throw error;
   });
   entry.encodedPng = { revision, promise };
   return promise;
+}
+
+export function getLiveProjectedCanvasBlob(url: string) {
+  const entry = liveCanvasTextures.get(url);
+  if (!entry) return undefined;
+  return getEncodedPng(entry, () => canvasToPngBlob(entry.canvas));
+}
+
+export function getLiveProjectedTextureBlob(url: string) {
+  const canvasEntry = liveCanvasTextures.get(url);
+  if (canvasEntry) return getEncodedPng(canvasEntry, () => canvasToPngBlob(canvasEntry.canvas));
+  const imageEntry = liveImageTextures.get(url);
+  return imageEntry
+    ? getEncodedPng(imageEntry, () => imageToPngBlob(imageEntry.image))
+    : undefined;
 }
 
 export function getLiveProjectedTextureSourceState(url: string) {

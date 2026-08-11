@@ -67,7 +67,7 @@ import {
   setDebugUvBakeVerbose,
 } from '@/engine/bake/uvBakeDebugControls';
 import {
-  getLiveProjectedCanvasBlob,
+  getLiveProjectedTextureBlob,
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import {
@@ -2064,7 +2064,7 @@ export function EditorPage({
     ) => {
       try {
         if (url && isLiveProjectedCanvasUrl(url)) {
-          const blobPromise = getLiveProjectedCanvasBlob(url);
+          const blobPromise = getLiveProjectedTextureBlob(url);
           if (!blobPromise) return fallback;
           const result = await saveBlobAsset({
             projectId: projectForSave.id,
@@ -4099,7 +4099,7 @@ export function EditorPage({
       if (currentObjectBaseColor) {
         const colorUrl = currentObjectBaseColor.imageUrl;
         const liveCanvasBlob = isLiveProjectedCanvasUrl(colorUrl)
-          ? await getLiveProjectedCanvasBlob(colorUrl)
+          ? await getLiveProjectedTextureBlob(colorUrl)
           : undefined;
         const colorBlob =
           liveCanvasBlob ??

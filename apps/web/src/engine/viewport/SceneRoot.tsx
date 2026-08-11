@@ -71,6 +71,7 @@ import type {
   ProjectionPreviewLighting,
 } from '@/engine/projection/projectionTypes';
 import type { Layer } from '@/types/layer';
+import { usesUnlitRenderedColor } from './renderedLayerColor';
 
 const RESOLUTION_TO_SIZE = {
   '1K': 1024,
@@ -195,13 +196,7 @@ function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
 }
 
 function isRenderedLocalRepaintLayer(layer: Layer) {
-  return Boolean(
-    layer.renderedColor ||
-    layer.id.startsWith('local-repaint-') ||
-    layer.id.startsWith('content-aware-projected-repair') ||
-    layer.generationId === 'texture-map-content-aware-repair' ||
-    (layer.imageUrl ?? '').includes('surface-edit:local-repaint'),
-  );
+  return usesUnlitRenderedColor(layer);
 }
 
 function reportProjectedPreviewProgress(
@@ -238,23 +233,6 @@ function reportProjectedPreviewProgress(
         layerCount: options.layerCount,
       },
     }),
-  );
-}
-
-function usesUnlitRenderedColor(layer: Layer) {
-  // Local repaint is authored as an albedo replacement and must follow the
-  // same PBR controls as the surface below it. Content-aware repair captures,
-  // by contrast, remain display-colour fallbacks for legacy compatibility.
-  if (
-    isOverlayProjectionPatch(layer) ||
-    layer.role === 'local-repaint-overlay' ||
-    layer.role === 'local-repaint-draft'
-  )
-    return false;
-  return Boolean(
-    layer.renderedColor ||
-      layer.id.startsWith('content-aware-projected-repair') ||
-      layer.generationId === 'texture-map-content-aware-repair',
   );
 }
 

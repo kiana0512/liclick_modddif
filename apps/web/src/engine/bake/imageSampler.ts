@@ -1,7 +1,10 @@
 import { getLocalTextureRuntimeApiBase } from '@/services/localTextureRuntimeClient';
 import { urlToBlob } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
-import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import {
+  getLiveProjectedTextureSourceState,
+  isLiveProjectedCanvasUrl,
+} from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 export type ImageSample = [number, number, number, number];
 const COLOR_ALPHA_REJECT_THRESHOLD = 3;
@@ -92,6 +95,7 @@ function rememberImageData(cacheKey: string, imageData: ImageData) {
 
 function describeUrlKind(url: string) {
   if (!url) return 'empty URL';
+  if (isLiveProjectedCanvasUrl(url)) return 'live projected texture';
   if (url.startsWith('blob:')) return 'temporary blob URL';
   if (url.startsWith('data:')) return 'embedded data URL';
   if (url.startsWith('http')) return 'HTTP URL';
@@ -111,9 +115,9 @@ export async function loadImageData(
   maxDimension = Number.POSITIVE_INFINITY,
   label = 'projected layer image',
 ): Promise<ImageData> {
-  const liveCanvasState = getLiveProjectedCanvasState(url);
-  const resolvedUrl = liveCanvasState
-    ? `${url}#${liveCanvasState.revision}`
+  const liveTextureState = getLiveProjectedTextureSourceState(url);
+  const resolvedUrl = liveTextureState
+    ? `${url}#${liveTextureState.revision}`
     : resolveImageAssetUrl(url);
   if (!resolvedUrl) throw new Error(`Could not load ${label}: image URL is empty.`);
   const cacheKey = getImageDataCacheKey(url, resolvedUrl, maxDimension);
@@ -125,10 +129,16 @@ export async function loadImageData(
   let source: CanvasImageSource;
   let sourceWidth: number;
   let sourceHeight: number;
-  if (liveCanvasState) {
-    source = liveCanvasState.canvas;
-    sourceWidth = liveCanvasState.canvas.width;
-    sourceHeight = liveCanvasState.canvas.height;
+  if (liveTextureState) {
+    source = liveTextureState.source;
+    sourceWidth =
+      liveTextureState.source instanceof HTMLImageElement
+        ? liveTextureState.source.naturalWidth || liveTextureState.source.width
+        : liveTextureState.source.width;
+    sourceHeight =
+      liveTextureState.source instanceof HTMLImageElement
+        ? liveTextureState.source.naturalHeight || liveTextureState.source.height
+        : liveTextureState.source.height;
   } else {
     const image = new Image();
     image.decoding = 'async';
@@ -149,6 +159,8 @@ export async function loadImageData(
               `Could not load ${label} for baking (${describeUrlKind(url)}). ` +
                 (url.startsWith('blob:')
                   ? 'The temporary blob URL is no longer available; regenerate or re-add this layer.'
+                  : isLiveProjectedCanvasUrl(url)
+                    ? 'The live projected texture is no longer registered; reopen or regenerate this layer.'
                   : 'Check that the workspace asset exists and the workspace server is running.'),
             ),
           );
