@@ -13,8 +13,8 @@ const INTERACTIVE_GPU_PAUSE_MS = 8;
 
 type GpuBuffer = {
   destroy(): void;
-  getMappedRange(): ArrayBuffer;
-  mapAsync(mode: number): Promise<void>;
+  getMappedRange(offset?: number, size?: number): ArrayBuffer;
+  mapAsync(mode: number, offset?: number, size?: number): Promise<void>;
   unmap(): void;
 };
 
@@ -327,16 +327,25 @@ async function copyToReadbackInBudgetedChunks(
   target: CompositeResources,
   request: NormalizedCompositeRequest,
 ) {
+  const output = new ArrayBuffer(target.byteLength);
+  const outputBytes = new Uint8Array(output);
+  // Mapping the complete 64MiB result in one operation can stall Chromium's
+  // compositor even though this code runs in a worker. Map bounded 8MiB ranges
+  // and copy them into worker-owned memory before PNG encoding.
+  const readbackChunkBytes = Math.max(activeChunkBytes(request), 8 * 1024 * 1024);
   for (let offset = 0; offset < target.byteLength; ) {
-    const size = Math.min(activeChunkBytes(request), target.byteLength - offset);
+    const size = Math.min(readbackChunkBytes, target.byteLength - offset);
     const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(target.front, offset, target.readback, offset, size);
     device.queue.submit([encoder.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    await target.readback.mapAsync(GPU_MAP_MODE_READ, offset, size);
+    outputBytes.set(new Uint8Array(target.readback.getMappedRange(offset, size)), offset);
+    target.readback.unmap();
     offset += size;
-    if (interactive) await device.queue.onSubmittedWorkDone();
     if (offset < target.byteLength) await yieldGpuBudget();
   }
-  await device.queue.onSubmittedWorkDone();
+  return output;
 }
 
 function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number) {
@@ -424,10 +433,7 @@ async function runComposite(rawRequest: CompositeRequest) {
     await computeInBudgetedChunks(device, target, request.opacity, request);
     const computeMs = performance.now() - computeStartedAt;
     const readbackStartedAt = performance.now();
-    await copyToReadbackInBudgetedChunks(device, target, request);
-    await target.readback.mapAsync(GPU_MAP_MODE_READ);
-    const output = target.readback.getMappedRange().slice(0);
-    target.readback.unmap();
+    const output = await copyToReadbackInBudgetedChunks(device, target, request);
     const readbackMs = performance.now() - readbackStartedAt;
     return {
       output,
@@ -531,16 +537,37 @@ scope.onmessage = (event) => {
           throw new Error('PNG output dimensions are missing.');
         }
         const encodeStartedAt = performance.now();
-        const encoded = await encodeRgbaPngBytesChunked(
-          request.width,
-          request.height,
-          new Uint8ClampedArray(verified.output),
-          () => wait(0),
-        );
+        let pngBlob: Blob;
+        if (interactive && typeof OffscreenCanvas !== 'undefined') {
+          // Chromium's native worker encoder keeps the compositor responsive
+          // during an active 4K viewport. putImageData is lossless RGBA; only
+          // PNG container compression differs from the deterministic idle path.
+          const canvas = new OffscreenCanvas(request.width, request.height);
+          const context = canvas.getContext('2d', { alpha: true });
+          if (!context) throw new Error('Could not create interactive PNG canvas.');
+          context.putImageData(
+            new ImageData(
+              new Uint8ClampedArray(verified.output),
+              request.width,
+              request.height,
+            ),
+            0,
+            0,
+          );
+          pngBlob = await canvas.convertToBlob({ type: 'image/png' });
+        } else {
+          const encoded = await encodeRgbaPngBytesChunked(
+            request.width,
+            request.height,
+            new Uint8ClampedArray(verified.output),
+            () => wait(0),
+          );
+          pngBlob = new Blob([encoded], { type: 'image/png' });
+        }
         const response: WorkerResponse = {
           type: 'result',
           id: request.id,
-          pngBlob: new Blob([encoded], { type: 'image/png' }),
+          pngBlob,
           encodeMs: performance.now() - encodeStartedAt,
           metrics: result.metrics,
           verification: verified.verification,

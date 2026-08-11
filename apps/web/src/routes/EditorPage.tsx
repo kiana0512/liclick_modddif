@@ -95,6 +95,7 @@ import {
 import {
   compositeRgbaUrlUnderAndEncodePngWithWebGpu,
   compositeRgbaUrlUnderWithWebGpu,
+  releaseWebGpuRgbaCompositeResources,
   type WebGpuRgbaCompositeMetrics,
 } from '@/engine/performance/webGpuRgbaComposite';
 import { compareUvLayersForComposition } from '@/engine/layers/uvLayerComposition';
@@ -121,7 +122,10 @@ import {
 } from '@/engine/localRepaint/maskUtils';
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
-import { prewarmPreviewTextures } from '@/engine/viewport/previewTextureCache';
+import {
+  prewarmPreviewTextures,
+  releasePreviewTexture,
+} from '@/engine/viewport/previewTextureCache';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
@@ -3455,11 +3459,15 @@ export function EditorPage({
   }
 
   const addUvContentAwareRepairLayer = useCallback(
-    async (imageData: ImageData, objectId: string) => {
+    async (imageData: ImageData, objectId: string, temporary = false) => {
       const layerId = createId('content-aware-uv-repair');
-      const imageUrl = await persistLayerImage(imageData, `${layerId}.png`, {
-        preserveTransparentRgb: true,
-      });
+      const imageUrl = temporary
+        ? await blobToDataUrl(
+            await encodeRgbaPngBlob(imageData.width, imageData.height, imageData.data),
+          )
+        : await persistLayerImage(imageData, `${layerId}.png`, {
+            preserveTransparentRgb: true,
+          });
       const currentLayers = useLayerStore.getState().layers;
       const previousRepairCount = currentLayers.filter(
         (layer) =>
@@ -3506,7 +3514,7 @@ export function EditorPage({
         eyeVisible: true,
         publishedAt: performance.now(),
       });
-      scheduleTexturedThumbnailRefresh(300);
+      if (!temporary) scheduleTexturedThumbnailRefresh(300);
       return layer;
     },
     [persistLayerImage, scheduleTexturedThumbnailRefresh, setActiveLayer, setLayers, t],
@@ -3976,6 +3984,10 @@ export function EditorPage({
           if (!previewPrewarmReady) throw new Error('4K UV preview texture prewarm failed.');
         } finally {
           previewPrewarmDurationMs = performance.now() - previewPrewarmStartedAt;
+          // S4 uses a one-shot Blob URL solely to validate the exact 4K GPU
+          // handoff. Never retain that revoked 64MB texture in the resident LRU;
+          // repeated stress runs must not manufacture a GC/VRAM regression.
+          releasePreviewTexture(previewUrl);
           URL.revokeObjectURL(previewUrl);
         }
         const result = {
@@ -4079,6 +4091,7 @@ export function EditorPage({
       if (benchmarkOnly) throw error;
     } finally {
       delete document.body.dataset.perfUvBakePhase;
+      releaseWebGpuRgbaCompositeResources();
       manualBakeRunningRef.current = false;
       manualBakeProgressTimerRef.current = window.setTimeout(
         () => setManualBakeProgress(undefined),
@@ -4671,6 +4684,9 @@ export function EditorPage({
       return;
     }
     const clickedAt = performance.now();
+    // Reserve the viewport/GPU synchronously, before React panel updates can
+    // schedule background 4K composition or projected-material promotion.
+    document.body.dataset.localRepaintGenerationBusy = '1';
     document.body.dataset.localRepaintButton2ClickedAt = clickedAt.toFixed(1);
     document.body.dataset.perfLocalRepaintPhase = 'button2-click-response';
     window.requestAnimationFrame((frameAt) => {
@@ -4974,7 +4990,11 @@ export function EditorPage({
   }, [handleLocalRepaintFromToolbar]);
 
   const runContentAwareRepair = useCallback(
-    async (requestedObjectId?: string) => {
+    async (
+      requestedObjectId?: string,
+      options?: { benchmarkOnly?: boolean },
+    ) => {
+      const benchmarkOnly = options?.benchmarkOnly === true;
       if (contentAwareRepairRunningRef.current) return;
       contentAwareRepairRunningRef.current = true;
       const repairRunStartedAt = performance.now();
@@ -4983,12 +5003,28 @@ export function EditorPage({
         phase: string,
         detail: Record<string, unknown> = {},
       ) => {
-        document.body.dataset.contentAwareRepairRun = JSON.stringify({
+        const state = {
           status,
           phase,
           durationMs: Math.round((performance.now() - repairRunStartedAt) * 10) / 10,
           ...detail,
-        });
+        };
+        document.body.dataset.contentAwareRepairRun = JSON.stringify(state);
+        document.body.dataset.perfContentAwareRepairPhase = `s9-${phase}`;
+        let history: Array<typeof state> = [];
+        if (phase !== 'prepare') {
+          try {
+            history = JSON.parse(
+              document.body.dataset.contentAwareRepairPhaseHistory ?? '[]',
+            ) as Array<typeof state>;
+          } catch {
+            history = [];
+          }
+        }
+        history.push(state);
+        document.body.dataset.contentAwareRepairPhaseHistory = JSON.stringify(
+          history.slice(-24),
+        );
       };
       reportRepairRunState('running', 'prepare');
       const abortController = new AbortController();
@@ -5004,12 +5040,14 @@ export function EditorPage({
                 )
               : undefined) ?? sceneState.importedModel);
         if (!viewportRuntime || !targetModel) {
-          pushToast({
-            tone: 'warning',
-            title: t('viewportUnavailable'),
-            description: t('importModelFirst'),
-          });
-          return;
+          if (!benchmarkOnly) {
+            pushToast({
+              tone: 'warning',
+              title: t('viewportUnavailable'),
+              description: t('importModelFirst'),
+            });
+          }
+          throw new Error(t('importModelFirst'));
         }
         window.clearTimeout(manualBakeProgressTimerRef.current);
         setManualBakeProgress({
@@ -5070,7 +5108,9 @@ export function EditorPage({
         reportRepairRunState('running', 'projection-bake-ready', {
           resolution: repairResolution,
           sourceLayerCount: sourceLayerIds.length,
+          bakePerformanceBreakdown: bakeResult.report.performanceBreakdown,
         });
+        delete document.body.dataset.perfUvBakePhase;
         const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
         if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
         let workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
@@ -5180,12 +5220,14 @@ export function EditorPage({
         if (detectedGaps.stats.totalPixels === 0) {
           reportRepairRunState('no-gaps', 'gap-scan-complete');
           setManualBakeProgress(undefined);
-          pushToast({
-            tone: 'info',
-            title: t('contentAwareRepair'),
-            description: t('contentAwareRepairNoBlankArea'),
-            dedupeKey: 'content-aware-no-blank-area',
-          });
+          if (!benchmarkOnly) {
+            pushToast({
+              tone: 'info',
+              title: t('contentAwareRepair'),
+              description: t('contentAwareRepairNoBlankArea'),
+              dedupeKey: 'content-aware-no-blank-area',
+            });
+          }
           return;
         }
 
@@ -5246,6 +5288,7 @@ export function EditorPage({
         );
         reportRepairRunState('running', 'repair-worker-ready', {
           repairedPixels: repair.stats.repairedPixels,
+          outputChecksum: repair.stats.outputChecksum,
         });
         console.info('[Liclick Content Aware] Surface repair', JSON.stringify(repair.stats));
         if (repair.stats.repairedPixels === 0) {
@@ -5259,19 +5302,26 @@ export function EditorPage({
           detail: t('contentAwareRepairFilling'),
           progress: 0.96,
         });
-        captureHistory('创建独立内容识别 UV 修补图层');
-        const repairLayer = await addUvContentAwareRepairLayer(repairTexture, objectId);
-        setProjectLayers(useLayerStore.getState().layers);
+        if (!benchmarkOnly) captureHistory('创建独立内容识别 UV 修补图层');
+        const repairLayer = await addUvContentAwareRepairLayer(
+          repairTexture,
+          objectId,
+          benchmarkOnly,
+        );
+        if (!benchmarkOnly) setProjectLayers(useLayerStore.getState().layers);
         reportRepairRunState('complete', 'atomic-publish', {
           layerId: repairLayer.id,
           repairedPixels: repair.stats.repairedPixels,
+          outputChecksum: repair.stats.outputChecksum,
         });
-        pushToast({
-          tone: 'success',
-          title: t('contentAwareFillComplete'),
-          description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px`,
-          dedupeKey: `content-aware-repair:${repairLayer.id}`,
-        });
+        if (!benchmarkOnly) {
+          pushToast({
+            tone: 'success',
+            title: t('contentAwareFillComplete'),
+            description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px`,
+            dedupeKey: `content-aware-repair:${repairLayer.id}`,
+          });
+        }
       } catch (error) {
         if (
           (error instanceof Error && error.name === 'AbortError') ||
@@ -5284,12 +5334,16 @@ export function EditorPage({
           message: error instanceof Error ? error.message : String(error),
         });
         setManualBakeProgress(undefined);
-        pushToast({
-          tone: 'error',
-          title: t('localRepaintFailed'),
-          description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
-        });
+        if (!benchmarkOnly) {
+          pushToast({
+            tone: 'error',
+            title: t('localRepaintFailed'),
+            description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
+          });
+        }
+        if (benchmarkOnly) throw error;
       } finally {
+        delete document.body.dataset.perfUvBakePhase;
         if (contentAwareRepairAbortControllerRef.current === abortController) {
           contentAwareRepairRunningRef.current = false;
           contentAwareRepairAbortControllerRef.current = undefined;
@@ -5302,6 +5356,42 @@ export function EditorPage({
     },
     [addUvContentAwareRepairLayer, captureHistory, pushToast, setProjectLayers, t],
   );
+
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has('perfLab')) return;
+    const target = window as typeof window & {
+      LiclickPerfContentAwareRepair?: {
+        run: (objectId?: string) => Promise<{
+          terminal: Record<string, unknown>;
+          history: Array<Record<string, unknown>>;
+        }>;
+      };
+    };
+    target.LiclickPerfContentAwareRepair = {
+      run: async (objectId) => {
+        delete document.body.dataset.contentAwareRepairRun;
+        delete document.body.dataset.contentAwareRepairPhaseHistory;
+        await runContentAwareRepair(objectId, { benchmarkOnly: true });
+        const terminal = JSON.parse(
+          document.body.dataset.contentAwareRepairRun ?? '{}',
+        ) as Record<string, unknown>;
+        const history = JSON.parse(
+          document.body.dataset.contentAwareRepairPhaseHistory ?? '[]',
+        ) as Array<Record<string, unknown>>;
+        if (terminal.status !== 'complete' && terminal.status !== 'no-gaps') {
+          throw new Error(
+            typeof terminal.message === 'string'
+              ? terminal.message
+              : '内容识别修复测试未发布完整结果。',
+          );
+        }
+        return { terminal, history };
+      },
+    };
+    return () => {
+      delete target.LiclickPerfContentAwareRepair;
+    };
+  }, [runContentAwareRepair]);
 
   const handleContentAwareRepairFromToolbar = useCallback(() => {
     void runContentAwareRepair();

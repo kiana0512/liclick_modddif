@@ -4,7 +4,10 @@ const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 export const residentPreviewTextureCache = new Map<string, THREE.Texture>();
 const previewTextureUploadPromises = new WeakMap<THREE.Texture, Promise<void>>();
-const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 1024 * 1024;
+// Two megapixels keeps a 4K upload below the 16.7ms interaction budget on the
+// performance-lab GPU while halving the number of ImageBitmap crops and rAF
+// gaps. Pixel format, dimensions and filtering remain unchanged.
+const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 2 * 1024 * 1024;
 let registeredPreviewRenderer: THREE.WebGLRenderer | undefined;
 
 export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | undefined) {
@@ -118,6 +121,20 @@ export async function prewarmPreviewTextures(imageUrls: string[]) {
   return results;
 }
 
+export function releasePreviewTexture(imageUrl: string) {
+  const texturePromise = bakedTextureCache.get(imageUrl);
+  bakedTextureCache.delete(imageUrl);
+  residentPreviewTextureCache.delete(imageUrl);
+  void texturePromise
+    ?.then((texture) => {
+      if (typeof ImageBitmap !== 'undefined' && texture.image instanceof ImageBitmap) {
+        texture.image.close();
+      }
+      texture.dispose();
+    })
+    .catch(() => undefined);
+}
+
 export function uploadPreviewTextureInStripes(
   renderer: THREE.WebGLRenderer,
   texture: THREE.Texture,
@@ -160,12 +177,18 @@ export function uploadPreviewTextureInStripes(
       context.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
     ) as boolean;
     try {
+      // Most preview bitmaps are pre-oriented and use flipY=false. Bake
+      // textures may intentionally retain flipY=true; preserve that exact
+      // sampling contract while still splitting the upload into stripes.
       context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, 0);
       context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
       for (let y = 0; y < image.height; y += rowsPerStripe) {
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
         const rowCount = Math.min(rowsPerStripe, image.height - y);
-        const stripe = await createImageBitmap(image, 0, y, image.width, rowCount);
+        const stripe = await createImageBitmap(image, 0, y, image.width, rowCount, {
+          imageOrientation: texture.flipY ? 'flipY' : 'none',
+          premultiplyAlpha: 'none',
+        });
         try {
           const stripeStartedAt = performance.now();
           context.bindTexture(context.TEXTURE_2D, webGlTexture);
@@ -173,7 +196,7 @@ export function uploadPreviewTextureInStripes(
             context.TEXTURE_2D,
             0,
             0,
-            y,
+            texture.flipY ? image.height - y - rowCount : y,
             context.RGBA,
             context.UNSIGNED_BYTE,
             stripe,

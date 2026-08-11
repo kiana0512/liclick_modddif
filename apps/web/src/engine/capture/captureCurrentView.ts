@@ -289,8 +289,14 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
       : request.colorMode === 'target-only'
         ? await captureTargetOnly(passRequest)
         : await captureColor(passRequest);
+  // Preserve all four exact passes and their resolution, while returning one
+  // presentation frame between GPU submissions so camera interaction and the
+  // progress UI remain responsive during local repaint generation.
+  await waitForViewportFrame();
   const mask = await captureMask(passRequest);
+  await waitForViewportFrame();
   const normal = await captureNormal(passRequest);
+  await waitForViewportFrame();
   const depth = await captureDepth(passRequest);
 
   const capture: Capture = {

@@ -1061,8 +1061,27 @@ export async function bakeVisibleProjectedLayersToTexture(
     const captureById = new Map(
       currentProject?.captures.map((capture) => [capture.id, capture] as const) ?? [],
     );
+    importedModel.group.updateMatrixWorld(true);
+    const currentObjectMatrixWorld = importedModel.group.matrixWorld.toArray();
+    const matrixMatches = (captured?: number[]) =>
+      captured?.length === 16 &&
+      captured.every(
+        (value, index) => Math.abs(value - currentObjectMatrixWorld[index]) <= 1e-6,
+      );
+    let reusedVisibilityLayerCount = 0;
+    let regeneratedVisibilityLayerCount = 0;
     layers = await Promise.all(
       layers.map(async (layer) => {
+        if (
+          layer.depthUrl &&
+          layer.normalUrl &&
+          layer.depthEncoding === 'linear-view' &&
+          matrixMatches(layer.objectMatrixWorld)
+        ) {
+          reusedVisibilityLayerCount += 1;
+          return layer;
+        }
+        regeneratedVisibilityLayerCount += 1;
         const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
         const visibility = await createRuntimeProjectionDepth({
           renderer,
@@ -1080,6 +1099,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         };
       }),
     );
+    performanceBreakdown.runtimeDepthReusedLayers = reusedVisibilityLayerCount;
+    performanceBreakdown.runtimeDepthRegeneratedLayers = regeneratedVisibilityLayerCount;
   }
   performanceBreakdown.runtimeDepthMs = performance.now() - runtimeDepthStartedAt;
   const bakeMethod = input.method ?? getDebugUvBakeMethod('gpu');
