@@ -8,6 +8,7 @@ type CompositeUvResponse =
 
 type PendingComposite = {
   id: number;
+  ownerKey: string;
   layers: CompositeUvLayerInput[];
   resolve: (bitmap: ImageBitmap) => void;
   reject: (error: Error) => void;
@@ -16,7 +17,7 @@ type PendingComposite = {
 let worker: Worker | undefined;
 let nextRequestId = 1;
 let activeComposite: PendingComposite | undefined;
-let queuedComposite: PendingComposite | undefined;
+const queuedComposites = new Map<string, PendingComposite>();
 let replacedCompositeCount = 0;
 
 function abortError() {
@@ -31,18 +32,22 @@ function releaseTaskBitmaps(task: PendingComposite) {
 
 function updateQueueProbe() {
   document.body.dataset.uvCompositeQueueDepth = String(
-    Number(Boolean(activeComposite)) + Number(Boolean(queuedComposite)),
+    Number(Boolean(activeComposite)) + queuedComposites.size,
   );
   document.body.dataset.uvCompositeReplacedCount = String(replacedCompositeCount);
 }
 
 function dispatchNextComposite() {
-  if (activeComposite || !queuedComposite) {
+  if (activeComposite || queuedComposites.size === 0) {
     updateQueueProbe();
     return;
   }
-  const task = queuedComposite;
-  queuedComposite = undefined;
+  const next = queuedComposites.entries().next().value as
+    | [string, PendingComposite]
+    | undefined;
+  if (!next) return;
+  const [ownerKey, task] = next;
+  queuedComposites.delete(ownerKey);
   activeComposite = task;
   updateQueueProbe();
   getWorker().postMessage(
@@ -93,22 +98,27 @@ export function canCompositeUvLayersInWorker() {
   );
 }
 
-export function compositeUvLayersInWorker(layers: CompositeUvLayerInput[]) {
+export function compositeUvLayersInWorker(
+  layers: CompositeUvLayerInput[],
+  ownerKey = 'default',
+) {
   const id = nextRequestId++;
   return new Promise<ImageBitmap>((resolve, reject) => {
-    const task = { id, layers, resolve, reject };
-    if (queuedComposite) {
-      releaseTaskBitmaps(queuedComposite);
-      queuedComposite.reject(abortError());
+    const task = { id, ownerKey, layers, resolve, reject };
+    const queuedForOwner = queuedComposites.get(ownerKey);
+    if (queuedForOwner) {
+      releaseTaskBitmaps(queuedForOwner);
+      queuedForOwner.reject(abortError());
       replacedCompositeCount += 1;
     }
-    queuedComposite = task;
+    queuedComposites.set(ownerKey, task);
     dispatchNextComposite();
   });
 }
 
 export function compositeUvLayerUrlsInWorker(
   layers: Array<{ imageUrl: string; opacity: number }>,
+  ownerKey = 'default',
 ) {
-  return compositeUvLayersInWorker(layers);
+  return compositeUvLayersInWorker(layers, ownerKey);
 }

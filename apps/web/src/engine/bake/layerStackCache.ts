@@ -1,9 +1,10 @@
 import type { BakedTexture } from './uvBakeTypes';
 import type { Project } from '@/types/project';
 import type { Layer } from '@/types/layer';
+import { getLiveProjectedTextureSourceState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 const MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO = 0.001;
-const UV_BAKE_PROTOCOL_VERSION = 6;
+const UV_BAKE_PROTOCOL_VERSION = 7;
 const inFlightLayerStackBakes = new Map<string, Promise<BakedTexture | undefined>>();
 
 export function getVisibleProjectedLayerStack(layers: Layer[], objectId: string) {
@@ -74,6 +75,8 @@ function hasReusableCoverage(texture: BakedTexture) {
 
 function getStableLayerAssetKey(url: string | undefined) {
   if (!url) return '';
+  const liveSource = getLiveProjectedTextureSourceState(url);
+  if (liveSource) return `${url}#revision=${liveSource.revision}`;
   if (url.startsWith('blob:')) return '';
   const workspaceIndex = url.indexOf('/workspace/');
   if (workspaceIndex >= 0) return url.slice(workspaceIndex + '/workspace/'.length);

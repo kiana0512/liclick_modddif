@@ -1,4 +1,7 @@
-export {};
+import {
+  getProjectionOverlayAlpha,
+  type ProjectedOverlayMode,
+} from '../engine/bake/projectedOverlayComposition';
 
 const TOP_K = 3;
 const BLEND_POWER = 2.4;
@@ -35,7 +38,12 @@ type BlendRequest = {
   forceCpuOutput: boolean;
   interactive: boolean;
   layers: Array<{ color: ArrayBuffer; quality: ArrayBuffer }>;
-  overlays: Array<{ color: ArrayBuffer; quality: ArrayBuffer }>;
+  overlays: Array<{
+    color: ArrayBuffer;
+    quality: ArrayBuffer;
+    overlayMode: ProjectedOverlayMode;
+    renderedColor: boolean;
+  }>;
 };
 
 type WorkerRequest = BlendRequest | { type: 'budget'; interactive: boolean };
@@ -60,6 +68,7 @@ type WorkerResponse =
       id: number;
       output: ArrayBuffer;
       coverage: ArrayBuffer;
+      renderedColorMask: ArrayBuffer;
       writtenTexels: number;
       backend: 'webgpu-worker' | 'cpu-worker';
       accumulateMs: number;
@@ -311,6 +320,7 @@ async function resolveCpu(topK: TopK, preserveAlpha: boolean) {
 async function applyOverlays(
   output: Uint8ClampedArray,
   coverage: Uint8Array,
+  renderedColorMask: Uint8Array,
   overlays: BlendRequest['overlays'],
 ) {
   let addedCoverage = 0;
@@ -319,13 +329,17 @@ async function applyOverlays(
     const qualityMap = new Float32Array(overlay.quality);
     for (let pixelIndex = 0, offset = 0; offset < imageData.length; pixelIndex += 1, offset += 4) {
       const layerCoverage = imageData[offset + 3] / 255;
-      if (layerCoverage <= COVERAGE_THRESHOLD) continue;
-      const qualityFade = smoothstep(
-        0,
-        0.15,
-        Math.max(qualityMap[pixelIndex], layerCoverage * 0.25),
+      if (
+        layerCoverage <= 0 ||
+        (overlay.overlayMode === 'feathered' && layerCoverage <= COVERAGE_THRESHOLD)
+      ) {
+        continue;
+      }
+      const alpha = getProjectionOverlayAlpha(
+        layerCoverage,
+        qualityMap[pixelIndex],
+        overlay.overlayMode,
       );
-      const alpha = Math.max(0, Math.min(1, layerCoverage * (0.75 + 0.25 * qualityFade)));
       if (alpha <= 0.0001) continue;
       const baseAlpha = output[offset + 3] / 255;
       const outputAlpha = alpha + baseAlpha * (1 - alpha);
@@ -347,6 +361,14 @@ async function applyOverlays(
           outputAlpha,
       );
       output[offset + 3] = Math.round(outputAlpha * 255);
+      // Store rendered-color contribution as premultiplied coverage. This is
+      // the exact information the viewport needs after a display-color local
+      // repaint has been flattened together with ordinary BaseColor texels.
+      const retainedRenderedCoverage = (renderedColorMask[pixelIndex] / 255) * (1 - alpha);
+      renderedColorMask[pixelIndex] = Math.round(
+        Math.max(0, Math.min(1, retainedRenderedCoverage + (overlay.renderedColor ? alpha : 0))) *
+          255,
+      );
       if (!coverage[pixelIndex]) {
         coverage[pixelIndex] = 1;
         addedCoverage += 1;
@@ -581,11 +603,18 @@ async function run(request: BlendRequest) {
   }
   const resolveMs = performance.now() - resolveStartedAt;
   const overlayStartedAt = performance.now();
-  const overlayAddedCoverage = await applyOverlays(output, topK.coverage, request.overlays);
+  const renderedColorMask = new Uint8Array(topK.coverage.length);
+  const overlayAddedCoverage = await applyOverlays(
+    output,
+    topK.coverage,
+    renderedColorMask,
+    request.overlays,
+  );
   const overlayMs = performance.now() - overlayStartedAt;
   return {
     output,
     coverage: topK.coverage,
+    renderedColorMask,
     writtenTexels: (cpu?.writtenTexels ?? topK.writtenTexels) + overlayAddedCoverage,
     backend,
     accumulateMs,
@@ -609,6 +638,7 @@ scope.onmessage = (event) => {
         type: 'result', id: request.id,
         output: result.output.buffer as ArrayBuffer,
         coverage: result.coverage.buffer as ArrayBuffer,
+        renderedColorMask: result.renderedColorMask.buffer as ArrayBuffer,
         writtenTexels: result.writtenTexels,
         backend: result.backend,
         accumulateMs: result.accumulateMs,
@@ -617,7 +647,7 @@ scope.onmessage = (event) => {
         totalMs: result.totalMs,
         verification: result.verification,
       };
-      scope.postMessage(response, [response.output, response.coverage]);
+      scope.postMessage(response, [response.output, response.coverage, response.renderedColorMask]);
     } catch (error) {
       scope.postMessage({ type: 'error', id: request.id, message: error instanceof Error ? error.message : String(error) });
     }

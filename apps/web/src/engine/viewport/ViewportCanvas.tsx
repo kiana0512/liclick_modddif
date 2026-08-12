@@ -49,7 +49,8 @@ import {
   publishLiveSurfacePaintPreview,
 } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
-import { getPreviewLighting, SceneRoot } from './SceneRoot';
+import { SceneRoot } from './SceneRoot';
+import { getPreviewLighting } from './previewLighting';
 import { CameraController } from './CameraController';
 import { ViewCube } from './ViewCube';
 import {
@@ -4595,7 +4596,6 @@ function SurfacePaintOverlay() {
   const localRepaintLastCommitReportRef = useRef<LocalRepaintUvCommitReport>();
   const localRepaintUvScheduleFrameRef = useRef<number>();
   const localRepaintHandoffFrameRef = useRef<number>();
-  const localRepaintPreviewTextureIdRef = useRef(createId('local-repaint-source-preview'));
   const inpaintMaskPrewarmResourceKeyRef = useRef<string>();
   const inpaintDepthCaptureTimerRef = useRef<number>();
   const inpaintDepthCaptureFrameRef = useRef<number>();
@@ -4619,6 +4619,7 @@ function SurfacePaintOverlay() {
   const localRepaintRuntimeDepthRef = useRef<{
     sourceKey: string;
     depthUrl: string;
+    normalUrl: string;
   }>();
   const viewportLayerStressRunningRef = useRef(false);
   const inpaintDepthMaterial = useMemo(() => {
@@ -4637,7 +4638,11 @@ function SurfacePaintOverlay() {
     delete document.body.dataset.localRepaintOverlayReady;
     delete document.body.dataset.localRepaintOverlayVisible;
     delete document.body.dataset.localRepaintOverlayCompileDurationMs;
-  }, []);
+    // The canvas uses demand rendering. Removing a coplanar overlay without an
+    // explicit invalidation can leave the last z-fighting frame on screen until
+    // the next camera move or eye toggle.
+    invalidate();
+  }, [invalidate]);
   const paintTool = useSceneStore((state) => state.paintTool);
   const displayMode = useSceneStore((state) => state.displayMode);
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
@@ -4646,11 +4651,6 @@ function SurfacePaintOverlay() {
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
   const textureResolutionSetting = useSettingsStore((state) => state.resolution);
-  const environmentPreset = useSettingsStore((state) => state.environmentPreset);
-  const exposure = useSettingsStore((state) => state.exposure);
-  const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
-  const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
-  const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
   const setPaintMaskDataUrl = useSceneStore((state) => state.setPaintMaskDataUrl);
   const setPaintMaskCapture = useSceneStore((state) => state.setPaintMaskCapture);
@@ -4679,14 +4679,6 @@ function SurfacePaintOverlay() {
       (inpaintMode || (state.paintTool === 'none' && state.paintMaskHasContent))
     );
   }, []);
-  const localRepaintPreviewLighting = getPreviewLighting({
-    displayMode,
-    environmentPreset,
-    exposure,
-    pbrEnvironmentIntensity,
-    pbrKeyLightIntensity,
-    pbrLightAzimuth,
-  });
   const enabled =
     paintTool === 'brush' || paintTool === 'eraser' || isInpaintMode || isLocalRepaintApplyMode;
   const texturePaintReady = Boolean(importedModel || selectedObjectId);
@@ -5152,29 +5144,53 @@ function SurfacePaintOverlay() {
   }, [runViewportLayerStressScenario]);
 
   useEffect(() => {
-    const overlay = localRepaintGpuOverlayRef.current;
-    if (!overlay) return;
-    const layerVisible = readLocalRepaintGpuOverlayLayerVisibility(overlay);
-    const visibilityChanged = setLocalRepaintGpuOverlayVisibility(
+    // This renderer-owned overlay is intentionally excluded from SceneRoot's
+    // ordinary projected-layer reconciliation. Subscribe to the stores here so
+    // a mode switch updates its GPU uniforms synchronously, even if React is
+    // busy or an asynchronous overlay build completes around the same frame.
+    const syncOverlayDisplay = () => {
+      const overlay = localRepaintGpuOverlayRef.current;
+      if (!overlay) return;
+      const sceneState = useSceneStore.getState();
+      const settingsState = useSettingsStore.getState();
+      const layerVisible = readLocalRepaintGpuOverlayLayerVisibility(overlay);
+      const visibilityChanged = setLocalRepaintGpuOverlayVisibility(
         overlay,
-        isLocalRepaintOverlayVisible(displayMode, layerVisible),
+        isLocalRepaintOverlayVisible(sceneState.displayMode, layerVisible),
       );
-    const lightingChanged = syncLocalRepaintGpuOverlayLighting(
-      overlay,
-      localRepaintPreviewLighting,
-    );
-    if (visibilityChanged || lightingChanged) {
-      invalidate();
-    }
-  }, [
-    displayMode,
-    environmentPreset,
-    exposure,
-    invalidate,
-    pbrEnvironmentIntensity,
-    pbrKeyLightIntensity,
-    pbrLightAzimuth,
-  ]);
+      const lightingChanged = syncLocalRepaintGpuOverlayLighting(
+        overlay,
+        getPreviewLighting({
+          displayMode: sceneState.displayMode,
+          environmentPreset: settingsState.environmentPreset,
+          exposure: settingsState.exposure,
+          pbrEnvironmentIntensity: settingsState.pbrEnvironmentIntensity,
+          pbrKeyLightIntensity: settingsState.pbrKeyLightIntensity,
+          pbrLightAzimuth: settingsState.pbrLightAzimuth,
+        }),
+      );
+      if (visibilityChanged || lightingChanged) invalidate();
+    };
+    syncOverlayDisplay();
+    const unsubscribeScene = useSceneStore.subscribe((state, previousState) => {
+      if (state.displayMode !== previousState.displayMode) syncOverlayDisplay();
+    });
+    const unsubscribeSettings = useSettingsStore.subscribe((state, previousState) => {
+      if (
+        state.environmentPreset !== previousState.environmentPreset ||
+        state.exposure !== previousState.exposure ||
+        state.pbrEnvironmentIntensity !== previousState.pbrEnvironmentIntensity ||
+        state.pbrKeyLightIntensity !== previousState.pbrKeyLightIntensity ||
+        state.pbrLightAzimuth !== previousState.pbrLightAzimuth
+      ) {
+        syncOverlayDisplay();
+      }
+    });
+    return () => {
+      unsubscribeScene();
+      unsubscribeSettings();
+    };
+  }, [invalidate]);
 
   useEffect(() => {
     // Eye state is store authority even when the renderer overlay was compiled
@@ -6305,8 +6321,15 @@ function SurfacePaintOverlay() {
         // Copying 2K/4K pixels through a full-size 2D canvas blocked the main
         // thread and duplicated memory before the same pixels reached GPU.
         const registerStartedAt = performance.now();
+        // Each generation owns an immutable runtime texture URL. Reusing one
+        // component-wide id disposed/replaced the previous generation's texture;
+        // persisted older layers still referenced that URL and therefore began
+        // sampling the newest repaint after any material/eye refresh.
         const previewImageUrl = registerLiveProjectedImageTexture(
-          localRepaintPreviewTextureIdRef.current,
+          `local-repaint-source-preview:${createLocalRepaintSourceKey(
+            source,
+            source.objectId ?? selectedObjectId ?? 'unknown-object',
+          )}`,
           sourceImage,
           THREE.SRGBColorSpace,
         );
@@ -6876,6 +6899,10 @@ function SurfacePaintOverlay() {
         localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
           ? localRepaintRuntimeDepthRef.current.depthUrl
           : undefined;
+      const runtimeNormal =
+        localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
+          ? localRepaintRuntimeDepthRef.current.normalUrl
+          : undefined;
 
       const projectedLayer: Layer = {
         ...existingLayer,
@@ -6889,6 +6916,7 @@ function SurfacePaintOverlay() {
         maskUrl: composite.maskUrl,
         depthUrl: runtimeDepth ?? localRepaintSource.depthUrl,
         depthEncoding: runtimeDepth ? 'linear-view' : localRepaintSource.depthEncoding,
+        normalUrl: runtimeNormal,
         objectId: localRepaintSource.objectId ?? model.objectId,
         objectMatrixWorld:
           localRepaintSource.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
@@ -6896,8 +6924,9 @@ function SurfacePaintOverlay() {
         generationId: localRepaintSource.generationId,
         captureId: localRepaintSource.captureId,
         replacementTargetLayerId: localRepaintSource.targetLayerId,
-        renderedColor: true,
+        renderedColor: false,
         minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
+        projectionVisibilityPolicy: 'surface-locked-v1',
         isBaked: false,
         needsRebake: true,
         visible: true,
@@ -6920,6 +6949,7 @@ function SurfacePaintOverlay() {
         currentPreviewLayer.imageUrl === projectedLayer.imageUrl &&
         currentPreviewLayer.maskUrl === projectedLayer.maskUrl &&
         currentPreviewLayer.depthUrl === projectedLayer.depthUrl &&
+        currentPreviewLayer.normalUrl === projectedLayer.normalUrl &&
         currentPreviewLayer.objectId === projectedLayer.objectId &&
         currentPreviewLayer.generationId === projectedLayer.generationId &&
         currentPreviewLayer.captureId === projectedLayer.captureId &&
@@ -6983,6 +7013,10 @@ function SurfacePaintOverlay() {
           ? localRepaintRuntimeDepthRef.current.depthUrl
           : undefined;
       const visibilityDepthUrl = runtimeDepth ?? source.depthUrl;
+      const visibilityNormalUrl =
+        localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
+          ? localRepaintRuntimeDepthRef.current.normalUrl
+          : undefined;
       const material = await createProjectedLayerMaterial({
         layerId: composite.layerId,
         imageUrl: previewImageUrl,
@@ -6990,12 +7024,12 @@ function SurfacePaintOverlay() {
         maskSpace: 'projection',
         depthUrl: visibilityDepthUrl,
         depthIsLinearView: runtimeDepth ? true : source.depthEncoding === 'linear-view',
+        normalUrl: visibilityNormalUrl,
         // Capture normals are smooth-shaded for image generation, while this
         // material evaluates flat derivative normals. Comparing the two clips
         // valid curved and low-poly regions into permanent paint dead zones.
         // Capture depth already provides exact front-surface visibility and is
         // sufficient to prevent projection-through without the false rejects.
-        normalUrl: undefined,
         camera: source.camera,
         objectId: source.objectId ?? model.objectId,
         objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
@@ -7008,10 +7042,11 @@ function SurfacePaintOverlay() {
         depthTest: true,
         useMask: true,
         useDepthCheck: Boolean(visibilityDepthUrl),
-        useNormalCheck: false,
-        renderedColor: true,
+        useNormalCheck: Boolean(visibilityNormalUrl),
+        renderedColor: false,
         transparentProjectionOnly: true,
         minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
+        projectionVisibilityPolicy: 'surface-locked-v1',
         enableBackfaceCulling: true,
         edgeFeather: 0.004,
         depthBias: 0.025,
@@ -7049,6 +7084,7 @@ function SurfacePaintOverlay() {
           'projectedMap',
           'maskMap',
           'depthMap',
+          'normalMap',
           'visibilityTexelSize',
           'projectorMatrix',
           'objectMatrixDelta',
@@ -7057,10 +7093,12 @@ function SurfacePaintOverlay() {
           'projectorPosition',
           'useMask',
           'useDepthCheck',
+          'useNormalCheck',
           'depthIsLinearView',
           'projectorNear',
           'projectorFar',
           'minimumProjectionFacing',
+          'surfaceLockedVisibility',
           'edgeFeather',
           'depthBias',
         ] as const;
@@ -7266,12 +7304,13 @@ function SurfacePaintOverlay() {
               source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
             width: composite.maskCanvas.width,
             height: composite.maskCanvas.height,
-            includeNormal: false,
+            includeNormal: true,
           });
           if (cancelled) return;
           localRepaintRuntimeDepthRef.current = {
             sourceKey,
             depthUrl: visibility.depthUrl,
+            normalUrl: visibility.normalUrl,
           };
           document.body.dataset.localRepaintRuntimeDepthMs = (
             performance.now() - visibilityStartedAt
@@ -8018,8 +8057,10 @@ function SurfacePaintOverlay() {
             // full RGBA canvas looked synchronous but Chromium deferred a
             // 70-260ms flush until its first thumbnail/readback. The renderer,
             // export and masked layer thumbnail all consume this exact pair.
-            imageUrl:
-              localRepaintSourceImageRef.current?.previewImageUrl ?? source.imageUrl,
+            // Persist the generation-owned asset URL, never the mutable runtime
+            // preview registry URL. Runtime URLs are an optimization for the
+            // active GPU overlay only and must not become durable layer data.
+            imageUrl: source.persistentImageUrl ?? source.imageUrl,
             maskUrl: composite.maskUrl,
             depthUrl: runtimeDepth ?? source.depthUrl,
             depthEncoding: runtimeDepth ? 'linear-view' : source.depthEncoding,
@@ -8031,8 +8072,9 @@ function SurfacePaintOverlay() {
             replacementTargetLayerId: source.targetLayerId,
             localRepaintSourceUrl: source.persistentImageUrl ?? source.imageUrl,
             localRepaintMaskUrl: composite.maskUrl,
-            renderedColor: true,
+            renderedColor: false,
             minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
+            projectionVisibilityPolicy: 'surface-locked-v1',
             isBaked: false,
             needsRebake: true,
             visible: true,
@@ -8151,8 +8193,9 @@ function SurfacePaintOverlay() {
           generationId: source.generationId,
           captureId: source.captureId,
           replacementTargetLayerId: source.targetLayerId,
-          renderedColor: true,
+          renderedColor: false,
           minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
+          projectionVisibilityPolicy: 'surface-locked-v1',
           visible: true,
           opacity: 1,
           strength: 1,
@@ -8306,7 +8349,7 @@ function SurfacePaintOverlay() {
         const retainedLayers = latestLayers.filter(
           (item) =>
             !isMatchingLocalRepaintUvMergeLayer(item, source, model.objectId) &&
-            !isLocalRepaintProjectionLayer(item),
+            !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
         );
         const mergedLayer: Layer = {
           ...existingMergeLayer,
@@ -8319,7 +8362,7 @@ function SurfacePaintOverlay() {
           generationId: source.generationId,
           captureId: source.captureId,
           replacementTargetLayerId: source.targetLayerId,
-          renderedColor: true,
+          renderedColor: false,
           visible: true,
           opacity: 1,
           strength: 1,

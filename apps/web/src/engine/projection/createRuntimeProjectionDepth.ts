@@ -166,6 +166,7 @@ function createGeometricViewNormalMaterial() {
       #include <morphtarget_pars_vertex>
       #include <skinning_pars_vertex>
       varying vec3 vCaptureViewPosition;
+      varying vec3 vCaptureViewVertexNormal;
 
       void main() {
         #include <batching_vertex>
@@ -175,16 +176,23 @@ function createGeometricViewNormalMaterial() {
         #include <skinning_vertex>
         vec4 captureViewPosition = modelViewMatrix * vec4(transformed, 1.0);
         vCaptureViewPosition = captureViewPosition.xyz;
+        vCaptureViewVertexNormal = normalize(normalMatrix * normal);
         gl_Position = projectionMatrix * captureViewPosition;
       }
     `,
     fragmentShader: `
       varying vec3 vCaptureViewPosition;
+      varying vec3 vCaptureViewVertexNormal;
 
       void main() {
         // Derivatives yield a flat geometric face normal. Unlike interpolated
         // vertex normals, this changes exactly at a model crease.
         vec3 faceNormal = normalize(cross(dFdx(vCaptureViewPosition), dFdy(vCaptureViewPosition)));
+        faceNormal *= mix(
+          1.0,
+          -1.0,
+          step(dot(faceNormal, normalize(vCaptureViewVertexNormal)), 0.0)
+        );
         gl_FragColor = vec4(faceNormal * 0.5 + 0.5, 1.0);
       }
     `,

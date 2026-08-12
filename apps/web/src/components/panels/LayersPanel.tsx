@@ -530,26 +530,38 @@ export function LayersPanel({
     captureHistory(`删除图层：${describeLayerSelection(ids)}`);
     const sceneState = useSceneStore.getState();
     const latestLayers = useLayerStore.getState().layers;
+    const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, ids);
+    const expandedIdSet = new Set(expandedIds);
     const deletesLocalRepaint = ids.some((id) =>
-      latestLayers.some((layer) => layer.id === id && Boolean(layer.replacementTargetLayerId)),
+      latestLayers.some((layer) => layer.id === id && isLocalRepaintVisibilityLayer(layer)),
     );
     if (deletesLocalRepaint) {
       // Hide the renderer inputs synchronously so the very next frame reflects
       // deletion. Row removal and resource disposal can reconcile one frame
       // later without blocking camera input or rebuilding the 14-layer stack.
-      setLayerVisibility(ids, false);
+      setLayerVisibility(expandedIds, false);
       // The local-repaint row has a renderer-only twin backed by a live canvas.
       // Deleting the persisted row must also end that live session, otherwise
       // SurfacePaintOverlay republishes the orphaned projection after deletion.
-      sceneState.setLocalRepaintPreviewLayer(undefined);
-      sceneState.setLocalRepaintProjectionSource(undefined);
-      sceneState.setPaintTool('none');
-      sceneState.clearPaintMask();
+      const currentPreview = sceneState.localRepaintPreviewLayer;
+      const currentSource = sceneState.localRepaintProjectionSource;
+      const deletesCurrentSession = Boolean(
+        (currentPreview && expandedIdSet.has(currentPreview.id)) ||
+          (currentPreview?.replacementTargetLayerId &&
+            expandedIdSet.has(currentPreview.replacementTargetLayerId)) ||
+          (currentSource?.targetLayerId && expandedIdSet.has(currentSource.targetLayerId)),
+      );
+      if (deletesCurrentSession) {
+        sceneState.setLocalRepaintPreviewLayer(undefined);
+        sceneState.setLocalRepaintProjectionSource(undefined);
+        sceneState.setPaintTool('none');
+        sceneState.clearPaintMask();
+      }
       setMenu(undefined);
       setSelectedLayerIds([]);
       setLastSelectedLayerId(undefined);
       window.requestAnimationFrame(() => {
-        startTransition(() => deleteLayers(ids));
+        startTransition(() => deleteLayers(expandedIds));
       });
       return;
     }

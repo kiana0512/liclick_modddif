@@ -48,7 +48,6 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 import type { WorkspacePanelDefinition } from '@/components/workspace/workspacePanelTypes';
 import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
-import { downloadBaseColorTexture } from '@/engine/bake/downloadTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
 import {
@@ -74,6 +73,7 @@ import {
   createProjectionMaskedImage,
   prewarmMaskedProjectedImageWorker,
 } from '@/engine/projection/createMaskedProjectedImage';
+import { isLocalRepaintProjectedLayer } from '@/engine/bake/projectedOverlayComposition';
 import { syncProjectedLayerMaterialProjection } from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import {
@@ -86,14 +86,17 @@ import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils'
 import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModelBesideScene';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import {
+  bakePbrPreviewLightingIntoUv,
   compositeRgbaUnderInPlace,
+  compositeRenderedColorMaskUnderInPlace,
+  compositeUniformRenderedColorUnderInPlace,
   getMergeUvPostprocessOptions,
   getRgbaAlphaCoverageRatio,
   isContentAwareUvUnderlay,
   isFlattenableUvMergeSource,
+  UV_MERGE_COMPOSITION_VERSION,
 } from '@/engine/layers/mergeUvComposition';
 import {
-  compositeRgbaUrlUnderAndEncodePngWithWebGpu,
   compositeRgbaUrlUnderWithWebGpu,
   releaseWebGpuRgbaCompositeResources,
   type WebGpuRgbaCompositeMetrics,
@@ -143,8 +146,8 @@ import {
 import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import {
   findMergedUvBakeLayer,
-  findVisibleProjectedLayerIdsForBake,
   isBakeMergeModelReady,
+  resolveBakeUvMergePlan,
   selectBakeBaseColor,
 } from '@/features/workflow/selectBakeBaseColor';
 import { EditorShell } from '@/layouts/EditorShell';
@@ -403,11 +406,7 @@ function getGenerationObjectMatrixWorld(generation: Generation) {
 }
 
 function isLocalRepaintProjectionLayer(layer: Layer) {
-  return (
-    layer.type === 'projected' &&
-    (layer.id.startsWith('local-repaint-projection') ||
-      layer.id.startsWith('local-repaint-brush-projection'))
-  );
+  return isLocalRepaintProjectedLayer(layer);
 }
 
 function isLocalRepaintLayer(layer: Layer) {
@@ -2202,6 +2201,14 @@ export function EditorPage({
           undefined,
         );
       });
+      persistenceTasks.push(async () => {
+        layer.renderedColorMaskUrl = await persistOptionalAsset(
+          layer.renderedColorMaskUrl,
+          'layers',
+          `${layer.id}-rendered-color-mask.png`,
+          undefined,
+        );
+      });
     }
     for (const bakedTexture of projectForSave.bakedTextures) {
       persistenceTasks.push(async () => {
@@ -2878,8 +2885,19 @@ export function EditorPage({
   }
 
   function handleExportBaseColorDownload() {
-    if (!project || !activeLayer || !activeColorTextureUrl) return;
-    downloadBaseColorTexture(activeColorTextureUrl, project, activeLayer);
+    if (!project || !importedModel) return;
+    const exportInput = {
+      project,
+      importedModel,
+      selectedObjectId,
+      target: 'scene' as const,
+      onProgress: updateExportBakeProgress,
+    };
+    void runExportAction(t('exporting'), () =>
+      import('@/engine/export/exportTexture').then(({ exportCompositedBaseColor }) =>
+        exportCompositedBaseColor(exportInput),
+      ),
+    );
   }
 
   const restoreExistingLocalRepaintSession = useCallback(() => {
@@ -3771,6 +3789,15 @@ export function EditorPage({
     }
     const objectId = options?.objectId ?? selectedObjectId ?? currentImportedModel.objectId;
     const currentLayers = useLayerStore.getState().layers;
+    const baseUvLayer = blankUvLayerId
+      ? currentLayers.find(
+          (layer) =>
+            layer.id === blankUvLayerId &&
+            layer.type === 'uv' &&
+            Boolean(layer.imageUrl) &&
+            (!layer.objectId || layer.objectId === objectId),
+        )
+      : undefined;
     const selectedLayers = layerIds
       .map((layerId) => currentLayers.find((item) => item.id === layerId))
       .filter((layer): layer is Layer => Boolean(layer && layer.id !== blankUvLayerId));
@@ -3782,11 +3809,11 @@ export function EditorPage({
         (!layer.objectId || layer.objectId === objectId),
       ),
     );
-    const selectedUvLayers = selectedLayers
-      .filter(
-        (layer) =>
-          isFlattenableUvMergeSource(layer) && (!layer.objectId || layer.objectId === objectId),
-      )
+    const selectedUvSourceLayers = selectedLayers.filter(
+      (layer) =>
+        isFlattenableUvMergeSource(layer) && (!layer.objectId || layer.objectId === objectId),
+    );
+    const selectedUvLayers = [...(baseUvLayer ? [baseUvLayer] : []), ...selectedUvSourceLayers]
       .sort((left, right) => {
         // Repair is always a sparse underlay, irrespective of incidental list
         // order. Ordinary merged UV color stays above it, while new projection
@@ -3797,9 +3824,9 @@ export function EditorPage({
         return compareUvLayersForComposition(left, right, 'top-to-bottom');
       });
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
-    const selectedUvLayerIds = selectedUvLayers.map((layer) => layer.id);
+    const selectedUvLayerIds = selectedUvSourceLayers.map((layer) => layer.id);
     const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
-    if (projectedLayerIds.length === 0) {
+    if (projectedLayerIds.length === 0 && !baseUvLayer) {
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
     }
@@ -3921,6 +3948,8 @@ export function EditorPage({
         mergedImageData = outputContext.getImageData(0, 0, bakeResolution, bakeResolution);
       }
       let mergedRgba = mergedImageData.data;
+      const renderedColorMask =
+        bakeResult?.renderedColorMask ?? new Uint8Array(bakeResolution * bakeResolution);
       readbackDurationMs = performance.now() - readbackStartedAt;
 
       // Flatten selected UV sources underneath projection coverage. This is
@@ -3935,37 +3964,37 @@ export function EditorPage({
       }
       for (let index = 0; index < selectedUvLayers.length; index += 1) {
         const layer = selectedUvLayers[index];
+        if (layer.renderedColorMaskUrl) {
+          const underlayRenderedColorMask = await urlToImageData(
+            layer.renderedColorMaskUrl,
+            bakeResolution,
+            bakeResolution,
+          );
+          compositeRenderedColorMaskUnderInPlace(
+            renderedColorMask,
+            mergedRgba,
+            underlayRenderedColorMask.data,
+            layer.opacity,
+          );
+        } else if (layer.renderedColor) {
+          compositeUniformRenderedColorUnderInPlace(
+            renderedColorMask,
+            mergedRgba,
+            layer.opacity,
+          );
+        }
         if (webGpuComposite.enabled) {
           try {
-            const isFinalUnderlay = index === selectedUvLayers.length - 1;
-            if (isFinalUnderlay && document.body.dataset.perfSimulatedViewportInteraction === '1') {
-              document.body.dataset.perfUvBakePhase = 'uv-underlay-composite-encode';
-            }
-            const result = isFinalUnderlay
-              ? await compositeRgbaUrlUnderAndEncodePngWithWebGpu(
-                  mergedRgba,
-                  layer.imageUrl,
-                  bakeResolution,
-                   bakeResolution,
-                   layer.opacity,
-                   options?.taskContext?.signal,
-                 )
-              : await compositeRgbaUrlUnderWithWebGpu(
-                  mergedRgba,
-                  layer.imageUrl,
-                  bakeResolution,
-                   bakeResolution,
-                   layer.opacity,
-                   options?.taskContext?.signal,
-                 );
+            const result = await compositeRgbaUrlUnderWithWebGpu(
+              mergedRgba,
+              layer.imageUrl,
+              bakeResolution,
+              bakeResolution,
+              layer.opacity,
+              options?.taskContext?.signal,
+            );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
-            if ('url' in result) {
-              mergedImageUrl = result.url;
-              mergedOutputBytes = result.byteLength;
-              pngEncodeDurationMs = result.encodeMs;
-            } else {
-              mergedRgba = result.data;
-            }
+            mergedRgba = result.data;
             webGpuComposite.dispatches += 1;
             webGpuComposite.uploadMs += metrics.uploadMs;
             webGpuComposite.computeMs += metrics.computeMs;
@@ -4004,6 +4033,28 @@ export function EditorPage({
           throw new DOMException('UV merge was superseded.', 'AbortError');
         }
       }
+      setManualBakeProgress({
+        title: t('mergeSelectedLayersToUvLayer'),
+        detail: '正在将当前 PBR 全局光照写入合并图层',
+        progress: 0.965,
+      });
+      const currentLighting = useSettingsStore.getState();
+      await bakePbrPreviewLightingIntoUv({
+        rgba: mergedRgba,
+        width: bakeResolution,
+        height: bakeResolution,
+        root: currentImportedModel.group,
+        settings: {
+          exposure: currentLighting.exposure,
+          pbrEnvironmentIntensity: currentLighting.pbrEnvironmentIntensity,
+          pbrKeyLightIntensity: currentLighting.pbrKeyLightIntensity,
+          pbrLightAzimuth: currentLighting.pbrLightAzimuth,
+          environmentPreset: currentLighting.environmentPreset,
+        },
+        renderedColorMask,
+      });
+      // The final UV is entirely display color. The layer-level flag is enough
+      // to bypass lighting in both Flat and PBR; do not encode/upload a 4K mask.
       uvCompositeDurationMs =
         performance.now() - uvCompositeStartedAt - pngEncodeDurationMs;
       const mergedCoverageRatio =
@@ -4071,8 +4122,9 @@ export function EditorPage({
         return result;
       }
       let imageUrl: string;
+      const outputAssetStem = blankUvLayerId ?? createId('merged-uv-layer');
       if (project.workspaceMode === 'local-server') {
-        const filename = `${blankUvLayerId ?? createId('merged-uv-layer')}.png`;
+        const filename = `${outputAssetStem}.png`;
         const uploadBlob = mergedImageBlob ?? (await (await fetch(mergedImageUrl!)).blob());
         imageUrl = (
           await saveBlobAsset({
@@ -4094,7 +4146,9 @@ export function EditorPage({
       const previewPrewarmStartedAt = performance.now();
       const previewResults = await prewarmPreviewTextures([imageUrl]);
       previewPrewarmDurationMs = performance.now() - previewPrewarmStartedAt;
-      previewPrewarmReady = previewResults.some((result) => result.status === 'fulfilled');
+      previewPrewarmReady =
+        previewResults.length > 0 &&
+        previewResults.every((result) => result.status === 'fulfilled');
       if (!previewPrewarmReady) {
         throw new Error('最终 UV 纹理未能完成 GPU 预热；已保留原图层，未执行切换。');
       }
@@ -4106,9 +4160,6 @@ export function EditorPage({
         detail: '最终纹理已就绪，正在同步图层眼睛状态',
         progress: 0.995,
       });
-      const renderedColorSources = selectedLayers.filter(
-        (layer) => !isContentAwareUvUnderlay(layer),
-      );
       const mergedLayer = mergeLayersIntoUvLayer({
         // Every source that actually contributed to this PNG is consumed. A
         // selected repair layer no longer remains as an apparently enabled but
@@ -4119,9 +4170,9 @@ export function EditorPage({
         objectId,
         name: t('mergedUvLayer'),
         role: 'merged-uv',
-        renderedColor:
-          renderedColorSources.length > 0 &&
-          renderedColorSources.every((layer) => Boolean(layer.renderedColor)),
+        uvMergeVersion: UV_MERGE_COMPOSITION_VERSION,
+        renderedColor: true,
+        renderedColorMaskUrl: undefined,
       });
       document.body.dataset.uvMergeAtomicHandoff = JSON.stringify({
         mergedLayerId: mergedLayer.id,
@@ -4224,32 +4275,33 @@ export function EditorPage({
     publishingToBakeRef.current = true;
     setPublishingToBake(true);
     try {
-      let mergedLayer = findMergedUvBakeLayer(useLayerStore.getState().layers, objectId);
-      if (!mergedLayer) {
-        const visibleProjectedLayerIds = findVisibleProjectedLayerIdsForBake(
-          useLayerStore.getState().layers,
-          objectId,
-        );
-        if (visibleProjectedLayerIds.length === 0) {
-          pushToast({
+      const mergePlan = resolveBakeUvMergePlan(useLayerStore.getState().layers, objectId);
+      let mergedLayer = mergePlan.action === 'reuse' ? mergePlan.mergedLayer : undefined;
+      if (mergePlan.action === 'missing') {
+        pushToast({
             tone: 'warning',
             title: '没有可合并的投影图层',
             description: '请先生成并显示至少一个投影图层，再传入烘焙。',
             dedupeKey: 'bake-merged-uv-missing',
-          });
-          return;
-        }
+        });
+        return;
+      }
+      if (mergePlan.action === 'merge') {
         pushToast({
           tone: 'info',
           title: '进入烘焙前需要合并 UV',
           description: '正在自动合并当前对象的可见投影图层，完成后将进入烘焙界面。',
           dedupeKey: 'bake-auto-merge-uv',
         });
-        const mergeResult = await mergeLayersToUvLayer(visibleProjectedLayerIds, undefined, {
-          objectId,
-          suppressErrorToast: true,
-          throwOnError: true,
-        });
+        const mergeResult = await mergeLayersToUvLayer(
+          mergePlan.sourceLayerIds,
+          mergePlan.baseUvLayerId,
+          {
+            objectId,
+            suppressErrorToast: true,
+            throwOnError: true,
+          },
+        );
         if (mergeResult && 'type' in mergeResult && mergeResult.type === 'uv') {
           mergedLayer = mergeResult;
         }
@@ -4686,6 +4738,11 @@ export function EditorPage({
         );
       },
       'texture-color': () => {
+        if (modelInput) {
+          return import('@/engine/export/exportTexture').then(({ exportCompositedBaseColor }) =>
+            exportCompositedBaseColor({ ...modelInput, target: 'scene' }),
+          );
+        }
         if (!activeColorTextureUrl) throw new Error(t('bakeBaseColorFirst'));
         return import('@/engine/export/exportTexture').then(({ exportTextureUrl }) =>
           exportTextureUrl(project, activeColorTextureUrl, 'basecolor'),
@@ -4822,16 +4879,18 @@ export function EditorPage({
     // is still selecting the mask.
     if (!generationCapture?.camera) return undefined;
     const objectId = selectedObjectId ?? generationCapture.objectId ?? importedModel.objectId;
-    const targetLayer =
-      layers.find(
-        (layer) =>
-          layer.id === activeProjectedLayerId && isLocalRepaintDestinationLayer(layer, objectId),
-      ) ??
-      layers.find(
-        (layer) =>
-          (layer.role === 'local-repaint-draft' || layer.role === 'local-repaint-overlay') &&
-          isLocalRepaintDestinationLayer(layer, objectId),
-      );
+    const generationResultLayer = layers.find(
+      (layer) =>
+        layer.type === 'projected' &&
+        layer.generationId === latestLocalRepaintGeneration.id &&
+        Boolean(layer.replacementTargetLayerId) &&
+        (!layer.objectId || layer.objectId === objectId),
+    );
+    const targetLayer = layers.find(
+      (layer) =>
+        layer.id === generationResultLayer?.replacementTargetLayerId &&
+        isLocalRepaintDestinationLayer(layer, objectId),
+    );
     if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) return undefined;
     const generationMaskUrl =
       typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
@@ -4907,7 +4966,6 @@ export function EditorPage({
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [
-    activeProjectedLayerId,
     generations,
     getLocalRepaintProjectionImage,
     importedModel,
@@ -6095,10 +6153,10 @@ export function EditorPage({
               </Button>
               <Button
                 className="w-full"
-                disabled={!activeColorTextureUrl || !activeLayer}
+                disabled={!importedModel}
                 onClick={handleExportBaseColorDownload}
                 icon={<Download className="h-4 w-4" />}
-                title={!activeColorTextureUrl ? t('bakeBaseColorFirst') : undefined}
+                title={!importedModel ? t('importModelFirst') : undefined}
               >
                 {t('downloadBaseColor')}
               </Button>

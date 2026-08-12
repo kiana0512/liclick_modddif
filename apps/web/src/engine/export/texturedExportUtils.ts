@@ -22,6 +22,7 @@ import {
 import { reconcileUvSeams } from '@/engine/bake/uvSeamReconciliation';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
+import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { saveBlobAsset, saveDataUrlAsset } from '@/services/workspaceApiClient';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
@@ -574,8 +575,24 @@ async function flattenVisibleLayersToBaseColor(
       Math.max(0, Math.min(1, layer.opacity)),
     );
   }
+  const baseUvStart = contentAwareUnderlayLayers.length;
+  const localRepaintUvStart = baseUvStart + baseUvLayers.length;
+  // Ordinary UV color is the base beneath projected edits. Drawing it after
+  // the projection bake used to cover the freshly baked local-repaint patch
+  // with a stale full-atlas merged UV image.
+  for (const { layer, blob } of layerRecords.slice(baseUvStart, localRepaintUvStart)) {
+    const opacity = Math.max(0, Math.min(1, layer.opacity));
+    if (isRenderedColorUvLayer(layer)) {
+      await drawRenderedColorLayerAsBaseColor(context, blob, width, height, opacity);
+    } else {
+      await drawBlobToCanvas(context, blob, width, height, opacity);
+    }
+  }
+  // The projected bake includes every currently visible projected layer,
+  // including the renderer-owned live local-repaint snapshot.
   if (baseBlob) await drawBlobToCanvas(context, baseBlob, width, height);
-  for (const { layer, blob } of layerRecords.slice(contentAwareUnderlayLayers.length)) {
+  // Persisted local-repaint UV patches remain the final authored overrides.
+  for (const { layer, blob } of layerRecords.slice(localRepaintUvStart)) {
     const opacity = Math.max(0, Math.min(1, layer.opacity));
     if (isRenderedColorUvLayer(layer)) {
       await drawRenderedColorLayerAsBaseColor(context, blob, width, height, opacity);
@@ -669,6 +686,30 @@ function getLayerStackCacheKey(
 
 type LayerStackLayers = ReturnType<typeof getVisibleProjectedLayerStack>;
 
+function getCurrentExportProjectedLayers(objectId: string): LayerStackLayers {
+  const persistedLayers = useLayerStore.getState().layers;
+  const previewLayer = useSceneStore.getState().localRepaintPreviewLayer;
+  if (
+    !previewLayer ||
+    previewLayer.type !== 'projected' ||
+    !previewLayer.visible ||
+    !previewLayer.imageUrl ||
+    !previewLayer.camera ||
+    (previewLayer.objectId && previewLayer.objectId !== objectId)
+  ) {
+    return getVisibleProjectedLayerStack(persistedLayers, objectId);
+  }
+
+  // A stroke is visible through a renderer-owned projection before its idle
+  // persistence task publishes the same layer to layerStore. Export must use
+  // that exact visible snapshot. Replace a persisted copy with the live copy
+  // by id so the repaint is included once, never omitted or double-applied.
+  return getVisibleProjectedLayerStack(
+    [previewLayer, ...persistedLayers.filter((layer) => layer.id !== previewLayer.id)],
+    objectId,
+  );
+}
+
 function isLocalRepaintProjectionLayer(layer: LayerStackLayers[number]) {
   return (
     layer.id.startsWith('local-repaint-projection') ||
@@ -702,7 +743,7 @@ function findCurrentBakedTexture(
   options: TexturedModelExportOptions = {},
 ) {
   const project = getLatestProject(input);
-  const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
+  const visibleLayers = getCurrentExportProjectedLayers(objectId);
   const cacheKey =
     expectedResolution === undefined
       ? undefined
@@ -752,7 +793,7 @@ async function bakeCurrentVisibleTextureForExport(
   objectId: string,
   options: TexturedModelExportOptions = {},
 ) {
-  const visibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
+  const visibleLayers = getCurrentExportProjectedLayers(objectId);
   if (visibleLayers.length === 0) return undefined;
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
@@ -764,7 +805,7 @@ async function bakeCurrentVisibleTextureForExport(
   const inFlightBake = getLayerStackBakeInFlight(stackSignature);
   if (inFlightBake) {
     const bakedTexture = await inFlightBake;
-    const latestVisibleLayers = getVisibleProjectedLayerStack(useLayerStore.getState().layers, objectId);
+    const latestVisibleLayers = getCurrentExportProjectedLayers(objectId);
     if (bakedTexture && canUseLayerStackCache(latestVisibleLayers, bakedTexture, resolution, objectId, stackSignature)) return bakedTexture;
   }
 

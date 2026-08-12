@@ -26,6 +26,9 @@ try {
   const renderedLayerColor = await server.ssrLoadModule(
     '/src/engine/viewport/renderedLayerColor.ts',
   );
+  const bakeOverlayComposition = await server.ssrLoadModule(
+    '/src/engine/bake/projectedOverlayComposition.ts',
+  );
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const camera = {
     type: 'perspective',
@@ -66,10 +69,10 @@ try {
   assert.equal(
     renderedLayerColor.usesUnlitRenderedColor({
       id: 'local-repaint-projection-legacy',
-      renderedColor: false,
+      renderedColor: true,
     }),
-    true,
-    'Legacy repaint layers must not receive viewport lighting a second time.',
+    false,
+    'Local repaint must participate in Flat/PBR surface lighting to blend with its base.',
   );
   assert.equal(
     renderedLayerColor.usesUnlitRenderedColor({
@@ -78,6 +81,48 @@ try {
     }),
     false,
     'Ordinary albedo layers must continue to receive viewport lighting.',
+  );
+  const localRepaintLayer = {
+    id: 'local-repaint-projection-regression',
+    type: 'projected',
+    imageUrl: 'memory://local-repaint',
+    blendMode: 'normal',
+  };
+  assert.equal(
+    bakeOverlayComposition.getProjectedLayerOverlayMode(localRepaintLayer),
+    'literal',
+    'Persisted local repaint projections must bypass the order-independent Top-K blend.',
+  );
+  assert.equal(
+    bakeOverlayComposition.getProjectedLayerOverlayMode({
+      ...localRepaintLayer,
+      id: 'ordinary-overlay',
+      blendMode: 'overlay',
+    }),
+    'feathered',
+    'Ordinary overlay layers must retain their quality feather.',
+  );
+  assert.equal(
+    bakeOverlayComposition.getProjectedLayerOverlayMode({
+      ...localRepaintLayer,
+      id: 'ordinary-normal',
+    }),
+    undefined,
+    'Ordinary normal projections must remain in the Top-K blend.',
+  );
+  assert.equal(
+    bakeOverlayComposition.getProjectionOverlayAlpha(0.2, 0, 'literal'),
+    0.2,
+    'Local repaint source-over alpha must equal its rasterized coverage.',
+  );
+  const featheredAlpha = bakeOverlayComposition.getProjectionOverlayAlpha(
+    0.2,
+    0,
+    'feathered',
+  );
+  assert(
+    featheredAlpha >= 0.15 && featheredAlpha < 0.2,
+    'Ordinary overlay alpha must retain the historical 0.75-1 quality feather.',
   );
   const residentUvTexture = new THREE.DataTexture(
     new Uint8Array([255, 255, 255, 255]),
@@ -148,7 +193,7 @@ try {
     ...layers[0],
     layerId: 'local-repaint-live-overlay',
     transparentProjectionOnly: true,
-    renderedColor: true,
+    renderedColor: false,
     useMask: false,
     depthTest: true,
   });
@@ -158,6 +203,40 @@ try {
   assert.equal(liveRepaintOverlay.polygonOffsetFactor, -16);
   assert.equal(liveRepaintOverlay.polygonOffsetUnits, -16);
   assert.equal(liveRepaintOverlay.uniforms.transparentProjectionOnly.value, 1);
+  assert.equal(
+    repaintOverlaySync.syncLocalRepaintGpuOverlayLighting(
+      { material: liveRepaintOverlay },
+      {
+        enabled: true,
+        exposure: 1.12,
+        ambientIntensity: 0.5,
+        keyLightIntensity: 1.22,
+        keyLightDirection: [0.35, 0.7, 0.45],
+      },
+    ),
+    true,
+  );
+  liveRepaintOverlay.uniformsNeedUpdate = false;
+  assert.equal(
+    repaintOverlaySync.syncLocalRepaintGpuOverlayLighting(
+      { material: liveRepaintOverlay },
+      {
+        enabled: false,
+        exposure: 1.12,
+        ambientIntensity: 0.5,
+        keyLightIntensity: 1.22,
+        keyLightDirection: [0.35, 0.7, 0.45],
+      },
+    ),
+    true,
+    'PBR -> Flat must synchronously disable lighting on the resident repaint overlay.',
+  );
+  assert.equal(liveRepaintOverlay.uniforms.previewLightingEnabled.value, 0);
+  assert.equal(
+    liveRepaintOverlay.uniformsNeedUpdate,
+    true,
+    'The display-mode switch must force the updated uniforms into the next GPU frame.',
+  );
   assert.match(
     liveRepaintOverlay.fragmentShader,
     /literalReplacementAlpha/,
@@ -376,6 +455,43 @@ try {
   assert.equal(flatWhiteMembraneMaterial.metalness, 0);
   assert.equal(flatWhiteMembraneMaterial.emissiveIntensity, 0);
   projection.disposeGeneratedMaterialTree(flatWhiteMembraneMaterial);
+
+  const mergedUv = new THREE.DataTexture(new Uint8Array([160, 120, 80, 255]), 1, 1);
+  const renderedColorMask = new THREE.DataTexture(
+    new Uint8Array([255, 255, 255, 255]),
+    1,
+    1,
+  );
+  const mergedUvMaterial = projection.createUvOverlayPreviewMaterial({
+    displayMode: 'pbr',
+    selected: false,
+    uvOverlayTexture: mergedUv,
+    uvOverlayRenderedColorMaskTexture: renderedColorMask,
+  });
+  assert.equal(mergedUvMaterial.uniforms.useUvOverlayRenderedColorMaskMap.value, 1);
+  assert.equal(
+    mergedUvMaterial.uniforms.uvOverlayRenderedColorMaskMap.value,
+    renderedColorMask,
+  );
+  projection.disposeGeneratedMaterialTree(mergedUvMaterial);
+
+  const wholeRenderedUvMaterial = projection.createUvOverlayPreviewMaterial({
+    displayMode: 'flat',
+    selected: false,
+    uvOverlayTexture: mergedUv,
+    uvOverlayRenderedColor: true,
+  });
+  assert.equal(
+    wholeRenderedUvMaterial.uniforms.uvOverlayRenderedColor.value,
+    1,
+    'A UV with baked PBR lighting must bypass preview lighting without a full-size mask.',
+  );
+  assert.match(
+    wholeRenderedUvMaterial.fragmentShader,
+    /max\(\s*uvOverlayRenderedColor,/,
+    'The whole-layer rendered-color flag must override the optional per-pixel mask.',
+  );
+  projection.disposeGeneratedMaterialTree(wholeRenderedUvMaterial);
 
   const missingNormalLayers = layers.map((layer, index) => ({
     ...layer,

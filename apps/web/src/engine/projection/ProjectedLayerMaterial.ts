@@ -122,6 +122,23 @@ const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
   keyLightDirection: [0.35, 0.7, 0.45],
 };
 
+// Every BaseColor preview path must use the same restrained PBR response.
+// The live local-repaint overlay is rendered by a separate material above the
+// resident projected stack; keeping this GLSL in one place prevents the two
+// surfaces from producing a visible brightness boundary in PBR mode.
+const BASE_COLOR_PREVIEW_LIGHT_GLSL = `
+  float computePreviewLight(vec3 normal) {
+    vec3 lightDir = normalize(keyLightDirection);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float lit = clamp(
+      ambientLightIntensity * 0.85 + diffuse * keyLightIntensity * 0.40,
+      0.0,
+      1.1
+    );
+    return mix(1.0, lit, previewLightingEnabled);
+  }
+`;
+
 type ProjectedLayerUniformBinding = {
   layerId: string;
   imageUrl: string;
@@ -151,12 +168,13 @@ export type ProjectedLayerSamplerBudget = {
   withinBudget: boolean;
 };
 
-const SINGLE_LAYER_FIXED_SAMPLERS = 9;
+const SINGLE_LAYER_FIXED_SAMPLERS = 10;
 
 type ProjectedLayerSamplerFeatures = {
   useBaseMap?: boolean;
   useBaseRenderedColorMaskMap?: boolean;
   useUvOverlayMap?: boolean;
+  useUvOverlayRenderedColorMaskMap?: boolean;
   useTopUvOverlayMap?: boolean;
   useTextureArrays?: boolean;
 };
@@ -167,6 +185,8 @@ function normalizeSamplerFeatures(features: ProjectedLayerSamplerFeatures = {}) 
     useBaseMap,
     useBaseRenderedColorMaskMap: useBaseMap && features.useBaseRenderedColorMaskMap === true,
     useUvOverlayMap: features.useUvOverlayMap === true,
+    useUvOverlayRenderedColorMaskMap:
+      features.useUvOverlayMap === true && features.useUvOverlayRenderedColorMaskMap === true,
     useTopUvOverlayMap: features.useTopUvOverlayMap === true,
     useTextureArrays: features.useTextureArrays === true,
   };
@@ -188,6 +208,7 @@ export function getProjectedLayerSamplerBudget(
     Number(normalizedFeatures.useBaseMap) +
     Number(normalizedFeatures.useBaseRenderedColorMaskMap) +
     Number(normalizedFeatures.useUvOverlayMap) +
+    Number(normalizedFeatures.useUvOverlayRenderedColorMaskMap) +
     Number(normalizedFeatures.useTopUvOverlayMap);
   const fixed =
     projected === 0 ? 0 : projected === 1 ? SINGLE_LAYER_FIXED_SAMPLERS - 1 : stackFixed;
@@ -286,6 +307,7 @@ const fragmentShader = `
   uniform sampler2D projectedMap;
   uniform sampler2D baseMap;
   uniform sampler2D uvOverlayMap;
+  uniform sampler2D uvOverlayRenderedColorMaskMap;
   uniform sampler2D topUvOverlayMap;
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
@@ -302,6 +324,7 @@ const fragmentShader = `
   uniform float projectedIsRenderedColor;
   uniform float transparentProjectionOnly;
   uniform float minimumProjectionFacing;
+  uniform float surfaceLockedVisibility;
   uniform float projectedBlendModeOverlay;
   uniform float projectedCompositeUnderlay;
   uniform float useMask;
@@ -326,6 +349,8 @@ const fragmentShader = `
   uniform sampler2D baseRenderedColorMaskMap;
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
+  uniform float uvOverlayRenderedColor;
+  uniform float useUvOverlayRenderedColorMaskMap;
   uniform float uvOverlayOpacity;
   uniform float useTopUvOverlayMap;
   uniform float topUvOverlayOpacity;
@@ -424,10 +449,11 @@ const fragmentShader = `
       useDepthCheck
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
+    float normalAgreement = dot(projectedFaceNormal, normalize(capturedFaceNormal));
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
-      abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
+      mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
   }
@@ -444,12 +470,7 @@ const fragmentShader = `
     return smoothstep(0.0, edge, edgeDistance);
   }
 
-  float computePreviewLight(vec3 normal) {
-    vec3 lightDir = normalize(keyLightDirection);
-    float diffuse = max(dot(normal, lightDir), 0.0);
-    float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
-    return mix(1.0, lit, previewLightingEnabled);
-  }
+  ${BASE_COLOR_PREVIEW_LIGHT_GLSL}
 
   float computeWhiteMembraneLight(vec3 normal) {
     vec3 lightDir = normalize(keyLightDirection);
@@ -520,6 +541,12 @@ const fragmentShader = `
     vec3 captureViewPosition = (projectorViewMatrix * captureWorldPosition).xyz;
     vec3 projectedFaceNormal = normalize(
       cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
+    );
+    vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix) * captureWorldNormal);
+    projectedFaceNormal *= mix(
+      1.0,
+      -1.0,
+      step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0)
     );
     // Neighbourhood matching removes seams between two faces that were both
     // visible in the capture, while still rejecting genuinely hidden faces.
@@ -618,9 +645,22 @@ const fragmentShader = `
       centerVisibility *
       mix(0.35, 1.0, grazingConfidence) *
       max(useNormalCheck, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
-    float visibilityCoverage =
+    float legacyVisibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    // Local repaint cannot let a neighbouring foreground texel rescue a
+    // rejected centre sample. This is the key guard against projection leaking
+    // through a hole onto another part of the model.
+    float lockedFacingCoverage = smoothstep(0.08, 0.16, projectionFacingFactor);
+    float lockedVisibilityCoverage =
+      centerVisibility *
+      max(neighborhoodVisibility, centerBackedVisibility) *
+      lockedFacingCoverage;
+    float visibilityCoverage = mix(
+      legacyVisibilityCoverage,
+      lockedVisibilityCoverage,
+      surfaceLockedVisibility
+    );
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     float lambert = computePreviewLight(normal);
     vec4 texel = texture2D(projectedMap, uv);
@@ -636,6 +676,7 @@ const fragmentShader = `
       smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, visibilityBackedNdv),
       useDepthCheck
     );
+    angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
     float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
@@ -660,6 +701,10 @@ const fragmentShader = `
     vec4 baseTexel = texture2D(baseMap, vUv);
     float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
     vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
+    float uvOverlayRenderedColorWeight = max(
+      uvOverlayRenderedColor,
+      texture2D(uvOverlayRenderedColorMaskMap, vUv).r * useUvOverlayRenderedColorMaskMap
+    );
     uvOverlayTexel.rgb = applyHsvAdjustments(
       uvOverlayTexel.rgb,
       uvOverlayHueShift,
@@ -668,10 +713,10 @@ const fragmentShader = `
     );
     float baseTextureAlpha = useBaseMap * baseTexel.a * baseTextureOpacity;
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, baseTextureAlpha);
-    // Local repaint images are captured display colors: they already contain the
-    // viewport exposure. LinearToneMapping applies the renderer exposure once more
-    // at the end of this shader, so cancel that second exposure for rendered
-    // colors while ordinary texture layers still receive preview lighting.
+    // Legacy rendered-color layers already contain viewport exposure.
+    // LinearToneMapping applies renderer exposure at the end of this shader, so
+    // cancel that second exposure only for those explicitly marked layers.
+    // Current local-repaint output is BaseColor and follows the ordinary path.
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 emptyPreviewColor = mix(
       computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(captureWorldNormal)),
@@ -699,8 +744,9 @@ const fragmentShader = `
       // The projected background already biases accepted fragments by 0.000006.
       // Make the final repaint pass decisively closer so duplicate geometry
       // cannot z-fight with the background while the camera moves.
+      float acceptedDepthOffset = mix(-0.000080, -0.000010, surfaceLockedVisibility);
       gl_FragDepthEXT = clamp(
-        gl_FragCoord.z + mix(0.000006, -0.000080, projectedDepthPriority),
+        gl_FragCoord.z + mix(0.000006, acceptedDepthOffset, projectedDepthPriority),
         0.0,
         1.0
       );
@@ -715,7 +761,7 @@ const fragmentShader = `
     vec3 mixedColor = mix(emptyPreviewColor, projectedDisplayColor, projectionAlpha);
     mixedColor = mix(
       mixedColor,
-      uvOverlayTexel.rgb * lambert,
+      uvOverlayTexel.rgb * mix(lambert, renderedColorExposureCompensation, uvOverlayRenderedColorWeight),
       uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity
     );
     vec4 topUvOverlayTexel = texture2D(topUvOverlayMap, vUv);
@@ -777,6 +823,7 @@ function buildStackFragmentShader(
     normalArraySlice?: number;
     renderedColor?: boolean;
     minimumProjectionFacing?: number;
+    projectionVisibilityPolicy?: ProjectionLayerStackInput['layers'][number]['projectionVisibilityPolicy'];
     blendMode?: ProjectionLayerStackInput['layers'][number]['blendMode'];
     compositeRole?: ProjectionLayerStackInput['layers'][number]['compositeRole'];
   }>,
@@ -789,6 +836,8 @@ function buildStackFragmentShader(
     Boolean(layers[index].useDepthCheck && layers[index].depthUrl);
   const layerUsesNormal = (index: number) =>
     Boolean(layers[index].useNormalCheck && layers[index].normalUrl);
+  const layerUsesSurfaceLock = (index: number) =>
+    layers[index].projectionVisibilityPolicy === 'surface-locked-v1';
   const projectionFacingCoverage = (index: number) => {
     const minimum = THREE.MathUtils.clamp(layers[index].minimumProjectionFacing ?? 0, 0, 0.99);
     return minimum > 0
@@ -823,7 +872,8 @@ function buildStackFragmentShader(
     layers[index].normalArraySlice ??
     arraySliceIndex(
       index,
-      (candidateIndex) => layerUsesNormal(candidateIndex) && layerUsesNormalArray(candidateIndex),
+      (candidateIndex) =>
+        layerUsesNormal(candidateIndex) && layerUsesNormalArray(candidateIndex),
     );
   const projectedSample = (index: number, uv: string) =>
     layerUsesProjectedArray(index)
@@ -855,6 +905,7 @@ function buildStackFragmentShader(
       projectedMetric, depthTolerance, projectedFaceNormal,
       ${layerUsesDepth(index) ? '1.0' : '0.0'},
       ${layerUsesNormal(index) ? '1.0' : '0.0'},
+      ${layerUsesSurfaceLock(index) ? '1.0' : '0.0'},
       ${layers[index].depthIsLinearView ? '1.0' : '0.0'},
       projectorNear${index}, projectorFar${index}
     )`;
@@ -901,7 +952,11 @@ function buildStackFragmentShader(
         max(${layerUsesNormal(index) ? '1.0' : '0.0'}, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
       float visibilityCoverage =
         max(neighborhoodVisibility, centerBackedVisibility) *
-        smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);`;
+        smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+      ${layerUsesSurfaceLock(index) ? `visibilityCoverage =
+        centerVisibility *
+        max(neighborhoodVisibility, centerBackedVisibility) *
+        smoothstep(0.08, 0.16, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))));` : ''}`;
   };
   const uniformDeclarations = Array.from(
     { length: layerCount },
@@ -927,10 +982,13 @@ function buildStackFragmentShader(
 `,
   ).join('');
 
+  const effectiveCompositeRole = (index: number) =>
+    layers[index].compositeRole ??
+    (layers[index].blendMode === 'overlay' ? 'overlay' : 'normal');
+
   const buildCandidateEvaluations = (role: 'normal' | 'underlay') =>
     Array.from({ length: layerCount }, (_, index) =>
-      (layers[index].compositeRole ?? 'normal') !== role ||
-      (role === 'normal' && layers[index].blendMode === 'overlay')
+      effectiveCompositeRole(index) !== role
         ? ''
         : `
     if (layerOpacity${index} > 0.0001) {
@@ -972,6 +1030,8 @@ function buildStackFragmentShader(
       };
       vec3 captureViewPosition = (projectorViewMatrix${index} * captureWorldPosition).xyz;
       vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
+      vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix${index}) * captureWorldNormal);
+      projectedFaceNormal *= mix(1.0, -1.0, step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0));
       float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
       float depthWeight = mix(0.7, 1.0, visibilityCoverage);
@@ -985,6 +1045,9 @@ function buildStackFragmentShader(
       float sourceAlpha = texel.a * maskAlpha;
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
+        layerUsesSurfaceLock(index)
+          ? `smoothstep(0.08, 0.16, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
+          :
         layerUsesDepth(index)
           ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1005,8 +1068,7 @@ function buildStackFragmentShader(
   const blendEvaluations = buildCandidateEvaluations('normal');
 
   const overlayEvaluations = Array.from({ length: layerCount }, (_, index) =>
-    (layers[index].compositeRole ?? 'normal') !== 'normal' ||
-    layers[index].blendMode !== 'overlay'
+    effectiveCompositeRole(index) !== 'overlay'
       ? ''
       : `
     if (layerOpacity${index} > 0.0001) {
@@ -1048,6 +1110,8 @@ function buildStackFragmentShader(
       };
       vec3 captureViewPosition = (projectorViewMatrix${index} * captureWorldPosition).xyz;
       vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
+      vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix${index}) * captureWorldNormal);
+      projectedFaceNormal *= mix(1.0, -1.0, step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0));
       float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
       float depthWeight = mix(0.7, 1.0, visibilityCoverage);
@@ -1061,6 +1125,9 @@ function buildStackFragmentShader(
       float sourceAlpha = texel.a * maskAlpha;
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
+        layerUsesSurfaceLock(index)
+          ? `smoothstep(0.08, 0.16, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
+          :
         layerUsesDepth(index)
           ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
           : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1098,7 +1165,9 @@ function buildStackFragmentShader(
   ${features.useBaseMap ? 'uniform float baseTextureOpacity;' : ''}
   ${features.useBaseRenderedColorMaskMap ? 'uniform sampler2D baseRenderedColorMaskMap;' : ''}
   ${features.useUvOverlayMap ? 'uniform sampler2D uvOverlayMap;' : ''}
+  ${features.useUvOverlayRenderedColorMaskMap ? 'uniform sampler2D uvOverlayRenderedColorMaskMap;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayOpacity;' : ''}
+  ${features.useUvOverlayMap ? 'uniform float uvOverlayRenderedColor;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayHueShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlaySaturationShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayLightnessShift;' : ''}
@@ -1178,6 +1247,7 @@ function buildStackFragmentShader(
     vec3 projectedFaceNormal,
     float sampleUsesDepth,
     float sampleUsesNormal,
+    float sampleSurfaceLocked,
     float sampleDepthIsLinearView,
     float sampleNear,
     float sampleFar
@@ -1199,10 +1269,11 @@ function buildStackFragmentShader(
       sampleUsesDepth
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
+    float normalAgreement = dot(projectedFaceNormal, normalize(capturedFaceNormal));
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
-      abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
+      mix(abs(normalAgreement), normalAgreement, sampleSurfaceLocked)
     );
     return depthVisibility * mix(1.0, normalVisibility, sampleUsesNormal);
   }
@@ -1230,18 +1301,7 @@ function buildStackFragmentShader(
     return smoothstep(0.0, edge, edgeDistance);
   }
 
-  float computePreviewLight(vec3 normal) {
-    vec3 lightDir = normalize(keyLightDirection);
-    float diffuse = max(dot(normal, lightDir), 0.0);
-    // Match the restrained white-membrane response so enabling PBR adds
-    // surface depth without lifting the source texture colours.
-    float lit = clamp(
-      ambientLightIntensity * 0.85 + diffuse * keyLightIntensity * 0.40,
-      0.0,
-      1.1
-    );
-    return mix(1.0, lit, previewLightingEnabled);
-  }
+  ${BASE_COLOR_PREVIEW_LIGHT_GLSL}
 
   float computeWhiteMembraneLight(vec3 normal) {
     vec3 lightDir = normalize(keyLightDirection);
@@ -1395,6 +1455,8 @@ function buildStackFragmentShader(
       liveEraserMaskTexel.a;
     ${features.useBaseMap ? 'vec4 baseTexel = texture2D(baseMap, vUv);' : ''}
     ${features.useBaseRenderedColorMaskMap ? 'float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r;' : 'float baseRenderedColor = 0.0;'}
+    ${features.useUvOverlayRenderedColorMaskMap ? 'float uvOverlayRenderedColorMask = texture2D(uvOverlayRenderedColorMaskMap, vUv).r;' : 'float uvOverlayRenderedColorMask = 0.0;'}
+    ${features.useUvOverlayMap ? 'float uvOverlayRenderedColorWeight = max(uvOverlayRenderedColor, uvOverlayRenderedColorMask);' : 'float uvOverlayRenderedColorWeight = 0.0;'}
     ${
       features.useUvOverlayMap
         ? `
@@ -1461,7 +1523,7 @@ function buildStackFragmentShader(
       features.useUvOverlayMap
         ? `mixedColor = mix(
       mixedColor,
-      uvOverlayTexel.rgb * lambert,
+      uvOverlayTexel.rgb * mix(lambert, renderedColorExposureCompensation, uvOverlayRenderedColorWeight),
       uvOverlayTexel.a * uvOverlayOpacity
     );`
         : ''
@@ -1537,6 +1599,12 @@ function prepareUvTexture(texture: THREE.Texture) {
   texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = UV_OVERLAY_TEXTURE_PROFILE;
 }
 
+function prepareRenderedColorMaskTexture(texture: THREE.Texture) {
+  prepareUvTexture(texture);
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.needsUpdate = true;
+}
+
 function prepareLiveEraserMaskTexture(texture: THREE.Texture) {
   texture.colorSpace = THREE.NoColorSpace;
   texture.flipY = false;
@@ -1593,6 +1661,8 @@ function getProjectionLayerStructureSignature(
     `${Number(normalizedFeatures.useBaseMap)}${Number(
       normalizedFeatures.useBaseRenderedColorMaskMap,
     )}${Number(normalizedFeatures.useUvOverlayMap)}${Number(
+      normalizedFeatures.useUvOverlayRenderedColorMaskMap,
+    )}${Number(
       normalizedFeatures.useTopUvOverlayMap,
     )}${Number(normalizedFeatures.useTextureArrays)}:` +
     layers
@@ -1610,6 +1680,7 @@ function getProjectionLayerStructureSignature(
           layer.useNormalCheck ? 1 : 0,
           layer.renderedColor ? 1 : 0,
           layer.minimumProjectionFacing ?? 0,
+          layer.projectionVisibilityPolicy ?? 'standard',
           layer.blendMode ?? 'normal',
           layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
@@ -1788,10 +1859,14 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
   root: THREE.Object3D,
   input: {
     uvOverlayTexture?: THREE.Texture;
+    uvOverlayRenderedColor?: boolean;
     baseTexture?: THREE.Texture;
     uvOverlayOpacity: number;
     topUvOverlayOpacity: number;
-    baseTextureOpacity: number;
+    // Omit while an asynchronous multi-layer base composite is being prepared.
+    // The resident material then keeps its last atomically published texture /
+    // opacity pair instead of flashing empty between visibility states.
+    baseTextureOpacity?: number;
   },
 ) {
   const visited = new Set<THREE.Material>();
@@ -1822,6 +1897,11 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
         if (Number(material.uniforms.useUvOverlayMap.value ?? 0) !== 1) updated = true;
         material.uniforms.useUvOverlayMap.value = 1;
       }
+      if (material.uniforms.uvOverlayRenderedColor) {
+        const value = input.uvOverlayRenderedColor ? 1 : 0;
+        if (Number(material.uniforms.uvOverlayRenderedColor.value ?? 0) !== value) updated = true;
+        material.uniforms.uvOverlayRenderedColor.value = value;
+      }
       if (
         input.baseTexture &&
         material.uniforms.baseMap &&
@@ -1840,6 +1920,7 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
         ['baseTextureOpacity', input.baseTextureOpacity],
       ] as const;
       for (const [name, value] of values) {
+        if (value === undefined) continue;
         const uniform = material.uniforms[name];
         if (!uniform || uniform.value === value) continue;
         uniform.value = value;
@@ -1864,6 +1945,9 @@ function updateSharedPreviewUniforms(
     material.uniforms.baseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture;
   if (material.uniforms.uvOverlayMap && input.uvOverlayTexture)
     material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
+  if (material.uniforms.uvOverlayRenderedColorMaskMap && input.uvOverlayRenderedColorMaskTexture)
+    material.uniforms.uvOverlayRenderedColorMaskMap.value =
+      input.uvOverlayRenderedColorMaskTexture;
   if (material.uniforms.topUvOverlayMap && input.topUvOverlayTexture)
     material.uniforms.topUvOverlayMap.value = input.topUvOverlayTexture;
   if (material.uniforms.liveEraserMaskMap && input.liveEraserMaskTexture)
@@ -1886,6 +1970,11 @@ function updateSharedPreviewUniforms(
       : 0;
   if (material.uniforms.useUvOverlayMap)
     material.uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  if (material.uniforms.uvOverlayRenderedColor)
+    material.uniforms.uvOverlayRenderedColor.value = input.uvOverlayRenderedColor ? 1 : 0;
+  if (material.uniforms.useUvOverlayRenderedColorMaskMap)
+    material.uniforms.useUvOverlayRenderedColorMaskMap.value =
+      input.uvOverlayRenderedColorMaskTexture ? 1 : 0;
   if (material.uniforms.uvOverlayOpacity)
     material.uniforms.uvOverlayOpacity.value = THREE.MathUtils.clamp(
       input.uvOverlayOpacity ?? 1,
@@ -1934,6 +2023,8 @@ function updateSharedPreviewUniforms(
     material.uniforms.keyLightDirection.value = previewLighting.keyLightDirection;
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.uvOverlayRenderedColorMaskTexture)
+    prepareRenderedColorMaskTexture(input.uvOverlayRenderedColorMaskTexture);
   if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
   if (input.liveEraserMaskTexture)
     prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
@@ -1956,6 +2047,7 @@ export function updateProjectedLayerStackMaterial(
       useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
+      useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
       useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays: state.usesTextureArrays,
     })
@@ -2621,6 +2713,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     useNormalCheck: input.useNormalCheck,
     renderedColor: input.renderedColor,
     minimumProjectionFacing: input.minimumProjectionFacing,
+    projectionVisibilityPolicy: input.projectionVisibilityPolicy,
   };
   const texture = await loadProjectedTexture(input.imageUrl);
 
@@ -2718,6 +2811,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       baseMap: { value: baseTexture },
       baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
       uvOverlayMap: { value: uvOverlayTexture },
+      uvOverlayRenderedColorMaskMap: {
+        value: input.uvOverlayRenderedColorMaskTexture ?? neutralTexture,
+      },
       topUvOverlayMap: { value: topUvOverlayTexture },
       maskMap: { value: maskTexture },
       depthMap: { value: depthTexture },
@@ -2740,6 +2836,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       minimumProjectionFacing: {
         value: THREE.MathUtils.clamp(input.minimumProjectionFacing ?? 0, 0, 0.99),
       },
+      surfaceLockedVisibility: {
+        value: input.projectionVisibilityPolicy === 'surface-locked-v1' ? 1 : 0,
+      },
       projectedBlendModeOverlay: { value: input.blendMode === 'overlay' ? 1 : 0 },
       projectedCompositeUnderlay: { value: input.compositeRole === 'underlay' ? 1 : 0 },
       useMask: { value: input.useMask && input.maskUrl ? 1 : 0 },
@@ -2753,7 +2852,11 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       },
       useNormalCheck: {
         value:
-          input.useNormalCheck && input.normalUrl && normalTexture !== neutralNormalTexture ? 1 : 0,
+          input.useNormalCheck &&
+          input.normalUrl &&
+          normalTexture !== neutralNormalTexture
+            ? 1
+            : 0,
       },
       depthIsLinearView: { value: input.depthIsLinearView ? 1 : 0 },
       projectorNear: { value: input.camera.near },
@@ -2777,6 +2880,10 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+      uvOverlayRenderedColor: { value: input.uvOverlayRenderedColor ? 1 : 0 },
+      useUvOverlayRenderedColorMaskMap: {
+        value: input.uvOverlayRenderedColorMaskTexture ? 1 : 0,
+      },
       uvOverlayOpacity: {
         value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
       },
@@ -2796,8 +2903,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     transparent: Boolean(input.transparentProjectionOnly),
     depthWrite: !input.transparentProjectionOnly,
     polygonOffset: Boolean(input.transparentProjectionOnly),
-    polygonOffsetFactor: input.transparentProjectionOnly ? -16 : 0,
-    polygonOffsetUnits: input.transparentProjectionOnly ? -16 : 0,
+    polygonOffsetFactor: input.transparentProjectionOnly ? -1 : 0,
+    polygonOffsetUnits: input.transparentProjectionOnly ? -1 : 0,
     depthFunc: THREE.LessEqualDepth,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
@@ -2860,6 +2967,7 @@ export async function createProjectedLayerStackMaterial(
     useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
     useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
     useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
+    useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
     useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
   };
   const directSamplerBudget = getProjectedLayerSamplerBudget(
@@ -2904,6 +3012,7 @@ export async function createProjectedLayerStackMaterial(
       useNormalCheck: layer.useNormalCheck,
       renderedColor: layer.renderedColor,
       minimumProjectionFacing: layer.minimumProjectionFacing,
+      projectionVisibilityPolicy: layer.projectionVisibilityPolicy,
     });
     material.userData[PROJECTED_LAYER_SAMPLER_BUDGET_KEY] = samplerBudget;
     return material;
@@ -2925,6 +3034,9 @@ export async function createProjectedLayerStackMaterial(
     baseMap: { value: input.baseTexture ?? neutralTexture },
     baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
     uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
+    uvOverlayRenderedColorMaskMap: {
+      value: input.uvOverlayRenderedColorMaskTexture ?? neutralTexture,
+    },
     topUvOverlayMap: { value: input.topUvOverlayTexture ?? neutralTexture },
     liveEraserMaskMap: { value: input.liveEraserMaskTexture ?? neutralTexture },
     useLiveEraserMask: {
@@ -2945,6 +3057,10 @@ export async function createProjectedLayerStackMaterial(
     },
     useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
     useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+    uvOverlayRenderedColor: { value: input.uvOverlayRenderedColor ? 1 : 0 },
+    useUvOverlayRenderedColorMaskMap: {
+      value: input.uvOverlayRenderedColorMaskTexture ? 1 : 0,
+    },
     uvOverlayOpacity: {
       value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
     },
@@ -3018,7 +3134,9 @@ export async function createProjectedLayerStackMaterial(
     async (layer) => {
       const requestedMask = Boolean(layer.useMask && layer.maskUrl);
       const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
-      const requestedNormal = Boolean(layer.useNormalCheck && layer.normalUrl);
+      const requestedNormal = Boolean(
+        layer.useNormalCheck && layer.normalUrl,
+      );
       const [texture, maskTexture, depthTexture, normalTexture] = await Promise.all([
         loadProjectedTextureWithRetry(layer.imageUrl).catch((error) => {
           console.warn(
@@ -3069,7 +3187,9 @@ export async function createProjectedLayerStackMaterial(
     const { layer, texture, maskTexture, depthTexture, normalTexture } = prepared;
     const requestedMask = Boolean(layer.useMask && layer.maskUrl);
     const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
-    const requestedNormal = Boolean(layer.useNormalCheck && layer.normalUrl);
+    const requestedNormal = Boolean(
+      layer.useNormalCheck && layer.normalUrl,
+    );
     // Never reinterpret a masked layer as an unmasked layer. In particular, the
     // renderer-only local repaint preview is created before its first brush
     // upload; a transient mask lookup miss must not reveal its full source image.
@@ -3152,7 +3272,10 @@ export async function createProjectedLayerStackMaterial(
     uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
     uniforms[`layerOverlayMode${index}`] = {
       value:
-        (layer.compositeRole ?? 'normal') === 'normal' && layer.blendMode === 'overlay' ? 1 : 0,
+        (layer.compositeRole ?? (layer.blendMode === 'overlay' ? 'overlay' : 'normal')) ===
+        'overlay'
+          ? 1
+          : 0,
     };
     captureObjectMatrices.push(captureObjectMatrixWorld);
     projectedArraySlices.push(projectedArraySlice);
@@ -3371,6 +3494,7 @@ export async function createProjectedLayerStackMaterial(
       useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
+      useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
       useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays,
     }),
@@ -3385,6 +3509,7 @@ export async function createProjectedLayerStackMaterial(
       useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
       useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
+      useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
       useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
       useTextureArrays,
     }),
@@ -3553,12 +3678,15 @@ const uvOverlayFragmentShader = `
   uniform sampler2D baseMap;
   uniform sampler2D baseRenderedColorMaskMap;
   uniform sampler2D uvOverlayMap;
+  uniform sampler2D uvOverlayRenderedColorMaskMap;
   uniform sampler2D liveUvOverlayMap;
   uniform sampler2D surfaceMaskMap;
   uniform float useBaseMap;
   uniform float baseTextureOpacity;
   uniform float useBaseRenderedColorMaskMap;
   uniform float useUvOverlayMap;
+  uniform float useUvOverlayRenderedColorMaskMap;
+  uniform float uvOverlayRenderedColor;
   uniform float uvOverlayOpacity;
   uniform float useLiveUvOverlayMap;
   uniform float liveUvOverlayOpacity;
@@ -3615,12 +3743,7 @@ const uvOverlayFragmentShader = `
     return srgbToLinear(hsvToRgb(hsv));
   }
 
-  float computePreviewLight(vec3 normal) {
-    vec3 lightDir = normalize(keyLightDirection);
-    float diffuse = max(dot(normal, lightDir), 0.0);
-    float lit = clamp(ambientLightIntensity + diffuse * keyLightIntensity * 0.55, 0.0, 2.0);
-    return mix(1.0, lit, previewLightingEnabled);
-  }
+  ${BASE_COLOR_PREVIEW_LIGHT_GLSL}
 
   float computeWhiteMembraneLight(vec3 normal) {
     vec3 lightDir = normalize(keyLightDirection);
@@ -3656,6 +3779,10 @@ const uvOverlayFragmentShader = `
     vec4 baseTexel = texture2D(baseMap, vUv);
     float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
     vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
+    float overlayRenderedColor = max(
+      uvOverlayRenderedColor,
+      texture2D(uvOverlayRenderedColorMaskMap, vUv).r * useUvOverlayRenderedColorMaskMap
+    );
     vec4 liveOverlayTexel = texture2D(liveUvOverlayMap, vUv);
     overlayTexel.rgb = applyHsvAdjustments(
       overlayTexel.rgb,
@@ -3682,7 +3809,6 @@ const uvOverlayFragmentShader = `
       useLiveUvOverlayMap * step(0.0001, liveUvOverlayOpacity)
     );
     vec3 surfaceColor = mix(baseSurface, uvPreviewBase, hasUvOverlay * showEmptyUvChecker);
-    surfaceColor = mix(surfaceColor, overlayTexel.rgb, overlayAlpha);
     float remainingTransparency = (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
     float lighting = mix(lambert, 1.0, hasUvOverlay * showEmptyUvChecker * remainingTransparency * 0.45);
     vec3 liveOverlayDisplayColor = liveOverlayTexel.rgb * mix(
@@ -3691,6 +3817,12 @@ const uvOverlayFragmentShader = `
       liveUvOverlayRenderedColor
     );
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
+    vec3 overlayPrelightColor = overlayTexel.rgb * mix(
+      1.0,
+      renderedColorExposureCompensation / max(lighting, 0.0001),
+      overlayRenderedColor
+    );
+    surfaceColor = mix(surfaceColor, overlayPrelightColor, overlayAlpha);
     vec3 litBaseSurface = mix(
       baseColor * lighting,
       baseTexel.rgb * mix(lighting, renderedColorExposureCompensation, baseRenderedColor),
@@ -3709,6 +3841,8 @@ export type UvOverlayPreviewMaterialInput = {
   displayMode: string;
   selected: boolean;
   uvOverlayTexture?: THREE.Texture;
+  uvOverlayRenderedColor?: boolean;
+  uvOverlayRenderedColorMaskTexture?: THREE.Texture;
   uvOverlayOpacity?: number;
   uvOverlayHue?: number;
   uvOverlaySaturation?: number;
@@ -3746,6 +3880,8 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
   neutralTexture.flipY = false;
 
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.uvOverlayRenderedColorMaskTexture)
+    prepareRenderedColorMaskTexture(input.uvOverlayRenderedColorMaskTexture);
   if (input.liveUvOverlayTexture) prepareUvTexture(input.liveUvOverlayTexture);
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   const previewLighting = getPreviewLighting(input.previewLighting);
@@ -3758,6 +3894,9 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
       baseMap: { value: input.baseTexture ?? neutralTexture },
       baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
       uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
+      uvOverlayRenderedColorMaskMap: {
+        value: input.uvOverlayRenderedColorMaskTexture ?? neutralTexture,
+      },
       liveUvOverlayMap: { value: input.liveUvOverlayTexture ?? neutralTexture },
       surfaceMaskMap: { value: input.surfaceMaskTexture ?? neutralTexture },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
@@ -3766,6 +3905,10 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
       },
       useBaseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ? 1 : 0 },
       useUvOverlayMap: { value: input.uvOverlayTexture ? 1 : 0 },
+      uvOverlayRenderedColor: { value: input.uvOverlayRenderedColor ? 1 : 0 },
+      useUvOverlayRenderedColorMaskMap: {
+        value: input.uvOverlayRenderedColorMaskTexture ? 1 : 0,
+      },
       uvOverlayOpacity: {
         value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
       },
@@ -3807,6 +3950,8 @@ export function updateUvOverlayPreviewMaterial(
   )?.[0];
   if (!neutralTexture) return false;
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
+  if (input.uvOverlayRenderedColorMaskTexture)
+    prepareRenderedColorMaskTexture(input.uvOverlayRenderedColorMaskTexture);
   if (input.liveUvOverlayTexture) prepareUvTexture(input.liveUvOverlayTexture);
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   const previewLighting = getPreviewLighting(input.previewLighting);
@@ -3814,6 +3959,8 @@ export function updateUvOverlayPreviewMaterial(
   uniforms.baseMap.value = input.baseTexture ?? neutralTexture;
   uniforms.baseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture ?? neutralTexture;
   uniforms.uvOverlayMap.value = input.uvOverlayTexture ?? neutralTexture;
+  uniforms.uvOverlayRenderedColorMaskMap.value =
+    input.uvOverlayRenderedColorMaskTexture ?? neutralTexture;
   uniforms.liveUvOverlayMap.value = input.liveUvOverlayTexture ?? neutralTexture;
   uniforms.surfaceMaskMap.value = input.surfaceMaskTexture ?? neutralTexture;
   uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
@@ -3824,6 +3971,9 @@ export function updateUvOverlayPreviewMaterial(
   );
   uniforms.useBaseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture ? 1 : 0;
   uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
+  uniforms.uvOverlayRenderedColor.value = input.uvOverlayRenderedColor ? 1 : 0;
+  uniforms.useUvOverlayRenderedColorMaskMap.value =
+    input.uvOverlayRenderedColorMaskTexture ? 1 : 0;
   uniforms.uvOverlayOpacity.value = THREE.MathUtils.clamp(
     input.uvOverlayOpacity ?? 1,
     0,

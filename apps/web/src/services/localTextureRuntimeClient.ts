@@ -13,6 +13,7 @@ export type LocalTextureRuntimeState =
   | { status: 'outdated'; health: LocalTextureRuntimeHealth; requiredVersion: string };
 
 const desktopRuntimePort = '4618';
+const localTextureRuntimeHealthTimeoutMs = 4_000;
 
 function isLoopbackHost(hostname: string) {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
@@ -77,7 +78,7 @@ export async function downloadLocalTextureRuntimeInstaller() {
 
 export async function checkLocalTextureRuntime(): Promise<LocalTextureRuntimeState> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 1_600);
+  const timeout = window.setTimeout(() => controller.abort(), localTextureRuntimeHealthTimeoutMs);
   try {
     const response = await fetch(`${getLocalTextureRuntimeApiBase()}/api/health`, {
       method: 'GET',

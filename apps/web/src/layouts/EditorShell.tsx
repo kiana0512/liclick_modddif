@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  ArrowLeft,
   Check,
   ChevronDown,
   Download,
@@ -174,13 +173,12 @@ export function EditorShell({
       <header className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex items-start gap-2">
         <div className="flex min-w-0 items-start gap-2">
           <div className="pointer-events-auto flex min-w-0 shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-black/42 px-2 py-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
-            <Button
-              variant="ghost"
-              className="h-8 w-8 px-0"
-              icon={<ArrowLeft className="h-4 w-4" />}
-              onClick={onBack}
+            <BrandMark
+              compact
+              className="flex"
+              onBack={onBack}
+              backLabel="返回项目列表"
             />
-            <BrandMark compact className="hidden sm:flex" />
             <div className="min-w-0 border-l border-white/12 pl-2 sm:pl-3">
               {editingProjectName ? (
                 <form

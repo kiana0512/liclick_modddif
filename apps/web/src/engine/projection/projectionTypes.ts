@@ -1,6 +1,6 @@
 import type * as THREE from 'three';
 import type { SerializedCamera } from '@/types/capture';
-import type { BlendMode, LayerMaskSpace } from '@/types/layer';
+import type { BlendMode, LayerMaskSpace, ProjectionVisibilityPolicy } from '@/types/layer';
 
 export type ProjectionLayerInput = {
   layerId: string;
@@ -23,6 +23,8 @@ export type ProjectionLayerInput = {
   baseTextureOpacity?: number;
   baseRenderedColorMaskTexture?: THREE.Texture;
   uvOverlayTexture?: THREE.Texture;
+  uvOverlayRenderedColor?: boolean;
+  uvOverlayRenderedColorMaskTexture?: THREE.Texture;
   /** Compile the UV-overlay branch before its resident texture finishes decoding. */
   reserveUvOverlaySampler?: boolean;
   /** Runtime visibility/opacity for a resident UV overlay; does not change shader structure. */
@@ -56,6 +58,7 @@ export type ProjectionLayerInput = {
   transparentProjectionOnly?: boolean;
   /** Reject projected fragments below this absolute geometric face-on cosine. */
   minimumProjectionFacing?: number;
+  projectionVisibilityPolicy?: ProjectionVisibilityPolicy;
   enableBackfaceCulling?: boolean;
   edgeFeather?: number;
   depthBias?: number;
@@ -111,6 +114,7 @@ export type ProjectionLayerStackInput = Omit<
   | 'renderedColor'
   | 'transparentProjectionOnly'
   | 'minimumProjectionFacing'
+  | 'projectionVisibilityPolicy'
 > & {
   layers: Array<
     Pick<
@@ -137,6 +141,7 @@ export type ProjectionLayerStackInput = Omit<
       | 'useNormalCheck'
       | 'renderedColor'
       | 'minimumProjectionFacing'
+      | 'projectionVisibilityPolicy'
     >
   >;
 };

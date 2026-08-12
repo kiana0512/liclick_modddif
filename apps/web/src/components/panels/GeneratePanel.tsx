@@ -2607,7 +2607,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         objectId,
         resolution: 2048,
         framing: 'current',
-        colorMode: 'target-only',
+        // Local repaint is authored as BaseColor. Always submit the unlit Flat
+        // view; the viewport reapplies its current PBR lighting only for display.
+        colorMode: 'flat-target',
         aspect: maskSize.width / maskSize.height,
       });
       document.body.dataset.localRepaintButton2ViewCaptureMs = (
@@ -2648,6 +2650,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           projectId: currentProject.id,
           objectId,
           paintMaskRevision: currentPaintMaskRevision,
+          sourceColorMode: 'flat-target',
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
@@ -2717,6 +2720,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           maskUrl: persistedPaintMaskUrl,
           paintMaskRevision: currentPaintMaskRevision,
+          sourceColorMode: 'flat-target',
           completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },
       };

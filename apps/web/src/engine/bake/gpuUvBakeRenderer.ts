@@ -171,6 +171,7 @@ const fragmentShader = `
   uniform float maximumDepthError;
   uniform float minimumOutputCoverage;
   uniform float minimumProjectionFacing;
+  uniform float surfaceLockedVisibility;
   uniform float enableBackfaceCulling;
   uniform float useCoverageAlpha;
   uniform float useQualityDepth;
@@ -255,10 +256,11 @@ const fragmentShader = `
       useDepthCheck
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
+    float normalAgreement = dot(projectedFaceNormal, normalize(capturedFaceNormal));
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
-      abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
+      mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
   }
@@ -373,6 +375,12 @@ const fragmentShader = `
     vec3 projectedFaceNormal = normalize(
       cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
     );
+    vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix) * captureWorldNormal);
+    projectedFaceNormal *= mix(
+      1.0,
+      -1.0,
+      step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0)
+    );
     float faceOnFactor = abs(projectedFaceNormal.z);
     float projectionFacingFactor = abs(
       dot(projectedFaceNormal, normalize(-captureViewPosition))
@@ -464,6 +472,13 @@ const fragmentShader = `
     float visibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    float lockedFacingCoverage = smoothstep(0.08, 0.16, projectionFacingFactor);
+    visibilityCoverage = mix(
+      visibilityCoverage,
+      centerVisibility * max(neighborhoodVisibility, centerBackedVisibility) * lockedFacingCoverage,
+      surfaceLockedVisibility
+    );
+    angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     if (strictDepthCheck > 0.5 && useDepthCheck > 0.5 && visibilityCoverage < 0.5) discard;
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
@@ -994,6 +1009,9 @@ function createLayerMaterial(input: {
       },
       minimumProjectionFacing: {
         value: THREE.MathUtils.clamp(input.layer.minimumProjectionFacing ?? 0, 0, 0.99),
+      },
+      surfaceLockedVisibility: {
+        value: input.layer.projectionVisibilityPolicy === 'surface-locked-v1' ? 1 : 0,
       },
       enableBackfaceCulling: { value: input.enableBackfaceCulling ? 1 : 0 },
       useCoverageAlpha: { value: input.compositeMode === 'coverage-alpha' ? 1 : 0 },

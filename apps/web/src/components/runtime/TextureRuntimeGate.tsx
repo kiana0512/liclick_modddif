@@ -96,18 +96,66 @@ function RuntimeStatus({
   );
 }
 
+function RuntimeReconnectNotice({
+  state,
+  onRetry,
+}: {
+  state: LocalTextureRuntimeState;
+  onRetry: () => void;
+}) {
+  const outdated = state.status === 'outdated';
+  return (
+    <div className="pointer-events-none fixed inset-x-0 top-3 z-[140] flex justify-center px-4">
+      <div
+        role="status"
+        aria-live="polite"
+        className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-xl border border-amber-200/20 bg-[#241b16]/95 px-4 py-3 text-sm text-amber-50 shadow-[0_18px_50px_rgba(0,0,0,0.38)] backdrop-blur-xl"
+      >
+        {outdated ? (
+          <MonitorCog className="h-4 w-4 shrink-0 text-amber-200" />
+        ) : (
+          <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-amber-200" />
+        )}
+        <span className="min-w-0 flex-1">
+          {outdated
+            ? '检测到本地组件版本变化。编辑器已保留，请完成当前操作后更新组件。'
+            : '本地组件暂时无响应，正在自动重连。当前生成任务不会被取消。'}
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="shrink-0 rounded-lg border border-white/15 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-white/78 transition hover:bg-white/[0.12] hover:text-white"
+        >
+          重新检测
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function TextureRuntimeGate({
   state,
+  hasReadySession = false,
   onRetry,
   onBack,
   children,
 }: {
   state: LocalTextureRuntimeState;
+  hasReadySession?: boolean;
   onRetry: () => void;
   onBack: () => void;
   children: ReactNode;
 }) {
-  if (state.status === 'ready') return <>{children}</>;
+  if (state.status === 'ready' || hasReadySession) {
+    return (
+      <>
+        {children}
+        {state.status === 'ready' ? null : (
+          <RuntimeReconnectNotice state={state} onRetry={onRetry} />
+        )}
+      </>
+    );
+  }
 
   return (
     <main className="li3d-home-surface min-h-screen text-white">

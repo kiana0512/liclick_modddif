@@ -1,6 +1,7 @@
 import { useLayerStore } from '@/stores/layerStore';
 import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
+import { isLiveProjectedCanvasUrl } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import type { Layer } from '@/types/layer';
 
 export type LocalRepaintSessionLayerResult = {
@@ -19,24 +20,58 @@ export function ensureLocalRepaintSessionLayer(input: {
     belongsToObject(layer) &&
     layer.type === 'uv' &&
     (layer.role === 'local-repaint-draft' || layer.role === 'local-repaint-overlay');
-  const initialLayers = useLayerStore.getState().layers;
+  let initialLayers = useLayerStore.getState().layers;
+  const migratedLayers = initialLayers.map((item) =>
+    item.type === 'projected' &&
+    item.localRepaintSourceUrl &&
+    isLiveProjectedCanvasUrl(item.imageUrl)
+      ? {
+          ...item,
+          // Older builds persisted one component-wide live preview URL. Its
+          // backing texture was replaced by every later generation, so several
+          // rows could display the same newest image. Restore each row to its
+          // own durable generation result as soon as the project is touched.
+          imageUrl: item.localRepaintSourceUrl,
+          contentRevision: (item.contentRevision ?? 0) + 1,
+        }
+      : item,
+  );
+  const migratedRuntimeUrls = migratedLayers.some(
+    (item, index) => item !== initialLayers[index],
+  );
+  if (migratedRuntimeUrls) {
+    useLayerStore.getState().setLayers(migratedLayers);
+    initialLayers = useLayerStore.getState().layers;
+  }
   const sessionTargets = initialLayers.filter(isSessionTarget);
   const targetIds = new Set(sessionTargets.map((item) => item.id));
-  const currentVisibleResult = initialLayers.find(
+  const generationResult = initialLayers.find(
     (item) =>
       belongsToObject(item) &&
       item.type === 'projected' &&
       Boolean(item.replacementTargetLayerId) &&
-      targetIds.has(item.replacementTargetLayerId!),
+      targetIds.has(item.replacementTargetLayerId!) &&
+      Boolean(input.generationId) &&
+      item.generationId === input.generationId,
   );
-  // A local repaint is one user-facing layer. Generation IDs describe newer
-  // source images for that same layer; they must not create another empty row.
-  // Prefer the target already owned by the visible first-row result so legacy
-  // projects converge without losing the current replacement.
+  const claimedTargetIds = new Set(
+    initialLayers.flatMap((item) =>
+      item.replacementTargetLayerId ? [item.replacementTargetLayerId] : [],
+    ),
+  );
+  // One generated repaint source owns one independent destination layer. More
+  // brush strokes from the same generation continue accumulating on that layer,
+  // while a newer generation starts with an empty mask and cannot recolour the
+  // pixels already authored by older repaint layers.
   let layer =
-    sessionTargets.find((item) => item.id === currentVisibleResult?.replacementTargetLayerId) ??
-    sessionTargets[0];
-  let mutated = false;
+    sessionTargets.find((item) => item.id === generationResult?.replacementTargetLayerId) ??
+    sessionTargets.find(
+      (item) => Boolean(input.generationId) && item.generationId === input.generationId,
+    ) ??
+    // Reuse only an uncommitted placeholder. A destination that already owns a
+    // visible result is historical content and must never be rebound.
+    sessionTargets.find((item) => !item.imageUrl && !claimedTargetIds.has(item.id));
+  let mutated = migratedRuntimeUrls;
   let boundGeneration = false;
 
   let created = false;
@@ -65,6 +100,13 @@ export function ensureLocalRepaintSessionLayer(input: {
     useLayerStore
       .getState()
       .layers.filter((item) => isSessionTarget(item) && item.id !== canonicalTargetId)
+      .filter(
+        (item) =>
+          Boolean(input.generationId) &&
+          item.generationId === input.generationId &&
+          !item.imageUrl &&
+          !claimedTargetIds.has(item.id),
+      )
       .map((item) => item.id),
   );
   const runtimeResults = useLayerStore.getState().layers.filter(
@@ -72,9 +114,7 @@ export function ensureLocalRepaintSessionLayer(input: {
       belongsToObject(item) &&
       item.type === 'projected' &&
       Boolean(item.replacementTargetLayerId) &&
-      (item.id.startsWith('local-repaint-projection') ||
-        item.id.startsWith('local-repaint-brush-projection') ||
-        targetIds.has(item.replacementTargetLayerId!) ||
+      (item.replacementTargetLayerId === canonicalTargetId ||
         duplicateTargetIds.has(item.replacementTargetLayerId!)),
   );
   const visibleResultId = runtimeResults[0]?.id;
@@ -86,9 +126,8 @@ export function ensureLocalRepaintSessionLayer(input: {
     mutated = true;
   }
   if (duplicateTargetIds.size > 0 || runtimeResults.length > 1) {
-    // Older builds produced one draft and one visible result for every
-    // generation. Keep the newest top-row result and the single canonical
-    // target; both the editor and exporter then see one coherent session.
+    // Collapse only duplicates belonging to this generation. Repaint results
+    // from other generations are intentional independent user-facing layers.
     const nextLayers = useLayerStore
       .getState()
       .layers.filter(
@@ -105,15 +144,31 @@ export function ensureLocalRepaintSessionLayer(input: {
     mutated = true;
   }
 
-  const activeRuntimeResult = visibleResultId
-    ? useLayerStore.getState().layers.find((item) => item.id === visibleResultId)
-    : undefined;
-  if (activeRuntimeResult) {
-    // Hand the previous persisted result to the renderer-owned overlay before
-    // the new source is prepared. Otherwise it briefly re-enters the main
-    // projected array as a 15th layer and forces a full background rebuild on
-    // every repaint round after the first.
-    useSceneStore.getState().setLocalRepaintPreviewLayer(activeRuntimeResult);
+  const sceneState = useSceneStore.getState();
+  const currentSource = sceneState.localRepaintProjectionSource;
+  const sourceOwnsTarget = currentSource?.targetLayerId === canonicalTargetId;
+  if (!sourceOwnsTarget) {
+    // A persisted result is not itself a renderer-owned live preview. Publishing
+    // it here used to mute the stored row before any GPU overlay existed. This
+    // effect runs again as soon as a remote generation succeeds, so the previous
+    // repaint vanished until an eye toggle forced the projected uniforms to
+    // refresh. Only ViewportCanvas may publish localRepaintPreviewLayer, after
+    // it has prepared the matching source, mask and overlay.
+    if (currentSource) {
+      // Keep the old persistent row muted until ViewportCanvas has physically
+      // removed its renderer-owned twin. Clearing preview ownership first lets
+      // SceneRoot show the stored row for one frame while the duplicate overlay
+      // geometry is still present; the two coplanar surfaces then z-fight into
+      // the regular stripe/moire pattern seen after a remote result returns.
+      // The source teardown owns the atomic order: dispose GPU overlay, then
+      // release preview ownership and reveal the persistent row.
+      sceneState.setLocalRepaintProjectionSource(undefined);
+      sceneState.setPaintTool('none');
+    } else if (sceneState.localRepaintPreviewLayer) {
+      // No renderer source means there cannot be a live overlay waiting to
+      // dispose, so a genuinely stale preview marker is safe to clear here.
+      sceneState.setLocalRepaintPreviewLayer(undefined);
+    }
   }
 
   if (mutated) {

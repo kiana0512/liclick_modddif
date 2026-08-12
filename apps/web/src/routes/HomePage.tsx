@@ -348,7 +348,7 @@ export function HomePage({
               accent="violet"
               visual="paint"
               badge="本机运行"
-              hoverAction="进入贴图工作台"
+              hoverAction="查看贴图项目"
               telemetryModule="texture_painting"
               onClick={onOpenTexture}
               layout="featured"

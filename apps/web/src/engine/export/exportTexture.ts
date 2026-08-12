@@ -1,8 +1,13 @@
 import type { Material, Mesh, Object3D, Texture } from 'three';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { Project } from '@/types/project';
+import type { ModelExportInput } from './exportTypes';
 import { downloadBlob, getExportFilename } from './exportUtils';
-import { blobFromImageAssetUrl, makeTransparentBaseColorForExport } from './texturedExportUtils';
+import {
+  blobFromImageAssetUrl,
+  makeTransparentBaseColorForExport,
+  prepareTexturedModelExport,
+} from './texturedExportUtils';
 
 function isCanvas(value: unknown): value is HTMLCanvasElement | OffscreenCanvas {
   return (
@@ -65,6 +70,18 @@ export async function exportTextureUrl(project: Project, imageUrl: string, suffi
     suffix.toLowerCase().includes('color') || suffix.toLowerCase().includes('basecolor') || suffix.toLowerCase().includes('base-color');
   const outputBlob = shouldExportBaseColor ? await makeTransparentBaseColorForExport(blob) : blob;
   downloadBlob(outputBlob, getExportFilename(project.name, suffix, 'png'));
+}
+
+export async function exportCompositedBaseColor(input: ModelExportInput) {
+  const prepared = await prepareTexturedModelExport(input);
+  if (!prepared.textureBlob) {
+    throw new Error('No visible BaseColor layers are available for export.');
+  }
+  const outputBlob = await makeTransparentBaseColorForExport(prepared.textureBlob);
+  downloadBlob(
+    outputBlob,
+    getExportFilename(input.project.name, 'basecolor', 'png'),
+  );
 }
 
 export async function exportNormalTexture(project: Project, texture: Texture) {

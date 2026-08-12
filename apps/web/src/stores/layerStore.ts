@@ -34,7 +34,9 @@ type LayerStore = {
     targetUvLayerId?: string;
     name?: string;
     renderedColor?: boolean;
+    renderedColorMaskUrl?: string;
     role?: Layer['role'];
+    uvMergeVersion?: number;
   }) => Layer;
   addProjectedLayerFromGeneration: (
     generation: Generation,
@@ -283,13 +285,16 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
             imageUrl: input.imageUrl,
             objectId: input.objectId ?? layer.objectId,
             renderedColor: input.renderedColor,
+            renderedColorMaskUrl: input.renderedColorMaskUrl,
             role: input.role ?? layer.role,
+            uvMergeVersion: input.uvMergeVersion,
             visible: true,
             opacity: 1,
             strength: 1,
             blendMode: 'normal',
             isBaked: false,
             needsRebake: false,
+            contentRevision: (layer.contentRevision ?? 0) + 1,
           };
           nextLayers[index] = mergedLayer;
         });
@@ -303,7 +308,9 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           imageUrl: input.imageUrl,
           objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
           renderedColor: input.renderedColor,
+          renderedColorMaskUrl: input.renderedColorMaskUrl,
           role: input.role,
+          uvMergeVersion: input.uvMergeVersion,
           visible: true,
           opacity: 1,
           strength: 1,
@@ -312,6 +319,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           order: insertIndex,
           isBaked: false,
           needsRebake: false,
+          contentRevision: 1,
           createdAt,
         };
         nextLayers.splice(Math.min(insertIndex, nextLayers.length), 0, mergedLayer);

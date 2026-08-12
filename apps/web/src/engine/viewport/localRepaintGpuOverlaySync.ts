@@ -42,6 +42,10 @@ export function syncLocalRepaintGpuOverlayLighting(
       updated = true;
     }
   }
+  // Demand-driven rendering can reuse the same linked program across display
+  // modes. Mark its uniforms dirty explicitly so PBR -> Flat cannot draw one
+  // more frame with the previous lighting state.
+  if (updated) overlay.material.uniformsNeedUpdate = true;
   return updated;
 }
 

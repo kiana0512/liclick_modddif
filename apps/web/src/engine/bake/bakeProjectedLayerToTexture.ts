@@ -37,7 +37,13 @@ import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
+import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
+import {
+  getProjectedLayerOverlayMode,
+  getProjectionOverlayAlpha,
+  type ProjectedOverlayMode,
+} from './projectedOverlayComposition';
 import {
   rasterizeUvTopologyMaskWithWebGpu,
   type WebGpuUvTopologyRasterResult,
@@ -309,11 +315,6 @@ function clampByte(value: number) {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
 
-function smoothstep(edge0: number, edge1: number, value: number) {
-  const t = Math.max(0, Math.min(1, (value - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
 function isSharpenTarget(
   imageData: ImageData,
   coverage: Uint8Array | undefined,
@@ -513,6 +514,7 @@ type OverlayRaster = {
   layer: Layer;
   imageData: ImageData;
   quality: Float32Array;
+  mode: ProjectedOverlayMode;
 };
 
 function createQualityBlendStackComposite(resolution: number): QualityBlendStackComposite {
@@ -725,8 +727,10 @@ async function applyOverlayRasters(
   base: ImageData,
   coverage: Uint8Array,
   overlays: OverlayRaster[],
+  renderedColorMask?: Uint8Array,
 ) {
-  for (const { imageData, quality: qualityMap } of overlays) {
+  for (const { layer, imageData, quality: qualityMap, mode } of overlays) {
+    const isRenderedColor = usesUnlitRenderedColor(layer);
     for (
       let pixelIndex = 0, offset = 0;
       offset < imageData.data.length;
@@ -736,13 +740,17 @@ async function applyOverlayRasters(
         await yieldToBakeUi();
       }
       const layerCoverage = imageData.data[offset + 3] / 255;
-      if (layerCoverage <= COVERAGE_THRESHOLD) continue;
-      const qualityFade = smoothstep(
-        0,
-        0.15,
-        Math.max(qualityMap[pixelIndex], layerCoverage * 0.25),
+      if (
+        layerCoverage <= 0 ||
+        (mode === 'feathered' && layerCoverage <= COVERAGE_THRESHOLD)
+      ) {
+        continue;
+      }
+      const alpha = getProjectionOverlayAlpha(
+        layerCoverage,
+        qualityMap[pixelIndex],
+        mode,
       );
-      const alpha = Math.max(0, Math.min(1, layerCoverage * (0.75 + 0.25 * qualityFade)));
       if (alpha <= 0.0001) continue;
 
       const baseAlpha = base.data[offset + 3] / 255;
@@ -769,6 +777,16 @@ async function applyOverlayRasters(
         (baseBlue * retainedBaseAlpha + layerBlue * alpha) / outputAlpha,
       );
       base.data[offset + 3] = Math.round(outputAlpha * 255);
+      if (renderedColorMask) {
+        const retainedRenderedCoverage =
+          (renderedColorMask[pixelIndex] / 255) * (1 - alpha);
+        renderedColorMask[pixelIndex] = Math.round(
+          Math.max(
+            0,
+            Math.min(1, retainedRenderedCoverage + (isRenderedColor ? alpha : 0)),
+          ) * 255,
+        );
+      }
       coverage[pixelIndex] = 1;
     }
   }
@@ -874,8 +892,14 @@ async function validateGpuBakeCoverage(input: {
       GPU_COVERAGE_VALIDATION_RESOLUTION,
       GPU_COVERAGE_VALIDATION_RESOLUTION,
     );
-    if (layer.blendMode === 'overlay') {
-      overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
+    const overlayMode = getProjectedLayerOverlayMode(layer);
+    if (overlayMode) {
+      overlayRasters.push({
+        layer,
+        imageData: layerImageData,
+        quality: rasterized.quality,
+        mode: overlayMode,
+      });
     } else {
       await accumulateQualityBlendLayer(
         qualityBlendComposite,
@@ -965,13 +989,17 @@ export async function bakeVisibleProjectedLayersToTexture(
 
   const requestedLayerIdSet = input.layerIds ? new Set(input.layerIds) : undefined;
   const sourceLayers = input.transientLayers
-    ? input.transientLayers.filter(
-        (layer) =>
-          layer.type === 'projected' &&
-          layer.imageUrl &&
-          layer.camera &&
-          (!layer.objectId || layer.objectId === input.objectId),
-      )
+    ? input.transientLayers
+        .filter(
+          (layer) =>
+            layer.type === 'projected' &&
+            layer.imageUrl &&
+            layer.camera &&
+            (!layer.objectId || layer.objectId === input.objectId),
+        )
+        // Layer order 0 is the top row. Raster and source-over bottom-up so
+        // multiple repaint patches preserve the same stacking as the viewport.
+        .sort((a, b) => b.order - a.order)
     : requestedLayerIdSet
       ? useLayerStore
           .getState()
@@ -991,7 +1019,6 @@ export async function bakeVisibleProjectedLayersToTexture(
     depthUrl: input.debugIgnoreDepth ? undefined : layer.depthUrl,
     normalUrl: input.debugIgnoreDepth ? undefined : layer.normalUrl,
   }));
-
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   const performanceBreakdown: Record<string, number> = {};
   let uvGutterTopologyPromise:
@@ -1154,7 +1181,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         const warnings = [...gpuBake.warnings];
         if (layers.length > 1) {
           warnings.push(
-            layers.some((layer) => layer.blendMode === 'overlay')
+            layers.some((layer) => getProjectedLayerOverlayMode(layer))
               ? 'GPU sampled layers used CPU parity loose coverage with strict quality blend and order-sensitive overlay layers.'
               : 'GPU sampled layers used CPU parity order-independent loose coverage with strict quality blend.',
           );
@@ -1164,11 +1191,13 @@ export async function bakeVisibleProjectedLayersToTexture(
         markUvBakePerformancePhase('quality-accumulate');
         for (const raster of gpuBake.rasters) {
           const layerImageData = raster.imageData;
-          if (raster.layer.blendMode === 'overlay') {
+          const overlayMode = getProjectedLayerOverlayMode(raster.layer);
+          if (overlayMode) {
             overlayRasters.push({
               layer: raster.layer,
               imageData: layerImageData,
               quality: raster.quality,
+              mode: overlayMode,
             });
           } else {
             normalRasters.push({ color: layerImageData.data, quality: raster.quality });
@@ -1181,6 +1210,8 @@ export async function bakeVisibleProjectedLayersToTexture(
           overlayRasters.map((raster) => ({
             color: raster.imageData.data,
             quality: raster.quality,
+            overlayMode: raster.mode,
+            renderedColor: usesUnlitRenderedColor(raster.layer),
           })),
         );
         const composite = qualityBlend.imageData;
@@ -1369,6 +1400,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           bakedTexture,
           canvas,
           imageData: composite,
+          renderedColorMask: qualityBlend.renderedColorMask,
           imageBlob,
           imageUrl,
           report,
@@ -1611,6 +1643,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create stacked UV bake canvas.');
   const composite = new ImageData(input.resolution, input.resolution);
+  const renderedColorMask = new Uint8Array(input.resolution * input.resolution);
   const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
   const overlayRasters: OverlayRaster[] = [];
   const readableLayers: Layer[] = [];
@@ -1627,7 +1660,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   const warnings: string[] = [...gpuFallbackWarnings];
   if (layers.length > 1) {
     warnings.push(
-      layers.some((layer) => layer.blendMode === 'overlay')
+      layers.some((layer) => getProjectedLayerOverlayMode(layer))
         ? 'Multiple projected layers used loose coverage with strict quality blend and order-sensitive overlay layers.'
         : 'Multiple projected layers used order-independent loose coverage with strict quality blend.',
     );
@@ -1697,8 +1730,14 @@ export async function bakeVisibleProjectedLayersToTexture(
     const layerContext = rasterized.canvas.getContext('2d', { willReadFrequently: true });
     if (!layerContext) throw new Error('Could not read layer bake canvas.');
     const layerImageData = layerContext.getImageData(0, 0, input.resolution, input.resolution);
-    if (layer.blendMode === 'overlay') {
-      overlayRasters.push({ layer, imageData: layerImageData, quality: rasterized.quality });
+    const overlayMode = getProjectedLayerOverlayMode(layer);
+    if (overlayMode) {
+      overlayRasters.push({
+        layer,
+        imageData: layerImageData,
+        quality: rasterized.quality,
+        mode: overlayMode,
+      });
     } else {
       await accumulateQualityBlendLayer(
         qualityBlendComposite,
@@ -1734,7 +1773,12 @@ export async function bakeVisibleProjectedLayersToTexture(
     composite,
     input.preserveCoverageConfidenceAlpha,
   );
-  await applyOverlayRasters(composite, qualityBlendComposite.coverage, overlayRasters);
+  await applyOverlayRasters(
+    composite,
+    qualityBlendComposite.coverage,
+    overlayRasters,
+    renderedColorMask,
+  );
   if (input.outputAlpha === 'transparent') {
     await clearWeakTransparentTexels(composite, qualityBlendComposite.coverage);
   }
@@ -1877,6 +1921,8 @@ export async function bakeVisibleProjectedLayersToTexture(
   return {
     bakedTexture,
     canvas,
+    imageData: composite,
+    renderedColorMask,
     imageBlob,
     imageUrl,
     report,

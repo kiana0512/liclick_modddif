@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, Flame, Folder, FolderPlus, Palette, Plus } from 'lucide-react';
+import { Check, ChevronDown, Flame, Folder, FolderPlus, Palette, Plus } from 'lucide-react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
 import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
@@ -578,21 +578,13 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
       )}
 
       <header className="flex h-16 items-center border-b border-white/[0.055] px-4 sm:px-6">
-        <BrandMark />
+        <BrandMark onBack={onBack} backLabel="返回功能首页" />
       </header>
 
       <section className="mx-auto w-full max-w-[1240px] px-4 pb-16 pt-8 sm:px-7 lg:px-8">
         <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
           <div>
-            <button
-              type="button"
-              onClick={onBack}
-              className="inline-flex items-center gap-2 text-sm text-white/44 transition hover:text-white"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              返回功能首页
-            </button>
-            <div className="mt-5 flex items-center gap-3">
+            <div className="flex items-center gap-3">
               <span className={`grid h-10 w-10 place-items-center rounded-xl border ${module === 'texture' ? 'border-fuchsia-300/24 bg-fuchsia-400/10 text-fuchsia-100' : 'border-orange-300/24 bg-orange-400/10 text-orange-100'}`}>
                 {module === 'texture' ? <Palette className="h-5 w-5" /> : <Flame className="h-5 w-5" />}
               </span>

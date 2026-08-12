@@ -453,6 +453,7 @@ function normalizeProjectAssetReferences(
             imageUrl: normalizeUrl(readString(layer.imageUrl)),
             maskUrl: normalizeUrl(readString(layer.maskUrl)),
             depthUrl: normalizeUrl(readString(layer.depthUrl)),
+            renderedColorMaskUrl: normalizeUrl(readString(layer.renderedColorMaskUrl)),
           }
         : layer,
     ),
@@ -663,6 +664,9 @@ function resolveProjectAssets(
             imageUrl: resolveUrl((layer as { imageUrl?: string }).imageUrl),
             maskUrl: resolveUrl((layer as { maskUrl?: string }).maskUrl),
             depthUrl: resolveUrl((layer as { depthUrl?: string }).depthUrl),
+            renderedColorMaskUrl: resolveUrl(
+              (layer as { renderedColorMaskUrl?: string }).renderedColorMaskUrl,
+            ),
           }
         : layer,
     ),
@@ -694,6 +698,7 @@ async function repairMissingLayerImageReferences(
         ['imageUrl', `${layerId}.png`],
         ['maskUrl', `${layerId}-mask.png`],
         ['depthUrl', `${layerId}-depth.png`],
+        ['renderedColorMaskUrl', `${layerId}-rendered-color-mask.png`],
       ] as const;
       let layerChanged = false;
       for (const [field, filename] of candidates) {

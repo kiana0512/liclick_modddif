@@ -873,7 +873,7 @@ export const translations = {
     downloadBaseColor: '下载 BaseColor',
     downloadImage: '下载图片',
     applyBakedTexture: '应用烘焙贴图',
-    autoBake: '自动烘焙',
+    autoBake: '自动烘焙 BaseColor',
     performanceTestMode: '性能测试模式',
     performanceTestModeHelp: '在编辑器底部显示可收起的帧率、输入延迟、CPU、GPU 与 WebGL 诊断指标。',
     autoBakePreparing: '准备中',

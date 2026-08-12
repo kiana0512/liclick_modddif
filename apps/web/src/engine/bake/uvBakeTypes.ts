@@ -130,6 +130,8 @@ export interface BakeProjectedLayerResult {
   bakedTexture: BakedTexture;
   canvas: HTMLCanvasElement;
   imageData?: ImageData;
+  /** Premultiplied coverage of baked display-color overlays, one byte per texel. */
+  renderedColorMask?: Uint8Array;
   imageBlob?: Blob;
   imageUrl: string;
   report: BakeReport;

@@ -24,7 +24,7 @@ export type CaptureCurrentViewRequest = {
   resolution: CaptureResolution;
   aspect?: number;
   framing?: 'current' | 'fit-object';
-  colorMode?: 'viewport' | 'clay-target' | 'target-only';
+  colorMode?: 'viewport' | 'clay-target' | 'target-only' | 'flat-target';
   fillRatio?: number;
   viewDirection?: [number, number, number];
   viewUp?: [number, number, number];

@@ -328,6 +328,7 @@ export function App() {
       <>
         <TextureRuntimeGate
           state={localTextureRuntime.state}
+          hasReadySession={localTextureRuntime.hasReadySession}
           onRetry={() => void localTextureRuntime.refresh()}
           onBack={navigation.openHome}
         >
@@ -383,6 +384,7 @@ export function App() {
         {route.module === 'texture' ? (
           <TextureRuntimeGate
             state={localTextureRuntime.state}
+            hasReadySession={localTextureRuntime.hasReadySession}
             onRetry={() => void localTextureRuntime.refresh()}
             onBack={navigation.openHome}
           >
@@ -465,7 +467,7 @@ export function App() {
     <>
       <Suspense fallback={<AppRouteFallback />}>
         <HomePage
-          onOpenTexture={navigation.openCurrentTexture}
+          onOpenTexture={navigation.openTextureProjects}
           onOpenBake={navigation.openCurrentBake}
           onOpenToolbox={navigation.openModelingToolbox}
           onOpenRetopology={navigation.openAutoRetopology}

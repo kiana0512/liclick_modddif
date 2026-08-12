@@ -1,4 +1,9 @@
 import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
+import { isLocalRepaintProjectedLayer } from '@/engine/bake/projectedOverlayComposition';
+import {
+  isContentAwareUvUnderlay,
+  UV_MERGE_COMPOSITION_VERSION,
+} from '@/engine/layers/mergeUvComposition';
 import type { Layer } from '@/types/layer';
 import type { TextureBakeHandoff } from '@/types/project';
 
@@ -25,6 +30,35 @@ type BakeMergeModel = {
   restoreStage?: 'bounds' | 'outline' | 'full';
 };
 
+export type BakeUvMergePlan =
+  | {
+      action: 'reuse';
+      objectId: string;
+      mergedLayer: Layer;
+      baseUvLayerId: string;
+      sourceLayerIds: [];
+      projectedLayerIds: [];
+      uvUnderlayLayerIds: [];
+    }
+  | {
+      action: 'merge';
+      objectId: string;
+      mergedLayer?: Layer;
+      baseUvLayerId?: string;
+      sourceLayerIds: string[];
+      projectedLayerIds: string[];
+      uvUnderlayLayerIds: string[];
+      reason: 'missing-merged-uv' | 'visible-layer-delta';
+    }
+  | {
+      action: 'missing';
+      objectId?: string;
+      sourceLayerIds: [];
+      projectedLayerIds: [];
+      uvUnderlayLayerIds: [];
+      reason: 'missing-object' | 'no-visible-merged-or-projected-source';
+    };
+
 function timestamp(value: string | undefined) {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
@@ -48,6 +82,7 @@ export function findMergedUvBakeLayer(
         layer.objectId === objectId &&
         layer.type === 'uv' &&
         layer.role === 'merged-uv' &&
+        layer.visible &&
         Boolean(layer.imageUrl),
     )
     .sort(compareLayers)[0];
@@ -67,6 +102,105 @@ export function findVisibleProjectedLayerIdsForBake(
         (!layer.objectId || layer.objectId === objectId),
     )
     .map((layer) => layer.id);
+}
+
+function findVisibleContentAwareUvLayerIdsForBake(
+  layers: readonly Layer[],
+  objectId: string | undefined,
+) {
+  if (!objectId) return [];
+  return layers
+    .filter(
+      (layer) =>
+        layer.visible &&
+        Boolean(layer.imageUrl) &&
+        isContentAwareUvUnderlay(layer) &&
+        (!layer.objectId || layer.objectId === objectId),
+    )
+    .map((layer) => layer.id);
+}
+
+/**
+ * Resolves whether Bake can reuse the current flattened UV layer or must
+ * return to the editor and atomically merge the visible authored deltas.
+ * Existing merged UV color is the merge base, never a consumable source.
+ */
+export function resolveBakeUvMergePlan(
+  layers: readonly Layer[],
+  objectId: string | undefined,
+): BakeUvMergePlan {
+  if (!objectId) {
+    return {
+      action: 'missing',
+      sourceLayerIds: [],
+      projectedLayerIds: [],
+      uvUnderlayLayerIds: [],
+      reason: 'missing-object',
+    };
+  }
+
+  const mergedLayer = findMergedUvBakeLayer(layers, objectId);
+  const visibleProjectedLayerIds = findVisibleProjectedLayerIdsForBake(layers, objectId);
+  // Versionless merged UV layers may have been produced by the old
+  // order-independent bake, which could discard a local-repaint replacement.
+  // Replay only those durable hidden patches over the existing merged base;
+  // once the editor publishes the current version this migration is inert.
+  const legacyLocalRepaintLayerIds =
+    mergedLayer && mergedLayer.uvMergeVersion !== UV_MERGE_COMPOSITION_VERSION
+      ? layers
+          .filter(
+            (layer) =>
+              !layer.visible &&
+              Boolean(layer.imageUrl && layer.camera) &&
+              (!layer.objectId || layer.objectId === objectId) &&
+              isLocalRepaintProjectedLayer(layer),
+          )
+          .map((layer) => layer.id)
+      : [];
+  const projectedLayerIds = [
+    ...visibleProjectedLayerIds,
+    ...legacyLocalRepaintLayerIds.filter(
+      (layerId) => !visibleProjectedLayerIds.includes(layerId),
+    ),
+  ];
+  const uvUnderlayLayerIds = findVisibleContentAwareUvLayerIdsForBake(layers, objectId);
+  const sourceLayerIds = [...projectedLayerIds, ...uvUnderlayLayerIds];
+
+  if (mergedLayer && sourceLayerIds.length === 0) {
+    return {
+      action: 'reuse',
+      objectId,
+      mergedLayer,
+      baseUvLayerId: mergedLayer.id,
+      sourceLayerIds: [],
+      projectedLayerIds: [],
+      uvUnderlayLayerIds: [],
+    };
+  }
+
+  // A content-aware layer is a sparse underlay. Without either an existing
+  // merged base or a projected front layer it cannot form a complete BaseColor.
+  if (projectedLayerIds.length > 0 || (mergedLayer && uvUnderlayLayerIds.length > 0)) {
+    return {
+      action: 'merge',
+      objectId,
+      mergedLayer,
+      baseUvLayerId: mergedLayer?.id,
+      sourceLayerIds,
+      projectedLayerIds,
+      uvUnderlayLayerIds,
+      reason: mergedLayer ? 'visible-layer-delta' : 'missing-merged-uv',
+    };
+  }
+
+  return {
+    action: 'missing',
+    objectId,
+    sourceLayerIds: [],
+    projectedLayerIds: [],
+    uvUnderlayLayerIds: [],
+    reason: 'no-visible-merged-or-projected-source',
+  };
 }
 
 /**
@@ -93,7 +227,7 @@ export function hasWorkflowBakeBaseColor(
 ) {
   return Boolean(
     (handoff?.objectId === objectId && handoff.baseColor?.imageUrl) ||
-      findMergedUvBakeLayer(layers, objectId),
+      resolveBakeUvMergePlan(layers, objectId).action === 'reuse',
   );
 }
 
@@ -115,14 +249,23 @@ export function requiresTextureUvMergeBeforeBake(
   ].filter((objectId): objectId is string => Boolean(objectId));
   if (preferredObjectIds.length > 0) {
     return !preferredObjectIds.some((objectId) =>
-      Boolean(findMergedUvBakeLayer(project.layers, objectId)),
+      resolveBakeUvMergePlan(project.layers, objectId).action === 'reuse',
     );
   }
-  return !project.layers.some(
-    (layer) =>
-      layer.type === 'uv' &&
-      layer.role === 'merged-uv' &&
-      Boolean(layer.imageUrl),
+  const mergedObjectIds = new Set(
+    project.layers
+      .filter(
+        (layer) =>
+          layer.objectId &&
+          layer.type === 'uv' &&
+          layer.role === 'merged-uv' &&
+          layer.visible &&
+          Boolean(layer.imageUrl),
+      )
+      .map((layer) => layer.objectId as string),
+  );
+  return ![...mergedObjectIds].some(
+    (objectId) => resolveBakeUvMergePlan(project.layers, objectId).action === 'reuse',
   );
 }
 

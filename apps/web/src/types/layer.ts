@@ -9,6 +9,7 @@ export type LayerRole =
   | 'content-aware-underlay';
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';
 export type LayerMaskSpace = 'projection' | 'uv';
+export type ProjectionVisibilityPolicy = 'standard' | 'surface-locked-v1';
 
 export type LayerAdjustments = {
   hue: number;
@@ -39,8 +40,12 @@ export type Layer = {
   /** Cumulative projection-space brush alpha retained without RGBA readback. */
   localRepaintMaskUrl?: string;
   renderedColor?: boolean;
+  /** Per-UV-texel weight whose color already contains viewport lighting/exposure. */
+  renderedColorMaskUrl?: string;
   /** Minimum absolute face-on cosine accepted by projection; 0 disables the guard. */
   minimumProjectionFacing?: number;
+  /** Local repaint visibility must remain attached to the captured front surface. */
+  projectionVisibilityPolicy?: ProjectionVisibilityPolicy;
   visible: boolean;
   opacity: number;
   strength?: number;
@@ -52,5 +57,7 @@ export type Layer = {
   isBaked?: boolean;
   needsRebake?: boolean;
   contentRevision?: number;
+  /** Version of the editor-side projected/UV flattening semantics. */
+  uvMergeVersion?: number;
   createdAt: string;
 };

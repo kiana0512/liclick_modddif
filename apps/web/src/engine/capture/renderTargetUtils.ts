@@ -197,7 +197,7 @@ export async function renderScenePassesToPngUrl(
 export function applyTargetOnlyMaterial(
   scene: THREE.Scene,
   objectId: string,
-  materialFactory?: () => THREE.Material,
+  materialFactory?: (sourceMaterial: THREE.Material) => THREE.Material,
 ) {
   const snapshots: SceneMaterialSnapshot[] = [];
   const targetMeshes = new Set<THREE.Mesh>();
@@ -232,7 +232,11 @@ export function applyTargetOnlyMaterial(
       material: object instanceof THREE.Mesh ? object.material : undefined,
     });
     object.visible = isTarget || isTargetAncestor;
-    if (isTarget && materialFactory) object.material = materialFactory();
+    if (isTarget && materialFactory) {
+      object.material = Array.isArray(object.material)
+        ? object.material.map((material) => materialFactory(material))
+        : materialFactory(object.material);
+    }
   });
 
   return () => {

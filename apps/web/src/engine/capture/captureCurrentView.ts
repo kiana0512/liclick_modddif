@@ -260,6 +260,83 @@ async function captureTargetOnly(passRequest: CapturePassRequest) {
   }
 }
 
+function createFlatTargetCaptureMaterial(sourceMaterial: THREE.Material) {
+  if (
+    sourceMaterial instanceof THREE.ShaderMaterial &&
+    sourceMaterial.uniforms.previewLightingEnabled
+  ) {
+    const material = sourceMaterial.clone();
+    material.name = `${sourceMaterial.name || sourceMaterial.type}:FlatCapture`;
+    material.uniforms.previewLightingEnabled.value = 0;
+    if (material.uniforms.normalPreviewEnabled) material.uniforms.normalPreviewEnabled.value = 0;
+    if (material.uniforms.wirePreviewEnabled) material.uniforms.wirePreviewEnabled.value = 0;
+    // Capture albedo, not the viewport presentation. The returned image will be
+    // sampled as an sRGB BaseColor and receive the viewport transform once.
+    material.toneMapped = false;
+    material.uniformsNeedUpdate = true;
+    material.needsUpdate = true;
+    return material;
+  }
+
+  const source = sourceMaterial as THREE.Material & {
+    color?: THREE.Color;
+    map?: THREE.Texture | null;
+    alphaMap?: THREE.Texture | null;
+    vertexColors?: boolean;
+  };
+  const material = new THREE.MeshBasicMaterial({
+    color: source.color?.clone() ?? new THREE.Color('#ffffff'),
+    map: source.map ?? null,
+    alphaMap: source.alphaMap ?? null,
+    transparent: sourceMaterial.transparent,
+    opacity: sourceMaterial.opacity,
+    alphaTest: sourceMaterial.alphaTest,
+    side: sourceMaterial.side,
+    depthTest: sourceMaterial.depthTest,
+    depthWrite: sourceMaterial.depthWrite,
+    vertexColors: source.vertexColors ?? false,
+  });
+  material.name = `${sourceMaterial.name || sourceMaterial.type}:FlatCapture`;
+  material.blending = sourceMaterial.blending;
+  material.blendSrc = sourceMaterial.blendSrc;
+  material.blendDst = sourceMaterial.blendDst;
+  material.blendEquation = sourceMaterial.blendEquation;
+  material.premultipliedAlpha = sourceMaterial.premultipliedAlpha;
+  material.polygonOffset = sourceMaterial.polygonOffset;
+  material.polygonOffsetFactor = sourceMaterial.polygonOffsetFactor;
+  material.polygonOffsetUnits = sourceMaterial.polygonOffsetUnits;
+  material.toneMapped = false;
+  return material;
+}
+
+async function captureFlatTarget(passRequest: CapturePassRequest) {
+  const temporaryMaterials = new Set<THREE.Material>();
+  const restore = applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId, (source) => {
+    const material = createFlatTargetCaptureMaterial(source);
+    temporaryMaterials.add(material);
+    return material;
+  });
+  try {
+    return {
+      url: await renderSceneToPngUrl(
+        {
+          ...passRequest,
+          clearColor: '#eeeeec',
+          clearAlpha: 1,
+        },
+        // The render target's sRGB encoding is the texture asset encoding. Do
+        // not bake exposure/tone mapping here: the preview shader applies that
+        // presentation transform after the generated image is painted back.
+        { applyDisplayTransform: false, onRenderSubmitted: restore },
+      ),
+      warnings: [],
+    };
+  } finally {
+    restore();
+    temporaryMaterials.forEach((material) => material.dispose());
+  }
+}
+
 export async function captureCurrentView(request: CaptureCurrentViewRequest): Promise<Capture> {
   const size = Math.min(request.resolution, maxCaptureSize);
   const warnings: string[] = [];
@@ -286,6 +363,8 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   const color =
     request.colorMode === 'clay-target'
       ? await captureClayTarget(passRequest)
+      : request.colorMode === 'flat-target'
+        ? await captureFlatTarget(passRequest)
       : request.colorMode === 'target-only'
         ? await captureTargetOnly(passRequest)
         : await captureColor(passRequest);

@@ -136,6 +136,7 @@ const candidateFragmentShader = `
   uniform float maskUsesUv;
   uniform float useDepthCheck;
   uniform float useNormalCheck;
+  uniform float surfaceLockedVisibility;
   uniform float depthIsLinearView;
   uniform float projectorNear;
   uniform float projectorFar;
@@ -226,10 +227,11 @@ const candidateFragmentShader = `
       useDepthCheck
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
+    float normalAgreement = dot(projectedFaceNormal, normalize(capturedFaceNormal));
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
-      abs(dot(projectedFaceNormal, normalize(capturedFaceNormal)))
+      mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
     return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
   }
@@ -275,6 +277,12 @@ const candidateFragmentShader = `
     vec3 captureViewPosition = (projectorViewMatrix * captureWorldPosition).xyz;
     vec3 projectedFaceNormal = normalize(
       cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
+    );
+    vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix) * captureWorldNormal);
+    projectedFaceNormal *= mix(
+      1.0,
+      -1.0,
+      step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0)
     );
     vec2 visibilityTextureSize = mix(
       vec2(textureSize(depthMap, 0)),
@@ -356,6 +364,14 @@ const candidateFragmentShader = `
     float visibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    float projectionFacingFactor = abs(dot(projectedFaceNormal, normalize(-captureViewPosition)));
+    float lockedFacingCoverage = smoothstep(0.08, 0.16, projectionFacingFactor);
+    visibilityCoverage = mix(
+      visibilityCoverage,
+      centerVisibility * max(neighborhoodVisibility, centerBackedVisibility) * lockedFacingCoverage,
+      surfaceLockedVisibility
+    );
+    angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
     if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
@@ -649,6 +665,9 @@ async function createCandidateMaterial(group: THREE.Group, layer: PreviewLayer) 
       maskUsesUv: { value: layer.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: layer.useDepthCheck && layer.depthUrl ? 1 : 0 },
       useNormalCheck: { value: layer.useNormalCheck && layer.normalUrl ? 1 : 0 },
+      surfaceLockedVisibility: {
+        value: layer.projectionVisibilityPolicy === 'surface-locked-v1' ? 1 : 0,
+      },
       depthIsLinearView: { value: layer.depthIsLinearView ? 1 : 0 },
       projectorNear: { value: layer.camera.near },
       projectorFar: { value: layer.camera.far },

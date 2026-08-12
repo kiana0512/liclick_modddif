@@ -1,5 +1,6 @@
 import { recordWebGpuProductionDispatch } from '@/engine/performance/gpuComputeBackend';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
+import type { ProjectedOverlayMode } from './projectedOverlayComposition';
 import {
   isViewportInteractionBusy,
   subscribeViewportInteraction,
@@ -8,6 +9,8 @@ import {
 export type QualityBlendWorkerLayer = {
   color: Uint8ClampedArray;
   quality: Float32Array;
+  overlayMode?: ProjectedOverlayMode;
+  renderedColor?: boolean;
 };
 
 export type QualityBlendVerification = {
@@ -27,6 +30,7 @@ export type QualityBlendVerification = {
 export type QualityBlendWorkerResult = {
   imageData: ImageData;
   coverage: Uint8Array<ArrayBuffer>;
+  renderedColorMask: Uint8Array<ArrayBuffer>;
   writtenTexels: number;
   backend: 'webgpu-worker' | 'cpu-worker';
   accumulateMs: number;
@@ -45,7 +49,12 @@ type BlendRequest = {
   forceCpuOutput: boolean;
   interactive: boolean;
   layers: Array<{ color: ArrayBuffer; quality: ArrayBuffer }>;
-  overlays: Array<{ color: ArrayBuffer; quality: ArrayBuffer }>;
+  overlays: Array<{
+    color: ArrayBuffer;
+    quality: ArrayBuffer;
+    overlayMode: ProjectedOverlayMode;
+    renderedColor: boolean;
+  }>;
 };
 
 type WorkerResponse =
@@ -54,6 +63,7 @@ type WorkerResponse =
       id: number;
       output: ArrayBuffer;
       coverage: ArrayBuffer;
+      renderedColorMask: ArrayBuffer;
       writtenTexels: number;
       backend: 'webgpu-worker' | 'cpu-worker';
       accumulateMs: number;
@@ -162,6 +172,7 @@ function getWorker() {
         request.resolution,
       ),
       coverage: new Uint8Array(event.data.coverage),
+      renderedColorMask: new Uint8Array(event.data.renderedColorMask),
       writtenTexels: event.data.writtenTexels,
       backend: event.data.backend,
       accumulateMs: event.data.accumulateMs,
@@ -215,7 +226,12 @@ export function blendProjectedRastersInWorker(
     const color = transferableBuffer(layer.color);
     const quality = transferableBuffer(layer.quality);
     transfers.push(color, quality);
-    return { color, quality };
+    return {
+      color,
+      quality,
+      overlayMode: layer.overlayMode ?? 'feathered',
+      renderedColor: layer.renderedColor === true,
+    };
   });
   const request: BlendRequest = {
     type: 'blend',
