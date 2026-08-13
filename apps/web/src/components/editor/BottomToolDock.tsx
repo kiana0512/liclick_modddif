@@ -1,5 +1,4 @@
 import {
-  Check,
   ChevronRight,
   ChevronUp,
   Eraser,
@@ -36,6 +35,7 @@ type BottomToolDockProps = {
   onLocalImageGeneration: () => void;
   onLocalRepaint: () => void;
   localImageGenerationRunning: boolean;
+  localImageGenerationSuccessKey: number;
   canLocalRepaint: boolean;
   canUndo: boolean;
   canRedo: boolean;
@@ -92,6 +92,7 @@ export function BottomToolDock({
   onLocalImageGeneration,
   onLocalRepaint,
   localImageGenerationRunning,
+  localImageGenerationSuccessKey,
   canLocalRepaint,
   canUndo,
   canRedo,
@@ -103,14 +104,19 @@ export function BottomToolDock({
   const [activeMenu, setActiveMenu] = useState<
     'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
+  const [generationGuideActive, setGenerationGuideActive] = useState(false);
+  const [repaintGuideActive, setRepaintGuideActive] = useState(false);
+  const previousGenerationSuccessKeyRef = useRef(localImageGenerationSuccessKey);
+  const previousApplyToolSelectedRef = useRef(paintTool === 'inpaint-apply');
+  const previousMaskToolSelectedRef = useRef(
+    paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract',
+  );
   const paintSettings = useSceneStore((state) => state.paintToolSettings);
   const setPaintSettings = useSceneStore((state) => state.setPaintToolSettings);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
-  const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
-  const paintMaskCapture = useSceneStore((state) => state.paintMaskCapture);
   const pushToast = useToastStore((state) => state.pushToast);
   const baseButton =
     'grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:border-white/22 hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/45 disabled:cursor-not-allowed disabled:opacity-42';
@@ -124,15 +130,12 @@ export function BottomToolDock({
     'cursor-not-allowed bg-transparent text-white/20 opacity-35 grayscale hover:bg-transparent hover:text-white/20';
   const runningWorkflowButton =
     'bg-liclick-pink/12 text-liclick-pink shadow-[inset_0_-2px_0_rgba(236,72,189,0.55)]';
+  const guideWorkflowButton =
+    'animate-pulse border-liclick-pink/70 bg-liclick-pink/20 text-white shadow-[0_0_14px_rgba(236,72,189,0.62),inset_0_-2px_0_rgba(236,72,189,0.8)]';
   const divider = <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />;
   const isTextureMode = mode === 'texture';
   const isMaskPaintTool = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
-  // The live mask is authoritative. Pointer-up intentionally defers its
-  // lossless PNG snapshot until step 2 so drawing never blocks on a full-canvas
-  // encode; requiring that deferred URL here would permanently lock step 2.
-  // The submit path captures and validates the exact mask before the request.
-  const hasUsablePaintMask = paintMaskHasContent || Boolean(paintMaskCapture);
-  const localRepaintReady = hasUsablePaintMask && canLocalRepaint;
+  const localRepaintReady = canLocalRepaint;
   const inpaintMenuVisible =
     activeMenu === 'inpaint-add' ||
     activeMenu === 'inpaint-subtract' ||
@@ -142,17 +145,39 @@ export function BottomToolDock({
     if (isTextureMode && paintTool === 'brush') onPaintToolChange('none');
   }, [isTextureMode, onPaintToolChange, paintTool]);
 
+  useEffect(() => {
+    if (localImageGenerationRunning) {
+      setRepaintGuideActive(false);
+    } else if (
+      previousGenerationSuccessKeyRef.current !== localImageGenerationSuccessKey &&
+      localRepaintReady
+    ) {
+      setRepaintGuideActive(true);
+    }
+    previousGenerationSuccessKeyRef.current = localImageGenerationSuccessKey;
+  }, [localImageGenerationRunning, localImageGenerationSuccessKey, localRepaintReady]);
+
+  useEffect(() => {
+    const applyToolSelected = paintTool === 'inpaint-apply';
+    if (!previousApplyToolSelectedRef.current && applyToolSelected) {
+      // The generation keeps its own archived mask. Once its apply brush is
+      // actually ready, discard the transient selection drawn for generation.
+      clearPaintMask();
+      setRepaintGuideActive(false);
+    }
+    previousApplyToolSelectedRef.current = applyToolSelected;
+  }, [clearPaintMask, paintTool]);
+
+  useEffect(() => {
+    if (!previousMaskToolSelectedRef.current && isMaskPaintTool) {
+      setGenerationGuideActive(true);
+      setRepaintGuideActive(false);
+    }
+    previousMaskToolSelectedRef.current = isMaskPaintTool;
+  }, [isMaskPaintTool]);
+
   function toggleMenu(menu: typeof activeMenu) {
     setActiveMenu((current) => (current === menu ? undefined : menu));
-  }
-
-  function notifyMaskRequired() {
-    pushToast({
-      tone: 'warning',
-      title: '请先绘制蒙版',
-      description: '先用蒙版画笔标记需要处理的区域，再执行局部生图。',
-      dedupeKey: 'local-workflow-mask-required',
-    });
   }
 
   function notifyGenerationRequired() {
@@ -173,27 +198,14 @@ export function BottomToolDock({
     });
   }
 
-  function renderWorkflowStepStatus({
-    completed = false,
-    running = false,
-  }: {
-    completed?: boolean;
-    running?: boolean;
-  }) {
-    if (!completed && !running) return null;
+  function renderWorkflowRunningStatus(running: boolean) {
+    if (!running) return null;
     return (
       <span
-        className={cn(
-          'pointer-events-none absolute -bottom-0.5 -right-0.5 z-10 grid h-3.5 w-3.5 place-items-center rounded-full shadow-sm',
-          running ? 'bg-[#3a1736] text-liclick-pink' : 'bg-emerald-400 text-[#06261e]',
-        )}
+        className="pointer-events-none absolute -bottom-0.5 -right-0.5 z-10 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#3a1736] text-liclick-pink shadow-sm"
         aria-hidden="true"
       >
-        {running ? (
-          <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
-        ) : (
-          <Check className="h-2.5 w-2.5 stroke-[3.2]" />
-        )}
+        <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
       </span>
     );
   }
@@ -467,7 +479,12 @@ export function BottomToolDock({
                     type="button"
                     className={cn(workflowButton, isMaskPaintTool && activeWorkflowButton)}
                     onClick={() => {
-                      onPaintToolChange(isMaskPaintTool ? 'none' : 'inpaint-add');
+                      const willSelectMaskTool = !isMaskPaintTool;
+                      onPaintToolChange(willSelectMaskTool ? 'inpaint-add' : 'none');
+                      if (willSelectMaskTool) {
+                        setGenerationGuideActive(true);
+                        setRepaintGuideActive(false);
+                      }
                       toggleMenu('inpaint-add');
                     }}
                     aria-label="蒙版绘制：左键绘制，右键擦除"
@@ -480,54 +497,45 @@ export function BottomToolDock({
                     </span>
                   </button>
                 </IconTooltip>
-                {renderWorkflowStepStatus({ completed: hasUsablePaintMask })}
               </span>
               <ChevronRight
-                className={cn(
-                  'mx-0.5 h-3.5 w-3.5 shrink-0 transition-colors',
-                  hasUsablePaintMask ? 'text-liclick-pink/80' : 'text-white/16',
-                )}
+                className="mx-0.5 h-3.5 w-3.5 shrink-0 text-white/16 transition-colors"
                 aria-hidden="true"
               />
               <span className="relative inline-flex">
                 <IconTooltip
                   label="步骤 2 · 局部生图"
-                  description="根据当前蒙版生成局部图片；结果会自动加入单视图参考图。"
+                  description="蒙版可选；未绘制时按全图范围生成，运行期间不可重复提交。"
                 >
                   <button
                     type="button"
                     className={cn(
                       workflowButton,
+                      generationGuideActive &&
+                        !localImageGenerationRunning &&
+                        guideWorkflowButton,
                       localImageGenerationRunning && runningWorkflowButton,
-                      !hasUsablePaintMask && lockedWorkflowButton,
                     )}
                     onClick={() => {
-                      if (!hasUsablePaintMask) {
-                        notifyMaskRequired();
-                        return;
-                      }
                       if (localImageGenerationRunning) {
                         notifyGenerationInProgress();
                         return;
                       }
+                      setGenerationGuideActive(false);
+                      setRepaintGuideActive(false);
                       onLocalImageGeneration();
                       setActiveMenu(undefined);
                     }}
                     aria-label={
                       localImageGenerationRunning
                         ? '局部生图（处理中）'
-                        : hasUsablePaintMask
-                          ? '局部生图'
-                          : '局部生图（需先绘制蒙版）'
+                        : '局部生图'
                     }
                   >
                     <ImagePlus className="h-4.5 w-4.5" />
                   </button>
                 </IconTooltip>
-                {renderWorkflowStepStatus({
-                  completed: localRepaintReady,
-                  running: localImageGenerationRunning,
-                })}
+                {renderWorkflowRunningStatus(localImageGenerationRunning)}
               </span>
               <ChevronRight
                 className={cn(
@@ -551,14 +559,15 @@ export function BottomToolDock({
                     className={cn(
                       workflowButton,
                       paintTool === 'inpaint-apply' && activeWorkflowButton,
-                      (!hasUsablePaintMask || !localRepaintReady || localImageGenerationRunning) &&
+                      repaintGuideActive &&
+                        localRepaintReady &&
+                        !localImageGenerationRunning &&
+                        paintTool !== 'inpaint-apply' &&
+                        guideWorkflowButton,
+                      (!localRepaintReady || localImageGenerationRunning) &&
                         lockedWorkflowButton,
                     )}
                     onClick={() => {
-                      if (!hasUsablePaintMask) {
-                        notifyMaskRequired();
-                        return;
-                      }
                       if (localImageGenerationRunning) {
                         notifyGenerationInProgress();
                         return;
@@ -567,8 +576,13 @@ export function BottomToolDock({
                         notifyGenerationRequired();
                         return;
                       }
-                      if (paintTool === 'inpaint-apply') onPaintToolChange('inpaint-add');
-                      else onLocalRepaint();
+                      setRepaintGuideActive(false);
+                      if (paintTool === 'inpaint-apply') {
+                        onPaintToolChange('inpaint-add');
+                        setGenerationGuideActive(true);
+                      } else {
+                        onLocalRepaint();
+                      }
                       toggleMenu('inpaint-apply');
                     }}
                     aria-label={

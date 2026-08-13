@@ -1,4 +1,4 @@
-import { Box, ChevronRight, Flame, LoaderCircle, Map, Network } from 'lucide-react';
+import { Box, Flame, LoaderCircle, Map } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import type { WorkflowModule, WorkflowNavigation } from './workflowTypes';
 
@@ -9,7 +9,6 @@ const modules: Array<{
   icon: typeof Box;
 }> = [
   { id: 'texture', label: '贴图', shortLabel: '贴图', icon: Box },
-  { id: 'retopology', label: '拓扑', shortLabel: '拓扑', icon: Network },
   { id: 'uv', label: 'UV', shortLabel: 'UV', icon: Map },
   { id: 'bake', label: '烘焙', shortLabel: '烘焙', icon: Flame },
 ];
@@ -33,9 +32,9 @@ export function WorkflowModuleSwitcher({
   return (
     <nav
       className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/34 p-1 shadow-[0_10px_30px_rgba(0,0,0,0.24)] backdrop-blur-md"
-      aria-label="贴图、拓扑、UV、烘焙工作流"
+      aria-label="贴图、UV、烘焙工作流"
     >
-      {modules.map(({ id, label, shortLabel, icon: Icon }, index) => {
+      {modules.map(({ id, label, shortLabel, icon: Icon }) => {
         const active = activeModule === id;
         const pending = pendingModule === id;
         return (
@@ -60,9 +59,6 @@ export function WorkflowModuleSwitcher({
               )}
               <span className={cn(compact && 'hidden xl:inline')}>{compact ? shortLabel : label}</span>
             </button>
-            {index < modules.length - 1 ? (
-              <ChevronRight className="h-3.5 w-3.5 text-white/18" aria-hidden="true" />
-            ) : null}
           </div>
         );
       })}

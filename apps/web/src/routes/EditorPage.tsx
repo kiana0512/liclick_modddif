@@ -846,6 +846,8 @@ export function EditorPage({
   const [modelImportBusy, setModelImportBusy] = useState(false);
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
+  const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
+  const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
   const [modelImportProgress, setModelImportProgress] = useState<AutoBakeProgress | undefined>();
   const [pendingReferenceImport, setPendingReferenceImport] = useState<ReferenceImage[]>();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
@@ -886,7 +888,6 @@ export function EditorPage({
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
   const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
-  const paintMaskRevision = useSceneStore((state) => state.paintMaskRevision);
   const setLocalRepaintProjectionSource = useSceneStore(
     (state) => state.setLocalRepaintProjectionSource,
   );
@@ -931,27 +932,26 @@ export function EditorPage({
         generation.status === 'succeeded' &&
         Boolean(generation.resultUrl) &&
         isLocalRepaintGeneration(generation) &&
-        (generation.metadata.paintMaskRevision === paintMaskRevision ||
-          (paintMaskRevision === 0 && typeof generation.metadata.maskUrl === 'string')) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
         (!preferredObjectId ||
           !generation.metadata.objectId ||
           generation.metadata.objectId === preferredObjectId),
     );
-  }, [generations, importedModel?.objectId, paintMaskRevision, projectId, selectedObjectId]);
-  const localImageGenerationRunning = useMemo(() => {
+  }, [generations, importedModel?.objectId, projectId, selectedObjectId]);
+  const localImageGenerationStoreRunning = useMemo(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     return generations.some(
       (generation) =>
         (generation.status === 'queued' || generation.status === 'running') &&
         isLocalRepaintGeneration(generation) &&
-        generation.metadata.paintMaskRevision === paintMaskRevision &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
         (!preferredObjectId ||
           !generation.metadata.objectId ||
           generation.metadata.objectId === preferredObjectId),
     );
-  }, [generations, importedModel?.objectId, paintMaskRevision, projectId, selectedObjectId]);
+  }, [generations, importedModel?.objectId, projectId, selectedObjectId]);
+  const localImageGenerationRunning =
+    localImageGenerationRequested || localImageGenerationStoreRunning;
   const activeBakedTexture = project?.bakedTextures.find(
     (texture) => texture.id === activeLayer?.bakedTextureId,
   );
@@ -5002,10 +5002,16 @@ export function EditorPage({
       }
     });
     setPaintTool('none');
+    setLocalImageGenerationRequested(true);
     showPanel('generate');
     setPanelCollapsed('generate', false);
     setLocalImageGenerationRequestKey((current) => current + 1);
   }, [importedModel, project, pushToast, setPaintTool, setPanelCollapsed, showPanel, t]);
+
+  const handleLocalImageGenerationSettled = useCallback((succeeded: boolean) => {
+    setLocalImageGenerationRequested(false);
+    if (succeeded) setLocalImageGenerationSuccessKey((current) => current + 1);
+  }, []);
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
@@ -6021,7 +6027,12 @@ export function EditorPage({
         collapsed: workspacePanels.find((panel) => panel.id === 'generate')?.collapsed ?? true,
         visible: true,
         mode: 'texture',
-        content: <GeneratePanel localImageGenerationRequestKey={localImageGenerationRequestKey} />,
+        content: (
+          <GeneratePanel
+            localImageGenerationRequestKey={localImageGenerationRequestKey}
+            onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
+          />
+        ),
       },
       {
         id: 'viewport',
@@ -6278,6 +6289,7 @@ export function EditorPage({
             onLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalRepaint={handleLocalRepaintFromToolbar}
             localImageGenerationRunning={localImageGenerationRunning}
+            localImageGenerationSuccessKey={localImageGenerationSuccessKey}
             canLocalRepaint={localRepaintGenerationReady}
             canUndo={canUndo}
             canRedo={canRedo}

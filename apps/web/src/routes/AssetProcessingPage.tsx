@@ -1550,6 +1550,8 @@ function JobPanel({
 function AutoUvWorkspace({
   initialAsset,
   onAssetChange,
+  onContinueImported,
+  continuingImported,
   onSubmissionInputsChange,
   serviceReady,
   serviceBlockReason,
@@ -1560,6 +1562,8 @@ function AutoUvWorkspace({
 }: {
   initialAsset?: File;
   onAssetChange?: (file?: File) => void;
+  onContinueImported?: (file: File) => Promise<void>;
+  continuingImported: boolean;
   onSubmissionInputsChange: () => void;
   serviceReady: boolean;
   serviceBlockReason?: string;
@@ -1705,6 +1709,21 @@ function AutoUvWorkspace({
           {busy ? <LoaderCircle className="h-4.5 w-4.5 animate-spin" /> : <MapIcon className="h-4.5 w-4.5" />}
           {busy ? '正在处理 UV…' : asset ? '开始自动展 UV' : '请先导入模型'}
         </button>
+        {asset && onContinueImported ? (
+          <button
+            type="button"
+            disabled={busy || continuingImported}
+            onClick={() => void onContinueImported(asset)}
+            className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-emerald-300/18 bg-emerald-400/[0.055] text-xs font-semibold text-emerald-50/78 transition hover:border-emerald-300/34 hover:bg-emerald-400/[0.1] disabled:cursor-wait disabled:opacity-40"
+          >
+            {continuingImported ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            {continuingImported ? '正在保存并传递…' : '直接传入烘焙'}
+          </button>
+        ) : null}
         <div className="mt-3 flex min-h-4 items-center justify-center gap-2 text-[11px] text-white/24">
           {serviceBlockReason ? (
             <>
@@ -2043,6 +2062,7 @@ export function AssetProcessingPage({
   const pipelineInputAsset = preferredPipelineInputAsset(project, mode);
   const hydratedInputRef = useRef('');
   const [initialAsset, setInitialAsset] = useState<File>();
+  const [externalContinueBusy, setExternalContinueBusy] = useState(false);
   const [inputLoadError, setInputLoadError] = useState<string>();
   const [serviceStatus, setServiceStatus] = useState<AssetProcessingStatus>();
   const [serviceLoading, setServiceLoading] = useState(true);
@@ -2202,7 +2222,7 @@ export function AssetProcessingPage({
     return () => {
       active = false;
     };
-  }, [pipelineInputAsset]);
+  }, [mode, pipelineInputAsset]);
 
   useEffect(() => {
     if (
@@ -2461,6 +2481,8 @@ export function AssetProcessingPage({
     sourceFile?: File;
     usePipelineParent: boolean;
     historyRecordId?: string;
+    sourceMode?: 'processing-job' | 'manual';
+    objectId?: string;
   }) {
     let targetProject = projectId
       ? useProjectStore.getState().projects.find((item) => item.id === projectId) ?? project
@@ -2487,13 +2509,15 @@ export function AssetProcessingPage({
         : undefined;
     // A published parent (including an explicitly chosen history result) may
     // inherit its Bake Set identity. A manually replaced file stays standalone.
-    const inheritedObjectId = input.usePipelineParent
-      ? resolvePipelineAssetObjectId(
-          inputAssets,
-          pipelineInputAsset?.objectId,
-          validWorkspaceObjectId,
-        )
-      : undefined;
+    const inheritedObjectId =
+      input.objectId ??
+      (input.usePipelineParent
+        ? resolvePipelineAssetObjectId(
+            inputAssets,
+            pipelineInputAsset?.objectId,
+            validWorkspaceObjectId,
+          )
+        : undefined);
     const modelAssetPaths: string[] = [];
     const revisionId = createId();
 
@@ -2570,12 +2594,13 @@ export function AssetProcessingPage({
     pipeline = publishPipelineRevision(pipeline, {
       id: revisionId,
       stage,
-      sourceMode: 'processing-job',
+      sourceMode: input.sourceMode ?? 'processing-job',
       parentRevisionId: parentRevision?.id,
       inputAssets,
       outputAssets: [outputAsset],
       settings: {
         jobId: input.jobId,
+        ...(input.sourceMode === 'manual' ? { entry: 'external-model' } : {}),
         ...(input.historyRecordId ? { historyRecordId: input.historyRecordId } : {}),
       },
       status: 'ready',
@@ -2663,6 +2688,31 @@ export function AssetProcessingPage({
       sourceFile: jobBinding.sourceFile,
       usePipelineParent: usesPublishedInput,
     });
+  }
+
+  async function handleImportedUvContinue(file: File) {
+    if (mode !== 'uv' || externalContinueBusy) return;
+    setExternalContinueBusy(true);
+    setError(undefined);
+    try {
+      const usesPublishedInput = Boolean(
+        pipelineInputAsset && initialAsset === file,
+      );
+      await publishOutputToNextStage({
+        jobId: `external-model-${createId()}`,
+        outputBlob: file,
+        outputName: file.name,
+        outputSize: file.size,
+        usePipelineParent: usesPublishedInput,
+        sourceMode: 'manual',
+        objectId:
+          pipelineInputAsset?.objectId ?? project?.bakeWorkspace?.selectedObjectId,
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '外部模型传入烘焙失败。');
+    } finally {
+      setExternalContinueBusy(false);
+    }
   }
 
   async function handleHistoryContinue(record: TaskHistoryRecord, output: TaskHistoryOutput) {
@@ -3021,6 +3071,8 @@ export function AssetProcessingPage({
             <AutoUvWorkspace
               initialAsset={initialAsset}
               onAssetChange={invalidateJobForInputChange}
+              onContinueImported={handleImportedUvContinue}
+              continuingImported={externalContinueBusy}
               onSubmissionInputsChange={invalidateJobForInputChange}
               serviceReady={serviceReady}
               serviceBlockReason={serviceBlockReason}

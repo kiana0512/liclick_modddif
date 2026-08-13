@@ -565,6 +565,17 @@ function getImageSize(url: string) {
   });
 }
 
+function createFullFrameMaskDataUrl(width: number, height: number) {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('无法创建全图局部重绘蒙版。');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png');
+}
+
 function getImportedModelMatrixWorld(objectId?: string) {
   const sceneState = useSceneStore.getState();
   const model = objectId
@@ -577,9 +588,13 @@ function getImportedModelMatrixWorld(objectId?: string) {
 
 type GeneratePanelProps = {
   localImageGenerationRequestKey?: number;
+  onLocalImageGenerationSettled?: (succeeded: boolean) => void;
 };
 
-export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePanelProps) {
+export function GeneratePanel({
+  localImageGenerationRequestKey = 0,
+  onLocalImageGenerationSettled,
+}: GeneratePanelProps) {
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
@@ -606,7 +621,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
   const [pendingLocalImageGenerationRequestKey, setPendingLocalImageGenerationRequestKey] =
     useState(0);
   const handledLocalImageGenerationRequestKeyRef = useRef(0);
-  const handleLocalRepaintGenerateRef = useRef<() => Promise<void>>(async () => undefined);
+  const handleLocalRepaintGenerateRef = useRef<() => Promise<boolean>>(async () => false);
 
   const updateTexturePipelineProgress = useCallback((progress: number, label: string) => {
     setTexturePipelineProgress((current) => ({
@@ -635,8 +650,11 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       return;
     handledLocalImageGenerationRequestKeyRef.current = pendingLocalImageGenerationRequestKey;
     setPendingLocalImageGenerationRequestKey(0);
-    void handleLocalRepaintGenerateRef.current();
-  }, [pendingLocalImageGenerationRequestKey, tab]);
+    void handleLocalRepaintGenerateRef.current().then(
+      (succeeded) => onLocalImageGenerationSettled?.(succeeded),
+      () => onLocalImageGenerationSettled?.(false),
+    );
+  }, [onLocalImageGenerationSettled, pendingLocalImageGenerationRequestKey, tab]);
 
   const [generateNotices, setGenerateNotices] = useState<
     Partial<Record<GenerateTab, GenerateNotice>>
@@ -660,6 +678,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
   const currentProjectId = currentProject?.id;
   const isTextureMapTab = tab === 'multiview';
   const isLocalRepaintTab = tab === 'repaint';
+  const displayedTexturePreviewMode: TexturePreviewMode = isLocalRepaintTab
+    ? 'repaint'
+    : texturePreviewMode;
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const updateProjectById = useProjectStore((state) => state.updateProjectById);
   const generationSettings = {
@@ -768,8 +789,6 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
     ensureLocalRepaintSessionLayer();
   }, [ensureLocalRepaintSessionLayer, isLocalRepaintTab]);
   const viewport = useSceneStore((state) => state.viewport);
-  const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
-  const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
   const activeReferences = references;
   const activeReferenceIds = useMemo(
     () => new Set(references.map((reference) => reference.id)),
@@ -2216,7 +2235,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         };
         submittedGenerations.push(submittedGeneration);
         syncGeneration(submittedGeneration);
-        return;
+        return false;
       }
       syncGeneration(
         createFailedGeneration(
@@ -2426,22 +2445,11 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           message: '当前工程已有局部重绘任务在运行，请等待该任务完成。',
         });
         pushToast({ tone: 'warning', title: '当前已有局部重绘任务在运行，请完成后再试。' });
-        return;
+        return false;
       }
       if (!currentProject || !captureObjectId) throw new Error(t('importModelFirst'));
-      const liveMaskCapture = useSceneStore.getState().paintMaskCapture;
-      if (!paintMaskHasContent && !paintMaskDataUrl && !liveMaskCapture) {
-        setGenerateNotice({ tone: 'warning', message: t('localRepaintMaskMissing') });
-        pushToast({
-          tone: 'warning',
-          title: t('localRepaintMaskMissing'),
-          description: t('inpaintSelectToolHelp'),
-          dedupeKey: 'generate-local-repaint-mask-required',
-        });
-        return;
-      }
       submitLocksRef.current.add('repaint');
-      if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return;
+      if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
       const objectId = captureObjectId;
       const textureMapCandidates = generations
         .filter((generation) => {
@@ -2490,37 +2498,47 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           description: '局部重绘会自动使用当前模型最近一次纹理贴图对应的多视图参考图。',
           dedupeKey: 'generate-local-repaint-material-reference-required',
         });
-        return;
+        return false;
       }
-      setGenerateNotice({ tone: 'info', message: '正在准备当前蒙版与视角。' });
+      const initialMaskState = useSceneStore.getState();
+      const hasUserPaintMask = initialMaskState.paintMaskHasContent;
+      setGenerateNotice({
+        tone: 'info',
+        message: hasUserPaintMask
+          ? '正在准备当前蒙版与视角。'
+          : '正在准备当前视角；未绘制蒙版时将使用全图范围。',
+      });
       // Commit the button state and progress text before any GPU capture work.
       // This guarantees an immediate visual response even on a cold renderer.
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      // The selection accumulates camera-specific projections instead of using
-      // model UVs. Reproject their union from the current camera immediately
-      // before submission so it matches the captured frame.
-      document.body.dataset.perfLocalRepaintPhase = 'button2-mask-capture';
-      const maskCaptureStartedAt = performance.now();
-      const currentPaintMaskDataUrl =
-        (await useSceneStore.getState().paintMaskCapture?.()) ?? paintMaskDataUrl;
-      document.body.dataset.localRepaintButton2MaskCaptureMs = (
-        performance.now() - maskCaptureStartedAt
-      ).toFixed(1);
-      if (!currentPaintMaskDataUrl) {
-        setGenerateNotice({ tone: 'warning', message: t('localRepaintMaskMissing') });
-        pushToast({
-          tone: 'warning',
-          title: t('localRepaintMaskMissing'),
-          description: t('inpaintSelectToolHelp'),
-          dedupeKey: 'generate-local-repaint-mask-required',
-        });
-        return;
+      let currentPaintMaskDataUrl: string | undefined;
+      let captureAspect: number;
+      if (hasUserPaintMask) {
+        // The selection accumulates camera-specific projections instead of using
+        // model UVs. Reproject their union from the current camera immediately
+        // before submission so it matches the captured frame.
+        document.body.dataset.perfLocalRepaintPhase = 'button2-mask-capture';
+        const maskCaptureStartedAt = performance.now();
+        currentPaintMaskDataUrl =
+          (await useSceneStore.getState().paintMaskCapture?.()) ??
+          useSceneStore.getState().paintMaskDataUrl;
+        document.body.dataset.localRepaintButton2MaskCaptureMs = (
+          performance.now() - maskCaptureStartedAt
+        ).toFixed(1);
+        if (!currentPaintMaskDataUrl) throw new Error('无法读取已绘制的局部重绘蒙版。');
+        useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
+        const maskSize = await getImageSize(currentPaintMaskDataUrl);
+        if (!maskSize.width || !maskSize.height)
+          throw new Error('无法读取当前局部重绘蒙版尺寸。');
+        captureAspect = maskSize.width / maskSize.height;
+      } else {
+        const viewportElement = useSceneStore.getState().viewport?.gl.domElement;
+        const viewportRect = viewportElement?.getBoundingClientRect();
+        const viewportWidth = viewportRect?.width || viewportElement?.clientWidth || 1;
+        const viewportHeight = viewportRect?.height || viewportElement?.clientHeight || 1;
+        captureAspect = viewportWidth / Math.max(viewportHeight, 1);
       }
-      useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
-      const currentPaintMaskRevision = useSceneStore.getState().paintMaskRevision;
-      const maskSize = await getImageSize(currentPaintMaskDataUrl);
-      if (!maskSize.width || !maskSize.height) throw new Error('无法读取当前局部重绘蒙版尺寸。');
       document.body.dataset.perfLocalRepaintPhase = 'button2-view-capture';
       const viewCaptureStartedAt = performance.now();
       const capture = await captureCurrentView({
@@ -2530,12 +2548,17 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         // Match the texture-map white-model input while retaining the authored
         // viewport framing so the local-only selection mask stays pixel aligned.
         colorMode: 'clay-target',
-        aspect: maskSize.width / maskSize.height,
+        aspect: captureAspect,
       });
       document.body.dataset.localRepaintButton2ViewCaptureMs = (
         performance.now() - viewCaptureStartedAt
       ).toFixed(1);
       setLastCapture(capture);
+      // When no selection was painted, archive an opaque full-frame mask that
+      // exactly matches this capture. It is used only by the returned result's
+      // apply step and deliberately does not become the current canvas mask.
+      currentPaintMaskDataUrl ??= createFullFrameMaskDataUrl(capture.width, capture.height);
+      const currentPaintMaskRevision = useSceneStore.getState().paintMaskRevision;
       // captureCurrentView already archives the exact capture in projectStore.
       // Writing it a second time duplicated a large four-pass capture record and
       // forced avoidable subscribers/renders at the hottest point of button 2.
@@ -2571,6 +2594,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           objectId,
           materialReferenceId: materialReference.id,
           paintMaskRevision: currentPaintMaskRevision,
+          paintMaskSource: hasUserPaintMask ? 'user' : 'full-frame-default',
           sourceColorMode: 'clay-target',
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           serverSubmitted: false,
@@ -2581,7 +2605,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       addProjectGeneration(pendingGeneration);
       setGenerateNotice({
         tone: 'info',
-        message: '正在提交当前视角白模和多视图材质参考；蒙版仅用于结果回贴。',
+        message: hasUserPaintMask
+          ? '正在提交当前视角白模和多视图材质参考；已绘蒙版仅用于结果回贴。'
+          : '正在提交当前视角白模和多视图材质参考；结果将按全图范围回贴。',
       });
       requestAbortController = new AbortController();
       generationAbortControllersRef.current.set(generationId, requestAbortController);
@@ -2604,7 +2630,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         },
         { signal: requestAbortController.signal },
       );
-      if (isCancelledGeneration(pendingGeneration)) return;
+      if (isCancelledGeneration(pendingGeneration)) return false;
       let localResultUrl = generation.resultUrl;
       if (localResultUrl) {
         try {
@@ -2625,7 +2651,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           });
         }
       }
-      if (isCancelledGeneration(pendingGeneration)) return;
+      if (isCancelledGeneration(pendingGeneration)) return false;
       const persistedPaintMaskUrl = await persistedPaintMaskUrlPromise;
       const completedGeneration: Generation = {
         ...generation,
@@ -2654,8 +2680,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         title: '局部生图已生成',
         description: '结果已显示在重绘效果图中。',
       });
+      return true;
     } catch (error) {
-      if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return;
+      if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return false;
       const rawMessage = error instanceof Error ? error.message : String(error);
       console.error('[ComfyUI Material Repaint] generation failed:', error);
       const message = getUserFacingGenerationError(error, '局部重绘生成失败，请稍后重试。');
@@ -2668,6 +2695,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       }
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: t('localRepaintFailed'), description: message });
+      return false;
     } finally {
       delete document.body.dataset.localRepaintGenerationBusy;
       if (document.body.dataset.perfLocalRepaintPhase?.startsWith('button2-')) {
@@ -3495,10 +3523,10 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         title={t('generatePanel')}
         className="generate-panel-adaptive flex h-full min-h-0 flex-col overflow-hidden"
       >
-        {isTextureMapTab && (
+        {(isTextureMapTab || isLocalRepaintTab) && (
           <div data-texture-onboarding="single-view">
             <SegmentedControl<TexturePreviewMode>
-              value={texturePreviewMode}
+              value={displayedTexturePreviewMode}
               options={[
                 { value: 'multi', label: '多视图' },
                 { value: 'single', label: '单视图' },
@@ -3506,14 +3534,17 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
               ]}
               onChange={(value) => {
                 setTexturePreviewMode(value);
-                if (value !== 'repaint') setTextureViewMode(value);
+                if (value !== 'repaint') {
+                  setTextureViewMode(value);
+                  setTab('multiview');
+                }
               }}
               className="mb-2"
             />
           </div>
         )}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/10 bg-black/24">
-          {(!isTextureMapTab || texturePreviewMode !== 'multi') && (
+          {displayedTexturePreviewMode !== 'multi' && (
             <div className="generate-preview-adaptive relative shrink-0 overflow-hidden bg-[#1b1b1b]">
               {displayedPreviewGeneration?.resultUrl ? (
                 <button
@@ -3530,7 +3561,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
                     className="h-full w-full object-contain"
                   />
                 </button>
-              ) : isTextureMapTab && texturePreviewMode === 'repaint' ? (
+              ) : displayedTexturePreviewMode === 'repaint' ? (
                 <div className="grid h-full w-full place-items-center px-5 text-center">
                   <div className="grid gap-1">
                     <div className="text-sm font-semibold text-white/72">暂无重绘效果图</div>
@@ -3679,32 +3710,28 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
               </section>
             )}
 
-            {!isLocalRepaintTab && (
-              <label className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
-                <span className="text-sm font-semibold text-white/88">
-                  {isTextureMapTab ? '纹理提示词' : t('prompt')}
-                </span>
-                <textarea
-                  value={prompt}
-                  onChange={(event) =>
-                    updateGenerationSettings(
-                      isTextureMapTab
-                        ? { textureMapPrompt: event.target.value }
-                        : { liclickPrompt: event.target.value },
-                    )
-                  }
-                  className="generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
-                />
-              </label>
-            )}
+            <label className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
+              <span className="text-sm font-semibold text-white/88">纹理提示词</span>
+              <textarea
+                value={isLocalRepaintTab ? '' : prompt}
+                readOnly={isLocalRepaintTab}
+                aria-readonly={isLocalRepaintTab}
+                placeholder={isLocalRepaintTab ? '使用固定材质迁移提示词，无需填写' : undefined}
+                onChange={(event) => {
+                  if (isLocalRepaintTab) return;
+                  updateGenerationSettings(
+                    isTextureMapTab
+                      ? { textureMapPrompt: event.target.value }
+                      : { liclickPrompt: event.target.value },
+                  );
+                }}
+                className={`generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition placeholder:text-white/38 focus:border-liclick-pink ${
+                  isLocalRepaintTab ? 'cursor-default' : ''
+                }`}
+              />
+            </label>
 
-            {isLocalRepaintTab && (
-              <div className="order-3 rounded-md border border-white/12 bg-white/[0.04] px-3 py-2 text-xs leading-5 text-white/66">
-                当前使用固定材质迁移提示词，无需填写。生成时仅提交当前视角白模和多视图材质参考，蒙版只限制结果回贴区域。
-              </div>
-            )}
-
-            {isTextureMapTab && (
+            {(isTextureMapTab || isLocalRepaintTab) && (
               <section
                 data-texture-onboarding="reference-images"
                 className="order-2 grid shrink-0 gap-2"
