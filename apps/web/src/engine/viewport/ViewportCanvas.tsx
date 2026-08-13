@@ -207,7 +207,6 @@ function isRendererOwnedLocalRepaintLayer(layer: Layer) {
   );
 }
 
-const MAX_INPAINT_PROJECTION_SNAPSHOTS = 12;
 // Selection strokes are authored in projector space. A matching GPU depth
 // snapshot prevents the same screen-space stamp from landing on every surface
 // along that projector ray. The capture is refreshed only after the camera
@@ -716,6 +715,7 @@ type PerformanceLabWindowApi = {
     metrics: PerformanceHudMetrics;
     native?: NativePerformanceSnapshot;
     events: PerformanceTimelineEvent[];
+    manualLocalRepaint?: ManualRepaintReport;
   };
 };
 
@@ -803,8 +803,81 @@ function hasFiniteMetricFields(value: unknown, fields: readonly string[]) {
   return fields.every((field) => typeof record[field] === 'number' && Number.isFinite(record[field]));
 }
 
+type ManualRepaintEvent = {
+  type: string;
+  unixMs: number;
+  elapsedMs: number;
+  latencyToFrameMs?: number;
+  detail?: Record<string, unknown>;
+};
+
+type ManualRepaintReport = {
+  durationMs: number;
+  frames: number;
+  averageFps: number;
+  frameP95: number;
+  frameMax: number;
+  droppedFrames: number;
+  pointerDownP95: number;
+  pointerUpP95: number;
+  wheelEvents: number;
+  strokes: number;
+  layerActions: number;
+  longTasks: number;
+  longTaskMax: number;
+  heapDeltaMb: number;
+  events: ManualRepaintEvent[];
+};
+
+function LightweightPerformanceHud() {
+  const [sample, setSample] = useState({ fps: 0, p95: 0, max: 0 });
+  useEffect(() => {
+    let frame = 0;
+    let previous = performance.now();
+    let published = previous;
+    const samples: number[] = [];
+    const tick = (now: number) => {
+      const duration = now - previous;
+      previous = now;
+      if (duration > 0 && duration < 1_000) {
+        samples.push(duration);
+        if (samples.length > 180) samples.shift();
+      }
+      if (now - published >= 500 && samples.length) {
+        published = now;
+        const recent = samples.slice(-120);
+        const total = recent.reduce((sum, value) => sum + value, 0);
+        setSample({
+          fps: total > 0 ? (recent.length * 1_000) / total : 0,
+          p95: percentile(recent, 0.95),
+          max: Math.max(...recent),
+        });
+      }
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+  const severe = sample.p95 > 25 || sample.fps < 45;
+  const warning = sample.p95 > 18 || sample.fps < 57;
+  return (
+    <div className={`pointer-events-none absolute right-4 top-4 z-[28] grid grid-cols-[auto_auto_auto_auto] items-center gap-4 rounded-md border px-3 py-2 text-white shadow-xl backdrop-blur-md ${severe ? 'border-red-500/70 bg-red-950/78' : warning ? 'border-amber-400/60 bg-black/82' : 'border-emerald-400/45 bg-black/78'}`}>
+      <span className={`text-xs font-semibold ${severe ? 'text-red-300' : warning ? 'text-amber-300' : 'text-emerald-300'}`}>
+        ● {severe ? '严重卡顿' : warning ? '卡顿' : '流畅'}
+      </span>
+      <span className="text-[10px] text-white/50">帧率 <b className="ml-1 font-mono text-xs text-white">{sample.fps.toFixed(0)} FPS</b></span>
+      <span className="text-[10px] text-white/50">延迟 P95 <b className="ml-1 font-mono text-xs text-white">{sample.p95.toFixed(1)} ms</b></span>
+      <span className="text-[10px] text-white/50">最大帧 <b className="ml-1 font-mono text-xs text-white">{sample.max.toFixed(1)} ms</b></span>
+    </div>
+  );
+}
+
 function PerformanceTestHud() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const [manualRecording, setManualRecording] = useState(false);
+  const [manualReport, setManualReport] = useState<ManualRepaintReport>();
+  const manualStartedAtRef = useRef(0);
+  const manualEventsRef = useRef<ManualRepaintEvent[]>([]);
   const [nativeSnapshot, setNativeSnapshot] = useState<NativePerformanceSnapshot>();
   const [nativeError, setNativeError] = useState<string>();
   const [computeBackend, setComputeBackend] = useState<GpuComputeBackendCapability>();
@@ -912,6 +985,93 @@ function PerformanceTestHud() {
     samplerMax: 0,
     samplerSamples: 0,
   });
+
+  useEffect(() => {
+    if (!manualRecording) return;
+    const startedAt = manualStartedAtRef.current;
+    const record = (type: string, detail?: Record<string, unknown>, eventTime?: number) => {
+      const item: ManualRepaintEvent = {
+        type,
+        unixMs: Date.now(),
+        elapsedMs: performance.now() - startedAt,
+        detail,
+      };
+      manualEventsRef.current.push(item);
+      if (eventTime !== undefined) {
+        window.requestAnimationFrame((frameAt) => {
+          item.latencyToFrameMs = Math.max(0, frameAt - eventTime);
+        });
+      }
+    };
+    const onPointerDown = (event: globalThis.PointerEvent) =>
+      record('pointerdown', { button: event.button, x: event.clientX, y: event.clientY, pressure: event.pressure }, event.timeStamp);
+    const onPointerUp = (event: globalThis.PointerEvent) =>
+      record('pointerup', { button: event.button, x: event.clientX, y: event.clientY, pressure: event.pressure }, event.timeStamp);
+    const onWheel = (event: globalThis.WheelEvent) =>
+      record('wheel', { deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode }, event.timeStamp);
+    const onClick = (event: MouseEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : undefined;
+      if (target?.closest('[data-layer-id], [data-layer-row], [aria-label*=\"图层\"]')) {
+        record('layer-action', { text: target.textContent?.trim().slice(0, 80) });
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('wheel', onWheel, true);
+    window.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointerup', onPointerUp, true);
+      window.removeEventListener('wheel', onWheel, true);
+      window.removeEventListener('click', onClick, true);
+    };
+  }, [manualRecording]);
+
+  const toggleManualRecording = useCallback(() => {
+    if (!manualRecording) {
+      manualStartedAtRef.current = performance.now();
+      manualEventsRef.current = [];
+      setManualReport(undefined);
+      document.body.dataset.perfManualLocalRepaintRecording = '1';
+      setManualRecording(true);
+      return;
+    }
+    const endedAt = Date.now();
+    const startedUnixMs = endedAt - (performance.now() - manualStartedAtRef.current);
+    const frames = frameSamplesRef.current.filter(
+      (sample) => sample.unixMs >= startedUnixMs && sample.unixMs <= endedAt,
+    );
+    const frameTimes = frames.map((sample) => sample.durationMs);
+    const targetMs = percentile(frameTimes.filter((value) => value < 40), 0.1) || 16.67;
+    const longTasks = longTaskSamplesRef.current.filter(
+      (sample) => sample.unixMs >= startedUnixMs && sample.unixMs <= endedAt,
+    );
+    const events = manualEventsRef.current.slice();
+    const latency = (type: string) => events
+      .filter((event) => event.type === type)
+      .map((event) => event.latencyToFrameMs ?? 0);
+    const max = (values: number[]) => (values.length ? Math.max(...values) : 0);
+    const total = frameTimes.reduce((sum, value) => sum + value, 0);
+    setManualReport({
+      durationMs: Math.max(0, endedAt - startedUnixMs),
+      frames: frameTimes.length,
+      averageFps: total > 0 ? (frameTimes.length * 1000) / total : 0,
+      frameP95: percentile(frameTimes, 0.95),
+      frameMax: max(frameTimes),
+      droppedFrames: frameTimes.filter((value) => value > targetMs * 1.5).length,
+      pointerDownP95: percentile(latency('pointerdown'), 0.95),
+      pointerUpP95: percentile(latency('pointerup'), 0.95),
+      wheelEvents: events.filter((event) => event.type === 'wheel').length,
+      strokes: events.filter((event) => event.type === 'pointerup').length,
+      layerActions: events.filter((event) => event.type === 'layer-action').length,
+      longTasks: longTasks.length,
+      longTaskMax: max(longTasks.map((sample) => sample.durationMs)),
+      heapDeltaMb: 0,
+      events,
+    });
+    delete document.body.dataset.perfManualLocalRepaintRecording;
+    setManualRecording(false);
+  }, [manualRecording]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1212,6 +1372,7 @@ function PerformanceTestHud() {
       nativeSamples: nativeSamplesRef.current,
       events: getPerformanceTimelineEvents(),
       viewport: { ...viewportTelemetry },
+      manualLocalRepaint: manualReport,
       scenarios: {
         projectedLayerRamp: projectedLayerRampResult,
         layerToggle: layerToggleScenarioResult,
@@ -1233,6 +1394,7 @@ function PerformanceTestHud() {
     contentAwareRepairBenchmarkResult,
     layerToggleScenarioResult,
     localRepaintBenchmarkResult,
+    manualReport,
     metrics,
     nativeSnapshot,
     projectedLayerRampResult,
@@ -2069,7 +2231,12 @@ function PerformanceTestHud() {
       runViewportLayerStressScenario,
       runContentAwareRepairBenchmark,
       runRefreshRestoreBenchmark,
-      snapshot: () => ({ metrics, native: nativeSnapshot, events: getPerformanceTimelineEvents() }),
+      snapshot: () => ({
+        metrics,
+        native: nativeSnapshot,
+        events: getPerformanceTimelineEvents(),
+        manualLocalRepaint: manualReport,
+      }),
     };
     return () => {
       delete target.LiclickPerfLab;
@@ -2078,6 +2245,7 @@ function PerformanceTestHud() {
     clearReport,
     exportReport,
     metrics,
+    manualReport,
     nativeSnapshot,
     runLayerToggleScenario,
     runProjectedLayerRamp,
@@ -2094,13 +2262,27 @@ function PerformanceTestHud() {
 
   if (collapsed) {
     return (
-      <button
-        type="button"
-        onClick={() => setCollapsed(false)}
-        className="absolute bottom-20 right-4 z-[28] rounded-md border border-liclick-pink/55 bg-black/78 px-3 py-2 text-xs font-semibold text-white shadow-xl backdrop-blur-md transition hover:bg-black/90"
-      >
-        性能实验室 · {metrics.fps.toFixed(0)} FPS · P95 {metrics.frameP95.toFixed(1)}ms
-      </button>
+      <div className="absolute right-4 top-4 z-[28] flex items-center gap-2 rounded-md border border-liclick-pink/55 bg-black/82 p-1.5 text-xs font-semibold text-white shadow-xl backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          className="rounded px-2 py-1 transition hover:bg-white/10"
+        >
+          性能 · {metrics.fps.toFixed(0)} FPS · P95 {metrics.frameP95.toFixed(1)}ms
+        </button>
+        <button
+          type="button"
+          onClick={toggleManualRecording}
+          className={`rounded px-2 py-1 transition ${manualRecording ? 'bg-red-500 text-white' : 'bg-liclick-pink/80 text-white hover:bg-liclick-pink'}`}
+        >
+          {manualRecording ? '■ 结束并分析' : '● 开始人工录制'}
+        </button>
+        {manualReport && (
+          <span className={manualReport.droppedFrames === 0 ? 'text-emerald-300' : 'text-rose-300'}>
+            {manualReport.averageFps.toFixed(1)} FPS / 掉帧 {manualReport.droppedFrames}
+          </span>
+        )}
+      </div>
     );
   }
 
@@ -2117,6 +2299,13 @@ function PerformanceTestHud() {
           </span>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={toggleManualRecording}
+            className={`rounded px-2 py-1 text-[11px] transition ${manualRecording ? 'bg-red-500 text-white' : 'bg-liclick-pink/25 text-pink-100 hover:bg-liclick-pink/40'}`}
+          >
+            {manualRecording ? '■ 结束并分析' : '● 开始人工录制'}
+          </button>
           <button
             type="button"
             disabled={projectedLayerRamp.running || contentAwareRepairBenchmarkRunning}
@@ -2255,6 +2444,31 @@ function PerformanceTestHud() {
           label="掉帧率 (>20ms)"
           value={`${metrics.droppedFrames.toFixed(0)}%`}
           tone={metricTone(metrics.droppedFrames, 5, 20)}
+        />
+        <PerformanceMetric
+          label="人工录制 / FPS / 掉帧"
+          value={
+            manualRecording
+              ? '录制中（再次点击结束）'
+              : manualReport
+                ? `${manualReport.strokes}笔 / ${manualReport.averageFps.toFixed(1)} / ${manualReport.droppedFrames}`
+                : '等待开始'
+          }
+          tone={manualRecording ? 'text-red-300' : manualReport?.droppedFrames === 0 ? 'text-emerald-300' : 'text-white/65'}
+        />
+        <PerformanceMetric
+          label="人工 P95 / 最大帧"
+          value={manualReport ? `${manualReport.frameP95.toFixed(1)} / ${manualReport.frameMax.toFixed(1)}ms` : '等待结果'}
+          tone={manualReport && (manualReport.frameP95 > 17.5 || manualReport.frameMax > 25) ? 'text-rose-300' : 'text-emerald-300'}
+        />
+        <PerformanceMetric
+          label="落笔/停笔到帧 P95 · 滚轮"
+          value={manualReport ? `${manualReport.pointerDownP95.toFixed(1)} / ${manualReport.pointerUpP95.toFixed(1)}ms · ${manualReport.wheelEvents}` : '等待结果'}
+        />
+        <PerformanceMetric
+          label="人工长任务 / 最大 / 堆变化"
+          value={manualReport ? `${manualReport.longTasks} / ${manualReport.longTaskMax.toFixed(1)}ms / ${manualReport.heapDeltaMb.toFixed(1)}MB` : '等待结果'}
+          tone={manualReport?.longTasks ? 'text-rose-300' : 'text-emerald-300'}
         />
         <PerformanceMetric
           label={`画笔输入 P95 · ${metrics.paintSamples}`}
@@ -2860,6 +3074,17 @@ type UvPaintLayer = {
   maskContext: CanvasRenderingContext2D;
   maskTexture: THREE.CanvasTexture;
   maskMaterial: THREE.ShaderMaterial;
+  accumulatedMaskMaterial: THREE.ShaderMaterial;
+  accumulatedMaskTarget: THREE.WebGLRenderTarget;
+  accumulatedMaskOverlays: THREE.Mesh[];
+  accumulatedMaskReady: boolean;
+  maskInverted: boolean;
+  inpaintMaterialBindings: Array<{
+    mesh: THREE.Mesh;
+    original: THREE.Material | THREE.Material[];
+    patched: THREE.Material | THREE.Material[];
+  }>;
+  directMaskReadyMeshes: Set<THREE.Mesh>;
   maskProjectorMatrix: THREE.Matrix4;
   maskProjectorObjectMatrix: THREE.Matrix4;
   maskProjectorPositionLocal: THREE.Vector3;
@@ -2871,15 +3096,179 @@ type UvPaintLayer = {
   overlayTargets: Set<THREE.Mesh>;
 };
 
-type InpaintMaskProjectionSnapshot = {
+type InpaintProjectionSource = {
   texture: THREE.CanvasTexture;
-  material: THREE.ShaderMaterial;
   projectorMatrix: THREE.Matrix4;
   projectorObjectMatrix: THREE.Matrix4;
   projectorPositionLocal: THREE.Vector3;
   depthTarget?: THREE.WebGLRenderTarget;
+};
+
+type InpaintMaskProjectionSnapshot = InpaintProjectionSource & {
+  material: THREE.ShaderMaterial;
   overlayMeshes: THREE.Mesh[];
 };
+
+type InpaintSurfaceCache = {
+  meshes: THREE.Mesh[];
+  triangleCount: number;
+};
+
+const inpaintSurfaceCache = new WeakMap<THREE.Object3D, InpaintSurfaceCache>();
+
+function getInpaintSurfaceCache(model: SurfacePaintTarget) {
+  const cached = inpaintSurfaceCache.get(model.group);
+  if (cached) return cached;
+  const meshes: THREE.Mesh[] = [];
+  let triangleCount = 0;
+  model.group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    if (
+      child.userData.liclickPaintOverlay ||
+      child.userData.liclickViewportHelper ||
+      child.userData.liclickSelectionGlow ||
+      child.userData.liclickWireframeOverlay
+    )
+      return;
+    const position = child.geometry.getAttribute('position');
+    if (!position) return;
+    meshes.push(child);
+    triangleCount += Math.floor((child.geometry.getIndex()?.count ?? position.count) / 3);
+  });
+  const result = { meshes, triangleCount };
+  inpaintSurfaceCache.set(model.group, result);
+  return result;
+}
+
+const inpaintMaterialPatchBackups = new WeakMap<
+  THREE.Material,
+  {
+    onBeforeCompile: THREE.Material['onBeforeCompile'];
+    customProgramCacheKey: THREE.Material['customProgramCacheKey'];
+  }
+>();
+
+function restoreInpaintPatchedMaterial(material: THREE.Material) {
+  const backup = inpaintMaterialPatchBackups.get(material);
+  if (!backup) return;
+  material.onBeforeCompile = backup.onBeforeCompile;
+  material.customProgramCacheKey = backup.customProgramCacheKey;
+  material.needsUpdate = true;
+  inpaintMaterialPatchBackups.delete(material);
+}
+
+function createInpaintPatchedMaterial(
+  source: THREE.Material,
+  layer: UvPaintLayer,
+  mesh: THREE.Mesh,
+) {
+  layer.directMaskReadyMeshes ??= new Set();
+  const material = source;
+  if (inpaintMaterialPatchBackups.has(material)) return material;
+  inpaintMaterialPatchBackups.set(material, {
+    onBeforeCompile: material.onBeforeCompile,
+    customProgramCacheKey: material.customProgramCacheKey,
+  });
+  const sharedUniforms = {
+    liclickAccumulatedMask: layer.accumulatedMaskMaterial.uniforms.maskMap,
+    liclickLiveMask: layer.accumulatedMaskMaterial.uniforms.liveMap,
+    liclickMaskReady: layer.accumulatedMaskMaterial.uniforms.projectionReady,
+    liclickBaseReady: layer.accumulatedMaskMaterial.uniforms.baseReady,
+    liclickLiveOperation: layer.accumulatedMaskMaterial.uniforms.liveOperation,
+    liclickLiveProjector: layer.accumulatedMaskMaterial.uniforms.liveProjectorMatrix,
+    liclickLiveProjectorPosition:
+      layer.accumulatedMaskMaterial.uniforms.liveProjectorPosition,
+    liclickMaskInverted: layer.accumulatedMaskMaterial.uniforms.maskInverted,
+  };
+  const vertexDeclarations = `
+uniform mat4 liclickLiveProjector;
+uniform vec3 liclickLiveProjectorPosition;
+varying vec2 vLiclickMaskUv;
+varying vec4 vLiclickLivePosition;
+varying float vLiclickLiveFacing;
+`;
+  const vertexAssignment = `
+vLiclickMaskUv = uv;
+vec4 liclickWorldPosition = modelMatrix * vec4(position, 1.0);
+vec3 liclickWorldNormal = normalize(mat3(modelMatrix) * normal);
+vec3 liclickProjectorDirection = normalize(
+  liclickLiveProjectorPosition - liclickWorldPosition.xyz
+);
+vLiclickLivePosition = liclickLiveProjector * liclickWorldPosition;
+vLiclickLiveFacing = dot(liclickWorldNormal, liclickProjectorDirection);
+`;
+  const fragmentDeclarations = `
+uniform sampler2D liclickAccumulatedMask;
+uniform sampler2D liclickLiveMask;
+uniform float liclickMaskReady;
+uniform float liclickBaseReady;
+uniform float liclickLiveOperation;
+uniform float liclickMaskInverted;
+varying vec2 vLiclickMaskUv;
+varying vec4 vLiclickLivePosition;
+varying float vLiclickLiveFacing;
+`;
+  const fragmentBlend = `
+if (liclickMaskReady > 0.5) {
+  float liclickMaskAlpha = 0.0;
+  if (liclickBaseReady > 0.5) {
+    vec4 liclickBase = texture2D(liclickAccumulatedMask, vLiclickMaskUv);
+    liclickMaskAlpha = max(liclickBase.r, max(liclickBase.g, liclickBase.b)) * liclickBase.a;
+  }
+  if (
+    abs(liclickLiveOperation) > 0.5 &&
+    vLiclickLivePosition.w > 0.0001 &&
+    vLiclickLiveFacing > 0.01
+  ) {
+    vec3 liclickNdc = vLiclickLivePosition.xyz / vLiclickLivePosition.w;
+    if (abs(liclickNdc.x) <= 1.0 && abs(liclickNdc.y) <= 1.0 && abs(liclickNdc.z) <= 1.0) {
+      vec2 liclickLiveUv = vec2(liclickNdc.x * 0.5 + 0.5, 1.0 - (liclickNdc.y * 0.5 + 0.5));
+      vec4 liclickLive = texture2D(liclickLiveMask, liclickLiveUv);
+      float liclickLiveAlpha = max(liclickLive.r, max(liclickLive.g, liclickLive.b)) * liclickLive.a;
+      liclickMaskAlpha = liclickLiveOperation > 0.0
+        ? max(liclickMaskAlpha, liclickLiveAlpha)
+        : liclickMaskAlpha * (1.0 - liclickLiveAlpha);
+    }
+  }
+  if (liclickMaskInverted > 0.5) liclickMaskAlpha = 1.0 - liclickMaskAlpha;
+  if (liclickMaskAlpha > 0.01) {
+    float liclickStripe = 1.0 - step(7.0, mod(gl_FragCoord.x + gl_FragCoord.y, 14.0));
+    float liclickMix = mix(0.16, 0.94, liclickStripe) * liclickMaskAlpha;
+    // Match the established selection material exactly. This blend happens
+    // before Three's final linear-to-output conversion, so keep the canonical
+    // #ac2f0d value sampled from the product reference in linear space instead
+    // of mixing an sRGB literal into a
+    // linear fragment (which made the live stroke look pink).
+    gl_FragColor.rgb = mix(
+      gl_FragColor.rgb,
+      vec3(0.412542613, 0.028426040, 0.004024717),
+      liclickMix
+    );
+  }
+}
+`;
+  const previousCompile = material.onBeforeCompile;
+  const previousCacheKey = material.customProgramCacheKey;
+  material.onBeforeCompile = (shader, renderer) => {
+    previousCompile.call(material, shader, renderer);
+    Object.assign(shader.uniforms, sharedUniforms);
+    shader.vertexShader = `${vertexDeclarations}${shader.vertexShader}`.replace(
+      /}\s*$/,
+      `${vertexAssignment}}`,
+    );
+    const fragmentSource = `${fragmentDeclarations}${shader.fragmentShader}`;
+    const outputConversion = '#include <colorspace_fragment>';
+    const outputConversionIndex = fragmentSource.lastIndexOf(outputConversion);
+    shader.fragmentShader =
+      outputConversionIndex >= 0
+        ? `${fragmentSource.slice(0, outputConversionIndex)}${fragmentBlend}${fragmentSource.slice(outputConversionIndex)}`
+        : fragmentSource.replace(/}\s*$/, `${fragmentBlend}}`);
+  };
+  material.customProgramCacheKey = () =>
+    `${previousCacheKey.call(material)}:liclick-inpaint-direct-v2`;
+  material.needsUpdate = true;
+  return material;
+}
 
 type UvPaintHit = {
   model: SurfacePaintTarget;
@@ -3692,7 +4081,7 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
       projectorMatrix: { value: new THREE.Matrix4() },
       projectorPosition: { value: new THREE.Vector3() },
       projectionReady: { value: 0 },
-      stripeColor: { value: new THREE.Color('#d6703e') },
+      stripeColor: { value: new THREE.Color('#ac2f0d') },
       stripeOpacity: { value: 0.94 },
       selectionFillOpacity: { value: 0.16 },
       stripePeriod: { value: 14 },
@@ -3766,6 +4155,218 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
     side: THREE.DoubleSide,
     toneMapped: false,
   });
+}
+
+function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      maskMap: { value: maskTexture },
+      projectionReady: { value: 0 },
+      baseReady: { value: 0 },
+      liveMap: { value: null },
+      liveProjectorMatrix: { value: new THREE.Matrix4() },
+      liveProjectorPosition: { value: new THREE.Vector3() },
+      liveOperation: { value: 0 },
+      maskInverted: { value: 0 },
+      stripeColor: { value: new THREE.Color('#ac2f0d') },
+      stripeOpacity: { value: 0.94 },
+      selectionFillOpacity: { value: 0.16 },
+      stripePeriod: { value: 14 },
+      stripeWidth: { value: 7 },
+    },
+    vertexShader: `
+      uniform mat4 liveProjectorMatrix;
+      uniform vec3 liveProjectorPosition;
+      varying vec2 vMaskUv;
+      varying vec4 vLiveProjectedPosition;
+      varying float vLiveProjectorFacing;
+      void main() {
+        vMaskUv = uv;
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vec3 worldNormal = normalize(mat3(modelMatrix) * normal);
+        vec3 liveDirection = normalize(liveProjectorPosition - worldPosition.xyz);
+        vLiveProjectedPosition = liveProjectorMatrix * worldPosition;
+        vLiveProjectorFacing = dot(worldNormal, liveDirection);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D maskMap;
+      uniform sampler2D liveMap;
+      uniform float projectionReady;
+      uniform float baseReady;
+      uniform float liveOperation;
+      uniform float maskInverted;
+      uniform vec3 stripeColor;
+      uniform float stripeOpacity;
+      uniform float selectionFillOpacity;
+      uniform float stripePeriod;
+      uniform float stripeWidth;
+      varying vec2 vMaskUv;
+      varying vec4 vLiveProjectedPosition;
+      varying float vLiveProjectorFacing;
+      void main() {
+        if (projectionReady < 0.5) discard;
+        float maskAlpha = 0.0;
+        if (baseReady > 0.5) {
+          vec4 maskTexel = texture2D(maskMap, vMaskUv);
+          maskAlpha = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
+        }
+        if (abs(liveOperation) > 0.5 && vLiveProjectedPosition.w > 0.0001 && vLiveProjectorFacing > 0.01) {
+          vec3 liveNdc = vLiveProjectedPosition.xyz / vLiveProjectedPosition.w;
+          if (abs(liveNdc.x) <= 1.0 && abs(liveNdc.y) <= 1.0 && abs(liveNdc.z) <= 1.0) {
+            vec2 liveUv = vec2(
+              liveNdc.x * 0.5 + 0.5,
+              1.0 - (liveNdc.y * 0.5 + 0.5)
+            );
+            vec4 liveTexel = texture2D(liveMap, liveUv);
+            float liveAlpha = max(liveTexel.r, max(liveTexel.g, liveTexel.b)) * liveTexel.a;
+            maskAlpha = liveOperation > 0.0
+              ? max(maskAlpha, liveAlpha)
+              : maskAlpha * (1.0 - liveAlpha);
+          }
+        }
+        if (maskInverted > 0.5) maskAlpha = 1.0 - maskAlpha;
+        if (maskAlpha <= 0.01) discard;
+        float coord = mod(gl_FragCoord.x + gl_FragCoord.y, stripePeriod);
+        float stripe = 1.0 - step(stripeWidth, coord);
+        gl_FragDepthEXT = clamp(gl_FragCoord.z - 0.00008, 0.0, 1.0);
+        gl_FragColor = vec4(
+          stripeColor,
+          mix(selectionFillOpacity, stripeOpacity, stripe) * maskAlpha
+        );
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -16,
+    polygonOffsetUnits: -16,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+}
+
+function createInpaintAccumulationTarget(size = 2048) {
+  const target = new THREE.WebGLRenderTarget(size, size, {
+    format: THREE.RGBAFormat,
+    type: THREE.UnsignedByteType,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: false,
+    stencilBuffer: false,
+  });
+  target.texture.colorSpace = THREE.NoColorSpace;
+  target.texture.generateMipmaps = false;
+  return target;
+}
+
+function createInpaintUvAccumulationMaterial(
+  snapshot: InpaintProjectionSource,
+  operation: 'add' | 'subtract',
+) {
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      maskMap: { value: snapshot.texture },
+      occlusionDepthMap: { value: null },
+      occlusionDepthTexelSize: { value: new THREE.Vector2(1, 1) },
+      occlusionDepthReady: { value: 0 },
+      occlusionDepthEpsilon: { value: INPAINT_DEPTH_EPSILON },
+      projectorMatrix: { value: new THREE.Matrix4() },
+      projectorPosition: { value: new THREE.Vector3() },
+      projectionReady: { value: 1 },
+    },
+    vertexShader: `
+      uniform mat4 projectorMatrix;
+      uniform vec3 projectorPosition;
+      varying vec4 vProjectedPosition;
+      varying float vProjectorFacing;
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vec3 worldNormal = normalize(mat3(modelMatrix) * normal);
+        vec3 projectorDelta = projectorPosition - worldPosition.xyz;
+        vec3 projectorDirection = projectorDelta / max(length(projectorDelta), 0.000001);
+        vProjectedPosition = projectorMatrix * worldPosition;
+        vProjectorFacing = dot(worldNormal, projectorDirection);
+        gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D maskMap;
+      varying vec4 vProjectedPosition;
+      varying float vProjectorFacing;
+      ${inpaintDepthShader}
+      void main() {
+        if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
+        vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
+        if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
+        vec2 projectorUv = ndc.xy * 0.5 + 0.5;
+        if (!isProjectorSurfaceVisible(projectorUv, ndc.z * 0.5 + 0.5)) discard;
+        vec2 maskUv = vec2(projectorUv.x, 1.0 - projectorUv.y);
+        vec4 maskTexel = texture2D(maskMap, maskUv);
+        float coverage = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
+        if (coverage <= 0.01) discard;
+        gl_FragColor = vec4(coverage);
+      }
+    `,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: operation === 'add' ? THREE.OneFactor : THREE.ZeroFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  bindInpaintDepthTarget(material, snapshot.depthTarget);
+  return material;
+}
+
+type InpaintUvAccumulationResources = {
+  modelGroup: THREE.Object3D;
+  scene: THREE.Scene;
+  material: THREE.ShaderMaterial;
+  meshes: Array<{ source: THREE.Mesh; bake: THREE.Mesh }>;
+};
+
+const inpaintUvAccumulationResources = new WeakMap<
+  THREE.WebGLRenderTarget,
+  InpaintUvAccumulationResources
+>();
+
+function disposeInpaintUvAccumulationResources(target?: THREE.WebGLRenderTarget) {
+  if (!target) return;
+  const resources = inpaintUvAccumulationResources.get(target);
+  if (!resources) return;
+  resources.meshes.forEach(({ bake }) => bake.removeFromParent());
+  resources.material.dispose();
+  inpaintUvAccumulationResources.delete(target);
+}
+
+function getInpaintUvAccumulationResources(
+  model: SurfacePaintTarget,
+  snapshot: InpaintProjectionSource,
+  target: THREE.WebGLRenderTarget,
+  operation: 'add' | 'subtract',
+) {
+  const existing = inpaintUvAccumulationResources.get(target);
+  if (existing?.modelGroup === model.group) return existing;
+  if (existing) disposeInpaintUvAccumulationResources(target);
+  const material = createInpaintUvAccumulationMaterial(snapshot, operation);
+  const scene = new THREE.Scene();
+  const meshes = getInpaintSurfaceCache(model).meshes.flatMap((source) => {
+    if (!source.geometry.getAttribute('uv')) return [];
+    const bake = new THREE.Mesh(source.geometry, material);
+    bake.matrixAutoUpdate = false;
+    bake.frustumCulled = false;
+    scene.add(bake);
+    return [{ source, bake }];
+  });
+  const resources = { modelGroup: model.group, scene, material, meshes };
+  inpaintUvAccumulationResources.set(target, resources);
+  return resources;
 }
 
 function createProjectedPaintPreviewMaterial(maskTexture: THREE.CanvasTexture) {
@@ -3842,7 +4443,7 @@ function updateInpaintProjectionCamera(
   object: THREE.Object3D,
 ) {
   camera.updateMatrixWorld(true);
-  object.updateMatrixWorld(true);
+  object.updateWorldMatrix(true, false);
   layer.maskProjectorMatrix.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse);
   layer.maskProjectorObjectMatrix.copy(object.matrixWorld);
   layer.maskProjectorPositionLocal
@@ -3862,6 +4463,15 @@ function updateInpaintProjectionCamera(
 const inpaintProjectorComparisonScratch = new THREE.Matrix4();
 const inpaintObjectMatrixInverseScratch = new THREE.Matrix4();
 const inpaintAdjustedProjectorScratch = new THREE.Matrix4();
+const inpaintMaterialTransformCache = new WeakMap<
+  THREE.ShaderMaterial,
+  {
+    objectMatrixWorld: THREE.Matrix4;
+    projectorMatrix: THREE.Matrix4;
+    projectorObjectMatrix: THREE.Matrix4;
+    projectorPositionLocal: THREE.Vector3;
+  }
+>();
 
 function updateInpaintMaterialForObject(
   material: THREE.ShaderMaterial,
@@ -3870,7 +4480,15 @@ function updateInpaintMaterialForObject(
   projectorPositionLocal: THREE.Vector3,
   object: THREE.Object3D,
 ) {
-  object.updateMatrixWorld(true);
+  object.updateWorldMatrix(true, false);
+  const cached = inpaintMaterialTransformCache.get(material);
+  if (
+    cached?.objectMatrixWorld.equals(object.matrixWorld) &&
+    cached.projectorMatrix.equals(projectorMatrix) &&
+    cached.projectorObjectMatrix.equals(projectorObjectMatrix) &&
+    cached.projectorPositionLocal.equals(projectorPositionLocal)
+  )
+    return;
   inpaintObjectMatrixInverseScratch.copy(object.matrixWorld).invert();
   inpaintAdjustedProjectorScratch
     .copy(projectorMatrix)
@@ -3883,6 +4501,82 @@ function updateInpaintMaterialForObject(
     .copy(projectorPositionLocal)
     .applyMatrix4(object.matrixWorld);
   material.uniforms.projectionReady.value = 1;
+  if (cached) {
+    cached.objectMatrixWorld.copy(object.matrixWorld);
+    cached.projectorMatrix.copy(projectorMatrix);
+    cached.projectorObjectMatrix.copy(projectorObjectMatrix);
+    cached.projectorPositionLocal.copy(projectorPositionLocal);
+  } else {
+    inpaintMaterialTransformCache.set(material, {
+      objectMatrixWorld: object.matrixWorld.clone(),
+      projectorMatrix: projectorMatrix.clone(),
+      projectorObjectMatrix: projectorObjectMatrix.clone(),
+      projectorPositionLocal: projectorPositionLocal.clone(),
+    });
+  }
+}
+
+function accumulateInpaintSnapshotToUv(
+  renderer: THREE.WebGLRenderer,
+  model: SurfacePaintTarget,
+  snapshot: InpaintProjectionSource,
+  target: THREE.WebGLRenderTarget,
+  clear: boolean,
+  operation: 'add' | 'subtract' = 'add',
+) {
+  const resources = getInpaintUvAccumulationResources(model, snapshot, target, operation);
+  const { material } = resources;
+  material.uniforms.maskMap.value = snapshot.texture;
+  bindInpaintDepthTarget(material, snapshot.depthTarget);
+  material.blendEquation = THREE.AddEquation;
+  material.blendSrc = operation === 'add' ? THREE.OneFactor : THREE.ZeroFactor;
+  material.blendDst = THREE.OneMinusSrcAlphaFactor;
+  updateInpaintMaterialForObject(
+    material,
+    snapshot.projectorMatrix,
+    snapshot.projectorObjectMatrix,
+    snapshot.projectorPositionLocal,
+    model.group,
+  );
+  if (resources.meshes.length === 0) throw new Error('模型没有可用于累计蒙版的 UV。');
+  resources.meshes.forEach(({ source, bake }) => {
+    source.updateWorldMatrix(true, false);
+    bake.matrix.copy(source.matrixWorld);
+  });
+  const previousTarget = renderer.getRenderTarget();
+  const previousAutoClear = renderer.autoClear;
+  const previousClearColor = renderer.getClearColor(new THREE.Color()).clone();
+  const previousClearAlpha = renderer.getClearAlpha();
+  try {
+    renderer.autoClear = false;
+    renderer.setRenderTarget(target);
+    if (clear) {
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear(true, false, false);
+    }
+    renderer.render(resources.scene, new THREE.Camera());
+  } finally {
+    renderer.setRenderTarget(previousTarget);
+    renderer.setClearColor(previousClearColor, previousClearAlpha);
+    renderer.autoClear = previousAutoClear;
+  }
+}
+
+function clearInpaintAccumulationTarget(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+) {
+  const previousTarget = renderer.getRenderTarget();
+  const previousClearColor = renderer.getClearColor(new THREE.Color()).clone();
+  const previousClearAlpha = renderer.getClearAlpha();
+  try {
+    renderer.setRenderTarget(target);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, false, false);
+  } finally {
+    renderer.setRenderTarget(previousTarget);
+    renderer.setClearColor(previousClearColor, previousClearAlpha);
+  }
 }
 
 function hasInpaintProjectionCameraChanged(layer: UvPaintLayer, camera: THREE.Camera) {
@@ -3907,6 +4601,14 @@ function disposeUvPaintLayer(layer?: UvPaintLayer) {
   layer.projectionTexture.dispose();
   layer.maskTexture.dispose();
   layer.maskMaterial.dispose();
+  layer.accumulatedMaskMaterial.dispose();
+  (layer.inpaintMaterialBindings ?? []).forEach(({ mesh, original, patched }) => {
+    if (mesh.material === patched) mesh.material = original;
+    (Array.isArray(patched) ? patched : [patched]).forEach(restoreInpaintPatchedMaterial);
+  });
+  layer.inpaintMaterialBindings = [];
+  disposeInpaintUvAccumulationResources(layer.accumulatedMaskTarget);
+  layer.accumulatedMaskTarget.dispose();
   layer.maskDepthTarget?.dispose();
   layer.inpaintSnapshots.forEach((snapshot) => {
     snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
@@ -3917,8 +4619,9 @@ function disposeUvPaintLayer(layer?: UvPaintLayer) {
 }
 
 function createInpaintMaskCaptureMaterial(
-  maskTexture: THREE.CanvasTexture,
+  maskTexture: THREE.Texture,
   depthTarget?: THREE.WebGLRenderTarget,
+  maskUsesUv = false,
 ) {
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -3930,12 +4633,15 @@ function createInpaintMaskCaptureMaterial(
       projectorMatrix: { value: new THREE.Matrix4() },
       projectorPosition: { value: new THREE.Vector3() },
       projectionReady: { value: 1 },
+      maskUsesUv: { value: maskUsesUv ? 1 : 0 },
+      maskInverted: { value: 0 },
     },
     vertexShader: `
       uniform mat4 projectorMatrix;
       uniform vec3 projectorPosition;
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
+      varying vec2 vSurfaceUv;
 
       void main() {
         vec4 worldPosition = modelMatrix * vec4(position, 1.0);
@@ -3943,25 +4649,35 @@ function createInpaintMaskCaptureMaterial(
         vec3 projectorDirection = normalize(projectorPosition - worldPosition.xyz);
         vProjectedPosition = projectorMatrix * worldPosition;
         vProjectorFacing = dot(worldNormal, projectorDirection);
+        vSurfaceUv = uv;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
       uniform sampler2D maskMap;
+      uniform float maskUsesUv;
+      uniform float maskInverted;
       varying vec4 vProjectedPosition;
       varying float vProjectorFacing;
+      varying vec2 vSurfaceUv;
       ${inpaintDepthShader}
 
       void main() {
-        if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
-        vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
-        if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
-        vec2 projectorUv = ndc.xy * 0.5 + 0.5;
-        if (!isProjectorSurfaceVisible(projectorUv, ndc.z * 0.5 + 0.5)) discard;
-        vec2 maskUv = projectorUv;
-        maskUv.y = 1.0 - maskUv.y;
+        vec2 maskUv;
+        if (maskUsesUv > 0.5) {
+          maskUv = vSurfaceUv;
+        } else {
+          if (vProjectedPosition.w <= 0.0001 || vProjectorFacing <= 0.01) discard;
+          vec3 ndc = vProjectedPosition.xyz / vProjectedPosition.w;
+          if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || abs(ndc.z) > 1.0) discard;
+          vec2 projectorUv = ndc.xy * 0.5 + 0.5;
+          if (!isProjectorSurfaceVisible(projectorUv, ndc.z * 0.5 + 0.5)) discard;
+          maskUv = projectorUv;
+          maskUv.y = 1.0 - maskUv.y;
+        }
         vec4 maskTexel = texture2D(maskMap, maskUv);
         float coverage = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
+        if (maskInverted > 0.5) coverage = 1.0 - coverage;
         if (coverage <= 0.01) discard;
         gl_FragColor = vec4(1.0, 1.0, 1.0, coverage);
       }
@@ -4603,6 +5319,14 @@ function SurfacePaintOverlay() {
   const maskDirtyRef = useRef(false);
   const maskHasContentRef = useRef(false);
   const currentProjectionHasContentRef = useRef(false);
+  const currentProjectionOperationRef = useRef<'add' | 'subtract'>('add');
+  const inpaintArchiveTimerRef = useRef<number>();
+  const inpaintArchiveIdleRef = useRef<number>();
+  const inpaintLastCameraRef = useRef({
+    position: camera.position.clone(),
+    quaternion: camera.quaternion.clone(),
+    zoom: camera.zoom,
+  });
   const paintMaskCommitRevisionRef = useRef(0);
   const handledPaintMaskInvertRevisionRef = useRef(0);
   const localRepaintSourceImageRef = useRef<{
@@ -5393,6 +6117,11 @@ function SurfacePaintOverlay() {
       configureCanvasTexture(maskTexture, THREE.NoColorSpace);
 
       const maskMaterial = createInpaintMaskMaterial(projectionTexture);
+      const accumulatedMaskTarget = createInpaintAccumulationTarget();
+      const accumulatedMaskMaterial = createAccumulatedInpaintMaskMaterial(
+        accumulatedMaskTarget.texture,
+      );
+      accumulatedMaskMaterial.uniforms.liveMap.value = projectionTexture;
 
       const paintLayer: UvPaintLayer = {
         objectId: model.objectId,
@@ -5424,6 +6153,13 @@ function SurfacePaintOverlay() {
         maskContext: mask.context,
         maskTexture,
         maskMaterial,
+        accumulatedMaskMaterial,
+        accumulatedMaskTarget,
+        accumulatedMaskOverlays: [],
+        accumulatedMaskReady: false,
+        maskInverted: false,
+        inpaintMaterialBindings: [],
+        directMaskReadyMeshes: new Set(),
         maskProjectorMatrix: new THREE.Matrix4(),
         maskProjectorObjectMatrix: new THREE.Matrix4(),
         maskProjectorPositionLocal: new THREE.Vector3(),
@@ -5460,64 +6196,168 @@ function SurfacePaintOverlay() {
 
   const ensureOverlayForMesh = useCallback(
     (layer: UvPaintLayer, mesh: THREE.Mesh) => {
-      const existingOverlay = layer.overlayMeshes.find(
-        (overlay) => overlay.userData.liclickInpaintMaskOverlay && overlay.parent === mesh,
+      // Raycasts can hit the visible mask mesh itself. Never attach another
+      // mask mesh below an overlay or the render passes grow after each stroke.
+      if (mesh.userData.liclickPaintOverlay) return;
+      let accumulatedOverlay = layer.accumulatedMaskOverlays.find(
+        (overlay) => overlay.parent === mesh,
       );
-      if (layer.overlayTargets.has(mesh) && existingOverlay) {
-        // Tool changes, async shader prewarm and model material commits can
-        // outlive one another. Repair the resident binding in place every time
-        // the selection tool asks for this mesh; a stale material/texture must
-        // never require a page refresh before new mask pixels become visible.
-        existingOverlay.material = layer.maskMaterial;
-        existingOverlay.userData.liclickInpaintMaskTexture = layer.projectionTexture;
-        existingOverlay.visible = readShouldShowInpaintMask();
-        layer.maskMaterial.uniforms.maskMap.value = layer.projectionTexture;
-        return;
+      if (!accumulatedOverlay) {
+        accumulatedOverlay = new THREE.Mesh(mesh.geometry, layer.accumulatedMaskMaterial);
+        accumulatedOverlay.name = 'Liclick Accumulated Inpaint Mask Overlay';
+        accumulatedOverlay.userData.liclickPaintOverlay = true;
+        accumulatedOverlay.userData.liclickInpaintMaskOverlay = true;
+        accumulatedOverlay.userData.liclickAccumulatedInpaintMaskOverlay = true;
+        accumulatedOverlay.visible =
+          (layer.accumulatedMaskReady || currentProjectionHasContentRef.current) &&
+          readShouldShowInpaintMask();
+        accumulatedOverlay.renderOrder = INPAINT_MASK_OVERLAY_RENDER_ORDER;
+        mesh.add(accumulatedOverlay);
+        layer.accumulatedMaskOverlays.push(accumulatedOverlay);
+        layer.overlayMeshes.push(accumulatedOverlay);
       }
-      if (layer.overlayTargets.has(mesh)) layer.overlayTargets.delete(mesh);
+      // One accumulated overlay composites both the fixed UV history and the
+      // current projected stroke. Do not allocate a second geometry pass.
       layer.overlayMeshes = layer.overlayMeshes.filter((overlay) => {
-        if (!overlay.userData.liclickInpaintMaskOverlay || overlay.parent !== mesh) return true;
+        if (
+          !overlay.userData.liclickInpaintMaskOverlay ||
+          overlay.userData.liclickAccumulatedInpaintMaskOverlay ||
+          overlay.parent !== mesh
+        )
+          return true;
         overlay.removeFromParent();
         return false;
       });
-      layer.overlayTargets.add(mesh);
-
-      const maskOverlay = new THREE.Mesh(mesh.geometry, layer.maskMaterial);
-      maskOverlay.name = 'Liclick Projected Inpaint Mask Overlay';
-      maskOverlay.userData.liclickPaintOverlay = true;
-      maskOverlay.userData.liclickInpaintMaskOverlay = true;
-      maskOverlay.userData.liclickInpaintMaskTexture = layer.projectionTexture;
-      maskOverlay.visible = readShouldShowInpaintMask();
-      maskOverlay.renderOrder = INPAINT_MASK_OVERLAY_RENDER_ORDER;
-      mesh.add(maskOverlay);
-      layer.overlayMeshes.push(maskOverlay);
+      layer.overlayTargets.delete(mesh);
     },
     [readShouldShowInpaintMask],
   );
 
   const ensureInpaintMaskOverlaysForModel = useCallback(
     (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+      // Migrate paint layers created by an older HMR generation in place.
+      layer.directMaskReadyMeshes ??= new Set();
       // The selection texture lives in screen space and may span several
       // disconnected submeshes even when the pointer itself only raycasts one
       // of them. Include real geometry even when it has no UVs; UV availability
       // is relevant to texture baking, but must not make a visible fitting punch
       // a hole through this screen-space editor overlay.
-      const meshes: THREE.Mesh[] = [];
-      model.group.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        if (
-          child.userData.liclickPaintOverlay ||
-          child.userData.liclickViewportHelper ||
-          child.userData.liclickSelectionGlow ||
-          child.userData.liclickWireframeOverlay
-        )
+      const meshes = getInpaintSurfaceCache(model).meshes;
+      const surfaceMeshes = new Set<THREE.Object3D>(meshes);
+      const nextBindings: UvPaintLayer['inpaintMaterialBindings'] = [];
+      meshes.forEach((mesh) => {
+        const existing = layer.inpaintMaterialBindings.find((binding) => binding.mesh === mesh);
+        if (existing && mesh.material === existing.patched) {
+          nextBindings.push(existing);
           return;
-        if (!child.geometry.getAttribute('position')) return;
-        meshes.push(child);
+        }
+        if (existing) {
+          (Array.isArray(existing.patched) ? existing.patched : [existing.patched]).forEach(
+            restoreInpaintPatchedMaterial,
+          );
+        }
+        layer.directMaskReadyMeshes.delete(mesh);
+        const original = mesh.material;
+        const patched = Array.isArray(original)
+          ? original.map((material) => createInpaintPatchedMaterial(material, layer, mesh))
+          : createInpaintPatchedMaterial(original, layer, mesh);
+        nextBindings.push({ mesh, original, patched });
+      });
+      layer.inpaintMaterialBindings.forEach((binding) => {
+        if (surfaceMeshes.has(binding.mesh)) return;
+        (Array.isArray(binding.patched) ? binding.patched : [binding.patched]).forEach(
+          restoreInpaintPatchedMaterial,
+        );
+        layer.directMaskReadyMeshes.delete(binding.mesh);
+      });
+      layer.inpaintMaterialBindings = nextBindings;
+      layer.overlayMeshes = layer.overlayMeshes.filter((overlay) => {
+        if (
+          !overlay.userData.liclickInpaintMaskOverlay ||
+          overlay.userData.liclickAccumulatedInpaintMaskOverlay
+        )
+          return true;
+        overlay.removeFromParent();
+        return false;
+      });
+      layer.overlayTargets.clear();
+      layer.inpaintSnapshots.forEach((snapshot) => {
+        snapshot.overlayMeshes.forEach((overlay) => overlay.removeFromParent());
+        snapshot.texture.dispose();
+        snapshot.material.dispose();
+        snapshot.depthTarget?.dispose();
+      });
+      layer.inpaintSnapshots = [];
+      const retainedAccumulatedOverlays = new Map<THREE.Object3D, THREE.Mesh>();
+      layer.accumulatedMaskOverlays = layer.accumulatedMaskOverlays.filter((overlay) => {
+        const parent = overlay.parent;
+        if (!parent || !surfaceMeshes.has(parent) || retainedAccumulatedOverlays.has(parent)) {
+          overlay.removeFromParent();
+          layer.overlayMeshes = layer.overlayMeshes.filter((item) => item !== overlay);
+          return false;
+        }
+        retainedAccumulatedOverlays.set(parent, overlay);
+        overlay.material = layer.accumulatedMaskMaterial;
+        return true;
       });
       meshes.forEach((mesh) => ensureOverlayForMesh(layer, mesh));
+      layer.accumulatedMaskOverlays.forEach((overlay) => {
+        const parent = overlay.parent;
+        overlay.visible =
+          parent instanceof THREE.Mesh &&
+          !layer.directMaskReadyMeshes.has(parent) &&
+          readShouldShowInpaintMask() &&
+          (layer.accumulatedMaskReady || currentProjectionHasContentRef.current);
+      });
+      {
+        document.body.dataset.inpaintMaskRenderPath = JSON.stringify({
+          mode: 'resident-material-with-overlay-fallback',
+          meshCount: meshes.length,
+          materialTypes: Array.from(
+            new Set(
+              meshes.flatMap((mesh) =>
+                (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).map(
+                  (material) => material.type,
+                ),
+              ),
+            ),
+          ),
+          overlayCount: layer.accumulatedMaskOverlays.filter((overlay) => overlay.visible).length,
+          directReadyCount: layer.directMaskReadyMeshes.size,
+        });
+      }
+      if (meshes.some((mesh) => !layer.directMaskReadyMeshes.has(mesh))) {
+        void gl.compileAsync(scene, camera).then(
+          () => {
+            if (layerRef.current !== layer) return;
+            layer.inpaintMaterialBindings.forEach((binding) => {
+              if (binding.mesh.material === binding.patched) {
+                layer.directMaskReadyMeshes.add(binding.mesh);
+              }
+            });
+            layer.accumulatedMaskOverlays.forEach((overlay) => {
+              if (overlay.parent instanceof THREE.Mesh) {
+                overlay.visible =
+                  !layer.directMaskReadyMeshes.has(overlay.parent) &&
+                  readShouldShowInpaintMask() &&
+                  (layer.accumulatedMaskReady || currentProjectionHasContentRef.current);
+              }
+            });
+            document.body.dataset.inpaintMaskDirectReadyCount = String(
+              layer.directMaskReadyMeshes.size,
+            );
+            invalidate();
+          },
+          (error) => {
+            console.warn(
+              '[Liclick 3D Texture] Direct mask material precompile failed; keeping overlay fallback.',
+              error,
+            );
+          },
+        );
+      }
     },
-    [ensureOverlayForMesh],
+    [camera, ensureOverlayForMesh, gl, invalidate, readShouldShowInpaintMask, scene],
   );
 
   const ensurePaintPreviewOverlayForMesh = useCallback((layer: UvPaintLayer, mesh: THREE.Mesh) => {
@@ -5682,75 +6522,37 @@ function SurfacePaintOverlay() {
   );
 
   const archiveCurrentInpaintProjection = useCallback(
-    (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+    (
+      layer: UvPaintLayer,
+      model: SurfacePaintTarget,
+      operation: 'add' | 'subtract' = 'add',
+    ) => {
       if (!currentProjectionHasContentRef.current) return;
-
-      const snapshotCanvas = copyCanvasRect(layer.projectionCanvas, {
-        x: 0,
-        y: 0,
-        width: layer.projectionCanvas.width,
-        height: layer.projectionCanvas.height,
-      });
-      const texture = new THREE.CanvasTexture(snapshotCanvas);
-      texture.colorSpace = THREE.NoColorSpace;
-      texture.flipY = false;
-      texture.wrapS = THREE.ClampToEdgeWrapping;
-      texture.wrapT = THREE.ClampToEdgeWrapping;
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
-      texture.needsUpdate = true;
-      const material = createInpaintMaskMaterial(texture);
-      const snapshot: InpaintMaskProjectionSnapshot = {
-        texture,
-        material,
-        projectorMatrix: layer.maskProjectorMatrix.clone(),
-        projectorObjectMatrix: layer.maskProjectorObjectMatrix.clone(),
-        projectorPositionLocal: layer.maskProjectorPositionLocal.clone(),
-        depthTarget: layer.maskDepthReady ? layer.maskDepthTarget : undefined,
-        overlayMeshes: [],
-      };
-      bindInpaintDepthTarget(material, snapshot.depthTarget);
-      if (snapshot.depthTarget) {
-        layer.maskDepthTarget = undefined;
-        layer.maskDepthReady = false;
-        bindInpaintDepthTarget(layer.maskMaterial, undefined, false);
-      }
-      updateInpaintMaterialForObject(
-        material,
-        snapshot.projectorMatrix,
-        snapshot.projectorObjectMatrix,
-        snapshot.projectorPositionLocal,
-        model.group,
+      accumulateInpaintSnapshotToUv(
+        gl,
+        model,
+        {
+          texture: layer.projectionTexture,
+          projectorMatrix: layer.maskProjectorMatrix,
+          projectorObjectMatrix: layer.maskProjectorObjectMatrix,
+          projectorPositionLocal: layer.maskProjectorPositionLocal,
+          depthTarget: layer.maskDepthReady ? layer.maskDepthTarget : undefined,
+        },
+        layer.accumulatedMaskTarget,
+        !layer.accumulatedMaskReady,
+        operation,
       );
-      model.group.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        if (
-          child.userData.liclickPaintOverlay ||
-          child.userData.liclickViewportHelper ||
-          child.userData.liclickSelectionGlow ||
-          child.userData.liclickWireframeOverlay ||
-          !child.geometry.getAttribute('position')
-        )
-          return;
-        const overlay = new THREE.Mesh(child.geometry, material);
-        overlay.name = 'Liclick Archived Inpaint Mask Overlay';
-        overlay.userData.liclickPaintOverlay = true;
-        overlay.userData.liclickInpaintMaskOverlay = true;
-        overlay.visible = readShouldShowInpaintMask();
-        overlay.renderOrder = INPAINT_MASK_OVERLAY_RENDER_ORDER;
-        child.add(overlay);
-        snapshot.overlayMeshes.push(overlay);
+      layer.accumulatedMaskReady = true;
+      layer.accumulatedMaskMaterial.uniforms.projectionReady.value = 1;
+      if (layer.accumulatedMaskMaterial.uniforms.baseReady)
+        layer.accumulatedMaskMaterial.uniforms.baseReady.value = 1;
+      if (layer.accumulatedMaskMaterial.uniforms.liveOperation)
+        layer.accumulatedMaskMaterial.uniforms.liveOperation.value = 0;
+      layer.accumulatedMaskOverlays.forEach((overlay) => {
+        overlay.visible =
+          !(overlay.parent instanceof THREE.Mesh) ||
+          (!layer.directMaskReadyMeshes.has(overlay.parent) && readShouldShowInpaintMask());
       });
-      layer.inpaintSnapshots.push(snapshot);
-      while (layer.inpaintSnapshots.length > MAX_INPAINT_PROJECTION_SNAPSHOTS) {
-        const expired = layer.inpaintSnapshots.shift();
-        expired?.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
-        expired?.texture.dispose();
-        expired?.material.dispose();
-        expired?.depthTarget?.dispose();
-      }
-
       layer.projectionContext.clearRect(
         0,
         0,
@@ -5758,28 +6560,51 @@ function SurfacePaintOverlay() {
         layer.projectionCanvas.height,
       );
       currentProjectionHasContentRef.current = false;
+      layer.overlayMeshes.forEach((mesh) => {
+        if (
+          mesh.userData.liclickInpaintMaskOverlay &&
+          !mesh.userData.liclickAccumulatedInpaintMaskOverlay
+        )
+          mesh.visible = false;
+      });
       scheduleProjectionTextureUpdate(layer.projectionTexture, true);
     },
-    [readShouldShowInpaintMask, scheduleProjectionTextureUpdate],
+    [gl, readShouldShowInpaintMask, scheduleProjectionTextureUpdate],
   );
 
   const syncInpaintMaskProjection = useCallback(
     (model: SurfacePaintTarget) => {
       const layer = getUvPaintLayer(model);
+      if (currentProjectionHasContentRef.current) {
+        archiveCurrentInpaintProjection(
+          layer,
+          model,
+          currentProjectionOperationRef.current,
+        );
+      }
       if (!hasInpaintProjectionCameraChanged(layer, camera)) return layer;
 
-      archiveCurrentInpaintProjection(layer, model);
+      archiveCurrentInpaintProjection(
+        layer,
+        model,
+        currentProjectionOperationRef.current,
+      );
       const rect = gl.domElement.getBoundingClientRect();
       resizeProjectionCanvas(layer, rect.width / Math.max(rect.height, 1), false);
       updateInpaintProjectionCamera(layer, camera, model.group);
-      scheduleInpaintProjectionDepth(layer, model);
       layer.paintPreviewMaterial.uniforms.projectionReady.value = 0;
       layer.paintPreviewOverlays.forEach((overlay) => {
         overlay.visible = false;
       });
       layer.overlayMeshes.forEach((mesh) => {
-        if (mesh.userData.liclickInpaintMaskOverlay)
-          mesh.visible = readShouldShowInpaintMask();
+        if (mesh.userData.liclickInpaintMaskOverlay) {
+          mesh.visible = mesh.userData.liclickAccumulatedInpaintMaskOverlay
+            ? mesh.parent instanceof THREE.Mesh &&
+              !layer.directMaskReadyMeshes.has(mesh.parent) &&
+              readShouldShowInpaintMask() &&
+              (layer.accumulatedMaskReady || currentProjectionHasContentRef.current)
+            : false;
+        }
       });
       return layer;
     },
@@ -5789,9 +6614,56 @@ function SurfacePaintOverlay() {
       getUvPaintLayer,
       gl.domElement,
       readShouldShowInpaintMask,
-      scheduleInpaintProjectionDepth,
     ],
   );
+
+  const cancelIdleInpaintArchive = useCallback(() => {
+    if (inpaintArchiveTimerRef.current !== undefined) {
+      window.clearTimeout(inpaintArchiveTimerRef.current);
+      inpaintArchiveTimerRef.current = undefined;
+    }
+    if (inpaintArchiveIdleRef.current !== undefined) {
+      window.cancelIdleCallback?.(inpaintArchiveIdleRef.current);
+      inpaintArchiveIdleRef.current = undefined;
+    }
+  }, []);
+
+  const scheduleIdleInpaintArchive = useCallback(
+    (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+      cancelIdleInpaintArchive();
+      // Keep the pointer-up boundary free: the finished stroke reaches the
+      // screen first, then the fixed UV buffer is updated only after input has
+      // been quiet for a short period. A new stroke cancels this work.
+      inpaintArchiveTimerRef.current = window.setTimeout(() => {
+        inpaintArchiveTimerRef.current = undefined;
+        const archive = () => {
+          inpaintArchiveIdleRef.current = undefined;
+          if (
+            isPaintingRef.current ||
+            layerRef.current !== layer ||
+            !currentProjectionHasContentRef.current
+          )
+            return;
+          archiveCurrentInpaintProjection(
+            layer,
+            model,
+            currentProjectionOperationRef.current,
+          );
+          invalidate();
+        };
+        if (window.requestIdleCallback) {
+          inpaintArchiveIdleRef.current = window.requestIdleCallback(archive, {
+            timeout: 600,
+          });
+        } else {
+          inpaintArchiveIdleRef.current = window.setTimeout(archive, 0);
+        }
+      }, 450);
+    },
+    [archiveCurrentInpaintProjection, cancelIdleInpaintArchive, invalidate],
+  );
+
+  useEffect(() => cancelIdleInpaintArchive, [cancelIdleInpaintArchive]);
 
   useEffect(() => {
     if (!canUseSurfacePaint || paintTool !== 'none' || !shouldShowColorPaintOverlays)
@@ -5837,7 +6709,7 @@ function SurfacePaintOverlay() {
       try {
         gl.initTexture(layer.projectionTexture);
         layer.overlayMeshes.forEach((mesh) => {
-          if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = true;
+          if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = false;
         });
         await gl.compileAsync(scene, camera);
         // Compile the front-most-depth pass before the selection tool becomes
@@ -5904,27 +6776,40 @@ function SurfacePaintOverlay() {
     const model = getTargetModel();
     const layer = layerRef.current;
     if (model && layer?.objectId === model.objectId) {
-      if (layer.maskProjectionReady) {
-        updateInpaintMaterialForObject(
-          layer.maskMaterial,
-          layer.maskProjectorMatrix,
-          layer.maskProjectorObjectMatrix,
-          layer.maskProjectorPositionLocal,
-          model.group,
-        );
+      // Imported/projected materials may be swapped asynchronously after the
+      // local-repaint tool opens. Detect that one-time ownership change and
+      // rebind the direct mask path; the fallback overlay stays visible until
+      // the replacement program has compiled, so the mask never flashes out.
+      if (
+        isInpaintMode &&
+        layer.inpaintMaterialBindings.some(
+          (binding) => binding.mesh.material !== binding.patched,
+        )
+      ) {
+        ensureInpaintMaskOverlaysForModel(layer, model);
       }
-      layer.inpaintSnapshots.forEach((snapshot) => {
-        updateInpaintMaterialForObject(
-          snapshot.material,
-          snapshot.projectorMatrix,
-          snapshot.projectorObjectMatrix,
-          snapshot.projectorPositionLocal,
-          model.group,
-        );
-      });
+      // Projector uniforms are model-local and change only when a projection is
+      // created. Rewriting and matrix-comparing them on every orbit frame adds
+      // CPU work without changing a pixel.
+      const previous = inpaintLastCameraRef.current;
+      const cameraChanged =
+        previous.position.distanceToSquared(camera.position) > 1e-10 ||
+        previous.quaternion.angleTo(camera.quaternion) > 1e-6 ||
+        Math.abs(previous.zoom - camera.zoom) > 1e-6;
+      if (cameraChanged) {
+        previous.position.copy(camera.position);
+        previous.quaternion.copy(camera.quaternion);
+        previous.zoom = camera.zoom;
+        // Camera navigation is a presentation-only path. Do not arm an idle
+        // archive from wheel/orbit frames: under sustained wheel input the old
+        // 450ms timer repeatedly crossed its deadline and submitted a full UV
+        // accumulation pass in the middle of navigation. The frozen live
+        // projector remains correct in model space and is handed off exactly
+        // once at the next paint/capture boundary.
+      }
     }
-    if (!isInpaintMode || isPaintingRef.current || !model) return;
-    syncInpaintMaskProjection(model);
+    // Orbit/zoom must never archive, copy canvases or rebuild projectors. The
+    // current projector remains attached to model space until the next stroke.
   });
 
   const capturePaintMask = useCallback(async () => {
@@ -5938,13 +6823,29 @@ function SurfacePaintOverlay() {
     )
       return undefined;
 
-    const sources = [
+    const sources: Array<{
+      texture: THREE.Texture;
+      usesUv: boolean;
+      projectorMatrix?: THREE.Matrix4;
+      projectorObjectMatrix?: THREE.Matrix4;
+      projectorPositionLocal?: THREE.Vector3;
+      depthTarget?: THREE.WebGLRenderTarget;
+    }> = [
+      ...(layer.accumulatedMaskReady
+        ? [
+            {
+              texture: layer.accumulatedMaskTarget.texture,
+              usesUv: true,
+            },
+          ]
+        : []),
       ...layer.inpaintSnapshots.map((snapshot) => ({
         texture: snapshot.texture,
         projectorMatrix: snapshot.projectorMatrix,
         projectorObjectMatrix: snapshot.projectorObjectMatrix,
         projectorPositionLocal: snapshot.projectorPositionLocal,
         depthTarget: snapshot.depthTarget,
+        usesUv: false,
       })),
       ...(currentProjectionHasContentRef.current
         ? [
@@ -5954,6 +6855,7 @@ function SurfacePaintOverlay() {
               projectorObjectMatrix: layer.maskProjectorObjectMatrix,
               projectorPositionLocal: layer.maskProjectorPositionLocal,
               depthTarget: layer.maskDepthReady ? layer.maskDepthTarget : undefined,
+              usesUv: false,
             },
           ]
         : []),
@@ -5970,12 +6872,17 @@ function SurfacePaintOverlay() {
       aspect >= 1
         ? Math.max(1, Math.round(PROJECTION_PAINT_MAX_SIZE / aspect))
         : PROJECTION_PAINT_MAX_SIZE;
-    const materials = sources.map((source) => {
-      const material = createInpaintMaskCaptureMaterial(source.texture, source.depthTarget);
+      const materials = sources.map((source) => {
+      const material = createInpaintMaskCaptureMaterial(
+        source.texture,
+        source.depthTarget,
+        source.usesUv,
+      );
       // Each white coverage pass is composited over the previous one. The
       // render helper clears depth (not colour) between projector cameras.
       material.depthWrite = true;
       material.transparent = true;
+      material.uniforms.maskInverted.value = layer.maskInverted ? 1 : 0;
       return material;
     });
     const startedAt = performance.now();
@@ -5994,13 +6901,15 @@ function SurfacePaintOverlay() {
         sources.map((source, index) => ({
           prepare: () => {
             const material = materials[index];
-            updateInpaintMaterialForObject(
-              material,
-              source.projectorMatrix,
-              source.projectorObjectMatrix,
-              source.projectorPositionLocal,
-              model.group,
-            );
+            if (!source.usesUv) {
+              updateInpaintMaterialForObject(
+                material,
+                source.projectorMatrix!,
+                source.projectorObjectMatrix!,
+                source.projectorPositionLocal!,
+                model.group,
+              );
+            }
             return applyTargetOnlyMaterial(scene, model.objectId, () => material);
           },
         })),
@@ -6014,7 +6923,7 @@ function SurfacePaintOverlay() {
     } finally {
       materials.forEach((material) => material.dispose());
     }
-  }, [camera, getTargetModel, gl, scene]);
+  }, [archiveCurrentInpaintProjection, camera, getTargetModel, gl, scene]);
 
   useEffect(() => {
     setPaintMaskCapture(capturePaintMask);
@@ -6032,96 +6941,23 @@ function SurfacePaintOverlay() {
     )
       return;
     handledPaintMaskInvertRevisionRef.current = paintMaskInvertRevision;
-    let cancelled = false;
-
-    void (async () => {
-      const model = getTargetModel();
-      if (!model) return;
-      const hadMaskContent = maskHasContentRef.current;
-      const combinedMaskUrl = hadMaskContent ? await capturePaintMask() : undefined;
-      if (cancelled || handledPaintMaskInvertRevisionRef.current !== paintMaskInvertRevision) return;
-
-      const layer = getUvPaintLayer(model);
-      layer.inpaintSnapshots.forEach((snapshot) => {
-        snapshot.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
-        snapshot.texture.dispose();
-        snapshot.material.dispose();
-        snapshot.depthTarget?.dispose();
-      });
-      layer.inpaintSnapshots = [];
-
-      const viewportRect = gl.domElement.getBoundingClientRect();
-      resizeProjectionCanvas(layer, viewportRect.width / Math.max(viewportRect.height, 1), true);
-      updateInpaintProjectionCamera(layer, camera, model.group);
-      scheduleInpaintProjectionDepth(layer, model);
-      ensureInpaintMaskOverlaysForModel(layer, model);
-
-      if (combinedMaskUrl) {
-        const combinedMaskImage = await loadImageElement(combinedMaskUrl);
-        if (cancelled || handledPaintMaskInvertRevisionRef.current !== paintMaskInvertRevision)
-          return;
-        const scratch = document.createElement('canvas');
-        scratch.width = layer.projectionCanvas.width;
-        scratch.height = layer.projectionCanvas.height;
-        const scratchContext = scratch.getContext('2d', { willReadFrequently: true });
-        if (!scratchContext) throw new Error('Could not invert the local repaint mask.');
-        scratchContext.drawImage(combinedMaskImage, 0, 0, scratch.width, scratch.height);
-        const source = scratchContext.getImageData(0, 0, scratch.width, scratch.height);
-        const inverted = layer.projectionContext.createImageData(scratch.width, scratch.height);
-        for (let index = 0; index < source.data.length; index += 4) {
-          const sourceValue = Math.max(
-            source.data[index],
-            source.data[index + 1],
-            source.data[index + 2],
-          );
-          const invertedValue = 255 - sourceValue;
-          inverted.data[index] = 255;
-          inverted.data[index + 1] = 255;
-          inverted.data[index + 2] = 255;
-          inverted.data[index + 3] = invertedValue;
-        }
-        layer.projectionContext.putImageData(inverted, 0, 0);
-      } else {
-        layer.projectionContext.fillStyle = '#ffffff';
-        layer.projectionContext.fillRect(
-          0,
-          0,
-          layer.projectionCanvas.width,
-          layer.projectionCanvas.height,
-        );
-      }
-
-      currentProjectionHasContentRef.current = true;
-      maskHasContentRef.current = true;
-      maskDirtyRef.current = false;
-      paintMaskCommitRevisionRef.current += 1;
-      layer.projectionTexture.needsUpdate = true;
-      const invertedMaskUrl = await projectionMaskToDataUrl(layer.projectionCanvas);
-      if (cancelled || handledPaintMaskInvertRevisionRef.current !== paintMaskInvertRevision) return;
-      setPaintMaskDataUrl(invertedMaskUrl, true);
-    })().catch((error) => {
-      console.warn('[Liclick 3D Texture] Could not invert the painted mask.', error);
-      pushToast({
-        tone: 'error',
-        title: '反选局部重绘区域失败',
-        description: error instanceof Error ? error.message : '请重试。',
-        dedupeKey: 'invert-local-repaint-mask-failed',
-      });
-    });
-
-    return () => {
-      cancelled = true;
-    };
+    const model = getTargetModel();
+    if (!model) return;
+    const layer = getUvPaintLayer(model);
+    layer.maskInverted = !layer.maskInverted;
+    layer.accumulatedMaskMaterial.uniforms.maskInverted ??= { value: 0 };
+    layer.accumulatedMaskMaterial.uniforms.maskInverted.value = layer.maskInverted ? 1 : 0;
+    maskHasContentRef.current = true;
+    maskDirtyRef.current = false;
+    paintMaskCommitRevisionRef.current += 1;
+    setPaintMaskDataUrl(undefined, true);
+    document.body.dataset.localRepaintInvertBackend = 'gpu-uniform';
+    invalidate();
   }, [
-    camera,
-    capturePaintMask,
-    ensureInpaintMaskOverlaysForModel,
     getTargetModel,
     getUvPaintLayer,
-    gl.domElement,
+    invalidate,
     paintMaskInvertRevision,
-    pushToast,
-    scheduleInpaintProjectionDepth,
     setPaintMaskDataUrl,
   ]);
 
@@ -6419,18 +7255,36 @@ function SurfacePaintOverlay() {
       snapshot.depthTarget?.dispose();
     });
     layer.inpaintSnapshots = [];
+    layer.accumulatedMaskReady = false;
+    layer.accumulatedMaskMaterial.uniforms.projectionReady.value = 0;
+    if (layer.accumulatedMaskMaterial.uniforms.baseReady)
+      layer.accumulatedMaskMaterial.uniforms.baseReady.value = 0;
+    if (layer.accumulatedMaskMaterial.uniforms.liveOperation)
+      layer.accumulatedMaskMaterial.uniforms.liveOperation.value = 0;
+    clearInpaintAccumulationTarget(gl, layer.accumulatedMaskTarget);
+    layer.accumulatedMaskOverlays.forEach((overlay) => {
+      overlay.visible = false;
+    });
     scheduleTextureUpdate(layer.maskTexture);
     scheduleTextureUpdate(layer.projectionTexture);
     maskDirtyRef.current = false;
     maskHasContentRef.current = false;
     currentProjectionHasContentRef.current = false;
-  }, [paintMaskResetRevision, scheduleTextureUpdate]);
+    currentProjectionOperationRef.current = 'add';
+  }, [gl, paintMaskResetRevision, scheduleTextureUpdate]);
 
   useEffect(() => {
     const layer = layerRef.current;
     if (!layer) return;
     layer.overlayMeshes.forEach((mesh) => {
-      if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = shouldShowInpaintMask;
+      if (mesh.userData.liclickInpaintMaskOverlay) {
+        mesh.visible = mesh.userData.liclickAccumulatedInpaintMaskOverlay
+          ? mesh.parent instanceof THREE.Mesh &&
+            !layer.directMaskReadyMeshes.has(mesh.parent) &&
+            shouldShowInpaintMask &&
+            (layer.accumulatedMaskReady || currentProjectionHasContentRef.current)
+          : false;
+      }
       if (mesh.userData.liclickPaintStrokePreview) {
         mesh.visible =
           shouldShowColorPaintOverlays &&
@@ -6439,7 +7293,7 @@ function SurfacePaintOverlay() {
     });
     layer.inpaintSnapshots.forEach((snapshot) => {
       snapshot.overlayMeshes.forEach((mesh) => {
-        mesh.visible = shouldShowInpaintMask;
+        mesh.visible = false;
       });
     });
   }, [paintTool, shouldShowColorPaintOverlays, shouldShowInpaintMask]);
@@ -6450,6 +7304,7 @@ function SurfacePaintOverlay() {
     if (!model) return;
     const layer = syncInpaintMaskProjection(model);
     ensureInpaintMaskOverlaysForModel(layer, model);
+    scheduleInpaintProjectionDepth(layer, model);
 
     // Local repaint uses a dedicated projected preview. Hide that transient
     // material when the user returns to the persistent selection projector.
@@ -6458,15 +7313,41 @@ function SurfacePaintOverlay() {
       overlay.visible = false;
     });
     layer.overlayMeshes.forEach((mesh) => {
-      if (mesh.userData.liclickInpaintMaskOverlay) mesh.visible = shouldShowInpaintMask;
+      if (mesh.userData.liclickInpaintMaskOverlay) {
+        mesh.visible = mesh.userData.liclickAccumulatedInpaintMaskOverlay
+          ? mesh.parent instanceof THREE.Mesh &&
+            !layer.directMaskReadyMeshes.has(mesh.parent) &&
+            shouldShowInpaintMask &&
+            (layer.accumulatedMaskReady || currentProjectionHasContentRef.current)
+          : false;
+      }
     });
   }, [
     ensureInpaintMaskOverlaysForModel,
     getTargetModel,
     isInpaintMode,
     shouldShowInpaintMask,
+    scheduleInpaintProjectionDepth,
     syncInpaintMaskProjection,
   ]);
+
+  useEffect(() => {
+    // Keep the compiled mask blend resident while a selection exists. Toggling
+    // the brush then changes input ownership only; it must not briefly restore
+    // and recompile the base material, which made the mask disappear.
+    if (isInpaintMode || paintMaskHasContent) return;
+    const layer = layerRef.current;
+    if (!layer || !layer.inpaintMaterialBindings?.length) return;
+    layer.inpaintMaterialBindings.forEach(({ mesh, original, patched }) => {
+      if (mesh.material === patched) mesh.material = original;
+      (Array.isArray(patched) ? patched : [patched]).forEach(restoreInpaintPatchedMaterial);
+    });
+    layer.inpaintMaterialBindings = [];
+    layer.overlayMeshes.forEach((overlay) => {
+      if (overlay.userData.liclickInpaintMaskOverlay) overlay.visible = false;
+    });
+    invalidate();
+  }, [invalidate, isInpaintMode, paintMaskHasContent]);
 
   const getBrushWorldRadius = useCallback(
     (
@@ -7614,6 +8495,21 @@ function SurfacePaintOverlay() {
         maskDirtyRef.current = true;
         maskHasContentRef.current = true;
         currentProjectionHasContentRef.current = true;
+        layer.accumulatedMaskMaterial.uniforms.projectionReady.value = 1;
+        (layer.accumulatedMaskMaterial.uniforms.liveProjectorMatrix.value as THREE.Matrix4)
+          .copy(layer.maskProjectorMatrix);
+        (layer.accumulatedMaskMaterial.uniforms.liveProjectorPosition.value as THREE.Vector3)
+          .setFromMatrixPosition(camera.matrixWorld);
+        layer.accumulatedMaskMaterial.uniforms.liveOperation.value = layer.maskInverted ? -1 : 1;
+        layer.accumulatedMaskOverlays.forEach((overlay) => {
+          overlay.visible =
+            !(overlay.parent instanceof THREE.Mesh) ||
+            (!layer.directMaskReadyMeshes.has(overlay.parent) && readShouldShowInpaintMask());
+        });
+        layer.overlayMeshes.forEach((mesh) => {
+          if (mesh.userData.liclickInpaintMaskOverlay && !mesh.userData.liclickAccumulatedInpaintMaskOverlay)
+            mesh.visible = false;
+        });
         if (document.body.dataset.perfLocalRepaintMeasuring === '1') {
           document.body.dataset.inpaintMaskLiveState = JSON.stringify({
             tool: strokePaintTool,
@@ -7636,7 +8532,7 @@ function SurfacePaintOverlay() {
           result.screenUv,
           screenBrush,
           '#ffffff',
-          'destination-out',
+          'source-over',
           'screen',
           255,
         );
@@ -7648,6 +8544,25 @@ function SurfacePaintOverlay() {
           );
         }
         maskDirtyRef.current = true;
+        currentProjectionHasContentRef.current = true;
+        layer.accumulatedMaskMaterial.uniforms.projectionReady.value = 1;
+        (layer.accumulatedMaskMaterial.uniforms.liveProjectorMatrix.value as THREE.Matrix4)
+          .copy(layer.maskProjectorMatrix);
+        (layer.accumulatedMaskMaterial.uniforms.liveProjectorPosition.value as THREE.Vector3)
+          .setFromMatrixPosition(camera.matrixWorld);
+        layer.accumulatedMaskMaterial.uniforms.liveOperation.value = layer.maskInverted ? 1 : -1;
+        layer.accumulatedMaskOverlays.forEach((overlay) => {
+          overlay.visible =
+            !(overlay.parent instanceof THREE.Mesh) ||
+            (!layer.directMaskReadyMeshes.has(overlay.parent) && readShouldShowInpaintMask());
+        });
+        layer.overlayMeshes.forEach((mesh) => {
+          if (
+            mesh.userData.liclickInpaintMaskOverlay &&
+            !mesh.userData.liclickAccumulatedInpaintMaskOverlay
+          )
+            mesh.visible = false;
+        });
         if (document.body.dataset.perfLocalRepaintMeasuring === '1') {
           document.body.dataset.inpaintMaskLiveState = JSON.stringify({
             tool: strokePaintTool,
@@ -7871,10 +8786,35 @@ function SurfacePaintOverlay() {
           : undefined;
       if (target === 'mask') {
         if (!layer) return;
+        cancelIdleInpaintArchive();
+        const requestedOperation =
+          strokePaintTool === 'inpaint-subtract' ? 'subtract' : 'add';
+        const nextOperation = layer.maskInverted
+          ? requestedOperation === 'add'
+            ? 'subtract'
+            : 'add'
+          : requestedOperation;
+        if (
+          currentProjectionHasContentRef.current &&
+          currentProjectionOperationRef.current !== nextOperation
+        ) {
+          archiveCurrentInpaintProjection(
+            layer,
+            result.model,
+            currentProjectionOperationRef.current,
+          );
+        }
+        currentProjectionOperationRef.current = nextOperation;
         ensureInpaintMaskOverlaysForModel(layer, result.model);
         layer.overlayMeshes.forEach((mesh) => {
-          if (mesh.userData.liclickInpaintMaskOverlay)
-            mesh.visible = readShouldShowInpaintMask();
+          if (mesh.userData.liclickInpaintMaskOverlay) {
+            mesh.visible =
+              Boolean(mesh.userData.liclickAccumulatedInpaintMaskOverlay) &&
+              mesh.parent instanceof THREE.Mesh &&
+              !layer.directMaskReadyMeshes.has(mesh.parent) &&
+              readShouldShowInpaintMask() &&
+              (layer.accumulatedMaskReady || currentProjectionHasContentRef.current);
+          }
         });
       }
       if (target === 'paint') {
@@ -7921,6 +8861,8 @@ function SurfacePaintOverlay() {
     },
     [
       getUvPaintLayer,
+      archiveCurrentInpaintProjection,
+      cancelIdleInpaintArchive,
       camera,
       gl.domElement,
       ensureInpaintMaskOverlaysForModel,
@@ -8908,19 +9850,11 @@ function SurfacePaintOverlay() {
     if (draft.target === 'apply-local-repaint') return;
     if (!draft.layer) return;
 
-    const currentProjectionHasContent = hasCanvasAlpha(
-      draft.layer.projectionCanvas,
-      draft.layer.projectionContext,
-    );
-    const afterMaskHasContent =
-      draft.target === 'mask'
-        ? draft.layer.inpaintSnapshots.length > 0 || currentProjectionHasContent
-        : maskHasContentRef.current;
-
-    if (draft.target === 'mask') {
-      currentProjectionHasContentRef.current = currentProjectionHasContent;
-      maskHasContentRef.current = afterMaskHasContent;
-    }
+    // The live stroke path already updates these flags. Scanning every pixel in
+    // the projection canvas here was a synchronous full-resolution readback on
+    // every pointer-up and caused the characteristic "画一下顿一下" pause.
+    currentProjectionHasContentRef.current = true;
+    maskHasContentRef.current = true;
   }, []);
 
   const probeLocalRepaintGpuOutput = useCallback(() => {
@@ -9765,15 +10699,16 @@ function SurfacePaintOverlay() {
           event.clientX <= canvasRect.right &&
           event.clientY >= canvasRect.top &&
           event.clientY <= canvasRect.bottom;
+        const queuedTarget = pendingPaintTargetsRef.current.at(-1);
+        const finalReference = queuedTarget ?? previousClient;
         const pointerUpDistance = Math.hypot(
-          event.clientX - previousClient.x,
-          event.clientY - previousClient.y,
+          event.clientX - finalReference.x,
+          event.clientY - finalReference.y,
         );
         const maximumPointerUpDistance = Math.max(
           8,
           (lastSampleRef.current?.screenBrushRadiusPx ?? 8) * 1.5,
         );
-        const queuedTarget = pendingPaintTargetsRef.current.at(-1);
         const finalPressure = queuedTarget?.pressure ?? previousClient.pressure;
         const telemetry = strokeTelemetryRef.current;
         if (telemetry) {
@@ -9783,7 +10718,9 @@ function SurfacePaintOverlay() {
           telemetry.maxPressure = Math.max(telemetry.maxPressure, finalPressure);
         }
         flushPendingPaintTargets(
-          pointerUpInsideCanvas && pointerUpDistance <= maximumPointerUpDistance
+          pointerUpInsideCanvas &&
+            pointerUpDistance >= 0.75 &&
+            pointerUpDistance <= maximumPointerUpDistance
             ? [{ x: event.clientX, y: event.clientY, pressure: finalPressure }]
             : [],
         );
@@ -9922,10 +10859,8 @@ function SurfacePaintOverlay() {
       // systems have native listeners on this same canvas element.
       if (!result) return;
       if (isInpaintMode) {
-        const maskLayer = syncInpaintMaskProjection(result.model);
-        if (!maskLayer.maskDepthReady) {
-          scheduleInpaintProjectionDepth(maskLayer, result.model, true);
-        }
+        cancelIdleInpaintArchive();
+        syncInpaintMaskProjection(result.model);
       }
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -10101,6 +11036,7 @@ function SurfacePaintOverlay() {
     };
   }, [
     commitMaskIfDirty,
+    cancelIdleInpaintArchive,
     beginStrokeHistory,
     commitPaintStroke,
     commitStrokeHistory,
@@ -10113,6 +11049,7 @@ function SurfacePaintOverlay() {
     isLocalRepaintApplyMode,
     paintAt,
     scheduleProjectionTextureUpdate,
+    scheduleIdleInpaintArchive,
     scheduleTextureUpdate,
     paintTool,
     raycastModel,
@@ -10273,14 +11210,14 @@ export function ViewportCanvas({
           <RendererSettings />
           <ViewportPerformanceProbe enabled={performanceTestModeEnabled} />
           <PerformanceAutoOrbit
-            enabled={performanceAutoOrbitEnabled || performanceTestModeEnabled}
+            enabled={performanceAutoOrbitEnabled}
           />
           <AcceleratedSceneRoot sceneOverlay={sceneOverlay} />
           <SurfacePaintOverlay />
         </Suspense>
         <CameraController />
       </Canvas>
-      {performanceTestModeEnabled && <PerformanceTestHud />}
+      {performanceTestModeEnabled ? <PerformanceTestHud /> : <LightweightPerformanceHud />}
       {showCaptureFrame && (
         <div
           className={`pointer-events-none absolute left-1/2 top-1/2 z-20 h-[82%] w-[72%] max-w-[1280px] -translate-x-1/2 -translate-y-1/2 rounded-[18px] border-[3px] border-dashed border-[#d9795c]/75 shadow-[0_0_0_1px_rgba(217,121,92,0.12)] transition-opacity duration-300 ${
