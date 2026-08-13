@@ -1,7 +1,16 @@
 import { GLTFLoader } from 'three-stdlib';
-import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } from './modelImportTypes';
+import {
+  materialSlotsToSceneSlots,
+  type LoadedModel,
+  type ModelImportOptions,
+} from './modelImportTypes';
 import { yieldForModelImportProgressPaint } from './modelImportProgress';
 import { summarizeLoadedGroup } from './modelLoadUtils';
+
+// glTF 2.0 defines all linear distances in meters. Li3D's bake alignment
+// space uses centimeters so it can be compared directly with FBX
+// UnitScaleFactor values (which are centimeters per source unit).
+const GLTF_CENTIMETERS_PER_UNIT = 100;
 
 export async function loadGltfModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new GLTFLoader();
@@ -18,9 +27,7 @@ export async function loadGltfModel(options: ModelImportOptions): Promise<Loaded
         phase: 'reading',
         loadedBytes: event.loaded,
         totalBytes:
-          event.lengthComputable && event.total > 0
-            ? event.total
-            : options.sourceByteLength,
+          event.lengthComputable && event.total > 0 ? event.total : options.sourceByteLength,
       });
     });
   }
@@ -34,6 +41,7 @@ export async function loadGltfModel(options: ModelImportOptions): Promise<Loaded
     objectUrl: options.sourceUrl,
     normalizeOptions: options.normalizeOptions,
   });
+  result.sourceUnitScaleFactor = GLTF_CENTIMETERS_PER_UNIT;
   options.onProgress?.({ phase: 'materials', phaseProgress: 1 });
 
   return {
@@ -51,6 +59,7 @@ export async function loadGltfModel(options: ModelImportOptions): Promise<Loaded
       boundingBox: result.boundingBox,
       originalBoundingBox: result.originalBoundingBox,
       importNormalizationTransform: result.importNormalizationTransform,
+      sourceUnitScaleFactor: GLTF_CENTIMETERS_PER_UNIT,
       userTransform: {
         position: result.importNormalizationTransform.position,
         rotation: [0, 0, 0],

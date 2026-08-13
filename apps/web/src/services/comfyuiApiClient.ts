@@ -21,6 +21,17 @@ export type ComfyTextureMapInput = {
   seed?: number;
 };
 
+export type ComfyMaterialRepaintInput = {
+  clientGenerationId: string;
+  projectId?: string;
+  captureId?: string;
+  objectId?: string;
+  materialReferenceId?: string;
+  whiteModel: ComfyControlFile;
+  materialReference: ComfyControlFile;
+  seed?: number;
+};
+
 export type ComfyStatus = {
   ok: boolean;
   baseUrl?: string;
@@ -106,6 +117,48 @@ export function createComfyuiApiClient() {
           objectId: input.objectId,
           materialReferenceId: input.materialReferenceId,
           resolution: input.resolution,
+          serverSubmitted: true,
+        },
+      };
+    },
+    async generateMaterialRepaint(
+      input: ComfyMaterialRepaintInput,
+      options?: { signal?: AbortSignal },
+    ): Promise<Generation> {
+      const result = await requestJson<{
+        id: string;
+        resultUrl?: string;
+        resultUrls?: string[];
+        promptId?: string;
+        output?: unknown;
+      }>('/api/comfyui/generate-material-repaint', {
+        method: 'POST',
+        timeoutMs: 30 * 60 * 1000,
+        signal: options?.signal,
+        body: JSON.stringify(input),
+      });
+      return {
+        id: input.clientGenerationId,
+        mode: 'inpaint',
+        prompt: '',
+        referenceIds: [input.materialReferenceId].filter((referenceId): referenceId is string =>
+          Boolean(referenceId),
+        ),
+        captureId: input.captureId,
+        resultUrl: result.resultUrl,
+        status: result.resultUrl ? 'succeeded' : 'failed',
+        metadata: {
+          provider: 'comfyui-local',
+          workflow: 'local-repaint',
+          comfyWorkflow: 'Flux2 Klein TrueV3-双图材质编辑-精简测试',
+          clientGenerationId: input.clientGenerationId,
+          serverJobId: result.id,
+          projectId: input.projectId,
+          promptId: result.promptId,
+          resultUrls: result.resultUrls,
+          output: result.output,
+          objectId: input.objectId,
+          materialReferenceId: input.materialReferenceId,
           serverSubmitted: true,
         },
       };

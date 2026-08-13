@@ -931,7 +931,8 @@ export function EditorPage({
         generation.status === 'succeeded' &&
         Boolean(generation.resultUrl) &&
         isLocalRepaintGeneration(generation) &&
-        generation.metadata.paintMaskRevision === paintMaskRevision &&
+        (generation.metadata.paintMaskRevision === paintMaskRevision ||
+          (paintMaskRevision === 0 && typeof generation.metadata.maskUrl === 'string')) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
         (!preferredObjectId ||
           !generation.metadata.objectId ||
@@ -5108,11 +5109,16 @@ export function EditorPage({
         return;
       }
       const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
+      const preparedSourceHasGpuError =
+        document.body.dataset.localRepaintGpuErrorGeneration ===
+          latestLocalRepaintGeneration.id &&
+        document.body.dataset.localRepaintGpuErrorTarget === targetLayer.id;
       if (
         preparedSource?.generationId === latestLocalRepaintGeneration.id &&
         preparedSource.allowedMaskUrl === generationMaskUrl &&
         preparedSource.objectId === objectId &&
-        preparedSource.targetLayerId === targetLayer.id
+        preparedSource.targetLayerId === targetLayer.id &&
+        !preparedSourceHasGpuError
       ) {
         const isGpuReady = () =>
           document.body.dataset.localRepaintGpuReadyGeneration ===

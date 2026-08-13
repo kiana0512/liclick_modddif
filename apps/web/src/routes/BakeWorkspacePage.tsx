@@ -48,7 +48,10 @@ import {
   type BakeModelFileInput,
 } from '@/features/bake/useBakeModelAnalysis';
 import { BakeSceneOverlay, type BakeViewportMode } from '@/features/bake/BakeSceneOverlay';
-import { canonicalizeFbxBoundingBox } from '@/features/bake/bakeModelAlignment';
+import {
+  bakeHighDisplayScale,
+  canonicalizeBakeBoundingBox,
+} from '@/features/bake/bakeModelAlignment';
 import { WorkflowShell } from '@/features/workflow/WorkflowShell';
 import { ModuleOneReadonlyViewport } from '@/features/workflow/ModuleOneReadonlyViewport';
 import {
@@ -313,7 +316,24 @@ export function BakeWorkspacePage({
     return handedOffObject ? [handedOffObject] : [];
   }, [handoff?.objectId, highObjectOverrides, persistedHighObjects]);
   const viewportProject = useMemo(
-    () => (project ? { ...project, objects: highObjects } : undefined),
+    () =>
+      project
+        ? {
+            ...project,
+            objects: highObjects.map((object) => ({
+              ...object,
+              transform: {
+                ...object.transform,
+                scale: bakeHighDisplayScale(
+                  object.transform.scale,
+                  object.format,
+                  object.sourceUnitScaleFactor,
+                  object.importNormalizationTransform?.normalized ?? true,
+                ),
+              },
+            })),
+          }
+        : undefined,
     [highObjects, project],
   );
   const [selectedObjectId, setSelectedObjectId] = useState(handoff?.objectId ?? '');
@@ -588,8 +608,7 @@ export function BakeWorkspacePage({
         setColorFiles(
           Object.fromEntries(
             Object.entries(color).filter(
-              ([objectId]) =>
-                !hasWorkflowBakeBaseColor(project.layers, objectId, handoff),
+              ([objectId]) => !hasWorkflowBakeBaseColor(project.layers, objectId, handoff),
             ),
           ),
         );
@@ -666,6 +685,9 @@ export function BakeWorkspacePage({
 
   const selectedHigh =
     highObjects.find((object) => object.id === selectedObjectId) ?? highObjects[0];
+  const viewportHighObject = viewportProject?.objects.find(
+    (object) => object.id === selectedHigh?.id,
+  );
   const projectColorForObject = useCallback(
     (objectId: string) => selectBakeBaseColor(project, objectId, handoff),
     [handoff, project?.bakedTextures, project?.layers],
@@ -934,7 +956,11 @@ export function BakeWorkspacePage({
   }, [activeStage, bakeJob?.id, currentDraftSettings, persistProjectUpdate, selectedHigh]);
   const highSourceBox = selectedHigh?.originalBoundingBox ?? selectedHigh?.boundingBox;
   const highBox = highSourceBox
-    ? canonicalizeFbxBoundingBox(highSourceBox, selectedHigh?.sourceUnitScaleFactor)
+    ? canonicalizeBakeBoundingBox(
+        highSourceBox,
+        selectedHigh?.format,
+        selectedHigh?.sourceUnitScaleFactor,
+      )
     : undefined;
   const lowBox = selectedLowInfo?.boundingBox;
   const highSize = maxDimension(highBox);
@@ -2725,11 +2751,11 @@ export function BakeWorkspacePage({
               </button>
             </div>
 
-            {viewportProject && selectedHigh ? (
+            {viewportProject && selectedHigh && viewportHighObject ? (
               <ModuleOneReadonlyViewport
                 key={`${selectedHigh.id}:${selectedHigh.sourcePath ?? ''}:${viewportResetKey}`}
                 project={viewportProject}
-                object={selectedHigh}
+                object={viewportHighObject}
                 sceneOverlay={
                   <BakeSceneOverlay
                     highObject={selectedHigh}

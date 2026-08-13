@@ -376,7 +376,9 @@ function RetopologyHistoryGrid({
                     <RetopologyOutputThumbnail output={output} />
                     <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent px-2 pb-2 pt-7">
                       <span className="block truncate text-[10px] font-medium text-white/78" title={output.filename}>
-                        {outputs.length > 1 ? `模型 ${index + 1}` : '拓扑结果'}
+                        {outputs.length === 2
+                          ? index === 0 ? '低模' : '高模'
+                          : outputs.length > 1 ? `模型 ${index + 1}` : '拓扑结果'}
                       </span>
                     </span>
                   </button>

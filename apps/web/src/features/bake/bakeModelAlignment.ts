@@ -1,12 +1,26 @@
-import type { ModelBoundingBox, Transform } from '@/types/model';
+import type { ModelBoundingBox, ModelFormat, Transform } from '@/types/model';
 
-function validUnitScaleFactor(value?: number) {
-  return value !== undefined && Number.isFinite(value) && value > 0 ? value : 1;
+/**
+ * Returns physical centimeters represented by one source-space unit.
+ *
+ * Older projects do not persist this field for GLB/GLTF, so format is kept as
+ * a deterministic fallback. OBJ is intentionally left at 1 because the format
+ * does not define a physical unit.
+ */
+export function bakeSourceUnitScaleFactor(format?: ModelFormat, unitScaleFactor?: number) {
+  if (unitScaleFactor !== undefined && Number.isFinite(unitScaleFactor) && unitScaleFactor > 0) {
+    return unitScaleFactor;
+  }
+  return format === 'glb' || format === 'gltf' ? 100 : 1;
 }
 
-/** Converts an FBX source-space box to a shared centimeter coordinate system. */
-export function canonicalizeFbxBoundingBox(box: ModelBoundingBox, unitScaleFactor?: number) {
-  const scale = validUnitScaleFactor(unitScaleFactor);
+/** Converts source-space bounds to Li3D's shared centimeter bake space. */
+export function canonicalizeBakeBoundingBox(
+  box: ModelBoundingBox,
+  format?: ModelFormat,
+  unitScaleFactor?: number,
+) {
+  const scale = bakeSourceUnitScaleFactor(format, unitScaleFactor);
   if (scale === 1) return box;
   return {
     min: box.min.map((value) => value * scale) as ModelBoundingBox['min'],
@@ -16,13 +30,38 @@ export function canonicalizeFbxBoundingBox(box: ModelBoundingBox, unitScaleFacto
   };
 }
 
-/** Maps a low/cage FBX source unit into the high-poly object's source coordinate system. */
+/**
+ * Applies physical units only when the high mesh has not already been import-
+ * normalized. Normalized models are already fitted to their target size.
+ */
+export function bakeHighDisplayScale(
+  highScale: Transform['scale'],
+  highFormat?: ModelFormat,
+  highUnitScaleFactor?: number,
+  highWasNormalized = true,
+): Transform['scale'] {
+  if (highWasNormalized) return highScale;
+  const scale = bakeSourceUnitScaleFactor(highFormat, highUnitScaleFactor);
+  return highScale.map((value) => value * scale) as Transform['scale'];
+}
+
+/** Maps a low/cage source unit into the displayed high-poly coordinate system. */
 export function bakeOverlayScale(
   highScale: Transform['scale'],
+  highFormat?: ModelFormat,
   highUnitScaleFactor?: number,
+  highWasNormalized = true,
+  overlayFormat?: ModelFormat,
   overlayUnitScaleFactor?: number,
 ): Transform['scale'] {
+  const displayedHighScale = bakeHighDisplayScale(
+    highScale,
+    highFormat,
+    highUnitScaleFactor,
+    highWasNormalized,
+  );
   const ratio =
-    validUnitScaleFactor(overlayUnitScaleFactor) / validUnitScaleFactor(highUnitScaleFactor);
-  return highScale.map((value) => value * ratio) as Transform['scale'];
+    bakeSourceUnitScaleFactor(overlayFormat, overlayUnitScaleFactor) /
+    bakeSourceUnitScaleFactor(highFormat, highUnitScaleFactor);
+  return displayedHighScale.map((value) => value * ratio) as Transform['scale'];
 }

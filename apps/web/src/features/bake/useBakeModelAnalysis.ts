@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
-import { canonicalizeFbxBoundingBox } from './bakeModelAlignment';
-import type { ModelBoundingBox } from '@/types/model';
+import { canonicalizeBakeBoundingBox } from './bakeModelAlignment';
+import type { ModelBoundingBox, ModelFormat } from '@/types/model';
 
 export type BakeModelFileInput = { objectId: string; file: File };
 
@@ -12,6 +12,7 @@ export type BakeModelInfo = {
   uvSets: string[];
   childMeshCount: number;
   warnings: string[];
+  format: ModelFormat;
   sourceUnitScaleFactor?: number;
 };
 
@@ -43,13 +44,15 @@ async function inspectModel({ objectId, file }: BakeModelFileInput) {
       objectId,
       info: {
         name: loaded.object.name,
-        boundingBox: canonicalizeFbxBoundingBox(
+        boundingBox: canonicalizeBakeBoundingBox(
           loaded.result.originalBoundingBox,
+          loaded.result.format,
           loaded.result.sourceUnitScaleFactor,
         ),
         uvSets: loaded.object.uvSets,
         childMeshCount: loaded.result.childMeshCount,
         warnings: loaded.result.warnings,
+        format: loaded.result.format,
         sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
       } satisfies BakeModelInfo,
     };
@@ -65,8 +68,15 @@ async function inspectCollection(inputs: BakeModelFileInput[]) {
 }
 
 /** Parses bake inputs for preflight checks without creating a second 3D viewport. */
-export function useBakeModelAnalysis(lowFiles: BakeModelFileInput[], cageFiles: BakeModelFileInput[]) {
-  const [analysis, setAnalysis] = useState<BakeModelAnalysis>({ low: {}, cage: {}, loading: false });
+export function useBakeModelAnalysis(
+  lowFiles: BakeModelFileInput[],
+  cageFiles: BakeModelFileInput[],
+) {
+  const [analysis, setAnalysis] = useState<BakeModelAnalysis>({
+    low: {},
+    cage: {},
+    loading: false,
+  });
 
   useEffect(() => {
     let cancelled = false;

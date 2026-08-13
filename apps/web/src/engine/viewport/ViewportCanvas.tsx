@@ -7355,8 +7355,11 @@ function SurfacePaintOverlay() {
         const backgroundDeadline = performance.now() + 3_000;
         let backgroundReady = false;
         while (!cancelled && performance.now() < backgroundDeadline) {
+          // A valid resident background can be either a projected texture stack
+          // or the ordinary display-mode material used by the clay/flat view.
+          // The latter intentionally has no projectedFinalMaterialReadyUnixMs,
+          // so requiring that marker rejects an otherwise ready white model.
           backgroundReady =
-            Number(document.body.dataset.projectedFinalMaterialReadyUnixMs ?? '0') > 0 &&
             Number(document.body.dataset.projectedBackgroundMaterialRevision ?? '0') > 0;
           if (backgroundReady) break;
           await waitForFrame();

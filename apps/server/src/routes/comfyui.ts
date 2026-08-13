@@ -3,9 +3,12 @@ import { requireAuth } from '../auth/authMiddleware.js';
 import { serverConfig } from '../config.js';
 import {
   cancelComfyTextureMap,
+  checkComfyMaterialRepaintStatus,
   checkComfyuiStatus,
   comfyCancelErrorStatus,
+  generateComfyMaterialRepaint,
   generateComfyTextureMap,
+  type ComfyMaterialRepaintInput,
   type ComfyTextureMapInput,
 } from '../services/comfyuiGenerationService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
@@ -35,6 +38,23 @@ export async function handleComfyuiRoute(
     return true;
   }
 
+  if (request.method === 'GET' && segments[2] === 'material-repaint-status') {
+    try {
+      const result = await checkComfyMaterialRepaintStatus();
+      sendJson(response, 200, result);
+    } catch (error) {
+      console.error('[ComfyUI Material Repaint] health check failed', error);
+      sendJson(response, 503, {
+        ok: false,
+        code: 'MATERIAL_REPAINT_COMFY_UNREACHABLE',
+        baseUrl: serverConfig.comfyuiMaterialRepaintBaseUrl,
+        error: '局部重绘工作流服务未启动或端口不可达，请联系管理员启动服务后重试。',
+        detail: error instanceof Error ? error.message : undefined,
+      });
+    }
+    return true;
+  }
+
   if (request.method === 'POST' && segments[2] === 'generate-texture-map') {
     const input = await readJsonBody<ComfyTextureMapInput>(request);
     if (!input.prompt?.trim()) {
@@ -47,6 +67,32 @@ export async function handleComfyuiRoute(
     }
     const result = await generateComfyTextureMap(input, user.id);
     sendJson(response, 200, result);
+    return true;
+  }
+
+  if (request.method === 'POST' && segments[2] === 'generate-material-repaint') {
+    const input = await readJsonBody<ComfyMaterialRepaintInput>(request);
+    if (!input.whiteModel?.dataUrl || !input.materialReference?.dataUrl) {
+      sendJson(response, 400, {
+        error: '局部重绘需要当前视角白模图和多视图材质参考图。',
+      });
+      return true;
+    }
+    try {
+      const result = await generateComfyMaterialRepaint(input, user.id);
+      sendJson(response, 200, result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '局部重绘工作流执行失败。';
+      const unreachable = /ComfyUI 后端未启动或无法连接|fetch failed|ECONN/i.test(message);
+      console.error('[ComfyUI Material Repaint] generation failed', error);
+      sendJson(response, unreachable ? 503 : 500, {
+        code: unreachable ? 'MATERIAL_REPAINT_COMFY_UNREACHABLE' : 'MATERIAL_REPAINT_COMFY_FAILED',
+        error: unreachable
+          ? '局部重绘工作流服务未启动或端口不可达，请联系管理员启动服务后重试。'
+          : message,
+        detail: message,
+      });
+    }
     return true;
   }
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
-import type { SceneObject, Transform } from '@/types/model';
+import type { ModelFormat, SceneObject, Transform } from '@/types/model';
 import { bakeOverlayScale } from './bakeModelAlignment';
 
 export type BakeViewportMode = 'high' | 'overlay' | 'cage';
@@ -9,6 +9,7 @@ export type BakeViewportMode = 'high' | 'overlay' | 'cage';
 type OverlaySource = {
   root: THREE.Group;
   sourceUrl: string;
+  format: ModelFormat;
   sourceUnitScaleFactor?: number;
 };
 
@@ -19,6 +20,14 @@ function disposeObject(root: THREE.Object3D) {
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     materials.forEach((material) => material.dispose());
   });
+}
+
+function sourceMaxDimension(source?: OverlaySource) {
+  if (!source) return 1;
+  source.root.updateMatrixWorld(true);
+  const size = new THREE.Vector3();
+  new THREE.Box3().setFromObject(source.root).getSize(size);
+  return Math.max(size.x, size.y, size.z, 1e-6);
 }
 
 function useOverlaySource(file?: File) {
@@ -35,20 +44,20 @@ function useOverlaySource(file?: File) {
       ground: false,
       targetMaxDimension: 3,
       recenter: false,
-    })
-      .then((loaded) => {
-        loadedSource = {
-          root: loaded.root,
-          sourceUrl: loaded.sourceUrl,
-          sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
-        };
-        if (cancelled) {
-          disposeObject(loaded.root);
-          if (loaded.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(loaded.sourceUrl);
-          return;
-        }
-        setSource(loadedSource);
-      });
+    }).then((loaded) => {
+      loadedSource = {
+        root: loaded.root,
+        sourceUrl: loaded.sourceUrl,
+        format: loaded.result.format,
+        sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
+      };
+      if (cancelled) {
+        disposeObject(loaded.root);
+        if (loaded.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(loaded.sourceUrl);
+        return;
+      }
+      setSource(loadedSource);
+    });
 
     return () => {
       cancelled = true;
@@ -104,12 +113,18 @@ function cloneForOverlay(root: THREE.Group, style: 'low' | 'cage', cageDistance 
 function OverlayModel({
   root,
   transform,
+  highFormat,
   highUnitScaleFactor,
+  highWasNormalized,
+  sourceFormat,
   sourceUnitScaleFactor,
 }: {
   root: THREE.Group;
   transform: Transform;
+  highFormat: ModelFormat;
   highUnitScaleFactor?: number;
+  highWasNormalized: boolean;
+  sourceFormat?: ModelFormat;
   sourceUnitScaleFactor?: number;
 }) {
   return (
@@ -117,7 +132,14 @@ function OverlayModel({
       object={root}
       position={transform.position}
       rotation={transform.rotation}
-      scale={bakeOverlayScale(transform.scale, highUnitScaleFactor, sourceUnitScaleFactor)}
+      scale={bakeOverlayScale(
+        transform.scale,
+        highFormat,
+        highUnitScaleFactor,
+        highWasNormalized,
+        sourceFormat,
+        sourceUnitScaleFactor,
+      )}
     />
   );
 }
@@ -138,26 +160,32 @@ export function BakeSceneOverlay({
 }) {
   const lowSource = useOverlaySource(lowFile);
   const cageSource = useOverlaySource(cageFile);
-  const rawMaxDimension = Math.max(...(highObject.originalBoundingBox?.size ?? [1, 1, 1]));
-  const cageDistance = Math.max(0, cageInflation) * rawMaxDimension;
+  // Inflate an automatically generated cage in the low mesh's own source
+  // units. Using the high mesh bounds here produces a 100x error whenever a
+  // meter-based GLB is paired with a centimeter-based FBX (or vice versa).
+  const cageDistance = Math.max(0, cageInflation) * sourceMaxDimension(lowSource);
   const lowOverlay = useMemo(
-    () => lowSource ? cloneForOverlay(lowSource.root, 'low') : undefined,
+    () => (lowSource ? cloneForOverlay(lowSource.root, 'low') : undefined),
     [lowSource],
   );
-  const cageOverlay = useMemo(
-    () => {
-      const source = cageSource ?? lowSource;
-      if (!source) return undefined;
-      return cloneForOverlay(source.root, 'cage', cageSource ? 0 : cageDistance);
-    }, [cageDistance, cageSource, lowSource],
-  );
+  const cageOverlay = useMemo(() => {
+    const source = cageSource ?? lowSource;
+    if (!source) return undefined;
+    return cloneForOverlay(source.root, 'cage', cageSource ? 0 : cageDistance);
+  }, [cageDistance, cageSource, lowSource]);
 
-  useEffect(() => () => {
-    if (lowOverlay) disposeObject(lowOverlay);
-  }, [lowOverlay]);
-  useEffect(() => () => {
-    if (cageOverlay) disposeObject(cageOverlay);
-  }, [cageOverlay]);
+  useEffect(
+    () => () => {
+      if (lowOverlay) disposeObject(lowOverlay);
+    },
+    [lowOverlay],
+  );
+  useEffect(
+    () => () => {
+      if (cageOverlay) disposeObject(cageOverlay);
+    },
+    [cageOverlay],
+  );
 
   if (mode === 'high') return null;
   return (
@@ -166,7 +194,10 @@ export function BakeSceneOverlay({
         <OverlayModel
           root={lowOverlay}
           transform={highObject.transform}
+          highFormat={highObject.format}
           highUnitScaleFactor={highObject.sourceUnitScaleFactor}
+          highWasNormalized={highObject.importNormalizationTransform?.normalized ?? true}
+          sourceFormat={lowSource?.format}
           sourceUnitScaleFactor={lowSource?.sourceUnitScaleFactor}
         />
       ) : null}
@@ -174,7 +205,10 @@ export function BakeSceneOverlay({
         <OverlayModel
           root={cageOverlay}
           transform={highObject.transform}
+          highFormat={highObject.format}
           highUnitScaleFactor={highObject.sourceUnitScaleFactor}
+          highWasNormalized={highObject.importNormalizationTransform?.normalized ?? true}
+          sourceFormat={(cageSource ?? lowSource)?.format}
           sourceUnitScaleFactor={(cageSource ?? lowSource)?.sourceUnitScaleFactor}
         />
       ) : null}

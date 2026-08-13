@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { serverConfig } from '../config.js';
-import { saveBinaryAsset } from './assetFileService.js';
+import { saveBinaryAsset, saveUserRecoveryAsset } from './assetFileService.js';
 
 type ComfyControlFile = {
   path: string;
@@ -14,6 +14,17 @@ export type ComfyTextureMapInput = {
   projectId?: string;
   prompt: string;
   files: ComfyControlFile[];
+  seed?: number;
+};
+
+export type ComfyMaterialRepaintInput = {
+  clientGenerationId?: string;
+  projectId?: string;
+  captureId?: string;
+  objectId?: string;
+  materialReferenceId?: string;
+  whiteModel: ComfyControlFile;
+  materialReference: ComfyControlFile;
   seed?: number;
 };
 
@@ -100,6 +111,16 @@ const requiredInputPaths = {
   [comfyNodeIds.normalView]: 'geometry/08_normal_view.png',
 } as const;
 
+const materialRepaintNodeIds = {
+  whiteModel: 4,
+  materialReference: 5,
+  noise: 14,
+  output: 20,
+} as const;
+
+const materialRepaintPrompt =
+  'Transfer the material appearance of the corresponding asset in image 2 onto the untextured model in image 1. Image 1 is the absolute source of geometry, silhouette, internal structure, component count, camera view, perspective, pose, scale, position, framing, visible surfaces, occlusion relationships, and background. Preserve every existing small part, edge, opening, fastener, blade, rail, control, seam, and surface boundary from image 1 without simplification. Use image 2 only to infer the material appearance of the same asset. Map each corresponding material region to the matching existing part in image 1, preserving the exact color zoning, paint boundaries, bare-metal regions, rust, scratches, wear, labels, and fine surface texture shown on corresponding parts in image 2. Do not spread the most dominant color across unrelated parts. If image 2 contains multiple views, use them only to understand material continuity; never copy the multi-view layout and never import components visible only in another view. Do not add, remove, move, resize, rotate, replace, reshape, merge, or reconstruct any geometry. Do not invent text, logos, attachments, openings, controls, or mechanical details. The final result is the exact model and current view from image 1 with only its visible surfaces re-materialized from image 2.';
+
 function dataUrlToBuffer(dataUrl: string) {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(dataUrl);
   if (!match) throw new Error('Invalid ComfyUI input image data URL.');
@@ -163,6 +184,11 @@ export async function checkComfyuiStatus(baseUrl = serverConfig.comfyuiBaseUrl) 
   const response = await comfyFetch('/system_stats', { method: 'GET' }, 3000, baseUrl);
   if (!response.ok) throw new Error(`ComfyUI status failed: ${response.status}`);
   return response.json() as Promise<unknown>;
+}
+
+export async function checkComfyMaterialRepaintStatus() {
+  await checkComfyuiStatus(serverConfig.comfyuiMaterialRepaintBaseUrl);
+  return { ok: true, baseUrl: serverConfig.comfyuiMaterialRepaintBaseUrl };
 }
 
 async function getObjectInfo(baseUrl = serverConfig.comfyuiBaseUrl) {
@@ -384,6 +410,158 @@ function convertWorkflowToApiPrompt(workflow: UiWorkflow, objectInfo: ObjectInfo
   return prompt;
 }
 
+function buildMaterialRepaintApiPrompt(
+  whiteModelPath: string,
+  materialReferencePath: string,
+  jobId: string,
+  seed?: number,
+) {
+  const noiseSeed = Number.isFinite(seed)
+    ? Math.floor(seed ?? 0)
+    : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+  const link = (nodeId: number, output = 0): [string, number] => [String(nodeId), output];
+  const node = (classType: string, inputs: Record<string, unknown>, title?: string) => ({
+    class_type: classType,
+    inputs,
+    _meta: title ? { title } : undefined,
+  });
+
+  // API equivalent of “Flux2 Klein TrueV3-双图材质编辑-精简测试”.
+  // The user prompt node remains present but intentionally empty; node 26
+  // appends the workflow-owned material-transfer instruction above.
+  return {
+    '1': node(
+      'UNETLoader',
+      {
+        unet_name: 'Flux2-Klein-9B-True-V3-int8mixedrow.safetensors',
+        weight_dtype: 'default',
+      },
+      'TrueV3 主模型',
+    ),
+    '2': node(
+      'CLIPLoader',
+      {
+        clip_name: 'qwen_3_8b_fp8mixed.safetensors',
+        type: 'flux2',
+        device: 'default',
+      },
+      'Flux2 文本编码器',
+    ),
+    '3': node('VAELoader', { vae_name: 'flux2-vae.safetensors' }, 'Flux2 VAE'),
+    '4': node('LoadImage', { image: whiteModelPath }, '图1｜白模主图（锁定构图）'),
+    '5': node('LoadImage', { image: materialReferencePath }, '图2｜六视图材质参考'),
+    '7': node('VAEEncode', { pixels: link(23), vae: link(3) }, '编码图1'),
+    '8': node('VAEEncode', { pixels: link(24), vae: link(3) }, '编码图2'),
+    '10': node(
+      'ReferenceLatent',
+      { conditioning: link(27), latent: link(7) },
+      '参考条件1｜白模主图',
+    ),
+    '11': node(
+      'ReferenceLatent',
+      { conditioning: link(10), latent: link(8) },
+      '参考条件2｜材质六视图',
+    ),
+    '12': node('BasicGuider', { model: link(21), conditioning: link(11) }, 'TrueV3 引导'),
+    '13': node(
+      'EmptyFlux2LatentImage',
+      { width: link(22, 2), height: link(22, 3), batch_size: 1 },
+      '输出画布｜跟随图1',
+    ),
+    '14': node('RandomNoise', { noise_seed: noiseSeed }, '随机种子'),
+    '15': node(
+      'BasicScheduler',
+      { model: link(21), scheduler: 'simple', steps: 12, denoise: 1 },
+      '12步 Simple 调度',
+    ),
+    '16': node('KSamplerSelect', { sampler_name: 'euler' }, 'Euler 采样器'),
+    '17': node(
+      'SamplerCustomAdvanced',
+      {
+        noise: link(14),
+        guider: link(12),
+        sampler: link(16),
+        sigmas: link(15),
+        latent_image: link(13),
+      },
+      'TrueV3 双图采样',
+    ),
+    '18': node('VAEDecode', { samples: link(17), vae: link(3) }, '解码生成结果'),
+    '20': node(
+      'SaveImage',
+      {
+        images: link(25),
+        filename_prefix: `li3d_material_repaint/${jobId}/KleinTrueV3_DualMaterial`,
+      },
+      '保存生成结果',
+    ),
+    '21': node(
+      'LoraLoaderModelOnly',
+      {
+        model: link(1),
+        lora_name: 'baimo_shangcaizhi_klein_v1_000005500.safetensors',
+        strength_model: 0.8,
+      },
+      '白模上材质 LoRA｜0.8',
+    ),
+    '22': node(
+      'CherryInferenceSizeBucket',
+      { image: link(4), aspect_threshold: 1.2, square_size: 1024, long_size: 1536 },
+      '图1｜选择推理尺寸并记录原始尺寸',
+    ),
+    '23': node(
+      'ImageResize+',
+      {
+        image: link(4),
+        width: link(22, 2),
+        height: link(22, 3),
+        interpolation: 'area',
+        method: 'pad',
+        condition: 'always',
+        multiple_of: 0,
+      },
+      '图1｜等比适配并补边到推理尺寸',
+    ),
+    '24': node(
+      'ImageResize+',
+      {
+        image: link(5),
+        width: link(22, 2),
+        height: link(22, 3),
+        interpolation: 'area',
+        method: 'pad',
+        condition: 'always',
+        multiple_of: 0,
+      },
+      '图2｜等比适配并补边到同一推理尺寸',
+    ),
+    '25': node(
+      'ImageScale',
+      {
+        image: link(18),
+        upscale_method: 'lanczos',
+        width: link(22, 0),
+        height: link(22, 1),
+        crop: 'center',
+      },
+      '去补边并恢复图1原始尺寸',
+    ),
+    '26': node('StringFunction|pysssss', {
+      action: 'append',
+      tidy_tags: 'no',
+      text_a: link(28),
+      text_b: materialRepaintPrompt,
+      text_c: '',
+    }),
+    '27': node(
+      'CLIPTextEncode',
+      { clip: link(2), text: link(26) },
+      'CLIP Text Encode (Positive Prompt)',
+    ),
+    '28': node('CherryKleinTextBox', { text: '' }, '用户定义视角(可空)'),
+  };
+}
+
 async function queuePrompt(
   prompt: Record<string, unknown>,
   clientId: string,
@@ -517,11 +695,9 @@ export async function cancelComfyTextureMap(jobId: string, userId: string) {
     { method: 'POST' },
     10_000,
     activeJob.baseUrl,
-  ).catch(
-    (error: unknown) => {
-      throw new Error(error instanceof Error ? error.message : 'ComfyUI interrupt failed.');
-    },
-  );
+  ).catch((error: unknown) => {
+    throw new Error(error instanceof Error ? error.message : 'ComfyUI interrupt failed.');
+  });
   if (!interrupt.ok) throw new Error(`ComfyUI interrupt failed: ${interrupt.status}`);
   return { ok: true, cancelledJobId: normalizedJobId };
 }
@@ -570,6 +746,91 @@ export async function generateComfyTextureMap(input: ComfyTextureMapInput, userI
       resultUrls: [saved.url],
       promptId,
       output: output.image,
+    };
+  } finally {
+    activeComfyJobs.delete(jobId);
+    cancelledComfyJobIds.delete(jobId);
+  }
+}
+
+export async function generateComfyMaterialRepaint(
+  input: ComfyMaterialRepaintInput,
+  userId: string,
+) {
+  const projectId = input.projectId;
+  if (!projectId) throw new Error('局部重绘需要当前项目 ID。');
+  const ownerUserId = userId.trim();
+  if (!ownerUserId) throw new Error('Authenticated user id is required.');
+  const jobId = input.clientGenerationId?.trim() || `material-repaint-${randomUUID()}`;
+  if (activeComfyJobs.has(jobId)) {
+    throw new Error('A ComfyUI generation job with this id is already active.');
+  }
+  const baseUrl = serverConfig.comfyuiMaterialRepaintBaseUrl;
+  activeComfyJobs.set(jobId, {
+    userId: ownerUserId,
+    cancelled: cancelledComfyJobIds.has(jobId),
+    baseUrl,
+  });
+  try {
+    await checkComfyuiStatus(baseUrl);
+    assertComfyJobActive(jobId);
+    const subfolder = `li3d_material_repaint/${jobId}`;
+    const [whiteModelPath, materialReferencePath] = await Promise.all([
+      uploadImage(input.whiteModel, subfolder, baseUrl),
+      uploadImage(input.materialReference, subfolder, baseUrl),
+    ]);
+    assertComfyJobActive(jobId);
+    const prompt = buildMaterialRepaintApiPrompt(
+      whiteModelPath,
+      materialReferencePath,
+      jobId,
+      input.seed,
+    );
+    const promptId = await queuePrompt(prompt, `liclick-material-${jobId}`, baseUrl);
+    getActiveComfyJob(jobId).promptId = promptId;
+    const output = await waitForOutput(promptId, jobId, {
+      baseUrl,
+      preferredNodeIds: [materialRepaintNodeIds.output],
+    });
+    assertComfyJobActive(jobId);
+    const image = await downloadComfyImage(output.image, baseUrl);
+    assertComfyJobActive(jobId);
+    const projectAsset = await saveBinaryAsset({
+      userId,
+      projectId,
+      category: 'generations',
+      mime: image.contentType,
+      buffer: image.buffer,
+      filename: `${jobId}-material-repaint.png`,
+    });
+    const saved =
+      projectAsset ??
+      (await saveUserRecoveryAsset({
+        userId,
+        mime: image.contentType,
+        buffer: image.buffer,
+        filename: `${jobId}-material-repaint.png`,
+      }));
+    if (!projectAsset) {
+      console.warn(
+        '[ComfyUI Material Repaint] project belongs to the local component; saved recovery asset',
+        {
+          userId,
+          projectId,
+          jobId,
+          resultUrl: saved.url,
+        },
+      );
+    }
+    return {
+      id: jobId,
+      resultUrl: saved.url,
+      resultUrls: [saved.url],
+      promptId,
+      output: {
+        ...output.image,
+        storage: projectAsset ? 'project' : 'user-recovery',
+      },
     };
   } finally {
     activeComfyJobs.delete(jobId);

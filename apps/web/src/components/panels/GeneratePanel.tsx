@@ -17,10 +17,6 @@ import {
 } from '@/engine/localRepaint/resultPreviewUtils';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import {
-  createComfyInpaintInputInWorker,
-  prewarmComfyInpaintInputWorker,
-} from '@/engine/localRepaint/comfyInpaintInputWorker';
-import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
 } from '@/engine/scene/transformActions';
@@ -31,7 +27,6 @@ import {
 } from '@/components/panels/ReferenceGroupPicker';
 import { devLogin } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
-import { createModelviewApiClient } from '@/services/modelviewApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
 import {
@@ -77,7 +72,6 @@ import type { ReferenceImage } from '@/types/project';
 import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
-import { encodeRgbaPngDataUrl } from '@/utils/encodeRgbaPng';
 import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
 import {
   getGenerationStartedAt,
@@ -455,8 +449,8 @@ const multiviewDefaultPrompt = `以输入图片中的主要物体为唯一参考
 严格保持物体的造型、比例、结构、零件、颜色、材质和纹理一致。所有视图必须来自同一个结构固定的三维物体。不可见区域根据对称性和结构逻辑进行最少量补全，不要添加参考图中不存在的细节。
 
 输出横向2×3布局：
-第一排：正面、左前45°、右前45°；
-第二排：左侧、右侧、顶部。
+第一排：正面、左前45°、顶部；
+第二排：左侧、右侧、底部。
 
 正交视图减少透视畸变，所有物体保持相同比例、状态和方向，完整居中且不裁切。使用纯黑背景和统一的柔和棚拍光照。
 
@@ -571,94 +565,6 @@ function getImageSize(url: string) {
   });
 }
 
-function loadImageElement(url: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new window.Image();
-    image.crossOrigin = 'anonymous';
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('无法读取局部重绘输入图。'));
-    image.src = url;
-  });
-}
-
-async function createComfyInpaintInputImage(
-  sourceUrl: string,
-  maskUrl: string,
-  width: number,
-  height: number,
-) {
-  const [sourceImage, maskImage] = await Promise.all([
-    loadImageElement(sourceUrl),
-    loadImageElement(maskUrl),
-  ]);
-  const workerStartedAt = performance.now();
-  try {
-    const result = await createComfyInpaintInputInWorker({
-      source: sourceImage,
-      mask: maskImage,
-      width,
-      height,
-    });
-    document.body.dataset.localRepaintButton2InputWorkerMs = result.processMs.toFixed(1);
-    document.body.dataset.localRepaintButton2InputTotalMs = (
-      performance.now() - workerStartedAt
-    ).toFixed(1);
-    document.body.dataset.localRepaintButton2InputBackend = 'worker';
-    return result.dataUrl;
-  } catch (error) {
-    document.body.dataset.localRepaintButton2InputBackend = 'main-thread-fallback';
-    console.warn('[Liclick 3D Texture] Inpaint input worker failed; using fallback.', error);
-  }
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) throw new Error('无法创建局部重绘输入画布。');
-  context.drawImage(sourceImage, 0, 0, width, height);
-  const source = context.getImageData(0, 0, width, height);
-
-  const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = width;
-  maskCanvas.height = height;
-  const maskContext = maskCanvas.getContext('2d', { willReadFrequently: true });
-  if (!maskContext) throw new Error('无法读取局部重绘蒙版。');
-  maskContext.imageSmoothingEnabled = true;
-  maskContext.imageSmoothingQuality = 'high';
-  maskContext.drawImage(maskImage, 0, 0, width, height);
-
-  // The selection canvas is smaller than the 2048px ComfyUI input. Smooth only
-  // the enlarged contour, then keep a very narrow sub-pixel coverage band. A hard
-  // 0/255 threshold turns every source pixel into a multi-pixel stair step again.
-  const sourceWidth = Math.max(1, maskImage.naturalWidth || maskImage.width);
-  const sourceHeight = Math.max(1, maskImage.naturalHeight || maskImage.height);
-  const upscale = Math.max(width / sourceWidth, height / sourceHeight);
-  let sampledMaskContext = maskContext;
-  if (upscale > 1.05) {
-    const contourCanvas = document.createElement('canvas');
-    contourCanvas.width = width;
-    contourCanvas.height = height;
-    const contourContext = contourCanvas.getContext('2d', { willReadFrequently: true });
-    if (contourContext) {
-      contourContext.filter = `blur(${Math.min(3, Math.max(0.75, upscale * 0.65))}px)`;
-      contourContext.drawImage(maskCanvas, 0, 0);
-      contourContext.filter = 'none';
-      sampledMaskContext = contourContext;
-    }
-  }
-  const mask = sampledMaskContext.getImageData(0, 0, width, height).data;
-  for (let offset = 0; offset < source.data.length; offset += 4) {
-    const coverage =
-      (Math.max(mask[offset], mask[offset + 1], mask[offset + 2]) * (mask[offset + 3] / 255)) / 255;
-    const edgeCoverage = Math.max(0, Math.min(1, (coverage - 0.42) / 0.16));
-    const antialiasedCoverage = edgeCoverage * edgeCoverage * (3 - 2 * edgeCoverage);
-    // ComfyUI derives its MASK from alpha. The custom straight-RGBA encoder keeps
-    // the original RGB below transparent pixels, so this one-pixel coverage edge
-    // smooths the mask without adding a light/black outline to the IMAGE output.
-    source.data[offset + 3] = Math.round((1 - antialiasedCoverage) * 255);
-  }
-  return encodeRgbaPngDataUrl(width, height, source.data);
-}
-
 function getImportedModelMatrixWorld(objectId?: string) {
   const sceneState = useSceneStore.getState();
   const model = objectId
@@ -701,36 +607,6 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
     useState(0);
   const handledLocalImageGenerationRequestKeyRef = useRef(0);
   const handleLocalRepaintGenerateRef = useRef<() => Promise<void>>(async () => undefined);
-
-  useEffect(() => {
-    // Start the module worker while the user is painting. Button 2 can then
-    // transfer its 2K source/mask immediately instead of compiling worker code
-    // in the click frame.
-    prewarmComfyInpaintInputWorker();
-    const target = window as typeof window & {
-      LiclickPerfLocalRepaintButton2?: {
-        prepareInput: (
-          sourceUrl: string,
-          maskUrl: string,
-          width: number,
-          height: number,
-        ) => Promise<{ totalMs: number; workerMs: number }>;
-      };
-    };
-    target.LiclickPerfLocalRepaintButton2 = {
-      prepareInput: async (sourceUrl, maskUrl, width, height) => {
-        const startedAt = performance.now();
-        await createComfyInpaintInputImage(sourceUrl, maskUrl, width, height);
-        return {
-          totalMs: performance.now() - startedAt,
-          workerMs: Number(document.body.dataset.localRepaintButton2InputWorkerMs ?? '0'),
-        };
-      },
-    };
-    return () => {
-      delete target.LiclickPerfLocalRepaintButton2;
-    };
-  }, []);
 
   const updateTexturePipelineProgress = useCallback((progress: number, label: string) => {
     setTexturePipelineProgress((current) => ({
@@ -792,12 +668,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
   };
   const liclickPrompt = generationSettings.liclickPrompt ?? generationSettings.prompt ?? '';
   const textureMapPrompt = generationSettings.textureMapPrompt ?? '';
-  const localRepaintPrompt = generationSettings.localRepaintPrompt ?? '';
-  const prompt = isTextureMapTab
-    ? textureMapPrompt
-    : isLocalRepaintTab
-      ? localRepaintPrompt
-      : liclickPrompt;
+  const prompt = isTextureMapTab ? textureMapPrompt : isLocalRepaintTab ? '' : liclickPrompt;
   const imageModel = isTextureMapTab
     ? ('gpt-image-2' as LiclickImageModel)
     : (generationSettings.model as LiclickImageModel);
@@ -2572,6 +2443,55 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       submitLocksRef.current.add('repaint');
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return;
       const objectId = captureObjectId;
+      const textureMapCandidates = generations
+        .filter((generation) => {
+          if (!isTextureMapGeneration(generation)) return false;
+          const generationProjectId = generation.metadata.projectId;
+          if (typeof generationProjectId === 'string' && generationProjectId !== currentProject.id)
+            return false;
+          const generationObjectId = generation.metadata.objectId;
+          if (typeof generationObjectId === 'string' && generationObjectId !== objectId)
+            return false;
+          const referenceId = generation.metadata.materialReferenceId;
+          return (
+            typeof referenceId === 'string' &&
+            references.some(
+              (reference) => reference.id === referenceId && isMultiviewReference(reference),
+            )
+          );
+        })
+        .sort((left, right) => {
+          const recency = (generation: Generation) => {
+            const completedAt = generation.metadata.completedAt;
+            const completedTimestamp =
+              typeof completedAt === 'string' ? Date.parse(completedAt) : Number.NaN;
+            const startedTimestamp = getGenerationStartedAt(generation);
+            return Number.isFinite(completedTimestamp)
+              ? completedTimestamp
+              : Number.isFinite(startedTimestamp)
+                ? startedTimestamp
+                : Number.NEGATIVE_INFINITY;
+          };
+          return recency(right) - recency(left);
+        });
+      const textureMaterialReferenceId = textureMapCandidates[0]?.metadata.materialReferenceId;
+      const materialReference =
+        (typeof textureMaterialReferenceId === 'string'
+          ? references.find((reference) => reference.id === textureMaterialReferenceId)
+          : undefined) ?? selectedMultiviewReference;
+      if (!materialReference || !isMultiviewReference(materialReference)) {
+        setGenerateNotice({
+          tone: 'warning',
+          message: '请先在纹理贴图中选择或使用一张多视图材质参考图。',
+        });
+        pushToast({
+          tone: 'warning',
+          title: '缺少多视图材质参考',
+          description: '局部重绘会自动使用当前模型最近一次纹理贴图对应的多视图参考图。',
+          dedupeKey: 'generate-local-repaint-material-reference-required',
+        });
+        return;
+      }
       setGenerateNotice({ tone: 'info', message: '正在准备当前蒙版与视角。' });
       // Commit the button state and progress text before any GPU capture work.
       // This guarantees an immediate visual response even on a cold renderer.
@@ -2607,9 +2527,9 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
         objectId,
         resolution: 2048,
         framing: 'current',
-        // Local repaint is authored as BaseColor. Always submit the unlit Flat
-        // view; the viewport reapplies its current PBR lighting only for display.
-        colorMode: 'flat-target',
+        // Match the texture-map white-model input while retaining the authored
+        // viewport framing so the local-only selection mask stays pixel aligned.
+        colorMode: 'clay-target',
         aspect: maskSize.width / maskSize.height,
       });
       document.body.dataset.localRepaintButton2ViewCaptureMs = (
@@ -2619,7 +2539,6 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       // captureCurrentView already archives the exact capture in projectStore.
       // Writing it a second time duplicated a large four-pass capture record and
       // forced avoidable subscribers/renders at the hottest point of button 2.
-      const submittedPrompt = prompt.trim();
       const generationId = createId('local-repaint');
       // `renderScenePassesToPngUrl` intentionally returns a fast Blob URL for
       // immediate submission. A Blob URL dies on reload, so persist the exact
@@ -2639,18 +2558,20 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       pendingGeneration = {
         id: generationId,
         mode: 'inpaint',
-        prompt: submittedPrompt,
-        referenceIds: [],
+        prompt: '',
+        referenceIds: [materialReference.id],
         captureId: capture.id,
         status: 'running',
         metadata: {
-          provider: 'modelview-seedvr2',
+          provider: 'comfyui-local',
           workflow: 'local-repaint',
+          comfyWorkflow: 'Flux2 Klein TrueV3-双图材质编辑-精简测试',
           clientGenerationId: generationId,
           projectId: currentProject.id,
           objectId,
+          materialReferenceId: materialReference.id,
           paintMaskRevision: currentPaintMaskRevision,
-          sourceColorMode: 'flat-target',
+          sourceColorMode: 'clay-target',
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
@@ -2660,30 +2581,26 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       addProjectGeneration(pendingGeneration);
       setGenerateNotice({
         tone: 'info',
-        message: '正在把当前视角和蒙版提交到 ModelView 局部重绘。',
+        message: '正在提交当前视角白模和多视图材质参考；蒙版仅用于结果回贴。',
       });
       requestAbortController = new AbortController();
       generationAbortControllersRef.current.set(generationId, requestAbortController);
-      document.body.dataset.perfLocalRepaintPhase = 'button2-input-worker';
-      const inputStartedAt = performance.now();
-      const inputImage = await createComfyInpaintInputImage(
-        capture.colorUrl,
-        currentPaintMaskDataUrl,
-        capture.width,
-        capture.height,
-      );
-      document.body.dataset.localRepaintButton2InputTotalMs = (
-        performance.now() - inputStartedAt
-      ).toFixed(1);
-      delete document.body.dataset.perfLocalRepaintPhase;
-      const generation = await createModelviewApiClient().generateInpaint(
+      const [whiteModelDataUrl, materialReferenceDataUrl] = await Promise.all([
+        urlToDataUrl(capture.colorUrl),
+        urlToDataUrl(materialReference.url),
+      ]);
+      const generation = await createComfyuiApiClient().generateMaterialRepaint(
         {
           clientGenerationId: generationId,
           projectId: currentProject.id,
-          prompt: submittedPrompt,
           captureId: capture.id,
           objectId,
-          image: { path: 'input-with-mask.png', dataUrl: inputImage },
+          materialReferenceId: materialReference.id,
+          whiteModel: { path: 'white-model.png', dataUrl: whiteModelDataUrl },
+          materialReference: {
+            path: 'multiview-material-reference.png',
+            dataUrl: materialReferenceDataUrl,
+          },
         },
         { signal: requestAbortController.signal },
       );
@@ -2720,7 +2637,7 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
           objectMatrixWorld: getImportedModelMatrixWorld(objectId),
           maskUrl: persistedPaintMaskUrl,
           paintMaskRevision: currentPaintMaskRevision,
-          sourceColorMode: 'flat-target',
+          sourceColorMode: 'clay-target',
           completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },
       };
@@ -2739,8 +2656,16 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
       });
     } catch (error) {
       if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return;
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      console.error('[ComfyUI Material Repaint] generation failed:', error);
       const message = getUserFacingGenerationError(error, '局部重绘生成失败，请稍后重试。');
-      if (pendingGeneration) syncGeneration(createFailedGeneration(pendingGeneration, message));
+      if (pendingGeneration) {
+        syncGeneration(
+          createFailedGeneration(pendingGeneration, message, {
+            rawError: rawMessage,
+          }),
+        );
+      }
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: t('localRepaintFailed'), description: message });
     } finally {
@@ -3754,24 +3679,30 @@ export function GeneratePanel({ localImageGenerationRequestKey = 0 }: GeneratePa
               </section>
             )}
 
-            <label className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
-              <span className="text-sm font-semibold text-white/88">
-                {isTextureMapTab ? '纹理提示词' : t('prompt')}
-              </span>
-              <textarea
-                value={prompt}
-                onChange={(event) =>
-                  updateGenerationSettings(
-                    isTextureMapTab
-                      ? { textureMapPrompt: event.target.value }
-                      : isLocalRepaintTab
-                        ? { localRepaintPrompt: event.target.value }
+            {!isLocalRepaintTab && (
+              <label className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
+                <span className="text-sm font-semibold text-white/88">
+                  {isTextureMapTab ? '纹理提示词' : t('prompt')}
+                </span>
+                <textarea
+                  value={prompt}
+                  onChange={(event) =>
+                    updateGenerationSettings(
+                      isTextureMapTab
+                        ? { textureMapPrompt: event.target.value }
                         : { liclickPrompt: event.target.value },
-                  )
-                }
-                className="generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
-              />
-            </label>
+                    )
+                  }
+                  className="generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink"
+                />
+              </label>
+            )}
+
+            {isLocalRepaintTab && (
+              <div className="order-3 rounded-md border border-white/12 bg-white/[0.04] px-3 py-2 text-xs leading-5 text-white/66">
+                当前使用固定材质迁移提示词，无需填写。生成时仅提交当前视角白模和多视图材质参考，蒙版只限制结果回贴区域。
+              </div>
+            )}
 
             {isTextureMapTab && (
               <section
