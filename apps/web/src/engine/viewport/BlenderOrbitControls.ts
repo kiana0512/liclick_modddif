@@ -32,17 +32,23 @@ export class BlenderOrbitControls {
   private readonly panOffset = new THREE.Vector3();
   private readonly yawRotation = new THREE.Quaternion();
   private readonly pitchRotation = new THREE.Quaternion();
+  private pendingWheelDelta = 0;
+  private wheelFrame?: number;
 
   constructor(
     readonly camera: SupportedCamera,
     readonly domElement: HTMLElement,
+    private readonly onWheelFrame?: () => void,
   ) {
     domElement.addEventListener('contextmenu', this.handleContextMenu);
     domElement.addEventListener('pointerdown', this.handlePointerDown);
     domElement.addEventListener('pointermove', this.handlePointerMove);
     domElement.addEventListener('pointerup', this.handlePointerUp);
     domElement.addEventListener('pointercancel', this.handlePointerUp);
-    domElement.addEventListener('wheel', this.handleWheel, { passive: false });
+    // The editor viewport is non-scrollable. Keeping this listener passive lets
+    // Chromium route precision-wheel input without waiting on a scroll-blocking
+    // main-thread acknowledgement for every raw device event.
+    domElement.addEventListener('wheel', this.handleWheel, { passive: true });
   }
 
   update = () => {
@@ -57,6 +63,11 @@ export class BlenderOrbitControls {
     this.domElement.removeEventListener('pointerup', this.handlePointerUp);
     this.domElement.removeEventListener('pointercancel', this.handlePointerUp);
     this.domElement.removeEventListener('wheel', this.handleWheel);
+    if (this.wheelFrame !== undefined) {
+      this.domElement.ownerDocument.defaultView?.cancelAnimationFrame(this.wheelFrame);
+      this.wheelFrame = undefined;
+    }
+    this.pendingWheelDelta = 0;
   }
 
   private handleContextMenu = (event: MouseEvent) => {
@@ -100,8 +111,28 @@ export class BlenderOrbitControls {
 
   private handleWheel = (event: WheelEvent) => {
     if (!this.enabled) return;
-    this.zoomByFactor(Math.exp(event.deltaY * this.zoomSpeed));
-    event.preventDefault();
+    // Precision wheels and trackpads can dispatch several events in one display
+    // interval. Applying lookAt/updateMatrixWorld for every raw event creates an
+    // input-rate CPU spike, especially while the local-repaint shader is active.
+    // Preserve the complete physical delta but apply it once per native display
+    // frame. This is refresh-rate adaptive (60/120/144Hz), not an FPS cap.
+    const deltaScale =
+      event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? 16
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? Math.max(this.domElement.clientHeight, 1)
+          : 1;
+    this.pendingWheelDelta += event.deltaY * deltaScale;
+    if (this.wheelFrame === undefined) {
+      const view = this.domElement.ownerDocument.defaultView;
+      this.wheelFrame = view?.requestAnimationFrame(() => {
+        this.wheelFrame = undefined;
+        const delta = this.pendingWheelDelta;
+        this.pendingWheelDelta = 0;
+        this.onWheelFrame?.();
+        this.zoomByFactor(Math.exp(delta * this.zoomSpeed));
+      });
+    }
   };
 
   private getPointerAction(event: PointerEvent): PointerAction | undefined {

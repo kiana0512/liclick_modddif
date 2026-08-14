@@ -28,12 +28,47 @@ type PackTask = {
 type WorkerSlot = {
   worker: Worker;
   task?: PackTask;
+  cancellationPoll?: number;
 };
 
 let nextRequestId = 1;
 const slots: WorkerSlot[] = [];
 const queue: PackTask[] = [];
 let peakActiveCount = 0;
+
+function clearCancellationPoll(slot: WorkerSlot) {
+  if (slot.cancellationPoll === undefined) return;
+  window.clearTimeout(slot.cancellationPoll);
+  slot.cancellationPoll = undefined;
+}
+
+function removeWorkerSlot(slot: WorkerSlot) {
+  clearCancellationPoll(slot);
+  const index = slots.indexOf(slot);
+  if (index >= 0) slots.splice(index, 1);
+}
+
+function monitorActiveTaskCancellation(slot: WorkerSlot, task: PackTask) {
+  clearCancellationPoll(slot);
+  const poll = () => {
+    if (slot.task !== task) return;
+    if (!task.isCancelled?.()) {
+      slot.cancellationPoll = window.setTimeout(poll, 16);
+      return;
+    }
+
+    // Cancellation callbacks cannot cross the Worker boundary. Terminating the
+    // superseded slot is the only way to stop its fetch/decode/canvas loop
+    // before it allocates and transfers another 50-100MB array buffer. A fresh
+    // slot is created immediately for the newest structural build.
+    slot.task = undefined;
+    slot.worker.terminate();
+    removeWorkerSlot(slot);
+    task.reject(new Error('Projected texture-array worker task was superseded.'));
+    dispatchQueuedPacks();
+  };
+  slot.cancellationPoll = window.setTimeout(poll, 16);
+}
 
 function updateWorkerProbe(status: string) {
   if (typeof document === 'undefined') return;
@@ -49,10 +84,15 @@ function updateWorkerProbe(status: string) {
 
 function desiredWorkerCount() {
   const cores = typeof navigator === 'undefined' ? 4 : navigator.hardwareConcurrency || 4;
-  // Projection has four independent profiles, but two packers benchmark more
-  // consistently than four because bitmap decode and GPU upload share memory
-  // bandwidth. Reserve CPU capacity for rendering, input, and heterogeneous cores.
-  return Math.max(1, Math.min(2, Math.floor(Math.max(1, cores - 2) / 3)));
+  // Colour, mask, depth and normal packing are independent CPU/decode jobs.
+  // Keep one worker per profile on high-end machines so the renderer does not
+  // wait for a second serial packing wave. The pool never exceeds four because
+  // there are only four profiles, and several logical cores remain available
+  // for input, React and the WebGL submission thread.
+  if (cores >= 12) return 4;
+  if (cores >= 8) return 3;
+  if (cores >= 6) return 2;
+  return 1;
 }
 
 function createWorkerSlot(): WorkerSlot {
@@ -65,6 +105,7 @@ function createWorkerSlot(): WorkerSlot {
   slot.worker.onmessage = (event: MessageEvent<PackResponse>) => {
     const task = slot.task;
     if (!task || task.id !== event.data.id) return;
+    clearCancellationPoll(slot);
     slot.task = undefined;
     if (task.isCancelled?.()) {
       task.reject(new Error('Projected texture-array worker task was superseded.'));
@@ -81,11 +122,11 @@ function createWorkerSlot(): WorkerSlot {
     dispatchQueuedPacks();
   };
   slot.worker.onerror = (event) => {
+    clearCancellationPoll(slot);
     slot.task?.reject(new Error(event.message || 'Projected texture-array worker failed.'));
     slot.task = undefined;
     slot.worker.terminate();
-    const index = slots.indexOf(slot);
-    if (index >= 0) slots.splice(index, 1);
+    removeWorkerSlot(slot);
     dispatchQueuedPacks();
   };
   return slot;
@@ -112,6 +153,7 @@ function dispatchQueuedPacks() {
         { id: task.id, ...task.input },
         { transfer: task.input.sources.flatMap(({ bitmap }) => (bitmap ? [bitmap] : [])) },
       );
+      monitorActiveTaskCancellation(slot, task);
     } catch (error) {
       slot.task = undefined;
       task.input.sources.forEach((source) => source.bitmap?.close());

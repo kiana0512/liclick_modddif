@@ -123,11 +123,18 @@ export function getLiveProjectedTexture(
   return entry.texture;
 }
 
-export function markLiveProjectedCanvasTextureUpdated(url: string) {
+export function markLiveProjectedCanvasTextureUpdated(
+  url: string,
+  options: { upload?: boolean } = {},
+) {
   const entry = liveCanvasTextures.get(url);
   if (entry) {
     entry.revision += 1;
-    entry.texture.needsUpdate = true;
+    // Callers that already published the final CanvasTexture revision during
+    // the interactive frame only need to invalidate the encoded-asset cache at
+    // pointer-up. Scheduling the same full canvas upload again on release made
+    // every short dot pay an avoidable presentation stall.
+    if (options.upload !== false) entry.texture.needsUpdate = true;
   }
 }
 

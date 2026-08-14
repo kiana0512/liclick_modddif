@@ -1588,14 +1588,25 @@ function getPreviewLighting(input?: ProjectionPreviewLighting) {
 
 function prepareUvTexture(texture: THREE.Texture) {
   if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === UV_OVERLAY_TEXTURE_PROFILE) return;
+  const uploadStateChanged =
+    texture.colorSpace !== THREE.SRGBColorSpace ||
+    texture.wrapS !== THREE.ClampToEdgeWrapping ||
+    texture.wrapT !== THREE.ClampToEdgeWrapping ||
+    texture.minFilter !== THREE.LinearFilter ||
+    texture.magFilter !== THREE.LinearFilter ||
+    texture.generateMipmaps;
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = true;
+  // Keep the source's established orientation. ImageBitmap previews are
+  // decoded pre-flipped and uploaded with flipY=false, while TextureLoader and
+  // canvas sources carry their own correct value. Forcing true here invalidated
+  // an already-resident 4K texture and made the first eye toggle perform a full
+  // driver upload on the interaction frame.
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.generateMipmaps = false;
-  texture.needsUpdate = true;
+  if (uploadStateChanged) texture.needsUpdate = true;
   texture.userData[PREPARED_TEXTURE_PROFILE_KEY] = UV_OVERLAY_TEXTURE_PROFILE;
 }
 
@@ -2228,6 +2239,16 @@ const PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE = 1024;
 // 1024px depth/mask/normal slices remain smaller than this same bound.
 const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 1536 * 1536;
 
+function getProjectedLayerPreparationConcurrency() {
+  const cores = typeof navigator === 'undefined' ? 4 : navigator.hardwareConcurrency || 4;
+  // Loading a layer is mostly fetch/ImageBitmap decode. Four layer groups keep
+  // a fast local/network source and the browser decoder busy without flooding
+  // the main thread with dozens of completion callbacks in the same frame.
+  if (cores >= 12) return 4;
+  if (cores >= 8) return 3;
+  return 2;
+}
+
 function getTexturePixelSize(texture: THREE.Texture) {
   const image = texture.image as
     | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }
@@ -2287,13 +2308,10 @@ async function waitForProjectedArrayUploadWindow(
   isViewportInteractionBusy?: () => boolean,
   isCancelled?: () => boolean,
 ) {
-  if (!isViewportInteractionBusy?.()) return;
+  // Never spin or wait for the complete gesture: loading speed is user-facing
+  // too. Yield presentation once, then let the caller submit one bounded unit.
+  if (isViewportInteractionBusy?.()) await yieldProjectedArrayUploadFrame();
   if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
-  // A bounded stripe is safe during interaction (measured <=3.3ms). The old
-  // unbounded while-loop paused the complete 14-layer upload until pointer-up,
-  // leaving the white/bootstrap membrane visible for the whole gesture. Yield
-  // once to let input present, then submit one bounded stripe this frame.
-  await yieldProjectedArrayUploadFrame();
 }
 
 let projectedArrayUploadTail = Promise.resolve();
@@ -2376,6 +2394,7 @@ async function packProjectedTextureArrayOnMainThread(
   width: number,
   height: number,
   isCancelled?: () => boolean,
+  isViewportInteractionBusy?: () => boolean,
 ): Promise<Uint8Array<ArrayBuffer>> {
   const uploadCanvas = document.createElement('canvas');
   uploadCanvas.width = width;
@@ -2393,6 +2412,7 @@ async function packProjectedTextureArrayOnMainThread(
   let uploadedPixelsThisFrame = 0;
   for (let index = 0; index < sources.length; index += 1) {
     if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+    await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
     const source = sources[index];
     const size = sourceSizes[index];
     const previewSize = previewSizes[index];
@@ -2451,6 +2471,9 @@ async function uploadProjectedTextureArrayInStripes(input: {
   isCancelled?: () => boolean;
   isViewportInteractionBusy?: () => boolean;
 }) {
+  let uploadYieldCount = 0;
+  let uploadDurationMs = 0;
+  let maximumStripeDurationMs = 0;
   const rowsPerStripe = Math.max(
     1,
     Math.min(
@@ -2458,9 +2481,6 @@ async function uploadProjectedTextureArrayInStripes(input: {
       Math.floor(PROJECTED_ARRAY_FRAME_PIXEL_BUDGET / Math.max(1, input.width)),
     ),
   );
-  let uploadYieldCount = 0;
-  let uploadDurationMs = 0;
-  let maximumStripeDurationMs = 0;
 
   for (let layerIndex = 0; layerIndex < input.layerCount; layerIndex += 1) {
     for (let firstRow = 0; firstRow < input.height; firstRow += rowsPerStripe) {
@@ -2587,6 +2607,7 @@ async function createProjectedTextureArray(
     width,
     height,
     isCancelled,
+    isViewportInteractionBusy,
   );
   if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
 
@@ -3130,7 +3151,7 @@ export async function createProjectedLayerStackMaterial(
   }
   const preparedLayers = await mapWithConcurrency(
     layers,
-    2,
+    getProjectedLayerPreparationConcurrency(),
     async (layer) => {
       const requestedMask = Boolean(layer.useMask && layer.maskUrl);
       const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);

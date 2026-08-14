@@ -59,7 +59,11 @@ export function CameraController() {
 
   useEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera || camera instanceof THREE.OrthographicCamera)) return;
-    const controls = new BlenderOrbitControls(camera, gl.domElement);
+    const controls = new BlenderOrbitControls(
+      camera,
+      gl.domElement,
+      markViewportInteractionActivity,
+    );
     const canvas = gl.domElement;
     let pointerActive = false;
     const handlePointerDown = () => {
@@ -75,12 +79,10 @@ export function CameraController() {
       pointerActive = false;
       markViewportInteractionEnd();
     };
-    const handleWheel = () => markViewportInteractionActivity();
     canvas.addEventListener('pointerdown', handlePointerDown, { passive: true });
     canvas.addEventListener('pointermove', handlePointerMove, { passive: true });
     window.addEventListener('pointerup', handlePointerUp, { passive: true });
     window.addEventListener('pointercancel', handlePointerUp, { passive: true });
-    canvas.addEventListener('wheel', handleWheel, { passive: true });
     controlsRef.current = controls;
     orbitTargetKeyRef.current = undefined;
     importedModelIdsRef.current = new Set();
@@ -91,7 +93,6 @@ export function CameraController() {
       canvas.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
-      canvas.removeEventListener('wheel', handleWheel);
       if (controlsRef.current === controls) controlsRef.current = null;
     };
   }, [camera, gl.domElement]);

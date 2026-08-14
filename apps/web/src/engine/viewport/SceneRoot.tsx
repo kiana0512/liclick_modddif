@@ -1137,6 +1137,7 @@ function ImportedModel({
           const interaction = projectedPreviewInteractionRef.current;
           const paintTool = useSceneStore.getState().paintTool;
           const busy =
+            isSharedViewportInteractionBusy() ||
             interaction.pointerDown ||
             performance.now() - interaction.lastMovedAt < 180 ||
             document.body.dataset.perfSimulatedViewportInteraction === '1' ||
@@ -1280,6 +1281,13 @@ function ImportedModel({
       .filter(
         (layer) =>
           layer.type === 'projected' &&
+          // The renderer-owned local repaint overlay is the authoritative
+          // foreground while its session marker is alive. Persisting the row
+          // must not also append it to the packed background array on every
+          // pointer-up: that 14 -> 15 structural transition was measured as a
+          // 333-967ms presentation stall. The row joins the resident stack only
+          // after the overlay handoff is complete.
+          layer.id !== localRepaintPreviewLayerId &&
           layer.imageUrl &&
           layer.camera &&
           (!layer.objectId || layer.objectId === importedObjectId),
@@ -1334,6 +1342,7 @@ function ImportedModel({
     initialProjectedMaterialReady,
     layers,
     liveSurfacePaintPreview,
+    localRepaintPreviewLayerId,
     texturedRestoreReady,
     visibleLocalRepaintPreviewLayer,
   ]);
@@ -1426,7 +1435,8 @@ function ImportedModel({
       const interaction = projectedPreviewInteractionRef.current;
       const paintTool = useSceneStore.getState().paintTool;
       const interactionBusy = Boolean(
-        interaction.pointerDown ||
+        isSharedViewportInteractionBusy(250) ||
+          interaction.pointerDown ||
           performance.now() - interaction.lastMovedAt < 250 ||
           document.body.dataset.perfSimulatedViewportInteraction === '1' ||
           document.body.dataset.perfViewportStressMeasuring === '1' ||
@@ -2476,7 +2486,9 @@ function ImportedModel({
   useFrame(() => {
     const interaction = projectedPreviewInteractionRef.current;
     const isInteracting =
-      interaction.pointerDown || performance.now() - interaction.lastMovedAt < 140;
+      isSharedViewportInteractionBusy(180) ||
+      interaction.pointerDown ||
+      performance.now() - interaction.lastMovedAt < 140;
     // CPU timing around renderer.render() does not include queued GPU work. Cap
     // operation count too, so background composition cannot flood the GPU queue.
     projectedPreviewCompositorRef.current?.step(isInteracting ? 1 : 2.5, isInteracting ? 1 : 2);
@@ -2585,7 +2597,8 @@ function ImportedModel({
       const simulatedInteractionIsPrewarm =
         localRepaintPhase === 's6-interaction-source-bind';
       return Boolean(
-        interaction.pointerDown ||
+        isSharedViewportInteractionBusy() ||
+          interaction.pointerDown ||
           performance.now() - interaction.lastMovedAt < 180 ||
           (document.body.dataset.perfSimulatedViewportInteraction === '1' &&
             !simulatedInteractionIsPrewarm) ||
@@ -3219,7 +3232,9 @@ function ImportedModel({
               usingSharedTextureArrayBuild = true;
               const textureArrayBuildSignature = [
                 projectedTextureArrayStructureSignature,
-                loadedUvTexture?.uuid ?? '',
+                // The UV overlay owns a reserved direct sampler and is updated
+                // as a uniform. Including its runtime texture UUID here rebuilt
+                // an otherwise unchanged 14-layer array after restore/HMR.
                 liveTopUvTexture?.uuid ?? '',
               ].join('|');
               sharedTextureArrayBuildSignature = textureArrayBuildSignature;
