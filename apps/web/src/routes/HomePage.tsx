@@ -6,7 +6,6 @@ import {
   Download,
   Flame,
   Map as MapIcon,
-  Network,
   Palette,
   Sparkles,
   Wrench,
@@ -279,14 +278,12 @@ export function HomePage({
   onOpenTexture,
   onOpenBake,
   onOpenToolbox,
-  onOpenRetopology,
   onOpenUv,
   onLogout,
 }: {
   onOpenTexture: () => void;
   onOpenBake: () => void;
   onOpenToolbox: () => void;
-  onOpenRetopology: () => void;
   onOpenUv: () => void;
   onLogout: () => void;
 }) {
@@ -332,7 +329,7 @@ export function HomePage({
             </span>
             <span className="hidden h-3 w-px bg-white/12 sm:block" />
             <span className="hidden items-center gap-2 sm:inline-flex">
-              <Boxes className="h-3.5 w-3.5" />5 个工作模块
+              <Boxes className="h-3.5 w-3.5" />4 个工作模块
             </span>
           </div>
         </div>
@@ -365,20 +362,6 @@ export function HomePage({
               {downloadingLocalComponent ? '正在下载…' : '下载最新安装包'}
             </button>
           </div>
-          <ModuleCard
-            eyebrow="AUTO RETOPOLOGY"
-            title="自动拓扑"
-            description="高模转生产级低模，优化结构与边流。"
-            detail="低模生成 · 边流优化"
-            icon={Network}
-            accent="blue"
-            visual="retopo"
-            badge="云端测试"
-            hoverAction="进入自动拓扑"
-            telemetryModule="auto_retopology"
-            onClick={onOpenRetopology}
-            layout="compact"
-          />
           <ModuleCard
             eyebrow="AUTO UV"
             title="自动展 UV"
