@@ -94,6 +94,7 @@ import {
   UV_MERGE_COMPOSITION_VERSION,
 } from '@/engine/layers/mergeUvComposition';
 import {
+  compositeRgbaUrlUnderAndEncodePngWithWebGpu,
   compositeRgbaUrlUnderWithWebGpu,
   releaseWebGpuRgbaCompositeResources,
   type WebGpuRgbaCompositeMetrics,
@@ -130,7 +131,10 @@ import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import {
+  isViewportInteractionBusy,
+  subscribeViewportInteraction,
+} from '@/engine/viewport/viewportInteractionState';
 import {
   markPerformanceEvent,
   startPerformanceSpan,
@@ -826,8 +830,6 @@ export function EditorPage({
   const contentAwareRepairAbortControllerRef = useRef<AbortController>();
   const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
   const localRepaintToolRequestRevisionRef = useRef(0);
-  const standardProjectThumbnailCaptureRef = useRef<() => string | undefined>(() => undefined);
-  const thumbnailRefreshTimerRef = useRef<number>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
@@ -891,7 +893,6 @@ export function EditorPage({
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayers = useLayerStore((state) => state.setLayers);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
-  const layers = useLayerStore((state) => state.layers);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const updateLayerImage = useLayerStore((state) => state.updateLayerImage);
   const addUvLayer = useLayerStore((state) => state.addUvLayer);
@@ -921,7 +922,13 @@ export function EditorPage({
   const restorePersistedHistory = useEditorHistoryStore((state) => state.restorePersisted);
   const canUndo = useEditorHistoryStore((state) => state.past.length > 0);
   const canRedo = useEditorHistoryStore((state) => state.future.length > 0);
-  const activeLayer = layers.find((layer) => layer.id === activeProjectedLayerId);
+  // EditorPage owns the whole workspace shell. Subscribing it to the complete
+  // layer array made every eye toggle and every generated projector reconcile
+  // the full route. Subscribe only to the few layer values this shell renders;
+  // the viewport and layer panel keep their own fine-grained subscriptions.
+  const activeLayer = useLayerStore((state) =>
+    state.layers.find((layer) => layer.id === activeProjectedLayerId),
+  );
   const localRepaintGenerationReady = useMemo(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     return generations.some(
@@ -957,16 +964,48 @@ export function EditorPage({
       ? activeLayer.imageUrl
       : activeBakedTexture?.imageUrl;
   const currentTextureObjectId = selectedObjectId ?? importedModel?.objectId;
-  const currentObjectBaseColor = selectBakeBaseColor(
-    project ? { layers, bakedTextures: project.bakedTextures } : undefined,
-    currentTextureObjectId,
+  const currentObjectBaseColorIdentity = useLayerStore((state) => {
+    const source = selectBakeBaseColor(
+      project ? { layers: state.layers, bakedTextures: project.bakedTextures } : undefined,
+      currentTextureObjectId,
+    );
+    return source ? `${source.name}\u0000${source.imageUrl}` : '';
+  });
+  const currentObjectBaseColor = useMemo(() => {
+    if (!currentObjectBaseColorIdentity) return undefined;
+    const separator = currentObjectBaseColorIdentity.indexOf('\u0000');
+    return {
+      name: currentObjectBaseColorIdentity.slice(0, separator),
+      imageUrl: currentObjectBaseColorIdentity.slice(separator + 1),
+    };
+  }, [currentObjectBaseColorIdentity]);
+  const normalLayer = useLayerStore((state) =>
+    state.layers.find(
+      (layer) =>
+        layer.type === 'normal' &&
+        Boolean(layer.imageUrl) &&
+        (!selectedObjectId || !layer.objectId || layer.objectId === selectedObjectId),
+    ),
   );
-  const normalLayer = layers.find(
-    (layer) =>
-      layer.type === 'normal' &&
-      Boolean(layer.imageUrl) &&
-      (!selectedObjectId || !layer.objectId || layer.objectId === selectedObjectId),
-  );
+  const localRepaintStageLayerSignature = useLayerStore((state) => {
+    const targetIds = new Set(
+      state.layers
+        .map((layer) => layer.replacementTargetLayerId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    return state.layers
+      .filter((layer) => Boolean(layer.replacementTargetLayerId) || targetIds.has(layer.id))
+      .map((layer) =>
+        [
+          layer.id,
+          layer.type,
+          layer.generationId ?? '',
+          layer.replacementTargetLayerId ?? '',
+          layer.imageUrl,
+        ].join(':'),
+      )
+      .join('|');
+  });
   const normalMapTexture = findNormalMapTexture(importedModel);
 
   useEffect(() => {
@@ -990,7 +1029,6 @@ export function EditorPage({
     () => () => {
       window.clearTimeout(manualBakeProgressTimerRef.current);
       window.clearTimeout(modelImportProgressTimerRef.current);
-      window.clearTimeout(thumbnailRefreshTimerRef.current);
       modelImportRevisionRef.current += 1;
       modelImportRunningRef.current = false;
       contentAwareRepairAbortControllerRef.current?.abort();
@@ -1053,24 +1091,67 @@ export function EditorPage({
   }, [authenticatedUserId, authStatus, projectId, pushToast, replaceCurrentProject, t]);
 
   useEffect(() => {
-    if (serverReadyProjectId !== projectId) return;
+    if (serverReadyProjectId !== projectId) return undefined;
+    const initialLayers = useLayerStore.getState().layers;
     if (skipProjectStoreSyncRef.current.layers) {
       skipProjectStoreSyncRef.current.layers = false;
-      return;
+    } else {
+      const storedProject = useProjectStore
+        .getState()
+        .projects.find((item) => item.id === projectId);
+      if (
+        import.meta.hot &&
+        initialLayers.length === 0 &&
+        (storedProject?.layers.length ?? 0) > 0
+      ) {
+        setLayers(storedProject!.layers);
+      }
     }
-    if (document.body.dataset.perfSuppressProjectLayerSync === '1') return;
-    if (suppressProjectLayerSyncRef.current > 0) return;
-    const storedProject = useProjectStore.getState().projects.find((item) => item.id === projectId);
-    if (import.meta.hot && layers.length === 0 && (storedProject?.layers.length ?? 0) > 0) {
-      setLayers(storedProject!.layers);
-      return;
-    }
-    // The layer store is the renderer's immediate source of truth. Mirroring a
-    // large stack into the project snapshot may reconcile most of the editor,
-    // so keep that secondary UI work interruptible while the viewport presents
-    // the already-published GPU result.
-    startTransition(() => setProjectLayers(layers));
-  }, [layers, projectId, serverReadyProjectId, setLayers, setProjectLayers]);
+
+    let pendingLayers: Layer[] | undefined;
+    let syncTimer: number | undefined;
+    const scheduleSync = () => {
+      if (syncTimer !== undefined || !pendingLayers) return;
+      syncTimer = window.setTimeout(flushSync, 220);
+    };
+    const flushSync = () => {
+      syncTimer = undefined;
+      if (!pendingLayers) return;
+      const interactionReserved =
+        isViewportInteractionBusy(420) ||
+        document.body.dataset.perfAutoOrbit === '1' ||
+        document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+        document.body.dataset.perfScenarioMeasuring === '1';
+      if (
+        interactionReserved ||
+        document.body.dataset.perfSuppressProjectLayerSync === '1' ||
+        suppressProjectLayerSyncRef.current > 0
+      ) {
+        scheduleSync();
+        return;
+      }
+      pendingLayers = undefined;
+      // Project snapshots and saves already read the authoritative layer store.
+      // Only mark the project dirty here; mirroring the whole array caused the
+      // 6k-line route to rerender for every eye/projector update.
+      const projectState = useProjectStore.getState();
+      const currentProject = projectState.projects.find((item) => item.id === projectId);
+      if (currentProject && !currentProject.dirty) {
+        startTransition(() => projectState.updateProjectById(projectId, { dirty: true }));
+      }
+    };
+    const unsubscribeLayers = useLayerStore.subscribe((state, previousState) => {
+      if (state.layers === previousState.layers) return;
+      pendingLayers = state.layers;
+      scheduleSync();
+    });
+    const unsubscribeInteraction = subscribeViewportInteraction(scheduleSync);
+    return () => {
+      unsubscribeLayers();
+      unsubscribeInteraction();
+      if (syncTimer !== undefined) window.clearTimeout(syncTimer);
+    };
+  }, [projectId, serverReadyProjectId, setLayers]);
 
   useEffect(() => {
     void objects;
@@ -1481,6 +1562,12 @@ export function EditorPage({
       models.map((model) => getBoundingBoxForObject(model.group)),
     );
     if (!framing) return getViewportThumbnailDataUrl();
+    const captureStartedAt = performance.now();
+    document.body.dataset.projectThumbnailCaptureCount = String(
+      Number(document.body.dataset.projectThumbnailCaptureCount ?? '0') + 1,
+    );
+    document.body.dataset.projectThumbnailCapturePhase =
+      document.body.dataset.perfViewportStressPhase ?? 'explicit';
 
     const cameraFrame = getFrontProjectThumbnailCameraFrame(framing.bounds);
     const camera = new THREE.PerspectiveCamera(
@@ -1550,9 +1637,11 @@ export function EditorPage({
         syncProjectedLayerMaterialProjection(state.group);
       }
       viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
+      document.body.dataset.projectThumbnailCaptureDurationMs = (
+        performance.now() - captureStartedAt
+      ).toFixed(1);
     }
   }
-  standardProjectThumbnailCaptureRef.current = getStandardProjectThumbnailDataUrl;
 
   const getCurrentCameraSnapshot = useCallback(() => {
     const viewportRuntime = useSceneStore.getState().viewport;
@@ -1667,39 +1756,11 @@ export function EditorPage({
     [project],
   );
 
-  const scheduleTexturedThumbnailRefresh = useCallback(
-    (delayMs = 900) => {
-      window.clearTimeout(thumbnailRefreshTimerRef.current);
-      thumbnailRefreshTimerRef.current = window.setTimeout(() => {
-        const thumbnail = standardProjectThumbnailCaptureRef.current();
-        if (thumbnail) updateCurrentProject({ thumbnail });
-      }, delayMs);
-    },
-    [updateCurrentProject],
-  );
-
-  useEffect(() => {
-    if (!project || !importedModel || layers.length === 0) return;
-    const projectedLayerSignature = layers
-      .filter((layer) => layer.type === 'projected')
-      .map((layer) =>
-        [
-          layer.id,
-          layer.visible ? 1 : 0,
-          layer.imageUrl,
-          layer.opacity,
-          layer.strength ?? 1,
-          layer.blendMode,
-          layer.bakedTextureId ?? '',
-          layer.needsRebake ? 1 : 0,
-        ].join(':'),
-      )
-      .join('|');
-    if (!projectedLayerSignature) return;
-    scheduleTexturedThumbnailRefresh(1200);
-    // Thumbnail refresh intentionally follows projected layer visual state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [importedModel, layers, project?.id]);
+  // Do not render synchronous 2048² project thumbnails from background edit
+  // timers. Those callbacks changed the live camera, rendered the full scene,
+  // read it back and PNG-encoded it on the UI thread; one callback measured
+  // 133 ms during otherwise frame-perfect viewport stress. Final-quality
+  // thumbnails are still generated at explicit save/navigation boundaries.
 
   function getImageSize(url: string) {
     return new Promise<{ width: number; height: number }>((resolve) => {
@@ -2417,7 +2478,6 @@ export function EditorPage({
 
     backNavigationPendingRef.current = true;
     window.clearTimeout(autosaveTimerRef.current);
-    window.clearTimeout(thumbnailRefreshTimerRef.current);
     const thumbnail = getStandardProjectThumbnailDataUrl();
     if (thumbnail) updateCurrentProject({ thumbnail });
     const snapshot = getProjectSnapshot();
@@ -2700,10 +2760,6 @@ export function EditorPage({
       }
       if (!isCurrentImport()) return false;
       onProgress?.({ phase: 'registering', phaseProgress: 0.9 }, t('modelImportSavingProject'));
-      window.setTimeout(() => {
-        const thumbnail = getStandardProjectThumbnailDataUrl();
-        if (thumbnail) updateCurrentProject({ thumbnail });
-      }, 300);
       pushToast({
         tone: loaded.result.warnings.length > 0 ? 'warning' : 'success',
         title: 'Model imported',
@@ -2987,7 +3043,6 @@ export function EditorPage({
       const imageUrl = await persistEditedLayerDataUrl(layer, dataUrl, `${layer.id}-${file.name}`);
       updateLayerImage(layer.id, imageUrl);
       setProjectLayers(useLayerStore.getState().layers);
-      scheduleTexturedThumbnailRefresh(layer.type === 'uv' ? 250 : 450);
       pushToast({
         tone: 'success',
         title: t('layerImageReplaced'),
@@ -3041,7 +3096,6 @@ export function EditorPage({
       imageUrl: nextSession.latestImageUrl,
       contentRevision: Math.max((current?.contentRevision ?? 0) + 1, nextSession.latestRevision),
     });
-    scheduleTexturedThumbnailRefresh(snapshot.type === 'uv' ? 250 : 450);
   }
 
   async function openLayerImageEdit(layer: Layer) {
@@ -3139,7 +3193,6 @@ export function EditorPage({
       setProjectLayers(useLayerStore.getState().layers);
       await closePhotoshopSession(session).catch(() => undefined);
       clearPhotoshopEditSession();
-      scheduleTexturedThumbnailRefresh(snapshot.type === 'uv' ? 250 : 450);
       pushToast({
         tone: 'success',
         title: 'Photoshop 纹理已应用',
@@ -3165,7 +3218,6 @@ export function EditorPage({
     if (snapshot) setProjectLayers(useLayerStore.getState().layers);
     if (session) void closePhotoshopSession(session).catch(() => undefined);
     clearPhotoshopEditSession();
-    if (snapshot) scheduleTexturedThumbnailRefresh(snapshot.type === 'uv' ? 250 : 450);
   }
 
   async function handlePhotoshopLaunch() {
@@ -3470,7 +3522,12 @@ export function EditorPage({
       }
       // Do not remove the projected patch until the exact UV replacement has
       // decoded and completed its full striped GPU upload.
-      const previewResults = await prewarmPreviewTextures([imageUrl]);
+      const previewResults = await prewarmPreviewTextures([imageUrl], {
+        // The upload is already split into 1MB stripes and fenced before
+        // publication. Keep advancing one stripe per presented frame so a
+        // continuous rotate/pan gesture cannot deadlock UV repair publication.
+        allowWhileInteracting: true,
+      });
       if (!previewResults.some((result) => result.status === 'fulfilled')) {
         throw new Error('UV repair texture prewarm failed; the projected patch was preserved.');
       }
@@ -3484,7 +3541,6 @@ export function EditorPage({
       });
       updateLayer(uvLayer.id, { isBaked: false, needsRebake: false });
       await applyBakedTextureToObject(importedModel.group, imageUrl);
-      scheduleTexturedThumbnailRefresh(300);
       return uvLayer;
     } catch (error) {
       setLayers(previousLayers);
@@ -3494,12 +3550,7 @@ export function EditorPage({
   }
 
   const addUvContentAwareRepairLayer = useCallback(
-    async (
-      imageData: ImageData,
-      objectId: string,
-      temporary = false,
-      signal?: AbortSignal,
-    ) => {
+    async (imageData: ImageData, objectId: string, temporary = false, signal?: AbortSignal) => {
       const layerId = createId('content-aware-uv-repair');
       const imageUrl = temporary
         ? await blobToDataUrl(
@@ -3541,7 +3592,11 @@ export function EditorPage({
         detail: '修补结果已生成，正在分帧上传完整纹理到 GPU',
         progress: 0.985,
       });
-      const previewResults = await prewarmPreviewTextures([imageUrl]);
+      const previewResults = await prewarmPreviewTextures([imageUrl], {
+        // Interaction remains authoritative, but bounded uploads must still
+        // make forward progress while the user keeps the viewport moving.
+        allowWhileInteracting: true,
+      });
       const previewReady = previewResults.some((result) => result.status === 'fulfilled');
       if (!previewReady) {
         throw new Error('内容识别修补纹理未能完成 GPU 预热；未发布不完整图层。');
@@ -3567,10 +3622,9 @@ export function EditorPage({
         eyeVisible: true,
         publishedAt: performance.now(),
       });
-      if (!temporary) scheduleTexturedThumbnailRefresh(300);
       return layer;
     },
-    [persistLayerImage, scheduleTexturedThumbnailRefresh, setActiveLayer, setLayers, t],
+    [persistLayerImage, setActiveLayer, setLayers, t],
   );
 
   async function acceptLocalRepaint({ continueEditing }: { continueEditing: boolean }) {
@@ -3615,7 +3669,6 @@ export function EditorPage({
         if (runtime.projectId) clearPersistedLocalRepaintRuntime(runtime.projectId);
         clearLocalRepaintRuntime();
       }
-      scheduleTexturedThumbnailRefresh(450);
     } catch (error) {
       pushToast({
         tone: 'error',
@@ -3811,16 +3864,18 @@ export function EditorPage({
       (layer) =>
         isFlattenableUvMergeSource(layer) && (!layer.objectId || layer.objectId === objectId),
     );
-    const selectedUvLayers = [...(baseUvLayer ? [baseUvLayer] : []), ...selectedUvSourceLayers]
-      .sort((left, right) => {
-        // Repair is always a sparse underlay, irrespective of incidental list
-        // order. Ordinary merged UV color stays above it, while new projection
-        // pixels remain the front-most authored result.
-        const underlayOrder =
-          Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right));
-        if (underlayOrder !== 0) return underlayOrder;
-        return compareUvLayersForComposition(left, right, 'top-to-bottom');
-      });
+    const selectedUvLayers = [
+      ...(baseUvLayer ? [baseUvLayer] : []),
+      ...selectedUvSourceLayers,
+    ].sort((left, right) => {
+      // Repair is always a sparse underlay, irrespective of incidental list
+      // order. Ordinary merged UV color stays above it, while new projection
+      // pixels remain the front-most authored result.
+      const underlayOrder =
+        Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right));
+      if (underlayOrder !== 0) return underlayOrder;
+      return compareUvLayersForComposition(left, right, 'top-to-bottom');
+    });
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     const selectedUvLayerIds = selectedUvSourceLayers.map((layer) => layer.id);
     const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
@@ -3962,16 +4017,33 @@ export function EditorPage({
         const layer = selectedUvLayers[index];
         if (webGpuComposite.enabled) {
           try {
-            const result = await compositeRgbaUrlUnderWithWebGpu(
-              mergedRgba,
-              layer.imageUrl,
-              bakeResolution,
-              bakeResolution,
-              layer.opacity,
-              options?.taskContext?.signal,
-            );
+            const encodeInCompositeWorker =
+              Boolean(bakeResult) && index === selectedUvLayers.length - 1;
+            const result = encodeInCompositeWorker
+              ? await compositeRgbaUrlUnderAndEncodePngWithWebGpu(
+                  mergedRgba,
+                  layer.imageUrl,
+                  bakeResolution,
+                  bakeResolution,
+                  layer.opacity,
+                  options?.taskContext?.signal,
+                )
+              : await compositeRgbaUrlUnderWithWebGpu(
+                  mergedRgba,
+                  layer.imageUrl,
+                  bakeResolution,
+                  bakeResolution,
+                  layer.opacity,
+                  options?.taskContext?.signal,
+                );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
-            mergedRgba = result.data;
+            if ('data' in result) {
+              mergedRgba = result.data;
+            } else {
+              mergedImageUrl = result.url;
+              mergedOutputBytes = result.byteLength;
+              pngEncodeDurationMs += result.encodeMs;
+            }
             webGpuComposite.dispatches += 1;
             webGpuComposite.uploadMs += metrics.uploadMs;
             webGpuComposite.computeMs += metrics.computeMs;
@@ -4012,7 +4084,7 @@ export function EditorPage({
       }
       // Store authored albedo only. PBR remains a live viewport operation and
       // is never flattened into the merged UV texture.
-      uvCompositeDurationMs = performance.now() - uvCompositeStartedAt;
+      uvCompositeDurationMs = performance.now() - uvCompositeStartedAt - pngEncodeDurationMs;
       const mergedCoverageRatio =
         bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedRgba);
 
@@ -4024,12 +4096,9 @@ export function EditorPage({
         document.body.dataset.perfUvBakePhase = 'png-encode';
       }
       if (!mergedImageBlob && !mergedImageUrl) {
-        const encoded = await encodeRgbaPngObjectUrl(
-          bakeResolution,
-          bakeResolution,
-          mergedRgba,
-          { transferOwnership: true },
-        );
+        const encoded = await encodeRgbaPngObjectUrl(bakeResolution, bakeResolution, mergedRgba, {
+          transferOwnership: true,
+        });
         mergedImageUrl = encoded.url;
         mergedOutputBytes = encoded.byteLength;
         pngEncodeDurationMs = performance.now() - pngEncodeStartedAt;
@@ -4046,7 +4115,9 @@ export function EditorPage({
         const previewUrl = mergedImageUrl ?? URL.createObjectURL(mergedImageBlob!);
         const previewPrewarmStartedAt = performance.now();
         try {
-          const previewResults = await prewarmPreviewTextures([previewUrl]);
+          const previewResults = await prewarmPreviewTextures([previewUrl], {
+            allowWhileInteracting: true,
+          });
           previewPrewarmReady = previewResults.some((result) => result.status === 'fulfilled');
           if (!previewPrewarmReady) throw new Error('4K UV preview texture prewarm failed.');
         } finally {
@@ -4100,7 +4171,9 @@ export function EditorPage({
         progress: 0.985,
       });
       const previewPrewarmStartedAt = performance.now();
-      const previewResults = await prewarmPreviewTextures([imageUrl]);
+      const previewResults = await prewarmPreviewTextures([imageUrl], {
+        allowWhileInteracting: true,
+      });
       previewPrewarmDurationMs = performance.now() - previewPrewarmStartedAt;
       previewPrewarmReady =
         previewResults.length > 0 &&
@@ -4145,7 +4218,6 @@ export function EditorPage({
         layerId: mergedLayer.id,
         previewPrewarmDurationMs,
       });
-      scheduleTexturedThumbnailRefresh(350);
       pushToast({
         tone: 'success',
         title: t('mergeComplete'),
@@ -4235,10 +4307,10 @@ export function EditorPage({
       let mergedLayer = mergePlan.action === 'reuse' ? mergePlan.mergedLayer : undefined;
       if (mergePlan.action === 'missing') {
         pushToast({
-            tone: 'warning',
-            title: '没有可合并的投影图层',
-            description: '请先生成并显示至少一个投影图层，再传入烘焙。',
-            dedupeKey: 'bake-merged-uv-missing',
+          tone: 'warning',
+          title: '没有可合并的投影图层',
+          description: '请先生成并显示至少一个投影图层，再传入烘焙。',
+          dedupeKey: 'bake-merged-uv-missing',
         });
         return;
       }
@@ -4312,8 +4384,7 @@ export function EditorPage({
       pushToast({
         tone: 'error',
         title: '传入烘焙失败',
-        description:
-          error instanceof Error ? error.message : '保存合并 UV 图层失败，请稍后重试。',
+        description: error instanceof Error ? error.message : '保存合并 UV 图层失败，请稍后重试。',
         dedupeKey: 'bake-merged-uv-persist-failed',
       });
     } finally {
@@ -4323,13 +4394,7 @@ export function EditorPage({
   }
 
   useEffect(() => {
-    if (
-      !autoOpenBake ||
-      !project ||
-      !importedModel ||
-      serverReadyProjectId !== projectId
-    )
-      return;
+    if (!autoOpenBake || !project || !importedModel || serverReadyProjectId !== projectId) return;
     const objectId = pendingBakeHandoff?.objectId ?? importedModel.objectId;
     const sceneState = useSceneStore.getState();
     const targetModel = sceneState.importedModels.find((model) => model.objectId === objectId);
@@ -4474,9 +4539,7 @@ export function EditorPage({
         blob: sourceBlob,
         filename: `pipeline-${revisionId}-high-${sourceName}`,
       });
-      let savedBaseColor:
-        | { asset: { url: string; relativePath: string } }
-        | undefined;
+      let savedBaseColor: { asset: { url: string; relativePath: string } } | undefined;
       let savedBaseColorMimeType = 'image/png';
       if (currentObjectBaseColor) {
         const colorUrl = currentObjectBaseColor.imageUrl;
@@ -4835,14 +4898,15 @@ export function EditorPage({
     // is still selecting the mask.
     if (!generationCapture?.camera) return undefined;
     const objectId = selectedObjectId ?? generationCapture.objectId ?? importedModel.objectId;
-    const generationResultLayer = layers.find(
+    const currentLayers = useLayerStore.getState().layers;
+    const generationResultLayer = currentLayers.find(
       (layer) =>
         layer.type === 'projected' &&
         layer.generationId === latestLocalRepaintGeneration.id &&
         Boolean(layer.replacementTargetLayerId) &&
         (!layer.objectId || layer.objectId === objectId),
     );
-    const targetLayer = layers.find(
+    const targetLayer = currentLayers.find(
       (layer) =>
         layer.id === generationResultLayer?.replacementTargetLayerId &&
         isLocalRepaintDestinationLayer(layer, objectId),
@@ -4925,7 +4989,7 @@ export function EditorPage({
     generations,
     getLocalRepaintProjectionImage,
     importedModel,
-    layers,
+    localRepaintStageLayerSignature,
     paintMaskDataUrl,
     paintTool,
     project,
@@ -5071,8 +5135,7 @@ export function EditorPage({
       }
       const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
       const preparedSourceHasGpuError =
-        document.body.dataset.localRepaintGpuErrorGeneration ===
-          latestLocalRepaintGeneration.id &&
+        document.body.dataset.localRepaintGpuErrorGeneration === latestLocalRepaintGeneration.id &&
         document.body.dataset.localRepaintGpuErrorTarget === targetLayer.id;
       if (
         preparedSource?.generationId === latestLocalRepaintGeneration.id &&
@@ -5245,7 +5308,10 @@ export function EditorPage({
           const sourceDeadline = performance.now() + 25_000;
           while (performance.now() < sourceDeadline) {
             const sceneState = useSceneStore.getState();
-            if (sceneState.localRepaintProjectionSource && sceneState.paintTool === 'inpaint-apply') {
+            if (
+              sceneState.localRepaintProjectionSource &&
+              sceneState.paintTool === 'inpaint-apply'
+            ) {
               return;
             }
             await wait(50);
@@ -5294,9 +5360,7 @@ export function EditorPage({
           }
         }
         history.push(state);
-        document.body.dataset.contentAwareRepairPhaseHistory = JSON.stringify(
-          history.slice(-24),
-        );
+        document.body.dataset.contentAwareRepairPhaseHistory = JSON.stringify(history.slice(-24));
       };
       reportRepairRunState('running', 'prepare');
       const abortController = new AbortController();
@@ -5372,6 +5436,10 @@ export function EditorPage({
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
+          // The repair pipeline consumes straight RGBA directly. Avoid a
+          // redundant 2K ImageData -> Canvas upload followed by an immediate
+          // Canvas -> ImageData readback on the interaction thread.
+          skipCanvasUpload: true,
           onProgress: (progress) =>
             setManualBakeProgress({
               title: t('contentAwareRepair'),
@@ -5385,9 +5453,12 @@ export function EditorPage({
           bakePerformanceBreakdown: bakeResult.report.performanceBreakdown,
         });
         delete document.body.dataset.perfUvBakePhase;
-        const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
-        if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
-        let workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
+        let workingImageData = bakeResult.imageData;
+        if (!workingImageData) {
+          const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
+          if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
+          workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
+        }
         // Projection remains the front layer. Repair deltas are applied in
         // authored top-to-bottom order and contribute only where coverage is
         // still empty, becoming evidence and donors for the next pass.
@@ -5674,9 +5745,10 @@ export function EditorPage({
         delete document.body.dataset.contentAwareRepairRun;
         delete document.body.dataset.contentAwareRepairPhaseHistory;
         await runContentAwareRepair(objectId, { benchmarkOnly: true });
-        const terminal = JSON.parse(
-          document.body.dataset.contentAwareRepairRun ?? '{}',
-        ) as Record<string, unknown>;
+        const terminal = JSON.parse(document.body.dataset.contentAwareRepairRun ?? '{}') as Record<
+          string,
+          unknown
+        >;
         const history = JSON.parse(
           document.body.dataset.contentAwareRepairPhaseHistory ?? '[]',
         ) as Array<Record<string, unknown>>;

@@ -18,10 +18,19 @@ export type RuntimeProjectionVisibility = {
   normalUrl: string;
 };
 
-const cacheByRenderer = new WeakMap<
-  THREE.WebGLRenderer,
-  Map<string, Promise<RuntimeProjectionVisibility>>
->();
+// Runtime visibility resolves to renderer-independent PNG object URLs. Keep a
+// page-wide cache in addition to the renderer-local map so the isolated UV
+// baker can consume the exact depth/normal pair already produced by the live
+// viewport. Without this bridge, content repair rendered every projection a
+// second time on another WebGL context (14 layers on the standard preset).
+const runtimeVisibilityGlobal = globalThis as typeof globalThis & {
+  __liclickRuntimeProjectionVisibilityCache?: Map<string, Promise<RuntimeProjectionVisibility>>;
+};
+const sharedVisibilityCache =
+  runtimeVisibilityGlobal.__liclickRuntimeProjectionVisibilityCache ??
+  new Map<string, Promise<RuntimeProjectionVisibility>>();
+runtimeVisibilityGlobal.__liclickRuntimeProjectionVisibilityCache = sharedVisibilityCache;
+const MAX_SHARED_VISIBILITY_ENTRIES = 64;
 const renderTailByRenderer = new WeakMap<THREE.WebGLRenderer, Promise<void>>();
 const visibilityMaterialsByRenderer = new WeakMap<
   THREE.WebGLRenderer,
@@ -41,7 +50,10 @@ async function withRuntimeVisibilityRenderLock<T>(
   const current = new Promise<void>((resolve) => {
     release = resolve;
   });
-  renderTailByRenderer.set(renderer, previous.then(() => current));
+  renderTailByRenderer.set(
+    renderer,
+    previous.then(() => current),
+  );
   await previous;
   try {
     return await task();
@@ -56,6 +68,7 @@ function stableNumbers(values?: number[]) {
 
 function geometryVersion(group: THREE.Object3D) {
   const parts: string[] = [];
+  let meshIndex = 0;
   group.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     const geometry = object.geometry;
@@ -64,7 +77,10 @@ function geometryVersion(group: THREE.Object3D) {
     const index = geometry.getIndex();
     parts.push(
       [
-        object.uuid,
+        meshIndex++,
+        object.name,
+        object.visible ? 1 : 0,
+        stableNumbers(object.matrix.elements),
         geometry.uuid,
         position?.count ?? 0,
         position?.version ?? 0,
@@ -79,16 +95,47 @@ function geometryVersion(group: THREE.Object3D) {
 }
 
 function createCacheKey(request: RuntimeProjectionDepthRequest) {
+  request.group.updateMatrixWorld(true);
   return [
-    request.group.uuid,
     geometryVersion(request.group),
     request.width,
     request.height,
     stableNumbers(request.camera.viewMatrix),
     stableNumbers(request.camera.projectionMatrix),
-    stableNumbers(request.captureObjectMatrixWorld),
+    stableNumbers(request.captureObjectMatrixWorld ?? request.group.matrixWorld.toArray()),
     request.includeNormal === false ? 'depth-only' : 'depth-normal',
   ].join(':');
+}
+
+function revokeVisibilityPromise(promise: Promise<RuntimeProjectionVisibility>) {
+  void promise.then(({ depthUrl, normalUrl }) => {
+    if (depthUrl.startsWith('blob:')) URL.revokeObjectURL(depthUrl);
+    if (normalUrl.startsWith('blob:')) URL.revokeObjectURL(normalUrl);
+  });
+}
+
+while (sharedVisibilityCache.size > MAX_SHARED_VISIBILITY_ENTRIES) {
+  const oldest = sharedVisibilityCache.entries().next().value as
+    | [string, Promise<RuntimeProjectionVisibility>]
+    | undefined;
+  if (!oldest) break;
+  sharedVisibilityCache.delete(oldest[0]);
+  revokeVisibilityPromise(oldest[1]);
+}
+
+function rememberSharedVisibility(
+  key: string,
+  promise: Promise<RuntimeProjectionVisibility>,
+) {
+  sharedVisibilityCache.set(key, promise);
+  while (sharedVisibilityCache.size > MAX_SHARED_VISIBILITY_ENTRIES) {
+    const oldest = sharedVisibilityCache.entries().next().value as
+      | [string, Promise<RuntimeProjectionVisibility>]
+      | undefined;
+    if (!oldest) break;
+    sharedVisibilityCache.delete(oldest[0]);
+    revokeVisibilityPromise(oldest[1]);
+  }
 }
 
 function createCamera(snapshot: SerializedCamera) {
@@ -267,9 +314,7 @@ function cloneVisibilityGeometry(group: THREE.Object3D) {
       ...(object.userData.liclickObjectId
         ? { liclickObjectId: object.userData.liclickObjectId }
         : {}),
-      ...(object.userData.liclickPaintOverlay
-        ? { liclickPaintOverlay: true }
-        : {}),
+      ...(object.userData.liclickPaintOverlay ? { liclickPaintOverlay: true } : {}),
     };
   });
   try {
@@ -292,9 +337,10 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
   const cloneStartedAt = performance.now();
   const clone = cloneVisibilityGeometry(request.group);
   const cloneMs = performance.now() - cloneStartedAt;
-  const captureRootMatrix = request.captureObjectMatrixWorld?.length === 16
-    ? new THREE.Matrix4().fromArray(request.captureObjectMatrixWorld)
-    : request.group.matrixWorld.clone();
+  const captureRootMatrix =
+    request.captureObjectMatrixWorld?.length === 16
+      ? new THREE.Matrix4().fromArray(request.captureObjectMatrixWorld)
+      : request.group.matrixWorld.clone();
   clone.matrixAutoUpdate = false;
   clone.matrix.copy(captureRootMatrix);
   clone.matrixWorld.copy(captureRootMatrix);
@@ -335,7 +381,14 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
         clearColor: '#ffffff',
         clearAlpha: 1,
       },
-      { dataTexture: true, samples: 0, ignoreSceneBackground: true },
+      {
+        dataTexture: true,
+        samples: 0,
+        ignoreSceneBackground: true,
+        tileSize: 256,
+        waitForViewportIdle: request.waitForViewportIdle,
+        performancePhasePrefix: 'runtime-depth',
+      },
     );
     depthSubmitMs = performance.now() - depthStartedAt;
     const depthUrl = await depthPromise;
@@ -363,7 +416,14 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
         clearColor: new THREE.Color(0.5, 0.5, 0.5),
         clearAlpha: 1,
       },
-      { dataTexture: true, samples: 0, ignoreSceneBackground: true },
+      {
+        dataTexture: true,
+        samples: 0,
+        ignoreSceneBackground: true,
+        tileSize: 256,
+        waitForViewportIdle: request.waitForViewportIdle,
+        performancePhasePrefix: 'runtime-depth',
+      },
     );
     normalSubmitMs = performance.now() - normalStartedAt;
     const normalUrl = await normalPromise;
@@ -400,20 +460,22 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
 }
 
 export function createRuntimeProjectionDepth(request: RuntimeProjectionDepthRequest) {
-  let cache = cacheByRenderer.get(request.renderer);
-  if (!cache) {
-    cache = new Map();
-    cacheByRenderer.set(request.renderer, cache);
-  }
   const key = createCacheKey(request);
-  const cached = cache.get(key);
-  if (cached) return cached;
+  const cached = sharedVisibilityCache.get(key);
+  if (cached) {
+    // Map insertion order gives us a tiny allocation-free LRU. Keeping active
+    // model/camera pairs hot avoids re-rendering 14 depth/normal pairs when UV
+    // baking switches from the live viewport renderer to its isolated context.
+    sharedVisibilityCache.delete(key);
+    sharedVisibilityCache.set(key, cached);
+    return cached;
+  }
   const promise = withRuntimeVisibilityRenderLock(request.renderer, () =>
     renderRuntimeProjectionDepth(request),
   ).catch((error) => {
-    cache?.delete(key);
+    if (sharedVisibilityCache.get(key) === promise) sharedVisibilityCache.delete(key);
     throw error;
   });
-  cache.set(key, promise);
+  rememberSharedVisibility(key, promise);
   return promise;
 }

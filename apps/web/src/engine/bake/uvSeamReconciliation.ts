@@ -53,9 +53,11 @@ function inwardPixelNormal(edgeStart: PixelPoint, edgeEnd: PixelPoint, inside: P
 }
 
 function orientedLike(reference: UvSeamEdgeRecord, candidate: UvSeamEdgeRecord) {
-  const direct = reference.a.position.distanceToSquared(candidate.a.position) +
+  const direct =
+    reference.a.position.distanceToSquared(candidate.a.position) +
     reference.b.position.distanceToSquared(candidate.b.position);
-  const crossed = reference.a.position.distanceToSquared(candidate.b.position) +
+  const crossed =
+    reference.a.position.distanceToSquared(candidate.b.position) +
     reference.b.position.distanceToSquared(candidate.a.position);
   if (direct <= crossed) return candidate;
   return { ...candidate, a: candidate.b, b: candidate.a };
@@ -86,21 +88,29 @@ export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = 
       const indices = [0, 1, 2].map((offset) =>
         index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
       );
-      const endpoints = indices.map((vertexIndex): UvSeamEndpoint => ({
-        position: new THREE.Vector3(
-          position.getX(vertexIndex),
-          position.getY(vertexIndex),
-          position.getZ(vertexIndex),
-        ).applyMatrix4(object.matrixWorld),
-        normal: new THREE.Vector3(
-          normal.getX(vertexIndex),
-          normal.getY(vertexIndex),
-          normal.getZ(vertexIndex),
-        ).applyMatrix3(normalMatrix).normalize(),
-        uv: new THREE.Vector2(uv.getX(vertexIndex), uv.getY(vertexIndex)),
-      }));
+      const endpoints = indices.map(
+        (vertexIndex): UvSeamEndpoint => ({
+          position: new THREE.Vector3(
+            position.getX(vertexIndex),
+            position.getY(vertexIndex),
+            position.getZ(vertexIndex),
+          ).applyMatrix4(object.matrixWorld),
+          normal: new THREE.Vector3(
+            normal.getX(vertexIndex),
+            normal.getY(vertexIndex),
+            normal.getZ(vertexIndex),
+          )
+            .applyMatrix3(normalMatrix)
+            .normalize(),
+          uv: new THREE.Vector2(uv.getX(vertexIndex), uv.getY(vertexIndex)),
+        }),
+      );
 
-      const edgeIndices = [[0, 1, 2], [1, 2, 0], [2, 0, 1]] as const;
+      const edgeIndices = [
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+      ] as const;
       for (const [start, end, inside] of edgeIndices) {
         const record: UvSeamEdgeRecord = {
           a: endpoints[start],
@@ -133,6 +143,150 @@ export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = 
   return pairs;
 }
 
+const cooperativeSeamPairCache = new WeakMap<
+  THREE.Object3D,
+  Map<string, Promise<Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]>>>
+>();
+
+function yieldSeamCollection() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+/**
+ * Byte-for-byte equivalent pair selection to `collectUvSeamPairs`, but model
+ * traversal is split into bounded tasks so a dense mesh cannot monopolize an
+ * interaction frame. Results are cached per model and continuity mode.
+ */
+export function collectUvSeamPairsCooperatively(
+  root: THREE.Object3D,
+  includeDiscontinuous = false,
+) {
+  let cache = cooperativeSeamPairCache.get(root);
+  if (!cache) {
+    cache = new Map();
+    cooperativeSeamPairCache.set(root, cache);
+  }
+  const cacheKey = includeDiscontinuous ? 'all' : 'continuous';
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+  const promise = (async () => {
+    const groupedEdges = new Map<string, UvSeamEdgeRecord[]>();
+    root.updateMatrixWorld(true);
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((object) => {
+      if (object instanceof THREE.Mesh) meshes.push(object);
+    });
+    let trianglesSinceYield = 0;
+    for (const object of meshes) {
+      const geometry = object.geometry;
+      const position = geometry.getAttribute('position');
+      const uv = geometry.getAttribute('uv');
+      if (!position || !uv) continue;
+      if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
+      const normal = geometry.getAttribute('normal');
+      if (!normal) continue;
+      const index = geometry.getIndex();
+      const triangleCount = index ? index.count / 3 : position.count / 3;
+      const normalMatrix = new THREE.Matrix3().getNormalMatrix(object.matrixWorld);
+
+      for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+        const indices = [0, 1, 2].map((offset) =>
+          index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
+        );
+        const endpoints = indices.map(
+          (vertexIndex): UvSeamEndpoint => ({
+            position: new THREE.Vector3(
+              position.getX(vertexIndex),
+              position.getY(vertexIndex),
+              position.getZ(vertexIndex),
+            ).applyMatrix4(object.matrixWorld),
+            normal: new THREE.Vector3(
+              normal.getX(vertexIndex),
+              normal.getY(vertexIndex),
+              normal.getZ(vertexIndex),
+            )
+              .applyMatrix3(normalMatrix)
+              .normalize(),
+            uv: new THREE.Vector2(uv.getX(vertexIndex), uv.getY(vertexIndex)),
+          }),
+        );
+        const edgeIndices = [
+          [0, 1, 2],
+          [1, 2, 0],
+          [2, 0, 1],
+        ] as const;
+        for (const [start, end, inside] of edgeIndices) {
+          const record: UvSeamEdgeRecord = {
+            a: endpoints[start],
+            b: endpoints[end],
+            insideUv: endpoints[inside].uv,
+          };
+          const key = edgeKey(record.a.position, record.b.position);
+          const records = groupedEdges.get(key);
+          if (records) records.push(record);
+          else groupedEdges.set(key, [record]);
+        }
+        trianglesSinceYield += 1;
+        if (trianglesSinceYield >= 1_024) {
+          trianglesSinceYield = 0;
+          await yieldSeamCollection();
+        }
+      }
+    }
+
+    const pairs: Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]> = [];
+    let groupsSinceYield = 0;
+    for (const records of groupedEdges.values()) {
+      if (records.length >= 2) {
+        const uniqueByUv = new Map<string, UvSeamEdgeRecord>();
+        records.forEach((record) => uniqueByUv.set(uvEdgeKey(record), record));
+        const unique = [...uniqueByUv.values()];
+        if (unique.length >= 2) {
+          const reference = unique[0];
+          for (let index = 1; index < unique.length; index += 1) {
+            const candidate = orientedLike(reference, unique[index]);
+            if (includeDiscontinuous || normalsAreContinuous(reference, candidate)) {
+              pairs.push([reference, candidate]);
+            }
+          }
+        }
+      }
+      groupsSinceYield += 1;
+      if (groupsSinceYield >= 4_096) {
+        groupsSinceYield = 0;
+        await yieldSeamCollection();
+      }
+    }
+    return pairs;
+  })().catch((error) => {
+    cache?.delete(cacheKey);
+    throw error;
+  });
+  cache.set(cacheKey, promise);
+  return promise;
+}
+
+export async function serializeUvSeamPairsCooperatively(
+  root: THREE.Object3D,
+  includeDiscontinuous = false,
+) {
+  const pairs = await collectUvSeamPairsCooperatively(root, includeDiscontinuous);
+  const serialized = new Float32Array(pairs.length * 12);
+  let offset = 0;
+  for (let index = 0; index < pairs.length; index += 1) {
+    for (const edge of pairs[index]) {
+      serialized[offset++] = edge.a.uv.x;
+      serialized[offset++] = edge.a.uv.y;
+      serialized[offset++] = edge.b.uv.x;
+      serialized[offset++] = edge.b.uv.y;
+      serialized[offset++] = edge.insideUv.x;
+      serialized[offset++] = edge.insideUv.y;
+    }
+    if (index > 0 && index % 4_096 === 0) await yieldSeamCollection();
+  }
+  return { pairs: serialized, pairCount: pairs.length };
+}
+
 function pixelIndex(point: PixelPoint, width: number, height: number) {
   const x = Math.max(0, Math.min(width - 1, Math.round(point.x)));
   const y = Math.max(0, Math.min(height - 1, Math.round(point.y)));
@@ -159,8 +313,16 @@ export function reconcileUvSeams(
     const firstEnd = toPixel(first.b.uv, width, height);
     const secondStart = toPixel(second.a.uv, width, height);
     const secondEnd = toPixel(second.b.uv, width, height);
-    const firstInward = inwardPixelNormal(firstStart, firstEnd, toPixel(first.insideUv, width, height));
-    const secondInward = inwardPixelNormal(secondStart, secondEnd, toPixel(second.insideUv, width, height));
+    const firstInward = inwardPixelNormal(
+      firstStart,
+      firstEnd,
+      toPixel(first.insideUv, width, height),
+    );
+    const secondInward = inwardPixelNormal(
+      secondStart,
+      secondEnd,
+      toPixel(second.insideUv, width, height),
+    );
     const samples = Math.max(
       1,
       Math.ceil(

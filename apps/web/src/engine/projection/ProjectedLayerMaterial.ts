@@ -30,6 +30,7 @@ export type ProjectedLayerProjectionData = {
     objectMatrixWorld?: number[];
     objectMatrixDeltaUniform: string;
     objectNormalDeltaUniform: string;
+    arrayIndex?: number;
   }>;
 };
 
@@ -73,6 +74,18 @@ export function syncProjectedLayerMaterialProjection(root: THREE.Object3D) {
           normalUniform.value.copy(normalDelta);
         } else if (normalUniform) {
           normalUniform.value = normalDelta.clone();
+        }
+        if (layer.arrayIndex !== undefined) {
+          const compactMatrices = material.uniforms.compactObjectMatrixDeltas?.value;
+          const compactNormals = material.uniforms.compactObjectNormalDeltas?.value;
+          if (Array.isArray(compactMatrices)) {
+            const target = compactMatrices[layer.arrayIndex];
+            if (target instanceof THREE.Matrix4) target.copy(matrixDelta);
+          }
+          if (Array.isArray(compactNormals)) {
+            const target = compactNormals[layer.arrayIndex];
+            if (target instanceof THREE.Matrix3) target.copy(normalDelta);
+          }
         }
       }
     }
@@ -149,6 +162,7 @@ type ProjectedLayerUniformBinding = {
   saturationUniform: string;
   lightnessUniform: string;
   overlayUniform?: string;
+  arrayIndex?: number;
 };
 
 type ProjectedLayerMaterialState = {
@@ -852,6 +866,20 @@ function buildStackFragmentShader(
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].depthUrl);
   const layerUsesNormalArray = (index: number) =>
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].normalUrl);
+  const useCompactArrayLoop = Boolean(
+    features.useTextureArrays &&
+    layers.every(
+      (layer, index) =>
+        layerUsesProjectedArray(index) &&
+        layer.projectedArraySlice !== undefined &&
+        (!layerUsesMask(index) ||
+          (layerUsesMaskArray(index) && layer.maskArraySlice !== undefined)) &&
+        (!layerUsesDepth(index) ||
+          (layerUsesDepthArray(index) && layer.depthArraySlice !== undefined)) &&
+        (!layerUsesNormal(index) ||
+          (layerUsesNormalArray(index) && layer.normalArraySlice !== undefined)),
+    ),
+  );
   const arraySliceIndex = (index: number, predicate: (candidateIndex: number) => boolean) =>
     Array.from({ length: index }, (_, candidateIndex) => candidateIndex).filter(predicate).length;
   const projectedArraySlice = (index: number) =>
@@ -872,8 +900,7 @@ function buildStackFragmentShader(
     layers[index].normalArraySlice ??
     arraySliceIndex(
       index,
-      (candidateIndex) =>
-        layerUsesNormal(candidateIndex) && layerUsesNormalArray(candidateIndex),
+      (candidateIndex) => layerUsesNormal(candidateIndex) && layerUsesNormalArray(candidateIndex),
     );
   const projectedSample = (index: number, uv: string) =>
     layerUsesProjectedArray(index)
@@ -898,17 +925,96 @@ function buildStackFragmentShader(
         useLiveEraserMask *
           (1.0 - step(0.5, abs(liveEraserLayerIndex - ${index.toFixed(1)})))
       )`;
-  const visibilitySample = (index: number, uv: string) =>
-    `computeVisibilitySample(
-      ${layerUsesDepth(index) ? depthSample(index, uv) : 'vec4(1.0)'},
-      ${layerUsesNormal(index) ? normalSample(index, uv) : 'vec4(0.5, 0.5, 0.5, 1.0)'},
-      projectedMetric, depthTolerance, projectedFaceNormal,
+  // The 3x3 visibility neighborhood used to inline the complete depth/normal
+  // decode expression nine times per layer. At 14 layers ANGLE had to compile
+  // hundreds of repeated sampler/branch expressions, producing a 300ms main-
+  // thread link frame. Keep the exact nine samples and math, but compile each
+  // layer's sampler contract once behind a tiny helper.
+  const compactHasMaskArray = layers.some((_layer, index) => layerUsesMask(index));
+  const compactHasDepthArray = layers.some((_layer, index) => layerUsesDepth(index));
+  const compactHasNormalArray = layers.some((_layer, index) => layerUsesNormal(index));
+  const visibilityFunctionDefinitions = useCompactArrayLoop
+    ? `
+  float computeCompactVisibility(
+    int layerIndex,
+    vec2 sampleUv,
+    float projectedMetric,
+    float depthTolerance,
+    vec3 projectedFaceNormal
+  ) {
+    vec4 depthTexel = vec4(1.0);
+    vec4 normalTexel = vec4(0.5, 0.5, 0.5, 1.0);
+    ${
+      compactHasDepthArray
+        ? `if (compactUseDepths[layerIndex] > 0.5) {
+      depthTexel = texture(
+        depthMaps,
+        vec3(
+          sampleUv * compactDepthMapUvScales[layerIndex],
+          compactDepthArraySlices[layerIndex]
+        )
+      );
+    }`
+        : ''
+    }
+    ${
+      compactHasNormalArray
+        ? `if (compactUseNormals[layerIndex] > 0.5) {
+      normalTexel = texture(
+        normalMaps,
+        vec3(
+          sampleUv * compactNormalMapUvScales[layerIndex],
+          compactNormalArraySlices[layerIndex]
+        )
+      );
+    }`
+        : ''
+    }
+    return computeVisibilitySample(
+      depthTexel,
+      normalTexel,
+      projectedMetric,
+      depthTolerance,
+      projectedFaceNormal,
+      compactUseDepths[layerIndex],
+      compactUseNormals[layerIndex],
+      compactSurfaceLocks[layerIndex],
+      compactDepthIsLinear[layerIndex],
+      compactProjectorNears[layerIndex],
+      compactProjectorFars[layerIndex]
+    );
+  }
+`
+    : Array.from({ length: layerCount }, (_, index) =>
+        !layerUsesDepth(index) && !layerUsesNormal(index)
+          ? ''
+          : `
+  float computeLayerVisibility${index}(
+    vec2 sampleUv,
+    float projectedMetric,
+    float depthTolerance,
+    vec3 projectedFaceNormal
+  ) {
+    return computeVisibilitySample(
+      ${layerUsesDepth(index) ? depthSample(index, 'sampleUv') : 'vec4(1.0)'},
+      ${layerUsesNormal(index) ? normalSample(index, 'sampleUv') : 'vec4(0.5, 0.5, 0.5, 1.0)'},
+      projectedMetric,
+      depthTolerance,
+      projectedFaceNormal,
       ${layerUsesDepth(index) ? '1.0' : '0.0'},
       ${layerUsesNormal(index) ? '1.0' : '0.0'},
       ${layerUsesSurfaceLock(index) ? '1.0' : '0.0'},
       ${layers[index].depthIsLinearView ? '1.0' : '0.0'},
-      projectorNear${index}, projectorFar${index}
-    )`;
+      projectorNear${index},
+      projectorFar${index}
+    );
+  }
+`,
+      ).join('');
+  const visibilitySample = (index: number, uv: string) =>
+    !layerUsesDepth(index) && !layerUsesNormal(index)
+      ? '1.0'
+      : `computeLayerVisibility${index}(${uv}, projectedMetric, depthTolerance, projectedFaceNormal)`;
   const visibilityNeighborhood = (index: number) => {
     if (!layerUsesDepth(index) && !layerUsesNormal(index)) {
       return `float visibilityCoverage = ${visibilitySample(index, 'uv')};`;
@@ -953,14 +1059,54 @@ function buildStackFragmentShader(
       float visibilityCoverage =
         max(neighborhoodVisibility, centerBackedVisibility) *
         smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
-      ${layerUsesSurfaceLock(index) ? `visibilityCoverage =
+      ${
+        layerUsesSurfaceLock(index)
+          ? `visibilityCoverage =
         centerVisibility *
         max(neighborhoodVisibility, centerBackedVisibility) *
-        smoothstep(0.08, 0.16, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))));` : ''}`;
+        smoothstep(0.08, 0.16, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))));`
+          : ''
+      }`;
   };
-  const uniformDeclarations = Array.from(
-    { length: layerCount },
-    (_, index) => `
+  const uniformDeclarations = useCompactArrayLoop
+    ? `
+  const int COMPACT_LAYER_CAPACITY = ${layerCount};
+  uniform int compactLayerCount;
+  uniform mat4 compactProjectorMatrices[COMPACT_LAYER_CAPACITY];
+  uniform mat4 compactObjectMatrixDeltas[COMPACT_LAYER_CAPACITY];
+  uniform mat3 compactObjectNormalDeltas[COMPACT_LAYER_CAPACITY];
+  uniform mat4 compactProjectorViewMatrices[COMPACT_LAYER_CAPACITY];
+  uniform vec3 compactProjectorPositions[COMPACT_LAYER_CAPACITY];
+  uniform vec2 compactProjectedMapUvScales[COMPACT_LAYER_CAPACITY];
+  uniform vec2 compactMaskMapUvScales[COMPACT_LAYER_CAPACITY];
+  uniform vec2 compactDepthMapUvScales[COMPACT_LAYER_CAPACITY];
+  uniform vec2 compactNormalMapUvScales[COMPACT_LAYER_CAPACITY];
+  uniform vec2 compactVisibilityTexelSizes[COMPACT_LAYER_CAPACITY];
+  uniform float compactProjectedArraySlices[COMPACT_LAYER_CAPACITY];
+  uniform float compactMaskArraySlices[COMPACT_LAYER_CAPACITY];
+  uniform float compactDepthArraySlices[COMPACT_LAYER_CAPACITY];
+  uniform float compactNormalArraySlices[COMPACT_LAYER_CAPACITY];
+  uniform float compactUseMasks[COMPACT_LAYER_CAPACITY];
+  uniform float compactMaskUsesUv[COMPACT_LAYER_CAPACITY];
+  uniform float compactUseDepths[COMPACT_LAYER_CAPACITY];
+  uniform float compactUseNormals[COMPACT_LAYER_CAPACITY];
+  uniform float compactSurfaceLocks[COMPACT_LAYER_CAPACITY];
+  uniform float compactDepthIsLinear[COMPACT_LAYER_CAPACITY];
+  uniform float compactRenderedColors[COMPACT_LAYER_CAPACITY];
+  uniform float compactMinimumFacings[COMPACT_LAYER_CAPACITY];
+  uniform float compactCompositeRoles[COMPACT_LAYER_CAPACITY];
+  uniform float compactProjectorNears[COMPACT_LAYER_CAPACITY];
+  uniform float compactProjectorFars[COMPACT_LAYER_CAPACITY];
+  uniform float compactLayerOpacities[COMPACT_LAYER_CAPACITY];
+  uniform float compactLayerStrengths[COMPACT_LAYER_CAPACITY];
+  uniform float compactHueShifts[COMPACT_LAYER_CAPACITY];
+  uniform float compactSaturationShifts[COMPACT_LAYER_CAPACITY];
+  uniform float compactLightnessShifts[COMPACT_LAYER_CAPACITY];
+  uniform float compactOverlayModes[COMPACT_LAYER_CAPACITY];
+`
+    : Array.from(
+        { length: layerCount },
+        (_, index) => `
   ${layerUsesProjectedArray(index) ? `uniform vec2 projectedMapUvScale${index};` : `uniform sampler2D projectedMap${index};`}
   ${layerUsesMask(index) ? (layerUsesMaskArray(index) ? `uniform vec2 maskMapUvScale${index};` : `uniform sampler2D maskMap${index};`) : ''}
   ${layerUsesDepth(index) ? (layerUsesDepthArray(index) ? `uniform vec2 depthMapUvScale${index};` : `uniform sampler2D depthMap${index};`) : ''}
@@ -980,26 +1126,331 @@ function buildStackFragmentShader(
   uniform float lightnessShift${index};
   uniform float layerOverlayMode${index};
 `,
-  ).join('');
+      ).join('');
 
-  const effectiveCompositeRole = (index: number) =>
-    layers[index].compositeRole === 'underlay' ? 'underlay' : 'normal';
+  const effectiveCompositeRole = (index: number) => layers[index].compositeRole ?? 'normal';
 
   // Normal/Overlay is presentation state, not material structure. Evaluate each
   // ordinary projection once, then route the result with a uniform so toggling
   // never recompiles the shader or re-uploads a 4K texture array.
-  const dynamicOverlayDeclarations = Array.from({ length: layerCount }, (_, index) =>
-    effectiveCompositeRole(index) === 'underlay'
-      ? ''
-      : `
+  const dynamicOverlayDeclarations = useCompactArrayLoop
+    ? ''
+    : Array.from({ length: layerCount }, (_, index) =>
+        effectiveCompositeRole(index) !== 'normal'
+          ? ''
+          : `
     vec3 pendingOverlayColor${index} = vec3(0.0);
     float pendingOverlayAlpha${index} = 0.0;
 `,
-  ).join('');
+      ).join('');
+
+  const buildCompactEvaluation = () => `
+    {
+      for (int layerIndex = 0; layerIndex < compactLayerCount; layerIndex++) {
+        if (compactLayerOpacities[layerIndex] > 0.0001) {
+          vec4 captureWorldPosition =
+            compactObjectMatrixDeltas[layerIndex] * vec4(vWorldPosition, 1.0);
+          vec3 captureWorldNormal = normalize(
+            compactObjectNormalDeltas[layerIndex] * vWorldNormal
+          );
+          vec4 projected = compactProjectorMatrices[layerIndex] * captureWorldPosition;
+          float projectedW = projected.w <= 0.0
+            ? -max(abs(projected.w), 0.0001)
+            : max(projected.w, 0.0001);
+          vec3 ndc = projected.xyz / projectedW;
+          vec2 uv = ndc.xy * 0.5 + 0.5;
+          uv.y = 1.0 - uv.y;
+
+          float inX = step(-1.0, ndc.x) * step(ndc.x, 1.0);
+          float inY = step(-1.0, ndc.y) * step(ndc.y, 1.0);
+          float inZ = step(-1.0, ndc.z) * step(ndc.z, 1.0);
+          float hasW = step(0.0001, projected.w);
+          float inside = inX * inY * inZ * hasW;
+
+          vec3 projectorViewDir = normalize(
+            compactProjectorPositions[layerIndex] - captureWorldPosition.xyz
+          );
+          float ndv = dot(captureWorldNormal, projectorViewDir);
+          float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
+          float backfaceAlpha = mix(
+            mix(1.0, frontFacing, enableBackfaceCulling),
+            1.0,
+            compactUseDepths[layerIndex]
+          );
+
+          vec4 maskTexel = vec4(1.0);
+          ${
+            compactHasMaskArray
+              ? `if (compactUseMasks[layerIndex] > 0.5) {
+            vec2 maskUv = mix(
+              uv,
+              vec2(vUv.x, 1.0 - vUv.y),
+              compactMaskUsesUv[layerIndex]
+            );
+            maskTexel = texture(
+              maskMaps,
+              vec3(
+                maskUv * compactMaskMapUvScales[layerIndex],
+                compactMaskArraySlices[layerIndex]
+              )
+            );
+          }`
+              : ''
+          }
+          float maskAlpha = mix(
+            1.0,
+            dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a,
+            compactUseMasks[layerIndex]
+          );
+          maskAlpha *= mix(
+            1.0,
+            liveEraserMaskAlpha,
+            useLiveEraserMask *
+              (1.0 - step(0.5, abs(liveEraserLayerIndex - float(layerIndex))))
+          );
+
+          float projectedDepth = ndc.z * 0.5 + 0.5;
+          float projectedViewDepth = -(
+            compactProjectorViewMatrices[layerIndex] * captureWorldPosition
+          ).z;
+          float projectedMetric = mix(
+            projectedDepth,
+            projectedViewDepth,
+            compactUseDepths[layerIndex] * compactDepthIsLinear[layerIndex]
+          );
+          float depthTolerance = mix(
+            ${DEPTH_EPSILON.toFixed(4)},
+            max(depthBias * 0.25, projectedViewDepth * 0.00075),
+            compactUseDepths[layerIndex] * compactDepthIsLinear[layerIndex]
+          );
+          vec3 captureViewPosition = (
+            compactProjectorViewMatrices[layerIndex] * captureWorldPosition
+          ).xyz;
+          vec3 projectedFaceNormal = normalize(
+            cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
+          );
+          vec3 captureViewVertexNormal = normalize(
+            mat3(compactProjectorViewMatrices[layerIndex]) * captureWorldNormal
+          );
+          projectedFaceNormal *= mix(
+            1.0,
+            -1.0,
+            step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0)
+          );
+
+          float minimumFacing = compactMinimumFacings[layerIndex];
+          float projectionFacingCoverage = mix(
+            1.0,
+            smoothstep(
+              minimumFacing,
+              min(0.999, minimumFacing + ${PROJECTION_FACING_FEATHER.toFixed(3)}),
+              abs(dot(projectedFaceNormal, normalize(-captureViewPosition)))
+            ),
+            step(0.0001, minimumFacing)
+          );
+          float visibilityCoverage = 1.0;
+          if (compactUseDepths[layerIndex] + compactUseNormals[layerIndex] > 0.5) {
+            float faceOnFactor = abs(projectedFaceNormal.z);
+            float grazingConfidence = smoothstep(
+              ${MIN_CAPTURE_FACE_ON.toFixed(2)},
+              ${FULL_CAPTURE_FACE_ON.toFixed(2)},
+              faceOnFactor
+            );
+            float grazingDepthScale = mix(
+              ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
+              1.0,
+              grazingConfidence
+            );
+            depthTolerance *= mix(
+              1.0,
+              grazingDepthScale,
+              compactUseNormals[layerIndex]
+            );
+            vec2 visibilityTexelSize = compactVisibilityTexelSizes[layerIndex];
+            float centerVisibility = computeCompactVisibility(
+              layerIndex,
+              uv,
+              projectedMetric,
+              depthTolerance,
+              projectedFaceNormal
+            );
+            float visibilitySupport = centerVisibility;
+            visibilitySupport += computeCompactVisibility(layerIndex, uv + vec2(visibilityTexelSize.x, 0.0), projectedMetric, depthTolerance, projectedFaceNormal);
+            visibilitySupport += computeCompactVisibility(layerIndex, uv - vec2(visibilityTexelSize.x, 0.0), projectedMetric, depthTolerance, projectedFaceNormal);
+            visibilitySupport += computeCompactVisibility(layerIndex, uv + vec2(0.0, visibilityTexelSize.y), projectedMetric, depthTolerance, projectedFaceNormal);
+            visibilitySupport += computeCompactVisibility(layerIndex, uv - vec2(0.0, visibilityTexelSize.y), projectedMetric, depthTolerance, projectedFaceNormal);
+            visibilitySupport += computeCompactVisibility(layerIndex, uv + visibilityTexelSize, projectedMetric, depthTolerance, projectedFaceNormal);
+            visibilitySupport += computeCompactVisibility(layerIndex, uv - visibilityTexelSize, projectedMetric, depthTolerance, projectedFaceNormal);
+            visibilitySupport += computeCompactVisibility(layerIndex, uv + vec2(visibilityTexelSize.x, -visibilityTexelSize.y), projectedMetric, depthTolerance, projectedFaceNormal);
+            visibilitySupport += computeCompactVisibility(layerIndex, uv + vec2(-visibilityTexelSize.x, visibilityTexelSize.y), projectedMetric, depthTolerance, projectedFaceNormal);
+            float requiredVisibilitySupport = mix(
+              ${MAX_GRAZING_VISIBILITY_SUPPORT.toFixed(1)},
+              ${MIN_VISIBILITY_SUPPORT.toFixed(1)},
+              grazingConfidence
+            );
+            float neighborhoodVisibility = smoothstep(
+              requiredVisibilitySupport - ${VISIBILITY_SUPPORT_FEATHER.toFixed(2)},
+              requiredVisibilitySupport + 0.5,
+              visibilitySupport
+            );
+            float centerBackedVisibility =
+              centerVisibility *
+              mix(0.35, 1.0, grazingConfidence) *
+              max(
+                compactUseNormals[layerIndex],
+                smoothstep(
+                  ${MIN_CAPTURE_FACE_ON.toFixed(2)},
+                  ${FULL_CAPTURE_FACE_ON.toFixed(2)},
+                  faceOnFactor
+                )
+              );
+            visibilityCoverage =
+              max(neighborhoodVisibility, centerBackedVisibility) *
+              smoothstep(
+                ${MIN_CAPTURE_FACE_ON.toFixed(2)},
+                ${FACE_ON_VISIBILITY_FULL.toFixed(2)},
+                faceOnFactor
+              );
+            if (compactSurfaceLocks[layerIndex] > 0.5) {
+              visibilityCoverage =
+                centerVisibility *
+                max(neighborhoodVisibility, centerBackedVisibility) *
+                smoothstep(
+                  0.08,
+                  0.16,
+                  abs(dot(projectedFaceNormal, normalize(-captureViewPosition)))
+                );
+            }
+          }
+          float depthWeight = mix(0.7, 1.0, visibilityCoverage);
+          vec4 texel = texture(
+            projectedMaps,
+            vec3(
+              uv * compactProjectedMapUvScales[layerIndex],
+              compactProjectedArraySlices[layerIndex]
+            )
+          );
+          texel.rgb = applyHsvAdjustments(
+            texel.rgb,
+            compactHueShifts[layerIndex],
+            compactSaturationShifts[layerIndex],
+            compactLightnessShifts[layerIndex]
+          );
+          texel.rgb *= mix(
+            lambert,
+            1.0 / max(previewExposure, 0.0001),
+            compactRenderedColors[layerIndex]
+          );
+          float sourceAlpha = texel.a * maskAlpha;
+          float alphaCoverage = step(0.01, sourceAlpha);
+          float normalAngleCoverage = smoothstep(
+            ${NDV_COVERAGE_START.toFixed(2)},
+            ${NDV_COVERAGE_END.toFixed(2)},
+            ndv
+          );
+          float depthAngleCoverage = smoothstep(
+            ${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)},
+            ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)},
+            abs(ndv)
+          );
+          float surfaceAngleCoverage = smoothstep(
+            0.08,
+            0.16,
+            abs(dot(projectedFaceNormal, normalize(-captureViewPosition)))
+          );
+          float angleCoverage = mix(
+            normalAngleCoverage,
+            depthAngleCoverage,
+            compactUseDepths[layerIndex]
+          );
+          angleCoverage = mix(
+            angleCoverage,
+            surfaceAngleCoverage,
+            compactSurfaceLocks[layerIndex]
+          );
+          float coverageEdge = computeImageEdgeFade(
+            uv,
+            ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)}
+          );
+          float coverage = clamp(
+            compactLayerOpacities[layerIndex] *
+              sourceAlpha *
+              angleCoverage *
+              visibilityCoverage *
+              projectionFacingCoverage *
+              mix(0.35, 1.0, coverageEdge),
+            0.0,
+            1.0
+          );
+          float angleWeight = computeAngleWeight(
+            mix(ndv, abs(ndv), compactUseDepths[layerIndex]),
+            compactLayerStrengths[layerIndex]
+          );
+          float qualityEdge = computeImageEdgeFade(
+            uv,
+            ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)}
+          );
+          float quality = coverage *
+            depthWeight *
+            angleWeight *
+            mix(0.3, 1.0, qualityEdge);
+          if (
+            inside * backfaceAlpha * alphaCoverage > 0.5 &&
+            coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}
+          ) {
+            float isUnderlay = 1.0 - step(
+              0.5,
+              abs(compactCompositeRoles[layerIndex])
+            );
+            float isOverlay = max(
+              1.0 - step(
+                0.5,
+                abs(compactCompositeRoles[layerIndex] - 2.0)
+              ),
+              (1.0 - step(
+                0.5,
+                abs(compactCompositeRoles[layerIndex] - 1.0)
+              )) * step(0.5, compactOverlayModes[layerIndex])
+            );
+            if (isOverlay > 0.5) {
+              float qualityFade = smoothstep(
+                0.0,
+                0.15,
+                max(quality, coverage * 0.25)
+              );
+              float overlayAlpha = clamp(
+                coverage * mix(0.75, 1.0, qualityFade),
+                0.0,
+                1.0
+              );
+              projectedDepthCoverage = max(
+                projectedDepthCoverage,
+                overlayAlpha
+              );
+              compactOverlayColor = mix(
+                compactOverlayColor,
+                texel.rgb,
+                overlayAlpha
+              );
+              compactOverlayTransmission *= 1.0 - overlayAlpha;
+            } else {
+              projectedDepthCoverage = max(projectedDepthCoverage, coverage);
+              insertCompactBlendCandidate(
+                isUnderlay > 0.5 ? 0 : 3,
+                texel.rgb,
+                coverage,
+                quality
+              );
+            }
+          }
+        }
+      }
+    }
+`;
 
   const buildCandidateEvaluations = (role: 'normal' | 'underlay') =>
     Array.from({ length: layerCount }, (_, index) =>
-      (role === 'underlay') !== (effectiveCompositeRole(index) === 'underlay')
+      effectiveCompositeRole(index) !== role
         ? ''
         : `
     if (layerOpacity${index} > 0.0001) {
@@ -1058,10 +1509,9 @@ function buildStackFragmentShader(
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
           ? `smoothstep(0.08, 0.16, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
-          :
-        layerUsesDepth(index)
-          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
-          : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
+          : layerUsesDepth(index)
+            ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
+            : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
@@ -1086,13 +1536,16 @@ function buildStackFragmentShader(
     }
 `,
     ).join('');
-  const underlayEvaluations = buildCandidateEvaluations('underlay');
-  const blendEvaluations = buildCandidateEvaluations('normal');
+  const compactEvaluation = useCompactArrayLoop ? buildCompactEvaluation() : '';
+  const underlayEvaluations = useCompactArrayLoop ? '' : buildCandidateEvaluations('underlay');
+  const blendEvaluations = useCompactArrayLoop ? '' : buildCandidateEvaluations('normal');
 
-  const overlayEvaluations = Array.from({ length: layerCount }, (_, index) =>
-    effectiveCompositeRole(index) !== 'overlay'
-      ? ''
-      : `
+  const overlayEvaluations = useCompactArrayLoop
+    ? ''
+    : Array.from({ length: layerCount }, (_, index) =>
+        effectiveCompositeRole(index) !== 'overlay'
+          ? ''
+          : `
     if (layerOpacity${index} > 0.0001) {
       vec4 captureWorldPosition = objectMatrixDelta${index} * vec4(vWorldPosition, 1.0);
       vec3 captureWorldNormal = normalize(objectNormalDelta${index} * vWorldNormal);
@@ -1149,10 +1602,9 @@ function buildStackFragmentShader(
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
           ? `smoothstep(0.08, 0.16, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
-          :
-        layerUsesDepth(index)
-          ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
-          : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
+          : layerUsesDepth(index)
+            ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
+            : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
       };
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
@@ -1169,16 +1621,69 @@ function buildStackFragmentShader(
       }
     }
 `,
-  ).join('') +
-  Array.from({ length: layerCount }, (_, index) =>
-    effectiveCompositeRole(index) === 'underlay'
-      ? ''
-      : `
+      ).join('') +
+      Array.from({ length: layerCount }, (_, index) =>
+        effectiveCompositeRole(index) !== 'normal'
+          ? ''
+          : `
     if (layerOverlayMode${index} > 0.5 && pendingOverlayAlpha${index} > 0.0001) {
       mixedColor = mix(mixedColor, pendingOverlayColor${index}, pendingOverlayAlpha${index});
     }
 `,
-  ).join('');
+      ).join('');
+
+  const compactBlendHelpers = useCompactArrayLoop
+    ? `
+  float compactTopQuality[6];
+  float compactTopCoverage[6];
+  vec3 compactTopColor[6];
+  vec3 compactOverlayColor;
+  float compactOverlayTransmission;
+
+  void insertCompactBlendCandidate(
+    int offset,
+    vec3 color,
+    float coverage,
+    float quality
+  ) {
+    float score = max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)});
+    if (score > compactTopQuality[offset]) {
+      compactTopCoverage[offset + 2] = compactTopCoverage[offset + 1];
+      compactTopQuality[offset + 2] = compactTopQuality[offset + 1];
+      compactTopColor[offset + 2] = compactTopColor[offset + 1];
+      compactTopCoverage[offset + 1] = compactTopCoverage[offset];
+      compactTopQuality[offset + 1] = compactTopQuality[offset];
+      compactTopColor[offset + 1] = compactTopColor[offset];
+      compactTopCoverage[offset] = coverage;
+      compactTopQuality[offset] = score;
+      compactTopColor[offset] = color;
+    } else if (score > compactTopQuality[offset + 1]) {
+      compactTopCoverage[offset + 2] = compactTopCoverage[offset + 1];
+      compactTopQuality[offset + 2] = compactTopQuality[offset + 1];
+      compactTopColor[offset + 2] = compactTopColor[offset + 1];
+      compactTopCoverage[offset + 1] = coverage;
+      compactTopQuality[offset + 1] = score;
+      compactTopColor[offset + 1] = color;
+    } else if (score > compactTopQuality[offset + 2]) {
+      compactTopCoverage[offset + 2] = coverage;
+      compactTopQuality[offset + 2] = score;
+      compactTopColor[offset + 2] = color;
+    }
+  }
+
+  void loadCompactBlendCandidates(int offset) {
+    topCoverage0 = compactTopCoverage[offset];
+    topCoverage1 = compactTopCoverage[offset + 1];
+    topCoverage2 = compactTopCoverage[offset + 2];
+    topQuality0 = compactTopQuality[offset];
+    topQuality1 = compactTopQuality[offset + 1];
+    topQuality2 = compactTopQuality[offset + 2];
+    topColor0 = compactTopColor[offset];
+    topColor1 = compactTopColor[offset + 1];
+    topColor2 = compactTopColor[offset + 2];
+  }
+`
+    : '';
 
   return `
   ${uniformDeclarations}
@@ -1309,6 +1814,8 @@ function buildStackFragmentShader(
     return depthVisibility * mix(1.0, normalVisibility, sampleUsesNormal);
   }
 
+  ${visibilityFunctionDefinitions}
+
   float unpackLinearViewDepth(vec4 rgbDepth) {
     return dot(
       rgbDepth.rgb,
@@ -1420,9 +1927,9 @@ function buildStackFragmentShader(
     vec3 consistencyDiff0 = topColor0 - consistencyBase;
     vec3 consistencyDiff1 = topColor1 - consistencyBase;
     vec3 consistencyDiff2 = topColor2 - consistencyBase;
-    float consistencySigmaSquared = ${(
-      COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA
-    ).toFixed(4)};
+    float consistencySigmaSquared = ${(COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA).toFixed(
+      4,
+    )};
     float adjustedQuality0 = topQuality0 * (
       0.35 + 0.65 * exp(-dot(consistencyDiff0, consistencyDiff0) / consistencySigmaSquared)
     );
@@ -1447,6 +1954,8 @@ function buildStackFragmentShader(
       smoothstep(${DOMINANCE_MARGIN_START.toFixed(2)}, ${DOMINANCE_MARGIN_END.toFixed(2)}, adjustedQuality0 - adjustedQuality1);
     return mix(fallbackColor, mix(blendedColor, topColor0, dominance), projectionMix);
   }
+
+  ${compactBlendHelpers}
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
@@ -1523,7 +2032,24 @@ function buildStackFragmentShader(
     )`
         : 'computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal))'
     };
-    topCoverage0 = 0.0;
+    ${
+      useCompactArrayLoop
+        ? `for (int compactCandidateIndex = 0; compactCandidateIndex < 6; compactCandidateIndex++) {
+      compactTopCoverage[compactCandidateIndex] = 0.0;
+      compactTopQuality[compactCandidateIndex] = 0.0;
+      compactTopColor[compactCandidateIndex] = vec3(0.0);
+    }
+    compactOverlayColor = vec3(0.0);
+    compactOverlayTransmission = 1.0;
+
+    ${compactEvaluation}
+
+    loadCompactBlendCandidates(0);
+    vec3 underlayColor = composeBlendBase(shadedBase);
+    loadCompactBlendCandidates(3);
+    vec3 mixedColor = composeBlendBase(underlayColor);
+    mixedColor = mixedColor * compactOverlayTransmission + compactOverlayColor;`
+        : `topCoverage0 = 0.0;
     topCoverage1 = 0.0;
     topCoverage2 = 0.0;
     topQuality0 = 0.0;
@@ -1550,7 +2076,8 @@ function buildStackFragmentShader(
     ${blendEvaluations}
 
     vec3 mixedColor = composeBlendBase(underlayColor);
-    ${overlayEvaluations}
+    ${overlayEvaluations}`
+    }
     ${
       features.useUvOverlayMap
         ? `mixedColor = mix(
@@ -1661,16 +2188,15 @@ function prepareLiveEraserMaskTexture(texture: THREE.Texture) {
 
 function prepareExistingBaseTexture(texture: THREE.Texture) {
   const sparseAlpha = texture.userData[SPARSE_ALPHA_BASE_TEXTURE_FLAG] === true;
-  const profile = sparseAlpha
-    ? SPARSE_ALPHA_BASE_TEXTURE_PROFILE
-    : BASE_PREVIEW_TEXTURE_PROFILE;
+  const profile = sparseAlpha ? SPARSE_ALPHA_BASE_TEXTURE_PROFILE : BASE_PREVIEW_TEXTURE_PROFILE;
   if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === profile) return;
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.minFilter = sparseAlpha || texture.isRenderTargetTexture
-    ? THREE.LinearFilter
-    : THREE.LinearMipmapLinearFilter;
+  texture.minFilter =
+    sparseAlpha || texture.isRenderTargetTexture
+      ? THREE.LinearFilter
+      : THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.generateMipmaps = !sparseAlpha && !texture.isRenderTargetTexture;
   if (!texture.isRenderTargetTexture) texture.needsUpdate = true;
@@ -1765,8 +2291,9 @@ function updateLayerDisplayUniforms(
   binding: ProjectedLayerUniformBinding,
   layer: ProjectionLayerDisplayInput,
 ) {
+  const opacityValue = layer.visible ? layer.opacity : 0;
   const opacityUniform = material.uniforms[binding.opacityUniform];
-  if (opacityUniform) opacityUniform.value = layer.visible ? layer.opacity : 0;
+  if (opacityUniform) opacityUniform.value = opacityValue;
   const strengthUniform = material.uniforms[binding.strengthUniform];
   if (strengthUniform) strengthUniform.value = layer.strength ?? 1;
   const hueUniform = material.uniforms[binding.hueUniform];
@@ -1778,6 +2305,18 @@ function updateLayerDisplayUniforms(
   if (binding.overlayUniform) {
     const overlayUniform = material.uniforms[binding.overlayUniform];
     if (overlayUniform) overlayUniform.value = layer.blendMode === 'overlay' ? 1 : 0;
+  }
+  if (binding.arrayIndex !== undefined) {
+    const assignCompact = (name: string, value: number) => {
+      const values = material.uniforms[name]?.value;
+      if (Array.isArray(values)) values[binding.arrayIndex!] = value;
+    };
+    assignCompact('compactLayerOpacities', opacityValue);
+    assignCompact('compactLayerStrengths', layer.strength ?? 1);
+    assignCompact('compactHueShifts', layer.hue ?? 0);
+    assignCompact('compactSaturationShifts', layer.saturation ?? 0);
+    assignCompact('compactLightnessShifts', layer.lightness ?? 0);
+    assignCompact('compactOverlayModes', layer.blendMode === 'overlay' ? 1 : 0);
   }
 }
 
@@ -1816,6 +2355,10 @@ export function syncProjectedLayerMaterialDisplayState(
       } else {
         const opacityUniform = candidate.uniforms[binding.opacityUniform];
         if (opacityUniform) opacityUniform.value = 0;
+        if (binding.arrayIndex !== undefined) {
+          const opacities = candidate.uniforms.compactLayerOpacities?.value;
+          if (Array.isArray(opacities)) opacities[binding.arrayIndex] = 0;
+        }
       }
     }
     if (candidate.uniforms.showEmptyProjectionHatch) {
@@ -1831,7 +2374,11 @@ export function syncProjectedLayerMaterialDisplayState(
     }
     if (previewLighting) {
       const hasProjectedColor = state.bindings.some((binding) => {
-        const opacity = candidate.uniforms[binding.opacityUniform]?.value;
+        const compactOpacities = candidate.uniforms.compactLayerOpacities?.value;
+        const opacity =
+          binding.arrayIndex !== undefined && Array.isArray(compactOpacities)
+            ? compactOpacities[binding.arrayIndex]
+            : candidate.uniforms[binding.opacityUniform]?.value;
         return typeof opacity === 'number' && opacity > 0;
       });
       const hasUvColor =
@@ -1988,8 +2535,7 @@ function updateSharedPreviewUniforms(
   if (material.uniforms.uvOverlayMap && input.uvOverlayTexture)
     material.uniforms.uvOverlayMap.value = input.uvOverlayTexture;
   if (material.uniforms.uvOverlayRenderedColorMaskMap && input.uvOverlayRenderedColorMaskTexture)
-    material.uniforms.uvOverlayRenderedColorMaskMap.value =
-      input.uvOverlayRenderedColorMaskTexture;
+    material.uniforms.uvOverlayRenderedColorMaskMap.value = input.uvOverlayRenderedColorMaskTexture;
   if (material.uniforms.topUvOverlayMap && input.topUvOverlayTexture)
     material.uniforms.topUvOverlayMap.value = input.topUvOverlayTexture;
   if (material.uniforms.liveEraserMaskMap && input.liveEraserMaskTexture)
@@ -2044,9 +2590,7 @@ function updateSharedPreviewUniforms(
   if (material.uniforms.baseColor)
     material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   if (material.uniforms.showEmptyProjectionHatch)
-    material.uniforms.showEmptyProjectionHatch.value = input.layers.some(
-      (layer) => layer.visible,
-    )
+    material.uniforms.showEmptyProjectionHatch.value = input.layers.some((layer) => layer.visible)
       ? 1
       : 0;
   if (material.uniforms.normalPreviewEnabled)
@@ -2068,8 +2612,7 @@ function updateSharedPreviewUniforms(
   if (input.uvOverlayRenderedColorMaskTexture)
     prepareRenderedColorMaskTexture(input.uvOverlayRenderedColorMaskTexture);
   if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
-  if (input.liveEraserMaskTexture)
-    prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
+  if (input.liveEraserMaskTexture) prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
 }
 
 export function updateProjectedLayerStackMaterial(
@@ -2234,9 +2777,7 @@ async function loadProjectedTextureWithRetry(
     } catch (error) {
       lastError = error;
       if (attempt < 2) {
-        await new Promise<void>((resolve) =>
-          window.setTimeout(resolve, attempt === 0 ? 80 : 200),
-        );
+        await new Promise<void>((resolve) => window.setTimeout(resolve, attempt === 0 ? 80 : 200));
       }
     }
   }
@@ -2304,10 +2845,7 @@ async function waitForProjectedArrayGpuFence(
   isCancelled?: () => boolean,
 ) {
   const context = renderer.getContext();
-  if (
-    typeof WebGL2RenderingContext === 'undefined' ||
-    !(context instanceof WebGL2RenderingContext)
-  )
+  if (typeof WebGL2RenderingContext === 'undefined' || !(context instanceof WebGL2RenderingContext))
     return;
   const sync = context.fenceSync(context.SYNC_GPU_COMMANDS_COMPLETE, 0);
   if (!sync) return;
@@ -2327,9 +2865,9 @@ async function waitForProjectedArrayGpuFence(
   } finally {
     context.deleteSync(sync);
     if (typeof document !== 'undefined') {
-      document.body.dataset.projectedArrayGpuFenceWaitMs = (
-        performance.now() - startedAt
-      ).toFixed(1);
+      document.body.dataset.projectedArrayGpuFenceWaitMs = (performance.now() - startedAt).toFixed(
+        1,
+      );
       document.body.dataset.projectedArrayGpuFencePolls = String(polls);
     }
   }
@@ -2384,8 +2922,7 @@ async function packProjectedTextureArrayInWorker(
   }
 
   const canDecodeEverySourceInWorker = sources.every(
-    (source) =>
-      !source || typeof source.userData.liclickProjectedSourceUrl === 'string',
+    (source) => !source || typeof source.userData.liclickProjectedSourceUrl === 'string',
   );
   const decodeConcurrency = Math.max(
     1,
@@ -2407,14 +2944,17 @@ async function packProjectedTextureArrayInWorker(
         ? (sources[index]?.userData.liclickProjectedSourceUrl as string)
         : undefined,
     previewWidth: previewSizes[index]?.width ?? 1,
-      previewHeight: previewSizes[index]?.height ?? 1,
+    previewHeight: previewSizes[index]?.height ?? 1,
   }));
-  return packProjectedTextureArrayInPersistentWorker({
-    width,
-    height,
-    profile,
-    sources: packedSources,
-  }, isCancelled);
+  return packProjectedTextureArrayInPersistentWorker(
+    {
+      width,
+      height,
+      profile,
+      sources: packedSources,
+    },
+    isCancelled,
+  );
 }
 
 async function packProjectedTextureArrayOnMainThread(
@@ -2519,14 +3059,10 @@ async function uploadProjectedTextureArrayInStripes(input: {
         throw new Error('Projected texture array upload was cancelled.');
       }
       await yieldProjectedArrayUploadFrame();
-      await waitForProjectedArrayUploadWindow(
-        input.isViewportInteractionBusy,
-        input.isCancelled,
-      );
+      await waitForProjectedArrayUploadWindow(input.isViewportInteractionBusy, input.isCancelled);
 
       const rowCount = Math.min(rowsPerStripe, input.height - firstRow);
-      const firstByte =
-        (layerIndex * input.width * input.height + firstRow * input.width) * 4;
+      const firstByte = (layerIndex * input.width * input.height + firstRow * input.width) * 4;
       const lastByte = firstByte + input.width * rowCount * 4;
       const previousActiveTexture = input.context.getParameter(
         input.context.ACTIVE_TEXTURE,
@@ -2714,10 +3250,7 @@ async function createProjectedTextureArray(
     return {
       texture,
       uvScales: previewSizes.map(
-        (size) => new THREE.Vector2(
-          (size?.width ?? 1) / width,
-          (size?.height ?? 1) / height,
-        ),
+        (size) => new THREE.Vector2((size?.width ?? 1) / width, (size?.height ?? 1) / height),
       ),
       uploadYieldCount,
       allocationDurationMs,
@@ -2733,9 +3266,7 @@ function getProjectedArrayPreviewSide(
   memoryBudget: number,
   maximumSide: number,
 ) {
-  const budgetSide = Math.floor(
-    Math.sqrt(memoryBudget / (4 * Math.max(1, totalSlices))),
-  );
+  const budgetSide = Math.floor(Math.sqrt(memoryBudget / (4 * Math.max(1, totalSlices))));
   return Math.max(
     PROJECTED_ARRAY_MIN_PREVIEW_SIDE,
     Math.min(renderer.capabilities.maxTextureSize, maximumSide, budgetSide),
@@ -2824,8 +3355,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
-  if (input.liveEraserMaskTexture)
-    prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
+  if (input.liveEraserMaskTexture) prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
   maskTexture.flipY = false;
   depthTexture.flipY = false;
   normalTexture.flipY = false;
@@ -2896,19 +3426,14 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       useMask: { value: input.useMask && input.maskUrl ? 1 : 0 },
       maskUsesUv: { value: input.maskSpace === 'uv' ? 1 : 0 },
       useLiveEraserMask: {
-        value:
-          input.liveEraserMaskTexture && input.liveEraserLayerId === input.layerId ? 1 : 0,
+        value: input.liveEraserMaskTexture && input.liveEraserLayerId === input.layerId ? 1 : 0,
       },
       useDepthCheck: {
         value: input.useDepthCheck && input.depthUrl && depthTexture !== neutralTexture ? 1 : 0,
       },
       useNormalCheck: {
         value:
-          input.useNormalCheck &&
-          input.normalUrl &&
-          normalTexture !== neutralNormalTexture
-            ? 1
-            : 0,
+          input.useNormalCheck && input.normalUrl && normalTexture !== neutralNormalTexture ? 1 : 0,
       },
       depthIsLinearView: { value: input.depthIsLinearView ? 1 : 0 },
       projectorNear: { value: input.camera.near },
@@ -3135,8 +3660,7 @@ export async function createProjectedLayerStackMaterial(
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   if (input.uvOverlayTexture) prepareUvTexture(input.uvOverlayTexture);
   if (input.topUvOverlayTexture) prepareUvTexture(input.topUvOverlayTexture);
-  if (input.liveEraserMaskTexture)
-    prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
+  if (input.liveEraserMaskTexture) prepareLiveEraserMaskTexture(input.liveEraserMaskTexture);
   const disposableTextures: THREE.Texture[] = [neutralTexture];
   const captureObjectMatrices: Array<number[] | undefined> = [];
   const projectedTextures: THREE.Texture[] = [];
@@ -3175,10 +3699,7 @@ export async function createProjectedLayerStackMaterial(
     }
   > = [];
   if (useTextureArrays) {
-    await waitForProjectedArrayUploadWindow(
-      options.isViewportInteractionBusy,
-      options.isCancelled,
-    );
+    await waitForProjectedArrayUploadWindow(options.isViewportInteractionBusy, options.isCancelled);
   }
   const preparedLayers = await mapWithConcurrency(
     layers,
@@ -3186,9 +3707,7 @@ export async function createProjectedLayerStackMaterial(
     async (layer) => {
       const requestedMask = Boolean(layer.useMask && layer.maskUrl);
       const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
-      const requestedNormal = Boolean(
-        layer.useNormalCheck && layer.normalUrl,
-      );
+      const requestedNormal = Boolean(layer.useNormalCheck && layer.normalUrl);
       const [texture, maskTexture, depthTexture, normalTexture] = await Promise.all([
         loadProjectedTextureWithRetry(layer.imageUrl).catch((error) => {
           console.warn(
@@ -3198,13 +3717,15 @@ export async function createProjectedLayerStackMaterial(
           return undefined;
         }),
         requestedMask
-          ? loadProjectedTextureWithRetry(layer.maskUrl!, THREE.NoColorSpace, 'mask').catch((error) => {
-              console.warn(
-                '[Liclick 3D Texture] Could not load projected layer mask; keeping layer hidden.',
-                error,
-              );
-              return undefined;
-            })
+          ? loadProjectedTextureWithRetry(layer.maskUrl!, THREE.NoColorSpace, 'mask').catch(
+              (error) => {
+                console.warn(
+                  '[Liclick 3D Texture] Could not load projected layer mask; keeping layer hidden.',
+                  error,
+                );
+                return undefined;
+              },
+            )
           : Promise.resolve(undefined),
         requestedDepth
           ? loadProjectedTexture(layer.depthUrl!, THREE.NoColorSpace, 'depth').catch((error) => {
@@ -3239,9 +3760,7 @@ export async function createProjectedLayerStackMaterial(
     const { layer, texture, maskTexture, depthTexture, normalTexture } = prepared;
     const requestedMask = Boolean(layer.useMask && layer.maskUrl);
     const requestedDepth = Boolean(layer.useDepthCheck && layer.depthUrl);
-    const requestedNormal = Boolean(
-      layer.useNormalCheck && layer.normalUrl,
-    );
+    const requestedNormal = Boolean(layer.useNormalCheck && layer.normalUrl);
     // Never reinterpret a masked layer as an unmasked layer. In particular, the
     // renderer-only local repaint preview is created before its first brush
     // upload; a transient mask lookup miss must not reveal its full source image.
@@ -3346,6 +3865,16 @@ export async function createProjectedLayerStackMaterial(
     });
   }
   if (loadedLayers.length === 0) return undefined;
+  const useCompactArrayShader = Boolean(
+    useTextureArrays &&
+    loadedLayers.every(
+      (layer) =>
+        layer.projectedArraySlice !== undefined &&
+        (!layer.useMask || layer.maskArraySlice !== undefined) &&
+        (!layer.useDepthCheck || layer.depthArraySlice !== undefined) &&
+        (!layer.useNormalCheck || layer.normalArraySlice !== undefined),
+    ),
+  );
   const loadedLiveEraserLayerIndex = input.liveEraserLayerId
     ? loadedLayers.findIndex((layer) => layer.layerId === input.liveEraserLayerId)
     : -1;
@@ -3523,6 +4052,113 @@ export async function createProjectedLayerStackMaterial(
           };
         }
       }
+      if (useCompactArrayShader) {
+        const compactScale = (bundle: ProjectedTextureArrayBundle | undefined, slice: number) =>
+          slice >= 0 && bundle ? bundle.uvScales[slice] : new THREE.Vector2(1, 1);
+        const compactVisibilityTexelSize = (index: number) => {
+          const value = uniforms[`visibilityTexelSize${index}`]?.value;
+          return value instanceof THREE.Vector2 ? value : new THREE.Vector2(1, 1);
+        };
+        Object.assign(uniforms, {
+          compactLayerCount: { value: loadedLayers.length },
+          compactProjectorMatrices: {
+            value: loadedLayers.map((_layer, index) => uniforms[`projectorMatrix${index}`].value),
+          },
+          compactObjectMatrixDeltas: {
+            value: loadedLayers.map((_layer, index) => uniforms[`objectMatrixDelta${index}`].value),
+          },
+          compactObjectNormalDeltas: {
+            value: loadedLayers.map((_layer, index) => uniforms[`objectNormalDelta${index}`].value),
+          },
+          compactProjectorViewMatrices: {
+            value: loadedLayers.map(
+              (_layer, index) => uniforms[`projectorViewMatrix${index}`].value,
+            ),
+          },
+          compactProjectorPositions: {
+            value: loadedLayers.map((_layer, index) => uniforms[`projectorPosition${index}`].value),
+          },
+          compactProjectedMapUvScales: {
+            value: projectedArraySlices.map((slice) => compactScale(projectedArray, slice)),
+          },
+          compactMaskMapUvScales: {
+            value: maskArraySlices.map((slice) => compactScale(maskArray, slice)),
+          },
+          compactDepthMapUvScales: {
+            value: depthArraySlices.map((slice) => compactScale(depthArray, slice)),
+          },
+          compactNormalMapUvScales: {
+            value: normalArraySlices.map((slice) => compactScale(normalArray, slice)),
+          },
+          compactVisibilityTexelSizes: {
+            value: loadedLayers.map((_layer, index) => compactVisibilityTexelSize(index)),
+          },
+          compactProjectedArraySlices: { value: projectedArraySlices },
+          compactMaskArraySlices: { value: maskArraySlices.map((slice) => Math.max(0, slice)) },
+          compactDepthArraySlices: { value: depthArraySlices.map((slice) => Math.max(0, slice)) },
+          compactNormalArraySlices: {
+            value: normalArraySlices.map((slice) => Math.max(0, slice)),
+          },
+          compactUseMasks: { value: loadedLayers.map((layer) => (layer.useMask ? 1 : 0)) },
+          compactMaskUsesUv: {
+            value: loadedLayers.map((layer) => (layer.maskSpace === 'uv' ? 1 : 0)),
+          },
+          compactUseDepths: {
+            value: loadedLayers.map((layer) => (layer.useDepthCheck ? 1 : 0)),
+          },
+          compactUseNormals: {
+            value: loadedLayers.map((layer) => (layer.useNormalCheck ? 1 : 0)),
+          },
+          compactSurfaceLocks: {
+            value: loadedLayers.map((layer) =>
+              layer.projectionVisibilityPolicy === 'surface-locked-v1' ? 1 : 0,
+            ),
+          },
+          compactDepthIsLinear: {
+            value: loadedLayers.map((layer) => (layer.depthIsLinearView ? 1 : 0)),
+          },
+          compactRenderedColors: {
+            value: loadedLayers.map((layer) => (layer.renderedColor ? 1 : 0)),
+          },
+          compactMinimumFacings: {
+            value: loadedLayers.map((layer) =>
+              THREE.MathUtils.clamp(layer.minimumProjectionFacing ?? 0, 0, 0.99),
+            ),
+          },
+          compactCompositeRoles: {
+            value: loadedLayers.map((layer) =>
+              layer.compositeRole === 'underlay' ? 0 : layer.compositeRole === 'overlay' ? 2 : 1,
+            ),
+          },
+          compactProjectorNears: {
+            value: loadedLayers.map((layer) => layer.camera.near),
+          },
+          compactProjectorFars: {
+            value: loadedLayers.map((layer) => layer.camera.far),
+          },
+          compactLayerOpacities: {
+            value: loadedLayers.map((layer) => (layer.visible ? layer.opacity : 0)),
+          },
+          compactLayerStrengths: {
+            value: loadedLayers.map((layer) => layer.strength ?? 1),
+          },
+          compactHueShifts: { value: loadedLayers.map((layer) => layer.hue ?? 0) },
+          compactSaturationShifts: {
+            value: loadedLayers.map((layer) => layer.saturation ?? 0),
+          },
+          compactLightnessShifts: {
+            value: loadedLayers.map((layer) => layer.lightness ?? 0),
+          },
+          compactOverlayModes: {
+            value: loadedLayers.map((layer) =>
+              layer.compositeRole !== 'underlay' &&
+              (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
+                ? 1
+                : 0,
+            ),
+          },
+        });
+      }
       // Source textures stay cached because the user may hide layers and return
       // immediately to the single/direct material path. Disposing shared sources
       // here can invalidate that next material after the array swap has completed.
@@ -3555,6 +4191,11 @@ export async function createProjectedLayerStackMaterial(
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
   material.userData[PROJECTED_LAYER_SAMPLER_BUDGET_KEY] = samplerBudget;
+  material.userData.liclickCompactProjectedArrayShader = useCompactArrayShader;
+  if (typeof document !== 'undefined') {
+    document.body.dataset.projectedCompactArrayShader = useCompactArrayShader ? '1' : '0';
+    document.body.dataset.projectedCompactArrayLayerCount = String(loadedLayers.length);
+  }
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
     signature: getProjectionLayerStructureSignature(loadedLayers, {
@@ -3578,6 +4219,7 @@ export async function createProjectedLayerStackMaterial(
       saturationUniform: `saturationShift${index}`,
       lightnessUniform: `lightnessShift${index}`,
       overlayUniform: `layerOverlayMode${index}`,
+      ...(useCompactArrayShader ? { arrayIndex: index } : {}),
     })),
     usesTextureArrays: useTextureArrays,
   } satisfies ProjectedLayerMaterialState;
@@ -3586,8 +4228,86 @@ export async function createProjectedLayerStackMaterial(
       objectMatrixWorld: captureObjectMatrices[index],
       objectMatrixDeltaUniform: `objectMatrixDelta${index}`,
       objectNormalDeltaUniform: `objectNormalDelta${index}`,
+      ...(useCompactArrayShader ? { arrayIndex: index } : {}),
     })),
   } satisfies ProjectedLayerProjectionData;
+  return material;
+}
+
+/**
+ * Creates a texture-free material with the exact program shape used by the
+ * eventual projected stack. WebGL program compilation only depends on shader
+ * source and renderer parameters, not on uniform values, so this lets the
+ * viewport link the expensive compact-array shader while the model is still in
+ * its restore placeholder stage. The returned material must stay alive until
+ * the real material has acquired the shared WebGL program.
+ */
+export function createProjectedLayerStackProgramWarmupMaterial(
+  input: ProjectionLayerStackInput,
+  options: {
+    maxTextureImageUnits: number;
+    isWebGL2: boolean;
+    preferTextureArrays?: boolean;
+  },
+) {
+  const layers = input.layers.filter((layer) => layer.imageUrl && layer.camera);
+  if (layers.length <= 1) return undefined;
+
+  const samplerFeatures = {
+    useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
+    useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
+    useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
+    useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
+    useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
+  };
+  const directSamplerBudget = getProjectedLayerSamplerBudget(
+    layers,
+    options.maxTextureImageUnits,
+    samplerFeatures,
+  );
+  const textureArraySamplerBudget = getProjectedLayerSamplerBudget(
+    layers,
+    options.maxTextureImageUnits,
+    { ...samplerFeatures, useTextureArrays: true },
+  );
+  const useTextureArrays =
+    options.isWebGL2 &&
+    textureArraySamplerBudget.withinBudget &&
+    (options.preferTextureArrays === true || !directSamplerBudget.withinBudget);
+  const samplerBudget = useTextureArrays ? textureArraySamplerBudget : directSamplerBudget;
+  if (!samplerBudget.withinBudget) return undefined;
+
+  // The compact-array shader only needs to know whether every requested source
+  // has an array slice. Slice numbers themselves are uniforms in that path.
+  // Assigning placeholders therefore produces byte-for-byte identical GLSL
+  // without decoding or uploading a single image.
+  const programLayers = layers.map((layer) => ({
+    ...layer,
+    ...(!useTextureArrays || isLiveProjectedCanvasUrl(layer.imageUrl)
+      ? {}
+      : { projectedArraySlice: 0 }),
+    ...(!useTextureArrays || !layer.useMask || isLiveProjectedCanvasUrl(layer.maskUrl)
+      ? {}
+      : { maskArraySlice: 0 }),
+    ...(!useTextureArrays || !layer.useDepthCheck || isLiveProjectedCanvasUrl(layer.depthUrl)
+      ? {}
+      : { depthArraySlice: 0 }),
+    ...(!useTextureArrays || !layer.useNormalCheck || isLiveProjectedCanvasUrl(layer.normalUrl)
+      ? {}
+      : { normalArraySlice: 0 }),
+  }));
+  const material = new THREE.ShaderMaterial({
+    name: `LiclickProjectedLayerStackWarmup:${layers.length}`,
+    vertexShader,
+    fragmentShader: buildStackFragmentShader(programLayers, {
+      ...samplerFeatures,
+      useTextureArrays,
+    }),
+    uniforms: {},
+    toneMapped: true,
+  });
+  material.userData[GENERATED_MATERIAL_FLAG] = true;
+  material.userData[PROJECTED_LAYER_SAMPLER_BUDGET_KEY] = samplerBudget;
   return material;
 }
 
@@ -3620,10 +4340,7 @@ function retainProjectedProgram(material: THREE.ShaderMaterial) {
   if (matchingAnchorIndex >= 0) {
     material.userData[DISPOSED_MATERIAL_FLAG] = true;
     material.dispose();
-    const matchingAnchor = residentProjectedProgramAnchors.splice(
-      matchingAnchorIndex,
-      1,
-    )[0];
+    const matchingAnchor = residentProjectedProgramAnchors.splice(matchingAnchorIndex, 1)[0];
     residentProjectedProgramAnchors.push(matchingAnchor);
     return;
   }
@@ -4016,21 +4733,12 @@ export function updateUvOverlayPreviewMaterial(
   uniforms.liveUvOverlayMap.value = input.liveUvOverlayTexture ?? neutralTexture;
   uniforms.surfaceMaskMap.value = input.surfaceMaskTexture ?? neutralTexture;
   uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
-  uniforms.baseTextureOpacity.value = THREE.MathUtils.clamp(
-    input.baseTextureOpacity ?? 1,
-    0,
-    1,
-  );
+  uniforms.baseTextureOpacity.value = THREE.MathUtils.clamp(input.baseTextureOpacity ?? 1, 0, 1);
   uniforms.useBaseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture ? 1 : 0;
   uniforms.useUvOverlayMap.value = input.uvOverlayTexture ? 1 : 0;
   uniforms.uvOverlayRenderedColor.value = input.uvOverlayRenderedColor ? 1 : 0;
-  uniforms.useUvOverlayRenderedColorMaskMap.value =
-    input.uvOverlayRenderedColorMaskTexture ? 1 : 0;
-  uniforms.uvOverlayOpacity.value = THREE.MathUtils.clamp(
-    input.uvOverlayOpacity ?? 1,
-    0,
-    1,
-  );
+  uniforms.useUvOverlayRenderedColorMaskMap.value = input.uvOverlayRenderedColorMaskTexture ? 1 : 0;
+  uniforms.uvOverlayOpacity.value = THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1);
   uniforms.useLiveUvOverlayMap.value = input.liveUvOverlayTexture ? 1 : 0;
   uniforms.liveUvOverlayOpacity.value = THREE.MathUtils.clamp(
     input.liveUvOverlayOpacity ?? 1,

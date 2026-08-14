@@ -7,8 +7,6 @@ type GapMaskPolicy = Pick<
   | 'hardAlphaThreshold'
   | 'weakAlphaThreshold'
   | 'weakGrowPixels'
-  | 'includeConservativeCoverage'
-  | 'excludeUvIslandBoundary'
   | 'minimumComponentPixels'
   | 'minimumComponentSpan'
 >;
@@ -24,8 +22,6 @@ type SurfacePropagationPolicy = Pick<
   | 'coverageSkirtPixels'
   | 'coverageSkirtMaxInputAlpha'
   | 'outputBleedPixels'
-  | 'outputBleedAlpha'
-  | 'nearestAtlasFallback'
   | 'lockToDominantSourceRegion'
   | 'dominantSourceColorThreshold'
   | 'requireCompleteComponents'
@@ -59,16 +55,6 @@ export function createVisibleSurfaceCompletionPolicy(
       hardAlphaThreshold: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       weakAlphaThreshold: 64,
       weakGrowPixels: 1,
-      // The conservative topology halo is the outline around every UV island,
-      // not missing model content. Publishing it is exactly what drew the
-      // orange/brown contour network in the sparse repair layer. Restrict
-      // writes to strict triangle pixel centres; hidden RGB bleed below keeps
-      // linear filtering safe without making those outlines visible.
-      includeConservativeCoverage: false,
-      // UV rasterization naturally leaves a low-alpha one-pixel perimeter on
-      // every island. It is not a renderer-detected missing surface and must
-      // never be emitted as a visible contour in the repair layer.
-      excludeUvIslandBoundary: true,
       // A one-texel miss can still be a visible crack on a thin rail or inside
       // a mechanical recess. `coreMask` is the noise boundary, not component size.
       minimumComponentPixels: 1,
@@ -92,13 +78,6 @@ export function createVisibleSurfaceCompletionPolicy(
       coverageSkirtPixels: 0,
       coverageSkirtMaxInputAlpha: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       outputBleedPixels: 4,
-      // Keep gutter RGB for bilinear filtering without publishing stretched
-      // atlas padding as visible repair content. Sparse UV textures do not use
-      // mipmaps in the viewport.
-      outputBleedAlpha: 0,
-      // Fully blank/disconnected micro-islands still need a visible fallback.
-      // Nearest-atlas cloning preserves a real texel instead of inventing colour.
-      nearestAtlasFallback: true,
       lockToDominantSourceRegion: true,
       dominantSourceColorThreshold: 18,
       requireCompleteComponents: false,

@@ -4,6 +4,7 @@ import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import type { Layer, LayerAdjustments } from '@/types/layer';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
+import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { useSceneStore } from './sceneStore';
 
 type LayerStore = {
@@ -67,12 +68,14 @@ type LayerStore = {
 const legacyTransparentImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
 
-function createEmptyLayer(input: {
-  name?: string;
-  objectId?: string;
-  role?: Layer['role'];
-  generationId?: string;
-} = {}): Layer {
+function createEmptyLayer(
+  input: {
+    name?: string;
+    objectId?: string;
+    role?: Layer['role'];
+    generationId?: string;
+  } = {},
+): Layer {
   return {
     id: uuid(),
     name: input.name ?? 'New layer',
@@ -162,6 +165,8 @@ function isLocalRepaintRuntimeLayer(layer: Layer) {
   return Boolean(layer.replacementTargetLayerId) && !layer.isBaked;
 }
 
+let projectedPreviewReleaseRevision = 0;
+
 export const useLayerStore = create<LayerStore>((set, get) => ({
   layers: [],
   activeProjectedLayerId: undefined,
@@ -178,14 +183,24 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       projectedPreviewLayers:
         state.projectedPreviewBatchDepth === 0 ? state.layers : state.projectedPreviewLayers,
     })),
-  endProjectedPreviewBatch: () =>
-    set((state) => {
-      const nextDepth = Math.max(0, state.projectedPreviewBatchDepth - 1);
-      return {
-        projectedPreviewBatchDepth: nextDepth,
-        projectedPreviewLayers: nextDepth === 0 ? undefined : state.projectedPreviewLayers,
-      };
-    }),
+  endProjectedPreviewBatch: () => {
+    const revision = ++projectedPreviewReleaseRevision;
+    const nextDepth = Math.max(0, get().projectedPreviewBatchDepth - 1);
+    set({ projectedPreviewBatchDepth: nextDepth });
+    if (nextDepth > 0) return;
+
+    const releaseWhenIdle = () => {
+      if (revision !== projectedPreviewReleaseRevision) return;
+      const state = get();
+      if (state.projectedPreviewBatchDepth > 0) return;
+      if (isViewportInteractionBusy()) {
+        window.setTimeout(releaseWhenIdle, 24);
+        return;
+      }
+      if (state.projectedPreviewLayers) set({ projectedPreviewLayers: undefined });
+    };
+    releaseWhenIdle();
+  },
   addEmptyLayer: (input) => {
     const layer = createEmptyLayer(input);
 
@@ -368,9 +383,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       );
       return {
         layers,
-        activeProjectedLayerId: layers.some(
-          (layer) => layer.id === state.activeProjectedLayerId,
-        )
+        activeProjectedLayerId: layers.some((layer) => layer.id === state.activeProjectedLayerId)
           ? state.activeProjectedLayerId
           : layers.find((layer) => layer.visible)?.id,
       };
@@ -518,9 +531,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       );
       const orderedLayers = withOrder(layers);
       return {
-        layers: removedLayer && isLocalRepaintRuntimeLayer(removedLayer)
-          ? orderedLayers
-          : markVisibleStackNeedsRebake(orderedLayers),
+        layers:
+          removedLayer && isLocalRepaintRuntimeLayer(removedLayer)
+            ? orderedLayers
+            : markVisibleStackNeedsRebake(orderedLayers),
         activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),

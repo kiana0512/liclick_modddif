@@ -11,12 +11,20 @@ type ConversionRequest = {
 type ConversionResponse =
   | {
       id: number;
-      mode: 'final' | 'layer';
+      mode: 'final';
       imageData: ArrayBuffer;
       coverage: ArrayBuffer;
+      recycledPixels: ArrayBuffer;
       coveredPixels: number;
     }
-  | { id: number; mode: 'quality'; quality: ArrayBuffer }
+  | {
+      id: number;
+      mode: 'layer';
+      imageData: ArrayBuffer;
+      recycledPixels: ArrayBuffer;
+      coveredPixels: number;
+    }
+  | { id: number; mode: 'quality'; quality: ArrayBuffer; recycledPixels: ArrayBuffer }
   | { id: number; error: string };
 
 type PendingConversion = {
@@ -27,6 +35,23 @@ type PendingConversion = {
 let worker: Worker | undefined;
 let nextRequestId = 1;
 const pending = new Map<number, PendingConversion>();
+const recycledReadbackBuffers = new Map<number, ArrayBuffer[]>();
+const MAX_RECYCLED_READBACK_BUFFERS_PER_SIZE = 2;
+
+function recycleReadbackBuffer(buffer: ArrayBuffer) {
+  if (buffer.byteLength === 0) return;
+  const buffers = recycledReadbackBuffers.get(buffer.byteLength) ?? [];
+  if (buffers.length >= MAX_RECYCLED_READBACK_BUFFERS_PER_SIZE) return;
+  buffers.push(buffer);
+  recycledReadbackBuffers.set(buffer.byteLength, buffers);
+}
+
+export function acquireGpuReadbackPixels(byteLength: number) {
+  const buffers = recycledReadbackBuffers.get(byteLength);
+  const buffer = buffers?.pop();
+  if (buffers?.length === 0) recycledReadbackBuffers.delete(byteLength);
+  return new Uint8Array(buffer ?? new ArrayBuffer(byteLength));
+}
 
 function getWorker() {
   if (worker) return worker;
@@ -37,8 +62,12 @@ function getWorker() {
     const request = pending.get(event.data.id);
     if (!request) return;
     pending.delete(event.data.id);
-    if ('error' in event.data) request.reject(new Error(event.data.error));
-    else request.resolve(event.data);
+    if ('error' in event.data) {
+      request.reject(new Error(event.data.error));
+    } else {
+      recycleReadbackBuffer(event.data.recycledPixels);
+      request.resolve(event.data);
+    }
   };
   worker.onerror = (event) => {
     const error = new Error(event.message || 'GPU readback conversion worker failed.');
@@ -84,24 +113,18 @@ export async function convertFinalGpuReadbackInWorker(
   };
 }
 
-export async function convertLayerGpuReadbackInWorker(
-  pixels: Uint8Array,
-  resolution: number,
-) {
+export async function convertLayerGpuReadbackInWorker(pixels: Uint8Array, resolution: number) {
   const response = await convert('layer', pixels, resolution);
   if ('error' in response || response.mode !== 'layer') throw new Error('Invalid layer readback.');
   return {
     imageData: new ImageData(new Uint8ClampedArray(response.imageData), resolution, resolution),
-    coverage: new Uint8Array(response.coverage),
     coveredPixels: response.coveredPixels,
   };
 }
 
-export async function convertQualityGpuReadbackInWorker(
-  pixels: Uint8Array,
-  resolution: number,
-) {
+export async function convertQualityGpuReadbackInWorker(pixels: Uint8Array, resolution: number) {
   const response = await convert('quality', pixels, resolution);
-  if ('error' in response || response.mode !== 'quality') throw new Error('Invalid quality readback.');
-  return new Float32Array(response.quality);
+  if ('error' in response || response.mode !== 'quality')
+    throw new Error('Invalid quality readback.');
+  return new Uint8Array(response.quality);
 }

@@ -75,9 +75,7 @@ type CompositeResponse =
   | { type: 'error'; id: number; message: string };
 
 type PendingComposite = {
-  resolve: (
-    result: WebGpuRgbaCompositeResult | WebGpuRgbaCompositePngResult,
-  ) => void;
+  resolve: (result: WebGpuRgbaCompositeResult | WebGpuRgbaCompositePngResult) => void;
   reject: (error: Error) => void;
   cleanup?: () => void;
 };
@@ -135,6 +133,7 @@ function getWorker() {
     type: 'module',
   });
   worker.onmessage = (event: MessageEvent<CompositeResponse>) => {
+    const callbackStartedAt = performance.now();
     const request = pending.get(event.data.id);
     if (!request) return;
     pending.delete(event.data.id);
@@ -162,6 +161,11 @@ function getWorker() {
     } else {
       request.reject(new Error('WebGPU composite worker returned no output.'));
     }
+    recordMainThreadCompositeTiming('worker-result', performance.now() - callbackStartedAt, {
+      hasOutput: Boolean(event.data.type === 'result' && event.data.output),
+      byteLength:
+        event.data.type === 'result' && event.data.output ? event.data.output.byteLength : 0,
+    });
   };
   worker.onerror = (event) => {
     failAllPending(event.message || 'WebGPU composite worker failed.');
@@ -172,11 +176,7 @@ function getWorker() {
   return worker;
 }
 
-function registerPending(
-  id: number,
-  request: PendingComposite,
-  signal?: AbortSignal,
-) {
+function registerPending(id: number, request: PendingComposite, signal?: AbortSignal) {
   if (signal?.aborted) {
     request.reject(new DOMException('RGBA composite was cancelled.', 'AbortError'));
     return false;
@@ -209,6 +209,30 @@ function transferableBuffer(source: Uint8Array | Uint8ClampedArray) {
   const copy = new Uint8Array(source.byteLength);
   copy.set(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
   return copy.buffer;
+}
+
+function recordMainThreadCompositeTiming(
+  phase: string,
+  durationMs: number,
+  details: Record<string, number | boolean> = {},
+) {
+  if (
+    typeof document === 'undefined' ||
+    new URLSearchParams(window.location.search).get('perfLab') !== '1'
+  )
+    return;
+  const current = (() => {
+    try {
+      return JSON.parse(document.body.dataset.perfWebGpuCompositeMain ?? '{}') as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      return {};
+    }
+  })();
+  current[phase] = { durationMs, ...details };
+  document.body.dataset.perfWebGpuCompositeMain = JSON.stringify(current);
 }
 
 /**
@@ -279,6 +303,7 @@ export function compositeRgbaUrlUnderWithWebGpu(
   opacity = 1,
   signal?: AbortSignal,
 ) {
+  const prepareStartedAt = performance.now();
   if (front.length !== width * height * 4) {
     return Promise.reject(new RangeError('RGBA buffer dimensions do not match.'));
   }
@@ -300,6 +325,13 @@ export function compositeRgbaUrlUnderWithWebGpu(
 
   const id = nextRequestId++;
   const frontBuffer = transferableBuffer(front);
+  recordMainThreadCompositeTiming('prepare', performance.now() - prepareStartedAt, {
+    byteLength: front.byteLength,
+    exactBuffer:
+      front.buffer instanceof ArrayBuffer &&
+      front.byteOffset === 0 &&
+      front.byteLength === front.buffer.byteLength,
+  });
   const requestedChunkBytes = getRequestedChunkBytes();
   const request: CompositeRequest = {
     type: 'composite',
@@ -323,7 +355,14 @@ export function compositeRgbaUrlUnderWithWebGpu(
       reject,
     };
     if (!registerPending(id, requestState, signal)) return;
-    getWorker().postMessage(request, [frontBuffer]);
+    const workerStartedAt = performance.now();
+    const compositeWorker = getWorker();
+    recordMainThreadCompositeTiming('get-worker', performance.now() - workerStartedAt);
+    const postStartedAt = performance.now();
+    compositeWorker.postMessage(request, [frontBuffer]);
+    recordMainThreadCompositeTiming('post-message', performance.now() - postStartedAt, {
+      byteLength: front.byteLength,
+    });
   });
 }
 
