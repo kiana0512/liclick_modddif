@@ -983,12 +983,23 @@ function buildStackFragmentShader(
   ).join('');
 
   const effectiveCompositeRole = (index: number) =>
-    layers[index].compositeRole ??
-    (layers[index].blendMode === 'overlay' ? 'overlay' : 'normal');
+    layers[index].compositeRole === 'underlay' ? 'underlay' : 'normal';
+
+  // Normal/Overlay is presentation state, not material structure. Evaluate each
+  // ordinary projection once, then route the result with a uniform so toggling
+  // never recompiles the shader or re-uploads a 4K texture array.
+  const dynamicOverlayDeclarations = Array.from({ length: layerCount }, (_, index) =>
+    effectiveCompositeRole(index) === 'underlay'
+      ? ''
+      : `
+    vec3 pendingOverlayColor${index} = vec3(0.0);
+    float pendingOverlayAlpha${index} = 0.0;
+`,
+  ).join('');
 
   const buildCandidateEvaluations = (role: 'normal' | 'underlay') =>
     Array.from({ length: layerCount }, (_, index) =>
-      effectiveCompositeRole(index) !== role
+      (role === 'underlay') !== (effectiveCompositeRole(index) === 'underlay')
         ? ''
         : `
     if (layerOpacity${index} > 0.0001) {
@@ -1059,7 +1070,18 @@ function buildStackFragmentShader(
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
       if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
         projectedDepthCoverage = max(projectedDepthCoverage, coverage);
-        insertBlendCandidate(texel.rgb, coverage, quality);
+        ${
+          role === 'normal'
+            ? `if (layerOverlayMode${index} > 0.5) {
+          float qualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
+          float overlayAlpha = clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
+          pendingOverlayColor${index} = texel.rgb;
+          pendingOverlayAlpha${index} = overlayAlpha;
+        } else {
+          insertBlendCandidate(texel.rgb, coverage, quality);
+        }`
+            : 'insertBlendCandidate(texel.rgb, coverage, quality);'
+        }
       }
     }
 `,
@@ -1145,6 +1167,15 @@ function buildStackFragmentShader(
         projectedDepthCoverage = max(projectedDepthCoverage, overlayAlpha);
         mixedColor = mix(mixedColor, texel.rgb, overlayAlpha);
       }
+    }
+`,
+  ).join('') +
+  Array.from({ length: layerCount }, (_, index) =>
+    effectiveCompositeRole(index) === 'underlay'
+      ? ''
+      : `
+    if (layerOverlayMode${index} > 0.5 && pendingOverlayAlpha${index} > 0.0001) {
+      mixedColor = mix(mixedColor, pendingOverlayColor${index}, pendingOverlayAlpha${index});
     }
 `,
   ).join('');
@@ -1515,6 +1546,7 @@ function buildStackFragmentShader(
     topColor1 = vec3(0.0);
     topColor2 = vec3(0.0);
 
+    ${dynamicOverlayDeclarations}
     ${blendEvaluations}
 
     vec3 mixedColor = composeBlendBase(underlayColor);
@@ -1692,7 +1724,6 @@ function getProjectionLayerStructureSignature(
           layer.renderedColor ? 1 : 0,
           layer.minimumProjectionFacing ?? 0,
           layer.projectionVisibilityPolicy ?? 'standard',
-          layer.blendMode ?? 'normal',
           layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
           getLayerCameraSignature(layer.camera),
@@ -3293,8 +3324,8 @@ export async function createProjectedLayerStackMaterial(
     uniforms[`lightnessShift${index}`] = { value: layer.lightness ?? 0 };
     uniforms[`layerOverlayMode${index}`] = {
       value:
-        (layer.compositeRole ?? (layer.blendMode === 'overlay' ? 'overlay' : 'normal')) ===
-        'overlay'
+        layer.compositeRole !== 'underlay' &&
+        (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
           ? 1
           : 0,
     };

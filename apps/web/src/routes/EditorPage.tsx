@@ -86,10 +86,7 @@ import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils'
 import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModelBesideScene';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import {
-  bakePbrPreviewLightingIntoUv,
   compositeRgbaUnderInPlace,
-  compositeRenderedColorMaskUnderInPlace,
-  compositeUniformRenderedColorUnderInPlace,
   getMergeUvPostprocessOptions,
   getRgbaAlphaCoverageRatio,
   isContentAwareUvUnderlay,
@@ -3949,8 +3946,6 @@ export function EditorPage({
         mergedImageData = outputContext.getImageData(0, 0, bakeResolution, bakeResolution);
       }
       let mergedRgba = mergedImageData.data;
-      const renderedColorMask =
-        bakeResult?.renderedColorMask ?? new Uint8Array(bakeResolution * bakeResolution);
       readbackDurationMs = performance.now() - readbackStartedAt;
 
       // Flatten selected UV sources underneath projection coverage. This is
@@ -3965,25 +3960,6 @@ export function EditorPage({
       }
       for (let index = 0; index < selectedUvLayers.length; index += 1) {
         const layer = selectedUvLayers[index];
-        if (layer.renderedColorMaskUrl) {
-          const underlayRenderedColorMask = await urlToImageData(
-            layer.renderedColorMaskUrl,
-            bakeResolution,
-            bakeResolution,
-          );
-          compositeRenderedColorMaskUnderInPlace(
-            renderedColorMask,
-            mergedRgba,
-            underlayRenderedColorMask.data,
-            layer.opacity,
-          );
-        } else if (layer.renderedColor) {
-          compositeUniformRenderedColorUnderInPlace(
-            renderedColorMask,
-            mergedRgba,
-            layer.opacity,
-          );
-        }
         if (webGpuComposite.enabled) {
           try {
             const result = await compositeRgbaUrlUnderWithWebGpu(
@@ -4034,30 +4010,9 @@ export function EditorPage({
           throw new DOMException('UV merge was superseded.', 'AbortError');
         }
       }
-      setManualBakeProgress({
-        title: t('mergeSelectedLayersToUvLayer'),
-        detail: '正在将当前 PBR 全局光照写入合并图层',
-        progress: 0.965,
-      });
-      const currentLighting = useSettingsStore.getState();
-      await bakePbrPreviewLightingIntoUv({
-        rgba: mergedRgba,
-        width: bakeResolution,
-        height: bakeResolution,
-        root: currentImportedModel.group,
-        settings: {
-          exposure: currentLighting.exposure,
-          pbrEnvironmentIntensity: currentLighting.pbrEnvironmentIntensity,
-          pbrKeyLightIntensity: currentLighting.pbrKeyLightIntensity,
-          pbrLightAzimuth: currentLighting.pbrLightAzimuth,
-          environmentPreset: currentLighting.environmentPreset,
-        },
-        renderedColorMask,
-      });
-      // The final UV is entirely display color. The layer-level flag is enough
-      // to bypass lighting in both Flat and PBR; do not encode/upload a 4K mask.
-      uvCompositeDurationMs =
-        performance.now() - uvCompositeStartedAt - pngEncodeDurationMs;
+      // Store authored albedo only. PBR remains a live viewport operation and
+      // is never flattened into the merged UV texture.
+      uvCompositeDurationMs = performance.now() - uvCompositeStartedAt;
       const mergedCoverageRatio =
         bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedRgba);
 
@@ -4172,7 +4127,7 @@ export function EditorPage({
         name: t('mergedUvLayer'),
         role: 'merged-uv',
         uvMergeVersion: UV_MERGE_COMPOSITION_VERSION,
-        renderedColor: true,
+        renderedColor: false,
         renderedColorMaskUrl: undefined,
       });
       document.body.dataset.uvMergeAtomicHandoff = JSON.stringify({

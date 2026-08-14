@@ -1,0 +1,2 @@
+export declare const EMPTY_PROJECTION_COVERAGE_FEATHER_END: 0.12;
+export declare const EMPTY_PROJECTION_MAX_VISIBLE_ALPHA: number;
