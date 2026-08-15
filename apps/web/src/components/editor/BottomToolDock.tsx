@@ -115,6 +115,10 @@ export function BottomToolDock({
   const setPaintSettings = useSceneStore((state) => state.setPaintToolSettings);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
+  const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
+  const setLocalRepaintBrushSettings = useSceneStore(
+    (state) => state.setLocalRepaintBrushSettings,
+  );
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
   const pushToast = useToastStore((state) => state.pushToast);
@@ -387,16 +391,27 @@ export function BottomToolDock({
                 {inpaintMenuVisible && (
                   <div className="absolute bottom-full left-0 z-50 mb-2 w-[284px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
                     <div className="mb-2 rounded-md bg-white/[0.07] px-2.5 py-2 text-xs font-semibold text-white/78">
-                      左键绘制蒙版，右键擦除蒙版
+                      {activeMenu === 'inpaint-apply'
+                        ? '局部重绘画笔参数'
+                        : '蒙版画笔参数 · 左键绘制，右键擦除'}
                     </div>
                     <label className="grid gap-1.5 text-[13px] font-semibold">
                       <span className="flex items-center justify-between">
                         <span>{labels.brushSize}</span>
                         <input
-                          value={paintMaskSettings.brushSize.toFixed(1)}
-                          onChange={(event) =>
-                            setPaintMaskSettings({ brushSize: Number(event.target.value) || 1 })
+                          value={
+                            activeMenu === 'inpaint-apply'
+                              ? localRepaintBrushSettings.brushSize.toFixed(1)
+                              : paintMaskSettings.brushSize.toFixed(1)
                           }
+                          onChange={(event) => {
+                            const brushSize = Number(event.target.value) || 1;
+                            if (activeMenu === 'inpaint-apply') {
+                              setLocalRepaintBrushSettings({ brushSize });
+                            } else {
+                              setPaintMaskSettings({ brushSize });
+                            }
+                          }}
                           className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
                         />
                       </span>
@@ -405,10 +420,19 @@ export function BottomToolDock({
                         min={MIN_PAINT_MASK_BRUSH_SIZE}
                         max={MAX_PAINT_MASK_BRUSH_SIZE}
                         step="0.1"
-                        value={paintMaskSettings.brushSize}
-                        onChange={(event) =>
-                          setPaintMaskSettings({ brushSize: Number(event.target.value) })
+                        value={
+                          activeMenu === 'inpaint-apply'
+                            ? localRepaintBrushSettings.brushSize
+                            : paintMaskSettings.brushSize
                         }
+                        onChange={(event) => {
+                          const brushSize = Number(event.target.value);
+                          if (activeMenu === 'inpaint-apply') {
+                            setLocalRepaintBrushSettings({ brushSize });
+                          } else {
+                            setPaintMaskSettings({ brushSize });
+                          }
+                        }}
                         className="w-full accent-[#ff8a68]"
                       />
                     </label>
@@ -423,9 +447,11 @@ export function BottomToolDock({
                                 min="0"
                                 max="100"
                                 step="1"
-                                value={Math.round(paintMaskSettings.brushOpacity)}
+                                value={Math.round(localRepaintBrushSettings.brushOpacity)}
                                 onChange={(event) =>
-                                  setPaintMaskSettings({ brushOpacity: Number(event.target.value) })
+                                  setLocalRepaintBrushSettings({
+                                    brushOpacity: Number(event.target.value),
+                                  })
                                 }
                                 className="h-8 w-20 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
                               />
@@ -437,37 +463,41 @@ export function BottomToolDock({
                             min="0"
                             max="100"
                             step="1"
-                            value={paintMaskSettings.brushOpacity}
+                            value={localRepaintBrushSettings.brushOpacity}
                             onChange={(event) =>
-                              setPaintMaskSettings({ brushOpacity: Number(event.target.value) })
+                              setLocalRepaintBrushSettings({
+                                brushOpacity: Number(event.target.value),
+                              })
                             }
                             className="w-full accent-[#ff8a68]"
                           />
                         </label>
                       </div>
                     )}
-                    <div className="mt-2 grid gap-1.5 border-t border-white/16 pt-2">
-                      <button
-                        type="button"
-                        className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
-                        onClick={clearPaintMask}
-                      >
-                        <span>{labels.resetInpaintRegion}</span>
-                        <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
-                          CTRL SHIFT D
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
-                        onClick={invertPaintMask}
-                      >
-                        <span>{labels.invertInpaintRegion}</span>
-                        <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
-                          CTRL I
-                        </span>
-                      </button>
-                    </div>
+                    {activeMenu !== 'inpaint-apply' && (
+                      <div className="mt-2 grid gap-1.5 border-t border-white/16 pt-2">
+                        <button
+                          type="button"
+                          className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
+                          onClick={clearPaintMask}
+                        >
+                          <span>{labels.resetInpaintRegion}</span>
+                          <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
+                            CTRL SHIFT D
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
+                          onClick={invertPaintMask}
+                        >
+                          <span>{labels.invertInpaintRegion}</span>
+                          <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
+                            CTRL I
+                          </span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
                 <IconTooltip
@@ -578,8 +608,8 @@ export function BottomToolDock({
                       }
                       setRepaintGuideActive(false);
                       if (paintTool === 'inpaint-apply') {
-                        onPaintToolChange('inpaint-add');
-                        setGenerationGuideActive(true);
+                        toggleMenu('inpaint-apply');
+                        return;
                       } else {
                         onLocalRepaint();
                       }

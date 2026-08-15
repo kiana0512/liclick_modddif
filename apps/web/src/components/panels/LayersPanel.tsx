@@ -57,29 +57,70 @@ type RenameState = {
   value: string;
 };
 
+function useLayerImageSource(url: string, enabled: boolean) {
+  const [image, setImage] = useState<HTMLImageElement>();
+
+  useEffect(() => {
+    if (!enabled || !url) {
+      setImage(undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    const nextImage = new Image();
+    nextImage.decoding = 'async';
+    nextImage.onload = () => {
+      if (!cancelled) setImage(nextImage);
+    };
+    nextImage.onerror = () => {
+      if (!cancelled) setImage(undefined);
+    };
+    nextImage.src = url;
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, url]);
+
+  return image;
+}
 function LayerThumbnail({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const liveSource = getLiveProjectedTextureSourceState(layer.imageUrl)?.source;
-  const liveMaskCanvas = layer.maskUrl
-    ? getLiveProjectedCanvasState(layer.maskUrl)?.canvas
-    : undefined;
+  const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
+  const liveMaskState = layer.maskUrl ? getLiveProjectedCanvasState(layer.maskUrl) : undefined;
+  const liveSource = liveSourceState?.source;
+  const liveMaskCanvas = liveMaskState?.canvas;
+  // A persisted local-repaint layer intentionally combines a durable colour
+  // URL with a GPU-resident live mask URL. CSS cannot resolve the registry URL,
+  // so decode the colour image and composite both sources on a canvas instead.
+  const decodedSource = useLayerImageSource(
+    layer.imageUrl,
+    !liveSource && Boolean(liveMaskCanvas),
+  );
+  const thumbnailSource = liveSource ?? decodedSource;
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !liveSource) return;
+    if (!canvas || !thumbnailSource) return;
     const context = canvas.getContext('2d');
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(liveSource, 0, 0, canvas.width, canvas.height);
+    context.drawImage(thumbnailSource, 0, 0, canvas.width, canvas.height);
     if (layer.replacementTargetLayerId && liveMaskCanvas) {
       context.save();
       context.globalCompositeOperation = 'destination-in';
       context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
       context.restore();
     }
-  }, [layer.contentRevision, liveSource, liveMaskCanvas, layer.replacementTargetLayerId]);
+  }, [
+    layer.contentRevision,
+    layer.replacementTargetLayerId,
+    liveMaskCanvas,
+    liveMaskState?.revision,
+    liveSourceState?.revision,
+    thumbnailSource,
+  ]);
 
-  if (liveSource) return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
+  if (liveSource || liveMaskCanvas)
+    return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
   if (!layer.imageUrl) return null;
   const localRepaintMaskStyle =
     layer.replacementTargetLayerId && layer.maskUrl
@@ -107,35 +148,40 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
 
 function LayerPreviewImage({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const liveSource = getLiveProjectedTextureSourceState(layer.imageUrl)?.source;
-  const liveMaskCanvas = layer.maskUrl
-    ? getLiveProjectedCanvasState(layer.maskUrl)?.canvas
-    : undefined;
+  const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
+  const liveMaskState = layer.maskUrl ? getLiveProjectedCanvasState(layer.maskUrl) : undefined;
+  const liveSource = liveSourceState?.source;
+  const liveMaskCanvas = liveMaskState?.canvas;
+  const decodedSource = useLayerImageSource(
+    layer.imageUrl,
+    !liveSource && Boolean(liveMaskCanvas),
+  );
+  const previewSource = liveSource ?? decodedSource;
   const maxPreviewDimension = 1600;
-  const sourceWidth = liveSource
-    ? 'naturalWidth' in liveSource
-      ? liveSource.naturalWidth
-      : liveSource.width
+  const sourceWidth = previewSource
+    ? 'naturalWidth' in previewSource
+      ? previewSource.naturalWidth
+      : previewSource.width
     : 1;
-  const sourceHeight = liveSource
-    ? 'naturalHeight' in liveSource
-      ? liveSource.naturalHeight
-      : liveSource.height
+  const sourceHeight = previewSource
+    ? 'naturalHeight' in previewSource
+      ? previewSource.naturalHeight
+      : previewSource.height
     : 1;
-  const scale = liveSource
+  const scale = previewSource
     ? Math.min(1, maxPreviewDimension / Math.max(sourceWidth, sourceHeight, 1))
     : 1;
-  const width = liveSource ? Math.max(1, Math.round(sourceWidth * scale)) : 1;
-  const height = liveSource ? Math.max(1, Math.round(sourceHeight * scale)) : 1;
+  const width = previewSource ? Math.max(1, Math.round(sourceWidth * scale)) : 1;
+  const height = previewSource ? Math.max(1, Math.round(sourceHeight * scale)) : 1;
   const isLocalRepaintPreview = Boolean(layer.replacementTargetLayerId);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !liveSource) return;
+    if (!canvas || !previewSource) return;
     const context = canvas.getContext('2d');
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(liveSource, 0, 0, canvas.width, canvas.height);
+    context.drawImage(previewSource, 0, 0, canvas.width, canvas.height);
     if (layer.replacementTargetLayerId && liveMaskCanvas) {
       context.save();
       context.globalCompositeOperation = 'destination-in';
@@ -146,12 +192,14 @@ function LayerPreviewImage({ layer }: { layer: Layer }) {
     height,
     layer.contentRevision,
     layer.replacementTargetLayerId,
-    liveSource,
     liveMaskCanvas,
+    liveMaskState?.revision,
+    liveSourceState?.revision,
+    previewSource,
     width,
   ]);
 
-  if (liveSource) {
+  if (liveSource || liveMaskCanvas) {
     const preview = (
       <canvas
         ref={canvasRef}
@@ -300,9 +348,7 @@ export function LayersPanel({
   const [draggingLayerId, setDraggingLayerId] = useState<string>();
   const [visibilityDrag, setVisibilityDrag] = useState<VisibilityDrag>();
   const [opacityDrag, setOpacityDrag] = useState<OpacityDrag>();
-  const [hoveredLayerId, setHoveredLayerId] = useState<string>();
   const [previewLayerId, setPreviewLayerId] = useState<string>();
-  const [isShiftPressed, setIsShiftPressed] = useState(false);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() =>
     activeProjectedLayerId ? [activeProjectedLayerId] : [],
   );
@@ -335,9 +381,8 @@ export function LayersPanel({
   const selectedLayerIdSet = useMemo(() => new Set(selectedLayerIds), [selectedLayerIds]);
   const layerById = useMemo(() => new Map(layers.map((layer) => [layer.id, layer])), [layers]);
   const previewLayer = useMemo(() => {
-    const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? lastSelectedLayerId ?? activeProjectedLayerId : undefined);
-    return visibleLayers.find((layer) => layer.id === layerId && layer.imageUrl);
-  }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, previewLayerId, visibleLayers]);
+    return visibleLayers.find((layer) => layer.id === previewLayerId && layer.imageUrl);
+  }, [previewLayerId, visibleLayers]);
   const describeLayerSelection = useCallback((ids: string[]) => {
     const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);
     if (names.length === 0) return '图层';
@@ -498,26 +543,18 @@ export function LayersPanel({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') setIsShiftPressed(true);
       if (event.key === 'Escape') {
         setPreviewLayerId(undefined);
         setRenameState(undefined);
-        setIsShiftPressed(false);
       }
-    };
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') setIsShiftPressed(false);
     };
     const handleBlur = () => {
       setPreviewLayerId(undefined);
-      setIsShiftPressed(false);
     };
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('blur', handleBlur);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', handleBlur);
     };
   }, []);
@@ -725,8 +762,6 @@ export function LayersPanel({
             active={layer.id === activeProjectedLayerId}
             selected={selectedLayerIdSet.has(layer.id)}
             dragging={draggingLayerId === layer.id}
-            onHover={() => setHoveredLayerId(layer.id)}
-            onHoverEnd={() => setHoveredLayerId((current) => (current === layer.id ? undefined : current))}
             onSelect={(event) => selectLayer(layer.id, event)}
             onDoubleClick={() => {
               setActiveLayer(layer.id);
@@ -997,8 +1032,6 @@ function LayerRow({
   dragging,
   onSelect,
   onDoubleClick,
-  onHover,
-  onHoverEnd,
   onVisibilityPointerDown,
   onVisibilityPointerEnter,
   onOpacityPointerDown,
@@ -1017,8 +1050,6 @@ function LayerRow({
   dragging: boolean;
   onSelect: MouseEventHandler<HTMLDivElement>;
   onDoubleClick: () => void;
-  onHover: () => void;
-  onHoverEnd: () => void;
   onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
   onVisibilityPointerEnter: PointerEventHandler<HTMLButtonElement>;
   onOpacityPointerDown: PointerEventHandler<HTMLButtonElement>;
@@ -1049,8 +1080,6 @@ function LayerRow({
         event.preventDefault();
         onDoubleClick();
       }}
-      onPointerEnter={onHover}
-      onPointerLeave={onHoverEnd}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
@@ -1293,7 +1322,6 @@ function LayerMenu({
         <>
           <MenuButton onClick={() => run(onView)} icon={<Eye className="h-4 w-4" />}>
             {t('view')}
-            <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">SHIFT</span>
           </MenuButton>
           <MenuButton onClick={() => run(onMoveUp)} icon={<ArrowUp className="h-4 w-4" />}>
             {t('moveLayerUp')}

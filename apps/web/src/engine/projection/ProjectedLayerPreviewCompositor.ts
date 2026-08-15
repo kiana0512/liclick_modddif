@@ -26,6 +26,10 @@ const VISIBILITY_SUPPORT_FEATHER = 1.25;
 const FACE_ON_VISIBILITY_FULL = 0.06;
 const MIN_CAPTURE_NORMAL_AGREEMENT = 0.72;
 const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
+const SURFACE_LOCKED_FACING_START = 0.015;
+const SURFACE_LOCKED_FACING_END = 0.06;
+const SURFACE_LOCKED_MIN_SAFE_FACING = 0.25;
+const SURFACE_LOCKED_VISIBILITY_THRESHOLD = 0.02;
 
 type PreviewLayer = ProjectionLayerStackInput['layers'][number];
 
@@ -233,7 +237,11 @@ const candidateFragmentShader = `
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
-    return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
+    // For local repaint, depth chooses the visible surface. Normal rejection is
+    // intentionally disabled because it classifies adjacent thin triangles
+    // differently and creates a striped boundary.
+    float normalCheckWeight = useNormalCheck * (1.0 - surfaceLockedVisibility);
+    return depthVisibility * mix(1.0, normalVisibility, normalCheckWeight);
   }
 
   float edgeFade(vec2 uv, float edge) {
@@ -365,15 +373,36 @@ const candidateFragmentShader = `
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
     float projectionFacingFactor = abs(dot(projectedFaceNormal, normalize(-captureViewPosition)));
-    float lockedFacingCoverage = smoothstep(0.08, 0.16, projectionFacingFactor);
+    float lockedFacingCoverage = smoothstep(
+      ${SURFACE_LOCKED_FACING_START.toFixed(3)},
+      ${SURFACE_LOCKED_FACING_END.toFixed(3)},
+      projectionFacingFactor
+    );
+    float lockedVisibilityCoverage = step(0.001, visibilitySupport);
     visibilityCoverage = mix(
       visibilityCoverage,
-      centerVisibility * max(neighborhoodVisibility, centerBackedVisibility) * lockedFacingCoverage,
+      lockedVisibilityCoverage,
       surfaceLockedVisibility
     );
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
-    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
+    float continuousCoverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
+    float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
+    // Depth already identifies the front-most captured surface. Do not combine
+    // it with a per-triangle normal cutoff: when the resident preview takes
+    // over, scanned/dense meshes otherwise turn into alternating paint strips.
+    // The angle cutoff remains a safe fallback for legacy captures without depth.
+    float lockedSafetyCoverage = mix(
+      step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, lockedSurfaceFacing),
+      1.0,
+      useDepthCheck
+    );
+    float lockedBinaryCoverage =
+      layerOpacity *
+      step(0.01, sourceAlpha) *
+      lockedSafetyCoverage *
+      step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage);
+    float coverage = mix(continuousCoverage, lockedBinaryCoverage, surfaceLockedVisibility);
     if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
     float strength = clamp(layerStrength, 0.25, 3.0);
     float angleWeight = smoothstep(0.02, 0.25, visibilityBackedNdv) * pow(clamp(visibilityBackedNdv, 0.0, 1.0), 4.0 / strength);

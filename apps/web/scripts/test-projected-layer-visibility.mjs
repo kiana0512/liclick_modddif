@@ -14,9 +14,7 @@ const server = await createServer({
 });
 
 try {
-  const projection = await server.ssrLoadModule(
-    '/src/engine/projection/ProjectedLayerMaterial.ts',
-  );
+  const projection = await server.ssrLoadModule('/src/engine/projection/ProjectedLayerMaterial.ts');
   const repaintActivation = await server.ssrLoadModule(
     '/src/engine/viewport/localRepaintPreviewActivation.ts',
   );
@@ -71,16 +69,25 @@ try {
       id: 'local-repaint-projection-legacy',
       renderedColor: true,
     }),
-    false,
-    'Local repaint must participate in Flat/PBR surface lighting to blend with its base.',
+    true,
+    'Local repaint must keep its authored colour and bypass the PBR sweep.',
   );
   assert.equal(
     renderedLayerColor.usesUnlitRenderedColor({
       id: 'ordinary-uv-layer',
       renderedColor: false,
     }),
+    true,
+    'Ordinary UV layers must bypass the PBR sweep.',
+  );
+  assert.equal(
+    renderedLayerColor.usesUnlitRenderedColor({
+      id: 'merged-uv-layer',
+      role: 'merged-uv',
+      renderedColor: false,
+    }),
     false,
-    'Ordinary albedo layers must continue to receive viewport lighting.',
+    'Only the final merged UV layer may receive PBR preview lighting.',
   );
   const localRepaintLayer = {
     id: 'local-repaint-projection-regression',
@@ -115,11 +122,7 @@ try {
     0.2,
     'Local repaint source-over alpha must equal its rasterized coverage.',
   );
-  const featheredAlpha = bakeOverlayComposition.getProjectionOverlayAlpha(
-    0.2,
-    0,
-    'feathered',
-  );
+  const featheredAlpha = bakeOverlayComposition.getProjectionOverlayAlpha(0.2, 0, 'feathered');
   assert(
     featheredAlpha >= 0.15 && featheredAlpha < 0.2,
     'Ordinary overlay alpha must retain the historical 0.75-1 quality feather.',
@@ -188,7 +191,6 @@ try {
     /overlayFacingGate|overlayCoverageGate/,
     'Live overlays must not crop already validated frontal coverage a second time.',
   );
-
   const liveRepaintOverlay = await projection.createProjectedLayerMaterial({
     ...layers[0],
     layerId: 'local-repaint-live-overlay',
@@ -200,8 +202,8 @@ try {
   assert.equal(liveRepaintOverlay.transparent, true);
   assert.equal(liveRepaintOverlay.depthWrite, false);
   assert.equal(liveRepaintOverlay.depthFunc, THREE.LessEqualDepth);
-  assert.equal(liveRepaintOverlay.polygonOffsetFactor, -16);
-  assert.equal(liveRepaintOverlay.polygonOffsetUnits, -16);
+  assert.equal(liveRepaintOverlay.polygonOffsetFactor, -1);
+  assert.equal(liveRepaintOverlay.polygonOffsetUnits, -1);
   assert.equal(liveRepaintOverlay.uniforms.transparentProjectionOnly.value, 1);
   assert.equal(
     repaintOverlaySync.syncLocalRepaintGpuOverlayLighting(
@@ -244,7 +246,12 @@ try {
   );
   assert.match(
     liveRepaintOverlay.fragmentShader,
-    /mix\(0\.000006, -0\.000080, projectedDepthPriority\)/,
+    /float lockedSafetyCoverage = mix\([\s\S]*useDepthCheck/,
+    'The live repaint shader must use depth as the authoritative surface guard.',
+  );
+  assert.match(
+    liveRepaintOverlay.fragmentShader,
+    /float acceptedDepthOffset = -0\.000080;[\s\S]*mix\(0\.000006, acceptedDepthOffset, projectedDepthPriority\)/,
     'The final repaint pass must have deterministic depth priority above the projected background.',
   );
   projection.syncProjectedLayerMaterialDisplayState(liveRepaintOverlay, []);
@@ -457,11 +464,7 @@ try {
   projection.disposeGeneratedMaterialTree(flatWhiteMembraneMaterial);
 
   const mergedUv = new THREE.DataTexture(new Uint8Array([160, 120, 80, 255]), 1, 1);
-  const renderedColorMask = new THREE.DataTexture(
-    new Uint8Array([255, 255, 255, 255]),
-    1,
-    1,
-  );
+  const renderedColorMask = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
   const mergedUvMaterial = projection.createUvOverlayPreviewMaterial({
     displayMode: 'pbr',
     selected: false,
@@ -469,9 +472,29 @@ try {
     uvOverlayRenderedColorMaskTexture: renderedColorMask,
   });
   assert.equal(mergedUvMaterial.uniforms.useUvOverlayRenderedColorMaskMap.value, 1);
+  assert.equal(mergedUvMaterial.uniforms.uvOverlayRenderedColorMaskMap.value, renderedColorMask);
+  const updatedUvLightDirection = [-0.8, 0.5, 0.25];
+  const expectedUvLightDirection = new THREE.Vector3(...updatedUvLightDirection).normalize();
   assert.equal(
-    mergedUvMaterial.uniforms.uvOverlayRenderedColorMaskMap.value,
-    renderedColorMask,
+    projection.syncProjectedLayerMaterialDisplayState(
+      mergedUvMaterial,
+      [],
+      false,
+      false,
+      {
+        enabled: true,
+        exposure: 1.1,
+        ambientIntensity: 0.45,
+        keyLightIntensity: 1.4,
+        keyLightDirection: updatedUvLightDirection,
+      },
+    ),
+    true,
+    'Merged UV preview lighting controls must update the resident UV material.',
+  );
+  assert(
+    mergedUvMaterial.uniforms.keyLightDirection.value.equals(expectedUvLightDirection),
+    'Changing PBR light azimuth must update the merged UV key-light direction.',
   );
   projection.disposeGeneratedMaterialTree(mergedUvMaterial);
 

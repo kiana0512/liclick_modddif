@@ -45,6 +45,10 @@ export type LocalRepaintProjectionSource = {
 
 export type PaintMaskSettings = {
   brushSize: number;
+};
+
+export type LocalRepaintBrushSettings = {
+  brushSize: number;
   brushOpacity: number;
 };
 
@@ -98,6 +102,7 @@ type SceneStore = {
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
   localRepaintPreviewLayer?: Layer;
   paintMaskSettings: PaintMaskSettings;
+  localRepaintBrushSettings: LocalRepaintBrushSettings;
   paintToolSettings: PaintToolSettings;
   importSettings: ImportSettings;
   importWarnings: string[];
@@ -123,6 +128,7 @@ type SceneStore = {
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
   setLocalRepaintPreviewLayer: (layer?: Layer) => void;
   setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
+  setLocalRepaintBrushSettings: (settings: Partial<LocalRepaintBrushSettings>) => void;
   setPaintToolSettings: (settings: Partial<PaintToolSettings>) => void;
   clearPaintMask: () => void;
   invertPaintMask: () => void;
@@ -218,6 +224,9 @@ export const useSceneStore = create<SceneStore>()(
       localRepaintProjectionSource: undefined,
       localRepaintPreviewLayer: undefined,
       paintMaskSettings: {
+        brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
+      },
+      localRepaintBrushSettings: {
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
         brushOpacity: 100,
       },
@@ -447,9 +456,24 @@ export const useSceneStore = create<SceneStore>()(
                 settings.brushSize ?? state.paintMaskSettings.brushSize,
               ),
             ),
+          },
+        })),
+      setLocalRepaintBrushSettings: (settings) =>
+        set((state) => ({
+          localRepaintBrushSettings: {
+            brushSize: Math.max(
+              MIN_PAINT_MASK_BRUSH_SIZE,
+              Math.min(
+                MAX_PAINT_MASK_BRUSH_SIZE,
+                settings.brushSize ?? state.localRepaintBrushSettings.brushSize,
+              ),
+            ),
             brushOpacity: Math.max(
               0,
-              Math.min(100, settings.brushOpacity ?? state.paintMaskSettings.brushOpacity),
+              Math.min(
+                100,
+                settings.brushOpacity ?? state.localRepaintBrushSettings.brushOpacity,
+              ),
             ),
           },
         })),

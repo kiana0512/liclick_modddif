@@ -1032,16 +1032,11 @@ export function EditorPage({
         setServerReadyProjectId(result.project.id);
         setRouteProjectStatus('idle');
       })
-      .catch(() => {
+      .catch((error) => {
         if (token.revision !== routeProjectLoadRevisionRef.current || token.projectId !== projectId)
           return;
         setRouteProjectStatus('missing');
-        pushToast({
-          tone: 'error',
-          title: t('projectLoadFailed'),
-          description: t('projectLoadFailedHelp'),
-          dedupeKey: `project-load:${projectId}`,
-        });
+        console.error('[Liclick 3D Texture] Project load failed in background:', error);
       });
     return () => {
       if (routeProjectLoadRevisionRef.current === token.revision) {
@@ -1839,12 +1834,10 @@ export function EditorPage({
       (object) => !object.sourcePath || !/^(https?:|blob:|data:)/.test(object.sourcePath),
     );
     if (skippedObjects.length > 0) {
-      pushToast({
-        tone: 'warning',
-        title: t('modelRestoreSkipped'),
-        description: t('modelRestoreRelativePath'),
-        dedupeKey: `model-restore:${projectToRestore.id}`,
-      });
+      console.warn(
+        '[Liclick 3D Texture] Some project models were skipped during background restore:',
+        skippedObjects.map((object) => object.name),
+      );
     }
     if (restorableObjects.length === 0) return;
     const restoreRequest = ++modelRestoreRequestRef.current;
@@ -1995,17 +1988,6 @@ export function EditorPage({
           `[Liclick 3D Texture] Restore model failed: ${result.object.name}`,
           result.error,
         );
-      });
-      pushToast({
-        tone: 'error',
-        title: t('modelRestoreFailed'),
-        description:
-          failedResults.length === restorableObjects.length
-            ? failedResults[0]?.error instanceof Error
-              ? failedResults[0].error.message
-              : t('modelRestoreFailedHelp')
-            : `${failedResults.length} / ${restorableObjects.length} 个模型加载失败，其余模型已恢复。`,
-        dedupeKey: `model-restore:${projectToRestore.id}`,
       });
     }
   }
@@ -3499,6 +3481,7 @@ export function EditorPage({
       objectId: string,
       temporary = false,
       signal?: AbortSignal,
+      silentForeground = false,
     ) => {
       const layerId = createId('content-aware-uv-repair');
       const imageUrl = temporary
@@ -3536,11 +3519,13 @@ export function EditorPage({
         order: currentLayers.length,
         createdAt: new Date().toISOString(),
       };
-      setManualBakeProgress({
-        title: t('contentAwareRepair'),
-        detail: '修补结果已生成，正在分帧上传完整纹理到 GPU',
-        progress: 0.985,
-      });
+      if (!silentForeground) {
+        setManualBakeProgress({
+          title: t('contentAwareRepair'),
+          detail: '修补结果已生成，正在分帧上传完整纹理到 GPU',
+          progress: 0.985,
+        });
+      }
       const previewResults = await prewarmPreviewTextures([imageUrl]);
       const previewReady = previewResults.some((result) => result.status === 'fulfilled');
       if (!previewReady) {
@@ -3673,26 +3658,15 @@ export function EditorPage({
     void restorePersistedLocalRepaintRuntime(projectId).then((runtime) => {
       if (cancelled || !runtime) return;
       openLocalRepaintRuntime(runtime);
-      if (runtime.status === 'submitting') {
-        pushToast({
-          tone: 'info',
-          title: '已恢复局部重绘任务',
-          description: '正在继续等待莉刻返回结果。',
-          dedupeKey: `local-repaint-restored:${runtime.id}`,
-        });
-      } else if (runtime.status === 'preview_ready') {
-        pushToast({
-          tone: 'success',
-          title: '已恢复局部重绘结果',
-          description: '上一次莉刻返回的结果已恢复，可以预览并应用。',
-          dedupeKey: `local-repaint-result-restored:${runtime.id}`,
-        });
-      }
+      console.info(
+        '[Liclick 3D Texture] Restored local repaint state in background:',
+        runtime.status,
+      );
     });
     return () => {
       cancelled = true;
     };
-  }, [localRepaintRuntime?.projectId, openLocalRepaintRuntime, projectId, pushToast]);
+  }, [localRepaintRuntime?.projectId, openLocalRepaintRuntime, projectId]);
 
   useEffect(() => {
     const runtime = localRepaintRuntime;
@@ -3811,16 +3785,18 @@ export function EditorPage({
       (layer) =>
         isFlattenableUvMergeSource(layer) && (!layer.objectId || layer.objectId === objectId),
     );
-    const selectedUvLayers = [...(baseUvLayer ? [baseUvLayer] : []), ...selectedUvSourceLayers]
-      .sort((left, right) => {
-        // Repair is always a sparse underlay, irrespective of incidental list
-        // order. Ordinary merged UV color stays above it, while new projection
-        // pixels remain the front-most authored result.
-        const underlayOrder =
-          Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right));
-        if (underlayOrder !== 0) return underlayOrder;
-        return compareUvLayersForComposition(left, right, 'top-to-bottom');
-      });
+    const selectedUvLayers = [
+      ...(baseUvLayer ? [baseUvLayer] : []),
+      ...selectedUvSourceLayers,
+    ].sort((left, right) => {
+      // Repair is always a sparse underlay, irrespective of incidental list
+      // order. Ordinary merged UV color stays above it, while new projection
+      // pixels remain the front-most authored result.
+      const underlayOrder =
+        Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right));
+      if (underlayOrder !== 0) return underlayOrder;
+      return compareUvLayersForComposition(left, right, 'top-to-bottom');
+    });
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     const selectedUvLayerIds = selectedUvSourceLayers.map((layer) => layer.id);
     const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
@@ -4024,12 +4000,9 @@ export function EditorPage({
         document.body.dataset.perfUvBakePhase = 'png-encode';
       }
       if (!mergedImageBlob && !mergedImageUrl) {
-        const encoded = await encodeRgbaPngObjectUrl(
-          bakeResolution,
-          bakeResolution,
-          mergedRgba,
-          { transferOwnership: true },
-        );
+        const encoded = await encodeRgbaPngObjectUrl(bakeResolution, bakeResolution, mergedRgba, {
+          transferOwnership: true,
+        });
         mergedImageUrl = encoded.url;
         mergedOutputBytes = encoded.byteLength;
         pngEncodeDurationMs = performance.now() - pngEncodeStartedAt;
@@ -4235,10 +4208,10 @@ export function EditorPage({
       let mergedLayer = mergePlan.action === 'reuse' ? mergePlan.mergedLayer : undefined;
       if (mergePlan.action === 'missing') {
         pushToast({
-            tone: 'warning',
-            title: '没有可合并的投影图层',
-            description: '请先生成并显示至少一个投影图层，再传入烘焙。',
-            dedupeKey: 'bake-merged-uv-missing',
+          tone: 'warning',
+          title: '没有可合并的投影图层',
+          description: '请先生成并显示至少一个投影图层，再传入烘焙。',
+          dedupeKey: 'bake-merged-uv-missing',
         });
         return;
       }
@@ -4312,8 +4285,7 @@ export function EditorPage({
       pushToast({
         tone: 'error',
         title: '传入烘焙失败',
-        description:
-          error instanceof Error ? error.message : '保存合并 UV 图层失败，请稍后重试。',
+        description: error instanceof Error ? error.message : '保存合并 UV 图层失败，请稍后重试。',
         dedupeKey: 'bake-merged-uv-persist-failed',
       });
     } finally {
@@ -4323,13 +4295,7 @@ export function EditorPage({
   }
 
   useEffect(() => {
-    if (
-      !autoOpenBake ||
-      !project ||
-      !importedModel ||
-      serverReadyProjectId !== projectId
-    )
-      return;
+    if (!autoOpenBake || !project || !importedModel || serverReadyProjectId !== projectId) return;
     const objectId = pendingBakeHandoff?.objectId ?? importedModel.objectId;
     const sceneState = useSceneStore.getState();
     const targetModel = sceneState.importedModels.find((model) => model.objectId === objectId);
@@ -4474,9 +4440,7 @@ export function EditorPage({
         blob: sourceBlob,
         filename: `pipeline-${revisionId}-high-${sourceName}`,
       });
-      let savedBaseColor:
-        | { asset: { url: string; relativePath: string } }
-        | undefined;
+      let savedBaseColor: { asset: { url: string; relativePath: string } } | undefined;
       let savedBaseColorMimeType = 'image/png';
       if (currentObjectBaseColor) {
         const colorUrl = currentObjectBaseColor.imageUrl;
@@ -4774,17 +4738,9 @@ export function EditorPage({
       'liclick:local-repaint-prewarm-progress',
       handleLocalRepaintPrewarmProgress,
     );
-    window.addEventListener(
-      'liclick:projected-preview-progress',
-      handleLocalRepaintPrewarmProgress,
-    );
     return () => {
       window.removeEventListener(
         'liclick:local-repaint-prewarm-progress',
-        handleLocalRepaintPrewarmProgress,
-      );
-      window.removeEventListener(
-        'liclick:projected-preview-progress',
         handleLocalRepaintPrewarmProgress,
       );
     };
@@ -5071,8 +5027,7 @@ export function EditorPage({
       }
       const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
       const preparedSourceHasGpuError =
-        document.body.dataset.localRepaintGpuErrorGeneration ===
-          latestLocalRepaintGeneration.id &&
+        document.body.dataset.localRepaintGpuErrorGeneration === latestLocalRepaintGeneration.id &&
         document.body.dataset.localRepaintGpuErrorTarget === targetLayer.id;
       if (
         preparedSource?.generationId === latestLocalRepaintGeneration.id &&
@@ -5245,7 +5200,10 @@ export function EditorPage({
           const sourceDeadline = performance.now() + 25_000;
           while (performance.now() < sourceDeadline) {
             const sceneState = useSceneStore.getState();
-            if (sceneState.localRepaintProjectionSource && sceneState.paintTool === 'inpaint-apply') {
+            if (
+              sceneState.localRepaintProjectionSource &&
+              sceneState.paintTool === 'inpaint-apply'
+            ) {
               return;
             }
             await wait(50);
@@ -5264,9 +5222,14 @@ export function EditorPage({
   const executeContentAwareRepair = useCallback(
     async (
       requestedObjectId?: string,
-      options?: { benchmarkOnly?: boolean; taskContext?: HeavyTaskContext },
+      options?: {
+        benchmarkOnly?: boolean;
+        silentForeground?: boolean;
+        taskContext?: HeavyTaskContext;
+      },
     ) => {
       const benchmarkOnly = options?.benchmarkOnly === true;
+      const silentForeground = options?.silentForeground === true;
       if (contentAwareRepairRunningRef.current) return;
       contentAwareRepairRunningRef.current = true;
       const repairRunStartedAt = performance.now();
@@ -5294,9 +5257,7 @@ export function EditorPage({
           }
         }
         history.push(state);
-        document.body.dataset.contentAwareRepairPhaseHistory = JSON.stringify(
-          history.slice(-24),
-        );
+        document.body.dataset.contentAwareRepairPhaseHistory = JSON.stringify(history.slice(-24));
       };
       reportRepairRunState('running', 'prepare');
       const abortController = new AbortController();
@@ -5314,7 +5275,7 @@ export function EditorPage({
                 )
               : undefined) ?? sceneState.importedModel);
         if (!viewportRuntime || !targetModel) {
-          if (!benchmarkOnly) {
+          if (!benchmarkOnly && !silentForeground) {
             pushToast({
               tone: 'warning',
               title: t('viewportUnavailable'),
@@ -5323,12 +5284,14 @@ export function EditorPage({
           }
           throw new Error(t('importModelFirst'));
         }
-        window.clearTimeout(manualBakeProgressTimerRef.current);
-        setManualBakeProgress({
-          title: t('contentAwareRepair'),
-          detail: t('contentAwareRepairScanning'),
-          progress: 0.04,
-        });
+        if (!silentForeground) {
+          window.clearTimeout(manualBakeProgressTimerRef.current);
+          setManualBakeProgress({
+            title: t('contentAwareRepair'),
+            detail: t('contentAwareRepairScanning'),
+            progress: 0.04,
+          });
+        }
         const objectId = targetModel.objectId;
         const currentLayers = useLayerStore.getState().layers;
         const sourceLayerIds = currentLayers
@@ -5372,12 +5335,14 @@ export function EditorPage({
           commitToProject: false,
           markSourceLayersBaked: false,
           skipImageEncoding: true,
-          onProgress: (progress) =>
-            setManualBakeProgress({
-              title: t('contentAwareRepair'),
-              detail: t('contentAwareRepairScanning'),
-              progress: 0.04 + progress.progress * 0.54,
-            }),
+          onProgress: silentForeground
+            ? undefined
+            : (progress) =>
+                setManualBakeProgress({
+                  title: t('contentAwareRepair'),
+                  detail: t('contentAwareRepairScanning'),
+                  progress: 0.04 + progress.progress * 0.54,
+                }),
         });
         reportRepairRunState('running', 'projection-bake-ready', {
           resolution: repairResolution,
@@ -5434,24 +5399,27 @@ export function EditorPage({
             minimumSeamNormalDot: 0.72,
             yieldIntervalMs: 8,
             signal: abortController.signal,
-            onProgress: (progress) => {
-              const phaseRange =
-                progress.phase === 'analyze'
-                  ? [0.58, 0.64]
-                  : progress.phase === 'rasterize'
-                    ? [0.64, 0.7]
-                    : progress.phase === 'seams'
-                      ? [0.7, 0.74]
-                      : [0.74, 0.74];
-              const phaseProgress = progress.total > 0 ? progress.completed / progress.total : 1;
-              setManualBakeProgress({
-                title: t('contentAwareRepair'),
-                detail: t('contentAwareRepairScanning'),
-                progress:
-                  phaseRange[0] +
-                  (phaseRange[1] - phaseRange[0]) * Math.max(0, Math.min(1, phaseProgress)),
-              });
-            },
+            onProgress: silentForeground
+              ? undefined
+              : (progress) => {
+                  const phaseRange =
+                    progress.phase === 'analyze'
+                      ? [0.58, 0.64]
+                      : progress.phase === 'rasterize'
+                        ? [0.64, 0.7]
+                        : progress.phase === 'seams'
+                          ? [0.7, 0.74]
+                          : [0.74, 0.74];
+                  const phaseProgress =
+                    progress.total > 0 ? progress.completed / progress.total : 1;
+                  setManualBakeProgress({
+                    title: t('contentAwareRepair'),
+                    detail: t('contentAwareRepairScanning'),
+                    progress:
+                      phaseRange[0] +
+                      (phaseRange[1] - phaseRange[0]) * Math.max(0, Math.min(1, phaseProgress)),
+                  });
+                },
           },
         );
         reportRepairRunState('running', 'topology-ready', {
@@ -5494,8 +5462,8 @@ export function EditorPage({
         );
         if (detectedGaps.stats.totalPixels === 0) {
           reportRepairRunState('no-gaps', 'gap-scan-complete');
-          setManualBakeProgress(undefined);
-          if (!benchmarkOnly) {
+          if (!silentForeground) setManualBakeProgress(undefined);
+          if (!benchmarkOnly && !silentForeground) {
             pushToast({
               tone: 'info',
               title: t('contentAwareRepair'),
@@ -5506,11 +5474,13 @@ export function EditorPage({
           return;
         }
 
-        setManualBakeProgress({
-          title: t('contentAwareRepair'),
-          detail: t('contentAwareRepairFilling'),
-          progress: 0.74,
-        });
+        if (!silentForeground) {
+          setManualBakeProgress({
+            title: t('contentAwareRepair'),
+            detail: t('contentAwareRepairFilling'),
+            progress: 0.74,
+          });
+        }
         const repair = await runSurfaceAwareRepair(
           {
             width: repairResolution,
@@ -5553,12 +5523,14 @@ export function EditorPage({
           {
             signal: abortController.signal,
             transferOwnership: { rgba: true, writeMask: true },
-            onProgress: (progress) =>
-              setManualBakeProgress({
-                title: t('contentAwareRepair'),
-                detail: t('contentAwareRepairFilling'),
-                progress: 0.74 + progress.progress * 0.2,
-              }),
+            onProgress: silentForeground
+              ? undefined
+              : (progress) =>
+                  setManualBakeProgress({
+                    title: t('contentAwareRepair'),
+                    detail: t('contentAwareRepairFilling'),
+                    progress: 0.74 + progress.progress * 0.2,
+                  }),
           },
         );
         reportRepairRunState('running', 'repair-worker-ready', {
@@ -5572,17 +5544,20 @@ export function EditorPage({
         // `filledRgba` is intentionally sparse: only successfully repaired gap
         // texels are opaque. It never contains a flattened copy of source layers.
         const repairTexture = new ImageData(repair.filledRgba, repairResolution, repairResolution);
-        setManualBakeProgress({
-          title: t('contentAwareRepair'),
-          detail: t('contentAwareRepairFilling'),
-          progress: 0.96,
-        });
+        if (!silentForeground) {
+          setManualBakeProgress({
+            title: t('contentAwareRepair'),
+            detail: t('contentAwareRepairFilling'),
+            progress: 0.96,
+          });
+        }
         if (!benchmarkOnly) captureHistory('创建独立内容识别 UV 修补图层');
         const repairLayer = await addUvContentAwareRepairLayer(
           repairTexture,
           objectId,
           benchmarkOnly,
           abortController.signal,
+          silentForeground,
         );
         if (!benchmarkOnly) setProjectLayers(useLayerStore.getState().layers);
         reportRepairRunState('complete', 'atomic-publish', {
@@ -5591,7 +5566,7 @@ export function EditorPage({
           outputChecksum: repair.stats.outputChecksum,
         });
         options?.taskContext?.markFirstResult({ layerId: repairLayer.id });
-        if (!benchmarkOnly) {
+        if (!benchmarkOnly && !silentForeground) {
           pushToast({
             tone: 'success',
             title: t('contentAwareFillComplete'),
@@ -5610,8 +5585,8 @@ export function EditorPage({
         reportRepairRunState('error', 'failed', {
           message: error instanceof Error ? error.message : String(error),
         });
-        setManualBakeProgress(undefined);
-        if (!benchmarkOnly) {
+        if (!silentForeground) setManualBakeProgress(undefined);
+        if (!benchmarkOnly && !silentForeground) {
           pushToast({
             tone: 'error',
             title: t('localRepaintFailed'),
@@ -5625,10 +5600,12 @@ export function EditorPage({
         if (contentAwareRepairAbortControllerRef.current === abortController) {
           contentAwareRepairRunningRef.current = false;
           contentAwareRepairAbortControllerRef.current = undefined;
-          manualBakeProgressTimerRef.current = window.setTimeout(
-            () => setManualBakeProgress(undefined),
-            1200,
-          );
+          if (!silentForeground) {
+            manualBakeProgressTimerRef.current = window.setTimeout(
+              () => setManualBakeProgress(undefined),
+              1200,
+            );
+          }
         }
       }
     },
@@ -5636,21 +5613,31 @@ export function EditorPage({
   );
 
   const runContentAwareRepair = useCallback(
-    (requestedObjectId?: string, options?: { benchmarkOnly?: boolean }) => {
+    (
+      requestedObjectId?: string,
+      options?: { benchmarkOnly?: boolean; silentForeground?: boolean },
+    ) => {
       const benchmarkOnly = options?.benchmarkOnly === true;
+      const silentForeground = options?.silentForeground === true;
       return scheduleHeavyTask({
         key: 'full-resolution-texture',
         label: 'content-aware-repair',
         priority: 'user-visible',
         replace: !benchmarkOnly,
-        onQueued: () =>
-          setManualBakeProgress({
-            title: t('contentAwareRepair'),
-            detail: '任务已排队，视口交互保持可用',
-            progress: 0.01,
-          }),
+        onQueued: silentForeground
+          ? undefined
+          : () =>
+              setManualBakeProgress({
+                title: t('contentAwareRepair'),
+                detail: '任务已排队，视口交互保持可用',
+                progress: 0.01,
+              }),
         run: (taskContext) =>
-          executeContentAwareRepair(requestedObjectId, { benchmarkOnly, taskContext }),
+          executeContentAwareRepair(requestedObjectId, {
+            benchmarkOnly,
+            silentForeground,
+            taskContext,
+          }),
       }).catch((error) => {
         if (!benchmarkOnly && error instanceof Error && error.name === 'AbortError') return;
         throw error;
@@ -5674,9 +5661,10 @@ export function EditorPage({
         delete document.body.dataset.contentAwareRepairRun;
         delete document.body.dataset.contentAwareRepairPhaseHistory;
         await runContentAwareRepair(objectId, { benchmarkOnly: true });
-        const terminal = JSON.parse(
-          document.body.dataset.contentAwareRepairRun ?? '{}',
-        ) as Record<string, unknown>;
+        const terminal = JSON.parse(document.body.dataset.contentAwareRepairRun ?? '{}') as Record<
+          string,
+          unknown
+        >;
         const history = JSON.parse(
           document.body.dataset.contentAwareRepairPhaseHistory ?? '[]',
         ) as Array<Record<string, unknown>>;
@@ -5705,7 +5693,9 @@ export function EditorPage({
       if (!request || request.source !== 'multiview-texture') return;
       if (request.projectId && request.projectId !== projectId) return;
       request.handled = true;
-      void runContentAwareRepair(request.objectId).then(request.resolve, request.reject);
+      void runContentAwareRepair(request.objectId, {
+        silentForeground: request.silentForeground,
+      }).then(request.resolve, request.reject);
     };
     window.addEventListener(CONTENT_AWARE_REPAIR_REQUEST_EVENT, handleAutomaticContentAwareRepair);
     return () =>

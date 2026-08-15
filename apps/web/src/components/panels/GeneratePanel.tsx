@@ -961,26 +961,20 @@ export function GeneratePanel({
     };
   }, [capturePreviewMaskUrl, previewProcessingMode, previewRawResultUrl]);
 
-  const notifyReferencePreprocessed = useCallback(
-    (result: ReferencePreprocessingResult) => {
-      const originalMiB = (result.originalBytes / 1024 / 1024).toFixed(1);
-      const processedMiB = (result.processedBytes / 1024 / 1024).toFixed(1);
-      const keptOriginalResolution =
-        result.originalWidth === result.processedWidth &&
-        result.originalHeight === result.processedHeight;
-      const resolutionDescription = keptOriginalResolution
-        ? `保留原始 ${result.processedWidth}×${result.processedHeight} 分辨率`
-        : `分辨率由 ${result.originalWidth}×${result.originalHeight} 调整为 ${result.processedWidth}×${result.processedHeight}`;
-      const qualityPercent = Math.round(result.outputQuality * 100);
-      pushToast({
-        tone: 'warning',
-        title: '参考图超限，已自动处理',
-        description: `${result.name} 已从 ${originalMiB} MB 优化为 ${processedMiB} MB；${resolutionDescription}，WebP 编码质量 ${qualityPercent}%，将按原构图继续生成。`,
-        dedupeKey: `atlas-reference-preprocessed:${result.id}`,
-      });
-    },
-    [pushToast],
-  );
+  const notifyReferencePreprocessed = useCallback((result: ReferencePreprocessingResult) => {
+    const originalMiB = (result.originalBytes / 1024 / 1024).toFixed(1);
+    const processedMiB = (result.processedBytes / 1024 / 1024).toFixed(1);
+    const keptOriginalResolution =
+      result.originalWidth === result.processedWidth &&
+      result.originalHeight === result.processedHeight;
+    const resolutionDescription = keptOriginalResolution
+      ? `保留原始 ${result.processedWidth}×${result.processedHeight} 分辨率`
+      : `分辨率由 ${result.originalWidth}×${result.originalHeight} 调整为 ${result.processedWidth}×${result.processedHeight}`;
+    const qualityPercent = Math.round(result.outputQuality * 100);
+    console.info(
+      `[Liclick 3D Texture] Reference preprocessed in background: ${result.name} ${originalMiB} MB -> ${processedMiB} MB; ${resolutionDescription}; WebP ${qualityPercent}%.`,
+    );
+  }, []);
 
   const syncGeneration = useCallback(
     (generation: Generation) => {
@@ -1183,14 +1177,9 @@ export function GeneratePanel({
         tone: 'error',
         message: userMessage,
       });
-      pushToast({
-        tone: 'error',
-        title: isTextureMapGeneration(generationToFail) ? t('textureMapFailed') : '图片生成失败',
-        description: userMessage,
-        dedupeKey: `generation-failed:${generationToFail.id}`,
-      });
+      console.error('[Liclick 3D Texture] Background generation failed:', userMessage);
     },
-    [finish, pushToast, setGenerateNotice, syncGeneration, t],
+    [finish, setGenerateNotice, syncGeneration],
   );
 
   const captureTextureMapCameraView = useCallback(
@@ -1385,14 +1374,8 @@ export function GeneratePanel({
       const failureCount = generationPollFailureCountsRef.current.get(jobId) ?? 0;
       generationPollFailureCountsRef.current.delete(jobId);
       dismissToastByDedupeKey(pollToastKey);
-      if (showRecovered && failureCount >= 2) {
-        pushToast({
-          tone: 'success',
-          title: '生成任务连接已恢复',
-          description: '后台任务仍在正常运行，结果完成后会自动回到预览区。',
-          dedupeKey: pollToastKey,
-        });
-      }
+      if (showRecovered && failureCount >= 2)
+        console.info('[Liclick 3D Texture] Background generation connection recovered.');
     }
 
     async function pollJob() {
@@ -1404,12 +1387,7 @@ export function GeneratePanel({
         if (result.message) {
           generationPollFailureCountsRef.current.set(jobId, 2);
           setGenerateNotice({ tone: 'warning', message: result.message });
-          pushToast({
-            tone: 'warning',
-            title: '生成服务正在自动重试',
-            description: result.message,
-            dedupeKey: pollToastKey,
-          });
+          console.warn('[Liclick 3D Texture] Background generation retrying:', result.message);
         } else {
           clearPollRetryFeedback(true);
         }
@@ -1430,12 +1408,7 @@ export function GeneratePanel({
           };
           syncGeneration(generation);
           window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
-          pushToast({
-            tone: 'success',
-            title: '图片生成完成',
-            description: '刷新前的莉刻生成任务已恢复结果。',
-            dedupeKey: `generation-restored:${generation.id}`,
-          });
+          console.info('[Liclick 3D Texture] Restored generation result:', generation.id);
           return;
         }
         if (result.status === 'succeeded' && !result.resultUrl) {
@@ -1493,12 +1466,7 @@ export function GeneratePanel({
         if (failureCount >= 2) {
           const retryMessage = '与本地生成服务的连接暂时不稳定，后台任务没有丢失，正在自动重试。';
           setGenerateNotice({ tone: 'warning', message: retryMessage });
-          pushToast({
-            tone: 'warning',
-            title: '生成任务正在自动重连',
-            description: retryMessage,
-            dedupeKey: pollToastKey,
-          });
+          console.warn('[Liclick 3D Texture] Background generation reconnecting:', retryMessage);
         }
       } finally {
         if (requestAbortController === controller) requestAbortController = undefined;
@@ -1584,12 +1552,10 @@ export function GeneratePanel({
     void persistPairedMultiviewReference(sourceReference, completedReferenceGeneration)
       .then(() => {
         setReferenceGroupGenerationState(undefined);
-        pushToast({
-          tone: 'success',
-          title: '多视图结果已恢复',
-          description: '刷新前完成的结果已写回对应参考图。',
-          dedupeKey: `reference-multiview-restored:${completedReferenceGeneration.id}`,
-        });
+        console.info(
+          '[Liclick 3D Texture] Restored multiview result:',
+          completedReferenceGeneration.id,
+        );
       })
       .catch((error) => {
         const message = getUserFacingGenerationError(error, '多视图结果写回失败，请重试。');
@@ -2308,12 +2274,10 @@ export function GeneratePanel({
                 metadata: { ...completed.metadata, projectionError: message },
               };
               syncGeneration(completedWithProjectionError);
-              pushToast({
-                tone: 'warning',
-                title: `${String(completed.metadata.cameraViewLabel ?? '当前')}视角已生成，等待重新投影`,
-                description: message,
-                dedupeKey: `texture-map-view-projection-failed:${completed.id}`,
-              });
+              console.warn(
+                `[Liclick 3D Texture] ${String(completed.metadata.cameraViewLabel ?? '当前')} view generated but projection is pending:`,
+                message,
+              );
               return { generation: completedWithProjectionError, projected: false };
             }
           } finally {
@@ -2405,34 +2369,34 @@ export function GeneratePanel({
           projectId: currentProject.id,
           objectId,
           batchId: completedGenerations.map((generation) => generation.id).join(':'),
+          silentForeground: true,
         });
         updateTexturePipelineProgress(100, '补缝完成');
       } catch (error) {
         updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
-        pushToast({
-          tone: 'warning',
-          title: '纹理贴图已生成，自动修补未完成',
-          description: error instanceof Error ? error.message : '可以稍后手动执行内容识别修补。',
-          dedupeKey: `texture-map-auto-repair:${currentProject.id}:${objectId}`,
-        });
+        console.warn('[Liclick 3D Texture] Automatic content repair did not complete:', error);
       }
     } else {
       updateTexturePipelineProgress(100, '纹理生成完成');
     }
 
-    setGenerateNotice(undefined);
-    pushToast({
-      tone: completedGenerations.length > 0 ? 'success' : 'error',
-      title: completedGenerations.length > 0 ? t('textureMapGenerated') : t('textureMapFailed'),
-      description:
-        completedGenerations.length > 0
-          ? isMultiviewRequest
-            ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
-            : `单视图纹理贴图已生成并自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
-          : isMultiviewRequest
-            ? '多视图纹理贴图任务提交失败。'
-            : '单视图纹理贴图任务提交失败。',
-    });
+    if (completedGenerations.length > 0) {
+      setGenerateNotice(undefined);
+      pushToast({
+        tone: 'success',
+        title: t('textureMapGenerated'),
+        description: isMultiviewRequest
+          ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
+          : `单视图纹理贴图已生成并自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`,
+      });
+    } else {
+      setGenerateNotice({
+        tone: 'error',
+        message: isMultiviewRequest
+          ? '多视图纹理贴图任务提交失败。'
+          : '单视图纹理贴图任务提交失败。',
+      });
+    }
   }
 
   async function handleLocalRepaintGenerate() {
@@ -2529,8 +2493,7 @@ export function GeneratePanel({
         if (!currentPaintMaskDataUrl) throw new Error('无法读取已绘制的局部重绘蒙版。');
         useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
         const maskSize = await getImageSize(currentPaintMaskDataUrl);
-        if (!maskSize.width || !maskSize.height)
-          throw new Error('无法读取当前局部重绘蒙版尺寸。');
+        if (!maskSize.width || !maskSize.height) throw new Error('无法读取当前局部重绘蒙版尺寸。');
         captureAspect = maskSize.width / maskSize.height;
       } else {
         const viewportElement = useSceneStore.getState().viewport?.gl.domElement;
@@ -2941,11 +2904,6 @@ export function GeneratePanel({
       });
       await saveGenerationStateBestEffort();
       finish();
-      pushToast({
-        tone: 'error',
-        title: t('textureMapFailed'),
-        description: message,
-      });
       setTexturePipelineProgress(undefined);
     } finally {
       submitLocksRef.current.delete('multiview');
@@ -3330,12 +3288,14 @@ export function GeneratePanel({
       ]);
     } catch (error) {
       console.error('[Liclick 3D Texture] Could not persist projected layer assets:', error);
-      pushToast({
-        tone: 'warning',
-        title: '图层保存失败',
-        description: error instanceof Error ? error.message : '请确认工作区服务在线后再试。',
-        dedupeKey: `layer-save-failed:${layerId}`,
-      });
+      if (!options.automatic) {
+        pushToast({
+          tone: 'warning',
+          title: '图层保存失败',
+          description: error instanceof Error ? error.message : '请确认工作区服务在线后再试。',
+          dedupeKey: `layer-save-failed:${layerId}`,
+        });
+      }
       throw error;
     }
     if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
@@ -3386,12 +3346,14 @@ export function GeneratePanel({
       await saveCriticalProjectState({ layers: nextLayers });
     } catch (error) {
       console.error('[Liclick 3D Texture] Could not persist projected layer:', error);
-      pushToast({
-        tone: 'warning',
-        title: '图层已添加，但工程保存失败',
-        description: error instanceof Error ? error.message : '请确认工作区服务在线后再试。',
-        dedupeKey: `layer-save-failed:${layer.id}`,
-      });
+      if (!options.automatic) {
+        pushToast({
+          tone: 'warning',
+          title: '图层已添加，但工程保存失败',
+          description: error instanceof Error ? error.message : '请确认工作区服务在线后再试。',
+          dedupeKey: `layer-save-failed:${layer.id}`,
+        });
+      }
       throw error;
     }
     if (!options.automatic) {
