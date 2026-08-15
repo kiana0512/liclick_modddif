@@ -7,6 +7,7 @@ import {
   createFlatPreviewMaterial,
   createPbrPreviewMaterial,
   createProjectedLayerStackMaterial,
+  createProjectedLayerStackProgramWarmupMaterial,
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
   getProjectedLayerSamplerBudget,
@@ -958,15 +959,49 @@ function TopologyWireframeOverlay({
     document.body.dataset.topologyWireframeMeshCount = String(overlay.group.children.length);
     document.body.dataset.topologyWireframeReady = '0';
     let cancelled = false;
-    const compileScene = new THREE.Scene();
-    const compileGeometry = new THREE.BoxGeometry(1, 1, 1);
-    const compileMesh = new THREE.Mesh(compileGeometry, overlay.material);
-    compileScene.add(compileMesh);
     const compile = async () => {
+      const compileScene = new THREE.Scene();
+      const compileGroup = overlay.group.clone(true);
+      compileGroup.visible = true;
+      compileGroup.traverse((child) => {
+        child.visible = true;
+        child.frustumCulled = false;
+      });
+      compileScene.add(compileGroup);
       if (typeof gl.compileAsync === 'function') {
         await gl.compileAsync(compileScene, camera);
       } else {
         gl.compile(compileScene, camera);
+      }
+      // WebGLRenderer builds the wireframe index buffer lazily on the first
+      // real draw; compiling a tiny box only warmed the shader and left a
+      // reproducible 33 ms stall on the user's first Wireframe click. Submit
+      // the exact model geometries to a 1x1 target while model restore is still
+      // preparing. This preserves the final line output and makes the later
+      // mode switch a visibility/uniform-only operation.
+      await waitForProjectionVisibilityIdle(0);
+      while (!cancelled && isSharedViewportInteractionBusy(250)) {
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      }
+      if (cancelled) return;
+      const warmTarget = new THREE.WebGLRenderTarget(1, 1, {
+        depthBuffer: true,
+        stencilBuffer: false,
+        generateMipmaps: false,
+      });
+      const previousTarget = gl.getRenderTarget();
+      const previousAutoClear = gl.autoClear;
+      try {
+        document.body.dataset.topologyWireframePhase = 'actual-geometry-prewarm';
+        gl.autoClear = true;
+        gl.setRenderTarget(warmTarget);
+        gl.render(compileScene, camera);
+      } finally {
+        gl.setRenderTarget(previousTarget);
+        gl.autoClear = previousAutoClear;
+        warmTarget.dispose();
+        compileGroup.removeFromParent();
+        delete document.body.dataset.topologyWireframePhase;
       }
       if (!cancelled) document.body.dataset.topologyWireframeReady = '1';
     };
@@ -975,8 +1010,6 @@ function TopologyWireframeOverlay({
     });
     return () => {
       cancelled = true;
-      compileGeometry.dispose();
-      compileMesh.removeFromParent();
       delete document.body.dataset.topologyWireframeMeshCount;
       delete document.body.dataset.topologyWireframeReady;
       overlay.group.removeFromParent();
@@ -1062,14 +1095,15 @@ function ImportedModel({
   // makes those views exact MeshStandardMaterial renders without paying a rebuild
   // when the user opens an eye again.
   const residentProjectedMaterialRef = useRef<THREE.ShaderMaterial>();
+  const projectedProgramWarmupRef = useRef<{
+    signature: string;
+    material: THREE.ShaderMaterial;
+    ready: boolean;
+    disposeWhenReady: boolean;
+  }>();
+  const acquiredProjectedProgramSignaturesRef = useRef(new Set<string>());
   const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   useEffect(() => {
-    if (stableResidentUvToggleLayers.length === 0) {
-      document.body.dataset.residentUvToggleTextureCount = '0';
-      document.body.dataset.residentUvTogglePrewarmMs = '0.0';
-      document.body.dataset.residentUvToggleReady = '1';
-      return;
-    }
     let cancelled = false;
     const prepare = async () => {
       await waitForProjectionVisibilityIdle(0);
@@ -1329,6 +1363,97 @@ function ImportedModel({
   const stablePreviewProjectedLayers = useStableValueBySignature(
     previewProjectedLayers,
     previewProjectedLayerSignature,
+  );
+  const projectedProgramWarmupLayers = useMemo(() => {
+    // Cold restore deliberately publishes one visible projection first. Shader
+    // warmup must nevertheless describe the complete resident stack; waiting
+    // for that stack to be published moves ANGLE's expensive link into the
+    // first fully textured frame and creates a user-visible 60ms+ hitch.
+    const residentLayers = layers
+      .filter(
+        (layer) =>
+          layer.type === 'projected' &&
+          layer.id !== localRepaintPreviewLayerId &&
+          layer.imageUrl &&
+          layer.camera &&
+          (!layer.objectId || layer.objectId === importedObjectId),
+      )
+      .sort((left, right) => right.order - left.order)
+      .map((layer) =>
+        liveSurfacePaintPreview?.target === 'projected-mask' &&
+        liveSurfacePaintPreview.composition === 'replace' &&
+        liveSurfacePaintPreview.objectId === importedObjectId &&
+        liveSurfacePaintPreview.layerId === layer.id
+          ? {
+              ...layer,
+              maskUrl: liveSurfacePaintPreview.assetUrl,
+              maskSpace: 'uv' as const,
+            }
+          : layer,
+      );
+    if (
+      !visibleLocalRepaintPreviewLayer?.imageUrl ||
+      !visibleLocalRepaintPreviewLayer.camera ||
+      (visibleLocalRepaintPreviewLayer.objectId &&
+        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
+    ) {
+      return residentLayers;
+    }
+    return [
+      ...residentLayers.filter((layer) => layer.id !== visibleLocalRepaintPreviewLayer.id),
+      visibleLocalRepaintPreviewLayer,
+    ];
+  }, [
+    importedObjectId,
+    layers,
+    liveSurfacePaintPreview,
+    localRepaintPreviewLayerId,
+    visibleLocalRepaintPreviewLayer,
+  ]);
+  const projectedProgramWarmupInputs = useMemo<ProjectionLayerStackInput['layers']>(
+    () =>
+      projectedProgramWarmupLayers.map((layer) => {
+        const runtimeVisibility = runtimeVisibilityByLayerId[layer.id];
+        const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
+        const depthUrl = runtimeVisibility?.depthUrl ?? layer.depthUrl ?? capture?.depthUrl;
+        const normalUrl = runtimeVisibility?.normalUrl;
+        return {
+          layerId: layer.id,
+          imageUrl: layer.imageUrl!,
+          maskUrl: layer.maskUrl,
+          maskSpace: layer.maskSpace,
+          depthUrl,
+          depthIsLinearView:
+            Boolean(runtimeVisibility?.depthUrl) ||
+            layer.depthEncoding === 'linear-view' ||
+            capture?.depthEncoding === 'linear-view',
+          normalUrl,
+          camera: layer.camera!,
+          objectMatrixWorld: layer.objectMatrixWorld,
+          opacity: layer.opacity,
+          strength: layer.strength ?? 1,
+          blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
+          compositeRole: getProjectionCompositeRole(layer),
+          visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
+          hue: (layer.adjustments?.hue ?? 0) / 100,
+          saturation: (layer.adjustments?.saturation ?? 0) / 100,
+          lightness: (layer.adjustments?.lightness ?? 0) / 100,
+          useMask: Boolean(layer.maskUrl),
+          useDepthCheck: Boolean(depthUrl),
+          useNormalCheck: Boolean(normalUrl),
+          renderedColor: usesUnlitRenderedColor(layer),
+          minimumProjectionFacing: layer.minimumProjectionFacing,
+          projectionVisibilityPolicy:
+            layer.projectionVisibilityPolicy ??
+            (isRenderedLocalRepaintLayer(layer) ? 'surface-locked-v1' : 'standard'),
+        };
+      }),
+    [
+      captureById,
+      localRepaintPreviewLayerId,
+      projectedProgramWarmupLayers,
+      runtimeVisibilityByLayerId,
+    ],
   );
   const previewProjectionInputs = useMemo(
     () =>
@@ -1707,24 +1832,22 @@ function ImportedModel({
   }, [importedObjectId, layers, texturedRestoreReady]);
   const residentUvToggleLayers = useMemo(
     () =>
-      texturedRestoreReady
-        ? layers
-            .filter(
-              (layer) =>
-                layer.type === 'uv' &&
-                layer.role !== 'local-repaint-overlay' &&
-                layer.role !== 'local-repaint-draft' &&
-                Boolean(layer.imageUrl) &&
-                (!layer.objectId || layer.objectId === importedObjectId),
-            )
-            .sort((left, right) => {
-              const priority = (layer: Layer) =>
-                layer.role === 'content-aware-underlay' ? 0 : layer.visible ? 1 : 2;
-              return priority(left) - priority(right) || left.order - right.order;
-            })
-            .slice(0, MAX_RESIDENT_UV_TOGGLE_TEXTURES)
-        : [],
-    [importedObjectId, layers, texturedRestoreReady],
+      layers
+        .filter(
+          (layer) =>
+            layer.type === 'uv' &&
+            layer.role !== 'local-repaint-overlay' &&
+            layer.role !== 'local-repaint-draft' &&
+            Boolean(layer.imageUrl) &&
+            (!layer.objectId || layer.objectId === importedObjectId),
+        )
+        .sort((left, right) => {
+          const priority = (layer: Layer) =>
+            layer.role === 'content-aware-underlay' ? 0 : layer.visible ? 1 : 2;
+          return priority(left) - priority(right) || left.order - right.order;
+        })
+        .slice(0, MAX_RESIDENT_UV_TOGGLE_TEXTURES),
+    [importedObjectId, layers],
   );
   const residentUvToggleSignature = useMemo(
     () => residentUvToggleLayers.map((layer) => `${layer.id}:${layer.imageUrl}`).join('|'),
@@ -1737,6 +1860,7 @@ function ImportedModel({
   useEffect(() => {
     let cancelled = false;
     const startedAt = performance.now();
+    document.body.dataset.residentUvTogglePrewarmStartedMs = startedAt.toFixed(1);
     const warm = async () => {
       // Decode independent UV assets together. The previous serial loop made
       // two 4K layers pay the full network/decode latency back-to-back.
@@ -1773,6 +1897,14 @@ function ImportedModel({
       );
       document.body.dataset.residentUvTogglePrewarmMs = (performance.now() - startedAt).toFixed(1);
       document.body.dataset.residentUvToggleReady = '1';
+      if (stableResidentUvToggleLayers.length > 0) {
+        // Hidden UV and content-repair layers are intentionally kept resident
+        // for instant eye toggles. Count that completed GPU upload as restored;
+        // waiting only for a currently visible base UV texture made S8 time out
+        // even though its sole hidden UV layer was already fully ready.
+        document.body.dataset.textureRestoreUvReady = '1';
+        document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
+      }
     };
     document.body.dataset.residentUvToggleReady = '0';
     void warm().catch((error) => {
@@ -1805,6 +1937,31 @@ function ImportedModel({
       }),
     [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, previewProjectionInputs],
   );
+  const projectedProgramWarmupDirectSamplerBudget = useMemo(
+    () =>
+      getProjectedLayerSamplerBudget(
+        projectedProgramWarmupInputs,
+        gl.capabilities.maxTextures,
+        {
+          useBaseMap: true,
+          useUvOverlayMap: hasResidentUvOverlaySampler,
+        },
+      ),
+    [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, projectedProgramWarmupInputs],
+  );
+  const projectedProgramWarmupArraySamplerBudget = useMemo(
+    () =>
+      getProjectedLayerSamplerBudget(
+        projectedProgramWarmupInputs,
+        gl.capabilities.maxTextures,
+        {
+          useBaseMap: true,
+          useUvOverlayMap: hasResidentUvOverlaySampler,
+          useTextureArrays: true,
+        },
+      ),
+    [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, projectedProgramWarmupInputs],
+  );
   const directProjectedSamplerHeadroom = Math.max(
     1,
     Math.floor(gl.capabilities.maxTextures * PROJECTED_ARRAY_DIRECT_SAMPLER_HEADROOM_RATIO),
@@ -1818,6 +1975,16 @@ function ImportedModel({
     previewProjectionInputs.length > 1 &&
     projectedTextureArraySamplerBudget.withinBudget &&
     !directProjectedSamplerStable,
+  );
+  const projectedProgramWarmupDirectStable = Boolean(
+    projectedProgramWarmupDirectSamplerBudget.withinBudget &&
+    projectedProgramWarmupDirectSamplerBudget.required < directProjectedSamplerHeadroom,
+  );
+  const useProjectedProgramWarmupTextureArrays = Boolean(
+    gl.capabilities.isWebGL2 &&
+    projectedProgramWarmupInputs.length > 1 &&
+    projectedProgramWarmupArraySamplerBudget.withinBudget &&
+    !projectedProgramWarmupDirectStable,
   );
   const projectedTextureArrayStructureSignature = useMemo(
     () =>
@@ -2432,6 +2599,7 @@ function ImportedModel({
     invalidate,
     liveTopUvLayer,
     loadedContentAwareUnderlayTexture,
+    loadedUvTexture,
     previewLighting,
     previewProjectionInputs,
     uvOverlayOpacity,
@@ -2443,13 +2611,18 @@ function ImportedModel({
       isSharedViewportInteractionBusy(180) ||
       interaction.pointerDown ||
       performance.now() - interaction.lastMovedAt < 140;
-    // CPU timing around renderer.render() does not include queued GPU work. Cap
-    // operation count too, so background composition cannot flood the GPU queue.
-    projectedPreviewCompositorRef.current?.step(isInteracting ? 1 : 2.5, isInteracting ? 1 : 2);
+    // Interaction owns the frame budget. Even a single compositor operation can
+    // enqueue enough GPU work to surface as a later wheel/drag hitch, so suspend
+    // the background queue completely until the viewport has settled.
+    if (!isInteracting) projectedPreviewCompositorRef.current?.step(2.5, 2);
     if (stableVisibleProjectedLayers.length === 0) {
       lastProjectedTransformRef.current = undefined;
       return;
     }
+    // Camera orbit/pan/zoom does not alter the model transform. Avoid forcing a
+    // full model-tree matrix traversal on every interaction frame; transform
+    // actions already mark/update this group and the renderer keeps it current.
+    if (isInteracting) return;
     importedModel.group.updateMatrixWorld(true);
     const currentMatrix = importedModel.group.matrixWorld;
     if (lastProjectedTransformRef.current?.equals(currentMatrix)) return;
@@ -2479,6 +2652,319 @@ function ImportedModel({
     useProjectedTextureArrays ? 'array' : 'direct',
     textureArrayCompositionFallbackRequired ? 'fallback' : 'exact',
   ].join('|');
+
+  const projectedProgramWarmupSourceSignature = useMemo(
+    () =>
+      projectedProgramWarmupInputs
+      .map((layer) =>
+        [
+          layer.layerId,
+          layer.imageUrl,
+          layer.maskUrl ?? '',
+          layer.depthUrl ?? '',
+          layer.normalUrl ?? '',
+          layer.useMask ? 1 : 0,
+          layer.useDepthCheck ? 1 : 0,
+          layer.useNormalCheck ? 1 : 0,
+          layer.projectionVisibilityPolicy ?? 'standard',
+        ].join('~'),
+      )
+      .join('|'),
+    [projectedProgramWarmupInputs],
+  );
+  const projectedProgramWarmupTextureArrayStructureSignature = useMemo(
+    () =>
+      projectedProgramWarmupInputs
+        .map((layer) =>
+          [
+            layer.layerId,
+            layer.imageUrl,
+            layer.maskUrl ?? '',
+            layer.depthUrl ?? '',
+            layer.normalUrl ?? '',
+            layer.maskSpace ?? 'projection',
+            layer.useMask ? 1 : 0,
+            layer.useDepthCheck ? 1 : 0,
+            layer.useNormalCheck ? 1 : 0,
+            layer.compositeRole ?? 'normal',
+            layer.objectMatrixWorld?.join(',') ?? '',
+            layer.camera.viewMatrix?.join(',') ?? '',
+            layer.camera.projectionMatrix?.join(',') ?? '',
+          ].join('~'),
+        )
+        .join('|'),
+    [projectedProgramWarmupInputs],
+  );
+  const projectedProgramWarmupSignature = [
+    projectedProgramWarmupSourceSignature,
+    useProjectedProgramWarmupTextureArrays ? 'array' : 'direct',
+    progressivePreviewBase?.renderedColorMaskTexture ? 'base-mask' : 'base-no-mask',
+    directUvRenderedColorMaskTexture ? 'uv-mask' : 'uv-no-mask',
+    liveTopUvTexture ? 'top-uv' : 'no-top-uv',
+  ].join('|');
+
+  useEffect(() => {
+    if (
+      typeof gl.compileAsync !== 'function' ||
+      projectedProgramWarmupInputs.length <= 1 ||
+      !projectedProgramWarmupSignature
+    ) {
+      return;
+    }
+    if (acquiredProjectedProgramSignaturesRef.current.has(projectedProgramWarmupSignature)) return;
+    if (projectedProgramWarmupRef.current?.signature === projectedProgramWarmupSignature) return;
+
+    const material = createProjectedLayerStackProgramWarmupMaterial(
+      {
+        layers: projectedProgramWarmupInputs,
+        objectId: importedModel.objectId,
+        depthTest: true,
+        reserveBaseMapSampler: true,
+        reserveUvOverlaySampler: hasResidentUvOverlaySampler,
+        ...(progressivePreviewBase?.renderedColorMaskTexture
+          ? { baseRenderedColorMaskTexture: progressivePreviewBase.renderedColorMaskTexture }
+          : {}),
+        ...(directUvRenderedColorMaskTexture
+          ? { uvOverlayRenderedColorMaskTexture: directUvRenderedColorMaskTexture }
+          : {}),
+        ...(liveTopUvTexture ? { topUvOverlayTexture: liveTopUvTexture } : {}),
+      },
+      {
+        maxTextureImageUnits: gl.capabilities.maxTextures,
+        isWebGL2: gl.capabilities.isWebGL2,
+        preferTextureArrays:
+          useProjectedProgramWarmupTextureArrays,
+      },
+    );
+    if (!material) return;
+
+    const previousWarmup = projectedProgramWarmupRef.current;
+    if (previousWarmup) {
+      if (previousWarmup.ready) previousWarmup.material.dispose();
+      else previousWarmup.disposeWhenReady = true;
+    }
+    const warmupRecord = {
+      signature: projectedProgramWarmupSignature,
+      material,
+      ready: false,
+      disposeWhenReady: false,
+    };
+    projectedProgramWarmupRef.current = warmupRecord;
+    const compileScene = new THREE.Scene();
+    const compileGeometry = new THREE.BoxGeometry(1, 1, 1);
+    const compileMesh = new THREE.Mesh(compileGeometry, material);
+    compileMesh.frustumCulled = false;
+    compileScene.add(compileMesh);
+    const startedAt = performance.now();
+    document.body.dataset.projectedProgramWarmupStatus = 'pending';
+    document.body.dataset.projectedProgramWarmupStartedMs = startedAt.toFixed(1);
+    document.body.dataset.projectedProgramWarmupModelStage = importedModel.restoreStage;
+    document.body.dataset.projectedProgramWarmupSignature = projectedProgramWarmupSignature;
+    void gl
+      .compileAsync(compileScene, camera)
+      .then(() => {
+        warmupRecord.ready = true;
+        if (warmupRecord.disposeWhenReady) {
+          material.dispose();
+          return;
+        }
+        if (projectedProgramWarmupRef.current !== warmupRecord) return;
+        const durationMs = performance.now() - startedAt;
+        document.body.dataset.projectedProgramWarmupStatus = 'ready';
+        document.body.dataset.projectedProgramWarmupDurationMs = durationMs.toFixed(1);
+        markPerformanceEvent('projection', 'projected-program-early-warmup', { durationMs });
+      })
+      .catch((error) => {
+        warmupRecord.ready = true;
+        if (warmupRecord.disposeWhenReady) {
+          material.dispose();
+          return;
+        }
+        if (projectedProgramWarmupRef.current !== warmupRecord) return;
+        document.body.dataset.projectedProgramWarmupStatus = 'error';
+        console.warn('[Liclick 3D Texture] Projected shader warmup was unavailable:', error);
+      })
+      .finally(() => {
+        compileMesh.removeFromParent();
+        compileGeometry.dispose();
+      });
+  }, [
+    camera,
+    directUvRenderedColorMaskTexture,
+    gl,
+    hasResidentUvOverlaySampler,
+    importedModel.objectId,
+    importedModel.restoreStage,
+    liveTopUvTexture,
+    projectedProgramWarmupInputs,
+    progressivePreviewBase?.renderedColorMaskTexture,
+    projectedProgramWarmupSignature,
+    useProjectedProgramWarmupTextureArrays,
+  ]);
+
+  useEffect(
+    () => () => {
+      const warmup = projectedProgramWarmupRef.current;
+      if (warmup) {
+        if (warmup.ready) warmup.material.dispose();
+        else warmup.disposeWhenReady = true;
+      }
+      projectedProgramWarmupRef.current = undefined;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      importedModel.restoreStage !== 'outline' ||
+      !useProjectedProgramWarmupTextureArrays ||
+      projectedProgramWarmupInputs.length <= 1 ||
+      !projectedProgramWarmupTextureArrayStructureSignature ||
+      textureArrayCompositionFallbackRequired
+    ) {
+      return;
+    }
+
+    const textureArrayBuildSignature = [
+      projectedProgramWarmupTextureArrayStructureSignature,
+      liveTopUvTexture?.uuid ?? '',
+    ].join('|');
+    if (projectedTextureArrayBuildRef.current?.signature === textureArrayBuildSignature) return;
+    if (projectedTextureArrayBuildRef.current) {
+      projectedTextureArrayBuildRef.current.cancelled = true;
+    }
+    const nextBuild = {
+      signature: textureArrayBuildSignature,
+      cancelled: false,
+      promise: undefined as unknown as Promise<THREE.ShaderMaterial | undefined>,
+    };
+    const earlyMaterialInput: ProjectionLayerStackInput = {
+      layers: projectedProgramWarmupInputs,
+      objectId: importedModel.objectId,
+      currentObjectMatrixWorld: importedModel.group.matrixWorld.toArray(),
+      reserveBaseMapSampler: true,
+      reserveUvOverlaySampler: hasResidentUvOverlaySampler,
+      depthTest: true,
+      enableBackfaceCulling: true,
+      edgeFeather: 0.004,
+      depthBias: 0.025,
+      normalPreview: false,
+      wirePreview: false,
+      previewLighting,
+      ...(directUvRenderedColorMaskTexture
+        ? { uvOverlayRenderedColorMaskTexture: directUvRenderedColorMaskTexture }
+        : {}),
+      ...topUvProjectedOverlayInput,
+    };
+    document.body.dataset.projectedEarlyArrayBuildStatus = 'building';
+    document.body.dataset.projectedEarlyArrayBuildStartedMs = performance.now().toFixed(1);
+    nextBuild.promise = createProjectedLayerStackMaterial(earlyMaterialInput, {
+      maxTextureImageUnits: gl.capabilities.maxTextures,
+      renderer: gl,
+      isCancelled: () => nextBuild.cancelled,
+      isViewportInteractionBusy: () =>
+        isSharedViewportInteractionBusy() ||
+        document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+        document.body.dataset.perfViewportStressMeasuring === '1',
+      preferTextureArrays: true,
+    });
+    projectedTextureArrayBuildRef.current = nextBuild;
+
+    void nextBuild.promise
+      .then(async (material) => {
+        if (
+          !material ||
+          nextBuild.cancelled ||
+          projectedTextureArrayBuildRef.current !== nextBuild
+        ) {
+          return;
+        }
+        const startedAt = performance.now();
+        const warmScene = new THREE.Scene();
+        const warmGeometry = new THREE.PlaneGeometry(2, 2);
+        const warmMesh = new THREE.Mesh(warmGeometry, material);
+        warmMesh.frustumCulled = false;
+        warmScene.add(warmMesh);
+        const warmCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        const warmTarget = new THREE.WebGLRenderTarget(1, 1, {
+          depthBuffer: false,
+          stencilBuffer: false,
+          generateMipmaps: false,
+        });
+        const previousTarget = gl.getRenderTarget();
+        const previousAutoClear = gl.autoClear;
+        try {
+          if (typeof gl.compileAsync === 'function') {
+            await gl.compileAsync(warmScene, warmCamera);
+          }
+          if (
+            nextBuild.cancelled ||
+            projectedTextureArrayBuildRef.current !== nextBuild
+          ) {
+            return;
+          }
+          gl.autoClear = true;
+          gl.setRenderTarget(warmTarget);
+          gl.render(warmScene, warmCamera);
+          const context = gl.getContext();
+          if ('fenceSync' in context) {
+            const gl2 = context as WebGL2RenderingContext;
+            const sync = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+            if (sync) {
+              gl2.flush();
+              try {
+                while (!nextBuild.cancelled) {
+                  await new Promise<void>((resolve) =>
+                    window.requestAnimationFrame(() => resolve()),
+                  );
+                  const status = gl2.clientWaitSync(sync, 0, 0);
+                  if (
+                    status === gl2.ALREADY_SIGNALED ||
+                    status === gl2.CONDITION_SATISFIED ||
+                    status === gl2.WAIT_FAILED
+                  ) {
+                    break;
+                  }
+                }
+              } finally {
+                gl2.deleteSync(sync);
+              }
+            }
+          }
+          document.body.dataset.projectedEarlyArrayBuildStatus = 'ready';
+          document.body.dataset.projectedEarlyArrayBuildReadyMs = performance.now().toFixed(1);
+          document.body.dataset.projectedEarlyArrayPipelinePrewarmMs = (
+            performance.now() - startedAt
+          ).toFixed(1);
+        } finally {
+          gl.setRenderTarget(previousTarget);
+          gl.autoClear = previousAutoClear;
+          warmMesh.removeFromParent();
+          warmGeometry.dispose();
+          warmTarget.dispose();
+        }
+      })
+      .catch((error) => {
+        if (nextBuild.cancelled) return;
+        if (projectedTextureArrayBuildRef.current === nextBuild) {
+          projectedTextureArrayBuildRef.current = undefined;
+        }
+        document.body.dataset.projectedEarlyArrayBuildStatus = 'error';
+        console.warn('[Liclick 3D Texture] Early projected array warmup was unavailable:', error);
+      });
+  }, [
+    directUvRenderedColorMaskTexture,
+    gl,
+    hasResidentUvOverlaySampler,
+    importedModel,
+    liveTopUvTexture?.uuid,
+    previewLighting,
+    projectedProgramWarmupInputs,
+    projectedProgramWarmupTextureArrayStructureSignature,
+    textureArrayCompositionFallbackRequired,
+    topUvProjectedOverlayInput,
+    useProjectedProgramWarmupTextureArrays,
+  ]);
 
   useEffect(() => {
     if (!importedModel) return;
@@ -2596,6 +3082,95 @@ function ImportedModel({
       // successfully linked program is still valid and should remain resident
       // for the newer effect's structurally identical material.
       return true;
+    };
+
+    const prewarmProjectedUvSamplers = async (
+      material: THREE.ShaderMaterial,
+      textures: THREE.Texture[],
+    ) => {
+      const uvOverlayMap = material.uniforms.uvOverlayMap;
+      const uvOverlayOpacityUniform = material.uniforms.uvOverlayOpacity;
+      const useUvOverlayMap = material.uniforms.useUvOverlayMap;
+      if (!uvOverlayMap || !uvOverlayOpacityUniform || !useUvOverlayMap || textures.length === 0)
+        return;
+
+      const previousTarget = gl.getRenderTarget();
+      const previousAutoClear = gl.autoClear;
+      const previousMap = uvOverlayMap.value;
+      const previousOpacity = uvOverlayOpacityUniform.value;
+      const previousUseMap = useUvOverlayMap.value;
+      const normalPreviewUniform = material.uniforms.normalPreviewEnabled;
+      const previousNormalPreview = normalPreviewUniform?.value;
+      const opacityUniforms = Object.entries(material.uniforms)
+        .filter(([name]) => /^layerOpacity\d+$/.test(name))
+        .map(([, uniform]) => uniform);
+      const previousLayerOpacities = opacityUniforms.map((uniform) => uniform.value);
+      const warmTarget = new THREE.WebGLRenderTarget(1, 1, {
+        depthBuffer: false,
+        stencilBuffer: false,
+        generateMipmaps: false,
+      });
+      const warmScene = new THREE.Scene();
+      const warmGeometry = new THREE.PlaneGeometry(2, 2);
+      const warmMesh = new THREE.Mesh(warmGeometry, material);
+      warmMesh.frustumCulled = false;
+      warmScene.add(warmMesh);
+      const warmCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const context = gl.getContext();
+
+      try {
+        opacityUniforms.forEach((uniform) => {
+          uniform.value = 0;
+        });
+        uvOverlayOpacityUniform.value = 1;
+        useUvOverlayMap.value = 1;
+        gl.autoClear = true;
+        gl.setRenderTarget(warmTarget);
+        for (const normalPreview of normalPreviewUniform ? [0, 1] : [0]) {
+          if (normalPreviewUniform) normalPreviewUniform.value = normalPreview;
+          for (const texture of textures) {
+            await waitForViewportInteractionIdle();
+            if (cancelled) return;
+            uvOverlayMap.value = texture;
+            gl.render(warmScene, warmCamera);
+            if ('fenceSync' in context) {
+              const gl2 = context as WebGL2RenderingContext;
+              const sync = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+              if (sync) {
+                gl2.flush();
+                try {
+                  while (!cancelled) {
+                    await waitForViewportInteractionIdle();
+                    await new Promise<void>((resolve) =>
+                      window.requestAnimationFrame(() => resolve()),
+                    );
+                    const status = gl2.clientWaitSync(sync, 0, 0);
+                    if (status === gl2.ALREADY_SIGNALED || status === gl2.CONDITION_SATISFIED)
+                      break;
+                    if (status === gl2.WAIT_FAILED) break;
+                  }
+                } finally {
+                  gl2.deleteSync(sync);
+                }
+              }
+            }
+          }
+        }
+        document.body.dataset.projectedUvSamplerPrewarmCount = String(textures.length);
+      } finally {
+        uvOverlayMap.value = previousMap;
+        uvOverlayOpacityUniform.value = previousOpacity;
+        useUvOverlayMap.value = previousUseMap;
+        if (normalPreviewUniform) normalPreviewUniform.value = previousNormalPreview;
+        opacityUniforms.forEach((uniform, index) => {
+          uniform.value = previousLayerOpacities[index];
+        });
+        gl.setRenderTarget(previousTarget);
+        gl.autoClear = previousAutoClear;
+        warmMesh.removeFromParent();
+        warmGeometry.dispose();
+        warmTarget.dispose();
+      }
     };
 
     async function applyMaterials() {
@@ -2983,6 +3558,25 @@ function ImportedModel({
       let sharedTextureArrayBuildSignature = '';
       let materialChanged = false;
       const disposedPreviousMaterials = new Set<THREE.Material | THREE.Material[]>();
+      const retainProjectedMaterialForReuse = (material: THREE.Material | THREE.Material[]) => {
+        if (
+          !(material instanceof THREE.ShaderMaterial) ||
+          !material.name.startsWith('LiclickProjectedLayerStack:')
+        )
+          return false;
+        const alreadyResident = residentProjectedMaterialRef.current;
+        if (!alreadyResident) {
+          residentProjectedMaterialRef.current = material;
+        } else if (alreadyResident !== material) {
+          disposeGeneratedMaterialTree(material);
+        }
+        return true;
+      };
+      const disposeUnlessRetained = (material: THREE.Material | THREE.Material[]) => {
+        if (!retainProjectedMaterialForReuse(material)) {
+          disposeGeneratedMaterialTree(material);
+        }
+      };
       const bypassMaterial = bypassProjectedMaterial
         ? createDisplayModeMaterial(displayMode, selected, undefined, previewLighting)
         : undefined;
@@ -3026,18 +3620,8 @@ function ImportedModel({
         const previousMaterial = child.material;
         if (projectedPreviewOverBudget) continue;
         if (bypassMaterial) {
-          if (
-            previousMaterial instanceof THREE.ShaderMaterial &&
-            previousMaterial.name.startsWith('LiclickProjectedLayerStack:')
-          ) {
-            const alreadyResident = residentProjectedMaterialRef.current;
-            if (!alreadyResident) {
-              residentProjectedMaterialRef.current = previousMaterial;
-            } else if (alreadyResident !== previousMaterial) {
-              disposeGeneratedMaterialTree(previousMaterial);
-            }
-          } else if (previousMaterial !== bypassMaterial) {
-            disposeGeneratedMaterialTree(previousMaterial);
+          if (previousMaterial !== bypassMaterial) {
+            disposeUnlessRetained(previousMaterial);
           }
           child.material = bypassMaterial;
           if (previousMaterial !== bypassMaterial) materialChanged = true;
@@ -3108,7 +3692,7 @@ function ImportedModel({
           };
           if (updateUvOverlayPreviewMaterial(previousMaterial, uvMaterialInput)) continue;
           child.material = createUvOverlayPreviewMaterial(uvMaterialInput);
-          disposeGeneratedMaterialTree(previousMaterial);
+          disposeUnlessRetained(previousMaterial);
           continue;
         }
         if (
@@ -3123,7 +3707,7 @@ function ImportedModel({
             ...(liveSurfaceMaskTexture ? { surfaceMaskTexture: liveSurfaceMaskTexture } : {}),
             previewLighting,
           });
-          disposeGeneratedMaterialTree(previousMaterial);
+          disposeUnlessRetained(previousMaterial);
           continue;
         }
         if (displayMode === 'pbr' && !projectedLayerInput) {
@@ -3133,7 +3717,7 @@ function ImportedModel({
             bakedTexture,
             previewLighting,
           );
-          disposeGeneratedMaterialTree(previousMaterial);
+          disposeUnlessRetained(previousMaterial);
           continue;
         }
         if (displayMode === 'flat' && !projectedLayerInput) {
@@ -3143,7 +3727,7 @@ function ImportedModel({
             bakedTexture,
             previewLighting,
           );
-          disposeGeneratedMaterialTree(previousMaterial);
+          disposeUnlessRetained(previousMaterial);
           continue;
         }
         if (
@@ -3229,7 +3813,39 @@ function ImportedModel({
                     { layerCount: visibleLayerCount },
                   );
                 }
+                // Shader compilation is a background publication step. It must
+                // never compete with pointer/wheel frames even after upload has
+                // already completed.
+                await waitForViewportInteractionIdle();
+                if (cancelled) return;
                 await precompileProjectedMaterial(sharedProjectedMaterial);
+                const warmup = projectedProgramWarmupRef.current;
+                if (
+                  warmup &&
+                  warmup.material.vertexShader === sharedProjectedMaterial.vertexShader &&
+                  warmup.material.fragmentShader === sharedProjectedMaterial.fragmentShader
+                ) {
+                  // The real material has now acquired the warmed WebGL program;
+                  // release only the texture-free anchor. The program remains
+                  // referenced by the authoritative material.
+                  if (warmup.ready) warmup.material.dispose();
+                  else warmup.disposeWhenReady = true;
+                  acquiredProjectedProgramSignaturesRef.current.add(warmup.signature);
+                  projectedProgramWarmupRef.current = undefined;
+                  document.body.dataset.projectedProgramWarmupMatched = '1';
+                } else if (warmup) {
+                  document.body.dataset.projectedProgramWarmupMatched = '0';
+                }
+                const residentUvTextures = stableResidentUvToggleLayers.flatMap((layer) => {
+                  const texture = layer.imageUrl
+                    ? residentPreviewTextureCache.get(layer.imageUrl)
+                    : undefined;
+                  return texture ? [texture] : [];
+                });
+                if (loadedUvTexture) residentUvTextures.push(loadedUvTexture);
+                await prewarmProjectedUvSamplers(sharedProjectedMaterial, [
+                  ...new Set(residentUvTextures),
+                ]);
                 if (visibleLayerCount > 0) {
                   reportProjectedPreviewProgress(0.96, '材质已就绪，正在按图层眼睛状态发布', {
                     layerCount: visibleLayerCount,
@@ -3434,19 +4050,20 @@ function ImportedModel({
           ...toProjectionLayerDisplayInput(layer),
           visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
         }));
+      const authoritativeLighting = getPreviewLighting({
+        displayMode: authoritativeSceneState.displayMode,
+        environmentPreset: authoritativeSettings.environmentPreset,
+        exposure: authoritativeSettings.exposure,
+        pbrEnvironmentIntensity: authoritativeSettings.pbrEnvironmentIntensity,
+        pbrKeyLightIntensity: authoritativeSettings.pbrKeyLightIntensity,
+        pbrLightAzimuth: authoritativeSettings.pbrLightAzimuth,
+      });
       syncProjectedLayerMaterialDisplayStateInObject(
         model.group,
         authoritativeDisplayLayers,
         authoritativeSceneState.displayMode === 'normal',
         authoritativeSceneState.displayMode === 'wire',
-        getPreviewLighting({
-          displayMode: authoritativeSceneState.displayMode,
-          environmentPreset: authoritativeSettings.environmentPreset,
-          exposure: authoritativeSettings.exposure,
-          pbrEnvironmentIntensity: authoritativeSettings.pbrEnvironmentIntensity,
-          pbrKeyLightIntensity: authoritativeSettings.pbrKeyLightIntensity,
-          pbrLightAzimuth: authoritativeSettings.pbrLightAzimuth,
-        }),
+        authoritativeLighting,
       );
       // An older async projected-material build may finish after UV merge and
       // carry the previous editing layer's unlit flag. Re-apply the latest UV

@@ -53,9 +53,24 @@ export function isViewportInteractionBusy(quietWindowMs = 180) {
   return (
     activePointerCount > 0 ||
     (typeof document !== 'undefined' &&
-      document.body.dataset.localRepaintGenerationBusy === '1') ||
+      (document.body.dataset.localRepaintGenerationBusy === '1' ||
+        document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+        document.body.dataset.perfAutoOrbit === '1')) ||
     (lastInteractionAt > 0 && performance.now() - lastInteractionAt < quietWindowMs)
   );
+}
+
+/**
+ * Gives camera input absolute priority over background GPU/CPU work. Heavy
+ * jobs call this at safe boundaries; they keep their exact state and resume
+ * after the pointer/wheel quiet window instead of competing for a frame.
+ */
+export async function waitForViewportInteractionIdle(quietWindowMs = 180) {
+  while (isViewportInteractionBusy(quietWindowMs)) {
+    await new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+    );
+  }
 }
 
 export function subscribeViewportInteraction(listener: () => void) {

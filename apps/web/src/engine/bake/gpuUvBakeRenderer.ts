@@ -1,15 +1,20 @@
 import * as THREE from 'three';
-import { loadImageData } from './imageSampler';
+import { loadImageData, resolveImageAssetUrl } from './imageSampler';
 import { collectUvSeamPairs, type UvSeamEdgeRecord } from './uvSeamReconciliation';
 import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import {
+  isViewportInteractionBusy,
+  waitForViewportInteractionIdle,
+} from '@/engine/viewport/viewportInteractionState';
+import {
+  loadPreviewTexture,
   residentPreviewTextureCache,
   uploadPreviewTextureInStripes,
 } from '@/engine/viewport/previewTextureCache';
 import {
+  acquireGpuReadbackPixels,
   convertFinalGpuReadbackInWorker,
   convertLayerGpuReadbackInWorker,
   convertQualityGpuReadbackInWorker,
@@ -58,6 +63,7 @@ type GpuLayerStackBakeInput = {
   repairMissingUvSeams?: boolean;
   uvSeamRepairPixels?: number;
   onProgress?: (progress: BakeProgress) => void;
+  onRaster?: (raster: GpuLayerRaster) => void | Promise<void>;
 };
 
 export type GpuLayerStackBakeOutput = {
@@ -80,8 +86,7 @@ export type GpuLayerStackBakeOutput = {
 export type GpuLayerRaster = {
   layer: Layer;
   imageData: ImageData;
-  coverage: Uint8Array;
-  quality: Float32Array;
+  quality: Uint8Array;
   coveredPixels: number;
 };
 
@@ -746,7 +751,19 @@ async function loadLayerTextureFromCpuImageData(input: {
   magFilter: THREE.MagnificationTextureFilter;
   flipY: boolean;
 }) {
-  const resident = residentPreviewTextureCache.get(input.url);
+  let resident = residentPreviewTextureCache.get(input.url);
+  if (!resident) {
+    try {
+      // GPU baking needs a decoded TexImageSource, not a CPU ImageData copy.
+      // Reuse the asynchronous bitmap decoder used by the viewport so depth
+      // and normal assets never pass through drawImage/getImageData on the UI
+      // thread. Oversized sources still use the exact legacy resize path below.
+      markGpuUvBakeStep('gpu-load-preview-bitmap');
+      resident = await loadPreviewTexture(resolveImageAssetUrl(input.url));
+    } catch {
+      resident = undefined;
+    }
+  }
   const residentImage = resident?.image as
     | (TexImageSource & {
         width?: number;
@@ -767,16 +784,31 @@ async function loadLayerTextureFromCpuImageData(input: {
     // Viewport prewarm already owns this exact decoded source. Clone only the
     // lightweight Three texture descriptor and preserve the resident image's
     // physical orientation; the bitmap remains owned by the resident cache.
+    const workerBitmapId = resident.userData.liclickPreviewWorkerBitmapId;
     const texture = prepareTexture(
-      new THREE.Texture(residentImage),
+      typeof workerBitmapId === 'number'
+        ? new THREE.DataTexture(
+            null,
+            residentWidth,
+            residentHeight,
+            THREE.RGBAFormat,
+            THREE.UnsignedByteType,
+          )
+        : new THREE.Texture(residentImage),
       input.minFilter,
       input.magFilter,
       resident.flipY,
     );
+    if (typeof workerBitmapId === 'number') {
+      texture.userData.liclickPreviewWorkerBitmapId = workerBitmapId;
+      texture.source.dataReady = false;
+    }
     texture.userData.liclickSharedResidentBitmap = true;
     return texture;
   }
+  markGpuUvBakeStep('gpu-load-cpu-image-data');
   const imageData = await loadImageData(input.url, input.resolution, input.label);
+  markGpuUvBakeStep('gpu-create-cpu-image-texture');
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
@@ -1042,9 +1074,10 @@ function createLayerMaterial(input: {
   });
 }
 
-function createBakeScene(meshes: PreparedMesh[]) {
+async function createBakeScene(meshes: PreparedMesh[]) {
   const scene = new THREE.Scene();
   const bakeMeshes: THREE.Mesh[] = [];
+  let budgetStartedAt = performance.now();
   for (const mesh of meshes) {
     const bakeMesh = new THREE.Mesh(mesh.source.geometry);
     bakeMesh.matrixAutoUpdate = false;
@@ -1054,8 +1087,14 @@ function createBakeScene(meshes: PreparedMesh[]) {
     bakeMesh.frustumCulled = false;
     scene.add(bakeMesh);
     bakeMeshes.push(bakeMesh);
+    if (isGpuUvBakeInteractionProtected() && performance.now() - budgetStartedAt >= 4) {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      budgetStartedAt = performance.now();
+    }
   }
-  scene.updateMatrixWorld(true);
+  // Every child owns the already-resolved source matrixWorld and disables both
+  // matrix update paths. A forced traversal here only re-walks large imported
+  // scenes without changing a single bake transform.
   return { scene, bakeMeshes };
 }
 
@@ -1350,55 +1389,232 @@ function runGpuPostprocess(input: {
   return { target: current, ownedTargets };
 }
 
-function waitForSharedRendererBakeSlot() {
-  if (!isViewportInteractionBusy()) return Promise.resolve();
-  // R3F owns this WebGL context. During an active drag, allow its onscreen
-  // frame to submit before issuing the next offscreen 4K bake pass.
-  return new Promise<void>((resolve) =>
-    window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-  );
+async function waitForSharedRendererBakeSlot() {
+  // A background 4K pass has no deadline. Preserve its exact state and stop at
+  // this boundary until camera input is quiet; trying to interleave detached
+  // WebGL contexts still produced compositor-only missed vsyncs even when JS
+  // and the visible GPU pass were both below 4ms.
+  await waitForViewportInteractionIdle();
 }
 
-// Eight 8 MiB stripes for a 4K RGBA target keep each driver readback bounded.
-// The smaller transfer is intentionally retained: stress testing showed a
-// 100.1ms maximum frame versus 433.6ms at 32 MiB, with identical pixels.
-const GPU_READBACK_STRIPE_BYTES = 8 * 1024 * 1024;
+// Four MiB PBO stripes keep both readPixels submission and getBufferSubData
+// below the viewport frame budget under simultaneous 4K baking. Pixel bytes
+// and their order are unchanged. Two MiB doubled the number of presentation
+// fences without reducing the measured copy peak below the frame budget.
+const GPU_READBACK_STRIPE_BYTES = 4 * 1024 * 1024;
+const INTERACTIVE_GPU_WORK_BUDGET_MS = 4;
+const INTERACTIVE_READBACK_SUBMITS_PER_FRAME = 1;
+
+type GpuReadbackBufferPool = {
+  buffers: WebGLBuffer[];
+  bytesPerBuffer: number;
+};
+
+const gpuReadbackBufferPools = new WeakMap<WebGL2RenderingContext, GpuReadbackBufferPool>();
+
+function waitForGpuFence(gl: WebGL2RenderingContext, sync: WebGLSync) {
+  return new Promise<void>((resolve, reject) => {
+    const probe = () => {
+      const status = gl.clientWaitSync(sync, 0, 0);
+      if (status === gl.WAIT_FAILED) {
+        reject(new Error('GPU UV readback fence failed.'));
+        return;
+      }
+      if (status === gl.TIMEOUT_EXPIRED) {
+        window.setTimeout(probe, 4);
+        return;
+      }
+      resolve();
+    };
+    window.setTimeout(probe, 0);
+  });
+}
+
+function getGpuReadbackBuffers(gl: WebGL2RenderingContext, count: number, bytesPerBuffer: number) {
+  let pool = gpuReadbackBufferPools.get(gl);
+  const poolIsValid =
+    pool &&
+    pool.bytesPerBuffer >= bytesPerBuffer &&
+    pool.buffers.length >= count &&
+    pool.buffers.every((buffer) => gl.isBuffer(buffer));
+  if (!poolIsValid) {
+    pool?.buffers.forEach((buffer) => gl.deleteBuffer(buffer));
+    const buffers: WebGLBuffer[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const buffer = gl.createBuffer();
+      if (!buffer) throw new Error('Unable to allocate GPU UV readback buffer.');
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, bytesPerBuffer, gl.STREAM_READ);
+      buffers.push(buffer);
+    }
+    pool = { buffers, bytesPerBuffer };
+    gpuReadbackBufferPools.set(gl, pool);
+  }
+  return pool!.buffers.slice(0, count);
+}
+
+/**
+ * Submits every stripe before waiting for the first one. Three's public async
+ * helper serializes submit -> fence -> copy for each stripe, leaving the GPU
+ * idle between transfers. A bounded, reusable PBO pool keeps the exact same
+ * 4K pixels while allowing the driver to pipeline the full target readback.
+ */
+async function readRenderTargetPixelsPipelined(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  resolution: number,
+  rowsPerStripe: number,
+) {
+  const gl = renderer.getContext();
+  if (!(gl instanceof WebGL2RenderingContext)) return undefined;
+  const readbackPhasePrefix =
+    typeof document !== 'undefined' ? document.body.dataset.perfUvBakePhase : undefined;
+  const markReadbackPhase = (suffix: string) => {
+    if (!readbackPhasePrefix) return;
+    markGpuUvBakeStep(`${readbackPhasePrefix}-${suffix}`);
+  };
+
+  const stripeCount = Math.ceil(resolution / rowsPerStripe);
+  const maximumStripeBytes = resolution * rowsPerStripe * 4;
+  const buffers = getGpuReadbackBuffers(gl, stripeCount, maximumStripeBytes);
+  const fences: WebGLSync[] = [];
+  let stateBeforeSubmission = captureRendererState(renderer);
+  let targetIsBound = true;
+  renderer.setRenderTarget(target);
+
+  try {
+    let submitBudgetStartedAt = performance.now();
+    let submitsSincePresentation = 0;
+    for (let stripeIndex = 0; stripeIndex < stripeCount; stripeIndex += 1) {
+      await waitForViewportInteractionIdle();
+      const y = stripeIndex * rowsPerStripe;
+      const rowCount = Math.min(rowsPerStripe, resolution - y);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffers[stripeIndex]);
+      markReadbackPhase('pbo-submit');
+      gl.readPixels(0, y, resolution, rowCount, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+      const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (!fence) throw new Error('Unable to create GPU UV readback fence.');
+      fences.push(fence);
+      submitsSincePresentation += 1;
+      if (
+        isGpuUvBakeInteractionProtected() &&
+        stripeIndex + 1 < stripeCount &&
+        (submitsSincePresentation >= INTERACTIVE_READBACK_SUBMITS_PER_FRAME ||
+          performance.now() - submitBudgetStartedAt >= INTERACTIVE_GPU_WORK_BUDGET_MS)
+      ) {
+        markReadbackPhase('pbo-submit-yield');
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        gl.flush();
+        // The caller restores the viewport as soon as this async readback
+        // yields. Restore our own snapshot too, then explicitly rebind the
+        // offscreen target after presentation; otherwise resumed stripes read
+        // the visible framebuffer and silently corrupt the merged UV output.
+        restoreRendererState(renderer, stateBeforeSubmission);
+        targetIsBound = false;
+        await new Promise<void>((resolve) =>
+          window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+        );
+        stateBeforeSubmission = captureRendererState(renderer);
+        renderer.setRenderTarget(target);
+        targetIsBound = true;
+        submitBudgetStartedAt = performance.now();
+        submitsSincePresentation = 0;
+      }
+    }
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    gl.flush();
+    restoreRendererState(renderer, stateBeforeSubmission);
+    targetIsBound = false;
+
+    const pixels = acquireGpuReadbackPixels(resolution * resolution * 4);
+    let maximumStripeMs = 0;
+    const startedAt = performance.now();
+    let copyBudgetStartedAt = performance.now();
+    for (let stripeIndex = 0; stripeIndex < stripeCount; stripeIndex += 1) {
+      await waitForViewportInteractionIdle();
+      const stripeStartedAt = performance.now();
+      markReadbackPhase('pbo-fence-wait');
+      await waitForGpuFence(gl, fences[stripeIndex]);
+      const y = stripeIndex * rowsPerStripe;
+      const rowCount = Math.min(rowsPerStripe, resolution - y);
+      const elementCount = resolution * rowCount * 4;
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffers[stripeIndex]);
+      markReadbackPhase('pbo-copy');
+      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, pixels, y * resolution * 4, elementCount);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
+      if (typeof document !== 'undefined') {
+        document.body.dataset.uvBakeReadbackCompletedStripes = String(stripeIndex + 1);
+      }
+      if (
+        isGpuUvBakeInteractionProtected() &&
+        stripeIndex + 1 < stripeCount &&
+        performance.now() - copyBudgetStartedAt >= INTERACTIVE_GPU_WORK_BUDGET_MS
+      ) {
+        markReadbackPhase('pbo-copy-yield');
+        await new Promise<void>((resolve) =>
+          window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+        );
+        copyBudgetStartedAt = performance.now();
+      }
+    }
+    return { pixels, maximumStripeMs, totalMs: performance.now() - startedAt };
+  } finally {
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    if (targetIsBound) restoreRendererState(renderer, stateBeforeSubmission);
+    fences.forEach((fence) => gl.deleteSync(fence));
+  }
+}
 
 async function readRenderTargetPixelsInStripes(
   renderer: THREE.WebGLRenderer,
   target: THREE.WebGLRenderTarget,
   resolution: number,
 ) {
-  const pixels = new Uint8Array(resolution * resolution * 4);
   const rowsPerStripe = Math.max(
     1,
     Math.min(resolution, Math.floor(GPU_READBACK_STRIPE_BYTES / (resolution * 4))),
   );
-  let maximumStripeMs = 0;
   const startedAt = performance.now();
-  for (let y = 0; y < resolution; y += rowsPerStripe) {
-    if (y > 0) {
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-    }
-    const rowCount = Math.min(rowsPerStripe, resolution - y);
-    const stripe = new Uint8Array(resolution * rowCount * 4);
-    const stripeStartedAt = performance.now();
-    await renderer.readRenderTargetPixelsAsync(
+  let maximumStripeMs = 0;
+  let pipelinedResult: Awaited<ReturnType<typeof readRenderTargetPixelsPipelined>>;
+  try {
+    pipelinedResult = await readRenderTargetPixelsPipelined(
+      renderer,
       target,
-      0,
-      y,
       resolution,
-      rowCount,
-      stripe,
+      rowsPerStripe,
     );
-    maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
-    pixels.set(stripe, y * resolution * 4);
+  } catch (error) {
+    console.warn('[Liclick 3D Texture] Pipelined UV readback failed; using safe fallback.', error);
+    pipelinedResult = undefined;
+  }
+  let pixels: Uint8Array;
+  if (pipelinedResult) {
+    // The PBO path already filled one contiguous target-sized array. Returning
+    // it directly avoids allocating and copying another 64 MiB for every color
+    // and quality pass (28 duplicate 4K buffers in a 14-layer merge).
+    pixels = pipelinedResult.pixels;
+    maximumStripeMs = pipelinedResult.maximumStripeMs;
+  } else {
+    pixels = acquireGpuReadbackPixels(resolution * resolution * 4);
+    for (let y = 0; y < resolution; y += rowsPerStripe) {
+      if (y > 0) {
+        await new Promise<void>((resolve) =>
+          window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+        );
+      }
+      const rowCount = Math.min(rowsPerStripe, resolution - y);
+      const stripe = new Uint8Array(resolution * rowCount * 4);
+      const stripeStartedAt = performance.now();
+      await renderer.readRenderTargetPixelsAsync(target, 0, y, resolution, rowCount, stripe);
+      maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
+      pixels.set(stripe, y * resolution * 4);
+    }
   }
   if (typeof document !== 'undefined') {
     document.body.dataset.uvBakeReadbackStripeRows = String(rowsPerStripe);
-    document.body.dataset.uvBakeReadbackStripeCount = String(
-      Math.ceil(resolution / rowsPerStripe),
-    );
+    document.body.dataset.uvBakeReadbackStripeCount = String(Math.ceil(resolution / rowsPerStripe));
     document.body.dataset.uvBakeReadbackMaximumStripeMs = maximumStripeMs.toFixed(1);
     document.body.dataset.uvBakeReadbackTotalMs = (performance.now() - startedAt).toFixed(1);
   }
@@ -1430,6 +1646,8 @@ async function readRenderTargetAlphaToFloat(
   resolution: number,
 ) {
   const pixels = await readRenderTargetPixelsInStripes(renderer, target, resolution);
+  // Alpha extraction and Y-flip touch every 4K texel. Keep that exact byte
+  // conversion off the UI thread; the RGBA buffer is transferred, not copied.
   return convertQualityGpuReadbackInWorker(pixels, resolution);
 }
 
@@ -1529,6 +1747,90 @@ function setBakeRenderTargetState(
   renderer.setScissorTest(false);
 }
 
+function markGpuUvBakeStep(step: string) {
+  if (
+    typeof document !== 'undefined' &&
+    document.body.dataset.perfSimulatedViewportInteraction === '1'
+  ) {
+    document.body.dataset.perfUvBakePhase = step;
+  }
+}
+
+function isGpuUvBakeInteractionProtected() {
+  return (
+    isViewportInteractionBusy() ||
+    (typeof document !== 'undefined' &&
+      document.body.dataset.perfSimulatedViewportInteraction === '1')
+  );
+}
+
+async function renderUvBakePass(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.Camera,
+  resolution: number,
+  maximumTileSize = 768,
+) {
+  const usesDetachedRenderer = !renderer.domElement.isConnected;
+  if (resolution <= 2048 || !usesDetachedRenderer) {
+    renderer.render(scene, camera);
+    return;
+  }
+
+  // Keep the full-resolution viewport transform, but bound fragment work to
+  // one bounded scissor tile per presentation opportunity. This produces the same
+  // target pixels while preventing a monolithic 4K pass from occupying the
+  // physical GPU across several onscreen frames.
+  // 768px keeps each detached GPU submission below the presentation budget.
+  // CPU wall time cannot estimate work queued in another WebGL context, so
+  // every tile yields to the visible compositor even when submission itself
+  // takes only microseconds. Resolution, sampling and pixels remain unchanged.
+  const tileSize = maximumTileSize;
+  renderer.setScissorTest(true);
+  const tiles: Array<{ x: number; y: number; width: number; height: number }> = [];
+  for (let y = 0; y < resolution; y += tileSize) {
+    for (let x = 0; x < resolution; x += tileSize) {
+      tiles.push({
+        x,
+        y,
+        width: Math.min(tileSize, resolution - x),
+        height: Math.min(tileSize, resolution - y),
+      });
+    }
+  }
+  for (let index = 0; index < tiles.length; index += 1) {
+    await waitForViewportInteractionIdle();
+    const tile = tiles[index];
+    renderer.setScissor(tile.x, tile.y, tile.width, tile.height);
+    renderer.render(scene, camera);
+    const context = renderer.getContext();
+    if (context instanceof WebGL2RenderingContext) {
+      // A detached context can enqueue tiles faster than the physical GPU can
+      // retire them. Merely flushing once per frame allowed that queue to grow
+      // until one quality pass stole two presentation intervals. Drain the
+      // current tile asynchronously before admitting the next one: no main
+      // thread wait, no pixel/quality change, and no cross-frame GPU backlog.
+      const fence = context.fenceSync(context.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      context.flush();
+      if (fence) {
+        try {
+          await waitForGpuFence(context, fence);
+        } finally {
+          context.deleteSync(fence);
+        }
+      }
+    } else {
+      context.flush();
+    }
+    if (index + 1 < tiles.length && isGpuUvBakeInteractionProtected()) {
+      await new Promise<void>((resolve) =>
+        window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+      );
+    }
+  }
+  renderer.setScissorTest(false);
+}
+
 export async function bakeProjectedLayerRastersWithGpu(
   input: GpuLayerStackBakeInput,
 ): Promise<GpuLayerRastersBakeOutput> {
@@ -1540,11 +1842,13 @@ export async function bakeProjectedLayerRastersWithGpu(
   }
 
   const warnings: string[] = [];
+  markGpuUvBakeStep('gpu-setup-collect-meshes');
   const meshes = collectPreparedMeshes(input.group, warnings);
   const totalTrianglesPerLayer = meshes.reduce((sum, mesh) => sum + mesh.triangleCount, 0);
   const totalTriangles = totalTrianglesPerLayer * input.layers.length;
   if (totalTriangles <= 0) throw new Error('No UV triangles were available for GPU baking.');
 
+  markGpuUvBakeStep('gpu-setup-targets');
   const colorTarget = createPostprocessTarget(resolution);
   const qualityTarget = createPostprocessTarget(resolution);
   let previousState = captureRendererState(renderer);
@@ -1572,8 +1876,10 @@ export async function bakeProjectedLayerRastersWithGpu(
   };
 
   try {
-    const bakeScene = createBakeScene(meshes);
+    markGpuUvBakeStep('gpu-setup-scene');
+    const bakeScene = await createBakeScene(meshes);
     for (const [layerIndex, layer] of input.layers.entries()) {
+      markGpuUvBakeStep('gpu-load-layer-textures');
       input.onProgress?.({
         phase: 'loading-assets',
         progress: 0.04 + (layerIndex / input.layers.length) * 0.78,
@@ -1585,6 +1891,7 @@ export async function bakeProjectedLayerRastersWithGpu(
         inputTextureFlipY: input.inputTextureFlipY ?? true,
       });
       sourceSizes.push(textures.sourceSizes);
+      markGpuUvBakeStep('gpu-texture-upload');
       await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
 
       const coverageMaterial = createLayerMaterial({
@@ -1606,7 +1913,9 @@ export async function bakeProjectedLayerRastersWithGpu(
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
       reportProgress(layer, layerIndex, true);
-      renderer.render(bakeScene.scene, camera);
+      markGpuUvBakeStep('gpu-color-render');
+      await renderUvBakePass(renderer, bakeScene.scene, camera, resolution);
+      markGpuUvBakeStep('gpu-color-readback');
       const layerRasterPromise = readRenderTargetToLayerImageData(
         renderer,
         colorTarget,
@@ -1637,7 +1946,9 @@ export async function bakeProjectedLayerRastersWithGpu(
       setBakeRenderTargetState(renderer, qualityTarget, resolution);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
-      renderer.render(bakeScene.scene, camera);
+      markGpuUvBakeStep('gpu-quality-render');
+      await renderUvBakePass(renderer, bakeScene.scene, camera, resolution);
+      markGpuUvBakeStep('gpu-quality-readback');
       const qualityPromise = readRenderTargetAlphaToFloat(renderer, qualityTarget, resolution);
       restoreRendererState(renderer, previousState);
       const quality = await qualityPromise;
@@ -1645,14 +1956,18 @@ export async function bakeProjectedLayerRastersWithGpu(
       qualityMaterial.dispose();
 
       disposeLayerTextures(textures.disposableTextures);
-      rasters.push({
+      const raster: GpuLayerRaster = {
         layer,
         imageData: layerRaster.imageData,
-        coverage: layerRaster.coverage,
         quality,
         coveredPixels: layerRaster.coveredPixels,
-      });
+      };
       coveredPixels += layerRaster.coveredPixels;
+      if (input.onRaster) {
+        await input.onRaster(raster);
+      } else {
+        rasters.push(raster);
+      }
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
       // React Three Fiber owns this renderer. Never yield to its animation frame
@@ -1734,7 +2049,7 @@ export async function bakeProjectedLayerStackWithGpu(
   };
 
   try {
-    const bakeScene = createBakeScene(meshes);
+    const bakeScene = await createBakeScene(meshes);
     let renderTargetInitialized = false;
     for (const [layerIndex, layer] of input.layers.entries()) {
       input.onProgress?.({

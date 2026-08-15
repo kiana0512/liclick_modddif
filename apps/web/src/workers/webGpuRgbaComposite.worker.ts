@@ -203,9 +203,7 @@ async function yieldGpuBudget() {
 function activeChunkBytes(request: CompositeRequest) {
   return Math.max(
     256,
-    Math.floor(
-      (interactive ? request.interactiveChunkBytes : request.idleChunkBytes) / 256,
-    ) * 256,
+    Math.floor((interactive ? request.interactiveChunkBytes : request.idleChunkBytes) / 256) * 256,
   );
 }
 
@@ -380,14 +378,58 @@ function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, o
       (front[offset] * frontAlpha + underlay[offset] * visibleUnderlayAlpha) / outputAlpha,
     );
     front[offset + 1] = Math.round(
-      (front[offset + 1] * frontAlpha + underlay[offset + 1] * visibleUnderlayAlpha) /
-        outputAlpha,
+      (front[offset + 1] * frontAlpha + underlay[offset + 1] * visibleUnderlayAlpha) / outputAlpha,
     );
     front[offset + 2] = Math.round(
-      (front[offset + 2] * frontAlpha + underlay[offset + 2] * visibleUnderlayAlpha) /
-        outputAlpha,
+      (front[offset + 2] * frontAlpha + underlay[offset + 2] * visibleUnderlayAlpha) / outputAlpha,
     );
     front[offset + 3] = Math.round(outputAlpha * 255);
+  }
+  return frontBuffer;
+}
+
+async function compositeOnCpuBudgeted(
+  frontBuffer: ArrayBuffer,
+  underlayBuffer: ArrayBuffer,
+  opacity: number,
+  request: NormalizedCompositeRequest,
+) {
+  const front = new Uint8ClampedArray(frontBuffer);
+  const underlay = new Uint8ClampedArray(underlayBuffer);
+  // A quarter mebibyte of RGBA per slice keeps this worker from monopolising a
+  // CPU core while the viewport is being orbited. The arithmetic is deliberately
+  // byte-for-byte identical to the canonical CPU composite above.
+  const sliceBytes = 256 * 1024;
+  for (let firstOffset = 0; firstOffset < front.length; firstOffset += sliceBytes) {
+    throwIfCancelled(request);
+    const endOffset = Math.min(front.length, firstOffset + sliceBytes);
+    for (let offset = firstOffset; offset < endOffset; offset += 4) {
+      const frontAlpha = front[offset + 3] / 255;
+      const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
+      const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
+      const outputAlpha = frontAlpha + visibleUnderlayAlpha;
+      if (outputAlpha <= 0) {
+        if (front[offset] === 0 && front[offset + 1] === 0 && front[offset + 2] === 0) {
+          front[offset] = underlay[offset];
+          front[offset + 1] = underlay[offset + 1];
+          front[offset + 2] = underlay[offset + 2];
+        }
+        continue;
+      }
+      front[offset] = Math.round(
+        (front[offset] * frontAlpha + underlay[offset] * visibleUnderlayAlpha) / outputAlpha,
+      );
+      front[offset + 1] = Math.round(
+        (front[offset + 1] * frontAlpha + underlay[offset + 1] * visibleUnderlayAlpha) /
+          outputAlpha,
+      );
+      front[offset + 2] = Math.round(
+        (front[offset + 2] * frontAlpha + underlay[offset + 2] * visibleUnderlayAlpha) /
+          outputAlpha,
+      );
+      front[offset + 3] = Math.round(outputAlpha * 255);
+    }
+    if (endOffset < front.length) await yieldGpuBudget();
   }
   return frontBuffer;
 }
@@ -401,11 +443,36 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
   if (!response.ok) throw new Error(`Could not load UV underlay (${response.status}).`);
   const bitmap = await createImageBitmap(await response.blob());
   try {
-    const canvas = new OffscreenCanvas(request.width, request.height);
+    const rowsPerSlice = Math.max(1, Math.floor((1 * 1024 * 1024) / (request.width * 4)));
+    const canvas = new OffscreenCanvas(request.width, rowsPerSlice);
     const context = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
     if (!context) throw new Error('Could not create UV underlay worker canvas.');
-    context.drawImage(bitmap, 0, 0, request.width, request.height);
-    return context.getImageData(0, 0, request.width, request.height).data.buffer as ArrayBuffer;
+    const output = new Uint8ClampedArray(request.width * request.height * 4);
+    for (let y = 0; y < request.height; y += rowsPerSlice) {
+      const rowCount = Math.min(rowsPerSlice, request.height - y);
+      context.clearRect(0, 0, request.width, rowsPerSlice);
+      // Rasterize only the rows consumed this turn. A single full 4K drawImage
+      // monopolized the browser GPU process long enough to delay a viewport
+      // frame by 33ms even though this code runs in a worker.
+      const sourceY = (y / request.height) * bitmap.height;
+      const sourceHeight = (rowCount / request.height) * bitmap.height;
+      context.drawImage(
+        bitmap,
+        0,
+        sourceY,
+        bitmap.width,
+        sourceHeight,
+        0,
+        0,
+        request.width,
+        rowCount,
+      );
+      output.set(context.getImageData(0, 0, request.width, rowCount).data, y * request.width * 4);
+      if (y + rowCount < request.height) {
+        await wait(request.interactive ? INTERACTIVE_GPU_PAUSE_MS : 0);
+      }
+    }
+    return output.buffer;
   } finally {
     bitmap.close();
   }
@@ -418,6 +485,31 @@ async function runComposite(rawRequest: CompositeRequest) {
   };
   interactive = request.interactive;
   const startedAt = performance.now();
+  // WebGPU compute and the WebGL viewport share the physical graphics queue.
+  // Even small compute dispatches can create a long presentation fence on
+  // some D3D11/ANGLE drivers. During active navigation, keep that queue wholly
+  // available to the viewport and run the exact same blend in this worker.
+  if (request.interactive) {
+    const output = await compositeOnCpuBudgeted(
+      request.front,
+      request.underlay,
+      request.opacity,
+      request,
+    );
+    const totalMs = performance.now() - startedAt;
+    return {
+      output,
+      metrics: {
+        uploadMs: 0,
+        computeMs: totalMs,
+        readbackMs: 0,
+        totalMs,
+        bytesTransferred: request.front.byteLength * 2,
+        chunkBytes: activeChunkBytes(request),
+        backend: 'cpu-worker' as const,
+      },
+    };
+  }
   const device = await getDevice();
   if (!device) {
     const output = compositeOnCpu(request.front, request.underlay, request.opacity);
@@ -486,11 +578,7 @@ function verifyGpuOutput(
   gpuOutput: ArrayBuffer,
 ): { output: ArrayBuffer; verification?: CompositeVerification } {
   if (!request.verify) return { output: gpuOutput };
-  const cpuOutput = compositeOnCpu(
-    request.front.slice(0),
-    request.underlay,
-    request.opacity,
-  );
+  const cpuOutput = compositeOnCpu(request.front.slice(0), request.underlay, request.opacity);
   const expected = new Uint8ClampedArray(cpuOutput);
   const actual = new Uint8ClampedArray(gpuOutput);
   let byteMismatches = 0;
@@ -555,33 +643,20 @@ scope.onmessage = (event) => {
           throw new Error('PNG output dimensions are missing.');
         }
         const encodeStartedAt = performance.now();
-        let pngBlob: Blob;
-        if (interactive && typeof OffscreenCanvas !== 'undefined') {
-          const canvas = new OffscreenCanvas(request.width, request.height);
-          const context = canvas.getContext('2d', { alpha: true });
-          if (!context) throw new Error('Could not create interactive PNG canvas.');
-          context.putImageData(
-            new ImageData(
-              new Uint8ClampedArray(verified.output),
-              request.width,
-              request.height,
-            ),
-            0,
-            0,
-          );
-          pngBlob = await canvas.convertToBlob({ type: 'image/png' });
-        } else {
-          const encoded = await encodeRgbaPngBytesChunked(
-            request.width,
-            request.height,
-            new Uint8ClampedArray(verified.output),
-            async () => {
-              throwIfCancelled(request);
-              await wait(0);
-            },
-          );
-          pngBlob = new Blob([encoded], { type: 'image/png' });
-        }
+        // Keep straight RGBA bytes under alpha=0. OffscreenCanvas PNG export is
+        // allowed to erase those hidden colour bytes, which reintroduces dark
+        // UV gutters under bilinear sampling. Chunked lossless encoding stays in
+        // this worker and yields without touching the viewport thread.
+        const encoded = await encodeRgbaPngBytesChunked(
+          request.width,
+          request.height,
+          new Uint8ClampedArray(verified.output),
+          async () => {
+            throwIfCancelled(request);
+            await wait(0);
+          },
+        );
+        const pngBlob = new Blob([encoded], { type: 'image/png' });
         throwIfCancelled(request);
         const response: WorkerResponse = {
           type: 'result',

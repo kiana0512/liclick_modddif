@@ -8,7 +8,7 @@ import {
 
 export type QualityBlendWorkerLayer = {
   color: Uint8ClampedArray;
-  quality: Float32Array;
+  quality: Uint8Array;
   overlayMode?: ProjectedOverlayMode;
   renderedColor?: boolean;
 };
@@ -58,6 +58,7 @@ type BlendRequest = {
 };
 
 type WorkerResponse =
+  | { type: 'ack'; id: number }
   | {
       type: 'result';
       id: number;
@@ -80,11 +81,14 @@ type PendingBlend = {
   reject: (error: Error) => void;
 };
 
+type PendingAck = { resolve: () => void; reject: (error: Error) => void };
+
 let worker: Worker | undefined;
 let nextRequestId = 1;
 let stopInteractionSubscription: (() => void) | undefined;
 let interactionHeartbeat: number | undefined;
 const pending = new Map<number, PendingBlend>();
+const pendingAcks = new Map<number, PendingAck>();
 
 function isInteractionProtected() {
   return (
@@ -99,9 +103,9 @@ function postBudgetState() {
 }
 
 function maintainInteractionHeartbeat() {
-  if (pending.size > 0 && interactionHeartbeat === undefined) {
+  if ((pending.size > 0 || pendingAcks.size > 0) && interactionHeartbeat === undefined) {
     interactionHeartbeat = window.setInterval(postBudgetState, 50);
-  } else if (pending.size === 0 && interactionHeartbeat !== undefined) {
+  } else if (pending.size === 0 && pendingAcks.size === 0 && interactionHeartbeat !== undefined) {
     window.clearInterval(interactionHeartbeat);
     interactionHeartbeat = undefined;
   }
@@ -109,7 +113,9 @@ function maintainInteractionHeartbeat() {
 
 function failAllPending(message: string) {
   for (const request of pending.values()) request.reject(new Error(message));
+  for (const request of pendingAcks.values()) request.reject(new Error(message));
   pending.clear();
+  pendingAcks.clear();
   maintainInteractionHeartbeat();
 }
 
@@ -119,8 +125,24 @@ function getWorker() {
     type: 'module',
   });
   worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+    if (event.data.type === 'ack') {
+      const ack = pendingAcks.get(event.data.id);
+      if (!ack) return;
+      pendingAcks.delete(event.data.id);
+      maintainInteractionHeartbeat();
+      ack.resolve();
+      return;
+    }
     const request = pending.get(event.data.id);
-    if (!request) return;
+    if (!request) {
+      const ack = pendingAcks.get(event.data.id);
+      if (ack && event.data.type === 'error') {
+        pendingAcks.delete(event.data.id);
+        maintainInteractionHeartbeat();
+        ack.reject(new Error(event.data.message));
+      }
+      return;
+    }
     pending.delete(event.data.id);
     maintainInteractionHeartbeat();
     if (event.data.type === 'error') {
@@ -206,7 +228,7 @@ export function blendProjectedRastersInWorker(
 ) {
   const id = nextRequestId++;
   const transfers: Transferable[] = [];
-  const transferableBuffer = (view: Uint8ClampedArray | Float32Array) => {
+  const transferableBuffer = (view: Uint8ClampedArray | Uint8Array) => {
     if (
       view.buffer instanceof ArrayBuffer &&
       view.byteOffset === 0 &&
@@ -255,6 +277,85 @@ export function blendProjectedRastersInWorker(
     maintainInteractionHeartbeat();
     getWorker().postMessage(request, transfers);
   });
+}
+
+/**
+ * Streams each 4K raster into the blend worker as soon as its GPU readback is
+ * complete. At most the caller's small backpressure window remains queued;
+ * the UI no longer retains fourteen 80MiB color/quality pairs until the final
+ * blend, avoiding a multi-second detached-buffer collection.
+ */
+export function createProjectedRasterBlendSession(
+  resolution: number,
+  preserveCoverageConfidenceAlpha: boolean,
+) {
+  const sessionId = nextRequestId++;
+  const interactive = isInteractionProtected();
+  const verify =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('perfQualityGpuAb') === '1';
+  const forceCpuOutput =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('perfQualityCpuGold') === '1';
+  const postAck = (message: Record<string, unknown>, transfers: Transferable[] = []) => {
+    const id = nextRequestId++;
+    return new Promise<void>((resolve, reject) => {
+      pendingAcks.set(id, { resolve, reject });
+      maintainInteractionHeartbeat();
+      getWorker().postMessage({ ...message, id }, transfers);
+    });
+  };
+  const ready = postAck({
+    type: 'stream-start',
+    sessionId,
+    resolution,
+    preserveCoverageConfidenceAlpha,
+    verify,
+    forceCpuOutput,
+    interactive,
+  });
+  return {
+    async addLayer(layer: QualityBlendWorkerLayer) {
+      await ready;
+      const color =
+        layer.color.buffer instanceof ArrayBuffer &&
+        layer.color.byteOffset === 0 &&
+        layer.color.byteLength === layer.color.buffer.byteLength
+          ? layer.color.buffer
+          : layer.color.slice().buffer;
+      const quality =
+        layer.quality.buffer instanceof ArrayBuffer &&
+        layer.quality.byteOffset === 0 &&
+        layer.quality.byteLength === layer.quality.buffer.byteLength
+          ? layer.quality.buffer
+          : layer.quality.slice().buffer;
+      await postAck(
+        {
+          type: 'stream-add',
+          sessionId,
+          layer: {
+            color,
+            quality,
+            overlayMode: layer.overlayMode,
+            renderedColor: layer.renderedColor === true,
+          },
+        },
+        [color, quality],
+      );
+    },
+    async finish() {
+      await ready;
+      const id = nextRequestId++;
+      return new Promise<QualityBlendWorkerResult>((resolve, reject) => {
+        pending.set(id, { resolution, resolve, reject });
+        maintainInteractionHeartbeat();
+        getWorker().postMessage({ type: 'stream-finish', id, sessionId });
+      });
+    },
+    abort() {
+      getWorker().postMessage({ type: 'stream-abort', sessionId });
+    },
+  };
 }
 
 export function terminateQualityBlendWorker() {

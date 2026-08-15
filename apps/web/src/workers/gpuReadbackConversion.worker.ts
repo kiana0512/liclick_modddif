@@ -14,12 +14,20 @@ type ConversionRequest = {
 type ConversionResponse =
   | {
       id: number;
-      mode: 'final' | 'layer';
+      mode: 'final';
       imageData: ArrayBuffer;
       coverage: ArrayBuffer;
+      recycledPixels: ArrayBuffer;
       coveredPixels: number;
     }
-  | { id: number; mode: 'quality'; quality: ArrayBuffer }
+  | {
+      id: number;
+      mode: 'layer';
+      imageData: ArrayBuffer;
+      recycledPixels: ArrayBuffer;
+      coveredPixels: number;
+    }
+  | { id: number; mode: 'quality'; quality: ArrayBuffer; recycledPixels: ArrayBuffer }
   | { id: number; error: string };
 
 const scope = self as unknown as {
@@ -29,12 +37,15 @@ const scope = self as unknown as {
 
 function convertQuality(request: ConversionRequest) {
   const pixels = new Uint8Array(request.pixels);
-  const quality = new Float32Array(request.resolution * request.resolution);
+  // Quality originates from an 8-bit render-target alpha channel. Keep that
+  // canonical byte representation until the blend worker consumes it instead
+  // of expanding every 4K layer to a 64 MiB Float32Array.
+  const quality = new Uint8Array(request.resolution * request.resolution);
   const rowLength = request.resolution * 4;
   for (let y = 0; y < request.resolution; y += 1) {
     const sourceStart = (request.resolution - 1 - y) * rowLength;
     for (let x = 0; x < request.resolution; x += 1) {
-      quality[y * request.resolution + x] = pixels[sourceStart + x * 4 + 3] / 255;
+      quality[y * request.resolution + x] = pixels[sourceStart + x * 4 + 3];
     }
   }
   return quality.buffer;
@@ -43,7 +54,8 @@ function convertQuality(request: ConversionRequest) {
 function convertColor(request: ConversionRequest) {
   const pixels = new Uint8Array(request.pixels);
   const imageData = new Uint8ClampedArray(request.resolution * request.resolution * 4);
-  const coverage = new Uint8Array(request.resolution * request.resolution);
+  const coverage =
+    request.mode === 'final' ? new Uint8Array(request.resolution * request.resolution) : undefined;
   const rowLength = request.resolution * 4;
   let coveredPixels = 0;
   for (let y = 0; y < request.resolution; y += 1) {
@@ -75,7 +87,7 @@ function convertColor(request: ConversionRequest) {
         imageData[targetOffset + 1] = green;
         imageData[targetOffset + 2] = blue;
         imageData[targetOffset + 3] = alphaByte;
-        coverage[pixelIndex] = 1;
+        if (coverage) coverage[pixelIndex] = 1;
         coveredPixels += 1;
       } else if (request.mode === 'final' && request.outputAlpha === 'opaque-viewport') {
         imageData[targetOffset] = UNPROJECTED_TEXTURE_FILL[0];
@@ -85,7 +97,7 @@ function convertColor(request: ConversionRequest) {
       }
     }
   }
-  return { imageData: imageData.buffer, coverage: coverage.buffer, coveredPixels };
+  return { imageData: imageData.buffer, coverage: coverage?.buffer, coveredPixels };
 }
 
 scope.onmessage = (event) => {
@@ -93,14 +105,36 @@ scope.onmessage = (event) => {
   try {
     if (request.mode === 'quality') {
       const quality = convertQuality(request);
-      scope.postMessage({ id: request.id, mode: 'quality', quality }, [quality]);
+      scope.postMessage(
+        { id: request.id, mode: 'quality', quality, recycledPixels: request.pixels },
+        [quality, request.pixels],
+      );
       return;
     }
     const result = convertColor(request);
-    scope.postMessage(
-      { id: request.id, mode: request.mode, ...result },
-      [result.imageData, result.coverage],
-    );
+    if (request.mode === 'final' && result.coverage) {
+      scope.postMessage(
+        {
+          id: request.id,
+          mode: 'final',
+          ...result,
+          coverage: result.coverage,
+          recycledPixels: request.pixels,
+        },
+        [result.imageData, result.coverage, request.pixels],
+      );
+    } else {
+      scope.postMessage(
+        {
+          id: request.id,
+          mode: 'layer',
+          imageData: result.imageData,
+          recycledPixels: request.pixels,
+          coveredPixels: result.coveredPixels,
+        },
+        [result.imageData, request.pixels],
+      );
+    }
   } catch (error) {
     scope.postMessage({
       id: request.id,

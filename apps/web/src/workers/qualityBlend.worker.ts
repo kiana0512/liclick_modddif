@@ -46,7 +46,33 @@ type BlendRequest = {
   }>;
 };
 
-type WorkerRequest = BlendRequest | { type: 'budget'; interactive: boolean };
+type StreamConfig = Pick<
+  BlendRequest,
+  'resolution' | 'preserveCoverageConfidenceAlpha' | 'verify' | 'forceCpuOutput' | 'interactive'
+>;
+
+type StreamStartRequest = StreamConfig & { type: 'stream-start'; id: number; sessionId: number };
+type StreamAddRequest = {
+  type: 'stream-add';
+  id: number;
+  sessionId: number;
+  layer: {
+    color: ArrayBuffer;
+    quality: ArrayBuffer;
+    overlayMode?: ProjectedOverlayMode;
+    renderedColor?: boolean;
+  };
+};
+type StreamFinishRequest = { type: 'stream-finish'; id: number; sessionId: number };
+type StreamAbortRequest = { type: 'stream-abort'; sessionId: number };
+
+type WorkerRequest =
+  | BlendRequest
+  | StreamStartRequest
+  | StreamAddRequest
+  | StreamFinishRequest
+  | StreamAbortRequest
+  | { type: 'budget'; interactive: boolean };
 
 type Verification = {
   byteMismatches: number;
@@ -63,6 +89,7 @@ type Verification = {
 };
 
 type WorkerResponse =
+  | { type: 'ack'; id: number }
   | {
       type: 'result';
       id: number;
@@ -125,8 +152,8 @@ type GpuDevice = {
 
 type TopK = {
   colors: Uint32Array[];
-  coverages: Float32Array[];
-  qualities: Float32Array[];
+  coverages: Uint8Array[];
+  qualitySources: Uint8Array[];
   coverage: Uint8Array;
   writtenTexels: number;
 };
@@ -146,6 +173,13 @@ const scope = self as unknown as {
 let interactive = false;
 let devicePromise: Promise<GpuDevice | undefined> | undefined;
 let workQueue = Promise.resolve();
+type StreamSession = StreamConfig & {
+  topK: TopK;
+  overlays: BlendRequest['overlays'];
+  startedAt: number;
+  accumulateMs: number;
+};
+const streamSessions = new Map<number, StreamSession>();
 const gpuQualityApproval = {
   opaque: false,
   confidenceAlpha: false,
@@ -173,64 +207,97 @@ function packRgb(source: Uint8ClampedArray, offset: number) {
 function createTopK(pixelCount: number): TopK {
   return {
     colors: Array.from({ length: TOP_K }, () => new Uint32Array(pixelCount)),
-    coverages: Array.from({ length: TOP_K }, () => new Float32Array(pixelCount)),
-    qualities: Array.from({ length: TOP_K }, () => new Float32Array(pixelCount)),
+    coverages: Array.from({ length: TOP_K }, () => new Uint8Array(pixelCount)),
+    qualitySources: Array.from({ length: TOP_K }, () => new Uint8Array(pixelCount)),
     coverage: new Uint8Array(pixelCount),
     writtenTexels: 0,
   };
+}
+
+function readStoredQuality(topK: TopK, slot: number, pixelIndex: number) {
+  const coverage = topK.coverages[slot][pixelIndex] / 255;
+  return Math.fround(
+    Math.max(
+      Math.fround(topK.qualitySources[slot][pixelIndex] / 255),
+      coverage * QUALITY_FLOOR_FROM_COVERAGE,
+    ),
+  );
 }
 
 async function yieldWorkerBudget() {
   await new Promise<void>((resolve) => setTimeout(resolve, interactive ? 8 : 0));
 }
 
+async function accumulateLayer(
+  topK: TopK,
+  layer: BlendRequest['layers'][number],
+  pixelCount: number,
+) {
+  const color = new Uint8ClampedArray(layer.color);
+  const qualityMap = new Uint8Array(layer.quality);
+  for (let pixelIndex = 0, offset = 0; pixelIndex < pixelCount; pixelIndex += 1, offset += 4) {
+    const coverageByte = color[offset + 3];
+    const coverage = coverageByte / 255;
+    if (coverage <= COVERAGE_THRESHOLD) continue;
+    const qualitySource = qualityMap[pixelIndex];
+    const quality = Math.max(
+      Math.fround(qualitySource / 255),
+      coverage * QUALITY_FLOOR_FROM_COVERAGE,
+    );
+    let insertAt = -1;
+    for (let slot = 0; slot < TOP_K; slot += 1) {
+      if (quality > readStoredQuality(topK, slot, pixelIndex)) {
+        insertAt = slot;
+        break;
+      }
+    }
+    if (insertAt < 0) continue;
+    for (let slot = TOP_K - 1; slot > insertAt; slot -= 1) {
+      topK.coverages[slot][pixelIndex] = topK.coverages[slot - 1][pixelIndex];
+      topK.qualitySources[slot][pixelIndex] = topK.qualitySources[slot - 1][pixelIndex];
+      topK.colors[slot][pixelIndex] = topK.colors[slot - 1][pixelIndex];
+    }
+    topK.coverages[insertAt][pixelIndex] = coverageByte;
+    topK.qualitySources[insertAt][pixelIndex] = qualitySource;
+    topK.colors[insertAt][pixelIndex] = packRgb(color, offset);
+    if (!topK.coverage[pixelIndex]) {
+      topK.coverage[pixelIndex] = 1;
+      topK.writtenTexels += 1;
+    }
+    if (interactive && pixelIndex > 0 && pixelIndex % 262_144 === 0) await yieldWorkerBudget();
+  }
+  await yieldWorkerBudget();
+}
+
 async function accumulate(topK: TopK, request: BlendRequest) {
   const pixelCount = request.resolution * request.resolution;
-  for (const layer of request.layers) {
-    const color = new Uint8ClampedArray(layer.color);
-    const qualityMap = new Float32Array(layer.quality);
-    for (let pixelIndex = 0, offset = 0; pixelIndex < pixelCount; pixelIndex += 1, offset += 4) {
-      const coverage = color[offset + 3] / 255;
-      if (coverage <= COVERAGE_THRESHOLD) continue;
-      const quality = Math.max(qualityMap[pixelIndex], coverage * QUALITY_FLOOR_FROM_COVERAGE);
-      let insertAt = -1;
-      for (let slot = 0; slot < TOP_K; slot += 1) {
-        if (quality > topK.qualities[slot][pixelIndex]) {
-          insertAt = slot;
-          break;
-        }
-      }
-      if (insertAt < 0) continue;
-      for (let slot = TOP_K - 1; slot > insertAt; slot -= 1) {
-        topK.coverages[slot][pixelIndex] = topK.coverages[slot - 1][pixelIndex];
-        topK.qualities[slot][pixelIndex] = topK.qualities[slot - 1][pixelIndex];
-        topK.colors[slot][pixelIndex] = topK.colors[slot - 1][pixelIndex];
-      }
-      topK.coverages[insertAt][pixelIndex] = coverage;
-      topK.qualities[insertAt][pixelIndex] = quality;
-      topK.colors[insertAt][pixelIndex] = packRgb(color, offset);
-      if (!topK.coverage[pixelIndex]) {
-        topK.coverage[pixelIndex] = 1;
-        topK.writtenTexels += 1;
-      }
-      if (interactive && pixelIndex > 0 && pixelIndex % 262_144 === 0) await yieldWorkerBudget();
-    }
-    await yieldWorkerBudget();
+  while (request.layers.length > 0) {
+    const layer = request.layers.shift();
+    if (layer) await accumulateLayer(topK, layer, pixelCount);
   }
 }
 
-function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: boolean, output: Uint8ClampedArray) {
+function resolvePixelCpu(
+  topK: TopK,
+  pixelIndex: number,
+  preserveAlpha: boolean,
+  output: Uint8ClampedArray,
+) {
   if (!topK.coverage[pixelIndex]) return false;
   const offset = pixelIndex * 4;
   let candidateCount = 0;
   let remaining = 1;
   const coverages = [0, 0, 0];
   const qualities = [0, 0, 0];
-  const colors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const colors = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
   for (let slot = 0; slot < TOP_K; slot += 1) {
-    const coverage = topK.coverages[slot][pixelIndex];
+    const coverage = Math.fround(topK.coverages[slot][pixelIndex] / 255);
     coverages[slot] = coverage;
-    qualities[slot] = topK.qualities[slot][pixelIndex];
+    qualities[slot] = readStoredQuality(topK, slot, pixelIndex);
     remaining *= 1 - Math.max(0, Math.min(1, coverage));
     if (coverage > COVERAGE_THRESHOLD) candidateCount += 1;
     const packed = topK.colors[slot][pixelIndex];
@@ -298,8 +365,11 @@ function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: boolean,
     finalBlue += colors[slot][2] * weight;
   }
   const dominance =
-    smoothstep(DOMINANCE_BLEND_START, DOMINANCE_BLEND_END, qualities[0] / Math.max(qualities[1], 0.000001)) *
-    smoothstep(DOMINANCE_MARGIN_START, DOMINANCE_MARGIN_END, qualities[0] - qualities[1]);
+    smoothstep(
+      DOMINANCE_BLEND_START,
+      DOMINANCE_BLEND_END,
+      qualities[0] / Math.max(qualities[1], 0.000001),
+    ) * smoothstep(DOMINANCE_MARGIN_START, DOMINANCE_MARGIN_END, qualities[0] - qualities[1]);
   output[offset] = linearToSrgbByte(finalRed * (1 - dominance) + colors[0][0] * dominance);
   output[offset + 1] = linearToSrgbByte(finalGreen * (1 - dominance) + colors[0][1] * dominance);
   output[offset + 2] = linearToSrgbByte(finalBlue * (1 - dominance) + colors[0][2] * dominance);
@@ -326,7 +396,7 @@ async function applyOverlays(
   let addedCoverage = 0;
   for (const overlay of overlays) {
     const imageData = new Uint8ClampedArray(overlay.color);
-    const qualityMap = new Float32Array(overlay.quality);
+    const qualityMap = new Uint8Array(overlay.quality);
     for (let pixelIndex = 0, offset = 0; offset < imageData.length; pixelIndex += 1, offset += 4) {
       const layerCoverage = imageData[offset + 3] / 255;
       if (
@@ -337,7 +407,7 @@ async function applyOverlays(
       }
       const alpha = getProjectionOverlayAlpha(
         layerCoverage,
-        qualityMap[pixelIndex],
+        Math.fround(qualityMap[pixelIndex] / 255),
         overlay.overlayMode,
       );
       if (alpha <= 0.0001) continue;
@@ -380,6 +450,25 @@ async function applyOverlays(
     await yieldWorkerBudget();
   }
   return addedCoverage;
+}
+
+async function clearWeakTransparentOutput(
+  output: Uint8ClampedArray,
+  coverage: Uint8Array,
+  renderedColorMask: Uint8Array,
+) {
+  for (let pixelIndex = 0, offset = 0; pixelIndex < coverage.length; pixelIndex += 1, offset += 4) {
+    if (output[offset + 3] > 8) continue;
+    output[offset] = 0;
+    output[offset + 1] = 0;
+    output[offset + 2] = 0;
+    output[offset + 3] = 0;
+    coverage[pixelIndex] = 0;
+    renderedColorMask[pixelIndex] = 0;
+    if (interactive && pixelIndex > 0 && pixelIndex % 262_144 === 0) {
+      await yieldWorkerBudget();
+    }
+  }
 }
 
 const shader = `
@@ -445,10 +534,14 @@ const shader = `
 
 async function getDevice() {
   devicePromise ??= (async () => {
-    const adapter = await scope.navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
+    const adapter = await scope.navigator.gpu?.requestAdapter({
+      powerPreference: 'high-performance',
+    });
     if (!adapter) return undefined;
     const device = await adapter.requestDevice();
-    void device.lost.then(() => { devicePromise = undefined; });
+    void device.lost.then(() => {
+      devicePromise = undefined;
+    });
     return device;
   })();
   return devicePromise;
@@ -459,7 +552,10 @@ async function resolveGpu(topK: TopK, preserveAlpha: boolean) {
   if (!device) return undefined;
   const pipeline = device.createComputePipeline({
     layout: 'auto',
-    compute: { module: device.createShaderModule({ code: shader, label: 'Li3D top-k quality blend' }), entryPoint: 'resolve' },
+    compute: {
+      module: device.createShaderModule({ code: shader, label: 'Li3D top-k quality blend' }),
+      entryPoint: 'resolve',
+    },
   });
   const finalOutput = new Uint8ClampedArray(topK.coverage.length * 4);
   for (let first = 0; first < topK.coverage.length; first += TILE_PIXELS) {
@@ -472,18 +568,30 @@ async function resolveGpu(topK: TopK, preserveAlpha: boolean) {
         const pixel = first + local;
         const packedColor = topK.colors[slot][pixel];
         view.setUint32(byteOffset, packedColor, true);
-        view.setFloat32(byteOffset + 4, topK.coverages[slot][pixel], true);
-        view.setFloat32(byteOffset + 8, topK.qualities[slot][pixel], true);
+        view.setFloat32(byteOffset + 4, Math.fround(topK.coverages[slot][pixel] / 255), true);
+        view.setFloat32(byteOffset + 8, readStoredQuality(topK, slot, pixel), true);
         view.setFloat32(byteOffset + 12, SRGB_BYTE_TO_LINEAR[packedColor & 255], true);
         view.setFloat32(byteOffset + 16, SRGB_BYTE_TO_LINEAR[(packedColor >>> 8) & 255], true);
         view.setFloat32(byteOffset + 20, SRGB_BYTE_TO_LINEAR[(packedColor >>> 16) & 255], true);
       }
     }
     const outputBytes = count * 4;
-    const inputBuffer = device.createBuffer({ size: packed.byteLength, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST });
-    const outputBuffer = device.createBuffer({ size: outputBytes, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC });
-    const readback = device.createBuffer({ size: outputBytes, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST });
-    const paramsBuffer = device.createBuffer({ size: 16, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST });
+    const inputBuffer = device.createBuffer({
+      size: packed.byteLength,
+      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    });
+    const outputBuffer = device.createBuffer({
+      size: outputBytes,
+      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
+    });
+    const readback = device.createBuffer({
+      size: outputBytes,
+      usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+    });
+    const paramsBuffer = device.createBuffer({
+      size: 16,
+      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+    });
     try {
       device.queue.writeBuffer(inputBuffer, 0, packed);
       const params = new Uint32Array(4);
@@ -510,7 +618,10 @@ async function resolveGpu(topK: TopK, preserveAlpha: boolean) {
       finalOutput.set(new Uint8ClampedArray(readback.getMappedRange()), first * 4);
       readback.unmap();
     } finally {
-      inputBuffer.destroy(); outputBuffer.destroy(); readback.destroy(); paramsBuffer.destroy();
+      inputBuffer.destroy();
+      outputBuffer.destroy();
+      readback.destroy();
+      paramsBuffer.destroy();
     }
     await yieldWorkerBudget();
   }
@@ -548,53 +659,51 @@ function verify(cpu: Uint8ClampedArray, gpu: Uint8ClampedArray): Verification {
   };
 }
 
-async function run(request: BlendRequest) {
-  interactive = request.interactive;
-  const startedAt = performance.now();
-  const topK = createTopK(request.resolution * request.resolution);
-  const accumulateStartedAt = performance.now();
-  await accumulate(topK, request);
-  const accumulateMs = performance.now() - accumulateStartedAt;
+async function finishBlend(
+  topK: TopK,
+  request: StreamConfig & { overlays: BlendRequest['overlays'] },
+  startedAt: number,
+  accumulateMs: number,
+) {
   const resolveStartedAt = performance.now();
   const approvedForMode = request.preserveCoverageConfidenceAlpha
     ? gpuQualityApproval.confidenceAlpha
     : gpuQualityApproval.opaque;
-  const needsCpuReference =
-    request.forceCpuOutput ||
-    request.verify ||
-    !approvedForMode;
+  const needsCpuReference = request.forceCpuOutput || request.verify || !approvedForMode;
   let cpu = needsCpuReference
     ? await resolveCpu(topK, request.preserveCoverageConfidenceAlpha)
     : undefined;
   let backend: 'webgpu-worker' | 'cpu-worker' = 'cpu-worker';
   let output = cpu?.output;
   let verification: Verification | undefined;
-  try {
-    const gpu = await resolveGpu(topK, request.preserveCoverageConfidenceAlpha);
-    if (gpu) {
-      backend = 'webgpu-worker';
-      if (cpu) {
-        verification = verify(cpu.output, gpu);
-        const visuallyLossless =
-          verification.alphaByteMismatches === 0 &&
-          verification.maximumByteDelta <= MAX_VISUALLY_LOSSLESS_BYTE_DELTA &&
-          verification.mismatchRatio <= MAX_VISUALLY_LOSSLESS_MISMATCH_RATIO;
-        verification.acceptedGpuOutput = visuallyLossless && !request.forceCpuOutput;
-        verification.usedCpuOutput = !verification.acceptedGpuOutput;
-        if (visuallyLossless) {
-          if (request.preserveCoverageConfidenceAlpha) {
-            gpuQualityApproval.confidenceAlpha = true;
-          } else {
-            gpuQualityApproval.opaque = true;
+  if (!request.interactive) {
+    try {
+      const gpu = await resolveGpu(topK, request.preserveCoverageConfidenceAlpha);
+      if (gpu) {
+        backend = 'webgpu-worker';
+        if (cpu) {
+          verification = verify(cpu.output, gpu);
+          const visuallyLossless =
+            verification.alphaByteMismatches === 0 &&
+            verification.maximumByteDelta <= MAX_VISUALLY_LOSSLESS_BYTE_DELTA &&
+            verification.mismatchRatio <= MAX_VISUALLY_LOSSLESS_MISMATCH_RATIO;
+          verification.acceptedGpuOutput = visuallyLossless && !request.forceCpuOutput;
+          verification.usedCpuOutput = !verification.acceptedGpuOutput;
+          if (visuallyLossless) {
+            if (request.preserveCoverageConfidenceAlpha) {
+              gpuQualityApproval.confidenceAlpha = true;
+            } else {
+              gpuQualityApproval.opaque = true;
+            }
           }
+          output = verification.acceptedGpuOutput ? gpu : cpu.output;
+        } else {
+          output = gpu;
         }
-        output = verification.acceptedGpuOutput ? gpu : cpu.output;
-      } else {
-        output = gpu;
       }
+    } catch {
+      devicePromise = undefined;
     }
-  } catch {
-    devicePromise = undefined;
   }
   if (!output) {
     cpu = await resolveCpu(topK, request.preserveCoverageConfidenceAlpha);
@@ -610,6 +719,7 @@ async function run(request: BlendRequest) {
     renderedColorMask,
     request.overlays,
   );
+  await clearWeakTransparentOutput(output, topK.coverage, renderedColorMask);
   const overlayMs = performance.now() - overlayStartedAt;
   return {
     output,
@@ -625,17 +735,83 @@ async function run(request: BlendRequest) {
   };
 }
 
+async function run(request: BlendRequest) {
+  interactive = request.interactive;
+  const startedAt = performance.now();
+  const topK = createTopK(request.resolution * request.resolution);
+  const accumulateStartedAt = performance.now();
+  await accumulate(topK, request);
+  const accumulateMs = performance.now() - accumulateStartedAt;
+  return finishBlend(topK, request, startedAt, accumulateMs);
+}
+
 scope.onmessage = (event) => {
   const request = event.data;
   if (request.type === 'budget') {
     interactive = request.interactive;
     return;
   }
+  if (request.type === 'stream-abort') {
+    streamSessions.delete(request.sessionId);
+    return;
+  }
   workQueue = workQueue.then(async () => {
     try {
-      const result = await run(request);
+      if (request.type === 'stream-start') {
+        interactive = request.interactive;
+        streamSessions.set(request.sessionId, {
+          resolution: request.resolution,
+          preserveCoverageConfidenceAlpha: request.preserveCoverageConfidenceAlpha,
+          verify: request.verify,
+          forceCpuOutput: request.forceCpuOutput,
+          interactive: request.interactive,
+          topK: createTopK(request.resolution * request.resolution),
+          overlays: [],
+          startedAt: performance.now(),
+          accumulateMs: 0,
+        });
+        scope.postMessage({ type: 'ack', id: request.id });
+        return;
+      }
+      if (request.type === 'stream-add') {
+        const session = streamSessions.get(request.sessionId);
+        if (!session) throw new Error('Quality blend stream is no longer available.');
+        const startedAt = performance.now();
+        if (request.layer.overlayMode) {
+          session.overlays.push({
+            color: request.layer.color,
+            quality: request.layer.quality,
+            overlayMode: request.layer.overlayMode,
+            renderedColor: request.layer.renderedColor === true,
+          });
+        } else {
+          await accumulateLayer(
+            session.topK,
+            request.layer,
+            session.resolution * session.resolution,
+          );
+          session.accumulateMs += performance.now() - startedAt;
+        }
+        scope.postMessage({ type: 'ack', id: request.id });
+        return;
+      }
+      let result: Awaited<ReturnType<typeof run>>;
+      if (request.type === 'stream-finish') {
+        const session = streamSessions.get(request.sessionId);
+        if (!session) throw new Error('Quality blend stream is no longer available.');
+        streamSessions.delete(request.sessionId);
+        result = await finishBlend(
+          session.topK,
+          { ...session, overlays: session.overlays },
+          session.startedAt,
+          session.accumulateMs,
+        );
+      } else {
+        result = await run(request);
+      }
       const response: WorkerResponse = {
-        type: 'result', id: request.id,
+        type: 'result',
+        id: request.id,
         output: result.output.buffer as ArrayBuffer,
         coverage: result.coverage.buffer as ArrayBuffer,
         renderedColorMask: result.renderedColorMask.buffer as ArrayBuffer,
@@ -649,7 +825,11 @@ scope.onmessage = (event) => {
       };
       scope.postMessage(response, [response.output, response.coverage, response.renderedColorMask]);
     } catch (error) {
-      scope.postMessage({ type: 'error', id: request.id, message: error instanceof Error ? error.message : String(error) });
+      scope.postMessage({
+        type: 'error',
+        id: request.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 };
