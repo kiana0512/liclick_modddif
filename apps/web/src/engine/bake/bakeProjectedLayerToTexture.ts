@@ -35,7 +35,10 @@ import type {
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import {
+  isViewportInteractionBusy,
+  waitForViewportInteractionIdle,
+} from '@/engine/viewport/viewportInteractionState';
 import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
@@ -1066,6 +1069,7 @@ export async function bakeVisibleProjectedLayersToTexture(
   // surfaces that were not visible in the projected preview.
   const runtimeDepthStartedAt = performance.now();
   markUvBakePerformancePhase('runtime-depth');
+  await waitForViewportInteractionIdle();
   if (viewportRenderer && !input.debugIgnoreDepth) {
     const runtimeVisibilityRenderer = getIsolatedUvBakeRenderer(viewportRenderer);
     const currentProject = useProjectStore.getState().getCurrentProject();
@@ -1102,6 +1106,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           captureObjectMatrixWorld: layer.objectMatrixWorld,
           width: Math.max(1, Math.min(2048, capture?.width ?? 1024)),
           height: Math.max(1, Math.min(2048, capture?.height ?? 1024)),
+          waitForViewportIdle: () => waitForViewportInteractionIdle(),
         });
         return {
           ...layer,

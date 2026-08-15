@@ -91,7 +91,10 @@ import {
 } from '@/services/nativePerformanceClient';
 import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
-import { isViewportInteractionBusy } from './viewportInteractionState';
+import {
+  isViewportInteractionBusy,
+  markViewportInteractionEnd,
+} from './viewportInteractionState';
 
 type SurfacePaintTarget = {
   objectId: string;
@@ -224,6 +227,7 @@ const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1_000_000_000;
 const LOCAL_REPAINT_OVERLAY_RENDER_ORDER = INPAINT_MASK_OVERLAY_RENDER_ORDER - 1;
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
+const gpuFramePhaseTimeSamples: Array<{ durationMs: number; phase?: string }> = [];
 const automaticFadeBrushStampCache = new Map<number, HTMLCanvasElement>();
 const paintBrushStampCache = new Map<string, HTMLCanvasElement>();
 let surfacePaintPerfFrame: number | undefined;
@@ -420,6 +424,7 @@ function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
 
     viewportTelemetry.gpuTimerSupported = true;
     const pendingQueries: WebGLQuery[] = [];
+    const queryPhases = new WeakMap<WebGLQuery, string | undefined>();
     const originalRender = gl.render;
     const pollQueries = () => {
       if (context.getParameter(extension.GPU_DISJOINT_EXT)) {
@@ -434,8 +439,11 @@ function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
         const elapsedNanoseconds = Number(context.getQueryParameter(query, context.QUERY_RESULT));
         context.deleteQuery(query);
         if (!Number.isFinite(elapsedNanoseconds)) continue;
-        gpuFrameTimeSamples.push(elapsedNanoseconds / 1_000_000);
+        const durationMs = elapsedNanoseconds / 1_000_000;
+        gpuFrameTimeSamples.push(durationMs);
+        gpuFramePhaseTimeSamples.push({ durationMs, phase: queryPhases.get(query) });
         if (gpuFrameTimeSamples.length > 240) gpuFrameTimeSamples.shift();
+        if (gpuFramePhaseTimeSamples.length > 240) gpuFramePhaseTimeSamples.shift();
       }
     };
     const wrappedRender: typeof gl.render = (scene, camera) => {
@@ -445,6 +453,14 @@ function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
       if (query) {
         try {
           context.beginQuery(extension.TIME_ELAPSED_EXT, query);
+          queryPhases.set(
+            query,
+            document.body.dataset.perfLayerTogglePhase ??
+              document.body.dataset.perfUvBakePhase ??
+              document.body.dataset.perfContentAwareRepairPhase ??
+              document.body.dataset.perfViewportStressPhase ??
+              document.body.dataset.perfScenarioPhase,
+          );
           queryStarted = true;
         } catch {
           context.deleteQuery(query);
@@ -649,6 +665,9 @@ type UvMergeBenchmarkResult = {
   protectedFrameP95: number;
   protectedFrameMax: number;
   protectedDroppedFrames: number;
+  fullFrameP95?: number;
+  fullFrameMax?: number;
+  fullDroppedFrames?: number;
   phaseFrameMax: Record<string, number>;
 };
 
@@ -685,6 +704,9 @@ type ContentAwareRepairBenchmarkResult = {
   frameP95: number;
   frameMax: number;
   droppedFrames: number;
+  protectedFrameP95: number;
+  protectedFrameMax: number;
+  protectedDroppedFrames: number;
   phaseFrameMax: Record<string, number>;
   projectedMaterialRebuilds: number;
   underlaySafe: boolean;
@@ -1050,6 +1072,16 @@ function PerformanceTestHud() {
   const layerToggleScenarioRunningRef = useRef(false);
   const frameSamplesRef = useRef<PerformanceFrameSample[]>([]);
   const longTaskSamplesRef = useRef<PerformanceLongTaskSample[]>([]);
+  const longAnimationFrameSamplesRef = useRef<
+    Array<{
+      durationMs: number;
+      blockingDurationMs: number;
+      renderDurationMs: number;
+      styleAndLayoutDurationMs: number;
+      phase?: string;
+      scripts: Array<{ durationMs: number; invoker?: string; sourceFunctionName?: string }>;
+    }>
+  >([]);
   const nativeSamplesRef = useRef<NativePerformanceSnapshot[]>([]);
   const samplerOverheadSamplesRef = useRef<PerformanceLongTaskSample[]>([]);
   const recordingStartedAtRef = useRef(Date.now());
@@ -1277,6 +1309,7 @@ function PerformanceTestHud() {
                   durationMs: entry.duration,
                   phase:
                     document.body.dataset.perfLocalRepaintPhase ??
+                    document.body.dataset.perfLayerTogglePhase ??
                     document.body.dataset.perfUvBakePhase ??
                     document.body.dataset.perfContentAwareRepairPhase ??
                     document.body.dataset.perfViewportStressPhase ??
@@ -1300,6 +1333,53 @@ function PerformanceTestHud() {
         observer.observe({ entryTypes: ['longtask'] });
       }
     }
+    const longAnimationFrameObserver =
+      typeof PerformanceObserver !== 'undefined' &&
+      PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')
+        ? new PerformanceObserver((list) => {
+            for (const rawEntry of list.getEntries()) {
+              const entry = rawEntry as PerformanceEntry & {
+                blockingDuration?: number;
+                renderStart?: number;
+                styleAndLayoutStart?: number;
+                scripts?: Array<{
+                  duration?: number;
+                  invoker?: string;
+                  sourceFunctionName?: string;
+                }>;
+              };
+              if (entry.duration <= 20) continue;
+              longAnimationFrameSamplesRef.current.push({
+                durationMs: entry.duration,
+                blockingDurationMs: entry.blockingDuration ?? 0,
+                renderDurationMs:
+                  entry.renderStart !== undefined
+                    ? entry.startTime + entry.duration - entry.renderStart
+                    : 0,
+                styleAndLayoutDurationMs:
+                  entry.styleAndLayoutStart !== undefined
+                    ? entry.startTime + entry.duration - entry.styleAndLayoutStart
+                    : 0,
+                phase:
+                  document.body.dataset.perfLocalRepaintPhase ??
+                  document.body.dataset.perfLayerTogglePhase ??
+                  document.body.dataset.perfUvBakePhase ??
+                  document.body.dataset.perfContentAwareRepairPhase ??
+                  document.body.dataset.perfViewportStressPhase ??
+                  document.body.dataset.perfScenarioPhase,
+                scripts: (entry.scripts ?? []).slice(0, 8).map((script) => ({
+                  durationMs: script.duration ?? 0,
+                  invoker: script.invoker,
+                  sourceFunctionName: script.sourceFunctionName,
+                })),
+              });
+              if (longAnimationFrameSamplesRef.current.length > 120) {
+                longAnimationFrameSamplesRef.current.splice(0, 20);
+              }
+            }
+          })
+        : undefined;
+    longAnimationFrameObserver?.observe({ type: 'long-animation-frame', buffered: true });
 
     const sampleFrame = (now: number) => {
       const duration = now - previousFrameAt;
@@ -1314,6 +1394,7 @@ function PerformanceTestHud() {
             durationMs: duration,
             phase:
               document.body.dataset.perfLocalRepaintPhase ??
+              document.body.dataset.perfLayerTogglePhase ??
               document.body.dataset.perfUvBakePhase ??
               document.body.dataset.perfContentAwareRepairPhase ??
               document.body.dataset.perfViewportStressPhase ??
@@ -1327,6 +1408,7 @@ function PerformanceTestHud() {
           durationMs: duration,
           phase:
             document.body.dataset.perfLocalRepaintPhase ??
+            document.body.dataset.perfLayerTogglePhase ??
             document.body.dataset.perfUvBakePhase ??
             document.body.dataset.perfContentAwareRepairPhase ??
             document.body.dataset.perfViewportStressPhase ??
@@ -1399,6 +1481,7 @@ function PerformanceTestHud() {
       window.cancelAnimationFrame(animationFrame);
       window.clearInterval(updateTimer);
       observer?.disconnect();
+      longAnimationFrameObserver?.disconnect();
       setPerformanceTimelineEnabled(false);
     };
   }, []);
@@ -1407,6 +1490,21 @@ function PerformanceTestHud() {
     let disposed = false;
     let activeController: AbortController | undefined;
     const sampleNative = async () => {
+      // Host telemetry is diagnostic-only. Do not even issue/parse its JSON
+      // while a viewport gesture or benchmark owns the frame budget: checking
+      // only after the request completed let the observer itself create random
+      // missed-vsync frames inside otherwise uniform layer-toggle scenarios.
+      if (
+        isViewportInteractionBusy(500) ||
+        document.body.dataset.perfAutoOrbit === '1' ||
+        document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+        document.body.dataset.perfScenarioMeasuring === '1' ||
+        document.body.dataset.perfViewportStressMeasuring === '1' ||
+        document.body.dataset.perfLocalRepaintMeasuring === '1' ||
+        document.body.dataset.perfUvMergeMeasuring === '1' ||
+        document.body.dataset.perfContentAwareRepairMeasuring === '1'
+      )
+        return;
       activeController?.abort();
       activeController = new AbortController();
       try {
@@ -1414,17 +1512,6 @@ function PerformanceTestHud() {
         if (disposed) return;
         nativeSamplesRef.current.push(snapshot);
         if (nativeSamplesRef.current.length > 600) nativeSamplesRef.current.splice(0, 100);
-        if (
-          isViewportInteractionBusy(500) ||
-          document.body.dataset.perfAutoOrbit === '1' ||
-          document.body.dataset.perfSimulatedViewportInteraction === '1' ||
-          document.body.dataset.perfScenarioMeasuring === '1' ||
-          document.body.dataset.perfViewportStressMeasuring === '1' ||
-          document.body.dataset.perfLocalRepaintMeasuring === '1' ||
-          document.body.dataset.perfUvMergeMeasuring === '1' ||
-          document.body.dataset.perfContentAwareRepairMeasuring === '1'
-        )
-          return;
         setNativeSnapshot(snapshot);
         setCpuHistory((values) => [...values.slice(-119), snapshot.cpu.overallUtilizationPercent]);
         setGpuHistory((values) => [
@@ -1453,6 +1540,8 @@ function PerformanceTestHud() {
     delete document.body.dataset.perfWebGpuCompositeMain;
     frameSamplesRef.current = [];
     longTaskSamplesRef.current = [];
+    longAnimationFrameSamplesRef.current = [];
+    gpuFramePhaseTimeSamples.length = 0;
     nativeSamplesRef.current = [];
     samplerOverheadSamplesRef.current = [];
     recordingStartedAtRef.current = Date.now();
@@ -1912,6 +2001,7 @@ function PerformanceTestHud() {
       document.body.dataset.perfScenarioMeasuring = '1';
       setLayerToggleScenario({ running: true, scenario });
       try {
+        document.body.dataset.perfLayerTogglePhase = `${scenario}-warmup`;
         useLayerStore.getState().setLayerVisibility(ids, false);
         if (uvTarget) useLayerStore.getState().setLayerVisibility([uvTarget.id], true);
         await waitForProjectedResidentReady();
@@ -1934,6 +2024,7 @@ function PerformanceTestHud() {
         clearReport(true);
         document.body.dataset.perfSimulatedViewportInteraction = '1';
         simulatedInteraction = true;
+        document.body.dataset.perfLayerTogglePhase = `${scenario}-protected-start`;
         const endScenario = startPerformanceSpan('layers', `real-4k-${scenario}-toggle-scenario`, {
           layerCount: ids.length,
           operations,
@@ -1951,20 +2042,38 @@ function PerformanceTestHud() {
             useLayerStore.getState().setLayerVisibility([uvTarget.id], true);
             await wait(intervalMs);
           } else {
-            for (const id of ids) {
+            for (const [index, id] of ids.entries()) {
+              document.body.dataset.perfLayerTogglePhase = `${scenario}-show-${index + 1}`;
               useLayerStore.getState().setLayerVisibility([id], true);
               await wait(intervalMs);
             }
-            for (const id of [...ids].reverse()) {
+            for (const [index, id] of [...ids].reverse().entries()) {
+              document.body.dataset.perfLayerTogglePhase = `${scenario}-hide-${ids.length - index}`;
               useLayerStore.getState().setLayerVisibility([id], false);
               await wait(intervalMs);
             }
           }
         }
+        document.body.dataset.perfLayerTogglePhase = `${scenario}-protected-settle`;
         await waitForFrame();
         await waitForFrame();
         await wait(700);
         const protectedSummary = summarizeFrames(frameSamplesRef.current);
+        const phaseFrameMax: Record<string, number> = {};
+        frameSamplesRef.current.forEach((sample) => {
+          const phase = sample.phase ?? 'unattributed';
+          phaseFrameMax[phase] = Math.max(phaseFrameMax[phase] ?? 0, sample.durationMs);
+        });
+        document.body.dataset.perfLayerTogglePhaseMax = JSON.stringify(phaseFrameMax);
+        document.body.dataset.perfLayerToggleLongAnimationFrames = JSON.stringify(
+          longAnimationFrameSamplesRef.current,
+        );
+        const gpuPhaseMax: Record<string, number> = {};
+        gpuFramePhaseTimeSamples.forEach((sample) => {
+          const phase = sample.phase ?? 'unattributed';
+          gpuPhaseMax[phase] = Math.max(gpuPhaseMax[phase] ?? 0, sample.durationMs);
+        });
+        document.body.dataset.perfLayerToggleGpuPhaseMax = JSON.stringify(gpuPhaseMax);
         markPerformanceEvent('interaction', `real-4k-${scenario}-protected-window`, {
           frameP95: protectedSummary.p95,
           frameMax: protectedSummary.max,
@@ -1975,6 +2084,7 @@ function PerformanceTestHud() {
         const publishFrameStart = frameSamplesRef.current.length;
         delete document.body.dataset.perfSimulatedViewportInteraction;
         simulatedInteraction = false;
+        document.body.dataset.perfLayerTogglePhase = `${scenario}-post-release`;
         markPerformanceEvent('interaction', `real-4k-${scenario}-simulated-pointer-release`);
         await wait(2_000);
         const publishSummary = summarizeFrames(frameSamplesRef.current.slice(publishFrameStart));
@@ -2002,6 +2112,7 @@ function PerformanceTestHud() {
         throw error;
       } finally {
         if (simulatedInteraction) delete document.body.dataset.perfSimulatedViewportInteraction;
+        delete document.body.dataset.perfLayerTogglePhase;
         useLayerStore.getState().setLayers(originalLayers);
         if (originalActiveLayerId) useLayerStore.getState().setActiveLayer(originalActiveLayerId);
         layerToggleScenarioRunningRef.current = false;
@@ -2045,22 +2156,73 @@ function PerformanceTestHud() {
     document.body.dataset.perfAutoOrbit = '1';
     const finishScenario = startPerformanceSpan('uv-merge', 'real-4k-merge-protected-scenario');
     try {
-      const mergeResult = (await target.LiclickPerfUvMerge.run()) as Omit<
+      // Hold a real continuous-orbit window first. Production baking now
+      // pauses at exact state boundaries while interaction is busy, then
+      // resumes at full quality/speed after release. Measuring the whole
+      // background completion interval as "interaction" made one compositor
+      // miss look like input latency even though the user had already stopped.
+      document.body.dataset.perfUvBakePhase = 's4-interaction-hold';
+      let mergeSettled = false;
+      const mergePromise = target.LiclickPerfUvMerge.run().finally(() => {
+        mergeSettled = true;
+      });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 3_000));
+      const protectedFrames = [...frameSamplesRef.current];
+      delete document.body.dataset.perfSimulatedViewportInteraction;
+      delete document.body.dataset.perfAutoOrbit;
+      markViewportInteractionEnd();
+      document.body.dataset.perfUvBakePhase = 's4-background-release';
+      // Give the full-resolution job time to enter its expensive GPU/readback/
+      // upload stages, then interrupt it with a second real orbit window. This
+      // catches resume-time contention that a single start-of-job hold misses.
+      await Promise.race([
+        mergePromise.catch(() => undefined),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 8_000)),
+      ]);
+      if (!mergeSettled) {
+        document.body.dataset.perfUvBakePhase = 's4-midflight-interaction-hold';
+        document.body.dataset.perfSimulatedViewportInteraction = '1';
+        document.body.dataset.perfAutoOrbit = '1';
+        const secondWindowStartsAt = frameSamplesRef.current.length;
+        const secondWindowEndsAt = performance.now() + 3_000;
+        while (performance.now() < secondWindowEndsAt) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+        protectedFrames.push(...frameSamplesRef.current.slice(secondWindowStartsAt));
+        delete document.body.dataset.perfSimulatedViewportInteraction;
+        delete document.body.dataset.perfAutoOrbit;
+        markViewportInteractionEnd();
+        document.body.dataset.perfUvBakePhase = 's4-background-resume';
+      }
+      const mergeResult = (await mergePromise) as Omit<
         UvMergeBenchmarkResult,
         'protectedFrameP95' | 'protectedFrameMax' | 'protectedDroppedFrames'
       >;
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      const protectedSummary = summarizeFrames(frameSamplesRef.current);
+      const protectedSummary = summarizeFrames(protectedFrames);
+      const fullSummary = summarizeFrames(frameSamplesRef.current);
       const phaseFrameMax: Record<string, number> = {};
       frameSamplesRef.current.forEach((sample) => {
         const phase = sample.phase ?? 'unattributed';
         phaseFrameMax[phase] = Math.max(phaseFrameMax[phase] ?? 0, sample.durationMs);
       });
+      const gpuPhaseMax: Record<string, number> = {};
+      gpuFramePhaseTimeSamples.forEach((sample) => {
+        const phase = sample.phase ?? 'unattributed';
+        gpuPhaseMax[phase] = Math.max(gpuPhaseMax[phase] ?? 0, sample.durationMs);
+      });
+      document.body.dataset.perfUvMergeGpuPhaseMax = JSON.stringify(gpuPhaseMax);
+      document.body.dataset.perfUvMergeLongAnimationFrames = JSON.stringify(
+        longAnimationFrameSamplesRef.current,
+      );
       const result: UvMergeBenchmarkResult = {
         ...mergeResult,
         protectedFrameP95: protectedSummary.p95,
         protectedFrameMax: protectedSummary.max,
         protectedDroppedFrames: protectedSummary.dropped,
+        fullFrameP95: fullSummary.p95,
+        fullFrameMax: fullSummary.max,
+        fullDroppedFrames: fullSummary.dropped,
         phaseFrameMax,
       };
       setUvMergeBenchmarkResult(result);
@@ -2235,9 +2397,16 @@ function PerformanceTestHud() {
       clearReport(true);
       document.body.dataset.perfSuppressProjectLayerSync = '1';
       document.body.dataset.perfSimulatedViewportInteraction = '1';
+      document.body.dataset.perfAutoOrbit = '1';
       document.body.dataset.perfContentAwareRepairMeasuring = '1';
       try {
         useLayerStore.getState().setLayers(benchmarkLayers);
+        await waitForFrame();
+        await waitForFrame();
+        // Hiding an existing content-repair underlay can retire a 4K preview
+        // texture/material asynchronously. Drain that benchmark-only setup
+        // before attributing frames to the new repair invocation.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 250));
         await waitForFrame();
         await waitForFrame();
         // Do not charge the benchmark for the HUD reset or for changing the
@@ -2246,7 +2415,71 @@ function PerformanceTestHud() {
         const projectedBuildStart = Number(
           document.body.dataset.projectedMaterialBuildRevision ?? '0',
         );
-        const apiResult = await target.LiclickPerfContentAwareRepair.run(selectedObjectId);
+        // Start the real repair while the model is rotating. Production work is
+        // expected to stop at its next safe boundary, leaving the viewport an
+        // uncontested 3-second interaction window. Then release the synthetic
+        // input and let the exact full-resolution job resume to completion.
+        let repairSettled = false;
+        const pendingRepair = target.LiclickPerfContentAwareRepair
+          .run(selectedObjectId)
+          .then(
+            (value) => ({ ok: true as const, value }),
+            (error: unknown) => ({ ok: false as const, error }),
+          )
+          .finally(() => {
+            repairSettled = true;
+          });
+        const protectedUntil = performance.now() + 3_000;
+        while (performance.now() < protectedUntil) await waitForFrame();
+        const protectedFrames = [...frameSamplesRef.current];
+        delete document.body.dataset.perfSimulatedViewportInteraction;
+        delete document.body.dataset.perfAutoOrbit;
+        markViewportInteractionEnd();
+        const waitForRepairPhase = async (
+          matches: () => boolean,
+          maximumWaitMs: number,
+        ) => {
+          const deadline = performance.now() + maximumWaitMs;
+          while (!repairSettled && performance.now() < deadline && !matches()) {
+            await waitForFrame();
+          }
+          return !repairSettled && matches();
+        };
+        const runMidflightInteractionWindow = async (phase: string) => {
+          document.body.dataset.perfContentAwareRepairPhase = phase;
+          document.body.dataset.perfSimulatedViewportInteraction = '1';
+          document.body.dataset.perfAutoOrbit = '1';
+          const windowStartsAt = frameSamplesRef.current.length;
+          const windowEndsAt = performance.now() + 2_000;
+          while (performance.now() < windowEndsAt) await waitForFrame();
+          protectedFrames.push(...frameSamplesRef.current.slice(windowStartsAt));
+          delete document.body.dataset.perfSimulatedViewportInteraction;
+          delete document.body.dataset.perfAutoOrbit;
+          markViewportInteractionEnd();
+        };
+        if (
+          await waitForRepairPhase(
+            () => (document.body.dataset.perfUvBakePhase ?? '').startsWith('runtime-depth'),
+            10_000,
+          )
+        ) {
+          await runMidflightInteractionWindow('s9-runtime-depth-interaction-hold');
+        }
+        if (
+          await waitForRepairPhase(
+            () =>
+              (document.body.dataset.perfContentAwareRepairPhase ?? '').startsWith(
+                's9-topology-',
+              ),
+            60_000,
+          )
+        ) {
+          await runMidflightInteractionWindow('s9-topology-interaction-hold');
+        }
+        const protectedFrameSummary = summarizeFrames(protectedFrames);
+        const repairOutcome = await pendingRepair;
+        if (!repairOutcome.ok) throw repairOutcome.error;
+        const apiResult = repairOutcome.value;
         const terminal = apiResult.terminal;
         const status = terminal.status;
         if (status !== 'complete' && status !== 'no-gaps') {
@@ -2319,6 +2552,9 @@ function PerformanceTestHud() {
           frameP95: frameSummary.p95,
           frameMax: frameSummary.max,
           droppedFrames: frameSummary.dropped,
+          protectedFrameP95: protectedFrameSummary.p95,
+          protectedFrameMax: protectedFrameSummary.max,
+          protectedDroppedFrames: protectedFrameSummary.dropped,
           phaseFrameMax,
           projectedMaterialRebuilds: Math.max(0, projectedBuildEnd - projectedBuildStart),
           underlaySafe: underlayState.safe === true,
@@ -2346,6 +2582,7 @@ function PerformanceTestHud() {
         }
         delete document.body.dataset.perfSuppressProjectLayerSync;
         delete document.body.dataset.perfSimulatedViewportInteraction;
+        delete document.body.dataset.perfAutoOrbit;
         delete document.body.dataset.perfContentAwareRepairMeasuring;
         delete document.body.dataset.perfContentAwareRepairPhase;
         setContentAwareRepairBenchmarkRunning(false);
@@ -2434,7 +2671,13 @@ function PerformanceTestHud() {
       }
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      const summary = summarizeFrames(scenarioFrameSamples);
+      // Keep harness-settle samples in the phase map for diagnostics, but do
+      // not report a deferred browser/GPU preflight task as a real mode or
+      // layer-toggle frame. Every user-facing operation has its own S7 phase.
+      const operationFrameSamples = scenarioFrameSamples.filter(
+        (sample) => sample.phase !== 's7-harness-settle',
+      );
+      const summary = summarizeFrames(operationFrameSamples);
       const phaseFrameMax: Record<string, number> = {};
       scenarioFrameSamples.forEach((sample) => {
         const phase = sample.phase ?? 'unattributed';
@@ -2819,7 +3062,16 @@ function PerformanceTestHud() {
           }
         />
         <PerformanceMetric
-          label="S9 P95 / 最大帧 / 掉帧"
+          label="S9 旋转保护 P95 / 最大帧 / 掉帧"
+          value={
+            contentAwareRepairBenchmarkResult
+              ? `${contentAwareRepairBenchmarkResult.protectedFrameP95.toFixed(1)} / ${contentAwareRepairBenchmarkResult.protectedFrameMax.toFixed(1)}ms / ${contentAwareRepairBenchmarkResult.protectedDroppedFrames.toFixed(0)}%`
+              : '等待压测'
+          }
+          tone={metricTone(contentAwareRepairBenchmarkResult?.protectedFrameMax ?? 0, 20, 33)}
+        />
+        <PerformanceMetric
+          label="S9 全流程 P95 / 最大帧 / 掉帧"
           value={
             contentAwareRepairBenchmarkResult
               ? `${contentAwareRepairBenchmarkResult.frameP95.toFixed(1)} / ${contentAwareRepairBenchmarkResult.frameMax.toFixed(1)}ms / ${contentAwareRepairBenchmarkResult.droppedFrames.toFixed(0)}%`
@@ -3139,6 +3391,21 @@ function PerformanceTestHud() {
               : '等待压测'
           }
           tone={metricTone(uvMergeBenchmarkResult?.protectedFrameMax ?? 0, 33, 80)}
+        />
+        <PerformanceMetric
+          label="S4 全流程 P95 / 最大 / 掉帧"
+          value={
+            uvMergeBenchmarkResult
+              ? `${(uvMergeBenchmarkResult.fullFrameP95 ?? uvMergeBenchmarkResult.protectedFrameP95).toFixed(1)} / ${(uvMergeBenchmarkResult.fullFrameMax ?? uvMergeBenchmarkResult.protectedFrameMax).toFixed(1)}ms / ${(uvMergeBenchmarkResult.fullDroppedFrames ?? uvMergeBenchmarkResult.protectedDroppedFrames).toFixed(0)}%`
+              : '等待压测'
+          }
+          tone={metricTone(
+            uvMergeBenchmarkResult?.fullFrameMax ??
+              uvMergeBenchmarkResult?.protectedFrameMax ??
+              0,
+            20,
+            33,
+          )}
         />
         <PerformanceMetric
           label="S4 GPU / 读回 / 编码"
@@ -6115,6 +6382,13 @@ function SurfacePaintOverlay() {
         { layerCount: targetIds.length },
       );
       try {
+        // The resident-stack preflight above may finish a deferred browser/GPU
+        // task after the isolated sampler has started. Give that harness-only
+        // completion its own phase and drain it before attributing frames to a
+        // real mode, eye-toggle or orbit operation.
+        document.body.dataset.perfViewportStressPhase = 's7-harness-settle';
+        await waitForFrame();
+        await waitForFrame();
         for (let cycle = 0; cycle < 2; cycle += 1) {
           for (const mode of modes) {
             document.body.dataset.perfViewportStressPhase = `s7-${mode}-mode`;

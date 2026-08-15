@@ -4,7 +4,10 @@ import { collectUvSeamPairs, type UvSeamEdgeRecord } from './uvSeamReconciliatio
 import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import {
+  isViewportInteractionBusy,
+  waitForViewportInteractionIdle,
+} from '@/engine/viewport/viewportInteractionState';
 import {
   loadPreviewTexture,
   residentPreviewTextureCache,
@@ -1386,25 +1389,21 @@ function runGpuPostprocess(input: {
   return { target: current, ownedTargets };
 }
 
-function waitForSharedRendererBakeSlot() {
-  if (
-    !isViewportInteractionBusy() &&
-    (typeof document === 'undefined' ||
-      document.body.dataset.perfSimulatedViewportInteraction !== '1')
-  ) {
-    return Promise.resolve();
-  }
-  // R3F owns this WebGL context. During an active drag, allow its onscreen
-  // frame to submit before issuing the next offscreen 4K bake pass.
-  return new Promise<void>((resolve) =>
-    window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-  );
+async function waitForSharedRendererBakeSlot() {
+  // A background 4K pass has no deadline. Preserve its exact state and stop at
+  // this boundary until camera input is quiet; trying to interleave detached
+  // WebGL contexts still produced compositor-only missed vsyncs even when JS
+  // and the visible GPU pass were both below 4ms.
+  await waitForViewportInteractionIdle();
 }
 
 // Four MiB PBO stripes keep both readPixels submission and getBufferSubData
 // below the viewport frame budget under simultaneous 4K baking. Pixel bytes
-// and their order are unchanged; only transfer scheduling is finer grained.
+// and their order are unchanged. Two MiB doubled the number of presentation
+// fences without reducing the measured copy peak below the frame budget.
 const GPU_READBACK_STRIPE_BYTES = 4 * 1024 * 1024;
+const INTERACTIVE_GPU_WORK_BUDGET_MS = 4;
+const INTERACTIVE_READBACK_SUBMITS_PER_FRAME = 1;
 
 type GpuReadbackBufferPool = {
   buffers: WebGLBuffer[];
@@ -1462,6 +1461,7 @@ function getGpuReadbackBuffers(gl: WebGL2RenderingContext, count: number, bytesP
  */
 async function readRenderTargetPixelsPipelined(
   renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
   resolution: number,
   rowsPerStripe: number,
 ) {
@@ -1478,9 +1478,15 @@ async function readRenderTargetPixelsPipelined(
   const maximumStripeBytes = resolution * rowsPerStripe * 4;
   const buffers = getGpuReadbackBuffers(gl, stripeCount, maximumStripeBytes);
   const fences: WebGLSync[] = [];
+  let stateBeforeSubmission = captureRendererState(renderer);
+  let targetIsBound = true;
+  renderer.setRenderTarget(target);
 
   try {
+    let submitBudgetStartedAt = performance.now();
+    let submitsSincePresentation = 0;
     for (let stripeIndex = 0; stripeIndex < stripeCount; stripeIndex += 1) {
+      await waitForViewportInteractionIdle();
       const y = stripeIndex * rowsPerStripe;
       const rowCount = Math.min(rowsPerStripe, resolution - y);
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffers[stripeIndex]);
@@ -1489,22 +1495,43 @@ async function readRenderTargetPixelsPipelined(
       const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
       if (!fence) throw new Error('Unable to create GPU UV readback fence.');
       fences.push(fence);
-      if (isGpuUvBakeInteractionProtected() && stripeIndex + 1 < stripeCount) {
+      submitsSincePresentation += 1;
+      if (
+        isGpuUvBakeInteractionProtected() &&
+        stripeIndex + 1 < stripeCount &&
+        (submitsSincePresentation >= INTERACTIVE_READBACK_SUBMITS_PER_FRAME ||
+          performance.now() - submitBudgetStartedAt >= INTERACTIVE_GPU_WORK_BUDGET_MS)
+      ) {
         markReadbackPhase('pbo-submit-yield');
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
         gl.flush();
+        // The caller restores the viewport as soon as this async readback
+        // yields. Restore our own snapshot too, then explicitly rebind the
+        // offscreen target after presentation; otherwise resumed stripes read
+        // the visible framebuffer and silently corrupt the merged UV output.
+        restoreRendererState(renderer, stateBeforeSubmission);
+        targetIsBound = false;
         await new Promise<void>((resolve) =>
           window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
         );
+        stateBeforeSubmission = captureRendererState(renderer);
+        renderer.setRenderTarget(target);
+        targetIsBound = true;
+        submitBudgetStartedAt = performance.now();
+        submitsSincePresentation = 0;
       }
     }
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
     gl.flush();
+    restoreRendererState(renderer, stateBeforeSubmission);
+    targetIsBound = false;
 
     const pixels = acquireGpuReadbackPixels(resolution * resolution * 4);
     let maximumStripeMs = 0;
     const startedAt = performance.now();
+    let copyBudgetStartedAt = performance.now();
     for (let stripeIndex = 0; stripeIndex < stripeCount; stripeIndex += 1) {
+      await waitForViewportInteractionIdle();
       const stripeStartedAt = performance.now();
       markReadbackPhase('pbo-fence-wait');
       await waitForGpuFence(gl, fences[stripeIndex]);
@@ -1519,16 +1546,22 @@ async function readRenderTargetPixelsPipelined(
       if (typeof document !== 'undefined') {
         document.body.dataset.uvBakeReadbackCompletedStripes = String(stripeIndex + 1);
       }
-      if (stripeIndex + 1 < stripeCount) {
+      if (
+        isGpuUvBakeInteractionProtected() &&
+        stripeIndex + 1 < stripeCount &&
+        performance.now() - copyBudgetStartedAt >= INTERACTIVE_GPU_WORK_BUDGET_MS
+      ) {
         markReadbackPhase('pbo-copy-yield');
         await new Promise<void>((resolve) =>
           window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
         );
+        copyBudgetStartedAt = performance.now();
       }
     }
     return { pixels, maximumStripeMs, totalMs: performance.now() - startedAt };
   } finally {
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    if (targetIsBound) restoreRendererState(renderer, stateBeforeSubmission);
     fences.forEach((fence) => gl.deleteSync(fence));
   }
 }
@@ -1546,7 +1579,12 @@ async function readRenderTargetPixelsInStripes(
   let maximumStripeMs = 0;
   let pipelinedResult: Awaited<ReturnType<typeof readRenderTargetPixelsPipelined>>;
   try {
-    pipelinedResult = await readRenderTargetPixelsPipelined(renderer, resolution, rowsPerStripe);
+    pipelinedResult = await readRenderTargetPixelsPipelined(
+      renderer,
+      target,
+      resolution,
+      rowsPerStripe,
+    );
   } catch (error) {
     console.warn('[Liclick 3D Texture] Pipelined UV readback failed; using safe fallback.', error);
     pipelinedResult = undefined;
@@ -1734,7 +1772,7 @@ async function renderUvBakePass(
   maximumTileSize = 768,
 ) {
   const usesDetachedRenderer = !renderer.domElement.isConnected;
-  if (!isGpuUvBakeInteractionProtected() || resolution <= 2048 || !usesDetachedRenderer) {
+  if (resolution <= 2048 || !usesDetachedRenderer) {
     renderer.render(scene, camera);
     return;
   }
@@ -1743,12 +1781,10 @@ async function renderUvBakePass(
   // one bounded scissor tile per presentation opportunity. This produces the same
   // target pixels while preventing a monolithic 4K pass from occupying the
   // physical GPU across several onscreen frames.
-  // 768px keeps detached-renderer submissions below the presentation budget
-  // without changing target resolution, sampling, or a single output pixel.
-  // The larger 1K tile is faster, but repeated cold stress runs can overlap its
-  // release with the following underlay composite and cost one presentation
-  // interval. Keep the conservative tile because viewport interaction wins
-  // over background completion time.
+  // 768px keeps each detached GPU submission below the presentation budget.
+  // CPU wall time cannot estimate work queued in another WebGL context, so
+  // every tile yields to the visible compositor even when submission itself
+  // takes only microseconds. Resolution, sampling and pixels remain unchanged.
   const tileSize = maximumTileSize;
   renderer.setScissorTest(true);
   const tiles: Array<{ x: number; y: number; width: number; height: number }> = [];
@@ -1763,6 +1799,7 @@ async function renderUvBakePass(
     }
   }
   for (let index = 0; index < tiles.length; index += 1) {
+    await waitForViewportInteractionIdle();
     const tile = tiles[index];
     renderer.setScissor(tile.x, tile.y, tile.width, tile.height);
     renderer.render(scene, camera);
@@ -1785,7 +1822,7 @@ async function renderUvBakePass(
     } else {
       context.flush();
     }
-    if (index + 1 < tiles.length) {
+    if (index + 1 < tiles.length && isGpuUvBakeInteractionProtected()) {
       await new Promise<void>((resolve) =>
         window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
       );

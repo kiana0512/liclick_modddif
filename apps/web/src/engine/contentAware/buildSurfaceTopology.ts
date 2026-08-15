@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 
 export type ContentAwareTopologyPhase = 'analyze' | 'rasterize' | 'seams' | 'complete';
 
@@ -122,8 +123,19 @@ class CooperativeScheduler {
 
   async checkpoint(force = false) {
     throwIfAborted(this.signal);
-    if (!force && now() - this.lastYieldAt < this.intervalMs) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const interactionBusy = isViewportInteractionBusy();
+    const effectiveIntervalMs = interactionBusy ? Math.min(this.intervalMs, 4) : this.intervalMs;
+    if (!force && now() - this.lastYieldAt < effectiveIntervalMs) return;
+    await new Promise<void>((resolve) => {
+      if (interactionBusy && typeof window !== 'undefined') {
+        // A zero-delay timer can run again before Chromium paints. During a
+        // viewport gesture, cross an actual paint boundary so topology work can
+        // never consume the camera's next frame budget.
+        window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+        return;
+      }
+      setTimeout(resolve, 0);
+    });
     this.lastYieldAt = now();
     throwIfAborted(this.signal);
   }
@@ -255,9 +267,22 @@ function seamNormalsAreCompatible(
   );
 }
 
-function collectMeshSources(root: THREE.Object3D, includeInvisible: boolean) {
-  const sources: MeshTopologySource[] = [];
-  let triangleCount = 0;
+async function collectMeshSources(
+  root: THREE.Object3D,
+  includeInvisible: boolean,
+  scheduler: CooperativeScheduler,
+) {
+  const pendingSources: Array<
+    Omit<
+      MeshTopologySource,
+      | 'globalTriangleOffset'
+      | 'triangleMaterialIndices'
+      | 'triangleSurfaceIds'
+      | 'triangleComponentIds'
+      | 'triangleRegionIds'
+      | 'seamEdgePairs'
+    >
+  > = [];
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh) || (!includeInvisible && !object.visible)) return;
     const geometry = object.geometry;
@@ -267,7 +292,7 @@ function collectMeshSources(root: THREE.Object3D, includeInvisible: boolean) {
     const index = geometry.getIndex();
     const meshTriangleCount = Math.floor((index ? index.count : position.count) / 3);
     if (meshTriangleCount <= 0) return;
-    sources.push({
+    pendingSources.push({
       mesh: object,
       geometry,
       position,
@@ -275,15 +300,34 @@ function collectMeshSources(root: THREE.Object3D, includeInvisible: boolean) {
       normal: geometry.getAttribute('normal'),
       index,
       triangleCount: meshTriangleCount,
+    });
+  });
+  const sources: MeshTopologySource[] = [];
+  let triangleCount = 0;
+  const allocateAcrossInteractionFrames = isViewportInteractionBusy();
+  for (const source of pendingSources) {
+    const triangleMaterialIndices = createTriangleMaterialIndices(
+      source.geometry,
+      source.triangleCount,
+    );
+    await scheduler.checkpoint(allocateAcrossInteractionFrames);
+    const triangleSurfaceIds = new Uint32Array(source.triangleCount);
+    await scheduler.checkpoint(allocateAcrossInteractionFrames);
+    const triangleComponentIds = new Uint32Array(source.triangleCount);
+    await scheduler.checkpoint(allocateAcrossInteractionFrames);
+    const triangleRegionIds = new Uint32Array(source.triangleCount);
+    await scheduler.checkpoint(allocateAcrossInteractionFrames);
+    sources.push({
+      ...source,
       globalTriangleOffset: triangleCount,
-      triangleMaterialIndices: createTriangleMaterialIndices(geometry, meshTriangleCount),
-      triangleSurfaceIds: new Uint32Array(meshTriangleCount),
-      triangleComponentIds: new Uint32Array(meshTriangleCount),
-      triangleRegionIds: new Uint32Array(meshTriangleCount),
+      triangleMaterialIndices,
+      triangleSurfaceIds,
+      triangleComponentIds,
+      triangleRegionIds,
       seamEdgePairs: [],
     });
-    triangleCount += meshTriangleCount;
-  });
+    triangleCount += source.triangleCount;
+  }
   return { sources, triangleCount };
 }
 
@@ -298,11 +342,17 @@ async function analyzeMesh(
   onProgress?: (progress: ContentAwareTopologyProgress) => void,
 ) {
   const { triangleCount, triangleMaterialIndices, position } = source;
+  const allocateAcrossInteractionFrames = isViewportInteractionBusy();
   const parent = new Int32Array(triangleCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const rank = new Uint8Array(triangleCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const regionParent = new Int32Array(triangleCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const regionRank = new Uint8Array(triangleCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const canonicalByVertex = new Int32Array(position.count);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const canonicalByPosition = new Map<string, number>();
   const firstEdgeByKey = new Map<string, number>();
   const surfaceIdByMaterial = new Map<number, number>();
@@ -374,7 +424,7 @@ async function analyzeMesh(
         source.seamEdgePairs.push(firstEncodedEdge, encodedEdge);
       }
     }
-    if ((triangle & 511) === 0) {
+    if ((triangle & (isViewportInteractionBusy() ? 127 : 255)) === 0) {
       onProgress?.({
         phase: 'analyze',
         completed: completedBeforeMesh + triangle,
@@ -409,7 +459,9 @@ async function analyzeMesh(
       regionIdByRoot.set(regionRoot, regionId);
     }
     source.triangleRegionIds[triangle] = regionId;
-    if ((triangle & 8191) === 0) await scheduler.checkpoint();
+    if ((triangle & (isViewportInteractionBusy() ? 1023 : 2047)) === 0) {
+      await scheduler.checkpoint();
+    }
   }
 }
 
@@ -478,11 +530,7 @@ function rasterizeConservativeTriangle(
       const edgeAB = orientation * edgeValue(a[0], a[1], b[0], b[1], x, y);
       const edgeBC = orientation * edgeValue(b[0], b[1], c[0], c[1], x, y);
       const edgeCA = orientation * edgeValue(c[0], c[1], a[0], a[1], x, y);
-      if (
-        edgeAB < -toleranceAB ||
-        edgeBC < -toleranceBC ||
-        edgeCA < -toleranceCA
-      ) {
+      if (edgeAB < -toleranceAB || edgeBC < -toleranceBC || edgeCA < -toleranceCA) {
         continue;
       }
       const pixelIndex = y * width + x;
@@ -499,10 +547,7 @@ function rasterizeConservativeTriangle(
         // A recoverable overlap can still be touched later by an unrelated
         // mesh/material component. Upgrade it to a hard conflict instead of
         // keeping the first draw-order owner.
-        if (
-          surfaceIds[pixelIndex] !== surfaceId ||
-          componentIds[pixelIndex] !== componentId
-        ) {
+        if (surfaceIds[pixelIndex] !== surfaceId || componentIds[pixelIndex] !== componentId) {
           conflictMask[pixelIndex] = 2;
           if (triangleIds) triangleIds[pixelIndex] = 0;
         }
@@ -596,7 +641,7 @@ async function rasterizeSources(
         }
       }
       completed += 1;
-      if ((triangle & 1023) === 0) {
+      if ((triangle & (isViewportInteractionBusy() ? 255 : 511)) === 0) {
         onProgress?.({ phase: 'rasterize', completed, total: totalTriangles });
         await scheduler.checkpoint();
       }
@@ -746,7 +791,7 @@ async function buildSeamLinks(
         }
       }
       completed += 1;
-      if ((completed & 255) === 0) {
+      if ((completed & (isViewportInteractionBusy() ? 63 : 127)) === 0) {
         onProgress?.({ phase: 'seams', completed, total: seamPairCount });
         await scheduler.checkpoint();
       }
@@ -877,7 +922,7 @@ export async function buildContentAwareSurfaceTopology(
     Math.max(2, options.yieldIntervalMs ?? DEFAULT_YIELD_INTERVAL_MS),
     options.signal,
   );
-  const { sources, triangleCount } = collectMeshSources(root, includeInvisible);
+  const { sources, triangleCount } = await collectMeshSources(root, includeInvisible, scheduler);
   const state: MutableBuildState = {
     nextSurfaceId: 1,
     nextComponentId: 1,
@@ -901,13 +946,21 @@ export async function buildContentAwareSurfaceTopology(
     await scheduler.checkpoint();
   }
 
+  const allocateAcrossInteractionFrames = isViewportInteractionBusy();
   const topologyMask = new Uint8Array(pixelCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const coreMask = new Uint8Array(pixelCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const surfaceIds = new Uint32Array(pixelCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const componentIds = new Uint32Array(pixelCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const regionIds = new Uint32Array(pixelCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const conflictMask = new Uint8Array(pixelCount);
+  await scheduler.checkpoint(allocateAcrossInteractionFrames);
   const triangleIds = includeTriangleIds ? new Uint32Array(pixelCount) : undefined;
+  await scheduler.checkpoint(allocateAcrossInteractionFrames && Boolean(triangleIds));
   await rasterizeSources(
     sources,
     width,

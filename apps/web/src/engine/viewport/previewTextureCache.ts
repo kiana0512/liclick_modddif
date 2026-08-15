@@ -5,16 +5,15 @@ const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 export const residentPreviewTextureCache = new Map<string, THREE.Texture>();
 const previewTextureUploadPromises = new WeakMap<THREE.Texture, Promise<void>>();
-// One eighth of a megapixel bounds each exact RGBA upload submission to 0.5MB. Bake
-// uploads share the physical GPU with the viewport even when they use a
-// detached WebGL context; this keeps the final upload fence inside one frame.
-// Dimensions, filtering and source bytes are unchanged.
+// Visible uploads stay at roughly 0.5MB. The detached renderer uses 2MB
+// submissions: CPU submission work remains far below a frame while halving
+// detached-context switches. Dimensions, filtering and source bytes stay exact.
 const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 128 * 1024;
-// rAF spacing limits CPU submission work, but it does not guarantee that the
-// GPU has consumed earlier texSubImage2D commands. Drain a small rolling batch
-// before queueing more; otherwise an entire 4K texture accumulates behind the
-// viewport and the final fence turns into a 40-60ms release frame.
-const PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FENCE = 4;
+const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 512 * 1024;
+// Flush visible uploads every four stripes without polling a WebGL fence:
+// timeout-zero clientWaitSync still blocked the UI thread for 134-150ms on
+// NVIDIA under load. Both renderer paths rely on exact same-context ordering.
+const PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH = 4;
 let registeredPreviewRenderer: THREE.WebGLRenderer | undefined;
 type BitmapWorkerResponse =
   | { type: 'ready'; id: number; width: number; height: number }
@@ -129,36 +128,6 @@ async function waitForViewportInteractionIdle() {
     await new Promise<void>((resolve) =>
       window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
     );
-  }
-}
-
-async function waitForTextureUploadFence(
-  context: WebGLRenderingContext | WebGL2RenderingContext,
-  pauseDuringInteraction: boolean,
-  existingSync?: WebGLSync,
-  frameAlreadyYielded = false,
-) {
-  if (!('fenceSync' in context)) return;
-  const gl2 = context as WebGL2RenderingContext;
-  const sync = existingSync ?? gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
-  if (!sync) return;
-  const startedAt = performance.now();
-  if (!existingSync) gl2.flush();
-  try {
-    let canPollImmediately = frameAlreadyYielded;
-    while (true) {
-      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-      if (!canPollImmediately) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      }
-      canPollImmediately = false;
-      const status = gl2.clientWaitSync(sync, 0, 0);
-      if (status === gl2.ALREADY_SIGNALED || status === gl2.CONDITION_SATISFIED) break;
-      if (status === gl2.WAIT_FAILED) throw new Error('UV preview GPU upload fence failed.');
-    }
-  } finally {
-    gl2.deleteSync(sync);
-    document.body.dataset.previewTextureUploadFenceMs = (performance.now() - startedAt).toFixed(1);
   }
 }
 
@@ -294,13 +263,14 @@ export function uploadPreviewTextureInStripes(
   if (pending) return pending;
   const upload = (async () => {
     const image = texture.image;
-    // A detached renderer owns no visible canvas state. It may keep advancing
-    // one bounded upload stripe after each presented viewport frame even while
-    // the user is dragging. Waiting for global interaction idle here deadlocks
-    // the S4 stress run, which intentionally keeps interaction active for the
-    // whole bake. The connected viewport renderer retains the stricter pause.
-    const pauseDuringInteraction =
-      renderer.domElement.isConnected && options?.allowWhileInteracting !== true;
+    const usesVisibleRenderer = renderer.domElement.isConnected;
+    const uploadPhasePrefix = usesVisibleRenderer
+      ? 'gpu-viewport-texture-upload'
+      : 'gpu-detached-texture-upload';
+    // Both visible and detached uploads stop at stripe boundaries while the
+    // viewport is moving. The detached context still shares the physical GPU,
+    // so allowing it to advance during a drag can cost a compositor frame.
+    const pauseDuringInteraction = options?.allowWhileInteracting !== true;
     const workerBitmapId = getWorkerBitmapId(texture);
     const imageBitmap = typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap;
     if (!imageBitmap && workerBitmapId === undefined) {
@@ -314,13 +284,16 @@ export function uploadPreviewTextureInStripes(
       1,
       Math.min(
         image.height,
-        Math.floor(PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME / Math.max(1, image.width)),
+        Math.floor(
+          (renderer.domElement.isConnected
+            ? PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME
+            : DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME) / Math.max(1, image.width),
+        ),
       ),
     );
     const startedAt = performance.now();
     let maximumStripeMs = 0;
-    let pendingStripeFence: WebGLSync | undefined;
-    let submittedSinceFence = 0;
+    let submittedSinceFlush = 0;
     texture.source.dataReady = false;
     texture.needsUpdate = true;
     if (pauseDuringInteraction) await waitForViewportInteractionIdle();
@@ -339,7 +312,7 @@ export function uploadPreviewTextureInStripes(
       // sampling contract while still splitting the upload into stripes.
       for (let y = 0; y < image.height; y += rowsPerStripe) {
         if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-        markPreviewUploadStep('gpu-texture-upload-wait-frame');
+        markPreviewUploadStep(`${uploadPhasePrefix}-wait-frame`);
         // Let every visible rAF callback submit first. Continuing from the rAF
         // microtask could put a detached 4K upload stripe ahead of R3F and cost
         // one presentation interval even though the stripe itself is bounded.
@@ -349,18 +322,25 @@ export function uploadPreviewTextureInStripes(
         // Input may arrive between the idle check and the next animation frame.
         // Recheck before issuing any GL work so interaction always wins.
         if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-        if (pendingStripeFence) {
-          await waitForTextureUploadFence(
-            context,
-            pauseDuringInteraction,
-            pendingStripeFence,
-            true,
-          );
-          pendingStripeFence = undefined;
+        const rowCount = Math.min(rowsPerStripe, image.height - y);
+        markPreviewUploadStep(`${uploadPhasePrefix}-crop`);
+        const stripe =
+          workerBitmapId !== undefined
+            ? await requestPreviewBitmapStripe(workerBitmapId, y, rowCount)
+            : await createImageBitmap(image, 0, y, image.width, rowCount, {
+                imageOrientation: texture.flipY ? 'flipY' : 'none',
+                premultiplyAlpha: 'none',
+              });
+        if (workerBitmapId !== undefined) {
+          // A transferred ImageBitmap resolves this promise in a microtask.
+          // Split adoption from the GL upload so a due visible render task can
+          // run first instead of sharing one event-loop turn with texSubImage2D.
+          markPreviewUploadStep(`${uploadPhasePrefix}-adopt-yield`);
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
         }
-        // React Three Fiber may have rendered during the rAF above. Reassert
-        // only the upload-local unpack state immediately before touching GL;
-        // never leave it or our raw texture binding live across a frame.
+        // Never hold raw GL state across the asynchronous crop above. R3F may
+        // render while the worker is producing the stripe, so capture and
+        // restore the current bindings only inside this synchronous upload.
         const frameActiveTexture = context.getParameter(context.ACTIVE_TEXTURE) as number;
         const frameBinding = context.getParameter(
           context.TEXTURE_BINDING_2D,
@@ -371,18 +351,9 @@ export function uploadPreviewTextureInStripes(
         ) as boolean;
         context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, 0);
         context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-        const rowCount = Math.min(rowsPerStripe, image.height - y);
-        markPreviewUploadStep('gpu-texture-upload-crop');
-        const stripe =
-          workerBitmapId !== undefined
-            ? await requestPreviewBitmapStripe(workerBitmapId, y, rowCount)
-            : await createImageBitmap(image, 0, y, image.width, rowCount, {
-                imageOrientation: texture.flipY ? 'flipY' : 'none',
-                premultiplyAlpha: 'none',
-              });
         try {
           const stripeStartedAt = performance.now();
-          markPreviewUploadStep('gpu-texture-upload-submit');
+          markPreviewUploadStep(`${uploadPhasePrefix}-submit`);
           context.bindTexture(context.TEXTURE_2D, webGlTexture);
           context.texSubImage2D(
             context.TEXTURE_2D,
@@ -394,15 +365,14 @@ export function uploadPreviewTextureInStripes(
             stripe,
           );
           maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
-          submittedSinceFence += 1;
-          if (
-            'fenceSync' in context &&
-            submittedSinceFence >= PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FENCE
-          ) {
-            const gl2 = context as WebGL2RenderingContext;
-            pendingStripeFence = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
-            gl2.flush();
-            submittedSinceFence = 0;
+          submittedSinceFlush += 1;
+          if (usesVisibleRenderer && submittedSinceFlush >= PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH) {
+            // `clientWaitSync(..., 0, 0)` is permitted to poll, but NVIDIA's
+            // Windows driver repeatedly blocked the main thread for 134-150ms.
+            // A flush preserves command order without ever synchronously asking
+            // the CPU to observe GPU completion.
+            context.flush();
+            submittedSinceFlush = 0;
           }
         } finally {
           stripe.close();
@@ -412,17 +382,19 @@ export function uploadPreviewTextureInStripes(
           context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, Number(framePremultiply));
         }
       }
-      // `texSubImage2D` only queues the transfer. Publishing the texture before
-      // that queue is drained shifts the cost into the first real sampler use,
-      // which showed up as a 200ms interaction frame when an eye was opened.
-      // Fence asynchronously while the texture is still private, then publish.
-      markPreviewUploadStep('gpu-texture-upload-fence');
-      if (pendingStripeFence) {
-        await waitForTextureUploadFence(context, pauseDuringInteraction, pendingStripeFence);
-        pendingStripeFence = undefined;
-      }
-      if (submittedSinceFence > 0) {
-        await waitForTextureUploadFence(context, pauseDuringInteraction);
+      // Visible textures stay private for two presented frames after the final
+      // flush. The upload and later sampler draw share one command stream, so
+      // ordering is exact without a driver-side CPU fence poll. Detached
+      // textures are likewise drawn/read back on their own ordered stream.
+      if (usesVisibleRenderer) {
+        markPreviewUploadStep(`${uploadPhasePrefix}-drain`);
+        context.flush();
+        for (let frame = 0; frame < 2; frame += 1) {
+          await new Promise<void>((resolve) =>
+            window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
+          );
+          if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        }
       }
       texture.source.dataReady = true;
       texture.userData.liclickPreviewStripedUploadReady = true;
@@ -434,9 +406,6 @@ export function uploadPreviewTextureInStripes(
         Math.ceil(image.height / rowsPerStripe),
       );
     } catch (error) {
-      if (pendingStripeFence && 'deleteSync' in context) {
-        (context as WebGL2RenderingContext).deleteSync(pendingStripeFence);
-      }
       texture.source.dataReady = true;
       texture.needsUpdate = true;
       throw error;

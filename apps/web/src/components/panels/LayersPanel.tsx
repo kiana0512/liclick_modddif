@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type DragEventHandler,
   type MouseEventHandler,
   type PointerEventHandler,
@@ -63,11 +62,20 @@ type RenameState = {
 };
 
 function useInteractionDeferredLayers() {
-  const committedLayersRef = useRef(useLayerStore.getState().layers);
-  const getSnapshot = useCallback(() => committedLayersRef.current, []);
-  const subscribe = useCallback((notify: () => void) => {
+  const [layers, setLayers] = useState(() => useLayerStore.getState().layers);
+  useEffect(() => {
+    let committedLayers = useLayerStore.getState().layers;
     let pendingLayers: Layer[] | undefined;
     let timer: number | undefined;
+    const commit = (nextLayers: Layer[], deferred: boolean) => {
+      if (nextLayers === committedLayers) return;
+      committedLayers = nextLayers;
+      if (deferred) {
+        startTransition(() => setLayers(nextLayers));
+      } else {
+        setLayers(nextLayers);
+      }
+    };
     const flush = () => {
       timer = undefined;
       if (!pendingLayers) return;
@@ -77,9 +85,7 @@ function useInteractionDeferredLayers() {
       }
       const targetLayers = pendingLayers;
       pendingLayers = undefined;
-      if (targetLayers === committedLayersRef.current) return;
-      committedLayersRef.current = targetLayers;
-      notify();
+      commit(targetLayers, true);
     };
     const schedule = () => {
       if (timer === undefined && pendingLayers) timer = window.setTimeout(flush, 32);
@@ -92,9 +98,7 @@ function useInteractionDeferredLayers() {
         return;
       }
       pendingLayers = undefined;
-      if (state.layers === committedLayersRef.current) return;
-      committedLayersRef.current = state.layers;
-      notify();
+      commit(state.layers, false);
     });
     const unsubscribeInteraction = subscribeViewportInteraction(schedule);
     return () => {
@@ -103,7 +107,7 @@ function useInteractionDeferredLayers() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return layers;
 }
 
 function LayerThumbnail({ layer }: { layer: Layer }) {

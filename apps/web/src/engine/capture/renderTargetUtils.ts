@@ -25,7 +25,13 @@ type RenderSceneToPngOptions = {
 
 function markCapturePerformancePhase(prefix: string | undefined, suffix: string) {
   if (!prefix || typeof document === 'undefined') return;
-  if (document.body.dataset.perfSimulatedViewportInteraction !== '1') return;
+  if (
+    document.body.dataset.perfSimulatedViewportInteraction !== '1' &&
+    document.body.dataset.perfContentAwareRepairMeasuring !== '1' &&
+    document.body.dataset.perfUvMergeMeasuring !== '1'
+  ) {
+    return;
+  }
   document.body.dataset.perfUvBakePhase = `${prefix}-${suffix}`;
 }
 
@@ -38,6 +44,7 @@ type RenderScenePass = {
 };
 
 let displayOutputPass: OutputPass | undefined;
+const INTERACTIVE_CAPTURE_GPU_BUDGET_MS = 4;
 
 type SharedRendererState = {
   target: THREE.WebGLRenderTarget | null;
@@ -157,6 +164,7 @@ export async function renderSceneToPngUrl(
           });
         }
       }
+      let presentationBudgetStartedAt = performance.now();
       for (let index = 0; index < tiles.length; index += 1) {
         await options.waitForViewportIdle?.();
         const tile = tiles[index];
@@ -177,14 +185,20 @@ export async function renderSceneToPngUrl(
         restoreSharedRendererState(request.gl, previousRendererState);
         markCapturePerformancePhase(options.performancePhasePrefix, 'gpu-wait');
         await tileCompletion;
-        if (index + 1 < tiles.length) {
+        if (
+          index + 1 < tiles.length &&
+          performance.now() - presentationBudgetStartedAt >= INTERACTIVE_CAPTURE_GPU_BUDGET_MS
+        ) {
           // Resume after every rAF callback (including R3F presentation) has
           // submitted for this frame. Resolving directly inside rAF resumes in
           // a microtask and can put the next detached capture tile in front of
-          // the visible viewport even though both paths are individually fast.
+          // the visible viewport. Fast tiles may share the same bounded 4ms
+          // window; this removes dozens of empty 16.7ms waits without allowing
+          // background capture to monopolize a presentation interval.
           await new Promise<void>((resolve) =>
             window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
           );
+          presentationBudgetStartedAt = performance.now();
         }
       }
       request.gl.setRenderTarget(sceneTarget);

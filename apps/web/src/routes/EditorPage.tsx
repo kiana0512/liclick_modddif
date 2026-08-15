@@ -3522,12 +3522,7 @@ export function EditorPage({
       }
       // Do not remove the projected patch until the exact UV replacement has
       // decoded and completed its full striped GPU upload.
-      const previewResults = await prewarmPreviewTextures([imageUrl], {
-        // The upload is already split into 1MB stripes and fenced before
-        // publication. Keep advancing one stripe per presented frame so a
-        // continuous rotate/pan gesture cannot deadlock UV repair publication.
-        allowWhileInteracting: true,
-      });
+      const previewResults = await prewarmPreviewTextures([imageUrl]);
       if (!previewResults.some((result) => result.status === 'fulfilled')) {
         throw new Error('UV repair texture prewarm failed; the projected patch was preserved.');
       }
@@ -3592,11 +3587,7 @@ export function EditorPage({
         detail: '修补结果已生成，正在分帧上传完整纹理到 GPU',
         progress: 0.985,
       });
-      const previewResults = await prewarmPreviewTextures([imageUrl], {
-        // Interaction remains authoritative, but bounded uploads must still
-        // make forward progress while the user keeps the viewport moving.
-        allowWhileInteracting: true,
-      });
+      const previewResults = await prewarmPreviewTextures([imageUrl]);
       const previewReady = previewResults.some((result) => result.status === 'fulfilled');
       if (!previewReady) {
         throw new Error('内容识别修补纹理未能完成 GPU 预热；未发布不完整图层。');
@@ -4115,9 +4106,7 @@ export function EditorPage({
         const previewUrl = mergedImageUrl ?? URL.createObjectURL(mergedImageBlob!);
         const previewPrewarmStartedAt = performance.now();
         try {
-          const previewResults = await prewarmPreviewTextures([previewUrl], {
-            allowWhileInteracting: true,
-          });
+          const previewResults = await prewarmPreviewTextures([previewUrl]);
           previewPrewarmReady = previewResults.some((result) => result.status === 'fulfilled');
           if (!previewPrewarmReady) throw new Error('4K UV preview texture prewarm failed.');
         } finally {
@@ -4171,9 +4160,7 @@ export function EditorPage({
         progress: 0.985,
       });
       const previewPrewarmStartedAt = performance.now();
-      const previewResults = await prewarmPreviewTextures([imageUrl], {
-        allowWhileInteracting: true,
-      });
+      const previewResults = await prewarmPreviewTextures([imageUrl]);
       previewPrewarmDurationMs = performance.now() - previewPrewarmStartedAt;
       previewPrewarmReady =
         previewResults.length > 0 &&
@@ -5503,9 +5490,13 @@ export function EditorPage({
             includeSeamLinks: true,
             seamBandPixels: 1,
             minimumSeamNormalDot: 0.72,
-            yieldIntervalMs: 8,
+            yieldIntervalMs: 4,
             signal: abortController.signal,
             onProgress: (progress) => {
+              if (document.body.dataset.perfContentAwareRepairMeasuring === '1') {
+                document.body.dataset.perfContentAwareRepairPhase =
+                  `s9-topology-${progress.phase}`;
+              }
               const phaseRange =
                 progress.phase === 'analyze'
                   ? [0.58, 0.64]

@@ -40,6 +40,12 @@ const visibilityMaterialsByRenderer = new WeakMap<
   }
 >();
 const visibilityProgramWarmupByRenderer = new WeakMap<THREE.WebGLRenderer, Promise<void>>();
+// A multi-view bake requests every camera in one synchronous Promise.all map.
+// Their geometry signature is identical, but recomputing it walked the full
+// imported hierarchy 14 times in one task (measured 100ms+ on dense models).
+// Reuse only within the current microtask turn; the entry is automatically
+// discarded before any later transform/geometry edit can request visibility.
+const geometryVersionTurnCache = new WeakMap<THREE.Object3D, string>();
 
 async function withRuntimeVisibilityRenderLock<T>(
   renderer: THREE.WebGLRenderer,
@@ -67,6 +73,9 @@ function stableNumbers(values?: number[]) {
 }
 
 function geometryVersion(group: THREE.Object3D) {
+  const cached = geometryVersionTurnCache.get(group);
+  if (cached !== undefined) return cached;
+  group.updateMatrixWorld(true);
   const parts: string[] = [];
   let meshIndex = 0;
   group.traverse((object) => {
@@ -91,11 +100,17 @@ function geometryVersion(group: THREE.Object3D) {
       ].join('/'),
     );
   });
-  return parts.join('|');
+  const version = parts.join('|');
+  geometryVersionTurnCache.set(group, version);
+  queueMicrotask(() => {
+    if (geometryVersionTurnCache.get(group) === version) {
+      geometryVersionTurnCache.delete(group);
+    }
+  });
+  return version;
 }
 
 function createCacheKey(request: RuntimeProjectionDepthRequest) {
-  request.group.updateMatrixWorld(true);
   return [
     geometryVersion(request.group),
     request.width,
@@ -385,6 +400,10 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
         dataTexture: true,
         samples: 0,
         ignoreSceneBackground: true,
+        // Dense/overdrawn models can turn a larger depth tile into a 100ms+
+        // physical-GPU fence even on a fast adapter. Keep this pass at the
+        // measured-safe 256px size; adaptive scheduling can still group cheap
+        // tiles, while resolution and samples remain unchanged.
         tileSize: 256,
         waitForViewportIdle: request.waitForViewportIdle,
         performancePhasePrefix: 'runtime-depth',

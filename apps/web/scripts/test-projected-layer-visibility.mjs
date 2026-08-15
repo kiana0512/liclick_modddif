@@ -200,8 +200,8 @@ try {
   assert.equal(liveRepaintOverlay.transparent, true);
   assert.equal(liveRepaintOverlay.depthWrite, false);
   assert.equal(liveRepaintOverlay.depthFunc, THREE.LessEqualDepth);
-  assert.equal(liveRepaintOverlay.polygonOffsetFactor, -16);
-  assert.equal(liveRepaintOverlay.polygonOffsetUnits, -16);
+  assert.equal(liveRepaintOverlay.polygonOffsetFactor, -1);
+  assert.equal(liveRepaintOverlay.polygonOffsetUnits, -1);
   assert.equal(liveRepaintOverlay.uniforms.transparentProjectionOnly.value, 1);
   assert.equal(
     repaintOverlaySync.syncLocalRepaintGpuOverlayLighting(
@@ -244,7 +244,7 @@ try {
   );
   assert.match(
     liveRepaintOverlay.fragmentShader,
-    /mix\(0\.000006, -0\.000080, projectedDepthPriority\)/,
+    /float acceptedDepthOffset = mix\(-0\.000080, -0\.000010, surfaceLockedVisibility\);[\s\S]*mix\(0\.000006, acceptedDepthOffset, projectedDepthPriority\)/,
     'The final repaint pass must have deterministic depth priority above the projected background.',
   );
   projection.syncProjectedLayerMaterialDisplayState(liveRepaintOverlay, []);
