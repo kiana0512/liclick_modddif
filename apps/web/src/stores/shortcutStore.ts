@@ -28,7 +28,6 @@ export type ShortcutActionId =
   | 'texture.showAllLayers'
   | 'texture.toggleLayer'
   | 'texture.select'
-  | 'texture.eraser'
   | 'texture.brushSmaller'
   | 'texture.brushLarger'
   | 'texture.maskAdd'
@@ -98,7 +97,6 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { id: 'texture.showAllLayers', scope: 'texture', categoryZh: '纹理编辑', categoryEn: 'Texture editing', labelZh: '显示全部图层', labelEn: 'Show all layers', defaults: [binding('KeyH', { alt: true })] },
   { id: 'texture.toggleLayer', scope: 'texture', categoryZh: '纹理编辑', categoryEn: 'Texture editing', labelZh: '切换当前图层显隐', labelEn: 'Toggle active layer', defaults: [binding('KeyH')] },
   { id: 'texture.select', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '选择工具', labelEn: 'Select tool', defaults: [binding('KeyQ')] },
-  { id: 'texture.eraser', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '橡皮', labelEn: 'Eraser', defaults: [binding('KeyE')] },
   { id: 'texture.brushSmaller', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '减小画笔', labelEn: 'Decrease brush size', defaults: [binding('BracketLeft')] },
   { id: 'texture.brushLarger', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '增大画笔', labelEn: 'Increase brush size', defaults: [binding('BracketRight')] },
   { id: 'texture.maskAdd', scope: 'texture', categoryZh: '局部重绘', categoryEn: 'Local repaint', labelZh: '添加蒙版', labelEn: 'Add mask', defaults: [binding('KeyK')] },

@@ -7728,41 +7728,38 @@ function SurfacePaintOverlay() {
         if ((index + 1) % 3 === 0) await waitForFrame();
         if (cancelled) return;
       }
-      try {
-        gl.initTexture(layer.projectionTexture);
-        // compileAsync ignores invisible objects. The old prewarm hid every
-        // overlay before compiling, so the first real dot still linked the mask
-        // program on the interaction frame (hundreds of milliseconds in D3D11).
-        // Make only the accumulated overlays discoverable for compilation; no
-        // draw is submitted by compileAsync and their prior visibility is
-        // restored immediately afterwards.
-        const overlayVisibility = layer.accumulatedMaskOverlays.map((mesh) => ({
-          mesh,
-          visible: mesh.visible,
-        }));
-        layer.accumulatedMaskOverlays.forEach((mesh) => {
-          mesh.visible = true;
+      const compileIsolatedMeshes = async (
+        sourceMeshes: THREE.Mesh[],
+        overrideMaterial?: THREE.Material,
+      ) => {
+        const compileScene = new THREE.Scene();
+        sourceMeshes.forEach((sourceMesh) => {
+          const compileMesh = sourceMesh.clone(false) as THREE.Mesh;
+          compileMesh.material = overrideMaterial ?? sourceMesh.material;
+          compileMesh.visible = true;
+          compileMesh.frustumCulled = false;
+          compileScene.add(compileMesh);
         });
         try {
-          await gl.compileAsync(scene, camera);
+          await gl.compileAsync(compileScene, camera);
         } finally {
-          overlayVisibility.forEach(({ mesh, visible }) => {
-            mesh.visible = visible;
-          });
+          compileScene.clear();
         }
+      };
+      try {
+        gl.initTexture(layer.projectionTexture);
+        // Compile only isolated mesh shells for the local-repaint programs.
+        // Passing the live scene here lets compileAsync retain unrelated
+        // materials while model restore is replacing them. Three's
+        // parallel-compile poller then dereferences a disposed currentProgram,
+        // producing an uncaught error and leaving the prewarm promise pending.
+        // The isolated scene warms the identical material programs without
+        // touching live visibility or unrelated material lifetimes.
+        await compileIsolatedMeshes(layer.accumulatedMaskOverlays);
         // Compile the front-most-depth pass before the selection tool becomes
         // interactive. The pass remains pixel-identical; only shader linking is
         // moved out of the first user stroke.
-        const restoreDepthScene = applyTargetOnlyMaterial(
-          scene,
-          model.objectId,
-          () => inpaintDepthMaterial,
-        );
-        try {
-          await gl.compileAsync(scene, camera);
-        } finally {
-          restoreDepthScene();
-        }
+        await compileIsolatedMeshes(meshes, inpaintDepthMaterial);
         // Allocate and fill the front-most depth target while idle as well.
         // Shader pre-linking alone still left the first selection stroke paying
         // the render-target allocation/first-render cost on the visible frame.
@@ -7804,7 +7801,6 @@ function SurfacePaintOverlay() {
     gl,
     inpaintDepthMaterial,
     paintTool,
-    scene,
     syncInpaintMaskProjection,
   ]);
 

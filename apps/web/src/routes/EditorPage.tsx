@@ -5977,12 +5977,6 @@ export function EditorPage({
         sceneState.setTransformMode('select');
         return;
       }
-      const nextPaintTool = shortcutMatches(event, 'texture.eraser') ? 'eraser' : undefined;
-      if (nextPaintTool) {
-        event.preventDefault();
-        sceneState.setPaintTool(sceneState.paintTool === nextPaintTool ? 'none' : nextPaintTool);
-        return;
-      }
       const brushSizeDirection = shortcutMatches(event, 'texture.brushSmaller')
         ? -1
         : shortcutMatches(event, 'texture.brushLarger')
@@ -6359,9 +6353,6 @@ export function EditorPage({
               rotate: t('rotate'),
               scale: t('scale'),
               layers: t('layers'),
-              eraser: t('eraser'),
-              eraserSize: t('eraserSize'),
-              eraserHardness: t('eraserHardness'),
               localRepaint: t('localRepaint'),
               inpaintSelect: t('inpaintSelect'),
               inpaintUnselect: t('inpaintUnselect'),
@@ -6376,7 +6367,6 @@ export function EditorPage({
               rotateHelp: t('rotateToolHelp'),
               scaleHelp: t('scaleToolHelp'),
               layersHelp: t('layersToolHelp'),
-              eraserHelp: t('eraserToolHelp'),
               localRepaintHelp: t('localRepaintToolHelp'),
               inpaintSelectHelp: t('inpaintSelectToolHelp'),
               inpaintUnselectHelp: t('inpaintUnselectToolHelp'),

@@ -1659,15 +1659,18 @@ function ImportedModel({
           ? residentUvPresentationCacheRef.current.get(visibleUvKey)
           : undefined;
       const residentUvTexture = residentSingleUvTexture ?? residentCompositeUvTexture;
+      let requiresMaterialReconciliation = false;
       if (
         visibleOrdinaryUvLayers.length > 0 &&
         !residentUvTexture &&
         pendingUvVisibilityRenderKeyRef.current !== visibleUvKey
       ) {
         pendingUvVisibilityRenderKeyRef.current = visibleUvKey;
-        setUvVisibilityRenderRevision((revision) => revision + 1);
+        requiresMaterialReconciliation = true;
       }
-      syncProjectedLayerResidentTextureVisibilityInObject(importedModel.group, {
+      const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject(
+        importedModel.group,
+        {
         ...(residentUvTexture ? { uvOverlayTexture: residentUvTexture } : {}),
         // A composed editing stack must stay unlit when it contains any layer
         // other than the final merged UV. The direct single-layer path below
@@ -1685,8 +1688,9 @@ function ImportedModel({
         // Do not clear the last valid base texture while that exact composite is
         // decoding/uploading; its owner effect will atomically publish the pair.
         baseTextureOpacity: contentAwareOpacity,
-      });
-      syncProjectedLayerMaterialDisplayStateInObject(
+        },
+      );
+      const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject(
         importedModel.group,
         displayLayers,
         currentDisplayMode === 'normal',
@@ -1700,6 +1704,29 @@ function ImportedModel({
           pbrLightAzimuth: currentSettings.pbrLightAzimuth,
         }),
       );
+      const hasVisibleUvContribution =
+        visibleOrdinaryUvLayers.length > 0 ||
+        visibleLocalRepaintUvLayers.length > 0 ||
+        visibleContentAwareUvLayers.length > 0;
+      const hasVisibleProjectedContribution = displayLayers.some((layer) => layer.visible);
+      // Visibility normally stays on the zero-allocation uniform path. A cold
+      // restore with every eye closed is the one state where there is no
+      // resident shader on the model to receive those uniforms: the viewport
+      // intentionally presents a MeshStandardMaterial white membrane. If an
+      // eye opens in that state, schedule exactly one React material pass so
+      // the already-resident UV texture or projected stack can be attached.
+      // Without this fallback the store and eye icon update correctly while
+      // every uniform sync is sent to a material that has no matching uniforms,
+      // leaving the model white until another structural layer change occurs.
+      if (
+        (hasVisibleUvContribution && !uvMaterialUpdated) ||
+        (hasVisibleProjectedContribution && !projectedMaterialUpdated)
+      ) {
+        requiresMaterialReconciliation = true;
+      }
+      if (requiresMaterialReconciliation) {
+        setUvVisibilityRenderRevision((revision) => revision + 1);
+      }
       invalidate();
       document.body.dataset.projectedDisplayPath = 'uniform';
       document.body.dataset.projectedDisplayUniformMs = String(

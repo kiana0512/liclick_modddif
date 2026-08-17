@@ -11,8 +11,13 @@ const sceneRootSource = readFileSync(
   path.join(root, 'src/engine/viewport/SceneRoot.tsx'),
   'utf8',
 );
+assert.match(
+  sceneRootSource,
+  /const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject\([\s\S]*?const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?hasVisibleUvContribution[\s\S]*?!uvMaterialUpdated[\s\S]*?!projectedMaterialUpdated[\s\S]*?setUvVisibilityRenderRevision/,
+  'Opening an eye after an all-hidden cold restore must schedule a material pass when no resident shader accepted the uniform update.',
+);
 const uvSamplerWarmupSource = sceneRootSource.match(
-  /const prewarmProjectedUvSamplers = async \([\s\S]*?\n    async function applyMaterials/,
+  /const prewarmProjectedUvSamplers = async \([\s\S]*?\r?\n    async function applyMaterials/,
 )?.[0];
 assert(uvSamplerWarmupSource, 'Expected the projected UV sampler warmup implementation.');
 assert.match(
@@ -30,7 +35,7 @@ const viewportCanvasSource = readFileSync(
   'utf8',
 );
 const repaintSourceTransparency = viewportCanvasSource.match(
-  /function constrainLocalRepaintFalloffToSourceContent\([\s\S]*?\n}\n/,
+  /function constrainLocalRepaintFalloffToSourceContent\([\s\S]*?\r?\n}\r?\n/,
 )?.[0];
 assert(
   repaintSourceTransparency,

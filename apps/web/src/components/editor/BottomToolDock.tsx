@@ -1,7 +1,6 @@
 import {
   ChevronRight,
   ChevronUp,
-  Eraser,
   ImagePlus,
   LoaderCircle,
   MousePointer2,
@@ -47,9 +46,6 @@ type BottomToolDockProps = {
     rotate: string;
     scale: string;
     layers: string;
-    eraser: string;
-    eraserSize: string;
-    eraserHardness: string;
     localRepaint: string;
     inpaintSelect: string;
     inpaintUnselect: string;
@@ -64,7 +60,6 @@ type BottomToolDockProps = {
     rotateHelp: string;
     scaleHelp: string;
     layersHelp: string;
-    eraserHelp: string;
     localRepaintHelp: string;
     inpaintSelectHelp: string;
     inpaintUnselectHelp: string;
@@ -102,7 +97,7 @@ export function BottomToolDock({
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   const [activeMenu, setActiveMenu] = useState<
-    'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
+    'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
   const [generationGuideActive, setGenerationGuideActive] = useState(false);
   const [repaintGuideActive, setRepaintGuideActive] = useState(false);
@@ -111,8 +106,6 @@ export function BottomToolDock({
   const previousMaskToolSelectedRef = useRef(
     paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract',
   );
-  const paintSettings = useSceneStore((state) => state.paintToolSettings);
-  const setPaintSettings = useSceneStore((state) => state.setPaintToolSettings);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
   const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
@@ -124,8 +117,6 @@ export function BottomToolDock({
   const pushToast = useToastStore((state) => state.pushToast);
   const baseButton =
     'grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:border-white/22 hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/45 disabled:cursor-not-allowed disabled:opacity-42';
-  const activeMaskButton =
-    'border-[#ff8a68]/70 bg-[#8b4a38] text-white shadow-[0_0_0_1px_rgba(255,138,104,0.26)]';
   const workflowButton =
     'grid h-10 w-10 shrink-0 place-items-center rounded-md border border-transparent bg-transparent text-white/72 transition hover:bg-white/[0.08] hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/35';
   const activeWorkflowButton =
@@ -148,6 +139,12 @@ export function BottomToolDock({
   useEffect(() => {
     if (isTextureMode && paintTool === 'brush') onPaintToolChange('none');
   }, [isTextureMode, onPaintToolChange, paintTool]);
+
+  useEffect(() => {
+    if (paintTool !== 'eraser') return;
+    onPaintToolChange('none');
+    setActiveMenu(undefined);
+  }, [onPaintToolChange, paintTool]);
 
   useEffect(() => {
     if (localImageGenerationRunning) {
@@ -313,71 +310,6 @@ export function BottomToolDock({
 
       {isTextureMode && (
         <>
-          <span className="inline-flex">
-            {activeMenu === 'eraser' && (
-              <div className="absolute bottom-full left-0 z-50 mb-2 w-[284px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-                <label className="grid gap-1.5 text-[13px] font-semibold">
-                  <span className="flex items-center justify-between">
-                    <span>{labels.eraserSize}</span>
-                    <input
-                      value={paintSettings.eraserSize.toFixed(1)}
-                      onChange={(event) =>
-                        setPaintSettings({ eraserSize: Number(event.target.value) || 1 })
-                      }
-                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                    />
-                  </span>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="120"
-                    step="0.5"
-                    value={paintSettings.eraserSize}
-                    onChange={(event) =>
-                      setPaintSettings({ eraserSize: Number(event.target.value) })
-                    }
-                    className="w-full accent-[#ff8a68]"
-                  />
-                </label>
-                <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-                  <span className="flex items-center justify-between">
-                    <span>{labels.eraserHardness}</span>
-                    <input
-                      value={paintSettings.eraserHardness.toFixed(1)}
-                      onChange={(event) =>
-                        setPaintSettings({ eraserHardness: Number(event.target.value) || 0 })
-                      }
-                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                    />
-                  </span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="0.5"
-                    value={paintSettings.eraserHardness}
-                    onChange={(event) =>
-                      setPaintSettings({ eraserHardness: Number(event.target.value) })
-                    }
-                    className="w-full accent-[#ff8a68]"
-                  />
-                </label>
-              </div>
-            )}
-            <IconTooltip label={labels.eraser} description={labels.eraserHelp} shortcut="E">
-              <button
-                type="button"
-                className={cn(baseButton, paintTool === 'eraser' && activeMaskButton)}
-                onClick={() => {
-                  onPaintToolChange(paintTool === 'eraser' ? 'none' : 'eraser');
-                  toggleMenu('eraser');
-                }}
-                aria-label={labels.eraser}
-              >
-                <Eraser className="h-4.5 w-4.5" />
-              </button>
-            </IconTooltip>
-          </span>
           <div className="ml-1 flex items-center gap-1.5">
             <span className="pointer-events-none flex shrink-0 items-center gap-1.5 whitespace-nowrap px-0.5 text-[12px] font-semibold tracking-wide text-white/62">
               <span
