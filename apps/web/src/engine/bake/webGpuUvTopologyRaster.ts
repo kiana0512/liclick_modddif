@@ -148,17 +148,6 @@ async function serializeUvTriangles(root: THREE.Object3D) {
   return promise;
 }
 
-async function cloneTrianglesForTransfer(source: Float32Array<ArrayBuffer>) {
-  const copy = new Float32Array(source.length);
-  const elementsPerChunk = 256 * 1024;
-  for (let offset = 0; offset < source.length; offset += elementsPerChunk) {
-    const end = Math.min(source.length, offset + elementsPerChunk);
-    copy.set(source.subarray(offset, end), offset);
-    if (end < source.length) await yieldMainThread();
-  }
-  return copy;
-}
-
 /**
  * Runs a genuine Worker-owned WebGPU render pipeline. The first topology for a
  * model/resolution is compared pixel-for-pixel with the same Canvas2D gold
@@ -187,12 +176,8 @@ export function rasterizeUvTopologyMaskWithWebGpu(
     }
     const serializeStartedAt = performance.now();
     const triangles = await serializeUvTriangles(root);
-    if (triangles.length === 0) throw new Error('The model has no UV triangles.');
-    // Keep the cached source intact, but transfer a cooperative copy instead of
-    // asking structured-clone to duplicate the full high-poly UV buffer in one
-    // uninterruptible main-thread task.
-    const transferredTriangles = await cloneTrianglesForTransfer(triangles);
     const serializeMs = performance.now() - serializeStartedAt;
+    if (triangles.length === 0) throw new Error('The model has no UV triangles.');
     const id = nextRequestId++;
     const request: RasterRequest = {
       type: 'raster',
@@ -200,14 +185,14 @@ export function rasterizeUvTopologyMaskWithWebGpu(
       cacheKey,
       // Do not transfer the cached geometry buffer: detaching it would force
       // another high-poly traversal on the next resolution or bake.
-      triangles: transferredTriangles.buffer,
+      triangles: triangles.buffer,
       width,
       height,
       preferWebGpu,
     };
     return new Promise<WebGpuUvTopologyRasterResult>((resolve, reject) => {
       pending.set(id, { resolve, reject, serializeMs });
-      getWorker().postMessage(request, [request.triangles]);
+      getWorker().postMessage(request);
     });
   })().catch((error) => {
     cache?.delete(cacheKey);
@@ -221,8 +206,4 @@ export function terminateWebGpuUvTopologyRasterWorker() {
   failAllPending('WebGPU UV topology worker was terminated.');
   worker?.terminate();
   worker = undefined;
-}
-
-export function clearWebGpuUvTopologyRasterCache(root: THREE.Object3D) {
-  resultByRoot.delete(root);
 }

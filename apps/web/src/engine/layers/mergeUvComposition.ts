@@ -3,10 +3,10 @@ import type { Layer } from '@/types/layer';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 5 stores authored albedo and
- * leaves PBR lighting as a live viewport operation.
+ * trusted to match the live layer stack. Version 4 writes the current PBR
+ * preview light into the final UV and displays that merged layer unlit.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 5;
+export const UV_MERGE_COMPOSITION_VERSION = 4;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,

@@ -1989,9 +1989,13 @@ function buildStackFragmentShader(
       pow(max(adjustedQuality1, 0.0), ${BLEND_POWER.toFixed(1)}) +
       pow(max(adjustedQuality2, 0.0), ${BLEND_POWER.toFixed(1)});
 
-    float w0 = mix(pow(adjustedQuality0, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage0 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
-    float w1 = mix(pow(adjustedQuality1, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage1 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
-    float w2 = mix(pow(adjustedQuality2, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage2 / sumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    // ANGLE/D3D still diagnoses the unguarded division even though the zero-
+    // coverage branch returns above. Clamp it explicitly so shader compilation
+    // cannot emit X4008 or hand a driver an undefined zero-division path.
+    float safeSumSoft = max(sumSoft, 0.000001);
+    float w0 = mix(pow(adjustedQuality0, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage0 / safeSumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    float w1 = mix(pow(adjustedQuality1, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage1 / safeSumSoft, ${RESIDUAL_MIX.toFixed(2)});
+    float w2 = mix(pow(adjustedQuality2, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage2 / safeSumSoft, ${RESIDUAL_MIX.toFixed(2)});
     vec3 blendedColor = topColor0 * w0 + topColor1 * w1 + topColor2 * w2;
     float qualityRatio = adjustedQuality0 / max(adjustedQuality1, 0.000001);
     float dominance =

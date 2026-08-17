@@ -1674,9 +1674,9 @@ function ImportedModel({
         uvOverlayRenderedColor: visibleOrdinaryUvLayers.some(usesUnlitRenderedColor),
         ...(contentAwareTexture ? { baseTexture: contentAwareTexture } : {}),
         uvOverlayOpacity:
-          visibleOrdinaryUvLayers.length === 1
+          residentUvTexture && visibleOrdinaryUvLayers.length === 1
             ? visibleOrdinaryUvLayers[0].opacity
-            : visibleOrdinaryUvLayers.length > 1
+            : residentUvTexture && visibleOrdinaryUvLayers.length > 1
               ? 1
               : 0,
         topUvOverlayOpacity: visibleLocalRepaintUvLayers[0]?.opacity ?? 0,
@@ -2579,7 +2579,10 @@ function ImportedModel({
       ...(loadedContentAwareUnderlayTexture
         ? { baseTexture: loadedContentAwareUnderlayTexture }
         : {}),
-      uvOverlayOpacity,
+      // Never reveal the reserved neutral sampler. Texture and opacity are a
+      // single presentation state: publish opacity only after the authored UV
+      // texture has decoded and is ready to bind.
+      uvOverlayOpacity: loadedUvTexture ? uvOverlayOpacity : 0,
       topUvOverlayOpacity: liveTopUvLayer?.visible ? liveTopUvLayer.opacity : 0,
       baseTextureOpacity: contentAwareUnderlayOpacity,
     });
@@ -3094,8 +3097,6 @@ function ImportedModel({
       if (!uvOverlayMap || !uvOverlayOpacityUniform || !useUvOverlayMap || textures.length === 0)
         return;
 
-      const previousTarget = gl.getRenderTarget();
-      const previousAutoClear = gl.autoClear;
       const previousMap = uvOverlayMap.value;
       const previousOpacity = uvOverlayOpacityUniform.value;
       const previousUseMap = useUvOverlayMap.value;
@@ -3124,15 +3125,27 @@ function ImportedModel({
         });
         uvOverlayOpacityUniform.value = 1;
         useUvOverlayMap.value = 1;
-        gl.autoClear = true;
-        gl.setRenderTarget(warmTarget);
         for (const normalPreview of normalPreviewUniform ? [0, 1] : [0]) {
           if (normalPreviewUniform) normalPreviewUniform.value = normalPreview;
           for (const texture of textures) {
             await waitForViewportInteractionIdle();
             if (cancelled) return;
             uvOverlayMap.value = texture;
-            gl.render(warmScene, warmCamera);
+            // Never keep an offscreen target bound across an await/rAF. R3F
+            // renders the visible scene during that wait and leaves the default
+            // framebuffer active. The old code then drew this fullscreen warmup
+            // plane into the browser canvas, exposing the UV atlas and the
+            // purple normal-preview frame during F5 restore.
+            const frameTarget = gl.getRenderTarget();
+            const frameAutoClear = gl.autoClear;
+            try {
+              gl.autoClear = true;
+              gl.setRenderTarget(warmTarget);
+              gl.render(warmScene, warmCamera);
+            } finally {
+              gl.setRenderTarget(frameTarget);
+              gl.autoClear = frameAutoClear;
+            }
             if ('fenceSync' in context) {
               const gl2 = context as WebGL2RenderingContext;
               const sync = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -3165,8 +3178,6 @@ function ImportedModel({
         opacityUniforms.forEach((uniform, index) => {
           uniform.value = previousLayerOpacities[index];
         });
-        gl.setRenderTarget(previousTarget);
-        gl.autoClear = previousAutoClear;
         warmMesh.removeFromParent();
         warmGeometry.dispose();
         warmTarget.dispose();
@@ -3888,6 +3899,13 @@ function ImportedModel({
                     layer.role !== 'local-repaint-overlay' &&
                     layer.role !== 'local-repaint-draft',
                 );
+                const latestOrdinaryUvKey = residentUvVisibilityKey(latestOrdinaryUvLayers);
+                const latestResidentUvTexture =
+                  latestOrdinaryUvLayers.length === 1
+                    ? residentPreviewTextureCache.get(latestOrdinaryUvLayers[0].imageUrl ?? '')
+                    : latestOrdinaryUvLayers.length > 1
+                      ? residentUvPresentationCacheRef.current.get(latestOrdinaryUvKey)
+                      : undefined;
                 const latestContentAwareLayers = latestObjectUvLayers.filter(
                   (layer) => layer.visible && layer.role === 'content-aware-underlay',
                 );
@@ -3897,10 +3915,13 @@ function ImportedModel({
                     ? residentPreviewTextureCache.get(latestContentAwareLayers[0].imageUrl ?? '')
                     : undefined;
                 if (sharedProjectedMaterial.uniforms.uvOverlayOpacity) {
+                  if (latestResidentUvTexture && sharedProjectedMaterial.uniforms.uvOverlayMap) {
+                    sharedProjectedMaterial.uniforms.uvOverlayMap.value = latestResidentUvTexture;
+                  }
                   sharedProjectedMaterial.uniforms.uvOverlayOpacity.value =
-                    latestOrdinaryUvLayers.length === 1
+                    latestResidentUvTexture && latestOrdinaryUvLayers.length === 1
                       ? latestOrdinaryUvLayers[0].opacity
-                      : latestOrdinaryUvLayers.length > 1
+                      : latestResidentUvTexture && latestOrdinaryUvLayers.length > 1
                         ? 1
                         : 0;
                 }
@@ -4087,12 +4108,24 @@ function ImportedModel({
           layer.visible &&
           (layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft'),
       );
+      const authoritativeOrdinaryUvKey = residentUvVisibilityKey(
+        authoritativeOrdinaryUvLayers,
+      );
+      const authoritativeResidentUvTexture =
+        authoritativeOrdinaryUvLayers.length === 1
+          ? residentPreviewTextureCache.get(authoritativeOrdinaryUvLayers[0].imageUrl ?? '')
+          : authoritativeOrdinaryUvLayers.length > 1
+            ? residentUvPresentationCacheRef.current.get(authoritativeOrdinaryUvKey)
+            : undefined;
       syncProjectedLayerResidentTextureVisibilityInObject(model.group, {
+        ...(authoritativeResidentUvTexture
+          ? { uvOverlayTexture: authoritativeResidentUvTexture }
+          : {}),
         uvOverlayRenderedColor: authoritativeOrdinaryUvLayers.some(usesUnlitRenderedColor),
         uvOverlayOpacity:
-          authoritativeOrdinaryUvLayers.length === 1
+          authoritativeResidentUvTexture && authoritativeOrdinaryUvLayers.length === 1
             ? authoritativeOrdinaryUvLayers[0].opacity
-            : authoritativeOrdinaryUvLayers.length > 1
+            : authoritativeResidentUvTexture && authoritativeOrdinaryUvLayers.length > 1
               ? 1
               : 0,
         topUvOverlayOpacity: authoritativeLocalRepaintUvLayers[0]?.opacity ?? 0,

@@ -94,7 +94,6 @@ import {
   UV_MERGE_COMPOSITION_VERSION,
 } from '@/engine/layers/mergeUvComposition';
 import {
-  compositeRgbaUrlUnderAndEncodePngWithWebGpu,
   compositeRgbaUrlUnderWithWebGpu,
   releaseWebGpuRgbaCompositeResources,
   type WebGpuRgbaCompositeMetrics,
@@ -3987,33 +3986,16 @@ export function EditorPage({
         const layer = selectedUvLayers[index];
         if (webGpuComposite.enabled) {
           try {
-            const encodeInCompositeWorker =
-              Boolean(bakeResult) && index === selectedUvLayers.length - 1;
-            const result = encodeInCompositeWorker
-              ? await compositeRgbaUrlUnderAndEncodePngWithWebGpu(
-                  mergedRgba,
-                  layer.imageUrl,
-                  bakeResolution,
-                  bakeResolution,
-                  layer.opacity,
-                  options?.taskContext?.signal,
-                )
-              : await compositeRgbaUrlUnderWithWebGpu(
-                  mergedRgba,
-                  layer.imageUrl,
-                  bakeResolution,
-                  bakeResolution,
-                  layer.opacity,
-                  options?.taskContext?.signal,
-                );
+            const result = await compositeRgbaUrlUnderWithWebGpu(
+              mergedRgba,
+              layer.imageUrl,
+              bakeResolution,
+              bakeResolution,
+              layer.opacity,
+              options?.taskContext?.signal,
+            );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
-            if ('data' in result) {
-              mergedRgba = result.data;
-            } else {
-              mergedImageUrl = result.url;
-              mergedOutputBytes = result.byteLength;
-              pngEncodeDurationMs += result.encodeMs;
-            }
+            mergedRgba = result.data;
             webGpuComposite.dispatches += 1;
             webGpuComposite.uploadMs += metrics.uploadMs;
             webGpuComposite.computeMs += metrics.computeMs;
@@ -4054,7 +4036,7 @@ export function EditorPage({
       }
       // Store authored albedo only. PBR remains a live viewport operation and
       // is never flattened into the merged UV texture.
-      uvCompositeDurationMs = performance.now() - uvCompositeStartedAt - pngEncodeDurationMs;
+      uvCompositeDurationMs = performance.now() - uvCompositeStartedAt;
       const mergedCoverageRatio =
         bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedRgba);
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +7,24 @@ import { createServer } from 'vite';
 import * as THREE from 'three';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const sceneRootSource = readFileSync(
+  path.join(root, 'src/engine/viewport/SceneRoot.tsx'),
+  'utf8',
+);
+const uvSamplerWarmupSource = sceneRootSource.match(
+  /const prewarmProjectedUvSamplers = async \([\s\S]*?\n    async function applyMaterials/,
+)?.[0];
+assert(uvSamplerWarmupSource, 'Expected the projected UV sampler warmup implementation.');
+assert.match(
+  uvSamplerWarmupSource,
+  /await waitForViewportInteractionIdle\(\);[\s\S]*?const frameTarget = gl\.getRenderTarget\(\);[\s\S]*?gl\.setRenderTarget\(warmTarget\);[\s\S]*?gl\.render\(warmScene, warmCamera\);[\s\S]*?gl\.setRenderTarget\(frameTarget\);/,
+  'Every fullscreen sampler warmup draw must bind and restore its offscreen target after the last await.',
+);
+assert.doesNotMatch(
+  uvSamplerWarmupSource,
+  /gl\.setRenderTarget\(warmTarget\);\s*for \(/,
+  'The sampler warmup must not keep an offscreen target bound across animation frames.',
+);
 const server = await createServer({
   root,
   appType: 'custom',
