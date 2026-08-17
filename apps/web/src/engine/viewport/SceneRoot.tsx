@@ -1044,6 +1044,15 @@ function ImportedModel({
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
   const localRepaintPreviewLayerId = useSceneStore((state) => state.localRepaintPreviewLayer?.id);
+  const hasAuthoritativeVisibleTextureLayer = useLayerStore((state) =>
+    state.layers.some(
+      (layer) =>
+        layer.visible &&
+        Boolean(layer.imageUrl) &&
+        (!layer.objectId || layer.objectId === importedModel.objectId) &&
+        (layer.type === 'uv' || (layer.type === 'projected' && Boolean(layer.camera))),
+    ),
+  );
   const [uvVisibilityRenderRevision, setUvVisibilityRenderRevision] = useState(0);
   const residentUvPresentationCacheRef = useRef(new Map<string, THREE.Texture>());
   const pendingUvVisibilityRenderKeyRef = useRef('');
@@ -2683,6 +2692,11 @@ function ImportedModel({
     useProjectedTextureArrays ? 'array' : 'direct',
     textureArrayCompositionFallbackRequired ? 'fallback' : 'exact',
   ].join('|');
+  const showWhiteMembrane = Boolean(
+    !hasAuthoritativeVisibleTextureLayer &&
+    !liveTopUvTexture &&
+    !liveSurfacePaintPreview,
+  );
 
   const projectedProgramWarmupSourceSignature = useMemo(
     () =>
@@ -3002,14 +3016,23 @@ function ImportedModel({
   useEffect(() => {
     if (!importedModel) return;
     let hasResidentProjectedMaterial = false;
+    let hasPresentedMaterial = false;
+    let presentsOnlyWhiteMembrane = true;
     importedModel.group.traverse((child) => {
-      if (hasResidentProjectedMaterial || !(child instanceof THREE.Mesh)) return;
+      if (!(child instanceof THREE.Mesh) || child.userData.liclickPaintOverlay) return;
       const materials = Array.isArray(child.material) ? child.material : [child.material];
-      hasResidentProjectedMaterial = materials.some((material) =>
+      hasPresentedMaterial = true;
+      hasResidentProjectedMaterial ||= materials.some((material) =>
         material.name.startsWith('LiclickProjectedLayerStack:'),
       );
+      presentsOnlyWhiteMembrane &&= materials.every(
+        (material) => material.name === 'LiclickWhiteMembranePreview',
+      );
     });
+    const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;
+    if (showWhiteMembrane && alreadyPresentsWhiteMembrane) return;
     if (
+      !showWhiteMembrane &&
       hasResidentProjectedMaterial &&
       committedProjectedMaterialStructureRef.current === projectedMaterialStructureKey
     ) {
@@ -3257,13 +3280,6 @@ function ImportedModel({
         : progressiveIncrementalPreviewReady
           ? progressiveIncrementalInputs
           : previewProjectionInputs;
-      const showWhiteMembrane = Boolean(
-        materialProjectionInputs.length > 0 &&
-        materialProjectionInputs.every((layer) => !layer.visible) &&
-        (!loadedUvTexture || uvOverlayOpacity <= 0) &&
-        !liveTopUvTexture &&
-        (!loadedContentAwareUnderlayTexture || contentAwareUnderlayOpacity <= 0),
-      );
       const showGeometryOnlyDisplay = displayMode === 'normal' || displayMode === 'wire';
       const hasResidentProjectionInputs = Boolean(
         canPreviewProjectedLayers && materialProjectionInputs.length > 0,
@@ -3414,12 +3430,15 @@ function ImportedModel({
       });
       const exactBakedBootstrapTexture =
         loadedBakedTexture &&
+        !showWhiteMembrane &&
+        stableVisibleProjectedLayers.length > 0 &&
         !hasLiveProjectedPreview &&
         !liveProjectedEraserMaskTexture &&
         !stableVisibleProjectedLayers.some((layer) => layer.needsRebake)
           ? loadedBakedTexture
           : undefined;
       const canPresentUvBootstrap = Boolean(
+        !showWhiteMembrane &&
         (displayMode === 'flat' || displayMode === 'pbr') &&
         !hasPresentedProjectedMaterial &&
         !hasPresentedBootstrapMaterial &&
@@ -4255,6 +4274,7 @@ function ImportedModel({
     projectedSamplerBudget,
     projectedPreviewNeedsComposition,
     projectedTextureArrayStructureSignature,
+    showWhiteMembrane,
     textureArrayCompositionFallbackRequired,
     useProjectedTextureArrays,
     activeProjectedPreviewInput,

@@ -16,6 +16,26 @@ assert.match(
   /const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject\([\s\S]*?const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?hasVisibleUvContribution[\s\S]*?!uvMaterialUpdated[\s\S]*?!projectedMaterialUpdated[\s\S]*?setUvVisibilityRenderRevision/,
   'Opening an eye after an all-hidden cold restore must schedule a material pass when no resident shader accepted the uniform update.',
 );
+assert.match(
+  sceneRootSource,
+  /const hasAuthoritativeVisibleTextureLayer = useLayerStore\(\(state\) =>[\s\S]*?state\.layers\.some\([\s\S]*?layer\.visible &&[\s\S]*?Boolean\(layer\.imageUrl\)[\s\S]*?layer\.type === 'uv'[\s\S]*?layer\.type === 'projected'/,
+  'White-membrane state must come directly from the layer store instead of a cached render-layer memo.',
+);
+assert.match(
+  sceneRootSource,
+  /const showWhiteMembrane = Boolean\(\s*!hasAuthoritativeVisibleTextureLayer &&\s*!liveTopUvTexture &&\s*!liveSurfacePaintPreview/,
+  'All hidden content-bearing layers must authoritatively keep the model in white-membrane mode.',
+);
+assert.match(
+  sceneRootSource,
+  /const exactBakedBootstrapTexture =\s*loadedBakedTexture &&\s*!showWhiteMembrane &&\s*stableVisibleProjectedLayers\.length > 0 &&/,
+  'Changing PBR lighting with every projected eye closed must not restore a stale baked bootstrap texture.',
+);
+assert.match(
+  sceneRootSource,
+  /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) return;\s*if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial/,
+  'PBR changes must reuse the resident white or projected material instead of rebuilding it.',
+);
 const uvSamplerWarmupSource = sceneRootSource.match(
   /const prewarmProjectedUvSamplers = async \([\s\S]*?\r?\n    async function applyMaterials/,
 )?.[0];

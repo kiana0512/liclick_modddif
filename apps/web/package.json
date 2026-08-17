@@ -13,6 +13,7 @@
     "test:heavy-task-scheduler": "node scripts/test-heavy-task-scheduler.mjs",
     "test:liclick-auth-separation": "node scripts/test-liclick-auth-separation.mjs",
     "test:model-import-progress": "node scripts/test-model-import-progress.mjs",
+    "test:model-export-texture-orientation": "node scripts/test-model-export-texture-orientation.mjs",
     "test:model-placement-camera-focus": "node scripts/test-model-placement-camera-focus.mjs",
     "test:local-runtime-health": "node scripts/test-local-runtime-health.mjs",
     "test:performance-lab-metrics": "node scripts/test-performance-lab-metrics.mjs",
