@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { repairSurfaceTexture } from '../surfaceAwareRepair.ts';
+import { createVisibleSurfaceCompletionPolicy } from '../visibleSurfaceCompletionPolicy.ts';
 
 function setPixel(rgba, index, color, alpha = 255) {
   rgba.set([...color, alpha], index * 4);
@@ -315,6 +316,65 @@ test('a second bounded pass advances from the previous repair result', () => {
 
   assert.equal(second.repairedMask[10], 255, 'second pass did not advance from pass one');
   assert.equal(second.repairedMask[11], 0, 'second pass exceeded its bounded layer');
+});
+
+test('visible-surface completion fills a deep reachable gap in one linear pass', () => {
+  const width = 320;
+  const pixelCount = width;
+  const rgba = new Uint8ClampedArray(pixelCount * 4);
+  const writeMask = new Uint8Array(pixelCount);
+  const topologyMask = new Uint8Array(pixelCount).fill(1);
+  const topologyRegionIds = new Uint32Array(pixelCount).fill(1);
+  setPixel(rgba, 0, [146, 92, 43]);
+  writeMask.fill(255, 1);
+
+  const policy = createVisibleSurfaceCompletionPolicy(width, 1);
+  const result = repairSurfaceTexture({
+    width,
+    height: 1,
+    rgba,
+    writeMask,
+    topologyMask,
+    topologyRegionIds,
+    ...policy.propagation,
+  });
+
+  assert.equal(policy.propagation.maxDistance, pixelCount);
+  assert.equal(result.stats.repairedPixels, pixelCount - 1);
+  assert.equal(result.stats.unresolvedPixels, 0);
+  assert.equal(result.stats.globalFallbackPixels, 0);
+  assert.equal(result.repairedMask.at(-1), 255, 'the deepest hatch-visible texel stayed open');
+  assert.deepEqual(getRgb(result, pixelCount - 1), [146, 92, 43]);
+});
+
+test('visible-surface completion never exposes hatch for a component with no local donor', () => {
+  const width = 8;
+  const rgba = new Uint8ClampedArray(width * 4);
+  const writeMask = new Uint8Array(width);
+  const topologyMask = new Uint8Array(width).fill(1);
+  const topologyRegionIds = new Uint32Array([1, 1, 1, 1, 2, 2, 2, 2]);
+  setPixel(rgba, 0, [180, 112, 52]);
+  writeMask.fill(255, 1);
+
+  const policy = createVisibleSurfaceCompletionPolicy(width, 1);
+  const result = repairSurfaceTexture({
+    width,
+    height: 1,
+    rgba,
+    writeMask,
+    topologyMask,
+    topologyRegionIds,
+    ...policy.propagation,
+  });
+
+  assert.equal(result.stats.repairedPixels, width - 1);
+  assert.equal(result.stats.unresolvedPixels, 0);
+  assert.equal(result.stats.globalFallbackPixels, 4);
+  assert.deepEqual(result.stats.globalFallbackColor, [180, 112, 52]);
+  for (let index = 4; index < width; index += 1) {
+    assert.equal(result.repairedMask[index], 255);
+    assert.deepEqual(getRgb(result, index), [180, 112, 52]);
+  }
 });
 
 test('coverage skirt closes transparent filtering gaps without crossing UV regions', () => {

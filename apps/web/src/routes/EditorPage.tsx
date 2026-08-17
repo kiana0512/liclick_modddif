@@ -49,11 +49,13 @@ import type { WorkspacePanelDefinition } from '@/components/workspace/workspaceP
 import { PerfScenarioLoader } from '@/dev/PerfScenarioLoader';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import { getProjectedLayerStackSignature } from '@/engine/bake/layerStackCache';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
 import {
   buildContentAwareRepairMask,
   buildContentAwareSurfaceTopology,
   CONTENT_AWARE_REPAIR_REQUEST_EVENT,
+  createVisibleSurfaceCompletionPolicy,
   runSurfaceAwareRepair,
   type ContentAwareRepairRequestDetail,
 } from '@/engine/contentAware';
@@ -200,7 +202,7 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { shortcutMatches } from '@/stores/shortcutStore';
 import { useToastStore } from '@/stores/toastStore';
-import type { BakeProgress, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
+import type { BakeProgress, BakeReport, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { LocalRepaintRuntime, MaskBitmap, Rect } from '@/types/localRepaint';
 import type { SerializedCamera } from '@/types/capture';
 import type { Generation } from '@/types/generation';
@@ -251,6 +253,67 @@ const resolutionToSize = {
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
 const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
+
+type ReusableProjectionBakePurpose = 'merge-uv' | 'content-aware-repair';
+
+type ReusableProjectionBakeEntry = {
+  signature: string;
+  imageData: ImageData;
+  report: BakeReport;
+};
+
+function createReusableProjectionBakeSignature(input: {
+  purpose: ReusableProjectionBakePurpose;
+  projectId?: string;
+  objectId: string;
+  resolution: UvBakeResolution;
+  group: THREE.Object3D;
+  layers: Layer[];
+  optionSignature: string;
+}) {
+  input.group.updateMatrixWorld(true);
+  const normalizedLayers = [...input.layers].sort((left, right) => right.order - left.order);
+  // `getProjectedLayerStackSignature` includes every visual layer setting and
+  // live-canvas revision. Append the exact transient asset URLs as well: blob
+  // URLs are deliberately omitted from the persistent cache signature, but are
+  // safe and necessary for this short-lived editor-session cache.
+  const stackSignature = getProjectedLayerStackSignature(
+    input.projectId,
+    input.objectId,
+    input.resolution,
+    normalizedLayers,
+    {
+      method: 'gpu',
+      outputAlpha: 'transparent',
+      enableDilation: false,
+      dilationPixels: 0,
+    },
+  );
+  const exactAssets = normalizedLayers
+    .map(
+      (layer) =>
+        `${layer.id}:${layer.imageUrl ?? ''}:${layer.maskUrl ?? ''}:${layer.depthUrl ?? ''}:${layer.normalUrl ?? ''}:${layer.depthEncoding ?? ''}`,
+    )
+    .join('|');
+  return [
+    'editor-projection-bake-cache-v1',
+    input.purpose,
+    stackSignature,
+    input.group.uuid,
+    input.group.matrixWorld.elements.join(','),
+    JSON.stringify(getDebugUvBakeStatus()),
+    input.optionSignature,
+    exactAssets,
+  ].join('||');
+}
+
+function cloneProjectionBakeImageData(imageData: ImageData) {
+  return new ImageData(
+    new Uint8ClampedArray(imageData.data),
+    imageData.width,
+    imageData.height,
+  );
+}
 
 async function waitForProjectRestoreIdle(timeoutMs = 800) {
   while (isViewportInteractionBusy()) {
@@ -830,6 +893,12 @@ export function EditorPage({
   const modelImportProgressTimerRef = useRef<number>();
   const contentAwareRepairRunningRef = useRef(false);
   const contentAwareRepairAbortControllerRef = useRef<AbortController>();
+  // Keep at most one pristine projection composite per workflow (64 MiB for
+  // 4K merge + 16 MiB for 2K repair). Reads are cloned before UV underlays are
+  // applied, so later compositing can never corrupt the reusable source.
+  const reusableProjectionBakeCacheRef = useRef(
+    new Map<ReusableProjectionBakePurpose, ReusableProjectionBakeEntry>(),
+  );
   const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
   const localRepaintToolRequestRevisionRef = useRef(0);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
@@ -1014,6 +1083,7 @@ export function EditorPage({
     contentAwareRepairAbortControllerRef.current?.abort();
     contentAwareRepairAbortControllerRef.current = undefined;
     contentAwareRepairRunningRef.current = false;
+    reusableProjectionBakeCacheRef.current.clear();
     setRouteProjectStatus('idle');
     setServerReadyProjectId(undefined);
     restoredHistoryProjectIdRef.current = undefined;
@@ -1036,6 +1106,7 @@ export function EditorPage({
       contentAwareRepairAbortControllerRef.current?.abort();
       contentAwareRepairAbortControllerRef.current = undefined;
       contentAwareRepairRunningRef.current = false;
+      reusableProjectionBakeCacheRef.current.clear();
     },
     [],
   );
@@ -3969,13 +4040,35 @@ export function EditorPage({
         ),
       );
       const postprocess = getMergeUvPostprocessOptions(bakeResolution);
+      const projectionBakeSignature = createReusableProjectionBakeSignature({
+        purpose: 'merge-uv',
+        projectId: project.id,
+        objectId,
+        resolution: bakeResolution,
+        group: currentImportedModel.group,
+        layers: layersToBake,
+        optionSignature: [
+          `gutter:${postprocess.uvIslandGutterPixels}`,
+          `interior:${postprocess.uvInteriorHolePixels}`,
+          `coverage:${postprocess.uvCoverageGapPixels}`,
+          `seam:${postprocess.uvSeamRepairPixels}`,
+          'coverage-confidence:0',
+        ].join('|'),
+      });
+      const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get('merge-uv');
+      const projectionBakeCacheHit =
+        reusableProjectionBake?.signature === projectionBakeSignature;
+      document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
+        ? 'merge-uv-hit'
+        : 'merge-uv-miss';
       markPerformanceEvent('uv-merge', 'gpu-bake-start', {
         layerCount: layersToBake.length,
         resolution: bakeResolution,
+        cacheHit: projectionBakeCacheHit,
       });
       const gpuBakeStartedAt = performance.now();
       const bakeResult =
-        layersToBake.length > 0
+        layersToBake.length > 0 && !projectionBakeCacheHit
           ? await bakeVisibleProjectedLayersToTexture({
               objectId,
               transientLayers: layersToBake,
@@ -4008,7 +4101,9 @@ export function EditorPage({
       gpuBakeDurationMs = performance.now() - gpuBakeStartedAt;
       markPerformanceEvent('uv-merge', 'gpu-bake-complete', {
         durationMs: performance.now() - mergeStartedAt,
-        coverageRatio: bakeResult?.report.coverageRatio,
+        coverageRatio:
+          bakeResult?.report.coverageRatio ?? reusableProjectionBake?.report.coverageRatio,
+        cacheHit: projectionBakeCacheHit,
       });
 
       const outputCanvas = bakeResult?.canvas ?? document.createElement('canvas');
@@ -4017,11 +4112,20 @@ export function EditorPage({
         outputCanvas.height = bakeResolution;
       }
       const readbackStartedAt = performance.now();
-      let mergedImageData = bakeResult?.imageData;
+      let mergedImageData = projectionBakeCacheHit
+        ? cloneProjectionBakeImageData(reusableProjectionBake.imageData)
+        : bakeResult?.imageData;
       if (!mergedImageData) {
         const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
         if (!outputContext) throw new Error('Could not create merged UV canvas.');
         mergedImageData = outputContext.getImageData(0, 0, bakeResolution, bakeResolution);
+      }
+      if (layersToBake.length > 0 && !projectionBakeCacheHit && bakeResult) {
+        reusableProjectionBakeCacheRef.current.set('merge-uv', {
+          signature: projectionBakeSignature,
+          imageData: cloneProjectionBakeImageData(mergedImageData),
+          report: bakeResult.report,
+        });
       }
       let mergedRgba = mergedImageData.data;
       readbackDurationMs = performance.now() - readbackStartedAt;
@@ -4092,7 +4196,9 @@ export function EditorPage({
       // is never flattened into the merged UV texture.
       uvCompositeDurationMs = performance.now() - uvCompositeStartedAt;
       const mergedCoverageRatio =
-        bakeResult?.report.coverageRatio ?? getRgbaAlphaCoverageRatio(mergedRgba);
+        bakeResult?.report.coverageRatio ??
+        reusableProjectionBake?.report.coverageRatio ??
+        getRgbaAlphaCoverageRatio(mergedRgba);
 
       // Encode straight RGBA directly. Canvas PNG export is allowed to erase
       // RGB beneath alpha=0, which would destroy the transparent UV gutter and
@@ -4145,7 +4251,10 @@ export function EditorPage({
           totalDurationMs: performance.now() - mergeStartedAt,
           outputBytes: mergedOutputBytes || mergedImageBlob?.size || 0,
           coverageRatio: mergedCoverageRatio,
-          bakePerformanceBreakdown: bakeResult?.report.performanceBreakdown ?? {},
+          bakePerformanceBreakdown:
+            bakeResult?.report.performanceBreakdown ??
+            (projectionBakeCacheHit ? { projectionBakeCacheHit: 1 } : {}),
+          projectionBakeCacheHit,
           webGpuComposite,
         };
         markPerformanceEvent('uv-merge', 'real-4k-merge-benchmark-complete', result);
@@ -5396,7 +5505,7 @@ export function EditorPage({
         }
         const objectId = targetModel.objectId;
         const currentLayers = useLayerStore.getState().layers;
-        const sourceLayerIds = currentLayers
+        const sourceProjectedLayers = currentLayers
           .filter(
             (layer) =>
               layer.type === 'projected' &&
@@ -5406,7 +5515,8 @@ export function EditorPage({
               !isLocalRepaintLayer(layer) &&
               !isContentAwareRepairLayer(layer),
           )
-          .map((layer) => layer.id);
+          .sort((left, right) => right.order - left.order);
+        const sourceLayerIds = sourceProjectedLayers.map((layer) => layer.id);
         const previousRepairLayers = currentLayers.filter(
           (layer) =>
             isContentAwareRepairLayer(layer) &&
@@ -5421,46 +5531,81 @@ export function EditorPage({
           resolutionToSize[useSettingsStore.getState().resolution],
           CONTENT_AWARE_UV_MAX_RESOLUTION,
         ) as UvBakeResolution;
-        const bakeResult = await bakeVisibleProjectedLayersToTexture({
+        const completionPolicy = createVisibleSurfaceCompletionPolicy(
+          repairResolution,
+          repairResolution,
+        );
+        const projectionBakeSignature = createReusableProjectionBakeSignature({
+          purpose: 'content-aware-repair',
+          projectId: project?.id,
           objectId,
-          layerIds: sourceLayerIds,
           resolution: repairResolution,
-          enableBackfaceCulling: true,
-          enableDilation: false,
-          dilationPixels: 0,
-          outputAlpha: 'transparent',
-          // Gap detection needs the same quality-ranked colour as UV merge,
-          // but must retain aggregate coverage confidence in alpha. Otherwise
-          // one weak grazing sample makes an actually empty surface look 100%
-          // filled and the repair tool reports no blank area.
-          preserveCoverageConfidenceAlpha: true,
-          commitToProject: false,
-          markSourceLayersBaked: false,
-          skipImageEncoding: true,
-          // The repair pipeline consumes straight RGBA directly. Avoid a
-          // redundant 2K ImageData -> Canvas upload followed by an immediate
-          // Canvas -> ImageData readback on the interaction thread.
-          skipCanvasUpload: true,
-          onProgress: silentForeground
-            ? undefined
-            : (progress) =>
-                setManualBakeProgress({
-                  title: t('contentAwareRepair'),
-                  detail: t('contentAwareRepairScanning'),
-                  progress: 0.04 + progress.progress * 0.54,
-                }),
+          group: targetModel.group,
+          layers: sourceProjectedLayers,
+          optionSignature: 'coverage-confidence:1|transparent|no-postprocess',
         });
+        const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get(
+          'content-aware-repair',
+        );
+        const projectionBakeCacheHit =
+          reusableProjectionBake?.signature === projectionBakeSignature;
+        document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
+          ? 'content-aware-repair-hit'
+          : 'content-aware-repair-miss';
+        const bakeResult = projectionBakeCacheHit
+          ? undefined
+          : await bakeVisibleProjectedLayersToTexture({
+              objectId,
+              layerIds: sourceLayerIds,
+              resolution: repairResolution,
+              enableBackfaceCulling: true,
+              enableDilation: false,
+              dilationPixels: 0,
+              outputAlpha: 'transparent',
+              // Gap detection needs the same quality-ranked colour as UV merge,
+              // but must retain aggregate coverage confidence in alpha. Otherwise
+              // one weak grazing sample makes an actually empty surface look 100%
+              // filled and the repair tool reports no blank area.
+              preserveCoverageConfidenceAlpha: true,
+              commitToProject: false,
+              markSourceLayersBaked: false,
+              skipImageEncoding: true,
+              // The repair pipeline consumes straight RGBA directly. Avoid a
+              // redundant 2K ImageData -> Canvas upload followed by an immediate
+              // Canvas -> ImageData readback on the interaction thread.
+              skipCanvasUpload: true,
+              onProgress: silentForeground
+                ? undefined
+                : (progress) =>
+                    setManualBakeProgress({
+                      title: t('contentAwareRepair'),
+                      detail: t('contentAwareRepairScanning'),
+                      progress: 0.04 + progress.progress * 0.54,
+                    }),
+            });
         reportRepairRunState('running', 'projection-bake-ready', {
           resolution: repairResolution,
           sourceLayerCount: sourceLayerIds.length,
-          bakePerformanceBreakdown: bakeResult.report.performanceBreakdown,
+          projectionBakeCacheHit,
+          bakePerformanceBreakdown:
+            bakeResult?.report.performanceBreakdown ??
+            (projectionBakeCacheHit ? { projectionBakeCacheHit: 1 } : undefined),
         });
         delete document.body.dataset.perfUvBakePhase;
-        let workingImageData = bakeResult.imageData;
+        let workingImageData = projectionBakeCacheHit
+          ? cloneProjectionBakeImageData(reusableProjectionBake.imageData)
+          : bakeResult?.imageData;
         if (!workingImageData) {
-          const bakeContext = bakeResult.canvas.getContext('2d', { willReadFrequently: true });
+          const bakeContext = bakeResult?.canvas.getContext('2d', { willReadFrequently: true });
           if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
           workingImageData = bakeContext.getImageData(0, 0, repairResolution, repairResolution);
+        }
+        if (!projectionBakeCacheHit && bakeResult) {
+          reusableProjectionBakeCacheRef.current.set('content-aware-repair', {
+            signature: projectionBakeSignature,
+            imageData: cloneProjectionBakeImageData(workingImageData),
+            report: bakeResult.report,
+          });
         }
         // Projection remains the front layer. Repair deltas are applied in
         // authored top-to-bottom order and contribute only where coverage is
@@ -5551,12 +5696,10 @@ export function EditorPage({
           // Imported atlases can overlap between components; those texels are
           // valid blank targets for this already-composited sparse underlay.
           allowConflictedWrites: true,
-          // The empty-area hatch is visible while aggregate projection
-          // confidence is below roughly 12.5%. Treat that as a hard gap; the
-          // connected-component filter still rejects isolated raster specks.
-          hardAlphaThreshold: 32,
-          weakAlphaThreshold: 64,
-          weakGrowPixels: 1,
+          // Use the exact live-hatch threshold and retain even a one-texel
+          // crack: the product contract is complete visible coverage, not a
+          // minimum repair-component size.
+          ...completionPolicy.gapMask,
           signal: abortController.signal,
           yieldIntervalMs: 8,
         });
@@ -5608,30 +5751,10 @@ export function EditorPage({
             topologyMask: topology.topologyMask,
             topologyRegionIds: topology.regionIds,
             seamLinks: topology.seamLinks,
-            maxSeamCrossings: 1,
-            // Keep a small donor guard band, but leave enough of the previous
-            // pass available for the next pass to advance progressively.
-            sourcePaddingPixels: Math.max(2, Math.min(4, Math.round(repairResolution / 768))),
-            // One click advances one bounded surface-distance layer. A later
-            // click starts from the cumulative result and continues farther.
-            maxDistance: Math.max(64, Math.min(128, Math.round(repairResolution / 16))),
-            minSourceAlpha: 64,
-            sourceColorOutlierThreshold: 64,
-            connectivity: 4,
-            // Publish one opaque texel only where the composited input is still
-            // empty and inside the same UV region. This closes bilinear-filter
-            // seams without overwriting projections or earlier repair passes.
-            coverageSkirtPixels: 1,
-            coverageSkirtMaxInputAlpha: 32,
-            outputBleedPixels: 4,
-            // Unify a genuinely flat boundary, but preserve nearest-source
-            // expansion when competing donors contain real colour variation.
-            lockToDominantSourceRegion: true,
-            dominantSourceColorThreshold: 18,
-            // Publish the reachable band only. Unresolved centres remain gaps
-            // for the next user-triggered repair pass instead of invalidating
-            // the complete pass.
-            requireCompleteComponents: false,
+            // Complete every reachable hatch-visible texel in one Worker pass.
+            // The queue remains O(N), while topology regions and physical seam
+            // links prevent atlas-space bleeding into unrelated surfaces.
+            ...completionPolicy.propagation,
           },
           {
             signal: abortController.signal,

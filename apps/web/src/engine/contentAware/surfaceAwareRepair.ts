@@ -76,6 +76,12 @@ export interface SurfaceAwareRepairInput {
   coverageSkirtMaxInputAlpha?: number;
   /** RGB-only atlas padding around the sparse output. Alpha remains zero. */
   outputBleedPixels?: number;
+  /**
+   * Fill a detected topology component that has no reachable local donor with
+   * the mean colour of all valid authored sources. This is a last-resort
+   * coverage guarantee; it never writes outside writeMask/topologyMask.
+   */
+  fillUnreachableWithGlobalAverage?: boolean;
   /** Reject a connected gap component when any of its texels cannot be repaired. */
   requireCompleteComponents?: boolean;
   /**
@@ -112,6 +118,8 @@ export interface SurfaceRepairStats {
   coverageSkirtPixelCount: number;
   outputBleedPixels: number;
   outputBleedPixelCount: number;
+  globalFallbackPixels: number;
+  globalFallbackColor?: [number, number, number];
   partialComponentsDiscarded: number;
   partialPixelsDiscarded: number;
   sourceRegionLockedComponents: number;
@@ -170,6 +178,7 @@ interface NormalizedInput {
   coverageSkirtPixels: number;
   coverageSkirtMaxInputAlpha: number;
   outputBleedPixels: number;
+  fillUnreachableWithGlobalAverage: boolean;
   requireCompleteComponents: boolean;
   dominantSourceColorThreshold?: number;
   lockToDominantSourceRegion: boolean;
@@ -249,6 +258,7 @@ function normalizeInput(input: SurfaceAwareRepairInput): NormalizedInput {
     coverageSkirtPixels: clampInteger(input.coverageSkirtPixels, 0, 0, 4),
     coverageSkirtMaxInputAlpha: clampInteger(input.coverageSkirtMaxInputAlpha, 0, 0, 255),
     outputBleedPixels: clampInteger(input.outputBleedPixels, 0, 0, 32),
+    fillUnreachableWithGlobalAverage: input.fillUnreachableWithGlobalAverage === true,
     requireCompleteComponents: input.requireCompleteComponents === true,
     dominantSourceColorThreshold:
       input.dominantSourceColorThreshold === undefined
@@ -766,6 +776,9 @@ export function repairSurfaceTexture(
   let requestedPixels = 0;
   let eligibleSourcePixels = 0;
   let sourceColorOutliersRejected = 0;
+  let eligibleRedSum = 0;
+  let eligibleGreenSum = 0;
+  let eligibleBlueSum = 0;
   for (let index = 0; index < input.pixelCount; index += 1) {
     const inTopology = input.topologyMask[index] !== 0;
     if (inTopology) topologyPixels += 1;
@@ -777,6 +790,10 @@ export function repairSurfaceTexture(
     if (isEligible) {
       owner[index] = -2;
       eligibleSourcePixels += 1;
+      const sourceOffset = index * 4;
+      eligibleRedSum += input.rgba[sourceOffset];
+      eligibleGreenSum += input.rgba[sourceOffset + 1];
+      eligibleBlueSum += input.rgba[sourceOffset + 2];
     } else {
       owner[index] = -1;
     }
@@ -798,6 +815,14 @@ export function repairSurfaceTexture(
     report('finding-sources', 0.25, 0.2, index + 1, input.pixelCount);
   }
   report('finding-sources', 0.25, 0.2, input.pixelCount, input.pixelCount, true);
+  const globalFallbackColor: [number, number, number] | undefined =
+    eligibleSourcePixels > 0
+      ? [
+          Math.round(eligibleRedSum / eligibleSourcePixels),
+          Math.round(eligibleGreenSum / eligibleSourcePixels),
+          Math.round(eligibleBlueSum / eligibleSourcePixels),
+        ]
+      : undefined;
 
   const neighborX = input.connectivity === 8 ? EIGHT_NEIGHBOR_X : FOUR_NEIGHBOR_X;
   const neighborY = input.connectivity === 8 ? EIGHT_NEIGHBOR_Y : FOUR_NEIGHBOR_Y;
@@ -957,6 +982,7 @@ export function repairSurfaceTexture(
   head = 0;
   tail = 0;
   let repairedPixels = 0;
+  let globalFallbackPixels = 0;
   for (let index = 0; index < input.pixelCount; index += 1) {
     const componentAccepted =
       !input.requireCompleteComponents || repairedMask[index] === 2;
@@ -966,12 +992,26 @@ export function repairSurfaceTexture(
       input.topologyMask[index] !== 0
     ) {
       const source = owner[index];
-      if (source >= 0) {
-        const sourceOffset = source * 4;
+      const fallbackColor =
+        source < 0 &&
+        input.fillUnreachableWithGlobalAverage &&
+        globalFallbackColor
+          ? globalFallbackColor
+          : undefined;
+      if (source >= 0 || fallbackColor) {
         const targetOffset = index * 4;
-        filledRgba[targetOffset] = input.rgba[sourceOffset];
-        filledRgba[targetOffset + 1] = input.rgba[sourceOffset + 1];
-        filledRgba[targetOffset + 2] = input.rgba[sourceOffset + 2];
+        if (source >= 0) {
+          const sourceOffset = source * 4;
+          filledRgba[targetOffset] = input.rgba[sourceOffset];
+          filledRgba[targetOffset + 1] = input.rgba[sourceOffset + 1];
+          filledRgba[targetOffset + 2] = input.rgba[sourceOffset + 2];
+        } else {
+          const [fallbackRed, fallbackGreen, fallbackBlue] = fallbackColor!;
+          filledRgba[targetOffset] = fallbackRed;
+          filledRgba[targetOffset + 1] = fallbackGreen;
+          filledRgba[targetOffset + 2] = fallbackBlue;
+          globalFallbackPixels += 1;
+        }
         // A repair texel is an opaque fallback. Source alpha is only a source
         // eligibility signal and must not punch a second soft hole in the layer.
         filledRgba[targetOffset + 3] = 255;
@@ -1128,6 +1168,8 @@ export function repairSurfaceTexture(
     coverageSkirtPixelCount,
     outputBleedPixels: input.outputBleedPixels,
     outputBleedPixelCount,
+    globalFallbackPixels,
+    ...(globalFallbackColor ? { globalFallbackColor } : {}),
     partialComponentsDiscarded,
     partialPixelsDiscarded,
     sourceRegionLockedComponents: sourceRegionLock.lockedComponents,

@@ -22,6 +22,7 @@ type SurfacePropagationPolicy = Pick<
   | 'coverageSkirtPixels'
   | 'coverageSkirtMaxInputAlpha'
   | 'outputBleedPixels'
+  | 'fillUnreachableWithGlobalAverage'
   | 'lockToDominantSourceRegion'
   | 'dominantSourceColorThreshold'
   | 'requireCompleteComponents'
@@ -78,6 +79,10 @@ export function createVisibleSurfaceCompletionPolicy(
       coverageSkirtPixels: 0,
       coverageSkirtMaxInputAlpha: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       outputBleedPixels: 4,
+      // A completely unprojected component has no topology-local donor. The
+      // product contract prefers an approximate authored colour over exposing
+      // the diagnostic black hatch, so finish it with a worker-side fallback.
+      fillUnreachableWithGlobalAverage: true,
       lockToDominantSourceRegion: true,
       dominantSourceColorThreshold: 18,
       requireCompleteComponents: false,

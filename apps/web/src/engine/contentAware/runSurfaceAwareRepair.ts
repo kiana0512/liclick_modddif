@@ -174,6 +174,7 @@ export function runSurfaceAwareRepair(
       coverageSkirtPixels: copiedInput.coverageSkirtPixels,
       coverageSkirtMaxInputAlpha: copiedInput.coverageSkirtMaxInputAlpha,
       outputBleedPixels: copiedInput.outputBleedPixels,
+      fillUnreachableWithGlobalAverage: copiedInput.fillUnreachableWithGlobalAverage,
       requireCompleteComponents: copiedInput.requireCompleteComponents,
       dominantSourceColorThreshold: copiedInput.dominantSourceColorThreshold,
       lockToDominantSourceRegion: copiedInput.lockToDominantSourceRegion,

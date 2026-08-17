@@ -25,6 +25,7 @@ export interface SurfaceRepairWorkerRequest {
   coverageSkirtPixels?: number;
   coverageSkirtMaxInputAlpha?: number;
   outputBleedPixels?: number;
+  fillUnreachableWithGlobalAverage?: boolean;
   requireCompleteComponents?: boolean;
   dominantSourceColorThreshold?: number;
   lockToDominantSourceRegion?: boolean;
@@ -76,6 +77,7 @@ workerScope.onmessage = (event) => {
       coverageSkirtPixels: request.coverageSkirtPixels,
       coverageSkirtMaxInputAlpha: request.coverageSkirtMaxInputAlpha,
       outputBleedPixels: request.outputBleedPixels,
+      fillUnreachableWithGlobalAverage: request.fillUnreachableWithGlobalAverage,
       requireCompleteComponents: request.requireCompleteComponents,
       dominantSourceColorThreshold: request.dominantSourceColorThreshold,
       lockToDominantSourceRegion: request.lockToDominantSourceRegion,
