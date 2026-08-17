@@ -25,6 +25,41 @@ assert.doesNotMatch(
   /gl\.setRenderTarget\(warmTarget\);\s*for \(/,
   'The sampler warmup must not keep an offscreen target bound across animation frames.',
 );
+const viewportCanvasSource = readFileSync(
+  path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
+  'utf8',
+);
+const repaintSourceTransparency = viewportCanvasSource.match(
+  /function constrainLocalRepaintFalloffToSourceContent\([\s\S]*?\n}\n/,
+)?.[0];
+assert(
+  repaintSourceTransparency,
+  'Expected local repaint projection to constrain brush coverage to generated content alpha.',
+);
+assert.match(
+  repaintSourceTransparency,
+  /removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
+  'Local repaint must remove the same dark backdrop as its generated-image preview before projection.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const compileScene = new THREE\.Scene\(\);[\s\S]*?const compilePromise = gl\.compileAsync\(compileScene, camera\);[\s\S]*?overlayState\.compilePromise = compilePromise/,
+  'Local repaint must compile only its isolated overlay instead of capturing replaceable scene materials.',
+);
+assert.match(
+  viewportCanvasSource,
+  /if \(state\.compilePromise\)[\s\S]*?state\.compilePromise\.then\([\s\S]*?finalizeLocalRepaintGpuOverlayDisposal/,
+  'Local repaint material disposal must wait for an in-flight asynchronous compile.',
+);
+const repaintFalloffWorkerSource = readFileSync(
+  path.join(root, 'src/workers/localRepaintFalloff.worker.ts'),
+  'utf8',
+);
+assert.match(
+  repaintFalloffWorkerSource,
+  /removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
+  'Dark-background rejection must run inside the local repaint worker before publishing coverage.',
+);
 const server = await createServer({
   root,
   appType: 'custom',
@@ -33,7 +68,47 @@ const server = await createServer({
 });
 
 try {
+  if (!globalThis.ImageData) {
+    globalThis.ImageData = class ImageData {
+      constructor(data, width, height) {
+        this.data = data;
+        this.width = width;
+        this.height = height;
+      }
+    };
+  }
   const projection = await server.ssrLoadModule('/src/engine/projection/ProjectedLayerMaterial.ts');
+  const repaintPreviewUtils = await server.ssrLoadModule(
+    '/src/engine/localRepaint/resultPreviewUtils.ts',
+  );
+  const sourcePixels = new Uint8ClampedArray(6 * 4 * 4);
+  for (let index = 0; index < 6 * 4; index += 1) {
+    const offset = index * 4;
+    sourcePixels[offset] = 8;
+    sourcePixels[offset + 1] = 9;
+    sourcePixels[offset + 2] = 12;
+    sourcePixels[offset + 3] = 255;
+  }
+  for (const index of [8, 9, 14, 15]) {
+    const offset = index * 4;
+    sourcePixels[offset] = 224;
+    sourcePixels[offset + 1] = 145;
+    sourcePixels[offset + 2] = 22;
+  }
+  const transparentRepaint = repaintPreviewUtils.removeEdgeConnectedNeutralBackground(
+    new ImageData(sourcePixels, 6, 4),
+    'dark-only',
+  ).imageData;
+  assert.equal(
+    transparentRepaint.data[3],
+    0,
+    'The edge-connected black generation backdrop must become transparent.',
+  );
+  assert.equal(
+    transparentRepaint.data[8 * 4 + 3],
+    255,
+    'Authored yellow/orange repaint pixels must remain fully visible.',
+  );
   const repaintActivation = await server.ssrLoadModule(
     '/src/engine/viewport/localRepaintPreviewActivation.ts',
   );

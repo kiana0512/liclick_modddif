@@ -35,6 +35,7 @@ function getWorker() {
 
 export async function createLocalRepaintFalloffInWorker(input: {
   mask: CanvasImageSource;
+  source: CanvasImageSource;
   width: number;
   height: number;
 }) {
@@ -45,18 +46,36 @@ export async function createLocalRepaintFalloffInWorker(input: {
   ) {
     throw new Error('Local repaint falloff worker is unavailable.');
   }
-  const mask = await createImageBitmap(input.mask);
+  const [maskResult, sourceResult] = await Promise.allSettled([
+    createImageBitmap(input.mask),
+    createImageBitmap(input.source),
+  ]);
+  if (maskResult.status === 'rejected') {
+    if (sourceResult.status === 'fulfilled') sourceResult.value.close();
+    throw maskResult.reason instanceof Error
+      ? maskResult.reason
+      : new Error(String(maskResult.reason));
+  }
+  if (sourceResult.status === 'rejected') {
+    maskResult.value.close();
+    throw sourceResult.reason instanceof Error
+      ? sourceResult.reason
+      : new Error(String(sourceResult.reason));
+  }
+  const mask = maskResult.value;
+  const source = sourceResult.value;
   const id = nextRequestId++;
   return new Promise<{ bitmap: ImageBitmap; processMs: number }>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     try {
       getWorker().postMessage(
-        { id, mask, width: input.width, height: input.height },
-        { transfer: [mask] },
+        { id, mask, source, width: input.width, height: input.height },
+        { transfer: [mask, source] },
       );
     } catch (error) {
       pending.delete(id);
       mask.close();
+      source.close();
       reject(error instanceof Error ? error : new Error(String(error)));
     }
   });

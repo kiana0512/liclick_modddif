@@ -20,7 +20,7 @@ function getTone(data: Uint8ClampedArray, offset: number) {
   return { alpha, max, min, chroma, luma };
 }
 
-type BackgroundRemovalMode = 'neutral' | 'dark-only';
+export type BackgroundRemovalMode = 'neutral' | 'dark-only';
 
 function isBackgroundSeed(
   data: Uint8ClampedArray,
@@ -46,7 +46,7 @@ function isBackgroundCandidate(
   return black || (mode === 'neutral' && white);
 }
 
-function removeEdgeConnectedNeutralBackground(
+export function removeEdgeConnectedNeutralBackground(
   imageData: ImageData,
   mode: BackgroundRemovalMode,
 ) {

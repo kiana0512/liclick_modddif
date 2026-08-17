@@ -91,6 +91,7 @@ import {
 } from '@/services/nativePerformanceClient';
 import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
+import { removeEdgeConnectedNeutralBackground } from '@/engine/localRepaint/resultPreviewUtils';
 import {
   isViewportInteractionBusy,
   markViewportInteractionEnd,
@@ -4299,13 +4300,35 @@ type LocalRepaintGpuOverlayState = {
   root: THREE.Group;
   meshes: THREE.Mesh[];
   unsubscribeVisibility: () => void;
+  compilePromise?: Promise<THREE.Object3D>;
+  disposeRequested?: boolean;
+  disposed?: boolean;
 };
 
+function finalizeLocalRepaintGpuOverlayDisposal(state: LocalRepaintGpuOverlayState) {
+  if (state.disposed) return;
+  state.disposed = true;
+  disposeGeneratedMaterialTree(state.material);
+}
+
 function disposeLocalRepaintGpuOverlay(state: LocalRepaintGpuOverlayState | undefined) {
-  if (!state) return;
+  if (!state || state.disposeRequested) return;
+  state.disposeRequested = true;
   state.unsubscribeVisibility();
   state.root.removeFromParent();
-  disposeGeneratedMaterialTree(state.material);
+  if (state.compilePromise) {
+    // Three's compileAsync poller assumes every captured material keeps its
+    // currentProgram until the promise settles. An effect replacement can
+    // detach this overlay immediately, but disposing the material mid-poll
+    // makes WebGLRenderer dereference an undefined program and leaves the
+    // background model on its neutral white fallback after refresh.
+    void state.compilePromise.then(
+      () => finalizeLocalRepaintGpuOverlayDisposal(state),
+      () => finalizeLocalRepaintGpuOverlayDisposal(state),
+    );
+    return;
+  }
+  finalizeLocalRepaintGpuOverlayDisposal(state);
 }
 
 function setLocalRepaintGpuOverlayVisibility(state: LocalRepaintGpuOverlayState, visible: boolean) {
@@ -4462,26 +4485,33 @@ function getLocalRepaintLiveMaskSize(sourceWidth: number, sourceHeight: number) 
 
 const localRepaintFalloffCanvasCache = new WeakMap<
   HTMLImageElement,
-  Map<string, Promise<HTMLCanvasElement>>
+  WeakMap<HTMLImageElement, Map<string, Promise<HTMLCanvasElement>>>
 >();
 
 function createLocalRepaintFalloffCanvasAsync(
   allowedMaskImage: HTMLImageElement,
+  sourceImage: HTMLImageElement,
   width: number,
   height: number,
 ) {
   const sizeKey = `${width}x${height}`;
-  let imageCache = localRepaintFalloffCanvasCache.get(allowedMaskImage);
-  if (!imageCache) {
-    imageCache = new Map();
-    localRepaintFalloffCanvasCache.set(allowedMaskImage, imageCache);
+  let maskCache = localRepaintFalloffCanvasCache.get(allowedMaskImage);
+  if (!maskCache) {
+    maskCache = new WeakMap();
+    localRepaintFalloffCanvasCache.set(allowedMaskImage, maskCache);
   }
-  const cached = imageCache.get(sizeKey);
+  let sourceCache = maskCache.get(sourceImage);
+  if (!sourceCache) {
+    sourceCache = new Map();
+    maskCache.set(sourceImage, sourceCache);
+  }
+  const cached = sourceCache.get(sizeKey);
   if (cached) return cached;
   const pending = (async () => {
     try {
       const { bitmap, processMs } = await createLocalRepaintFalloffInWorker({
         mask: allowedMaskImage,
+        source: sourceImage,
         width,
         height,
       });
@@ -4502,14 +4532,58 @@ function createLocalRepaintFalloffCanvasAsync(
       return canvas;
     } catch (error) {
       console.warn('[Liclick 3D Texture] Falloff worker unavailable; using main thread.', error);
-      return createLocalRepaintFalloffCanvas(allowedMaskImage, width, height);
+      return constrainLocalRepaintFalloffToSourceContent(
+        createLocalRepaintFalloffCanvas(allowedMaskImage, width, height),
+        sourceImage,
+      );
     }
   })();
-  imageCache.set(sizeKey, pending);
+  sourceCache.set(sizeKey, pending);
   void pending.catch(() => {
-    if (imageCache?.get(sizeKey) === pending) imageCache.delete(sizeKey);
+    if (sourceCache?.get(sizeKey) === pending) sourceCache.delete(sizeKey);
   });
   return pending;
+}
+
+function constrainLocalRepaintFalloffToSourceContent(
+  falloffCanvas: HTMLCanvasElement,
+  sourceImage: HTMLImageElement,
+) {
+  const width = falloffCanvas.width;
+  const height = falloffCanvas.height;
+  const sourceMaskCanvas = document.createElement('canvas');
+  sourceMaskCanvas.width = width;
+  sourceMaskCanvas.height = height;
+  const sourceMaskContext = sourceMaskCanvas.getContext('2d', { willReadFrequently: true });
+  const outputCanvas = document.createElement('canvas');
+  outputCanvas.width = width;
+  outputCanvas.height = height;
+  const outputContext = outputCanvas.getContext('2d');
+  if (!sourceMaskContext || !outputContext) return falloffCanvas;
+
+  // The generation panel previews local-repaint results after removing the
+  // edge-connected dark backdrop. Apply the same rule to projection coverage,
+  // but at the lightweight live-mask resolution: the original 2K/4K colour
+  // image stays untouched and no full-size PNG/base64 copy is needed.
+  sourceMaskContext.drawImage(sourceImage, 0, 0, width, height);
+  const sourcePixels = sourceMaskContext.getImageData(0, 0, width, height);
+  const transparentSource = removeEdgeConnectedNeutralBackground(sourcePixels, 'dark-only');
+  const alphaMask = sourceMaskContext.createImageData(width, height);
+  for (let offset = 0; offset < alphaMask.data.length; offset += 4) {
+    alphaMask.data[offset] = 255;
+    alphaMask.data[offset + 1] = 255;
+    alphaMask.data[offset + 2] = 255;
+    alphaMask.data[offset + 3] = transparentSource.imageData.data[offset + 3];
+  }
+  sourceMaskContext.putImageData(alphaMask, 0, 0);
+
+  // Keep the cached visibility falloff immutable. A capture mask may be reused
+  // by another generation whose transparent subject silhouette is different.
+  outputContext.drawImage(falloffCanvas, 0, 0);
+  outputContext.globalCompositeOperation = 'destination-in';
+  outputContext.drawImage(sourceMaskCanvas, 0, 0);
+  outputContext.globalCompositeOperation = 'source-over';
+  return outputCanvas;
 }
 
 type PaintableMeshCache = {
@@ -8135,6 +8209,7 @@ function SurfacePaintOverlay() {
         const liveMaskSize = getLocalRepaintLiveMaskSize(sourceWidth, sourceHeight);
         const falloffCanvas = await createLocalRepaintFalloffCanvasAsync(
           allowedMaskImage,
+          sourceImage,
           liveMaskSize.width,
           liveMaskSize.height,
         );
@@ -9126,7 +9201,22 @@ function SurfacePaintOverlay() {
       localRepaintGpuOverlayRef.current = overlayState;
       syncLocalRepaintGpuOverlayActivity();
       syncProjectedLayerMaterialProjection(model.group);
-      if (typeof gl.compileAsync === 'function') await gl.compileAsync(scene, camera);
+      if (typeof gl.compileAsync === 'function' && targets[0]) {
+        // Compile only the new overlay program. Compiling the whole live scene
+        // captures unrelated background materials that SceneRoot may replace
+        // while the asynchronous poll is still running.
+        const compileScene = new THREE.Scene();
+        const compileMesh = new THREE.Mesh(targets[0].geometry, material);
+        compileScene.add(compileMesh);
+        const compilePromise = gl.compileAsync(compileScene, camera);
+        overlayState.compilePromise = compilePromise;
+        try {
+          await compilePromise;
+        } finally {
+          overlayState.compilePromise = undefined;
+          compileScene.remove(compileMesh);
+        }
+      }
       if (localRepaintGpuOverlayRef.current !== overlayState) {
         disposeLocalRepaintGpuOverlay(overlayState);
         return undefined;
@@ -9143,7 +9233,6 @@ function SurfacePaintOverlay() {
       clearLocalRepaintGpuOverlay,
       gl,
       invalidate,
-      scene,
       syncLocalRepaintGpuOverlayActivity,
     ],
   );

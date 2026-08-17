@@ -1,6 +1,9 @@
+import { removeEdgeConnectedNeutralBackground } from '../engine/localRepaint/resultPreviewUtils';
+
 type FalloffRequest = {
   id: number;
   mask: ImageBitmap;
+  source: ImageBitmap;
   width: number;
   height: number;
 };
@@ -10,7 +13,7 @@ type FalloffResponse =
   | { id: number; error: string };
 
 self.onmessage = (event: MessageEvent<FalloffRequest>) => {
-  const { id, mask, width, height } = event.data;
+  const { id, mask, source, width, height } = event.data;
   const startedAt = performance.now();
   try {
     const canvas = new OffscreenCanvas(width, height);
@@ -18,7 +21,7 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
     if (!context) throw new Error('Could not create local repaint falloff canvas.');
     context.clearRect(0, 0, width, height);
     context.drawImage(mask, 0, 0, width, height);
-    const source = context.getImageData(0, 0, width, height);
+    const maskPixels = context.getImageData(0, 0, width, height);
     let weightTotal = 0;
     let weightedX = 0;
     let weightedY = 0;
@@ -26,9 +29,13 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
       for (let x = 0; x < width; x += 1) {
         const offset = (y * width + x) * 4;
         const weight =
-          (Math.max(source.data[offset], source.data[offset + 1], source.data[offset + 2]) /
+          (Math.max(
+            maskPixels.data[offset],
+            maskPixels.data[offset + 1],
+            maskPixels.data[offset + 2],
+          ) /
             255) *
-          (source.data[offset + 3] / 255);
+          (maskPixels.data[offset + 3] / 255);
         if (weight <= 0.03) continue;
         weightTotal += weight;
         weightedX += x * weight;
@@ -44,9 +51,13 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
         for (let x = 0; x < width; x += 1) {
           const offset = (y * width + x) * 4;
           const coverage =
-            (Math.max(source.data[offset], source.data[offset + 1], source.data[offset + 2]) /
+            (Math.max(
+              maskPixels.data[offset],
+              maskPixels.data[offset + 1],
+              maskPixels.data[offset + 2],
+            ) /
               255) *
-            (source.data[offset + 3] / 255);
+            (maskPixels.data[offset + 3] / 255);
           if (coverage <= 0.03) continue;
           coreRadius = Math.max(coreRadius, Math.hypot(x - centerX, y - centerY));
         }
@@ -80,6 +91,27 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
       context.clearRect(0, 0, width, height);
     }
 
+    // Match the transparent preview shown in the generation panel. The source
+    // colour remains the original high-resolution asset; only its lightweight
+    // coverage silhouette is combined here, entirely off the main thread.
+    const sourceCanvas = new OffscreenCanvas(width, height);
+    const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
+    if (!sourceContext) throw new Error('Could not create local repaint source mask canvas.');
+    sourceContext.drawImage(source, 0, 0, width, height);
+    const sourcePixels = sourceContext.getImageData(0, 0, width, height);
+    const transparentSource = removeEdgeConnectedNeutralBackground(sourcePixels, 'dark-only');
+    const alphaMask = sourceContext.createImageData(width, height);
+    for (let offset = 0; offset < alphaMask.data.length; offset += 4) {
+      alphaMask.data[offset] = 255;
+      alphaMask.data[offset + 1] = 255;
+      alphaMask.data[offset + 2] = 255;
+      alphaMask.data[offset + 3] = transparentSource.imageData.data[offset + 3];
+    }
+    sourceContext.putImageData(alphaMask, 0, 0);
+    context.globalCompositeOperation = 'destination-in';
+    context.drawImage(sourceCanvas, 0, 0);
+    context.globalCompositeOperation = 'source-over';
+
     const bitmap = canvas.transferToImageBitmap();
     const response: FalloffResponse = {
       id,
@@ -95,6 +127,7 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
     self.postMessage(response);
   } finally {
     mask.close();
+    source.close();
   }
 };
 
