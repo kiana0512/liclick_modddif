@@ -143,8 +143,17 @@ export function App() {
   const [route, setRoute] = useState<RouteState>(() => routeFromPath(window.location.pathname));
   const navigationRevisionRef = useRef(0);
   const entryProjectPromiseRef = useRef<Promise<Project | undefined> | null>(null);
+  const residentTextureProjectIdRef = useRef<string>();
+  if (route.name === 'editor') residentTextureProjectIdRef.current = route.projectId;
+  const preserveTextureWorkspaceForUv = Boolean(
+    route.name === 'autoUv' &&
+      route.projectId &&
+      residentTextureProjectIdRef.current === route.projectId,
+  );
   const textureRouteActive =
-    route.name === 'editor' || (route.name === 'projects' && route.module === 'texture');
+    route.name === 'editor' ||
+    preserveTextureWorkspaceForUv ||
+    (route.name === 'projects' && route.module === 'texture');
   const localTextureRuntime = useLocalTextureRuntime(textureRouteActive);
   const setChecking = useAuthStore((state) => state.setChecking);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
@@ -323,7 +332,10 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (route.name === 'editor') {
+  if (route.name === 'editor' || preserveTextureWorkspaceForUv) {
+    const textureProjectId =
+      route.name === 'editor' ? route.projectId : residentTextureProjectIdRef.current!;
+    const textureWorkspaceActive = route.name === 'editor';
     return (
       <>
         <TextureRuntimeGate
@@ -332,18 +344,38 @@ export function App() {
           onRetry={() => void localTextureRuntime.refresh()}
           onBack={navigation.openHome}
         >
+          <div className="h-screen" hidden={!textureWorkspaceActive} aria-hidden={!textureWorkspaceActive}>
+            <Suspense fallback={<AppRouteFallback />}>
+              <EditorPage
+                projectId={textureProjectId}
+                onBack={navigation.openTextureProjects}
+                onOpenRetopology={() => navigation.openAutoRetopology(textureProjectId)}
+                onOpenUv={() => navigation.openAutoUv(textureProjectId)}
+                onOpenBake={(handoff) => navigation.openBake(textureProjectId, handoff)}
+                autoOpenBake={route.name === 'editor' ? route.continueToBake : false}
+                pendingBakeHandoff={route.name === 'editor' ? route.bakeHandoff : undefined}
+                isActive={textureWorkspaceActive}
+              />
+            </Suspense>
+          </div>
+        </TextureRuntimeGate>
+        {route.name === 'autoUv' ? (
           <Suspense fallback={<AppRouteFallback />}>
-            <EditorPage
+            <AutoUvPage
               projectId={route.projectId}
-              onBack={navigation.openTextureProjects}
-              onOpenRetopology={() => navigation.openAutoRetopology(route.projectId)}
-              onOpenUv={() => navigation.openAutoUv(route.projectId)}
-              onOpenBake={(handoff) => navigation.openBake(route.projectId, handoff)}
-              autoOpenBake={route.continueToBake}
-              pendingBakeHandoff={route.bakeHandoff}
+              onBack={navigation.openHome}
+              onLogout={navigation.openHome}
+              navigation={{
+                activeModule: 'uv',
+                onOpenTexture: () => navigation.openEditor(textureProjectId),
+                onOpenRetopology: () => navigation.openAutoRetopology(route.projectId),
+                onOpenUv: () => undefined,
+                onOpenBake: () => navigation.openBake(textureProjectId),
+              }}
+              onContinue={(projectId, handoff) => navigation.openBake(projectId, handoff)}
             />
           </Suspense>
-        </TextureRuntimeGate>
+        ) : null}
         <ToastHost />
       </>
     );

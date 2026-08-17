@@ -109,6 +109,7 @@ type ViewportCanvasProps = {
   onImportReferenceImages: (files: File[]) => void;
   onOpenImport: () => void;
   importDisabled?: boolean;
+  isActive?: boolean;
   showGrid?: boolean;
   gridVariant?: 'default' | 'subtle';
   backgroundColor?: string;
@@ -12302,6 +12303,7 @@ export function ViewportCanvas({
   onImportReferenceImages,
   onOpenImport,
   importDisabled = false,
+  isActive = true,
   backgroundColor = '#080914',
   showCaptureFrame = true,
   showViewCube = true,
@@ -12397,6 +12399,7 @@ export function ViewportCanvas({
     >
       <Canvas
         key={canvasKey}
+        frameloop={isActive ? 'always' : 'never'}
         dpr={[1, 1.5]}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}
         gl={{

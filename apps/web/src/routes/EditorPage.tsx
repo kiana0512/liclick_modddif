@@ -83,6 +83,7 @@ import {
   type ModelImportProgressEvent,
 } from '@/engine/loaders/modelImportProgress';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
+import { getReusableFullProjectModels } from '@/engine/loaders/projectModelRestoreReuse';
 import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModelBesideScene';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import {
@@ -220,6 +221,7 @@ type EditorPageProps = {
   onOpenBake: (handoff?: TextureBakeHandoff) => void;
   autoOpenBake?: boolean;
   pendingBakeHandoff?: TextureBakeHandoff;
+  isActive?: boolean;
 };
 
 declare global {
@@ -799,6 +801,7 @@ export function EditorPage({
   onOpenBake,
   autoOpenBake = false,
   pendingBakeHandoff,
+  isActive = true,
 }: EditorPageProps) {
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
@@ -1900,6 +1903,22 @@ export function EditorPage({
       );
     }
     if (restorableObjects.length === 0) return;
+    const reusableModels = getReusableFullProjectModels(
+      restorableObjects,
+      useSceneStore.getState().importedModels,
+    );
+    if (reusableModels) {
+      const activeObjectId = projectToRestore.activeObjectId ?? restorableObjects[0]?.id;
+      reusableModels.forEach((model) => {
+        model.group.userData.liclickProjectId = projectToRestore.id;
+      });
+      restoreImportedModels(reusableModels, activeObjectId);
+      document.body.dataset.textureRestoreModelFull = '1';
+      document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
+      document.body.dataset.textureRestoreModelReuse = '1';
+      return;
+    }
+    document.body.dataset.textureRestoreModelReuse = '0';
     const restoreRequest = ++modelRestoreRequestRef.current;
     const activeObjectId = projectToRestore.activeObjectId ?? restorableObjects[0]?.id;
     const prioritizedObjects = activeObjectId
@@ -1944,6 +1963,7 @@ export function EditorPage({
             targetMaxDimension: object.importNormalizationTransform?.targetMaxDimension ?? 3,
           },
         });
+        loaded.root.userData.liclickProjectId = projectToRestore.id;
         return {
           object,
           model: {
@@ -2280,11 +2300,9 @@ export function EditorPage({
 
   async function performWorkspaceServerSave(snapshot: Project) {
     const projectForSave = await prepareProjectForWorkspaceSave(snapshot);
-    const result = await saveWorkspaceProject(projectForSave).catch((error) => {
-      throw new Error(
-        `保存项目 JSON 失败: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      );
-    });
+    // Preserve WorkspaceApiError so callers can distinguish a harmless stale
+    // snapshot race from authentication and real persistence failures.
+    const result = await saveWorkspaceProject(projectForSave);
     const latestProject = useProjectStore
       .getState()
       .projects.find((project) => project.id === snapshot.id);
@@ -2373,7 +2391,10 @@ export function EditorPage({
       });
       return;
     }
-    const snapshot = getProjectSnapshot();
+    // Immediate/background saves must not synchronously encode the WebGL
+    // viewport. That work can create a visible long frame while switching
+    // modules; the normal autosave or an explicit Ctrl+S will refresh it.
+    const snapshot = getProjectSnapshot({ refreshThumbnail: showSuccessToast });
     if (!snapshot) return;
 
     manualSaveRunningRef.current = true;
@@ -2399,8 +2420,41 @@ export function EditorPage({
         setAutosaveRetryToken((token) => token + 1);
       }
     } catch (error) {
+      let reportedError = error;
+      const staleSnapshot =
+        error instanceof WorkspaceApiError &&
+        error.status === 409 &&
+        error.message.includes('stale project snapshot');
+      if (staleSnapshot) {
+        const latestSnapshot = getProjectSnapshot({ refreshThumbnail: false });
+        if (latestSnapshot) {
+          try {
+            const result = await saveToWorkspaceServer(latestSnapshot);
+            setSaveStatus(result.savedLatestSnapshot ? 'saved' : 'idle');
+            if (!result.savedLatestSnapshot) {
+              setAutosaveRetryToken((token) => token + 1);
+            }
+            return;
+          } catch (retryError) {
+            const supersededAgain =
+              retryError instanceof WorkspaceApiError &&
+              retryError.status === 409 &&
+              retryError.message.includes('stale project snapshot');
+            if (supersededAgain) {
+              // Another module saved an even newer snapshot while this retry
+              // was uploading assets. Keep the editor retryable instead of
+              // presenting a false permanent failure; autosave reads all
+              // current stores again on its next pass.
+              setSaveStatus('idle');
+              setAutosaveRetryToken((token) => token + 1);
+              return;
+            }
+            reportedError = retryError;
+          }
+        }
+      }
       setSaveStatus('failed');
-      console.error('[Liclick 3D Texture] Manual workspace save failed.', error);
+      console.error('[Liclick 3D Texture] Manual workspace save failed.', reportedError);
     } finally {
       manualSaveRunningRef.current = false;
       if (pendingImmediateSaveRef.current) {
@@ -6336,6 +6390,7 @@ export function EditorPage({
             onImportReferenceImages={(files) => void handleImportReferenceImages(files)}
             onOpenImport={() => modelInputRef.current?.click()}
             importDisabled={modelImportBusy}
+            isActive={isActive}
           />
         }
         panels={panelDefinitions}

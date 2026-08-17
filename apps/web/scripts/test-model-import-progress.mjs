@@ -15,6 +15,41 @@ const server = await createServer({
 });
 
 try {
+  const restoreReuse = await server.ssrLoadModule(
+    '/src/engine/loaders/projectModelRestoreReuse.ts',
+  );
+  const persistedObject = {
+    id: 'object-1',
+    sourcePath: 'http://127.0.0.1/model.fbx',
+  };
+  const residentModel = {
+    objectId: 'object-1',
+    objectUrl: persistedObject.sourcePath,
+    restoreStage: 'full',
+    group: { userData: {} },
+  };
+  assert.deepEqual(
+    restoreReuse.getReusableFullProjectModels([persistedObject], [residentModel]),
+    [residentModel],
+    'Reopening the same project must retain its fully loaded model and GPU material inputs.',
+  );
+  assert.equal(
+    restoreReuse.getReusableFullProjectModels(
+      [persistedObject],
+      [{ ...residentModel, restoreStage: 'outline' }],
+    ),
+    undefined,
+    'A partially restored model must continue through the cold restore pipeline.',
+  );
+  assert.equal(
+    restoreReuse.getReusableFullProjectModels(
+      [{ ...persistedObject, sourcePath: 'http://127.0.0.1/revised-model.fbx' }],
+      [residentModel],
+    ),
+    undefined,
+    'A revised model asset must never reuse stale geometry or textures.',
+  );
+
   const progress = await server.ssrLoadModule(
     '/src/engine/loaders/modelImportProgress.ts',
   );

@@ -1088,6 +1088,7 @@ function ImportedModel({
     signature: string;
     cancelled: boolean;
     promise: Promise<THREE.ShaderMaterial | undefined>;
+    precompilePromise?: Promise<void>;
   }>();
   const committedProjectedMaterialStructureRef = useRef('');
   // The authoritative projected material stays fully resident while geometry-only
@@ -2840,6 +2841,7 @@ function ImportedModel({
       signature: textureArrayBuildSignature,
       cancelled: false,
       promise: undefined as unknown as Promise<THREE.ShaderMaterial | undefined>,
+      precompilePromise: undefined as Promise<void> | undefined,
     };
     const earlyMaterialInput: ProjectionLayerStackInput = {
       layers: projectedProgramWarmupInputs,
@@ -2873,7 +2875,7 @@ function ImportedModel({
     });
     projectedTextureArrayBuildRef.current = nextBuild;
 
-    void nextBuild.promise
+    nextBuild.precompilePromise = nextBuild.promise
       .then(async (material) => {
         if (
           !material ||
@@ -2946,7 +2948,8 @@ function ImportedModel({
           warmGeometry.dispose();
           warmTarget.dispose();
         }
-      })
+      });
+    void nextBuild.precompilePromise
       .catch((error) => {
         if (nextBuild.cancelled) return;
         if (projectedTextureArrayBuildRef.current === nextBuild) {
@@ -3791,6 +3794,7 @@ function ImportedModel({
                   signature: textureArrayBuildSignature,
                   cancelled: false,
                   promise: undefined as unknown as Promise<THREE.ShaderMaterial | undefined>,
+                  precompilePromise: undefined as Promise<void> | undefined,
                 };
                 const visibleLayerCount = projectedMaterialInput.layers.filter(
                   (layer) => layer.visible,
@@ -3812,7 +3816,8 @@ function ImportedModel({
                 });
                 projectedTextureArrayBuildRef.current = nextBuild;
               }
-              sharedProjectedMaterial = await projectedTextureArrayBuildRef.current.promise;
+              const textureArrayBuild = projectedTextureArrayBuildRef.current;
+              sharedProjectedMaterial = await textureArrayBuild.promise;
               if (sharedProjectedMaterial) {
                 const visibleLayerCount = projectedMaterialInput.layers.filter(
                   (layer) => layer.visible,
@@ -3829,7 +3834,15 @@ function ImportedModel({
                 // already completed.
                 await waitForViewportInteractionIdle();
                 if (cancelled) return;
-                await precompileProjectedMaterial(sharedProjectedMaterial);
+                // A cold outline restore starts the same structural build early.
+                // Wait for its single precompile instead of polling the same
+                // material concurrently from two compileAsync calls; Three's
+                // parallel poller can otherwise observe an undefined program.
+                if (textureArrayBuild.precompilePromise) {
+                  await textureArrayBuild.precompilePromise;
+                } else {
+                  await precompileProjectedMaterial(sharedProjectedMaterial);
+                }
                 const warmup = projectedProgramWarmupRef.current;
                 if (
                   warmup &&
