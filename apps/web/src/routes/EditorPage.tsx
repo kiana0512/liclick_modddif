@@ -126,6 +126,10 @@ import {
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import {
+  generationBelongsToObject,
+  normalizeLocalRepaintObjectBindings,
+} from '@/engine/localRepaint/objectBinding';
+import {
   prewarmPreviewTextures,
   releasePreviewTexture,
 } from '@/engine/viewport/previewTextureCache';
@@ -150,7 +154,6 @@ import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitch
 import {
   findMergedUvBakeLayer,
   isBakeMergeModelReady,
-  resolveBakeUvMergePlan,
   selectBakeBaseColor,
 } from '@/features/workflow/selectBakeBaseColor';
 import { EditorShell } from '@/layouts/EditorShell';
@@ -504,7 +507,7 @@ function isMatchingLocalRepaintProjectionLayer(
   if (targetLayerId) return layer.replacementTargetLayerId === targetLayerId;
   if (generationId) return layer.generationId === generationId;
   if (captureId) return layer.captureId === captureId;
-  return !layer.objectId || layer.objectId === objectId;
+  return layer.objectId === objectId;
 }
 
 function collapseLocalRepaintProjectionLayers(
@@ -536,8 +539,7 @@ function isLocalRepaintDestinationLayer(
   layer: Layer | undefined,
   objectId: string,
 ): layer is Layer & { type: 'uv' } {
-  if (!layer || layer.type !== 'uv' || (layer.objectId && layer.objectId !== objectId))
-    return false;
+  if (!layer || layer.type !== 'uv' || layer.objectId !== objectId) return false;
   if (!layer.imageUrl) return true;
   return layer.role === 'local-repaint-overlay';
 }
@@ -901,6 +903,7 @@ export function EditorPage({
   );
   const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
   const localRepaintToolRequestRevisionRef = useRef(0);
+  const localRepaintObjectScopeRef = useRef<string>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
@@ -962,6 +965,30 @@ export function EditorPage({
     (state) => state.setLocalRepaintProjectionSource,
   );
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+
+  useEffect(() => {
+    const activeObjectId = selectedObjectId ?? importedModel?.objectId;
+    const nextScope = `${projectId}:${activeObjectId ?? ''}`;
+    if (localRepaintObjectScopeRef.current === nextScope) return;
+    localRepaintObjectScopeRef.current = nextScope;
+
+    const sceneState = useSceneStore.getState();
+    if (
+      !sceneState.localRepaintProjectionSource &&
+      !sceneState.localRepaintPreviewLayer &&
+      !sceneState.paintMaskHasContent
+    )
+      return;
+    // The live projection source and mask are renderer-owned session state.
+    // They cannot follow a project/model switch even when a legacy layer lacks
+    // objectId, otherwise that old image is painted onto every later model.
+    localRepaintToolRequestRevisionRef.current += 1;
+    sceneState.setLocalRepaintProjectionSource(undefined);
+    sceneState.setLocalRepaintPreviewLayer(undefined);
+    sceneState.setPaintTool('none');
+    sceneState.clearPaintMask();
+  }, [importedModel?.objectId, projectId, selectedObjectId]);
+
   const setLayers = useLayerStore((state) => state.setLayers);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
@@ -1008,11 +1035,13 @@ export function EditorPage({
         Boolean(generation.resultUrl) &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        (!preferredObjectId ||
-          !generation.metadata.objectId ||
-          generation.metadata.objectId === preferredObjectId),
+        generationBelongsToObject(
+          generation,
+          preferredObjectId,
+          project?.captures ?? [],
+        ),
     );
-  }, [generations, importedModel?.objectId, projectId, selectedObjectId]);
+  }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
   const localImageGenerationStoreRunning = useMemo(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     return generations.some(
@@ -1020,11 +1049,13 @@ export function EditorPage({
         (generation.status === 'queued' || generation.status === 'running') &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        (!preferredObjectId ||
-          !generation.metadata.objectId ||
-          generation.metadata.objectId === preferredObjectId),
+        generationBelongsToObject(
+          generation,
+          preferredObjectId,
+          project?.captures ?? [],
+        ),
     );
-  }, [generations, importedModel?.objectId, projectId, selectedObjectId]);
+  }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
   const localImageGenerationRunning =
     localImageGenerationRequested || localImageGenerationStoreRunning;
   const activeBakedTexture = project?.bakedTextures.find(
@@ -1864,8 +1895,13 @@ export function EditorPage({
     skipProjectStoreSyncRef.current.generations = true;
     skipProjectStoreSyncRef.current.references = true;
     setObjects(projectToHydrate.objects.filter((object) => object.format !== 'primitive'));
-    setLayers(projectToHydrate.layers);
-    const visibleTextureLayers = projectToHydrate.layers.filter(
+    const normalizedLocalRepaintLayers = normalizeLocalRepaintObjectBindings({
+      layers: projectToHydrate.layers,
+      generations: projectToHydrate.generations,
+      captures: projectToHydrate.captures,
+    }).layers;
+    setLayers(normalizedLocalRepaintLayers);
+    const visibleTextureLayers = normalizedLocalRepaintLayers.filter(
       (layer) => layer.visible && Boolean(layer.imageUrl),
     );
     document.body.dataset.textureRestoreHydrated = '1';
@@ -4398,7 +4434,7 @@ export function EditorPage({
     });
   }
 
-  async function handleOpenBake(requestedHandoff?: TextureBakeHandoff) {
+  function handleOpenBake(requestedHandoff?: TextureBakeHandoff) {
     if (publishingToBakeRef.current || manualBakeRunningRef.current) return;
     const objectId = requestedHandoff?.objectId ?? selectedObjectId ?? importedModel?.objectId;
     if (!project || !objectId) {
@@ -4414,89 +4450,17 @@ export function EditorPage({
     publishingToBakeRef.current = true;
     setPublishingToBake(true);
     try {
-      const mergePlan = resolveBakeUvMergePlan(useLayerStore.getState().layers, objectId);
-      let mergedLayer = mergePlan.action === 'reuse' ? mergePlan.mergedLayer : undefined;
-      if (mergePlan.action === 'missing') {
-        pushToast({
-          tone: 'warning',
-          title: '没有可合并的投影图层',
-          description: '请先生成并显示至少一个投影图层，再传入烘焙。',
-          dedupeKey: 'bake-merged-uv-missing',
-        });
-        return;
-      }
-      if (mergePlan.action === 'merge') {
-        pushToast({
-          tone: 'info',
-          title: '进入烘焙前需要合并 UV',
-          description: '正在自动合并当前对象的可见投影图层，完成后将进入烘焙界面。',
-          dedupeKey: 'bake-auto-merge-uv',
-        });
-        const mergeResult = await mergeLayersToUvLayer(
-          mergePlan.sourceLayerIds,
-          mergePlan.baseUvLayerId,
-          {
-            objectId,
-            suppressErrorToast: true,
-            throwOnError: true,
-          },
-        );
-        if (mergeResult && 'type' in mergeResult && mergeResult.type === 'uv') {
-          mergedLayer = mergeResult;
-        }
-        mergedLayer = findMergedUvBakeLayer(useLayerStore.getState().layers, objectId);
-      }
-      if (!mergedLayer?.imageUrl) {
-        throw new Error('自动合并 UV 图层未生成有效贴图，请稍后重试。');
-      }
-
-      // Entering the bake route unmounts the texture editor immediately. The
-      // normal five-second autosave therefore cannot be relied on to retain a
-      // UV merge that was just created above. Persist the complete layer stack
-      // first so returning to Texture (or entering Bake again) reuses the same
-      // merged UV layer instead of baking all projected layers a second time.
-      if (project.workspaceMode === 'local-server') {
-        window.clearTimeout(autosaveTimerRef.current);
-        window.clearTimeout(manualBakeProgressTimerRef.current);
-        setManualBakeProgress({
-          title: '正在保存合并 UV 图层',
-          detail: '保存后再次进入烘焙将直接复用这一层。',
-          progress: 0.998,
-        });
-        setSaveStatus('saving');
-
-        const saveMergedLayer = async () => {
-          const snapshot = getProjectSnapshot({ refreshThumbnail: false });
-          if (!snapshot) throw new Error('无法读取当前贴图项目。');
-          const result = await saveToWorkspaceServer(snapshot);
-          const persisted = result.project.layers.some(
-            (layer) =>
-              layer.id === mergedLayer.id &&
-              layer.type === 'uv' &&
-              layer.role === 'merged-uv' &&
-              Boolean(layer.imageUrl),
-          );
-          return { result, persisted };
-        };
-
-        let saved = await saveMergedLayer();
-        if (!saved.persisted) saved = await saveMergedLayer();
-        if (!saved.persisted) throw new Error('合并 UV 图层未能保存到贴图项目。');
-        setSaveStatus(saved.result.savedLatestSnapshot ? 'saved' : 'idle');
-      }
+      const mergedLayer = findMergedUvBakeLayer(useLayerStore.getState().layers, objectId);
+      const baseColor =
+        requestedHandoff?.baseColor ??
+        (mergedLayer?.imageUrl
+          ? { name: mergedLayer.name, imageUrl: mergedLayer.imageUrl }
+          : undefined);
 
       onOpenBake({
         ...requestedHandoff,
         objectId,
-        baseColor: { name: mergedLayer.name, imageUrl: mergedLayer.imageUrl },
-      });
-    } catch (error) {
-      setSaveStatus('failed');
-      pushToast({
-        tone: 'error',
-        title: '传入烘焙失败',
-        description: error instanceof Error ? error.message : '保存合并 UV 图层失败，请稍后重试。',
-        dedupeKey: 'bake-merged-uv-persist-failed',
+        ...(baseColor ? { baseColor } : {}),
       });
     } finally {
       publishingToBakeRef.current = false;
@@ -4957,12 +4921,18 @@ export function EditorPage({
   }, []);
 
   useEffect(() => {
+    const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     const latestLocalRepaintGeneration = generations.find(
       (generation) =>
         generation.resultUrl &&
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
-        (!generation.metadata.projectId || generation.metadata.projectId === projectId),
+        (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+        generationBelongsToObject(
+          generation,
+          preferredObjectId,
+          project?.captures ?? [],
+        ),
     );
     if (!latestLocalRepaintGeneration?.resultUrl) return;
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
@@ -4971,7 +4941,14 @@ export function EditorPage({
     void getLocalRepaintProjectionImage(latestLocalRepaintGeneration.resultUrl).catch((error) => {
       console.warn('[Liclick 3D Texture] Could not preload local repaint result:', error);
     });
-  }, [generations, getLocalRepaintProjectionImage, projectId]);
+  }, [
+    generations,
+    getLocalRepaintProjectionImage,
+    importedModel?.objectId,
+    project?.captures,
+    projectId,
+    selectedObjectId,
+  ]);
 
   useEffect(() => {
     if (
@@ -4982,12 +4959,18 @@ export function EditorPage({
       document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
     )
       return undefined;
+    const preferredObjectId = selectedObjectId ?? importedModel.objectId;
     const latestLocalRepaintGeneration = generations.find(
       (generation) =>
         generation.resultUrl &&
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
-        (!generation.metadata.projectId || generation.metadata.projectId === projectId),
+        (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+        generationBelongsToObject(
+          generation,
+          preferredObjectId,
+          project.captures,
+        ),
     );
     if (!latestLocalRepaintGeneration?.resultUrl) return undefined;
     const generationCapture =
@@ -5000,14 +4983,14 @@ export function EditorPage({
     // a moving viewport here would prewarm the wrong projection while the user
     // is still selecting the mask.
     if (!generationCapture?.camera) return undefined;
-    const objectId = selectedObjectId ?? generationCapture.objectId ?? importedModel.objectId;
+    const objectId = preferredObjectId;
     const currentLayers = useLayerStore.getState().layers;
     const generationResultLayer = currentLayers.find(
       (layer) =>
         layer.type === 'projected' &&
         layer.generationId === latestLocalRepaintGeneration.id &&
         Boolean(layer.replacementTargetLayerId) &&
-        (!layer.objectId || layer.objectId === objectId),
+        layer.objectId === objectId,
     );
     const targetLayer = currentLayers.find(
       (layer) =>
@@ -5169,7 +5152,11 @@ export function EditorPage({
           generation.status === 'succeeded' &&
           isLocalRepaintGeneration(generation) &&
           (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-          (!generation.metadata.objectId || generation.metadata.objectId === preferredObjectId),
+          generationBelongsToObject(
+            generation,
+            preferredObjectId,
+            project.captures,
+          ),
       );
       const generationCapture = latestLocalRepaintGeneration
         ? (project.captures.find(

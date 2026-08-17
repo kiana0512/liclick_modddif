@@ -15,6 +15,7 @@ import {
   getVisibleUvLayerStack,
   isLocalRepaintUvOverlayLayer,
 } from '@/engine/layers/uvLayerComposition';
+import { findMergedUvBakeLayer } from '@/features/workflow/selectBakeBaseColor';
 import {
   dilateUvCoverageWithinTopology,
   padUvIslandGutters,
@@ -406,7 +407,30 @@ function reconcileFlattenedBaseColorUvSeams(
 }
 
 function findVisibleUvLayers(objectId: string) {
-  return getVisibleUvLayerStack(useLayerStore.getState().layers, objectId, 'bottom-to-top');
+  const layers = useLayerStore.getState().layers;
+  const stack = getVisibleUvLayerStack(layers, objectId, 'bottom-to-top').filter(
+    (layer) => layer.objectId === objectId,
+  );
+  const mergedLayer = findMergedUvBakeLayer(layers, objectId);
+  if (!mergedLayer) return stack;
+
+  // A merged UV row is the final Li3D-authored Base Color. The imported
+  // Base texture is one of its inputs and must not be drawn again during
+  // export, regardless of stale layer order. Keep only authored sparse
+  // overlays above the merged atlas and force the atlas to be the last
+  // ordinary UV base drawn before projected/local-repaint deltas.
+  const retainedLayers = stack.filter(
+    (layer) => layer.role !== 'base-color' && layer.id !== mergedLayer.id,
+  );
+  const firstLocalOverlayIndex = retainedLayers.findIndex((layer) =>
+    isLocalRepaintUvOverlayLayer(layer),
+  );
+  if (firstLocalOverlayIndex < 0) return [...retainedLayers, mergedLayer];
+  return [
+    ...retainedLayers.slice(0, firstLocalOverlayIndex),
+    mergedLayer,
+    ...retainedLayers.slice(firstLocalOverlayIndex),
+  ];
 }
 
 function getExportMaterialBaseColor(root: THREE.Object3D): [number, number, number] {
@@ -665,7 +689,8 @@ async function getAverageTextureColor(blob: Blob): Promise<[number, number, numb
 }
 
 function getLatestProject(input: ModelExportInput) {
-  return useProjectStore.getState().getCurrentProject() ?? input.project;
+  const currentProject = useProjectStore.getState().getCurrentProject();
+  return currentProject?.id === input.project.id ? currentProject : input.project;
 }
 
 function getLayerStackCacheKey(
@@ -865,7 +890,8 @@ export async function prepareTexturedModelExport(
   const uvLayers = findVisibleUvLayers(objectId);
   if (!bakedTexture?.imageUrl && uvLayers.length === 0) return { root };
 
-  const importedBaseTexture = findImportedBaseColorTexture(root);
+  const mergedUvLayer = uvLayers.find((layer) => layer.role === 'merged-uv');
+  const importedBaseTexture = mergedUvLayer ? undefined : findImportedBaseColorTexture(root);
   const importedBaseBlob = importedBaseTexture
     ? await blobFromTextureImage(importedBaseTexture)
     : undefined;

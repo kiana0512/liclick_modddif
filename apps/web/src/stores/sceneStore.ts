@@ -81,7 +81,7 @@ export type ViewportRuntime = {
   };
 };
 
-export type PaintMaskCapture = () => Promise<string | undefined>;
+export type PaintMaskCapture = (options?: { aspect?: number }) => Promise<string | undefined>;
 
 type SceneStore = {
   objects: SceneObject[];
@@ -142,6 +142,22 @@ type SceneStore = {
   toggleObjectVisibility: (objectId: string) => void;
   requestCameraRestore: (camera: SerializedCamera) => void;
 };
+
+function resetLocalRepaintForObjectChange(
+  state: SceneStore,
+  nextObjectId: string | undefined,
+) {
+  if (state.selectedObjectId === nextObjectId) return {};
+  return {
+    paintTool: 'none' as const,
+    paintMaskDataUrl: undefined,
+    paintMaskHasContent: false,
+    localRepaintProjectionSource: undefined,
+    localRepaintPreviewLayer: undefined,
+    paintMaskRevision: state.paintMaskRevision + 1,
+    paintMaskResetRevision: state.paintMaskResetRevision + 1,
+  };
+}
 
 function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObject[]) {
   const modelWidths = models.map((model) => {
@@ -252,6 +268,7 @@ export const useSceneStore = create<SceneStore>()(
           );
           const selectedObjectId = objects.find((object) => object.selected)?.id ?? objects[0]?.id;
           return {
+            ...resetLocalRepaintForObjectChange(state, selectedObjectId),
             objects,
             importedModels,
             importedModel: importedModels.find((model) => model.objectId === selectedObjectId),
@@ -275,6 +292,7 @@ export const useSceneStore = create<SceneStore>()(
               )
             : [...state.objects.map((item) => ({ ...item, selected: false })), nextObject];
           return {
+            ...resetLocalRepaintForObjectChange(state, object.id),
             importedModels,
             importedModel: model,
             objects,
@@ -291,6 +309,7 @@ export const useSceneStore = create<SceneStore>()(
               : models[0]?.objectId) ?? state.objects[0]?.id;
           const importedModel = models.find((model) => model.objectId === activeObjectId);
           return {
+            ...resetLocalRepaintForObjectChange(state, activeObjectId),
             importedModels: models,
             importedModel,
             selectedObjectId: activeObjectId,
@@ -307,6 +326,7 @@ export const useSceneStore = create<SceneStore>()(
             state.importedModels.find((model) => model.objectId === objectId) ??
             state.importedModel;
           return {
+            ...resetLocalRepaintForObjectChange(state, objectId),
             importedModel,
             selectedObjectId: objectId,
             objects: state.objects.map((object) => ({
@@ -317,13 +337,14 @@ export const useSceneStore = create<SceneStore>()(
           };
         }),
       clearImportedModel: () =>
-        set({
+        set((state) => ({
+          ...resetLocalRepaintForObjectChange(state, undefined),
           importedModels: [],
           importedModel: undefined,
           objects: [],
           selectedObjectId: undefined,
           importWarnings: [],
-        }),
+        })),
       renameObject: (objectId, name) =>
         set((state) => ({
           objects: state.objects.map((object) =>
@@ -409,6 +430,7 @@ export const useSceneStore = create<SceneStore>()(
               state.importedModel)
             : state.importedModel;
           return {
+            ...resetLocalRepaintForObjectChange(state, objectId),
             importedModel,
             selectedObjectId: objectId,
             objects: state.objects.map((object) => ({

@@ -1,7 +1,9 @@
 import { useLayerStore } from '@/stores/layerStore';
+import { useGenerationStore } from '@/stores/generationStore';
 import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { isLiveProjectedCanvasUrl } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { normalizeLocalRepaintObjectBindings } from './objectBinding';
 import type { Layer } from '@/types/layer';
 
 export type LocalRepaintSessionLayerResult = {
@@ -14,13 +16,22 @@ export function ensureLocalRepaintSessionLayer(input: {
   objectId: string;
   generationId?: string;
 }): LocalRepaintSessionLayerResult {
-  const belongsToObject = (layer: Layer) =>
-    !layer.objectId || layer.objectId === input.objectId;
+  const belongsToObject = (layer: Layer) => layer.objectId === input.objectId;
   const isSessionTarget = (layer: Layer) =>
     belongsToObject(layer) &&
     layer.type === 'uv' &&
     (layer.role === 'local-repaint-draft' || layer.role === 'local-repaint-overlay');
   let initialLayers = useLayerStore.getState().layers;
+  const currentProject = useProjectStore.getState().getCurrentProject();
+  const normalizedBindings = normalizeLocalRepaintObjectBindings({
+    layers: initialLayers,
+    generations: useGenerationStore.getState().generations,
+    captures: currentProject?.captures ?? [],
+  });
+  if (normalizedBindings.changed) {
+    useLayerStore.getState().setLayers(normalizedBindings.layers);
+    initialLayers = useLayerStore.getState().layers;
+  }
   const migratedLayers = initialLayers.map((item) =>
     item.type === 'projected' &&
     item.localRepaintSourceUrl &&
@@ -71,7 +82,7 @@ export function ensureLocalRepaintSessionLayer(input: {
     // Reuse only an uncommitted placeholder. A destination that already owns a
     // visible result is historical content and must never be rebound.
     sessionTargets.find((item) => !item.imageUrl && !claimedTargetIds.has(item.id));
-  let mutated = migratedRuntimeUrls;
+  let mutated = migratedRuntimeUrls || normalizedBindings.changed;
   let boundGeneration = false;
 
   let created = false;

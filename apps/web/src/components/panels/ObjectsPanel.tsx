@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   BarChart3,
@@ -150,6 +150,15 @@ export function ObjectsPanel() {
   const [renameState, setRenameState] = useState<RenameState>();
   const [dialog, setDialog] = useState<ObjectDialogState>();
   const [deleteCandidateId, setDeleteCandidateId] = useState<string>();
+  const objectListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selectedObjectId) return;
+    const selectedRow = objectListRef.current?.querySelector<HTMLElement>(
+      `[data-object-id="${CSS.escape(selectedObjectId)}"]`,
+    );
+    selectedRow?.scrollIntoView({ block: 'nearest' });
+  }, [selectedObjectId, objects.length]);
 
   useEffect(() => {
     if (!menu) return undefined;
@@ -284,7 +293,6 @@ export function ObjectsPanel() {
   if (objects.length === 0) {
     return (
       <div
-        data-texture-onboarding="import-model"
         className="grid min-h-48 place-items-center text-sm font-semibold text-white/48"
       >
         {t('noImportedModel')}
@@ -294,7 +302,7 @@ export function ObjectsPanel() {
 
   return (
     <div
-      data-texture-onboarding="import-model"
+      ref={objectListRef}
       className="max-h-40 overflow-y-auto overflow-x-hidden rounded-md border border-white/24 overscroll-contain"
     >
       {objects.map((object) => {
@@ -302,8 +310,10 @@ export function ObjectsPanel() {
         return (
           <div
             key={object.id}
+            data-object-id={object.id}
             role="button"
             tabIndex={0}
+            aria-current={selected ? 'true' : undefined}
             onClick={() => handleSelectObject(object.id)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') handleSelectObject(object.id);
@@ -311,8 +321,8 @@ export function ObjectsPanel() {
             className={cn(
               'flex h-10 w-full items-center gap-2 border-b border-white/24 bg-black/82 px-2 text-left transition hover:bg-white/[0.06]',
               selected &&
-                'border-liclick-pink bg-liclick-pink/12 text-white shadow-[inset_0_0_0_1px_rgba(255,92,207,0.44)]',
-              !object.visible && 'opacity-48',
+                'relative z-[1] border-liclick-pink bg-gradient-to-r from-liclick-pink/28 to-violet-500/16 text-white shadow-[inset_3px_0_0_#ff5ccf,inset_0_0_0_1px_rgba(255,92,207,0.9),0_0_18px_rgba(236,72,189,0.28)]',
+              !object.visible && !selected && 'opacity-48',
             )}
           >
             <button
@@ -335,6 +345,11 @@ export function ObjectsPanel() {
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold text-white">{object.name}</div>
             </div>
+            {selected && (
+              <span className="shrink-0 rounded border border-liclick-pink/70 bg-liclick-pink/20 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-pink-100">
+                当前
+              </span>
+            )}
             <button
               type="button"
               className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-white transition hover:bg-white/18"
@@ -540,6 +555,8 @@ export function ObjectsPanelActions({
       </button>
       <button
         type="button"
+        data-texture-onboarding="import-model"
+        data-onboarding-complete={objects.length > 0 ? 'true' : 'false'}
         onClick={onImportModelClick}
         disabled={importDisabled}
         className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink disabled:cursor-wait disabled:opacity-35"

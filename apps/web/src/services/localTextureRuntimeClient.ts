@@ -12,7 +12,10 @@ export type LocalTextureRuntimeState =
   | { status: 'missing'; reason?: string }
   | { status: 'outdated'; health: LocalTextureRuntimeHealth; requiredVersion: string };
 
-const desktopRuntimePort = '4618';
+// Packaged/server builds keep using the installed desktop component on 4618.
+// Local development injects 4619 so it can run an isolated component without
+// reusing or replacing the component owned by the server build.
+const desktopRuntimePort = import.meta.env.VITE_LICLICK_LOCAL_COMPONENT_PORT?.trim() || '4618';
 const localTextureRuntimeHealthTimeoutMs = 4_000;
 
 function isLoopbackHost(hostname: string) {
@@ -44,7 +47,7 @@ export function getLocalTextureRuntimeDownloadUrl() {
   if (configured) return configured;
   const basePath = `/${(import.meta.env.BASE_URL ?? '/').split('/').filter(Boolean).join('/')}`;
   const normalizedBase = basePath === '/' ? '' : basePath;
-  return `${normalizedBase}/downloads/LIclick-3D-Texture-Local-Component-Setup.exe?v=0.1.10`;
+  return `${normalizedBase}/downloads/LIclick-3D-Texture-Local-Component-Setup.exe?v=0.1.13`;
 }
 
 export async function downloadLocalTextureRuntimeInstaller() {

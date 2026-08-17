@@ -22,6 +22,8 @@ export type ModelviewInpaintInput = {
   projectId?: string;
   prompt?: string;
   image: ModelviewControlFile;
+  materialImage: ModelviewControlFile;
+  viewportReference: ModelviewControlFile;
 };
 
 type RemoteResponse = {
@@ -88,49 +90,61 @@ function inpaintTrust() {
   return [...tls.rootCertificates, gpuControlLanCa];
 }
 
-function dataUrlToBuffer(dataUrl: string) {
+const maxModelviewImageBytes = 50 * 1024 * 1024;
+const supportedModelviewImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+function dataUrlToBuffer(dataUrl: string, label: string) {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(dataUrl);
-  if (!match) throw new ModelviewInpaintError('局部重绘输入图不是有效的 data URL。', 400);
+  if (!match) throw new ModelviewInpaintError(`${label}不是有效的图片 data URL。`, 422);
   const mime = (match[1] || 'image/png').toLowerCase();
-  if (!mime.startsWith('image/')) {
-    throw new ModelviewInpaintError('局部重绘输入必须是图片。', 400);
+  if (!supportedModelviewImageTypes.has(mime)) {
+    throw new ModelviewInpaintError(`${label}必须是 PNG、JPG、JPEG 或 WEBP 图片。`, 422);
   }
   const payload = match[3] ?? '';
   const buffer = match[2]
     ? Buffer.from(payload, 'base64')
     : Buffer.from(decodeURIComponent(payload), 'utf8');
-  if (!buffer.byteLength) throw new ModelviewInpaintError('局部重绘输入图不能为空。', 400);
+  if (!buffer.byteLength) throw new ModelviewInpaintError(`${label}不能为空。`, 422);
+  if (buffer.byteLength > maxModelviewImageBytes) {
+    throw new ModelviewInpaintError(`${label}不能超过 50 MiB。`, 413);
+  }
   return { mime, buffer };
 }
 
-function safeFilename(value: string) {
+function safeFilename(value: string, fallback: string) {
   const filename = path.basename(value.replaceAll('\\', '/'));
   const safe = filename.replace(/[^a-z0-9._-]+/gi, '_').replace(/^_+|_+$/g, '');
-  return safe || 'input-with-mask.png';
+  return safe || fallback;
 }
 
 function createIdempotencyKey(jobId: string) {
   const stableId = jobId.replace(/[^a-z0-9._-]+/gi, '-').slice(0, 160) || randomUUID();
-  return `${stableId}:inpaint:g1:attempt-1`;
+  return `${stableId}:inpaint:3input-r2:attempt-1`;
 }
 
 function multipartBody(input: {
   boundary: string;
-  filename: string;
-  mime: string;
-  image: Buffer;
+  files: Array<{
+    field: 'image' | 'material_image' | 'viewport_reference';
+    filename: string;
+    mime: string;
+    image: Buffer;
+  }>;
   prompt?: string;
 }) {
-  const chunks = [
-    Buffer.from(
-      `--${input.boundary}\r\n` +
-        `Content-Disposition: form-data; name="image"; filename="${input.filename}"\r\n` +
-        `Content-Type: ${input.mime}\r\n\r\n`,
-      'utf8',
-    ),
-    input.image,
-    Buffer.from('\r\n', 'utf8'),
-  ];
+  const chunks: Buffer[] = [];
+  input.files.forEach((file) => {
+    chunks.push(
+      Buffer.from(
+        `--${input.boundary}\r\n` +
+          `Content-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\n` +
+          `Content-Type: ${file.mime}\r\n\r\n`,
+        'utf8',
+      ),
+      file.image,
+      Buffer.from('\r\n', 'utf8'),
+    );
+  });
   if (input.prompt) {
     chunks.push(
       Buffer.from(
@@ -234,6 +248,23 @@ function responseErrorMessage(response: RemoteResponse) {
   if (!text) return `ModelView 局部重绘请求失败：HTTP ${response.statusCode}`;
   try {
     const payload = JSON.parse(text) as Record<string, unknown>;
+    const detail = payload.detail;
+    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+      const message = (detail as Record<string, unknown>).message;
+      if (typeof message === 'string' && message) return message;
+    }
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((item) =>
+          item &&
+          typeof item === 'object' &&
+          typeof (item as Record<string, unknown>).msg === 'string'
+            ? String((item as Record<string, unknown>).msg)
+            : '',
+        )
+        .filter(Boolean);
+      if (messages.length) return messages.join('；');
+    }
     for (const key of ['detail', 'error', 'message']) {
       if (typeof payload[key] === 'string' && payload[key]) return payload[key];
     }
@@ -259,7 +290,13 @@ export async function generateModelviewInpaint(
 ) {
   const projectId = input.projectId;
   if (!projectId) throw new ModelviewInpaintError('局部重绘需要当前项目 ID。', 400);
-  if (!input.image?.dataUrl) throw new ModelviewInpaintError('局部重绘输入图不能为空。', 400);
+  if (!input.image?.dataUrl) throw new ModelviewInpaintError('局部重绘白模主图不能为空。', 422);
+  if (!input.materialImage?.dataUrl) {
+    throw new ModelviewInpaintError('局部重绘多视图材质参考图不能为空。', 422);
+  }
+  if (!input.viewportReference?.dataUrl) {
+    throw new ModelviewInpaintError('局部重绘当前视角预览图不能为空。', 422);
+  }
   const prompt = input.prompt?.trim() ?? '';
   if (Array.from(prompt).length > 4096) {
     throw new ModelviewInpaintError('局部重绘提示词不能超过 4096 个字符。', 400);
@@ -267,17 +304,39 @@ export async function generateModelviewInpaint(
 
   const jobId = input.clientGenerationId || `modelview-inpaint-${randomUUID()}`;
   const idempotencyKey = createIdempotencyKey(jobId);
-  const image = dataUrlToBuffer(input.image.dataUrl);
-  if (image.buffer.byteLength > maxLocalAssetBytes) {
-    throw new ModelviewInpaintError('局部重绘输入图过大。', 413);
-  }
+  const image = dataUrlToBuffer(input.image.dataUrl, '局部重绘白模主图');
+  const materialImage = dataUrlToBuffer(
+    input.materialImage.dataUrl,
+    '局部重绘多视图材质参考图',
+  );
+  const viewportReference = dataUrlToBuffer(
+    input.viewportReference.dataUrl,
+    '局部重绘当前视角预览图',
+  );
   const boundaryHash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const boundary = `----Li3DModelview${boundaryHash}`;
   const body = multipartBody({
     boundary,
-    filename: safeFilename(input.image.path),
-    mime: image.mime,
-    image: image.buffer,
+    files: [
+      {
+        field: 'image',
+        filename: safeFilename(input.image.path, 'white-model.png'),
+        mime: image.mime,
+        image: image.buffer,
+      },
+      {
+        field: 'material_image',
+        filename: safeFilename(input.materialImage.path, 'multiview-material-reference.png'),
+        mime: materialImage.mime,
+        image: materialImage.buffer,
+      },
+      {
+        field: 'viewport_reference',
+        filename: safeFilename(input.viewportReference.path, 'viewport-reference.png'),
+        mime: viewportReference.mime,
+        image: viewportReference.buffer,
+      },
+    ],
     prompt: prompt || undefined,
   });
   const response = await requestInpaint(body, boundary, idempotencyKey, options.signal);
@@ -311,7 +370,7 @@ export async function generateModelviewInpaint(
     category: 'generations',
     mime: contentType,
     buffer: response.body,
-    filename: `${jobId}-modelview-seedvr2.png`,
+    filename: `${jobId}-modelview-int8.png`,
   });
   const saved =
     projectAsset ??
@@ -319,7 +378,7 @@ export async function generateModelviewInpaint(
       userId,
       mime: contentType,
       buffer: response.body,
-      filename: `${jobId}-modelview-seedvr2.png`,
+      filename: `${jobId}-modelview-int8.png`,
     }));
   if (!projectAsset) {
     console.warn('[ModelView Inpaint] project missing after remote completion; saved recovery asset', {
@@ -348,7 +407,8 @@ export async function generateModelviewInpaint(
       sha256,
       source: 'modelview-inpaint',
       storage: projectAsset ? 'project' : 'user-recovery',
-      finalNode: 'SeedVR2VideoUpscaler #110 -> SaveImage #9',
+      workflow: '2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2',
+      finalNode: 'SaveImage #32',
     },
   };
 }

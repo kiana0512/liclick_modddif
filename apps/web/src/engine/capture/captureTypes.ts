@@ -41,6 +41,13 @@ export type CaptureNormalPreview = {
   warnings: string[];
 };
 
+export type CaptureColorPreview = {
+  width: number;
+  height: number;
+  colorUrl: string;
+  warnings: string[];
+};
+
 export type SceneMaterialSnapshot = {
   object: THREE.Object3D;
   visible: boolean;

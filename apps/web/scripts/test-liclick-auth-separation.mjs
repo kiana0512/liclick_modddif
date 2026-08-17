@@ -6,6 +6,9 @@ import { createServer } from "vite";
 
 env.VITE_LICLICK_WORKSPACE_API = "http://127.0.0.1:4518";
 env.VITE_LICLICK_LOCAL_COMPONENT_PORT = "4618";
+// Ignore a developer's untracked .env.local override so this regression test
+// exercises the port-based local-component separation deterministically.
+env.VITE_LI3D_LOCAL_RUNTIME_API = "";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const server = await createServer({

@@ -298,6 +298,14 @@ export function BottomToolDock({
     <div
       ref={dockRef}
       data-texture-onboarding="edit-tools"
+      data-onboarding-complete={
+        paintTool === 'eraser' ||
+        paintTool === 'inpaint-add' ||
+        paintTool === 'inpaint-subtract' ||
+        paintTool === 'inpaint-apply'
+          ? 'true'
+          : 'false'
+      }
       className="relative mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
     >
       {!isTextureMode && (
@@ -434,7 +442,6 @@ export function BottomToolDock({
                 )}
                 <IconTooltip
                   label="步骤 1 · 绘制蒙版"
-                  description="左键绘制蒙版，右键擦除蒙版"
                   shortcut="K"
                 >
                   <button

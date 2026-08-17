@@ -4,10 +4,15 @@ import { captureMask } from './captureMask';
 import { captureNormal } from './captureNormal';
 import type {
   CaptureCurrentViewRequest,
+  CaptureColorPreview,
   CaptureNormalPreview,
   CapturePassRequest,
 } from './captureTypes';
-import { applyTargetOnlyMaterial, renderSceneToPngUrl } from './renderTargetUtils';
+import {
+  applyTargetOnlyMaterial,
+  cloneCameraForCaptureAspect,
+  renderSceneToPngUrl,
+} from './renderTargetUtils';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -192,7 +197,7 @@ async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: 
   const viewport = useSceneStore.getState().viewport;
   if (!viewport) throw new Error('视口尚未准备完成，请稍后重试。');
 
-  let captureCamera = viewport.camera;
+  let captureCamera = cloneCameraForCaptureAspect(viewport.camera, aspect);
   let captureTarget = viewport.controls?.target?.clone() ?? new THREE.Vector3();
 
   if (request.framing === 'fit-object') {
@@ -335,6 +340,49 @@ async function captureFlatTarget(passRequest: CapturePassRequest) {
     restore();
     temporaryMaterials.forEach((material) => material.dispose());
   }
+}
+
+/**
+ * Captures only the current color presentation. Unlike captureCurrentView this
+ * does not render mask, normal or depth passes and does not archive another
+ * project capture, so the third ModelView input adds only one GPU readback.
+ */
+export async function captureCurrentColorPreview(
+  request: CaptureCurrentViewRequest,
+): Promise<CaptureColorPreview> {
+  const size = Math.min(request.resolution, maxCaptureSize);
+  const warnings: string[] = [];
+  if (request.resolution > maxCaptureSize) {
+    warnings.push(
+      'Large reference capture was limited to 2048px in this browser MVP to avoid freezing the viewport.',
+    );
+  }
+  const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
+  const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
+  const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
+  const { viewport, captureCamera } = await resolveCaptureCamera(request, aspect);
+  const passRequest: CapturePassRequest = {
+    gl: viewport.gl,
+    scene: viewport.scene,
+    camera: captureCamera,
+    objectId: request.objectId,
+    width,
+    height,
+  };
+  const color =
+    request.colorMode === 'clay-target'
+      ? await captureClayTarget(passRequest)
+      : request.colorMode === 'flat-target'
+        ? await captureFlatTarget(passRequest)
+        : request.colorMode === 'target-only'
+          ? await captureTargetOnly(passRequest)
+          : await captureColor(passRequest);
+  return {
+    width,
+    height,
+    colorUrl: color.url,
+    warnings: [...warnings, ...color.warnings],
+  };
 }
 
 export async function captureCurrentView(request: CaptureCurrentViewRequest): Promise<Capture> {

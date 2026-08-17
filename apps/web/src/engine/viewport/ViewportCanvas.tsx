@@ -67,6 +67,7 @@ import { encodeProjectionMaskInWorker } from '@/engine/localRepaint/projectionMa
 import { getCanvasAlphaBoundsAsync } from '@/utils/getCanvasAlphaBounds';
 import {
   applyTargetOnlyMaterial,
+  cloneCameraForCaptureAspect,
   renderScenePassesToPngUrl,
 } from '@/engine/capture/renderTargetUtils';
 import {
@@ -7847,7 +7848,7 @@ function SurfacePaintOverlay() {
     // current projector remains attached to model space until the next stroke.
   });
 
-  const capturePaintMask = useCallback(async () => {
+  const capturePaintMask = useCallback(async (options?: { aspect?: number }) => {
     const model = getTargetModel();
     const layer = layerRef.current;
     if (!model || !layer || layer.objectId !== model.objectId || !maskHasContentRef.current)
@@ -7896,7 +7897,11 @@ function SurfacePaintOverlay() {
     if (sources.length === 0) return undefined;
 
     const viewportRect = gl.domElement.getBoundingClientRect();
-    const aspect = viewportRect.width / Math.max(viewportRect.height, 1);
+    const viewportAspect = viewportRect.width / Math.max(viewportRect.height, 1);
+    const aspect =
+      Number.isFinite(options?.aspect) && (options?.aspect ?? 0) > 0
+        ? options!.aspect!
+        : viewportAspect;
     const width =
       aspect >= 1
         ? PROJECTION_PAINT_MAX_SIZE
@@ -7924,7 +7929,7 @@ function SurfacePaintOverlay() {
         {
           gl,
           scene,
-          camera,
+          camera: cloneCameraForCaptureAspect(camera, aspect),
           objectId: model.objectId,
           width,
           height,
@@ -9613,7 +9618,11 @@ function SurfacePaintOverlay() {
           '#ffffff',
           'source-over',
           'screen',
-          255,
+          // Selection masks are binary. A feathered alpha stamp accumulates
+          // opacity wherever pointer samples overlap, producing visibly darker
+          // patches inside one stroke. A solid stamp keeps every selected pixel
+          // at the same value no matter how many times the brush passes over it.
+          undefined,
         );
         // Pointer samples are already coalesced to one hit per display frame.
         // Publish the CanvasTexture in this same frame so pen feedback follows
@@ -9685,7 +9694,9 @@ function SurfacePaintOverlay() {
           '#ffffff',
           'source-over',
           'screen',
-          255,
+          // Keep subtract previews binary as well, so repeated samples never
+          // create a partially erased overlap band.
+          undefined,
         );
         scheduleTextureUpdate(layer.projectionTexture);
         if (strokeDraftRef.current?.target === 'mask') {

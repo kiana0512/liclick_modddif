@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { TextureRuntimeGate } from './components/runtime/TextureRuntimeGate';
 import { resolveBakeEntryProject } from './features/workflow/resolveBakeEntryProject';
-import { requiresTextureUvMergeBeforeBake } from './features/workflow/selectBakeBaseColor';
 import { useLocalTextureRuntime } from './hooks/useLocalTextureRuntime';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
@@ -176,14 +175,7 @@ export function App() {
         project: Project,
         handoff?: TextureBakeHandoff,
       ): RouteState {
-        return requiresTextureUvMergeBeforeBake(project, handoff)
-          ? {
-              name: 'editor',
-              projectId: project.id,
-              continueToBake: true,
-              bakeHandoff: handoff,
-            }
-          : { name: 'bake', projectId: project.id, handoff };
+        return { name: 'bake', projectId: project.id, handoff };
       }
 
       function openCurrentProjectStage(stage: 'texture' | 'bake') {

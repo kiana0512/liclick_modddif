@@ -48,7 +48,7 @@ const workspacePort = devPort(process.env.LICLICK_WORKSPACE_PORT, '4518', 'LICLI
 const webPort = devPort(process.env.LICLICK_WEB_PORT, '5173', 'LICLICK_WEB_PORT');
 const localComponentPort = devPort(
   process.env.VITE_LICLICK_LOCAL_COMPONENT_PORT,
-  '4618',
+  '4619',
   'VITE_LICLICK_LOCAL_COMPONENT_PORT',
 );
 const workspaceOrigin = `http://127.0.0.1:${workspacePort}`;
@@ -231,7 +231,7 @@ async function localComponentHealth() {
     : null;
 }
 
-async function ensureService({ label, port, probe, pnpmArgs }) {
+async function ensureService({ label, port, probe, pnpmArgs, extraEnv = {} }) {
   const existing = await probe();
   if (existing) {
     console.log(`[dev] Reusing healthy ${label} on 127.0.0.1:${port}.`);
@@ -244,7 +244,7 @@ async function ensureService({ label, port, probe, pnpmArgs }) {
   }
 
   console.log(`[dev] Starting ${label} on 127.0.0.1:${port}...`);
-  const child = runPnpm(pnpmArgs, { label });
+  const child = runPnpm(pnpmArgs, { label, extraEnv });
   const health = await waitForHealthy(label, probe, child);
   console.log(`[dev] ${label} is ready.`);
   return { health, child };
@@ -301,16 +301,23 @@ try {
     pnpmArgs: ['--filter', '@liclick/web', 'dev'],
   });
 
-  const component = await localComponentHealth();
-  if (component) {
-    console.log(
-      `[dev] Local component detected on 127.0.0.1:${localComponentPort} (runtime ${component.runtimeVersion ?? 'unknown'}).`,
-    );
-  } else {
-    console.log(
-      `[dev] Local component is not running on 127.0.0.1:${localComponentPort}; the web app will offer the installer.`,
-    );
-  }
+  const localComponent = await ensureService({
+    label: 'LI3D development local component',
+    port: localComponentPort,
+    probe: localComponentHealth,
+    pnpmArgs: ['--filter', '@liclick/server', 'serve:local-component'],
+    extraEnv: {
+      SERVER_PORT: localComponentPort,
+      LICLICK_WORKSPACE_PORT: localComponentPort,
+      LICLICK_PUBLIC_WORKSPACE_URL: localComponentOrigin,
+      LICLICK_FRONTEND_URL: webOrigin,
+      LICLICK_ALLOWED_ORIGINS: `${webOrigin},http://localhost:${webPort}`,
+      LICLICK_LOCAL_COMPONENT_MODE: '1',
+    },
+  });
+  console.log(
+    `[dev] Isolated local component ready on 127.0.0.1:${localComponentPort} (runtime ${localComponent.health.runtimeVersion ?? 'unknown'}); installed/server component 4618 remains untouched.`,
+  );
   console.log(`[dev] Ready: ${webOrigin}`);
 
   if (managedChildren.size === 0) {

@@ -74,9 +74,14 @@ const modelviewMock = http.createServer(async (request, response) => {
     const boundary = /boundary=([^;]+)/.exec(contentType)?.[1];
     assert(boundary, 'The proxy must send multipart/form-data with a boundary.');
     assert.match(contentType, /^multipart\/form-data;/);
-    assert.match(request.headers['idempotency-key'] ?? '', /:inpaint:g1:attempt-1$/);
+    assert.match(request.headers['idempotency-key'] ?? '', /:inpaint:3input-r2:attempt-1$/);
     const bodyText = body.toString('latin1');
-    assert.match(bodyText, /name="image"; filename="input-with-mask\.png"/);
+    assert.match(bodyText, /name="image"; filename="white-model\.png"/);
+    assert.match(
+      bodyText,
+      /name="material_image"; filename="multiview-material-reference\.png"/,
+    );
+    assert.match(bodyText, /name="viewport_reference"; filename="viewport-reference\.png"/);
     assert.match(bodyText, /Content-Type: image\/png/);
     assert(body.includes(Buffer.from('修复纸张边缘', 'utf8')));
     assert(bodyText.endsWith(`--${boundary}--\r\n`));
@@ -151,10 +156,32 @@ try {
     projectId: created.project.id,
     prompt: '修复纸张边缘',
     image: {
-      path: 'input-with-mask.png',
+      path: 'white-model.png',
+      dataUrl: `data:image/png;base64,${resultPng.toString('base64')}`,
+    },
+    materialImage: {
+      path: 'multiview-material-reference.png',
+      dataUrl: `data:image/png;base64,${resultPng.toString('base64')}`,
+    },
+    viewportReference: {
+      path: 'viewport-reference.png',
       dataUrl: `data:image/png;base64,${resultPng.toString('base64')}`,
     },
   };
+  const missingViewportReference = await fetch(`${workspaceBaseUrl}/api/modelview/inpaint`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Cookie: cookie,
+      Origin: allowedOrigin,
+    },
+    body: JSON.stringify({
+      ...inpaintPayload,
+      clientGenerationId: 'smoke-generation-missing-viewport',
+      viewportReference: undefined,
+    }),
+  });
+  assert.equal(missingViewportReference.status, 422);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const inpaint = await fetch(`${workspaceBaseUrl}/api/modelview/inpaint`, {
       method: 'POST',
@@ -204,7 +231,7 @@ try {
   assert.equal(observedRequests[0].idempotencyKey, observedRequests[1].idempotencyKey);
   assert.equal(observedRequests[0].sha256, observedRequests[1].sha256);
   console.log(
-    'ModelView inpaint smoke passed: multipart image/prompt, deterministic idempotency, X-Job-ID, and PNG persistence.',
+    'ModelView inpaint smoke passed: three-image multipart/prompt, required-input validation, deterministic idempotency, X-Job-ID, and PNG persistence.',
   );
 } catch (error) {
   if (serverOutput.trim()) console.error(serverOutput.trim());

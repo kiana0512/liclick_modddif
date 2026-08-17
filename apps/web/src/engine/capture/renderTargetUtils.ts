@@ -301,6 +301,32 @@ export async function renderScenePassesToPngUrl(
   return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
 }
 
+/**
+ * Copies the live viewport camera for an offscreen target without changing the
+ * authored view. The vertical framing is preserved while the horizontal field
+ * of view is recalculated for the target aspect ratio. Rendering a wide camera
+ * directly into a square target would otherwise squeeze the model.
+ */
+export function cloneCameraForCaptureAspect(source: THREE.Camera, aspect: number) {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const camera = source.clone();
+
+  if (camera instanceof THREE.PerspectiveCamera) {
+    camera.aspect = safeAspect;
+    camera.updateProjectionMatrix();
+  } else if (camera instanceof THREE.OrthographicCamera) {
+    const centerX = (camera.left + camera.right) * 0.5;
+    const halfHeight = Math.max((camera.top - camera.bottom) * 0.5, 0.0001);
+    const halfWidth = halfHeight * safeAspect;
+    camera.left = centerX - halfWidth;
+    camera.right = centerX + halfWidth;
+    camera.updateProjectionMatrix();
+  }
+
+  camera.updateMatrixWorld(true);
+  return camera;
+}
+
 export function applyTargetOnlyMaterial(
   scene: THREE.Scene,
   objectId: string,

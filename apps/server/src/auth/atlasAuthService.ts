@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSession, upsertUser } from './sessionService.js';
 import { serverConfig } from '../config.js';
 import { enrichFeishuUserByEmail } from '../services/feishuPlatformService.js';
+import { localLiclickTokenFile } from '../services/localLiclickAccountService.js';
 import type { AuthUser } from './authTypes.js';
 
 type AtlasCommandResult = {
@@ -88,6 +89,11 @@ function atlasNodePath() {
 
 function atlasTokenFile(homeDir?: string) {
   if (homeDir) return path.join(homeDir, '.atlas-ai-gateway-oauth.json');
+  // The standalone texture component owns a per-machine personal Liclick
+  // credential. Account binding writes this file, so generation must read the
+  // same file instead of falling back to the workspace server / Atlas CLI
+  // credential in the user's home directory.
+  if (process.env.LICLICK_LOCAL_COMPONENT_MODE === '1') return localLiclickTokenFile();
   const configuredTokenFile = process.env.ATLAS_TOKEN_FILE?.trim();
   if (configuredTokenFile) return path.resolve(configuredTokenFile);
   return path.join(os.homedir(), '.atlas-ai-gateway-oauth.json');

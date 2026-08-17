@@ -13,6 +13,15 @@ export type ModelviewInpaintInput = {
     path: string;
     dataUrl: string;
   };
+  materialImage: {
+    path: string;
+    dataUrl: string;
+  };
+  viewportReference: {
+    path: string;
+    dataUrl: string;
+  };
+  materialReferenceId?: string;
 };
 
 async function requestJson<T>(
@@ -81,8 +90,9 @@ export function createModelviewApiClient() {
         resultUrl: result.resultUrl,
         status: result.resultUrl ? 'succeeded' : 'failed',
         metadata: {
-          provider: 'modelview-seedvr2',
+          provider: 'modelview-int8',
           workflow: 'local-repaint',
+          modelviewWorkflow: '2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2',
           clientGenerationId: input.clientGenerationId,
           serverJobId: result.modelviewJobId ?? result.id,
           projectId: input.projectId,
@@ -91,6 +101,7 @@ export function createModelviewApiClient() {
           resultUrls: result.resultUrls,
           output: result.output,
           objectId: input.objectId,
+          materialReferenceId: input.materialReferenceId,
           serverSubmitted: true,
         },
       };

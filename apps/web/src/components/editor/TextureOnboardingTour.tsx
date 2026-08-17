@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, Check, MousePointerClick, X } from 'lucide-react';
+import { Check, MousePointerClick, X } from 'lucide-react';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 
 type TextureOnboardingTourProps = {
@@ -37,6 +37,7 @@ const NEW_PROJECT_WINDOW_MS = 30 * 60 * 1000;
 const TARGET_PADDING = 8;
 const CARD_WIDTH = 304;
 const CARD_HEIGHT_ESTIMATE = 174;
+const STEP_COMPLETION_DELAY_MS = 280;
 
 const tourSteps: TourStep[] = [
   {
@@ -148,11 +149,35 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
     setPanelCollapsed('generate', false);
   }, [active, setMode, setPanelCollapsed, showPanel]);
 
+  const finish = useCallback(() => {
+    writeSavedStep(storageKey, 'done');
+    setActive(false);
+    setTargetRect(undefined);
+  }, [storageKey]);
+
+  const advance = useCallback(() => {
+    if (stepIndex >= tourSteps.length - 1) {
+      finish();
+      return;
+    }
+    const nextStep = stepIndex + 1;
+    writeSavedStep(storageKey, nextStep);
+    setStepIndex(nextStep);
+  }, [finish, stepIndex, storageKey]);
+
   useEffect(() => {
     if (!active || !step) return undefined;
     let frame = 0;
     let target: HTMLElement | null = null;
     let observer: ResizeObserver | undefined;
+    let completionTimer: number | undefined;
+    let completionScheduled = false;
+
+    const scheduleAdvanceWhenCompleted = (element: HTMLElement | null) => {
+      if (completionScheduled || element?.dataset.onboardingComplete !== 'true') return;
+      completionScheduled = true;
+      completionTimer = window.setTimeout(advance, STEP_COMPLETION_DELAY_MS);
+    };
 
     const updateTarget = () => {
       target = document.querySelector<HTMLElement>(`[data-texture-onboarding="${step.target}"]`);
@@ -160,6 +185,7 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
         setTargetRect(undefined);
         return;
       }
+      scheduleAdvanceWhenCompleted(target);
       const rect = target.getBoundingClientRect();
       const nextRect: TargetRect = {
         left: clamp(rect.left - TARGET_PADDING, 8, window.innerWidth - 8),
@@ -195,38 +221,19 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
       window.clearInterval(retryTimer);
       window.removeEventListener('resize', updateTarget);
       window.removeEventListener('scroll', updateTarget, true);
+      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
       observer?.disconnect();
     };
-  }, [active, step]);
-
-  const finish = useCallback(() => {
-    writeSavedStep(storageKey, 'done');
-    setActive(false);
-    setTargetRect(undefined);
-  }, [storageKey]);
-
-  const advance = useCallback(() => {
-    if (stepIndex >= tourSteps.length - 1) {
-      finish();
-      return;
-    }
-    const nextStep = stepIndex + 1;
-    writeSavedStep(storageKey, nextStep);
-    setStepIndex(nextStep);
-  }, [finish, stepIndex, storageKey]);
+  }, [active, advance, step]);
 
   useEffect(() => {
     if (!active) return undefined;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') finish();
-      else if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        advance();
-      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [active, advance, finish]);
+  }, [active, finish]);
 
   if (!active || !step || typeof document === 'undefined') return null;
 
@@ -268,54 +275,32 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
   const isLastStep = stepIndex === tourSteps.length - 1;
 
   return createPortal(
-    <div className="fixed inset-0 z-[180] text-white" aria-live="polite">
+    <div className="pointer-events-none fixed inset-0 z-[180] text-white" aria-live="polite">
       {targetRect ? (
-        <>
-          <div
-            className="pointer-events-none fixed left-0 right-0 top-0 bg-black/76 backdrop-blur-[1px]"
-            style={{ height: targetRect.top }}
-          />
-          <div
-            className="pointer-events-none fixed left-0 bg-black/76 backdrop-blur-[1px]"
-            style={{ top: targetRect.top, width: targetRect.left, height: targetRect.height }}
-          />
-          <div
-            className="pointer-events-none fixed right-0 bg-black/76 backdrop-blur-[1px]"
-            style={{ top: targetRect.top, left: targetRect.right, height: targetRect.height }}
-          />
-          <div
-            className="pointer-events-none fixed bottom-0 left-0 right-0 bg-black/76 backdrop-blur-[1px]"
-            style={{ top: targetRect.bottom }}
-          />
-          <div
-            className="pointer-events-none fixed rounded-xl border-2 border-liclick-pink shadow-[0_0_0_4px_rgba(236,72,189,0.16),0_0_34px_rgba(236,72,189,0.42)]"
-            style={{
-              left: targetRect.left,
-              top: targetRect.top,
-              width: targetRect.width,
-              height: targetRect.height,
-            }}
-          />
-        </>
-      ) : (
-        <div className="pointer-events-none fixed inset-0 bg-black/76 backdrop-blur-[1px]" />
-      )}
+        <div
+          className="pointer-events-none fixed rounded-xl border-2 border-liclick-pink shadow-[0_0_0_4px_rgba(236,72,189,0.16),0_0_34px_rgba(236,72,189,0.42)]"
+          style={{
+            left: targetRect.left,
+            top: targetRect.top,
+            width: targetRect.width,
+            height: targetRect.height,
+          }}
+        />
+      ) : null}
 
       <button
         type="button"
-        className="fixed inset-0 z-[181] cursor-pointer bg-transparent"
+        className="hidden"
         aria-label={isLastStep ? '完成新手引导' : '下一条新手引导'}
-        onClick={advance}
       />
 
       <section
         role="dialog"
-        aria-modal="true"
+        aria-modal="false"
         aria-label={`${step.eyebrow}：${step.title}`}
         tabIndex={0}
-        className="fixed z-[182] cursor-pointer overflow-hidden rounded-xl border border-white/16 bg-[#17131f]/98 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.66)] backdrop-blur-xl outline-none"
+        className="pointer-events-auto fixed z-[182] overflow-hidden rounded-xl border border-white/16 bg-[#17131f]/98 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.66)] backdrop-blur-xl outline-none"
         style={{ left: cardLeft, top: cardTop, width: cardWidth }}
-        onClick={advance}
       >
         <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-liclick-pink to-liclick-purple" />
         <div className="flex items-start justify-between gap-3">
@@ -360,12 +345,11 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
           <span className="flex items-center gap-1.5 text-xs font-semibold text-white/70">
             {isLastStep ? (
               <>
-                <Check className="h-3.5 w-3.5" /> 完成
+                <Check className="h-3.5 w-3.5" /> 完成当前操作后结束引导
               </>
             ) : (
               <>
-                <MousePointerClick className="h-3.5 w-3.5" /> 点击继续
-                <ArrowRight className="h-3.5 w-3.5" />
+                <MousePointerClick className="h-3.5 w-3.5" /> 完成当前操作后自动继续
               </>
             )}
           </span>
