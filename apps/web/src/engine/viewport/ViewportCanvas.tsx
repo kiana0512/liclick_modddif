@@ -228,11 +228,6 @@ const INPAINT_DEPTH_EPSILON = 0.00002;
 const PAINT_STROKE_PREVIEW_RENDER_ORDER = 1000;
 const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1_000_000_000;
 const LOCAL_REPAINT_OVERLAY_RENDER_ORDER = INPAINT_MASK_OVERLAY_RENDER_ORDER - 1;
-// ContactShadows renders the scene through its own default-layer camera and
-// override depth material. Keep the clip-space mask preview on an editor-only
-// layer so that shadow capture cannot reinterpret its fullscreen quad as a
-// solid world-space plane.
-const INPAINT_SCREEN_PREVIEW_CAMERA_LAYER = 31;
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
 const gpuFramePhaseTimeSamples: Array<{ durationMs: number; phase?: string }> = [];
@@ -5081,8 +5076,6 @@ function createLiveInpaintScreenPreview() {
   mesh.renderOrder = INPAINT_MASK_OVERLAY_RENDER_ORDER + 1;
   mesh.visible = false;
   mesh.userData.liclickViewportHelper = true;
-  mesh.layers.set(INPAINT_SCREEN_PREVIEW_CAMERA_LAYER);
-  mesh.raycast = () => undefined;
   return { mesh, material };
 }
 
@@ -6220,15 +6213,13 @@ function SurfacePaintOverlay() {
   }, []);
   const liveInpaintScreenPreview = useMemo(() => createLiveInpaintScreenPreview(), []);
   useEffect(() => {
-    camera.layers.enable(INPAINT_SCREEN_PREVIEW_CAMERA_LAYER);
     scene.add(liveInpaintScreenPreview.mesh);
     return () => {
       liveInpaintScreenPreview.mesh.removeFromParent();
       liveInpaintScreenPreview.mesh.geometry.dispose();
       liveInpaintScreenPreview.material.dispose();
-      camera.layers.disable(INPAINT_SCREEN_PREVIEW_CAMERA_LAYER);
     };
-  }, [camera, liveInpaintScreenPreview, scene]);
+  }, [liveInpaintScreenPreview, scene]);
   const clearLocalRepaintGpuOverlay = useCallback(() => {
     disposeLocalRepaintGpuOverlay(localRepaintGpuOverlayRef.current);
     localRepaintGpuOverlayRef.current = undefined;
