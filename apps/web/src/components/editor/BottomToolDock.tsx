@@ -332,7 +332,7 @@ export function BottomToolDock({
                   <div className="absolute bottom-full left-0 z-50 mb-2 w-[284px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
                     <div className="mb-2 rounded-md bg-white/[0.07] px-2.5 py-2 text-xs font-semibold text-white/78">
                       {activeMenu === 'inpaint-apply'
-                        ? '局部重绘画笔参数'
+                        ? '局部重绘画笔参数 · 左键绘制，右键擦除'
                         : '蒙版画笔参数 · 左键绘制，右键擦除'}
                     </div>
                     <label className="grid gap-1.5 text-[13px] font-semibold">
@@ -518,11 +518,11 @@ export function BottomToolDock({
                 aria-hidden="true"
               />
               <span className="relative inline-flex">
-          <IconTooltip
-            label="步骤 3 · 应用重绘"
-            description="使用局部生图结果在当前模型表面重绘：左键涂上，右键擦除。"
-            shortcut="I"
-          >
+                <IconTooltip
+                  label="步骤 3 · 应用重绘"
+                  description="使用局部生图结果在当前模型表面重绘：左键涂上，右键擦除。"
+                  shortcut="I"
+                >
                   <button
                     type="button"
                     className={cn(

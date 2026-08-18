@@ -95,6 +95,22 @@ function waitForViewportFrame() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+/**
+ * Copies the authored camera synchronously at a user-action boundary. Deferred
+ * GPU passes can then share this immutable view while the live camera remains
+ * free to orbit.
+ */
+export function snapshotCurrentCaptureCamera(aspect = 1) {
+  const viewport = useSceneStore.getState().viewport;
+  if (!viewport) throw new Error('视口尚未准备完成，请稍后重试。');
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  return {
+    camera: cloneCameraForCaptureAspect(viewport.camera, safeAspect),
+    aspect: safeAspect,
+    target: viewport.controls?.target?.clone() ?? new THREE.Vector3(),
+  };
+}
+
 async function getTargetBoundsWhenReady(scene: THREE.Scene, objectId: string) {
   // Switching objects updates the Zustand selection before React Three Fiber has
   // necessarily attached the new model group to the viewport scene. Wait through
@@ -197,17 +213,21 @@ async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: 
   const viewport = useSceneStore.getState().viewport;
   if (!viewport) throw new Error('视口尚未准备完成，请稍后重试。');
 
-  let captureCamera = cloneCameraForCaptureAspect(viewport.camera, aspect);
-  let captureTarget = viewport.controls?.target?.clone() ?? new THREE.Vector3();
+  const sourceCamera = request.cameraSnapshot?.camera ?? viewport.camera;
+  let captureCamera = cloneCameraForCaptureAspect(sourceCamera, aspect);
+  let captureTarget =
+    request.cameraSnapshot?.target?.clone() ??
+    viewport.controls?.target?.clone() ??
+    new THREE.Vector3();
 
   if (request.framing === 'fit-object') {
     const targetBounds = await getTargetBoundsWhenReady(viewport.scene, request.objectId);
     const fitted = createFitObjectCamera(
-      viewport.camera,
+      sourceCamera,
       targetBounds,
       aspect,
       request.fillRatio ?? defaultFillRatio,
-      viewport.controls?.target,
+      request.cameraSnapshot?.target ?? viewport.controls?.target,
       vectorFromTuple(request.viewDirection),
       vectorFromTuple(request.viewUp),
     );
@@ -273,6 +293,10 @@ function createFlatTargetCaptureMaterial(sourceMaterial: THREE.Material) {
     const material = sourceMaterial.clone();
     material.name = `${sourceMaterial.name || sourceMaterial.type}:FlatCapture`;
     material.uniforms.previewLightingEnabled.value = 0;
+    // No renderer exposure is applied to this asset capture. Neutralize the
+    // legacy rendered-colour compensation too, otherwise a user's PBR exposure
+    // setting would still darken/brighten the supposedly flat reference.
+    if (material.uniforms.previewExposure) material.uniforms.previewExposure.value = 1;
     if (material.uniforms.normalPreviewEnabled) material.uniforms.normalPreviewEnabled.value = 0;
     if (material.uniforms.wirePreviewEnabled) material.uniforms.wirePreviewEnabled.value = 0;
     // Capture albedo, not the viewport presentation. The returned image will be

@@ -23,6 +23,8 @@ export type CaptureCurrentViewRequest = {
   objectId: string;
   resolution: CaptureResolution;
   aspect?: number;
+  /** Frozen at the user action boundary so deferred passes cannot drift with viewport navigation. */
+  cameraSnapshot?: SerializedCameraInput;
   framing?: 'current' | 'fit-object';
   colorMode?: 'viewport' | 'clay-target' | 'target-only' | 'flat-target';
   fillRatio?: number;
