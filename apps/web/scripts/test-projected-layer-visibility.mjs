@@ -54,6 +54,36 @@ const viewportCanvasSource = readFileSync(
   path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
   'utf8',
 );
+assert.match(
+  viewportCanvasSource,
+  /const localRepaintEraseContact =\s*isLocalRepaintApplyMode && \(event\.button === 2 \|\| penEraserContact\)/,
+  'Button 3 must reserve right mouse and pen eraser contact for subtracting local repaint.',
+);
+assert.match(
+  viewportCanvasSource,
+  /strokePaintToolRef\.current === 'inpaint-apply-erase';[\s\S]*?event\.buttons & \(usesSecondaryButton \? 2 : 1\)/,
+  'A right-button local repaint stroke must remain active throughout pointer movement.',
+);
+assert.match(
+  viewportCanvasSource,
+  /operation === 'erase' \? 'destination-out' : 'lighten'/,
+  'Local repaint erasing must subtract the existing live mask.',
+);
+assert.match(
+  viewportCanvasSource,
+  /if \(operation === 'apply'\) \{[\s\S]*?scratchContext\.globalCompositeOperation = 'destination-in'/,
+  'Only additive repaint stamps may be clipped by generated-content alpha; erasing must clear the existing mask completely.',
+);
+assert.match(
+  viewportCanvasSource,
+  /erasesLocalRepaint \? undefined : opacityByte/,
+  'Local repaint erasing must use a binary stamp so one pass cannot leave a blended residue.',
+);
+assert.match(
+  viewportCanvasSource,
+  /strokePaintTool === 'inpaint-apply' \|\|[\s\S]*?strokePaintTool === 'inpaint-apply-erase'[\s\S]*?erasesLocalRepaint \? 'erase' : 'apply'/,
+  'Local repaint apply and erase must share the same projected brush path.',
+);
 const repaintSourceTransparency = viewportCanvasSource.match(
   /function constrainLocalRepaintFalloffToSourceContent\([\s\S]*?\r?\n}\r?\n/,
 )?.[0];

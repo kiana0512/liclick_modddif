@@ -4135,6 +4135,8 @@ type PaintDirtyRect = {
   height: number;
 };
 
+type SurfaceStrokePaintTool = PaintToolMode | 'inpaint-apply-erase';
+
 type PaintStrokeDraft = {
   layer?: UvPaintLayer;
   target: 'paint' | 'mask' | 'apply-local-repaint';
@@ -5864,6 +5866,7 @@ function computeLocalRepaintBrushTransform(
 function mergeLocalRepaintScratchPatch(
   composite: LocalRepaintCompositeState,
   dirtyRect: PaintDirtyRect,
+  operation: 'apply' | 'erase' = 'apply',
 ) {
   const x = Math.max(0, Math.floor(dirtyRect.x));
   const y = Math.max(0, Math.floor(dirtyRect.y));
@@ -5872,23 +5875,26 @@ function mergeLocalRepaintScratchPatch(
   const width = Math.max(1, right - x);
   const height = Math.max(1, bottom - y);
 
-  composite.scratchContext.save();
-  composite.scratchContext.globalCompositeOperation = 'destination-in';
-  composite.scratchContext.drawImage(
-    composite.falloffCanvas,
-    x,
-    y,
-    width,
-    height,
-    x,
-    y,
-    width,
-    height,
-  );
-  composite.scratchContext.restore();
+  if (operation === 'apply') {
+    composite.scratchContext.save();
+    composite.scratchContext.globalCompositeOperation = 'destination-in';
+    composite.scratchContext.drawImage(
+      composite.falloffCanvas,
+      x,
+      y,
+      width,
+      height,
+      x,
+      y,
+      width,
+      height,
+    );
+    composite.scratchContext.restore();
+  }
 
   composite.maskContext.save();
-  composite.maskContext.globalCompositeOperation = 'lighten';
+  composite.maskContext.globalCompositeOperation =
+    operation === 'erase' ? 'destination-out' : 'lighten';
   composite.maskContext.drawImage(
     composite.scratchCanvas,
     x,
@@ -6143,7 +6149,7 @@ function SurfacePaintOverlay() {
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
   const pointerCancelRecoveryTimerRef = useRef<number>();
-  const strokePaintToolRef = useRef<PaintToolMode>();
+  const strokePaintToolRef = useRef<SurfaceStrokePaintTool>();
   const lastPaintActivityAtRef = useRef(0);
   const strokeTelemetryRef = useRef<StrokeTelemetrySnapshot & { startedAt: number }>();
   const strokeDraftRef = useRef<PaintStrokeDraft>();
@@ -9450,7 +9456,11 @@ function SurfacePaintOverlay() {
   );
 
   const paintAt = useCallback(
-    (result: UvPaintHit, pressure = 1, strokePaintTool = paintTool) => {
+    (
+      result: UvPaintHit,
+      pressure = 1,
+      strokePaintTool: SurfaceStrokePaintTool = paintTool,
+    ) => {
       const pressureSizeScale = getPressureSizeScale(pressure);
       // Surface masks consume the projected footprint; ordinary paint consumes
       // the UV-density-aware footprint computed for the current triangle. The
@@ -9458,7 +9468,8 @@ function SurfacePaintOverlay() {
       const usesSurfaceBrush =
         strokePaintTool === 'inpaint-add' ||
         strokePaintTool === 'inpaint-subtract' ||
-        strokePaintTool === 'inpaint-apply';
+        strokePaintTool === 'inpaint-apply' ||
+        strokePaintTool === 'inpaint-apply-erase';
       const screenBrush = scaleBrushTransform(result.screenBrush, pressureSizeScale);
       const uvBrush = usesSurfaceBrush
         ? result.uvBrush
@@ -9466,12 +9477,16 @@ function SurfacePaintOverlay() {
       // Local repaint owns its dedicated 320px live mask and does not need the
       // ordinary UV/mask painting resource bundle. Avoid even looking that
       // bundle up on the high-frequency path.
-      const layer = strokePaintTool === 'inpaint-apply' ? undefined : getUvPaintLayer(result.model);
+      const layer =
+        strokePaintTool === 'inpaint-apply' || strokePaintTool === 'inpaint-apply-erase'
+          ? undefined
+          : getUvPaintLayer(result.model);
       const previousSample = lastSampleRef.current;
       const usesProjectionStroke =
         strokePaintTool === 'inpaint-add' ||
         strokePaintTool === 'inpaint-subtract' ||
-        strokePaintTool === 'inpaint-apply';
+        strokePaintTool === 'inpaint-apply' ||
+        strokePaintTool === 'inpaint-apply-erase';
       const fromUv = usesProjectionStroke ? undefined : getStrokeSourceUv(result);
       if (!usesProjectionStroke && !fromUv && previousSample && strokeTelemetryRef.current) {
         strokeTelemetryRef.current.continuityBreaks += 1;
@@ -9741,7 +9756,11 @@ function SurfacePaintOverlay() {
             ).length,
           });
         }
-      } else if (strokePaintTool === 'inpaint-apply') {
+      } else if (
+        strokePaintTool === 'inpaint-apply' ||
+        strokePaintTool === 'inpaint-apply-erase'
+      ) {
+        const erasesLocalRepaint = strokePaintTool === 'inpaint-apply-erase';
         const draft = strokeDraftRef.current;
         const composite = draft?.localRepaintComposite;
         const surfaceFacesProjector =
@@ -9802,7 +9821,11 @@ function SurfacePaintOverlay() {
           `rgb(${opacityByte}, ${opacityByte}, ${opacityByte})`,
           'lighten',
           'screen',
-          opacityByte,
+          // Match the step-1 selection-mask gesture: right-button subtraction
+          // is binary, so one pass restores the original surface instead of
+          // leaving an opacity-dependent blend band. Left paint keeps the
+          // existing authored opacity and automatic soft edge.
+          erasesLocalRepaint ? undefined : opacityByte,
         );
         if (strokeDraftRef.current?.target === 'apply-local-repaint') {
           strokeDraftRef.current.bounds = unionDirtyRect(
@@ -9812,8 +9835,12 @@ function SurfacePaintOverlay() {
           // The soft brush stamp is merged directly across the generated view.
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
-          mergeLocalRepaintScratchPatch(composite, projectionBounds);
-          composite.hasContent = true;
+          mergeLocalRepaintScratchPatch(
+            composite,
+            projectionBounds,
+            erasesLocalRepaint ? 'erase' : 'apply',
+          );
+          if (!erasesLocalRepaint) composite.hasContent = true;
           // The prewarmed overlay is deliberately absent from the render list
           // while its mask is empty. Activate it only after the first accepted
           // stamp so merely entering the tool or hovering a 300k-face model
@@ -9837,6 +9864,7 @@ function SurfacePaintOverlay() {
             const falloffPixel = falloffContext?.getImageData(sampleX, sampleY, 1, 1).data;
             document.body.dataset.localRepaintLastApply = JSON.stringify({
               uv: [localRepaintUv.x, localRepaintUv.y],
+              operation: erasesLocalRepaint ? 'erase' : 'apply',
               pixel: [sampleX, sampleY],
               mask: [...maskPixel],
               falloff: falloffPixel ? [...falloffPixel] : undefined,
@@ -9942,11 +9970,11 @@ function SurfacePaintOverlay() {
   );
 
   const beginStrokeHistory = useCallback(
-    (result: UvPaintHit, strokePaintTool = paintTool) => {
+    (result: UvPaintHit, strokePaintTool: SurfaceStrokePaintTool = paintTool) => {
       const target =
         strokePaintTool === 'inpaint-add' || strokePaintTool === 'inpaint-subtract'
           ? 'mask'
-          : strokePaintTool === 'inpaint-apply'
+          : strokePaintTool === 'inpaint-apply' || strokePaintTool === 'inpaint-apply-erase'
             ? 'apply-local-repaint'
             : 'paint';
       // Invalidate an older high-resolution handoff as soon as a new gesture
@@ -11897,10 +11925,13 @@ function SurfacePaintOverlay() {
       window.clearTimeout(pointerCancelRecoveryTimerRef.current);
       pointerCancelRecoveryTimerRef.current = undefined;
     };
-    const isPointerContactActive = (event: globalThis.PointerEvent) =>
-      event.pointerType === 'pen'
-        ? event.pressure > 0 || (event.buttons & 1) !== 0
-        : (event.buttons & 1) !== 0;
+    const isPointerContactActive = (event: globalThis.PointerEvent) => {
+      if (event.pointerType === 'pen') return event.pressure > 0 || event.buttons !== 0;
+      const usesSecondaryButton =
+        strokePaintToolRef.current === 'inpaint-subtract' ||
+        strokePaintToolRef.current === 'inpaint-apply-erase';
+      return (event.buttons & (usesSecondaryButton ? 2 : 1)) !== 0;
+    };
     const finishPaintStroke = (
       event: globalThis.PointerEvent | undefined,
       endReason: StrokeTelemetrySnapshot['endReason'],
@@ -12071,7 +12102,13 @@ function SurfacePaintOverlay() {
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
       const rightMaskEraseContact = isInpaintMode && event.button === 2;
-      const isPaintButton = event.button === 0 || penEraserContact || rightMaskEraseContact;
+      const localRepaintEraseContact =
+        isLocalRepaintApplyMode && (event.button === 2 || penEraserContact);
+      const isPaintButton =
+        event.button === 0 ||
+        penEraserContact ||
+        rightMaskEraseContact ||
+        localRepaintEraseContact;
       const result = raycastModel(event);
 
       // Navigation buttons must reach the camera controls even when the drag
@@ -12182,11 +12219,13 @@ function SurfacePaintOverlay() {
       lastUvRef.current = undefined;
       lastSampleRef.current = undefined;
       const pressure = getPointerPressure(event);
-      const strokePaintTool = rightMaskEraseContact
-        ? 'inpaint-subtract'
-        : penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
-          ? 'eraser'
-          : paintTool;
+      const strokePaintTool: SurfaceStrokePaintTool = localRepaintEraseContact
+        ? 'inpaint-apply-erase'
+        : rightMaskEraseContact
+          ? 'inpaint-subtract'
+          : penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
+            ? 'eraser'
+            : paintTool;
       strokePaintToolRef.current = strokePaintTool;
       lastPointerClientRef.current = { x: event.clientX, y: event.clientY, pressure };
       strokeTelemetryRef.current = {
@@ -12221,7 +12260,7 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      if (isInpaintMode) event.preventDefault();
+      if (isInpaintMode || isLocalRepaintApplyMode) event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);
     canvas.addEventListener('pointerdown', handlePointerDown, true);

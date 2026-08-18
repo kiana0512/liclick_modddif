@@ -518,11 +518,11 @@ export function BottomToolDock({
                 aria-hidden="true"
               />
               <span className="relative inline-flex">
-                <IconTooltip
-                  label="步骤 3 · 应用重绘"
-                  description="使用局部生图结果在当前模型表面进行重绘。"
-                  shortcut="I"
-                >
+          <IconTooltip
+            label="步骤 3 · 应用重绘"
+            description="使用局部生图结果在当前模型表面重绘：左键涂上，右键擦除。"
+            shortcut="I"
+          >
                   <button
                     type="button"
                     className={cn(
