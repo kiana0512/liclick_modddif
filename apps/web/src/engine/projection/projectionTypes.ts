@@ -29,6 +29,8 @@ export type ProjectionLayerInput = {
   reserveUvOverlaySampler?: boolean;
   /** Runtime visibility/opacity for a resident UV overlay; does not change shader structure. */
   uvOverlayOpacity?: number;
+  /** Composite the UV overlay as the projected stack's base instead of its final foreground. */
+  uvOverlayBelowProjected?: boolean;
   uvOverlayHue?: number;
   uvOverlaySaturation?: number;
   uvOverlayLightness?: number;

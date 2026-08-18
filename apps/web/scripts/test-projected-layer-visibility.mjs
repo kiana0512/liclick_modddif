@@ -11,10 +11,62 @@ const sceneRootSource = readFileSync(
   path.join(root, 'src/engine/viewport/SceneRoot.tsx'),
   'utf8',
 );
+const generatePanelSource = readFileSync(
+  path.join(root, 'src/components/panels/GeneratePanel.tsx'),
+  'utf8',
+);
+const viewportCanvasInteractionSource = readFileSync(
+  path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
+  'utf8',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /const rightLocalRepaintEraseContact = isLocalRepaintApplyMode && event\.button === 2;[\s\S]*?rightLocalRepaintEraseContact \? 'eraser' : 'brush'/,
+  'The local-repaint apply tool must route right-button strokes to erase while keeping left-button strokes additive.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /operation === 'eraser' \? 'destination-out' : 'lighten'/,
+  'Right-button local repaint strokes must subtract from the accumulated apply mask.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /if \(isInpaintMode \|\| isLocalRepaintApplyMode\) event\.preventDefault\(\);/,
+  'Both repaint brushes must suppress the browser context menu while right-button erasing.',
+);
+assert.match(
+  generatePanelSource,
+  /const viewportReference = await captureCurrentColorPreview\([\s\S]*?colorMode: 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
+  'The local-repaint viewport reference must capture frozen-camera BaseColor without PBR lighting.',
+);
+assert.match(
+  generatePanelSource,
+  /const completedGeneration: Generation = \{[\s\S]*?syncGeneration\(completedGeneration\);[\s\S]*?setGenerateNotice\(undefined\);[\s\S]*?void Promise\.all\(\[persistedResultUrlPromise, persistedPaintMaskUrlPromise\]\)/,
+  'A returned repaint result must leave the foreground spinner before local persistence continues in the background.',
+);
+const captureCurrentViewSource = readFileSync(
+  path.join(root, 'src/engine/capture/captureCurrentView.ts'),
+  'utf8',
+);
+assert.match(
+  captureCurrentViewSource,
+  /previewLightingEnabled\.value = 0;[\s\S]*?previewExposure\.value = 1/,
+  'Flat target capture must disable both preview lighting and exposure compensation.',
+);
 assert.match(
   sceneRootSource,
   /const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject\([\s\S]*?const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?hasVisibleUvContribution[\s\S]*?!uvMaterialUpdated[\s\S]*?!projectedMaterialUpdated[\s\S]*?setUvVisibilityRenderRevision/,
   'Opening an eye after an all-hidden cold restore must schedule a material pass when no resident shader accepted the uniform update.',
+);
+assert.match(
+  sceneRootSource,
+  /function getVisibleMergedUvBoundaryOrder[\s\S]*?layer\.role === 'merged-uv'[\s\S]*?isProjectedLayerAboveMergedUv[\s\S]*?layer\.order < mergedUvBoundaryOrder/,
+  'A visible merged UV row must become an explicit layer-order boundary for projected repaint rows.',
+);
+assert.match(
+  sceneRootSource,
+  /uvOverlayBelowProjected: Number\.isFinite\(visibleMergedUvBoundaryOrder\)/,
+  'The merged UV texture must be composited below projected repaint rows that are higher in the panel.',
 );
 assert.match(
   sceneRootSource,
@@ -188,8 +240,17 @@ try {
       id: 'local-repaint-projection-legacy',
       renderedColor: true,
     }),
-    true,
-    'Local repaint must keep its authored colour and bypass the PBR sweep.',
+    false,
+    'Projected local repaint is BaseColor and must receive PBR viewport lighting.',
+  );
+  assert.equal(
+    renderedLayerColor.usesUnlitRenderedColor({
+      id: 'local-repaint-uv-layer',
+      role: 'local-repaint-overlay',
+      renderedColor: false,
+    }),
+    false,
+    'A UV-committed local repaint must retain the same BaseColor lighting semantics.',
   );
   assert.equal(
     renderedLayerColor.usesUnlitRenderedColor({
@@ -268,6 +329,7 @@ try {
       depthTest: true,
       uvOverlayTexture: residentUvTexture,
       uvOverlayOpacity: 1,
+      uvOverlayBelowProjected: true,
       baseTexture: residentContentAwareTexture,
       baseTextureOpacity: 1,
     },
@@ -276,6 +338,7 @@ try {
   assert(material, 'Expected the six-layer projected material to be created.');
   const state = material.userData.liclickProjectedLayerStackState;
   assert.equal(state.bindings.length, 6);
+  assert.equal(material.uniforms.uvOverlayBelowProjected.value, 1);
   assert.deepEqual(
     state.bindings.map((binding) => binding.layerId),
     layers.map((layer) => layer.layerId),
@@ -508,6 +571,7 @@ try {
       depthTest: true,
       uvOverlayTexture: residentUvTexture,
       uvOverlayOpacity: 0,
+      uvOverlayBelowProjected: false,
       baseTexture: residentContentAwareTexture,
       baseTextureOpacity: 0,
     }),
@@ -515,6 +579,7 @@ try {
     'Closing a resident UV eye must update uniforms without rebuilding the shader.',
   );
   assert.equal(material.uniforms.uvOverlayOpacity.value, 0);
+  assert.equal(material.uniforms.uvOverlayBelowProjected.value, 0);
   assert.equal(material.uniforms.useUvOverlayMap.value, 1);
   assert.equal(material.uniforms.baseTextureOpacity.value, 0);
   assert.equal(material.uniforms.useBaseMap.value, 1);
@@ -522,6 +587,11 @@ try {
     material.fragmentShader,
     /baseTexel\.a \* baseTextureOpacity/,
     'Content-aware visibility must be applied in the shader without releasing its sampler.',
+  );
+  assert.match(
+    material.fragmentShader,
+    /shadedBase = mix\([\s\S]*uvOverlayAlpha \* uvOverlayBelowProjected[\s\S]*vec3 mixedColor/,
+    'Merged UV must be available as the base underneath higher projected repaint layers.',
   );
   assert.equal(material.uuid, materialId, 'UV visibility must not replace the GPU material.');
   projection.disposeGeneratedMaterialTree(material);

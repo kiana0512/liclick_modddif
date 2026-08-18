@@ -81,7 +81,10 @@ export type ViewportRuntime = {
   };
 };
 
-export type PaintMaskCapture = (options?: { aspect?: number }) => Promise<string | undefined>;
+export type PaintMaskCapture = (options?: {
+  aspect?: number;
+  camera?: THREE.Camera;
+}) => Promise<string | undefined>;
 
 type SceneStore = {
   objects: SceneObject[];

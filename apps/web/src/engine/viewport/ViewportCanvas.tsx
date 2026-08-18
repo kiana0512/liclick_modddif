@@ -228,6 +228,11 @@ const INPAINT_DEPTH_EPSILON = 0.00002;
 const PAINT_STROKE_PREVIEW_RENDER_ORDER = 1000;
 const INPAINT_MASK_OVERLAY_RENDER_ORDER = 1_000_000_000;
 const LOCAL_REPAINT_OVERLAY_RENDER_ORDER = INPAINT_MASK_OVERLAY_RENDER_ORDER - 1;
+// ContactShadows renders the scene through its own default-layer camera and
+// override depth material. Keep the clip-space mask preview on an editor-only
+// layer so that shadow capture cannot reinterpret its fullscreen quad as a
+// solid world-space plane.
+const INPAINT_SCREEN_PREVIEW_CAMERA_LAYER = 31;
 const surfacePaintPerfSamples: number[] = [];
 const gpuFrameTimeSamples: number[] = [];
 const gpuFramePhaseTimeSamples: Array<{ durationMs: number; phase?: string }> = [];
@@ -5074,6 +5079,8 @@ function createLiveInpaintScreenPreview() {
   mesh.renderOrder = INPAINT_MASK_OVERLAY_RENDER_ORDER + 1;
   mesh.visible = false;
   mesh.userData.liclickViewportHelper = true;
+  mesh.layers.set(INPAINT_SCREEN_PREVIEW_CAMERA_LAYER);
+  mesh.raycast = () => undefined;
   return { mesh, material };
 }
 
@@ -5864,6 +5871,8 @@ function computeLocalRepaintBrushTransform(
 function mergeLocalRepaintScratchPatch(
   composite: LocalRepaintCompositeState,
   dirtyRect: PaintDirtyRect,
+  operation: 'brush' | 'eraser' = 'brush',
+  opacity = 1,
 ) {
   const x = Math.max(0, Math.floor(dirtyRect.x));
   const y = Math.max(0, Math.floor(dirtyRect.y));
@@ -5888,7 +5897,14 @@ function mergeLocalRepaintScratchPatch(
   composite.scratchContext.restore();
 
   composite.maskContext.save();
-  composite.maskContext.globalCompositeOperation = 'lighten';
+  composite.maskContext.globalCompositeOperation =
+    operation === 'eraser' ? 'destination-out' : 'lighten';
+  // Local repaint stores brush strength in the grayscale channel when adding
+  // coverage. Canvas destination-out only consumes source alpha, so apply the
+  // same user-facing opacity explicitly while erasing.
+  if (operation === 'eraser') {
+    composite.maskContext.globalAlpha = THREE.MathUtils.clamp(opacity, 0, 1);
+  }
   composite.maskContext.drawImage(
     composite.scratchCanvas,
     x,
@@ -6207,13 +6223,15 @@ function SurfacePaintOverlay() {
   }, []);
   const liveInpaintScreenPreview = useMemo(() => createLiveInpaintScreenPreview(), []);
   useEffect(() => {
+    camera.layers.enable(INPAINT_SCREEN_PREVIEW_CAMERA_LAYER);
     scene.add(liveInpaintScreenPreview.mesh);
     return () => {
       liveInpaintScreenPreview.mesh.removeFromParent();
       liveInpaintScreenPreview.mesh.geometry.dispose();
       liveInpaintScreenPreview.material.dispose();
+      camera.layers.disable(INPAINT_SCREEN_PREVIEW_CAMERA_LAYER);
     };
-  }, [liveInpaintScreenPreview, scene]);
+  }, [camera, liveInpaintScreenPreview, scene]);
   const clearLocalRepaintGpuOverlay = useCallback(() => {
     disposeLocalRepaintGpuOverlay(localRepaintGpuOverlayRef.current);
     localRepaintGpuOverlayRef.current = undefined;
@@ -7848,7 +7866,10 @@ function SurfacePaintOverlay() {
     // current projector remains attached to model space until the next stroke.
   });
 
-  const capturePaintMask = useCallback(async (options?: { aspect?: number }) => {
+  const capturePaintMask = useCallback(async (options?: {
+    aspect?: number;
+    camera?: THREE.Camera;
+  }) => {
     const model = getTargetModel();
     const layer = layerRef.current;
     if (!model || !layer || layer.objectId !== model.objectId || !maskHasContentRef.current)
@@ -7929,7 +7950,7 @@ function SurfacePaintOverlay() {
         {
           gl,
           scene,
-          camera: cloneCameraForCaptureAspect(camera, aspect),
+          camera: cloneCameraForCaptureAspect(options?.camera ?? camera, aspect),
           objectId: model.objectId,
           width,
           height,
@@ -9772,9 +9793,13 @@ function SurfacePaintOverlay() {
         }
         // Projection masks are sampled as grayscale by both the live material and
         // the UV bake path, so encode brush opacity in RGB instead of canvas alpha.
-        const opacityByte = Math.round(
-          THREE.MathUtils.clamp(localRepaintBrushSettings.brushOpacity / 100, 0, 1) * 255,
+        const brushOpacity = THREE.MathUtils.clamp(
+          localRepaintBrushSettings.brushOpacity / 100,
+          0,
+          1,
         );
+        const opacityByte = Math.round(brushOpacity * 255);
+        const localRepaintOperation = draft.paintOperation ?? 'brush';
         const previousLocalRepaintUv = lastSampleRef.current?.localRepaintUv;
         const fromLocalRepaintUv = canConnectLocalRepaintStroke(
           previousLocalRepaintUv,
@@ -9799,10 +9824,12 @@ function SurfacePaintOverlay() {
           fromLocalRepaintUv,
           localRepaintUv,
           localRepaintBrush,
-          `rgb(${opacityByte}, ${opacityByte}, ${opacityByte})`,
-          'lighten',
+          localRepaintOperation === 'eraser'
+            ? 'rgb(255, 255, 255)'
+            : `rgb(${opacityByte}, ${opacityByte}, ${opacityByte})`,
+          localRepaintOperation === 'eraser' ? 'source-over' : 'lighten',
           'screen',
-          opacityByte,
+          localRepaintOperation === 'eraser' ? 255 : opacityByte,
         );
         if (strokeDraftRef.current?.target === 'apply-local-repaint') {
           strokeDraftRef.current.bounds = unionDirtyRect(
@@ -9812,7 +9839,12 @@ function SurfacePaintOverlay() {
           // The soft brush stamp is merged directly across the generated view.
           // Its radial alpha keeps the automatic edge fade, while the projected
           // UV and returned image alpha still reject pixels outside valid content.
-          mergeLocalRepaintScratchPatch(composite, projectionBounds);
+          mergeLocalRepaintScratchPatch(
+            composite,
+            projectionBounds,
+            localRepaintOperation,
+            brushOpacity,
+          );
           composite.hasContent = true;
           // The prewarmed overlay is deliberately absent from the render list
           // while its mask is empty. Activate it only after the first accepted
@@ -9942,7 +9974,11 @@ function SurfacePaintOverlay() {
   );
 
   const beginStrokeHistory = useCallback(
-    (result: UvPaintHit, strokePaintTool = paintTool) => {
+    (
+      result: UvPaintHit,
+      strokePaintTool = paintTool,
+      localRepaintOperation: 'brush' | 'eraser' = 'brush',
+    ) => {
       const target =
         strokePaintTool === 'inpaint-add' || strokePaintTool === 'inpaint-subtract'
           ? 'mask'
@@ -10027,6 +10063,8 @@ function SurfacePaintOverlay() {
         paintOperation:
           target === 'paint' && strokePaintTool === 'eraser'
             ? 'eraser'
+            : target === 'apply-local-repaint'
+              ? localRepaintOperation
             : target === 'paint'
               ? 'brush'
               : undefined,
@@ -11897,10 +11935,15 @@ function SurfacePaintOverlay() {
       window.clearTimeout(pointerCancelRecoveryTimerRef.current);
       pointerCancelRecoveryTimerRef.current = undefined;
     };
-    const isPointerContactActive = (event: globalThis.PointerEvent) =>
-      event.pointerType === 'pen'
-        ? event.pressure > 0 || (event.buttons & 1) !== 0
-        : (event.buttons & 1) !== 0;
+    const isPointerContactActive = (event: globalThis.PointerEvent) => {
+      const usesSecondaryButton =
+        strokeDraftRef.current?.target === 'apply-local-repaint' &&
+        strokeDraftRef.current.paintOperation === 'eraser';
+      const activeButtonMask = usesSecondaryButton ? 2 : 1;
+      return event.pointerType === 'pen'
+        ? event.pressure > 0 || (event.buttons & activeButtonMask) !== 0
+        : (event.buttons & activeButtonMask) !== 0;
+    };
     const finishPaintStroke = (
       event: globalThis.PointerEvent | undefined,
       endReason: StrokeTelemetrySnapshot['endReason'],
@@ -12071,7 +12114,12 @@ function SurfacePaintOverlay() {
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
       const rightMaskEraseContact = isInpaintMode && event.button === 2;
-      const isPaintButton = event.button === 0 || penEraserContact || rightMaskEraseContact;
+      const rightLocalRepaintEraseContact = isLocalRepaintApplyMode && event.button === 2;
+      const isPaintButton =
+        event.button === 0 ||
+        penEraserContact ||
+        rightMaskEraseContact ||
+        rightLocalRepaintEraseContact;
       const result = raycastModel(event);
 
       // Navigation buttons must reach the camera controls even when the drag
@@ -12204,7 +12252,11 @@ function SurfacePaintOverlay() {
         minPressure: pressure,
         maxPressure: pressure,
       };
-      beginStrokeHistory(result, strokePaintTool);
+      beginStrokeHistory(
+        result,
+        strokePaintTool,
+        rightLocalRepaintEraseContact ? 'eraser' : 'brush',
+      );
       setOrbitControlsEnabled(false);
       paintAt(result, pressure, strokePaintTool);
       recordSurfacePaintPerf(performance.now() - paintStartedAt);
@@ -12221,7 +12273,7 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      if (isInpaintMode) event.preventDefault();
+      if (isInpaintMode || isLocalRepaintApplyMode) event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);
     canvas.addEventListener('pointerdown', handlePointerDown, true);

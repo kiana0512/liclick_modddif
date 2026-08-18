@@ -378,6 +378,7 @@ const fragmentShader = `
   uniform float uvOverlayRenderedColor;
   uniform float useUvOverlayRenderedColorMaskMap;
   uniform float uvOverlayOpacity;
+  uniform float uvOverlayBelowProjected;
   uniform float useTopUvOverlayMap;
   uniform float topUvOverlayOpacity;
   uniform float topUvOverlayRenderedColor;
@@ -815,11 +816,26 @@ const fragmentShader = `
       #include <colorspace_fragment>
       return;
     }
-    vec3 mixedColor = mix(emptyPreviewColor, projectedDisplayColor, projectionAlpha);
+    float uvOverlayAlpha = clamp(
+      uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity,
+      0.0,
+      1.0
+    );
+    vec3 uvOverlayDisplayColor = uvOverlayTexel.rgb * mix(
+      lambert,
+      renderedColorExposureCompensation,
+      uvOverlayRenderedColorWeight
+    );
+    vec3 projectedBaseColor = mix(
+      emptyPreviewColor,
+      uvOverlayDisplayColor,
+      uvOverlayAlpha * uvOverlayBelowProjected
+    );
+    vec3 mixedColor = mix(projectedBaseColor, projectedDisplayColor, projectionAlpha);
     mixedColor = mix(
       mixedColor,
-      uvOverlayTexel.rgb * mix(lambert, renderedColorExposureCompensation, uvOverlayRenderedColorWeight),
-      uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity
+      uvOverlayDisplayColor,
+      uvOverlayAlpha * (1.0 - uvOverlayBelowProjected)
     );
     vec4 topUvOverlayTexel = texture2D(topUvOverlayMap, vUv);
     topUvOverlayTexel.rgb = applyHsvAdjustments(
@@ -1748,6 +1764,7 @@ function buildStackFragmentShader(
   ${features.useUvOverlayMap ? 'uniform sampler2D uvOverlayMap;' : ''}
   ${features.useUvOverlayRenderedColorMaskMap ? 'uniform sampler2D uvOverlayRenderedColorMaskMap;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayOpacity;' : ''}
+  ${features.useUvOverlayMap ? 'uniform float uvOverlayBelowProjected;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayRenderedColor;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlayHueShift;' : ''}
   ${features.useUvOverlayMap ? 'uniform float uvOverlaySaturationShift;' : ''}
@@ -2082,6 +2099,21 @@ function buildStackFragmentShader(
         : 'computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal))'
     };
     ${
+      features.useUvOverlayMap
+        ? `float uvOverlayAlpha = clamp(uvOverlayTexel.a * uvOverlayOpacity, 0.0, 1.0);
+    vec3 uvOverlayDisplayColor = uvOverlayTexel.rgb * mix(
+      lambert,
+      renderedColorExposureCompensation,
+      uvOverlayRenderedColorWeight
+    );
+    shadedBase = mix(
+      shadedBase,
+      uvOverlayDisplayColor,
+      uvOverlayAlpha * uvOverlayBelowProjected
+    );`
+        : ''
+    }
+    ${
       useCompactArrayLoop
         ? `for (int compactCandidateIndex = 0; compactCandidateIndex < 6; compactCandidateIndex++) {
       compactTopCoverage[compactCandidateIndex] = 0.0;
@@ -2131,8 +2163,8 @@ function buildStackFragmentShader(
       features.useUvOverlayMap
         ? `mixedColor = mix(
       mixedColor,
-      uvOverlayTexel.rgb * mix(lambert, renderedColorExposureCompensation, uvOverlayRenderedColorWeight),
-      uvOverlayTexel.a * uvOverlayOpacity
+      uvOverlayDisplayColor,
+      uvOverlayAlpha * (1.0 - uvOverlayBelowProjected)
     );`
         : ''
     }
@@ -2518,6 +2550,7 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
     uvOverlayRenderedColor?: boolean;
     baseTexture?: THREE.Texture;
     uvOverlayOpacity: number;
+    uvOverlayBelowProjected?: boolean;
     topUvOverlayOpacity: number;
     // Omit while an asynchronous multi-layer base composite is being prepared.
     // The resident material then keeps its last atomically published texture /
@@ -2572,6 +2605,7 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
       }
       const values = [
         ['uvOverlayOpacity', input.uvOverlayOpacity],
+        ['uvOverlayBelowProjected', input.uvOverlayBelowProjected ? 1 : 0],
         ['topUvOverlayOpacity', input.topUvOverlayOpacity],
         ['baseTextureOpacity', input.baseTextureOpacity],
       ] as const;
@@ -2636,6 +2670,8 @@ function updateSharedPreviewUniforms(
       0,
       1,
     );
+  if (material.uniforms.uvOverlayBelowProjected)
+    material.uniforms.uvOverlayBelowProjected.value = input.uvOverlayBelowProjected ? 1 : 0;
   if (material.uniforms.useTopUvOverlayMap)
     material.uniforms.useTopUvOverlayMap.value = input.topUvOverlayTexture ? 1 : 0;
   if (material.uniforms.topUvOverlayOpacity)
@@ -3531,6 +3567,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       uvOverlayOpacity: {
         value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
       },
+      uvOverlayBelowProjected: { value: input.uvOverlayBelowProjected ? 1 : 0 },
       useTopUvOverlayMap: { value: input.topUvOverlayTexture ? 1 : 0 },
       topUvOverlayOpacity: { value: input.topUvOverlayOpacity ?? 1 },
       topUvOverlayRenderedColor: { value: input.topUvOverlayRenderedColor ? 1 : 0 },
@@ -3708,6 +3745,7 @@ export async function createProjectedLayerStackMaterial(
     uvOverlayOpacity: {
       value: THREE.MathUtils.clamp(input.uvOverlayOpacity ?? 1, 0, 1),
     },
+    uvOverlayBelowProjected: { value: input.uvOverlayBelowProjected ? 1 : 0 },
     useTopUvOverlayMap: { value: input.topUvOverlayTexture ? 1 : 0 },
     topUvOverlayOpacity: { value: input.topUvOverlayOpacity ?? 1 },
     topUvOverlayRenderedColor: { value: input.topUvOverlayRenderedColor ? 1 : 0 },

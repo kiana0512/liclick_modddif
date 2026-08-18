@@ -355,7 +355,7 @@ function importedModelLayerDisplaySignature(layers: Layer[], objectId: string) {
     .filter((layer) => !layer.objectId || layer.objectId === objectId)
     .map(
       (layer) =>
-        `${layer.id}:${layer.type}:${Number(layer.visible)}:${layer.opacity}:${layer.strength ?? 1}:${layer.blendMode}:${layer.adjustments?.hue ?? 0}:${layer.adjustments?.saturation ?? 0}:${layer.adjustments?.lightness ?? 0}`,
+        `${layer.id}:${layer.type}:${layer.role ?? ''}:${layer.order}:${Number(layer.visible)}:${layer.opacity}:${layer.strength ?? 1}:${layer.blendMode}:${layer.adjustments?.hue ?? 0}:${layer.adjustments?.saturation ?? 0}:${layer.adjustments?.lightness ?? 0}`,
     )
     .join('|');
 }
@@ -374,6 +374,26 @@ function toProjectionLayerDisplayInput(layer: Layer): ProjectionLayerDisplayInpu
     saturation: (layer.adjustments?.saturation ?? 0) / 100,
     lightness: (layer.adjustments?.lightness ?? 0) / 100,
   };
+}
+
+function getVisibleMergedUvBoundaryOrder(layers: Layer[], objectId?: string) {
+  let boundary = Number.POSITIVE_INFINITY;
+  for (const layer of layers) {
+    if (
+      layer.type === 'uv' &&
+      layer.role === 'merged-uv' &&
+      layer.visible &&
+      Boolean(layer.imageUrl) &&
+      (!layer.objectId || layer.objectId === objectId)
+    ) {
+      boundary = Math.min(boundary, layer.order);
+    }
+  }
+  return boundary;
+}
+
+function isProjectedLayerAboveMergedUv(layer: Layer, mergedUvBoundaryOrder: number) {
+  return !Number.isFinite(mergedUvBoundaryOrder) || layer.order < mergedUvBoundaryOrder;
 }
 
 export { getPreviewLighting } from './previewLighting';
@@ -1071,6 +1091,10 @@ function ImportedModel({
     const layerState = useLayerStore.getState();
     return layerState.projectedPreviewLayers ?? layerState.layers;
   }, [layerRenderSignature, uvVisibilityRenderRevision]);
+  const visibleMergedUvBoundaryOrder = useMemo(
+    () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
+    [importedModel.objectId, layers],
+  );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
   // SurfacePaintOverlay owns the renderer-only local repaint preview. Keep an
   // already-persisted repaint row resident in the projected texture array and
@@ -1250,18 +1274,20 @@ function ImportedModel({
     if (!texturedRestoreReady) return [];
     const storedLayers = (
       importedObjectId ? getVisibleProjectedLayerStack(layers, importedObjectId) : []
-    ).map((layer) =>
-      liveSurfacePaintPreview?.target === 'projected-mask' &&
-      liveSurfacePaintPreview.composition === 'replace' &&
-      liveSurfacePaintPreview.objectId === importedObjectId &&
-      liveSurfacePaintPreview.layerId === layer.id
-        ? {
-            ...layer,
-            maskUrl: liveSurfacePaintPreview.assetUrl,
-            maskSpace: 'uv' as const,
-          }
-        : layer,
-    );
+    )
+      .filter((layer) => isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder))
+      .map((layer) =>
+        liveSurfacePaintPreview?.target === 'projected-mask' &&
+        liveSurfacePaintPreview.composition === 'replace' &&
+        liveSurfacePaintPreview.objectId === importedObjectId &&
+        liveSurfacePaintPreview.layerId === layer.id
+          ? {
+              ...layer,
+              maskUrl: liveSurfacePaintPreview.assetUrl,
+              maskSpace: 'uv' as const,
+            }
+          : layer,
+      );
     if (
       !visibleLocalRepaintPreviewLayer?.imageUrl ||
       !visibleLocalRepaintPreviewLayer.camera ||
@@ -1278,6 +1304,7 @@ function ImportedModel({
     layers,
     liveSurfacePaintPreview,
     texturedRestoreReady,
+    visibleMergedUvBoundaryOrder,
     visibleLocalRepaintPreviewLayer,
   ]);
   const visibleProjectedLayerSignature = useMemo(
@@ -1444,7 +1471,10 @@ function ImportedModel({
           strength: layer.strength ?? 1,
           blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
           compositeRole: getProjectionCompositeRole(layer),
-          visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
+          visible:
+            layer.visible &&
+            layer.id !== localRepaintPreviewLayerId &&
+            isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
           hue: (layer.adjustments?.hue ?? 0) / 100,
           saturation: (layer.adjustments?.saturation ?? 0) / 100,
           lightness: (layer.adjustments?.lightness ?? 0) / 100,
@@ -1463,6 +1493,7 @@ function ImportedModel({
       localRepaintPreviewLayerId,
       projectedProgramWarmupLayers,
       runtimeVisibilityByLayerId,
+      visibleMergedUvBoundaryOrder,
     ],
   );
   const previewProjectionInputs = useMemo(
@@ -1498,7 +1529,10 @@ function ImportedModel({
           compositeRole: getProjectionCompositeRole(layer),
           // Keep the projection visible while the exact runtime visibility pass
           // is preparing. The stored depth (when present) remains a valid fallback.
-          visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
+          visible:
+            layer.visible &&
+            layer.id !== localRepaintPreviewLayerId &&
+            isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
           hue: (layer.adjustments?.hue ?? 0) / 100,
           saturation: (layer.adjustments?.saturation ?? 0) / 100,
           lightness: (layer.adjustments?.lightness ?? 0) / 100,
@@ -1517,6 +1551,7 @@ function ImportedModel({
       localRepaintPreviewLayerId,
       runtimeVisibilityByLayerId,
       stablePreviewProjectedLayers,
+      visibleMergedUvBoundaryOrder,
     ],
   );
   useEffect(() => {
@@ -1598,6 +1633,10 @@ function ImportedModel({
         return;
       const startedAt = performance.now();
       const currentPreviewLayerId = useSceneStore.getState().localRepaintPreviewLayer?.id;
+      const currentMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
+        state.layers,
+        importedModel.objectId,
+      );
       const displayLayers = state.layers
         .filter(
           (layer) =>
@@ -1609,7 +1648,10 @@ function ImportedModel({
           // Only the currently edited repaint is presented by the renderer-owned
           // low-latency overlay. Historical repaint rows remain authoritative in
           // the resident stack and must recover their stored visibility/opacity.
-          visible: layer.visible && layer.id !== currentPreviewLayerId,
+          visible:
+            layer.visible &&
+            layer.id !== currentPreviewLayerId &&
+            isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
       if (
         visibleLocalRepaintPreviewLayer?.type === 'projected' &&
@@ -1692,12 +1734,13 @@ function ImportedModel({
             : residentUvTexture && visibleOrdinaryUvLayers.length > 1
               ? 1
               : 0,
+        uvOverlayBelowProjected: Number.isFinite(currentMergedUvBoundaryOrder),
         topUvOverlayOpacity: visibleLocalRepaintUvLayers[0]?.opacity ?? 0,
         // A multi-layer repair presentation is composed asynchronously below.
         // Do not clear the last valid base texture while that exact composite is
         // decoding/uploading; its owner effect will atomically publish the pair.
         baseTextureOpacity: contentAwareOpacity,
-        },
+      },
       );
       const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject(
         importedModel.group,
@@ -1753,9 +1796,13 @@ function ImportedModel({
     // the resident material; this changes uniforms only and never recompiles.
     const unsubscribe = useSceneStore.subscribe((state, previousState) => {
       if (state.displayMode === previousState.displayMode) return;
-      const displayLayers = useLayerStore
-        .getState()
-        .layers.filter(
+      const currentLayers = useLayerStore.getState().layers;
+      const currentMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
+        currentLayers,
+        importedModel.objectId,
+      );
+      const displayLayers = currentLayers
+        .filter(
           (layer) =>
             layer.type === 'projected' &&
             (!layer.objectId || layer.objectId === importedModel.objectId),
@@ -1763,7 +1810,9 @@ function ImportedModel({
         .map((layer) => ({
           ...toProjectionLayerDisplayInput(layer),
           visible:
-            layer.visible && layer.id !== useSceneStore.getState().localRepaintPreviewLayer?.id,
+            layer.visible &&
+            layer.id !== useSceneStore.getState().localRepaintPreviewLayer?.id &&
+            isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
       if (
         visibleLocalRepaintPreviewLayer?.type === 'projected' &&
@@ -1796,16 +1845,23 @@ function ImportedModel({
     // layer so the previous generation is immediately unmuted in the background.
     const sceneState = useSceneStore.getState();
     const settings = useSettingsStore.getState();
-    const displayLayers = useLayerStore
-      .getState()
-      .layers.filter(
+    const currentLayers = useLayerStore.getState().layers;
+    const currentMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
+      currentLayers,
+      importedModel.objectId,
+    );
+    const displayLayers = currentLayers
+      .filter(
         (layer) =>
           layer.type === 'projected' &&
           (!layer.objectId || layer.objectId === importedModel.objectId),
       )
       .map((layer) => ({
         ...toProjectionLayerDisplayInput(layer),
-        visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
+        visible:
+          layer.visible &&
+          layer.id !== localRepaintPreviewLayerId &&
+          isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
       }));
     syncProjectedLayerMaterialDisplayStateInObject(
       importedModel.group,
@@ -2620,6 +2676,7 @@ function ImportedModel({
       // single presentation state: publish opacity only after the authored UV
       // texture has decoded and is ready to bind.
       uvOverlayOpacity: loadedUvTexture ? uvOverlayOpacity : 0,
+      uvOverlayBelowProjected: Number.isFinite(visibleMergedUvBoundaryOrder),
       topUvOverlayOpacity: liveTopUvLayer?.visible ? liveTopUvLayer.opacity : 0,
       baseTextureOpacity: contentAwareUnderlayOpacity,
     });
@@ -2643,6 +2700,7 @@ function ImportedModel({
     previewLighting,
     previewProjectionInputs,
     uvOverlayOpacity,
+    visibleMergedUvBoundaryOrder,
   ]);
 
   useFrame(() => {
@@ -3326,6 +3384,7 @@ function ImportedModel({
               ? (directUvLayer.adjustments?.lightness ?? 0) / 100
               : 0,
             uvOverlayOpacity,
+            uvOverlayBelowProjected: Number.isFinite(visibleMergedUvBoundaryOrder),
             uvOverlayRenderedColor: directUvRenderedColor,
             ...(directUvRenderedColorMaskTexture
               ? { uvOverlayRenderedColorMaskTexture: directUvRenderedColorMaskTexture }
@@ -3928,6 +3987,10 @@ function ImportedModel({
                   return;
                 }
                 const latestLayerState = useLayerStore.getState();
+                const latestMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
+                  latestLayerState.layers,
+                  importedModel.objectId,
+                );
                 const latestDisplayLayers = latestLayerState.layers
                   .filter(
                     (layer) =>
@@ -3936,7 +3999,10 @@ function ImportedModel({
                   )
                   .map((layer) => ({
                     ...toProjectionLayerDisplayInput(layer),
-                    visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
+                    visible:
+                      layer.visible &&
+                      layer.id !== localRepaintPreviewLayerId &&
+                      isProjectedLayerAboveMergedUv(layer, latestMergedUvBoundaryOrder),
                   }));
                 const latestDisplayMode = useSceneStore.getState().displayMode;
                 syncProjectedLayerMaterialDisplayState(
@@ -3983,6 +4049,13 @@ function ImportedModel({
                       : latestResidentUvTexture && latestOrdinaryUvLayers.length > 1
                         ? 1
                         : 0;
+                }
+                if (sharedProjectedMaterial.uniforms.uvOverlayBelowProjected) {
+                  sharedProjectedMaterial.uniforms.uvOverlayBelowProjected.value = Number.isFinite(
+                    latestMergedUvBoundaryOrder,
+                  )
+                    ? 1
+                    : 0;
                 }
                 if (sharedProjectedMaterial.uniforms.baseTextureOpacity) {
                   const latestContentAwareTexture =
@@ -4120,6 +4193,10 @@ function ImportedModel({
       const authoritativeSceneState = useSceneStore.getState();
       const authoritativeSettings = useSettingsStore.getState();
       const authoritativeLayers = useLayerStore.getState().layers;
+      const authoritativeMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
+        authoritativeLayers,
+        importedModel.objectId,
+      );
       const authoritativeDisplayLayers = authoritativeLayers
         .filter(
           (layer) =>
@@ -4128,7 +4205,10 @@ function ImportedModel({
         )
         .map((layer) => ({
           ...toProjectionLayerDisplayInput(layer),
-          visible: layer.visible && layer.id !== localRepaintPreviewLayerId,
+          visible:
+            layer.visible &&
+            layer.id !== localRepaintPreviewLayerId &&
+            isProjectedLayerAboveMergedUv(layer, authoritativeMergedUvBoundaryOrder),
         }));
       const authoritativeLighting = getPreviewLighting({
         displayMode: authoritativeSceneState.displayMode,
@@ -4187,6 +4267,7 @@ function ImportedModel({
             : authoritativeResidentUvTexture && authoritativeOrdinaryUvLayers.length > 1
               ? 1
               : 0,
+        uvOverlayBelowProjected: Number.isFinite(authoritativeMergedUvBoundaryOrder),
         topUvOverlayOpacity: authoritativeLocalRepaintUvLayers[0]?.opacity ?? 0,
       });
       syncProjectedLayerMaterialProjection(model.group);
@@ -4281,6 +4362,7 @@ function ImportedModel({
     stablePreviewProjectedLayers,
     topUvProjectedOverlayInput,
     uvOverlayOpacity,
+    visibleMergedUvBoundaryOrder,
     visibleLocalRepaintPreviewLayer,
     visibleStackHasBakedPreview,
   ]);
