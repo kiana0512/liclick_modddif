@@ -1,5 +1,12 @@
 import { createPortal } from 'react-dom';
-import { useEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent as ReactDragEvent,
+} from 'react';
 import {
   AlertTriangle,
   Check,
@@ -88,6 +95,22 @@ function isImageFile(file: File) {
 
 function imageFilesFromDrop(event: ReactDragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.files).filter(isImageFile);
+}
+
+function isEditablePasteTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(
+    target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'),
+  );
+}
+
+function imageFilesFromClipboard(clipboard: DataTransfer) {
+  const itemFiles = Array.from(clipboard.items)
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  if (itemFiles.length > 0) return itemFiles;
+  return Array.from(clipboard.files).filter(isImageFile);
 }
 
 function EmptyUploadTarget({
@@ -253,7 +276,7 @@ export function ReferenceGroupPicker({
     return () => window.removeEventListener('pointerdown', closeMenu);
   }, [openReferenceMenuId]);
 
-  async function imageFromFile(file: File): Promise<ReferenceImage> {
+  const imageFromFile = useCallback(async (file: File): Promise<ReferenceImage> => {
     const url = await fileToDataUrl(file);
     const size = await getImageSize(url);
     return {
@@ -265,9 +288,9 @@ export function ReferenceGroupPicker({
       isPrimary: false,
       referenceSource: 'uploaded',
     };
-  }
+  }, []);
 
-  async function queueReferenceFiles(files: File[]) {
+  const queueReferenceFiles = useCallback(async (files: File[]) => {
     const imageFiles = files.filter(isImageFile);
     if (!imageFiles.length) {
       setUploadError('请选择图片文件。');
@@ -276,7 +299,21 @@ export function ReferenceGroupPicker({
     const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
     setPendingImport(created);
     setUploadError(undefined);
-  }
+  }, [imageFromFile]);
+
+  useEffect(() => {
+    function handlePaste(event: ClipboardEvent) {
+      if (disabled || pendingImport || isEditablePasteTarget(event.target)) return;
+      if (!event.clipboardData) return;
+      const imageFiles = imageFilesFromClipboard(event.clipboardData);
+      if (imageFiles.length === 0) return;
+      event.preventDefault();
+      void queueReferenceFiles(imageFiles);
+    }
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [disabled, pendingImport, queueReferenceFiles]);
 
   function confirmReferenceFiles(role: ReferenceImportRole) {
     if (!pendingImport?.length) return;
@@ -409,7 +446,7 @@ export function ReferenceGroupPicker({
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-semibold text-white/88">参考图</span>
         <div className="relative flex items-center gap-1.5">
-          <span className="text-[9px] font-normal text-white/30">单图 / 多视图任选</span>
+          <span className="text-[9px] font-normal text-white/30">单图 / 多视图任选 · Ctrl+V</span>
           <button
             type="button"
             disabled={disabled}
@@ -465,7 +502,11 @@ export function ReferenceGroupPicker({
                   }`}
                   style={checkerboardStyle()}
                   onClick={() => selectReference(reference)}
-                  title={`选中${role === 'multi-view' ? '多视图' : '单视图'}`}
+                  onDoubleClick={() => {
+                    setPreviewReference(reference);
+                    setOpenReferenceMenuId(undefined);
+                  }}
+                  title={`单击选中${role === 'multi-view' ? '多视图' : '单视图'}，双击预览`}
                 >
                   <img
                     src={reference.url}

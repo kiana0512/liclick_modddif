@@ -1084,6 +1084,11 @@ export async function bakeVisibleProjectedLayersToTexture(
   const runtimeDepthStartedAt = performance.now();
   markUvBakePerformancePhase('runtime-depth');
   if (viewportRenderer && !input.debugIgnoreDepth) {
+    const runtimeVisibilityIncludeNormal = input.runtimeVisibilityIncludeNormal !== false;
+    const runtimeVisibilityMaxSize = Math.max(
+      128,
+      Math.min(2048, Math.round(input.runtimeVisibilityMaxSize ?? 2048)),
+    );
     const currentProject = useProjectStore.getState().getCurrentProject();
     const captureById = new Map(
       currentProject?.captures.map((capture) => [capture.id, capture] as const) ?? [],
@@ -1101,7 +1106,7 @@ export async function bakeVisibleProjectedLayersToTexture(
       layers.map(async (layer) => {
         if (
           layer.depthUrl &&
-          layer.normalUrl &&
+          (!runtimeVisibilityIncludeNormal || layer.normalUrl) &&
           layer.depthEncoding === 'linear-view' &&
           matrixMatches(layer.objectMatrixWorld)
         ) {
@@ -1115,8 +1120,9 @@ export async function bakeVisibleProjectedLayersToTexture(
           group: importedModel.group,
           camera: layer.camera!,
           captureObjectMatrixWorld: layer.objectMatrixWorld,
-          width: Math.max(1, Math.min(2048, capture?.width ?? 1024)),
-          height: Math.max(1, Math.min(2048, capture?.height ?? 1024)),
+          width: Math.max(1, Math.min(runtimeVisibilityMaxSize, capture?.width ?? 1024)),
+          height: Math.max(1, Math.min(runtimeVisibilityMaxSize, capture?.height ?? 1024)),
+          includeNormal: runtimeVisibilityIncludeNormal,
         });
         return {
           ...layer,

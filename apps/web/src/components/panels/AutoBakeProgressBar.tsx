@@ -5,7 +5,15 @@ export type AutoBakeProgress = {
   indeterminate?: boolean;
 };
 
-export function AutoBakeProgressBar({ progress }: { progress: AutoBakeProgress }) {
+export function AutoBakeProgressBar({
+  progress,
+  onCancel,
+  cancelling = false,
+}: {
+  progress: AutoBakeProgress;
+  onCancel?: () => void;
+  cancelling?: boolean;
+}) {
   const percentage = Math.round(Math.min(1, Math.max(0, progress.progress)) * 100);
 
   return (
@@ -20,8 +28,21 @@ export function AutoBakeProgressBar({ progress }: { progress: AutoBakeProgress }
           <div className="truncate text-[13px] font-semibold">{progress.title}</div>
           <div className="mt-0.5 truncate text-xs text-white/66">{progress.detail}</div>
         </div>
-        <div className="shrink-0 text-xs font-semibold text-white/80">
-          {progress.indeterminate ? '…' : `${percentage}%`}
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="text-xs font-semibold text-white/80">
+            {progress.indeterminate ? '…' : `${percentage}%`}
+          </div>
+          {onCancel ? (
+            <button
+              type="button"
+              className="h-7 rounded border border-red-300/32 bg-red-500/16 px-3 text-xs font-semibold text-red-100 transition-colors hover:bg-red-500/24 disabled:cursor-wait disabled:opacity-60"
+              onClick={onCancel}
+              disabled={cancelling}
+              aria-label="中断当前任务"
+            >
+              {cancelling ? '中断中…' : '中断'}
+            </button>
+          ) : null}
         </div>
       </div>
       <div

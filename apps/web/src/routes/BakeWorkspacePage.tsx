@@ -285,6 +285,7 @@ export function BakeWorkspacePage({
   const highInputRef = useRef<HTMLInputElement>(null);
   const lowInputRef = useRef<HTMLInputElement>(null);
   const cageInputRef = useRef<HTMLInputElement>(null);
+  const materialInputRef = useRef<HTMLInputElement>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
   const roughnessInputRef = useRef<HTMLInputElement>(null);
   const metallicInputRef = useRef<HTMLInputElement>(null);
@@ -709,7 +710,7 @@ export function BakeWorkspacePage({
   const selectedNormalPreview = useFilePreviewUrl(selectedNormal);
   const materialMapCount =
     Number(Boolean(selectedColorName)) +
-    Number(Boolean(selectedRoughness) || autoRoughnessEnabled) +
+    Number(Boolean(selectedRoughness)) +
     Number(Boolean(selectedMetallic)) +
     Number(Boolean(selectedNormal));
   const selectedLowInfo = selectedHigh ? alignmentInfo.low[selectedHigh.id] : undefined;
@@ -1136,17 +1137,35 @@ export function BakeWorkspacePage({
   ]);
 
   function chooseFiles(
-    kind: 'high' | 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
+    kind:
+      | 'high'
+      | 'low'
+      | 'cage'
+      | 'material'
+      | 'color'
+      | 'roughness'
+      | 'metallic'
+      | 'normal',
     objectId?: string,
   ) {
     fileTargetIdRef.current = objectId ?? selectedHigh?.id;
-    if (kind === 'high') highInputRef.current?.click();
-    if (kind === 'low') lowInputRef.current?.click();
-    if (kind === 'cage') cageInputRef.current?.click();
-    if (kind === 'color') colorInputRef.current?.click();
-    if (kind === 'roughness') roughnessInputRef.current?.click();
-    if (kind === 'metallic') metallicInputRef.current?.click();
-    if (kind === 'normal') normalInputRef.current?.click();
+    const input = {
+      high: highInputRef.current,
+      low: lowInputRef.current,
+      cage: cageInputRef.current,
+      material: materialInputRef.current,
+      color: colorInputRef.current,
+      roughness: roughnessInputRef.current,
+      metallic: metallicInputRef.current,
+      normal: normalInputRef.current,
+    }[kind];
+    if (!input) {
+      setBakeError('导入控件尚未就绪，请稍后重试。');
+      return;
+    }
+    // Clearing first lets users replace an asset with the same local file.
+    input.value = '';
+    input.click();
   }
 
   function handleLowImport(files: File[]) {
@@ -1789,6 +1808,17 @@ export function BakeWorkspacePage({
           }}
         />
         <input
+          ref={materialInputRef}
+          className="hidden"
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp,.tga"
+          onChange={(event) => {
+            handleMaterialImport(Array.from(event.target.files ?? []));
+            event.target.value = '';
+          }}
+        />
+        <input
           ref={colorInputRef}
           className="hidden"
           type="file"
@@ -2254,11 +2284,7 @@ export function BakeWorkspacePage({
                     materialMapCount > 0
                       ? `${materialMapCount}/4 已准备 · ${[
                           selectedColorName ? '颜色' : undefined,
-                          selectedRoughness
-                            ? '粗糙度'
-                            : autoRoughnessEnabled
-                              ? 'AI 粗糙度'
-                              : undefined,
+                          selectedRoughness ? '粗糙度' : undefined,
                           selectedMetallic ? '金属度' : undefined,
                           selectedNormal ? '法线' : undefined,
                         ]
@@ -2267,6 +2293,7 @@ export function BakeWorkspacePage({
                       : '点击管理材质贴图'
                   }
                   ready={
+                    materialMapCount > 0 &&
                     (!requiresColor || Boolean(selectedColorName)) &&
                     (!requiresRoughness ||
                       Boolean(selectedRoughness) ||
@@ -2276,7 +2303,9 @@ export function BakeWorkspacePage({
                   icon={Sparkles}
                   tone="rose"
                   actionLabel={materialMapCount > 0 ? '管理贴图' : '导入贴图'}
-                  onClick={() => setMaterialDialogOpen(true)}
+                  onClick={() =>
+                    materialMapCount > 0 ? setMaterialDialogOpen(true) : chooseFiles('material')
+                  }
                   onFilesDropped={handleMaterialImport}
                   dropHint="Base Color / Roughness / Metallic / Normal"
                 />
@@ -2284,7 +2313,7 @@ export function BakeWorkspacePage({
 
               <div className="border-t border-white/[0.07] bg-black/14 p-4 sm:p-6">
                 <div className="mb-3 flex flex-wrap items-center gap-1.5 px-1">
-                  <span className="mr-1 text-[11px] font-medium text-white/30">
+                  <span className="mr-1 text-xs font-medium text-white/48">
                     输出 {enabledChannels.size}/{resultChannelOrder.length}
                   </span>
                   {resultChannelOrder.map((channel) => {
@@ -2297,16 +2326,16 @@ export function BakeWorkspacePage({
                         disabled={!supported}
                         title={supported ? undefined : '当前远端配置不支持此输出'}
                         className={cn(
-                          'inline-flex h-7 items-center justify-center gap-1 rounded-lg border px-2 text-[10px] font-medium transition-all',
+                          'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all',
                           selected
-                            ? 'border-white/12 bg-white/[0.055] text-white/58'
-                            : 'border-white/[0.05] bg-transparent text-white/20 hover:border-white/12 hover:text-white/48',
+                            ? 'border-white/20 bg-white/[0.08] text-white/92'
+                            : 'border-white/10 bg-white/[0.015] text-white/52 hover:border-white/20 hover:bg-white/[0.04] hover:text-white/78',
                           !supported && 'cursor-not-allowed opacity-35 hover:border-white/[0.05]',
                         )}
                         aria-pressed={selected}
                         onClick={() => toggleChannel(channel)}
                       >
-                        {selected ? <Check className="h-3 w-3" /> : null}
+                        {selected ? <Check className="h-3.5 w-3.5" /> : null}
                         {channelShortLabels[channel]}
                       </button>
                     );
@@ -3500,10 +3529,10 @@ function OneClickAssetCard({
             className={cn(
               'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium',
               warning
-                ? 'border-amber-300/24 bg-amber-300/[0.08] text-amber-100/76'
+                ? 'border-amber-300/32 bg-amber-300/[0.1] text-amber-100/88'
                 : ready
-                  ? 'border-emerald-300/20 bg-emerald-300/[0.07] text-emerald-100/72'
-                  : 'border-white/10 bg-black/18 text-white/38',
+                  ? 'border-emerald-400 bg-emerald-500 text-white shadow-[0_0_18px_rgba(16,185,129,.22)]'
+                  : 'border-white/14 bg-white/[0.025] text-white/58',
             )}
           >
             {warning ? (

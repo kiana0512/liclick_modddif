@@ -1,4 +1,12 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type SyntheticEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Plus } from 'lucide-react';
 import * as THREE from 'three';
@@ -203,7 +211,7 @@ import {
   useSceneStore,
 } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { shortcutMatches } from '@/stores/shortcutStore';
+import { shortcutMatches, type ShortcutActionId } from '@/stores/shortcutStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { BakeProgress, BakeReport, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { LocalRepaintRuntime, MaskBitmap, Rect } from '@/types/localRepaint';
@@ -257,6 +265,44 @@ const resolutionToSize = {
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
 const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
+const EDITOR_TASK_LOCKED_SHORTCUTS = [
+  'project.save',
+  'history.undo',
+  'history.redo',
+  'scene.arrange',
+  'scene.select',
+  'scene.translate',
+  'scene.rotate',
+  'scene.scale',
+  'texture.clearMask',
+  'texture.duplicateLayer',
+  'texture.invertMask',
+  'texture.newLayer',
+  'texture.moveLayerUp',
+  'texture.moveLayerDown',
+  'texture.showAllLayers',
+  'texture.toggleLayer',
+  'texture.select',
+  'texture.brushSmaller',
+  'texture.brushLarger',
+  'texture.maskAdd',
+  'texture.maskSubtract',
+  'texture.localRepaint',
+  'image.move',
+  'image.select',
+  'image.brush',
+  'image.eraser',
+  'image.fill',
+  'image.picker',
+  'image.brushSmaller',
+  'image.brushLarger',
+  'image.hardnessSofter',
+  'image.hardnessHarder',
+  'repaint.brush',
+  'repaint.eraser',
+  'repaint.brushSmaller',
+  'repaint.brushLarger',
+] satisfies ShortcutActionId[];
 
 type ReusableProjectionBakePurpose = 'merge-uv' | 'content-aware-repair';
 
@@ -312,11 +358,7 @@ function createReusableProjectionBakeSignature(input: {
 }
 
 function cloneProjectionBakeImageData(imageData: ImageData) {
-  return new ImageData(
-    new Uint8ClampedArray(imageData.data),
-    imageData.width,
-    imageData.height,
-  );
+  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
 }
 
 async function waitForProjectRestoreIdle(timeoutMs = 800) {
@@ -889,6 +931,7 @@ export function EditorPage({
   const modelImportProgressTimerRef = useRef<number>();
   const contentAwareRepairRunningRef = useRef(false);
   const contentAwareRepairAbortControllerRef = useRef<AbortController>();
+  const contentAwareRepairTaskTokenRef = useRef<symbol>();
   // Keep at most one pristine projection composite per workflow (64 MiB for
   // 4K merge + 16 MiB for 2K repair). Reads are cloned before UV underlays are
   // applied, so later compositing can never corrupt the reusable source.
@@ -915,6 +958,10 @@ export function EditorPage({
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
   const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
   const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
+  const [generatePanelTaskRunning, setGeneratePanelTaskRunning] = useState(false);
+  const [contentAwareRepairRunning, setContentAwareRepairRunning] = useState(false);
+  const [contentAwareRepairTaskActive, setContentAwareRepairTaskActive] = useState(false);
+  const [contentAwareRepairCancelling, setContentAwareRepairCancelling] = useState(false);
   const [modelImportProgress, setModelImportProgress] = useState<AutoBakeProgress | undefined>();
   const [pendingReferenceImport, setPendingReferenceImport] = useState<ReferenceImage[]>();
   const [photoshopEditSession, setPhotoshopEditSession] = useState<PhotoshopSession>();
@@ -1029,11 +1076,7 @@ export function EditorPage({
         Boolean(generation.resultUrl) &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project?.captures ?? [],
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
     );
   }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
   const localImageGenerationStoreRunning = useMemo(() => {
@@ -1043,15 +1086,89 @@ export function EditorPage({
         (generation.status === 'queued' || generation.status === 'running') &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project?.captures ?? [],
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
     );
   }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
   const localImageGenerationRunning =
     localImageGenerationRequested || localImageGenerationStoreRunning;
+  const projectGenerationRunning = useMemo(
+    () =>
+      generations.some((generation) => {
+        if (generation.status !== 'queued' && generation.status !== 'running') return false;
+        const generationProjectId = generation.metadata.projectId;
+        return typeof generationProjectId !== 'string' || generationProjectId === projectId;
+      }),
+    [generations, projectId],
+  );
+  const editorTaskRunning =
+    projectGenerationRunning || generatePanelTaskRunning || contentAwareRepairRunning;
+  const notifyEditorTaskRunning = useCallback(() => {
+    pushToast({
+      tone: 'info',
+      title: '任务正在运行',
+      description: contentAwareRepairRunning
+        ? '正在进行内容识别补缝，完成前仅支持预览。'
+        : '生成任务完成前仅支持旋转、缩放和结果预览，暂不能进行其他操作。',
+      dedupeKey: 'editor-task-preview-only',
+    });
+  }, [contentAwareRepairRunning, pushToast]);
+
+  const handleLockedEditorInteraction = useCallback(
+    (event: SyntheticEvent<HTMLElement>) => {
+      if (!editorTaskRunning) return;
+      const target = event.target as HTMLElement;
+      if (!target.closest('button, input, select, textarea, a, label, [role="button"]')) return;
+      if (target.closest('[data-task-preview-allowed="true"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      notifyEditorTaskRunning();
+    },
+    [editorTaskRunning, notifyEditorTaskRunning],
+  );
+
+  useEffect(() => {
+    if (!editorTaskRunning) return;
+    const sceneState = useSceneStore.getState();
+    if (sceneState.paintTool !== 'none') sceneState.setPaintTool('none');
+    if (sceneState.transformMode !== 'select') sceneState.setTransformMode('select');
+  }, [editorTaskRunning]);
+
+  useEffect(() => {
+    if (!editorTaskRunning) return;
+
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      (activeElement.matches('input, textarea, select') || activeElement.isContentEditable)
+    ) {
+      activeElement.blur();
+    }
+
+    const handleTaskLockedShortcut = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const blocked =
+        event.key === 'Delete' ||
+        event.key === 'Backspace' ||
+        EDITOR_TASK_LOCKED_SHORTCUTS.some((actionId) => shortcutMatches(event, actionId));
+      if (!blocked) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      notifyEditorTaskRunning();
+    };
+
+    document.addEventListener('keydown', handleTaskLockedShortcut, true);
+    return () => document.removeEventListener('keydown', handleTaskLockedShortcut, true);
+  }, [editorTaskRunning, notifyEditorTaskRunning]);
   const activeBakedTexture = project?.bakedTextures.find(
     (texture) => texture.id === activeLayer?.bakedTextureId,
   );
@@ -1107,7 +1224,12 @@ export function EditorPage({
   useEffect(() => {
     contentAwareRepairAbortControllerRef.current?.abort();
     contentAwareRepairAbortControllerRef.current = undefined;
+    contentAwareRepairTaskTokenRef.current = undefined;
     contentAwareRepairRunningRef.current = false;
+    setContentAwareRepairRunning(false);
+    setContentAwareRepairTaskActive(false);
+    setContentAwareRepairCancelling(false);
+    setGeneratePanelTaskRunning(false);
     reusableProjectionBakeCacheRef.current.clear();
     setRouteProjectStatus('idle');
     setServerReadyProjectId(undefined);
@@ -1130,6 +1252,7 @@ export function EditorPage({
       modelImportRunningRef.current = false;
       contentAwareRepairAbortControllerRef.current?.abort();
       contentAwareRepairAbortControllerRef.current = undefined;
+      contentAwareRepairTaskTokenRef.current = undefined;
       contentAwareRepairRunningRef.current = false;
       reusableProjectionBakeCacheRef.current.clear();
     },
@@ -1282,11 +1405,16 @@ export function EditorPage({
       if (document.querySelector('[data-shortcut-dialog]')) return;
       if (!shortcutMatches(event, 'project.save')) return;
       event.preventDefault();
+      if (editorTaskRunning) {
+        notifyEditorTaskRunning();
+        event.stopImmediatePropagation();
+        return;
+      }
       manualSaveHandlerRef.current();
     }
     window.addEventListener('keydown', handleManualSaveShortcut);
     return () => window.removeEventListener('keydown', handleManualSaveShortcut);
-  }, []);
+  }, [editorTaskRunning, notifyEditorTaskRunning]);
 
   useEffect(() => {
     const handleImmediateSave = () => immediateSaveHandlerRef.current();
@@ -1300,15 +1428,25 @@ export function EditorPage({
       if (document.querySelector('[data-editor-shortcut-scope]')) return;
       if (shortcutMatches(event, 'history.undo')) {
         event.preventDefault();
+        if (editorTaskRunning) {
+          notifyEditorTaskRunning();
+          event.stopImmediatePropagation();
+          return;
+        }
         undo();
       } else if (shortcutMatches(event, 'history.redo')) {
         event.preventDefault();
+        if (editorTaskRunning) {
+          notifyEditorTaskRunning();
+          event.stopImmediatePropagation();
+          return;
+        }
         redo();
       }
     }
     window.addEventListener('keydown', handleUndoRedo);
     return () => window.removeEventListener('keydown', handleUndoRedo);
-  }, [redo, undo]);
+  }, [editorTaskRunning, notifyEditorTaskRunning, redo, undo]);
 
   useEffect(() => {
     if (
@@ -2919,6 +3057,10 @@ export function EditorPage({
   }
 
   async function handleImportModels(files: File[]) {
+    if (editorTaskRunning) {
+      notifyEditorTaskRunning();
+      return;
+    }
     const modelFiles = files.filter((file) => /\.(glb|gltf|fbx|obj)$/i.test(file.name));
     const resourceFiles = files.filter((file) => !modelFiles.includes(file));
     if (modelFiles.length === 0 || modelImportRunningRef.current) return;
@@ -3000,6 +3142,10 @@ export function EditorPage({
   }
 
   async function handleImportReferenceImages(files: File[]) {
+    if (editorTaskRunning) {
+      notifyEditorTaskRunning();
+      return;
+    }
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name),
     );
@@ -4100,8 +4246,7 @@ export function EditorPage({
         ].join('|'),
       });
       const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get('merge-uv');
-      const projectionBakeCacheHit =
-        reusableProjectionBake?.signature === projectionBakeSignature;
+      const projectionBakeCacheHit = reusableProjectionBake?.signature === projectionBakeSignature;
       document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
         ? 'merge-uv-hit'
         : 'merge-uv-miss';
@@ -4936,11 +5081,7 @@ export function EditorPage({
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project?.captures ?? [],
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
     );
     if (!latestLocalRepaintGeneration?.resultUrl) return;
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
@@ -4974,11 +5115,7 @@ export function EditorPage({
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project.captures,
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project.captures),
     );
     if (!latestLocalRepaintGeneration?.resultUrl) return undefined;
     const generationCapture =
@@ -5094,6 +5231,10 @@ export function EditorPage({
   ]);
 
   const handleLocalImageGenerationFromToolbar = useCallback(() => {
+    if (editorTaskRunning) {
+      notifyEditorTaskRunning();
+      return;
+    }
     if (!project || !importedModel) {
       pushToast({
         tone: 'warning',
@@ -5119,7 +5260,17 @@ export function EditorPage({
     showPanel('generate');
     setPanelCollapsed('generate', false);
     setLocalImageGenerationRequestKey((current) => current + 1);
-  }, [importedModel, project, pushToast, setPaintTool, setPanelCollapsed, showPanel, t]);
+  }, [
+    editorTaskRunning,
+    importedModel,
+    notifyEditorTaskRunning,
+    project,
+    pushToast,
+    setPaintTool,
+    setPanelCollapsed,
+    showPanel,
+    t,
+  ]);
 
   const handleLocalImageGenerationSettled = useCallback((succeeded: boolean) => {
     setLocalImageGenerationRequested(false);
@@ -5127,6 +5278,10 @@ export function EditorPage({
   }, []);
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
+    if (editorTaskRunning) {
+      notifyEditorTaskRunning();
+      return;
+    }
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
     localRepaintToolRequestRevisionRef.current = requestRevision;
     const showPrewarmProgress = (detail: string, progress: number) => {
@@ -5160,11 +5315,7 @@ export function EditorPage({
           generation.status === 'succeeded' &&
           isLocalRepaintGeneration(generation) &&
           (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-          generationBelongsToObject(
-            generation,
-            preferredObjectId,
-            project.captures,
-          ),
+          generationBelongsToObject(generation, preferredObjectId, project.captures),
       );
       const generationCapture = latestLocalRepaintGeneration
         ? (project.captures.find(
@@ -5363,10 +5514,12 @@ export function EditorPage({
       });
     })();
   }, [
+    editorTaskRunning,
     generations,
     getCurrentCameraSnapshot,
     getLocalRepaintProjectionImage,
     importedModel,
+    notifyEditorTaskRunning,
     paintMaskDataUrl,
     paintMaskHasContent,
     project,
@@ -5438,6 +5591,7 @@ export function EditorPage({
       const silentForeground = options?.silentForeground === true;
       if (contentAwareRepairRunningRef.current) return;
       contentAwareRepairRunningRef.current = true;
+      setContentAwareRepairRunning(true);
       const repairRunStartedAt = performance.now();
       const reportRepairRunState = (
         status: 'running' | 'complete' | 'no-gaps' | 'error' | 'cancelled',
@@ -5539,9 +5693,8 @@ export function EditorPage({
           layers: sourceProjectedLayers,
           optionSignature: 'coverage-confidence:1|transparent|no-postprocess',
         });
-        const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get(
-          'content-aware-repair',
-        );
+        const reusableProjectionBake =
+          reusableProjectionBakeCacheRef.current.get('content-aware-repair');
         const projectionBakeCacheHit =
           reusableProjectionBake?.signature === projectionBakeSignature;
         document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
@@ -5571,13 +5724,18 @@ export function EditorPage({
               skipCanvasUpload: true,
               onProgress: silentForeground
                 ? undefined
-                : (progress) =>
+                : (progress) => {
+                    if (abortController.signal.aborted) return;
                     setManualBakeProgress({
                       title: t('contentAwareRepair'),
                       detail: t('contentAwareRepairScanning'),
                       progress: 0.04 + progress.progress * 0.54,
-                    }),
+                    });
+                  },
             });
+        if (abortController.signal.aborted) {
+          throw new DOMException('Content-aware repair cancelled.', 'AbortError');
+        }
         reportRepairRunState('running', 'projection-bake-ready', {
           resolution: repairResolution,
           sourceLayerCount: sourceLayerIds.length,
@@ -5652,8 +5810,7 @@ export function EditorPage({
               ? undefined
               : (progress) => {
                   if (document.body.dataset.perfContentAwareRepairMeasuring === '1') {
-                    document.body.dataset.perfContentAwareRepairPhase =
-                      `s9-topology-${progress.phase}`;
+                    document.body.dataset.perfContentAwareRepairPhase = `s9-topology-${progress.phase}`;
                   }
                   const phaseRange =
                     progress.phase === 'analyze'
@@ -5830,6 +5987,7 @@ export function EditorPage({
         delete document.body.dataset.perfUvBakePhase;
         if (contentAwareRepairAbortControllerRef.current === abortController) {
           contentAwareRepairRunningRef.current = false;
+          setContentAwareRepairRunning(false);
           contentAwareRepairAbortControllerRef.current = undefined;
           if (!silentForeground) {
             manualBakeProgressTimerRef.current = window.setTimeout(
@@ -5850,6 +6008,12 @@ export function EditorPage({
     ) => {
       const benchmarkOnly = options?.benchmarkOnly === true;
       const silentForeground = options?.silentForeground === true;
+      const taskToken = Symbol('content-aware-repair');
+      if (!silentForeground) {
+        contentAwareRepairTaskTokenRef.current = taskToken;
+        setContentAwareRepairTaskActive(true);
+        setContentAwareRepairCancelling(false);
+      }
       return scheduleHeavyTask({
         key: 'full-resolution-texture',
         label: 'content-aware-repair',
@@ -5869,13 +6033,42 @@ export function EditorPage({
             silentForeground,
             taskContext,
           }),
-      }).catch((error) => {
-        if (!benchmarkOnly && error instanceof Error && error.name === 'AbortError') return;
-        throw error;
-      });
+      })
+        .catch((error) => {
+          if (!benchmarkOnly && error instanceof Error && error.name === 'AbortError') return;
+          throw error;
+        })
+        .finally(() => {
+          if (silentForeground || contentAwareRepairTaskTokenRef.current !== taskToken) return;
+          contentAwareRepairTaskTokenRef.current = undefined;
+          setContentAwareRepairTaskActive(false);
+          setContentAwareRepairCancelling(false);
+        });
     },
     [executeContentAwareRepair, t],
   );
+
+  const interruptContentAwareRepair = useCallback(() => {
+    if (!contentAwareRepairTaskTokenRef.current) return;
+    setContentAwareRepairCancelling(true);
+    setManualBakeProgress((progress) =>
+      progress
+        ? {
+            ...progress,
+            detail: '正在中断内容识别填补任务…',
+            indeterminate: true,
+          }
+        : progress,
+    );
+    contentAwareRepairAbortControllerRef.current?.abort();
+    cancelHeavyTasks('full-resolution-texture');
+    pushToast({
+      tone: 'info',
+      title: '正在中断内容识别填补',
+      description: '当前扫描、填补和图层写入会停止。',
+      dedupeKey: 'content-aware-repair-interrupting',
+    });
+  }, [pushToast]);
 
   useEffect(() => {
     if (!new URLSearchParams(window.location.search).has('perfLab')) return;
@@ -5915,8 +6108,12 @@ export function EditorPage({
   }, [runContentAwareRepair]);
 
   const handleContentAwareRepairFromToolbar = useCallback(() => {
+    if (editorTaskRunning) {
+      notifyEditorTaskRunning();
+      return;
+    }
     void runContentAwareRepair();
-  }, [runContentAwareRepair]);
+  }, [editorTaskRunning, notifyEditorTaskRunning, runContentAwareRepair]);
 
   useEffect(() => {
     const handleAutomaticContentAwareRepair = (event: Event) => {
@@ -5989,6 +6186,16 @@ export function EditorPage({
           description: modelName ? `旋转中心已定位到 ${modelName}` : undefined,
           dedupeKey: 'focus-current-model-shortcut',
         });
+        return;
+      }
+
+      const taskBlockedShortcut = EDITOR_TASK_LOCKED_SHORTCUTS.some((actionId) =>
+        shortcutMatches(event, actionId),
+      );
+      if (editorTaskRunning && taskBlockedShortcut) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        notifyEditorTaskRunning();
         return;
       }
 
@@ -6158,7 +6365,15 @@ export function EditorPage({
 
     window.addEventListener('keydown', handleEditorShortcuts);
     return () => window.removeEventListener('keydown', handleEditorShortcuts);
-  }, [captureHistory, handleLocalRepaintFromToolbar, pushToast, t, updateCurrentProject]);
+  }, [
+    captureHistory,
+    editorTaskRunning,
+    handleLocalRepaintFromToolbar,
+    notifyEditorTaskRunning,
+    pushToast,
+    t,
+    updateCurrentProject,
+  ]);
 
   const panelDefinitions = (
     [
@@ -6172,8 +6387,14 @@ export function EditorPage({
         mode: 'all',
         actions: (
           <ObjectsPanelActions
-            onImportModelClick={() => modelInputRef.current?.click()}
-            importDisabled={modelImportBusy}
+            onImportModelClick={() => {
+              if (editorTaskRunning) {
+                notifyEditorTaskRunning();
+                return;
+              }
+              modelInputRef.current?.click();
+            }}
+            importDisabled={modelImportBusy || editorTaskRunning}
           />
         ),
         content: <ObjectsPanel />,
@@ -6201,6 +6422,9 @@ export function EditorPage({
           <GeneratePanel
             localImageGenerationRequestKey={localImageGenerationRequestKey}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
+            interactionLocked={editorTaskRunning}
+            onInteractionLocked={notifyEditorTaskRunning}
+            onTaskRunningChange={setGeneratePanelTaskRunning}
           />
         ),
       },
@@ -6212,7 +6436,11 @@ export function EditorPage({
         collapsed: workspacePanels.find((panel) => panel.id === 'viewport')?.collapsed ?? true,
         visible: true,
         mode: 'all',
-        content: <ViewportPanel />,
+        content: (
+          <div data-task-preview-allowed="true">
+            <ViewportPanel />
+          </div>
+        ),
       },
       {
         id: 'referenceImages',
@@ -6389,8 +6617,13 @@ export function EditorPage({
         className="hidden"
         accept=".glb,.gltf,.fbx,.obj,.png,.jpg,.jpeg,.webp,.bmp,.tga"
         multiple
-        disabled={modelImportBusy}
+        disabled={modelImportBusy || editorTaskRunning}
         onChange={(event) => {
+          if (editorTaskRunning) {
+            notifyEditorTaskRunning();
+            event.target.value = '';
+            return;
+          }
           const files = event.target.files ? Array.from(event.target.files) : [];
           if (files.length > 0) void handleImportModels(files);
         }}
@@ -6400,110 +6633,144 @@ export function EditorPage({
         type="file"
         className="hidden"
         accept="application/json,.json,.liclick.json"
+        disabled={editorTaskRunning}
         onChange={(event) => {
+          if (editorTaskRunning) {
+            notifyEditorTaskRunning();
+            event.target.value = '';
+            return;
+          }
           const file = event.target.files?.item(0);
           if (file) void handleLoadProject(file);
         }}
       />
-      <EditorShell
-        projectName={project?.name ?? 'Untitled Project'}
-        workspaceLabel={getWorkspaceLabel()}
-        onRenameProject={handleRenameProject}
-        onBack={handleBackToProjects}
-        workflowSwitcher={
-          <WorkflowModuleSwitcher
-            compact
-            activeModule="texture"
-            pendingModule={
-              publishingToRetopology ? 'retopology' : publishingToBake ? 'bake' : undefined
-            }
-            onOpenTexture={() => undefined}
-            onOpenRetopology={() => void handlePublishToRetopology()}
-            onOpenUv={onOpenUv}
-            onOpenBake={() => void handleOpenBake()}
-          />
-        }
-        exportMenu={
-          <ExportMenu
-            canExportScene={Boolean(importedModel && viewport)}
-            canExportObject={Boolean(importedModel && selectedObjectId)}
-            canExportColor={Boolean(activeLayer && activeColorTextureUrl)}
-            canExportNormal={Boolean(normalMapTexture || normalLayer?.imageUrl)}
-            canRecordTurntable={canRecordTurntableInBrowser()}
-            onExport={handleExportAction}
-            labels={{
-              export: t('export'),
-              scene: t('scene'),
-              object: t('object'),
-              texture: t('texture'),
-              video: t('video'),
-              viewportSnapshot: t('viewportSnapshot'),
-              turntable: t('turntable'),
-              color: t('color'),
-              normal: t('normal'),
-              bakeFirst: t('bakeBaseColorFirst'),
-              importModelFirst: t('importModelFirst'),
-              selectObjectFirst: t('selectObjectFirst'),
-              normalTextureMissing: t('normalTextureMissing'),
-              browserUnsupported: t('browserUnsupported'),
-            }}
-          />
-        }
-        bottomToolbar={
-          <BottomToolDock
-            mode={workspaceMode}
-            transformMode={transformMode}
-            paintTool={paintTool}
-            onTransformModeChange={setTransformMode}
-            onPaintToolChange={setPaintTool}
-            onLocalImageGeneration={handleLocalImageGenerationFromToolbar}
-            onLocalRepaint={handleLocalRepaintFromToolbar}
-            localImageGenerationRunning={localImageGenerationRunning}
-            localImageGenerationSuccessKey={localImageGenerationSuccessKey}
-            canLocalRepaint={localRepaintGenerationReady}
-            canUndo={canUndo}
-            canRedo={canRedo}
-            onUndo={undo}
-            onRedo={redo}
-            labels={{
-              select: t('select'),
-              move: t('move'),
-              rotate: t('rotate'),
-              scale: t('scale'),
-              layers: t('layers'),
-              localRepaint: t('localRepaint'),
-              inpaintSelect: t('inpaintSelect'),
-              inpaintUnselect: t('inpaintUnselect'),
-              undo: t('undo'),
-              redo: t('redo'),
-              brushSize: t('brushSize'),
-              brushOpacity: t('imageEditBrushOpacity'),
-              resetInpaintRegion: t('resetInpaintRegion'),
-              invertInpaintRegion: t('invertInpaintRegion'),
-              selectHelp: t('selectToolHelp'),
-              moveHelp: t('moveToolHelp'),
-              rotateHelp: t('rotateToolHelp'),
-              scaleHelp: t('scaleToolHelp'),
-              layersHelp: t('layersToolHelp'),
-              localRepaintHelp: t('localRepaintToolHelp'),
-              inpaintSelectHelp: t('inpaintSelectToolHelp'),
-              inpaintUnselectHelp: t('inpaintUnselectToolHelp'),
-            }}
-          />
-        }
-        center={
-          <ViewportCanvas
-            hasImportedModel={Boolean(importedModel)}
-            onImportModels={(files) => void handleImportModels(files)}
-            onImportReferenceImages={(files) => void handleImportReferenceImages(files)}
-            onOpenImport={() => modelInputRef.current?.click()}
-            importDisabled={modelImportBusy}
-            isActive={isActive}
-          />
-        }
-        panels={panelDefinitions}
-      />
-      <TextureOnboardingTour projectId={project.id} projectCreatedAt={project.createdAt} />
+      <div
+        className="contents"
+        onPointerDownCapture={handleLockedEditorInteraction}
+        onClickCapture={handleLockedEditorInteraction}
+      >
+        <EditorShell
+          projectName={project?.name ?? 'Untitled Project'}
+          workspaceLabel={getWorkspaceLabel()}
+          onRenameProject={handleRenameProject}
+          onBack={handleBackToProjects}
+          workflowSwitcher={
+            <WorkflowModuleSwitcher
+              compact
+              activeModule="texture"
+              pendingModule={
+                publishingToRetopology ? 'retopology' : publishingToBake ? 'bake' : undefined
+              }
+              onOpenTexture={() => undefined}
+              onOpenRetopology={() => void handlePublishToRetopology()}
+              onOpenUv={onOpenUv}
+              onOpenBake={() => void handleOpenBake()}
+            />
+          }
+          exportMenu={
+            <ExportMenu
+              canExportScene={Boolean(importedModel && viewport)}
+              canExportObject={Boolean(importedModel && selectedObjectId)}
+              canExportColor={Boolean(activeLayer && activeColorTextureUrl)}
+              canExportNormal={Boolean(normalMapTexture || normalLayer?.imageUrl)}
+              canRecordTurntable={canRecordTurntableInBrowser()}
+              onExport={handleExportAction}
+              labels={{
+                export: t('export'),
+                scene: t('scene'),
+                object: t('object'),
+                texture: t('texture'),
+                video: t('video'),
+                viewportSnapshot: t('viewportSnapshot'),
+                turntable: t('turntable'),
+                color: t('color'),
+                normal: t('normal'),
+                bakeFirst: t('bakeBaseColorFirst'),
+                importModelFirst: t('importModelFirst'),
+                selectObjectFirst: t('selectObjectFirst'),
+                normalTextureMissing: t('normalTextureMissing'),
+                browserUnsupported: t('browserUnsupported'),
+              }}
+            />
+          }
+          bottomToolbar={
+            <BottomToolDock
+              mode={workspaceMode}
+              transformMode={transformMode}
+              paintTool={paintTool}
+              onTransformModeChange={setTransformMode}
+              onPaintToolChange={setPaintTool}
+              onLocalImageGeneration={handleLocalImageGenerationFromToolbar}
+              onLocalRepaint={handleLocalRepaintFromToolbar}
+              localImageGenerationRunning={localImageGenerationRunning}
+              localImageGenerationSuccessKey={localImageGenerationSuccessKey}
+              canLocalRepaint={localRepaintGenerationReady}
+              canUndo={canUndo}
+              canRedo={canRedo}
+              onUndo={undo}
+              onRedo={redo}
+              interactionLocked={editorTaskRunning}
+              onInteractionLocked={notifyEditorTaskRunning}
+              labels={{
+                select: t('select'),
+                move: t('move'),
+                rotate: t('rotate'),
+                scale: t('scale'),
+                layers: t('layers'),
+                localRepaint: t('localRepaint'),
+                inpaintSelect: t('inpaintSelect'),
+                inpaintUnselect: t('inpaintUnselect'),
+                undo: t('undo'),
+                redo: t('redo'),
+                brushSize: t('brushSize'),
+                brushOpacity: t('imageEditBrushOpacity'),
+                resetInpaintRegion: t('resetInpaintRegion'),
+                invertInpaintRegion: t('invertInpaintRegion'),
+                selectHelp: t('selectToolHelp'),
+                moveHelp: t('moveToolHelp'),
+                rotateHelp: t('rotateToolHelp'),
+                scaleHelp: t('scaleToolHelp'),
+                layersHelp: t('layersToolHelp'),
+                localRepaintHelp: t('localRepaintToolHelp'),
+                inpaintSelectHelp: t('inpaintSelectToolHelp'),
+                inpaintUnselectHelp: t('inpaintUnselectToolHelp'),
+              }}
+            />
+          }
+          center={
+            <ViewportCanvas
+              hasImportedModel={Boolean(importedModel)}
+              onImportModels={(files) => {
+                if (editorTaskRunning) {
+                  notifyEditorTaskRunning();
+                  return;
+                }
+                void handleImportModels(files);
+              }}
+              onImportReferenceImages={(files) => {
+                if (editorTaskRunning) {
+                  notifyEditorTaskRunning();
+                  return;
+                }
+                void handleImportReferenceImages(files);
+              }}
+              onOpenImport={() => {
+                if (editorTaskRunning) {
+                  notifyEditorTaskRunning();
+                  return;
+                }
+                modelInputRef.current?.click();
+              }}
+              importDisabled={modelImportBusy || editorTaskRunning}
+              isActive={isActive}
+            />
+          }
+          panels={panelDefinitions}
+        />
+      </div>
+      {!editorTaskRunning && (
+        <TextureOnboardingTour projectId={project.id} projectCreatedAt={project.createdAt} />
+      )}
       {pendingReferenceImport ? (
         <ReferenceImportDialog
           references={pendingReferenceImport}
@@ -6542,7 +6809,14 @@ export function EditorPage({
       {modelImportProgress
         ? createPortal(<AutoBakeProgressBar progress={modelImportProgress} />, document.body)
         : manualBakeProgress
-          ? createPortal(<AutoBakeProgressBar progress={manualBakeProgress} />, document.body)
+          ? createPortal(
+              <AutoBakeProgressBar
+                progress={manualBakeProgress}
+                onCancel={contentAwareRepairTaskActive ? interruptContentAwareRepair : undefined}
+                cancelling={contentAwareRepairCancelling}
+              />,
+              document.body,
+            )
           : null}
     </>
   );

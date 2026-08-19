@@ -145,10 +145,7 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
   // A persisted local-repaint layer intentionally combines a durable colour
   // URL with a GPU-resident live mask URL. CSS cannot resolve the registry URL,
   // so decode the colour image and composite both sources on a canvas instead.
-  const decodedSource = useLayerImageSource(
-    layer.imageUrl,
-    !liveSource && Boolean(liveMaskCanvas),
-  );
+  const decodedSource = useLayerImageSource(layer.imageUrl, !liveSource && Boolean(liveMaskCanvas));
   const thumbnailSource = liveSource ?? decodedSource;
 
   useEffect(() => {
@@ -206,10 +203,7 @@ function LayerPreviewImage({ layer }: { layer: Layer }) {
   const liveMaskState = layer.maskUrl ? getLiveProjectedCanvasState(layer.maskUrl) : undefined;
   const liveSource = liveSourceState?.source;
   const liveMaskCanvas = liveMaskState?.canvas;
-  const decodedSource = useLayerImageSource(
-    layer.imageUrl,
-    !liveSource && Boolean(liveMaskCanvas),
-  );
+  const decodedSource = useLayerImageSource(layer.imageUrl, !liveSource && Boolean(liveMaskCanvas));
   const previewSource = liveSource ?? decodedSource;
   const maxPreviewDimension = 1600;
   const sourceWidth = previewSource
@@ -439,12 +433,15 @@ export function LayersPanel({
   const previewLayer = useMemo(() => {
     return visibleLayers.find((layer) => layer.id === previewLayerId && layer.imageUrl);
   }, [previewLayerId, visibleLayers]);
-  const describeLayerSelection = useCallback((ids: string[]) => {
-    const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);
-    if (names.length === 0) return '图层';
-    if (names.length === 1) return names[0];
-    return `${names[0]} 等 ${names.length} 个图层`;
-  }, [layerById]);
+  const describeLayerSelection = useCallback(
+    (ids: string[]) => {
+      const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);
+      if (names.length === 0) return '图层';
+      if (names.length === 1) return names[0];
+      return `${names[0]} 等 ${names.length} 个图层`;
+    },
+    [layerById],
+  );
 
   useEffect(() => {
     setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
@@ -1023,8 +1020,11 @@ export function LayersPanelActions({
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const deleteLayers = useLayerStore((state) => state.deleteLayers);
+  const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
   const pushToast = useToastStore((state) => state.pushToast);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
   function handleAddLayer() {
     captureHistory('创建空图层');
@@ -1049,47 +1049,154 @@ export function LayersPanelActions({
     )
     .map((layer) => layer.id);
 
+  const clearableLayerIds = layers
+    .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
+    .map((layer) => layer.id);
+
+  function handleClearLayers() {
+    const latestLayers = useLayerStore.getState().layers;
+    const currentLayerIds = latestLayers
+      .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
+      .map((layer) => layer.id);
+    if (currentLayerIds.length === 0) {
+      setClearConfirmOpen(false);
+      return;
+    }
+
+    const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, currentLayerIds);
+    const expandedIdSet = new Set(expandedIds);
+    captureHistory(`清空当前模型图层（${expandedIds.length} 个）`);
+    setLayerVisibility(expandedIds, false);
+
+    const sceneState = useSceneStore.getState();
+    const currentPreview = sceneState.localRepaintPreviewLayer;
+    const currentSource = sceneState.localRepaintProjectionSource;
+    if (
+      (currentPreview && expandedIdSet.has(currentPreview.id)) ||
+      (currentPreview?.replacementTargetLayerId &&
+        expandedIdSet.has(currentPreview.replacementTargetLayerId)) ||
+      (currentSource?.targetLayerId && expandedIdSet.has(currentSource.targetLayerId))
+    ) {
+      sceneState.setLocalRepaintPreviewLayer(undefined);
+      sceneState.setLocalRepaintProjectionSource(undefined);
+      sceneState.setPaintTool('none');
+      sceneState.clearPaintMask();
+    }
+
+    setClearConfirmOpen(false);
+    window.requestAnimationFrame(() => {
+      startTransition(() => deleteLayers(expandedIds));
+    });
+    pushToast({
+      tone: 'success',
+      title: '图层已清空',
+      description: '已清空当前模型的图层，可使用撤销恢复。',
+      dedupeKey: 'layers-cleared',
+    });
+  }
+
   return (
-    <div className="flex items-center gap-1.5">
-      <LayerHeaderButton title={`${t('fitCamera')} (F)`} onClick={handleFitCamera}>
-        <Focus className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton
-        title={t('contentAwareRepair')}
-        onClick={() => {
-          if (!onContentAwareRepair) {
-            pushToast({
-              tone: 'info',
-              title: t('localRepaint'),
-              description: t('localRepaintToolHelp'),
-              dedupeKey: 'layer-content-aware-repair',
-            });
-            return;
-          }
-          onContentAwareRepair();
-        }}
-      >
-        <PaintBucket className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton
-        title={t('layerAdjustments')}
-        active={adjustmentsOpen}
-        disabled={!activeProjectedLayerId || !onToggleAdjustments}
-        onClick={onToggleAdjustments}
-      >
-        <SlidersHorizontal className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton title={`${t('addLayer')} (Ctrl+Shift+N)`} onClick={handleAddLayer}>
-        <Plus className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton
-        title={t('mergeVisibleProjectedLayersToUvLayer')}
-        disabled={visibleProjectedLayerIds.length < 1 || !onMergeVisibleProjectedToUvLayer}
-        onClick={() => onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds)}
-      >
-        <Scissors className="h-4 w-4" />
-      </LayerHeaderButton>
-    </div>
+    <>
+      <div className="flex items-center gap-1.5">
+        <LayerHeaderButton
+          title="一键清空当前模型图层"
+          disabled={clearableLayerIds.length === 0}
+          onClick={() => setClearConfirmOpen(true)}
+        >
+          <Trash2 className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton title={`${t('fitCamera')} (F)`} onClick={handleFitCamera}>
+          <Focus className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('contentAwareRepair')}
+          onClick={() => {
+            if (!onContentAwareRepair) {
+              pushToast({
+                tone: 'info',
+                title: t('localRepaint'),
+                description: t('localRepaintToolHelp'),
+                dedupeKey: 'layer-content-aware-repair',
+              });
+              return;
+            }
+            onContentAwareRepair();
+          }}
+        >
+          <PaintBucket className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('layerAdjustments')}
+          active={adjustmentsOpen}
+          disabled={!activeProjectedLayerId || !onToggleAdjustments}
+          onClick={onToggleAdjustments}
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton title={`${t('addLayer')} (Ctrl+Shift+N)`} onClick={handleAddLayer}>
+          <Plus className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('mergeVisibleProjectedLayersToUvLayer')}
+          disabled={visibleProjectedLayerIds.length < 1 || !onMergeVisibleProjectedToUvLayer}
+          onClick={() => onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds)}
+        >
+          <Scissors className="h-4 w-4" />
+        </LayerHeaderButton>
+      </div>
+
+      {clearConfirmOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[98] grid place-items-center bg-black/58 px-4 backdrop-blur-sm"
+            onPointerDown={() => setClearConfirmOpen(false)}
+          >
+            <section
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="clear-layers-title"
+              aria-describedby="clear-layers-description"
+              className="w-full max-w-md overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.62)]"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 border-b border-white/12 px-4 py-4">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-rose-300/20 bg-rose-500/12 text-rose-200">
+                  <Trash2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="clear-layers-title" className="text-base font-semibold text-white">
+                    清空当前模型图层
+                  </h2>
+                  <div className="text-xs text-white/48">共 {clearableLayerIds.length} 个图层</div>
+                </div>
+              </div>
+              <div className="px-4 py-4">
+                <p id="clear-layers-description" className="text-sm leading-6 text-white/64">
+                  将删除当前模型的全部贴图和局部重绘图层。清空后可以使用撤销恢复。
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="h-9 rounded-md px-3 text-sm font-semibold text-white/72 transition hover:bg-white/10 hover:text-white"
+                    onClick={() => setClearConfirmOpen(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="h-9 rounded-md bg-rose-500 px-3 text-sm font-semibold text-white transition hover:bg-rose-400"
+                    onClick={handleClearLayers}
+                    autoFocus
+                  >
+                    全部清空
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
