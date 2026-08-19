@@ -1,5 +1,33 @@
 const DEFAULT_FRAME_FALLBACK_MS = 120;
 
+type BrowserScheduler = {
+  yield?: () => Promise<void>;
+};
+
+let taskYieldChannel: MessageChannel | undefined;
+const taskYieldQueue: Array<() => void> = [];
+
+/**
+ * Yields to input/rendering without paying the nested-timer clamp of
+ * `setTimeout(0)`. Texture streaming can yield thousands of times during a
+ * cold 14-view bake, so even a 4ms timer floor turns cooperative scheduling
+ * into seconds of artificial latency. Scheduler.yield keeps the continuation
+ * ordered; MessageChannel is the unclamped task fallback.
+ */
+export function yieldToBrowserTask() {
+  if (typeof window === 'undefined') return Promise.resolve();
+  const scheduler = (globalThis as typeof globalThis & { scheduler?: BrowserScheduler }).scheduler;
+  if (typeof scheduler?.yield === 'function') return scheduler.yield();
+  return new Promise<void>((resolve) => {
+    if (!taskYieldChannel) {
+      taskYieldChannel = new MessageChannel();
+      taskYieldChannel.port1.onmessage = () => taskYieldQueue.shift()?.();
+    }
+    taskYieldQueue.push(resolve);
+    taskYieldChannel.port2.postMessage(0);
+  });
+}
+
 function isDocumentVisible() {
   return typeof document === 'undefined' || document.visibilityState !== 'hidden';
 }

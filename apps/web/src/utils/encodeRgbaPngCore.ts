@@ -2,6 +2,10 @@ import { Zlib, zlibSync } from 'fflate';
 
 const pngSignature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 const textEncoder = new TextEncoder();
+// PNG compression changes file size and encode time only; decoded RGBA bytes
+// remain bit-exact. Level 3 is the interactive-editor sweet spot and avoids
+// spending a full second squeezing a temporary 2K/4K repair texture.
+const INTERACTIVE_PNG_COMPRESSION_LEVEL = 3 as const;
 
 function crc32(bytes: Uint8Array) {
   let crc = 0xffffffff;
@@ -51,7 +55,7 @@ export function encodeRgbaPngBytes(
 
   const chunks = [
     pngChunk('IHDR', ihdr),
-    pngChunk('IDAT', zlibSync(raw, { level: 6 })),
+    pngChunk('IDAT', zlibSync(raw, { level: INTERACTIVE_PNG_COMPRESSION_LEVEL })),
     pngChunk('IEND', new Uint8Array()),
   ];
   const byteLength =
@@ -83,7 +87,7 @@ export async function encodeRgbaPngBytesChunked(
   }
   const compressedChunks: Uint8Array[] = [];
   let compressedLength = 0;
-  const zlib = new Zlib({ level: 6 }, (chunk) => {
+  const zlib = new Zlib({ level: INTERACTIVE_PNG_COMPRESSION_LEVEL }, (chunk) => {
     compressedChunks.push(chunk);
     compressedLength += chunk.byteLength;
   });

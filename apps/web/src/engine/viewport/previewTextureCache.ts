@@ -1,16 +1,15 @@
 import * as THREE from 'three';
-import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import { waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle } from './viewportInteractionState';
 
 const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 export const residentPreviewTextureCache = new Map<string, THREE.Texture>();
 const previewTextureUploadPromises = new WeakMap<THREE.Texture, Promise<void>>();
-// Visible uploads stay at roughly 0.5MB. The detached renderer uses 2MB
-// submissions: CPU submission work remains far below a frame while halving
-// detached-context switches. Dimensions, filtering and source bytes stay exact.
+// Keep both contexts at roughly 0.5MB. Larger detached submissions did not
+// improve S9 wall time and increased long frames on NVIDIA/Windows.
 const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 128 * 1024;
-const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 512 * 1024;
+const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 128 * 1024;
 // Flush visible uploads every four stripes without polling a WebGL fence:
 // timeout-zero clientWaitSync still blocked the UI thread for 134-150ms on
 // NVIDIA under load. Both renderer paths rely on exact same-context ordering.
@@ -315,20 +314,7 @@ export function uploadPreviewTextureInStripes(
       // Most preview bitmaps are pre-oriented and use flipY=false. Bake
       // textures may intentionally retain flipY=true; preserve that exact
       // sampling contract while still splitting the upload into stripes.
-      for (let y = 0; y < image.height; y += rowsPerStripe) {
-        throwIfCancelled();
-        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-        throwIfCancelled();
-        markPreviewUploadStep(`${uploadPhasePrefix}-wait-frame`);
-        // Let every visible rAF callback submit first. Continuing from the rAF
-        // microtask could put a detached 4K upload stripe ahead of R3F and cost
-        // one presentation interval even though the stripe itself is bounded.
-        await waitForBrowserPaint();
-        throwIfCancelled();
-        // Input may arrive between the idle check and the next animation frame.
-        // Recheck before issuing any GL work so interaction always wins.
-        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-        throwIfCancelled();
+      const prepareStripe = async (y: number) => {
         const rowCount = Math.min(rowsPerStripe, image.height - y);
         markPreviewUploadStep(`${uploadPhasePrefix}-crop`);
         const stripe =
@@ -338,17 +324,40 @@ export function uploadPreviewTextureInStripes(
                 imageOrientation: texture.flipY ? 'flipY' : 'none',
                 premultiplyAlpha: 'none',
               });
+        return { rowCount, stripe, y };
+      };
+      let pendingStripe: ReturnType<typeof prepareStripe> | undefined = prepareStripe(0);
+      for (let y = 0; y < image.height; y += rowsPerStripe) {
+        throwIfCancelled();
+        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        throwIfCancelled();
+        const prepared = await pendingStripe!;
+        const nextY = y + rowsPerStripe;
+        pendingStripe = nextY < image.height ? prepareStripe(nextY) : undefined;
+        markPreviewUploadStep(`${uploadPhasePrefix}-yield`);
+        if (usesVisibleRenderer) {
+          // The visible context must yield through presentation because R3F
+          // owns the same GL state and command stream.
+          await waitForBrowserPaint();
+        } else {
+          // The detached renderer has independent GL state. A macrotask yield
+          // lets pointer/rAF work run without adding a mandatory 16.7ms wait to
+          // every exact upload stripe (hundreds of waits in a 14-view 4K bake).
+          await yieldToBrowserTask();
+        }
+        throwIfCancelled();
+        // Input may arrive between the idle check and the next animation frame.
+        // Recheck before issuing any GL work so interaction always wins.
+        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        throwIfCancelled();
+        const { rowCount, stripe } = prepared;
         if (options?.shouldCancel?.()) {
           stripe.close();
           throw new DOMException('Texture upload superseded.', 'AbortError');
         }
-        if (workerBitmapId !== undefined) {
-          // A transferred ImageBitmap resolves this promise in a microtask.
-          // Split adoption from the GL upload so a due visible render task can
-          // run first instead of sharing one event-loop turn with texSubImage2D.
-          markPreviewUploadStep(`${uploadPhasePrefix}-adopt-yield`);
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-        }
+        // The crop/worker transfer for the next stripe is already in flight.
+        // The task yield above separates bitmap adoption from texSubImage2D,
+        // preserving input priority without serializing crop and GPU work.
         // Never hold raw GL state across the asynchronous crop above. R3F may
         // render while the worker is producing the stripe, so capture and
         // restore the current bindings only inside this synchronous upload.
