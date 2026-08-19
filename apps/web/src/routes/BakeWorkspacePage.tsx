@@ -291,6 +291,8 @@ export function BakeWorkspacePage({
   const metallicInputRef = useRef<HTMLInputElement>(null);
   const normalInputRef = useRef<HTMLInputElement>(null);
   const fileTargetIdRef = useRef<string>();
+  const highObjectsRef = useRef<SceneObject[]>([]);
+  const selectedHighRef = useRef<SceneObject>();
   const hydratedProjectRef = useRef('');
   const applyingSettingsRef = useRef(false);
   const hydratedSettingsObjectRef = useRef('');
@@ -314,8 +316,9 @@ export function BakeWorkspacePage({
     );
     if (!handoff?.objectId) return candidates;
     const handedOffObject = candidates.find((object) => object.id === handoff.objectId);
-    return handedOffObject ? [handedOffObject] : [];
+    return handedOffObject ? [handedOffObject] : candidates;
   }, [handoff?.objectId, highObjectOverrides, persistedHighObjects]);
+  highObjectsRef.current = highObjects;
   const viewportProject = useMemo(
     () =>
       project
@@ -686,6 +689,7 @@ export function BakeWorkspacePage({
 
   const selectedHigh =
     highObjects.find((object) => object.id === selectedObjectId) ?? highObjects[0];
+  selectedHighRef.current = selectedHigh;
   const viewportHighObject = viewportProject?.objects.find(
     (object) => object.id === selectedHigh?.id,
   );
@@ -2302,10 +2306,8 @@ export function BakeWorkspacePage({
                   }
                   icon={Sparkles}
                   tone="rose"
-                  actionLabel={materialMapCount > 0 ? '管理贴图' : '导入贴图'}
-                  onClick={() =>
-                    materialMapCount > 0 ? setMaterialDialogOpen(true) : chooseFiles('material')
-                  }
+                  actionLabel="管理贴图"
+                  onClick={() => setMaterialDialogOpen(true)}
                   onFilesDropped={handleMaterialImport}
                   dropHint="Base Color / Roughness / Metallic / Normal"
                 />

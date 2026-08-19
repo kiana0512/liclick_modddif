@@ -49,7 +49,8 @@ export type PaintMaskSettings = {
 
 export type LocalRepaintBrushSettings = {
   brushSize: number;
-  brushOpacity: number;
+  /** Width of the soft edge as a percentage of the brush radius. */
+  brushFeather: number;
 };
 
 export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
@@ -61,6 +62,8 @@ export type PaintToolSettings = {
   brushHardness: number;
   eraserSize: number;
   eraserHardness: number;
+  /** Width of the eraser's soft edge as a percentage of its radius. */
+  eraserFeather: number;
   color: string;
 };
 
@@ -247,13 +250,15 @@ export const useSceneStore = create<SceneStore>()(
       },
       localRepaintBrushSettings: {
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
-        brushOpacity: 100,
+        // Preserve the former fixed soft edge (solid through 55% of the radius).
+        brushFeather: 45,
       },
       paintToolSettings: {
         brushSize: 32,
         brushHardness: 50,
         eraserSize: 42,
         eraserHardness: 50,
+        eraserFeather: 50,
         color: '#ffffff',
       },
       importSettings: {
@@ -493,11 +498,11 @@ export const useSceneStore = create<SceneStore>()(
                 settings.brushSize ?? state.localRepaintBrushSettings.brushSize,
               ),
             ),
-            brushOpacity: Math.max(
+            brushFeather: Math.max(
               0,
               Math.min(
                 100,
-                settings.brushOpacity ?? state.localRepaintBrushSettings.brushOpacity,
+                settings.brushFeather ?? state.localRepaintBrushSettings.brushFeather,
               ),
             ),
           },
@@ -520,6 +525,10 @@ export const useSceneStore = create<SceneStore>()(
             eraserHardness: Math.max(
               0,
               Math.min(100, settings.eraserHardness ?? state.paintToolSettings.eraserHardness),
+            ),
+            eraserFeather: Math.max(
+              0,
+              Math.min(100, settings.eraserFeather ?? state.paintToolSettings.eraserFeather ?? 50),
             ),
             color: settings.color ?? state.paintToolSettings.color,
           },

@@ -27,7 +27,10 @@ import {
   getLiveProjectedCanvasState,
   getLiveProjectedCanvasTexture,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
-import { useLiveSurfacePaintPreview } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
+import {
+  getLiveSurfacePaintPreview,
+  useLiveSurfacePaintPreview,
+} from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import {
   createRuntimeProjectionDepth,
   prepareRuntimeProjectionVisibilityMaterials,
@@ -4142,6 +4145,23 @@ function ImportedModel({
           if (!sharedBuildStillCurrent) disposeGeneratedMaterialTree(projectedMaterial);
           return;
         }
+        if (projectedMaterial && projectedLayerInput) {
+          // A newer effect may intentionally reuse an in-flight texture-array
+          // build because the layer structure is unchanged. Its samplers are
+          // valid, but the build was created with the earlier effect's live
+          // eraser layer/texture. Rebind every uniform-only input immediately
+          // before publication so the shared material cannot resurrect that
+          // stale binding after several short eraser clicks or a layer switch.
+          updateProjectedLayerStackMaterial(projectedMaterial, {
+            ...projectedLayerInput,
+            ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
+            uvOverlayRenderedColor: directUvRenderedColor,
+            ...(directUvRenderedColorMaskTexture
+              ? { uvOverlayRenderedColorMaskTexture: directUvRenderedColorMaskTexture }
+              : {}),
+            ...topUvProjectedOverlayInput,
+          });
+        }
         if (projectedMaterial) finalProjectedMaterialCommitted = true;
         child.material =
           projectedMaterial ??
@@ -4282,6 +4302,32 @@ function ImportedModel({
         uvOverlayBelowProjected: Number.isFinite(authoritativeMergedUvBoundaryOrder),
         topUvOverlayOpacity: authoritativeLocalRepaintUvLayers[0]?.opacity ?? 0,
       });
+      // The live eraser registry is the synchronous authority. React effect
+      // closures can become stale while a large texture array uploads, so read
+      // the current selection again after assigning the final material and
+      // atomically bind (or disable) its multiplier on the newly resident
+      // shader. This prevents an old layer index from turning erased pixels into
+      // the diagonal empty-projection hatch shown by the user.
+      const authoritativeLiveSurfacePreview = getLiveSurfacePaintPreview();
+      const authoritativeLiveEraserTexture =
+        authoritativeLiveSurfacePreview?.target === 'projected-mask' &&
+        authoritativeLiveSurfacePreview.composition === 'multiply-original-mask' &&
+        authoritativeLiveSurfacePreview.objectId === importedModel.objectId
+          ? getLiveProjectedCanvasTexture(
+              authoritativeLiveSurfacePreview.assetUrl,
+              THREE.NoColorSpace,
+              { flipY: false },
+            )
+          : undefined;
+      const authoritativeLiveEraserLayerId = authoritativeLiveEraserTexture
+        ? authoritativeLiveSurfacePreview?.layerId
+        : undefined;
+      syncProjectedLayerLiveEraserPreviewInObject(
+        model.group,
+        authoritativeLiveEraserLayerId,
+        authoritativeLiveEraserTexture,
+      );
+      document.body.dataset.projectedLiveEraserBinding = authoritativeLiveEraserLayerId ?? 'none';
       syncProjectedLayerMaterialProjection(model.group);
       const presentsProjectedMaterial = meshes.some((mesh) => {
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];

@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
-import { Vector3 } from 'three';
+import { Quaternion, Vector3 } from 'three';
 import { cn } from '@/components/common/cn';
 import { useSceneStore } from '@/stores/sceneStore';
+import {
+  getViewCubeRotation,
+  modelViewDirectionToWorld,
+  worldViewDirectionToModelLocal,
+} from './viewCubeOrientation';
 
 type CubeFace = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
 type FaceEdge = 'left' | 'right' | 'top' | 'bottom';
@@ -159,6 +164,7 @@ function getSnapTarget(face: CubeFace, event: MouseEvent<HTMLButtonElement>): Sn
 
 export function ViewCube() {
   const viewport = useSceneStore((state) => state.viewport);
+  const importedModel = useSceneStore((state) => state.importedModel);
   const [rotation, setRotation] = useState({ pitch: -24, yaw: 38 });
   const [activeLabel, setActiveLabel] = useState(faceLabels.front);
   const [hoveredTarget, setHoveredTarget] = useState<SnapTarget>();
@@ -174,14 +180,18 @@ export function ViewCube() {
     const currentPosition = new Vector3();
     viewport.camera.getWorldPosition(currentPosition);
     const distance = Math.max(currentPosition.distanceTo(target), 0.8);
-    const snapDirection = direction.clone().normalize();
+    const modelWorldQuaternion = importedModel
+      ? importedModel.group.getWorldQuaternion(new Quaternion())
+      : new Quaternion();
+    const snapDirection = modelViewDirectionToWorld(direction, modelWorldQuaternion);
+    const cameraUp = upForDirection(direction).applyQuaternion(modelWorldQuaternion).normalize();
     viewport.camera.position.copy(target).add(snapDirection.multiplyScalar(distance));
-    viewport.camera.up.copy(upForDirection(direction));
+    viewport.camera.up.copy(cameraUp);
     viewport.camera.lookAt(target);
     viewport.controls?.target.copy(target);
     viewport.controls?.update();
     viewport.camera.updateMatrixWorld();
-  }, [viewport]);
+  }, [importedModel, viewport]);
 
   const snapFromFaceClick = useCallback((face: CubeFace, event: MouseEvent<HTMLButtonElement>) => {
     snapToDirection(getSnapTarget(face, event).direction, event);
@@ -207,17 +217,31 @@ export function ViewCube() {
     let frame = 0;
     const cameraPosition = new Vector3();
     const target = new Vector3();
-    const direction = new Vector3();
+    const worldDirection = new Vector3();
+    const modelDirection = new Vector3();
+    const modelWorldQuaternion = new Quaternion();
+    const inverseModelWorldQuaternion = new Quaternion();
     const origin = new Vector3(0, 0, 0);
 
     const update = () => {
       if (viewport) {
         viewport.camera.getWorldPosition(cameraPosition);
         target.copy(viewport.controls?.target ?? origin);
-        direction.copy(cameraPosition).sub(target).normalize();
-        const yaw = Math.atan2(direction.x, direction.z) * (180 / Math.PI);
-        const pitch = Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * (180 / Math.PI);
-        const nextState = { pitch: -pitch, yaw, label: getViewLabel(direction) };
+        worldDirection.copy(cameraPosition).sub(target).normalize();
+        if (importedModel) importedModel.group.getWorldQuaternion(modelWorldQuaternion);
+        else modelWorldQuaternion.identity();
+        worldViewDirectionToModelLocal(
+          worldDirection,
+          modelWorldQuaternion,
+          modelDirection,
+          inverseModelWorldQuaternion,
+        );
+        const cubeRotation = getViewCubeRotation(modelDirection);
+        const nextState = {
+          pitch: cubeRotation.pitch,
+          yaw: cubeRotation.yaw,
+          label: getViewLabel(modelDirection),
+        };
         const previous = lastStateRef.current;
         if (
           Math.abs(previous.pitch - nextState.pitch) > 0.35 ||
@@ -234,7 +258,7 @@ export function ViewCube() {
 
     frame = requestAnimationFrame(update);
     return () => cancelAnimationFrame(frame);
-  }, [viewport]);
+  }, [importedModel, viewport]);
 
   const displayLabel = hoveredTarget?.label ?? activeLabel;
   const hoveredEdgeStyle = hoveredTarget?.edges.length === 1 ? edgeMarkerStyle(hoveredTarget.direction) : undefined;

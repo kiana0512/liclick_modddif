@@ -54,7 +54,18 @@ async function main() {
   const firstSave = await saveProject(userId, created.project.id, {
     ...created.project,
     objects: [modelObject, anchorObject],
-    layers: [{ id: 'anchor-layer', objectId: anchorObject.id }],
+    layers: [
+      { id: 'anchor-layer', objectId: anchorObject.id },
+      {
+        id: 'local-repaint-projection-test',
+        type: 'projected',
+        objectId: modelObject.id,
+        imageUrl: `${projectUrlPrefix}/assets/generations/repaint.png`,
+        maskUrl: `${projectUrlPrefix}/assets/layers/repaint-mask.png`,
+        localRepaintSourceUrl: `${projectUrlPrefix}/assets/generations/repaint.png`,
+        localRepaintMaskUrl: `${projectUrlPrefix}/assets/layers/repaint-mask.png`,
+      },
+    ],
     pipeline,
   });
 
@@ -72,6 +83,11 @@ async function main() {
   assert.equal(raw.pipeline.revisions[0].inputAssets[0].futureAssetField, 'keep-me');
   assert.equal(raw.pipeline.revisions[0].inputAssets[0].url, 'assets/models/a.glb');
   assert.equal(raw.pipeline.revisions[0].outputAssets[0].url, 'assets/generations/a.png');
+  const rawLocalRepaint = raw.layers.find(
+    (layer) => layer.id === 'local-repaint-projection-test',
+  );
+  assert.equal(rawLocalRepaint.localRepaintSourceUrl, 'assets/generations/repaint.png');
+  assert.equal(rawLocalRepaint.localRepaintMaskUrl, 'assets/layers/repaint-mask.png');
 
   assert.equal(
     firstSave.project.pipeline.revisions[0].inputAssets[0].url,
@@ -82,6 +98,17 @@ async function main() {
   assert.equal(
     loaded.project.pipeline.revisions[0].outputAssets[0].url,
     `${projectUrlPrefix}/assets/generations/a.png`,
+  );
+  const loadedLocalRepaint = loaded.project.layers.find(
+    (layer) => layer.id === 'local-repaint-projection-test',
+  );
+  assert.equal(
+    loadedLocalRepaint.localRepaintSourceUrl,
+    `${projectUrlPrefix}/assets/generations/repaint.png`,
+  );
+  assert.equal(
+    loadedLocalRepaint.localRepaintMaskUrl,
+    `${projectUrlPrefix}/assets/layers/repaint-mask.png`,
   );
 
   // Simulate an older/partial client that knows neither the pipeline field nor

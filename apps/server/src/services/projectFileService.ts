@@ -452,6 +452,8 @@ function normalizeProjectAssetReferences(
             ...layer,
             imageUrl: normalizeUrl(readString(layer.imageUrl)),
             maskUrl: normalizeUrl(readString(layer.maskUrl)),
+            localRepaintSourceUrl: normalizeUrl(readString(layer.localRepaintSourceUrl)),
+            localRepaintMaskUrl: normalizeUrl(readString(layer.localRepaintMaskUrl)),
             depthUrl: normalizeUrl(readString(layer.depthUrl)),
             renderedColorMaskUrl: normalizeUrl(readString(layer.renderedColorMaskUrl)),
           }
@@ -663,6 +665,12 @@ function resolveProjectAssets(
             ...layer,
             imageUrl: resolveUrl((layer as { imageUrl?: string }).imageUrl),
             maskUrl: resolveUrl((layer as { maskUrl?: string }).maskUrl),
+            localRepaintSourceUrl: resolveUrl(
+              (layer as { localRepaintSourceUrl?: string }).localRepaintSourceUrl,
+            ),
+            localRepaintMaskUrl: resolveUrl(
+              (layer as { localRepaintMaskUrl?: string }).localRepaintMaskUrl,
+            ),
             depthUrl: resolveUrl((layer as { depthUrl?: string }).depthUrl),
             renderedColorMaskUrl: resolveUrl(
               (layer as { renderedColorMaskUrl?: string }).renderedColorMaskUrl,

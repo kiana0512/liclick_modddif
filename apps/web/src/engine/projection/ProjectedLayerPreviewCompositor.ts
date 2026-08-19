@@ -259,7 +259,8 @@ const candidateFragmentShader = `
     vec2 uv = ndc.xy * 0.5 + 0.5;
     uv.y = 1.0 - uv.y;
     vec2 maskUv = mix(uv, vec2(vTextureUv.x, 1.0 - vTextureUv.y), maskUsesUv);
-    float maskValue = dot(texture(maskMap, maskUv).rgb, vec3(0.299, 0.587, 0.114));
+    vec4 maskTexel = texture(maskMap, maskUv);
+    float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
     float maskAlpha = mix(1.0, maskValue, useMask);
     vec4 texel = texture(projectedMap, uv);
     texel.rgb = applyAdjustments(texel.rgb);
@@ -397,12 +398,14 @@ const candidateFragmentShader = `
       1.0,
       useDepthCheck
     );
-    float lockedBinaryCoverage =
+    // Keep the depth/surface decision binary without binarizing the authored
+    // mask itself; local-repaint feather is carried by sourceAlpha.
+    float lockedCoverage =
       layerOpacity *
-      step(0.01, sourceAlpha) *
+      sourceAlpha *
       lockedSafetyCoverage *
       step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage);
-    float coverage = mix(continuousCoverage, lockedBinaryCoverage, surfaceLockedVisibility);
+    float coverage = mix(continuousCoverage, lockedCoverage, surfaceLockedVisibility);
     if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
     float strength = clamp(layerStrength, 0.25, 3.0);
     float angleWeight = smoothstep(0.02, 0.25, visibilityBackedNdv) * pow(clamp(visibilityBackedNdv, 0.0, 1.0), 4.0 / strength);

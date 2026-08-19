@@ -16,8 +16,25 @@ function emitChange() {
 }
 
 export function publishLiveSurfacePaintPreview(preview: LiveSurfacePaintPreview) {
+  // Pointer-down re-enters the already-active projected eraser for every short
+  // stroke. The live canvas and CanvasTexture are intentionally stable, so an
+  // identical publication carries no new React state. Emitting anyway caused
+  // SceneRoot to restart its async projected-material pass on every dot; a late
+  // pass could then publish the previous layer binding over the resident one.
+  if (
+    currentPreview?.objectId === preview.objectId &&
+    currentPreview.layerId === preview.layerId &&
+    currentPreview.target === preview.target &&
+    currentPreview.assetUrl === preview.assetUrl &&
+    currentPreview.composition === preview.composition
+  )
+    return;
   currentPreview = preview;
   emitChange();
+}
+
+export function getLiveSurfacePaintPreview() {
+  return currentPreview;
 }
 
 export function clearLiveSurfacePaintPreview(layerId: string, assetUrl?: string) {

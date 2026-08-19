@@ -19,12 +19,60 @@ const viewportCanvasInteractionSource = readFileSync(
   path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
   'utf8',
 );
+const projectedPreviewCompositorSource = readFileSync(
+  path.join(root, 'src/engine/projection/ProjectedLayerPreviewCompositor.ts'),
+  'utf8',
+);
+const projectedLayerMaterialSource = readFileSync(
+  path.join(root, 'src/engine/projection/ProjectedLayerMaterial.ts'),
+  'utf8',
+);
+const liveSurfacePaintPreviewRegistrySource = readFileSync(
+  path.join(root, 'src/engine/paint/liveSurfacePaintPreviewRegistry.ts'),
+  'utf8',
+);
 const viewportPanelSource = readFileSync(
   path.join(root, 'src/components/panels/ViewportPanel.tsx'),
   'utf8',
 );
 const sceneStoreSource = readFileSync(path.join(root, 'src/stores/sceneStore.ts'), 'utf8');
 const editorShellSource = readFileSync(path.join(root, 'src/layouts/EditorShell.tsx'), 'utf8');
+const editorPageSource = readFileSync(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8');
+assert.match(
+  projectedPreviewCompositorSource,
+  /vec4 maskTexel = texture\(maskMap, maskUv\);\s*float maskValue = dot\(maskTexel\.rgb,[\s\S]*?\) \* maskTexel\.a;/,
+  'Projected preview compositing must preserve continuous mask alpha.',
+);
+assert.match(
+  projectedPreviewCompositorSource,
+  /float lockedCoverage =\s*layerOpacity \*\s*sourceAlpha \*\s*lockedSafetyCoverage/,
+  'Surface-locked preview compositing must not binarize local-repaint feather.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /float lockedCoverage =\s*layerOpacity \*\s*sourceAlpha \*\s*lockedSafetyCoverage/,
+  'The resident surface-locked material must preserve continuous local-repaint coverage.',
+);
+assert.match(
+  liveSurfacePaintPreviewRegistrySource,
+  /currentPreview\?\.objectId === preview\.objectId[\s\S]*?currentPreview\.layerId === preview\.layerId[\s\S]*?currentPreview\.assetUrl === preview\.assetUrl[\s\S]*?return;/,
+  'Repeated short eraser strokes must not republish an identical live preview and restart the projected-material effect.',
+);
+assert.match(
+  sceneRootSource,
+  /if \(projectedMaterial && projectedLayerInput\) \{[\s\S]*?updateProjectedLayerStackMaterial\(projectedMaterial,[\s\S]*?topUvProjectedOverlayInput/,
+  'A reused asynchronous texture-array material must receive the current effect live-erasure uniforms before publication.',
+);
+assert.match(
+  sceneRootSource,
+  /const authoritativeLiveSurfacePreview = getLiveSurfacePaintPreview\(\);[\s\S]*?syncProjectedLayerLiveEraserPreviewInObject\([\s\S]*?authoritativeLiveEraserLayerId,[\s\S]*?authoritativeLiveEraserTexture/,
+  'Final projected-material publication must atomically rebind the current registry eraser layer instead of a stale effect closure.',
+);
+assert.equal(
+  (projectedLayerMaterialSource.match(/layerOpacity\$\{index\} \* sourceAlpha/g) ?? []).length >= 2,
+  true,
+  'Both generated projected-stack variants must preserve source alpha for surface-locked layers.',
+);
 assert.match(
   viewportPanelSource,
   /\{ value: 'flat', labelKey: 'flatShort' \},\s*\{ value: 'pbr', labelKey: 'pbr' \}/,
@@ -44,6 +92,26 @@ assert.match(
   viewportCanvasInteractionSource,
   /if \(isInpaintMode \|\| isLocalRepaintApplyMode\) event\.preventDefault\(\);/,
   'Both repaint brushes must suppress the browser context menu while right-button erasing.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /const maximumProjectedRadius = Math\.min\([\s\S]*?fallbackUvRadius \* 4[\s\S]*?length > maximumProjectedRadius[\s\S]*?axis\.multiplyScalar\(maximumProjectedRadius \/ length\)/,
+  'A grazing local-repaint projection must clamp a dot stroke before it can erase unrelated material regions.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /const eraserFeather = paintToolSettings\.eraserFeather \?\? 50;[\s\S]*?layer\.liveResultContext[\s\S]*?'destination-out',[\s\S]*?'uv',[\s\S]*?eraserFeather/,
+  'The projected-layer eraser must apply its feather value to the live keep-mask.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /erasesLocalRepaint && paintTool === 'eraser'[\s\S]*?paintToolSettings\.eraserFeather/,
+  'The dedicated eraser feather must also control completed local-repaint masks.',
+);
+assert.match(
+  readFileSync(path.join(root, 'src/components/editor/BottomToolDock.tsx'), 'utf8'),
+  /paintToolSettings\.eraserFeather[\s\S]*?setPaintToolSettings\(\{ eraserFeather:/,
+  'The eraser parameter popover must expose a feather control.',
 );
 assert.match(
   generatePanelSource,
@@ -124,8 +192,113 @@ const viewportCanvasSource = readFileSync(
 );
 assert.match(
   viewportCanvasSource,
-  /const localRepaintEraseContact =\s*isLocalRepaintApplyMode && \(event\.button === 2 \|\| penEraserContact\)/,
-  'Button 3 must reserve right mouse and pen eraser contact for subtracting local repaint.',
+  /const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?event\.button === 2 \|\|[\s\S]*?penEraserContact \|\|[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
+  'Button 3, pen erasers, and the primary eraser gesture must subtract local repaint.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const isLocalRepaintApplyMode =\s*paintTool === 'inpaint-apply' \|\| isEditingPersistedLocalRepaint/,
+  'The ordinary eraser must enter the non-destructive local repaint path for a completed repaint layer.',
+);
+assert.match(
+  viewportCanvasSource,
+  /!canUseSurfacePaint \|\|\s*isEditingPersistedLocalRepaint[\s\S]*?beginLiveEraserPreview/,
+  'A completed local repaint must never prewarm the all-white generic projected-layer eraser mask.',
+);
+assert.match(
+  viewportCanvasSource,
+  /setLocalRepaintProjectionSource\(\{[\s\S]*?imageUrl: sourceUrl,[\s\S]*?allowedMaskUrl,[\s\S]*?camera: projectionCamera/,
+  'Re-entering the eraser must restore the persisted local repaint editing source.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const shouldPrewarmPersistedLocalRepaint =\s*isEditableLocalRepaintProjectionLayer\(activePaintLayer\) &&\s*\(paintTool === 'none' \|\| isEditingPersistedLocalRepaint\)/,
+  'A selected persisted local repaint must restore its editing source before the eraser is pressed.',
+);
+assert.match(
+  viewportCanvasSource,
+  /if \(!shouldPrewarmPersistedLocalRepaint && paintTool !== 'inpaint-apply'\) return;[\s\S]*?getFeatheredBrushStamp\(localRepaintBrushSettings\.brushFeather\)/,
+  'The active local repaint feather stamp must be allocated before the first pointer sample.',
+);
+assert.match(
+  viewportCanvasSource,
+  /if \(!shouldPrewarmPersistedLocalRepaint \|\| !activePaintLayer\?\.camera\) return;[\s\S]*?currentPaintTool !== 'none' && currentPaintTool !== 'eraser'/,
+  'Persisted local repaint prewarming must stay active while the viewport is idle or erasing.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const sourceUrl = activePaintLayer\.imageUrl \|\| activePaintLayer\.localRepaintSourceUrl;\s*const savedMaskUrl = activePaintLayer\.maskUrl \|\| activePaintLayer\.localRepaintMaskUrl;/,
+  'Reloaded repaint editing must prefer workspace-resolved canonical asset URLs.',
+);
+assert.match(
+  viewportCanvasSource,
+  /if \(composite\.restoredMaskUrl && !composite\.restoredMaskReady\) return;[\s\S]*?const commitRevision =/,
+  'An unrecovered persisted mask must never publish an empty live canvas.',
+);
+assert.match(
+  viewportCanvasSource,
+  /!composite \|\|\s*\(composite\.restoredMaskUrl && !composite\.restoredMaskReady\) \|\|\s*!composite\.gpuOverlayReady[\s\S]*?return;\s*const surfaceFacesProjector/,
+  'The eraser must reject its first stroke until persisted coverage and the GPU overlay are ready.',
+);
+assert.match(
+  viewportCanvasSource,
+  /isEditingPersistedLocalRepaint &&\s*!isLocalRepaintSourceForLayer\(source, activePaintLayer\)/,
+  'The eraser must reject input until the selected repaint layer owns the restored source.',
+);
+assert.match(
+  viewportCanvasSource,
+  /currentPreviewLayer &&[\s\S]*?!isMatchingLocalRepaintProjectionLayer\([\s\S]*?sceneState\.setLocalRepaintPreviewLayer\(undefined\)/,
+  'Switching repaint layers must unmute the previous persisted row before rebinding its overlay.',
+);
+assert.match(
+  editorPageSource,
+  /const selectedPersistedLocalRepaint = Boolean\([\s\S]*?activeLayer && isLocalRepaintProjectionLayer\(activeLayer\)[\s\S]*?selectedPersistedLocalRepaint \|\|/,
+  'Background staging of the newest generation must yield while a persisted repaint row is selected.',
+);
+assert.match(
+  editorPageSource,
+  /const latestActiveLayer = latestLayerState\.layers\.find\([\s\S]*?isLocalRepaintProjectionLayer\(latestActiveLayer\)[\s\S]*?return;/,
+  'A pending newest-generation preload must not overwrite a historical repaint source after selection changes.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const persistedOverlayCanOwnPresentation = Boolean\([\s\S]*?!existingLayer \|\|[\s\S]*?composite\.hasContent &&[\s\S]*?composite\.gpuOverlayReady &&[\s\S]*?currentOverlay\?\.sourceKey === sourceKey &&[\s\S]*?currentOverlay\.root\.visible/,
+  'A persisted repaint row must stay visible until its saved mask and GPU overlay are both ready and visible.',
+);
+assert.match(
+  viewportCanvasSource,
+  /currentPreviewLayer\?\.id === projectedLayer\.id &&[\s\S]*?!persistedOverlayCanOwnPresentation[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
+  'Refresh must clear a stale live-owner marker instead of hiding both the saved repaint and its overlay.',
+);
+assert.match(
+  viewportCanvasSource,
+  /syncLocalRepaintGpuOverlayBinding\(overlay,[\s\S]*?if \(visible\) ensureLiveLocalRepaintComposite\(result\.model, source\)/,
+  'Pointer-down must transfer repaint presentation ownership only after making the live overlay visible.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const savedLiveMaskCanvas = savedMaskUrl[\s\S]*?getLiveProjectedCanvasState\(savedMaskUrl\)\?\.canvas[\s\S]*?createLocalRepaintComposite\(/,
+  'Switching repaint layers must capture the old stable-URL mask before registering its replacement canvas.',
+);
+assert.doesNotMatch(
+  viewportCanvasSource,
+  /savedMaskUrl && savedMaskUrl !== composite\.maskUrl/,
+  'A stable live mask URL must still be restored when a new canvas reuses that URL.',
+);
+assert.match(
+  viewportCanvasSource,
+  /if \(composite\.restoredMaskPromise\) await composite\.restoredMaskPromise;[\s\S]*?ensureLiveLocalRepaintComposite\(model, source\) !== composite/,
+  'Persisted repaint ownership must publish only after mask restore and GPU overlay readiness.',
+);
+assert.match(
+  viewportCanvasSource,
+  /preparedAssets\?\.url !== source\.imageUrl \|\|\s*preparedAssets\.allowedMaskUrl !== source\.allowedMaskUrl/,
+  'A repaint stroke must reject decoded assets owned by a different local repaint layer.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const keepsLiveLocalRepaintPreview =\s*sceneStateAtCommit\.paintTool === 'inpaint-apply' \|\|\s*erasesPersistedLocalRepaint/,
+  'Committing an eraser stroke must retain the cumulative repaint mask for the next stroke.',
 );
 assert.match(
   viewportCanvasSource,
@@ -144,8 +317,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /erasesLocalRepaint \? undefined : opacityByte/,
-  'Local repaint erasing must use a binary stamp so one pass cannot leave a blended residue.',
+  /erasesLocalRepaint \? undefined : featherPercent/,
+  'Local repaint erasing must stay binary while additive strokes use the configured feather.',
 );
 assert.match(
   viewportCanvasSource,

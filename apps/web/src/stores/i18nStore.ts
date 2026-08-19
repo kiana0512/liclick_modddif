@@ -255,7 +255,7 @@ export const translations = {
     replaceLayerImage: 'Replace image',
     layerImageReplaced: 'Layer image replaced',
     replaceLayerImageFailed: 'Replace image failed',
-    imageEditBrushOpacity: 'Brush opacity',
+    imageEditBrushFeather: 'Feather amount',
     imageEditUvAppliedHelp:
       'The merged UV layer image was updated and the UV preview will refresh from the edited pixels.',
     copySuffix: 'Copy',
@@ -749,7 +749,7 @@ export const translations = {
     replaceLayerImage: '替换图片',
     layerImageReplaced: '图层图片已替换',
     replaceLayerImageFailed: '替换图片失败',
-    imageEditBrushOpacity: '画笔不透明度',
+    imageEditBrushFeather: '羽化值',
     imageEditUvAppliedHelp: '合并 UV 图层图像已更新，UV 预览会使用编辑后的像素刷新。',
     copySuffix: '副本',
     referenceLinkToolHelp: '在生成面板里管理参考图。',

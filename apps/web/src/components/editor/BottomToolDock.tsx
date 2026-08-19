@@ -56,7 +56,7 @@ type BottomToolDockProps = {
     undo: string;
     redo: string;
     brushSize: string;
-    brushOpacity: string;
+    brushFeather: string;
     resetInpaintRegion: string;
     invertInpaintRegion: string;
     selectHelp: string;
@@ -391,6 +391,36 @@ export function BottomToolDock({
                     className="w-full accent-[#6f93ff]"
                   />
                 </label>
+                <label className="mt-2 grid gap-1.5 border-t border-white/16 pt-2 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.brushFeather}</span>
+                    <span className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={Math.round(paintToolSettings.eraserFeather ?? 50)}
+                        onChange={(event) =>
+                          setPaintToolSettings({ eraserFeather: Number(event.target.value) })
+                        }
+                        className="h-8 w-20 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#6f93ff]"
+                      />
+                      <span className="text-xs text-white/60">%</span>
+                    </span>
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={paintToolSettings.eraserFeather ?? 50}
+                    onChange={(event) =>
+                      setPaintToolSettings({ eraserFeather: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#6f93ff]"
+                  />
+                </label>
               </div>
             )}
             <IconTooltip
@@ -491,17 +521,17 @@ export function BottomToolDock({
                       <div className="mt-2 grid gap-2 border-t border-white/16 pt-2">
                         <label className="grid gap-1.5 text-[13px] font-semibold">
                           <span className="flex items-center justify-between">
-                            <span>{labels.brushOpacity}</span>
+                            <span>{labels.brushFeather}</span>
                             <span className="flex items-center gap-1">
                               <input
                                 type="number"
                                 min="0"
                                 max="100"
                                 step="1"
-                                value={Math.round(localRepaintBrushSettings.brushOpacity)}
+                                value={Math.round(localRepaintBrushSettings.brushFeather)}
                                 onChange={(event) =>
                                   setLocalRepaintBrushSettings({
-                                    brushOpacity: Number(event.target.value),
+                                    brushFeather: Number(event.target.value),
                                   })
                                 }
                                 className="h-8 w-20 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
@@ -514,10 +544,10 @@ export function BottomToolDock({
                             min="0"
                             max="100"
                             step="1"
-                            value={localRepaintBrushSettings.brushOpacity}
+                            value={localRepaintBrushSettings.brushFeather}
                             onChange={(event) =>
                               setLocalRepaintBrushSettings({
-                                brushOpacity: Number(event.target.value),
+                                brushFeather: Number(event.target.value),
                               })
                             }
                             className="w-full accent-[#ff8a68]"

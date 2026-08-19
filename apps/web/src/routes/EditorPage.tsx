@@ -2572,8 +2572,11 @@ export function EditorPage({
       });
     }
     for (const layer of projectForSave.layers) {
-      const persistedImageSource = layer.localRepaintSourceUrl ?? layer.imageUrl;
-      const persistedMaskSource = layer.localRepaintMaskUrl ?? layer.maskUrl;
+      // Canonical layer URLs are resolved by the workspace loader and updated by
+      // live editing. The dedicated repaint metadata may still be a stale
+      // relative/previous-server URL after reopening an older project.
+      const persistedImageSource = layer.imageUrl ?? layer.localRepaintSourceUrl;
+      const persistedMaskSource = layer.maskUrl ?? layer.localRepaintMaskUrl;
       persistenceTasks.push(async () => {
         layer.imageUrl =
           (await persistOptionalAsset(persistedImageSource, 'layers', `${layer.id}.png`)) ??
@@ -5195,10 +5198,14 @@ export function EditorPage({
   ]);
 
   useEffect(() => {
+    const selectedPersistedLocalRepaint = Boolean(
+      activeLayer && isLocalRepaintProjectionLayer(activeLayer),
+    );
     if (
       !project ||
       !importedModel ||
       paintTool === 'inpaint-apply' ||
+      selectedPersistedLocalRepaint ||
       document.body.dataset.localRepaintPrewarmProgressRequested === '1' ||
       document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
     )
@@ -5270,6 +5277,16 @@ export function EditorPage({
           .getState()
           .layers.find((layer) => layer.id === targetLayer.id);
         if (!isLocalRepaintDestinationLayer(currentTarget, objectId)) return;
+        const latestLayerState = useLayerStore.getState();
+        const latestActiveLayer = latestLayerState.layers.find(
+          (layer) => layer.id === latestLayerState.activeProjectedLayerId,
+        );
+        if (latestActiveLayer && isLocalRepaintProjectionLayer(latestActiveLayer)) {
+          // A pending idle task may have started before the user selected an
+          // older repaint row. Historical-layer editing owns the source now;
+          // never let "warm newest result" steal it back after image decoding.
+          return;
+        }
         importedModel.group.updateMatrixWorld(true);
         const nameSource = latestLocalRepaintGeneration.prompt.trim();
         setLocalRepaintProjectionSource({
@@ -5312,6 +5329,7 @@ export function EditorPage({
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [
+    activeLayer,
     generations,
     getLocalRepaintProjectionImage,
     importedModel,
@@ -6874,7 +6892,7 @@ export function EditorPage({
                 undo: t('undo'),
                 redo: t('redo'),
                 brushSize: t('brushSize'),
-                brushOpacity: t('imageEditBrushOpacity'),
+                brushFeather: t('imageEditBrushFeather'),
                 resetInpaintRegion: t('resetInpaintRegion'),
                 invertInpaintRegion: t('invertInpaintRegion'),
                 selectHelp: t('selectToolHelp'),
