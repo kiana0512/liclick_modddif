@@ -1,5 +1,6 @@
 import { loadImageData, sampleImageBilinear } from '@/engine/bake/imageSampler';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
+import { removeEdgeConnectedNeutralBackground } from '@/engine/localRepaint/resultPreviewUtils';
 
 type LabColor = [number, number, number];
 type RgbColor = [number, number, number];
@@ -78,7 +79,9 @@ function labToRgb(lab: LabColor): RgbColor {
 
   function encode(value: number) {
     const clamped = clamp(value, 0, 1);
-    return Math.round((clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055) * 255);
+    return Math.round(
+      (clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055) * 255,
+    );
   }
 
   return [encode(linearRed), encode(linearGreen), encode(linearBlue)];
@@ -98,7 +101,12 @@ function getBorderCoordinateCount(width: number, height: number, borderWidth: nu
   return width * height - innerWidth * innerHeight;
 }
 
-function getSampledBorderCoordinates(width: number, height: number, borderWidth: number, maxSamples = 60000) {
+function getSampledBorderCoordinates(
+  width: number,
+  height: number,
+  borderWidth: number,
+  maxSamples = 60000,
+) {
   const totalCoordinates = getBorderCoordinateCount(width, height, borderWidth);
   const stride = totalCoordinates > maxSamples ? Math.ceil(totalCoordinates / maxSamples) : 1;
   const coordinates: Array<[number, number]> = [];
@@ -121,11 +129,19 @@ function getLabAt(image: ImageData, x: number, y: number): LabColor {
 }
 
 function medianLab(samples: LabColor[]): LabColor {
-  return [0, 1, 2].map((channel) => percentile(samples.map((sample) => sample[channel]), 0.5)) as LabColor;
+  return [0, 1, 2].map((channel) =>
+    percentile(
+      samples.map((sample) => sample[channel]),
+      0.5,
+    ),
+  ) as LabColor;
 }
 
 function estimateBackground(image: ImageData, options: CutoutOptions) {
-  const borderWidth = Math.max(4, Math.round(Math.min(image.width, image.height) * options.borderFrac));
+  const borderWidth = Math.max(
+    4,
+    Math.round(Math.min(image.width, image.height) * options.borderFrac),
+  );
   const borderCoordinates = getSampledBorderCoordinates(image.width, image.height, borderWidth);
   const labs = borderCoordinates.map(([x, y]) => getLabAt(image, x, y));
   const sortedLabs = [...labs].sort((a, b) => a[0] - b[0]);
@@ -154,7 +170,9 @@ function estimateBackground(image: ImageData, options: CutoutOptions) {
     }
     centers = centers.map((center, index) => {
       const count = sums[index][3];
-      return count > 0 ? [sums[index][0] / count, sums[index][1] / count, sums[index][2] / count] : center;
+      return count > 0
+        ? [sums[index][0] / count, sums[index][1] / count, sums[index][2] / count]
+        : center;
     }) as LabColor[];
   }
 
@@ -182,7 +200,8 @@ function estimateBackground(image: ImageData, options: CutoutOptions) {
   const maxCornerDistance = Math.max(...cornerDistances, 1);
   const bgIndex = centers.reduce((bestIndex, center, index) => {
     const score = counts[index] / maxCount - 0.15 * (cornerDistances[index] / maxCornerDistance);
-    const bestScore = counts[bestIndex] / maxCount - 0.15 * (cornerDistances[bestIndex] / maxCornerDistance);
+    const bestScore =
+      counts[bestIndex] / maxCount - 0.15 * (cornerDistances[bestIndex] / maxCornerDistance);
     return score > bestScore ? index : bestIndex;
   }, 0);
   const bgLab = centers[bgIndex];
@@ -270,7 +289,12 @@ function floodBackground(maybeBackground: Uint8Array, width: number, height: num
   return connected;
 }
 
-function removeSmallForegroundComponents(foreground: Uint8Array, width: number, height: number, minArea: number) {
+function removeSmallForegroundComponents(
+  foreground: Uint8Array,
+  width: number,
+  height: number,
+  minArea: number,
+) {
   const output = new Uint8Array(foreground.length);
   const visited = new Uint8Array(foreground.length);
   const queue = new Int32Array(foreground.length);
@@ -470,7 +494,13 @@ function growForegroundBleed(image: ImageData, radius: number) {
         const [ox, oy] = neighborOffsets[offsetIndex];
         const nx = x + ox;
         const ny = y + oy;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height || data[(ny * width + nx) * 4 + 3] < 220) {
+        if (
+          nx < 0 ||
+          ny < 0 ||
+          nx >= width ||
+          ny >= height ||
+          data[(ny * width + nx) * 4 + 3] < 220
+        ) {
           isBoundary = true;
           break;
         }
@@ -510,24 +540,44 @@ function growForegroundBleed(image: ImageData, radius: number) {
 }
 
 export function removeSolidBackground(image: ImageData, options: CutoutOptions = defaultOptions) {
-  const { maybeBackground, bgRgb } = createBackgroundCandidateMask(image, options);
-  const connectedBackground = floodBackground(maybeBackground, image.width, image.height);
+  // ModelView can return a transparent outer canvas containing a second,
+  // opaque near-black rectangle. The Lab border estimator sees the transparent
+  // outer edge first and otherwise treats that inner rectangle as foreground.
+  // Strip all edge-connected dark regions before the existing colour-agnostic
+  // matte pass, then keep the established inward feather/bleed behaviour.
+  const darkRemoved = removeEdgeConnectedNeutralBackground(image, 'dark-only').imageData;
+  const { maybeBackground, bgRgb } = createBackgroundCandidateMask(darkRemoved, options);
+  const connectedBackground = floodBackground(
+    maybeBackground,
+    darkRemoved.width,
+    darkRemoved.height,
+  );
   let foreground = new Uint8Array(connectedBackground.length);
   for (let i = 0; i < foreground.length; i += 1) foreground[i] = connectedBackground[i] ? 0 : 1;
 
-  const minArea = Math.max(16, Math.floor(image.width * image.height * options.minAreaFrac));
-  foreground = removeSmallForegroundComponents(foreground, image.width, image.height, minArea);
-  if (options.closePx > 0) foreground = closeMask(foreground, image.width, image.height, options.closePx);
-  if (options.openPx > 0) foreground = openMask(foreground, image.width, image.height, options.openPx);
+  const minArea = Math.max(
+    16,
+    Math.floor(darkRemoved.width * darkRemoved.height * options.minAreaFrac),
+  );
+  foreground = removeSmallForegroundComponents(
+    foreground,
+    darkRemoved.width,
+    darkRemoved.height,
+    minArea,
+  );
+  if (options.closePx > 0)
+    foreground = closeMask(foreground, darkRemoved.width, darkRemoved.height, options.closePx);
+  if (options.openPx > 0)
+    foreground = openMask(foreground, darkRemoved.width, darkRemoved.height, options.openPx);
 
-  const alpha = makeAlpha(foreground, image, options);
-  const output = new ImageData(image.width, image.height);
+  const alpha = makeAlpha(foreground, darkRemoved, options);
+  const output = new ImageData(darkRemoved.width, darkRemoved.height);
   for (let i = 0; i < alpha.length; i += 1) {
     const offset = i * 4;
     const nextAlpha = alpha[i];
-    let red = image.data[offset];
-    let green = image.data[offset + 1];
-    let blue = image.data[offset + 2];
+    let red = darkRemoved.data[offset];
+    let green = darkRemoved.data[offset + 1];
+    let blue = darkRemoved.data[offset + 2];
     const alphaRatio = nextAlpha / 255;
     if (alphaRatio > 0.001 && alphaRatio < 0.999) {
       const safeAlpha = Math.max(alphaRatio, 0.05);
@@ -567,8 +617,7 @@ export function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
       const u = image.width <= 1 ? 0 : x / (image.width - 1);
       const sourceOffset = (y * image.width + x) * 4;
       const maskSample = sampleImageBilinear(mask, u, v);
-      const maskLuminance =
-        maskSample[0] * 0.299 + maskSample[1] * 0.587 + maskSample[2] * 0.114;
+      const maskLuminance = maskSample[0] * 0.299 + maskSample[1] * 0.587 + maskSample[2] * 0.114;
       const maskCoverage = (maskLuminance / 255) * (maskSample[3] / 255);
       const nextAlpha = Math.round(output.data[sourceOffset + 3] * maskCoverage);
       output.data[sourceOffset + 3] = nextAlpha;
@@ -716,14 +765,14 @@ function processMaskedProjectedImageInWorker(
     }
     const cutout = removeSolidBackground(source);
     if (!mask) return Promise.resolve(cutout);
-    return Promise.resolve(applyProjectedAlphaMask(alignCutoutToProjectionMask(cutout, mask), mask));
+    return Promise.resolve(
+      applyProjectedAlphaMask(alignCutoutToProjectionMask(cutout, mask), mask),
+    );
   }
   const id = ++maskedProjectedRequestId;
   const sourceBuffer = source.data.buffer as ArrayBuffer;
   const transfer: Transferable[] = [sourceBuffer];
-  let maskPayload:
-    | { width: number; height: number; data: ArrayBuffer }
-    | undefined;
+  let maskPayload: { width: number; height: number; data: ArrayBuffer } | undefined;
   if (mask) {
     const maskBuffer = mask.data.buffer as ArrayBuffer;
     maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
@@ -746,15 +795,9 @@ function processMaskedProjectedImageInWorker(
 export async function createMaskedProjectedImage(imageUrl: string, projectionMaskUrl?: string) {
   const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
   const projectionMask = projectionMaskUrl
-    ? await loadImageData(
-        projectionMaskUrl,
-        maxCutoutDimension,
-        'local repaint projection mask',
-      )
+    ? await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask')
     : undefined;
-  return imageDataToPngUrl(
-    await processMaskedProjectedImageInWorker(sourceImage, projectionMask),
-  );
+  return imageDataToPngUrl(await processMaskedProjectedImageInWorker(sourceImage, projectionMask));
 }
 
 /**
@@ -770,11 +813,7 @@ export async function createProjectionMaskedImage(imageUrl: string, projectionMa
     loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
   ]);
   return imageDataToPngUrl(
-    await processMaskedProjectedImageInWorker(
-      sourceImage,
-      projectionMask,
-      'projection-alpha-only',
-    ),
+    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'projection-alpha-only'),
   );
 }
 

@@ -6,8 +6,8 @@
   "description": "Liclick 3D Texture - Web AI 3D texture studio foundation.",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "dev": "node scripts/dev-fixed.mjs",
-    "dev:fixed": "node scripts/dev-fixed.mjs",
+    "dev": "node scripts/dev-fixed.mjs --restart-all",
+    "dev:fixed": "node scripts/dev-fixed.mjs --restart-all",
     "dev:raw": "corepack pnpm --parallel --filter @liclick/server --filter @liclick/web dev",
     "dev:web": "corepack pnpm --filter @liclick/web dev",
     "dev:server": "corepack pnpm --filter @liclick/server dev",

@@ -263,6 +263,7 @@ export function uploadPreviewTextureInStripes(
         throw new DOMException('Texture upload superseded.', 'AbortError');
       }
     };
+    throwIfCancelled();
     const image = texture.image;
     const usesVisibleRenderer = renderer.domElement.isConnected;
     const uploadPhasePrefix = usesVisibleRenderer
@@ -276,6 +277,7 @@ export function uploadPreviewTextureInStripes(
     const imageBitmap = typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap;
     if (!imageBitmap && workerBitmapId === undefined) {
       if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      throwIfCancelled();
       renderer.initTexture(texture);
       texture.userData.liclickPreviewStripedUploadReady = true;
       return;
@@ -298,6 +300,7 @@ export function uploadPreviewTextureInStripes(
     texture.source.dataReady = false;
     texture.needsUpdate = true;
     if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+    throwIfCancelled();
     const allocationStartedAt = performance.now();
     renderer.initTexture(texture);
     document.body.dataset.previewTextureAllocationMs = (
@@ -383,7 +386,10 @@ export function uploadPreviewTextureInStripes(
           );
           maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
           submittedSinceFlush += 1;
-          if (usesVisibleRenderer && submittedSinceFlush >= PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH) {
+          if (
+            usesVisibleRenderer &&
+            submittedSinceFlush >= PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH
+          ) {
             // `clientWaitSync(..., 0, 0)` is permitted to poll, but NVIDIA's
             // Windows driver repeatedly blocked the main thread for 134-150ms.
             // A flush preserves command order without ever synchronously asking
@@ -408,7 +414,9 @@ export function uploadPreviewTextureInStripes(
         context.flush();
         for (let frame = 0; frame < 2; frame += 1) {
           await waitForBrowserPaint();
+          throwIfCancelled();
           if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+          throwIfCancelled();
         }
       }
       texture.source.dataReady = true;

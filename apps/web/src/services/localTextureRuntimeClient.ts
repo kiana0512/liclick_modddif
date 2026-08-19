@@ -17,6 +17,7 @@ export type LocalTextureRuntimeState =
 // reusing or replacing the component owned by the server build.
 const desktopRuntimePort = import.meta.env.VITE_LICLICK_LOCAL_COMPONENT_PORT?.trim() || '4618';
 const localTextureRuntimeHealthTimeoutMs = 4_000;
+const localTextureRuntimeDevHealthPath = '/__li3d-local-component/api/health';
 
 function isLoopbackHost(hostname: string) {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
@@ -29,6 +30,21 @@ export function getLocalTextureRuntimeApiBase() {
     return `http://${window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname}:${desktopRuntimePort}`;
   }
   return `http://127.0.0.1:${desktopRuntimePort}`;
+}
+
+function getLocalTextureRuntimeHealthUrl() {
+  if (
+    import.meta.env.DEV &&
+    typeof window !== 'undefined' &&
+    isLoopbackHost(window.location.hostname)
+  ) {
+    // Keep the development health probe same-origin. Chromium can otherwise
+    // leave a cross-port Private Network Access probe pending while 4618 is
+    // restarting, which traps the runtime gate in its checking state even
+    // though the installed component is already healthy.
+    return `${window.location.origin}${localTextureRuntimeDevHealthPath}`;
+  }
+  return `${getLocalTextureRuntimeApiBase()}/api/health`;
 }
 
 function compareVersions(left: string, right: string) {
@@ -83,7 +99,7 @@ export async function checkLocalTextureRuntime(): Promise<LocalTextureRuntimeSta
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), localTextureRuntimeHealthTimeoutMs);
   try {
-    const response = await fetch(`${getLocalTextureRuntimeApiBase()}/api/health`, {
+    const response = await fetch(getLocalTextureRuntimeHealthUrl(), {
       method: 'GET',
       cache: 'no-store',
       credentials: 'omit',

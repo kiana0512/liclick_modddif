@@ -9,9 +9,10 @@ import {
 import { createPortal } from 'react-dom';
 import { Eraser, Paintbrush, RotateCcw, Square, WandSparkles, X } from 'lucide-react';
 import { cn } from '@/components/common/cn';
+import { prepareLocalRepaintMasksInWorker } from '@/engine/localRepaint/maskPreparationWorker';
 import { useT } from '@/stores/i18nStore';
 import { shortcutMatches } from '@/stores/shortcutStore';
-import type { MaskBitmap } from '@/types/localRepaint';
+import type { MaskBitmap, Rect } from '@/types/localRepaint';
 import type { ReferenceImage } from '@/types/project';
 
 export type LocalRepaintGenerateInput = {
@@ -21,12 +22,17 @@ export type LocalRepaintGenerateInput = {
   limitToBlankAndSelection: boolean;
   preserveUnmaskedArea: boolean;
   selectedReferenceIds: string[];
+  preparedEditMask?: MaskBitmap;
+  preparedProtectMask?: MaskBitmap;
+  preparedBbox?: Rect;
+  maskPreparationMs?: number;
 };
 
 type LocalRepaintDialogProps = {
   mode: 'edit_layer_image' | 'repair_current_view';
   workingImageUrl: string;
   objectMask: MaskBitmap;
+  holeMask: MaskBitmap;
   initialUserMask?: MaskBitmap;
   targetName: string;
   references: ReferenceImage[];
@@ -95,6 +101,7 @@ export function LocalRepaintDialog({
   mode,
   workingImageUrl,
   objectMask,
+  holeMask,
   initialUserMask,
   targetName,
   references,
@@ -128,8 +135,9 @@ export function LocalRepaintDialog({
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
   const [showAfter, setShowAfter] = useState(true);
   const [localError, setLocalError] = useState<string>();
+  const [isStarting, setIsStarting] = useState(false);
   const [paintSurfaceStyle, setPaintSurfaceStyle] = useState<CSSProperties>({ inset: 0 });
-  const isSubmitting = status === 'submitting';
+  const isSubmitting = status === 'submitting' || isStarting;
 
   useEffect(() => {
     initialMaskAppliedRef.current = false;
@@ -482,38 +490,63 @@ export function LocalRepaintDialog({
     return { width: canvas.width, height: canvas.height, data };
   }
 
+  async function prepareGenerateInput(): Promise<LocalRepaintGenerateInput> {
+    syncCanvasSize();
+    const canvas = canvasRef.current;
+    if (!canvas) throw new Error(t('localRepaintMaskMissing'));
+    const logicalMaskCanvas = getLogicalMaskCanvas(canvas.width, canvas.height);
+    const prepared = await prepareLocalRepaintMasksInWorker({
+      maskCanvas: logicalMaskCanvas,
+      objectMask,
+      holeMask,
+      mode,
+      includeBlankArea,
+      limitToBlankAndSelection,
+      preserveUnmaskedArea,
+    }).catch(() => undefined);
+    return {
+      prompt,
+      userMask: prepared?.userMask ?? readUserMask(),
+      includeBlankArea,
+      limitToBlankAndSelection,
+      preserveUnmaskedArea,
+      selectedReferenceIds,
+      preparedEditMask: prepared?.editMask,
+      preparedProtectMask: prepared?.protectMask,
+      preparedBbox: prepared?.bbox,
+      maskPreparationMs: prepared?.processMs,
+    };
+  }
+
   async function handleGenerate() {
     setLocalError(undefined);
+    setIsStarting(true);
     try {
-      await onGenerate({
-        prompt,
-        userMask: readUserMask(),
-        includeBlankArea,
-        limitToBlankAndSelection,
-        preserveUnmaskedArea,
-        selectedReferenceIds,
-      });
+      // Paint the busy state before any full-resolution canvas work. Mask read,
+      // dilation, bounds and protection are prepared in a Worker, so clicking
+      // Generate never turns the button into a main-thread long task.
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await onGenerate(await prepareGenerateInput());
       setShowAfter(true);
     } catch (caught) {
       setLocalError(caught instanceof Error ? caught.message : t('localRepaintFailed'));
+    } finally {
+      setIsStarting(false);
     }
   }
 
   async function handleContentAwareFill() {
     if (!onContentAwareFill) return;
     setLocalError(undefined);
+    setIsStarting(true);
     try {
-      await onContentAwareFill({
-        prompt,
-        userMask: readUserMask(),
-        includeBlankArea,
-        limitToBlankAndSelection,
-        preserveUnmaskedArea,
-        selectedReferenceIds,
-      });
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await onContentAwareFill(await prepareGenerateInput());
       setShowAfter(true);
     } catch (caught) {
       setLocalError(caught instanceof Error ? caught.message : t('localRepaintFailed'));
+    } finally {
+      setIsStarting(false);
     }
   }
 

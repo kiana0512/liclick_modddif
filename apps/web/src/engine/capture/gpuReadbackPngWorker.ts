@@ -37,6 +37,7 @@ export function encodeFlippedGpuReadbackPngInWorker(
   pixels: Uint8Array,
   width: number,
   height: number,
+  outputSize?: { width: number; height: number },
 ) {
   const id = nextRequestId++;
   const buffer =
@@ -47,6 +48,16 @@ export function encodeFlippedGpuReadbackPngInWorker(
       : pixels.slice().buffer;
   return new Promise<ArrayBuffer>((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    getWorker().postMessage({ id, pixels: buffer, width, height }, [buffer]);
+    getWorker().postMessage(
+      {
+        id,
+        pixels: buffer,
+        width,
+        height,
+        outputWidth: outputSize?.width,
+        outputHeight: outputSize?.height,
+      },
+      [buffer],
+    );
   });
 }

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -48,27 +48,77 @@ const workspacePort = devPort(process.env.LICLICK_WORKSPACE_PORT, '4518', 'LICLI
 const webPort = devPort(process.env.LICLICK_WEB_PORT, '5173', 'LICLICK_WEB_PORT');
 const localComponentPort = devPort(
   process.env.VITE_LICLICK_LOCAL_COMPONENT_PORT,
-  '4619',
+  '4618',
   'VITE_LICLICK_LOCAL_COMPONENT_PORT',
 );
 const workspaceOrigin = `http://127.0.0.1:${workspacePort}`;
 const webOrigin = `http://127.0.0.1:${webPort}`;
 const localComponentOrigin = `http://127.0.0.1:${localComponentPort}`;
 const managedChildren = new Set();
+const installedLocalComponentRoot = path.join(
+  process.env.LOCALAPPDATA ?? '',
+  'Programs',
+  'LIclick 3D Texture Local Component',
+);
+const installedLocalComponentNode = path.join(installedLocalComponentRoot, 'node', 'node.exe');
+const installedLocalComponentStop = path.join(
+  installedLocalComponentRoot,
+  'scripts',
+  'stop-local-component.mjs',
+);
+const installedLocalComponentLauncher = path.join(
+  installedLocalComponentRoot,
+  'scripts',
+  'windows-local-component.mjs',
+);
+const installedFrontendUrlFile = path.join(installedLocalComponentRoot, 'frontend-url.txt');
 
+function readInstalledFrontendOrigin() {
+  try {
+    const configured = fs.readFileSync(installedFrontendUrlFile, 'utf8').trim();
+    const url = new URL(configured);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.origin;
+  } catch {
+    // A development-only installation may not include the server origin file.
+  }
+  return webOrigin;
+}
+
+const installedFrontendOrigin = readInstalledFrontendOrigin();
+
+const workspaceDir = path.resolve(
+  process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),
+);
+const managedLanCaPath = path.join(workspaceDir, 'config', 'GPU_CONTROL_LAN_CA.crt');
+const configuredSubstanceCaPath = process.env.LICLICK_SUBSTANCE_BAKER_CA_PATH?.trim();
+const configuredModelviewCaPath = process.env.LICLICK_MODELVIEW_INPAINT_CA_PATH?.trim();
 const env = {
   ...process.env,
   SERVER_PORT: workspacePort,
   LICLICK_WORKSPACE_PORT: workspacePort,
-  LICLICK_WORKSPACE_DIR: process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),
+  LICLICK_WORKSPACE_DIR: workspaceDir,
   LICLICK_PUBLIC_WORKSPACE_URL: process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? workspaceOrigin,
   LICLICK_FRONTEND_URL: process.env.LICLICK_FRONTEND_URL ?? webOrigin,
   LICLICK_ALLOWED_ORIGINS:
     process.env.LICLICK_ALLOWED_ORIGINS ?? `${webOrigin},http://localhost:${webPort}`,
   VITE_LICLICK_WORKSPACE_API: process.env.VITE_LICLICK_WORKSPACE_API ?? workspaceOrigin,
   VITE_LICLICK_LOCAL_COMPONENT_PORT: localComponentPort,
+  // An old absolute path in a copied workspace must not break TLS. Preserve an
+  // existing operator certificate, otherwise use the managed certificate that
+  // the current server materializes inside the active workspace.
+  LICLICK_SUBSTANCE_BAKER_CA_PATH:
+    configuredSubstanceCaPath && fs.existsSync(path.resolve(configuredSubstanceCaPath))
+      ? path.resolve(configuredSubstanceCaPath)
+      : managedLanCaPath,
+  LICLICK_MODELVIEW_INPAINT_CA_PATH:
+    configuredModelviewCaPath && fs.existsSync(path.resolve(configuredModelviewCaPath))
+      ? path.resolve(configuredModelviewCaPath)
+      : managedLanCaPath,
   AUTH_MODE: process.env.AUTH_MODE ?? 'feishu-oauth',
   LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: process.env.LICLICK_ENABLE_ATLAS_LOCAL_LOGIN ?? 'true',
+  LICLICK_IDENTITY_PROOF_FALLBACK_VERIFIER_URL:
+    process.env.LICLICK_IDENTITY_PROOF_FALLBACK_VERIFIER_URL ??
+    `${installedFrontendOrigin}/api/auth/local-proof/verify`,
 };
 
 function delay(milliseconds) {
@@ -115,6 +165,120 @@ function isPortOpen(port) {
     socket.once('timeout', () => finish(false));
     socket.once('error', () => finish(false));
   });
+}
+
+async function stopPreviousLi3dServices() {
+  const services = [
+    { label: 'LI3D identity/workspace service', port: workspacePort, probe: workspaceHealth },
+    { label: 'LI3D web app', port: webPort, probe: webHealth },
+  ];
+  for (const service of services) {
+    if (!(await isPortOpen(service.port))) continue;
+    if (!(await service.probe())) {
+      throw new Error(
+        `[dev] Port ${service.port} is occupied by something other than ${service.label}; refusing to stop it.`,
+      );
+    }
+  }
+  const occupiedPorts = [];
+  for (const service of services) {
+    if (await isPortOpen(service.port)) occupiedPorts.push(service.port);
+  }
+  if (occupiedPorts.length === 0) return;
+  if (process.platform !== 'win32') {
+    throw new Error('[dev] Automatic restart of existing services is currently supported on Windows.');
+  }
+
+  // Restart only the development workspace and web processes. Port 4618 belongs
+  // to the separately installed local component and must never be terminated or
+  // replaced by this repository's development launcher.
+  const portFilter = occupiedPorts.join(',');
+  const script = [
+    `$targetPorts = @(${portFilter})`,
+    '$listenerPids = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $targetPorts -contains $_.LocalPort } | Select-Object -ExpandProperty OwningProcess -Unique)',
+    '$roots = New-Object System.Collections.Generic.HashSet[int]',
+    'foreach ($listenerPid in $listenerPids) {',
+    '  $cursor = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerPid" -ErrorAction SilentlyContinue',
+    '  while ($cursor) {',
+    '    if ($cursor.Name -eq "node.exe" -and $cursor.CommandLine -match "scripts[\\\\/]dev-fixed\\.mjs") { [void]$roots.Add([int]$cursor.ProcessId); break }',
+    '    if (-not $cursor.ParentProcessId) { break }',
+    '    $cursor = Get-CimInstance Win32_Process -Filter "ProcessId=$($cursor.ParentProcessId)" -ErrorAction SilentlyContinue',
+    '  }',
+    '}',
+    'foreach ($rootPid in $roots) { & taskkill.exe /PID $rootPid /T /F *> $null }',
+    'Start-Sleep -Milliseconds 250',
+    '$remaining = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $targetPorts -contains $_.LocalPort } | Select-Object -ExpandProperty OwningProcess -Unique)',
+    'foreach ($remainingPid in $remaining) { Stop-Process -Id $remainingPid -Force -ErrorAction SilentlyContinue }',
+  ].join('; ');
+  const stopped = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+    { cwd: repoRoot, encoding: 'utf8', windowsHide: true },
+  );
+  if (stopped.status !== 0) {
+    throw new Error(
+      `[dev] Could not restart previous LI3D services: ${(stopped.stderr || stopped.stdout || '').trim()}`,
+    );
+  }
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    const states = await Promise.all(occupiedPorts.map((port) => isPortOpen(port)));
+    if (states.every((open) => !open)) return;
+    await delay(150);
+  }
+  throw new Error(`[dev] Timed out stopping LI3D services on ${occupiedPorts.join(', ')}.`);
+}
+
+async function restartInstalledLocalComponent() {
+  const requiredFiles = [
+    installedLocalComponentNode,
+    installedLocalComponentStop,
+    installedLocalComponentLauncher,
+  ];
+  if (process.platform !== 'win32' || requiredFiles.some((file) => !fs.existsSync(file))) {
+    return false;
+  }
+  const stop = spawnSync(installedLocalComponentNode, [installedLocalComponentStop], {
+    cwd: installedLocalComponentRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (stop.status !== 0) {
+    throw new Error(
+      `[dev] Could not restart the installed LI3D local component: ${(stop.stderr || stop.stdout || '').trim()}`,
+    );
+  }
+  const closeDeadline = Date.now() + 8_000;
+  while (Date.now() < closeDeadline && (await isPortOpen(localComponentPort))) {
+    await delay(150);
+  }
+  if (await isPortOpen(localComponentPort)) {
+    throw new Error(`[dev] Installed LI3D local component did not release port ${localComponentPort}.`);
+  }
+  const launch = spawnSync(installedLocalComponentNode, [installedLocalComponentLauncher], {
+    cwd: installedLocalComponentRoot,
+    env: {
+      ...process.env,
+      // Preserve the installed/server frontend as the component owner. The
+      // component build already permits loopback 5173, so both server and local
+      // development pages can use the same installed runtime concurrently.
+      LICLICK_FRONTEND_URL: installedFrontendOrigin,
+      LICLICK_IDENTITY_PROOF_VERIFIER_URL: `${workspaceOrigin}/api/auth/local-proof/verify`,
+    },
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (launch.status !== 0) {
+    throw new Error(
+      `[dev] Installed LI3D local component failed to start: ${(launch.stderr || launch.stdout || '').trim()}`,
+    );
+  }
+  const readyDeadline = Date.now() + 12_000;
+  while (Date.now() < readyDeadline) {
+    if (await localComponentHealth()) return true;
+    await delay(200);
+  }
+  throw new Error(`[dev] Installed LI3D local component did not become ready on ${localComponentOrigin}.`);
 }
 
 function corepackCommand(args) {
@@ -273,6 +437,9 @@ try {
   if (loadedDevelopmentEnvironment) {
     console.log(`[dev] Loaded local development configuration from ${developmentEnvironmentFile}.`);
   }
+  if (process.argv.includes('--restart-all')) {
+    await stopPreviousLi3dServices();
+  }
   await synchronizeDependencies();
   const workspace = await ensureService({
     label: 'LI3D identity/workspace service',
@@ -301,23 +468,27 @@ try {
     pnpmArgs: ['--filter', '@liclick/web', 'dev'],
   });
 
-  const localComponent = await ensureService({
-    label: 'LI3D development local component',
-    port: localComponentPort,
-    probe: localComponentHealth,
-    pnpmArgs: ['--filter', '@liclick/server', 'serve:local-component'],
-    extraEnv: {
-      SERVER_PORT: localComponentPort,
-      LICLICK_WORKSPACE_PORT: localComponentPort,
-      LICLICK_PUBLIC_WORKSPACE_URL: localComponentOrigin,
-      LICLICK_FRONTEND_URL: webOrigin,
-      LICLICK_ALLOWED_ORIGINS: `${webOrigin},http://localhost:${webPort}`,
-      LICLICK_LOCAL_COMPONENT_MODE: '1',
-    },
-  });
-  console.log(
-    `[dev] Isolated local component ready on 127.0.0.1:${localComponentPort} (runtime ${localComponent.health.runtimeVersion ?? 'unknown'}); installed/server component 4618 remains untouched.`,
-  );
+  if (process.argv.includes('--restart-all')) {
+    const restarted = await restartInstalledLocalComponent();
+    if (restarted) {
+      console.log(
+        `[dev] Restarted the installed LI3D local component with the development identity verifier; its installed files and workspace remain untouched.`,
+      );
+    }
+  }
+
+  const localComponent = await localComponentHealth();
+  if (localComponent) {
+    console.log(
+      `[dev] Reusing installed LI3D local component on 127.0.0.1:${localComponentPort} (runtime ${localComponent.runtimeVersion ?? 'unknown'}); it remains untouched.`,
+    );
+  } else {
+    console.warn(
+      `[dev] Installed LI3D local component is not ready on 127.0.0.1:${localComponentPort}; development services remain available and the installed component was not modified.`,
+    );
+  }
+  console.log(`[dev] Atlas CLI identity and generation use the workspace service on 127.0.0.1:${workspacePort}.`);
+  console.log(`[dev] Managed LAN CA: ${managedLanCaPath}.`);
   console.log(`[dev] Ready: ${webOrigin}`);
 
   if (managedChildren.size === 0) {

@@ -27,6 +27,37 @@ import {
 } from '../auth/webOAuthService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
+type VerifiedLocalIdentity = {
+  id: string;
+  displayName?: string;
+  email: string;
+  authSource?: string;
+};
+
+async function verifyFallbackLocalIdentityProof(proof?: string) {
+  const configured = process.env.LICLICK_IDENTITY_PROOF_FALLBACK_VERIFIER_URL?.trim();
+  if (!configured || !proof || proof.length > 256) return undefined;
+  try {
+    const verifier = new URL(configured);
+    if (verifier.protocol !== 'http:' && verifier.protocol !== 'https:') return undefined;
+    const response = await fetch(verifier, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ proof }),
+      signal: AbortSignal.timeout(6_000),
+    });
+    const payload = (await response.json().catch(() => undefined)) as
+      | { valid?: boolean; identity?: VerifiedLocalIdentity }
+      | undefined;
+    const identity = payload?.identity;
+    const email = identity?.email?.trim().toLowerCase();
+    if (!response.ok || payload?.valid !== true || !identity?.id || !email) return undefined;
+    return { ...identity, email };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function handleAuthRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
   const segments = getPathSegments(url);
   if (segments[0] !== 'api' || segments[1] !== 'auth') return false;
@@ -50,7 +81,9 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
     segments.length === 4
   ) {
     const body = await readJsonBody<{ proof?: string }>(request);
-    const identity = await consumeLocalIdentityProof(body.proof);
+    const identity =
+      (await consumeLocalIdentityProof(body.proof)) ??
+      (await verifyFallbackLocalIdentityProof(body.proof));
     if (!identity) {
       sendJson(response, 401, { code: 'INVALID_LOCAL_IDENTITY_PROOF', error: '本地身份证明无效、已使用或已过期。' });
       return true;

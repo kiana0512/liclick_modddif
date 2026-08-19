@@ -11,7 +11,7 @@ type LiveCanvasEntry = {
 };
 
 type LiveImageEntry = {
-  image: HTMLImageElement;
+  image: HTMLImageElement | ImageBitmap;
   texture: THREE.Texture;
   revision: number;
   flipY: boolean;
@@ -77,7 +77,7 @@ export function registerLiveProjectedCanvasTexture(
 
 export function registerLiveProjectedImageTexture(
   id: string,
-  image: HTMLImageElement,
+  image: HTMLImageElement | ImageBitmap,
   colorSpace: THREE.ColorSpace = THREE.NoColorSpace,
   options: { flipY?: boolean } = {},
 ) {
@@ -152,9 +152,9 @@ function canvasToPngBlob(canvas: HTMLCanvasElement) {
   });
 }
 
-function imageToPngBlob(image: HTMLImageElement) {
-  const width = image.naturalWidth || image.width;
-  const height = image.naturalHeight || image.height;
+function imageToPngBlob(image: HTMLImageElement | ImageBitmap) {
+  const width = image instanceof HTMLImageElement ? image.naturalWidth || image.width : image.width;
+  const height = image instanceof HTMLImageElement ? image.naturalHeight || image.height : image.height;
   if (!width || !height) return Promise.reject(new Error('The live projected image is empty.'));
   const canvas = document.createElement('canvas');
   canvas.width = width;

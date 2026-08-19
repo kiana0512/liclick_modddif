@@ -44,6 +44,11 @@ const host = process.env.SERVER_HOST ?? process.env.LICLICK_WORKSPACE_HOST ?? '1
 const workspaceDir = path.resolve(
   process.env.LICLICK_WORKSPACE_DIR ?? path.join(repoRoot, 'workspace'),
 );
+const managedGpuControlLanCaPath = path.join(
+  workspaceDir,
+  'config',
+  gpuControlLanCaFilename,
+);
 const publicWorkspaceUrl = process.env.LICLICK_PUBLIC_WORKSPACE_URL ?? `http://127.0.0.1:${port}`;
 const frontendUrl = process.env.LICLICK_FRONTEND_URL ?? 'http://localhost:5173';
 const serveWeb = process.env.LICLICK_SERVE_WEB === 'true';
@@ -60,10 +65,15 @@ const comfyuiTextureWorkflowPath =
 const modelviewInpaintUrl =
   process.env.LICLICK_MODELVIEW_INPAINT_URL?.trim() ||
   'https://10.3.34.11/api/v1/services/modelview-inpaint';
-const modelviewInpaintCaPath =
+const explicitModelviewInpaintCaPath =
   process.env.LICLICK_MODELVIEW_INPAINT_CA_PATH?.trim() ||
-  process.env.LICLICK_SUBSTANCE_BAKER_CA_PATH?.trim() ||
-  '';
+  process.env.LICLICK_SUBSTANCE_BAKER_CA_PATH?.trim();
+const modelviewInpaintCaManaged =
+  !explicitModelviewInpaintCaPath ||
+  path.resolve(explicitModelviewInpaintCaPath) === path.resolve(managedGpuControlLanCaPath);
+const modelviewInpaintCaPath = path.resolve(
+  explicitModelviewInpaintCaPath || managedGpuControlLanCaPath,
+);
 const modelviewInpaintApiKey =
   process.env.LICLICK_MODELVIEW_INPAINT_API_KEY?.trim() ?? '';
 const modelviewInpaintTimeoutMs = Number(
@@ -72,7 +82,13 @@ const modelviewInpaintTimeoutMs = Number(
 const substanceBakerBaseUrl = (
   process.env.LICLICK_SUBSTANCE_BAKER_BASE_URL ?? 'https://10.3.34.11'
 ).replace(/\/$/, '');
-const substanceBakerCaPath = process.env.LICLICK_SUBSTANCE_BAKER_CA_PATH?.trim() ?? '';
+const explicitSubstanceBakerCaPath = process.env.LICLICK_SUBSTANCE_BAKER_CA_PATH?.trim();
+const substanceBakerCaManaged =
+  !explicitSubstanceBakerCaPath ||
+  path.resolve(explicitSubstanceBakerCaPath) === path.resolve(managedGpuControlLanCaPath);
+const substanceBakerCaPath = path.resolve(
+  explicitSubstanceBakerCaPath || managedGpuControlLanCaPath,
+);
 const substanceBakerApiKey = process.env.LICLICK_SUBSTANCE_BAKER_API_KEY?.trim() ?? '';
 const substanceBakerTextureCacheMb = Number(
   process.env.LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB ?? 32768,
@@ -87,10 +103,12 @@ const assetServiceApiToken =
   process.env.ASSET_SERVICE_API_KEY?.trim() ||
   undefined;
 const explicitAssetServiceCaCertPath = process.env.ASSET_SERVICE_CA_CERT_PATH?.trim();
-const assetServiceCaCertManaged = !explicitAssetServiceCaCertPath;
+const assetServiceCaCertManaged =
+  !explicitAssetServiceCaCertPath ||
+  path.resolve(explicitAssetServiceCaCertPath) === path.resolve(managedGpuControlLanCaPath);
 const assetServiceCaCertPath = path.resolve(
   explicitAssetServiceCaCertPath ||
-    path.join(workspaceDir, 'config', gpuControlLanCaFilename),
+    managedGpuControlLanCaPath,
 );
 const assetServiceCaCertExpectedSha256 = gpuControlLanCaExpectedSha256;
 const assetServiceTlsRejectUnauthorized =
@@ -510,10 +528,12 @@ export const serverConfig = {
   comfyuiTextureWorkflowPath,
   modelviewInpaintUrl,
   modelviewInpaintCaPath,
+  modelviewInpaintCaManaged,
   modelviewInpaintApiKey,
   modelviewInpaintTimeoutMs,
   substanceBakerBaseUrl,
   substanceBakerCaPath,
+  substanceBakerCaManaged,
   substanceBakerApiKey,
   substanceBakerTextureCacheMb,
   assetServiceBaseUrl,

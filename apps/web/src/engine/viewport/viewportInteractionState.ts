@@ -55,8 +55,7 @@ export function isViewportInteractionBusy(quietWindowMs = 180) {
   return (
     activePointerCount > 0 ||
     (typeof document !== 'undefined' &&
-      (document.body.dataset.localRepaintGenerationBusy === '1' ||
-        document.body.dataset.perfSimulatedViewportInteraction === '1' ||
+      (document.body.dataset.perfSimulatedViewportInteraction === '1' ||
         document.body.dataset.perfAutoOrbit === '1')) ||
     (lastInteractionAt > 0 && performance.now() - lastInteractionAt < quietWindowMs)
   );

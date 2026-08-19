@@ -15,6 +15,11 @@ type RenderSceneToPngOptions = {
   tileSize?: number;
   waitForViewportIdle?: () => Promise<void>;
   performancePhasePrefix?: string;
+  /** Encode to this size in the PNG worker after the GPU readback. This keeps
+   * expensive interactive captures small without changing the service input
+   * contract or doing image resampling on the main thread. */
+  encodedWidth?: number;
+  encodedHeight?: number;
   /**
    * Runs as soon as the offscreen render and readback have been submitted,
    * before this function yields while waiting for the pixels. Callers that
@@ -27,6 +32,7 @@ type RenderSceneToPngOptions = {
 function markCapturePerformancePhase(prefix: string | undefined, suffix: string) {
   if (!prefix || typeof document === 'undefined') return;
   if (
+    !prefix.startsWith('button2-') &&
     document.body.dataset.perfSimulatedViewportInteraction !== '1' &&
     document.body.dataset.perfContentAwareRepairMeasuring !== '1' &&
     document.body.dataset.perfUvMergeMeasuring !== '1'
@@ -34,6 +40,9 @@ function markCapturePerformancePhase(prefix: string | undefined, suffix: string)
     return;
   }
   document.body.dataset.perfUvBakePhase = `${prefix}-${suffix}`;
+  if (prefix.startsWith('button2-')) {
+    document.body.dataset.perfLocalRepaintPhase = `${prefix}-${suffix}`;
+  }
 }
 
 type RenderScenePass = {
@@ -234,7 +243,14 @@ export async function renderSceneToPngUrl(
   }
 
   markCapturePerformancePhase(options.performancePhasePrefix, 'encode-worker');
-  const png = await encodeFlippedGpuReadbackPngInWorker(pixels, request.width, request.height);
+  const png = await encodeFlippedGpuReadbackPngInWorker(
+    pixels,
+    request.width,
+    request.height,
+    options.encodedWidth && options.encodedHeight
+      ? { width: options.encodedWidth, height: options.encodedHeight }
+      : undefined,
+  );
   markCapturePerformancePhase(options.performancePhasePrefix, 'publish');
   return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
 }
@@ -250,7 +266,7 @@ export async function renderScenePassesToPngUrl(
   passes: RenderScenePass[],
   options: Pick<
     RenderSceneToPngOptions,
-    'dataTexture' | 'ignoreSceneBackground' | 'onRenderSubmitted'
+    'dataTexture' | 'ignoreSceneBackground' | 'onRenderSubmitted' | 'waitForViewportIdle'
   > = {},
 ) {
   const target = new THREE.WebGLRenderTarget(request.width, request.height, {
@@ -267,17 +283,38 @@ export async function renderScenePassesToPngUrl(
     request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
     request.gl.clear(true, true, true);
     for (let index = 0; index < passes.length; index += 1) {
+      await options.waitForViewportIdle?.();
+      request.gl.setRenderTarget(target);
+      request.gl.setScissorTest(false);
+      request.gl.autoClear = false;
       const restore = passes[index].prepare();
       try {
         request.gl.render(request.scene, request.camera);
       } finally {
         restore();
       }
+      // A repaint mask may contain many archived projector strokes. Submitting
+      // every pass in one uninterrupted loop made button 2 monopolise the GPU
+      // and prevented Chromium from presenting (or even dispatching CDP) for
+      // several seconds. Drain one projector at a time, restore the shared
+      // renderer and let the visible R3F frame present before continuing.
+      const passCompletion = waitForSubmittedGpuWork(request.gl);
+      restoreSharedRendererState(request.gl, previousRendererState);
+      await passCompletion;
       // Every pass uses the same viewer camera but a different projector. Keep
       // accumulated colour while allowing the next projection to rasterize the
       // same front-most surface again.
-      if (index + 1 < passes.length) request.gl.clearDepth();
+      if (index + 1 < passes.length) {
+        await waitForBrowserPaint();
+        request.gl.setRenderTarget(target);
+        request.gl.setScissorTest(false);
+        request.gl.autoClear = false;
+        request.gl.clearDepth();
+      }
     }
+    request.gl.setRenderTarget(target);
+    request.gl.setScissorTest(false);
+    request.gl.autoClear = false;
     const readbackPromise = request.gl.readRenderTargetPixelsAsync(
       target,
       0,

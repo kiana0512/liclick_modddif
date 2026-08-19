@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import {
+  collapseGenerationRecords,
   generationsReferToSameJob,
   upsertGenerationByIdentity,
 } from '@/utils/generationIdentity';
@@ -44,6 +45,28 @@ function isActiveGenerationRunning(generation?: Generation) {
   );
 }
 
+function isUnrecoverableRestoredLocalRepaint(generation: Generation) {
+  return (
+    isActiveGenerationRunning(generation) &&
+    generation.metadata.workflow === 'local-repaint' &&
+    (generation.metadata.provider === 'modelview-int8' ||
+      generation.metadata.provider === 'modelview-seedvr2')
+  );
+}
+
+function markRestoredLocalRepaintInterrupted(generation: Generation): Generation {
+  return {
+    ...generation,
+    status: 'failed',
+    metadata: {
+      ...generation.metadata,
+      interrupted: true,
+      error: '应用重载后无法恢复局部重绘等待，已自动解除任务锁定。',
+      completedAt: new Date().toISOString(),
+    },
+  };
+}
+
 export const useGenerationStore = create<GenerationStore>()(
   persist(
     (set) => ({
@@ -83,25 +106,14 @@ export const useGenerationStore = create<GenerationStore>()(
           const persistedPending = state.generations.filter((generation) =>
             isPendingGeneration(generation, projectId),
           );
-          const mergedGenerations = generations.map((generation) => {
-            const persisted = persistedPending.find((item) =>
-              generationsReferToSameJob(item, generation),
-            );
-            if (!persisted || !isPendingGeneration(generation, projectId)) return generation;
-            return {
-              ...generation,
-              ...persisted,
-              metadata: {
-                ...generation.metadata,
-                ...persisted.metadata,
-              },
-            };
-          });
-          const pendingMissingFromProject = persistedPending.filter(
-            (generation) =>
-              !mergedGenerations.some((item) => generationsReferToSameJob(item, generation)),
+          const nextGenerations = collapseGenerationRecords([
+            ...persistedPending,
+            ...generations,
+          ]).map((generation) =>
+            isUnrecoverableRestoredLocalRepaint(generation)
+              ? markRestoredLocalRepaintInterrupted(generation)
+              : generation,
           );
-          const nextGenerations = [...pendingMissingFromProject, ...mergedGenerations];
           const restoredCurrentGeneration = state.currentGeneration
             ? nextGenerations.find((generation) =>
                 generationsReferToSameJob(generation, state.currentGeneration),

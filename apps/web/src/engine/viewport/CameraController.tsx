@@ -107,17 +107,19 @@ export function CameraController() {
   }, [camera, size.height, size.width]);
 
   useEffect(() => {
+    const activeControls = controlsRef.current;
     setViewportRuntime({
       gl,
       scene,
       camera,
-      controls: controlsRef.current
+      controls: activeControls
         ? {
-            target: controlsRef.current.target,
-            update: () => controlsRef.current?.update(),
+            target: activeControls.target,
+            update: () => activeControls.update(),
             setEnabled: (enabled) => {
-              if (controlsRef.current) controlsRef.current.enabled = enabled;
+              activeControls.enabled = enabled;
             },
+            subscribeChange: (listener) => activeControls.subscribeChange(listener),
           }
         : undefined,
     });
