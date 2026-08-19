@@ -1158,22 +1158,26 @@ function ImportedModel({
   >({});
   const [initialProjectedMaterialReady, setInitialProjectedMaterialReady] = useState(false);
   const [initialProjectedMaterialColdReady, setInitialProjectedMaterialColdReady] = useState(false);
-  const [initialMaterialPresentationReady, setInitialMaterialPresentationReady] = useState(
-    !importedModel.restoreStage,
-  );
-  const presentedMaterialGroupRef = useRef<THREE.Group | undefined>(
-    !importedModel.restoreStage ? importedModel.group : undefined,
+  const [presentedMaterialGroup, setPresentedMaterialGroup] = useState<THREE.Group | undefined>(
+    () => (!importedModel.restoreStage ? importedModel.group : undefined),
   );
   const initialMaterialPresentationReadyForGroup =
-    initialMaterialPresentationReady && presentedMaterialGroupRef.current === importedModel.group;
+    presentedMaterialGroup === importedModel.group;
   const initialMaterialPresentationVisibleForGroup =
+    // With no authored texture, the white membrane is the final presentation,
+    // not a temporary placeholder. Keep the replacement Group visible in the
+    // same React commit so progressive restore cannot produce a one-frame wipe.
+    !hasAuthoritativeVisibleTextureLayer ||
     importedModel.restoreStage === 'bounds' ||
     (importedModel.restoreStage === 'outline' &&
       importedModel.group.userData.liclickRestoreOutlinePrepared === true) ||
     initialMaterialPresentationReadyForGroup;
   const revealInitialMaterialPresentation = () => {
-    presentedMaterialGroupRef.current = importedModel.group;
-    setInitialMaterialPresentationReady(true);
+    // Progressive restore replaces the Group while retaining the same object id.
+    // Store the exact published Group instead of a boolean: writing `true` again
+    // after a replacement is a React no-op and leaves the new white membrane
+    // permanently hidden.
+    setPresentedMaterialGroup(importedModel.group);
   };
   useEffect(() => {
     document.body.dataset.atomicModelRevealObjectId = importedModel.objectId;
@@ -3206,7 +3210,13 @@ function ImportedModel({
       );
     });
     const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;
-    if (showWhiteMembrane && alreadyPresentsWhiteMembrane) return;
+    if (showWhiteMembrane && alreadyPresentsWhiteMembrane) {
+      // The canonical white membrane is the final presentation for an object
+      // without a visible texture. Publish a newly restored Group before the
+      // material-builder fast path returns.
+      revealInitialMaterialPresentation();
+      return;
+    }
     if (
       !showWhiteMembrane &&
       hasResidentProjectedMaterial &&

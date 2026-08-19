@@ -139,8 +139,8 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) return;\s*if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial/,
-  'PBR changes must reuse the resident white or projected material instead of rebuilding it.',
+  /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;[\s\S]*?\}\s*if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial/,
+  'PBR changes must publish the current Group before reusing the resident white or projected material.',
 );
 assert.match(
   sceneRootSource,
@@ -164,8 +164,18 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /importedModel\.restoreStage === 'bounds'[\s\S]*?liclickRestoreOutlinePrepared === true[\s\S]*?initialMaterialPresentationReadyForGroup/,
+  /!hasAuthoritativeVisibleTextureLayer \|\|[\s\S]*?importedModel\.restoreStage === 'bounds'[\s\S]*?liclickRestoreOutlinePrepared === true[\s\S]*?initialMaterialPresentationReadyForGroup/,
   'A refresh must stay non-empty from saved bounds through prepared outline and final material.',
+);
+assert.match(
+  sceneRootSource,
+  /const \[presentedMaterialGroup, setPresentedMaterialGroup\] = useState<THREE\.Group \| undefined>[\s\S]*?presentedMaterialGroup === importedModel\.group/,
+  'Atomic reveal must track the exact progressively restored Group instead of a stale boolean.',
+);
+assert.match(
+  sceneRootSource,
+  /if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;/,
+  'A textureless model must publish its final white-membrane Group before the material fast path returns.',
 );
 assert.match(
   sceneRootSource,
