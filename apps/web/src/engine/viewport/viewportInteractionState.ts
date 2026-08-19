@@ -1,3 +1,5 @@
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
+
 let activePointerCount = 0;
 let lastInteractionAt = 0;
 const listeners = new Set<() => void>();
@@ -67,9 +69,11 @@ export function isViewportInteractionBusy(quietWindowMs = 180) {
  */
 export async function waitForViewportInteractionIdle(quietWindowMs = 180) {
   while (isViewportInteractionBusy(quietWindowMs)) {
-    await new Promise<void>((resolve) =>
-      window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-    );
+    // A hidden tab has no viewport presentation to protect. More importantly,
+    // rAF is suspended there, so a stale pointer state must not freeze a queued
+    // texture task until the user returns to this page.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    await waitForBrowserPaint();
   }
 }
 

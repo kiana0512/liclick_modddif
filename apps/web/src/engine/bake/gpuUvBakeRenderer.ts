@@ -5,6 +5,7 @@ import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBak
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import {
   residentPreviewTextureCache,
   uploadPreviewTextureInStripes,
@@ -803,7 +804,7 @@ async function stageLayerTexturesForGpu(
     // full-resolution asset upload. ImageBitmap sources use exact striped
     // texSubImage2D uploads; compatibility sources still remain one asset per
     // frame instead of four consecutive uploads inside the bake draw.
-    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await waitForBrowserPaint();
     await waitForSharedRendererBakeSlot();
     const startedAt = performance.now();
     await uploadPreviewTextureInStripes(renderer, texture);
@@ -1354,9 +1355,7 @@ function waitForSharedRendererBakeSlot() {
   if (!isViewportInteractionBusy()) return Promise.resolve();
   // R3F owns this WebGL context. During an active drag, allow its onscreen
   // frame to submit before issuing the next offscreen 4K bake pass.
-  return new Promise<void>((resolve) =>
-    window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-  );
+  return waitForBrowserPaint();
 }
 
 // Eight 8 MiB stripes for a 4K RGBA target keep each driver readback bounded.
@@ -1378,7 +1377,7 @@ async function readRenderTargetPixelsInStripes(
   const startedAt = performance.now();
   for (let y = 0; y < resolution; y += rowsPerStripe) {
     if (y > 0) {
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await waitForBrowserPaint();
     }
     const rowCount = Math.min(rowsPerStripe, resolution - y);
     const stripe = new Uint8Array(resolution * rowCount * 4);

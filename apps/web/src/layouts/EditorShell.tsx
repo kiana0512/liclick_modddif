@@ -159,7 +159,7 @@ export function EditorShell({
     setMode(nextMode);
     if (nextMode === 'scene') setDisplayMode('pbr');
     if (nextMode === 'normal') setDisplayMode('normal');
-    if (nextMode === 'texture') setDisplayMode('pbr');
+    if (nextMode === 'texture') setDisplayMode('flat');
   }
 
   const modeOptions: Array<{ value: WorkspaceMode; label: string }> = [

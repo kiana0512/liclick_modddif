@@ -3,10 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
-globalThis.document = { body: { dataset: {} } };
+globalThis.document = { body: { dataset: {} }, visibilityState: 'visible' };
 globalThis.window = {
   requestAnimationFrame: (callback) => setTimeout(() => callback(performance.now()), 0),
+  cancelAnimationFrame: clearTimeout,
   setTimeout,
+  clearTimeout,
 };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -50,6 +52,25 @@ try {
   assert.equal((await first).name, 'AbortError');
   assert.equal(await second, 'latest');
   assert.deepEqual(order, ['feedback:first', 'start:first', 'feedback:second', 'start:second']);
+  assert.equal(document.body.dataset.heavyTaskQueueDepth, '0');
+
+  // Chromium suspends requestAnimationFrame for hidden tabs. A texture task
+  // queued after the user switches pages must start from the timer fallback.
+  document.visibilityState = 'hidden';
+  window.requestAnimationFrame = () => {
+    throw new Error('A hidden-tab task must not depend on requestAnimationFrame.');
+  };
+  const backgroundResult = await Promise.race([
+    scheduler.scheduleHeavyTask({
+      key: 'background-texture',
+      label: 'background-texture',
+      run: async () => 'continued-in-background',
+    }),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Background texture task did not start.')), 500),
+    ),
+  ]);
+  assert.equal(backgroundResult, 'continued-in-background');
   assert.equal(document.body.dataset.heavyTaskQueueDepth, '0');
   console.log('Heavy task scheduler regression test passed.');
 } finally {

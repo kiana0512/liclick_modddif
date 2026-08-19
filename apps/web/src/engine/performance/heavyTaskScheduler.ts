@@ -1,4 +1,5 @@
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
+import { scheduleAfterBrowserPaint } from '@/utils/browserScheduling';
 
 export type HeavyTaskPriority = 'user-visible' | 'background';
 
@@ -50,11 +51,7 @@ function updateProbe() {
 }
 
 function nextPaint(callback: () => void) {
-  if (typeof window === 'undefined') {
-    queueMicrotask(callback);
-    return;
-  }
-  window.requestAnimationFrame(() => window.setTimeout(callback, 0));
+  scheduleAfterBrowserPaint(callback);
 }
 
 function schedulePump() {

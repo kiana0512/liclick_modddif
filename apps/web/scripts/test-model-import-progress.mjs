@@ -134,6 +134,25 @@ try {
   assert.doesNotMatch(indeterminateMarkup, /aria-valuenow=/);
   assert.match(indeterminateMarkup, /aria-busy="true"/);
 
+  const editorSource = await import('node:fs/promises').then(({ readFile }) =>
+    readFile(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8'),
+  );
+  assert.match(
+    editorSource,
+    /title: event\.phase === 'complete' \? t\('modelImportComplete'\) : t\('importingModel'\)/,
+    'The progress panel must switch to an explicit loaded state after the model enters the scene.',
+  );
+  assert.match(
+    editorSource,
+    /dedupeKey: `model-import-complete:\$\{revision\}`/,
+    'A successful model load must present one completion toast per import batch.',
+  );
+  assert.match(
+    editorSource,
+    /if \(loaded\) loadedFileCount \+= 1/,
+    'Failed files must not be reported as successfully loaded.',
+  );
+
   stdout.write('Model import progress regression test passed.\n');
 } finally {
   await server.close();

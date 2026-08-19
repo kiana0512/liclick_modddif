@@ -4399,6 +4399,7 @@ export function SceneRoot() {
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const selectObject = useSceneStore((state) => state.selectObject);
   const displayMode = useSceneStore((state) => state.displayMode);
+  const paintTool = useSceneStore((state) => state.paintTool);
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
@@ -4455,17 +4456,20 @@ export function SceneRoot() {
         />
       ))}
       <ObjectTransformControls />
-      {/* Keep the exact contact-shadow pipeline mounted while progressive
-          geometry is restoring. Mounting it only at the final texture handoff
-          compiled its render target and shader in that same presentation frame
-          (measured ~80ms). Zero opacity preserves the lightweight restore view;
-          the final 0.22/blur 2.4 result is unchanged. */}
-      <ContactShadows
-        position={[0, -0.02, 0]}
-        opacity={hasProgressiveRestore ? 0 : 0.22}
-        scale={8}
-        blur={2.4}
-      />
+      {/* ContactShadows owns a world-space receiver plane and continuously fills
+          its offscreen texture. Screen-space paint helpers and depth captures can
+          transiently pollute that texture on some drivers, exposing the receiver
+          as a large grey square. Painting does not need the floor shadow, so hide
+          its output for every paint tool while keeping the render pipeline warm.
+          The next idle frame refreshes a clean texture before showing it again. */}
+      <group visible={paintTool === 'none'}>
+        <ContactShadows
+          position={[0, -0.02, 0]}
+          opacity={hasProgressiveRestore ? 0 : 0.22}
+          scale={8}
+          blur={2.4}
+        />
+      </group>
     </group>
   );
 }

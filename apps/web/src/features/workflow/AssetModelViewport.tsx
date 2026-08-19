@@ -4,6 +4,7 @@ import { Box, LoaderCircle, Rotate3D } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
+import { createClayModelMaterial } from '@/engine/materials/clayModelMaterial';
 import {
   frameVisiblePreviewObject,
   repairConcaveFbxPreview,
@@ -51,11 +52,7 @@ function preparePreviewObject(root: THREE.Object3D) {
     if (!(child instanceof THREE.Mesh)) return;
     const sourceMaterials = Array.isArray(child.material) ? child.material : [child.material];
     sourceMaterials.forEach((material) => material?.dispose());
-    child.material = new THREE.MeshStandardMaterial({
-      color: '#aeb5c1',
-      roughness: 0.7,
-      metalness: 0.04,
-    });
+    child.material = createClayModelMaterial();
   });
 }
 
@@ -160,9 +157,10 @@ export function AssetModelViewport({
           gl.toneMappingExposure = 1.05;
         }}
       >
-        <hemisphereLight args={['#ffffff', '#252a39', 2.1]} />
-        <directionalLight position={[5, 7, 5]} intensity={2.4} />
-        <directionalLight position={[-4, 2, -3]} intensity={0.9} color="#9fb8ff" />
+        <ambientLight intensity={0.5} />
+        <hemisphereLight args={['#fff0e8', '#302640', 0.82]} />
+        <directionalLight position={[5, 7, 5]} intensity={1.22} />
+        <directionalLight position={[-4, 2, -3]} intensity={0.26} />
         <gridHelper args={[24, 48, '#2d3341', '#171b27']} position={[0, -0.01, 0]} />
         {object ? <primitive key={source?.key} object={object} dispose={null} /> : null}
         {objectBounds ? <PreviewCamera bounds={objectBounds} /> : null}

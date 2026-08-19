@@ -1,6 +1,7 @@
 import {
   ChevronRight,
   ChevronUp,
+  Eraser,
   ImagePlus,
   LoaderCircle,
   MousePointer2,
@@ -22,6 +23,7 @@ import {
   type PaintToolMode,
   type TransformMode,
 } from '@/stores/sceneStore';
+import { useLayerStore } from '@/stores/layerStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { WorkspaceMode } from '@/components/workspace/workspacePanelTypes';
 
@@ -97,7 +99,7 @@ export function BottomToolDock({
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   const [activeMenu, setActiveMenu] = useState<
-    'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
+    'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
   const [generationGuideActive, setGenerationGuideActive] = useState(false);
   const [repaintGuideActive, setRepaintGuideActive] = useState(false);
@@ -112,8 +114,13 @@ export function BottomToolDock({
   const setLocalRepaintBrushSettings = useSceneStore(
     (state) => state.setLocalRepaintBrushSettings,
   );
+  const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
+  const setPaintToolSettings = useSceneStore((state) => state.setPaintToolSettings);
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
+  const activeProjectedLayer = useLayerStore((state) =>
+    state.layers.find((layer) => layer.id === state.activeProjectedLayerId),
+  );
   const pushToast = useToastStore((state) => state.pushToast);
   const baseButton =
     'grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:border-white/22 hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/45 disabled:cursor-not-allowed disabled:opacity-42';
@@ -131,6 +138,12 @@ export function BottomToolDock({
   const isTextureMode = mode === 'texture';
   const isMaskPaintTool = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
   const localRepaintReady = canLocalRepaint;
+  const canEraseSelectedLayer = Boolean(
+    activeProjectedLayer?.visible &&
+      activeProjectedLayer.imageUrl &&
+      (activeProjectedLayer.role === 'local-repaint-overlay' ||
+        (activeProjectedLayer.type === 'projected' && activeProjectedLayer.camera)),
+  );
   const inpaintMenuVisible =
     activeMenu === 'inpaint-add' ||
     activeMenu === 'inpaint-subtract' ||
@@ -141,10 +154,10 @@ export function BottomToolDock({
   }, [isTextureMode, onPaintToolChange, paintTool]);
 
   useEffect(() => {
-    if (paintTool !== 'eraser') return;
+    if (paintTool !== 'eraser' || canEraseSelectedLayer) return;
     onPaintToolChange('none');
     setActiveMenu(undefined);
-  }, [onPaintToolChange, paintTool]);
+  }, [canEraseSelectedLayer, onPaintToolChange, paintTool]);
 
   useEffect(() => {
     if (localImageGenerationRunning) {
@@ -196,6 +209,15 @@ export function BottomToolDock({
       title: '局部生图正在处理',
       description: '生成完成后会自动解锁“应用重绘”。',
       dedupeKey: 'local-workflow-generation-running',
+    });
+  }
+
+  function notifyProjectedLayerRequired() {
+    pushToast({
+      tone: 'info',
+      title: '请先选择投影或局部重绘图层',
+      description: '请选择普通投影或局部重绘结果；合并 UV 和其他图层不能擦除。',
+      dedupeKey: 'projected-layer-eraser-selection-required',
     });
   }
 
@@ -318,6 +340,77 @@ export function BottomToolDock({
 
       {isTextureMode && (
         <>
+          <span className="relative inline-flex">
+            {activeMenu === 'eraser' && paintTool === 'eraser' && (
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[248px] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+                <div className="mb-2 rounded-md bg-white/[0.07] px-2.5 py-2 text-xs font-semibold text-white/78">
+                  橡皮擦参数
+                </div>
+                <label className="grid gap-1.5 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.brushSize}</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="256"
+                      step="1"
+                      value={Math.round(paintToolSettings.eraserSize)}
+                      onChange={(event) =>
+                        setPaintToolSettings({ eraserSize: Number(event.target.value) })
+                      }
+                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#6f93ff]"
+                    />
+                  </span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="256"
+                    step="1"
+                    value={paintToolSettings.eraserSize}
+                    onChange={(event) =>
+                      setPaintToolSettings({ eraserSize: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#6f93ff]"
+                  />
+                </label>
+              </div>
+            )}
+            <IconTooltip
+              label="投影图层橡皮擦"
+              description="可擦普通投影和局部重绘结果；合并 UV 与其他图层不会被修改。使用 [ / ] 调整画笔大小。"
+            >
+              <button
+                type="button"
+                className={cn(
+                  baseButton,
+                  paintTool === 'eraser' &&
+                    'border-[#6f93ff] bg-[#4568db]/18 text-white shadow-[0_0_0_1px_rgba(111,147,255,0.55),0_0_16px_rgba(69,104,219,0.24)]',
+                )}
+                onClick={() => {
+                  if (paintTool === 'eraser') {
+                    onPaintToolChange('none');
+                    setActiveMenu(undefined);
+                    return;
+                  }
+                  if (!canEraseSelectedLayer) {
+                    notifyProjectedLayerRequired();
+                    return;
+                  }
+                  onPaintToolChange('eraser');
+                  setActiveMenu('eraser');
+                }}
+                aria-pressed={paintTool === 'eraser'}
+                aria-label="投影图层橡皮擦"
+              >
+                <span className="relative grid place-items-center">
+                  <Eraser className="h-5 w-5" />
+                  {paintTool === 'eraser' && (
+                    <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
+                  )}
+                </span>
+              </button>
+            </IconTooltip>
+          </span>
           <div className="ml-1 flex items-center gap-1.5">
             <span className="pointer-events-none flex shrink-0 items-center gap-1.5 whitespace-nowrap px-0.5 text-[12px] font-semibold tracking-wide text-white/62">
               <span

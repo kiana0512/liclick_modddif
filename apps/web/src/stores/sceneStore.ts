@@ -230,7 +230,7 @@ export const useSceneStore = create<SceneStore>()(
       importedModel: undefined,
       viewport: undefined,
       selectedObjectId: undefined,
-      displayMode: 'pbr',
+      displayMode: 'flat',
       projectionMode: 'perspective',
       transformMode: 'select',
       paintTool: 'none',
@@ -574,6 +574,12 @@ export const useSceneStore = create<SceneStore>()(
     {
       name: 'liclick-viewport-preferences-v1',
       storage: createJSONStorage(() => localStorage),
+      version: 2,
+      migrate: (persistedState, version) => {
+        const preferences = persistedState as Partial<SceneStore>;
+        if (version < 2) return { ...preferences, displayMode: 'flat' as const };
+        return preferences;
+      },
       partialize: (state) => ({
         displayMode: state.displayMode,
         projectionMode: state.projectionMode,

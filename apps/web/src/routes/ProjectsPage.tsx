@@ -5,6 +5,7 @@ import { BrandMark } from '@/components/common/BrandMark';
 import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
 import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
+import { getNextDefaultProjectName } from '@/features/projects/projectDefaultName';
 import { useT } from '@/stores/i18nStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectStore } from '@/stores/projectStore';
@@ -65,7 +66,7 @@ function projectFromSummary(summary: ProjectSummary): Project {
     dirty: false,
     settings: {
       resolution: '2K',
-      displayMode: 'pbr',
+      displayMode: 'flat',
       projectionMode: 'perspective',
       colorManagement: 'srgb',
     },
@@ -205,6 +206,7 @@ function NameDialog({
           autoFocus
           value={name}
           onChange={(event) => setName(event.target.value)}
+          onFocus={(event) => event.currentTarget.select()}
           placeholder={placeholder}
           className="mt-4 h-10 w-full rounded-md border border-white/12 bg-black/30 px-3 text-sm text-white outline-none focus:border-liclick-pink"
         />
@@ -491,6 +493,10 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
       {nameDialog?.type === 'new-project' && (
         <NameDialog
           title={t('newProject')}
+          initialName={getNextDefaultProjectName(
+            projects.map((project) => project.name),
+            t('defaultProjectNamePrefix'),
+          )}
           placeholder={t('projectName')}
           confirmLabel={t('create')}
           onClose={() => setNameDialog(undefined)}

@@ -14,10 +14,12 @@ import {
   renderSceneToPngUrl,
 } from './renderTargetUtils';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
+import { createClayModelMaterial } from '@/engine/materials/clayModelMaterial';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import type { Capture } from '@/types/capture';
 import { createId } from '@/utils/id';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import * as THREE from 'three';
 
 const maxCaptureSize = 2048;
@@ -89,10 +91,7 @@ function getTargetBounds(scene: THREE.Scene, objectId: string) {
 }
 
 function waitForViewportFrame() {
-  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  return waitForBrowserPaint();
 }
 
 /**
@@ -242,12 +241,7 @@ async function captureClayTarget(passRequest: CapturePassRequest) {
   const restore = applyTargetOnlyMaterial(
     passRequest.scene,
     passRequest.objectId,
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: '#f4f4f0',
-        roughness: 0.82,
-        metalness: 0,
-      }),
+    () => createClayModelMaterial(),
   );
   try {
     return {

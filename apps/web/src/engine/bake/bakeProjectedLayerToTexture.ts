@@ -37,6 +37,7 @@ import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import {
@@ -262,9 +263,7 @@ function yieldToBakeUi() {
   if (isViewportInteractionBusy()) {
     // Let the viewport present first, then consume only a bounded CPU slice.
     // This changes scheduling only; every source pixel is still processed.
-    return new Promise<void>((resolve) =>
-      window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-    );
+    return waitForBrowserPaint();
   }
   const browserScheduler = (
     globalThis as typeof globalThis & {

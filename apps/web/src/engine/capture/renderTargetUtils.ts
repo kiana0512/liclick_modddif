@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { CapturePassRequest, SceneMaterialSnapshot } from './captureTypes';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
@@ -195,9 +196,7 @@ export async function renderSceneToPngUrl(
           // the visible viewport. Fast tiles may share the same bounded 4ms
           // window; this removes dozens of empty 16.7ms waits without allowing
           // background capture to monopolize a presentation interval.
-          await new Promise<void>((resolve) =>
-            window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-          );
+          await waitForBrowserPaint();
           presentationBudgetStartedAt = performance.now();
         }
       }

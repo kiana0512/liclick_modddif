@@ -216,6 +216,7 @@ import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob, encodeRgbaPngObjectUrl } from '@/utils/encodeRgbaPng';
 import { generationBelongsToProject } from '@/utils/generationIdentity';
 import { createId } from '@/utils/id';
+import { waitForBrowserIdle, waitForBrowserPaint } from '@/utils/browserScheduling';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 
 type EditorPageProps = {
@@ -320,19 +321,12 @@ function cloneProjectionBakeImageData(imageData: ImageData) {
 
 async function waitForProjectRestoreIdle(timeoutMs = 800) {
   while (isViewportInteractionBusy()) {
-    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    if (document.visibilityState === 'hidden') break;
+    await waitForBrowserPaint();
   }
-  await new Promise<void>((resolve) => {
-    const scheduleIdle = () => {
-      if (typeof window.requestIdleCallback === 'function') {
-        window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
-        return;
-      }
-      window.setTimeout(resolve, 0);
-    };
-    window.requestAnimationFrame(() => scheduleIdle());
-  });
+  await waitForBrowserIdle(timeoutMs);
   if (isViewportInteractionBusy()) {
+    if (document.visibilityState === 'hidden') return;
     await waitForProjectRestoreIdle(timeoutMs);
   }
 }
@@ -2902,13 +2896,14 @@ export function EditorPage({
       }
       if (!isCurrentImport()) return false;
       onProgress?.({ phase: 'registering', phaseProgress: 0.9 }, t('modelImportSavingProject'));
-      pushToast({
-        tone: loaded.result.warnings.length > 0 ? 'warning' : 'success',
-        title: 'Model imported',
-        description:
-          loaded.result.warnings[0] ??
-          `${loaded.result.sourceFileName} loaded with ${loaded.result.childMeshCount} mesh node(s).`,
-      });
+      if (loaded.result.warnings.length > 0) {
+        pushToast({
+          tone: 'warning',
+          title: `${loaded.result.sourceFileName} ${t('modelImportComplete')}`,
+          description: loaded.result.warnings[0],
+          dedupeKey: `model-import-warning:${object.id}`,
+        });
+      }
       onProgress?.({ phase: 'complete', phaseProgress: 1 }, t('modelImportComplete'));
       return true;
     } catch (error) {
@@ -2954,25 +2949,27 @@ export function EditorPage({
       if (!isCurrentImport()) return;
       const nextProgress = getModelImportBatchProgress(fileIndex, modelFiles.length, event);
       setModelImportProgress((current) => ({
-        title: t('importingModel'),
+        title: event.phase === 'complete' ? t('modelImportComplete') : t('importingModel'),
         detail: `${fileIndex + 1}/${modelFiles.length} · ${file.name} · ${detail}`,
         progress: Math.max(current?.progress ?? 0, nextProgress),
         indeterminate: isModelImportProgressIndeterminate(event),
       }));
     };
 
+    let loadedFileCount = 0;
     try {
       for (const [fileIndex, file] of modelFiles.entries()) {
         if (!isCurrentImport()) break;
         reportProgress(fileIndex, file, { phase: 'preparing', phaseProgress: 0 });
-        await handleImportModel(
+        const loaded = await handleImportModel(
           file,
           resourceFiles,
           (event, detail) => reportProgress(fileIndex, file, event, detail),
           isCurrentImport,
         );
+        if (loaded) loadedFileCount += 1;
       }
-      if (isCurrentImport()) {
+      if (isCurrentImport() && loadedFileCount > 0) {
         const lastFile = modelFiles[modelFiles.length - 1];
         reportProgress(
           modelFiles.length - 1,
@@ -2980,9 +2977,20 @@ export function EditorPage({
           { phase: 'complete', phaseProgress: 1 },
           t('modelImportComplete'),
         );
+        pushToast({
+          tone: loadedFileCount === modelFiles.length ? 'success' : 'warning',
+          title: t('modelImportComplete'),
+          description:
+            modelFiles.length === 1
+              ? `${lastFile.name} ${t('modelImportLoadedIntoScene')}`
+              : t('modelImportBatchComplete')
+                  .replace('{loaded}', String(loadedFileCount))
+                  .replace('{total}', String(modelFiles.length)),
+          dedupeKey: `model-import-complete:${revision}`,
+        });
         modelImportProgressTimerRef.current = window.setTimeout(() => {
           if (modelImportRevisionRef.current === revision) setModelImportProgress(undefined);
-        }, 1200);
+        }, 1800);
       }
     } finally {
       modelImportRunningRef.current = false;

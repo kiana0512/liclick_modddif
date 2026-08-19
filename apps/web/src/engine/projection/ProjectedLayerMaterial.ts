@@ -13,8 +13,15 @@ import {
 } from './liveProjectedCanvasTextureRegistry';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
+import {
+  CLAY_MODEL_COLOR,
+  CLAY_MODEL_METALNESS,
+  CLAY_MODEL_ROUGHNESS,
+  createClayModelMaterial,
+} from '@/engine/materials/clayModelMaterial';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
-const DEFAULT_PREVIEW_COLOR = '#f0f1ee';
+const DEFAULT_PREVIEW_COLOR = CLAY_MODEL_COLOR;
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
 const GENERATED_MATERIAL_FLAG = 'liclickGeneratedMaterial';
 const DISPOSABLE_TEXTURES_KEY = 'liclickDisposableTextures';
@@ -318,13 +325,7 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
   // Reuse the original sculpting-style import material for every texture-empty
   // state. It preserves the same highlights, shadows and edge definition and
   // removes the separate grey/self-lit fallback that drifted visually.
-  const material = new THREE.MeshStandardMaterial({
-    color: DEFAULT_PREVIEW_COLOR,
-    roughness: 0.78,
-    metalness: 0,
-    emissive: '#000000',
-    emissiveIntensity: 0,
-  });
+  const material = createClayModelMaterial();
   material.name = 'LiclickWhiteMembranePreview';
   return markGeneratedMaterial(material);
 }
@@ -2937,10 +2938,7 @@ function getTexturePixelSize(texture: THREE.Texture) {
 }
 
 function yieldProjectedArrayUploadFrame() {
-  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  return waitForBrowserPaint();
 }
 
 async function waitForProjectedArrayGpuFence(
@@ -4895,14 +4893,24 @@ function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: T
       previewMaterial.map.needsUpdate = true;
     }
     if (!previewMaterial.map) {
-      previewMaterial.color.set(DEFAULT_PREVIEW_COLOR);
+      previewMaterial.color.set(CLAY_MODEL_COLOR);
+      previewMaterial.roughness = CLAY_MODEL_ROUGHNESS;
+      previewMaterial.metalness = CLAY_MODEL_METALNESS;
+      previewMaterial.emissive.set('#000000');
+      previewMaterial.emissiveIntensity = 0;
+      if (previewMaterial instanceof THREE.MeshPhysicalMaterial) {
+        previewMaterial.clearcoat = 0;
+        previewMaterial.sheen = 0;
+        previewMaterial.transmission = 0;
+      }
+    } else {
+      previewMaterial.roughness = Number.isFinite(previewMaterial.roughness)
+        ? Math.max(0.46, previewMaterial.roughness)
+        : 0.58;
+      previewMaterial.metalness = Number.isFinite(previewMaterial.metalness)
+        ? Math.min(0.25, previewMaterial.metalness)
+        : 0;
     }
-    previewMaterial.roughness = Number.isFinite(previewMaterial.roughness)
-      ? Math.max(0.46, previewMaterial.roughness)
-      : 0.58;
-    previewMaterial.metalness = Number.isFinite(previewMaterial.metalness)
-      ? Math.min(0.25, previewMaterial.metalness)
-      : 0;
     previewMaterial.needsUpdate = true;
     return markGeneratedMaterial(previewMaterial);
   }
@@ -4928,13 +4936,7 @@ function prepareSinglePreviewMaterial(material: THREE.Material, bakedTexture?: T
       }),
     );
   }
-  return markGeneratedMaterial(
-    new THREE.MeshStandardMaterial({
-      color: DEFAULT_PREVIEW_COLOR,
-      roughness: 0.58,
-      metalness: 0,
-    }),
-  );
+  return markGeneratedMaterial(createClayModelMaterial());
 }
 
 function prepareSingleFlatMaterial(material: THREE.Material, bakedTexture?: THREE.Texture) {

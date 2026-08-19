@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 export type ContentAwareTopologyPhase = 'analyze' | 'rasterize' | 'seams' | 'complete';
 
@@ -126,16 +127,13 @@ class CooperativeScheduler {
     const interactionBusy = isViewportInteractionBusy();
     const effectiveIntervalMs = interactionBusy ? Math.min(this.intervalMs, 4) : this.intervalMs;
     if (!force && now() - this.lastYieldAt < effectiveIntervalMs) return;
-    await new Promise<void>((resolve) => {
-      if (interactionBusy && typeof window !== 'undefined') {
-        // A zero-delay timer can run again before Chromium paints. During a
-        // viewport gesture, cross an actual paint boundary so topology work can
-        // never consume the camera's next frame budget.
-        window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
-        return;
-      }
-      setTimeout(resolve, 0);
-    });
+    if (interactionBusy && typeof window !== 'undefined') {
+      // Foreground interaction crosses a paint boundary; hidden tabs use the
+      // timeout fallback so topology construction keeps progressing.
+      await waitForBrowserPaint();
+    } else {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
     this.lastYieldAt = now();
     throwIfAborted(this.signal);
   }

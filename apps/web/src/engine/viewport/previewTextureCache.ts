@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { isViewportInteractionBusy } from './viewportInteractionState';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle } from './viewportInteractionState';
 
 const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
@@ -123,12 +124,8 @@ function markPreviewUploadStep(step: string) {
   }
 }
 
-async function waitForViewportInteractionIdle() {
-  while (isViewportInteractionBusy(240)) {
-    await new Promise<void>((resolve) =>
-      window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-    );
-  }
+function waitForViewportInteractionIdle() {
+  return waitForSharedViewportInteractionIdle(240);
 }
 
 export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | undefined) {
@@ -316,9 +313,7 @@ export function uploadPreviewTextureInStripes(
         // Let every visible rAF callback submit first. Continuing from the rAF
         // microtask could put a detached 4K upload stripe ahead of R3F and cost
         // one presentation interval even though the stripe itself is bounded.
-        await new Promise<void>((resolve) =>
-          window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-        );
+        await waitForBrowserPaint();
         // Input may arrive between the idle check and the next animation frame.
         // Recheck before issuing any GL work so interaction always wins.
         if (pauseDuringInteraction) await waitForViewportInteractionIdle();
@@ -390,9 +385,7 @@ export function uploadPreviewTextureInStripes(
         markPreviewUploadStep(`${uploadPhasePrefix}-drain`);
         context.flush();
         for (let frame = 0; frame < 2; frame += 1) {
-          await new Promise<void>((resolve) =>
-            window.requestAnimationFrame(() => window.setTimeout(resolve, 0)),
-          );
+          await waitForBrowserPaint();
           if (pauseDuringInteraction) await waitForViewportInteractionIdle();
         }
       }

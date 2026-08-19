@@ -19,6 +19,27 @@ const viewportCanvasInteractionSource = readFileSync(
   path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
   'utf8',
 );
+const viewportPanelSource = readFileSync(
+  path.join(root, 'src/components/panels/ViewportPanel.tsx'),
+  'utf8',
+);
+const sceneStoreSource = readFileSync(path.join(root, 'src/stores/sceneStore.ts'), 'utf8');
+const editorShellSource = readFileSync(path.join(root, 'src/layouts/EditorShell.tsx'), 'utf8');
+assert.match(
+  viewportPanelSource,
+  /\{ value: 'flat', labelKey: 'flatShort' \},\s*\{ value: 'pbr', labelKey: 'pbr' \}/,
+  'Flat view must appear before PBR in the viewport controls.',
+);
+assert.match(
+  sceneStoreSource,
+  /displayMode: 'flat',[\s\S]*?version: 2,[\s\S]*?version < 2[\s\S]*?displayMode: 'flat'/,
+  'Flat view must be the initial and migrated viewport preference.',
+);
+assert.match(
+  editorShellSource,
+  /if \(nextMode === 'texture'\) setDisplayMode\('flat'\);/,
+  'Entering the texture workspace must default to flat view.',
+);
 assert.match(
   viewportCanvasInteractionSource,
   /if \(isInpaintMode \|\| isLocalRepaintApplyMode\) event\.preventDefault\(\);/,
@@ -57,6 +78,11 @@ assert.match(
   sceneRootSource,
   /uvOverlayBelowProjected: Number\.isFinite\(visibleMergedUvBoundaryOrder\)/,
   'The merged UV texture must be composited below projected repaint rows that are higher in the panel.',
+);
+assert.match(
+  sceneRootSource,
+  /const paintTool = useSceneStore\(\(state\) => state\.paintTool\);[\s\S]*?<group visible=\{paintTool === 'none'\}>[\s\S]*?<ContactShadows/,
+  'The contact-shadow receiver plane must be hidden while a paint tool is active.',
 );
 assert.match(
   sceneRootSource,

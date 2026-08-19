@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
+import { createClayModelMaterial } from '@/engine/materials/clayModelMaterial';
 import type { TaskHistoryOutput } from '@/services/taskHistoryApiClient';
 import { fetchTaskHistoryOutputBlob } from '@/services/taskHistoryApiClient';
 import {
@@ -41,11 +42,7 @@ function applyPreviewMaterial(root: THREE.Object3D) {
     if (!(child instanceof THREE.Mesh)) return;
     const sourceMaterials = Array.isArray(child.material) ? child.material : [child.material];
     sourceMaterials.forEach((material) => material?.dispose());
-    child.material = new THREE.MeshStandardMaterial({
-      color: '#b8bdc7',
-      roughness: 0.72,
-      metalness: 0.03,
-    });
+    child.material = createClayModelMaterial();
     child.castShadow = true;
     child.receiveShadow = true;
   });
@@ -76,11 +73,12 @@ export async function renderHistoryModelThumbnail(output: TaskHistoryOutput, siz
     applyPreviewMaterial(root);
     const bounds = frameVisiblePreviewObject(root) ?? new THREE.Box3().setFromObject(root);
     scene.add(root);
-    scene.add(new THREE.HemisphereLight('#ffffff', '#303544', 2.2));
-    const keyLight = new THREE.DirectionalLight('#ffffff', 2.4);
+    scene.add(new THREE.AmbientLight('#ffffff', 0.5));
+    scene.add(new THREE.HemisphereLight('#fff0e8', '#302640', 0.82));
+    const keyLight = new THREE.DirectionalLight('#ffffff', 1.22);
     keyLight.position.set(4, 6, 5);
     scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight('#a9bfff', 1.1);
+    const fillLight = new THREE.DirectionalLight('#ffffff', 0.26);
     fillLight.position.set(-4, 2, -3);
     scene.add(fillLight);
 

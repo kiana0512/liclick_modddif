@@ -18,8 +18,8 @@ const resolutionToSize = {
 } as const;
 
 const displayOptions: Array<{ value: DisplayMode; labelKey: 'pbr' | 'flatShort' | 'normalShort' | 'wireShort' }> = [
-  { value: 'pbr', labelKey: 'pbr' },
   { value: 'flat', labelKey: 'flatShort' },
+  { value: 'pbr', labelKey: 'pbr' },
   { value: 'normal', labelKey: 'normalShort' },
   { value: 'wire', labelKey: 'wireShort' },
 ];
