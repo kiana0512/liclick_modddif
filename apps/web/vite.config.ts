@@ -111,12 +111,67 @@ function localInstallerPlugin(base: string): Plugin {
   };
 }
 
+function eraserPerformanceDiagnosticsPlugin(base: string): Plugin {
+  const basePrefix = base === '/' ? '' : base.slice(0, -1);
+  const diagnosticsRoute = `${basePrefix}/__li3d_eraser_perf`;
+  const diagnosticsPath = path.resolve(
+    rootDir,
+    '..',
+    '..',
+    '.codex-tmp',
+    'eraser-performance.ndjson',
+  );
+  return {
+    name: 'li3d-eraser-performance-diagnostics',
+    configureServer(server) {
+      server.middlewares.use((request: IncomingMessage, response: ServerResponse, next) => {
+        const method = request.method?.toUpperCase() ?? 'GET';
+        const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+        if (pathname !== diagnosticsRoute || method !== 'POST') {
+          next();
+          return;
+        }
+        let body = '';
+        let rejected = false;
+        request.setEncoding('utf8');
+        request.on('data', (chunk: string) => {
+          if (rejected) return;
+          body += chunk;
+          if (body.length > 1_000_000) {
+            rejected = true;
+            response.writeHead(413, { 'cache-control': 'no-store' });
+            response.end();
+          }
+        });
+        request.on('end', () => {
+          if (rejected) return;
+          fs.mkdir(path.dirname(diagnosticsPath), { recursive: true }, (directoryError) => {
+            if (directoryError) {
+              response.writeHead(500, { 'cache-control': 'no-store' });
+              response.end();
+              return;
+            }
+            fs.appendFile(diagnosticsPath, `${body}\n`, 'utf8', (writeError) => {
+              response.writeHead(writeError ? 500 : 204, { 'cache-control': 'no-store' });
+              response.end();
+            });
+          });
+        });
+      });
+    },
+  };
+}
+
 const publicBase = normalizeBase(process.env.VITE_PUBLIC_PATH ?? process.env.VITE_BASE_PATH);
 const localComponentPort = process.env.VITE_LICLICK_LOCAL_COMPONENT_PORT?.trim() || '4618';
 const localComponentDevProxyPath = '/__li3d-local-component';
 
 export default defineConfig({
-  plugins: [localInstallerPlugin(publicBase), react()],
+  plugins: [
+    localInstallerPlugin(publicBase),
+    eraserPerformanceDiagnosticsPlugin(publicBase),
+    react(),
+  ],
   base: publicBase,
   resolve: {
     alias: {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, MousePointerClick, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 
 type TextureOnboardingTourProps = {
@@ -59,7 +59,7 @@ const tourSteps: TourStep[] = [
     eyebrow: '第三步',
     title: '生成纹理',
     body: '点击底部按钮，即可生成纹理贴图。',
-    placement: 'above',
+    placement: 'right',
   },
   {
     target: 'single-view',
@@ -272,8 +272,6 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
         : placement === 'below'
           ? targetRect.bottom + 18
           : (viewportHeight - CARD_HEIGHT_ESTIMATE) / 2;
-  const isLastStep = stepIndex === tourSteps.length - 1;
-
   return createPortal(
     <div className="pointer-events-none fixed inset-0 z-[180] text-white" aria-live="polite">
       {targetRect ? (
@@ -287,12 +285,6 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
           }}
         />
       ) : null}
-
-      <button
-        type="button"
-        className="hidden"
-        aria-label={isLastStep ? '完成新手引导' : '下一条新手引导'}
-      />
 
       <section
         role="dialog"
@@ -324,36 +316,6 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
           </button>
         </div>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-white/72">{step.body}</p>
-        <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/10 pt-3">
-          <div
-            className="flex items-center gap-1.5"
-            aria-label={`引导 ${stepIndex + 1}/${tourSteps.length}`}
-          >
-            {tourSteps.map((item, index) => (
-              <span
-                key={item.target}
-                className={`h-1.5 rounded-full transition-all ${
-                  index === stepIndex
-                    ? 'w-5 bg-liclick-pink'
-                    : index < stepIndex
-                      ? 'w-1.5 bg-white/48'
-                      : 'w-1.5 bg-white/18'
-                }`}
-              />
-            ))}
-          </div>
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-white/70">
-            {isLastStep ? (
-              <>
-                <Check className="h-3.5 w-3.5" /> 完成当前操作后结束引导
-              </>
-            ) : (
-              <>
-                <MousePointerClick className="h-3.5 w-3.5" /> 完成当前操作后自动继续
-              </>
-            )}
-          </span>
-        </div>
       </section>
     </div>,
     document.body,

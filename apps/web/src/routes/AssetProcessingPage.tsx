@@ -1550,24 +1550,26 @@ function JobPanel({
 function AutoUvWorkspace({
   initialAsset,
   onAssetChange,
-  onContinueImported,
-  continuingImported,
   onSubmissionInputsChange,
   serviceReady,
   serviceBlockReason,
   onJob,
+  job,
+  error,
+  onCancel,
   setBusy,
   busy,
   setError,
 }: {
   initialAsset?: File;
   onAssetChange?: (file?: File) => void;
-  onContinueImported?: (file: File) => Promise<void>;
-  continuingImported: boolean;
   onSubmissionInputsChange: () => void;
   serviceReady: boolean;
   serviceBlockReason?: string;
   onJob: (job: AssetJob, snapshot: SubmissionSnapshot) => void;
+  job?: AssetJob;
+  error?: string;
+  onCancel: () => void;
   setBusy: (busy: boolean) => void;
   busy: boolean;
   setError: (error?: string) => void;
@@ -1578,6 +1580,18 @@ function AutoUvWorkspace({
   const hardEdgeAngle = 75;
   const padding = 10;
   const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
+  const [downloadingUv, setDownloadingUv] = useState(false);
+  const [downloadError, setDownloadError] = useState<string>();
+
+  const progress = Math.min(100, Math.max(0, job?.progress ?? 0));
+  const succeeded = job?.status === 'SUCCEEDED';
+  const failed = job?.status === 'FAILED';
+  const active = Boolean(job && !terminalStatuses.has(job.status));
+  const uvArtifacts = assetJobArtifacts(job);
+  const uvFbxArtifact = succeeded
+    ? primaryArtifacts(uvArtifacts).find((artifact) => /\.fbx$/i.test(artifact.filename))
+      ?? uvArtifacts.find((artifact) => /\.fbx$/i.test(artifact.filename))
+    : undefined;
 
   useEffect(() => {
     if (!initialAsset) return;
@@ -1587,6 +1601,23 @@ function AutoUvWorkspace({
   function selectAsset(file?: File) {
     setAsset(file);
     onAssetChange?.(file);
+  }
+
+  async function downloadUvFbx() {
+    const currentJobId = job ? assetJobId(job) : '';
+    if (!currentJobId || !uvFbxArtifact || downloadingUv) return;
+    setDownloadingUv(true);
+    setDownloadError(undefined);
+    try {
+      await downloadVerifiedArtifact(currentJobId, uvFbxArtifact);
+      trackModuleAction('auto_uv', 'download');
+    } catch (artifactError) {
+      setDownloadError(
+        submissionErrorMessage(artifactError, 'UV FBX 下载或校验失败。'),
+      );
+    } finally {
+      setDownloadingUv(false);
+    }
   }
 
   async function submit() {
@@ -1704,25 +1735,55 @@ function AutoUvWorkspace({
           type="button"
           disabled={!asset || busy || !serviceReady}
           onClick={() => void submit()}
-          className="flex h-14 w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-sm font-semibold text-white shadow-[0_18px_42px_rgba(16,185,129,.18)] transition hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:translate-y-0"
+          className="relative flex h-14 w-full overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-sm font-semibold text-white shadow-[0_18px_42px_rgba(16,185,129,.18)] transition hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
         >
-          {busy ? <LoaderCircle className="h-4.5 w-4.5 animate-spin" /> : <MapIcon className="h-4.5 w-4.5" />}
-          {busy ? '正在处理 UV…' : asset ? '开始自动展 UV' : '请先导入模型'}
+          <span className="relative z-[1] flex h-full w-full items-center justify-center gap-3">
+            {busy ? <LoaderCircle className="h-4.5 w-4.5 animate-spin" /> : <MapIcon className="h-4.5 w-4.5" />}
+            {active
+              ? `正在自动展 UV · ${Math.round(progress)}%`
+              : asset
+                ? '开始自动展 UV'
+                : '请先导入模型'}
+          </span>
+          {job ? (
+            <span className="absolute inset-x-0 bottom-0 z-[2] h-1 bg-black/20">
+              <span
+                className="block h-full rounded-r-full bg-white/80 transition-[width] duration-500"
+                style={{ width: `${progress}%` }}
+              />
+            </span>
+          ) : null}
         </button>
-        {asset && onContinueImported ? (
+
+        {uvFbxArtifact ? (
           <button
             type="button"
-            disabled={busy || continuingImported}
-            onClick={() => void onContinueImported(asset)}
+            disabled={downloadingUv}
+            onClick={() => void downloadUvFbx()}
             className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-emerald-300/18 bg-emerald-400/[0.055] text-xs font-semibold text-emerald-50/78 transition hover:border-emerald-300/34 hover:bg-emerald-400/[0.1] disabled:cursor-wait disabled:opacity-40"
           >
-            {continuingImported ? (
+            {downloadingUv ? (
               <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
             ) : (
-              <Sparkles className="h-3.5 w-3.5" />
+              <Download className="h-3.5 w-3.5" />
             )}
-            {continuingImported ? '正在保存并传递…' : '直接传入烘焙'}
+            {downloadingUv ? '正在校验并下载…' : '下载 UV FBX'}
           </button>
+        ) : null}
+        {active ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.025] text-[11px] text-white/42 transition hover:bg-white/[0.065] hover:text-white"
+          >
+            <X className="h-3.5 w-3.5" />
+            取消自动展 UV
+          </button>
+        ) : null}
+        {(failed || error || downloadError) ? (
+          <div className="mt-3 rounded-lg border border-rose-300/12 bg-rose-400/[0.045] px-3 py-2 text-[10px] leading-4 text-rose-100/56">
+            {downloadError ?? error ?? assetJobError(job) ?? '自动展 UV 任务失败，请检查输入后重试。'}
+          </div>
         ) : null}
         <div className="mt-3 flex min-h-4 items-center justify-center gap-2 text-[11px] text-white/24">
           {serviceBlockReason ? (
@@ -2062,7 +2123,6 @@ export function AssetProcessingPage({
   const pipelineInputAsset = preferredPipelineInputAsset(project, mode);
   const hydratedInputRef = useRef('');
   const [initialAsset, setInitialAsset] = useState<File>();
-  const [externalContinueBusy, setExternalContinueBusy] = useState(false);
   const [inputLoadError, setInputLoadError] = useState<string>();
   const [serviceStatus, setServiceStatus] = useState<AssetProcessingStatus>();
   const [serviceLoading, setServiceLoading] = useState(true);
@@ -2690,31 +2750,6 @@ export function AssetProcessingPage({
     });
   }
 
-  async function handleImportedUvContinue(file: File) {
-    if (mode !== 'uv' || externalContinueBusy) return;
-    setExternalContinueBusy(true);
-    setError(undefined);
-    try {
-      const usesPublishedInput = Boolean(
-        pipelineInputAsset && initialAsset === file,
-      );
-      await publishOutputToNextStage({
-        jobId: `external-model-${createId()}`,
-        outputBlob: file,
-        outputName: file.name,
-        outputSize: file.size,
-        usePipelineParent: usesPublishedInput,
-        sourceMode: 'manual',
-        objectId:
-          pipelineInputAsset?.objectId ?? project?.bakeWorkspace?.selectedObjectId,
-      });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '外部模型传入烘焙失败。');
-    } finally {
-      setExternalContinueBusy(false);
-    }
-  }
-
   async function handleHistoryContinue(record: TaskHistoryRecord, output: TaskHistoryOutput) {
     await publishOutputToNextStage({
       jobId: record.id,
@@ -3067,31 +3102,23 @@ export function AssetProcessingPage({
         )}
 
         {mode === 'uv' ? (
-          <div className="mt-6 grid min-w-0 max-w-full items-stretch gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_280px] xl:grid-cols-[minmax(520px,1fr)_280px_minmax(360px,0.82fr)]">
+          <div className="mt-6 grid min-w-0 max-w-full items-stretch gap-4 overflow-hidden xl:grid-cols-[minmax(520px,0.9fr)_minmax(480px,1.1fr)]">
             <AutoUvWorkspace
               initialAsset={initialAsset}
               onAssetChange={invalidateJobForInputChange}
-              onContinueImported={handleImportedUvContinue}
-              continuingImported={externalContinueBusy}
               onSubmissionInputsChange={invalidateJobForInputChange}
               serviceReady={serviceReady}
               serviceBlockReason={serviceBlockReason}
               onJob={handleSubmittedJob}
+              job={job}
+              error={error}
+              onCancel={() => void handleCancel()}
               setBusy={setBusy}
               busy={busy || jobActive}
               setError={setError}
             />
-          <JobPanel
-            mode={mode}
-            job={job}
-            busy={busy || jobActive}
-            error={error}
-            onCancel={() => void handleCancel()}
-            onContinue={jobBinding?.sourceFile ? handleContinue : undefined}
-            continueLabel={mode === 'uv' ? '保存并传入烘焙' : '保存并传入 UV'}
-          />
           {job?.status === 'SUCCEEDED' ? (
-            <div className="min-h-[560px] lg:col-span-2 xl:col-span-1">
+            <div className="min-h-[560px]">
               <AssetUvLayoutPreview
                 job={job}
                 busy={false}

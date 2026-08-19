@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { Eraser, Paintbrush, RotateCcw, Square, WandSparkles, X } from 'lucide-react';
 import { cn } from '@/components/common/cn';
@@ -147,7 +154,8 @@ export function LocalRepaintDialog({
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         (target instanceof HTMLElement && target.isContentEditable)
-      ) return;
+      )
+        return;
       if (event.key === 'Escape') onCancel();
       else if (shortcutMatches(event, 'repaint.brush')) setTool('brush');
       else if (shortcutMatches(event, 'repaint.eraser')) setTool('erase');
@@ -157,7 +165,9 @@ export function LocalRepaintDialog({
       ) {
         event.preventDefault();
         const direction = shortcutMatches(event, 'repaint.brushSmaller') ? -1 : 1;
-        setBrushSize((value) => Math.max(2, Math.min(MAX_LOCAL_REPAINT_BRUSH_SIZE, value + direction * 2)));
+        setBrushSize((value) =>
+          Math.max(2, Math.min(MAX_LOCAL_REPAINT_BRUSH_SIZE, value + direction * 2)),
+        );
       }
     };
     window.addEventListener('keydown', closeOnEscape);
@@ -212,7 +222,8 @@ export function LocalRepaintDialog({
   }
 
   function getLogicalMaskCanvas(width: number, height: number) {
-    if (!logicalMaskCanvasRef.current) logicalMaskCanvasRef.current = document.createElement('canvas');
+    if (!logicalMaskCanvasRef.current)
+      logicalMaskCanvasRef.current = document.createElement('canvas');
     const canvas = logicalMaskCanvasRef.current;
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
@@ -318,9 +329,14 @@ export function LocalRepaintDialog({
 
   function isPointOnObject(point: CanvasPoint) {
     if (objectMask.width <= 0 || objectMask.height <= 0) return true;
-    const maskX = Math.floor((point.x / Math.max(1, canvasRef.current?.width ?? objectMask.width)) * objectMask.width);
-    const maskY = Math.floor((point.y / Math.max(1, canvasRef.current?.height ?? objectMask.height)) * objectMask.height);
-    if (maskX < 0 || maskY < 0 || maskX >= objectMask.width || maskY >= objectMask.height) return false;
+    const maskX = Math.floor(
+      (point.x / Math.max(1, canvasRef.current?.width ?? objectMask.width)) * objectMask.width,
+    );
+    const maskY = Math.floor(
+      (point.y / Math.max(1, canvasRef.current?.height ?? objectMask.height)) * objectMask.height,
+    );
+    if (maskX < 0 || maskY < 0 || maskX >= objectMask.width || maskY >= objectMask.height)
+      return false;
     return (objectMask.data[maskY * objectMask.width + maskX] ?? 0) > 8;
   }
 
@@ -334,8 +350,12 @@ export function LocalRepaintDialog({
       ? {
           x: Math.max(0, Math.floor(bounds.x)),
           y: Math.max(0, Math.floor(bounds.y)),
-          w: Math.min(canvas.width, Math.ceil(bounds.x + bounds.w)) - Math.max(0, Math.floor(bounds.x)),
-          h: Math.min(canvas.height, Math.ceil(bounds.y + bounds.h)) - Math.max(0, Math.floor(bounds.y)),
+          w:
+            Math.min(canvas.width, Math.ceil(bounds.x + bounds.w)) -
+            Math.max(0, Math.floor(bounds.x)),
+          h:
+            Math.min(canvas.height, Math.ceil(bounds.y + bounds.h)) -
+            Math.max(0, Math.floor(bounds.y)),
         }
       : undefined;
     if (clipBounds && (clipBounds.w <= 0 || clipBounds.h <= 0)) return;
@@ -350,7 +370,11 @@ export function LocalRepaintDialog({
     context.restore();
   }
 
-  function getStrokeBounds(point: CanvasPoint, previousPoint: CanvasPoint | undefined, size: number): CanvasRect {
+  function getStrokeBounds(
+    point: CanvasPoint,
+    previousPoint: CanvasPoint | undefined,
+    size: number,
+  ): CanvasRect {
     const radius = size / 2 + STROKE_CLIP_PADDING;
     const minX = previousPoint ? Math.min(previousPoint.x, point.x) : point.x;
     const minY = previousPoint ? Math.min(previousPoint.y, point.y) : point.y;
@@ -382,20 +406,31 @@ export function LocalRepaintDialog({
     const logicalContext = logicalCanvas.getContext('2d');
     const previousPoint = lastPointRef.current;
     const pressureSize = (pressure: number) => brushSize * (0.1 + Math.pow(pressure, 0.72) * 0.9);
-    const strokeSize = Math.max(pressureSize(point.pressure), pressureSize(previousPoint?.pressure ?? point.pressure));
+    const strokeSize = Math.max(
+      pressureSize(point.pressure),
+      pressureSize(previousPoint?.pressure ?? point.pressure),
+    );
     const strokeBounds = getStrokeBounds(point, previousPoint, strokeSize);
     const maskBrush = getMaskBrushPattern(context);
-    const drawStroke = (targetContext: CanvasRenderingContext2D, fillStyle: string | CanvasPattern) => {
+    const drawStroke = (
+      targetContext: CanvasRenderingContext2D,
+      fillStyle: string | CanvasPattern,
+    ) => {
       targetContext.save();
-      targetContext.globalCompositeOperation = strokeTool === 'erase' ? 'destination-out' : 'source-over';
+      targetContext.globalCompositeOperation =
+        strokeTool === 'erase' ? 'destination-out' : 'source-over';
       targetContext.fillStyle = fillStyle;
       if (previousPoint) {
         const distance = Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y);
-        const spacing = Math.max(0.75, Math.min(pressureSize(previousPoint.pressure), pressureSize(point.pressure)) * 0.2);
+        const spacing = Math.max(
+          0.75,
+          Math.min(pressureSize(previousPoint.pressure), pressureSize(point.pressure)) * 0.2,
+        );
         const steps = Math.max(1, Math.ceil(distance / spacing));
         for (let index = 0; index <= steps; index += 1) {
           const ratio = index / steps;
-          const pressure = previousPoint.pressure + (point.pressure - previousPoint.pressure) * ratio;
+          const pressure =
+            previousPoint.pressure + (point.pressure - previousPoint.pressure) * ratio;
           targetContext.beginPath();
           targetContext.arc(
             previousPoint.x + (point.x - previousPoint.x) * ratio,
@@ -424,14 +459,18 @@ export function LocalRepaintDialog({
     const context = canvas?.getContext('2d');
     if (!canvas || !context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+    getLogicalMaskCanvas(canvas.width, canvas.height)
+      .getContext('2d')
+      ?.clearRect(0, 0, canvas.width, canvas.height);
   }
 
   function readUserMask(): MaskBitmap {
     syncCanvasSize();
     const canvas = canvasRef.current;
     const context = canvas
-      ? getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d', { willReadFrequently: true })
+      ? getLogicalMaskCanvas(canvas.width, canvas.height).getContext('2d', {
+          willReadFrequently: true,
+        })
       : undefined;
     if (!canvas || !context) throw new Error(t('localRepaintMaskMissing'));
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -525,20 +564,28 @@ export function LocalRepaintDialog({
       !finalEvent ||
       finalEvent.clientX !== event.nativeEvent.clientX ||
       finalEvent.clientY !== event.nativeEvent.clientY
-    ) events.push(event.nativeEvent);
+    )
+      events.push(event.nativeEvent);
     const strokeTool = strokeToolRef.current ?? tool;
     events.forEach((nativeEvent) => paintAt(nativeEvent, strokeTool));
   }
 
-  const modeLabel = mode === 'edit_layer_image' ? t('localRepaintModeLayer') : t('localRepaintModeView');
+  const modeLabel =
+    mode === 'edit_layer_image' ? t('localRepaintModeLayer') : t('localRepaintModeView');
   const displayUrl = previewUrl && showAfter ? previewUrl : workingImageUrl;
   const viewportRepairZoom = mode === 'repair_current_view' ? 1.65 : 1;
   const displayError = error ?? localError;
 
   return createPortal(
-    <div data-editor-shortcut-scope="repaint" className="fixed inset-0 z-[120] grid place-items-center bg-black/62 p-4 backdrop-blur-sm">
+    <div
+      data-editor-shortcut-scope="repaint"
+      className="fixed inset-0 z-[120] grid place-items-center bg-black/62 p-4 backdrop-blur-sm"
+    >
       <section className="grid max-h-[94vh] w-full max-w-[min(92vw,1480px)] grid-cols-[minmax(0,1fr)_320px] overflow-hidden rounded-lg border border-white/16 bg-[#11121c] text-white shadow-[0_30px_90px_rgba(0,0,0,0.58)]">
-        <div ref={frameRef} className="relative min-h-[min(760px,88vh)] overflow-hidden bg-[#070811]">
+        <div
+          ref={frameRef}
+          className="relative min-h-[min(760px,88vh)] overflow-hidden bg-[#070811]"
+        >
           <img
             ref={imageRef}
             src={displayUrl}
@@ -554,10 +601,14 @@ export function LocalRepaintDialog({
           {!previewUrl && (
             <canvas
               ref={canvasRef}
-              className={cn('absolute touch-none select-none origin-center cursor-crosshair', isSubmitting && 'pointer-events-none opacity-70')}
+              className={cn(
+                'absolute touch-none select-none origin-center cursor-crosshair',
+                isSubmitting && 'pointer-events-none opacity-70',
+              )}
               style={{ ...paintSurfaceStyle, transform: `scale(${viewportRepairZoom})` }}
               onPointerDown={(event) => {
-                if (event.pointerType === 'touch' || activePointerIdRef.current !== undefined) return;
+                if (event.pointerType === 'touch' || activePointerIdRef.current !== undefined)
+                  return;
                 event.preventDefault();
                 event.currentTarget.setPointerCapture(event.pointerId);
                 activePointerIdRef.current = event.pointerId;
@@ -633,7 +684,11 @@ export function LocalRepaintDialog({
               <div className="text-xs font-semibold text-[#ff8bdc]">{modeLabel}</div>
               <h2 className="mt-1 truncate text-lg font-semibold">{targetName}</h2>
             </div>
-            <button type="button" className="grid h-8 w-8 place-items-center rounded hover:bg-white/10" onClick={onCancel}>
+            <button
+              type="button"
+              className="grid h-8 w-8 place-items-center rounded hover:bg-white/10"
+              onClick={onCancel}
+            >
               <X className="h-4 w-4" />
             </button>
           </header>
@@ -643,7 +698,10 @@ export function LocalRepaintDialog({
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    className={cn('flex h-10 items-center justify-center gap-2 rounded-md border border-white/16', tool === 'brush' && 'border-[#ff62d2] bg-[#7d2d72]')}
+                    className={cn(
+                      'flex h-10 items-center justify-center gap-2 rounded-md border border-white/16',
+                      tool === 'brush' && 'border-[#ff62d2] bg-[#7d2d72]',
+                    )}
                     onClick={() => setTool('brush')}
                   >
                     <Paintbrush className="h-4 w-4" />
@@ -651,7 +709,10 @@ export function LocalRepaintDialog({
                   </button>
                   <button
                     type="button"
-                    className={cn('flex h-10 items-center justify-center gap-2 rounded-md border border-white/16', tool === 'erase' && 'border-[#ff62d2] bg-[#7d2d72]')}
+                    className={cn(
+                      'flex h-10 items-center justify-center gap-2 rounded-md border border-white/16',
+                      tool === 'erase' && 'border-[#ff62d2] bg-[#7d2d72]',
+                    )}
                     onClick={() => setTool('erase')}
                   >
                     <Eraser className="h-4 w-4" />
@@ -727,7 +788,8 @@ export function LocalRepaintDialog({
                       type="button"
                       className={cn(
                         'aspect-square overflow-hidden rounded border border-white/14 bg-black/28',
-                        selectedReferenceIds.includes(reference.id) && 'border-[#ff62d2] ring-1 ring-[#ff62d2]',
+                        selectedReferenceIds.includes(reference.id) &&
+                          'border-[#ff62d2] ring-1 ring-[#ff62d2]',
                       )}
                       onClick={() => toggleReference(reference.id)}
                       title={reference.name}
@@ -738,11 +800,20 @@ export function LocalRepaintDialog({
                 </div>
               </div>
             )}
-            {displayError && <div className="rounded-md border border-red-400/30 bg-red-500/10 p-2 text-sm text-red-100">{displayError}</div>}
+            {displayError && (
+              <div className="rounded-md border border-red-400/30 bg-red-500/10 p-2 text-sm text-red-100">
+                {displayError}
+              </div>
+            )}
           </div>
           <footer className="grid gap-2 border-t border-white/12 p-4">
             {!previewUrl ? (
-              <div className={cn('grid gap-2', isSubmitting && onAbort && 'grid-cols-[minmax(0,1fr)_48px]')}>
+              <div
+                className={cn(
+                  'grid gap-2',
+                  isSubmitting && onAbort && 'grid-cols-[minmax(0,1fr)_76px]',
+                )}
+              >
                 <button
                   type="button"
                   disabled={isSubmitting}
@@ -765,12 +836,13 @@ export function LocalRepaintDialog({
                 {isSubmitting && onAbort && (
                   <button
                     type="button"
-                    className="grid h-10 place-items-center rounded-md border border-red-300/32 bg-red-500/16 text-red-100 hover:bg-red-500/24"
+                    className="flex h-10 items-center justify-center gap-1.5 rounded-md border border-red-300/32 bg-red-500/16 px-2 text-sm font-semibold text-red-100 hover:bg-red-500/24"
                     onClick={onAbort}
                     title="终止局部重绘"
                     aria-label="终止局部重绘"
                   >
                     <Square className="h-4 w-4 fill-current" />
+                    中断
                   </button>
                 )}
               </div>
@@ -792,7 +864,11 @@ export function LocalRepaintDialog({
                 </button>
               </div>
             )}
-            <button type="button" className="h-9 rounded-md text-sm font-semibold text-white/68 hover:bg-white/8" onClick={onCancel}>
+            <button
+              type="button"
+              className="h-9 rounded-md text-sm font-semibold text-white/68 hover:bg-white/8"
+              onClick={onCancel}
+            >
               {t('cancel')}
             </button>
           </footer>

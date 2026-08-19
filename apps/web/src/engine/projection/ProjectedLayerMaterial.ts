@@ -2543,6 +2543,50 @@ export function syncProjectedLayerMaterialDisplayStateInObject(
   return updated;
 }
 
+/**
+ * Binds the transient projected-layer eraser mask without rebuilding the
+ * projected material. Every projected shader reserves these uniforms up
+ * front, so changing layers only needs one texture pointer and one layer
+ * index update. This is intentionally synchronous: the first pointer sample
+ * after selecting another layer must already see the new GPU mask.
+ */
+export function syncProjectedLayerLiveEraserPreviewInObject(
+  root: THREE.Object3D,
+  layerId?: string,
+  texture?: THREE.Texture,
+) {
+  if (texture) prepareLiveEraserMaskTexture(texture);
+  const visited = new Set<THREE.Material>();
+  let updated = false;
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (visited.has(material)) continue;
+      visited.add(material);
+      if (!(material instanceof THREE.ShaderMaterial)) continue;
+      if (material.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG]) continue;
+      const state = material.userData[PROJECTED_LAYER_STACK_STATE_KEY] as
+        | ProjectedLayerMaterialState
+        | undefined;
+      if (!state || !material.uniforms.useLiveEraserMask) continue;
+      const layerIndex = layerId
+        ? state.bindings.findIndex((binding) => binding.layerId === layerId)
+        : -1;
+      const enabled = Boolean(texture && layerIndex >= 0);
+      if (enabled && material.uniforms.liveEraserMaskMap) {
+        material.uniforms.liveEraserMaskMap.value = texture;
+      }
+      if (material.uniforms.liveEraserLayerIndex) {
+        material.uniforms.liveEraserLayerIndex.value = layerIndex;
+      }
+      material.uniforms.useLiveEraserMask.value = enabled ? 1 : 0;
+      updated = true;
+    }
+  });
+  return updated;
+}
+
 export function syncProjectedLayerResidentTextureVisibilityInObject(
   root: THREE.Object3D,
   input: {

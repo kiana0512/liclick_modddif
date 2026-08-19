@@ -630,11 +630,17 @@ function getImportedModelMatrixWorld(objectId?: string) {
 type GeneratePanelProps = {
   localImageGenerationRequestKey?: number;
   onLocalImageGenerationSettled?: (succeeded: boolean) => void;
+  interactionLocked?: boolean;
+  onInteractionLocked?: () => void;
+  onTaskRunningChange?: (running: boolean) => void;
 };
 
 export function GeneratePanel({
   localImageGenerationRequestKey = 0,
   onLocalImageGenerationSettled,
+  interactionLocked = false,
+  onInteractionLocked,
+  onTaskRunningChange,
 }: GeneratePanelProps) {
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
@@ -661,6 +667,7 @@ export function GeneratePanel({
   const capturingCameraViewsRef = useRef<Set<string>>(new Set());
   const [pendingLocalImageGenerationRequestKey, setPendingLocalImageGenerationRequestKey] =
     useState(0);
+  const [submissionActive, setSubmissionActive] = useState(false);
   const handledLocalImageGenerationRequestKeyRef = useRef(0);
   const handleLocalRepaintGenerateRef = useRef<() => Promise<boolean>>(async () => false);
 
@@ -869,8 +876,8 @@ export function GeneratePanel({
     if (authStatus !== 'authenticated' || !usesPersonalLiclickAccount(providerStatus)) return;
     void getPersonalLiclickAccountStatus().catch(() => undefined);
   }, [authStatus, providerStatus]);
-  // Each workflow owns its submission lifecycle. A repaint request must not
-  // block texture-map or ordinary image generation (and vice versa).
+  // A project has one mutation pipeline. While any generation channel owns
+  // this lock, every other authoring action stays read-only.
   const submitLocksRef = useRef(new Set<GenerateChannel>());
   const cancelledGenerationIdsRef = useRef(new Set<string>());
   const cancelledTextureBatchIdsRef = useRef(new Set<string>());
@@ -894,6 +901,12 @@ export function GeneratePanel({
   const activeProjectGeneration = tabGenerations.find((generation) =>
     isRunningGeneration(generation),
   );
+  const activeAnyProjectGeneration = generations.find((generation) => {
+    const projectId =
+      typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
+    const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
+    return belongsToProject && isRunningGeneration(generation);
+  });
   const activeReferenceGeneration = generations.find((generation) => {
     const projectId =
       typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
@@ -904,7 +917,7 @@ export function GeneratePanel({
       isRunningGeneration(generation)
     );
   });
-  const activeWorkflowGeneration = activeReferenceGeneration ?? activeProjectGeneration;
+  const activeWorkflowGeneration = activeReferenceGeneration ?? activeAnyProjectGeneration;
   const activeReferenceGroupId =
     typeof activeReferenceGeneration?.metadata.referenceGroupId === 'string'
       ? activeReferenceGeneration.metadata.referenceGroupId
@@ -914,6 +927,41 @@ export function GeneratePanel({
     (activeReferenceGroupId
       ? ({ groupId: activeReferenceGroupId, status: 'generating' } as const)
       : undefined);
+  const panelTaskRunning =
+    submissionActive ||
+    texturePipelineProgress?.active === true ||
+    Boolean(activeWorkflowGeneration) ||
+    displayedReferenceGroupGenerationState?.status === 'generating';
+  const workflowOperationLocked = interactionLocked || panelTaskRunning;
+  const notifyWorkflowOperationLocked = useCallback(() => {
+    setGenerateNotice({
+      tone: 'info',
+      message: texturePipelineProgress?.active
+        ? `${texturePipelineProgress.label}正在进行，完成前仅支持预览。`
+        : '当前任务正在运行，完成前仅支持预览。',
+    });
+    if (onInteractionLocked) {
+      onInteractionLocked();
+      return;
+    }
+    pushToast({
+      tone: 'info',
+      title: '任务正在运行',
+      description: '任务完成前仅支持旋转、缩放和结果预览。',
+      dedupeKey: 'editor-task-preview-only',
+    });
+  }, [onInteractionLocked, pushToast, setGenerateNotice, texturePipelineProgress]);
+
+  useEffect(() => {
+    onTaskRunningChange?.(panelTaskRunning);
+  }, [onTaskRunningChange, panelTaskRunning]);
+
+  useEffect(
+    () => () => {
+      onTaskRunningChange?.(false);
+    },
+    [onTaskRunningChange],
+  );
   const previewGeneration = activeProjectGeneration ?? tabGenerations[0];
   const previewIsGenerating = isRunningGeneration(previewGeneration);
   const displayedPreviewGeneration =
@@ -1599,6 +1647,10 @@ export function GeneratePanel({
   }, [currentProject?.id, generations, pushToast, references]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
+    if (workflowOperationLocked) {
+      notifyWorkflowOperationLocked();
+      return;
+    }
     if (!currentProject) return;
     updateCurrentProject({
       settings: {
@@ -1612,6 +1664,10 @@ export function GeneratePanel({
   }
 
   function handleCameraViewSelect(view: CameraViewItem) {
+    if (workflowOperationLocked) {
+      notifyWorkflowOperationLocked();
+      return;
+    }
     if (!captureObjectId) {
       pushToast({ tone: 'warning', title: t('importModelFirst') });
       return;
@@ -1620,6 +1676,10 @@ export function GeneratePanel({
   }
 
   function handleCameraViewPresetSelect(selection: CameraViewPresetSelection) {
+    if (workflowOperationLocked) {
+      notifyWorkflowOperationLocked();
+      return;
+    }
     const nextViews =
       selection === 'custom'
         ? createCameraViewsFromValues(customCameraViewPreset.views, t)
@@ -1634,6 +1694,10 @@ export function GeneratePanel({
   }
 
   function handleDeleteCameraView(viewId: string) {
+    if (workflowOperationLocked) {
+      notifyWorkflowOperationLocked();
+      return;
+    }
     setSelectedCameraViewPreset('custom');
     setCameraViews((current) => current.filter((view) => view.id !== viewId));
     setCameraViewPreviews((current) => {
@@ -1648,6 +1712,10 @@ export function GeneratePanel({
   }
 
   function handleAddCurrentCameraView() {
+    if (workflowOperationLocked) {
+      notifyWorkflowOperationLocked();
+      return;
+    }
     if (!captureObjectId) {
       pushToast({ tone: 'warning', title: t('importModelFirst') });
       return;
@@ -1790,6 +1858,7 @@ export function GeneratePanel({
     const cancelsTexturePipeline = isTextureMap || texturePipelineProgress?.active === true;
     if (!isTextureMap) {
       submitLocksRef.current.delete(getGenerationChannel(generationToCancel));
+      setSubmissionActive(submitLocksRef.current.size > 0);
     }
     finish();
     if (cancelsTexturePipeline) setTexturePipelineProgress(undefined);
@@ -2515,12 +2584,8 @@ export function GeneratePanel({
     let pendingGeneration: Generation | undefined;
     let requestAbortController: AbortController | undefined;
     try {
-      if (submitLocksRef.current.has('repaint') || previewIsGenerating) {
-        setGenerateNotice({
-          tone: 'warning',
-          message: '当前工程已有局部重绘任务在运行，请等待该任务完成。',
-        });
-        pushToast({ tone: 'warning', title: '当前已有局部重绘任务在运行，请完成后再试。' });
+      if (workflowOperationLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
+        notifyWorkflowOperationLocked();
         return false;
       }
       if (!currentProject || !captureObjectId) throw new Error(t('importModelFirst'));
@@ -2531,6 +2596,7 @@ export function GeneratePanel({
       const captureCameraSnapshot = snapshotCurrentCaptureCamera(captureAspect);
       const captureObjectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
       submitLocksRef.current.add('repaint');
+      setSubmissionActive(true);
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
       const objectId = captureObjectId;
       const textureMapCandidates = generations
@@ -2869,6 +2935,7 @@ export function GeneratePanel({
         generationAbortControllersRef.current.delete(pendingGeneration.id);
       }
       submitLocksRef.current.delete('repaint');
+      setSubmissionActive(submitLocksRef.current.size > 0);
       finish();
     }
   }
@@ -3042,11 +3109,12 @@ export function GeneratePanel({
   }
 
   async function handleGeneratePairedMultiview(singleReference: ReferenceImage) {
-    if (submitLocksRef.current.has('single') || submitLocksRef.current.has('multiview')) {
-      pushToast({ tone: 'warning', title: '当前已有生成任务在运行，请完成后再试。' });
+    if (workflowOperationLocked || submitLocksRef.current.size > 0) {
+      notifyWorkflowOperationLocked();
       return;
     }
     submitLocksRef.current.add('single');
+    setSubmissionActive(true);
     setGenerateNotice({ tone: 'info', message: '正在根据单视图生成并保存配对多视图。' });
     try {
       await generatePairedMultiviewReference(singleReference);
@@ -3066,6 +3134,7 @@ export function GeneratePanel({
       pushToast({ tone: 'error', title: '多视图生成失败', description: message });
     } finally {
       submitLocksRef.current.delete('single');
+      setSubmissionActive(submitLocksRef.current.size > 0);
     }
   }
 
@@ -3085,12 +3154,8 @@ export function GeneratePanel({
     requestedViewMode: TextureViewMode = textureViewMode,
   ) {
     try {
-      if (submitLocksRef.current.has('multiview') || previewIsGenerating) {
-        setGenerateNotice({
-          tone: 'warning',
-          message: '当前工程已有纹理贴图任务在运行，完成前不能再次提交同类任务。',
-        });
-        pushToast({ tone: 'warning', title: '当前已有纹理贴图任务在运行，请完成后再试。' });
+      if (workflowOperationLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
+        notifyWorkflowOperationLocked();
         return;
       }
       if (!selectedSingleReference && !selectedMultiviewReference) {
@@ -3107,6 +3172,7 @@ export function GeneratePanel({
         return;
       }
       submitLocksRef.current.add('multiview');
+      setSubmissionActive(true);
       setTexturePipelineProgress({ active: true, progress: 3, label: '检查参考图' });
       let materialReference = selectedMultiviewReference;
       if (!materialReference) {
@@ -3150,6 +3216,7 @@ export function GeneratePanel({
       setTexturePipelineProgress(undefined);
     } finally {
       submitLocksRef.current.delete('multiview');
+      setSubmissionActive(submitLocksRef.current.size > 0);
       setTexturePipelineProgress((current) =>
         current?.progress === 100 ? { ...current, active: false } : current,
       );
@@ -3632,6 +3699,10 @@ export function GeneratePanel({
   }
 
   async function handleAddProjectedLayer() {
+    if (workflowOperationLocked) {
+      notifyWorkflowOperationLocked();
+      return;
+    }
     if (!displayedPreviewGeneration) return;
     await addGenerationAsProjectedLayer(displayedPreviewGeneration);
   }
@@ -3672,11 +3743,19 @@ export function GeneratePanel({
         }`}
         variant="primary"
         disabled={
-          (tab === 'multiview' && texturePipelineProgress?.active) ||
-          previewIsGenerating ||
-          displayedReferenceGroupGenerationState?.status === 'generating'
+          !workflowOperationLocked &&
+          ((tab === 'multiview' && texturePipelineProgress?.active) ||
+            previewIsGenerating ||
+            displayedReferenceGroupGenerationState?.status === 'generating')
         }
-        onClick={handleGenerate}
+        aria-disabled={workflowOperationLocked}
+        onClick={() => {
+          if (workflowOperationLocked) {
+            notifyWorkflowOperationLocked();
+            return;
+          }
+          void handleGenerate();
+        }}
         icon={<Sparkles className="relative z-10 h-4 w-4" />}
         style={
           texturePipelineProgress?.active && tab === 'multiview'
@@ -3706,6 +3785,7 @@ export function GeneratePanel({
       </Button>
       {canCancelGeneration && (
         <Button
+          data-task-preview-allowed="true"
           className="h-12 w-full px-0"
           variant="danger"
           onClick={cancelCurrentGeneration}
@@ -3737,6 +3817,7 @@ export function GeneratePanel({
       >
         {(isTextureMapTab || isLocalRepaintTab) && (
           <div
+            data-task-preview-allowed="true"
             data-texture-onboarding="single-view"
             data-onboarding-complete={displayedTexturePreviewMode === 'single' ? 'true' : 'false'}
           >
@@ -3764,6 +3845,7 @@ export function GeneratePanel({
               {displayedPreviewGeneration?.resultUrl ? (
                 <button
                   type="button"
+                  data-task-preview-allowed="true"
                   className="h-full w-full cursor-zoom-in"
                   onClick={() => setPreviewImageOpen(true)}
                   aria-label={t('view')}
@@ -3810,6 +3892,7 @@ export function GeneratePanel({
                   </button>
                   <button
                     type="button"
+                    data-task-preview-allowed="true"
                     className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
                     title={t('view')}
                     aria-label={t('view')}
@@ -3929,11 +4012,15 @@ export function GeneratePanel({
               <span className="text-sm font-semibold text-white/88">纹理提示词</span>
               <textarea
                 value={isLocalRepaintTab ? '' : prompt}
-                readOnly={isLocalRepaintTab}
-                aria-readonly={isLocalRepaintTab}
+                readOnly={isLocalRepaintTab || workflowOperationLocked}
+                aria-readonly={isLocalRepaintTab || workflowOperationLocked}
                 placeholder={isLocalRepaintTab ? '使用固定材质迁移提示词，无需填写' : undefined}
                 onChange={(event) => {
                   if (isLocalRepaintTab) return;
+                  if (workflowOperationLocked) {
+                    notifyWorkflowOperationLocked();
+                    return;
+                  }
                   updateGenerationSettings(
                     isTextureMapTab
                       ? { textureMapPrompt: event.target.value }
@@ -3954,6 +4041,7 @@ export function GeneratePanel({
               >
                 <ReferenceGroupPicker
                   disabled={
+                    workflowOperationLocked ||
                     previewIsGenerating ||
                     displayedReferenceGroupGenerationState?.status === 'generating'
                   }

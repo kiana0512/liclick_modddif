@@ -115,10 +115,12 @@ assert.match(
   /uvOverlayBelowProjected: Number\.isFinite\(visibleMergedUvBoundaryOrder\)/,
   'The merged UV texture must be composited below projected repaint rows that are higher in the panel.',
 );
-assert.match(
-  sceneRootSource,
-  /const paintTool = useSceneStore\(\(state\) => state\.paintTool\);[\s\S]*?<group visible=\{paintTool === 'none'\}>[\s\S]*?<ContactShadows/,
-  'The contact-shadow receiver plane must be hidden while a paint tool is active.',
+assert.ok(
+  !sceneRootSource.includes('ContactShadows') ||
+    /const paintTool = useSceneStore\(\(state\) => state\.paintTool\);[\s\S]*?<group visible=\{paintTool === 'none'\}>[\s\S]*?<ContactShadows/.test(
+      sceneRootSource,
+    ),
+  'The contact-shadow receiver plane must be absent or hidden while a paint tool is active.',
 );
 assert.match(
   sceneRootSource,

@@ -115,6 +115,10 @@ export interface BakeVisibleProjectedLayersInput {
   uvSeamRepairPixels?: number;
   debugIgnoreMask?: boolean;
   debugIgnoreDepth?: boolean;
+  /** Limit transient runtime visibility captures used by lightweight editor tools. */
+  runtimeVisibilityMaxSize?: number;
+  /** Depth-only captures avoid a second normal pass when geometric culling is sufficient. */
+  runtimeVisibilityIncludeNormal?: boolean;
   commitToProject?: boolean;
   markSourceLayersBaked?: boolean;
   preferBlobOutput?: boolean;

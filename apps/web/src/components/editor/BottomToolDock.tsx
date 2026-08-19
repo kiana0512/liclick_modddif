@@ -42,6 +42,8 @@ type BottomToolDockProps = {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  interactionLocked?: boolean;
+  onInteractionLocked?: () => void;
   labels: {
     select: string;
     move: string;
@@ -95,6 +97,8 @@ export function BottomToolDock({
   canRedo,
   onUndo,
   onRedo,
+  interactionLocked = false,
+  onInteractionLocked,
   labels,
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
@@ -111,9 +115,7 @@ export function BottomToolDock({
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
   const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
-  const setLocalRepaintBrushSettings = useSceneStore(
-    (state) => state.setLocalRepaintBrushSettings,
-  );
+  const setLocalRepaintBrushSettings = useSceneStore((state) => state.setLocalRepaintBrushSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
   const setPaintToolSettings = useSceneStore((state) => state.setPaintToolSettings);
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
@@ -140,9 +142,9 @@ export function BottomToolDock({
   const localRepaintReady = canLocalRepaint;
   const canEraseSelectedLayer = Boolean(
     activeProjectedLayer?.visible &&
-      activeProjectedLayer.imageUrl &&
-      (activeProjectedLayer.role === 'local-repaint-overlay' ||
-        (activeProjectedLayer.type === 'projected' && activeProjectedLayer.camera)),
+    activeProjectedLayer.imageUrl &&
+    (activeProjectedLayer.role === 'local-repaint-overlay' ||
+      (activeProjectedLayer.type === 'projected' && activeProjectedLayer.camera)),
   );
   const inpaintMenuVisible =
     activeMenu === 'inpaint-add' ||
@@ -319,6 +321,22 @@ export function BottomToolDock({
   return (
     <div
       ref={dockRef}
+      onPointerDownCapture={(event) => {
+        if (!interactionLocked) return;
+        const target = event.target as HTMLElement;
+        if (!target.closest('button, input, select, textarea')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onInteractionLocked?.();
+      }}
+      onClickCapture={(event) => {
+        if (!interactionLocked) return;
+        const target = event.target as HTMLElement;
+        if (!target.closest('button, input, select, textarea')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onInteractionLocked?.();
+      }}
       data-texture-onboarding="edit-tools"
       data-onboarding-complete={
         paintTool === 'eraser' ||
@@ -533,10 +551,7 @@ export function BottomToolDock({
                     )}
                   </div>
                 )}
-                <IconTooltip
-                  label="步骤 1 · 绘制蒙版"
-                  shortcut="K"
-                >
+                <IconTooltip label="步骤 1 · 绘制蒙版" shortcut="K">
                   <button
                     type="button"
                     className={cn(workflowButton, isMaskPaintTool && activeWorkflowButton)}
@@ -573,9 +588,7 @@ export function BottomToolDock({
                     type="button"
                     className={cn(
                       workflowButton,
-                      generationGuideActive &&
-                        !localImageGenerationRunning &&
-                        guideWorkflowButton,
+                      generationGuideActive && !localImageGenerationRunning && guideWorkflowButton,
                       localImageGenerationRunning && runningWorkflowButton,
                     )}
                     onClick={() => {
@@ -588,11 +601,7 @@ export function BottomToolDock({
                       onLocalImageGeneration();
                       setActiveMenu(undefined);
                     }}
-                    aria-label={
-                      localImageGenerationRunning
-                        ? '局部生图（处理中）'
-                        : '局部生图'
-                    }
+                    aria-label={localImageGenerationRunning ? '局部生图（处理中）' : '局部生图'}
                   >
                     <ImagePlus className="h-4.5 w-4.5" />
                   </button>
@@ -626,8 +635,7 @@ export function BottomToolDock({
                         !localImageGenerationRunning &&
                         paintTool !== 'inpaint-apply' &&
                         guideWorkflowButton,
-                      (!localRepaintReady || localImageGenerationRunning) &&
-                        lockedWorkflowButton,
+                      (!localRepaintReady || localImageGenerationRunning) && lockedWorkflowButton,
                     )}
                     onClick={() => {
                       if (localImageGenerationRunning) {
