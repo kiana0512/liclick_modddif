@@ -5,7 +5,10 @@ import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ModelBoundingBox, SceneObject, Transform } from '@/types/model';
 import type { AssetManifest, Project, ReferenceImage, WorkspaceMode } from '@/types/project';
-import { upsertGenerationByIdentity } from '@/utils/generationIdentity';
+import {
+  collapseGenerationRecords,
+  upsertGenerationByIdentity,
+} from '@/utils/generationIdentity';
 
 export const IMMEDIATE_PROJECT_SAVE_EVENT = 'liclick:immediate-project-save';
 const LOCAL_OBJECT_DELETION_KEY = 'liclick:pending-object-deletions:v1';
@@ -224,9 +227,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     })),
   setProjectObjects: (objects) => get().updateCurrentProject({ objects }),
   setProjectLayers: (layers) => get().updateCurrentProject({ layers }),
-  setProjectGenerations: (generations) => get().updateCurrentProject({ generations }),
+  setProjectGenerations: (generations) =>
+    get().updateCurrentProject({ generations: collapseGenerationRecords(generations) }),
   setProjectGenerationsById: (projectId, generations) =>
-    get().updateProjectById(projectId, { generations }),
+    get().updateProjectById(projectId, {
+      generations: collapseGenerationRecords(generations),
+    }),
   setProjectCaptures: (captures) => get().updateCurrentProject({ captures }),
   setProjectReferences: (references) => get().updateCurrentProject({ references }),
   deleteProjectObject: (objectId) =>

@@ -1794,6 +1794,7 @@ export function GeneratePanel({
     setCancelConfirmGeneration(undefined);
     if (!isRunningGeneration(generationToCancel)) return;
     const isTextureMap = isTextureMapGeneration(generationToCancel);
+    const isLocalRepaint = isLocalRepaintGeneration(generationToCancel);
     const textureBatchId =
       typeof generationToCancel.metadata.textureBatchId === 'string'
         ? generationToCancel.metadata.textureBatchId
@@ -1801,9 +1802,11 @@ export function GeneratePanel({
     if (textureBatchId) cancelledTextureBatchIdsRef.current.add(textureBatchId);
 
     const liveGenerations = useGenerationStore.getState().generations;
-    const generationsToCancel = isTextureMap
+    const generationsToCancel = isTextureMap || isLocalRepaint
       ? liveGenerations.filter((generation) => {
-          if (!isTextureMapGeneration(generation) || !isRunningGeneration(generation)) return false;
+          if (!isRunningGeneration(generation)) return false;
+          if (isTextureMap && !isTextureMapGeneration(generation)) return false;
+          if (isLocalRepaint && !isLocalRepaintGeneration(generation)) return false;
           const generationProjectId =
             typeof generation.metadata.projectId === 'string'
               ? generation.metadata.projectId
@@ -1863,6 +1866,7 @@ export function GeneratePanel({
     finish();
     if (cancelsTexturePipeline) setTexturePipelineProgress(undefined);
     setGenerateNotice(undefined);
+    window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
     void Promise.allSettled(cancelRequests).then((results) => {
       results.forEach((result) => {
         if (result.status === 'rejected') {
@@ -2851,6 +2855,10 @@ export function GeneratePanel({
       // submit lock or progress spinner alive after the server result exists.
       const completedGeneration: Generation = {
         ...generation,
+        // Keep one canonical client id from start through completion. Some
+        // legacy ModelView responses used the remote id here, leaving the
+        // persisted client-id record permanently `running` beside the result.
+        id: pendingGeneration.id,
         captureId: generation.captureId ?? capture.id,
         metadata: {
           ...pendingGeneration.metadata,
@@ -4086,7 +4094,10 @@ export function GeneratePanel({
       {portalRoot &&
         cancelConfirmGeneration &&
         createPortal(
-          <div className="fixed inset-0 z-[140] grid place-items-center bg-black/62 px-4 backdrop-blur-sm">
+          <div
+            data-task-preview-allowed="true"
+            className="fixed inset-0 z-[140] grid place-items-center bg-black/62 px-4 backdrop-blur-sm"
+          >
             <div className="w-full max-w-[420px] rounded-lg border border-white/16 bg-[#151520] p-4 text-white shadow-2xl">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div>

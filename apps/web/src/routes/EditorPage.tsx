@@ -2194,6 +2194,32 @@ export function EditorPage({
         .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : [])),
     );
     setGenerations(projectToHydrate.generations, projectToHydrate.id);
+    const recoveredProjectGenerations = useGenerationStore
+      .getState()
+      .generations.filter((generation) =>
+        generationBelongsToProject(generation, projectToHydrate.id),
+      );
+    const generationStateSignature = (items: Generation[]) =>
+      JSON.stringify(
+        items.map((generation) => ({
+          id: generation.id,
+          status: generation.status,
+          resultUrl: generation.resultUrl,
+          captureId: generation.captureId,
+          clientGenerationId: generation.metadata.clientGenerationId,
+          serverJobId: generation.metadata.serverJobId,
+          interrupted: generation.metadata.interrupted,
+        })),
+      );
+    if (
+      generationStateSignature(recoveredProjectGenerations) !==
+      generationStateSignature(projectToHydrate.generations)
+    ) {
+      // Persist recovery immediately in the in-memory project. The normal
+      // autosave that starts after hydration then removes the zombie task from
+      // the workspace server as well, so later restarts stay unlocked.
+      setProjectGenerationsById(projectToHydrate.id, recoveredProjectGenerations);
+    }
     setReferences(projectToHydrate.references);
     void restoreProjectModel(projectToHydrate).then(() => {
       if (restoredHistoryProjectIdRef.current === projectToHydrate.id) return;
