@@ -253,12 +253,18 @@ export function releasePreviewTexture(imageUrl: string) {
 export function uploadPreviewTextureInStripes(
   renderer: THREE.WebGLRenderer,
   texture: THREE.Texture,
-  options?: { allowWhileInteracting?: boolean },
+  options?: { allowWhileInteracting?: boolean; shouldCancel?: () => boolean },
 ) {
   if (texture.userData.liclickPreviewStripedUploadReady === true) return Promise.resolve();
   const pending = previewTextureUploadPromises.get(texture);
   if (pending) return pending;
   const upload = (async () => {
+    const throwIfCancelled = () => {
+      if (options?.shouldCancel?.()) {
+        throw new DOMException('Texture upload superseded.', 'AbortError');
+      }
+    };
+    throwIfCancelled();
     const image = texture.image;
     const usesVisibleRenderer = renderer.domElement.isConnected;
     const uploadPhasePrefix = usesVisibleRenderer
@@ -272,6 +278,7 @@ export function uploadPreviewTextureInStripes(
     const imageBitmap = typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap;
     if (!imageBitmap && workerBitmapId === undefined) {
       if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      throwIfCancelled();
       renderer.initTexture(texture);
       texture.userData.liclickPreviewStripedUploadReady = true;
       return;
@@ -294,6 +301,7 @@ export function uploadPreviewTextureInStripes(
     texture.source.dataReady = false;
     texture.needsUpdate = true;
     if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+    throwIfCancelled();
     const allocationStartedAt = performance.now();
     renderer.initTexture(texture);
     document.body.dataset.previewTextureAllocationMs = (
@@ -308,15 +316,19 @@ export function uploadPreviewTextureInStripes(
       // textures may intentionally retain flipY=true; preserve that exact
       // sampling contract while still splitting the upload into stripes.
       for (let y = 0; y < image.height; y += rowsPerStripe) {
+        throwIfCancelled();
         if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        throwIfCancelled();
         markPreviewUploadStep(`${uploadPhasePrefix}-wait-frame`);
         // Let every visible rAF callback submit first. Continuing from the rAF
         // microtask could put a detached 4K upload stripe ahead of R3F and cost
         // one presentation interval even though the stripe itself is bounded.
         await waitForBrowserPaint();
+        throwIfCancelled();
         // Input may arrive between the idle check and the next animation frame.
         // Recheck before issuing any GL work so interaction always wins.
         if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        throwIfCancelled();
         const rowCount = Math.min(rowsPerStripe, image.height - y);
         markPreviewUploadStep(`${uploadPhasePrefix}-crop`);
         const stripe =
@@ -326,6 +338,10 @@ export function uploadPreviewTextureInStripes(
                 imageOrientation: texture.flipY ? 'flipY' : 'none',
                 premultiplyAlpha: 'none',
               });
+        if (options?.shouldCancel?.()) {
+          stripe.close();
+          throw new DOMException('Texture upload superseded.', 'AbortError');
+        }
         if (workerBitmapId !== undefined) {
           // A transferred ImageBitmap resolves this promise in a microtask.
           // Split adoption from the GL upload so a due visible render task can
@@ -361,7 +377,10 @@ export function uploadPreviewTextureInStripes(
           );
           maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
           submittedSinceFlush += 1;
-          if (usesVisibleRenderer && submittedSinceFlush >= PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH) {
+          if (
+            usesVisibleRenderer &&
+            submittedSinceFlush >= PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH
+          ) {
             // `clientWaitSync(..., 0, 0)` is permitted to poll, but NVIDIA's
             // Windows driver repeatedly blocked the main thread for 134-150ms.
             // A flush preserves command order without ever synchronously asking
@@ -386,7 +405,9 @@ export function uploadPreviewTextureInStripes(
         context.flush();
         for (let frame = 0; frame < 2; frame += 1) {
           await waitForBrowserPaint();
+          throwIfCancelled();
           if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+          throwIfCancelled();
         }
       }
       texture.source.dataReady = true;

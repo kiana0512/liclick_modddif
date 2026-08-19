@@ -7,6 +7,8 @@ import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import {
   captureCurrentColorPreview,
+  captureCurrentDepthPreview,
+  captureCurrentLocalRepaintView,
   captureCurrentNormalPreview,
   captureCurrentView,
   snapshotCurrentCaptureCamera,
@@ -788,11 +790,7 @@ export function GeneratePanel({
       return !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
     });
     const candidates = projectCandidates.filter((generation) =>
-      generationBelongsToObject(
-        generation,
-        captureObjectId,
-        currentProject?.captures ?? [],
-      ),
+      generationBelongsToObject(generation, captureObjectId, currentProject?.captures ?? []),
     );
     return candidates.reduce<Generation | undefined>((latestGeneration, generation) => {
       if (!latestGeneration) return generation;
@@ -951,19 +949,24 @@ export function GeneratePanel({
       : undefined;
   const previewProcessingMode = displayedPreviewGeneration
     ? isLocalRepaintGeneration(displayedPreviewGeneration)
-      ? capturePreviewMaskUrl
-        ? 'capture-mask'
-        : 'dark-background'
+      ? 'dark-background'
       : isTextureMapGeneration(displayedPreviewGeneration)
         ? capturePreviewMaskUrl
           ? 'capture-mask'
           : undefined
         : undefined
     : undefined;
+  // A local-repaint result is a normal generated image, not the editor's
+  // selection mask.  Keeping that mask in the preview cache key made an old
+  // result jump to the newest brush position and re-ran a large hidden image
+  // composition whenever the user painted again.
+  const previewProcessingMaskUrl =
+    previewProcessingMode === 'capture-mask' ? capturePreviewMaskUrl : undefined;
   const previewResultUrl =
     previewRawResultUrl &&
+    previewProcessingMode &&
     subjectFilledPreview?.sourceUrl === previewRawResultUrl &&
-    subjectFilledPreview.maskUrl === capturePreviewMaskUrl
+    subjectFilledPreview.maskUrl === previewProcessingMaskUrl
       ? subjectFilledPreview.previewUrl
       : previewRawResultUrl;
 
@@ -986,7 +989,7 @@ export function GeneratePanel({
         if (!cancelled)
           setSubjectFilledPreview({
             sourceUrl,
-            maskUrl: capturePreviewMaskUrl,
+            maskUrl: previewProcessingMaskUrl,
             previewUrl,
           });
       })
@@ -995,14 +998,14 @@ export function GeneratePanel({
         console.warn('[Liclick 3D Texture] Could not prepare generated image preview.', error);
         setSubjectFilledPreview({
           sourceUrl,
-          maskUrl: capturePreviewMaskUrl,
+          maskUrl: previewProcessingMaskUrl,
           previewUrl: sourceUrl,
         });
       });
     return () => {
       cancelled = true;
     };
-  }, [capturePreviewMaskUrl, previewProcessingMode, previewRawResultUrl]);
+  }, [capturePreviewMaskUrl, previewProcessingMaskUrl, previewProcessingMode, previewRawResultUrl]);
 
   const syncGeneration = useCallback(
     (generation: Generation) => {
@@ -1706,9 +1709,7 @@ export function GeneratePanel({
   function isCancelledGeneration(generation: Generation) {
     const jobId = getGenerationJobId(generation);
     return (
-      generationIdentityIds(generation).some((id) =>
-        cancelledGenerationIdsRef.current.has(id),
-      ) ||
+      generationIdentityIds(generation).some((id) => cancelledGenerationIdsRef.current.has(id)) ||
       cancelledGenerationIdsRef.current.has(jobId)
     );
   }
@@ -1753,9 +1754,7 @@ export function GeneratePanel({
     const cancelRequests: Promise<unknown>[] = [];
     generationsToCancel.forEach((generation) => {
       const jobId = getGenerationJobId(generation);
-      generationIdentityIds(generation).forEach((id) =>
-        cancelledGenerationIdsRef.current.add(id),
-      );
+      generationIdentityIds(generation).forEach((id) => cancelledGenerationIdsRef.current.add(id));
       cancelledGenerationIdsRef.current.add(jobId);
       generationAbortControllersRef.current.get(generation.id)?.abort();
       generationAbortControllersRef.current.delete(generation.id);
@@ -1798,7 +1797,10 @@ export function GeneratePanel({
     void Promise.allSettled(cancelRequests).then((results) => {
       results.forEach((result) => {
         if (result.status === 'rejected') {
-          console.warn('[Liclick 3D Texture] Could not cancel remote generation job:', result.reason);
+          console.warn(
+            '[Liclick 3D Texture] Could not cancel remote generation job:',
+            result.reason,
+          );
         }
       });
     });
@@ -2131,8 +2133,7 @@ export function GeneratePanel({
 
     const client = createLiclickApiClient();
     const textureBatchId = createId('texture-map-batch');
-    const textureBatchWasCancelled = () =>
-      cancelledTextureBatchIdsRef.current.has(textureBatchId);
+    const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
     const pendingGenerations = viewCaptures.map(({ viewId, cameraView, label, capture }) => {
       const generationId = createId(`texture-map-${viewId}`);
       const modelViewReference: ReferenceImage = {
@@ -2528,6 +2529,7 @@ export function GeneratePanel({
       // user can keep orbiting without changing any of the three model inputs.
       const captureAspect = 1;
       const captureCameraSnapshot = snapshotCurrentCaptureCamera(captureAspect);
+      const captureObjectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
       submitLocksRef.current.add('repaint');
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
       const objectId = captureObjectId;
@@ -2541,11 +2543,7 @@ export function GeneratePanel({
           if (
             typeof generationObjectId === 'string'
               ? generationObjectId !== objectId
-              : !generationBelongsToObject(
-                  generation,
-                  objectId,
-                  currentProject.captures,
-                )
+              : !generationBelongsToObject(generation, objectId, currentProject.captures)
           )
             return false;
           const referenceId = generation.metadata.materialReferenceId;
@@ -2601,8 +2599,11 @@ export function GeneratePanel({
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       let currentPaintMaskDataUrl: string | undefined;
-      // ModelView INT8 receives square 2K white-model and textured-preview
-      // frames. The selection mask remains local-only and is never submitted.
+      // ModelView receives square 1K white-model and textured-preview guidance
+      // frames. They share one frozen camera/model matrix; the selection mask
+      // remains local-only and the authored/generated texture assets retain
+      // their full resolution. Keeping transient guidance at 1K prevents a
+      // multi-megapixel PNG publication from blocking Chromium's main thread.
       if (hasUserPaintMask) {
         // The selection accumulates camera-specific projections instead of using
         // model UVs. Reproject their union from the current camera immediately
@@ -2613,37 +2614,41 @@ export function GeneratePanel({
           (await useSceneStore.getState().paintMaskCapture?.({
             aspect: captureAspect,
             camera: captureCameraSnapshot.camera,
-          })) ??
-          useSceneStore.getState().paintMaskDataUrl;
+          })) ?? useSceneStore.getState().paintMaskDataUrl;
         document.body.dataset.localRepaintButton2MaskCaptureMs = (
           performance.now() - maskCaptureStartedAt
         ).toFixed(1);
         if (!currentPaintMaskDataUrl) throw new Error('无法读取已绘制的局部重绘蒙版。');
         useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
-        const maskSize = await getImageSize(currentPaintMaskDataUrl);
-        if (!maskSize.width || !maskSize.height) throw new Error('无法读取当前局部重绘蒙版尺寸。');
+        // paintMaskCapture has already produced a renderer-owned PNG. Loading
+        // it into a hidden HTMLImageElement merely to re-check its dimensions
+        // forces a synchronous 2K decode in the image onload task (measured at
+        // 164ms) and freezes the viewport. The mask stays local and its camera
+        // alignment is defined by the frozen capture request, not DOM pixels.
       }
+      currentPaintMaskDataUrl ??= createFullFrameMaskDataUrl(2048, 2048);
       document.body.dataset.perfLocalRepaintPhase = 'button2-view-capture';
       const viewCaptureStartedAt = performance.now();
-      const capture = await captureCurrentView({
-        objectId,
-        resolution: 2048,
-        framing: 'current',
-        // Match the texture-map white-model input while retaining the authored
-        // viewport framing so the local-only selection mask stays pixel aligned.
-        colorMode: 'clay-target',
-        aspect: captureAspect,
-        cameraSnapshot: captureCameraSnapshot,
-      });
+      let capture = await captureCurrentLocalRepaintView(
+        {
+          objectId,
+          resolution: 1024,
+          framing: 'current',
+          colorMode: 'clay-target',
+          aspect: captureAspect,
+          cameraSnapshot: captureCameraSnapshot,
+        },
+        currentPaintMaskDataUrl,
+      );
       document.body.dataset.localRepaintButton2ViewCaptureMs = (
         performance.now() - viewCaptureStartedAt
       ).toFixed(1);
-      setLastCapture(capture);
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       document.body.dataset.perfLocalRepaintPhase = 'button2-viewport-reference-capture';
       const viewportReferenceCaptureStartedAt = performance.now();
       const viewportReference = await captureCurrentColorPreview({
         objectId,
-        resolution: 2048,
+        resolution: 1024,
         framing: 'current',
         // ModelView must receive authored BaseColor rather than a PBR-lit
         // presentation. The generated result is painted back as BaseColor and
@@ -2655,10 +2660,6 @@ export function GeneratePanel({
       document.body.dataset.localRepaintButton2ViewportReferenceCaptureMs = (
         performance.now() - viewportReferenceCaptureStartedAt
       ).toFixed(1);
-      // When no selection was painted, archive an opaque full-frame mask that
-      // exactly matches this capture. It is used only by the returned result's
-      // apply step and deliberately does not become the current canvas mask.
-      currentPaintMaskDataUrl ??= createFullFrameMaskDataUrl(capture.width, capture.height);
       const currentPaintMaskRevision = useSceneStore.getState().paintMaskRevision;
       // captureCurrentView already archives the exact capture in projectStore.
       // Writing it a second time duplicated a large four-pass capture record and
@@ -2698,13 +2699,18 @@ export function GeneratePanel({
           paintMaskSource: hasUserPaintMask ? 'user' : 'full-frame-default',
           sourceColorMode: 'clay-target',
           viewportReferenceColorMode: 'flat-target',
-          objectMatrixWorld: getImportedModelMatrixWorld(objectId),
+          objectMatrixWorld: captureObjectMatrixWorld,
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
         },
       };
       start(pendingGeneration);
       addProjectGeneration(pendingGeneration);
+      // Publish the capture only after its running generation exists. Publishing
+      // it earlier lets the preview selector pair this new mask with the
+      // previous completed result for the same object, which triggers a hidden
+      // 2K IMG decode/mask composition in the button-2 hot path.
+      setLastCapture(capture);
       setGenerateNotice({
         tone: 'info',
         message: hasUserPaintMask
@@ -2715,11 +2721,11 @@ export function GeneratePanel({
       generationAbortControllersRef.current.set(generationId, requestAbortController);
       const [whiteModelDataUrl, materialReferenceDataUrl, viewportReferenceDataUrl] =
         await Promise.all([
-        urlToDataUrl(capture.colorUrl),
-        urlToDataUrl(materialReference.url),
+          urlToDataUrl(capture.colorUrl),
+          urlToDataUrl(materialReference.url),
           urlToDataUrl(viewportReference.colorUrl),
         ]);
-      const generation = await createModelviewApiClient().generateInpaint(
+      const generationPromise = createModelviewApiClient().generateInpaint(
         {
           clientGenerationId: generationId,
           projectId: currentProject.id,
@@ -2738,6 +2744,40 @@ export function GeneratePanel({
         },
         { signal: requestAbortController.signal },
       );
+      // The depth guard is local-only. Capture it at 1K from the exact frozen
+      // camera while the remote request is already running, then attach it to
+      // the archived capture before the result can be painted back.
+      const depthPreviewPromise = captureCurrentDepthPreview({
+        objectId,
+        resolution: 1024,
+        framing: 'current',
+        aspect: captureAspect,
+        cameraSnapshot: captureCameraSnapshot,
+      }).catch((error) => {
+        console.warn('[Liclick 3D Texture] Local repaint depth guard was not captured:', error);
+        return undefined;
+      });
+      const [generation, depthPreview] = await Promise.all([
+        generationPromise,
+        depthPreviewPromise,
+      ]);
+      if (depthPreview) {
+        capture = {
+          ...capture,
+          depthUrl: depthPreview.depthUrl,
+          depthEncoding: depthPreview.depthEncoding,
+          warnings: [...capture.warnings, ...depthPreview.warnings],
+        };
+        const captureProject = useProjectStore
+          .getState()
+          .projects.find((project) => project.id === currentProject.id);
+        updateProjectById(currentProject.id, {
+          captures: (captureProject?.captures ?? []).map((item) =>
+            item.id === capture.id ? capture : item,
+          ),
+        });
+        setLastCapture(capture);
+      }
       if (isCancelledGeneration(pendingGeneration)) return false;
       // A returned image is the terminal foreground event. Local asset writes
       // can cold-start the desktop component and occasionally take seconds (or
@@ -2749,7 +2789,7 @@ export function GeneratePanel({
         metadata: {
           ...pendingGeneration.metadata,
           ...generation.metadata,
-          objectMatrixWorld: getImportedModelMatrixWorld(objectId),
+          objectMatrixWorld: captureObjectMatrixWorld,
           maskUrl: currentPaintMaskDataUrl,
           paintMaskRevision: currentPaintMaskRevision,
           sourceColorMode: 'clay-target',
@@ -2819,7 +2859,6 @@ export function GeneratePanel({
       pushToast({ tone: 'error', title: t('localRepaintFailed'), description: message });
       return false;
     } finally {
-      delete document.body.dataset.localRepaintGenerationBusy;
       if (document.body.dataset.perfLocalRepaintPhase?.startsWith('button2-')) {
         delete document.body.dataset.perfLocalRepaintPhase;
       }
@@ -3910,9 +3949,7 @@ export function GeneratePanel({
             {(isTextureMapTab || isLocalRepaintTab) && (
               <section
                 data-texture-onboarding="reference-images"
-                data-onboarding-complete={
-                  activeSelectedReferenceIds.length > 0 ? 'true' : 'false'
-                }
+                data-onboarding-complete={activeSelectedReferenceIds.length > 0 ? 'true' : 'false'}
                 className="order-2 grid shrink-0 gap-2"
               >
                 <ReferenceGroupPicker

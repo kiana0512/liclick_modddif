@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+} from 'react';
 import { Vector3 } from 'three';
 import { cn } from '@/components/common/cn';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -77,10 +84,14 @@ function axisSign(value: number) {
 function faceHoverMarkerStyle(edges: FaceEdge[]): CSSProperties | undefined {
   if (edges.length === 1) {
     switch (edges[0]) {
-      case 'left': return { left: 0, top: 0, width: hoverMarkerThickness, height: '100%' };
-      case 'right': return { right: 0, top: 0, width: hoverMarkerThickness, height: '100%' };
-      case 'top': return { left: 0, top: 0, width: '100%', height: hoverMarkerThickness };
-      case 'bottom': return { left: 0, bottom: 0, width: '100%', height: hoverMarkerThickness };
+      case 'left':
+        return { left: 0, top: 0, width: hoverMarkerThickness, height: '100%' };
+      case 'right':
+        return { right: 0, top: 0, width: hoverMarkerThickness, height: '100%' };
+      case 'top':
+        return { left: 0, top: 0, width: '100%', height: hoverMarkerThickness };
+      case 'bottom':
+        return { left: 0, bottom: 0, width: '100%', height: hoverMarkerThickness };
     }
   }
   if (edges.length === 2) {
@@ -96,7 +107,8 @@ function faceHoverMarkerStyle(edges: FaceEdge[]): CSSProperties | undefined {
 
 function upForDirection(direction: Vector3) {
   const horizontalLength = Math.hypot(direction.x, direction.z);
-  if (horizontalLength < 0.001) return direction.y >= 0 ? new Vector3(0, 0, -1) : new Vector3(0, 0, 1);
+  if (horizontalLength < 0.001)
+    return direction.y >= 0 ? new Vector3(0, 0, -1) : new Vector3(0, 0, 1);
 
   const worldUp = new Vector3(0, 1, 0);
   const up = worldUp.sub(direction.clone().multiplyScalar(worldUp.dot(direction)));
@@ -134,27 +146,33 @@ export function ViewCube() {
   const lastStateRef = useRef({ pitch: -24, yaw: 38, label: faceLabels.front });
   const lastHoverKeyRef = useRef('');
 
-  const snapToDirection = useCallback((direction: Vector3, event?: MouseEvent) => {
-    event?.preventDefault();
-    event?.stopPropagation();
-    if (!viewport) return;
+  const snapToDirection = useCallback(
+    (direction: Vector3, event?: MouseEvent) => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      if (!viewport) return;
 
-    const target = viewport.controls?.target?.clone() ?? new Vector3(0, 0, 0);
-    const currentPosition = new Vector3();
-    viewport.camera.getWorldPosition(currentPosition);
-    const distance = Math.max(currentPosition.distanceTo(target), 0.8);
-    const snapDirection = direction.clone().normalize();
-    viewport.camera.position.copy(target).add(snapDirection.multiplyScalar(distance));
-    viewport.camera.up.copy(upForDirection(direction));
-    viewport.camera.lookAt(target);
-    viewport.controls?.target.copy(target);
-    viewport.controls?.update();
-    viewport.camera.updateMatrixWorld();
-  }, [viewport]);
+      const target = viewport.controls?.target?.clone() ?? new Vector3(0, 0, 0);
+      const currentPosition = new Vector3();
+      viewport.camera.getWorldPosition(currentPosition);
+      const distance = Math.max(currentPosition.distanceTo(target), 0.8);
+      const snapDirection = direction.clone().normalize();
+      viewport.camera.position.copy(target).add(snapDirection.multiplyScalar(distance));
+      viewport.camera.up.copy(upForDirection(direction));
+      viewport.camera.lookAt(target);
+      viewport.controls?.target.copy(target);
+      viewport.controls?.update();
+      viewport.camera.updateMatrixWorld();
+    },
+    [viewport],
+  );
 
-  const snapFromFaceClick = useCallback((face: CubeFace, event: MouseEvent<HTMLButtonElement>) => {
-    snapToDirection(getSnapTarget(face, event).direction, event);
-  }, [snapToDirection]);
+  const snapFromFaceClick = useCallback(
+    (face: CubeFace, event: MouseEvent<HTMLButtonElement>) => {
+      snapToDirection(getSnapTarget(face, event).direction, event);
+    },
+    [snapToDirection],
+  );
 
   const updateHoverTarget = useCallback((face: CubeFace, event: MouseEvent<HTMLButtonElement>) => {
     const nextTarget = getSnapTarget(face, event);
@@ -183,8 +201,16 @@ export function ViewCube() {
         viewport.camera.getWorldPosition(cameraPosition);
         target.copy(viewport.controls?.target ?? origin);
         direction.copy(cameraPosition).sub(target).normalize();
-        const yaw = Math.atan2(direction.x, direction.z) * (180 / Math.PI);
-        const pitch = Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * (180 / Math.PI);
+        const rawYaw = Math.atan2(direction.x, direction.z) * (180 / Math.PI);
+        // atan2 wraps at the back view (+180 -> -180). Feeding that wrapped
+        // value to a CSS transition makes the cube spin almost a full turn and
+        // visibly twitch while the camera crosses the seam. Keep yaw on the
+        // nearest continuous revolution instead.
+        let yaw = rawYaw;
+        while (yaw - lastStateRef.current.yaw > 180) yaw -= 360;
+        while (yaw - lastStateRef.current.yaw < -180) yaw += 360;
+        const pitch =
+          Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * (180 / Math.PI);
         const nextState = { pitch: -pitch, yaw, label: getViewLabel(direction) };
         const previous = lastStateRef.current;
         if (
@@ -218,8 +244,16 @@ export function ViewCube() {
       </div>
       <div className="mt-2 [perspective:540px]" style={{ width: cubeSize, height: cubeSize }}>
         <div
-          className="relative [transform-style:preserve-3d] transition-transform duration-75"
-          style={{ width: cubeSize, height: cubeSize, transform: `rotateX(${rotation.pitch}deg) rotateY(${rotation.yaw}deg)` }}
+          className="relative [transform-style:preserve-3d] will-change-transform"
+          style={{
+            width: cubeSize,
+            height: cubeSize,
+            // CSS rotates the cube itself while `yaw` describes the camera
+            // orbit. Those rotations are inverse operations. Using the same
+            // sign mirrored the visible corner (LEFT | FRONT instead of the
+            // user-facing FRONT | RIGHT).
+            transform: `rotateX(${rotation.pitch}deg) rotateY(${-rotation.yaw}deg)`,
+          }}
         >
           {(Object.keys(faceLabels) as CubeFace[]).map((face) => {
             const hoverEdges = hoveredTarget?.face === face ? hoveredTarget.edges : [];
@@ -238,7 +272,12 @@ export function ViewCube() {
                     ? 'border-liclick-pink bg-liclick-pink text-white'
                     : 'border-[#31333b] bg-white text-[#191a22] hover:border-liclick-pink/70',
                 )}
-                style={{ width: cubeSize, height: cubeSize, transform: faceTransform(face), backfaceVisibility: 'hidden' }}
+                style={{
+                  width: cubeSize,
+                  height: cubeSize,
+                  transform: faceTransform(face),
+                  backfaceVisibility: 'hidden',
+                }}
                 onClick={(event) => snapFromFaceClick(face, event)}
                 onMouseMove={(event) => updateHoverTarget(face, event)}
                 onMouseLeave={clearHoverTarget}
@@ -248,7 +287,9 @@ export function ViewCube() {
                 {hoverMarkerStyle && (
                   <span
                     className="pointer-events-none absolute z-20 rounded-sm bg-liclick-pink shadow-[0_0_12px_rgba(255,98,210,0.92)]"
-                    data-testid={hoverEdges.length === 2 ? 'view-cube-hover-vertex' : 'view-cube-hover-edge'}
+                    data-testid={
+                      hoverEdges.length === 2 ? 'view-cube-hover-vertex' : 'view-cube-hover-edge'
+                    }
                     style={hoverMarkerStyle}
                   />
                 )}

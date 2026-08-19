@@ -72,11 +72,16 @@ import {
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import {
+  createMaskedProjectedImage,
   createProjectionMaskedImage,
   prewarmMaskedProjectedImageWorker,
 } from '@/engine/projection/createMaskedProjectedImage';
 import { isLocalRepaintProjectedLayer } from '@/engine/bake/projectedOverlayComposition';
-import { syncProjectedLayerMaterialProjection } from '@/engine/projection/ProjectedLayerMaterial';
+import {
+  createFlatPreviewMaterial,
+  disposeGeneratedMaterialTree,
+  syncProjectedLayerMaterialProjection,
+} from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
 import {
   getModelImportBatchProgress,
@@ -312,11 +317,7 @@ function createReusableProjectionBakeSignature(input: {
 }
 
 function cloneProjectionBakeImageData(imageData: ImageData) {
-  return new ImageData(
-    new Uint8ClampedArray(imageData.data),
-    imageData.width,
-    imageData.height,
-  );
+  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
 }
 
 async function waitForProjectRestoreIdle(timeoutMs = 800) {
@@ -410,6 +411,21 @@ function disposeProjectModelBoundsPlaceholder(model: ModelLoadResult | undefined
     materials.forEach((material) => material.dispose());
   });
   model.group.removeFromParent();
+}
+
+function prepareProjectRestoreOutline(model: ModelLoadResult) {
+  const outlineMaterial = createFlatPreviewMaterial(undefined, false);
+  const disposedMaterials = new Set<THREE.Material | THREE.Material[]>();
+  model.group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || child.userData.liclickPaintOverlay) return;
+    const previousMaterial = child.material;
+    child.material = outlineMaterial;
+    if (previousMaterial === outlineMaterial || disposedMaterials.has(previousMaterial)) return;
+    disposedMaterials.add(previousMaterial);
+    disposeGeneratedMaterialTree(previousMaterial);
+  });
+  model.group.userData.liclickRestoreOutlinePrepared = true;
+  return model;
 }
 
 function startProjectModelSourcePrefetch(
@@ -906,6 +922,7 @@ export function EditorPage({
     'idle',
   );
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
+  const [presentedViewportProjectId, setPresentedViewportProjectId] = useState<string>();
   const [publishingToRetopology, setPublishingToRetopology] = useState(false);
   const publishingToBakeRef = useRef(false);
   const [publishingToBake, setPublishingToBake] = useState(false);
@@ -1029,11 +1046,7 @@ export function EditorPage({
         Boolean(generation.resultUrl) &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project?.captures ?? [],
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
     );
   }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
   const localImageGenerationStoreRunning = useMemo(() => {
@@ -1043,11 +1056,7 @@ export function EditorPage({
         (generation.status === 'queued' || generation.status === 'running') &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project?.captures ?? [],
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
     );
   }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
   const localImageGenerationRunning =
@@ -1111,6 +1120,9 @@ export function EditorPage({
     reusableProjectionBakeCacheRef.current.clear();
     setRouteProjectStatus('idle');
     setServerReadyProjectId(undefined);
+    setPresentedViewportProjectId(undefined);
+    delete document.body.dataset.atomicModelRevealPainted;
+    delete document.body.dataset.atomicModelRevealPaintedObjectId;
     restoredHistoryProjectIdRef.current = undefined;
     hydratedProjectVersionRef.current = undefined;
     restoredModelKeyRef.current = undefined;
@@ -1121,6 +1133,21 @@ export function EditorPage({
     setModelImportBusy(modelImportRunningRef.current);
     setModelImportProgress(undefined);
   }, [authenticatedUserId, authStatus, projectId]);
+
+  useEffect(() => {
+    const handleInitialModelFramePresented = () => {
+      setPresentedViewportProjectId(projectId);
+    };
+    window.addEventListener(
+      'liclick:initial-model-frame-presented',
+      handleInitialModelFramePresented,
+    );
+    return () =>
+      window.removeEventListener(
+        'liclick:initial-model-frame-presented',
+        handleInitialModelFramePresented,
+      );
+  }, [projectId]);
 
   useEffect(
     () => () => {
@@ -2050,7 +2077,12 @@ export function EditorPage({
     async function loadRestoredModel(object: SceneObject) {
       try {
         const sourceBuffer = await sourcePrefetchByObjectId.get(object.id);
-        await waitForProjectRestoreIdle();
+        // Geometry is the first meaningful viewport content after a hard
+        // refresh. Give React one paint for the editor chrome, then parse it
+        // immediately; the previous 800 ms idle gate left a visibly empty
+        // viewport before doing the same unavoidable parse work. Texture
+        // decoding, shader warmup and secondary models remain idle-queued.
+        await waitForBrowserPaint();
         if (restoreRequest !== modelRestoreRequestRef.current) {
           return { object, cancelled: true as const };
         }
@@ -2067,7 +2099,7 @@ export function EditorPage({
         loaded.root.userData.liclickProjectId = projectToRestore.id;
         return {
           object,
-          model: {
+          model: prepareProjectRestoreOutline({
             ...applySavedObjectToLoadedModel(loaded, object),
             // Always admit parsed geometry through the lightweight outline
             // stage first. Publishing the active FBX with its original material
@@ -2076,7 +2108,7 @@ export function EditorPage({
             // The final textured stage is still atomic and pixel-identical; the
             // queue below waits for its exact UV upload before flipping stages.
             restoreStage: 'outline' as const,
-          },
+          }),
         };
       } catch (error) {
         return { object, error };
@@ -3440,17 +3472,20 @@ export function EditorPage({
     }
     const source = localRepaintRuntime.workingImageData;
     const editMask =
-      localRepaintRuntime.mode === 'edit_layer_image'
+      input.preparedEditMask ??
+      (localRepaintRuntime.mode === 'edit_layer_image'
         ? input.userMask
         : buildEditMask(input.userMask, localRepaintRuntime.holeMask, {
             includeBlankArea: input.includeBlankArea,
             dilationRadius: input.limitToBlankAndSelection ? 0 : 8,
-          });
+          }));
     if (!ensureMaskContent(editMask)) throw new Error(t('localRepaintMaskMissing'));
-    const protectMask = input.preserveUnmaskedArea
-      ? buildProtectMask(localRepaintRuntime.objectMask, editMask)
-      : createEmptyMask(source.width, source.height);
-    const bbox = computeMaskBoundingBox(editMask);
+    const protectMask =
+      input.preparedProtectMask ??
+      (input.preserveUnmaskedArea
+        ? buildProtectMask(localRepaintRuntime.objectMask, editMask)
+        : createEmptyMask(source.width, source.height));
+    const bbox = input.preparedBbox ?? computeMaskBoundingBox(editMask);
     if (!bbox) throw new Error(t('localRepaintMaskMissing'));
     const roiRect = expandRect(bbox, 32, { width: source.width, height: source.height });
     const prompt = buildLocalRepaintPrompt({
@@ -3559,17 +3594,20 @@ export function EditorPage({
     if (!localRepaintRuntime) throw new Error(t('localRepaintUnavailable'));
     const source = localRepaintRuntime.workingImageData;
     const editMask =
-      localRepaintRuntime.mode === 'edit_layer_image'
+      input.preparedEditMask ??
+      (localRepaintRuntime.mode === 'edit_layer_image'
         ? input.userMask
         : buildEditMask(input.userMask, localRepaintRuntime.holeMask, {
             includeBlankArea: input.includeBlankArea,
             dilationRadius: input.limitToBlankAndSelection ? 0 : 8,
-          });
+          }));
     if (!ensureMaskContent(editMask)) throw new Error(t('localRepaintMaskMissing'));
-    const protectMask = input.preserveUnmaskedArea
-      ? buildProtectMask(localRepaintRuntime.objectMask, editMask)
-      : createEmptyMask(source.width, source.height);
-    const bbox = computeMaskBoundingBox(editMask);
+    const protectMask =
+      input.preparedProtectMask ??
+      (input.preserveUnmaskedArea
+        ? buildProtectMask(localRepaintRuntime.objectMask, editMask)
+        : createEmptyMask(source.width, source.height));
+    const bbox = input.preparedBbox ?? computeMaskBoundingBox(editMask);
     if (!bbox) throw new Error(t('localRepaintMaskMissing'));
     const roiRect = expandRect(bbox, 32, { width: source.width, height: source.height });
     const filled = contentAwareFillMaskedPixels(source, editMask, localRepaintRuntime.objectMask, {
@@ -4100,8 +4138,7 @@ export function EditorPage({
         ].join('|'),
       });
       const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get('merge-uv');
-      const projectionBakeCacheHit =
-        reusableProjectionBake?.signature === projectionBakeSignature;
+      const projectionBakeCacheHit = reusableProjectionBake?.signature === projectionBakeSignature;
       document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
         ? 'merge-uv-hit'
         : 'merge-uv-miss';
@@ -4878,23 +4915,28 @@ export function EditorPage({
     void runExportAction(t('exporting'), actions[actionId]);
   }
 
-  const getLocalRepaintProjectionImage = useCallback((resultUrl: string) => {
-    const cached = localRepaintProjectionImageCacheRef.current.get(resultUrl);
-    if (cached) return cached;
-    // The generation result is already a browser-loadable asset URL. Converting
-    // a 2K/4K response to base64 duplicated the download, copied every byte on
-    // the main thread and accounted for most of the observed 3-5 second cold
-    // activation. Keep the original URL; the viewport image loader uses CORS
-    // and the persisted layer already stores this same asset.
-    const promise = Promise.resolve(resultUrl);
-    localRepaintProjectionImageCacheRef.current.set(resultUrl, promise);
-    promise.catch(() => {
-      if (localRepaintProjectionImageCacheRef.current.get(resultUrl) === promise) {
-        localRepaintProjectionImageCacheRef.current.delete(resultUrl);
-      }
-    });
-    return promise;
-  }, []);
+  const getLocalRepaintProjectionImage = useCallback(
+    (resultUrl: string, silhouetteUrl?: string) => {
+      const cacheKey = `${resultUrl}\u0000${silhouetteUrl ?? ''}`;
+      const cached = localRepaintProjectionImageCacheRef.current.get(cacheKey);
+      if (cached) return cached;
+      // Reuse the repository's worker-backed transparency/alignment algorithm.
+      // The clay capture supplies the complete object silhouette; the smaller
+      // authored repaint mask remains separate and only limits where the aligned
+      // result can affect the model.
+      const promise = silhouetteUrl
+        ? createMaskedProjectedImage(resultUrl, silhouetteUrl)
+        : Promise.resolve(resultUrl);
+      localRepaintProjectionImageCacheRef.current.set(cacheKey, promise);
+      promise.catch(() => {
+        if (localRepaintProjectionImageCacheRef.current.get(cacheKey) === promise) {
+          localRepaintProjectionImageCacheRef.current.delete(cacheKey);
+        }
+      });
+      return promise;
+    },
+    [],
+  );
 
   useEffect(() => {
     const handleLocalRepaintPrewarmProgress = (event: Event) => {
@@ -4936,17 +4978,19 @@ export function EditorPage({
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project?.captures ?? [],
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
     );
     if (!latestLocalRepaintGeneration?.resultUrl) return;
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
     // apply button should only bind an already warm source, regardless of which
     // repaint round the user is entering.
-    void getLocalRepaintProjectionImage(latestLocalRepaintGeneration.resultUrl).catch((error) => {
+    const generationCapture = project?.captures.find(
+      (capture) => capture.id === latestLocalRepaintGeneration.captureId,
+    );
+    void getLocalRepaintProjectionImage(
+      latestLocalRepaintGeneration.resultUrl,
+      generationCapture?.colorUrl,
+    ).catch((error) => {
       console.warn('[Liclick 3D Texture] Could not preload local repaint result:', error);
     });
   }, [
@@ -4974,11 +5018,7 @@ export function EditorPage({
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(
-          generation,
-          preferredObjectId,
-          project.captures,
-        ),
+        generationBelongsToObject(generation, preferredObjectId, project.captures),
     );
     if (!latestLocalRepaintGeneration?.resultUrl) return undefined;
     const generationCapture =
@@ -5000,12 +5040,11 @@ export function EditorPage({
         Boolean(layer.replacementTargetLayerId) &&
         layer.objectId === objectId,
     );
-    const targetLayer = currentLayers.find(
+    let targetLayer = currentLayers.find(
       (layer) =>
         layer.id === generationResultLayer?.replacementTargetLayerId &&
         isLocalRepaintDestinationLayer(layer, objectId),
     );
-    if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) return undefined;
     const generationMaskUrl =
       typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
         ? latestLocalRepaintGeneration.metadata.maskUrl
@@ -5015,6 +5054,7 @@ export function EditorPage({
     if (
       preparedSource?.generationId === latestLocalRepaintGeneration.id &&
       preparedSource.objectId === objectId &&
+      targetLayer &&
       preparedSource.targetLayerId === targetLayer.id
     )
       return undefined;
@@ -5025,8 +5065,28 @@ export function EditorPage({
     const stage = async () => {
       const startedAt = performance.now();
       try {
+        if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
+          // Create/bind the destination while the browser is idle, not in the
+          // button-3 click handler. Preserve the user's active layer because
+          // this is preparation rather than an explicit layer selection.
+          const activeLayerId = useLayerStore.getState().activeProjectedLayerId;
+          targetLayer = ensureLocalRepaintSessionLayer({
+            objectId,
+            generationId: latestLocalRepaintGeneration.id,
+          }).layer;
+          if (
+            activeLayerId &&
+            useLayerStore.getState().layers.some((layer) => layer.id === activeLayerId)
+          ) {
+            useLayerStore.getState().setActiveLayer(activeLayerId);
+          }
+          await waitForBrowserPaint();
+        }
+        if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) return;
+        const targetLayerId = targetLayer.id;
         const projectionImageUrl = await getLocalRepaintProjectionImage(
           latestLocalRepaintGeneration.resultUrl!,
+          generationCapture.colorUrl,
         );
         if (
           cancelled ||
@@ -5036,7 +5096,7 @@ export function EditorPage({
           return;
         const currentTarget = useLayerStore
           .getState()
-          .layers.find((layer) => layer.id === targetLayer.id);
+          .layers.find((layer) => layer.id === targetLayerId);
         if (!isLocalRepaintDestinationLayer(currentTarget, objectId)) return;
         importedModel.group.updateMatrixWorld(true);
         const nameSource = latestLocalRepaintGeneration.prompt.trim();
@@ -5103,9 +5163,6 @@ export function EditorPage({
       return;
     }
     const clickedAt = performance.now();
-    // Reserve the viewport/GPU synchronously, before React panel updates can
-    // schedule background 4K composition or projected-material promotion.
-    document.body.dataset.localRepaintGenerationBusy = '1';
     document.body.dataset.localRepaintButton2ClickedAt = clickedAt.toFixed(1);
     document.body.dataset.perfLocalRepaintPhase = 'button2-click-response';
     window.requestAnimationFrame((frameAt) => {
@@ -5127,6 +5184,11 @@ export function EditorPage({
   }, []);
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
+    const clickedAt = performance.now();
+    document.body.dataset.localRepaintButton3ClickedAt = clickedAt.toFixed(1);
+    window.requestAnimationFrame((frameAt) => {
+      document.body.dataset.localRepaintButton3ResponseMs = (frameAt - clickedAt).toFixed(1);
+    });
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
     localRepaintToolRequestRevisionRef.current = requestRevision;
     const showPrewarmProgress = (detail: string, progress: number) => {
@@ -5160,11 +5222,7 @@ export function EditorPage({
           generation.status === 'succeeded' &&
           isLocalRepaintGeneration(generation) &&
           (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-          generationBelongsToObject(
-            generation,
-            preferredObjectId,
-            project.captures,
-          ),
+          generationBelongsToObject(generation, preferredObjectId, project.captures),
       );
       const generationCapture = latestLocalRepaintGeneration
         ? (project.captures.find(
@@ -5176,10 +5234,6 @@ export function EditorPage({
             ?.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId))
         : undefined;
       const objectId = preferredObjectId;
-      const { layer: targetLayer } = ensureLocalRepaintSessionLayer({
-        objectId,
-        generationId: latestLocalRepaintGeneration?.id,
-      });
       if (!latestLocalRepaintGeneration?.resultUrl) {
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
@@ -5191,6 +5245,93 @@ export function EditorPage({
         });
         return;
       }
+      const benchmarkMaskUrl =
+        document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
+          ? useSceneStore.getState().paintMaskDataUrl
+          : undefined;
+      const generationMaskUrl =
+        benchmarkMaskUrl ??
+        (typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
+          ? latestLocalRepaintGeneration.metadata.maskUrl
+          : paintMaskDataUrl);
+      // Applying an already generated repaint must use the mask archived with
+      // that generation. The transient viewport selection is intentionally not
+      // guaranteed to survive reloads, tool changes, or a long generation job.
+      if (!generationMaskUrl) {
+        pushToast({
+          tone: 'warning',
+          title: t('localRepaintMaskMissing'),
+          description: t('inpaintSelectToolHelp'),
+          dedupeKey: 'local-repaint-mask-missing',
+        });
+        return;
+      }
+
+      // Hot path first: the result, mask and destination are staged while the
+      // remote generation is finishing. Do not normalize every layer, trigger
+      // an immediate project save and rebuild React subscribers before checking
+      // the prepared GPU source. In the normal case button 3 now only flips the
+      // tool mode and returns in the same frame.
+      const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
+      const preparedTargetLayer = preparedSource?.targetLayerId
+        ? useLayerStore.getState().layers.find((layer) => layer.id === preparedSource.targetLayerId)
+        : undefined;
+      const preparedTargetId = preparedTargetLayer?.id;
+      const preparedSourceHasGpuError =
+        document.body.dataset.localRepaintGpuErrorGeneration === latestLocalRepaintGeneration.id &&
+        document.body.dataset.localRepaintGpuErrorTarget === preparedTargetId;
+      if (
+        preparedSource?.generationId === latestLocalRepaintGeneration.id &&
+        preparedSource.allowedMaskUrl === generationMaskUrl &&
+        preparedSource.objectId === objectId &&
+        preparedTargetId &&
+        isLocalRepaintDestinationLayer(preparedTargetLayer, objectId) &&
+        !preparedSourceHasGpuError
+      ) {
+        const isGpuReady = () =>
+          document.body.dataset.localRepaintGpuReadyGeneration ===
+            latestLocalRepaintGeneration.id &&
+          document.body.dataset.localRepaintGpuReadyTarget === preparedTargetId;
+        const hasGpuError = () =>
+          document.body.dataset.localRepaintGpuErrorGeneration ===
+            latestLocalRepaintGeneration.id &&
+          document.body.dataset.localRepaintGpuErrorTarget === preparedTargetId;
+        if (isGpuReady()) {
+          document.body.dataset.localRepaintButton3ActivationPath = 'resident-gpu';
+          clearPrewarmProgress();
+          setPaintTool('inpaint-apply');
+          return;
+        }
+        document.body.dataset.localRepaintButton3ActivationPath = 'background-prewarm';
+        setPaintTool('none');
+        showPrewarmProgress('复用后台 GPU 预热任务', 0.2);
+        while (
+          localRepaintToolRequestRevisionRef.current === requestRevision &&
+          !isGpuReady() &&
+          !hasGpuError()
+        ) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+        if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
+        clearPrewarmProgress();
+        if (isGpuReady()) {
+          setPaintTool('inpaint-apply');
+        } else {
+          pushToast({
+            tone: 'error',
+            title: '局部重绘 GPU 准备失败',
+            description: '高清结果或蒙版无法上传，请再次点击局部重绘重试。',
+            dedupeKey: 'local-repaint-gpu-prewarm-failed',
+          });
+        }
+        return;
+      }
+
+      const { layer: targetLayer } = ensureLocalRepaintSessionLayer({
+        objectId,
+        generationId: latestLocalRepaintGeneration.id,
+      });
+      document.body.dataset.localRepaintButton3ActivationPath = 'cold-prepare';
       if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
         setLocalRepaintProjectionSource(undefined);
         setPaintTool('none');
@@ -5208,80 +5349,6 @@ export function EditorPage({
       }
       importedModel.group.updateMatrixWorld(true);
       const captureId = generationCapture?.id ?? latestLocalRepaintGeneration.captureId;
-      const benchmarkMaskUrl =
-        document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
-          ? useSceneStore.getState().paintMaskDataUrl
-          : undefined;
-      const generationMaskUrl =
-        benchmarkMaskUrl ??
-        (typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
-          ? latestLocalRepaintGeneration.metadata.maskUrl
-          : paintMaskDataUrl);
-      // Applying an already generated repaint must use the mask archived with
-      // that generation. The transient viewport selection is intentionally not
-      // guaranteed to survive reloads, tool changes, or a long generation job.
-      // Requiring it here left the toolbar visually focused but still in Select,
-      // so every apparent brush stroke was silently ignored.
-      if (!generationMaskUrl) {
-        pushToast({
-          tone: 'warning',
-          title: t('localRepaintMaskMissing'),
-          description: t('inpaintSelectToolHelp'),
-          dedupeKey: 'local-repaint-mask-missing',
-        });
-        return;
-      }
-      const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
-      const preparedSourceHasGpuError =
-        document.body.dataset.localRepaintGpuErrorGeneration === latestLocalRepaintGeneration.id &&
-        document.body.dataset.localRepaintGpuErrorTarget === targetLayer.id;
-      if (
-        preparedSource?.generationId === latestLocalRepaintGeneration.id &&
-        preparedSource.allowedMaskUrl === generationMaskUrl &&
-        preparedSource.objectId === objectId &&
-        preparedSource.targetLayerId === targetLayer.id &&
-        !preparedSourceHasGpuError
-      ) {
-        const isGpuReady = () =>
-          document.body.dataset.localRepaintGpuReadyGeneration ===
-            latestLocalRepaintGeneration.id &&
-          document.body.dataset.localRepaintGpuReadyTarget === targetLayer.id;
-        const hasGpuError = () =>
-          document.body.dataset.localRepaintGpuErrorGeneration ===
-            latestLocalRepaintGeneration.id &&
-          document.body.dataset.localRepaintGpuErrorTarget === targetLayer.id;
-        if (isGpuReady()) {
-          clearPrewarmProgress();
-          setPaintTool('inpaint-apply');
-          return;
-        }
-        // The user clicked while background staging was still finishing. Block
-        // strokes, but keep the decoded source/material job alive instead of
-        // restarting it. In the common warm case this branch is never entered.
-        setPaintTool('none');
-        showPrewarmProgress('复用后台 GPU 预热任务', 0.2);
-        while (
-          localRepaintToolRequestRevisionRef.current === requestRevision &&
-          !isGpuReady() &&
-          !hasGpuError()
-        ) {
-          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-        }
-        if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
-        if (isGpuReady()) {
-          clearPrewarmProgress();
-          setPaintTool('inpaint-apply');
-        } else {
-          clearPrewarmProgress();
-          pushToast({
-            tone: 'error',
-            title: '局部重绘 GPU 准备失败',
-            description: '高清结果或蒙版无法上传，请再次点击局部重绘重试。',
-            dedupeKey: 'local-repaint-gpu-prewarm-failed',
-          });
-        }
-        return;
-      }
       // A new ComfyUI result is a fresh interactive session. Keep painting
       // disabled while its lightweight source and renderer material are being
       // prepared, so an early gesture cannot be silently queued behind setup.
@@ -5291,6 +5358,7 @@ export function EditorPage({
       try {
         projectionImageUrl = await getLocalRepaintProjectionImage(
           latestLocalRepaintGeneration.resultUrl,
+          generationCapture?.colorUrl,
         );
       } catch (error) {
         if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
@@ -5539,9 +5607,8 @@ export function EditorPage({
           layers: sourceProjectedLayers,
           optionSignature: 'coverage-confidence:1|transparent|no-postprocess',
         });
-        const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get(
-          'content-aware-repair',
-        );
+        const reusableProjectionBake =
+          reusableProjectionBakeCacheRef.current.get('content-aware-repair');
         const projectionBakeCacheHit =
           reusableProjectionBake?.signature === projectionBakeSignature;
         document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
@@ -5652,8 +5719,7 @@ export function EditorPage({
               ? undefined
               : (progress) => {
                   if (document.body.dataset.perfContentAwareRepairMeasuring === '1') {
-                    document.body.dataset.perfContentAwareRepairPhase =
-                      `s9-topology-${progress.phase}`;
+                    document.body.dataset.perfContentAwareRepairPhase = `s9-topology-${progress.phase}`;
                   }
                   const phaseRange =
                     progress.phase === 'analyze'
@@ -6383,6 +6449,14 @@ export function EditorPage({
   return (
     <>
       <PerfScenarioLoader />
+      {presentedViewportProjectId !== projectId && (
+        <main className="liclick-surface fixed inset-0 z-[220] grid place-items-center px-6 text-white">
+          <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
+            <div className="text-lg font-semibold">{t('projectLoading')}</div>
+            <p className="mt-2 text-sm leading-6 text-white/54">{t('projectLoadingHelp')}</p>
+          </section>
+        </main>
+      )}
       <input
         ref={modelInputRef}
         type="file"
@@ -6516,6 +6590,7 @@ export function EditorPage({
           mode={localRepaintRuntime.mode}
           workingImageUrl={localRepaintRuntime.workingImageUrl}
           objectMask={localRepaintRuntime.objectMask}
+          holeMask={localRepaintRuntime.holeMask}
           initialUserMask={localRepaintRuntime.initialUserMask}
           targetName={localRepaintRuntime.targetName}
           references={references}

@@ -595,11 +595,10 @@ const fragmentShader = `
       ),
       useProjectionFacingGuard
     );
-    projectionFacingCoverage = mix(
-      projectionFacingCoverage,
-      1.0,
-      surfaceLockedVisibility
-    );
+    // Surface-locked repaint still needs an inward-facing footprint. Depth
+    // proves which surface was captured, but it does not make a grazing side
+    // face part of the authored view; keeping this smooth guard avoids both
+    // cross-side leakage and hard black seams.
     // On a foreshortened plane the expected depth changes several times more
     // per source pixel than on a face-on plane. The normal buffer keeps this
     // relaxation on the same surface, while the wider tolerance reconnects
@@ -734,6 +733,7 @@ const fragmentShader = `
     float lockedSurfaceCoverage =
       layerOpacity *
       sourceAlpha *
+      projectionFacingCoverage *
       lockedSafetyCoverage *
       step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage);
     float coverage = mix(continuousCoverage, lockedSurfaceCoverage, surfaceLockedVisibility);
@@ -913,7 +913,6 @@ function buildStackFragmentShader(
   const layerUsesSurfaceLock = (index: number) =>
     layers[index].projectionVisibilityPolicy === 'surface-locked-v1';
   const projectionFacingCoverage = (index: number) => {
-    if (layerUsesSurfaceLock(index)) return '1.0';
     const minimum = THREE.MathUtils.clamp(layers[index].minimumProjectionFacing ?? 0, 0, 0.99);
     return minimum > 0
       ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
@@ -1570,7 +1569,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
+          ? `layerOpacity${index} * sourceAlpha * angleCoverage * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
           : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -1667,7 +1666,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
+          ? `layerOpacity${index} * sourceAlpha * angleCoverage * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
           : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -2550,7 +2549,10 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
     uvOverlayTexture?: THREE.Texture;
     uvOverlayRenderedColor?: boolean;
     baseTexture?: THREE.Texture;
-    uvOverlayOpacity: number;
+    // Omit while a replacement UV stack is still being composed/uploaded. The
+    // resident shader then keeps the last complete texture/opacity pair until
+    // the new pair can be published atomically.
+    uvOverlayOpacity?: number;
     uvOverlayBelowProjected?: boolean;
     topUvOverlayOpacity: number;
     // Omit while an asynchronous multi-layer base composite is being prepared.

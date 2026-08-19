@@ -63,6 +63,7 @@ import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { encodeProjectionMaskInWorker } from '@/engine/localRepaint/projectionMaskEncodeWorker';
 import { getCanvasAlphaBoundsAsync } from '@/utils/getCanvasAlphaBounds';
 import {
@@ -181,6 +182,16 @@ const PROJECTION_PAINT_MAX_SIZE = 512;
 // coverage is dynamic; a 1024px mask keeps soft edges crisp without uploading
 // the multi-megapixel color source again on every pointer frame.
 const LOCAL_REPAINT_LIVE_MASK_MAX_SIZE = 1024;
+// The durable generated image may be 4K-16K. Painting only needs a responsive
+// screen-space source; the original URL remains authoritative for persistence,
+// export and final baking. Uploading a 16K texture in one gl.initTexture call
+// produced 200-900ms presentation stalls on button 3.
+// Interactive paint preview is intentionally capped at 1K. The original
+// generated image remains untouched for durable projection/export; only the
+// resident brush feedback texture is resized asynchronously. This keeps a
+// first-time upload below one presentation budget instead of asking WebGL to
+// synchronously upload a multi-megapixel/16K source on the main thread.
+const LOCAL_REPAINT_LIVE_SOURCE_MAX_SIZE = 1024;
 // Keep brush interaction on the lightweight projected preview, then promote the
 // accumulated result to the selected UV resolution once the editor is idle.
 // New paint input invalidates the queued commit, so the expensive pass never
@@ -199,7 +210,10 @@ const PROJECTED_ERASER_HIGH_RES_IDLE_MS = 1800;
 // near-grazing fallback guard for legacy sources without capture depth; a high
 // face-on threshold creates permanent brush dead zones on curved/hard-edge
 // geometry even though those pixels are visibly present in the generated view.
-const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.02;
+// Keep the editable footprint slightly inside the captured silhouette. The
+// smooth shader feather runs from 0.08 to 0.16, so grazing side faces fade to
+// the underlying UV instead of receiving a stretched repaint or a black seam.
+const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.08;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
@@ -4430,6 +4444,26 @@ function getLocalRepaintLiveMaskSize(sourceWidth: number, sourceHeight: number) 
   };
 }
 
+async function createLocalRepaintLiveSource(
+  sourceImage: HTMLImageElement,
+): Promise<HTMLImageElement | ImageBitmap> {
+  const sourceWidth = sourceImage.naturalWidth || sourceImage.width;
+  const sourceHeight = sourceImage.naturalHeight || sourceImage.height;
+  const maximumDimension = Math.max(sourceWidth, sourceHeight);
+  if (
+    maximumDimension <= LOCAL_REPAINT_LIVE_SOURCE_MAX_SIZE ||
+    typeof createImageBitmap !== 'function'
+  ) {
+    return sourceImage;
+  }
+  const scale = LOCAL_REPAINT_LIVE_SOURCE_MAX_SIZE / maximumDimension;
+  return createImageBitmap(sourceImage, {
+    resizeWidth: Math.max(1, Math.round(sourceWidth * scale)),
+    resizeHeight: Math.max(1, Math.round(sourceHeight * scale)),
+    resizeQuality: 'high',
+  });
+}
+
 const localRepaintFalloffCanvasCache = new WeakMap<
   HTMLImageElement,
   WeakMap<HTMLImageElement, Map<string, Promise<HTMLCanvasElement>>>
@@ -6118,6 +6152,7 @@ function SurfacePaintOverlay() {
     url: string;
     allowedMaskUrl: string;
     image: HTMLImageElement;
+    liveSource: HTMLImageElement | ImageBitmap;
     previewImageUrl: string;
     allowedMaskImage?: HTMLImageElement;
     falloffCanvas?: HTMLCanvasElement;
@@ -7956,7 +7991,13 @@ function SurfacePaintOverlay() {
             return restoreScene;
           },
         })),
-        { dataTexture: true, ignoreSceneBackground: true },
+        {
+          dataTexture: true,
+          ignoreSceneBackground: true,
+          // Projector accumulation is exact and order preserving; yielding
+          // changes only scheduling, not any pixel or camera transform.
+          waitForViewportIdle: waitForBrowserPaint,
+        },
       );
       document.body.dataset.localRepaintButton2MaskCaptureMs = (
         performance.now() - startedAt
@@ -8212,14 +8253,17 @@ function SurfacePaintOverlay() {
           liveMaskSize.width,
           liveMaskSize.height,
         );
+        const liveSource =
+          previousAssets?.url === source.imageUrl
+            ? previousAssets.liveSource
+            : await createLocalRepaintLiveSource(sourceImage);
         if (cancelled) {
           traceSourceEffect('cancelled-after-falloff');
           return;
         }
         reportLocalRepaintPrewarmProgress(0.4, '高清图与透明蒙版已解码');
-        // Register the decoded image itself as the dedicated foreground texture.
-        // Copying 2K/4K pixels through a full-size 2D canvas blocked the main
-        // thread and duplicated memory before the same pixels reached GPU.
+        // Register an asynchronously resized GPU source for interaction. The
+        // full-resolution HTML image remains beside it for final quality work.
         const registerStartedAt = performance.now();
         // Each generation owns an immutable runtime texture URL. Reusing one
         // component-wide id disposed/replaced the previous generation's texture;
@@ -8230,7 +8274,7 @@ function SurfacePaintOverlay() {
             source,
             source.objectId ?? selectedObjectId ?? 'unknown-object',
           )}`,
-          sourceImage,
+          liveSource,
           THREE.SRGBColorSpace,
         );
         if (document.body.dataset.perfLocalRepaintMeasuring === '1') {
@@ -8243,6 +8287,7 @@ function SurfacePaintOverlay() {
           url: source.imageUrl,
           allowedMaskUrl: source.allowedMaskUrl,
           image: sourceImage,
+          liveSource,
           previewImageUrl,
           allowedMaskImage,
           falloffCanvas,

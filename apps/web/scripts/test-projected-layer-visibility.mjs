@@ -11,6 +11,7 @@ const sceneRootSource = readFileSync(
   path.join(root, 'src/engine/viewport/SceneRoot.tsx'),
   'utf8',
 );
+const editorPageSource = readFileSync(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8');
 const generatePanelSource = readFileSync(
   path.join(root, 'src/components/panels/GeneratePanel.tsx'),
   'utf8',
@@ -29,6 +30,22 @@ const viewportPanelSource = readFileSync(
 );
 const sceneStoreSource = readFileSync(path.join(root, 'src/stores/sceneStore.ts'), 'utf8');
 const editorShellSource = readFileSync(path.join(root, 'src/layouts/EditorShell.tsx'), 'utf8');
+const localRepaintDialogSource = readFileSync(
+  path.join(root, 'src/components/localRepaint/LocalRepaintDialog.tsx'),
+  'utf8',
+);
+const localRepaintMaskWorkerSource = readFileSync(
+  path.join(root, 'src/workers/localRepaintMaskPreparation.worker.ts'),
+  'utf8',
+);
+const renderTargetUtilsSource = readFileSync(
+  path.join(root, 'src/engine/capture/renderTargetUtils.ts'),
+  'utf8',
+);
+const gpuReadbackWorkerSource = readFileSync(
+  path.join(root, 'src/workers/encodeGpuReadbackPng.worker.ts'),
+  'utf8',
+);
 assert.match(
   viewportPanelSource,
   /\{ value: 'flat', labelKey: 'flatShort' \},\s*\{ value: 'pbr', labelKey: 'pbr' \}/,
@@ -69,6 +86,21 @@ assert.match(
   'Flat target capture must disable both preview lighting and exposure compensation.',
 );
 assert.match(
+  captureCurrentViewSource,
+  /localRepaintInteractiveCaptureSize = 512[\s\S]*?mutatedShaderMaterials[\s\S]*?return source;/,
+  'Button 2 must reuse the resident flat shader at a bounded interactive capture size.',
+);
+assert.match(
+  renderTargetUtilsSource,
+  /encodedWidth[\s\S]*?encodeFlippedGpuReadbackPngInWorker[\s\S]*?options\.encodedWidth/,
+  'Transient repaint guidance resizing must stay in the PNG worker.',
+);
+assert.match(
+  gpuReadbackWorkerSource,
+  /resizeRgbaBilinear[\s\S]*?encodeRgbaPngBytes\(outputWidth, outputHeight, output\)/,
+  'The PNG worker must resize and encode without returning raw 2K RGBA to the main thread.',
+);
+assert.match(
   sceneRootSource,
   /const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject\([\s\S]*?const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?hasVisibleUvContribution[\s\S]*?!uvMaterialUpdated[\s\S]*?!projectedMaterialUpdated[\s\S]*?setUvVisibilityRenderRevision/,
   'Opening an eye after an all-hidden cold restore must schedule a material pass when no resident shader accepted the uniform update.',
@@ -107,6 +139,91 @@ assert.match(
   sceneRootSource,
   /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) return;\s*if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial/,
   'PBR changes must reuse the resident white or projected material instead of rebuilding it.',
+);
+assert.match(
+  sceneRootSource,
+  /const allowProgressiveDirectBootstrap = false as boolean/,
+  'Cold projection restore must not expose a one-camera partial bootstrap.',
+);
+assert.match(
+  sceneRootSource,
+  /const hasAuthoritativeVisibleProjectedLayer = useLayerStore\([\s\S]*?layer\.type === 'projected'[\s\S]*?Boolean\(layer\.camera\)/,
+  'Cold restore must determine visible projected content directly from the authoritative layer store.',
+);
+assert.match(
+  sceneRootSource,
+  /!hasAuthoritativeVisibleProjectedLayer &&[\s\S]*?loadedUvTexture/,
+  'A UV bootstrap must never cover a visible projected stack while its final material is building.',
+);
+assert.match(
+  sceneRootSource,
+  /visible=\{initialMaterialPresentationVisibleForGroup\}/,
+  'Cold restore must explicitly control placeholder, outline and final-material presentation.',
+);
+assert.match(
+  sceneRootSource,
+  /importedModel\.restoreStage === 'bounds'[\s\S]*?liclickRestoreOutlinePrepared === true[\s\S]*?initialMaterialPresentationReadyForGroup/,
+  'A refresh must stay non-empty from saved bounds through prepared outline and final material.',
+);
+assert.match(
+  sceneRootSource,
+  /requestAnimationFrame[\s\S]*?requestAnimationFrame[\s\S]*?liclick:initial-model-frame-presented/,
+  'The editor reveal signal must wait until the first WebGL model frame has actually been presented.',
+);
+assert.match(
+  editorPageSource,
+  /presentedViewportProjectId !== projectId[\s\S]*?fixed inset-0 z-\[220\]/,
+  'The project loading cover must remain above an initializing viewport until model content is presented.',
+);
+assert.match(
+  sceneRootSource,
+  /model\.restoreStage === 'outline'[\s\S]*?createFlatPreviewMaterial[\s\S]*?revealInitialMaterialPresentation\(\)/,
+  'Cold restore must reveal exact geometry with the canonical flat material instead of leaving an empty viewport.',
+);
+assert.match(
+  sceneRootSource,
+  /authoritativeHasVisibleProjection[\s\S]*?presentsProjectedMaterial \|\| presentsExactProjectedBootstrap[\s\S]*?revealInitialMaterialPresentation/,
+  'A visible projected stack may reveal only a complete projected material or an exact baked equivalent.',
+);
+assert.match(
+  localRepaintDialogSource,
+  /setIsStarting\(true\);[\s\S]*?requestAnimationFrame[\s\S]*?prepareGenerateInput\(\)/,
+  'The local repaint Generate button must paint immediate feedback before mask preparation.',
+);
+assert.match(
+  localRepaintMaskWorkerSource,
+  /buildEditMask[\s\S]*?buildProtectMask[\s\S]*?computeMaskBoundingBox/,
+  'Edit-mask dilation, protection and bounds must run off the main thread.',
+);
+assert.doesNotMatch(
+  `${generatePanelSource}\n${viewportCanvasInteractionSource}\n${sceneRootSource}`,
+  /localRepaintGenerationBusy/,
+  'Local repaint generation must use frozen capture coordinates instead of a global viewport lock.',
+);
+assert.match(
+  generatePanelSource,
+  /captureCurrentLocalRepaintView[\s\S]*?captureCurrentColorPreview[\s\S]*?generationPromise[\s\S]*?captureCurrentDepthPreview[\s\S]*?Promise\.all/,
+  'The two aligned colour inputs must submit before the local-only depth guard finishes in parallel.',
+);
+assert.match(
+  generatePanelSource,
+  /start\(pendingGeneration\);\s*addProjectGeneration\(pendingGeneration\);[\s\S]*?setLastCapture\(capture\);/,
+  'A new repaint capture must not be paired with the previous result before its running generation exists.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /LOCAL_REPAINT_LIVE_SOURCE_MAX_SIZE = 1024/,
+  'The interactive repaint preview must not synchronously upload the durable high-resolution source.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /LOCAL_REPAINT_MINIMUM_FACE_ON = 0\.08/,
+  'Local repaint projection must feather inward before reaching grazing side faces.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /sourceAlpha \*[\s\S]*?projectionFacingCoverage \*[\s\S]*?lockedSafetyCoverage/,
+  'Surface-locked repaint must retain smooth facing coverage so the base UV shows through without black seams.',
 );
 const uvSamplerWarmupSource = sceneRootSource.match(
   /const prewarmProjectedUvSamplers = async \([\s\S]*?\r?\n    async function applyMaterials/,

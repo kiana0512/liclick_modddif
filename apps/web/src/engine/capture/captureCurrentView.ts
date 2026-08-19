@@ -24,6 +24,12 @@ import * as THREE from 'three';
 
 const maxCaptureSize = 2048;
 const defaultFillRatio = 0.96;
+// Local-repaint structure/reference frames are guidance inputs, not exported
+// texture assets. Render both from the exact same frozen camera at a bounded
+// resolution, then let the PNG worker upscale to ModelView's 2K contract. A
+// single 512px GPU pass avoids visible WebGL queue stalls while preserving
+// pixel-perfect alignment between the white and authored-colour inputs.
+const localRepaintInteractiveCaptureSize = 512;
 
 function getBoxCorners(box: THREE.Box3) {
   return [
@@ -237,7 +243,10 @@ async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: 
   return { viewport, captureCamera, captureTarget };
 }
 
-async function captureClayTarget(passRequest: CapturePassRequest) {
+async function captureClayTarget(
+  passRequest: CapturePassRequest,
+  encodedSize?: { width: number; height: number },
+) {
   const restore = applyTargetOnlyMaterial(
     passRequest.scene,
     passRequest.objectId,
@@ -251,7 +260,18 @@ async function captureClayTarget(passRequest: CapturePassRequest) {
           clearColor: '#f7f7f3',
           clearAlpha: 1,
         },
-        { applyDisplayTransform: true, onRenderSubmitted: restore },
+        {
+          applyDisplayTransform: true,
+          // Keep the exact 2K ModelView input, but submit it in bounded GPU
+          // tiles so the visible viewport receives a frame between capture
+          // chunks. Total capture work stays equivalent without a multi-second
+          // main-thread/GPU presentation stall on button 2.
+          tileSize: 512,
+          performancePhasePrefix: 'button2-white-model',
+          encodedWidth: encodedSize?.width,
+          encodedHeight: encodedSize?.height,
+          onRenderSubmitted: restore,
+        },
       ),
       warnings: [],
     };
@@ -332,13 +352,61 @@ function createFlatTargetCaptureMaterial(sourceMaterial: THREE.Material) {
   return material;
 }
 
-async function captureFlatTarget(passRequest: CapturePassRequest) {
+async function captureFlatTarget(
+  passRequest: CapturePassRequest,
+  encodedSize?: { width: number; height: number },
+) {
   const temporaryMaterials = new Set<THREE.Material>();
-  const restore = applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId, (source) => {
+  const mutatedShaderMaterials = new Set<THREE.ShaderMaterial>();
+  const restoreUniforms: Array<() => void> = [];
+  const restoreScene = applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId, (source) => {
+    // The authored projection/UV material is already resident and compiled in
+    // the viewport. Cloning it here creates a brand-new shader program and can
+    // block Chromium's main/GPU threads for several seconds on button 2. Flat
+    // capture only changes presentation uniforms, so borrow the resident
+    // program for this single submitted draw and restore its values immediately
+    // afterwards. Camera and model matrices remain the frozen click snapshot.
+    if (
+      source instanceof THREE.ShaderMaterial &&
+      source.uniforms.previewLightingEnabled
+    ) {
+      if (!mutatedShaderMaterials.has(source)) {
+        mutatedShaderMaterials.add(source);
+        const previousValues = new Map<string, unknown>();
+        for (const [name, value] of [
+          ['previewLightingEnabled', 0],
+          ['previewExposure', 1],
+          ['normalPreviewEnabled', 0],
+          ['wirePreviewEnabled', 0],
+        ] as const) {
+          const uniform = source.uniforms[name];
+          if (!uniform) continue;
+          previousValues.set(name, uniform.value);
+          uniform.value = value;
+        }
+        source.uniformsNeedUpdate = true;
+        restoreUniforms.push(() => {
+          previousValues.forEach((value, name) => {
+            const uniform = source.uniforms[name];
+            if (uniform) uniform.value = value;
+          });
+          source.uniformsNeedUpdate = true;
+        });
+      }
+      return source;
+    }
     const material = createFlatTargetCaptureMaterial(source);
     temporaryMaterials.add(material);
     return material;
   });
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    restoreScene();
+    restoreUniforms.forEach((restoreUniform) => restoreUniform());
+    temporaryMaterials.forEach((material) => material.dispose());
+  };
   try {
     return {
       url: await renderSceneToPngUrl(
@@ -350,13 +418,19 @@ async function captureFlatTarget(passRequest: CapturePassRequest) {
         // The render target's sRGB encoding is the texture asset encoding. Do
         // not bake exposure/tone mapping here: the preview shader applies that
         // presentation transform after the generated image is painted back.
-        { applyDisplayTransform: false, onRenderSubmitted: restore },
+        {
+          applyDisplayTransform: false,
+          tileSize: 512,
+          performancePhasePrefix: 'button2-viewport-reference',
+          encodedWidth: encodedSize?.width,
+          encodedHeight: encodedSize?.height,
+          onRenderSubmitted: restore,
+        },
       ),
       warnings: [],
     };
   } finally {
     restore();
-    temporaryMaterials.forEach((material) => material.dispose());
   }
 }
 
@@ -387,11 +461,19 @@ export async function captureCurrentColorPreview(
     width,
     height,
   };
+  const interactiveWidth = Math.min(width, localRepaintInteractiveCaptureSize);
+  const interactiveHeight = Math.min(height, localRepaintInteractiveCaptureSize);
   const color =
     request.colorMode === 'clay-target'
-      ? await captureClayTarget(passRequest)
+      ? await captureClayTarget(
+          { ...passRequest, width: interactiveWidth, height: interactiveHeight },
+          { width, height },
+        )
       : request.colorMode === 'flat-target'
-        ? await captureFlatTarget(passRequest)
+        ? await captureFlatTarget(
+            { ...passRequest, width: interactiveWidth, height: interactiveHeight },
+            { width, height },
+          )
         : request.colorMode === 'target-only'
           ? await captureTargetOnly(passRequest)
           : await captureColor(passRequest);
@@ -401,6 +483,63 @@ export async function captureCurrentColorPreview(
     colorUrl: color.url,
     warnings: [...warnings, ...color.warnings],
   };
+}
+
+/**
+ * Captures the one colour pass needed by ModelView local repaint and archives
+ * the already camera-aligned paint mask. Auxiliary depth is deliberately
+ * separate so it can run while the remote request is in flight instead of
+ * blocking the Generate button behind mask/normal/depth readbacks.
+ */
+export async function captureCurrentLocalRepaintView(
+  request: CaptureCurrentViewRequest,
+  maskUrl: string,
+): Promise<Capture> {
+  const size = Math.min(request.resolution, maxCaptureSize);
+  const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
+  const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
+  const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
+  const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect);
+  const interactiveWidth = Math.min(width, localRepaintInteractiveCaptureSize);
+  const interactiveHeight = Math.min(height, localRepaintInteractiveCaptureSize);
+  const color = await captureClayTarget({
+    gl: viewport.gl,
+    scene: viewport.scene,
+    camera: captureCamera,
+    objectId: request.objectId,
+    width: interactiveWidth,
+    height: interactiveHeight,
+  }, { width, height });
+  const capture: Capture = {
+    id: createId('capture'),
+    objectId: request.objectId,
+    camera: serializeCamera(captureCamera, aspect, captureTarget),
+    width,
+    height,
+    colorUrl: color.url,
+    maskUrl,
+    createdAt: new Date().toISOString(),
+    warnings: color.warnings,
+  };
+  useProjectStore.getState().addCapture(capture);
+  return capture;
+}
+
+export async function captureCurrentDepthPreview(request: CaptureCurrentViewRequest) {
+  const size = Math.min(request.resolution, 1024);
+  const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
+  const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
+  const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
+  const { viewport, captureCamera } = await resolveCaptureCamera(request, aspect);
+  const depth = await captureDepth({
+    gl: viewport.gl,
+    scene: viewport.scene,
+    camera: captureCamera,
+    objectId: request.objectId,
+    width,
+    height,
+  });
+  return { depthUrl: depth.url, depthEncoding: 'linear-view' as const, warnings: depth.warnings };
 }
 
 export async function captureCurrentView(request: CaptureCurrentViewRequest): Promise<Capture> {
