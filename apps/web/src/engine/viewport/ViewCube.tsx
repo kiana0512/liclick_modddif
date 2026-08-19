@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { Vector3 } from 'three';
 import { cn } from '@/components/common/cn';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -74,54 +74,23 @@ function axisSign(value: number) {
   return value > 0 ? 1 : -1;
 }
 
-function vertexMarkerStyle(direction: Vector3) {
-  const x = axisSign(direction.x);
-  const y = axisSign(direction.y);
-  const z = axisSign(direction.z);
-  if (!x || !y || !z) return undefined;
-
-  return {
-    left: `calc(50% + ${x * cubeHalf}px)`,
-    top: `calc(50% + ${-y * cubeHalf}px)`,
-    transform: `translate(-50%, -50%) translateZ(${z * cubeHalf}px)`,
-  };
-}
-
-function edgeMarkerStyle(direction: Vector3) {
-  const x = axisSign(direction.x);
-  const y = axisSign(direction.y);
-  const z = axisSign(direction.z);
-
-  if (!x && y && z) {
+function faceHoverMarkerStyle(edges: FaceEdge[]): CSSProperties | undefined {
+  if (edges.length === 1) {
+    switch (edges[0]) {
+      case 'left': return { left: 0, top: 0, width: hoverMarkerThickness, height: '100%' };
+      case 'right': return { right: 0, top: 0, width: hoverMarkerThickness, height: '100%' };
+      case 'top': return { left: 0, top: 0, width: '100%', height: hoverMarkerThickness };
+      case 'bottom': return { left: 0, bottom: 0, width: '100%', height: hoverMarkerThickness };
+    }
+  }
+  if (edges.length === 2) {
     return {
-      width: `${cubeSize}px`,
-      height: `${hoverMarkerThickness}px`,
-      left: '50%',
-      top: `calc(50% + ${-y * cubeHalf}px)`,
-      transform: `translate(-50%, -50%) translateZ(${z * cubeHalf}px)`,
+      ...(edges.includes('left') ? { left: 0 } : { right: 0 }),
+      ...(edges.includes('top') ? { top: 0 } : { bottom: 0 }),
+      width: 16,
+      height: 16,
     };
   }
-
-  if (x && !y && z) {
-    return {
-      width: `${hoverMarkerThickness}px`,
-      height: `${cubeSize}px`,
-      left: `calc(50% + ${x * cubeHalf}px)`,
-      top: '50%',
-      transform: `translate(-50%, -50%) translateZ(${z * cubeHalf}px)`,
-    };
-  }
-
-  if (x && y && !z) {
-    return {
-      width: `${cubeSize}px`,
-      height: `${hoverMarkerThickness}px`,
-      left: `calc(50% + ${x * cubeHalf}px)`,
-      top: `calc(50% + ${-y * cubeHalf}px)`,
-      transform: 'translate(-50%, -50%) rotateY(90deg)',
-    };
-  }
-
   return undefined;
 }
 
@@ -204,7 +173,6 @@ export function ViewCube() {
   }, []);
 
   useEffect(() => {
-    let frame = 0;
     const cameraPosition = new Vector3();
     const target = new Vector3();
     const direction = new Vector3();
@@ -229,16 +197,13 @@ export function ViewCube() {
           setActiveLabel(nextState.label);
         }
       }
-      frame = requestAnimationFrame(update);
     };
 
-    frame = requestAnimationFrame(update);
-    return () => cancelAnimationFrame(frame);
+    update();
+    return viewport?.controls?.subscribeChange?.(update);
   }, [viewport]);
 
   const displayLabel = hoveredTarget?.label ?? activeLabel;
-  const hoveredEdgeStyle = hoveredTarget?.edges.length === 1 ? edgeMarkerStyle(hoveredTarget.direction) : undefined;
-  const hoveredVertexStyle = hoveredTarget?.edges.length === 2 ? vertexMarkerStyle(hoveredTarget.direction) : undefined;
 
   return (
     <div className="absolute right-4 top-4 z-10 grid h-32 w-32 place-items-start justify-items-center">
@@ -259,6 +224,7 @@ export function ViewCube() {
           {(Object.keys(faceLabels) as CubeFace[]).map((face) => {
             const hoverEdges = hoveredTarget?.face === face ? hoveredTarget.edges : [];
             const centerHovered = hoveredTarget?.face === face && hoverEdges.length === 0;
+            const hoverMarkerStyle = faceHoverMarkerStyle(hoverEdges);
 
             return (
               <button
@@ -279,23 +245,16 @@ export function ViewCube() {
               >
                 <span className="pointer-events-none absolute inset-[8px] rounded-sm bg-white/70" />
                 <span className="pointer-events-none relative z-10">{faceLabels[face]}</span>
+                {hoverMarkerStyle && (
+                  <span
+                    className="pointer-events-none absolute z-20 rounded-sm bg-liclick-pink shadow-[0_0_12px_rgba(255,98,210,0.92)]"
+                    data-testid={hoverEdges.length === 2 ? 'view-cube-hover-vertex' : 'view-cube-hover-edge'}
+                    style={hoverMarkerStyle}
+                  />
+                )}
               </button>
             );
           })}
-          {hoveredEdgeStyle && (
-            <span
-              className="pointer-events-none absolute rounded-full bg-liclick-pink shadow-[0_0_12px_rgba(255,98,210,0.92)]"
-              data-testid="view-cube-hover-edge"
-              style={hoveredEdgeStyle}
-            />
-          )}
-          {hoveredVertexStyle && (
-            <span
-              className="pointer-events-none absolute h-4 w-4 rounded-full bg-liclick-pink shadow-[0_0_13px_rgba(255,98,210,0.95)] ring-2 ring-white"
-              data-testid="view-cube-hover-vertex"
-              style={hoveredVertexStyle}
-            />
-          )}
         </div>
       </div>
     </div>

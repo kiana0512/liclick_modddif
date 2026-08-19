@@ -2871,7 +2871,14 @@ export function GeneratePanel({
       ),
     ];
     useReferenceStore.getState().setReferences(nextReferences);
-    useReferenceStore.getState().setSelectedReferences([singleReference.id]);
+    // A single-view reference is only the input to this job. Once its paired
+    // multi-view result exists, make that result the active reference and move
+    // the panel to multi-view in the same render so the user never sees the
+    // completed result land under the wrong tab.
+    useReferenceStore.getState().setSelectedReferences([multiviewReference.id]);
+    setTexturePreviewMode('multi');
+    setTextureViewMode('multi');
+    setTab('multiview');
     setProjectReferences(nextReferences);
     await saveCriticalProjectState({ references: nextReferences });
     return multiviewReference;

@@ -239,6 +239,14 @@ function startTelemetryAggregateWorker() {
 
 async function startServer() {
   await materializeGpuControlLanCa(
+    serverConfig.modelviewInpaintCaPath,
+    serverConfig.modelviewInpaintCaManaged,
+  );
+  await materializeGpuControlLanCa(
+    serverConfig.substanceBakerCaPath,
+    serverConfig.substanceBakerCaManaged,
+  );
+  await materializeGpuControlLanCa(
     serverConfig.assetServiceCaCertPath,
     serverConfig.assetServiceCaCertManaged,
   );

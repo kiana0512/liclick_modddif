@@ -34,6 +34,7 @@ export class BlenderOrbitControls {
   private readonly pitchRotation = new THREE.Quaternion();
   private pendingWheelDelta = 0;
   private wheelFrame?: number;
+  private readonly changeListeners = new Set<() => void>();
 
   constructor(
     readonly camera: SupportedCamera,
@@ -54,7 +55,13 @@ export class BlenderOrbitControls {
   update = () => {
     this.camera.lookAt(this.target);
     this.camera.updateMatrixWorld();
+    this.changeListeners.forEach((listener) => listener());
   };
+
+  subscribeChange(listener: () => void) {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
 
   dispose() {
     this.domElement.removeEventListener('contextmenu', this.handleContextMenu);
@@ -68,6 +75,7 @@ export class BlenderOrbitControls {
       this.wheelFrame = undefined;
     }
     this.pendingWheelDelta = 0;
+    this.changeListeners.clear();
   }
 
   private handleContextMenu = (event: MouseEvent) => {

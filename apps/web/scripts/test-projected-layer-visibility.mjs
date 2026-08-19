@@ -19,6 +19,10 @@ const viewportCanvasInteractionSource = readFileSync(
   path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
   'utf8',
 );
+const projectedLayerMaterialSource = readFileSync(
+  path.join(root, 'src/engine/projection/ProjectedLayerMaterial.ts'),
+  'utf8',
+);
 const viewportPanelSource = readFileSync(
   path.join(root, 'src/components/panels/ViewportPanel.tsx'),
   'utf8',
@@ -180,8 +184,13 @@ const repaintFalloffWorkerSource = readFileSync(
 );
 assert.match(
   repaintFalloffWorkerSource,
-  /removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
-  'Dark-background rejection must run inside the local repaint worker before publishing coverage.',
+  /createInwardFeatheredMask\(maskPixels, featherRadius\)[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?output\.data\[offset \+ 3\] = Math\.round/,
+  'The worker must keep feathering inside the authored mask and multiply it by cleaned source alpha.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /float lockedSurfaceCoverage =[\s\S]*?sourceAlpha[\s\S]*?float coverage = mix\(continuousCoverage, lockedSurfaceCoverage, surfaceLockedVisibility\)/,
+  'Surface-locked repaint must retain continuous source alpha instead of exposing binary black fringe pixels.',
 );
 const server = await createServer({
   root,
@@ -193,10 +202,16 @@ const server = await createServer({
 try {
   if (!globalThis.ImageData) {
     globalThis.ImageData = class ImageData {
-      constructor(data, width, height) {
-        this.data = data;
-        this.width = width;
-        this.height = height;
+      constructor(dataOrWidth, widthOrHeight, height) {
+        if (typeof dataOrWidth === 'number') {
+          this.width = dataOrWidth;
+          this.height = widthOrHeight;
+          this.data = new Uint8ClampedArray(this.width * this.height * 4);
+        } else {
+          this.data = dataOrWidth;
+          this.width = widthOrHeight;
+          this.height = height;
+        }
       }
     };
   }
@@ -231,6 +246,30 @@ try {
     transparentRepaint.data[8 * 4 + 3],
     255,
     'Authored yellow/orange repaint pixels must remain fully visible.',
+  );
+  const authoredMaskPixels = new Uint8ClampedArray(7 * 7 * 4);
+  for (let y = 1; y <= 5; y += 1) {
+    for (let x = 1; x <= 5; x += 1) {
+      const offset = (y * 7 + x) * 4;
+      authoredMaskPixels[offset] = 255;
+      authoredMaskPixels[offset + 1] = 255;
+      authoredMaskPixels[offset + 2] = 255;
+      authoredMaskPixels[offset + 3] = 255;
+    }
+  }
+  const inwardFeather = repaintPreviewUtils.createInwardFeatheredMask(
+    new ImageData(authoredMaskPixels, 7, 7),
+    3,
+  );
+  assert.equal(
+    inwardFeather.data[(3 * 7 + 0) * 4 + 3],
+    0,
+    'Inward feathering must never add coverage outside the authored selection.',
+  );
+  assert(
+    inwardFeather.data[(3 * 7 + 1) * 4 + 3] <
+      inwardFeather.data[(3 * 7 + 3) * 4 + 3],
+    'Coverage must rise smoothly from the selection edge into its interior.',
   );
   const repaintActivation = await server.ssrLoadModule(
     '/src/engine/viewport/localRepaintPreviewActivation.ts',

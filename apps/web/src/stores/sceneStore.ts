@@ -78,6 +78,7 @@ export type ViewportRuntime = {
     target: THREE.Vector3;
     update: () => void;
     setEnabled: (enabled: boolean) => void;
+    subscribeChange?: (listener: () => void) => () => void;
   };
 };
 

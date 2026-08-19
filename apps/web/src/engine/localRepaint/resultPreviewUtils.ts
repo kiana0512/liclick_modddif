@@ -150,6 +150,74 @@ export function removeEdgeConnectedNeutralBackground(
   return { imageData: output, removedOpaquePixels, hadTransparency };
 }
 
+/**
+ * Build a soft mask that never grows beyond the authored selection. An
+ * eight-neighbour distance field keeps the work linear in pixel count and
+ * produces a uniform, direction-independent transition toward the interior.
+ */
+export function createInwardFeatheredMask(imageData: ImageData, radius: number) {
+  const { width, height, data } = imageData;
+  const originalCoverage = new Uint8ClampedArray(width * height);
+  const distance = new Float32Array(width * height);
+  const output = new ImageData(width, height);
+  const infinity = width + height + 1;
+  const diagonal = Math.SQRT2;
+
+  for (let index = 0; index < originalCoverage.length; index += 1) {
+    const offset = index * 4;
+    const coverage = Math.round(
+      Math.max(data[offset], data[offset + 1], data[offset + 2]) *
+        (data[offset + 3] / 255),
+    );
+    originalCoverage[index] = coverage;
+    distance[index] = coverage > 0 ? infinity : 0;
+    output.data[offset] = 255;
+    output.data[offset + 1] = 255;
+    output.data[offset + 2] = 255;
+  }
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      if (distance[index] === 0) continue;
+      let value =
+        x === 0 || y === 0 || x === width - 1 || y === height - 1
+          ? 1
+          : distance[index];
+      if (x > 0) value = Math.min(value, distance[index - 1] + 1);
+      if (y > 0) value = Math.min(value, distance[index - width] + 1);
+      if (x > 0 && y > 0)
+        value = Math.min(value, distance[index - width - 1] + diagonal);
+      if (x + 1 < width && y > 0)
+        value = Math.min(value, distance[index - width + 1] + diagonal);
+      distance[index] = value;
+    }
+  }
+
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const index = y * width + x;
+      if (distance[index] === 0) continue;
+      let value = distance[index];
+      if (x + 1 < width) value = Math.min(value, distance[index + 1] + 1);
+      if (y + 1 < height) value = Math.min(value, distance[index + width] + 1);
+      if (x + 1 < width && y + 1 < height)
+        value = Math.min(value, distance[index + width + 1] + diagonal);
+      if (x > 0 && y + 1 < height)
+        value = Math.min(value, distance[index + width - 1] + diagonal);
+      distance[index] = value;
+    }
+  }
+
+  const featherRadius = Math.max(1, radius);
+  for (let index = 0; index < originalCoverage.length; index += 1) {
+    const normalized = Math.max(0, Math.min(1, distance[index] / featherRadius));
+    const smoothCoverage = normalized * normalized * (3 - 2 * normalized);
+    output.data[index * 4 + 3] = Math.round(originalCoverage[index] * smoothCoverage);
+  }
+  return output;
+}
+
 function getAlphaContentBounds(imageData: ImageData) {
   const { width, height, data } = imageData;
   const columns = new Uint32Array(width);

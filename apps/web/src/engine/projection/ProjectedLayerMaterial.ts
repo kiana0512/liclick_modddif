@@ -731,12 +731,12 @@ const fragmentShader = `
       1.0,
       useDepthCheck
     );
-    float lockedBinaryCoverage =
+    float lockedSurfaceCoverage =
       layerOpacity *
-      alphaCoverage *
+      sourceAlpha *
       lockedSafetyCoverage *
       step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage);
-    float coverage = mix(continuousCoverage, lockedBinaryCoverage, surfaceLockedVisibility);
+    float coverage = mix(continuousCoverage, lockedSurfaceCoverage, surfaceLockedVisibility);
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
@@ -1570,7 +1570,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * alphaCoverage * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
+          ? `layerOpacity${index} * sourceAlpha * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
           : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -1667,7 +1667,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * alphaCoverage * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
+          ? `layerOpacity${index} * sourceAlpha * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
           : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});

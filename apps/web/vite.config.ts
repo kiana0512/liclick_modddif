@@ -112,6 +112,8 @@ function localInstallerPlugin(base: string): Plugin {
 }
 
 const publicBase = normalizeBase(process.env.VITE_PUBLIC_PATH ?? process.env.VITE_BASE_PATH);
+const localComponentPort = process.env.VITE_LICLICK_LOCAL_COMPONENT_PORT?.trim() || '4618';
+const localComponentDevProxyPath = '/__li3d-local-component';
 
 export default defineConfig({
   plugins: [localInstallerPlugin(publicBase), react()],
@@ -119,6 +121,15 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(rootDir, 'src'),
+    },
+  },
+  server: {
+    proxy: {
+      [localComponentDevProxyPath]: {
+        target: `http://127.0.0.1:${localComponentPort}`,
+        changeOrigin: false,
+        rewrite: (requestPath) => requestPath.slice(localComponentDevProxyPath.length) || '/',
+      },
     },
   },
 });
