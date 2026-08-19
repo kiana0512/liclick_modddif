@@ -10,6 +10,7 @@ import {
   residentPreviewTextureCache,
   uploadPreviewTextureInStripes,
 } from '@/engine/viewport/previewTextureCache';
+import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import {
   convertFinalGpuReadbackInWorker,
   convertLayerGpuReadbackInWorker,
@@ -799,12 +800,17 @@ async function stageLayerTexturesForGpu(
   textures: Iterable<THREE.Texture>,
 ) {
   let maximumUploadMs = 0;
+  const usesVisibleRenderer = renderer.domElement.isConnected;
   for (const texture of new Set(textures)) {
     // Give the onscreen renderer one presentation opportunity before every
     // full-resolution asset upload. ImageBitmap sources use exact striped
     // texSubImage2D uploads; compatibility sources still remain one asset per
     // frame instead of four consecutive uploads inside the bake draw.
-    await waitForBrowserPaint();
+    if (usesVisibleRenderer) {
+      await waitForBrowserPaint();
+    } else {
+      await yieldToBrowserTask();
+    }
     await waitForSharedRendererBakeSlot();
     const startedAt = performance.now();
     await uploadPreviewTextureInStripes(renderer, texture);
@@ -836,45 +842,51 @@ async function loadLayerTexturesWithOptions(
   resolution: UvBakeResolution,
   options: { inputTextureFlipY: boolean },
 ): Promise<LoadedLayerTextures> {
-  const projectedTexture = await loadLayerTextureFromCpuImageData({
-    url: layer.imageUrl,
-    resolution,
-    label: `${layer.name} image`,
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter,
-    flipY: options.inputTextureFlipY,
-  });
   const neutralTexture = createNeutralTexture();
-  const maskTexture = layer.maskUrl
-    ? await loadLayerTextureFromCpuImageData({
-        url: layer.maskUrl,
-        resolution,
-        label: `${layer.name} mask`,
-        minFilter: THREE.LinearFilter,
-        magFilter: THREE.LinearFilter,
-        flipY: options.inputTextureFlipY,
-      })
-    : neutralTexture;
-  const depthTexture = layer.depthUrl
-    ? await loadLayerTextureFromCpuImageData({
-        url: layer.depthUrl,
-        resolution,
-        label: `${layer.name} depth`,
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        flipY: options.inputTextureFlipY,
-      })
-    : neutralTexture;
-  const normalTexture = layer.normalUrl
-    ? await loadLayerTextureFromCpuImageData({
-        url: layer.normalUrl,
-        resolution,
-        label: `${layer.name} normal`,
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        flipY: options.inputTextureFlipY,
-      })
-    : neutralTexture;
+  // Decode the four immutable inputs concurrently. The old serial chain made
+  // every layer pay image + mask + depth + normal latency back-to-back even
+  // though decoding is already isolated in workers and does not touch GL.
+  // Filtering, orientation and source bytes are unchanged.
+  const [projectedTexture, maskTexture, depthTexture, normalTexture] = await Promise.all([
+    loadLayerTextureFromCpuImageData({
+      url: layer.imageUrl,
+      resolution,
+      label: `${layer.name} image`,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      flipY: options.inputTextureFlipY,
+    }),
+    layer.maskUrl
+      ? loadLayerTextureFromCpuImageData({
+          url: layer.maskUrl,
+          resolution,
+          label: `${layer.name} mask`,
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter,
+          flipY: options.inputTextureFlipY,
+        })
+      : Promise.resolve(neutralTexture),
+    layer.depthUrl
+      ? loadLayerTextureFromCpuImageData({
+          url: layer.depthUrl,
+          resolution,
+          label: `${layer.name} depth`,
+          minFilter: THREE.NearestFilter,
+          magFilter: THREE.NearestFilter,
+          flipY: options.inputTextureFlipY,
+        })
+      : Promise.resolve(neutralTexture),
+    layer.normalUrl
+      ? loadLayerTextureFromCpuImageData({
+          url: layer.normalUrl,
+          resolution,
+          label: `${layer.name} normal`,
+          minFilter: THREE.NearestFilter,
+          magFilter: THREE.NearestFilter,
+          flipY: options.inputTextureFlipY,
+        })
+      : Promise.resolve(neutralTexture),
+  ]);
   return {
     projectedTexture,
     maskTexture,
@@ -1375,9 +1387,14 @@ async function readRenderTargetPixelsInStripes(
   );
   let maximumStripeMs = 0;
   const startedAt = performance.now();
+  const usesVisibleRenderer = renderer.domElement.isConnected;
   for (let y = 0; y < resolution; y += rowsPerStripe) {
     if (y > 0) {
-      await waitForBrowserPaint();
+      if (usesVisibleRenderer) {
+        await waitForBrowserPaint();
+      } else {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      }
     }
     const rowCount = Math.min(rowsPerStripe, resolution - y);
     const stripe = new Uint8Array(resolution * rowCount * 4);
@@ -1611,12 +1628,7 @@ export async function bakeProjectedLayerRastersWithGpu(
         colorTarget,
         resolution,
       );
-      // Async GPU readback is safe only after React Three Fiber regains its
-      // onscreen target and viewport. The PBO already owns the submitted pixels.
       restoreRendererState(renderer, previousState);
-      const layerRaster = await layerRasterPromise;
-      previousState = captureRendererState(renderer);
-      coverageMaterial.dispose();
 
       const qualityMaterial = createLayerMaterial({
         group: input.group,
@@ -1639,8 +1651,11 @@ export async function bakeProjectedLayerRastersWithGpu(
       renderer.render(bakeScene.scene, camera);
       const qualityPromise = readRenderTargetAlphaToFloat(renderer, qualityTarget, resolution);
       restoreRendererState(renderer, previousState);
-      const quality = await qualityPromise;
+      // The PBOs own both submitted images now. Convert the two exact byte
+      // buffers concurrently while R3F has already regained the viewport.
+      const [layerRaster, quality] = await Promise.all([layerRasterPromise, qualityPromise]);
       previousState = captureRendererState(renderer);
+      coverageMaterial.dispose();
       qualityMaterial.dispose();
 
       disposeLayerTextures(textures.disposableTextures);
@@ -1657,7 +1672,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       // React Three Fiber owns this renderer. Never yield to its animation frame
       // while the shared renderer still points at the square UV bake target.
       restoreRendererState(renderer, previousState);
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      await yieldToBrowserTask();
       previousState = captureRendererState(renderer);
     }
     bakeScene.scene.clear();
@@ -1780,7 +1795,7 @@ export async function bakeProjectedLayerStackWithGpu(
       // The editor render loop can run at this await. Restore the onscreen target
       // and viewport first so UV baking can never leak into the main viewport.
       restoreRendererState(renderer, previousState);
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      await yieldToBrowserTask();
       previousState = captureRendererState(renderer);
     }
     if (input.enableDilation && input.constrainDilationToInteriorHoles) {

@@ -24,6 +24,21 @@ const workerScope = self as unknown as {
   postMessage(message: EncodeRgbaPngResponse, transfer: Transferable[]): void;
 };
 
+// Worker timers are clamped too. A 2K encode has 128 cooperative boundaries;
+// setTimeout(0) added hundreds of milliseconds to a cold publish even though
+// this work never touches the UI thread. MessageChannel keeps cancellation and
+// other worker messages schedulable without paying that timer floor.
+const yieldQueue: Array<() => void> = [];
+const yieldChannel = new MessageChannel();
+yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
+
+function yieldWorkerTask() {
+  return new Promise<void>((resolve) => {
+    yieldQueue.push(resolve);
+    yieldChannel.port2.postMessage(0);
+  });
+}
+
 workerScope.onmessage = async (event) => {
   if (event.data.type === 'revoke-object-url') {
     URL.revokeObjectURL(event.data.url);
@@ -35,7 +50,7 @@ workerScope.onmessage = async (event) => {
       width,
       height,
       new Uint8ClampedArray(rgba),
-      () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+      yieldWorkerTask,
     );
     const blob = new Blob([png], { type: 'image/png' });
     workerScope.postMessage(

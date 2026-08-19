@@ -49,6 +49,8 @@ export function createVisibleSurfaceCompletionPolicy(
   if (!Number.isSafeInteger(pixelCount) || pixelCount > 0xffffffff) {
     throw new RangeError(`Visible-surface completion is too large: ${width}x${height}.`);
   }
+  const repairResolution = Math.max(width, height);
+  const megapixelScale = pixelCount / (1024 * 1024);
   return {
     gapMask: {
       // This is the live shader's exact hatch feather boundary. Running at the
@@ -56,33 +58,27 @@ export function createVisibleSurfaceCompletionPolicy(
       hardAlphaThreshold: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       weakAlphaThreshold: 64,
       weakGrowPixels: 1,
-      // A one-texel miss can still be a visible crack on a thin rail or inside
-      // a mechanical recess. `coreMask` is the noise boundary, not component size.
-      minimumComponentPixels: 1,
-      minimumComponentSpan: 0,
+      // Restore the original quality filter: isolated raster misses must not
+      // seed a visible repair layer, while long narrow seams are retained.
+      minimumComponentPixels: Math.max(4, Math.round(16 * megapixelScale)),
+      minimumComponentSpan: Math.max(4, Math.round(12 * Math.sqrt(megapixelScale))),
     },
     propagation: {
-      // 255 is the repair core's unlimited physical-seam mode. Seam links are
-      // already restricted to the same surface component and compatible normals.
-      maxSeamCrossings: 255,
-      // Alpha already separates sources (>=64) from shader-visible gaps. Keeping the
-      // adjacent donor is essential for one-texel rails and conservative edges.
-      sourcePaddingPixels: 0,
-      // The queue visits every topology texel at most once. Pixel count is a
-      // safe upper bound that removes the old one-click 64..128 px cutoff.
-      maxDistance: pixelCount,
+      // Only one verified physical seam may provide a donor. Never cascade
+      // through an arbitrary chain of UV islands.
+      maxSeamCrossings: 1,
+      sourcePaddingPixels: Math.max(2, Math.min(4, Math.round(repairResolution / 768))),
+      maxDistance: Math.max(64, Math.min(128, Math.round(repairResolution / 16))),
       minSourceAlpha: 64,
       sourceColorOutlierThreshold: 64,
       connectivity: 4,
-      // Publish exactly the detected gap. A visible one-pixel skirt becomes an
-      // orange/brown outline when the sparse repair layer is inspected alone.
-      coverageSkirtPixels: 0,
+      coverageSkirtPixels: 1,
       coverageSkirtMaxInputAlpha: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       outputBleedPixels: 4,
-      // A completely unprojected component has no topology-local donor. The
-      // product contract prefers an approximate authored colour over exposing
-      // the diagnostic black hatch, so finish it with a worker-side fallback.
-      fillUnreachableWithGlobalAverage: true,
+      // The global-average fallback introduced after the original algorithm
+      // paints unrelated/unseen UV islands skin-coloured or brown. A component
+      // without local/verified-seam evidence must remain untouched.
+      fillUnreachableWithGlobalAverage: false,
       lockToDominantSourceRegion: true,
       dominantSourceColorThreshold: 18,
       requireCompleteComponents: false,

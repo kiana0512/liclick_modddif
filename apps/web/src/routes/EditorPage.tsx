@@ -68,6 +68,10 @@ import {
   type ContentAwareRepairRequestDetail,
 } from '@/engine/contentAware';
 import {
+  readContentAwareProjectionBake,
+  writeContentAwareProjectionBake,
+} from '@/engine/contentAware/projectionBakeCache';
+import {
   clearDebugUvBakeMethod,
   getDebugUvBakeStatus,
   setDebugGpuCoverageValidation,
@@ -312,6 +316,12 @@ type ReusableProjectionBakeEntry = {
   report: BakeReport;
 };
 
+function compareProjectedLayersForDeterministicBake(left: Layer, right: Layer) {
+  const orderDelta = right.order - left.order;
+  if (orderDelta !== 0) return orderDelta;
+  return left.id.localeCompare(right.id);
+}
+
 function createReusableProjectionBakeSignature(input: {
   purpose: ReusableProjectionBakePurpose;
   projectId?: string;
@@ -322,7 +332,7 @@ function createReusableProjectionBakeSignature(input: {
   optionSignature: string;
 }) {
   input.group.updateMatrixWorld(true);
-  const normalizedLayers = [...input.layers].sort((left, right) => right.order - left.order);
+  const normalizedLayers = [...input.layers].sort(compareProjectedLayersForDeterministicBake);
   // `getProjectedLayerStackSignature` includes every visual layer setting and
   // live-canvas revision. Append the exact transient asset URLs as well: blob
   // URLs are deliberately omitted from the persistent cache signature, but are
@@ -342,14 +352,13 @@ function createReusableProjectionBakeSignature(input: {
   const exactAssets = normalizedLayers
     .map(
       (layer) =>
-        `${layer.id}:${layer.imageUrl ?? ''}:${layer.maskUrl ?? ''}:${layer.depthUrl ?? ''}:${layer.normalUrl ?? ''}:${layer.depthEncoding ?? ''}`,
+        `${layer.id}:${layer.contentRevision ?? 0}:${layer.imageUrl ?? ''}:${layer.maskUrl ?? ''}:${layer.depthUrl ?? ''}:${layer.normalUrl ?? ''}:${layer.depthEncoding ?? ''}`,
     )
     .join('|');
   return [
-    'editor-projection-bake-cache-v1',
+    'editor-projection-bake-cache-v8',
     input.purpose,
     stackSignature,
-    input.group.uuid,
     input.group.matrixWorld.elements.join(','),
     JSON.stringify(getDebugUvBakeStatus()),
     input.optionSignature,
@@ -931,6 +940,11 @@ export function EditorPage({
   const modelImportProgressTimerRef = useRef<number>();
   const contentAwareRepairRunningRef = useRef(false);
   const contentAwareRepairAbortControllerRef = useRef<AbortController>();
+  const contentAwareTopologyPrewarmRef = useRef<{
+    key: string;
+    root: THREE.Object3D;
+    promise: ReturnType<typeof buildContentAwareSurfaceTopology>;
+  }>();
   const contentAwareRepairTaskTokenRef = useRef<symbol>();
   // Keep at most one pristine projection composite per workflow (64 MiB for
   // 4K merge + 16 MiB for 2K repair). Reads are cloned before UV underlays are
@@ -1047,6 +1061,87 @@ export function EditorPage({
   const addReferences = useReferenceStore((state) => state.addReferences);
   const setSelectedReferences = useReferenceStore((state) => state.setSelectedReferences);
   const resolution = useSettingsStore((state) => state.resolution);
+
+  // Surface connectivity is invariant while the model geometry is unchanged.
+  // Build it cooperatively as soon as the restored model becomes idle instead
+  // of charging the six-second topology cost to the user's repair click.
+  useEffect(() => {
+    if (!importedModel) return;
+    const repairResolution = Math.min(
+      resolutionToSize[resolution],
+      CONTENT_AWARE_UV_MAX_RESOLUTION,
+    );
+    const key = `${projectId}:${importedModel.objectId}:${repairResolution}`;
+    let cancelled = false;
+    let idleId: number | undefined;
+    let timeoutId: number | undefined;
+    const prewarm = () => {
+      if (
+        cancelled ||
+        (contentAwareTopologyPrewarmRef.current?.key === key &&
+          contentAwareTopologyPrewarmRef.current.root === importedModel.group)
+      )
+        return;
+      // Atomic model reveal temporarily hides the imported hierarchy. Building
+      // an `includeInvisible:false` topology during that window cached a
+      // partial graph (and changed the repair checksum between cold runs).
+      // Wait for this exact object to be fully revealed before caching it.
+      if (
+        document.body.dataset.atomicModelRevealStatus !== 'ready' ||
+        document.body.dataset.atomicModelRevealObjectId !== importedModel.objectId
+      ) {
+        timeoutId = window.setTimeout(prewarm, 100);
+        return;
+      }
+      const startedAt = performance.now();
+      const promise = buildContentAwareSurfaceTopology(
+        importedModel.group,
+        repairResolution,
+        repairResolution,
+        {
+          includeInvisible: false,
+          includeSeamLinks: true,
+          seamBandPixels: 1,
+          minimumSeamNormalDot: 0.72,
+          yieldIntervalMs: 4,
+        },
+      );
+      const prewarmRoot = importedModel.group;
+      contentAwareTopologyPrewarmRef.current = { key, root: prewarmRoot, promise };
+      void promise
+        .then(() => {
+          if (
+            contentAwareTopologyPrewarmRef.current?.key !== key ||
+            contentAwareTopologyPrewarmRef.current.root !== prewarmRoot
+          )
+            return;
+          document.body.dataset.contentAwareTopologyPrewarm = 'ready';
+          document.body.dataset.contentAwareTopologyPrewarmMs = (
+            performance.now() - startedAt
+          ).toFixed(1);
+        })
+        .catch((error) => {
+          if (
+            contentAwareTopologyPrewarmRef.current?.key === key &&
+            contentAwareTopologyPrewarmRef.current.root === prewarmRoot
+          ) {
+            contentAwareTopologyPrewarmRef.current = undefined;
+          }
+          console.warn('[Liclick Content Aware] Topology prewarm failed.', error);
+        });
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(prewarm, { timeout: 1_500 });
+    } else {
+      timeoutId = window.setTimeout(prewarm, 250);
+    }
+    return () => {
+      cancelled = true;
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [importedModel, projectId, resolution]);
+
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
   const authenticatedUserId = useAuthStore((state) => state.user?.id);
@@ -5664,7 +5759,7 @@ export function EditorPage({
               !isLocalRepaintLayer(layer) &&
               !isContentAwareRepairLayer(layer),
           )
-          .sort((left, right) => right.order - left.order);
+          .sort(compareProjectedLayersForDeterministicBake);
         const sourceLayerIds = sourceProjectedLayers.map((layer) => layer.id);
         const previousRepairLayers = currentLayers.filter(
           (layer) =>
@@ -5695,11 +5790,21 @@ export function EditorPage({
         });
         const reusableProjectionBake =
           reusableProjectionBakeCacheRef.current.get('content-aware-repair');
-        const projectionBakeCacheHit =
+        const memoryProjectionBakeHit =
           reusableProjectionBake?.signature === projectionBakeSignature;
-        document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
-          ? 'content-aware-repair-hit'
-          : 'content-aware-repair-miss';
+        const persistentProjectionBake = memoryProjectionBakeHit
+          ? undefined
+          : await readContentAwareProjectionBake(
+              projectionBakeSignature,
+              repairResolution,
+              repairResolution,
+            );
+        const projectionBakeCacheHit = memoryProjectionBakeHit || Boolean(persistentProjectionBake);
+        document.body.dataset.perfProjectionBakeCache = memoryProjectionBakeHit
+          ? 'content-aware-repair-memory-hit'
+          : persistentProjectionBake
+            ? 'content-aware-repair-disk-hit'
+            : 'content-aware-repair-miss';
         const bakeResult = projectionBakeCacheHit
           ? undefined
           : await bakeVisibleProjectedLayersToTexture({
@@ -5745,9 +5850,11 @@ export function EditorPage({
             (projectionBakeCacheHit ? { projectionBakeCacheHit: 1 } : undefined),
         });
         delete document.body.dataset.perfUvBakePhase;
-        let workingImageData = projectionBakeCacheHit
+        let workingImageData = memoryProjectionBakeHit
           ? cloneProjectionBakeImageData(reusableProjectionBake.imageData)
-          : bakeResult?.imageData;
+          : persistentProjectionBake
+            ? cloneProjectionBakeImageData(persistentProjectionBake)
+            : bakeResult?.imageData;
         if (!workingImageData) {
           const bakeContext = bakeResult?.canvas.getContext('2d', { willReadFrequently: true });
           if (!bakeContext) throw new Error(t('localRepaintFailedHelp'));
@@ -5758,6 +5865,35 @@ export function EditorPage({
             signature: projectionBakeSignature,
             imageData: cloneProjectionBakeImageData(workingImageData),
             report: bakeResult.report,
+          });
+          // Persistence runs after the full-quality result is available and is
+          // intentionally not awaited: CacheStorage owns its byte copy while
+          // repair/topology continue, so no disk write extends the click path.
+          void writeContentAwareProjectionBake(projectionBakeSignature, workingImageData);
+        } else if (persistentProjectionBake && !memoryProjectionBakeHit) {
+          reusableProjectionBakeCacheRef.current.set('content-aware-repair', {
+            signature: projectionBakeSignature,
+            imageData: cloneProjectionBakeImageData(persistentProjectionBake),
+            report: {
+              id: createId('persistent-projection-bake-report'),
+              objectId,
+              layerId: sourceLayerIds[0] ?? '',
+              width: repairResolution,
+              height: repairResolution,
+              totalTriangles: 0,
+              processedTriangles: 0,
+              coveredPixels: 0,
+              skippedPixels: 0,
+              totalTexels: repairResolution * repairResolution,
+              inFrustumTexels: 0,
+              maskRejectedTexels: 0,
+              depthRejectedTexels: 0,
+              backfaceRejectedTexels: 0,
+              writtenTexels: 0,
+              coverageRatio: getRgbaAlphaCoverageRatio(persistentProjectionBake.data),
+              warnings: ['Restored exact projection RGBA from the persistent content-aware cache.'],
+              durationMs: 0,
+            },
           });
         }
         // Projection remains the front layer. Repair deltas are applied in
@@ -5792,46 +5928,61 @@ export function EditorPage({
             compositeRgbaUnderInPlace(workingImageData.data, imageData.data, layer.opacity);
           }
         }
-        const topology = await buildContentAwareSurfaceTopology(
-          targetModel.group,
-          repairResolution,
-          repairResolution,
-          {
-            includeInvisible: false,
-            // A bounded physical-seam bridge can seed a fully blank UV island.
-            // The repair core limits propagation to one seam crossing so colour
-            // cannot cascade through an arbitrary chain of neighbouring islands.
-            includeSeamLinks: true,
-            seamBandPixels: 1,
-            minimumSeamNormalDot: 0.72,
-            yieldIntervalMs: 4,
-            signal: abortController.signal,
-            onProgress: silentForeground
-              ? undefined
-              : (progress) => {
-                  if (document.body.dataset.perfContentAwareRepairMeasuring === '1') {
-                    document.body.dataset.perfContentAwareRepairPhase = `s9-topology-${progress.phase}`;
-                  }
-                  const phaseRange =
-                    progress.phase === 'analyze'
-                      ? [0.58, 0.64]
-                      : progress.phase === 'rasterize'
-                        ? [0.64, 0.7]
-                        : progress.phase === 'seams'
-                          ? [0.7, 0.74]
-                          : [0.74, 0.74];
-                  const phaseProgress =
-                    progress.total > 0 ? progress.completed / progress.total : 1;
-                  setManualBakeProgress({
-                    title: t('contentAwareRepair'),
-                    detail: t('contentAwareRepairScanning'),
-                    progress:
-                      phaseRange[0] +
-                      (phaseRange[1] - phaseRange[0]) * Math.max(0, Math.min(1, phaseProgress)),
-                  });
-                },
-          },
-        );
+        const topologyPrewarmKey = `${projectId}:${objectId}:${repairResolution}`;
+        const prewarmedTopology =
+          contentAwareTopologyPrewarmRef.current?.key === topologyPrewarmKey &&
+          contentAwareTopologyPrewarmRef.current.root === targetModel.group
+            ? contentAwareTopologyPrewarmRef.current.promise
+            : undefined;
+        document.body.dataset.perfContentAwareTopologyCache = prewarmedTopology
+          ? 'prewarm-hit'
+          : 'miss';
+        const topology = prewarmedTopology
+          ? await prewarmedTopology
+          : await buildContentAwareSurfaceTopology(
+              targetModel.group,
+              repairResolution,
+              repairResolution,
+              {
+                includeInvisible: false,
+                // A bounded physical-seam bridge can seed a fully blank UV island.
+                // The repair core limits propagation to one seam crossing so colour
+                // cannot cascade through an arbitrary chain of neighbouring islands.
+                includeSeamLinks: true,
+                seamBandPixels: 1,
+                minimumSeamNormalDot: 0.72,
+                yieldIntervalMs: 4,
+                signal: abortController.signal,
+                onProgress: silentForeground
+                  ? undefined
+                  : (progress) => {
+                      if (document.body.dataset.perfContentAwareRepairMeasuring === '1') {
+                        document.body.dataset.perfContentAwareRepairPhase = `s9-topology-${progress.phase}`;
+                      }
+                      const phaseRange =
+                        progress.phase === 'analyze'
+                          ? [0.58, 0.64]
+                          : progress.phase === 'rasterize'
+                            ? [0.64, 0.7]
+                            : progress.phase === 'seams'
+                              ? [0.7, 0.74]
+                              : [0.74, 0.74];
+                      const phaseProgress =
+                        progress.total > 0 ? progress.completed / progress.total : 1;
+                      setManualBakeProgress({
+                        title: t('contentAwareRepair'),
+                        detail: t('contentAwareRepairScanning'),
+                        progress:
+                          phaseRange[0] +
+                          (phaseRange[1] - phaseRange[0]) *
+                            Math.max(0, Math.min(1, phaseProgress)),
+                      });
+                    },
+              },
+            );
+        if (abortController.signal.aborted) {
+          throw new DOMException('Content-aware repair was superseded.', 'AbortError');
+        }
         reportRepairRunState('running', 'topology-ready', {
           componentCount: topology.componentCount,
           seamLinkCount: topology.seamLinkCount,
