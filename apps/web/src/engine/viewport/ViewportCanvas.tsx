@@ -95,10 +95,7 @@ import {
 } from '@/services/nativePerformanceClient';
 import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
-import {
-  createInwardFeatheredMask,
-  removeEdgeConnectedNeutralBackground,
-} from '@/engine/localRepaint/resultPreviewUtils';
+import { removeEdgeConnectedNeutralBackground } from '@/engine/localRepaint/resultPreviewUtils';
 import {
   isViewportInteractionBusy,
   markViewportInteractionEnd,
@@ -4427,11 +4424,72 @@ function createLocalRepaintFalloffCanvas(
 
   context.drawImage(allowedMaskImage, 0, 0, width, height);
   const mask = context.getImageData(0, 0, width, height);
-  const featherRadius = Math.max(
-    4,
-    Math.min(18, Math.round(Math.min(width, height) * 0.016)),
+  let weightTotal = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const weight =
+        (Math.max(mask.data[offset], mask.data[offset + 1], mask.data[offset + 2]) / 255) *
+        (mask.data[offset + 3] / 255);
+      if (weight <= 0.03) continue;
+      weightTotal += weight;
+      weightedX += x * weight;
+      weightedY += y * weight;
+    }
+  }
+  if (weightTotal <= 0) {
+    // A decoded but empty authoritative mask is still empty. Opening it to
+    // full white reintroduced projection-through and repaint dead zones.
+    context.clearRect(0, 0, width, height);
+    reportDuration();
+    return canvas;
+  }
+
+  const centerX = weightedX / weightTotal;
+  const centerY = weightedY / weightTotal;
+  let coreRadius = 1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const coverage =
+        (Math.max(mask.data[offset], mask.data[offset + 1], mask.data[offset + 2]) / 255) *
+        (mask.data[offset + 3] / 255);
+      if (coverage <= 0.03) continue;
+      coreRadius = Math.max(coreRadius, Math.hypot(x - centerX, y - centerY));
+    }
+  }
+
+  // Preserve full opacity throughout the authored mask, then fade around its
+  // centroid across the complete captured view. Put the zero point beyond the
+  // farthest canvas corner so every visible model pixel remains paintable while
+  // distant replacement content still blends much more softly.
+  const farthestCornerRadius = Math.max(
+    Math.hypot(centerX, centerY),
+    Math.hypot(width - 1 - centerX, centerY),
+    Math.hypot(centerX, height - 1 - centerY),
+    Math.hypot(width - 1 - centerX, height - 1 - centerY),
   );
-  const output = createInwardFeatheredMask(mask, featherRadius);
+  const fadeEndRadius = Math.max(coreRadius + 1, farthestCornerRadius * 1.2);
+  const expansionRadius = fadeEndRadius - coreRadius;
+  const output = context.createImageData(width, height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const distance = Math.hypot(x - centerX, y - centerY);
+      const linearFade = THREE.MathUtils.clamp(
+        (fadeEndRadius - distance) / Math.max(expansionRadius, 1),
+        0,
+        1,
+      );
+      const opacity = linearFade * linearFade * (3 - 2 * linearFade);
+      const offset = (y * width + x) * 4;
+      output.data[offset] = 255;
+      output.data[offset + 1] = 255;
+      output.data[offset + 2] = 255;
+      output.data[offset + 3] = Math.round(opacity * 255);
+    }
+  }
   context.putImageData(output, 0, 0);
   reportDuration();
   return canvas;

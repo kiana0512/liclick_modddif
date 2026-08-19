@@ -313,8 +313,13 @@ const repaintFalloffWorkerSource = readFileSync(
 );
 assert.match(
   repaintFalloffWorkerSource,
-  /createInwardFeatheredMask\(maskPixels, featherRadius\)[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?output\.data\[offset \+ 3\] = Math\.round/,
-  'The worker must keep feathering inside the authored mask and multiply it by cleaned source alpha.',
+  /weightTotal[\s\S]*?farthestCornerRadius[\s\S]*?fadeEndRadius[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
+  'The worker must preserve the authored core and fade across the complete captured view.',
+);
+assert.match(
+  editorPageSource,
+  /const getLocalRepaintProjectionImage = useCallback\(\(resultUrl: string\)[\s\S]*?const promise = Promise\.resolve\(resultUrl\)/,
+  'An aligned local repaint result must reach the viewport without a second silhouette crop.',
 );
 assert.match(
   projectedLayerMaterialSource,
@@ -375,30 +380,6 @@ try {
     transparentRepaint.data[8 * 4 + 3],
     255,
     'Authored yellow/orange repaint pixels must remain fully visible.',
-  );
-  const authoredMaskPixels = new Uint8ClampedArray(7 * 7 * 4);
-  for (let y = 1; y <= 5; y += 1) {
-    for (let x = 1; x <= 5; x += 1) {
-      const offset = (y * 7 + x) * 4;
-      authoredMaskPixels[offset] = 255;
-      authoredMaskPixels[offset + 1] = 255;
-      authoredMaskPixels[offset + 2] = 255;
-      authoredMaskPixels[offset + 3] = 255;
-    }
-  }
-  const inwardFeather = repaintPreviewUtils.createInwardFeatheredMask(
-    new ImageData(authoredMaskPixels, 7, 7),
-    3,
-  );
-  assert.equal(
-    inwardFeather.data[(3 * 7 + 0) * 4 + 3],
-    0,
-    'Inward feathering must never add coverage outside the authored selection.',
-  );
-  assert(
-    inwardFeather.data[(3 * 7 + 1) * 4 + 3] <
-      inwardFeather.data[(3 * 7 + 3) * 4 + 3],
-    'Coverage must rise smoothly from the selection edge into its interior.',
   );
   const repaintActivation = await server.ssrLoadModule(
     '/src/engine/viewport/localRepaintPreviewActivation.ts',

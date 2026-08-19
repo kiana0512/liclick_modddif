@@ -1,7 +1,4 @@
-import {
-  createInwardFeatheredMask,
-  removeEdgeConnectedNeutralBackground,
-} from '../engine/localRepaint/resultPreviewUtils';
+import { removeEdgeConnectedNeutralBackground } from '../engine/localRepaint/resultPreviewUtils';
 
 type FalloffRequest = {
   id: number;
@@ -25,11 +22,74 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
     context.clearRect(0, 0, width, height);
     context.drawImage(mask, 0, 0, width, height);
     const maskPixels = context.getImageData(0, 0, width, height);
-    const featherRadius = Math.max(
-      4,
-      Math.min(18, Math.round(Math.min(width, height) * 0.016)),
-    );
-    const output = createInwardFeatheredMask(maskPixels, featherRadius);
+    let weightTotal = 0;
+    let weightedX = 0;
+    let weightedY = 0;
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const offset = (y * width + x) * 4;
+        const weight =
+          (Math.max(
+            maskPixels.data[offset],
+            maskPixels.data[offset + 1],
+            maskPixels.data[offset + 2],
+          ) /
+            255) *
+          (maskPixels.data[offset + 3] / 255);
+        if (weight <= 0.03) continue;
+        weightTotal += weight;
+        weightedX += x * weight;
+        weightedY += y * weight;
+      }
+    }
+
+    if (weightTotal > 0) {
+      const centerX = weightedX / weightTotal;
+      const centerY = weightedY / weightTotal;
+      let coreRadius = 1;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const offset = (y * width + x) * 4;
+          const coverage =
+            (Math.max(
+              maskPixels.data[offset],
+              maskPixels.data[offset + 1],
+              maskPixels.data[offset + 2],
+            ) /
+              255) *
+            (maskPixels.data[offset + 3] / 255);
+          if (coverage <= 0.03) continue;
+          coreRadius = Math.max(coreRadius, Math.hypot(x - centerX, y - centerY));
+        }
+      }
+      const farthestCornerRadius = Math.max(
+        Math.hypot(centerX, centerY),
+        Math.hypot(width - 1 - centerX, centerY),
+        Math.hypot(centerX, height - 1 - centerY),
+        Math.hypot(width - 1 - centerX, height - 1 - centerY),
+      );
+      const fadeEndRadius = Math.max(coreRadius + 1, farthestCornerRadius * 1.2);
+      const expansionRadius = fadeEndRadius - coreRadius;
+      const output = context.createImageData(width, height);
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const distance = Math.hypot(x - centerX, y - centerY);
+          const linearFade = Math.max(
+            0,
+            Math.min(1, (fadeEndRadius - distance) / Math.max(expansionRadius, 1)),
+          );
+          const opacity = linearFade * linearFade * (3 - 2 * linearFade);
+          const offset = (y * width + x) * 4;
+          output.data[offset] = 255;
+          output.data[offset + 1] = 255;
+          output.data[offset + 2] = 255;
+          output.data[offset + 3] = Math.round(opacity * 255);
+        }
+      }
+      context.putImageData(output, 0, 0);
+    } else {
+      context.clearRect(0, 0, width, height);
+    }
 
     // Match the transparent preview shown in the generation panel. The source
     // colour remains the original high-resolution asset; only its lightweight
@@ -40,12 +100,17 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
     sourceContext.drawImage(source, 0, 0, width, height);
     const sourcePixels = sourceContext.getImageData(0, 0, width, height);
     const transparentSource = removeEdgeConnectedNeutralBackground(sourcePixels, 'dark-only');
-    for (let offset = 0; offset < output.data.length; offset += 4) {
-      output.data[offset + 3] = Math.round(
-        (output.data[offset + 3] * transparentSource.imageData.data[offset + 3]) / 255,
-      );
+    const alphaMask = sourceContext.createImageData(width, height);
+    for (let offset = 0; offset < alphaMask.data.length; offset += 4) {
+      alphaMask.data[offset] = 255;
+      alphaMask.data[offset + 1] = 255;
+      alphaMask.data[offset + 2] = 255;
+      alphaMask.data[offset + 3] = transparentSource.imageData.data[offset + 3];
     }
-    context.putImageData(output, 0, 0);
+    sourceContext.putImageData(alphaMask, 0, 0);
+    context.globalCompositeOperation = 'destination-in';
+    context.drawImage(sourceCanvas, 0, 0);
+    context.globalCompositeOperation = 'source-over';
 
     const bitmap = canvas.transferToImageBitmap();
     const response: FalloffResponse = {

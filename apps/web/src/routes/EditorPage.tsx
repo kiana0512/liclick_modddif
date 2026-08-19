@@ -84,7 +84,6 @@ import {
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import {
-  createMaskedProjectedImage,
   createProjectionMaskedImage,
   prewarmMaskedProjectedImageWorker,
 } from '@/engine/projection/createMaskedProjectedImage';
@@ -5168,28 +5167,21 @@ export function EditorPage({
     void runExportAction(t('exporting'), actions[actionId]);
   }
 
-  const getLocalRepaintProjectionImage = useCallback(
-    (resultUrl: string, silhouetteUrl?: string) => {
-      const cacheKey = `${resultUrl}\u0000${silhouetteUrl ?? ''}`;
-      const cached = localRepaintProjectionImageCacheRef.current.get(cacheKey);
-      if (cached) return cached;
-      // Reuse the repository's worker-backed transparency/alignment algorithm.
-      // The clay capture supplies the complete object silhouette; the smaller
-      // authored repaint mask remains separate and only limits where the aligned
-      // result can affect the model.
-      const promise = silhouetteUrl
-        ? createMaskedProjectedImage(resultUrl, silhouetteUrl)
-        : Promise.resolve(resultUrl);
-      localRepaintProjectionImageCacheRef.current.set(cacheKey, promise);
-      promise.catch(() => {
-        if (localRepaintProjectionImageCacheRef.current.get(cacheKey) === promise) {
-          localRepaintProjectionImageCacheRef.current.delete(cacheKey);
-        }
-      });
-      return promise;
-    },
-    [],
-  );
+  const getLocalRepaintProjectionImage = useCallback((resultUrl: string) => {
+    const cached = localRepaintProjectionImageCacheRef.current.get(resultUrl);
+    if (cached) return cached;
+    // The generated result is already aligned to the archived capture. Keep the
+    // original asset intact; masking it again with the shaded clay screenshot
+    // clips valid repaint pixels before the authored application mask is applied.
+    const promise = Promise.resolve(resultUrl);
+    localRepaintProjectionImageCacheRef.current.set(resultUrl, promise);
+    promise.catch(() => {
+      if (localRepaintProjectionImageCacheRef.current.get(resultUrl) === promise) {
+        localRepaintProjectionImageCacheRef.current.delete(resultUrl);
+      }
+    });
+    return promise;
+  }, []);
 
   useEffect(() => {
     const handleLocalRepaintPrewarmProgress = (event: Event) => {
@@ -5237,13 +5229,7 @@ export function EditorPage({
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
     // apply button should only bind an already warm source, regardless of which
     // repaint round the user is entering.
-    const generationCapture = project?.captures.find(
-      (capture) => capture.id === latestLocalRepaintGeneration.captureId,
-    );
-    void getLocalRepaintProjectionImage(
-      latestLocalRepaintGeneration.resultUrl,
-      generationCapture?.colorUrl,
-    ).catch((error) => {
+    void getLocalRepaintProjectionImage(latestLocalRepaintGeneration.resultUrl).catch((error) => {
       console.warn('[Liclick 3D Texture] Could not preload local repaint result:', error);
     });
   }, [
@@ -5339,7 +5325,6 @@ export function EditorPage({
         const targetLayerId = targetLayer.id;
         const projectionImageUrl = await getLocalRepaintProjectionImage(
           latestLocalRepaintGeneration.resultUrl!,
-          generationCapture.colorUrl,
         );
         if (
           cancelled ||
@@ -5629,7 +5614,6 @@ export function EditorPage({
       try {
         projectionImageUrl = await getLocalRepaintProjectionImage(
           latestLocalRepaintGeneration.resultUrl,
-          generationCapture?.colorUrl,
         );
       } catch (error) {
         if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
