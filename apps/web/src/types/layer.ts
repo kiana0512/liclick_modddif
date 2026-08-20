@@ -35,8 +35,10 @@ export type Layer = {
   generationId?: string;
   captureId?: string;
   replacementTargetLayerId?: string;
-  /** Original generated view retained for non-destructive local repaint saves. */
+  /** Canonical active projection source retained for non-destructive repaint saves. */
   localRepaintSourceUrl?: string;
+  /** Untouched result retained alongside a seam-enhanced projection source. */
+  localRepaintRawSourceUrl?: string;
   /** Cumulative projection-space brush alpha retained without RGBA readback. */
   localRepaintMaskUrl?: string;
   renderedColor?: boolean;

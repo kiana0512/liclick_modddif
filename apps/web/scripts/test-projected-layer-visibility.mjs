@@ -137,13 +137,18 @@ assert.match(
   'The eraser parameter popover must expose a feather control.',
 );
 assert.match(
+  readFileSync(path.join(root, 'src/components/editor/BottomToolDock.tsx'), 'utf8'),
+  /const PROJECTED_ERASER_TOOL_ENABLED = false;[\s\S]*?\{PROJECTED_ERASER_TOOL_ENABLED && \(/,
+  'The projected-layer eraser implementation must remain hidden until rollout is enabled.',
+);
+assert.match(
   generatePanelSource,
   /const viewportReference = await captureCurrentColorPreview\([\s\S]*?colorMode: 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
   'The local-repaint viewport reference must capture frozen-camera BaseColor without PBR lighting.',
 );
 assert.match(
   generatePanelSource,
-  /const completedGeneration: Generation = \{[\s\S]*?syncGeneration\(completedGeneration\);[\s\S]*?setGenerateNotice\(undefined\);[\s\S]*?void Promise\.all\(\[persistedResultUrlPromise, persistedPaintMaskUrlPromise\]\)/,
+  /const completedGeneration: Generation = \{[\s\S]*?syncGeneration\(completedGeneration\);[\s\S]*?setGenerateNotice\(undefined\);[\s\S]*?void Promise\.all\(\[[\s\S]*?persistedResultUrlPromise,[\s\S]*?persistedPaintMaskUrlPromise,[\s\S]*?persistedViewportReferenceUrlPromise,[\s\S]*?\]\)/,
   'A returned repaint result must leave the foreground spinner before local persistence continues in the background.',
 );
 assert.match(
@@ -452,8 +457,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const sourceUrl = activePaintLayer\.imageUrl \|\| activePaintLayer\.localRepaintSourceUrl;\s*const savedMaskUrl = activePaintLayer\.maskUrl \|\| activePaintLayer\.localRepaintMaskUrl;/,
-  'Reloaded repaint editing must prefer workspace-resolved canonical asset URLs.',
+  /const enhancedSourceUrl = activePaintLayer\.imageUrl \|\| activePaintLayer\.localRepaintSourceUrl;[\s\S]*?activePaintLayer\.localRepaintRawSourceUrl \|\| enhancedSourceUrl[\s\S]*?const savedMaskUrl = activePaintLayer\.maskUrl \|\| activePaintLayer\.localRepaintMaskUrl;/,
+  'Reloaded repaint editing must prefer canonical assets while retaining the raw rollback source.',
 );
 assert.match(
   viewportCanvasSource,
@@ -613,8 +618,8 @@ assert.match(
 );
 assert.match(
   editorPageSource,
-  /const getLocalRepaintProjectionImage = useCallback\(\(resultUrl: string\)[\s\S]*?const promise = Promise\.resolve\(resultUrl\)/,
-  'An aligned local repaint result must reach the viewport without a second silhouette crop.',
+  /const getLocalRepaintProjectionImage = useCallback\([\s\S]*?const rawResultUrl =[\s\S]*?if \(seamMode === 'legacy' \|\| !referenceUrl\) return legacyResult;[\s\S]*?harmonizeLocalRepaintInWorker/,
+  'An aligned local repaint result must retain a direct, uncropped legacy path beside seam harmonization.',
 );
 assert.match(
   projectedLayerMaterialSource,

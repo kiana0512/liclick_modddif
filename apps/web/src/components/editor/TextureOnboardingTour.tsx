@@ -71,8 +71,8 @@ const tourSteps: TourStep[] = [
   {
     target: 'edit-tools',
     eyebrow: '第四步 · 2/2',
-    title: '橡皮擦与局部重绘',
-    body: '橡皮擦清理选中图层的纹理\n局部修改按蒙版 → 局部生图 → 重绘使用。',
+    title: '局部重绘',
+    body: '局部修改按蒙版 → 局部生图 → 重绘使用。',
     placement: 'above',
   },
 ];

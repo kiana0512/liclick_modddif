@@ -2797,6 +2797,16 @@ export function GeneratePanel({
         console.warn('[Liclick 3D Texture] Could not persist local repaint mask:', error);
         return currentPaintMaskDataUrl;
       });
+      const persistedViewportReferenceUrlPromise = persistGeneratedImage(
+        'generations',
+        viewportReference.colorUrl,
+        `${generationId}-viewport-reference.png`,
+        undefined,
+        currentProject.id,
+      ).catch((error) => {
+        console.warn('[Liclick 3D Texture] Could not persist repaint colour reference:', error);
+        return viewportReference.colorUrl;
+      });
       pendingGeneration = {
         id: generationId,
         mode: 'inpaint',
@@ -2816,6 +2826,7 @@ export function GeneratePanel({
           paintMaskSource: hasUserPaintMask ? 'user' : 'full-frame-default',
           sourceColorMode: 'clay-target',
           viewportReferenceColorMode: 'flat-target',
+          viewportReferenceUrl: viewportReference.colorUrl,
           objectMatrixWorld: captureObjectMatrixWorld,
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
@@ -2912,6 +2923,7 @@ export function GeneratePanel({
           ...generation.metadata,
           objectMatrixWorld: captureObjectMatrixWorld,
           maskUrl: currentPaintMaskDataUrl,
+          viewportReferenceUrl: viewportReference.colorUrl,
           paintMaskRevision: currentPaintMaskRevision,
           sourceColorMode: 'clay-target',
           completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
@@ -2941,14 +2953,26 @@ export function GeneratePanel({
             return completedGeneration.resultUrl;
           })
         : Promise.resolve(undefined);
-      void Promise.all([persistedResultUrlPromise, persistedPaintMaskUrlPromise])
-        .then(async ([persistedResultUrl, persistedPaintMaskUrl]) => {
+      void Promise.all([
+        persistedResultUrlPromise,
+        persistedPaintMaskUrlPromise,
+        persistedViewportReferenceUrlPromise,
+      ])
+        .then(async ([persistedResultUrl, persistedPaintMaskUrl, persistedViewportReferenceUrl]) => {
+          const latestCompletedRecord =
+            useGenerationStore
+              .getState()
+              .generations.find((candidate) => candidate.id === completedGeneration.id) ??
+            completedGeneration;
           const durableGeneration: Generation = {
-            ...completedGeneration,
+            ...latestCompletedRecord,
             resultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
             metadata: {
               ...completedGeneration.metadata,
+              ...latestCompletedRecord.metadata,
               maskUrl: persistedPaintMaskUrl,
+              rawResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+              viewportReferenceUrl: persistedViewportReferenceUrl,
             },
           };
           syncGeneration(durableGeneration);

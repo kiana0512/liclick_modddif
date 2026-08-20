@@ -26,6 +26,8 @@ export type LocalRepaintProjectionSource = {
   imageUrl: string;
   /** Original server/project URL used by autosave without data-URL readback. */
   persistentImageUrl?: string;
+  /** Untouched generated result retained for an exact legacy-mode rollback. */
+  rawImageUrl?: string;
   /** Background source staging must not switch tools without an explicit click. */
   autoActivate?: boolean;
   allowedMaskUrl: string;

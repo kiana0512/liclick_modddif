@@ -82,6 +82,10 @@ const tools: Array<{
   { mode: 'scale', icon: Scaling, labelKey: 'scale', shortcut: 'R' },
 ];
 
+// Keep the complete projected-layer eraser implementation available for a
+// later rollout, but do not expose or activate it in the current release.
+const PROJECTED_ERASER_TOOL_ENABLED = false;
+
 export function BottomToolDock({
   mode,
   transformMode,
@@ -156,7 +160,11 @@ export function BottomToolDock({
   }, [isTextureMode, onPaintToolChange, paintTool]);
 
   useEffect(() => {
-    if (paintTool !== 'eraser' || canEraseSelectedLayer) return;
+    if (
+      paintTool !== 'eraser' ||
+      (PROJECTED_ERASER_TOOL_ENABLED && canEraseSelectedLayer)
+    )
+      return;
     onPaintToolChange('none');
     setActiveMenu(undefined);
   }, [canEraseSelectedLayer, onPaintToolChange, paintTool]);
@@ -358,7 +366,8 @@ export function BottomToolDock({
 
       {isTextureMode && (
         <>
-          <span className="relative inline-flex">
+          {PROJECTED_ERASER_TOOL_ENABLED && (
+            <span className="relative inline-flex">
             {activeMenu === 'eraser' && paintTool === 'eraser' && (
               <div className="absolute bottom-full left-0 z-50 mb-2 w-[248px] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
                 <div className="mb-2 rounded-md bg-white/[0.07] px-2.5 py-2 text-xs font-semibold text-white/78">
@@ -458,7 +467,8 @@ export function BottomToolDock({
                 </span>
               </button>
             </IconTooltip>
-          </span>
+            </span>
+          )}
           <div className="ml-1 flex items-center gap-1.5">
             <span className="pointer-events-none flex shrink-0 items-center gap-1.5 whitespace-nowrap px-0.5 text-[12px] font-semibold tracking-wide text-white/62">
               <span

@@ -96,6 +96,7 @@ import {
 } from '@/services/nativePerformanceClient';
 import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
+import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import {
   createPackedDepthVisibilityMask,
   removeEdgeConnectedNeutralBackground,
@@ -6543,7 +6544,11 @@ function SurfacePaintOverlay() {
   useEffect(() => {
     if (!shouldPrewarmPersistedLocalRepaint || !activePaintLayer?.camera) return;
     const projectionCamera = activePaintLayer.camera;
-    const sourceUrl = activePaintLayer.imageUrl || activePaintLayer.localRepaintSourceUrl;
+    const enhancedSourceUrl = activePaintLayer.imageUrl || activePaintLayer.localRepaintSourceUrl;
+    const sourceUrl =
+      getLocalRepaintSeamMode() === 'legacy'
+        ? activePaintLayer.localRepaintRawSourceUrl || enhancedSourceUrl
+        : enhancedSourceUrl;
     const savedMaskUrl = activePaintLayer.maskUrl || activePaintLayer.localRepaintMaskUrl;
     if (!sourceUrl || !savedMaskUrl) return;
 
@@ -6566,6 +6571,7 @@ function SurfacePaintOverlay() {
       useSceneStore.getState().setLocalRepaintProjectionSource({
         imageUrl: sourceUrl,
         persistentImageUrl: sourceUrl,
+        rawImageUrl: activePaintLayer.localRepaintRawSourceUrl,
         autoActivate: false,
         allowedMaskUrl,
         depthUrl: activePaintLayer.depthUrl,
@@ -10823,6 +10829,7 @@ function SurfacePaintOverlay() {
             captureId: source.captureId,
             replacementTargetLayerId: source.targetLayerId,
             localRepaintSourceUrl: source.persistentImageUrl ?? source.imageUrl,
+            localRepaintRawSourceUrl: source.rawImageUrl,
             localRepaintMaskUrl: composite.maskUrl,
             renderedColor: false,
             minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,

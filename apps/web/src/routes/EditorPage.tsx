@@ -143,6 +143,12 @@ import {
   maskToBlob,
 } from '@/engine/localRepaint/maskUtils';
 import { buildLocalRepaintPrompt } from '@/engine/localRepaint/promptBuilder';
+import {
+  getLocalRepaintSeamMode,
+  setLocalRepaintSeamMode,
+  type LocalRepaintSeamMode,
+} from '@/engine/localRepaint/seamHarmonizationMode';
+import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import {
   generationBelongsToObject,
@@ -998,7 +1004,17 @@ export function EditorPage({
   const reusableProjectionBakeCacheRef = useRef(
     new Map<ReusableProjectionBakePurpose, ReusableProjectionBakeEntry>(),
   );
-  const localRepaintProjectionImageCacheRef = useRef(new Map<string, Promise<string>>());
+  const localRepaintProjectionImageCacheRef = useRef(
+    new Map<
+      string,
+      Promise<{
+        imageUrl: string;
+        persistentImageUrl: string;
+        rawImageUrl: string;
+        seamMode: LocalRepaintSeamMode;
+      }>
+    >(),
+  );
   const localRepaintToolRequestRevisionRef = useRef(0);
   const localRepaintObjectScopeRef = useRef<string>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
@@ -5327,20 +5343,150 @@ export function EditorPage({
     void runExportAction(t('exporting'), actions[actionId]);
   }
 
-  const getLocalRepaintProjectionImage = useCallback((resultUrl: string) => {
-    const cached = localRepaintProjectionImageCacheRef.current.get(resultUrl);
-    if (cached) return cached;
-    // The generated result is already aligned to the archived capture. Keep the
-    // original asset intact; masking it again with the shaded clay screenshot
-    // clips valid repaint pixels before the authored application mask is applied.
-    const promise = Promise.resolve(resultUrl);
-    localRepaintProjectionImageCacheRef.current.set(resultUrl, promise);
-    promise.catch(() => {
-      if (localRepaintProjectionImageCacheRef.current.get(resultUrl) === promise) {
-        localRepaintProjectionImageCacheRef.current.delete(resultUrl);
-      }
-    });
-    return promise;
+  const getLocalRepaintProjectionImage = useCallback(
+    (generation: Generation, maskUrl: string) => {
+      const seamMode = getLocalRepaintSeamMode();
+      const metadata = generation.metadata;
+      const rawResultUrl =
+        typeof metadata.rawResultUrl === 'string'
+          ? metadata.rawResultUrl
+          : generation.resultUrl;
+      if (!rawResultUrl) return Promise.reject(new Error('Local repaint result is missing.'));
+      const referenceUrl =
+        typeof metadata.viewportReferenceUrl === 'string'
+          ? metadata.viewportReferenceUrl
+          : undefined;
+      const harmonizedResultUrl =
+        typeof metadata.harmonizedResultUrl === 'string'
+          ? metadata.harmonizedResultUrl
+          : undefined;
+      const selectedResultUrl =
+        seamMode === 'enhanced' && harmonizedResultUrl
+          ? harmonizedResultUrl
+          : rawResultUrl;
+      const cacheKey = [
+        seamMode,
+        generation.id,
+        selectedResultUrl,
+        referenceUrl ?? 'no-reference',
+        maskUrl,
+      ].join('|');
+      const cached = localRepaintProjectionImageCacheRef.current.get(cacheKey);
+      if (cached) return cached;
+
+      const legacyResult = {
+        imageUrl: rawResultUrl,
+        persistentImageUrl: rawResultUrl,
+        rawImageUrl: rawResultUrl,
+        seamMode: 'legacy' as const,
+      };
+      const promise = (async () => {
+        // This is an explicit bypass, not an approximation of the old path.
+        // Old projects without the archived flat-colour reference also retain
+        // their exact legacy behaviour.
+        if (seamMode === 'legacy' || !referenceUrl) return legacyResult;
+        if (harmonizedResultUrl) {
+          return {
+            imageUrl: harmonizedResultUrl,
+            persistentImageUrl: harmonizedResultUrl,
+            rawImageUrl: rawResultUrl,
+            seamMode,
+          };
+        }
+        try {
+          const result = await harmonizeLocalRepaintInWorker({
+            generatedUrl: rawResultUrl,
+            referenceUrl,
+            maskUrl,
+          });
+          if (!result.report.applied) return legacyResult;
+          const generationProjectId =
+            typeof metadata.projectId === 'string' ? metadata.projectId : projectId;
+          const generationProject = useProjectStore
+            .getState()
+            .projects.find((candidate) => candidate.id === generationProjectId);
+          let persistentImageUrl: string;
+          if (generationProject?.workspaceMode === 'local-server') {
+            try {
+              persistentImageUrl = (
+                await saveBlobAsset({
+                  projectId: generationProjectId,
+                  category: 'generations',
+                  blob: result.blob,
+                  filename: `${generation.id}-seam-harmonized-v1.png`,
+                })
+              ).asset.url;
+            } catch (error) {
+              console.warn(
+                '[Liclick 3D Texture] Could not persist harmonized repaint; keeping an embedded copy:',
+                error,
+              );
+              persistentImageUrl = await blobToDataUrl(result.blob);
+            }
+          } else {
+            persistentImageUrl = await blobToDataUrl(result.blob);
+          }
+          const latestGeneration =
+            useGenerationStore
+              .getState()
+              .generations.find((candidate) => candidate.id === generation.id) ?? generation;
+          const persistentRawResultUrl =
+            typeof latestGeneration.metadata.rawResultUrl === 'string'
+              ? latestGeneration.metadata.rawResultUrl
+              : rawResultUrl;
+          useGenerationStore.getState().addGeneration({
+            ...latestGeneration,
+            metadata: {
+              ...latestGeneration.metadata,
+              rawResultUrl: persistentRawResultUrl,
+              harmonizedResultUrl: persistentImageUrl,
+              seamHarmonizationVersion: 1,
+              seamHarmonizationBlendWidth: result.report.blendWidth,
+              seamHarmonizationSampleCount: result.report.sampledPixels,
+              seamHarmonizationProcessMs: result.processMs,
+            },
+          });
+          window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+          return {
+            imageUrl: persistentImageUrl,
+            persistentImageUrl,
+            rawImageUrl: persistentRawResultUrl,
+            seamMode,
+          };
+        } catch (error) {
+          // Enhancements are never allowed to make projection unavailable.
+          // Any decode, worker or persistence failure falls back to the exact
+          // original generated image.
+          console.warn(
+            '[Liclick 3D Texture] Seam harmonization failed; using the original repaint result:',
+            error,
+          );
+          return legacyResult;
+        }
+      })();
+      localRepaintProjectionImageCacheRef.current.set(cacheKey, promise);
+      return promise;
+    },
+    [projectId],
+  );
+
+  useEffect(() => {
+    type SeamDebugApi = {
+      getMode: () => LocalRepaintSeamMode;
+      setMode: (mode: LocalRepaintSeamMode) => void;
+    };
+    const debugWindow = window as Window & { LiclickLocalRepaintSeam?: SeamDebugApi };
+    debugWindow.LiclickLocalRepaintSeam = {
+      getMode: getLocalRepaintSeamMode,
+      setMode: (mode) => {
+        setLocalRepaintSeamMode(mode);
+        localRepaintProjectionImageCacheRef.current.clear();
+        useSceneStore.getState().setLocalRepaintProjectionSource(undefined);
+      },
+    };
+    return () => {
+      delete debugWindow.LiclickLocalRepaintSeam;
+    };
   }, []);
 
   useEffect(() => {
@@ -5389,13 +5535,19 @@ export function EditorPage({
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
     // apply button should only bind an already warm source, regardless of which
     // repaint round the user is entering.
-    void getLocalRepaintProjectionImage(latestLocalRepaintGeneration.resultUrl).catch((error) => {
+    const generationMaskUrl =
+      typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
+        ? latestLocalRepaintGeneration.metadata.maskUrl
+        : paintMaskDataUrl;
+    if (!generationMaskUrl) return;
+    void getLocalRepaintProjectionImage(latestLocalRepaintGeneration, generationMaskUrl).catch((error) => {
       console.warn('[Liclick 3D Texture] Could not preload local repaint result:', error);
     });
   }, [
     generations,
     getLocalRepaintProjectionImage,
     importedModel?.objectId,
+    paintMaskDataUrl,
     project?.captures,
     projectId,
     selectedObjectId,
@@ -5487,8 +5639,9 @@ export function EditorPage({
         }
         if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) return;
         const targetLayerId = targetLayer.id;
-        const projectionImageUrl = await getLocalRepaintProjectionImage(
-          latestLocalRepaintGeneration.resultUrl!,
+        const projectionImage = await getLocalRepaintProjectionImage(
+          latestLocalRepaintGeneration,
+          generationMaskUrl,
         );
         if (
           cancelled ||
@@ -5513,8 +5666,9 @@ export function EditorPage({
         importedModel.group.updateMatrixWorld(true);
         const nameSource = latestLocalRepaintGeneration.prompt.trim();
         setLocalRepaintProjectionSource({
-          imageUrl: projectionImageUrl,
-          persistentImageUrl: latestLocalRepaintGeneration.resultUrl,
+          imageUrl: projectionImage.imageUrl,
+          persistentImageUrl: projectionImage.persistentImageUrl,
+          rawImageUrl: projectionImage.rawImageUrl,
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
           depthUrl: generationCapture.depthUrl,
@@ -5785,10 +5939,16 @@ export function EditorPage({
       // prepared, so an early gesture cannot be silently queued behind setup.
       setPaintTool('none');
       showPrewarmProgress('读取高清生成结果', 0.06);
-      let projectionImageUrl: string;
+      let projectionImage: {
+        imageUrl: string;
+        persistentImageUrl: string;
+        rawImageUrl: string;
+        seamMode: LocalRepaintSeamMode;
+      };
       try {
-        projectionImageUrl = await getLocalRepaintProjectionImage(
-          latestLocalRepaintGeneration.resultUrl,
+        projectionImage = await getLocalRepaintProjectionImage(
+          latestLocalRepaintGeneration,
+          generationMaskUrl,
         );
       } catch (error) {
         if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
@@ -5840,8 +6000,9 @@ export function EditorPage({
         setProjectLayers(useLayerStore.getState().layers);
       }
       setLocalRepaintProjectionSource({
-        imageUrl: projectionImageUrl,
-        persistentImageUrl: latestLocalRepaintGeneration.resultUrl,
+        imageUrl: projectionImage.imageUrl,
+        persistentImageUrl: projectionImage.persistentImageUrl,
+        rawImageUrl: projectionImage.rawImageUrl,
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,
         depthUrl: generationCapture?.depthUrl,
