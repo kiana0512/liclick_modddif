@@ -1,10 +1,30 @@
-import type { ModelBoundingBox } from '@/types/model';
+import type { DisplayMode, ModelBoundingBox } from '@/types/model';
 
 export const frontProjectThumbnailCapture = {
   width: 2048,
   height: 2048,
   matchCameraToRenderAspect: true,
 } as const;
+
+/**
+ * Project cards always use the textured PBR presentation. The editor defaults
+ * to flat mode and users may leave from normal/wire mode, so thumbnail capture
+ * must not inherit a diagnostic viewport mode or skip the capture entirely.
+ */
+export function withProjectThumbnailPbrMode<T>(
+  currentDisplayMode: DisplayMode,
+  setDisplayMode: (displayMode: DisplayMode) => void,
+  capture: () => T,
+) {
+  if (currentDisplayMode === 'pbr') return capture();
+
+  setDisplayMode('pbr');
+  try {
+    return capture();
+  } finally {
+    setDisplayMode(currentDisplayMode);
+  }
+}
 
 export type ProjectThumbnailFraming = {
   bounds: ModelBoundingBox;
@@ -23,7 +43,9 @@ export type FrontProjectThumbnailCameraFrame = {
 
 function isUsableModelBounds(bounds: ModelBoundingBox) {
   const values = [...bounds.min, ...bounds.max];
-  return values.every(Number.isFinite) && bounds.max.every((value, index) => value >= bounds.min[index]);
+  return (
+    values.every(Number.isFinite) && bounds.max.every((value, index) => value >= bounds.min[index])
+  );
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   getFrontProjectThumbnailCameraFrame,
   getContainedImageDrawRect,
   getProjectThumbnailFraming,
+  withProjectThumbnailPbrMode,
 } from '@/features/projects/projectThumbnailPolicy';
 import { neutralizeUntexturedThumbnailMaterials } from '@/features/projects/projectThumbnailMaterials';
 import {
@@ -2064,7 +2065,6 @@ export function EditorPage({
     const models = sceneState.importedModels;
     const viewportRuntime = sceneState.viewport;
     if (!viewportRuntime || models.length === 0) return getViewportThumbnailDataUrl();
-    if (sceneState.displayMode !== 'pbr') return undefined;
     if (models.some((model) => model.restoreStage && model.restoreStage !== 'full')) {
       return undefined;
     }
@@ -2105,53 +2105,55 @@ export function EditorPage({
     }));
     let restoreNeutralMaterials: () => void = () => undefined;
 
-    try {
-      for (const model of models) {
-        if (!viewportRuntime.scene.getObjectById(model.group.id)) {
-          viewportRuntime.scene.attach(model.group);
+    return withProjectThumbnailPbrMode(sceneState.displayMode, sceneState.setDisplayMode, () => {
+      try {
+        for (const model of models) {
+          if (!viewportRuntime.scene.getObjectById(model.group.id)) {
+            viewportRuntime.scene.attach(model.group);
+          }
+          model.group.visible = true;
+          model.group.updateMatrixWorld(true);
+          syncProjectedLayerMaterialProjection(model.group);
         }
-        model.group.visible = true;
-        model.group.updateMatrixWorld(true);
-        syncProjectedLayerMaterialProjection(model.group);
-      }
-      restoreNeutralMaterials = neutralizeUntexturedThumbnailMaterials(
-        models.map((model) => model.group),
-      );
+        restoreNeutralMaterials = neutralizeUntexturedThumbnailMaterials(
+          models.map((model) => model.group),
+        );
 
-      return getViewportThumbnailDataUrl({
-        ...frontProjectThumbnailCapture,
-        camera: serializeCamera(camera, cameraFrame.aspect, target),
-      });
-    } finally {
-      restoreNeutralMaterials();
-      for (const state of originalModelStates) {
-        if (state.group.parent !== state.parent) {
-          state.group.removeFromParent();
-          if (state.parent) {
-            state.parent.add(state.group);
-            if (state.siblingIndex >= 0) {
-              const currentIndex = state.parent.children.indexOf(state.group);
-              state.parent.children.splice(currentIndex, 1);
-              state.parent.children.splice(
-                Math.min(state.siblingIndex, state.parent.children.length),
-                0,
-                state.group,
-              );
+        return getViewportThumbnailDataUrl({
+          ...frontProjectThumbnailCapture,
+          camera: serializeCamera(camera, cameraFrame.aspect, target),
+        });
+      } finally {
+        restoreNeutralMaterials();
+        for (const state of originalModelStates) {
+          if (state.group.parent !== state.parent) {
+            state.group.removeFromParent();
+            if (state.parent) {
+              state.parent.add(state.group);
+              if (state.siblingIndex >= 0) {
+                const currentIndex = state.parent.children.indexOf(state.group);
+                state.parent.children.splice(currentIndex, 1);
+                state.parent.children.splice(
+                  Math.min(state.siblingIndex, state.parent.children.length),
+                  0,
+                  state.group,
+                );
+              }
             }
           }
+          state.group.position.copy(state.position);
+          state.group.quaternion.copy(state.quaternion);
+          state.group.scale.copy(state.scale);
+          state.group.visible = state.visible;
+          state.group.updateMatrixWorld(true);
+          syncProjectedLayerMaterialProjection(state.group);
         }
-        state.group.position.copy(state.position);
-        state.group.quaternion.copy(state.quaternion);
-        state.group.scale.copy(state.scale);
-        state.group.visible = state.visible;
-        state.group.updateMatrixWorld(true);
-        syncProjectedLayerMaterialProjection(state.group);
+        viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
+        document.body.dataset.projectThumbnailCaptureDurationMs = (
+          performance.now() - captureStartedAt
+        ).toFixed(1);
       }
-      viewportRuntime.gl.render(viewportRuntime.scene, viewportRuntime.camera);
-      document.body.dataset.projectThumbnailCaptureDurationMs = (
-        performance.now() - captureStartedAt
-      ).toFixed(1);
-    }
+    });
   }
 
   const getCurrentCameraSnapshot = useCallback(() => {

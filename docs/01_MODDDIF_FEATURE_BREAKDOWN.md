@@ -5,7 +5,7 @@
 | Area | Current status | Actual behavior |
 | --- | --- | --- |
 | Unified home | Implemented | 四张模块卡：贴图绘制、Auto UV、模型烘焙、工具箱 |
-| Projects | Implemented | 项目/文件夹/资产/设置、缩略图、创建与恢复；服务离线时首页可显示 mock 项目回退 |
+| Projects | Implemented | 项目/文件夹/资产/设置、缩略图、创建与恢复；保存/返回时临时用 PBR 模式捕获项目缩略图并还原当前显示模式；服务离线时首页可显示 mock 项目回退 |
 | Texture editor | Implemented | Three.js 视口、浮动 Dock、对象/参考/生成/图层/变换面板、ViewCube、显示模式 |
 | Objects | Implemented | 多模型工程、活动对象、显隐/选择、归一化、移动/旋转/缩放、居中/落地/相机适配 |
 | Model import | Implemented/experimental | GLB/glTF 为主；FBX/OBJ 实验性；当前贴图导入流程不接受 STL |

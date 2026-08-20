@@ -19,8 +19,8 @@ try {
     getContainedImageDrawRect,
     getFrontProjectThumbnailCameraFrame,
     getProjectThumbnailFraming,
-  } =
-    await server.ssrLoadModule('/src/features/projects/projectThumbnailPolicy.ts');
+    withProjectThumbnailPbrMode,
+  } = await server.ssrLoadModule('/src/features/projects/projectThumbnailPolicy.ts');
   const { neutralizeUntexturedThumbnailMaterials } = await server.ssrLoadModule(
     '/src/features/projects/projectThumbnailMaterials.ts',
   );
@@ -30,6 +30,45 @@ try {
     height: 2048,
     matchCameraToRenderAspect: true,
   });
+
+  for (const displayMode of ['flat', 'normal', 'wire']) {
+    const displayModeTransitions = [];
+    const captureResult = withProjectThumbnailPbrMode(
+      displayMode,
+      (nextDisplayMode) => displayModeTransitions.push(nextDisplayMode),
+      () => {
+        assert.equal(displayModeTransitions.at(-1), 'pbr');
+        return `${displayMode}-thumbnail`;
+      },
+    );
+    assert.equal(captureResult, `${displayMode}-thumbnail`);
+    assert.deepEqual(displayModeTransitions, ['pbr', displayMode]);
+  }
+
+  const pbrTransitions = [];
+  assert.equal(
+    withProjectThumbnailPbrMode(
+      'pbr',
+      (nextDisplayMode) => pbrTransitions.push(nextDisplayMode),
+      () => 'pbr-thumbnail',
+    ),
+    'pbr-thumbnail',
+  );
+  assert.deepEqual(pbrTransitions, []);
+
+  const failedCaptureTransitions = [];
+  assert.throws(
+    () =>
+      withProjectThumbnailPbrMode(
+        'flat',
+        (nextDisplayMode) => failedCaptureTransitions.push(nextDisplayMode),
+        () => {
+          throw new Error('capture failed');
+        },
+      ),
+    /capture failed/,
+  );
+  assert.deepEqual(failedCaptureTransitions, ['pbr', 'flat']);
 
   const single = getProjectThumbnailFraming([
     { min: [3, 0, -1], max: [7, 6, 1], center: [5, 3, 0], size: [4, 6, 2] },
