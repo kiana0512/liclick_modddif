@@ -9895,7 +9895,10 @@ function SurfacePaintOverlay() {
             captureObjectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
             width: composite.maskCanvas.width,
             height: composite.maskCanvas.height,
-            includeNormal: true,
+            // Depth identifies the captured surface. A flat runtime normal map
+            // classifies adjacent triangles independently and exposes a comb at
+            // the soft repaint boundary, so angular falloff stays vertex-smooth.
+            includeNormal: false,
             waitForViewportIdle,
           });
           if (cancelled) return;

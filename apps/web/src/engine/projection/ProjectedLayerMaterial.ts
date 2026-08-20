@@ -143,7 +143,6 @@ const SURFACE_LOCKED_MIN_SAFE_FACING = 0.25;
 // Local repaint is a replacement operation, so accepted pixels must be fully
 // covered. Keeping the continuous visibility/angle weight as alpha creates
 // zebra-like gaps on grazing or finely triangulated surfaces.
-const SURFACE_LOCKED_VISIBILITY_THRESHOLD = 0.02;
 const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
 const DEFAULT_PREVIEW_LIGHTING: ProjectionPreviewLighting = {
@@ -581,9 +580,12 @@ const fragmentShader = `
     );
     // Neighbourhood matching removes seams between two faces that were both
     // visible in the capture, while still rejecting genuinely hidden faces.
-    float faceOnFactor = abs(projectedFaceNormal.z);
+    // Visibility is sampled against geometric depth, but its presentation
+    // feather must remain continuous across a smooth surface. Flat derivative
+    // normals are triangle-constant and expose the mesh tessellation as a comb.
+    float faceOnFactor = abs(captureViewVertexNormal.z);
     float projectionFacingFactor = abs(
-      dot(projectedFaceNormal, normalize(-captureViewPosition))
+      dot(captureViewVertexNormal, normalize(-captureViewPosition))
     );
     float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
     float projectionFacingCoverage = mix(
@@ -600,15 +602,16 @@ const fragmentShader = `
     // face part of the authored view; keeping this smooth guard avoids both
     // cross-side leakage and hard black seams.
     // On a foreshortened plane the expected depth changes several times more
-    // per source pixel than on a face-on plane. The normal buffer keeps this
-    // relaxation on the same surface, while the wider tolerance reconnects
-    // rasterized scan lines into one continuous visible region.
+    // per source pixel than on a face-on plane. This geometric quantisation is
+    // present with or without a normal buffer, so always widen the tolerance;
+    // tying it to useNormalCheck makes the depth-only production path alternate
+    // between accepted and rejected triangles after array promotion.
     float grazingDepthScale = mix(
       ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
       1.0,
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
-    depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
+    depthTolerance *= grazingDepthScale;
     float centerVisibility = computeSingleVisibilitySample(
       texture2D(depthMap, uv), texture2D(normalMap, uv),
       projectedMetric, depthTolerance, projectedFaceNormal
@@ -680,9 +683,21 @@ const fragmentShader = `
       centerVisibility *
       mix(0.35, 1.0, grazingConfidence) *
       max(useNormalCheck, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
-    float legacyVisibilityCoverage =
+    float supportedVisibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    // At a grazing silhouette the captured surface can be thinner than one
+    // visibility texel. Requiring several matching texels makes neighbouring
+    // triangles alternate between accepted and rejected. Any continuous depth
+    // support is sufficient there; angle coverage supplies the soft exit.
+    float grazingVisibilityCoverage =
+      smoothstep(0.0, 1.0, visibilitySupport) *
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    float legacyVisibilityCoverage = mix(
+      grazingVisibilityCoverage,
+      supportedVisibilityCoverage,
+      grazingConfidence
+    );
     // At a grazing angle the capture raster contains alternating empty centre
     // samples. The 3x3 neighbourhood is already depth- and normal-matched to
     // this exact surface, so let that support close the sub-pixel gaps instead
@@ -695,7 +710,7 @@ const fragmentShader = `
     // A single captured depth texel can cover many display pixels at a grazing
     // angle. Treat any matching texel in the 3x3 depth neighbourhood as a hard
     // surface hit, otherwise the discrete capture columns become zebra bands.
-    float lockedVisibilityCoverage = step(0.001, visibilitySupport);
+    float lockedVisibilityCoverage = smoothstep(0.0, 1.0, visibilitySupport);
     float visibilityCoverage = mix(
       legacyVisibilityCoverage,
       lockedVisibilityCoverage,
@@ -726,7 +741,11 @@ const fragmentShader = `
     // material replaces the live overlay. Only use the angle guard for legacy
     // repaint data that has no depth capture.
     float lockedSafetyCoverage = mix(
-      step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, lockedSurfaceFacing),
+      smoothstep(
+        ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},
+        ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)},
+        lockedSurfaceFacing
+      ),
       1.0,
       useDepthCheck
     );
@@ -738,7 +757,7 @@ const fragmentShader = `
       sourceAlpha *
       projectionFacingCoverage *
       lockedSafetyCoverage *
-      step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage);
+      visibilityCoverage;
     float coverage = mix(continuousCoverage, lockedCoverage, surfaceLockedVisibility);
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
@@ -918,7 +937,7 @@ function buildStackFragmentShader(
   const projectionFacingCoverage = (index: number) => {
     const minimum = THREE.MathUtils.clamp(layers[index].minimumProjectionFacing ?? 0, 0, 0.99);
     return minimum > 0
-      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
+      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
       : '1.0';
   };
   const layerUsesProjectedArray = (index: number) =>
@@ -1083,7 +1102,7 @@ function buildStackFragmentShader(
       return `float visibilityCoverage = ${visibilitySample(index, 'uv')};`;
     }
     const texelSize = `visibilityTexelSize${index}`;
-    return `float faceOnFactor = abs(projectedFaceNormal.z);
+    return `float faceOnFactor = abs(captureViewVertexNormal.z);
       float grazingConfidence = smoothstep(
         ${MIN_CAPTURE_FACE_ON.toFixed(2)},
         ${FULL_CAPTURE_FACE_ON.toFixed(2)},
@@ -1094,7 +1113,7 @@ function buildStackFragmentShader(
         1.0,
         grazingConfidence
       );
-      depthTolerance *= mix(1.0, grazingDepthScale, ${layerUsesNormal(index) ? '1.0' : '0.0'});
+      depthTolerance *= grazingDepthScale;
       float centerVisibility = ${visibilitySample(index, 'uv')};
       float visibilitySupport = centerVisibility;
       visibilitySupport += ${visibilitySample(index, `uv + vec2(${texelSize}.x, 0.0)`)};
@@ -1119,10 +1138,18 @@ function buildStackFragmentShader(
         centerVisibility *
         mix(0.35, 1.0, grazingConfidence) *
         max(${layerUsesNormal(index) ? '1.0' : '0.0'}, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
-      float visibilityCoverage =
+      float supportedVisibilityCoverage =
         max(neighborhoodVisibility, centerBackedVisibility) *
         smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
-      ${layerUsesSurfaceLock(index) ? 'visibilityCoverage = step(0.001, visibilitySupport);' : ''}`;
+      float grazingVisibilityCoverage =
+        smoothstep(0.0, 1.0, visibilitySupport) *
+        smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+      float visibilityCoverage = mix(
+        grazingVisibilityCoverage,
+        supportedVisibilityCoverage,
+        grazingConfidence
+      );
+      ${layerUsesSurfaceLock(index) ? 'visibilityCoverage = smoothstep(0.0, 1.0, visibilitySupport);' : ''}`;
   };
   const uniformDeclarations = useCompactArrayLoop
     ? `
@@ -1300,13 +1327,13 @@ function buildStackFragmentShader(
             smoothstep(
               minimumFacing,
               min(0.999, minimumFacing + ${PROJECTION_FACING_FEATHER.toFixed(3)}),
-              abs(dot(projectedFaceNormal, normalize(-captureViewPosition)))
+              abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
             ),
             step(0.0001, minimumFacing)
           );
           float visibilityCoverage = 1.0;
           if (compactUseDepths[layerIndex] + compactUseNormals[layerIndex] > 0.5) {
-            float faceOnFactor = abs(projectedFaceNormal.z);
+            float faceOnFactor = abs(captureViewVertexNormal.z);
             float grazingConfidence = smoothstep(
               ${MIN_CAPTURE_FACE_ON.toFixed(2)},
               ${FULL_CAPTURE_FACE_ON.toFixed(2)},
@@ -1317,11 +1344,7 @@ function buildStackFragmentShader(
               1.0,
               grazingConfidence
             );
-            depthTolerance *= mix(
-              1.0,
-              grazingDepthScale,
-              compactUseNormals[layerIndex]
-            );
+            depthTolerance *= grazingDepthScale;
             vec2 visibilityTexelSize = compactVisibilityTexelSizes[layerIndex];
             float centerVisibility = computeCompactVisibility(
               layerIndex,
@@ -1360,22 +1383,27 @@ function buildStackFragmentShader(
                   faceOnFactor
                 )
               );
-            visibilityCoverage =
+            float supportedVisibilityCoverage =
               max(neighborhoodVisibility, centerBackedVisibility) *
               smoothstep(
                 ${MIN_CAPTURE_FACE_ON.toFixed(2)},
                 ${FACE_ON_VISIBILITY_FULL.toFixed(2)},
                 faceOnFactor
               );
+            float grazingVisibilityCoverage =
+              smoothstep(0.0, 1.0, visibilitySupport) *
+              smoothstep(
+                ${MIN_CAPTURE_FACE_ON.toFixed(2)},
+                ${FACE_ON_VISIBILITY_FULL.toFixed(2)},
+                faceOnFactor
+              );
+            visibilityCoverage = mix(
+              grazingVisibilityCoverage,
+              supportedVisibilityCoverage,
+              grazingConfidence
+            );
             if (compactSurfaceLocks[layerIndex] > 0.5) {
-              visibilityCoverage =
-                centerVisibility *
-                max(neighborhoodVisibility, centerBackedVisibility) *
-                smoothstep(
-                  0.08,
-                  0.16,
-                  abs(dot(projectedFaceNormal, normalize(-captureViewPosition)))
-                );
+              visibilityCoverage = smoothstep(0.0, 1.0, visibilitySupport);
             }
           }
           float depthWeight = mix(0.7, 1.0, visibilityCoverage);
@@ -1410,9 +1438,9 @@ function buildStackFragmentShader(
             abs(ndv)
           );
           float surfaceAngleCoverage = smoothstep(
-            0.08,
-            0.16,
-            abs(dot(projectedFaceNormal, normalize(-captureViewPosition)))
+            ${SURFACE_LOCKED_FACING_START.toFixed(3)},
+            ${SURFACE_LOCKED_FACING_END.toFixed(3)},
+            abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
           );
           float angleCoverage = mix(
             normalAngleCoverage,
@@ -1564,7 +1592,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
-          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
+          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
           : layerUsesDepth(index)
             ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
             : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1572,7 +1600,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
+          ? `layerOpacity${index} * sourceAlpha * angleCoverage * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
           : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -1661,7 +1689,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
-          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(projectedFaceNormal, normalize(-captureViewPosition))))`
+          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
           : layerUsesDepth(index)
             ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
             : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1669,7 +1697,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage)`
+          ? `layerOpacity${index} * sourceAlpha * angleCoverage * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
           : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -2092,14 +2120,18 @@ function buildStackFragmentShader(
     }
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     float projectedDepthCoverage = 0.0;
+    vec3 emptyDiagnosticColor = computeProjectionEmptyPreviewColor(
+      baseColor,
+      computeWhiteMembraneLight(normal)
+    );
     vec3 shadedBase = ${
       features.useBaseMap
         ? `mix(
-      computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal)),
+      emptyDiagnosticColor,
       baseTexel.rgb * mix(lambert, renderedColorExposureCompensation, baseRenderedColor),
       baseTexel.a * baseTextureOpacity
     )`
-        : 'computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(normal))'
+        : 'emptyDiagnosticColor'
     };
     ${
       features.useUvOverlayMap
@@ -2947,22 +2979,23 @@ type ProjectedTextureArrayBundle = {
 };
 
 const PROJECTED_ARRAY_COLOR_MEMORY_BUDGET = 64 * 1024 * 1024;
-const PROJECTED_ARRAY_AUXILIARY_MEMORY_BUDGET = 64 * 1024 * 1024;
+// Coverage textures are not ordinary preview colour. Reducing every depth slice
+// together with masks/normals to a shared ~1K budget changed the silhouette after
+// the resident array replaced the direct material. Keep independent budgets so
+// authored 2K depth remains exact while masks retain enough resolution for a
+// soft edge. Normal arrays are a legacy fallback and stay conservatively capped.
+const PROJECTED_ARRAY_MASK_MEMORY_BUDGET = 128 * 1024 * 1024;
+const PROJECTED_ARRAY_DEPTH_MEMORY_BUDGET = 224 * 1024 * 1024;
+const PROJECTED_ARRAY_NORMAL_MEMORY_BUDGET = 64 * 1024 * 1024;
 const PROJECTED_ARRAY_MIN_PREVIEW_SIDE = 256;
-// Preserve visibility accuracy at 1K while giving the color arrays more detail.
-// Separate budgets avoid multiplying a 1.5K color requirement across masks,
-// depth and normals, keeping the total preview allocation bounded near 128 MiB.
 const PROJECTED_ARRAY_MAX_COLOR_PREVIEW_SIDE = 1536;
-const PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE = 1024;
-// Upload at most 1 MiB of RGBA texels before yielding presentation back to the
-// viewport. Source/export resolution is unchanged; only transfer scheduling is
-// split more finely because interaction stability outranks completion time.
-// A 262K budget limited a 14-layer stack to one ~2ms stripe per animation
-// frame, turning the complete arrays into ~140 mandatory waits (~2.5s) despite
-// ample headroom. One full 1536px colour-preview slice measured below 10ms on
-// the performance-lab GPU, so publish one exact slice per frame. Auxiliary
-// 1024px depth/mask/normal slices remain smaller than this same bound.
-const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 1536 * 1536;
+const PROJECTED_ARRAY_MAX_MASK_PREVIEW_SIDE = 2048;
+const PROJECTED_ARRAY_MAX_DEPTH_PREVIEW_SIDE = 2048;
+const PROJECTED_ARRAY_MAX_NORMAL_PREVIEW_SIDE = 1024;
+// Large exact depth slices are uploaded in <=1M-pixel stripes. Packing remains
+// off-thread and each WebGL submission yields a presentation frame, so preserving
+// coverage quality cannot turn an eye toggle or camera gesture into a long frame.
+const PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 1024 * 1024;
 
 function getProjectedLayerPreparationConcurrency() {
   const cores = typeof navigator === 'undefined' ? 4 : navigator.hardwareConcurrency || 4;
@@ -4043,11 +4076,23 @@ export async function createProjectedLayerStackMaterial(
       PROJECTED_ARRAY_COLOR_MEMORY_BUDGET,
       PROJECTED_ARRAY_MAX_COLOR_PREVIEW_SIDE,
     );
-    const auxiliaryArrayPreviewSide = getProjectedArrayPreviewSide(
+    const maskArrayPreviewSide = getProjectedArrayPreviewSide(
       renderer,
-      maskTextures.length + depthTextures.length + normalTextures.length,
-      PROJECTED_ARRAY_AUXILIARY_MEMORY_BUDGET,
-      PROJECTED_ARRAY_MAX_AUXILIARY_PREVIEW_SIDE,
+      maskTextures.length,
+      PROJECTED_ARRAY_MASK_MEMORY_BUDGET,
+      PROJECTED_ARRAY_MAX_MASK_PREVIEW_SIDE,
+    );
+    const depthArrayPreviewSide = getProjectedArrayPreviewSide(
+      renderer,
+      depthTextures.length,
+      PROJECTED_ARRAY_DEPTH_MEMORY_BUDGET,
+      PROJECTED_ARRAY_MAX_DEPTH_PREVIEW_SIDE,
+    );
+    const normalArrayPreviewSide = getProjectedArrayPreviewSide(
+      renderer,
+      normalTextures.length,
+      PROJECTED_ARRAY_NORMAL_MEMORY_BUDGET,
+      PROJECTED_ARRAY_MAX_NORMAL_PREVIEW_SIDE,
     );
     const arrayPipelineStartedAt = performance.now();
     if (typeof document !== 'undefined') {
@@ -4072,7 +4117,7 @@ export async function createProjectedLayerStackMaterial(
               maskTextures,
               'mask',
               options.isCancelled,
-              auxiliaryArrayPreviewSide,
+              maskArrayPreviewSide,
               options.isViewportInteractionBusy,
             )
           : Promise.resolve(undefined),
@@ -4082,7 +4127,7 @@ export async function createProjectedLayerStackMaterial(
               depthTextures,
               'depth',
               options.isCancelled,
-              auxiliaryArrayPreviewSide,
+              depthArrayPreviewSide,
               options.isViewportInteractionBusy,
             )
           : Promise.resolve(undefined),
@@ -4092,7 +4137,7 @@ export async function createProjectedLayerStackMaterial(
               normalTextures,
               'normal',
               options.isCancelled,
-              auxiliaryArrayPreviewSide,
+              normalArrayPreviewSide,
               options.isViewportInteractionBusy,
             )
           : Promise.resolve(undefined),

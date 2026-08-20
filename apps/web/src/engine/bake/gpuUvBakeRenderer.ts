@@ -39,6 +39,8 @@ const FACE_ON_VISIBILITY_FULL = 0.06;
 const MIN_CAPTURE_NORMAL_AGREEMENT = 0.72;
 const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 const PROJECTION_FACING_FEATHER = 0.08;
+const SURFACE_LOCKED_FACING_START = 0.015;
+const SURFACE_LOCKED_FACING_END = 0.06;
 const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
 
 type GpuLayerStackBakeInput = {
@@ -264,7 +266,10 @@ const fragmentShader = `
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
-    return depthVisibility * mix(1.0, normalVisibility, useNormalCheck);
+    // Surface-locked repaint uses depth as the front-surface authority. Flat
+    // normal rejection would expose adjacent triangles as alternating strips.
+    float normalCheckWeight = useNormalCheck * (1.0 - surfaceLockedVisibility);
+    return depthVisibility * mix(1.0, normalVisibility, normalCheckWeight);
   }
 
   float computeAngleWeight(float ndv, float strength) {
@@ -383,9 +388,9 @@ const fragmentShader = `
       -1.0,
       step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0)
     );
-    float faceOnFactor = abs(projectedFaceNormal.z);
+    float faceOnFactor = abs(captureViewVertexNormal.z);
     float projectionFacingFactor = abs(
-      dot(projectedFaceNormal, normalize(-captureViewPosition))
+      dot(captureViewVertexNormal, normalize(-captureViewPosition))
     );
     if (projectionFacingFactor < minimumProjectionFacing) discard;
     float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
@@ -403,7 +408,9 @@ const fragmentShader = `
       1.0,
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
-    depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
+    // Match live preview: grazing depth needs the wider tolerance regardless
+    // of whether optional geometric-normal rejection is enabled.
+    depthTolerance *= grazingDepthScale;
     float centerVisibility = computeVisibilitySample(
       texture2D(depthMap, projectedSampleUv), texture2D(normalMap, projectedSampleUv),
       projectedMetric, depthTolerance, projectedFaceNormal
@@ -471,13 +478,25 @@ const fragmentShader = `
       centerVisibility *
       mix(0.35, 1.0, grazingConfidence) *
       max(useNormalCheck, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
-    float visibilityCoverage =
+    float supportedVisibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
-    float lockedFacingCoverage = smoothstep(0.08, 0.16, projectionFacingFactor);
+    float grazingVisibilityCoverage =
+      smoothstep(0.0, 1.0, visibilitySupport) *
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    float visibilityCoverage = mix(
+      grazingVisibilityCoverage,
+      supportedVisibilityCoverage,
+      grazingConfidence
+    );
+    float lockedFacingCoverage = smoothstep(
+      ${SURFACE_LOCKED_FACING_START.toFixed(3)},
+      ${SURFACE_LOCKED_FACING_END.toFixed(3)},
+      projectionFacingFactor
+    );
     visibilityCoverage = mix(
       visibilityCoverage,
-      centerVisibility * max(neighborhoodVisibility, centerBackedVisibility) * lockedFacingCoverage,
+      smoothstep(0.0, 1.0, visibilitySupport),
       surfaceLockedVisibility
     );
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
