@@ -137,6 +137,11 @@ assert.match(
   'The eraser parameter popover must expose a feather control.',
 );
 assert.match(
+  viewportCanvasInteractionSource,
+  /previewOwnsOverlay &&[\s\S]*?sceneState\.localRepaintGenerationPresentationActive[\s\S]*?localRepaintGenerationPresentationActive,[\s\S]*?paintTool/,
+  'A running local generation must keep the previous renderer-owned repaint visible while editing is locked.',
+);
+assert.match(
   readFileSync(path.join(root, 'src/components/editor/BottomToolDock.tsx'), 'utf8'),
   /const PROJECTED_ERASER_TOOL_ENABLED = false;[\s\S]*?\{PROJECTED_ERASER_TOOL_ENABLED && \(/,
   'The projected-layer eraser implementation must remain hidden until rollout is enabled.',

@@ -2648,6 +2648,11 @@ export function GeneratePanel({
       const captureObjectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
       submitLocksRef.current.add('repaint');
       setSubmissionActive(true);
+      // Keep the previous completed repaint on its already-resident GPU path
+      // while this task locks paint tools and prepares detached snapshots. The
+      // persisted row remains authoritative; this flag only prevents the live
+      // twin from being hidden before the atomic handoff can reveal that row.
+      useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
       const objectId = captureObjectId;
       const textureMapCandidates = generations
@@ -3031,6 +3036,7 @@ export function GeneratePanel({
       }
       submitLocksRef.current.delete('repaint');
       setSubmissionActive(submitLocksRef.current.size > 0);
+      useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
       finish();
     }
   }

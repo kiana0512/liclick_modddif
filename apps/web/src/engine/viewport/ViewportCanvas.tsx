@@ -6488,6 +6488,9 @@ function SurfacePaintOverlay() {
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
   const textureResolutionSetting = useSettingsStore((state) => state.resolution);
   const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
+  const localRepaintGenerationPresentationActive = useSceneStore(
+    (state) => state.localRepaintGenerationPresentationActive,
+  );
   const setPaintMaskDataUrl = useSceneStore((state) => state.setPaintMaskDataUrl);
   const setPaintMaskCapture = useSceneStore((state) => state.setPaintMaskCapture);
   const setOrbitControlsEnabled = useSceneStore((state) => state.setOrbitControlsEnabled);
@@ -7757,7 +7760,9 @@ function SurfacePaintOverlay() {
       sceneState.paintTool === 'inpaint-apply' ||
       erasesPersistedLocalRepaint ||
       (previewOwnsOverlay &&
-        (sceneState.paintTool === 'inpaint-add' || sceneState.paintTool === 'inpaint-subtract'));
+        (sceneState.paintTool === 'inpaint-add' ||
+          sceneState.paintTool === 'inpaint-subtract' ||
+          sceneState.localRepaintGenerationPresentationActive));
     // An empty prewarmed overlay used to rasterize the complete model even
     // though every fragment resolved to zero alpha. Do not submit that draw at
     // all. Mask editing is part of the same local-repaint session, so keep the
@@ -7794,7 +7799,12 @@ function SurfacePaintOverlay() {
     syncLocalRepaintGpuOverlayActivity();
     const unsubscribeLayers = useLayerStore.subscribe(syncLocalRepaintGpuOverlayActivity);
     return unsubscribeLayers;
-  }, [displayMode, paintTool, syncLocalRepaintGpuOverlayActivity]);
+  }, [
+    displayMode,
+    localRepaintGenerationPresentationActive,
+    paintTool,
+    syncLocalRepaintGpuOverlayActivity,
+  ]);
 
   const ensurePaintPreviewOverlayForMesh = useCallback((layer: UvPaintLayer, mesh: THREE.Mesh) => {
     if (layer.paintOverlayTargets.has(mesh)) return;

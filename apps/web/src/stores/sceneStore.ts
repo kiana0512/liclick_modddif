@@ -111,6 +111,12 @@ type SceneStore = {
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
   localRepaintPreviewLayer?: Layer;
   /**
+   * Renderer-only handoff guard used while a local image generation is in
+   * flight. The previous repaint remains visible through its already-resident
+   * GPU overlay, while authoring stays locked by EditorPage.
+   */
+  localRepaintGenerationPresentationActive: boolean;
+  /**
    * Renderer-only presentation override used while multiview snapshots are
    * captured. It deliberately stays out of persisted project/preferences
    * state so authored layer and material changes can continue underneath it.
@@ -142,6 +148,7 @@ type SceneStore = {
   setPaintMaskCapture: (capture?: PaintMaskCapture) => void;
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
   setLocalRepaintPreviewLayer: (layer?: Layer) => void;
+  setLocalRepaintGenerationPresentationActive: (active: boolean) => void;
   setTransientWhitePresentationObject: (objectId?: string) => void;
   setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
   setLocalRepaintBrushSettings: (settings: Partial<LocalRepaintBrushSettings>) => void;
@@ -170,6 +177,7 @@ function resetLocalRepaintForObjectChange(
     paintMaskHasContent: false,
     localRepaintProjectionSource: undefined,
     localRepaintPreviewLayer: undefined,
+    localRepaintGenerationPresentationActive: false,
     paintMaskRevision: state.paintMaskRevision + 1,
     paintMaskResetRevision: state.paintMaskResetRevision + 1,
   };
@@ -255,6 +263,7 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskCapture: undefined,
       localRepaintProjectionSource: undefined,
       localRepaintPreviewLayer: undefined,
+      localRepaintGenerationPresentationActive: false,
       transientWhitePresentationObjectId: undefined,
       paintMaskSettings: {
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
@@ -415,6 +424,7 @@ export const useSceneStore = create<SceneStore>()(
                   paintMaskHasContent: false,
                   localRepaintProjectionSource: undefined,
                   localRepaintPreviewLayer: undefined,
+                  localRepaintGenerationPresentationActive: false,
                   paintMaskResetRevision: state.paintMaskResetRevision + 1,
                 }
               : {}),
@@ -487,6 +497,9 @@ export const useSceneStore = create<SceneStore>()(
         set({ localRepaintProjectionSource }),
       setLocalRepaintPreviewLayer: (localRepaintPreviewLayer) =>
         set({ localRepaintPreviewLayer }),
+      setLocalRepaintGenerationPresentationActive: (
+        localRepaintGenerationPresentationActive,
+      ) => set({ localRepaintGenerationPresentationActive }),
       setTransientWhitePresentationObject: (transientWhitePresentationObjectId) =>
         set({ transientWhitePresentationObjectId }),
       setPaintMaskSettings: (settings) =>

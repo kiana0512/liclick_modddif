@@ -1108,6 +1108,7 @@ export function EditorPage({
     localRepaintToolRequestRevisionRef.current += 1;
     sceneState.setLocalRepaintProjectionSource(undefined);
     sceneState.setLocalRepaintPreviewLayer(undefined);
+    sceneState.setLocalRepaintGenerationPresentationActive(false);
     sceneState.setPaintTool('none');
     sceneState.clearPaintMask();
   }, [importedModel?.objectId, projectId, selectedObjectId]);
@@ -1277,6 +1278,7 @@ export function EditorPage({
           (!generation.metadata.projectId || generation.metadata.projectId === projectId),
       );
       if (!hasBackingGeneration) {
+        useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
         setLocalImageGenerationRequested(false);
         pushToast({
           tone: 'warning',
@@ -5742,6 +5744,10 @@ export function EditorPage({
         delete document.body.dataset.perfLocalRepaintPhase;
       }
     });
+    // Set the presentation guard in the same event turn as the toolbar click.
+    // Waiting for GeneratePanel to mount would leave one frame where `none`
+    // hides the live repaint before the persisted row has taken ownership.
+    useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
     setPaintTool('none');
     setLocalImageGenerationRequested(true);
     showPanel('generate');
@@ -5760,6 +5766,7 @@ export function EditorPage({
   ]);
 
   const handleLocalImageGenerationSettled = useCallback((succeeded: boolean) => {
+    useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
     setLocalImageGenerationRequested(false);
     if (succeeded) setLocalImageGenerationSuccessKey((current) => current + 1);
   }, []);
