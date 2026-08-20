@@ -43,6 +43,8 @@ export type Layer = {
   localRepaintSeamHarmonizationVersion?: number;
   /** Cumulative projection-space brush alpha retained without RGBA readback. */
   localRepaintMaskUrl?: string;
+  /** Ignore the generated image alpha; the authored brush mask is the only repaint coverage. */
+  ignoreSourceAlpha?: boolean;
   renderedColor?: boolean;
   /** Per-UV-texel weight whose color already contains viewport lighting/exposure. */
   renderedColorMaskUrl?: string;

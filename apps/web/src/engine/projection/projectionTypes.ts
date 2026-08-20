@@ -55,6 +55,8 @@ export type ProjectionLayerInput = {
   useMask?: boolean;
   useDepthCheck?: boolean;
   useNormalCheck?: boolean;
+  /** Treat the projected RGB as opaque before multiplying the authored mask. */
+  ignoreSourceAlpha?: boolean;
   renderedColor?: boolean;
   /** Render only accepted projection pixels and keep all other fragments transparent. */
   transparentProjectionOnly?: boolean;
@@ -113,6 +115,7 @@ export type ProjectionLayerStackInput = Omit<
   | 'useMask'
   | 'useDepthCheck'
   | 'useNormalCheck'
+  | 'ignoreSourceAlpha'
   | 'renderedColor'
   | 'transparentProjectionOnly'
   | 'minimumProjectionFacing'
@@ -141,6 +144,7 @@ export type ProjectionLayerStackInput = Omit<
       | 'useMask'
       | 'useDepthCheck'
       | 'useNormalCheck'
+      | 'ignoreSourceAlpha'
       | 'renderedColor'
       | 'minimumProjectionFacing'
       | 'projectionVisibilityPolicy'

@@ -29,6 +29,14 @@ const gpuUvBakeRendererSource = readFileSync(
   path.join(root, 'src/engine/bake/gpuUvBakeRenderer.ts'),
   'utf8',
 );
+const maskedProjectedImageSource = readFileSync(
+  path.join(root, 'src/engine/projection/createMaskedProjectedImage.ts'),
+  'utf8',
+);
+const maskedProjectedImageWorkerSource = readFileSync(
+  path.join(root, 'src/engine/projection/maskedProjectedImage.worker.ts'),
+  'utf8',
+);
 const bakeProjectedLayerToTextureSource = readFileSync(
   path.join(root, 'src/engine/bake/bakeProjectedLayerToTexture.ts'),
   'utf8',
@@ -68,6 +76,31 @@ assert.match(
   projectedPreviewCompositorSource,
   /vec4 maskTexel = texture\(maskMap, maskUv\);\s*float maskValue = dot\(maskTexel\.rgb,[\s\S]*?\) \* maskTexel\.a;/,
   'Projected preview compositing must preserve continuous mask alpha.',
+);
+assert.match(
+  maskedProjectedImageSource,
+  /createMaskedProjectedImage[\s\S]*?processMaskedProjectedImageInWorker\(sourceImage, projectionMask, 'mask-only'\)/,
+  'Generated projection staging must retain the capture silhouette without running a colour-key cutout.',
+);
+assert.doesNotMatch(
+  maskedProjectedImageWorkerSource,
+  /removeSolidBackground|removeEdgeConnectedNeutralBackground|alignCutoutToProjectionMask/,
+  'The production projection worker must never infer transparency from dark connected pixels.',
+);
+assert.match(
+  `${projectedLayerMaterialSource}\n${projectedPreviewCompositorSource}\n${gpuUvBakeRendererSource}`,
+  /mix\(texel\.a, 1\.0, ignoreSourceAlpha\)/,
+  'Mask-authored repaint preview and bake paths must be able to ignore damaged source alpha.',
+);
+assert.match(
+  bakeProjectedLayerToTextureSource,
+  /ignoreSourceAlpha: layer\.ignoreSourceAlpha \?\? localRepaint/,
+  'Legacy local-repaint layers must normalize to brush-mask-only alpha during UV baking.',
+);
+assert.match(
+  sceneRootSource,
+  /const localRepaint = isRenderedLocalRepaintLayer\(layer\);[\s\S]*?storedDepthUrl = localRepaint \? undefined[\s\S]*?ignoreSourceAlpha: layer\.ignoreSourceAlpha \?\? localRepaint/,
+  'Resident local repaint must ignore both inherited capture depth and source-image alpha.',
 );
 assert.match(
   projectedPreviewCompositorSource,

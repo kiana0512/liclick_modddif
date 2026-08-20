@@ -755,6 +755,8 @@ async function prepareProjectedLayersForExport(layers: LayerStackLayers) {
             ...layer,
             imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
             maskUrl: undefined,
+            // The mask is now the source alpha; do not bypass it in the export bake.
+            ignoreSourceAlpha: false,
           }
         : layer,
     ),

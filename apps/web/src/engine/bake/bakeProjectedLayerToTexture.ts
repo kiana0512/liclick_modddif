@@ -44,6 +44,7 @@ import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import {
   getBatchedLiteralOverlaySuffix,
+  isLocalRepaintProjectedLayer,
   getProjectedLayerOverlayMode,
   getProjectionOverlayAlpha,
   type ProjectedOverlayMode,
@@ -1015,12 +1016,19 @@ export async function bakeVisibleProjectedLayersToTexture(
           )
           .sort((a, b) => b.order - a.order)
       : getVisibleProjectedLayerStack(useLayerStore.getState().layers, input.objectId);
-  let layers = sourceLayers.map((layer) => ({
-    ...layer,
-    maskUrl: input.debugIgnoreMask ? undefined : layer.maskUrl,
-    depthUrl: input.debugIgnoreDepth ? undefined : layer.depthUrl,
-    normalUrl: input.debugIgnoreDepth ? undefined : layer.normalUrl,
-  }));
+  let layers = sourceLayers.map((layer) => {
+    const localRepaint = isLocalRepaintProjectedLayer(layer);
+    return {
+      ...layer,
+      maskUrl: input.debugIgnoreMask ? undefined : layer.maskUrl,
+      // A repaint's brush mask is its only coverage authority. Legacy rows may
+      // still carry capture visibility metadata, so normalize it away here as
+      // well as in the live renderer.
+      depthUrl: localRepaint || input.debugIgnoreDepth ? undefined : layer.depthUrl,
+      normalUrl: localRepaint || input.debugIgnoreDepth ? undefined : layer.normalUrl,
+      ignoreSourceAlpha: layer.ignoreSourceAlpha ?? localRepaint,
+    };
+  });
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   const performanceBreakdown: Record<string, number> = {};
   let uvGutterTopologyPromise:

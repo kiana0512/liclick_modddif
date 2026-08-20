@@ -23,6 +23,11 @@ try {
     localStorage: { getItem: () => 'legacy' },
   };
   assert.equal(getLocalRepaintSeamMode(), 'legacy', 'stored switch must bypass enhancements');
+  globalThis.window = {
+    location: { search: '' },
+    localStorage: { getItem: () => null },
+  };
+  assert.equal(getLocalRepaintSeamMode(), 'legacy', 'legacy mode must be the default');
   globalThis.window = previousWindow;
   const width = 64;
   const height = 64;

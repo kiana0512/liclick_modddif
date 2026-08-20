@@ -182,6 +182,7 @@ function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
     layer.adjustments?.saturation ?? 0,
     layer.adjustments?.lightness ?? 0,
     layer.renderedColor ? 1 : 0,
+    layer.ignoreSourceAlpha ? 1 : 0,
     layer.minimumProjectionFacing ?? 0,
     layer.projectionVisibilityPolicy ?? '',
     layer.contentRevision ?? 0,
@@ -1622,16 +1623,17 @@ function ImportedModel({
     () =>
       projectedProgramWarmupLayers.map((layer) => {
         const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
-        const storedDepthUrl = layer.depthUrl ?? capture?.depthUrl;
+        const localRepaint = isRenderedLocalRepaintLayer(layer);
+        const storedDepthUrl = localRepaint ? undefined : (layer.depthUrl ?? capture?.depthUrl);
         const storedDepthIsLinearView = layer.depthUrl
           ? layer.depthEncoding === 'linear-view'
           : capture?.depthEncoding === 'linear-view';
         const runtimeVisibility =
-          storedDepthUrl && storedDepthIsLinearView
+          localRepaint || (storedDepthUrl && storedDepthIsLinearView)
             ? undefined
             : runtimeVisibilityByLayerId[layer.id];
         const depthUrl = runtimeVisibility?.depthUrl ?? storedDepthUrl;
-        const normalUrl = runtimeVisibility?.normalUrl;
+        const normalUrl = localRepaint ? undefined : runtimeVisibility?.normalUrl;
         return {
           layerId: layer.id,
           imageUrl: layer.imageUrl!,
@@ -1657,8 +1659,9 @@ function ImportedModel({
           saturation: (layer.adjustments?.saturation ?? 0) / 100,
           lightness: (layer.adjustments?.lightness ?? 0) / 100,
           useMask: Boolean(layer.maskUrl),
-          useDepthCheck: Boolean(depthUrl),
-          useNormalCheck: Boolean(normalUrl),
+          useDepthCheck: !localRepaint && Boolean(depthUrl),
+          useNormalCheck: !localRepaint && Boolean(normalUrl),
+          ignoreSourceAlpha: layer.ignoreSourceAlpha ?? localRepaint,
           renderedColor: usesUnlitRenderedColor(layer),
           minimumProjectionFacing: layer.minimumProjectionFacing,
           projectionVisibilityPolicy:
@@ -1678,19 +1681,20 @@ function ImportedModel({
     () =>
       stablePreviewProjectedLayers.map((layer) => {
         const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
-        const storedDepthUrl = layer.depthUrl ?? capture?.depthUrl;
+        const localRepaint = isRenderedLocalRepaintLayer(layer);
+        const storedDepthUrl = localRepaint ? undefined : (layer.depthUrl ?? capture?.depthUrl);
         const storedDepthIsLinearView = layer.depthUrl
           ? layer.depthEncoding === 'linear-view'
           : capture?.depthEncoding === 'linear-view';
         const runtimeVisibility =
-          storedDepthUrl && storedDepthIsLinearView
+          localRepaint || (storedDepthUrl && storedDepthIsLinearView)
             ? undefined
             : runtimeVisibilityByLayerId[layer.id];
         const depthUrl = runtimeVisibility?.depthUrl ?? storedDepthUrl;
         // Capture normals are generation guidance, not coverage authority.
         // Runtime normal visibility is deliberately opt-in and ordinary saved
         // projections remain on their authored depth for their whole lifetime.
-        const normalUrl = runtimeVisibility?.normalUrl;
+        const normalUrl = localRepaint ? undefined : runtimeVisibility?.normalUrl;
         return {
           layerId: layer.id,
           imageUrl: layer.imageUrl,
@@ -1720,8 +1724,9 @@ function ImportedModel({
           saturation: (layer.adjustments?.saturation ?? 0) / 100,
           lightness: (layer.adjustments?.lightness ?? 0) / 100,
           useMask: Boolean(layer.maskUrl),
-          useDepthCheck: Boolean(depthUrl),
-          useNormalCheck: Boolean(runtimeVisibility?.normalUrl),
+          useDepthCheck: !localRepaint && Boolean(depthUrl),
+          useNormalCheck: !localRepaint && Boolean(normalUrl),
+          ignoreSourceAlpha: layer.ignoreSourceAlpha ?? localRepaint,
           renderedColor: usesUnlitRenderedColor(layer),
           minimumProjectionFacing: layer.minimumProjectionFacing,
           projectionVisibilityPolicy:

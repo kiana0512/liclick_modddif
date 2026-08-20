@@ -4550,6 +4550,9 @@ export function EditorPage({
                 ...layer,
                 imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
                 maskUrl: undefined,
+                // This temporary source has already flattened the brush mask
+                // into alpha. Preserve that authored alpha during the bake.
+                ignoreSourceAlpha: false,
               }
             : layer,
         ),

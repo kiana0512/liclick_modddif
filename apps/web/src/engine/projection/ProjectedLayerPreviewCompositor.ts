@@ -135,6 +135,7 @@ const candidateFragmentShader = `
   uniform vec3 projectorPosition;
   uniform float layerOpacity;
   uniform float layerStrength;
+  uniform float ignoreSourceAlpha;
   uniform float useMask;
   uniform float maskUsesUv;
   uniform float useDepthCheck;
@@ -263,7 +264,7 @@ const candidateFragmentShader = `
     float maskAlpha = mix(1.0, maskValue, useMask);
     vec4 texel = texture(projectedMap, uv);
     texel.rgb = applyAdjustments(texel.rgb);
-    float sourceAlpha = texel.a * maskAlpha;
+    float sourceAlpha = mix(texel.a, 1.0, ignoreSourceAlpha) * maskAlpha;
     if (sourceAlpha < 0.01) discard;
     vec3 viewDirection = normalize(projectorPosition - captureWorldPosition.xyz);
     float ndv = dot(captureWorldNormal, viewDirection);
@@ -707,6 +708,7 @@ async function createCandidateMaterial(group: THREE.Group, layer: PreviewLayer) 
       projectorPosition: { value: new THREE.Vector3().fromArray(layer.camera.position) },
       layerOpacity: { value: layer.visible ? layer.opacity : 0 },
       layerStrength: { value: layer.strength ?? 1 },
+      ignoreSourceAlpha: { value: layer.ignoreSourceAlpha ? 1 : 0 },
       useMask: { value: layer.useMask && layer.maskUrl ? 1 : 0 },
       maskUsesUv: { value: layer.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: layer.useDepthCheck && layer.depthUrl ? 1 : 0 },

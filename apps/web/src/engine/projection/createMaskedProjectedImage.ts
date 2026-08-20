@@ -609,7 +609,11 @@ async function imageDataToPngUrl(imageData: ImageData) {
   return createRegisteredObjectUrl(blob);
 }
 
-export function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
+export function applyProjectedAlphaMask(
+  image: ImageData,
+  mask: ImageData,
+  options: { ignoreSourceAlpha?: boolean } = {},
+) {
   const output = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
   for (let y = 0; y < image.height; y += 1) {
     const v = image.height <= 1 ? 0 : y / (image.height - 1);
@@ -619,9 +623,16 @@ export function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
       const maskSample = sampleImageBilinear(mask, u, v);
       const maskLuminance = maskSample[0] * 0.299 + maskSample[1] * 0.587 + maskSample[2] * 0.114;
       const maskCoverage = (maskLuminance / 255) * (maskSample[3] / 255);
-      const nextAlpha = Math.round(output.data[sourceOffset + 3] * maskCoverage);
+      // Local repaint and other explicitly mask-authored projections use the
+      // camera/brush mask as their only coverage authority. Generated-image
+      // alpha may have already been damaged by an earlier dark-background
+      // heuristic, so it must not be allowed to punch new holes in the model.
+      const sourceAlpha = options.ignoreSourceAlpha
+        ? 255
+        : output.data[sourceOffset + 3];
+      const nextAlpha = Math.round(sourceAlpha * maskCoverage);
       output.data[sourceOffset + 3] = nextAlpha;
-      if (nextAlpha <= 0) {
+      if (nextAlpha <= 0 && !options.ignoreSourceAlpha) {
         output.data[sourceOffset] = 0;
         output.data[sourceOffset + 1] = 0;
         output.data[sourceOffset + 2] = 0;
@@ -756,18 +767,18 @@ function getMaskedProjectedWorker() {
 function processMaskedProjectedImageInWorker(
   source: ImageData,
   mask?: ImageData,
-  mode: 'cutout' | 'projection-alpha-only' = 'cutout',
+  mode: 'mask-only' | 'projection-alpha-only' = 'mask-only',
 ) {
   const worker = getMaskedProjectedWorker();
   if (!worker) {
     if (mode === 'projection-alpha-only') {
-      return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
+      return Promise.resolve(
+        mask ? applyProjectedAlphaMask(source, mask, { ignoreSourceAlpha: true }) : source,
+      );
     }
-    const cutout = removeSolidBackground(source);
-    if (!mask) return Promise.resolve(cutout);
-    return Promise.resolve(
-      applyProjectedAlphaMask(alignCutoutToProjectionMask(cutout, mask), mask),
-    );
+    // The generated image is already the authoritative result. Only retain the
+    // capture silhouette; never infer transparency again from pixel colour.
+    return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
   }
   const id = ++maskedProjectedRequestId;
   const sourceBuffer = source.data.buffer as ArrayBuffer;
@@ -797,14 +808,17 @@ export async function createMaskedProjectedImage(imageUrl: string, projectionMas
   const projectionMask = projectionMaskUrl
     ? await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask')
     : undefined;
-  return imageDataToPngUrl(await processMaskedProjectedImageInWorker(sourceImage, projectionMask));
+  return imageDataToPngUrl(
+    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'mask-only'),
+  );
 }
 
 /**
  * Flattens a projection-space mask into the source alpha before UV baking.
  * This is deliberately separate from createMaskedProjectedImage: a local
  * repaint result is a complete rendered frame and must not run through the
- * solid-background cutout heuristic. Baking the mask into alpha also makes the
+ * solid-background cutout heuristic. Its source alpha is also ignored: the
+ * authored brush mask is the only coverage source. Baking the mask into alpha makes the
  * merge robust if an optional mask texture cannot be loaded by the GPU path.
  */
 export async function createProjectionMaskedImage(imageUrl: string, projectionMaskUrl: string) {

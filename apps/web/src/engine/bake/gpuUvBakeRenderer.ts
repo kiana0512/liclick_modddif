@@ -167,6 +167,7 @@ const fragmentShader = `
   uniform vec3 projectorPosition;
   uniform float layerOpacity;
   uniform float layerStrength;
+  uniform float ignoreSourceAlpha;
   uniform float useMask;
   uniform float maskUsesUv;
   uniform float useDepthCheck;
@@ -313,29 +314,29 @@ const fragmentShader = `
     float totalWeight = 0.0;
     float maxAlpha = 0.0;
 
-    if (w00 > 0.0 && c00.a >= threshold) {
+    if (w00 > 0.0 && (ignoreSourceAlpha > 0.5 || c00.a >= threshold)) {
       rgb += c00.rgb * w00;
       totalWeight += w00;
       maxAlpha = max(maxAlpha, c00.a);
     }
-    if (w10 > 0.0 && c10.a >= threshold) {
+    if (w10 > 0.0 && (ignoreSourceAlpha > 0.5 || c10.a >= threshold)) {
       rgb += c10.rgb * w10;
       totalWeight += w10;
       maxAlpha = max(maxAlpha, c10.a);
     }
-    if (w01 > 0.0 && c01.a >= threshold) {
+    if (w01 > 0.0 && (ignoreSourceAlpha > 0.5 || c01.a >= threshold)) {
       rgb += c01.rgb * w01;
       totalWeight += w01;
       maxAlpha = max(maxAlpha, c01.a);
     }
-    if (w11 > 0.0 && c11.a >= threshold) {
+    if (w11 > 0.0 && (ignoreSourceAlpha > 0.5 || c11.a >= threshold)) {
       rgb += c11.rgb * w11;
       totalWeight += w11;
       maxAlpha = max(maxAlpha, c11.a);
     }
 
     if (totalWeight <= 0.00001) return vec4(0.0);
-    return vec4(rgb / totalWeight, maxAlpha);
+    return vec4(rgb / totalWeight, mix(maxAlpha, 1.0, ignoreSourceAlpha));
   }
 
   void main() {
@@ -507,7 +508,7 @@ const fragmentShader = `
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
     texel.rgb = applyHsvAdjustments(texel.rgb);
-    float sourceAlpha = texel.a * maskCoverage;
+    float sourceAlpha = mix(texel.a, 1.0, ignoreSourceAlpha) * maskCoverage;
     if (sourceAlpha < 0.01) discard;
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
@@ -1028,6 +1029,7 @@ function createLayerMaterial(input: {
       projectorPosition: { value: new THREE.Vector3().fromArray(input.layer.camera.position) },
       layerOpacity: { value: input.layer.opacity },
       layerStrength: { value: input.layer.strength ?? 1 },
+      ignoreSourceAlpha: { value: input.layer.ignoreSourceAlpha ? 1 : 0 },
       useMask: { value: input.textures.useMask ? 1 : 0 },
       maskUsesUv: { value: input.layer.maskSpace === 'uv' ? 1 : 0 },
       useDepthCheck: { value: input.textures.useDepthCheck ? 1 : 0 },

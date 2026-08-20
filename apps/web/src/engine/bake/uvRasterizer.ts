@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { getBarycentric, isInsideBarycentric } from './barycentric';
 import { dilateImageData } from './dilation';
-import { sampleImageBilinear, sampleImageBilinearCleanColor, sampleImageNearest } from './imageSampler';
+import {
+  sampleImageBilinear,
+  sampleImageBilinearCleanColor,
+  sampleImageBilinearIgnoringAlpha,
+  sampleImageNearest,
+} from './imageSampler';
 import type { BakeProjectedLayerInput } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -174,11 +179,12 @@ function applyLooseProjectionWeights(
   strength: number,
   depthWeight: number,
   maskCoverage: number,
+  ignoreSourceAlpha: boolean,
 ): ProjectedLayerSample | undefined {
   // Keep CPU fallback identical to the live/GPU paths. The projected mask is
   // alpha coverage, including the automatic brush feather, rather than a
   // threshold that turns every surviving pixel fully opaque.
-  const sourceAlpha = (color[3] / 255) * maskCoverage;
+  const sourceAlpha = (ignoreSourceAlpha ? 1 : color[3] / 255) * maskCoverage;
   if (sourceAlpha < SOURCE_ALPHA_REJECT) return undefined;
   if (ndv < NDV_HARD_REJECT) return undefined;
 
@@ -315,13 +321,17 @@ function resolveProjectedSample({
     depthWeight = 0.2 + 0.8 * Math.exp(-((depthErr / DEPTH_EPSILON) ** 2));
   }
 
+  const projectedColor = input.layer.ignoreSourceAlpha
+    ? sampleImageBilinearIgnoringAlpha(input.projectedImage, imageUv.u, imageUv.v)
+    : sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v);
   const sample = applyLooseProjectionWeights(
-    applyLayerAdjustments(sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v), input.layer),
+    applyLayerAdjustments(projectedColor, input.layer),
     imageUv,
     ndv,
     input.layer.strength ?? 1,
     depthWeight,
     maskCoverage,
+    Boolean(input.layer.ignoreSourceAlpha),
   );
   if (!sample) return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
   if (sample.coverage <= COVERAGE_THRESHOLD) {

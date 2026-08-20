@@ -358,6 +358,7 @@ const fragmentShader = `
   uniform float useLiveEraserMask;
   uniform float useDepthCheck;
   uniform float useNormalCheck;
+  uniform float ignoreSourceAlpha;
   uniform float depthIsLinearView;
   uniform float projectorNear;
   uniform float projectorFar;
@@ -720,7 +721,7 @@ const fragmentShader = `
     float lambert = computePreviewLight(normal);
     vec4 texel = texture2D(projectedMap, uv);
     texel.rgb = applyHsvAdjustments(texel.rgb, hueShift, saturationShift, lightnessShift);
-    float sourceAlpha = texel.a * maskAlpha;
+    float sourceAlpha = mix(texel.a, 1.0, ignoreSourceAlpha) * maskAlpha;
     float alphaCoverage = step(0.01, sourceAlpha);
     // Capture depth is the visibility authority. Imported/scanned meshes often
     // contain locally flipped normals; using signed N·V after accepting the
@@ -917,6 +918,7 @@ function buildStackFragmentShader(
     maskArraySlice?: number;
     depthArraySlice?: number;
     normalArraySlice?: number;
+    ignoreSourceAlpha?: boolean;
     renderedColor?: boolean;
     minimumProjectionFacing?: number;
     projectionVisibilityPolicy?: ProjectionLayerStackInput['layers'][number]['projectionVisibilityPolicy'];
@@ -1175,6 +1177,7 @@ function buildStackFragmentShader(
   uniform float compactUseNormals[COMPACT_LAYER_CAPACITY];
   uniform float compactSurfaceLocks[COMPACT_LAYER_CAPACITY];
   uniform float compactDepthIsLinear[COMPACT_LAYER_CAPACITY];
+  uniform float compactIgnoreSourceAlphas[COMPACT_LAYER_CAPACITY];
   uniform float compactRenderedColors[COMPACT_LAYER_CAPACITY];
   uniform float compactMinimumFacings[COMPACT_LAYER_CAPACITY];
   uniform float compactCompositeRoles[COMPACT_LAYER_CAPACITY];
@@ -1425,7 +1428,11 @@ function buildStackFragmentShader(
             1.0 / max(previewExposure, 0.0001),
             compactRenderedColors[layerIndex]
           );
-          float sourceAlpha = texel.a * maskAlpha;
+          float sourceAlpha = mix(
+            texel.a,
+            1.0,
+            compactIgnoreSourceAlphas[layerIndex]
+          ) * maskAlpha;
           float alphaCoverage = step(0.01, sourceAlpha);
           float normalAngleCoverage = smoothstep(
             ${NDV_COVERAGE_START.toFixed(2)},
@@ -1588,7 +1595,7 @@ function buildStackFragmentShader(
         1.0 / max(previewExposure, 0.0001),
         ${layers[index].renderedColor ? '1.0' : '0.0'}
       );
-      float sourceAlpha = texel.a * maskAlpha;
+      float sourceAlpha = ${layers[index].ignoreSourceAlpha ? '1.0' : 'texel.a'} * maskAlpha;
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
@@ -1685,7 +1692,7 @@ function buildStackFragmentShader(
         1.0 / max(previewExposure, 0.0001),
         ${layers[index].renderedColor ? '1.0' : '0.0'}
       );
-      float sourceAlpha = texel.a * maskAlpha;
+      float sourceAlpha = ${layers[index].ignoreSourceAlpha ? '1.0' : 'texel.a'} * maskAlpha;
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
@@ -2363,6 +2370,7 @@ function getProjectionLayerStructureSignature(
           layer.maskSpace ?? 'projection',
           layer.useDepthCheck ? 1 : 0,
           layer.useNormalCheck ? 1 : 0,
+          layer.ignoreSourceAlpha ? 1 : 0,
           layer.renderedColor ? 1 : 0,
           layer.minimumProjectionFacing ?? 0,
           layer.projectionVisibilityPolicy ?? 'standard',
@@ -3477,6 +3485,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     useMask: input.useMask,
     useDepthCheck: input.useDepthCheck,
     useNormalCheck: input.useNormalCheck,
+    ignoreSourceAlpha: input.ignoreSourceAlpha,
     renderedColor: input.renderedColor,
     minimumProjectionFacing: input.minimumProjectionFacing,
     projectionVisibilityPolicy: input.projectionVisibilityPolicy,
@@ -3618,6 +3627,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
         value:
           input.useNormalCheck && input.normalUrl && normalTexture !== neutralNormalTexture ? 1 : 0,
       },
+      ignoreSourceAlpha: { value: input.ignoreSourceAlpha ? 1 : 0 },
       depthIsLinearView: { value: input.depthIsLinearView ? 1 : 0 },
       projectorNear: { value: input.camera.near },
       projectorFar: { value: input.camera.far },
@@ -4313,6 +4323,9 @@ export async function createProjectedLayerStackMaterial(
           },
           compactDepthIsLinear: {
             value: loadedLayers.map((layer) => (layer.depthIsLinearView ? 1 : 0)),
+          },
+          compactIgnoreSourceAlphas: {
+            value: loadedLayers.map((layer) => (layer.ignoreSourceAlpha ? 1 : 0)),
           },
           compactRenderedColors: {
             value: loadedLayers.map((layer) => (layer.renderedColor ? 1 : 0)),

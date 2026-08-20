@@ -8,15 +8,15 @@ function parseMode(value: string | null | undefined): LocalRepaintSeamMode | und
 }
 
 export function getLocalRepaintSeamMode(): LocalRepaintSeamMode {
-  if (typeof window === 'undefined') return 'enhanced';
+  if (typeof window === 'undefined') return 'legacy';
   const queryMode = parseMode(
     new URLSearchParams(window.location.search).get(LOCAL_REPAINT_SEAM_MODE_QUERY_KEY),
   );
   if (queryMode) return queryMode;
   try {
-    return parseMode(window.localStorage.getItem(LOCAL_REPAINT_SEAM_MODE_STORAGE_KEY)) ?? 'enhanced';
+    return parseMode(window.localStorage.getItem(LOCAL_REPAINT_SEAM_MODE_STORAGE_KEY)) ?? 'legacy';
   } catch {
-    return 'enhanced';
+    return 'legacy';
   }
 }
 
