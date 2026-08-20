@@ -1,5 +1,8 @@
 # LI3D PBR Job 状态、日志与错误规范 v0.1
 
+> 设计基线，不表示所有状态、日志和错误契约都已完整实现。当前功能状态
+> 以代码、`README.md` 和 `docs/README.md` 为准。
+
 状态：设计基线
 
 版本：0.1
@@ -981,4 +984,3 @@ PBR Pipeline 实现时必须：
 - 定义取消、重试、幂等、持久化、重启恢复、队列和资源锁。
 - 建立首批 ENV、ASSET、IO、MESH、BAKE、COMFY、PBR 和 DCC 错误码。
 - 定义 DCC Receipt、日志分层、UI 映射和启动器集成要求。
-

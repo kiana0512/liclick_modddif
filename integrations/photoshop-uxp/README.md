@@ -7,6 +7,12 @@ This UXP plugin is the Photoshop side of LIclick's external texture editor.
 - Working PSD files and immutable PNG revisions live under the LIclick workspace.
 - Control traffic uses WebSocket; image pixels stay on disk and are never sent as Base64.
 
-During development, load this directory with Adobe UXP Developer Tool. For distribution,
-package it as a `.ccx` using Adobe UXP Developer Tool and place the result under
-`dist-plugins/LIclick Live Texture.ccx` before creating the Windows installer.
+During development, load this directory with Adobe UXP Developer Tool. The repo's
+current distribution command is:
+
+```bash
+corepack pnpm package:photoshop
+```
+
+The Photoshop package and the Windows Local Component are separate artifacts; the
+retired full Electron desktop installer is not part of the current release path.

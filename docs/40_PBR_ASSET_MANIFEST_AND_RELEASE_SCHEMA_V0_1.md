@@ -1,5 +1,8 @@
 # LI3D PBR 资产 Manifest 与 Release 规范 v0.1
 
+> 设计基线，不表示所有 manifest/release 能力已进入当前 runtime。
+> 当前项目契约见 `docs/04_PROJECT_SCHEMA.md`。
+
 状态：设计基线
 
 版本：0.1
@@ -813,4 +816,3 @@ POST   /api/projects/:projectId/pipeline/releases/:releaseId/deliveries
 - 首次定义 PipelineAsset、Draft、Job、Attempt、Candidate、Release 和 Delivery。
 - 定义 Geometry、Texture、Material、File、Target Profile 和数据血缘。
 - 定义目录、发布事务、哈希、路径安全、迁移和现有项目兼容策略。
-

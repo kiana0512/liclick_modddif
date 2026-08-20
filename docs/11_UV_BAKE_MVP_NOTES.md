@@ -1,96 +1,79 @@
-# UV Bake MVP Notes
+# UV Bake And Merge Notes
 
-Phase 3 added a browser bake path. The current path supports one imported object, one UV channel, and a visible projected-layer stack composited into one BaseColor texture. Automatic stacked baking is GPU-first and falls back to the CPU rasterizer at the same selected resolution if the browser/GPU cannot allocate the requested render target.
+当前代码仍保留通用 GPU-first projected-to-UV bake engine，但产品行为已经从早期“全局 Auto UV bake”演进为多种显式用途。不要再用旧的开关模型描述现状。
+
+## Current Entry Points
+
+| Entry | Trigger | Result |
+| --- | --- | --- |
+| Merge selected layers to UV | 用户在 Layers 面板执行 | 把选中 Projected/UV sources 合成新 `merged-uv` layer |
+| Merge into blank UV layer | 用户选择目标空白 UV layer | 更新目标 UV layer 并消费 source visibility |
+| Local repaint UV commit | 用户确认局部重绘 | 创建/更新 `local-repaint-overlay` UV layer |
+| Content-aware repair | 用户触发，或 multiview 完成后自动尝试 | 分析 projected coverage，生成/更新 repair underlay |
+| Textured model/BaseColor export | 用户导出 | 若没有与当前 visible stack 完全匹配的 cache，则按需 bake，再叠加 visible UV layers |
+
+新增 Projected Layer 本身只进入实时 shader preview。当前没有用户可操作的全局 Auto UV bake toggle，也没有“关掉后才只看实时投影”的双模式。
 
 ## Key Files
 
-- `apps/web/src/engine/bake/bakeProjectedLayerToTexture.ts`: orchestration entry.
-- `apps/web/src/engine/bake/gpuUvBakeRenderer.ts`: GPU UV-space render target path for automatic visible-layer baking.
-- `apps/web/src/engine/bake/uvRasterizer.ts`: triangle iteration and UV rasterization.
-- `apps/web/src/engine/bake/barycentric.ts`: barycentric math helpers.
-- `apps/web/src/engine/bake/imageSampler.ts`: projected image loading and sampling.
-- `apps/web/src/engine/bake/dilation.ts`: simple seam padding.
-- `apps/web/src/engine/bake/applyBakedTexture.ts`: applies basecolor texture to model materials.
-- `apps/web/src/engine/bake/downloadTexture.ts`: downloads `liclick_basecolor_*.png`.
-- `apps/web/src/engine/projection/ProjectedLayerMaterial.ts`: live projected stack preview, UV overlay preview material, and shader-side object matrix delta metadata.
-- `apps/web/src/engine/export/texturedExportUtils.ts`: prepares textured model exports by finding or baking the current visible projected stack, compositing visible UV repair/merged layers over it, and attaching the BaseColor texture to cloned export geometry.
-- `apps/web/src/components/panels/GeneratePanel.tsx`: automatic bake queue and progress UI.
-- `apps/web/src/components/panels/LayerAdjustmentsPanel.tsx`: layer controls and baked-texture state.
+- `apps/web/src/engine/bake/bakeProjectedLayerToTexture.ts`：投影到 UV 的统一入口。
+- `apps/web/src/engine/bake/gpuUvBakeRenderer.ts`：GPU UV-space renderer。
+- `apps/web/src/engine/bake/uvRasterizer.ts`：CPU/parity triangle rasterization。
+- `apps/web/src/engine/bake/imageSampler.ts`：图像、Mask、Depth、Normal sample。
+- `apps/web/src/engine/bake/dilation.ts`：基础 padding utility；生产 merge 还使用拓扑约束的 gutter/seam 处理。
+- `apps/web/src/engine/projection/ProjectedLayerMaterial.ts`：实时 projected stack 与 UV overlay preview。
+- `apps/web/src/engine/export/texturedExportUtils.ts`：精确 cache 查找、export-on-demand bake 与 UV flatten。
+- `apps/web/src/routes/EditorPage.tsx`：手动 merge、局部重绘 UV commit、内容补缝和 progress 编排。
+- `apps/web/src/components/panels/LayersPanel.tsx`：选择、可见性和 merge UI。
 
-## Algorithm
+## Projection Bake
 
-The GPU path draws the imported meshes into UV space on an offscreen WebGL render target. Its shader reconstructs world position and normal, projects them through the saved capture camera, applies the same frustum, mask, depth, backface, source-alpha, opacity, strength, and HSL adjustment rules, and blends each visible projected layer into the output texture.
+GPU 路径把目标 mesh 绘制到 UV-space render target。每个 fragment 重构 world position/normal，并通过 source layer 保存的 projector camera 执行：
 
-The CPU fallback maps mesh UV triangles into the output texture. For every covered texel it computes barycentric coordinates, interpolates world position and normal, projects the world position through the saved capture camera, samples the generated image, and writes coverage plus quality into the basecolor composite.
+- frustum 和 image bounds；
+- source alpha 与 projection mask；
+- linear-view depth 和 normal visibility；
+- backface/facing；
+- opacity、strength、HSL 与 Blend/Overlay 规则。
 
-For automatic bake, the Generate panel queues the visible projected layers only when the global Auto UV bake setting is enabled. It renders or rasterizes each layer, composites blend layers with order-independent loose coverage plus strict quality, applies overlay layers in stack order, fills remaining transparent texels with the neutral material color for a viewport-ready opaque BaseColor PNG, applies it immediately to the viewport, and persists it to `assets/baked/` for local-server projects.
+CPU path 用 barycentric rasterization 产生同类结果，用于 parity/coverage 验证和必要 fallback。GPU 失败时是否允许同分辨率 CPU fallback 由调用路径和资源条件决定；不能承诺所有 8K 场景都能无成本回退。
 
-Phase 8 visibility rules:
+## Merge Semantics
 
-- reject texels outside the projector frustum;
-- reject backfaces by default;
-- reject mask pixels below threshold when a capture mask is stored;
-- reject approximate depth mismatches when a capture depth image is stored;
-- report in-frustum, mask rejected, depth rejected, backface rejected, and written texel counts.
+- Merge 输出 straight RGBA，不把 PBR 灯光/曝光错误固化进 BaseColor；特殊 `renderedColor` repair layer 有单独权重语义。
+- Selected UV sources 作为 underlay 与 projected result 合成，避免 repair layer 在 merge 后消失。
+- 最终图片编码后先预热 GPU texture，再原子创建/更新 UV layer 并切换 source layer visibility。
+- `uvMergeVersion` 和 source `contentRevision` 参与兼容/cache 判断。
+- 合并目标是 Layer，不等同于独立 Model Baking 工作台的 PBR bake job。
 
-Current compositing rules:
+## Export Cache
 
-- `blend` layers collect the best projected candidates by quality and mix the top samples with a small coverage floor so single-image coverage is not rejected too aggressively.
-- `overlay` layers are applied after the blend composite in stack order.
-- Layer opacity controls visibility strength; projection strength controls how strongly lighting/projected appearance is applied in the live preview.
-- Rejected or uncovered live-preview fragments fall back to the model's base material instead of showing black edges or accidental white masks.
+导出 cache 必须匹配：
 
-Phase 4 object transforms are respected through the current mesh `matrixWorld`. If a user moves, rotates, scales, centers, or grounds the model after capture, the active projected layer may need a fresh capture or rebake.
+- project/object；
+- visible projected source ids、revisions 和参数；
+- output resolution/alpha/options；
+- layer stack signature。
 
-## Dilation
+如果不存在精确 cache，GLB/FBX/OBJ 或 BaseColor 准备过程调用 projection bake。之后把 visible UV layers 叠加在 imported/baked base 上，并为导出 clone 应用 `Liclick_BaseColor` material。
 
-The MVP dilation copies colors from neighboring covered pixels into uncovered pixels for a small number of iterations. Automatic bake currently uses 4 pixels of padding. This reduces visible UV seam gaps but is not a production-quality padding algorithm.
+## Orientation
 
-## Progress And Preview Stability
+当前 UV/Three.js/glTF 路径使用 `texture.flipY = false`。PNG、live preview、GLB、FBX 和 OBJ 必须作为一组验证；不能只通过浏览器截图判断 orientation 正确。
 
-Automatic bake reports progress phases for asset loading, GPU/CPU UV rasterization, compositing, PNG encoding, applying, and persistence. The top progress bar is intentionally visible because 4K/8K bakes still include texture upload, render target readback, PNG encoding, and workspace persistence.
+## Limits
 
-PBR preview avoids a white-model gap while baked assets are loading. It keeps using the projected preview or the in-memory baked texture until the persisted baked texture is available. Visible UV layers are composited into a transparent UV stack texture and applied over either the baked BaseColor or the original/base material. This keeps the difference between live UV overlay and flattened BaseColor explicit while making local repaint UV repair layers visible immediately.
+- 一次处理活动对象与一个 `uv` attribute；无 UDIM。
+- Texture editor 的 projection bake 主要生成 BaseColor RGBA。
+- 大分辨率成本包括纹理 decode/upload、UV rendering、readback、PNG encoding、workspace upload 和 preview prewarm。
+- 复杂几何/多层场景会受 WebGL texture size、sampler/array、显存与浏览器内存限制。
+- Seam/gutter 算法是面向当前 mesh/UV 的工程实现，不是完整 DCC baker 替代品。
 
-## Texture Orientation
+## Manual Verification
 
-The CPU rasterizer maps output Y as `uv.y`, matching the GPU bake path and the live model shader's `vUv` sampling. The applied texture sets `texture.flipY = false` for the current renderer/material path. If a future GLB/FBX/OBJ exporter rewrites image assets, re-test orientation against both live preview and exported files.
-
-## Current Limits
-
-- Visible projected layers are composited into one BaseColor output; shader preview supports the visible projected stack with a live-preview guard for very large unbaked stacks.
-- One imported object.
-- One UV channel named `uv`.
-- Basecolor only.
-- No UDIM.
-- Depth occlusion is approximate because the capture depth is grayscale-packed for the browser MVP.
-- GPU bake reports total and written texel coverage, but detailed mask/depth/backface rejection counters remain CPU-diagnostic only.
-- No normal/roughness/metallic bake.
-- 4096 and 8192 keep output quality. GPU bake avoids the main CPU raster loop; very large outputs can still be limited by GPU max texture size, readback, PNG encoding, and available browser memory.
-- `project.liclick.json` workspace save materializes registered Blob URLs and data URLs into workspace assets where possible.
-- UV merge/orientation is still a sensitive area. Recent changes separate unbaked UV overlay preview from baked BaseColor preview, but every UV orientation change must be tested against side-view models, saved PNGs, and exported model formats.
-
-## Performance Notes
-
-- Automatic visible-layer bake now tries the GPU UV render target first and uses the CPU rasterizer only as a same-resolution fallback.
-- GPU bake runs UV-space rendering, seam dilation, and covered-texel sharpening on WebGL render targets before the final readback. This avoids the heaviest 4K/8K CPU image loops in the normal GPU path.
-- GPU bake is guarded by a low-resolution CPU coverage validation pass; if the UV texels written by GPU diverge from CPU coverage, the result is discarded and the full-resolution CPU bake is used instead.
-- Local-server projects persist capture, layer, and baked PNGs through a binary blob upload path. Browser-only projects keep data URLs so downloaded project JSON remains self-contained.
-- Render-target captures and generated-image matte outputs now use asynchronous PNG Blob URLs rather than synchronous `toDataURL` in the hot path.
-- The CPU rasterizer reuses sample vectors and computes projector NDC directly from the matrix to reduce garbage collection pressure during fallback 4K/8K bakes.
-- Only one automatic bake runs at a time, and both automatic and manual bake entry points respect the global Auto UV bake setting.
-- The next quality-preserving optimization is moving PNG encoding and post-process sharpening off the main thread where browser APIs allow it.
-
-## Manual Test
-
-1. Import a UV-mapped GLB/GLTF.
-2. Capture current view.
-3. Generate image.
-4. Add as Projected Layer.
-5. Watch the automatic bake progress bar complete.
-6. Toggle projected layer visibility off.
-7. Switch to PBR or Flat.
-8. Confirm baked basecolor remains visible without a white-model gap.
-9. Click `Download BaseColor`.
-10. Export GLB/FBX/OBJ and confirm the baked BaseColor is attached or emitted beside the model as expected.
-11. Switch to Normal mode and confirm the UI says the colors visualize surface normals, not the final texture.
+1. 导入带 UV 的 GLB/glTF。
+2. 创建单视图和多视图 Projected Layers，确认新增层后仍是实时投影。
+3. 选择多层执行 Merge to UV，确认 source 显隐、UV layer 和 PBR/Flat preview 一致。
+4. 对 UV repair/local repaint layer 再次 merge，确认未被漏合成。
+5. 导出 BaseColor、GLB、FBX、OBJ，确认缓存命中/按需 bake 后的结果一致。
+6. 用侧视模型验证 `flipY`、seam、mask permission 和 depth visibility。

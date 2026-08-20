@@ -1,5 +1,9 @@
 # WebGL Shader Sampler Limit Incident
 
+> Historical incident analysis. The sampler limit remains relevant, but the
+> current projected stack also uses texture arrays, compact shaders, caching, and
+> live-preview guards described in `docs/03` and `docs/19`.
+
 Updated: 2026-07-17
 
 This document explains the projected-layer WebGL failure observed during local repaint testing, why it happens, why the app cannot simply increase the limit, and what the correct engineering direction should be.

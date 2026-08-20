@@ -1,5 +1,8 @@
 # Comprehensive Code, Security, Test, And Release Audit
 
+> Historical audit only. It covers the retired Electron/installer architecture
+> and must not be used as the current packaging or deployment guide.
+
 Date: 2026-07-15  
 Application version: `0.1.3`  
 Desktop shell build: `2026.07.15.1104`

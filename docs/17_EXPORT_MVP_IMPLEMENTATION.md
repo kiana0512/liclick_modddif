@@ -1,80 +1,60 @@
-# Export MVP Implementation
+# Editor Toolbar And Export Implementation
 
-Phase 7 implements the first usable export workflow and the matching editor interaction polish.
+本文补充当前编辑器交互与导出代码位置。Undo/Redo 已接线；Paint 与 Eraser 必须按当前 feature exposure 单独判断。
 
-## Dock Drag / Drop
+## Dock Drag And Drop
 
-Panel drag uses native HTML drag/drop:
+- `WorkspacePanelHeader` 只从 drag handle 开始 panel drag。
+- `dragInteractionStore` 区分 panel drag 与 asset-file drag。
+- `WorkspaceDock` 是左/右 dock 的有效 drop target，顺序和侧边保存在 localStorage。
+- 当前不是任意坐标 floating window；Reset Layout 恢复预设。
+- Panel drag 不触发 viewport 模型 import overlay。
 
-- `WorkspacePanelHeader` starts drag only from the handle.
-- `dragInteractionStore` records `activeDragType='panel'`.
-- `WorkspacePanel` renders a lifted glow while dragged.
-- `WorkspaceDock` is the only valid drop zone and highlights while hovered.
-- `workspaceLayoutStore.reorderPanel()` snaps the panel into the left or right dock and persists order to localStorage.
+## Model Drop Boundary
 
-The editor does not support arbitrary floating panels. Keeping panels docked prevents lost controls and keeps the Web3D viewport as the main work surface.
+贴图编辑器实际模型导入 filter 是 `.glb`、`.gltf`、`.fbx`、`.obj`。旧文档把 `.stl` 写成可拖入模型是错误的；STL 当前仅支持导出。
 
-## Preventing Import Overlay Conflicts
-
-Viewport file import checks `dragInteractionStore` before showing the drop overlay.
-
-- Panel drag: overlay stays hidden.
-- Model file drag: overlay appears for `.glb`, `.gltf`, `.fbx`, `.obj`, and `.stl`.
-- Future asset drags can use `activeDragType='asset-file'` without triggering model import.
+图片 drop 会进入当前活动对象的 reference workflow，而不是被当成模型。
 
 ## Bottom Toolbar
 
-`BottomToolDock` renders square icon buttons with hover tooltips:
+当前可达工具：
 
-- Select, Move, Rotate, Scale are active transform modes.
-- Add Projected Layer is enabled only when a generation result exists.
-- Undo and Redo are disabled and labelled as coming soon.
+- Select、Move、Rotate、Scale。
+- Project/accept generation 的相关动作由 Generate/Layer context 控制。
+- Undo/Redo 根据编辑器 history 的 `canUndo/canRedo` 启用。
+- Local repaint mask 使用 add、subtract、apply 等 mode，支持连续笔触和模型 silhouette/visibility clipping。
+- Projected Layer Eraser 的底层参数、preview、commit 和 refinement 代码仍存在，但当前 `PROJECTED_ERASER_TOOL_ENABLED=false`：按钮不渲染，已有 eraser 状态会重置为 `none`。
 
-Paint and Eraser stay out of the main toolbar until the brush workflow is implemented.
+普通自由绘制 Brush mode 当前会被重置/隐藏，Projected Layer Eraser 也未对用户开放，不应描述成完整 3D paint workflow 已交付。Quick Mask 与 Segments 仍未实现。
 
 ## Export Modules
 
-Export logic lives under `apps/web/src/engine/export/`:
+主要代码位于 `apps/web/src/engine/export/`：
 
-- `exportGltf.ts`: Scene / Object GLB via `GLTFExporter`.
-- `exportFbx.ts`: Scene / Object binary FBX via the local writer.
-- `exportObj.ts`: Scene / Object OBJ via `OBJExporter`.
-- `exportStl.ts`: Scene / Object STL via `STLExporter`.
-- `exportTexture.ts`: baked BaseColor PNG and material normal map PNG.
-- `exportSnapshot.ts`: viewport PNG from the preserved WebGL canvas.
-- `exportTurntable.ts`: 5 second WebM turntable via `MediaRecorder` and `canvas.captureStream(30)`, with projected-layer shader uniforms resynced every frame so projected textures rotate with the model.
-- `texturedExportUtils.ts`: shared export preparation for GLB/FBX/OBJ. It finds or bakes the current visible stack, creates a transparent BaseColor PNG for exported assets, and applies a `Liclick_BaseColor` material to cloned geometry.
+- `exportGltf.ts`：Scene/Object GLB。
+- `exportFbx.ts`：Scene/Object binary FBX。
+- `exportObj.ts`：Scene/Object OBJ/MTL。
+- `exportStl.ts`：Scene/Object STL。
+- `exportTexture.ts`：BaseColor 和已有 material normalMap。
+- `exportSnapshot.ts`：Viewport PNG。
+- `exportTurntable.ts`：5 秒 WebM turntable。
+- `texturedExportUtils.ts`：exact stack cache、按需 projection bake、UV layer flatten 和 export material clone。
 
-`three-stdlib` is already part of the project and follows the Three.js ecosystem licensing expectations used by the app.
+## Current Output
 
-The local FBX writer now targets the Blender-stable FBX IO shape that 3ds Max accepts: large deterministic object ids, full model/material property templates, `Normal -> UV -> Material` layer order, indexed normal/UV tables, uncompressed tiny arrays such as `Materials [0]`, and a `100 / 3` model scale correction. This preserves the editor's normalized max dimension of 3 while exporting back to a DCC max dimension of 100.
+- Scene/Object：GLB、FBX、OBJ、STL。
+- Texture：BaseColor；源材质存在 normalMap 时可导出 Normal。
+- View：Viewport PNG。
+- Video：浏览器支持时输出 WebM。
 
-## Supported Now
+未实现：Segments ColorID、MP4、project package zip。
 
-- Scene GLB / OBJ / STL.
-- Scene FBX.
-- Selected object GLB / FBX / OBJ / STL.
-- Baked BaseColor PNG.
-- Normal texture PNG when the imported material provides `normalMap`.
-- Viewport PNG snapshot.
-- Turntable WebM when the browser supports `MediaRecorder`.
+## Verification Checklist
 
-## Still Unsupported
-
-- Segments ColorID: disabled until real segmentation data exists.
-- MP4 export: deferred; WebM is the browser-native MVP.
-- Project package zip: server endpoint remains a stub.
-- FBX compatibility should continue to be regression-tested in Blender and 3ds Max because the writer is local.
-
-## Test Checklist
-
-1. Drag Objects / Generate / References within the left dock and refresh; order should persist.
-2. Drag Generate to the right dock, then Reset Layout; it should return to default.
-3. Drag a panel over the viewport; the model import overlay should not appear.
-4. Drag a `.glb` / `.fbx` file over the viewport; the model import overlay should appear.
-5. Export Scene GLB, FBX, OBJ, and STL with a model loaded.
-6. Select the imported object and export Object GLB, FBX, OBJ, and STL.
-7. Bake a projected layer and export BaseColor PNG.
-8. Export GLB/FBX/OBJ after baking and confirm the BaseColor material/texture is present.
-9. Use Viewport PNG and Turntable WebM from the header Export menu.
-10. Import an exported FBX into Blender and 3ds Max; confirm the mesh opens, the white-model fallback opens without media, UV/normal data is present, and the model max dimension matches the original Modddif-style scale.
+1. Panel drag/refresh/reset，不触发模型导入 overlay。
+2. GLB/glTF/FBX/OBJ 模型 drop；确认 STL 被拒绝为导入模型。
+3. Projected + UV repair stack 下分别导出 BaseColor、GLB、FBX、OBJ。
+4. 确认没有 exact cache 时导出按需 bake，重复导出可复用匹配 cache。
+5. 在 Blender/3ds Max 验证 FBX，在标准 glTF viewer 验证 GLB。
+6. 验证 Viewport PNG 不含 grid/paint helpers，WebM 旋转时 projected texture 不漂移。

@@ -1,5 +1,8 @@
 # LI3D 模块 2、模块 3 与启动器 UX/低保真规范 v0.1
 
+> 历史 UX 设计基线。Electron launcher 已退役；当前产品是 Browser
+> Service + Windows Local Component。本文不作为当前壳层或部署规范。
+
 状态：视觉概念前置基线
 
 版本：0.1

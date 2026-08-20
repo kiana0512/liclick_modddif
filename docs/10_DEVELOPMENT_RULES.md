@@ -37,14 +37,14 @@ Future Codex sessions must read these docs before modifying core behavior.
 
 ## API
 
-- Use `services/liclickApiClient.ts` for real calls.
+- Use `services/liclickApiClient.ts` for generic image-generation jobs. Multiview and local repaint are specialized orchestration paths; do not call its currently unwired `generateMultiview`, `inpaint`, or `generateNormal` stubs.
 - Use explicit development fallbacks only when they are still wired into the app. Remove mock services and seed data once they no longer have product callers.
 - Keep request/response contracts typed.
 
 ## Persistence
 
 - The local project file is `project.liclick.json`.
-- The primary project flow is the local workspace server in `apps/server`.
+- Project APIs are provided by `apps/server`; deployed Web projects use the main workspace service, while Texture Painting uses the per-user local component boundary where configured.
 - Do not write absolute user-machine paths into project documents; store project-relative asset paths.
 - Prefer File System Access workspace save when available.
 - Keep JSON download/import fallback working for browsers without directory access.
@@ -56,4 +56,4 @@ Future Codex sessions must read these docs before modifying core behavior.
 - Do not hand-roll per-panel collapse state unless it is purely internal to that panel body.
 - Do not implement drag/drop by mutating panel order ad hoc; use `movePanel(panelId, dock, order)`.
 - For drag/drop dock sorting, use `reorderPanel(panelId, dock, beforePanelId)` so order is normalized and persisted.
-- Texture mode should remain the default working mode. Normal, Segments, and Export can show placeholder panels until their engine features ship.
+- Texture mode should remain the default working mode. Normal generation and Segments can remain explicit placeholders until their engine features ship; Normal visualization and Export already have production paths.

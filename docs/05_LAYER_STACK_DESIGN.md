@@ -1,75 +1,63 @@
 # Layer Stack Design
 
-The layer stack is the core editing model for Liclick texture work.
+图层栈是贴图编辑器的核心非破坏数据模型。当前实现同时管理 Projected Layer 和 UV Layer；`patch`/`normal` 类型存在于契约中，但主 UI 的生产路径主要落为 projected 或 uv role。
 
-## Layer Types
+## Layer Types And Roles
 
-- `projected`: image generated from a camera view and projected back onto the mesh.
-- `uv`: texture authored directly in UV space.
-- `patch`: localized inpaint or repair image with mask.
-- `normal`: normal-map layer or generated normal result.
+- `projected`：带捕获相机/对象矩阵的相机投影图；可包含 projection-space mask、linear depth 和 normal visibility。
+- `uv`：已经位于目标对象 UV 空间的纹理，不需要相机投影。
+- `patch`：类型契约保留给局部 patch；当前局部重绘通常先用 transient projected patch，再提交为 UV repair layer。
+- `normal`：类型契约已定义，但 Normal generation 尚未成为正式图层流程。
 
-## Projected Layer Workflow
+常用 UV roles 包括 `base-color`、`merged-uv`、`local-repaint-overlay` 和 `content-aware-underlay`。
 
-1. Select object and camera view.
-2. Capture color/mask/depth/normal.
-3. Generate image.
-4. Add image as projected layer with camera snapshot.
-5. Preview in viewport.
-6. Bake into UV output when needed.
+## Current UI
 
-## UV Layer Workflow
+Layers 面板当前支持：
 
-UV layers are already in texture space and do not need projection. They participate in blend, opacity, and export.
+- 单选/多选、缩略图与活动层。
+- 可见性（包括拖动批量切换）、opacity、projection strength。
+- Blend/Overlay 切换和 HSL 调整。
+- Projected Layer 的 Go to Camera。
+- 删除选中层。
+- 对图层图像执行本地重绘、编辑/替换等上下文操作。
+- 将选中 Projected/UV sources 合并成新 UV layer。
+- 将选中 sources 合并到指定空白 UV layer。
+- 撤销/重做由编辑器 history 驱动，按钮根据 `canUndo/canRedo` 启用。
 
-## Patch Layer Workflow
+旧文档中的“rename placeholder”“go-to-camera placeholder”和“点击 Bake Active Layer 重新烘焙”已不再代表当前主工作流。
 
-Patch layers include a mask and target region. They are used by inpaint and localized corrections.
+## Projected Preview Composition
 
-## UI
+同一对象的可见 Projected Layers 会进入 shader stack：
 
-The right panel lists layers with thumbnail, visibility toggle, opacity slider, rename placeholder, delete, and go-to-camera placeholder.
+- Blend 候选按覆盖与质量组合，适合多视图重叠。
+- Overlay 按图层顺序覆盖 Blend 结果。
+- mask/depth/normal/backface/frustum/source-alpha 决定表面样本是否有效。
+- 无有效样本处回退到 imported/base material。
+
+Layer opacity、strength、blend、adjustments 或 source 内容变化会改变 stack identity；已有 baked cache 只有在 source layer revisions、可见栈、对象、分辨率和导出选项完全匹配时才可复用。
+
+## UV Layers And Merge
+
+UV layers 直接覆盖目标对象 UV。手动合并流程：
+
+1. 选中一个或多个 Projected/UV layers。
+2. Projected sources 通过 UV-space bake 变成透明 RGBA。
+3. UV sources 按编辑器合成规则加入结果。
+4. 进行受 UV topology 约束的 gutter/seam 处理与 PNG 编码。
+5. 预热最终 texture 后创建/更新 `merged-uv` layer，并隐藏已被消费的 source layers。
+
+本地重绘提交和内容识别补缝也会创建专用 UV layers，但不会冒充完整 BaseColor flatten。
+
+## Bake Semantics
+
+- 当前没有用户级 Auto UV bake 开关。
+- 新增 Texture Map 结果会自动建立实时 Projected Layer，不会因为旧的全局设置自动 flatten 全栈。
+- 用户通过 Layers 面板显式合并 UV。
+- GLB/FBX/OBJ/BaseColor 导出会在需要时按当前可见 projected stack 生成精确 baked texture，并叠加 visible UV layers。
+- `isBaked`、`bakedTextureId`、`bakedAt`、`needsRebake` 仍作为 cache/兼容字段存在；不能据此恢复已移除的 UI toggle。
 
 ## Persistence
 
-Layer metadata lives in `project.liclick.json`. Image assets should be stored in the workspace asset folders or object storage blobs referenced by URL.
-
-## Blend, Opacity, Visibility
-
-Composition order is determined by `order`. Invisible layers are skipped. Opacity is a 0-1 value. Blend modes start with normal and expand later.
-
-## Go To Camera
-
-Projected layers should restore the camera snapshot that created them so users can reproject or edit from the same view.
-
-Phase 2 implements go-to-camera for projected layers using the serialized capture camera. The Layers panel calls `sceneStore.requestCameraRestore`, and `CameraController` applies position, quaternion, near/far, zoom/fov, and OrbitControls target.
-
-## Projected Preview State
-
-Projected layers now store `generationId`, `captureId`, `objectId`, `imageUrl`, `camera`, `visible`, and `opacity`. The active visible projected layer is applied to the imported model through the projection shader. Visibility and opacity update the preview. Deleting the active layer removes the projected preview and restores the model display material.
-
-## Stacked Preview
-
-The data model and viewport preview now support multiple visible projected layers for one imported object. `createProjectedLayerStackMaterial` receives the visible layer stack, samples each projected image through its saved camera, rejects invalid samples with frustum/mask/depth/backface gates, and composites:
-
-- `blend` layers by quality, so the strongest candidates can contribute without depending on layer order;
-- `overlay` layers in stack order, matching the user's layer-list mental model.
-
-The viewport still guards extremely large unbaked stacks for performance. The intended fast path for production-sized stacks is to bake the visible stack into one BaseColor texture and preview/export that baked result.
-
-## Baked Layer State
-
-Phase 3 adds baked state to layers:
-
-- `isBaked`: the layer has produced a basecolor texture.
-- `bakedTextureId`: links to `project.bakedTextures`.
-- `bakedAt`: timestamp of the bake.
-- `needsRebake`: opacity changed after baking, so the baked texture should be regenerated.
-
-The Layers panel highlights the active projected layer and shows a BAKED or Re-bake badge. Clicking a projected layer makes it the active layer for preview and bake.
-
-## Re-Bake Rule
-
-Changing projected layer opacity after baking does not mutate the previous baked PNG. The UI marks the layer as needing re-bake. Users should click `Bake Active Layer` again to produce a new basecolor.
-
-Texture Map results are accepted through the projected-layer action, not by adding the result back into the reference-image library. Normal Liclick generation keeps its `Add to references` shortcut, while Texture Map hides that shortcut to keep material references separate from generated texture outputs.
+项目 JSON 保存图层元数据；图片、mask、depth、normal 和 merged output 在 local-server/local-component 工程中物化到资产目录。Live canvas/blob 数据必须在关键保存点转为 durable asset，避免刷新后丢失遮罩或投影来源。
