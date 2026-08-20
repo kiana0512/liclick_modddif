@@ -11,6 +11,8 @@
     "test:bake-base-color-selection": "node scripts/test-bake-base-color-selection.mjs",
     "test:content-aware-repair": "node --test src/engine/contentAware/__tests__/buildRepairMask.test.mjs src/engine/contentAware/__tests__/surfaceAwareRepair.test.mjs",
     "test:generation-polling": "node scripts/test-generation-polling.mjs",
+    "test:fbx-legacy-repair": "node scripts/test-fbx-legacy-repair.mjs",
+    "test:frame-budget-governor": "node scripts/test-frame-budget-governor.mjs",
     "test:heavy-task-scheduler": "node scripts/test-heavy-task-scheduler.mjs",
     "test:liclick-auth-separation": "node scripts/test-liclick-auth-separation.mjs",
     "test:model-import-progress": "node scripts/test-model-import-progress.mjs",

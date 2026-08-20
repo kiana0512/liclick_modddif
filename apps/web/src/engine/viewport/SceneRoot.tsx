@@ -597,6 +597,11 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
     let cancelled = false;
     let composing = false;
     let composeAgain = false;
+    const useWorkerUrlSources =
+      canCompositeUvLayersInWorker() &&
+      uvLayers.every(
+        (layer) => !getLiveProjectedCanvasState(layer.imageUrl) && Boolean(layer.imageUrl),
+      );
 
     const waitForInteractionIdle = async () => {
       while (!cancelled && isSharedViewportInteractionBusy()) {
@@ -647,7 +652,12 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
         const live = getLiveProjectedCanvasState(layer.imageUrl);
         return {
           layer,
-          source: live?.canvas ?? (await loadImageElement(layer.imageUrl)),
+          // Static URL compositions are decoded by the worker. Loading the
+          // same 4K files into HTMLImageElement first caused a repeatable
+          // 0.93-0.99s main-thread task during project restore.
+          source:
+            live?.canvas ??
+            (useWorkerUrlSources ? undefined : await loadImageElement(layer.imageUrl)),
           liveUrl: live ? layer.imageUrl : undefined,
           liveRevision: live?.revision,
         };
@@ -657,23 +667,32 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
         if (cancelled) return;
         const sourceWidth = Math.max(
           1,
-          ...sources.map(
-            ({ source }) =>
-              ('naturalWidth' in source ? source.naturalWidth || source.width : source.width) || 1,
+          ...sources.flatMap(({ source }) =>
+            source
+              ? [
+                  ('naturalWidth' in source
+                    ? source.naturalWidth || source.width
+                    : source.width) || 1,
+                ]
+              : [],
           ),
         );
         const sourceHeight = Math.max(
           1,
-          ...sources.map(
-            ({ source }) =>
-              ('naturalHeight' in source ? source.naturalHeight || source.height : source.height) ||
-              1,
+          ...sources.flatMap(({ source }) =>
+            source
+              ? [
+                  ('naturalHeight' in source
+                    ? source.naturalHeight || source.height
+                    : source.height) || 1,
+                ]
+              : [],
           ),
         );
         // Keep the composited material at the source UV resolution. Interactive paint and
         // eraser work must never trade the user's texture resolution for viewport speed.
-        const width = sourceWidth;
-        const height = sourceHeight;
+        let width = sourceWidth;
+        let height = sourceHeight;
         const sortedSources = [...sources].sort((left, right) =>
           compareUvLayersForComposition(left.layer, right.layer, 'bottom-to-top'),
         );
@@ -698,9 +717,7 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
             let nextTexture: THREE.Texture;
             if (canCompositeUvLayersInWorker()) {
               document.body.dataset.uvCompositeBackend = 'worker';
-              const staticSources = sortedSources.every(
-                ({ layer, liveUrl }) => !liveUrl && Boolean(layer.imageUrl),
-              );
+              const staticSources = useWorkerUrlSources;
               const bitmap = staticSources
                 ? await compositeUvLayerUrlsInWorker(
                     sortedSources.map(({ layer }) => ({
@@ -711,13 +728,20 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
                   )
                 : await compositeUvLayersInWorker(
                     await Promise.all(
-                      sortedSources.map(async ({ layer, source }) => ({
-                        bitmap: await createImageBitmap(source),
-                        opacity: layer.opacity,
-                      })),
+                      sortedSources.map(async ({ layer, source }) => {
+                        if (!source) throw new Error('UV composition source was not decoded.');
+                        return {
+                          bitmap: await createImageBitmap(source),
+                          opacity: layer.opacity,
+                        };
+                      }),
                     ),
                     workerOwnerKeyRef.current,
                   );
+              if (staticSources) {
+                width = bitmap.width;
+                height = bitmap.height;
+              }
               document.body.dataset.uvCompositeDecodeBackend = staticSources
                 ? 'worker-fetch-image-bitmap'
                 : 'main-thread-live-bitmap';
@@ -731,6 +755,7 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
               if (!context) throw new Error('Could not create UV layer composite canvas.');
               context.clearRect(0, 0, width, height);
               sortedSources.forEach(({ layer, source }) => {
+                if (!source) throw new Error('UV composition source was not decoded.');
                 context.save();
                 context.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
                 context.globalCompositeOperation = 'source-over';
@@ -2073,54 +2098,71 @@ function ImportedModel({
     residentUvToggleLayers,
     residentUvToggleSignature,
   );
+  const [residentUvTogglePrewarmReady, setResidentUvTogglePrewarmReady] = useState(false);
   useEffect(() => {
     let cancelled = false;
     const startedAt = performance.now();
+    setResidentUvTogglePrewarmReady(false);
     document.body.dataset.residentUvTogglePrewarmStartedMs = startedAt.toFixed(1);
     const warm = async () => {
       // Decode independent UV assets together. The previous serial loop made
       // two 4K layers pay the full network/decode latency back-to-back.
-      const textures = await Promise.all(
-        stableResidentUvToggleLayers.map(async (layer) => {
-          if (!layer.imageUrl) return undefined;
-          let lastError: unknown;
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-              return await loadPreviewTexture(layer.imageUrl);
-            } catch (error) {
-              lastError = error;
-              if (attempt < 2) {
-                await new Promise<void>((resolve) =>
-                  window.setTimeout(resolve, attempt === 0 ? 80 : 200),
-                );
+      const texturePromises = new Map(
+        stableResidentUvToggleLayers.map((layer) => [
+          layer.id,
+          (async () => {
+            if (!layer.imageUrl) return undefined;
+            let lastError: unknown;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              try {
+                return await loadPreviewTexture(layer.imageUrl);
+              } catch (error) {
+                lastError = error;
+                if (attempt < 2) {
+                  await new Promise<void>((resolve) =>
+                    window.setTimeout(resolve, attempt === 0 ? 80 : 200),
+                  );
+                }
               }
             }
-          }
-          throw lastError;
-        }),
+            throw lastError;
+          })(),
+        ]),
       );
-      for (const texture of textures) {
-        if (!texture) continue;
-        if (cancelled) return;
-        // Spread bounded 4K uploads across frames so prewarming never turns
-        // into one long main-thread/GPU submission spike.
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-        if (cancelled) return;
-        await uploadPreviewTextureInStripes(gl, texture);
+      const visibleLayers = stableResidentUvToggleLayers.filter((layer) => layer.visible);
+      const hiddenLayers = stableResidentUvToggleLayers.filter((layer) => !layer.visible);
+      const uploadLayers = async (targetLayers: Layer[]) => {
+        for (const layer of targetLayers) {
+          const texture = await texturePromises.get(layer.id);
+          if (!texture || cancelled) return false;
+          // The uploader already yields before every bounded stripe. Do not add
+          // another unconditional frame between complete textures.
+          await uploadPreviewTextureInStripes(gl, texture);
+          if (cancelled) return false;
+        }
+        return true;
+      };
+
+      // User-visible restore and hidden eye-toggle prewarming are different
+      // completion states. Publish the exact visible set first; hidden layers
+      // keep warming at the same conservative per-frame budget afterwards.
+      if (!(await uploadLayers(visibleLayers))) return;
+      document.body.dataset.residentUvVisiblePrewarmCount = String(visibleLayers.length);
+      document.body.dataset.residentUvVisiblePrewarmMs = (
+        performance.now() - startedAt
+      ).toFixed(1);
+      if (visibleLayers.length > 0) {
+        document.body.dataset.textureRestoreUvReady = '1';
+        document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
       }
+
+      if (!(await uploadLayers(hiddenLayers))) return;
       document.body.dataset.residentUvToggleTextureCount = String(
         stableResidentUvToggleLayers.length,
       );
       document.body.dataset.residentUvTogglePrewarmMs = (performance.now() - startedAt).toFixed(1);
       document.body.dataset.residentUvToggleReady = '1';
-      if (stableResidentUvToggleLayers.length > 0) {
-        // Hidden UV and content-repair layers are intentionally kept resident
-        // for instant eye toggles. Count that completed GPU upload as restored;
-        // waiting only for a currently visible base UV texture made S8 time out
-        // even though its sole hidden UV layer was already fully ready.
-        document.body.dataset.textureRestoreUvReady = '1';
-        document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
-      }
+      setResidentUvTogglePrewarmReady(true);
     };
     document.body.dataset.residentUvToggleReady = '0';
     void warm().catch((error) => {
@@ -2606,12 +2648,12 @@ function ImportedModel({
   const compositedUvTextureState = useCompositedUvTextureState(compositedUvLayers);
   const residentAllVisibleUvLayers = useMemo(
     () =>
-      stableResidentUvToggleLayers.length > 1
+      residentUvTogglePrewarmReady && stableResidentUvToggleLayers.length > 1
         ? stableResidentUvToggleLayers.map((layer) =>
             layer.visible ? layer : { ...layer, visible: true },
           )
         : [],
-    [stableResidentUvToggleLayers],
+    [residentUvTogglePrewarmReady, stableResidentUvToggleLayers],
   );
   const residentAllVisibleUvKey = useMemo(
     () => residentUvVisibilityKey(residentAllVisibleUvLayers),

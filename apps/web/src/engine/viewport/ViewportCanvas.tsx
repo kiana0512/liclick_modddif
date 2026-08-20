@@ -84,6 +84,7 @@ import {
 import {
   sumDurationSamples,
   summarizeDurationSamples,
+  summarizeFramePacing,
 } from '@/engine/performance/performanceLabMetrics';
 import {
   prepareGpuComputeBackend,
@@ -518,6 +519,8 @@ function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
 type PerformanceHudMetrics = {
   fps: number;
   frameP95: number;
+  frameP99: number;
+  frameJitterP95: number;
   frameMax: number;
   droppedFrames: number;
   paintP95: number;
@@ -707,6 +710,7 @@ type RefreshRestoreBenchmarkResult = {
   uvReadyMs: number;
   projectedReadyMs: number;
   uvPrewarmMs: number;
+  visibleUvPrewarmMs: number;
   expectedLayers: number;
   expectedUvLayers: number;
   expectedProjectedLayers: number;
@@ -714,8 +718,15 @@ type RefreshRestoreBenchmarkResult = {
   loadedProjectedLayers: number;
   loadedLocalRepaintLayers: number;
   frameP95: number;
+  frameP99: number;
+  frameJitterP95: number;
   frameMax: number;
   droppedFrames: number;
+  postModelFrameP95: number;
+  postModelFrameP99: number;
+  postModelFrameJitterP95: number;
+  postModelFrameMax: number;
+  postModelDroppedFrames: number;
   longTaskMax: number;
 };
 
@@ -1116,6 +1127,8 @@ function PerformanceTestHud() {
   const [metrics, setMetrics] = useState<PerformanceHudMetrics>({
     fps: 0,
     frameP95: 0,
+    frameP99: 0,
+    frameJitterP95: 0,
     frameMax: 0,
     droppedFrames: 0,
     paintP95: 0,
@@ -1466,7 +1479,7 @@ function PerformanceTestHud() {
       const samplerStartedAt = performance.now();
       const averageFrame =
         frameTimes.reduce((sum, value) => sum + value, 0) / Math.max(1, frameTimes.length);
-      const frameSummary = summarizeDurationSamples(frameSamplesRef.current, 20);
+      const frameSummary = summarizeFramePacing(frameSamplesRef.current, 20);
       const recordedLongTaskDuration = sumDurationSamples(longTaskSamplesRef.current);
       const recordedDuration = Math.max(1, Date.now() - recordingStartedAtRef.current);
       const paintSamples = surfacePaintPerfSamples.slice(-240);
@@ -1480,6 +1493,8 @@ function PerformanceTestHud() {
       setMetrics({
         fps: averageFrame > 0 ? 1000 / averageFrame : 0,
         frameP95: frameSummary.p95,
+        frameP99: frameSummary.p99,
+        frameJitterP95: frameSummary.jitterP95,
         frameMax: frameSummary.maximum,
         droppedFrames: frameSummary.aboveThresholdPercent,
         paintP95: percentile(paintSamples, 0.95),
@@ -1601,9 +1616,16 @@ function PerformanceTestHud() {
       if (cancelled) return;
       const readNumber = (key: string) => Number(document.body.dataset[key] ?? '0');
       const modelFullMs = readNumber('textureRestoreModelFullMs');
-      const textureStageStartedAt = performance.timeOrigin + modelFullMs;
+      const hydratedMs = readNumber('textureRestoreHydratedMs');
+      // Visible-first restoration overlaps texture streaming with model load.
+      // Start at hydration so that moving work earlier cannot hide its frames
+      // by finishing before the old model-full sampling boundary.
+      const textureStageStartedAt = performance.timeOrigin + hydratedMs;
       const textureStageSamples = frameSamplesRef.current.filter(
         (sample) => sample.unixMs >= textureStageStartedAt,
+      );
+      const postModelSamples = frameSamplesRef.current.filter(
+        (sample) => sample.unixMs >= performance.timeOrigin + modelFullMs,
       );
       const durations = textureStageSamples.map((sample) => sample.durationMs);
       const phaseFrameMax: Record<string, number> = {};
@@ -1641,28 +1663,39 @@ function PerformanceTestHud() {
             })),
         });
       }
+      const pacing = summarizeFramePacing(textureStageSamples, 20);
+      const postModelPacing = summarizeFramePacing(postModelSamples, 20);
       const result: RefreshRestoreBenchmarkResult = {
         success,
         totalMs: performance.now(),
-        hydratedMs: readNumber('textureRestoreHydratedMs'),
+        hydratedMs,
         modelFullMs,
         uvReadyMs: readNumber('textureRestoreUvReadyMs'),
         projectedReadyMs: readNumber('textureRestoreProjectedReadyMs'),
         uvPrewarmMs: readNumber('residentUvTogglePrewarmMs'),
+        visibleUvPrewarmMs: readNumber('residentUvVisiblePrewarmMs'),
         expectedLayers: readNumber('textureRestoreExpectedLayers'),
         expectedUvLayers: readNumber('textureRestoreExpectedUvLayers'),
         expectedProjectedLayers: readNumber('textureRestoreExpectedProjectedLayers'),
         expectedLocalRepaintLayers: readNumber('textureRestoreExpectedLocalRepaintLayers'),
         loadedProjectedLayers: readNumber('textureRestoreLoadedProjectedLayers'),
         loadedLocalRepaintLayers: readNumber('textureRestoreLoadedLocalRepaintLayers'),
-        frameP95: percentile(durations, 0.95),
+        frameP95: pacing.p95,
+        frameP99: pacing.p99,
+        frameJitterP95: pacing.jitterP95,
         frameMax: durations.length > 0 ? Math.max(...durations) : 0,
         droppedFrames:
           durations.length > 0
             ? (durations.filter((duration) => duration > 20).length / durations.length) * 100
             : 0,
+        postModelFrameP95: postModelPacing.p95,
+        postModelFrameP99: postModelPacing.p99,
+        postModelFrameJitterP95: postModelPacing.jitterP95,
+        postModelFrameMax: postModelPacing.maximum,
+        postModelDroppedFrames: postModelPacing.aboveThresholdPercent,
         longTaskMax: longTasks.length > 0 ? Math.max(...longTasks) : 0,
       };
+      document.body.dataset.perfRefreshRestoreResult = JSON.stringify(result);
       window.sessionStorage.removeItem(REFRESH_RESTORE_BENCHMARK_KEY);
       setRefreshRestoreBenchmarkResult(result);
       setRefreshRestoreBenchmarkRunning(false);
@@ -1680,11 +1713,16 @@ function PerformanceTestHud() {
       const loadedLocal = Number(
         document.body.dataset.textureRestoreLoadedLocalRepaintLayers ?? '0',
       );
+      const loadedProjected = Number(
+        document.body.dataset.textureRestoreLoadedProjectedLayers ?? '0',
+      );
       const ready = Boolean(
         document.body.dataset.textureRestoreHydrated === '1' &&
         document.body.dataset.textureRestoreModelFull === '1' &&
         (expectedUv === 0 || document.body.dataset.textureRestoreUvReady === '1') &&
-        (expectedProjected === 0 || document.body.dataset.textureRestoreProjectedReady === '1') &&
+        (expectedProjected === 0 ||
+          (document.body.dataset.textureRestoreProjectedReady === '1' &&
+            loadedProjected >= expectedProjected)) &&
         (expectedLocal === 0 || loadedLocal >= expectedLocal),
       );
       if (ready) {
@@ -2719,6 +2757,7 @@ function PerformanceTestHud() {
         droppedFrames: summary.dropped,
         phaseFrameMax,
       };
+      document.body.dataset.perfViewportStressResult = JSON.stringify(result);
       setViewportLayerStressResult(result);
       return result;
     } finally {
@@ -2993,6 +3032,11 @@ function PerformanceTestHud() {
           tone={metricTone(metrics.frameP95, 20, 33)}
         />
         <PerformanceMetric
+          label="帧耗时 P99 / 抖动 P95"
+          value={`${metrics.frameP99.toFixed(1)} / ${metrics.frameJitterP95.toFixed(1)} ms`}
+          tone={metricTone(Math.max(metrics.frameP99, metrics.frameJitterP95), 33.3, 50)}
+        />
+        <PerformanceMetric
           label="帧耗时最大"
           value={`${metrics.frameMax.toFixed(1)} ms`}
           tone={metricTone(metrics.frameMax, 33, 80)}
@@ -3188,22 +3232,31 @@ function PerformanceTestHud() {
           tone={refreshRestoreBenchmarkResult?.success ? 'text-emerald-300' : 'text-rose-300'}
         />
         <PerformanceMetric
-          label="S8 UV 预热 / 最大长任务"
+          label="S8 可见 UV / 全部 UV / 最大长任务"
           value={
             refreshRestoreBenchmarkResult
-              ? `${refreshRestoreBenchmarkResult.uvPrewarmMs.toFixed(1)} / ${refreshRestoreBenchmarkResult.longTaskMax.toFixed(1)}ms`
+              ? `${(refreshRestoreBenchmarkResult.visibleUvPrewarmMs ?? 0).toFixed(1)} / ${refreshRestoreBenchmarkResult.uvPrewarmMs > 0 ? refreshRestoreBenchmarkResult.uvPrewarmMs.toFixed(1) : '后台继续'} / ${refreshRestoreBenchmarkResult.longTaskMax.toFixed(1)}ms`
               : '等待压测'
           }
           tone={metricTone(refreshRestoreBenchmarkResult?.uvPrewarmMs ?? 0, 500, 1000)}
         />
         <PerformanceMetric
-          label="S8 纹理阶段 P95 / 最大帧 / 掉帧"
+          label="S8 全恢复 P95 / P99 / 抖动 / 最大帧 / 掉帧"
           value={
             refreshRestoreBenchmarkResult
-              ? `${refreshRestoreBenchmarkResult.frameP95.toFixed(1)} / ${refreshRestoreBenchmarkResult.frameMax.toFixed(1)}ms / ${refreshRestoreBenchmarkResult.droppedFrames.toFixed(0)}%`
+              ? `${refreshRestoreBenchmarkResult.frameP95.toFixed(1)} / ${(refreshRestoreBenchmarkResult.frameP99 ?? 0).toFixed(1)} / ${(refreshRestoreBenchmarkResult.frameJitterP95 ?? 0).toFixed(1)} / ${refreshRestoreBenchmarkResult.frameMax.toFixed(1)}ms / ${refreshRestoreBenchmarkResult.droppedFrames.toFixed(0)}%`
               : '等待压测'
           }
           tone={metricTone(refreshRestoreBenchmarkResult?.frameMax ?? 0, 33, 80)}
+        />
+        <PerformanceMetric
+          label="S8 模型后 P95 / P99 / 抖动 / 最大帧 / 掉帧"
+          value={
+            refreshRestoreBenchmarkResult
+              ? `${(refreshRestoreBenchmarkResult.postModelFrameP95 ?? 0).toFixed(1)} / ${(refreshRestoreBenchmarkResult.postModelFrameP99 ?? 0).toFixed(1)} / ${(refreshRestoreBenchmarkResult.postModelFrameJitterP95 ?? 0).toFixed(1)} / ${(refreshRestoreBenchmarkResult.postModelFrameMax ?? 0).toFixed(1)}ms / ${(refreshRestoreBenchmarkResult.postModelDroppedFrames ?? 0).toFixed(0)}%`
+              : '等待压测'
+          }
+          tone={metricTone(refreshRestoreBenchmarkResult?.postModelFrameMax ?? 0, 33, 80)}
         />
         <PerformanceMetric
           label={`采集计算 P95 / 最大 · ${metrics.samplerSamples}`}

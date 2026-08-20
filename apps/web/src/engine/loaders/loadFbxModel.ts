@@ -4,12 +4,17 @@ import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } 
 import { yieldForModelImportProgressPaint } from './modelImportProgress';
 import { summarizeLoadedGroup } from './modelLoadUtils';
 import { applyFbxModelVisibility, readFbxMetadata } from './fbxVisibility';
+import { startPerformanceSpan } from '@/engine/performance/performanceTimeline';
 
 const LEGACY_EMBEDDED_PNG_NAME = new TextEncoder().encode('liclick_image_0_png');
 
-function repairLegacyEmbeddedTextureFileNames(source: ArrayBuffer) {
-  const bytes = new Uint8Array(source.slice(0));
-  for (let offset = 0; offset <= bytes.length - LEGACY_EMBEDDED_PNG_NAME.length; offset += 1) {
+export function repairLegacyEmbeddedTextureFileNames(source: ArrayBuffer) {
+  const bytes = new Uint8Array(source);
+  const matchingOffsets: number[] = [];
+  let searchOffset = 0;
+  while (searchOffset <= bytes.length - LEGACY_EMBEDDED_PNG_NAME.length) {
+    const offset = bytes.indexOf(LEGACY_EMBEDDED_PNG_NAME[0]!, searchOffset);
+    if (offset < 0 || offset > bytes.length - LEGACY_EMBEDDED_PNG_NAME.length) break;
     let matches = true;
     for (let index = 0; index < LEGACY_EMBEDDED_PNG_NAME.length; index += 1) {
       if (bytes[offset + index] !== LEGACY_EMBEDDED_PNG_NAME[index]) {
@@ -17,9 +22,16 @@ function repairLegacyEmbeddedTextureFileNames(source: ArrayBuffer) {
         break;
       }
     }
-    if (matches) bytes[offset + 'liclick_image_0'.length] = '.'.charCodeAt(0);
+    if (matches) matchingOffsets.push(offset);
+    searchOffset = offset + (matches ? LEGACY_EMBEDDED_PNG_NAME.length : 1);
   }
-  return bytes.buffer;
+  if (matchingOffsets.length === 0) return source;
+  const repaired = source.slice(0);
+  const repairedBytes = new Uint8Array(repaired);
+  matchingOffsets.forEach((offset) => {
+    repairedBytes[offset + 'liclick_image_0'.length] = '.'.charCodeAt(0);
+  });
+  return repaired;
 }
 
 function normalizeResourcePath(value: string) {
@@ -56,7 +68,31 @@ export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedM
   if (options.sourceBuffer) {
     options.onProgress?.({ phase: 'parsing' });
     await yieldForModelImportProgressPaint();
-    fbx = loader.parse(repairLegacyEmbeddedTextureFileNames(options.sourceBuffer), '');
+    const parseStartedAt = performance.now();
+    const finishParseSpan = startPerformanceSpan('model-load', 'fbx-main-thread-parse', {
+      sourceBytes: options.sourceBuffer.byteLength,
+    });
+    try {
+      const repairStartedAt = performance.now();
+      const repairedSource = repairLegacyEmbeddedTextureFileNames(options.sourceBuffer);
+      const repairDurationMs = performance.now() - repairStartedAt;
+      const loaderParseStartedAt = performance.now();
+      fbx = loader.parse(repairedSource, '');
+      document.body.dataset.fbxLegacyRepairMs = repairDurationMs.toFixed(1);
+      document.body.dataset.fbxLoaderParseMs = (performance.now() - loaderParseStartedAt).toFixed(1);
+      document.body.dataset.fbxMainThreadParseMs = (performance.now() - parseStartedAt).toFixed(1);
+      finishParseSpan('end', {
+        durationMs: performance.now() - parseStartedAt,
+        repairDurationMs,
+        copiedSource: repairedSource !== options.sourceBuffer,
+      });
+    } catch (error) {
+      finishParseSpan('error', {
+        durationMs: performance.now() - parseStartedAt,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
     applyFbxModelVisibility(fbx, options.sourceBuffer, sourceMetadata?.visibilityByModelId);
   } else {
     options.onProgress?.({ phase: 'reading', phaseProgress: 0 });

@@ -7,6 +7,7 @@ export type PerformanceTimelineEvent = {
     | 'layers'
     | 'uv-composite'
     | 'uv-merge'
+    | 'model-load'
     | 'projection'
     | 'local-repaint'
     | 'system';

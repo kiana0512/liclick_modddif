@@ -1,6 +1,15 @@
 import * as THREE from 'three';
+import {
+  createTextureUploadBudget,
+  INITIAL_TEXTURE_UPLOAD_PIXELS,
+  startFrameIntervalMonitor,
+  updateTextureUploadBudget,
+} from '@/engine/performance/frameBudgetGovernor';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
-import { waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle } from './viewportInteractionState';
+import {
+  isViewportInteractionBusy,
+  waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle,
+} from './viewportInteractionState';
 
 const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
@@ -10,10 +19,10 @@ const previewTextureUploadPromises = new WeakMap<
   WeakMap<THREE.WebGLRenderer, Promise<void>>
 >();
 const previewTextureReadyRenderers = new WeakMap<THREE.Texture, WeakSet<THREE.WebGLRenderer>>();
-// Keep both contexts at roughly 0.5MB. Larger detached submissions did not
-// improve S9 wall time and increased long frames on NVIDIA/Windows.
-const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 128 * 1024;
-const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 128 * 1024;
+// Detached contexts stay at roughly 0.5MB. Larger detached submissions did
+// not improve S9 wall time and increased long frames on NVIDIA/Windows. The
+// visible renderer instead uses the frame-budget governor below.
+const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = INITIAL_TEXTURE_UPLOAD_PIXELS;
 // Flush visible uploads every four stripes without polling a WebGL fence:
 // timeout-zero clientWaitSync still blocked the UI thread for 134-150ms on
 // NVIDIA under load. Both renderer paths rely on exact same-context ordering.
@@ -146,6 +155,14 @@ function markPreviewUploadStep(step: string) {
 
 function waitForViewportInteractionIdle() {
   return waitForSharedViewportInteractionIdle(240);
+}
+
+function previewUploadGovernorEnabled() {
+  if (typeof window === 'undefined') return true;
+  const params = new URLSearchParams(window.location.search);
+  // Kept only as a perf-lab A/B switch. Production always defaults to the
+  // adaptive path and ordinary users never carry this query parameter.
+  return !(params.get('perfLab') === '1' && params.get('previewUploadGovernor') === '0');
 }
 
 export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | undefined) {
@@ -315,20 +332,15 @@ export function uploadPreviewTextureInStripes(
       return;
     }
     const context = renderer.getContext();
-    const rowsPerStripe = Math.max(
-      1,
-      Math.min(
-        image.height,
-        Math.floor(
-          (renderer.domElement.isConnected
-            ? PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME
-            : DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME) / Math.max(1, image.width),
-        ),
-      ),
-    );
+    const adaptiveVisibleUpload = usesVisibleRenderer && previewUploadGovernorEnabled();
+    let uploadBudget = createTextureUploadBudget();
+    const frameMonitor = adaptiveVisibleUpload ? startFrameIntervalMonitor() : undefined;
     const startedAt = performance.now();
     let maximumStripeMs = 0;
     let submittedSinceFlush = 0;
+    let stripeCount = 0;
+    let minimumUploadPixels = uploadBudget.pixels;
+    let maximumUploadPixels = uploadBudget.pixels;
     texture.source.dataReady = false;
     texture.needsUpdate = true;
     if (pauseDuringInteraction) await waitForViewportInteractionIdle();
@@ -346,7 +358,15 @@ export function uploadPreviewTextureInStripes(
       // Most preview bitmaps are pre-oriented and use flipY=false. Bake
       // textures may intentionally retain flipY=true; preserve that exact
       // sampling contract while still splitting the upload into stripes.
-      const prepareStripe = async (y: number) => {
+      type PreparedPreviewStripe = { rowCount: number; stripe: ImageBitmap; y: number };
+      const prepareStripe = async (
+        y: number,
+        pixelBudget: number,
+      ): Promise<PreparedPreviewStripe> => {
+        const rowsPerStripe = Math.max(
+          1,
+          Math.min(image.height, Math.floor(pixelBudget / Math.max(1, image.width))),
+        );
         const rowCount = Math.min(rowsPerStripe, image.height - y);
         markPreviewUploadStep(`${uploadPhasePrefix}-crop`);
         const stripe =
@@ -358,14 +378,31 @@ export function uploadPreviewTextureInStripes(
               });
         return { rowCount, stripe, y };
       };
-      let pendingStripe: ReturnType<typeof prepareStripe> | undefined = prepareStripe(0);
-      for (let y = 0; y < image.height; y += rowsPerStripe) {
+      let y = 0;
+      let pendingStripe: Promise<PreparedPreviewStripe> | undefined = prepareStripe(
+        0,
+        usesVisibleRenderer
+          ? uploadBudget.pixels
+          : DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME,
+      );
+      while (y < image.height) {
         throwIfCancelled();
         if (pauseDuringInteraction) await waitForViewportInteractionIdle();
         throwIfCancelled();
-        const prepared = await pendingStripe!;
-        const nextY = y + rowsPerStripe;
-        pendingStripe = nextY < image.height ? prepareStripe(nextY) : undefined;
+        const prepared: PreparedPreviewStripe = await pendingStripe!;
+        const nextY: number = y + prepared.rowCount;
+        // Keep one worker crop in flight while the browser presents. Budget
+        // changes therefore take effect after at most one already-prepared
+        // stripe, preserving overlap without permitting an unbounded batch.
+        pendingStripe =
+          nextY < image.height
+            ? prepareStripe(
+                nextY,
+                usesVisibleRenderer
+                  ? uploadBudget.pixels
+                  : DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME,
+              )
+            : undefined;
         markPreviewUploadStep(`${uploadPhasePrefix}-yield`);
         if (usesVisibleRenderer) {
           // The visible context must yield through presentation because R3F
@@ -403,6 +440,7 @@ export function uploadPreviewTextureInStripes(
         ) as boolean;
         context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, 0);
         context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+        let stripeSubmitMs = 0;
         try {
           const stripeStartedAt = performance.now();
           markPreviewUploadStep(`${uploadPhasePrefix}-submit`);
@@ -416,7 +454,9 @@ export function uploadPreviewTextureInStripes(
             context.UNSIGNED_BYTE,
             stripe,
           );
-          maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
+          stripeSubmitMs = performance.now() - stripeStartedAt;
+          maximumStripeMs = Math.max(maximumStripeMs, stripeSubmitMs);
+          stripeCount += 1;
           submittedSinceFlush += 1;
           if (
             usesVisibleRenderer &&
@@ -436,6 +476,19 @@ export function uploadPreviewTextureInStripes(
           context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, Number(frameFlipY));
           context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, Number(framePremultiply));
         }
+        if (adaptiveVisibleUpload && frameMonitor) {
+          const frameSample = frameMonitor.readAndReset();
+          uploadBudget = updateTextureUploadBudget(uploadBudget, {
+            frameMaximumMs: frameSample.maximumMs,
+            frameSampleCount: frameSample.sampleCount,
+            frameTargetMs: frameSample.targetMs,
+            synchronousWorkMs: stripeSubmitMs,
+            interactionBusy: isViewportInteractionBusy(240),
+          });
+          minimumUploadPixels = Math.min(minimumUploadPixels, uploadBudget.pixels);
+          maximumUploadPixels = Math.max(maximumUploadPixels, uploadBudget.pixels);
+        }
+        y = nextY;
       }
       // Visible textures stay private for two presented frames after the final
       // flush. The upload and later sampler draw share one command stream, so
@@ -463,13 +516,15 @@ export function uploadPreviewTextureInStripes(
         1,
       );
       document.body.dataset.previewTextureStripedUploadMaxStripeMs = maximumStripeMs.toFixed(1);
-      document.body.dataset.previewTextureStripedUploadCount = String(
-        Math.ceil(image.height / rowsPerStripe),
-      );
+      document.body.dataset.previewTextureStripedUploadCount = String(stripeCount);
+      document.body.dataset.previewTextureUploadBudgetRange = `${minimumUploadPixels}-${maximumUploadPixels}`;
+      document.body.dataset.previewTextureUploadGovernor = adaptiveVisibleUpload ? 'adaptive' : 'fixed';
     } catch (error) {
       texture.source.dataReady = true;
       texture.needsUpdate = true;
       throw error;
+    } finally {
+      frameMonitor?.stop();
     }
   })();
   rendererUploads.set(renderer, upload);
