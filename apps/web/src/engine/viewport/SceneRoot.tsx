@@ -1208,7 +1208,6 @@ function ImportedModel({
     Record<string, { depthUrl: string; normalUrl: string }>
   >({});
   const [initialProjectedMaterialReady, setInitialProjectedMaterialReady] = useState(false);
-  const [initialProjectedMaterialColdReady, setInitialProjectedMaterialColdReady] = useState(false);
   const [presentedMaterialGroup, setPresentedMaterialGroup] = useState<THREE.Group | undefined>(
     () => (!importedModel.restoreStage ? importedModel.group : undefined),
   );
@@ -1323,15 +1322,34 @@ function ImportedModel({
     const candidates = [
       ...layers,
       ...(visibleLocalRepaintPreviewLayer ? [visibleLocalRepaintPreviewLayer] : []),
-    ].filter(
-      (layer) =>
-        layer.type === 'projected' &&
-        layer.visible &&
-        layer.imageUrl &&
-        layer.camera &&
-        (!layer.objectId || layer.objectId === importedModel.objectId),
-    );
-    if (candidates.length === 0) return undefined;
+    ].filter((layer) => {
+      if (
+        layer.type !== 'projected' ||
+        !layer.visible ||
+        !layer.imageUrl ||
+        !layer.camera ||
+        (layer.objectId && layer.objectId !== importedModel.objectId)
+      ) {
+        return false;
+      }
+      const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
+      const storedDepthUrl = layer.depthUrl ?? capture?.depthUrl;
+      const storedDepthIsLinearView = layer.depthUrl
+        ? layer.depthEncoding === 'linear-view'
+        : capture?.depthEncoding === 'linear-view';
+      // The authored depth is captured with the same frozen camera and object
+      // matrix as the projected image. Replacing that valid 2K asset a second
+      // later with a capped 1K runtime render creates the visible before/after
+      // transition and quantises grazing boundaries. Only repair genuinely
+      // missing or legacy visibility data in the background.
+      return !(storedDepthUrl && storedDepthIsLinearView);
+    });
+    if (candidates.length === 0) {
+      document.body.dataset.runtimeProjectionVisibilityStatus = 'stored';
+      document.body.dataset.runtimeProjectionVisibilityTotal = '0';
+      document.body.dataset.runtimeProjectionVisibilityCompleted = '0';
+      return undefined;
+    }
 
     void (async () => {
       const waitForInteractionIdle = async () => {
@@ -1356,9 +1374,10 @@ function ImportedModel({
       document.body.dataset.runtimeProjectionVisibilityTotal = String(candidates.length);
       for (let index = 0; index < candidates.length; index += 1) {
         const layer = candidates[index];
-        // Stored capture depth is sufficient for the first visible material.
-        // Rebuild the sharper runtime depth/crease-normal pair after the model
-        // and its textures have had time to present, yielding between layers.
+        // Missing/legacy visibility data is repaired with runtime depth only.
+        // Publishing a flat per-triangle normal pass turns curved grazing
+        // boundaries into a visible comb; depth remains the front-surface
+        // authority for both ordinary projections and surface-locked repaint.
         await waitForProjectionVisibilityIdle(index === 0 ? 1000 : 32);
         await waitForInteractionIdle();
         if (cancelled) return;
@@ -1375,6 +1394,7 @@ function ImportedModel({
             captureObjectMatrixWorld: layer.objectMatrixWorld,
             width: previewSize.width,
             height: previewSize.height,
+            includeNormal: false,
             waitForViewportIdle: waitForInteractionIdle,
           });
           if (cancelled) return;
@@ -1506,25 +1526,12 @@ function ImportedModel({
         layer.camera &&
         (!layer.objectId || layer.objectId === importedObjectId),
     );
-    const coldVisibleCandidates = projectedCandidates
-      .filter((layer) => layer.visible)
-      .sort((left, right) => left.order - right.order);
-    const coldLocalRepaintCandidates = coldVisibleCandidates.filter(
-      (layer) =>
-        isRenderedLocalRepaintLayer(layer) ||
-        Boolean(layer.localRepaintSourceUrl || layer.localRepaintMaskUrl),
-    );
-    const residentCandidates = initialProjectedMaterialReady
-      ? projectedCandidates
-      : coldLocalRepaintCandidates.length > 0
-        ? coldLocalRepaintCandidates
-        : coldVisibleCandidates.slice(0, 1);
-    const storedLayers = residentCandidates
-      // Cold restore presents visible layers first. Only after that atomic
-      // material is on screen do hidden layers join the resident GPU material;
-      // otherwise fourteen hidden projections can block the only visible local
-      // repaint result for many seconds after refresh. When no repaint exists,
-      // the top visible projection is the first meaningful preview.
+    const storedLayers = projectedCandidates
+      // Every persisted projection stays resident so an eye click remains a
+      // uniform-only operation. This is also the only stack eligible for initial
+      // publication: the old cold path first exposed a one-layer direct material
+      // and then replaced it with a differently sampled resident array, producing
+      // the visible correct-frame -> comb-frame transition.
       // Layer order 0 is the top row in the panel. Feed the shader bottom-up so
       // later overlay evaluations preserve that visible stacking order.
       .sort((a, b) => b.order - a.order)
@@ -1553,7 +1560,6 @@ function ImportedModel({
     ];
   }, [
     importedObjectId,
-    initialProjectedMaterialReady,
     layers,
     liveSurfacePaintPreview,
     transientLocalRepaintPreviewLayerId,
@@ -1569,10 +1575,8 @@ function ImportedModel({
     previewProjectedLayerSignature,
   );
   const projectedProgramWarmupLayers = useMemo(() => {
-    // Cold restore deliberately publishes one visible projection first. Shader
-    // warmup must nevertheless describe the complete resident stack; waiting
-    // for that stack to be published moves ANGLE's expensive link into the
-    // first fully textured frame and creates a user-visible 60ms+ hitch.
+    // Warm the exact resident structure used by the single authoritative
+    // material. Hidden rows remain zero-opacity uniforms until their eye opens.
     const residentLayers = layers
       .filter(
         (layer) =>
@@ -1617,9 +1621,16 @@ function ImportedModel({
   const projectedProgramWarmupInputs = useMemo<ProjectionLayerStackInput['layers']>(
     () =>
       projectedProgramWarmupLayers.map((layer) => {
-        const runtimeVisibility = runtimeVisibilityByLayerId[layer.id];
         const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
-        const depthUrl = runtimeVisibility?.depthUrl ?? layer.depthUrl ?? capture?.depthUrl;
+        const storedDepthUrl = layer.depthUrl ?? capture?.depthUrl;
+        const storedDepthIsLinearView = layer.depthUrl
+          ? layer.depthEncoding === 'linear-view'
+          : capture?.depthEncoding === 'linear-view';
+        const runtimeVisibility =
+          storedDepthUrl && storedDepthIsLinearView
+            ? undefined
+            : runtimeVisibilityByLayerId[layer.id];
+        const depthUrl = runtimeVisibility?.depthUrl ?? storedDepthUrl;
         const normalUrl = runtimeVisibility?.normalUrl;
         return {
           layerId: layer.id,
@@ -1666,14 +1677,19 @@ function ImportedModel({
   const previewProjectionInputs = useMemo(
     () =>
       stablePreviewProjectedLayers.map((layer) => {
-        const runtimeVisibility = runtimeVisibilityByLayerId[layer.id];
         const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
-        const depthUrl = runtimeVisibility?.depthUrl ?? layer.depthUrl ?? capture?.depthUrl;
-        // Capture.normalUrl is a smooth shaded normal pass intended for image
-        // generation. Projection visibility requires the flat geometric normal
-        // produced by createRuntimeProjectionDepth; mixing the two clips large
-        // regions on curved or low-poly surfaces. Until that runtime pass is
-        // ready, depth-only visibility is safer and matches the bake footprint.
+        const storedDepthUrl = layer.depthUrl ?? capture?.depthUrl;
+        const storedDepthIsLinearView = layer.depthUrl
+          ? layer.depthEncoding === 'linear-view'
+          : capture?.depthEncoding === 'linear-view';
+        const runtimeVisibility =
+          storedDepthUrl && storedDepthIsLinearView
+            ? undefined
+            : runtimeVisibilityByLayerId[layer.id];
+        const depthUrl = runtimeVisibility?.depthUrl ?? storedDepthUrl;
+        // Capture normals are generation guidance, not coverage authority.
+        // Runtime normal visibility is deliberately opt-in and ordinary saved
+        // projections remain on their authored depth for their whole lifetime.
         const normalUrl = runtimeVisibility?.normalUrl;
         return {
           layerId: layer.id,
@@ -1721,75 +1737,6 @@ function ImportedModel({
       visibleMergedUvBoundaryOrder,
     ],
   );
-  useEffect(() => {
-    if (!initialProjectedMaterialColdReady || initialProjectedMaterialReady) return undefined;
-    const residentProjectedLayerCount = layers.filter(
-      (layer) =>
-        layer.type === 'projected' &&
-        layer.imageUrl &&
-        (!layer.objectId || layer.objectId === importedObjectId),
-    ).length;
-    if (residentProjectedLayerCount <= previewProjectedLayers.length) {
-      setInitialProjectedMaterialReady(true);
-      return undefined;
-    }
-
-    let cancelled = false;
-    let retryTimer: number | undefined;
-    const earliestPromotionAt = performance.now() + 750;
-    reportProjectedPreviewProgress(
-      0.985,
-      `当前可见贴图已显示，正在后台预热 ${residentProjectedLayerCount} 个图层`,
-      { layerCount: previewProjectedLayers.filter((layer) => layer.visible).length },
-    );
-
-    const promoteWhenIdle = () => {
-      if (cancelled) return;
-      const interaction = projectedPreviewInteractionRef.current;
-      const paintTool = useSceneStore.getState().paintTool;
-      const interactionBusy = Boolean(
-        isSharedViewportInteractionBusy(250) ||
-        interaction.pointerDown ||
-        performance.now() - interaction.lastMovedAt < 250 ||
-        document.body.dataset.perfSimulatedViewportInteraction === '1' ||
-        document.body.dataset.perfViewportStressMeasuring === '1' ||
-        paintTool === 'inpaint-add' ||
-        paintTool === 'inpaint-subtract' ||
-        paintTool === 'inpaint-apply',
-      );
-      if (interactionBusy || performance.now() < earliestPromotionAt) {
-        retryTimer = window.setTimeout(promoteWhenIdle, 120);
-        return;
-      }
-      const commitPromotion = () => {
-        if (cancelled) return;
-        setInitialProjectedMaterialReady(true);
-        const visibleLayerCount = previewProjectedLayers.filter((layer) => layer.visible).length;
-        reportProjectedPreviewProgress(
-          1,
-          `${visibleLayerCount} 个可见投影图层已显示，后台预热完成`,
-          { done: true, layerCount: visibleLayerCount },
-        );
-      };
-      // requestIdleCallback can remain starved indefinitely in a continuously
-      // rendered R3F viewport (the progress bar then sticks at 99%). We have
-      // already observed the interaction quiet window and precompiled the
-      // material, so commit on the next macrotask with a deterministic bound.
-      retryTimer = window.setTimeout(commitPromotion, 0);
-    };
-    retryTimer = window.setTimeout(promoteWhenIdle, 120);
-
-    return () => {
-      cancelled = true;
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-    };
-  }, [
-    importedObjectId,
-    initialProjectedMaterialColdReady,
-    initialProjectedMaterialReady,
-    layers,
-    previewProjectedLayers,
-  ]);
   useEffect(() => {
     const unsubscribe = useLayerStore.subscribe((state, previousState) => {
       if (
@@ -4625,11 +4572,10 @@ function ImportedModel({
         notifyProjectedPreviewFailure(error);
       })
       .finally(() => {
-        // The gate means the first material pass has settled, not necessarily
-        // that every optional normal/depth asset succeeded. This preserves the
-        // newer strict visibility policy without deadlocking its runtime repair.
+        // The gate means the single authoritative resident-material pass has
+        // settled, not necessarily that every optional repair asset succeeded.
         if (!cancelled && !initialProjectedMaterialReady) {
-          setInitialProjectedMaterialColdReady(true);
+          setInitialProjectedMaterialReady(true);
         }
       });
 
@@ -4646,7 +4592,6 @@ function ImportedModel({
     gl,
     hasAuthoritativeVisibleProjectedLayer,
     importedModel,
-    initialProjectedMaterialReady,
     loadedBakedTexture,
     loadedContentAwareUnderlayTexture,
     contentAwareUnderlayOpacity,

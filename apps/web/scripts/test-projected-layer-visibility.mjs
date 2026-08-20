@@ -25,6 +25,14 @@ const projectedLayerMaterialSource = readFileSync(
   path.join(root, 'src/engine/projection/ProjectedLayerMaterial.ts'),
   'utf8',
 );
+const gpuUvBakeRendererSource = readFileSync(
+  path.join(root, 'src/engine/bake/gpuUvBakeRenderer.ts'),
+  'utf8',
+);
+const bakeProjectedLayerToTextureSource = readFileSync(
+  path.join(root, 'src/engine/bake/bakeProjectedLayerToTexture.ts'),
+  'utf8',
+);
 const liveSurfacePaintPreviewRegistrySource = readFileSync(
   path.join(root, 'src/engine/paint/liveSurfacePaintPreviewRegistry.ts'),
   'utf8',
@@ -63,13 +71,68 @@ assert.match(
 );
 assert.match(
   projectedPreviewCompositorSource,
-  /float lockedCoverage =\s*layerOpacity \*\s*sourceAlpha \*\s*lockedSafetyCoverage/,
-  'Surface-locked preview compositing must not binarize local-repaint feather.',
+  /float lockedCoverage =\s*layerOpacity \*\s*sourceAlpha \*\s*lockedFacingCoverage \*\s*lockedSafetyCoverage \*\s*visibilityCoverage/,
+  'Surface-locked preview compositing must keep angle, authored alpha, and visibility coverage continuous.',
 );
 assert.match(
   projectedLayerMaterialSource,
   /float lockedCoverage =\s*layerOpacity \*\s*sourceAlpha \*\s*projectionFacingCoverage \*\s*lockedSafetyCoverage/,
   'The resident surface-locked material must preserve continuous local-repaint coverage.',
+);
+assert.match(
+  sceneRootSource,
+  /const storedDepthIsLinearView[\s\S]*?return !\(storedDepthUrl && storedDepthIsLinearView\);[\s\S]*?runtimeProjectionVisibilityStatus = 'stored'/,
+  'A valid authored linear-depth capture must remain the stable preview authority instead of being replaced by a delayed runtime render.',
+);
+assert.match(
+  sceneRootSource,
+  /storedDepthUrl && storedDepthIsLinearView[\s\S]*?\? undefined[\s\S]*?: runtimeVisibilityByLayerId\[layer\.id\]/,
+  'A stale runtime visibility result must not override an authored linear-depth capture.',
+);
+assert.doesNotMatch(
+  `${sceneRootSource}\n${viewportCanvasInteractionSource}`,
+  /includeNormal:\s*true/,
+  'Runtime preview visibility must not publish flat triangle normals into projection alpha.',
+);
+assert.match(
+  bakeProjectedLayerToTextureSource,
+  /runtimeVisibilityIncludeNormal = input\.runtimeVisibilityIncludeNormal === true/,
+  'Final UV baking must keep geometric-normal visibility opt-in.',
+);
+assert.doesNotMatch(
+  `${projectedLayerMaterialSource}\n${projectedPreviewCompositorSource}\n${gpuUvBakeRendererSource}`,
+  /abs\(projectedFaceNormal\.z\)|dot\(projectedFaceNormal, normalize\(-captureViewPosition\)\)/,
+  'Projection angle feather must use interpolated vertex normals rather than triangle-constant derivative normals.',
+);
+assert.doesNotMatch(
+  `${projectedLayerMaterialSource}\n${projectedPreviewCompositorSource}`,
+  /step\(0\.001, visibilitySupport\)|SURFACE_LOCKED_VISIBILITY_THRESHOLD/,
+  'Resident and staged preview coverage must not threshold visibility support into triangular comb teeth.',
+);
+assert.match(
+  gpuUvBakeRendererSource,
+  /float normalCheckWeight = useNormalCheck \* \(1\.0 - surfaceLockedVisibility\);[\s\S]*?smoothstep\(0\.0, 1\.0, visibilitySupport\)/,
+  'The UV bake must keep surface-locked coverage depth-authoritative and continuous.',
+);
+assert.match(
+  sceneRootSource,
+  /const storedLayers = projectedCandidates[\s\S]*?sort\(\(a, b\) => b\.order - a\.order\)/,
+  'Every persisted projection must enter the single resident stack, including rows whose eyes are closed.',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /coldVisibleCandidates|initialProjectedMaterialColdReady|setInitialProjectedMaterialColdReady/,
+  'Cold restore must not publish a temporary projected material that is later replaced by the resident stack.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /PROJECTED_ARRAY_DEPTH_MEMORY_BUDGET = 224 \* 1024 \* 1024[\s\S]*?PROJECTED_ARRAY_MAX_DEPTH_PREVIEW_SIDE = 2048[\s\S]*?PROJECTED_ARRAY_FRAME_PIXEL_BUDGET = 1024 \* 1024/,
+  'Resident depth arrays must preserve authored 2K coverage while yielding bounded upload stripes.',
+);
+assert.doesNotMatch(
+  projectedLayerMaterialSource,
+  /computeProjectionEmptyFeatherColor|vec3\(0\.040\)/,
+  'Projection feathering must not inject a white/grey placeholder colour.',
 );
 assert.match(
   liveSurfacePaintPreviewRegistrySource,

@@ -9,7 +9,7 @@
 - `color`：用于模型视图参考的干净颜色捕获。
 - `mask`：目标对象 silhouette。
 - `depth`：线性 view-space depth，PNG 编码并标记 `depthEncoding='linear-view'`。
-- `normal`：几何法线可见性。
+- `normal`：几何法线辅助资产。当前实时投影与局部重绘默认以 linear-view Depth 为可见性权威，Normal 校验需要显式启用。
 
 捕获使用离屏 WebGL render target，临时替换材质/显隐后恢复原场景。PNG 通过异步 Blob 路径编码；服务工程再把资产物化到 `assets/captures`。
 
@@ -22,12 +22,19 @@ Projected Layer 保存 source image、camera、object matrix、Mask、Depth、No
 1. 使用保存相机将 world position 投影到 clip/image UV。
 2. 拒绝 projector 后方、frustum 外和图片边界外样本。
 3. 应用 source alpha 与 capture mask。
-4. 比较 projected view depth 与捕获的 linear-view depth，并读取 normal 邻域。
-5. 应用 backface/facing、edge feather、opacity、strength 和 HSL adjustments。
+4. 比较 projected view depth 与捕获的 linear-view depth；缺失/legacy depth 才后台重建。Normal 邻域仅在显式 opt-in 时参与拒绝。
+5. 使用插值顶点法线计算连续 backface/facing 与 edge feather，再应用 opacity、strength 和 HSL adjustments；禁止用 triangle-constant 法线或 hard step 写入边缘 alpha。
 6. 将 Blend candidates 按质量合成，再按顺序加入 Overlay layers。
-7. 没有覆盖时返回 base/imported material。
+7. 没有覆盖时投影 alpha 为 0，保留既有底层显示，不生成额外白/灰占位色。
 
 对象从 capture transform 发生变化时，shader 使用保存矩阵到当前矩阵的 delta 修正投影。该机制同样用于模型旋转的 WebM turntable。
+
+### Preview Residency And Performance
+
+- 所有持久化 Projected Layer 进入同一个最终 texture-array material；没有单视角临时材质和延迟替换阶段。
+- 图层眼睛与 opacity 只更新 resident material 的 uniform，切换不重建数组、不重新编译 shader。
+- authored linear-view Depth 不会被稍后的低分辨率 runtime pass 覆盖。缺失/legacy visibility 的后台修复默认只生成 Depth。
+- 各数组独立分配精度预算；准备在 worker 执行，GPU upload 分 stripe 并逐帧让出，避免阻塞相机和画笔交互。
 
 ## Multiview
 
@@ -47,7 +54,7 @@ GPU-first UV path：
 
 1. 在目标模型 UV 空间绘制 triangles。
 2. 重构 world position/normal。
-3. 对每个 projected source 执行与实时预览一致的 visibility rules。
+3. 对每个 projected source 执行与实时预览一致的 depth-authoritative、连续 coverage rules；surface-locked local repaint 不默认启用 flat Normal 拒绝。
 4. 输出 coverage/quality 与 straight RGBA。
 5. 按用途进行受 UV topology 约束的 gutter、hole、seam repair。
 6. 必要时运行 CPU parity/fallback。

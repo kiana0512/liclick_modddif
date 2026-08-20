@@ -29,7 +29,6 @@ const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 const SURFACE_LOCKED_FACING_START = 0.015;
 const SURFACE_LOCKED_FACING_END = 0.06;
 const SURFACE_LOCKED_MIN_SAFE_FACING = 0.25;
-const SURFACE_LOCKED_VISIBILITY_THRESHOLD = 0.02;
 
 type PreviewLayer = ProjectionLayerStackInput['layers'][number];
 
@@ -299,13 +298,15 @@ const candidateFragmentShader = `
       useNormalCheck
     );
     vec2 visibilityTexelSize = 1.0 / max(visibilityTextureSize, vec2(1.0));
-    float faceOnFactor = abs(projectedFaceNormal.z);
+    float faceOnFactor = abs(captureViewVertexNormal.z);
     float grazingDepthScale = mix(
       ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
       1.0,
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
-    depthTolerance *= mix(1.0, grazingDepthScale, useNormalCheck);
+    // Depth quantisation grows at grazing angles even when normal rejection is
+    // disabled. Keep the staged compositor aligned with the resident shader.
+    depthTolerance *= grazingDepthScale;
     float centerVisibility = computeVisibilitySample(
       texture(depthMap, uv), texture(normalMap, uv),
       projectedMetric, depthTolerance, projectedFaceNormal
@@ -370,16 +371,24 @@ const candidateFragmentShader = `
       centerVisibility *
       mix(0.35, 1.0, grazingConfidence) *
       max(useNormalCheck, smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor));
-    float visibilityCoverage =
+    float supportedVisibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
-    float projectionFacingFactor = abs(dot(projectedFaceNormal, normalize(-captureViewPosition)));
+    float grazingVisibilityCoverage =
+      smoothstep(0.0, 1.0, visibilitySupport) *
+      smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
+    float visibilityCoverage = mix(
+      grazingVisibilityCoverage,
+      supportedVisibilityCoverage,
+      grazingConfidence
+    );
+    float projectionFacingFactor = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
     float lockedFacingCoverage = smoothstep(
       ${SURFACE_LOCKED_FACING_START.toFixed(3)},
       ${SURFACE_LOCKED_FACING_END.toFixed(3)},
       projectionFacingFactor
     );
-    float lockedVisibilityCoverage = step(0.001, visibilitySupport);
+    float lockedVisibilityCoverage = smoothstep(0.0, 1.0, visibilitySupport);
     visibilityCoverage = mix(
       visibilityCoverage,
       lockedVisibilityCoverage,
@@ -394,17 +403,22 @@ const candidateFragmentShader = `
     // over, scanned/dense meshes otherwise turn into alternating paint strips.
     // The angle cutoff remains a safe fallback for legacy captures without depth.
     float lockedSafetyCoverage = mix(
-      step(${SURFACE_LOCKED_MIN_SAFE_FACING.toFixed(2)}, lockedSurfaceFacing),
+      smoothstep(
+        ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},
+        ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)},
+        lockedSurfaceFacing
+      ),
       1.0,
       useDepthCheck
     );
-    // Keep the depth/surface decision binary without binarizing the authored
-    // mask itself; local-repaint feather is carried by sourceAlpha.
+    // Keep depth authoritative while preserving a continuous angular and
+    // neighbourhood feather; no triangle-level decision reaches output alpha.
     float lockedCoverage =
       layerOpacity *
       sourceAlpha *
+      lockedFacingCoverage *
       lockedSafetyCoverage *
-      step(${SURFACE_LOCKED_VISIBILITY_THRESHOLD.toFixed(2)}, visibilityCoverage);
+      visibilityCoverage;
     float coverage = mix(continuousCoverage, lockedCoverage, surfaceLockedVisibility);
     if (coverage <= ${COVERAGE_THRESHOLD.toFixed(2)}) discard;
     float strength = clamp(layerStrength, 0.25, 3.0);

@@ -1078,13 +1078,13 @@ export async function bakeVisibleProjectedLayersToTexture(
   const gpuFallbackWarnings: string[] = [];
   const viewportRenderer = useSceneStore.getState().viewport?.gl;
   // The live viewport builds visibility from the current model pose. Rebuild
-  // that same depth + geometric-normal capture immediately before UV baking so
-  // merge/export cannot fall back to stale capture depth or extrapolate onto
-  // surfaces that were not visible in the projected preview.
+  // that same depth capture immediately before UV baking so merge/export cannot
+  // fall back to stale capture depth. Geometric-normal rejection is opt-in:
+  // using its flat per-triangle result as output alpha creates grazing combs.
   const runtimeDepthStartedAt = performance.now();
   markUvBakePerformancePhase('runtime-depth');
   if (viewportRenderer && !input.debugIgnoreDepth) {
-    const runtimeVisibilityIncludeNormal = input.runtimeVisibilityIncludeNormal !== false;
+    const runtimeVisibilityIncludeNormal = input.runtimeVisibilityIncludeNormal === true;
     const runtimeVisibilityMaxSize = Math.max(
       128,
       Math.min(2048, Math.round(input.runtimeVisibilityMaxSize ?? 2048)),
@@ -1111,7 +1111,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           matrixMatches(layer.objectMatrixWorld)
         ) {
           reusedVisibilityLayerCount += 1;
-          return layer;
+          return runtimeVisibilityIncludeNormal ? layer : { ...layer, normalUrl: undefined };
         }
         regeneratedVisibilityLayerCount += 1;
         const capture = layer.captureId ? captureById.get(layer.captureId) : undefined;
@@ -1128,7 +1128,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           ...layer,
           depthUrl: visibility.depthUrl,
           depthEncoding: 'linear-view' as const,
-          normalUrl: visibility.normalUrl,
+          normalUrl: visibility.normalUrl || undefined,
         };
       }),
     );
