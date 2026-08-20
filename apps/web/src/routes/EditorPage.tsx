@@ -39,7 +39,10 @@ import {
   AutoBakeProgressBar,
   type AutoBakeProgress,
 } from '@/components/panels/AutoBakeProgressBar';
-import { GeneratePanel } from '@/components/panels/GeneratePanel';
+import {
+  GeneratePanel,
+  type GeneratePanelTaskState,
+} from '@/components/panels/GeneratePanel';
 import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel';
 import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
 import { ObjectTransformPanel } from '@/components/panels/ObjectTransformPanel';
@@ -175,8 +178,10 @@ import {
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
 import {
+  EDITOR_PROJECT_VIEWPORT_PRESENTATION_TIMEOUT_MS,
   isCurrentEditorProjectLoad,
   isEditorProjectServerReady,
+  isEditorProjectViewportReady,
   shouldLoadEditorProjectRoute,
   type EditorProjectLoadToken,
 } from '@/services/editorProjectRouteLoad';
@@ -310,6 +315,28 @@ const EDITOR_TASK_LOCKED_SHORTCUTS = [
   'repaint.eraser',
   'repaint.brushSmaller',
   'repaint.brushLarger',
+] satisfies ShortcutActionId[];
+
+const EDITOR_SNAPSHOT_LOCKED_SHORTCUTS = [
+  'history.undo',
+  'history.redo',
+  'scene.arrange',
+  'scene.translate',
+  'scene.rotate',
+  'scene.scale',
+  'texture.clearMask',
+  'texture.invertMask',
+  'texture.brushSmaller',
+  'texture.brushLarger',
+  'texture.maskAdd',
+  'texture.maskSubtract',
+  'texture.localRepaint',
+  'image.move',
+  'image.brush',
+  'image.eraser',
+  'image.fill',
+  'repaint.brush',
+  'repaint.eraser',
 ] satisfies ShortcutActionId[];
 
 type ReusableProjectionBakePurpose = 'merge-uv' | 'content-aware-repair';
@@ -983,6 +1010,7 @@ export function EditorPage({
   );
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
   const [presentedViewportProjectId, setPresentedViewportProjectId] = useState<string>();
+  const [presentationTimedOutProjectId, setPresentationTimedOutProjectId] = useState<string>();
   const [publishingToRetopology, setPublishingToRetopology] = useState(false);
   const publishingToBakeRef = useRef(false);
   const [publishingToBake, setPublishingToBake] = useState(false);
@@ -992,7 +1020,10 @@ export function EditorPage({
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
   const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
   const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
-  const [generatePanelTaskRunning, setGeneratePanelTaskRunning] = useState(false);
+  const [generatePanelTaskState, setGeneratePanelTaskState] = useState<GeneratePanelTaskState>({
+    running: false,
+    snapshotPreparing: false,
+  });
   const [contentAwareRepairRunning, setContentAwareRepairRunning] = useState(false);
   const [contentAwareRepairTaskActive, setContentAwareRepairTaskActive] = useState(false);
   const [contentAwareRepairCancelling, setContentAwareRepairCancelling] = useState(false);
@@ -1018,6 +1049,7 @@ export function EditorPage({
     (state) => state.setActiveAbortController,
   );
   const project = useProjectStore((state) => state.projects.find((item) => item.id === projectId));
+  const routeProjectObjectCount = project?.objects.length ?? 0;
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const updateProjectById = useProjectStore((state) => state.updateProjectById);
@@ -1206,6 +1238,47 @@ export function EditorPage({
   }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
   const localImageGenerationRunning =
     localImageGenerationRequested || localImageGenerationStoreRunning;
+
+  useEffect(() => {
+    if (
+      !localImageGenerationRequested ||
+      localImageGenerationStoreRunning ||
+      generatePanelTaskState.running
+    ) {
+      return undefined;
+    }
+
+    // `localImageGenerationRequested` bridges the toolbar click to the panel.
+    // If the panel/request is remounted or a timed-out submission has already
+    // been removed, that bridge can otherwise outlive every real task and keep
+    // the whole editor exclusively locked. Give a fresh click time to enter
+    // the panel, then release only a request with no backing activity.
+    const orphanedRequestTimeout = window.setTimeout(() => {
+      const hasBackingGeneration = useGenerationStore.getState().generations.some(
+        (generation) =>
+          (generation.status === 'queued' || generation.status === 'running') &&
+          isLocalRepaintGeneration(generation) &&
+          (!generation.metadata.projectId || generation.metadata.projectId === projectId),
+      );
+      if (!hasBackingGeneration) {
+        setLocalImageGenerationRequested(false);
+        pushToast({
+          tone: 'warning',
+          title: '已解除异常任务锁',
+          description: '局部生图任务未成功进入后台，请重新生成。',
+          dedupeKey: 'orphaned-local-generation-lock-released',
+        });
+      }
+    }, 5_000);
+    return () => window.clearTimeout(orphanedRequestTimeout);
+  }, [
+    generatePanelTaskState.running,
+    localImageGenerationRequested,
+    localImageGenerationStoreRunning,
+    projectId,
+    pushToast,
+  ]);
+
   const projectGenerationRunning = useMemo(
     () =>
       generations.some((generation) => {
@@ -1215,18 +1288,29 @@ export function EditorPage({
       }),
     [generations, projectId],
   );
-  const editorTaskRunning =
-    projectGenerationRunning || generatePanelTaskRunning || contentAwareRepairRunning;
+  // Local repaint generation and content-aware repair own mutable paint/bake
+  // resources, so they retain the exclusive editor lock. Multiview generation
+  // uses narrower stage-specific guards below.
+  const editorTaskRunning = localImageGenerationRunning || contentAwareRepairRunning;
+  const snapshotPreparationLocked = generatePanelTaskState.snapshotPreparing;
+  const modelMutationLocked =
+    editorTaskRunning || projectGenerationRunning || generatePanelTaskState.running;
+  const generationOperationLocked = modelMutationLocked;
+  const editorToolsLocked = editorTaskRunning || snapshotPreparationLocked;
   const notifyEditorTaskRunning = useCallback(() => {
     pushToast({
       tone: 'info',
       title: '任务正在运行',
       description: contentAwareRepairRunning
         ? '正在进行内容识别补缝，完成前仅支持预览。'
-        : '生成任务完成前仅支持旋转、缩放和结果预览，暂不能进行其他操作。',
+        : localImageGenerationRunning
+          ? '局部生图正在运行，完成前暂不能修改当前工程。'
+          : snapshotPreparationLocked
+            ? '正在准备多视角快照，模型变换和绘画会在快照完成后自动解锁。'
+            : '生成任务仍绑定当前模型，暂不能删除、替换模型或启动另一项生成任务。',
       dedupeKey: 'editor-task-preview-only',
     });
-  }, [contentAwareRepairRunning, pushToast]);
+  }, [contentAwareRepairRunning, localImageGenerationRunning, pushToast, snapshotPreparationLocked]);
 
   const handleLockedEditorInteraction = useCallback(
     (event: SyntheticEvent<HTMLElement>) => {
@@ -1242,14 +1326,14 @@ export function EditorPage({
   );
 
   useEffect(() => {
-    if (!editorTaskRunning) return;
+    if (!editorToolsLocked) return;
     const sceneState = useSceneStore.getState();
     if (sceneState.paintTool !== 'none') sceneState.setPaintTool('none');
     if (sceneState.transformMode !== 'select') sceneState.setTransformMode('select');
-  }, [editorTaskRunning]);
+  }, [editorToolsLocked]);
 
   useEffect(() => {
-    if (!editorTaskRunning) return;
+    if (!editorTaskRunning && !snapshotPreparationLocked && !modelMutationLocked) return;
 
     const activeElement = document.activeElement;
     if (
@@ -1271,9 +1355,11 @@ export function EditorPage({
       }
 
       const blocked =
-        event.key === 'Delete' ||
-        event.key === 'Backspace' ||
-        EDITOR_TASK_LOCKED_SHORTCUTS.some((actionId) => shortcutMatches(event, actionId));
+        (modelMutationLocked && (event.key === 'Delete' || event.key === 'Backspace')) ||
+        (editorTaskRunning &&
+          EDITOR_TASK_LOCKED_SHORTCUTS.some((actionId) => shortcutMatches(event, actionId))) ||
+        (snapshotPreparationLocked &&
+          EDITOR_SNAPSHOT_LOCKED_SHORTCUTS.some((actionId) => shortcutMatches(event, actionId)));
       if (!blocked) return;
 
       event.preventDefault();
@@ -1283,7 +1369,7 @@ export function EditorPage({
 
     document.addEventListener('keydown', handleTaskLockedShortcut, true);
     return () => document.removeEventListener('keydown', handleTaskLockedShortcut, true);
-  }, [editorTaskRunning, notifyEditorTaskRunning]);
+  }, [editorTaskRunning, modelMutationLocked, notifyEditorTaskRunning, snapshotPreparationLocked]);
   const activeBakedTexture = project?.bakedTextures.find(
     (texture) => texture.id === activeLayer?.bakedTextureId,
   );
@@ -1344,11 +1430,12 @@ export function EditorPage({
     setContentAwareRepairRunning(false);
     setContentAwareRepairTaskActive(false);
     setContentAwareRepairCancelling(false);
-    setGeneratePanelTaskRunning(false);
+    setGeneratePanelTaskState({ running: false, snapshotPreparing: false });
     reusableProjectionBakeCacheRef.current.clear();
     setRouteProjectStatus('idle');
     setServerReadyProjectId(undefined);
     setPresentedViewportProjectId(undefined);
+    setPresentationTimedOutProjectId(undefined);
     delete document.body.dataset.atomicModelRevealPainted;
     delete document.body.dataset.atomicModelRevealPaintedObjectId;
     restoredHistoryProjectIdRef.current = undefined;
@@ -1363,19 +1450,63 @@ export function EditorPage({
   }, [authenticatedUserId, authStatus, projectId]);
 
   useEffect(() => {
-    const handleInitialModelFramePresented = () => {
+    const markPresentedIfCurrentProject = (objectId?: string) => {
+      const currentProject = useProjectStore
+        .getState()
+        .projects.find((item) => item.id === projectId);
+      if (objectId && currentProject && !currentProject.objects.some((item) => item.id === objectId)) {
+        return;
+      }
       setPresentedViewportProjectId(projectId);
+    };
+    const reconcilePaintedFrame = () => {
+      if (document.body.dataset.atomicModelRevealPainted !== '1') return;
+      markPresentedIfCurrentProject(document.body.dataset.atomicModelRevealPaintedObjectId);
+    };
+    const handleInitialModelFramePresented = (event: Event) => {
+      markPresentedIfCurrentProject(
+        (event as CustomEvent<{ objectId?: string }>).detail?.objectId,
+      );
     };
     window.addEventListener(
       'liclick:initial-model-frame-presented',
       handleInitialModelFramePresented,
     );
-    return () =>
+    const observer = new MutationObserver(reconcilePaintedFrame);
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: [
+        'data-atomic-model-reveal-painted',
+        'data-atomic-model-reveal-painted-object-id',
+      ],
+    });
+    reconcilePaintedFrame();
+    return () => {
       window.removeEventListener(
         'liclick:initial-model-frame-presented',
         handleInitialModelFramePresented,
       );
+      observer.disconnect();
+    };
   }, [projectId]);
+
+  useEffect(() => {
+    if (
+      serverReadyProjectId !== projectId ||
+      routeProjectObjectCount === 0 ||
+      presentedViewportProjectId === projectId
+    ) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setPresentationTimedOutProjectId(projectId);
+      console.warn(
+        '[Liclick 3D Texture] Model presentation timed out; releasing the project loading cover.',
+        { projectId },
+      );
+    }, EDITOR_PROJECT_VIEWPORT_PRESENTATION_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [presentedViewportProjectId, projectId, routeProjectObjectCount, serverReadyProjectId]);
 
   useEffect(
     () => () => {
@@ -3224,7 +3355,7 @@ export function EditorPage({
   }
 
   async function handleImportModels(files: File[]) {
-    if (editorTaskRunning) {
+    if (modelMutationLocked) {
       notifyEditorTaskRunning();
       return;
     }
@@ -5436,7 +5567,7 @@ export function EditorPage({
   ]);
 
   const handleLocalImageGenerationFromToolbar = useCallback(() => {
-    if (editorTaskRunning) {
+    if (generationOperationLocked) {
       notifyEditorTaskRunning();
       return;
     }
@@ -5463,7 +5594,7 @@ export function EditorPage({
     setPanelCollapsed('generate', false);
     setLocalImageGenerationRequestKey((current) => current + 1);
   }, [
-    editorTaskRunning,
+    generationOperationLocked,
     importedModel,
     notifyEditorTaskRunning,
     project,
@@ -5485,7 +5616,7 @@ export function EditorPage({
     window.requestAnimationFrame((frameAt) => {
       document.body.dataset.localRepaintButton3ResponseMs = (frameAt - clickedAt).toFixed(1);
     });
-    if (editorTaskRunning) {
+    if (generationOperationLocked) {
       notifyEditorTaskRunning();
       return;
     }
@@ -5730,7 +5861,7 @@ export function EditorPage({
       });
     })();
   }, [
-    editorTaskRunning,
+    generationOperationLocked,
     generations,
     getCurrentCameraSnapshot,
     getLocalRepaintProjectionImage,
@@ -6380,12 +6511,12 @@ export function EditorPage({
   }, [runContentAwareRepair]);
 
   const handleContentAwareRepairFromToolbar = useCallback(() => {
-    if (editorTaskRunning) {
+    if (generationOperationLocked) {
       notifyEditorTaskRunning();
       return;
     }
     void runContentAwareRepair();
-  }, [editorTaskRunning, notifyEditorTaskRunning, runContentAwareRepair]);
+  }, [generationOperationLocked, notifyEditorTaskRunning, runContentAwareRepair]);
 
   useEffect(() => {
     const handleAutomaticContentAwareRepair = (event: Event) => {
@@ -6660,16 +6791,21 @@ export function EditorPage({
         actions: (
           <ObjectsPanelActions
             onImportModelClick={() => {
-              if (editorTaskRunning) {
+              if (modelMutationLocked) {
                 notifyEditorTaskRunning();
                 return;
               }
               modelInputRef.current?.click();
             }}
-            importDisabled={modelImportBusy || editorTaskRunning}
+            importDisabled={modelImportBusy || modelMutationLocked}
           />
         ),
-        content: <ObjectsPanel />,
+        content: (
+          <ObjectsPanel
+            mutationLocked={modelMutationLocked}
+            onMutationLocked={notifyEditorTaskRunning}
+          />
+        ),
       },
       {
         id: 'objectTransform',
@@ -6680,7 +6816,12 @@ export function EditorPage({
           workspacePanels.find((panel) => panel.id === 'objectTransform')?.collapsed ?? false,
         visible: workspacePanels.find((panel) => panel.id === 'objectTransform')?.visible ?? false,
         mode: 'scene',
-        content: <ObjectTransformPanel />,
+        content: (
+          <ObjectTransformPanel
+            transformLocked={editorToolsLocked}
+            onTransformLocked={notifyEditorTaskRunning}
+          />
+        ),
       },
       {
         id: 'generate',
@@ -6694,9 +6835,13 @@ export function EditorPage({
           <GeneratePanel
             localImageGenerationRequestKey={localImageGenerationRequestKey}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
-            interactionLocked={editorTaskRunning}
+            // GeneratePanel owns its own local/multiview generation state. Do
+            // not feed the toolbar-to-panel local request bridge back as an
+            // external lock: the panel must be allowed to consume that exact
+            // request before it can publish its running generation record.
+            interactionLocked={contentAwareRepairRunning}
             onInteractionLocked={notifyEditorTaskRunning}
-            onTaskRunningChange={setGeneratePanelTaskRunning}
+            onTaskRunningChange={setGeneratePanelTaskState}
           />
         ),
       },
@@ -6883,7 +7028,13 @@ export function EditorPage({
   return (
     <>
       <PerfScenarioLoader />
-      {presentedViewportProjectId !== projectId && (
+      {!isEditorProjectViewportReady({
+        routeProjectId: projectId,
+        serverReadyProjectId,
+        presentedViewportProjectId,
+        presentationTimedOutProjectId,
+        objectCount: project.objects.length,
+      }) && (
         <main className="liclick-surface fixed inset-0 z-[220] grid place-items-center px-6 text-white">
           <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
             <div className="text-lg font-semibold">{t('projectLoading')}</div>
@@ -6897,9 +7048,9 @@ export function EditorPage({
         className="hidden"
         accept=".glb,.gltf,.fbx,.obj,.png,.jpg,.jpeg,.webp,.bmp,.tga"
         multiple
-        disabled={modelImportBusy || editorTaskRunning}
+        disabled={modelImportBusy || modelMutationLocked}
         onChange={(event) => {
-          if (editorTaskRunning) {
+          if (modelMutationLocked) {
             notifyEditorTaskRunning();
             event.target.value = '';
             return;
@@ -6913,9 +7064,9 @@ export function EditorPage({
         type="file"
         className="hidden"
         accept="application/json,.json,.liclick.json"
-        disabled={editorTaskRunning}
+        disabled={modelMutationLocked}
         onChange={(event) => {
-          if (editorTaskRunning) {
+          if (modelMutationLocked) {
             notifyEditorTaskRunning();
             event.target.value = '';
             return;
@@ -6989,7 +7140,7 @@ export function EditorPage({
               canRedo={canRedo}
               onUndo={undo}
               onRedo={redo}
-              interactionLocked={editorTaskRunning}
+              interactionLocked={editorToolsLocked}
               onInteractionLocked={notifyEditorTaskRunning}
               labels={{
                 select: t('select'),
@@ -7021,7 +7172,7 @@ export function EditorPage({
             <ViewportCanvas
               hasImportedModel={Boolean(importedModel)}
               onImportModels={(files) => {
-                if (editorTaskRunning) {
+                if (modelMutationLocked) {
                   notifyEditorTaskRunning();
                   return;
                 }
@@ -7035,13 +7186,13 @@ export function EditorPage({
                 void handleImportReferenceImages(files);
               }}
               onOpenImport={() => {
-                if (editorTaskRunning) {
+                if (modelMutationLocked) {
                   notifyEditorTaskRunning();
                   return;
                 }
                 modelInputRef.current?.click();
               }}
-              importDisabled={modelImportBusy || editorTaskRunning}
+              importDisabled={modelImportBusy || modelMutationLocked}
               isActive={isActive}
             />
           }

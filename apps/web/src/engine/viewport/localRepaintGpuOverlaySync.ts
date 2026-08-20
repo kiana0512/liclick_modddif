@@ -12,6 +12,11 @@ export type LocalRepaintGpuOverlaySyncInput = {
   sourceTexture?: THREE.Texture;
   maskTexture: THREE.Texture;
   visible: boolean;
+  opacity?: number;
+  strength?: number;
+  hue?: number;
+  saturation?: number;
+  lightness?: number;
 };
 
 export function isLocalRepaintOverlayVisible(displayMode: string, layerVisible: boolean) {
@@ -94,11 +99,24 @@ export function syncLocalRepaintGpuOverlayBinding(
     repaired = true;
   }
   const opacity = overlay.material.uniforms.layerOpacity;
-  const expectedOpacity = input.visible ? 1 : 0;
+  const expectedOpacity = input.visible ? (input.opacity ?? 1) : 0;
   if (opacity && opacity.value !== expectedOpacity) {
     opacity.value = expectedOpacity;
     repaired = true;
   }
+
+  const syncNumber = (name: string, value: number) => {
+    const uniform = overlay.material.uniforms[name];
+    if (!uniform || uniform.value === value) return;
+    uniform.value = value;
+    repaired = true;
+  };
+  syncNumber('layerStrength', input.strength ?? 1);
+  syncNumber('hueShift', input.hue ?? 0);
+  syncNumber('saturationShift', input.saturation ?? 0);
+  syncNumber('lightnessShift', input.lightness ?? 0);
+
+  if (repaired) overlay.material.uniformsNeedUpdate = true;
 
   return repaired;
 }

@@ -63,6 +63,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { Grid } from './Grid';
 import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
+import { mergeAuthoritativeLocalRepaintLayers } from './projectedPreviewLayerAuthority';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { isViewportInteractionBusy as isSharedViewportInteractionBusy } from './viewportInteractionState';
 import {
@@ -1099,7 +1100,21 @@ function ImportedModel({
   const pbrKeyLightIntensity = useSettingsStore((state) => state.pbrKeyLightIntensity);
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
-  const localRepaintPreviewLayerId = useSceneStore((state) => state.localRepaintPreviewLayer?.id);
+  const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
+  const transientWhitePresentationObjectId = useSceneStore(
+    (state) => state.transientWhitePresentationObjectId,
+  );
+  const localRepaintPreviewLayerId = localRepaintPreviewLayer?.id;
+  // A completed repaint row must stay resident in the projected texture array
+  // while its renderer-owned eraser twin is active. Removing and later adding
+  // that existing row turns an eye toggle into an asynchronous structural
+  // material rebuild; the icon can already be visible while the row is still
+  // absent (or remains muted by a late build). A brand-new repaint has no
+  // resident row yet and can still use the lightweight transient path.
+  const transientLocalRepaintPreviewLayerId =
+    localRepaintPreviewLayer && localRepaintPreviewLayer.contentRevision === undefined
+      ? localRepaintPreviewLayer.id
+      : undefined;
   const hasAuthoritativeVisibleTextureLayer = useLayerStore((state) =>
     state.layers.some(
       (layer) =>
@@ -1134,7 +1149,11 @@ function ImportedModel({
   const texturedRestoreReady = !importedModel.restoreStage || importedModel.restoreStage === 'full';
   const layerRenderSignature = useLayerStore((state) =>
     importedModelLayerRenderSignature(
-      state.projectedPreviewLayers ?? state.layers,
+      mergeAuthoritativeLocalRepaintLayers(
+        state.layers,
+        state.projectedPreviewLayers,
+        importedModel.objectId,
+      ),
       importedModel.objectId,
     ),
   );
@@ -1158,7 +1177,11 @@ function ImportedModel({
   );
   const layers = useMemo(() => {
     const layerState = useLayerStore.getState();
-    return layerState.projectedPreviewLayers ?? layerState.layers;
+    return mergeAuthoritativeLocalRepaintLayers(
+      layerState.layers,
+      layerState.projectedPreviewLayers,
+      importedModel.objectId,
+    );
   }, [layerRenderSignature, uvVisibilityRenderRevision]);
   const visibleMergedUvBoundaryOrder = useMemo(
     () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
@@ -1478,7 +1501,7 @@ function ImportedModel({
         // pointer-up: that 14 -> 15 structural transition was measured as a
         // 333-967ms presentation stall. The row joins the resident stack only
         // after the overlay handoff is complete.
-        layer.id !== localRepaintPreviewLayerId &&
+        layer.id !== transientLocalRepaintPreviewLayerId &&
         layer.imageUrl &&
         layer.camera &&
         (!layer.objectId || layer.objectId === importedObjectId),
@@ -1533,7 +1556,7 @@ function ImportedModel({
     initialProjectedMaterialReady,
     layers,
     liveSurfacePaintPreview,
-    localRepaintPreviewLayerId,
+    transientLocalRepaintPreviewLayerId,
     texturedRestoreReady,
     visibleLocalRepaintPreviewLayer,
   ]);
@@ -1554,7 +1577,7 @@ function ImportedModel({
       .filter(
         (layer) =>
           layer.type === 'projected' &&
-          layer.id !== localRepaintPreviewLayerId &&
+          layer.id !== transientLocalRepaintPreviewLayerId &&
           layer.imageUrl &&
           layer.camera &&
           (!layer.objectId || layer.objectId === importedObjectId),
@@ -1588,7 +1611,7 @@ function ImportedModel({
     importedObjectId,
     layers,
     liveSurfacePaintPreview,
-    localRepaintPreviewLayerId,
+    transientLocalRepaintPreviewLayerId,
     visibleLocalRepaintPreviewLayer,
   ]);
   const projectedProgramWarmupInputs = useMemo<ProjectionLayerStackInput['layers']>(
@@ -2931,7 +2954,8 @@ function ImportedModel({
     textureArrayCompositionFallbackRequired ? 'fallback' : 'exact',
   ].join('|');
   const showWhiteMembrane = Boolean(
-    !hasAuthoritativeVisibleTextureLayer && !liveTopUvTexture && !liveSurfacePaintPreview,
+    transientWhitePresentationObjectId === importedModel.objectId ||
+      (!hasAuthoritativeVisibleTextureLayer && !liveTopUvTexture && !liveSurfacePaintPreview),
   );
 
   const projectedProgramWarmupSourceSignature = useMemo(

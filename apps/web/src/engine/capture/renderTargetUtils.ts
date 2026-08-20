@@ -21,6 +21,13 @@ type RenderSceneToPngOptions = {
   encodedWidth?: number;
   encodedHeight?: number;
   /**
+   * Applies capture-only scene state immediately before each submitted draw
+   * and restores it synchronously afterwards. Tiled captures must use this
+   * instead of holding visibility/material mutations across browser frames,
+   * otherwise the live viewport can present a hidden grid/background.
+   */
+  prepareScene?: () => () => void;
+  /**
    * Runs as soon as the offscreen render and readback have been submitted,
    * before this function yields while waiting for the pixels. Callers that
    * temporarily mutate the live scene can restore it here so the viewport
@@ -182,7 +189,12 @@ export async function renderSceneToPngUrl(
         request.gl.setRenderTarget(sceneTarget);
         request.gl.setScissorTest(true);
         request.gl.setScissor(tile.x, tile.y, tile.width, tile.height);
-        request.gl.render(request.scene, request.camera);
+        const restorePreparedScene = options.prepareScene?.();
+        try {
+          request.gl.render(request.scene, request.camera);
+        } finally {
+          restorePreparedScene?.();
+        }
         // Do not let a detached depth/normal capture queue outrun the physical
         // GPU. A flush only submits work; it does not prevent several 256px
         // tiles accumulating behind the onscreen renderer and stealing a later
@@ -212,7 +224,12 @@ export async function renderSceneToPngUrl(
       request.gl.setRenderTarget(sceneTarget);
       request.gl.setScissorTest(false);
     } else {
-      request.gl.render(request.scene, request.camera);
+      const restorePreparedScene = options.prepareScene?.();
+      try {
+        request.gl.render(request.scene, request.camera);
+      } finally {
+        restorePreparedScene?.();
+      }
     }
 
     if (outputTarget) {

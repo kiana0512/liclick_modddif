@@ -108,6 +108,12 @@ type SceneStore = {
   paintMaskCapture?: PaintMaskCapture;
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
   localRepaintPreviewLayer?: Layer;
+  /**
+   * Renderer-only presentation override used while multiview snapshots are
+   * captured. It deliberately stays out of persisted project/preferences
+   * state so authored layer and material changes can continue underneath it.
+   */
+  transientWhitePresentationObjectId?: string;
   paintMaskSettings: PaintMaskSettings;
   localRepaintBrushSettings: LocalRepaintBrushSettings;
   paintToolSettings: PaintToolSettings;
@@ -134,6 +140,7 @@ type SceneStore = {
   setPaintMaskCapture: (capture?: PaintMaskCapture) => void;
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
   setLocalRepaintPreviewLayer: (layer?: Layer) => void;
+  setTransientWhitePresentationObject: (objectId?: string) => void;
   setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
   setLocalRepaintBrushSettings: (settings: Partial<LocalRepaintBrushSettings>) => void;
   setPaintToolSettings: (settings: Partial<PaintToolSettings>) => void;
@@ -246,6 +253,7 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskCapture: undefined,
       localRepaintProjectionSource: undefined,
       localRepaintPreviewLayer: undefined,
+      transientWhitePresentationObjectId: undefined,
       paintMaskSettings: {
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
       },
@@ -477,6 +485,8 @@ export const useSceneStore = create<SceneStore>()(
         set({ localRepaintProjectionSource }),
       setLocalRepaintPreviewLayer: (localRepaintPreviewLayer) =>
         set({ localRepaintPreviewLayer }),
+      setTransientWhitePresentationObject: (transientWhitePresentationObjectId) =>
+        set({ transientWhitePresentationObjectId }),
       setPaintMaskSettings: (settings) =>
         set((state) => ({
           paintMaskSettings: {

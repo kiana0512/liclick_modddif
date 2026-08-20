@@ -123,6 +123,11 @@ assert.match(
 );
 assert.match(
   viewportCanvasInteractionSource,
+  /function endLiveEraserPreview\(layer: UvPaintLayer\)[\s\S]*?clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?syncProjectedLayerLiveEraserPreviewInObject\([\s\S]*?layer\.layerId,[\s\S]*?undefined/,
+  'Ending a normal projected-layer eraser preview must synchronously detach its resident keep-mask uniform.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
   /erasesLocalRepaint && paintTool === 'eraser'[\s\S]*?paintToolSettings\.eraserFeather/,
   'The dedicated eraser feather must also control completed local-repaint masks.',
 );
@@ -141,6 +146,21 @@ assert.match(
   /const completedGeneration: Generation = \{[\s\S]*?syncGeneration\(completedGeneration\);[\s\S]*?setGenerateNotice\(undefined\);[\s\S]*?void Promise\.all\(\[persistedResultUrlPromise, persistedPaintMaskUrlPromise\]\)/,
   'A returned repaint result must leave the foreground spinner before local persistence continues in the background.',
 );
+assert.match(
+  generatePanelSource,
+  /setTexturePreviewMode\('repaint'\);\s*setTab\('repaint'\);/,
+  'A completed local repaint must keep the next generate action on the repaint channel.',
+);
+assert.match(
+  generatePanelSource,
+  /async function handleGenerate\(\) \{[\s\S]*?if \(displayedTexturePreviewMode === 'repaint'\) \{[\s\S]*?handleLocalRepaintGenerate\(\)/,
+  'The visible repaint preview must never fall through to multi-view generation.',
+);
+assert.match(
+  generatePanelSource,
+  /onChange=\{\(value\) => \{\s*setTexturePreviewMode\(value\);\s*if \(value === 'repaint'\) \{\s*setTab\('repaint'\);/,
+  'Selecting the repaint result view must also select the repaint generation channel.',
+);
 const captureCurrentViewSource = readFileSync(
   path.join(root, 'src/engine/capture/captureCurrentView.ts'),
   'utf8',
@@ -154,6 +174,61 @@ assert.match(
   captureCurrentViewSource,
   /localRepaintInteractiveCaptureSize = 512[\s\S]*?mutatedShaderMaterials[\s\S]*?return source;/,
   'Button 2 must reuse the resident flat shader at a bounded interactive capture size.',
+);
+assert.match(
+  captureCurrentViewSource,
+  /withStableClayTargetPresentation[\s\S]*?setTransientWhitePresentationObject\(objectId\)[\s\S]*?await waitForViewportFrame\(\)[\s\S]*?return await task\(\)[\s\S]*?setTransientWhitePresentationObject\(previousPresentationObjectId\)/,
+  'A multiview capture batch must keep a reactive white membrane without restoring stale materials.',
+);
+assert.match(
+  captureCurrentViewSource,
+  /captureClayTarget[\s\S]*?prepareScene:\s*\(\) =>[\s\S]*?applyTargetOnlyMaterial\([\s\S]*?captureMaterial/,
+  'Tiled clay snapshots must scope target-only visibility to each offscreen draw.',
+);
+assert.match(
+  renderTargetUtilsSource,
+  /const restorePreparedScene = options\.prepareScene\?\.\(\);[\s\S]*?request\.gl\.render\(request\.scene, request\.camera\);[\s\S]*?restorePreparedScene\?\.\(\);[\s\S]*?await tileCompletion/,
+  'Capture-only visibility must be restored before a tiled render yields another viewport frame.',
+);
+assert.match(
+  generatePanelSource,
+  /getTextureMapMultiviewCaptures[\s\S]*?withStableClayTargetPresentation\(captureObjectId,[\s\S]*?captureTextureMapCameraView/,
+  'Multiview snapshot preparation must run inside the stable white-membrane presentation.',
+);
+assert.match(
+  generatePanelSource,
+  /const workflowConfigurationLocked = interactionLocked \|\| snapshotPreparing;[\s\S]*?const workflowSubmissionLocked = interactionLocked \|\| panelTaskRunning;/,
+  'Remote multiview generation must lock duplicate submission without locking ordinary panel configuration.',
+);
+assert.match(
+  editorPageSource,
+  /const editorTaskRunning = localImageGenerationRunning \|\| contentAwareRepairRunning;[\s\S]*?const snapshotPreparationLocked = generatePanelTaskState\.snapshotPreparing;[\s\S]*?const modelMutationLocked =[\s\S]*?projectGenerationRunning[\s\S]*?const editorToolsLocked = editorTaskRunning \|\| snapshotPreparationLocked;/,
+  'The editor must retain exclusive locks only for local generation/content repair and use narrower multiview guards.',
+);
+assert.match(
+  generatePanelSource,
+  /failUnsubmittedGeneration[\s\S]*?submissionTimedOut: true[\s\S]*?generationAbortControllersRef\.current\.get\(generation\.id\)\?\.abort\(\)[\s\S]*?setSubmissionActive\([\s\S]*?onLocalImageGenerationSettled\?\.\(false\)/,
+  'A generation that never reaches the remote service must abort its request and release every local task lock.',
+);
+assert.match(
+  editorPageSource,
+  /orphanedRequestTimeout[\s\S]*?hasBackingGeneration[\s\S]*?setLocalImageGenerationRequested\(false\)[\s\S]*?orphaned-local-generation-lock-released/,
+  'The editor must self-heal a local-generation request bridge with no backing panel or generation task.',
+);
+assert.match(
+  editorPageSource,
+  /<ObjectsPanel[\s\S]*?mutationLocked=\{modelMutationLocked\}[\s\S]*?<ObjectTransformPanel[\s\S]*?transformLocked=\{editorToolsLocked\}/,
+  'Running multiview tasks must protect model structure while allowing transforms again after snapshot preparation.',
+);
+assert.match(
+  editorPageSource,
+  /<BottomToolDock[\s\S]*?interactionLocked=\{editorToolsLocked\}/,
+  'Painting and transform tools must be locked only during exclusive work or multiview snapshot preparation.',
+);
+assert.match(
+  editorPageSource,
+  /<GeneratePanel[\s\S]*?interactionLocked=\{contentAwareRepairRunning\}/,
+  'A toolbar local-generation request must not feed back into GeneratePanel as its own external lock.',
 );
 assert.match(
   renderTargetUtilsSource,
@@ -209,13 +284,18 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /const showWhiteMembrane = Boolean\(\s*!hasAuthoritativeVisibleTextureLayer &&\s*!liveTopUvTexture &&\s*!liveSurfacePaintPreview/,
+  /const showWhiteMembrane = Boolean\(\s*transientWhitePresentationObjectId === importedModel\.objectId \|\|\s*\(!hasAuthoritativeVisibleTextureLayer &&\s*!liveTopUvTexture &&\s*!liveSurfacePaintPreview\)/,
   'All hidden content-bearing layers must authoritatively keep the model in white-membrane mode.',
 );
 assert.match(
   sceneRootSource,
   /const exactBakedBootstrapTexture =\s*loadedBakedTexture &&\s*!showWhiteMembrane &&\s*stableVisibleProjectedLayers\.length > 0 &&/,
   'Changing PBR lighting with every projected eye closed must not restore a stale baked bootstrap texture.',
+);
+assert.match(
+  sceneRootSource,
+  /const transientLocalRepaintPreviewLayerId =[\s\S]*?localRepaintPreviewLayer\.contentRevision === undefined[\s\S]*?layer\.id !== transientLocalRepaintPreviewLayerId/,
+  'A completed local repaint must stay structurally resident while its eraser overlay owns visibility.',
 );
 assert.match(
   sceneRootSource,
@@ -264,7 +344,7 @@ assert.match(
 );
 assert.match(
   editorPageSource,
-  /presentedViewportProjectId !== projectId[\s\S]*?fixed inset-0 z-\[220\]/,
+  /!isEditorProjectViewportReady\(\{[\s\S]*?presentedViewportProjectId,[\s\S]*?objectCount: project\.objects\.length,[\s\S]*?fixed inset-0 z-\[220\]/,
   'The project loading cover must remain above an initializing viewport until model content is presented.',
 );
 assert.match(
@@ -412,6 +492,26 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
+  /visible: existingLayer\?\.visible \?\? true,[\s\S]*?opacity: existingLayer\?\.opacity \?\? 1,[\s\S]*?strength: existingLayer\?\.strength \?\? 1,[\s\S]*?adjustments: existingLayer\?\.adjustments/,
+  'The renderer-owned repaint twin must inherit the persisted row adjustments instead of resetting them.',
+);
+assert.match(
+  viewportCanvasSource,
+  /contentRevision: existingLayer \? \(existingLayer\.contentRevision \?\? 0\) : undefined/,
+  'Legacy completed repaint rows must be distinguishable from a brand-new transient repaint preview.',
+);
+assert.match(
+  viewportCanvasSource,
+  /if \(!shouldRender && hasPersistedLayer && previewOwnsOverlay\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)[\s\S]*?else if \(shouldRender && persistedLayer && !previewOwnsOverlay\)/,
+  'Eye toggles must transfer repaint ownership according to actual GPU submission state.',
+);
+assert.match(
+  viewportCanvasSource,
+  /visible: existingProjectionLayer\?\.visible \?\? true,[\s\S]*?opacity: existingProjectionLayer\?\.opacity \?\? 1,[\s\S]*?strength: existingProjectionLayer\?\.strength \?\? 1,[\s\S]*?order: existingProjectionLayer\?\.order \?\? 0/,
+  'Committing an erased repaint mask must preserve the user-facing layer presentation and order.',
+);
+assert.match(
+  viewportCanvasSource,
   /currentPreviewLayer\?\.id === projectedLayer\.id &&[\s\S]*?!persistedOverlayCanOwnPresentation[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
   'Refresh must clear a stale live-owner marker instead of hiding both the saved repaint and its overlay.',
 );
@@ -479,8 +579,18 @@ assert(
 );
 assert.match(
   repaintSourceTransparency,
-  /removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
-  'Local repaint must remove the same dark backdrop as its generated-image preview before projection.',
+  /if \(depthImage\)[\s\S]*?createPackedDepthVisibilityMask[\s\S]*?else \{[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
+  'Local repaint projection must prefer geometry depth while retaining its legacy backdrop fallback.',
+);
+assert.match(
+  viewportCanvasSource,
+  /source\.depthUrl[\s\S]*?loadImageElement\(source\.depthUrl\)[\s\S]*?createLocalRepaintFalloffCanvasAsync\([\s\S]*?depthImage/,
+  'Local repaint preparation must decode its captured depth for geometry-derived brush coverage.',
+);
+assert.match(
+  generatePanelSource,
+  /isLocalRepaintGeneration\(displayedPreviewGeneration\)[\s\S]*?LOCAL_REPAINT_RESULT_PREVIEW_CUTOUT_ENABLED[\s\S]*?'dark-background'[\s\S]*?: undefined/,
+  'The generated-image preview must show the raw local repaint while cutout is disabled.',
 );
 assert.match(
   viewportCanvasSource,
@@ -498,8 +608,8 @@ const repaintFalloffWorkerSource = readFileSync(
 );
 assert.match(
   repaintFalloffWorkerSource,
-  /weightTotal[\s\S]*?farthestCornerRadius[\s\S]*?fadeEndRadius[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
-  'The worker must preserve the authored core and fade across the complete captured view.',
+  /weightTotal[\s\S]*?farthestCornerRadius[\s\S]*?fadeEndRadius[\s\S]*?if \(depth\)[\s\S]*?createPackedDepthVisibilityMask[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
+  'The worker must preserve the authored core and prefer geometry depth for its projection silhouette.',
 );
 assert.match(
   editorPageSource,
@@ -537,6 +647,34 @@ try {
   const projection = await server.ssrLoadModule('/src/engine/projection/ProjectedLayerMaterial.ts');
   const repaintPreviewUtils = await server.ssrLoadModule(
     '/src/engine/localRepaint/resultPreviewUtils.ts',
+  );
+  assert.equal(
+    repaintPreviewUtils.LOCAL_REPAINT_RESULT_PREVIEW_CUTOUT_ENABLED,
+    false,
+    'Local repaint preview cutout must stay disabled so the returned image is shown intact.',
+  );
+  const packedDepthPixels = new Uint8ClampedArray([
+    255, 255, 255, 255,
+    8, 9, 12, 255,
+    253, 255, 255, 255,
+  ]);
+  const packedDepthVisibility = repaintPreviewUtils.createPackedDepthVisibilityMask(
+    new ImageData(packedDepthPixels, 3, 1),
+  );
+  assert.equal(
+    packedDepthVisibility.data[3],
+    0,
+    'The white depth clear value must stay outside local repaint projection coverage.',
+  );
+  assert.equal(
+    packedDepthVisibility.data[7],
+    255,
+    'A dark recessed surface must remain paintable when geometry depth is present.',
+  );
+  assert.equal(
+    packedDepthVisibility.data[11],
+    255,
+    'A packed depth value near the far plane must still count as visible geometry.',
   );
   const sourcePixels = new Uint8ClampedArray(6 * 4 * 4);
   for (let index = 0; index < 6 * 4; index += 1) {
@@ -577,6 +715,9 @@ try {
   );
   const bakeOverlayComposition = await server.ssrLoadModule(
     '/src/engine/bake/projectedOverlayComposition.ts',
+  );
+  const projectedPreviewAuthority = await server.ssrLoadModule(
+    '/src/engine/viewport/projectedPreviewLayerAuthority.ts',
   );
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const camera = {
@@ -681,6 +822,39 @@ try {
     bakeOverlayComposition.getProjectionOverlayAlpha(0.2, 0, 'literal'),
     0.2,
     'Local repaint source-over alpha must equal its rasterized coverage.',
+  );
+  const authoritativeRepaint = {
+    id: 'local-repaint-projection-restored',
+    name: 'Local repaint',
+    type: 'projected',
+    imageUrl: 'memory://restored-repaint',
+    objectId: 'object-a',
+    replacementTargetLayerId: 'local-repaint-target',
+    visible: true,
+    opacity: 1,
+    strength: 1,
+    blendMode: 'normal',
+    adjustments: { hue: 0, saturation: 0, lightness: 0 },
+    order: 0,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const frozenOrdinaryProjection = {
+    ...authoritativeRepaint,
+    id: 'ordinary-projection',
+    imageUrl: 'memory://ordinary',
+    replacementTargetLayerId: undefined,
+    order: 1,
+  };
+  assert.deepEqual(
+    projectedPreviewAuthority
+      .mergeAuthoritativeLocalRepaintLayers(
+        [authoritativeRepaint, frozenOrdinaryProjection],
+        [frozenOrdinaryProjection],
+        'object-a',
+      )
+      .map((layer) => layer.id),
+    ['local-repaint-projection-restored', 'ordinary-projection'],
+    'A frozen projected preview batch must not suppress a restored local repaint layer.',
   );
   const featheredAlpha = bakeOverlayComposition.getProjectionOverlayAlpha(0.2, 0, 'feathered');
   assert(
@@ -841,6 +1015,10 @@ try {
       projectedMap: { value: staleSourceTexture },
       maskMap: { value: staleMaskTexture },
       layerOpacity: { value: 0 },
+      layerStrength: { value: 1 },
+      hueShift: { value: 0 },
+      saturationShift: { value: 0 },
+      lightnessShift: { value: 0 },
     },
   });
   overlayRoot.visible = false;
@@ -863,6 +1041,11 @@ try {
         sourceTexture: currentSourceTexture,
         maskTexture: currentMaskTexture,
         visible: true,
+        opacity: 0.63,
+        strength: 1.75,
+        hue: 0.12,
+        saturation: -0.28,
+        lightness: 0.34,
       },
     ),
     true,
@@ -873,7 +1056,11 @@ try {
   assert.equal(detachedMesh.parent, overlayRoot);
   assert.equal(overlayMaterial.uniforms.projectedMap.value, currentSourceTexture);
   assert.equal(overlayMaterial.uniforms.maskMap.value, currentMaskTexture);
-  assert.equal(overlayMaterial.uniforms.layerOpacity.value, 1);
+  assert.equal(overlayMaterial.uniforms.layerOpacity.value, 0.63);
+  assert.equal(overlayMaterial.uniforms.layerStrength.value, 1.75);
+  assert.equal(overlayMaterial.uniforms.hueShift.value, 0.12);
+  assert.equal(overlayMaterial.uniforms.saturationShift.value, -0.28);
+  assert.equal(overlayMaterial.uniforms.lightnessShift.value, 0.34);
   assert.equal(overlayRoot.visible, true);
   assert.equal(overlayMesh.visible, true);
   assert.equal(detachedMesh.visible, true);
@@ -885,6 +1072,11 @@ try {
         sourceTexture: currentSourceTexture,
         maskTexture: currentMaskTexture,
         visible: true,
+        opacity: 0.63,
+        strength: 1.75,
+        hue: 0.12,
+        saturation: -0.28,
+        lightness: 0.34,
       },
     ),
     false,
@@ -903,6 +1095,11 @@ try {
           sourceTexture: replacementSourceTexture,
           maskTexture: replacementMaskTexture,
           visible: true,
+          opacity: 0.63,
+          strength: 1.75,
+          hue: 0.12,
+          saturation: -0.28,
+          lightness: 0.34,
         },
       ),
       true,

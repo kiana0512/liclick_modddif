@@ -132,7 +132,13 @@ function cloneRuntimeModel(
   return { result: duplicatedResult, object: duplicatedObject };
 }
 
-export function ObjectsPanel() {
+export function ObjectsPanel({
+  mutationLocked = false,
+  onMutationLocked,
+}: {
+  mutationLocked?: boolean;
+  onMutationLocked?: () => void;
+}) {
   const t = useT();
   const objects = useSceneStore((state) => state.objects);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
@@ -201,6 +207,11 @@ export function ObjectsPanel() {
   }
 
   function handleDeleteObject(objectId: string) {
+    if (mutationLocked) {
+      setDeleteCandidateId(undefined);
+      onMutationLocked?.();
+      return;
+    }
     const object = objects.find((item) => item.id === objectId);
     if (!object) return;
     captureHistory(`${t('objectDeleteHistory')}：${object?.name ?? t('model')}`);
@@ -216,6 +227,10 @@ export function ObjectsPanel() {
   }
 
   function handleDuplicateObject(objectId: string) {
+    if (mutationLocked) {
+      onMutationLocked?.();
+      return;
+    }
     const object = objects.find((item) => item.id === objectId);
     const model = getImportedModelForObject(objectId);
     if (!object || !model) {
@@ -377,7 +392,13 @@ export function ObjectsPanel() {
             onDuplicate={() => handleDuplicateObject(menu.objectId)}
             onFocus={() => handleSelectObject(menu.objectId)}
             onDialog={(type) => setDialog({ type, objectId: menu.objectId })}
-            onDelete={() => setDeleteCandidateId(menu.objectId)}
+            onDelete={() => {
+              if (mutationLocked) {
+                onMutationLocked?.();
+                return;
+              }
+              setDeleteCandidateId(menu.objectId);
+            }}
           />,
           document.body,
         )}
@@ -663,23 +684,23 @@ function ObjectDialog({
       onPointerDown={onClose}
     >
       <section
-        className="max-h-[82vh] w-full max-w-xl overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
+        className="min-w-0 max-h-[82vh] w-full max-w-xl overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <div className="flex h-12 items-center justify-between border-b border-white/12 px-4">
-          <div className="min-w-0">
+        <div className="flex h-12 items-center justify-between gap-3 border-b border-white/12 px-4">
+          <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-white">{title}</div>
             <div className="truncate text-[11px] text-white/48">{object.name}</div>
           </div>
           <button
             type="button"
-            className="h-8 rounded-md px-3 text-xs font-semibold text-white/64 hover:bg-white/8"
+            className="h-8 shrink-0 rounded-md px-3 text-xs font-semibold text-white/64 hover:bg-white/8"
             onClick={onClose}
           >
             {t('close')}
           </button>
         </div>
-        <div className="max-h-[calc(82vh-48px)] overflow-auto p-4">
+        <div className="min-w-0 max-h-[calc(82vh-48px)] overflow-x-hidden overflow-y-auto p-4">
           {state.type === 'statistics' && <StatisticsDialogBody object={object} stats={stats} />}
           {state.type === 'download' && <DownloadDialogBody onDownload={onDownload} />}
         </div>
@@ -691,15 +712,16 @@ function ObjectDialog({
 function StatisticsDialogBody({ object, stats }: { object: SceneObject; stats: ObjectStats }) {
   const t = useT();
   const dimensions = stats.dimensions?.map((value) => value.toFixed(2)).join(' x ') ?? '-';
+  const source = object.sourcePath ?? t('objectRuntimeSource');
   return (
-    <div className="grid gap-3">
-      <div className="grid grid-cols-2 gap-2">
+    <div className="grid min-w-0 gap-3">
+      <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] gap-2">
         <StatTile label={t('objectMeshes')} value={formatNumber(stats.meshes)} />
         <StatTile label={t('objectTriangles')} value={formatNumber(stats.triangles)} />
         <StatTile label={t('objectVertices')} value={formatNumber(stats.vertices)} />
         <StatTile label={t('objectMaterials')} value={formatNumber(stats.materials)} />
       </div>
-      <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs leading-6 text-white/72">
+      <div className="min-w-0 rounded-md border border-white/12 bg-black/24 p-3 text-xs leading-6 text-white/72">
         <div>
           {t('format')}: {object.format.toUpperCase()}
         </div>
@@ -709,8 +731,11 @@ function StatisticsDialogBody({ object, stats }: { object: SceneObject; stats: O
         <div>
           {t('objectDimensions')}: {dimensions}
         </div>
-        <div className="truncate">
-          {t('objectSource')}: {object.sourcePath ?? t('objectRuntimeSource')}
+        <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-1">
+          <span>{t('objectSource')}:</span>
+          <span className="break-all" title={source}>
+            {source}
+          </span>
         </div>
       </div>
     </div>
@@ -735,11 +760,11 @@ function DownloadDialogBody({ onDownload }: { onDownload: () => void }) {
 
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-white/12 bg-black/24 p-3">
+    <div className="min-w-0 rounded-md border border-white/12 bg-black/24 p-3">
       <div className="text-[11px] font-semibold uppercase tracking-normal text-white/42">
         {label}
       </div>
-      <div className="mt-1 text-lg font-semibold text-white">{value}</div>
+      <div className="mt-1 break-words text-lg font-semibold tabular-nums text-white">{value}</div>
     </div>
   );
 }

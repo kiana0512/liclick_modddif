@@ -36,6 +36,7 @@ function getWorker() {
 export async function createLocalRepaintFalloffInWorker(input: {
   mask: CanvasImageSource;
   source: CanvasImageSource;
+  depth?: CanvasImageSource;
   width: number;
   height: number;
 }) {
@@ -46,36 +47,48 @@ export async function createLocalRepaintFalloffInWorker(input: {
   ) {
     throw new Error('Local repaint falloff worker is unavailable.');
   }
-  const [maskResult, sourceResult] = await Promise.allSettled([
+  const [maskResult, sourceResult, depthResult] = await Promise.allSettled([
     createImageBitmap(input.mask),
     createImageBitmap(input.source),
+    input.depth ? createImageBitmap(input.depth) : Promise.resolve(undefined),
   ]);
   if (maskResult.status === 'rejected') {
     if (sourceResult.status === 'fulfilled') sourceResult.value.close();
+    if (depthResult.status === 'fulfilled') depthResult.value?.close();
     throw maskResult.reason instanceof Error
       ? maskResult.reason
       : new Error(String(maskResult.reason));
   }
   if (sourceResult.status === 'rejected') {
     maskResult.value.close();
+    if (depthResult.status === 'fulfilled') depthResult.value?.close();
     throw sourceResult.reason instanceof Error
       ? sourceResult.reason
       : new Error(String(sourceResult.reason));
   }
+  if (depthResult.status === 'rejected') {
+    maskResult.value.close();
+    sourceResult.value.close();
+    throw depthResult.reason instanceof Error
+      ? depthResult.reason
+      : new Error(String(depthResult.reason));
+  }
   const mask = maskResult.value;
   const source = sourceResult.value;
+  const depth = depthResult.value;
   const id = nextRequestId++;
   return new Promise<{ bitmap: ImageBitmap; processMs: number }>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     try {
       getWorker().postMessage(
-        { id, mask, source, width: input.width, height: input.height },
-        { transfer: [mask, source] },
+        { id, mask, source, depth, width: input.width, height: input.height },
+        { transfer: depth ? [mask, source, depth] : [mask, source] },
       );
     } catch (error) {
       pending.delete(id);
       mask.close();
       source.close();
+      depth?.close();
       reject(error instanceof Error ? error : new Error(String(error)));
     }
   });

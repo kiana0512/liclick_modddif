@@ -1,9 +1,13 @@
-import { removeEdgeConnectedNeutralBackground } from '../engine/localRepaint/resultPreviewUtils';
+import {
+  createPackedDepthVisibilityMask,
+  removeEdgeConnectedNeutralBackground,
+} from '../engine/localRepaint/resultPreviewUtils';
 
 type FalloffRequest = {
   id: number;
   mask: ImageBitmap;
   source: ImageBitmap;
+  depth?: ImageBitmap;
   width: number;
   height: number;
 };
@@ -13,7 +17,7 @@ type FalloffResponse =
   | { id: number; error: string };
 
 self.onmessage = (event: MessageEvent<FalloffRequest>) => {
-  const { id, mask, source, width, height } = event.data;
+  const { id, mask, source, depth, width, height } = event.data;
   const startedAt = performance.now();
   try {
     const canvas = new OffscreenCanvas(width, height);
@@ -91,21 +95,29 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
       context.clearRect(0, 0, width, height);
     }
 
-    // Match the transparent preview shown in the generation panel. The source
-    // colour remains the original high-resolution asset; only its lightweight
-    // coverage silhouette is combined here, entirely off the main thread.
+    // Prefer geometry depth for projection coverage. A colour flood-fill can
+    // leak through an opening and mistake a dark recessed surface for the
+    // backdrop. Legacy sources without depth retain the old colour fallback.
     const sourceCanvas = new OffscreenCanvas(width, height);
     const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
     if (!sourceContext) throw new Error('Could not create local repaint source mask canvas.');
-    sourceContext.drawImage(source, 0, 0, width, height);
-    const sourcePixels = sourceContext.getImageData(0, 0, width, height);
-    const transparentSource = removeEdgeConnectedNeutralBackground(sourcePixels, 'dark-only');
-    const alphaMask = sourceContext.createImageData(width, height);
-    for (let offset = 0; offset < alphaMask.data.length; offset += 4) {
-      alphaMask.data[offset] = 255;
-      alphaMask.data[offset + 1] = 255;
-      alphaMask.data[offset + 2] = 255;
-      alphaMask.data[offset + 3] = transparentSource.imageData.data[offset + 3];
+    let alphaMask: ImageData;
+    if (depth) {
+      sourceContext.drawImage(depth, 0, 0, width, height);
+      alphaMask = createPackedDepthVisibilityMask(
+        sourceContext.getImageData(0, 0, width, height),
+      );
+    } else {
+      sourceContext.drawImage(source, 0, 0, width, height);
+      const sourcePixels = sourceContext.getImageData(0, 0, width, height);
+      const transparentSource = removeEdgeConnectedNeutralBackground(sourcePixels, 'dark-only');
+      alphaMask = sourceContext.createImageData(width, height);
+      for (let offset = 0; offset < alphaMask.data.length; offset += 4) {
+        alphaMask.data[offset] = 255;
+        alphaMask.data[offset + 1] = 255;
+        alphaMask.data[offset + 2] = 255;
+        alphaMask.data[offset + 3] = transparentSource.imageData.data[offset + 3];
+      }
     }
     sourceContext.putImageData(alphaMask, 0, 0);
     context.globalCompositeOperation = 'destination-in';
@@ -128,6 +140,7 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
   } finally {
     mask.close();
     source.close();
+    depth?.close();
   }
 };
 

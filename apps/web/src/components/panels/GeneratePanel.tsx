@@ -12,12 +12,14 @@ import {
   captureCurrentNormalPreview,
   captureCurrentView,
   snapshotCurrentCaptureCamera,
+  withStableClayTargetPresentation,
 } from '@/engine/capture/captureCurrentView';
 import { requestContentAwareRepair } from '@/engine/contentAware';
 import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import {
   createCaptureMaskedPreview,
   createSubjectFilledPreview,
+  LOCAL_REPAINT_RESULT_PREVIEW_CUTOUT_ENABLED,
 } from '@/engine/localRepaint/resultPreviewUtils';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
@@ -632,7 +634,12 @@ type GeneratePanelProps = {
   onLocalImageGenerationSettled?: (succeeded: boolean) => void;
   interactionLocked?: boolean;
   onInteractionLocked?: () => void;
-  onTaskRunningChange?: (running: boolean) => void;
+  onTaskRunningChange?: (state: GeneratePanelTaskState) => void;
+};
+
+export type GeneratePanelTaskState = {
+  running: boolean;
+  snapshotPreparing: boolean;
 };
 
 export function GeneratePanel({
@@ -932,13 +939,21 @@ export function GeneratePanel({
     texturePipelineProgress?.active === true ||
     Boolean(activeWorkflowGeneration) ||
     displayedReferenceGroupGenerationState?.status === 'generating';
-  const workflowOperationLocked = interactionLocked || panelTaskRunning;
+  const snapshotPreparing = Boolean(
+    texturePipelineProgress?.active &&
+      (texturePipelineProgress.label === '准备多视角快照' ||
+        texturePipelineProgress.label.startsWith('多视角快照 ')),
+  );
+  const workflowConfigurationLocked = interactionLocked || snapshotPreparing;
+  const workflowSubmissionLocked = interactionLocked || panelTaskRunning;
   const notifyWorkflowOperationLocked = useCallback(() => {
     setGenerateNotice({
       tone: 'info',
-      message: texturePipelineProgress?.active
-        ? `${texturePipelineProgress.label}正在进行，完成前仅支持预览。`
-        : '当前任务正在运行，完成前仅支持预览。',
+      message: snapshotPreparing
+        ? '正在准备多视角快照，快照完成后会恢复这些设置。'
+        : panelTaskRunning
+          ? '当前生成任务仍在运行，可以继续普通编辑，但暂不能重复提交生成。'
+          : '当前独占任务正在运行，请等待任务完成。',
     });
     if (onInteractionLocked) {
       onInteractionLocked();
@@ -947,18 +962,20 @@ export function GeneratePanel({
     pushToast({
       tone: 'info',
       title: '任务正在运行',
-      description: '任务完成前仅支持旋转、缩放和结果预览。',
+      description: snapshotPreparing
+        ? '快照准备期间暂时锁定模型和生图参数。'
+        : '可以继续普通编辑，但暂不能重复提交生成任务。',
       dedupeKey: 'editor-task-preview-only',
     });
-  }, [onInteractionLocked, pushToast, setGenerateNotice, texturePipelineProgress]);
+  }, [onInteractionLocked, panelTaskRunning, pushToast, setGenerateNotice, snapshotPreparing]);
 
   useEffect(() => {
-    onTaskRunningChange?.(panelTaskRunning);
-  }, [onTaskRunningChange, panelTaskRunning]);
+    onTaskRunningChange?.({ running: panelTaskRunning, snapshotPreparing });
+  }, [onTaskRunningChange, panelTaskRunning, snapshotPreparing]);
 
   useEffect(
     () => () => {
-      onTaskRunningChange?.(false);
+      onTaskRunningChange?.({ running: false, snapshotPreparing: false });
     },
     [onTaskRunningChange],
   );
@@ -997,7 +1014,9 @@ export function GeneratePanel({
       : undefined;
   const previewProcessingMode = displayedPreviewGeneration
     ? isLocalRepaintGeneration(displayedPreviewGeneration)
-      ? 'dark-background'
+      ? LOCAL_REPAINT_RESULT_PREVIEW_CUTOUT_ENABLED
+        ? 'dark-background'
+        : undefined
       : isTextureMapGeneration(displayedPreviewGeneration)
         ? capturePreviewMaskUrl
           ? 'capture-mask'
@@ -1248,9 +1267,13 @@ export function GeneratePanel({
   }, [authStatus, currentProjectId, syncGeneration]);
 
   const markGenerationFailed = useCallback(
-    (generationToFail: Generation, message: string) => {
+    (
+      generationToFail: Generation,
+      message: string,
+      extraMetadata: Record<string, unknown> = {},
+    ) => {
       const userMessage = getUserFacingGenerationError(message);
-      syncGeneration(createFailedGeneration(generationToFail, userMessage));
+      syncGeneration(createFailedGeneration(generationToFail, userMessage, extraMetadata));
       finish();
       setGenerateNotice({
         tone: 'error',
@@ -1259,6 +1282,28 @@ export function GeneratePanel({
       console.error('[Liclick 3D Texture] Background generation failed:', userMessage);
     },
     [finish, setGenerateNotice, syncGeneration],
+  );
+
+  const failUnsubmittedGeneration = useCallback(
+    (generation: Generation) => {
+      const message = '生图任务没有成功提交到莉刻后台，已自动解除任务锁，请重新生成。';
+      markGenerationFailed(generation, message, {
+        submissionTimedOut: true,
+        serverSubmitted: false,
+      });
+
+      // A ModelView request can remain pending even when no remote worker ever
+      // accepted it. Merely failing the generation record leaves the original
+      // promise, the panel submit lock and EditorPage's request bridge alive.
+      // Abort and release all three ownership layers together.
+      generationAbortControllersRef.current.get(generation.id)?.abort();
+      generationAbortControllersRef.current.delete(generation.id);
+      submitLocksRef.current.delete(getGenerationChannel(generation));
+      setSubmissionActive(submitLocksRef.current.size > 0);
+      if (isLocalRepaintGeneration(generation)) onLocalImageGenerationSettled?.(false);
+      window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+    },
+    [markGenerationFailed, onLocalImageGenerationSettled],
   );
 
   const captureTextureMapCameraView = useCallback(
@@ -1419,14 +1464,12 @@ export function GeneratePanel({
             .getState()
             .generations.find((generation) => generation.id === generationToPoll.id);
           if (latest && isRunningGeneration(latest) && !isGenerationSubmittedToServer(latest)) {
-            markGenerationFailed(latest, '生图任务没有成功提交到莉刻后台，请重新生成。');
-            window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+            failUnsubmittedGeneration(latest);
           }
         }, remaining);
         return () => window.clearTimeout(submissionTimeoutId);
       }
-      markGenerationFailed(generationToPoll, '生图任务没有成功提交到莉刻后台，请重新生成。');
-      window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+      failUnsubmittedGeneration(generationToPoll);
       return undefined;
     }
     const taskId =
@@ -1583,6 +1626,7 @@ export function GeneratePanel({
   }, [
     activeReferenceGeneration,
     dismissToastByDedupeKey,
+    failUnsubmittedGeneration,
     markGenerationFailed,
     previewGeneration,
     pushToast,
@@ -1647,7 +1691,7 @@ export function GeneratePanel({
   }, [currentProject?.id, generations, pushToast, references]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
-    if (workflowOperationLocked) {
+    if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
     }
@@ -1664,7 +1708,7 @@ export function GeneratePanel({
   }
 
   function handleCameraViewSelect(view: CameraViewItem) {
-    if (workflowOperationLocked) {
+    if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
     }
@@ -1676,7 +1720,7 @@ export function GeneratePanel({
   }
 
   function handleCameraViewPresetSelect(selection: CameraViewPresetSelection) {
-    if (workflowOperationLocked) {
+    if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
     }
@@ -1694,7 +1738,7 @@ export function GeneratePanel({
   }
 
   function handleDeleteCameraView(viewId: string) {
-    if (workflowOperationLocked) {
+    if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
     }
@@ -1712,7 +1756,7 @@ export function GeneratePanel({
   }
 
   function handleAddCurrentCameraView() {
-    if (workflowOperationLocked) {
+    if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
     }
@@ -2083,44 +2127,47 @@ export function GeneratePanel({
   }
 
   async function getTextureMapMultiviewCaptures(views: CameraViewItem[]) {
-    const captures: Partial<Record<string, Capture>> = {};
-    for (let index = 0; index < views.length; index += 1) {
-      const view = views[index];
-      if (!view) continue;
-      if (captures[view.id]) continue;
-      setCapturingCameraViews((current) => new Set([...current, view.id]));
-      try {
-        const capture = await captureTextureMapCameraView(view, { setAsLastCapture: false });
-        captures[view.id] = capture;
-        updateTexturePipelineProgress(
-          20 + ((index + 1) / Math.max(1, views.length)) * 18,
-          `多视角快照 ${index + 1}/${views.length}`,
-        );
-      } finally {
-        setCapturingCameraViews((current) => {
-          const next = new Set(current);
-          next.delete(view.id);
-          return next;
-        });
+    if (!captureObjectId) throw new Error(t('importModelFirst'));
+    return withStableClayTargetPresentation(captureObjectId, async () => {
+      const captures: Partial<Record<string, Capture>> = {};
+      for (let index = 0; index < views.length; index += 1) {
+        const view = views[index];
+        if (!view) continue;
+        if (captures[view.id]) continue;
+        setCapturingCameraViews((current) => new Set([...current, view.id]));
+        try {
+          const capture = await captureTextureMapCameraView(view, { setAsLastCapture: false });
+          captures[view.id] = capture;
+          updateTexturePipelineProgress(
+            20 + ((index + 1) / Math.max(1, views.length)) * 18,
+            `多视角快照 ${index + 1}/${views.length}`,
+          );
+        } finally {
+          setCapturingCameraViews((current) => {
+            const next = new Set(current);
+            next.delete(view.id);
+            return next;
+          });
+        }
       }
-    }
-    return views
-      .map((view) => ({
-        viewId: view.id,
-        cameraView: view.value ?? 'custom',
-        label: view.label,
-        capture: captures[view.id],
-      }))
-      .filter(
-        (
-          item,
-        ): item is {
-          viewId: string;
-          cameraView: ObjectViewPreset | 'custom';
-          label: string;
-          capture: Capture;
-        } => Boolean(item.capture),
-      );
+      return views
+        .map((view) => ({
+          viewId: view.id,
+          cameraView: view.value ?? 'custom',
+          label: view.label,
+          capture: captures[view.id],
+        }))
+        .filter(
+          (
+            item,
+          ): item is {
+            viewId: string;
+            cameraView: ObjectViewPreset | 'custom';
+            label: string;
+            capture: Capture;
+          } => Boolean(item.capture),
+        );
+    });
   }
 
   async function waitForLiclickGeneration(generation: Generation) {
@@ -2588,7 +2635,7 @@ export function GeneratePanel({
     let pendingGeneration: Generation | undefined;
     let requestAbortController: AbortController | undefined;
     try {
-      if (workflowOperationLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
+      if (workflowSubmissionLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
         notifyWorkflowOperationLocked();
         return false;
       }
@@ -2876,7 +2923,7 @@ export function GeneratePanel({
       }
       setGenerateNotice(undefined);
       setTexturePreviewMode('repaint');
-      setTab('multiview');
+      setTab('repaint');
       pushToast({
         tone: 'success',
         title: '局部生图已生成',
@@ -2921,6 +2968,22 @@ export function GeneratePanel({
       if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return false;
       const rawMessage = error instanceof Error ? error.message : String(error);
       console.error('[ModelView INT8 Material Repaint] generation failed:', error);
+      const timedOutGeneration = pendingGeneration
+        ? useGenerationStore
+            .getState()
+            .generations.find((generation) => generation.id === pendingGeneration?.id)
+        : undefined;
+      if (
+        timedOutGeneration?.status === 'failed' &&
+        timedOutGeneration.metadata.submissionTimedOut === true
+      ) {
+        const timeoutMessage =
+          typeof timedOutGeneration.metadata.error === 'string'
+            ? timedOutGeneration.metadata.error
+            : '生图任务未成功进入后台，已解除任务锁。';
+        setGenerateNotice({ tone: 'error', message: timeoutMessage });
+        return false;
+      }
       const message = getUserFacingGenerationError(error, '局部重绘生成失败，请稍后重试。');
       if (pendingGeneration) {
         syncGeneration(
@@ -3117,7 +3180,7 @@ export function GeneratePanel({
   }
 
   async function handleGeneratePairedMultiview(singleReference: ReferenceImage) {
-    if (workflowOperationLocked || submitLocksRef.current.size > 0) {
+    if (workflowSubmissionLocked || submitLocksRef.current.size > 0) {
       notifyWorkflowOperationLocked();
       return;
     }
@@ -3147,7 +3210,10 @@ export function GeneratePanel({
   }
 
   async function handleGenerate() {
-    if (tab === 'repaint') {
+    // Route by the preview the user can actually see. This also protects the
+    // click between two batched state updates: a repaint preview must never
+    // fall through to the multi-view texture pipeline.
+    if (displayedTexturePreviewMode === 'repaint') {
       await handleLocalRepaintGenerate();
       return;
     }
@@ -3162,7 +3228,7 @@ export function GeneratePanel({
     requestedViewMode: TextureViewMode = textureViewMode,
   ) {
     try {
-      if (workflowOperationLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
+      if (workflowSubmissionLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
         notifyWorkflowOperationLocked();
         return;
       }
@@ -3707,7 +3773,7 @@ export function GeneratePanel({
   }
 
   async function handleAddProjectedLayer() {
-    if (workflowOperationLocked) {
+    if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
     }
@@ -3751,14 +3817,14 @@ export function GeneratePanel({
         }`}
         variant="primary"
         disabled={
-          !workflowOperationLocked &&
+          !workflowSubmissionLocked &&
           ((tab === 'multiview' && texturePipelineProgress?.active) ||
             previewIsGenerating ||
             displayedReferenceGroupGenerationState?.status === 'generating')
         }
-        aria-disabled={workflowOperationLocked}
+        aria-disabled={workflowSubmissionLocked}
         onClick={() => {
-          if (workflowOperationLocked) {
+          if (workflowSubmissionLocked) {
             notifyWorkflowOperationLocked();
             return;
           }
@@ -3838,7 +3904,9 @@ export function GeneratePanel({
               ]}
               onChange={(value) => {
                 setTexturePreviewMode(value);
-                if (value !== 'repaint') {
+                if (value === 'repaint') {
+                  setTab('repaint');
+                } else {
                   setTextureViewMode(value);
                   setTab('multiview');
                 }
@@ -4020,12 +4088,12 @@ export function GeneratePanel({
               <span className="text-sm font-semibold text-white/88">纹理提示词</span>
               <textarea
                 value={isLocalRepaintTab ? '' : prompt}
-                readOnly={isLocalRepaintTab || workflowOperationLocked}
-                aria-readonly={isLocalRepaintTab || workflowOperationLocked}
+                readOnly={isLocalRepaintTab || workflowConfigurationLocked}
+                aria-readonly={isLocalRepaintTab || workflowConfigurationLocked}
                 placeholder={isLocalRepaintTab ? '使用固定材质迁移提示词，无需填写' : undefined}
                 onChange={(event) => {
                   if (isLocalRepaintTab) return;
-                  if (workflowOperationLocked) {
+                  if (workflowConfigurationLocked) {
                     notifyWorkflowOperationLocked();
                     return;
                   }
@@ -4049,8 +4117,7 @@ export function GeneratePanel({
               >
                 <ReferenceGroupPicker
                   disabled={
-                    workflowOperationLocked ||
-                    previewIsGenerating ||
+                    workflowConfigurationLocked ||
                     displayedReferenceGroupGenerationState?.status === 'generating'
                   }
                   generationState={displayedReferenceGroupGenerationState}

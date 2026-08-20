@@ -247,11 +247,7 @@ async function captureClayTarget(
   passRequest: CapturePassRequest,
   encodedSize?: { width: number; height: number },
 ) {
-  const restore = applyTargetOnlyMaterial(
-    passRequest.scene,
-    passRequest.objectId,
-    () => createClayModelMaterial(),
-  );
+  const captureMaterial = createClayModelMaterial();
   try {
     return {
       url: await renderSceneToPngUrl(
@@ -270,13 +266,67 @@ async function captureClayTarget(
           performancePhasePrefix: 'button2-white-model',
           encodedWidth: encodedSize?.width,
           encodedHeight: encodedSize?.height,
-          onRenderSubmitted: restore,
+          // Restrict the scene only for the exact offscreen draw. Restoring
+          // before every inter-tile browser frame keeps the live background,
+          // grid and helpers continuously visible during snapshot preparation.
+          prepareScene: () =>
+            applyTargetOnlyMaterial(
+              passRequest.scene,
+              passRequest.objectId,
+              () => captureMaterial,
+            ),
         },
       ),
       warnings: [],
     };
   } finally {
-    restore();
+    captureMaterial.dispose();
+  }
+}
+
+/**
+ * Keeps the authored viewport on one canonical white-model presentation while
+ * a batch of offscreen capture passes temporarily swaps mask/normal/depth
+ * materials. Every inner pass restores to this stable material before yielding
+ * a browser frame, so the user never sees the diagnostic capture channels.
+ */
+export async function withStableClayTargetPresentation<T>(
+  objectId: string,
+  task: () => Promise<T>,
+) {
+  const sceneState = useSceneStore.getState();
+  if (!sceneState.viewport) throw new Error('视口尚未准备完成，请稍后重试。');
+  const previousPresentationObjectId = sceneState.transientWhitePresentationObjectId;
+  sceneState.setTransientWhitePresentationObject(objectId);
+  try {
+    // Let SceneRoot publish the canonical white membrane before the first
+    // detached GPU pass. Unlike a direct material snapshot/restore, this
+    // renderer-only override allows layer eye/opacity edits to keep updating
+    // their authoritative stores without restoring stale materials afterward.
+    for (let frame = 0; frame < 12; frame += 1) {
+      await waitForViewportFrame();
+      const model = useSceneStore
+        .getState()
+        .importedModels.find((candidate) => candidate.objectId === objectId);
+      if (!model) continue;
+      let hasMaterial = false;
+      let presentsOnlyWhiteMembrane = true;
+      model.group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh) || child.userData.liclickPaintOverlay) return;
+        hasMaterial = true;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        presentsOnlyWhiteMembrane &&= materials.every(
+          (material) => material.name === 'LiclickWhiteMembranePreview',
+        );
+      });
+      if (hasMaterial && presentsOnlyWhiteMembrane) break;
+    }
+    return await task();
+  } finally {
+    const currentState = useSceneStore.getState();
+    if (currentState.transientWhitePresentationObjectId === objectId) {
+      currentState.setTransientWhitePresentationObject(previousPresentationObjectId);
+    }
   }
 }
 

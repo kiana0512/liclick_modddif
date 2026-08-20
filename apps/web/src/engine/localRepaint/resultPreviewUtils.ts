@@ -8,6 +8,12 @@ const captureMaskedPreviewCache = new Map<
 const MAX_PREVIEW_CACHE_ENTRIES = 12;
 const SUBJECT_PADDING_RATIO = 0.02;
 
+// Temporarily show local-repaint previews exactly as returned by ModelView.
+// The preview flood-fill can mistake authored black material, narrow gaps, and
+// shadows for the backdrop. Model projection keeps its separate silhouette
+// constraint so the generated background still cannot be painted onto meshes.
+export const LOCAL_REPAINT_RESULT_PREVIEW_CUTOUT_ENABLED = false;
+
 function getTone(data: Uint8ClampedArray, offset: number) {
   const red = data[offset];
   const green = data[offset + 1];
@@ -21,6 +27,26 @@ function getTone(data: Uint8ClampedArray, offset: number) {
 }
 
 export type BackgroundRemovalMode = 'neutral' | 'dark-only';
+
+/**
+ * Turns a packed linear-depth capture into a geometry-only coverage mask.
+ * Depth captures clear pixels without geometry to opaque white. Using this
+ * signal instead of source colour keeps dark, edge-connected recesses inside
+ * the model paintable while still excluding the generated backdrop.
+ */
+export function createPackedDepthVisibilityMask(depthImageData: ImageData) {
+  const { width, height, data } = depthImageData;
+  const output = new ImageData(width, height);
+  for (let offset = 0; offset < data.length; offset += 4) {
+    const isClearPixel =
+      data[offset] >= 254 && data[offset + 1] >= 254 && data[offset + 2] >= 254;
+    output.data[offset] = 255;
+    output.data[offset + 1] = 255;
+    output.data[offset + 2] = 255;
+    output.data[offset + 3] = isClearPixel ? 0 : 255;
+  }
+  return output;
+}
 
 function isBackgroundSeed(
   data: Uint8ClampedArray,
