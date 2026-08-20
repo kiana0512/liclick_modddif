@@ -66,8 +66,8 @@ import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActiv
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { isViewportInteractionBusy as isSharedViewportInteractionBusy } from './viewportInteractionState';
 import {
+  getReadyResidentPreviewTexture,
   loadPreviewTexture,
-  residentPreviewTextureCache,
   uploadPreviewTextureInStripes,
 } from './previewTextureCache';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
@@ -472,7 +472,7 @@ function useLoadedPreviewTextureState(
   // cache before the layer eye is committed. Read that cache synchronously on
   // the first render of the new URL instead of waiting one extra React effect
   // turn; that turn used to expose the reserved white sampler.
-  const residentTexture = imageUrl ? residentPreviewTextureCache.get(imageUrl) : undefined;
+  const residentTexture = getReadyResidentPreviewTexture(imageUrl, gl);
   const state = residentTexture ? { key: imageUrl!, texture: residentTexture } : loadedState;
   const texture = state?.texture;
   if (texture && options?.colorSpace) texture.colorSpace = options.colorSpace;
@@ -1164,8 +1164,7 @@ function ImportedModel({
   const [presentedMaterialGroup, setPresentedMaterialGroup] = useState<THREE.Group | undefined>(
     () => (!importedModel.restoreStage ? importedModel.group : undefined),
   );
-  const initialMaterialPresentationReadyForGroup =
-    presentedMaterialGroup === importedModel.group;
+  const initialMaterialPresentationReadyForGroup = presentedMaterialGroup === importedModel.group;
   const initialMaterialPresentationVisibleForGroup =
     // With no authored texture, the white membrane is the final presentation,
     // not a temporary placeholder. Keep the replacement Group visible in the
@@ -1803,7 +1802,7 @@ function ImportedModel({
       );
       const residentContentAwareTexture =
         visibleContentAwareUvLayers.length === 1
-          ? residentPreviewTextureCache.get(visibleContentAwareUvLayers[0].imageUrl ?? '')
+          ? getReadyResidentPreviewTexture(visibleContentAwareUvLayers[0].imageUrl, gl)
           : undefined;
       const previousContentAwarePresentation = contentAwareUnderlayPresentationRef.current;
       const contentAwareTexture =
@@ -1825,7 +1824,7 @@ function ImportedModel({
       };
       const residentSingleUvTexture =
         visibleOrdinaryUvLayers.length === 1
-          ? residentPreviewTextureCache.get(visibleOrdinaryUvLayers[0].imageUrl ?? '')
+          ? getReadyResidentPreviewTexture(visibleOrdinaryUvLayers[0].imageUrl, gl)
           : undefined;
       const visibleUvKey = residentUvVisibilityKey(visibleOrdinaryUvLayers);
       const residentCompositeUvTexture =
@@ -4117,9 +4116,7 @@ function ImportedModel({
                   document.body.dataset.projectedProgramWarmupMatched = '0';
                 }
                 const residentUvTextures = stableResidentUvToggleLayers.flatMap((layer) => {
-                  const texture = layer.imageUrl
-                    ? residentPreviewTextureCache.get(layer.imageUrl)
-                    : undefined;
+                  const texture = getReadyResidentPreviewTexture(layer.imageUrl, gl);
                   return texture ? [texture] : [];
                 });
                 if (loadedUvTexture) residentUvTextures.push(loadedUvTexture);
@@ -4178,7 +4175,7 @@ function ImportedModel({
                 const latestOrdinaryUvKey = residentUvVisibilityKey(latestOrdinaryUvLayers);
                 const latestResidentUvTexture =
                   latestOrdinaryUvLayers.length === 1
-                    ? residentPreviewTextureCache.get(latestOrdinaryUvLayers[0].imageUrl ?? '')
+                    ? getReadyResidentPreviewTexture(latestOrdinaryUvLayers[0].imageUrl, gl)
                     : latestOrdinaryUvLayers.length > 1
                       ? residentUvPresentationCacheRef.current.get(latestOrdinaryUvKey)
                       : undefined;
@@ -4188,7 +4185,7 @@ function ImportedModel({
                 const currentContentAwarePresentation = contentAwareUnderlayPresentationRef.current;
                 const latestResidentContentAwareTexture =
                   latestContentAwareLayers.length === 1
-                    ? residentPreviewTextureCache.get(latestContentAwareLayers[0].imageUrl ?? '')
+                    ? getReadyResidentPreviewTexture(latestContentAwareLayers[0].imageUrl, gl)
                     : undefined;
                 if (sharedProjectedMaterial.uniforms.uvOverlayOpacity) {
                   if (latestResidentUvTexture && sharedProjectedMaterial.uniforms.uvOverlayMap) {
@@ -4410,6 +4407,9 @@ function ImportedModel({
           layer.role !== 'local-repaint-overlay' &&
           layer.role !== 'local-repaint-draft',
       );
+      const authoritativeContentAwareUvLayers = authoritativeUvLayers.filter(
+        (layer) => layer.visible && layer.role === 'content-aware-underlay',
+      );
       const authoritativeLocalRepaintUvLayers = authoritativeUvLayers.filter(
         (layer) =>
           layer.visible &&
@@ -4418,15 +4418,36 @@ function ImportedModel({
       const authoritativeOrdinaryUvKey = residentUvVisibilityKey(authoritativeOrdinaryUvLayers);
       const authoritativeResidentUvTexture =
         authoritativeOrdinaryUvLayers.length === 1
-          ? residentPreviewTextureCache.get(authoritativeOrdinaryUvLayers[0].imageUrl ?? '')
+          ? getReadyResidentPreviewTexture(authoritativeOrdinaryUvLayers[0].imageUrl, gl)
           : authoritativeOrdinaryUvLayers.length > 1
             ? residentUvPresentationCacheRef.current.get(authoritativeOrdinaryUvKey)
             : undefined;
+      const authoritativeResidentContentAwareTexture =
+        authoritativeContentAwareUvLayers.length === 1
+          ? getReadyResidentPreviewTexture(authoritativeContentAwareUvLayers[0].imageUrl, gl)
+          : undefined;
+      const authoritativeContentAwarePresentation = contentAwareUnderlayPresentationRef.current;
+      const authoritativeContentAwareTexture =
+        authoritativeResidentContentAwareTexture ??
+        (authoritativeContentAwareUvLayers.length > 0
+          ? authoritativeContentAwarePresentation.texture
+          : undefined);
+      const authoritativeContentAwareOpacity =
+        authoritativeContentAwareUvLayers.length === 0
+          ? 0
+          : authoritativeResidentContentAwareTexture
+            ? authoritativeContentAwareUvLayers[0].opacity
+            : authoritativeContentAwareTexture
+              ? authoritativeContentAwarePresentation.opacity
+              : undefined;
       syncProjectedLayerResidentTextureVisibilityInObject(model.group, {
         ...(authoritativeResidentUvTexture
           ? { uvOverlayTexture: authoritativeResidentUvTexture }
           : {}),
         uvOverlayRenderedColor: authoritativeOrdinaryUvLayers.some(usesUnlitRenderedColor),
+        ...(authoritativeContentAwareTexture
+          ? { baseTexture: authoritativeContentAwareTexture }
+          : {}),
         ...(authoritativeResidentUvTexture
           ? {
               uvOverlayOpacity:
@@ -4439,6 +4460,13 @@ function ImportedModel({
             : {}),
         uvOverlayBelowProjected: Number.isFinite(authoritativeMergedUvBoundaryOrder),
         topUvOverlayOpacity: authoritativeLocalRepaintUvLayers[0]?.opacity ?? 0,
+        baseTextureOpacity: authoritativeContentAwareOpacity,
+      });
+      document.body.dataset.contentAwareFinalMaterialReconcile = JSON.stringify({
+        visibleLayerCount: authoritativeContentAwareUvLayers.length,
+        textureReady: Boolean(authoritativeContentAwareTexture),
+        effectiveOpacity: authoritativeContentAwareOpacity ?? null,
+        atMs: Math.round(performance.now() * 10) / 10,
       });
       // The live eraser registry is the synchronous authority. React effect
       // closures can become stale while a large texture array uploads, so read

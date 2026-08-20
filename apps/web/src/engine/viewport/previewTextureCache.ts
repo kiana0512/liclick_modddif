@@ -5,7 +5,11 @@ import { waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle 
 const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 export const residentPreviewTextureCache = new Map<string, THREE.Texture>();
-const previewTextureUploadPromises = new WeakMap<THREE.Texture, Promise<void>>();
+const previewTextureUploadPromises = new WeakMap<
+  THREE.Texture,
+  WeakMap<THREE.WebGLRenderer, Promise<void>>
+>();
+const previewTextureReadyRenderers = new WeakMap<THREE.Texture, WeakSet<THREE.WebGLRenderer>>();
 // Keep both contexts at roughly 0.5MB. Larger detached submissions did not
 // improve S9 wall time and increased long frames on NVIDIA/Windows.
 const PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 128 * 1024;
@@ -15,6 +19,23 @@ const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = 128 * 1024;
 // NVIDIA under load. Both renderer paths rely on exact same-context ordering.
 const PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH = 4;
 let registeredPreviewRenderer: THREE.WebGLRenderer | undefined;
+
+/**
+ * A decoded preview enters the resident cache before its striped GPU upload
+ * finishes. Rendering that texture early exposes an allocated-but-incomplete
+ * sampler and can leave a restored UV/content-aware layer invisible until a
+ * later eye toggle invalidates the material. Only publish cache entries after
+ * the exact upload has completed.
+ */
+export function getReadyResidentPreviewTexture(imageUrl?: string, renderer?: THREE.WebGLRenderer) {
+  if (!imageUrl) return undefined;
+  const texture = residentPreviewTextureCache.get(imageUrl);
+  if (!texture) return undefined;
+  if (renderer) {
+    return previewTextureReadyRenderers.get(texture)?.has(renderer) ? texture : undefined;
+  }
+  return texture.userData.liclickPreviewStripedUploadReady === true ? texture : undefined;
+}
 type BitmapWorkerResponse =
   | { type: 'ready'; id: number; width: number; height: number }
   | { type: 'stripe'; requestId: number; bitmap: ImageBitmap }
@@ -254,8 +275,13 @@ export function uploadPreviewTextureInStripes(
   texture: THREE.Texture,
   options?: { allowWhileInteracting?: boolean; shouldCancel?: () => boolean },
 ) {
-  if (texture.userData.liclickPreviewStripedUploadReady === true) return Promise.resolve();
-  const pending = previewTextureUploadPromises.get(texture);
+  if (previewTextureReadyRenderers.get(texture)?.has(renderer)) return Promise.resolve();
+  let rendererUploads = previewTextureUploadPromises.get(texture);
+  if (!rendererUploads) {
+    rendererUploads = new WeakMap<THREE.WebGLRenderer, Promise<void>>();
+    previewTextureUploadPromises.set(texture, rendererUploads);
+  }
+  const pending = rendererUploads.get(renderer);
   if (pending) return pending;
   const upload = (async () => {
     const throwIfCancelled = () => {
@@ -280,6 +306,12 @@ export function uploadPreviewTextureInStripes(
       throwIfCancelled();
       renderer.initTexture(texture);
       texture.userData.liclickPreviewStripedUploadReady = true;
+      let readyRenderers = previewTextureReadyRenderers.get(texture);
+      if (!readyRenderers) {
+        readyRenderers = new WeakSet<THREE.WebGLRenderer>();
+        previewTextureReadyRenderers.set(texture, readyRenderers);
+      }
+      readyRenderers.add(renderer);
       return;
     }
     const context = renderer.getContext();
@@ -421,6 +453,12 @@ export function uploadPreviewTextureInStripes(
       }
       texture.source.dataReady = true;
       texture.userData.liclickPreviewStripedUploadReady = true;
+      let readyRenderers = previewTextureReadyRenderers.get(texture);
+      if (!readyRenderers) {
+        readyRenderers = new WeakSet<THREE.WebGLRenderer>();
+        previewTextureReadyRenderers.set(texture, readyRenderers);
+      }
+      readyRenderers.add(renderer);
       document.body.dataset.previewTextureStripedUploadMs = (performance.now() - startedAt).toFixed(
         1,
       );
@@ -434,7 +472,7 @@ export function uploadPreviewTextureInStripes(
       throw error;
     }
   })();
-  previewTextureUploadPromises.set(texture, upload);
-  void upload.catch(() => previewTextureUploadPromises.delete(texture));
+  rendererUploads.set(renderer, upload);
+  void upload.catch(() => rendererUploads?.delete(renderer));
   return upload;
 }

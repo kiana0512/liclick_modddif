@@ -7,10 +7,7 @@ import { createServer } from 'vite';
 import * as THREE from 'three';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const sceneRootSource = readFileSync(
-  path.join(root, 'src/engine/viewport/SceneRoot.tsx'),
-  'utf8',
-);
+const sceneRootSource = readFileSync(path.join(root, 'src/engine/viewport/SceneRoot.tsx'), 'utf8');
 const editorPageSource = readFileSync(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8');
 const generatePanelSource = readFileSync(
   path.join(root, 'src/components/panels/GeneratePanel.tsx'),
@@ -48,6 +45,10 @@ const localRepaintMaskWorkerSource = readFileSync(
 );
 const renderTargetUtilsSource = readFileSync(
   path.join(root, 'src/engine/capture/renderTargetUtils.ts'),
+  'utf8',
+);
+const previewTextureCacheSource = readFileSync(
+  path.join(root, 'src/engine/viewport/previewTextureCache.ts'),
   'utf8',
 );
 const gpuReadbackWorkerSource = readFileSync(
@@ -168,6 +169,21 @@ assert.match(
   sceneRootSource,
   /const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject\([\s\S]*?const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?hasVisibleUvContribution[\s\S]*?!uvMaterialUpdated[\s\S]*?!projectedMaterialUpdated[\s\S]*?setUvVisibilityRenderRevision/,
   'Opening an eye after an all-hidden cold restore must schedule a material pass when no resident shader accepted the uniform update.',
+);
+assert.match(
+  previewTextureCacheSource,
+  /function getReadyResidentPreviewTexture\([\s\S]*?previewTextureReadyRenderers\.get\(texture\)\?\.has\(renderer\)/,
+  'A decoded cache entry must not be published before its exact upload completes in the active renderer.',
+);
+assert.match(
+  previewTextureCacheSource,
+  /if \(previewTextureReadyRenderers\.get\(texture\)\?\.has\(renderer\)\) return Promise\.resolve\(\);[\s\S]*?readyRenderers\.add\(renderer\)/,
+  'A cached preview must upload again after project exit creates a new WebGL renderer.',
+);
+assert.match(
+  sceneRootSource,
+  /const authoritativeContentAwareUvLayers =[\s\S]*?getReadyResidentPreviewTexture\(authoritativeContentAwareUvLayers\[0\]\.imageUrl, gl\)[\s\S]*?syncProjectedLayerResidentTextureVisibilityInObject\(model\.group,[\s\S]*?baseTexture: authoritativeContentAwareTexture[\s\S]*?baseTextureOpacity: authoritativeContentAwareOpacity/,
+  'Final asynchronous material publication must reconcile the authoritative content-aware texture and eye opacity.',
 );
 assert.match(
   sceneRootSource,
@@ -1029,19 +1045,13 @@ try {
   const updatedUvLightDirection = [-0.8, 0.5, 0.25];
   const expectedUvLightDirection = new THREE.Vector3(...updatedUvLightDirection).normalize();
   assert.equal(
-    projection.syncProjectedLayerMaterialDisplayState(
-      mergedUvMaterial,
-      [],
-      false,
-      false,
-      {
-        enabled: true,
-        exposure: 1.1,
-        ambientIntensity: 0.45,
-        keyLightIntensity: 1.4,
-        keyLightDirection: updatedUvLightDirection,
-      },
-    ),
+    projection.syncProjectedLayerMaterialDisplayState(mergedUvMaterial, [], false, false, {
+      enabled: true,
+      exposure: 1.1,
+      ambientIntensity: 0.45,
+      keyLightIntensity: 1.4,
+      keyLightDirection: updatedUvLightDirection,
+    }),
     true,
     'Merged UV preview lighting controls must update the resident UV material.',
   );
