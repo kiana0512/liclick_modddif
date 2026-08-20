@@ -1,5 +1,8 @@
 # Workspace UI Refactor
 
+> Historical Phase 5 implementation note. Treat it as UI evolution context, not
+> as a complete inventory of the current editor.
+
 Phase 5 moves the editor from a fixed three-column layout to a viewport-first floating dock workspace.
 
 ## Why Change The Layout

@@ -1,34 +1,38 @@
 # Projected Layer Visibility, Blend, And Depth
 
-Earlier projected preview could look like the whole generated image was spread across the model because the shader mainly checked projector frustum bounds. The current path separates loose coverage from strict quality so a single projected image can still cover the visible surface, while bad samples do not dominate seams or overlaps.
+当前投影 visibility 已支持 Mask、linear-view Depth、Normal、backface、frustum 和对象矩阵补偿。旧的“multiview 仍是未来能力”和“depth 只是 grayscale approximation”不再成立。
 
-## Preview Rules
+## Per-fragment Rules
 
-For every projected fragment:
+1. 用保存的 camera projection/view matrix 投影当前 world position。
+2. 应用 capture object matrix 到当前 object matrix 的 delta。
+3. 拒绝 `clip.w <= 0`、NDC/frustum 外和 image UV 外样本。
+4. 应用 image-edge feather 与 source alpha。
+5. 读取 capture mask。
+6. 将 projected view depth 与 `depthEncoding='linear-view'` 的捕获深度比较；在邻域内允许有限 tolerance。
+7. 用 normal visibility/facing 辅助拒绝错误表面和 grazing noise。
+8. 应用 backface policy、minimum facing、opacity、strength 和 HSL。
+9. 计算 coverage 与 quality；surface-locked local repaint 使用更严格的 depth/normal 权限。
+10. 无有效投影样本时显示 base/imported material。
 
-1. Project world position by `projectionMatrix * viewMatrix`.
-2. Reject if clip `w <= 0` or NDC is outside `[-1, 1]`.
-3. Convert NDC to projected image UV.
-4. Feather near UV borders.
-5. Reject backfaces relative to the capture camera.
-6. If a mask image exists, reject low alpha/luminance.
-7. If a depth image exists, compare approximate projected depth with grayscale captured depth using a bias.
-8. Compute coverage from source alpha, layer opacity, view angle, and image-edge fade.
-9. Compute quality from coverage plus stricter depth, normal-angle, and edge confidence.
-10. If no projected sample covers the fragment, show the original/base material instead of a black edge, white mask, or checker diagnostic.
+## Blend And Overlay
 
-`Blend` mode is order-independent for the strongest candidates. It keeps the top projected samples by quality, mixes them with a coverage floor, and is intended for multi-view or overlapping generated layers. `Overlay` mode is order-sensitive and paints over the blended base, matching the layer-stack mental model.
-
-The projected preview also tracks each layer's object matrix at capture/generation time. The shader receives matrix-delta uniforms so projection can be evaluated relative to the current object transform. This is used by normal viewport preview and by Turntable WebM export, where the model rotates during recording and the projected texture must remain attached to the mesh.
-
-## Bake Rules
-
-UV bake uses the same idea per texel: interpolate world position/normal from UV rasterization, then apply frustum, mask, depth, source-alpha, and backface checks before sampling the generated image. Multi-layer bake uses the same loose coverage / strict quality split as preview: blend layers feed the order-independent quality composite, then overlay layers are applied in stack order. Dilation only expands already-written texel edges.
-
-## Depth Limit
-
-Current depth is an MVP grayscale image from `MeshDepthMaterial`, not a calibrated linear depth asset. It catches many obvious projection-through cases but should be replaced with a linear or packed depth buffer before production multiview.
+- `Blend` 适合多视图重叠：按质量保留强候选并组合，不简单依赖 layer order。
+- `Overlay` 按图层栈顺序覆盖 Blend base。
+- UV overlay 使用独立 sampler/合成路径，不把“未 flatten 的 UV layer”伪装成 baked BaseColor。
+- 大 stack 可使用 texture arrays 和 compact shader；系统还有 sampler budget 与 live-preview guard。
 
 ## Multiview Reuse
 
-Future multiview can reuse this visibility function per camera/layer, then composite accepted samples by view weight, angle, and mask confidence.
+多视图已复用同一套 visibility：每个 camera view 形成独立 Projected Layer，实时预览和 UV bake 都按 view coverage/quality 组合。批次结束后的 content-aware repair 根据 UV coverage 检测空洞，生成 repair layer，而不是把坏视角无条件铺满模型。
+
+## UV Bake Rules
+
+UV-space bake 对每个 texel 重构 world position/normal，并使用相同 Mask/Depth/Normal/backface/frustum/source-alpha 规则。Blend sources 先进入质量合成，Overlay sources 再按顺序应用。Padding/seam repair 只能扩展已确认的 UV coverage，不能绕过 authored mask permission。
+
+## Remaining Limits
+
+- Linear-view depth 仍是分辨率有限的 PNG 资产，不是逐像素 ray cast；薄壳、重叠面、透明面和极端 grazing angle 需要人工验证。
+- Normal 来自当前几何与捕获相机，错误/破损 mesh normal 会影响 visibility。
+- 纹理数组和 compact shader 缓解 sampler 限制，但显存、WebGL compile 和 texture upload 仍限制超大多视图栈。
+- Local repaint 的 authored mask 是硬权限边界；任何新 repair/merge 优化都必须验证未选区域 bitwise/visual 不被改写。

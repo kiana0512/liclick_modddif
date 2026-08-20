@@ -1,5 +1,8 @@
 # Windows Release Audit — Build 2026.07.17.1452
 
+> Historical release record for the retired Electron/legacy installer build.
+> It is not a current release or deployment guide.
+
 Date: 2026-07-17
 
 ## Release Scope

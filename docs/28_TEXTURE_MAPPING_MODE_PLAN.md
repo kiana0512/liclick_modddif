@@ -1,5 +1,9 @@
 # Texture Map Mode Plan And Current State
 
+> Historical plan/current-state snapshot. Multiview is now implemented through
+> multiple single-view jobs, and the user-facing Auto UV bake toggle no longer
+> exists. Use `docs/01`, `docs/06`, `docs/07`, and `docs/11` for current behavior.
+
 Texture Map mode is the clean-room path for the Modddif-like workflow: reference images describe the material, while the current MVP viewport model view describes object shape, pose, camera, and visible surface layout.
 
 This mode must not be treated as generic Liclick image generation. The required output is an aligned transparent projected texture layer that can be previewed on the model, adjusted in the layer stack, and baked into UV space.

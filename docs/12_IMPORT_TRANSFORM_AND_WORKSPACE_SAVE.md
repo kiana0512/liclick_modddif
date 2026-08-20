@@ -1,5 +1,9 @@
 # Import, Transform, And Workspace Save
 
+> Historical Phase 4 implementation note. It explains the original feature
+> landing, but current import, workspace, layer, and bake behavior is documented
+> in `README.md` and `docs/03`–`docs/15`.
+
 Phase 4 makes the editor safer to use before larger AI and export work lands.
 
 ## Import Normalization

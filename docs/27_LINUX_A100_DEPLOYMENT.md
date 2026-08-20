@@ -1,5 +1,10 @@
 # Linux A100 Deployment
 
+> Historical environment-specific A100/ComfyUI deployment snapshot. It contains
+> private-network addresses and the retired shared Atlas service-token login model.
+> For the current single-node Web service and Feishu OAuth path use `docs/60` and
+> `docs/61`; keep port `4517` here only as that deployment's explicit configuration.
+
 This is the current A100 deployment path for the shared server version.
 
 The recommended temporary public entry is the existing ComfyUI web server:

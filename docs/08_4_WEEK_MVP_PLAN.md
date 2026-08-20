@@ -1,5 +1,9 @@
 # Four-Week MVP Plan
 
+> Historical planning document. The four-week sequence is complete/obsolete as a
+> delivery tracker. Use `README.md`, `docs/README.md`, and the current feature
+> matrix for actual status.
+
 ## Week 1
 
 - WebUI shell.

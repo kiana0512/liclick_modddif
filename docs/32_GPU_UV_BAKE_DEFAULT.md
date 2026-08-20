@@ -1,5 +1,9 @@
 # GPU UV Bake Default
 
+> Historical engine decision. GPU-first projection bake remains available, but
+> the product no longer has a global Auto UV bake mode; current entry points are
+> documented in `docs/11_UV_BAKE_MVP_NOTES.md`.
+
 As of 2026-07-09, the UV bake production path is GPU-first with CPU fallback.
 
 ## Current decision

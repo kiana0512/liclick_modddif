@@ -1,6 +1,6 @@
 # Database Schema
 
-`apps/server/prisma/schema.prisma` defines the durable data model for local SQLite and future server deployment.
+`apps/server/prisma/schema.prisma` defines a target relational model for local SQLite experiments and a future database-backed server deployment. It is not the current runtime persistence layer.
 
 Primary entities:
 

@@ -25,6 +25,9 @@ Before adding a new dependency:
 3. Prefer permissive licenses.
 4. Document unusual license decisions.
 
-## Current Risk
+## Current Projection Dependency
 
-The initial stack uses common permissive open-source packages. `three-projected-material` is not included in the first commit because the projected material is stubbed; if added later, verify package maintenance, peer dependency compatibility, and license first.
+The projected-layer implementation is an LI3D-owned Three.js shader path.
+`three-projected-material` is not a current dependency. If a replacement or
+supplemental projection package is proposed later, review its license, maintenance,
+peer dependency compatibility, shader limits, and clean-room implications first.

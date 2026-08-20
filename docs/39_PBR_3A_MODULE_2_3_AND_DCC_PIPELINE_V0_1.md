@@ -1,5 +1,8 @@
 # LI3D PBR/3A 模块 2、3 与 DCC 联动流程基线 v0.1
 
+> 设计基线，不是当前交付清单。当前 Bake/Auto UV/Retopology/DCC 状态以
+> `README.md` 和 `docs/01_MODDDIF_FEATURE_BREAKDOWN.md` 为准。
+
 状态：初始开发基线
 
 版本：0.1
