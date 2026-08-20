@@ -337,7 +337,7 @@ async function applyOverlays(
       }
       const alpha = getProjectionOverlayAlpha(
         layerCoverage,
-        qualityMap[pixelIndex],
+        overlay.overlayMode === 'literal' ? 0 : qualityMap[pixelIndex],
         overlay.overlayMode,
       );
       if (alpha <= 0.0001) continue;

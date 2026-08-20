@@ -8,7 +8,11 @@ export type LocalRepaintSeamHarmonizationReport = {
   applied: boolean;
   blendWidth: number;
   sampledPixels: number;
-  reason?: 'empty-mask' | 'full-frame-mask' | 'insufficient-boundary-samples';
+  reason?:
+    | 'empty-mask'
+    | 'full-frame-mask'
+    | 'mask-too-thin'
+    | 'insufficient-boundary-samples';
 };
 
 type LabStats = {
@@ -291,15 +295,35 @@ export function harmonizeLocalRepaintPixels(input: {
       report: { applied: false, blendWidth: 0, sampledPixels: 0, reason: 'full-frame-mask' },
     };
   }
-  const minimumBlendWidth = input.options?.minBlendWidth ?? 8;
-  const maximumBlendWidth = input.options?.maxBlendWidth ?? 32;
-  const blendWidth = clamp(
+  const requestedMinimumBlendWidth = input.options?.minBlendWidth ?? 8;
+  const requestedMaximumBlendWidth = input.options?.maxBlendWidth ?? 32;
+  const requestedBlendWidth = clamp(
     Math.round(Math.min(width, height) * 0.018),
-    minimumBlendWidth,
-    maximumBlendWidth,
+    requestedMinimumBlendWidth,
+    requestedMaximumBlendWidth,
   );
   const insideDistance = distanceToValue(hardMaskResult.mask, width, height, 0);
   const outsideDistance = distanceToValue(hardMaskResult.mask, width, height, 1);
+  let maximumInsideDistance = 0;
+  for (let index = 0; index < hardMaskResult.mask.length; index += 1) {
+    if (hardMaskResult.mask[index] === 1) {
+      maximumInsideDistance = Math.max(maximumInsideDistance, insideDistance[index] ?? 0);
+    }
+  }
+  // A fixed 8-32 px band can consume a thin or fragmented brush selection in
+  // its entirety. Reserve at least the inner two thirds of the mask for the
+  // authored generation result and only harmonize the outermost ring. A
+  // one-pixel selection has no separable edge/interior, so leave it untouched.
+  if (maximumInsideDistance < 2) {
+    return {
+      pixels: new Uint8ClampedArray(generated),
+      report: { applied: false, blendWidth: 0, sampledPixels: 0, reason: 'mask-too-thin' },
+    };
+  }
+  const blendWidth = Math.min(
+    requestedBlendWidth,
+    Math.max(2, Math.floor(maximumInsideDistance / 3)),
+  );
   const innerStart = Math.max(2, Math.round(blendWidth * 0.2));
   let sampledPixels = 0;
   let corrected = new Uint8ClampedArray(generated);
@@ -346,8 +370,9 @@ export function harmonizeLocalRepaintPixels(input: {
   const output = new Uint8ClampedArray(corrected.length);
   for (let index = 0; index < hardMaskResult.mask.length; index += 1) {
     const offset = index * 4;
-    const distance = hardMaskResult.mask[index] === 1 ? (insideDistance[index] ?? 0) : 0;
-    if (distance >= blendWidth) {
+    const isInside = hardMaskResult.mask[index] === 1;
+    const distance = isInside ? (insideDistance[index] ?? 0) : 0;
+    if (!isInside || distance >= blendWidth) {
       output[offset] = corrected[offset] ?? 0;
       output[offset + 1] = corrected[offset + 1] ?? 0;
       output[offset + 2] = corrected[offset + 2] ?? 0;

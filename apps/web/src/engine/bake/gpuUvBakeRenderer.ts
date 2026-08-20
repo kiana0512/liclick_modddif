@@ -61,11 +61,14 @@ type GpuLayerStackBakeInput = {
   constrainDilationToInteriorHoles?: boolean;
   repairMissingUvSeams?: boolean;
   uvSeamRepairPixels?: number;
+  /** Keep straight RGBA in memory without uploading it to a compatibility canvas. */
+  skipCanvasUpload?: boolean;
   onProgress?: (progress: BakeProgress) => void;
 };
 
 export type GpuLayerStackBakeOutput = {
   canvas: HTMLCanvasElement;
+  imageData: ImageData;
   coverage: Uint8Array;
   sourceSizes: GpuLayerSourceSize[];
   postProcessedOnGpu: boolean;
@@ -1882,9 +1885,11 @@ export async function bakeProjectedLayerStackWithGpu(
     const canvas = document.createElement('canvas');
     canvas.width = resolution;
     canvas.height = resolution;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context) throw new Error('Could not create GPU UV bake canvas.');
-    context.putImageData(imageData, 0, 0);
+    if (!input.skipCanvasUpload) {
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) throw new Error('Could not create GPU UV bake canvas.');
+      context.putImageData(imageData, 0, 0);
+    }
 
     warnings.push(
       'GPU bake does not expose per-rejection texel counters yet; fallback CPU remains available for diagnostics.',
@@ -1892,6 +1897,7 @@ export async function bakeProjectedLayerStackWithGpu(
 
     return {
       canvas,
+      imageData,
       coverage,
       sourceSizes,
       postProcessedOnGpu: true,

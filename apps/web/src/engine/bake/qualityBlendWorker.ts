@@ -13,6 +13,11 @@ export type QualityBlendWorkerLayer = {
   renderedColor?: boolean;
 };
 
+export type QualityBlendWorkerOverlay = Omit<QualityBlendWorkerLayer, 'quality'> & {
+  /** Literal overlays use authored coverage directly and do not need a quality map. */
+  quality?: Float32Array;
+};
+
 export type QualityBlendVerification = {
   byteMismatches: number;
   alphaByteMismatches: number;
@@ -202,7 +207,7 @@ export function blendProjectedRastersInWorker(
   layers: QualityBlendWorkerLayer[],
   resolution: number,
   preserveCoverageConfidenceAlpha: boolean,
-  overlays: QualityBlendWorkerLayer[] = [],
+  overlays: QualityBlendWorkerOverlay[] = [],
 ) {
   const id = nextRequestId++;
   const transfers: Transferable[] = [];
@@ -224,8 +229,9 @@ export function blendProjectedRastersInWorker(
   });
   const workerOverlays = overlays.map((layer) => {
     const color = transferableBuffer(layer.color);
-    const quality = transferableBuffer(layer.quality);
-    transfers.push(color, quality);
+    const quality = layer.quality ? transferableBuffer(layer.quality) : new ArrayBuffer(0);
+    transfers.push(color);
+    if (quality.byteLength > 0) transfers.push(quality);
     return {
       color,
       quality,

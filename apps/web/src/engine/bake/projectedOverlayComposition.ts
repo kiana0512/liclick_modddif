@@ -25,6 +25,26 @@ export function getProjectedLayerOverlayMode(
 }
 
 /**
+ * CPU-parity composition resolves ordinary projected layers first and then
+ * applies projection overlays in order. Only the final contiguous literal run
+ * can therefore be collapsed without crossing a feathered overlay boundary.
+ */
+export function getBatchedLiteralOverlaySuffix<
+  T extends Pick<Layer, 'type' | 'id' | 'imageUrl' | 'blendMode'>,
+>(layers: readonly T[]) {
+  const overlays = layers.filter((layer) => getProjectedLayerOverlayMode(layer));
+  let suffixStart = overlays.length;
+  while (
+    suffixStart > 0 &&
+    getProjectedLayerOverlayMode(overlays[suffixStart - 1]) === 'literal'
+  ) {
+    suffixStart -= 1;
+  }
+  const suffix = overlays.slice(suffixStart);
+  return suffix.length > 1 ? suffix : [];
+}
+
+/**
  * Persistent projection overlays keep the historical quality feather. Local
  * repaint already owns a user-authored mask, so its source-over alpha must be
  * the rasterized coverage itself to match the live layer stack exactly.

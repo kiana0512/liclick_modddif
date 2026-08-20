@@ -41,7 +41,7 @@ try {
 
   const result = harmonizeLocalRepaintPixels({ generated, reference, mask, width, height });
   assert.equal(result.report.applied, true);
-  assert.equal(result.report.blendWidth, 8);
+  assert.ok(result.report.blendWidth >= 2 && result.report.blendWidth < 8);
   const centerOffset = (32 * width + 32) * 4;
   assert.deepEqual(
     Array.from(result.pixels.slice(centerOffset, centerOffset + 4)),
@@ -58,6 +58,33 @@ try {
     result.pixels[boundaryOffset + 3],
     generated[boundaryOffset + 3],
     'seam blending must leave authored alpha untouched',
+  );
+  const outsideOffset = (4 * width + 4) * 4;
+  assert.deepEqual(
+    Array.from(result.pixels.slice(outsideOffset, outsideOffset + 4)),
+    Array.from(generated.slice(outsideOffset, outsideOffset + 4)),
+    'pixels outside the authored mask must remain byte-identical',
+  );
+
+  const thinMask = new Uint8ClampedArray(mask.length);
+  for (let y = 20; y < 26; y += 1) {
+    for (let x = 8; x < 56; x += 1) {
+      thinMask.set([255, 255, 255, 255], (y * width + x) * 4);
+    }
+  }
+  const thinResult = harmonizeLocalRepaintPixels({
+    generated,
+    reference,
+    mask: thinMask,
+    width,
+    height,
+  });
+  assert.equal(thinResult.report.blendWidth, 2, 'thin masks should use a narrow edge ring');
+  const thinCoreOffset = (22 * width + 24) * 4;
+  assert.deepEqual(
+    Array.from(thinResult.pixels.slice(thinCoreOffset, thinCoreOffset + 4)),
+    Array.from(generated.slice(thinCoreOffset, thinCoreOffset + 4)),
+    'the core of a thin mask must remain the exact generated result',
   );
 
   const fullMask = new Uint8ClampedArray(mask.length).fill(255);

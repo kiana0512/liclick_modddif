@@ -28,6 +28,8 @@ export type LocalRepaintProjectionSource = {
   persistentImageUrl?: string;
   /** Untouched generated result retained for an exact legacy-mode rollback. */
   rawImageUrl?: string;
+  /** Version of boundary-only seam harmonization used by imageUrl. */
+  seamHarmonizationVersion?: number;
   /** Background source staging must not switch tools without an explicit click. */
   autoActivate?: boolean;
   allowedMaskUrl: string;

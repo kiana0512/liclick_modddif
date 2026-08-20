@@ -13,6 +13,8 @@ import {
   bakeProjectedLayerRastersWithGpu,
   bakeProjectedLayerStackWithGpu,
   getIsolatedUvBakeRenderer,
+  type GpuLayerRastersBakeOutput,
+  type GpuLayerStackBakeOutput,
   type GpuLayerSourceSize,
 } from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
@@ -41,6 +43,7 @@ import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import {
+  getBatchedLiteralOverlaySuffix,
   getProjectedLayerOverlayMode,
   getProjectionOverlayAlpha,
   type ProjectedOverlayMode,
@@ -1146,10 +1149,32 @@ export async function bakeVisibleProjectedLayersToTexture(
       if (gpuCompositeMode === 'cpu-parity') {
         const gpuRasterStartedAt = performance.now();
         markUvBakePerformancePhase('gpu-raster-readback');
-        const gpuBake = await bakeProjectedLayerRastersWithGpu({
+        // Local repaint layers are literal source-over overlays. Rasterizing every
+        // one through the CPU-parity path performs two full-resolution GPU
+        // readbacks per layer (colour + quality), although literal overlays never
+        // consume the quality map. Keep normal projections on the exact path, but
+        // collapse the top contiguous local-repaint overlay run on the GPU and
+        // read it back once. A failed batch automatically falls back to the old
+        // per-layer path, so this optimization never blocks a bake.
+        const batchedLiteralLayers = getBatchedLiteralOverlaySuffix(layers);
+        const batchedLiteralLayerIds = new Set(batchedLiteralLayers.map((layer) => layer.id));
+        const parityLayers = layers.filter((layer) => !batchedLiteralLayerIds.has(layer.id));
+        const emptyGpuBake = (): GpuLayerRastersBakeOutput => ({
+          rasters: [],
+          sourceSizes: [],
+          totalTriangles: 0,
+          processedTriangles: 0,
+          coveredPixels: 0,
+          skippedPixels: 0,
+          warnings: [],
+        });
+        const createGpuBakeInput = (
+          bakeLayers: Layer[],
+          progressOffset: number,
+        ): Parameters<typeof bakeProjectedLayerRastersWithGpu>[0] => ({
           renderer,
           group: importedModel.group,
-          layers,
+          layers: bakeLayers,
           resolution: input.resolution,
           enableBackfaceCulling: input.enableBackfaceCulling,
           enableDilation: false,
@@ -1165,10 +1190,48 @@ export async function bakeVisibleProjectedLayersToTexture(
           onProgress: (progress) =>
             input.onProgress?.({
               ...progress,
-              progress: 0.04 + clampProgress(progress.progress) * 0.84,
+              progress:
+                0.04 +
+                clampProgress(
+                  (progressOffset + clampProgress(progress.progress) * bakeLayers.length) /
+                    layers.length,
+                ) *
+                  0.84,
+              layerIndex:
+                progress.layerIndex === undefined
+                  ? progress.layerIndex
+                  : progressOffset + progress.layerIndex,
+              layerCount: layers.length,
             }),
         });
+
+        const gpuBake = parityLayers.length
+          ? await bakeProjectedLayerRastersWithGpu(createGpuBakeInput(parityLayers, 0))
+          : emptyGpuBake();
+        let literalOverlayBake: GpuLayerStackBakeOutput | undefined;
+        let literalFallbackBake = emptyGpuBake();
+        let literalBatchError: unknown;
+        if (batchedLiteralLayers.length > 0) {
+          const literalProgressOffset = parityLayers.length;
+          try {
+            literalOverlayBake = await bakeProjectedLayerStackWithGpu({
+              ...createGpuBakeInput(batchedLiteralLayers, literalProgressOffset),
+              outputAlpha: 'transparent',
+              compositeMode: 'coverage-alpha',
+              skipCanvasUpload: true,
+            });
+          } catch (error) {
+            literalBatchError = error;
+            literalFallbackBake = await bakeProjectedLayerRastersWithGpu(
+              createGpuBakeInput(batchedLiteralLayers, literalProgressOffset),
+            );
+          }
+        }
         performanceBreakdown.gpuRasterAndReadbackMs = performance.now() - gpuRasterStartedAt;
+        performanceBreakdown.localRepaintBatchedLayers = literalOverlayBake?.sourceSizes.length ?? 0;
+        performanceBreakdown.localRepaintSavedFullResolutionReadbacks = literalOverlayBake
+          ? literalOverlayBake.sourceSizes.length * 2 - 1
+          : 0;
 
         input.onProgress?.({
           phase: 'compositing',
@@ -1182,8 +1245,46 @@ export async function bakeVisibleProjectedLayersToTexture(
         const context = canvas.getContext('2d', { willReadFrequently: true });
         if (!context) throw new Error('Could not create GPU parity UV bake canvas.');
         const overlayRasters: OverlayRaster[] = [];
+        let batchedLiteralOverlay:
+          | { layer: Layer; imageData: ImageData; mode: ProjectedOverlayMode }
+          | undefined;
         const normalRasters: Array<{ color: Uint8ClampedArray; quality: Float32Array }> = [];
-        const warnings = [...gpuBake.warnings];
+        const combinedRasters = [...gpuBake.rasters, ...literalFallbackBake.rasters];
+        const combinedSourceSizes = [
+          ...gpuBake.sourceSizes,
+          ...literalFallbackBake.sourceSizes,
+          ...(literalOverlayBake?.sourceSizes ?? []),
+        ];
+        const combinedTotalTriangles =
+          gpuBake.totalTriangles +
+          literalFallbackBake.totalTriangles +
+          (literalOverlayBake?.totalTriangles ?? 0);
+        const combinedProcessedTriangles =
+          gpuBake.processedTriangles +
+          literalFallbackBake.processedTriangles +
+          (literalOverlayBake?.processedTriangles ?? 0);
+        const combinedCoveredPixels =
+          gpuBake.coveredPixels +
+          literalFallbackBake.coveredPixels +
+          (literalOverlayBake?.coveredPixels ?? 0);
+        const combinedSkippedPixels =
+          gpuBake.skippedPixels +
+          literalFallbackBake.skippedPixels +
+          (literalOverlayBake?.skippedPixels ?? 0);
+        const warnings = [
+          ...gpuBake.warnings,
+          ...literalFallbackBake.warnings,
+          ...(literalOverlayBake?.warnings ?? []),
+        ];
+        if (literalOverlayBake) {
+          warnings.push(
+            `Batched ${literalOverlayBake.sourceSizes.length} contiguous local repaint overlays into one GPU readback.`,
+          );
+        } else if (literalBatchError) {
+          warnings.push(
+            `Local repaint overlay batching failed and used the exact per-layer fallback: ${literalBatchError instanceof Error ? literalBatchError.message : String(literalBatchError)}`,
+          );
+        }
         if (layers.length > 1) {
           warnings.push(
             layers.some((layer) => getProjectedLayerOverlayMode(layer))
@@ -1194,7 +1295,7 @@ export async function bakeVisibleProjectedLayersToTexture(
 
         let writtenTexels = 0;
         markUvBakePerformancePhase('quality-accumulate');
-        for (const raster of gpuBake.rasters) {
+        for (const raster of combinedRasters) {
           const layerImageData = raster.imageData;
           const overlayMode = getProjectedLayerOverlayMode(raster.layer);
           if (overlayMode) {
@@ -1208,16 +1309,35 @@ export async function bakeVisibleProjectedLayersToTexture(
             normalRasters.push({ color: layerImageData.data, quality: raster.quality });
           }
         }
+        if (literalOverlayBake) {
+          batchedLiteralOverlay = {
+            layer: batchedLiteralLayers[batchedLiteralLayers.length - 1],
+            imageData: literalOverlayBake.imageData,
+            mode: 'literal',
+          };
+        }
         const qualityBlend = await blendProjectedRastersInWorker(
           normalRasters,
           input.resolution,
           input.preserveCoverageConfidenceAlpha ?? false,
-          overlayRasters.map((raster) => ({
-            color: raster.imageData.data,
-            quality: raster.quality,
-            overlayMode: raster.mode,
-            renderedColor: usesUnlitRenderedColor(raster.layer),
-          })),
+          [
+            ...overlayRasters.map((raster) => ({
+              color: raster.imageData.data,
+              quality: raster.quality,
+              overlayMode: raster.mode,
+              renderedColor: usesUnlitRenderedColor(raster.layer),
+            })),
+            ...(batchedLiteralOverlay
+              ? [{
+                  color: batchedLiteralOverlay.imageData.data,
+                  // Literal overlay alpha is coverage-only, so the worker can
+                  // omit the full-resolution quality map as well as all of its
+                  // GPU readbacks.
+                  overlayMode: batchedLiteralOverlay.mode,
+                  renderedColor: usesUnlitRenderedColor(batchedLiteralOverlay.layer),
+                }]
+              : []),
+          ],
         );
         const composite = qualityBlend.imageData;
         const qualityCoverage = qualityBlend.coverage;
@@ -1358,12 +1478,12 @@ export async function bakeVisibleProjectedLayersToTexture(
           layerId: layers[0].id,
           width: input.resolution,
           height: input.resolution,
-          totalTriangles: gpuBake.totalTriangles,
-          processedTriangles: gpuBake.processedTriangles,
-          coveredPixels: gpuBake.coveredPixels,
-          skippedPixels: gpuBake.skippedPixels,
+          totalTriangles: combinedTotalTriangles,
+          processedTriangles: combinedProcessedTriangles,
+          coveredPixels: combinedCoveredPixels,
+          skippedPixels: combinedSkippedPixels,
           totalTexels: input.resolution * input.resolution,
-          inFrustumTexels: gpuBake.coveredPixels,
+          inFrustumTexels: combinedCoveredPixels,
           maskRejectedTexels: 0,
           depthRejectedTexels: 0,
           backfaceRejectedTexels: 0,
@@ -1399,7 +1519,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           );
         }
         console.info('[Liclick 3D Texture] GPU CPU-parity UV bake report:', report);
-        logTransparentBakeSizeDiagnostics(input, canvas, bakedTexture, gpuBake.sourceSizes);
+        logTransparentBakeSizeDiagnostics(input, canvas, bakedTexture, combinedSourceSizes);
 
         return {
           bakedTexture,

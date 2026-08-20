@@ -39,6 +39,8 @@ export type Layer = {
   localRepaintSourceUrl?: string;
   /** Untouched result retained alongside a seam-enhanced projection source. */
   localRepaintRawSourceUrl?: string;
+  /** Version of boundary-only seam harmonization used by the active source. */
+  localRepaintSeamHarmonizationVersion?: number;
   /** Cumulative projection-space brush alpha retained without RGBA readback. */
   localRepaintMaskUrl?: string;
   renderedColor?: boolean;

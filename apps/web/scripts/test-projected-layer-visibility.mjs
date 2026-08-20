@@ -644,21 +644,31 @@ assert.match(
   'Local repaint apply and erase must share the same projected brush path.',
 );
 const repaintSourceTransparency = viewportCanvasSource.match(
-  /function constrainLocalRepaintFalloffToSourceContent\([\s\S]*?\r?\n}\r?\n/,
+  /function createLocalRepaintFalloffCanvasAsync\([\s\S]*?\r?\n}\r?\n/,
 )?.[0];
 assert(
   repaintSourceTransparency,
-  'Expected local repaint projection to constrain brush coverage to generated content alpha.',
+  'Expected local repaint projection to prepare brush-mask falloff.',
 );
 assert.match(
   repaintSourceTransparency,
-  /if \(depthImage\)[\s\S]*?createPackedDepthVisibilityMask[\s\S]*?else \{[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
-  'Local repaint projection must prefer geometry depth while retaining its legacy backdrop fallback.',
+  /brush-mask-only-v1[\s\S]*?createLocalRepaintFalloffInWorker\(\{[\s\S]*?mask: allowedMaskImage[\s\S]*?width[\s\S]*?height/,
+  'Local repaint projection falloff must be derived only from the authored brush mask.',
+);
+assert.doesNotMatch(
+  repaintSourceTransparency,
+  /sourceImage|depthImage|removeEdgeConnectedNeutralBackground|createPackedDepthVisibilityMask|destination-in/,
+  'Projection falloff must not cut the generated texture using source alpha, depth or colour.',
 );
 assert.match(
   viewportCanvasSource,
-  /source\.depthUrl[\s\S]*?loadImageElement\(source\.depthUrl\)[\s\S]*?createLocalRepaintFalloffCanvasAsync\([\s\S]*?depthImage/,
-  'Local repaint preparation must decode its captured depth for geometry-derived brush coverage.',
+  /imageUrl: source\.persistentImageUrl \?\? source\.imageUrl[\s\S]*?maskUrl: composite\.maskUrl[\s\S]*?depthUrl: undefined[\s\S]*?depthEncoding: undefined/,
+  'Persisted local repaint projection must not carry a depth cutout asset.',
+);
+assert.match(
+  viewportCanvasSource,
+  /createProjectedLayerMaterial\(\{[\s\S]*?maskUrl: composite\.maskUrl[\s\S]*?useDepthCheck: false[\s\S]*?useNormalCheck: false/,
+  'The live local repaint projection must not run depth or normal cutout checks.',
 );
 assert.match(
   generatePanelSource,
@@ -681,8 +691,13 @@ const repaintFalloffWorkerSource = readFileSync(
 );
 assert.match(
   repaintFalloffWorkerSource,
-  /weightTotal[\s\S]*?farthestCornerRadius[\s\S]*?fadeEndRadius[\s\S]*?if \(depth\)[\s\S]*?createPackedDepthVisibilityMask[\s\S]*?removeEdgeConnectedNeutralBackground\(sourcePixels, 'dark-only'\)[\s\S]*?globalCompositeOperation = 'destination-in'/,
-  'The worker must preserve the authored core and prefer geometry depth for its projection silhouette.',
+  /weightTotal[\s\S]*?farthestCornerRadius[\s\S]*?fadeEndRadius[\s\S]*?transferToImageBitmap/,
+  'The worker must preserve authored brush falloff without an extra texture silhouette.',
+);
+assert.doesNotMatch(
+  repaintFalloffWorkerSource,
+  /\bsource\b|\bdepth\b|removeEdgeConnectedNeutralBackground|createPackedDepthVisibilityMask|destination-in/,
+  'The worker must not infer local repaint transparency from source alpha, depth or colour.',
 );
 assert.match(
   editorPageSource,

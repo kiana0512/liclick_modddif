@@ -20,6 +20,7 @@
     "test:model-export-texture-orientation": "node scripts/test-model-export-texture-orientation.mjs",
     "test:model-placement-camera-focus": "node scripts/test-model-placement-camera-focus.mjs",
     "test:local-runtime-health": "node scripts/test-local-runtime-health.mjs",
+    "test:local-repaint-bake-batching": "node scripts/test-local-repaint-bake-batching.mjs",
     "test:local-repaint-seam-harmonization": "node scripts/test-local-repaint-seam-harmonization.mjs",
     "test:performance-lab-metrics": "node scripts/test-performance-lab-metrics.mjs",
     "test:project-thumbnail-policy": "node scripts/test-project-thumbnail-policy.mjs",

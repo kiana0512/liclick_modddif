@@ -98,10 +98,6 @@ import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import {
-  createPackedDepthVisibilityMask,
-  removeEdgeConnectedNeutralBackground,
-} from '@/engine/localRepaint/resultPreviewUtils';
-import {
   isViewportInteractionBusy,
   markViewportInteractionEnd,
 } from './viewportInteractionState';
@@ -4634,36 +4630,26 @@ async function createLocalRepaintLiveSource(
 
 const localRepaintFalloffCanvasCache = new WeakMap<
   HTMLImageElement,
-  WeakMap<HTMLImageElement, Map<string, Promise<HTMLCanvasElement>>>
+  Map<string, Promise<HTMLCanvasElement>>
 >();
 
 function createLocalRepaintFalloffCanvasAsync(
   allowedMaskImage: HTMLImageElement,
-  sourceImage: HTMLImageElement,
-  depthImage: HTMLImageElement | undefined,
   width: number,
   height: number,
 ) {
-  const depthKey = depthImage?.currentSrc || depthImage?.src || 'legacy-colour';
-  const sizeKey = `${width}x${height}:${depthKey}`;
+  const sizeKey = `${width}x${height}:brush-mask-only-v1`;
   let maskCache = localRepaintFalloffCanvasCache.get(allowedMaskImage);
   if (!maskCache) {
-    maskCache = new WeakMap();
+    maskCache = new Map();
     localRepaintFalloffCanvasCache.set(allowedMaskImage, maskCache);
   }
-  let sourceCache = maskCache.get(sourceImage);
-  if (!sourceCache) {
-    sourceCache = new Map();
-    maskCache.set(sourceImage, sourceCache);
-  }
-  const cached = sourceCache.get(sizeKey);
+  const cached = maskCache.get(sizeKey);
   if (cached) return cached;
   const pending = (async () => {
     try {
       const { bitmap, processMs } = await createLocalRepaintFalloffInWorker({
         mask: allowedMaskImage,
-        source: sourceImage,
-        depth: depthImage,
         width,
         height,
       });
@@ -4684,66 +4670,14 @@ function createLocalRepaintFalloffCanvasAsync(
       return canvas;
     } catch (error) {
       console.warn('[Liclick 3D Texture] Falloff worker unavailable; using main thread.', error);
-      return constrainLocalRepaintFalloffToSourceContent(
-        createLocalRepaintFalloffCanvas(allowedMaskImage, width, height),
-        sourceImage,
-        depthImage,
-      );
+      return createLocalRepaintFalloffCanvas(allowedMaskImage, width, height);
     }
   })();
-  sourceCache.set(sizeKey, pending);
+  maskCache.set(sizeKey, pending);
   void pending.catch(() => {
-    if (sourceCache?.get(sizeKey) === pending) sourceCache.delete(sizeKey);
+    if (maskCache?.get(sizeKey) === pending) maskCache.delete(sizeKey);
   });
   return pending;
-}
-
-function constrainLocalRepaintFalloffToSourceContent(
-  falloffCanvas: HTMLCanvasElement,
-  sourceImage: HTMLImageElement,
-  depthImage?: HTMLImageElement,
-) {
-  const width = falloffCanvas.width;
-  const height = falloffCanvas.height;
-  const sourceMaskCanvas = document.createElement('canvas');
-  sourceMaskCanvas.width = width;
-  sourceMaskCanvas.height = height;
-  const sourceMaskContext = sourceMaskCanvas.getContext('2d', { willReadFrequently: true });
-  const outputCanvas = document.createElement('canvas');
-  outputCanvas.width = width;
-  outputCanvas.height = height;
-  const outputContext = outputCanvas.getContext('2d');
-  if (!sourceMaskContext || !outputContext) return falloffCanvas;
-
-  let alphaMask: ImageData;
-  if (depthImage) {
-    sourceMaskContext.drawImage(depthImage, 0, 0, width, height);
-    alphaMask = createPackedDepthVisibilityMask(
-      sourceMaskContext.getImageData(0, 0, width, height),
-    );
-  } else {
-    // Legacy captures have no depth asset. Retain the colour-based fallback so
-    // their generated backdrop is still excluded from model projection.
-    sourceMaskContext.drawImage(sourceImage, 0, 0, width, height);
-    const sourcePixels = sourceMaskContext.getImageData(0, 0, width, height);
-    const transparentSource = removeEdgeConnectedNeutralBackground(sourcePixels, 'dark-only');
-    alphaMask = sourceMaskContext.createImageData(width, height);
-    for (let offset = 0; offset < alphaMask.data.length; offset += 4) {
-      alphaMask.data[offset] = 255;
-      alphaMask.data[offset + 1] = 255;
-      alphaMask.data[offset + 2] = 255;
-      alphaMask.data[offset + 3] = transparentSource.imageData.data[offset + 3];
-    }
-  }
-  sourceMaskContext.putImageData(alphaMask, 0, 0);
-
-  // Keep the cached visibility falloff immutable. A capture mask may be reused
-  // by another generation whose transparent subject silhouette is different.
-  outputContext.drawImage(falloffCanvas, 0, 0);
-  outputContext.globalCompositeOperation = 'destination-in';
-  outputContext.drawImage(sourceMaskCanvas, 0, 0);
-  outputContext.globalCompositeOperation = 'source-over';
-  return outputCanvas;
 }
 
 type PaintableMeshCache = {
@@ -5840,6 +5774,14 @@ function isLocalRepaintSourceForLayer(
   layer: Layer | undefined,
 ) {
   if (!source || !isEditableLocalRepaintProjectionLayer(layer)) return false;
+  if (
+    getLocalRepaintSeamMode() === 'enhanced' &&
+    layer.localRepaintRawSourceUrl &&
+    layer.localRepaintSeamHarmonizationVersion !== 2 &&
+    source.imageUrl !== layer.localRepaintRawSourceUrl
+  ) {
+    return false;
+  }
   if (source.targetLayerId !== layer.replacementTargetLayerId) return false;
   if (layer.generationId) return source.generationId === layer.generationId;
   if (layer.captureId) return source.captureId === layer.captureId;
@@ -6549,7 +6491,8 @@ function SurfacePaintOverlay() {
     const projectionCamera = activePaintLayer.camera;
     const enhancedSourceUrl = activePaintLayer.imageUrl || activePaintLayer.localRepaintSourceUrl;
     const sourceUrl =
-      getLocalRepaintSeamMode() === 'legacy'
+      getLocalRepaintSeamMode() === 'legacy' ||
+      activePaintLayer.localRepaintSeamHarmonizationVersion !== 2
         ? activePaintLayer.localRepaintRawSourceUrl || enhancedSourceUrl
         : enhancedSourceUrl;
     const savedMaskUrl = activePaintLayer.maskUrl || activePaintLayer.localRepaintMaskUrl;
@@ -6575,11 +6518,9 @@ function SurfacePaintOverlay() {
         imageUrl: sourceUrl,
         persistentImageUrl: sourceUrl,
         rawImageUrl: activePaintLayer.localRepaintRawSourceUrl,
+        seamHarmonizationVersion: activePaintLayer.localRepaintSeamHarmonizationVersion,
         autoActivate: false,
         allowedMaskUrl,
-        depthUrl: activePaintLayer.depthUrl,
-        depthEncoding: activePaintLayer.depthEncoding,
-        normalUrl: activePaintLayer.normalUrl,
         objectId: activePaintLayer.objectId,
         objectMatrixWorld: activePaintLayer.objectMatrixWorld,
         camera: projectionCamera,
@@ -8675,15 +8616,7 @@ function SurfacePaintOverlay() {
       // The generated visibility mask is authoritative. Never turn a failed
       // mask fetch into unrestricted projection opacity.
       loadImageElement(source.allowedMaskUrl),
-      source.depthUrl
-        ? loadImageElement(source.depthUrl).catch((error) => {
-            console.warn(
-              '[Liclick 3D Texture] Could not decode local repaint depth silhouette; using legacy colour fallback.',
-              error,
-            );
-            return undefined;
-          })
-        : Promise.resolve(undefined),
+      Promise.resolve(undefined),
     ])
       .then(async ([sourceImage, allowedMaskImage, depthImage]) => {
         if (cancelled) return;
@@ -8697,8 +8630,6 @@ function SurfacePaintOverlay() {
         const liveMaskSize = getLocalRepaintLiveMaskSize(sourceWidth, sourceHeight);
         const falloffCanvas = await createLocalRepaintFalloffCanvasAsync(
           allowedMaskImage,
-          sourceImage,
-          depthImage,
           liveMaskSize.width,
           liveMaskSize.height,
         );
@@ -9386,15 +9317,6 @@ function SurfacePaintOverlay() {
       }
       if (!composite) return undefined;
       updateLocalRepaintProjectionMatrix(composite, model, localRepaintSource);
-      const runtimeDepth =
-        localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
-          ? localRepaintRuntimeDepthRef.current.depthUrl
-          : undefined;
-      const runtimeNormal =
-        localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
-          ? localRepaintRuntimeDepthRef.current.normalUrl
-          : undefined;
-
       const projectedLayer: Layer = {
         ...existingLayer,
         id: layerId,
@@ -9405,9 +9327,9 @@ function SurfacePaintOverlay() {
         imageUrl:
           localRepaintSourceImageRef.current?.previewImageUrl ?? localRepaintSource.imageUrl,
         maskUrl: composite.maskUrl,
-        depthUrl: runtimeDepth ?? localRepaintSource.depthUrl,
-        depthEncoding: runtimeDepth ? 'linear-view' : localRepaintSource.depthEncoding,
-        normalUrl: runtimeNormal,
+        depthUrl: undefined,
+        depthEncoding: undefined,
+        normalUrl: undefined,
         objectId: localRepaintSource.objectId ?? model.objectId,
         objectMatrixWorld:
           localRepaintSource.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
@@ -9548,15 +9470,6 @@ function SurfacePaintOverlay() {
       if (!previewImageUrl) return undefined;
       model.group.updateMatrixWorld(true);
       const compileStartedAt = performance.now();
-      const runtimeDepth =
-        localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
-          ? localRepaintRuntimeDepthRef.current.depthUrl
-          : undefined;
-      const visibilityDepthUrl = runtimeDepth ?? source.depthUrl;
-      const visibilityNormalUrl =
-        localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
-          ? localRepaintRuntimeDepthRef.current.normalUrl
-          : undefined;
       const persistedPresentationLayer = useLayerStore
         .getState()
         .layers.find((layer) => layer.id === composite.layerId);
@@ -9565,9 +9478,6 @@ function SurfacePaintOverlay() {
         imageUrl: previewImageUrl,
         maskUrl: composite.maskUrl,
         maskSpace: 'projection',
-        depthUrl: visibilityDepthUrl,
-        depthIsLinearView: runtimeDepth ? true : source.depthEncoding === 'linear-view',
-        normalUrl: visibilityNormalUrl,
         // Capture normals are smooth-shaded for image generation, while this
         // material evaluates flat derivative normals. Comparing the two clips
         // valid curved and low-poly regions into permanent paint dead zones.
@@ -9587,8 +9497,8 @@ function SurfacePaintOverlay() {
         lightness: (persistedPresentationLayer?.adjustments?.lightness ?? 0) / 100,
         depthTest: true,
         useMask: true,
-        useDepthCheck: Boolean(visibilityDepthUrl),
-        useNormalCheck: Boolean(visibilityNormalUrl),
+        useDepthCheck: false,
+        useNormalCheck: false,
         renderedColor: false,
         transparentProjectionOnly: true,
         minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
@@ -10813,10 +10723,6 @@ function SurfacePaintOverlay() {
             isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
           );
           const previewLayer = useSceneStore.getState().localRepaintPreviewLayer;
-          const runtimeDepth =
-            localRepaintRuntimeDepthRef.current?.sourceKey === composite.sourceKey
-              ? localRepaintRuntimeDepthRef.current.depthUrl
-              : undefined;
           const persistedLayer: Layer = {
             ...(previewLayer?.id === composite.layerId ? previewLayer : existingProjectionLayer),
             id: composite.layerId,
@@ -10833,8 +10739,9 @@ function SurfacePaintOverlay() {
             // active GPU overlay only and must not become durable layer data.
             imageUrl: source.persistentImageUrl ?? source.imageUrl,
             maskUrl: composite.maskUrl,
-            depthUrl: runtimeDepth ?? source.depthUrl,
-            depthEncoding: runtimeDepth ? 'linear-view' : source.depthEncoding,
+            depthUrl: undefined,
+            depthEncoding: undefined,
+            normalUrl: undefined,
             objectId: source.objectId ?? model.objectId,
             objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
             camera: source.camera,
@@ -10843,6 +10750,7 @@ function SurfacePaintOverlay() {
             replacementTargetLayerId: source.targetLayerId,
             localRepaintSourceUrl: source.persistentImageUrl ?? source.imageUrl,
             localRepaintRawSourceUrl: source.rawImageUrl,
+            localRepaintSeamHarmonizationVersion: source.seamHarmonizationVersion,
             localRepaintMaskUrl: composite.maskUrl,
             renderedColor: false,
             minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
@@ -10975,14 +10883,9 @@ function SurfacePaintOverlay() {
           type: 'projected',
           imageUrl: source.imageUrl,
           maskUrl: maskSnapshotUrl,
-          depthUrl:
-            localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
-              ? localRepaintRuntimeDepthRef.current.depthUrl
-              : source.depthUrl,
-          depthEncoding:
-            localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
-              ? 'linear-view'
-              : source.depthEncoding,
+          depthUrl: undefined,
+          depthEncoding: undefined,
+          normalUrl: undefined,
           objectId: source.objectId ?? model.objectId,
           objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
           camera: source.camera,

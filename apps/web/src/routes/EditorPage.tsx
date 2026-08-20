@@ -1013,6 +1013,7 @@ export function EditorPage({
         persistentImageUrl: string;
         rawImageUrl: string;
         seamMode: LocalRepaintSeamMode;
+        seamHarmonizationVersion?: number;
       }>
     >(),
   );
@@ -5364,9 +5365,11 @@ export function EditorPage({
         typeof metadata.harmonizedResultUrl === 'string'
           ? metadata.harmonizedResultUrl
           : undefined;
+      const reusableHarmonizedResultUrl =
+        metadata.seamHarmonizationVersion === 2 ? harmonizedResultUrl : undefined;
       const selectedResultUrl =
-        seamMode === 'enhanced' && harmonizedResultUrl
-          ? harmonizedResultUrl
+        seamMode === 'enhanced' && reusableHarmonizedResultUrl
+          ? reusableHarmonizedResultUrl
           : rawResultUrl;
       const cacheKey = [
         seamMode,
@@ -5383,18 +5386,20 @@ export function EditorPage({
         persistentImageUrl: rawResultUrl,
         rawImageUrl: rawResultUrl,
         seamMode: 'legacy' as const,
+        seamHarmonizationVersion: undefined,
       };
       const promise = (async () => {
         // This is an explicit bypass, not an approximation of the old path.
         // Old projects without the archived flat-colour reference also retain
         // their exact legacy behaviour.
         if (seamMode === 'legacy' || !referenceUrl) return legacyResult;
-        if (harmonizedResultUrl) {
+        if (reusableHarmonizedResultUrl) {
           return {
-            imageUrl: harmonizedResultUrl,
-            persistentImageUrl: harmonizedResultUrl,
+            imageUrl: reusableHarmonizedResultUrl,
+            persistentImageUrl: reusableHarmonizedResultUrl,
             rawImageUrl: rawResultUrl,
             seamMode,
+            seamHarmonizationVersion: 2,
           };
         }
         try {
@@ -5417,7 +5422,7 @@ export function EditorPage({
                   projectId: generationProjectId,
                   category: 'generations',
                   blob: result.blob,
-                  filename: `${generation.id}-seam-harmonized-v1.png`,
+                  filename: `${generation.id}-seam-harmonized-v2.png`,
                 })
               ).asset.url;
             } catch (error) {
@@ -5444,7 +5449,7 @@ export function EditorPage({
               ...latestGeneration.metadata,
               rawResultUrl: persistentRawResultUrl,
               harmonizedResultUrl: persistentImageUrl,
-              seamHarmonizationVersion: 1,
+              seamHarmonizationVersion: 2,
               seamHarmonizationBlendWidth: result.report.blendWidth,
               seamHarmonizationSampleCount: result.report.sampledPixels,
               seamHarmonizationProcessMs: result.processMs,
@@ -5456,6 +5461,7 @@ export function EditorPage({
             persistentImageUrl,
             rawImageUrl: persistentRawResultUrl,
             seamMode,
+            seamHarmonizationVersion: 2,
           };
         } catch (error) {
           // Enhancements are never allowed to make projection unavailable.
@@ -5673,6 +5679,7 @@ export function EditorPage({
           imageUrl: projectionImage.imageUrl,
           persistentImageUrl: projectionImage.persistentImageUrl,
           rawImageUrl: projectionImage.rawImageUrl,
+          seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
           depthUrl: generationCapture.depthUrl,
@@ -5953,6 +5960,7 @@ export function EditorPage({
         persistentImageUrl: string;
         rawImageUrl: string;
         seamMode: LocalRepaintSeamMode;
+        seamHarmonizationVersion?: number;
       };
       try {
         projectionImage = await getLocalRepaintProjectionImage(
@@ -6012,6 +6020,7 @@ export function EditorPage({
         imageUrl: projectionImage.imageUrl,
         persistentImageUrl: projectionImage.persistentImageUrl,
         rawImageUrl: projectionImage.rawImageUrl,
+        seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,
         depthUrl: generationCapture?.depthUrl,
