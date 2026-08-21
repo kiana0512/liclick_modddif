@@ -9,6 +9,8 @@ import {
   nextProjectRevision,
   projectRevisionMatches,
   parseProjectCommand,
+  parseCreateAssetUploadIntent,
+  parseCompleteAssetUploadIntent,
   selectLocalComputePlan,
 } from '../dist/index.js';
 
@@ -135,5 +137,38 @@ test('parses versioned project commands and rejects malformed payloads', () => {
   assert.throws(
     () => parseProjectCommand({ ...command, id: '../escape' }),
     /command id/,
+  );
+});
+
+test('validates direct asset transfer metadata', () => {
+  const intent = parseCreateAssetUploadIntent({
+    protocolVersion: 1,
+    category: 'layers',
+    filename: 'paint.png',
+    mimeType: 'image/png',
+    sizeBytes: 1024,
+    sha256: 'a'.repeat(64),
+  });
+  assert.equal(intent.category, 'layers');
+  assert.equal(intent.mimeType, 'image/png');
+  assert.throws(
+    () => parseCreateAssetUploadIntent({ ...intent, filename: '../escape.png' }),
+    /filename/,
+  );
+  assert.throws(
+    () => parseCreateAssetUploadIntent({ ...intent, sizeBytes: 0 }),
+    /sizeBytes/,
+  );
+  assert.deepEqual(
+    parseCompleteAssetUploadIntent({
+      protocolVersion: 1,
+      assetId: 'asset-00000001',
+      sha256: 'b'.repeat(64),
+    }),
+    {
+      protocolVersion: 1,
+      assetId: 'asset-00000001',
+      sha256: 'b'.repeat(64),
+    },
   );
 });

@@ -12,6 +12,7 @@
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "test:bake-artifact-plan": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-bake-artifact-plan.mjs",
     "test:pipeline-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-project-pipeline-persistence.mjs",
+    "test:asset-transfer": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-asset-transfer.mjs",
     "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -1,17 +1,106 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import {
+  parseCompleteAssetUploadIntent,
+  parseCreateAssetUploadIntent,
+} from '@liclick/contracts';
 import { requireAuth } from '../auth/authMiddleware.js';
 import { maxLocalAssetBytes, saveBinaryAsset, saveDataUrlAsset, saveRemoteImageAsset } from '../services/assetFileService.js';
+import {
+  AssetTransferError,
+  completeAssetUploadIntent,
+  createAssetDownloadUrl,
+  createAssetUploadIntent,
+} from '../services/assetTransferService.js';
 import type { AssetCategory } from '../types/asset.js';
-import { getPathSegments, readBinaryBody, readJsonBody, sendJson } from './httpUtils.js';
+import { corsHeaders, getPathSegments, readBinaryBody, readJsonBody, sendJson } from './httpUtils.js';
+
+function sendAssetTransferError(response: ServerResponse, error: unknown) {
+  if (!(error instanceof AssetTransferError)) return false;
+  sendJson(response, error.statusCode, { error: error.message, code: error.code });
+  return true;
+}
 
 export async function handleAssetsRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
   const segments = getPathSegments(url);
   const projectId = segments[2];
-  if (request.method !== 'POST' || segments[1] !== 'projects' || !projectId || segments[3] !== 'assets') {
+  if (segments[1] !== 'projects' || !projectId || segments[3] !== 'assets') {
     return false;
   }
   const user = await requireAuth(request, response);
   if (!user) return true;
+
+  if (request.method === 'POST' && segments.length === 5 && segments[4] === 'intents') {
+    let input;
+    try {
+      input = parseCreateAssetUploadIntent(await readJsonBody<unknown>(request));
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : 'Invalid asset upload intent.',
+        code: 'INVALID_ASSET_UPLOAD_INTENT',
+      });
+      return true;
+    }
+    try {
+      const intent = await createAssetUploadIntent(user.id, projectId, input);
+      if (!intent) sendJson(response, 404, { error: 'Project not found.' });
+      else sendJson(response, 201, { intent });
+    } catch (error) {
+      if (!sendAssetTransferError(response, error)) throw error;
+    }
+    return true;
+  }
+
+  if (
+    request.method === 'POST' &&
+    segments.length === 7 &&
+    segments[4] === 'intents' &&
+    segments[6] === 'complete'
+  ) {
+    let input;
+    try {
+      input = parseCompleteAssetUploadIntent(await readJsonBody<unknown>(request));
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : 'Invalid asset upload completion.',
+        code: 'INVALID_ASSET_UPLOAD_COMPLETION',
+      });
+      return true;
+    }
+    try {
+      const result = await completeAssetUploadIntent(
+        user.id,
+        projectId,
+        segments[5],
+        input,
+      );
+      sendJson(response, 200, result);
+    } catch (error) {
+      if (!sendAssetTransferError(response, error)) throw error;
+    }
+    return true;
+  }
+
+  if (request.method === 'GET' && segments.length === 6 && segments[5] === 'content') {
+    try {
+      const downloadUrl = await createAssetDownloadUrl(user.id, projectId, segments[4]);
+      if (!downloadUrl) {
+        sendJson(response, 404, { error: 'Asset not found.' });
+      } else {
+        response.writeHead(307, {
+          ...corsHeaders(response),
+          location: downloadUrl,
+          'cache-control': 'private, no-store',
+          'x-content-type-options': 'nosniff',
+        });
+        response.end();
+      }
+    } catch (error) {
+      if (!sendAssetTransferError(response, error)) throw error;
+    }
+    return true;
+  }
+
+  if (request.method !== 'POST' || segments.length !== 4) return false;
 
   if (url.searchParams.get('format') === 'blob') {
     const category = url.searchParams.get('category') as AssetCategory | null;

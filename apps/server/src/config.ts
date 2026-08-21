@@ -179,6 +179,45 @@ const assetServiceMaxArtifactBytes = positiveNumber(
   1024 * 1024 * 1024,
   'ASSET_SERVICE_MAX_ARTIFACT_BYTES',
 );
+const objectStorageEndpointRaw = process.env.LICLICK_OBJECT_STORAGE_ENDPOINT?.trim() ?? '';
+const objectStorageRegion = process.env.LICLICK_OBJECT_STORAGE_REGION?.trim() || 'auto';
+const objectStorageBucket = process.env.LICLICK_OBJECT_STORAGE_BUCKET?.trim() ?? '';
+const objectStorageAccessKeyId = process.env.LICLICK_OBJECT_STORAGE_ACCESS_KEY_ID?.trim() ?? '';
+const objectStorageSecretAccessKey =
+  process.env.LICLICK_OBJECT_STORAGE_SECRET_ACCESS_KEY?.trim() ?? '';
+const objectStorageSessionToken = process.env.LICLICK_OBJECT_STORAGE_SESSION_TOKEN?.trim() || undefined;
+const objectStorageConfiguredValues = [
+  objectStorageEndpointRaw,
+  objectStorageBucket,
+  objectStorageAccessKeyId,
+  objectStorageSecretAccessKey,
+];
+const objectStoragePartiallyConfigured = objectStorageConfiguredValues.some(Boolean);
+const objectStorageEnabled = objectStorageConfiguredValues.every(Boolean);
+if (objectStoragePartiallyConfigured && !objectStorageEnabled) {
+  throw new Error(
+    'Object storage configuration is incomplete. Endpoint, bucket, access key ID and secret access key are all required.',
+  );
+}
+if (objectStorageBucket && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(objectStorageBucket)) {
+  throw new Error('LICLICK_OBJECT_STORAGE_BUCKET has an invalid format.');
+}
+const objectStorageEndpoint = objectStorageEndpointRaw
+  ? serverHttpUrl(objectStorageEndpointRaw, 'LICLICK_OBJECT_STORAGE_ENDPOINT')
+  : '';
+const objectStorageSignedUrlTtlSeconds = Math.min(
+  900,
+  Math.max(
+    60,
+    Math.floor(
+      positiveNumber(
+        process.env.LICLICK_OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS,
+        600,
+        'LICLICK_OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS',
+      ),
+    ),
+  ),
+);
 const blenderExecutablePath =
   process.env.BLENDER_EXECUTABLE_PATH?.trim() ||
   process.env.LICLICK_BLENDER_PATH?.trim() ||
@@ -545,6 +584,16 @@ export const serverConfig = {
   assetServiceRequestTimeoutMs,
   assetServiceMaxUploadBytes,
   assetServiceMaxArtifactBytes,
+  objectStorage: {
+    enabled: objectStorageEnabled,
+    endpoint: objectStorageEndpoint,
+    region: objectStorageRegion,
+    bucket: objectStorageBucket,
+    accessKeyId: objectStorageAccessKeyId,
+    secretAccessKey: objectStorageSecretAccessKey,
+    sessionToken: objectStorageSessionToken,
+    signedUrlTtlSeconds: objectStorageSignedUrlTtlSeconds,
+  },
   blenderExecutablePath,
   retopologyPrepareTimeoutMs,
   retopologyPrepareMaxFileBytes,

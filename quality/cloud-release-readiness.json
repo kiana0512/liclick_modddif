@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-21",
+  "rule": "Every required capability must be passed before a Cloud release can be declared ready.",
+  "capabilities": [
+    {
+      "id": "cloud.zero-install-artifact",
+      "name": "Cloud 产物零安装、无 localhost 回退",
+      "required": true,
+      "status": "passed",
+      "evidence": ["check:cloud-artifact", "simulate:cloud-deployment", "browser:/li3d/"]
+    },
+    {
+      "id": "cloud.control-plane-recovery",
+      "name": "登录、项目 Revision/Command、重启恢复",
+      "required": true,
+      "status": "passed",
+      "evidence": ["simulate:cloud-deployment"]
+    },
+    {
+      "id": "deployment.remote-simulator",
+      "name": "远端部署模拟器构建、代理、故障和重启场景",
+      "required": true,
+      "status": "passed",
+      "evidence": ["simulate:cloud-deployment"]
+    },
+    {
+      "id": "cloud.asset-direct-transfer",
+      "name": "真实浏览器对象直传、校验、重试、幂等和 ownership",
+      "required": true,
+      "status": "in_progress",
+      "evidence": ["协议与远端模拟器通过；真实 UI 资产上传 E2E 尚待执行"]
+    },
+    {
+      "id": "auth.liclick-production-sso",
+      "name": "莉刻真实 SSO 登录与退出",
+      "required": true,
+      "status": "not_tested",
+      "evidence": ["当前仅通过无密钥开发身份模拟"]
+    },
+    {
+      "id": "compute.browser-policy",
+      "name": "浏览器 GPU/CPU 能力协商且禁止服务器补算",
+      "required": true,
+      "status": "passed",
+      "evidence": ["browser:data-texture-backend=webgpu-worker", "browser:data-cpu-backend=wasm-worker", "browser:data-server-fallback=forbidden"]
+    },
+    {
+      "id": "texture.real-workflow",
+      "name": "真实模型贴图、投影、图层、蒙版、局部重绘、撤销恢复",
+      "required": true,
+      "status": "in_progress",
+      "evidence": ["编辑器空项目 UI/路由通过；真实资产结果与像素回归尚未完成"]
+    },
+    {
+      "id": "uv.browser-local",
+      "name": "UV 在浏览器本地算力完成",
+      "required": true,
+      "status": "failed",
+      "evidence": ["现 UI 显示远端 Worker 容量；只验证了页面加载"]
+    },
+    {
+      "id": "bake.browser-local-pbr",
+      "name": "PBR Bake 在浏览器本地算力完成并可导出",
+      "required": true,
+      "status": "failed",
+      "evidence": ["现 UI 显示远端 Substance/3090；只验证了页面加载"]
+    },
+    {
+      "id": "topology.browser-local",
+      "name": "拓扑在浏览器本地算力完成",
+      "required": true,
+      "status": "not_tested",
+      "evidence": ["尚未建立真实模型拓扑结果对照"]
+    },
+    {
+      "id": "performance.interaction",
+      "name": "交互帧耗、Long Task、静止渲染和内存预算",
+      "required": true,
+      "status": "not_tested",
+      "evidence": ["尚未完成目标硬件自动性能采样"]
+    },
+    {
+      "id": "compat.desktop-regression",
+      "name": "迁移期桌面旧功能全量回归",
+      "required": true,
+      "status": "not_tested",
+      "evidence": ["待运行完整 legacy smoke matrix"]
+    },
+    {
+      "id": "security.production-data-plane",
+      "name": "PostgreSQL 事务、对象回收、内容验证和安全扫描",
+      "required": true,
+      "status": "in_progress",
+      "evidence": ["签名和 ownership 已实现；生产事务与内容扫描未完成"]
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 import {
+  ASSET_TRANSFER_PROTOCOL_VERSION,
   PROJECT_COMMAND_SCHEMA_VERSION,
   isProjectRevision,
+  type AssetUploadIntent,
   type ProjectCommand,
   type ProjectRevision,
 } from '@liclick/contracts';
@@ -140,6 +142,23 @@ export async function createProject(input: { name?: string; folderId?: string })
 
 export async function loadProject(projectId: string) {
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}`);
+}
+
+function directAssetPathAtBase(url: string, base: string) {
+  try {
+    const baseUrl = new URL(base);
+    const basePath = baseUrl.pathname.replace(/\/$/, '');
+    const candidate = new URL(url, `${baseUrl.origin}${basePath || '/'}`);
+    if (candidate.origin !== baseUrl.origin) return undefined;
+    const directAssetPattern = new RegExp(
+      `^${basePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/api/projects/[^/]+/assets/[^/]+/content$`,
+    );
+    return directAssetPattern.test(candidate.pathname)
+      ? candidate.pathname.slice(basePath.length)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 type ProjectCommandResponse = {
@@ -288,6 +307,10 @@ export async function saveDataUrlAsset(input: {
   dataUrl: string;
   filename: string;
 }) {
+  if (isCloudBuild) {
+    const blob = await fetch(input.dataUrl).then((response) => response.blob());
+    return saveDirectBlobAsset({ ...input, blob });
+  }
   return requestJson<{ asset: { category: AssetCategory; relativePath: string; url: string } }>(
     `/api/projects/${input.projectId}/assets`,
     {
@@ -314,6 +337,96 @@ type SaveBlobAssetInput = {
 type SavedAssetResponse = {
   asset: { category: AssetCategory; relativePath: string; url: string };
 };
+
+async function blobSha256(blob: Blob) {
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function putDirectAsset(
+  intent: AssetUploadIntent,
+  blob: Blob,
+  onProgress?: (progress: BlobAssetUploadProgress) => void,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(intent.upload.method, intent.upload.url);
+    request.timeout = 10 * 60_000;
+    Object.entries(intent.upload.headers).forEach(([name, value]) => {
+      request.setRequestHeader(name, value);
+    });
+    request.upload.onloadstart = () => onProgress?.({ loadedBytes: 0, totalBytes: blob.size });
+    request.upload.onprogress = (event) => {
+      onProgress?.({
+        loadedBytes: event.loaded,
+        totalBytes: event.lengthComputable && event.total > 0 ? event.total : blob.size,
+      });
+    };
+    request.onload = () => {
+      if (request.status < 200 || request.status >= 300) {
+        reject(
+          new WorkspaceApiError(
+            request.status,
+            `对象存储直传失败（${request.status}），项目资源尚未保存。`,
+          ),
+        );
+        return;
+      }
+      onProgress?.({ loadedBytes: blob.size, totalBytes: blob.size });
+      resolve();
+    };
+    request.onerror = () =>
+      reject(new WorkspaceApiError(0, '对象存储网络连接失败，项目资源尚未保存。'));
+    request.ontimeout = () =>
+      reject(new WorkspaceApiError(408, '对象存储直传超时，请稍后重试。'));
+    request.send(blob);
+  });
+}
+
+async function saveDirectBlobAsset(input: SaveBlobAssetInput) {
+  if (!input.blob.size) throw new WorkspaceApiError(400, '不能上传空资源。');
+  input.onProgress?.({ loadedBytes: 0, totalBytes: input.blob.size });
+  const sha256 = await blobSha256(input.blob);
+  const { intent } = await requestJson<{ intent: AssetUploadIntent }>(
+    `/api/projects/${input.projectId}/assets/intents`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        protocolVersion: ASSET_TRANSFER_PROTOCOL_VERSION,
+        category: input.category,
+        filename: input.filename,
+        mimeType: input.blob.type || 'application/octet-stream',
+        sizeBytes: input.blob.size,
+        sha256,
+      }),
+      timeoutMs: 10_000,
+    },
+  );
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await putDirectAsset(intent, input.blob, input.onProgress);
+      break;
+    } catch (error) {
+      const retryable =
+        error instanceof WorkspaceApiError &&
+        (error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500);
+      if (!retryable || attempt === 2) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+  }
+  return requestJson<SavedAssetResponse & { replayed: boolean }>(
+    `/api/projects/${input.projectId}/assets/intents/${intent.intentId}/complete`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        protocolVersion: ASSET_TRANSFER_PROTOCOL_VERSION,
+        assetId: intent.assetId,
+        sha256,
+      }),
+      timeoutMs: 15_000,
+    },
+  );
+}
 
 function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
   return new Promise<SavedAssetResponse>((resolve, reject) => {
@@ -376,6 +489,7 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
 }
 
 export async function saveBlobAsset(input: SaveBlobAssetInput) {
+  if (isCloudBuild) return saveDirectBlobAsset(input);
   if (input.onProgress) return saveBlobAssetWithProgress(input);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 60_000);
@@ -484,5 +598,8 @@ export async function urlToDataUrl(url: string) {
 }
 
 export function isWorkspaceAssetUrl(url?: string) {
-  return Boolean(url && workspacePathAtBase(url, workspaceApiBase));
+  return Boolean(
+    url &&
+      (workspacePathAtBase(url, workspaceApiBase) || directAssetPathAtBase(url, workspaceApiBase)),
+  );
 }
