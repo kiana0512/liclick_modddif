@@ -39,15 +39,15 @@ Cloud control plane
 
 ## 阶段
 
-| 阶段 | 交付物 | 退出条件 |
-| --- | --- | --- |
-| 0. 隔离与基线 | 独立仓库、审计、基准、ADR | 原仓库零修改，基线可复现 |
-| 1. 发布与契约 | Release Manifest、CI、Cloud 边界门禁 | 混合版本可检测，新债务被阻断 |
-| 2. 项目领域 | 权威 Schema、Command、Revision、迁移 | 项目协议只有一个实现 |
-| 3. 云端数据面 | PostgreSQL、对象存储、签名直传、SSO | 无本地组件可保存和恢复项目 |
-| 4. 本地计算面 | Engine Session、Scheduler、资源预算 | 重任务不阻塞交互，服务器不补算 |
-| 5. 算法迁移 | WebGPU/WASM Bake、Auto UV、拓扑 | 核心贴图计算全部在浏览器 |
-| 6. 切换 | Cloud Build 清零 localhost 依赖、灰度 | 干净设备纯浏览器 E2E 通过 |
+| 阶段          | 交付物                                | 退出条件                       |
+| ------------- | ------------------------------------- | ------------------------------ |
+| 0. 隔离与基线 | 独立仓库、审计、基准、ADR             | 原仓库零修改，基线可复现       |
+| 1. 发布与契约 | Release Manifest、CI、Cloud 边界门禁  | 混合版本可检测，新债务被阻断   |
+| 2. 项目领域   | 权威 Schema、Command、Revision、迁移  | 项目协议只有一个实现           |
+| 3. 云端数据面 | PostgreSQL、对象存储、签名直传、SSO   | 无本地组件可保存和恢复项目     |
+| 4. 本地计算面 | Engine Session、Scheduler、资源预算   | 重任务不阻塞交互，服务器不补算 |
+| 5. 算法迁移   | WebGPU/WASM Bake、Auto UV、拓扑       | 核心贴图计算全部在浏览器       |
+| 6. 切换       | Cloud Build 清零 localhost 依赖、灰度 | 干净设备纯浏览器 E2E 通过      |
 
 详细门禁见 [ACCEPTANCE_GATES.md](./ACCEPTANCE_GATES.md)，首个架构决策见 [ADR-0001](./ADR-0001-cloud-local-compute.md)。
 
@@ -60,6 +60,7 @@ Cloud control plane
 - Cloud 构建已采用独立适配器：项目/设置走同源控制面，浏览器贴图入口不检测桌面组件。
 - Cloud 产物门禁会拒绝安装器、可执行文件、本地账号桥接端点和 `4618` loopback 回退。
 - Windows 本地组件、安装器、个人设备账号桥接和 localhost 运行时已从现代化分支退役。Photoshop/DCC 实时交互暂缓，后续只能以独立方案重新立项，不能成为浏览器核心流程依赖。
+- 真实员工身份的本地验收使用 `pnpm preview:real-auth`：浏览器仍为零安装，开发机上的后端进程模拟云服务器并调用 server-side Atlas/IDaaS。该命令不启动 Mock IDaaS，也不会进入 Cloud Web 产物。它只证明真实员工登录、退出和会话链路；正式发布仍必须通过已登记 HTTPS 回调的企业 OAuth/IDaaS 验收。
 - 浏览器能力协商已形成版本化 Compute Policy；任何降级仍在用户浏览器执行，`serverFallbackAllowed` 固定为 `false`。
 - 项目保存已加入服务器签发的单调 Revision；Cloud 模式拒绝缺失或过期令牌，避免多端用客户端时间戳互相覆盖。
 - Cloud 保存、重命名和移动已统一为版本化 Project Command；网络重试具有持久化幂等回执，同一命令不会重复生成 Revision，旧桌面接口继续作为兼容适配器。

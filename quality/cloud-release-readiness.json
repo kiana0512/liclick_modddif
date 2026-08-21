@@ -8,7 +8,12 @@
       "name": "Cloud 产物零安装、无 localhost 回退",
       "required": true,
       "status": "passed",
-      "evidence": ["check:cloud-artifact", "smoke:web（旧安装 URL 404）", "simulate:cloud-deployment", "browser:/li3d/ 与 /li3d/uv"]
+      "evidence": [
+        "check:cloud-artifact",
+        "smoke:web（旧安装 URL 404）",
+        "simulate:cloud-deployment",
+        "browser:/li3d/ 与 /li3d/uv"
+      ]
     },
     {
       "id": "cloud.control-plane-recovery",
@@ -29,21 +34,33 @@
       "name": "真实浏览器对象直传、校验、重试、幂等和 ownership",
       "required": true,
       "status": "passed",
-      "evidence": ["simulate:cloud-deployment", "browser:源 OBJ 与 UV GLB 直传并在 Bake 恢复", "quality/evidence/browser-local-uv-e2e.json"]
+      "evidence": [
+        "simulate:cloud-deployment",
+        "browser:源 OBJ 与 UV GLB 直传并在 Bake 恢复",
+        "quality/evidence/browser-local-uv-e2e.json"
+      ]
     },
     {
       "id": "auth.liclick-production-sso",
       "name": "莉刻真实 SSO 登录与退出",
       "required": true,
-      "status": "not_tested",
-      "evidence": ["当前仅通过无密钥开发身份模拟"]
+      "status": "in_progress",
+      "evidence": [
+        "2026-08-21 浏览器真实员工账号登录、退出、再登录通过（server-side Atlas/IDaaS 测试适配器）",
+        "真实 feishu-oauth 身份、稳定用户 ID 与有效 Atlas gateway 凭据已核验",
+        "生产 HTTPS 回调与企业应用发布尚未验收"
+      ]
     },
     {
       "id": "compute.browser-policy",
       "name": "浏览器 GPU/CPU 能力协商且禁止服务器补算",
       "required": true,
       "status": "passed",
-      "evidence": ["browser:data-texture-backend=webgpu-worker", "browser:data-cpu-backend=wasm-worker", "browser:data-server-fallback=forbidden"]
+      "evidence": [
+        "browser:data-texture-backend=webgpu-worker",
+        "browser:data-cpu-backend=wasm-worker",
+        "browser:data-server-fallback=forbidden"
+      ]
     },
     {
       "id": "compute.engine-session-foundation",
@@ -64,14 +81,23 @@
       "name": "UV 在浏览器本地算力完成",
       "required": true,
       "status": "in_progress",
-      "evidence": ["@liclick/web test:local-uv-atlas", "browser:xatlas WASM Worker -> GLB -> UV preview -> direct upload -> Bake 2/2", "生产模型与质量矩阵尚未完成"]
+      "evidence": [
+        "@liclick/web test:local-uv-atlas",
+        "browser:xatlas WASM Worker -> GLB -> UV preview -> direct upload -> Bake 2/2",
+        "生产模型与质量矩阵尚未完成"
+      ]
     },
     {
       "id": "bake.browser-local-pbr",
       "name": "PBR Bake 在浏览器本地算力完成并可导出",
       "required": true,
       "status": "in_progress",
-      "evidence": ["@liclick/web test:local-pbr-bake", "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> Normal/AO PNG -> direct upload -> refresh restore", "quality/evidence/browser-local-pbr-bake-e2e.json", "生产模型、五通道质量和硬件性能矩阵尚未完成"]
+      "evidence": [
+        "@liclick/web test:local-pbr-bake",
+        "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> Normal/AO PNG -> direct upload -> refresh restore",
+        "quality/evidence/browser-local-pbr-bake-e2e.json",
+        "生产模型、五通道质量和硬件性能矩阵尚未完成"
+      ]
     },
     {
       "id": "topology.cloud-service",
@@ -79,6 +105,18 @@
       "required": true,
       "status": "not_tested",
       "evidence": ["禁止以本地三角简化冒充自动拓扑；严格 TLS/CA 模拟和真实模型结果对照尚未完成"]
+    },
+    {
+      "id": "toolbox.capability-preservation",
+      "name": "工具箱非 DCC 能力保留并迁移到浏览器/云端",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "Cloud 首页恢复第 5 个工具箱模块",
+        "/tools 完整登记原 9 项工具且无安装器或假按钮",
+        "UV 引擎能力已具备；其余浏览器/云端工具仍需逐项实现",
+        "PS/DCC 桥接按 ADR-0010 暂缓"
+      ]
     },
     {
       "id": "performance.interaction",
@@ -99,7 +137,9 @@
       "name": "PostgreSQL 事务、对象回收、内容验证和安全扫描",
       "required": true,
       "status": "in_progress",
-      "evidence": ["签名和 ownership 已实现；浏览器通过同源鉴权换取短期签名 URL，并以 credentials=omit 读取对象；生产事务与内容扫描未完成"]
+      "evidence": [
+        "签名和 ownership 已实现；浏览器通过同源鉴权换取短期签名 URL，并以 credentials=omit 读取对象；生产事务与内容扫描未完成"
+      ]
     }
   ]
 }

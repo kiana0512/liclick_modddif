@@ -37,6 +37,7 @@
     "smoke:local-liclick-callback": "corepack pnpm --filter @liclick/server build && node scripts/smoke-local-liclick-query-callback.mjs",
     "smoke:web": "corepack pnpm --filter @liclick/server build && corepack pnpm --filter @liclick/web build && node scripts/smoke-integrated-web.mjs",
     "simulate:cloud-deployment": "node scripts/simulate-cloud-deployment.mjs",
+    "preview:real-auth": "powershell -ExecutionPolicy Bypass -File scripts/run-real-employee-auth-preview.ps1",
     "smoke:remote-bake": "corepack pnpm --filter @liclick/server build && node scripts/smoke-remote-substance-bake.mjs",
     "recover:remote-bake": "corepack pnpm --filter @liclick/server build && node scripts/recover-remote-substance-bakes.mjs",
     "smoke:comfy-cancel": "corepack pnpm --filter @liclick/server build && node scripts/smoke-comfyui-cancel.mjs",
