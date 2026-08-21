@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { TextureRuntimeBoundary } from './components/runtime/TextureRuntimeBoundary';
+import { EngineSessionBoundary } from './engine/session/EngineSessionBoundary';
 import { resolveBakeEntryProject } from './features/workflow/resolveBakeEntryProject';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
@@ -57,6 +58,20 @@ function AppRouteFallback() {
     <main className="liclick-surface flex min-h-screen items-center justify-center text-sm text-white/58">
       Loading LIclick 3D Texture...
     </main>
+  );
+}
+
+function OptionalEngineSessionBoundary({
+  projectId,
+  children,
+}: {
+  projectId?: string;
+  children: ReactNode;
+}) {
+  return projectId ? (
+    <EngineSessionBoundary projectId={projectId}>{children}</EngineSessionBoundary>
+  ) : (
+    children
   );
 }
 
@@ -330,7 +345,7 @@ export function App() {
       route.name === 'editor' ? route.projectId : residentTextureProjectIdRef.current!;
     const textureWorkspaceActive = route.name === 'editor';
     return (
-      <>
+      <EngineSessionBoundary projectId={textureProjectId}>
         <TextureRuntimeBoundary onBack={navigation.openHome}>
           <div className="h-screen" hidden={!textureWorkspaceActive} aria-hidden={!textureWorkspaceActive}>
             <Suspense fallback={<AppRouteFallback />}>
@@ -365,13 +380,13 @@ export function App() {
           </Suspense>
         ) : null}
         <ToastHost />
-      </>
+      </EngineSessionBoundary>
     );
   }
 
   if (route.name === 'bake') {
     return (
-      <>
+      <EngineSessionBoundary projectId={route.projectId}>
         <Suspense fallback={<AppRouteFallback />}>
           <BakeWorkspacePage
             projectId={route.projectId}
@@ -383,7 +398,7 @@ export function App() {
           />
         </Suspense>
         <ToastHost />
-      </>
+      </EngineSessionBoundary>
     );
   }
 
@@ -426,7 +441,7 @@ export function App() {
 
   if (route.name === 'autoRetopology') {
     return (
-      <>
+      <OptionalEngineSessionBoundary projectId={route.projectId}>
         <Suspense fallback={<AppRouteFallback />}>
           <AutoRetopologyPage
             projectId={route.projectId}
@@ -447,13 +462,13 @@ export function App() {
           />
         </Suspense>
         <ToastHost />
-      </>
+      </OptionalEngineSessionBoundary>
     );
   }
 
   if (route.name === 'autoUv') {
     return (
-      <>
+      <OptionalEngineSessionBoundary projectId={route.projectId}>
         <Suspense fallback={<AppRouteFallback />}>
           <AutoUvPage
             projectId={route.projectId}
@@ -474,7 +489,7 @@ export function App() {
           />
         </Suspense>
         <ToastHost />
-      </>
+      </OptionalEngineSessionBoundary>
     );
   }
 

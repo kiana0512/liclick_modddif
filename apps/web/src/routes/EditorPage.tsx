@@ -171,11 +171,12 @@ import {
   markPerformanceEvent,
   startPerformanceSpan,
 } from '@/engine/performance/performanceTimeline';
+import type { HeavyTaskContext } from '@/engine/performance/heavyTaskScheduler';
+import { useEngineSession } from '@/engine/session/engineSessionContext';
 import {
-  cancelHeavyTasks,
-  scheduleHeavyTask,
-  type HeavyTaskContext,
-} from '@/engine/performance/heavyTaskScheduler';
+  cancelEngineHeavyTasks,
+  scheduleEngineHeavyTask,
+} from '@/engine/session/engineTaskScheduler';
 import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitcher';
 import {
   findMergedUvBakeLayer,
@@ -966,6 +967,7 @@ export function EditorPage({
   pendingBakeHandoff,
   isActive = true,
 }: EditorPageProps) {
+  const engineSession = useEngineSession();
   const modelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const loadedProjectIdRef = useRef<string>();
@@ -4961,7 +4963,7 @@ export function EditorPage({
     },
   ) {
     const benchmarkOnly = options?.benchmarkOnly === true;
-    return scheduleHeavyTask({
+    return scheduleEngineHeavyTask(engineSession, {
       key: 'full-resolution-texture',
       label: '4k-uv-merge',
       priority: 'user-visible',
@@ -6670,7 +6672,7 @@ export function EditorPage({
         setContentAwareRepairTaskActive(true);
         setContentAwareRepairCancelling(false);
       }
-      return scheduleHeavyTask({
+      return scheduleEngineHeavyTask(engineSession, {
         key: 'full-resolution-texture',
         label: 'content-aware-repair',
         priority: 'user-visible',
@@ -6701,7 +6703,7 @@ export function EditorPage({
           setContentAwareRepairCancelling(false);
         });
     },
-    [executeContentAwareRepair, t],
+    [engineSession, executeContentAwareRepair, t],
   );
 
   const interruptContentAwareRepair = useCallback(() => {
@@ -6717,14 +6719,14 @@ export function EditorPage({
         : progress,
     );
     contentAwareRepairAbortControllerRef.current?.abort();
-    cancelHeavyTasks('full-resolution-texture');
+    cancelEngineHeavyTasks(engineSession, 'full-resolution-texture');
     pushToast({
       tone: 'info',
       title: '正在中断内容识别填补',
       description: '当前扫描、填补和图层写入会停止。',
       dedupeKey: 'content-aware-repair-interrupting',
     });
-  }, [pushToast]);
+  }, [engineSession, pushToast]);
 
   useEffect(() => {
     if (!new URLSearchParams(window.location.search).has('perfLab')) return;

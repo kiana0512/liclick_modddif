@@ -16,6 +16,7 @@ export type BrowserComputeState = {
 };
 
 export const browserComputeCapabilitiesEventName = 'li3d:browser-compute-capabilities';
+let browserComputeStatePromise: Promise<BrowserComputeState> | undefined;
 
 async function hasWebGpu(navigatorWithCompute: NavigatorWithBrowserCompute) {
   if (!navigatorWithCompute.gpu || !window.isSecureContext) return false;
@@ -54,8 +55,13 @@ export async function detectBrowserComputeState(): Promise<BrowserComputeState> 
   return { capabilities, plan: selectLocalComputePlan(capabilities) };
 }
 
+export function getBrowserComputeState() {
+  browserComputeStatePromise ??= detectBrowserComputeState();
+  return browserComputeStatePromise;
+}
+
 export async function initializeBrowserComputeCapabilities() {
-  const state = await detectBrowserComputeState();
+  const state = await getBrowserComputeState();
   const root = document.documentElement;
   root.dataset.li3dTextureBackend = state.plan.textureBackend;
   root.dataset.li3dCpuBackend = state.plan.cpuBackend;

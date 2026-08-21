@@ -46,6 +46,13 @@
       "evidence": ["browser:data-texture-backend=webgpu-worker", "browser:data-cpu-backend=wasm-worker", "browser:data-server-fallback=forbidden"]
     },
     {
+      "id": "compute.engine-session-foundation",
+      "name": "按项目 Engine Session、取消、并发和资源释放边界",
+      "required": true,
+      "status": "passed",
+      "evidence": ["@liclick/web test:engine-session", "浏览器贴图到 UV 保持相同 Engine Session ID"]
+    },
+    {
       "id": "texture.real-workflow",
       "name": "真实模型贴图、投影、图层、蒙版、局部重绘、撤销恢复",
       "required": true,
