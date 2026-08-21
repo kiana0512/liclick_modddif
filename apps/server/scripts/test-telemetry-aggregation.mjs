@@ -70,7 +70,6 @@ async function main() {
     ['auto_retopology', 'start', 6],
     ['auto_uv', 'start', 7],
     ['local_repaint', 'start', 8],
-    ['local_component', 'download', 9],
     ['model_baking', 'download', 2],
   ];
   let index = 0;
@@ -97,7 +96,7 @@ async function main() {
   assert.equal(fields['日期键'], '2026-08-04');
   assert.equal(fields['日期时间'], Date.parse(aggregate.last_event_at));
   assert.equal(fields['电脑名'], '');
-  assert.equal(fields['下载次数'], 11);
+  assert.equal(fields['下载次数'], 2);
   assert.equal(fields['贴图绘制次数'], 2);
   assert.equal(fields['生图次数'], 3);
   assert.equal(fields['模型烘焙次数'], 4);
@@ -105,7 +104,6 @@ async function main() {
   assert.equal(fields['自动拓扑次数'], 6);
   assert.equal(fields['自动展UV次数'], 7);
   assert.equal(fields['局部重绘次数'], 8);
-  assert.equal(fields['本地组件下载次数'], 9);
   assert.equal(fields['用户唯一ID'], detailedProfile.userKey);
   assert.equal(fields['事件总数'], events.length);
   assert.deepEqual(JSON.parse(fields['动作计数JSON']), aggregate.counts);
@@ -129,7 +127,6 @@ async function main() {
     '自动拓扑次数',
     '自动展UV次数',
     '局部重绘次数',
-    '本地组件下载次数',
     '用户唯一ID',
     '事件总数',
     '动作计数JSON',

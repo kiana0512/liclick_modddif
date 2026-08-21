@@ -8,7 +8,7 @@
       "name": "Cloud 产物零安装、无 localhost 回退",
       "required": true,
       "status": "passed",
-      "evidence": ["check:cloud-artifact", "simulate:cloud-deployment", "browser:/li3d/"]
+      "evidence": ["check:cloud-artifact", "smoke:web（旧安装 URL 404）", "simulate:cloud-deployment", "browser:/li3d/ 与 /li3d/uv"]
     },
     {
       "id": "cloud.control-plane-recovery",
@@ -74,11 +74,11 @@
       "evidence": ["@liclick/web test:local-pbr-bake", "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> Normal/AO PNG -> direct upload -> refresh restore", "quality/evidence/browser-local-pbr-bake-e2e.json", "生产模型、五通道质量和硬件性能矩阵尚未完成"]
     },
     {
-      "id": "topology.browser-local",
-      "name": "拓扑在浏览器本地算力完成",
+      "id": "topology.cloud-service",
+      "name": "高模上传云端自动拓扑并返回正式低模产物",
       "required": true,
       "status": "not_tested",
-      "evidence": ["尚未建立真实模型拓扑结果对照"]
+      "evidence": ["禁止以本地三角简化冒充自动拓扑；严格 TLS/CA 模拟和真实模型结果对照尚未完成"]
     },
     {
       "id": "performance.interaction",
@@ -88,11 +88,11 @@
       "evidence": ["尚未完成目标硬件自动性能采样"]
     },
     {
-      "id": "compat.desktop-regression",
-      "name": "迁移期桌面旧功能全量回归",
-      "required": true,
-      "status": "not_tested",
-      "evidence": ["待运行完整 legacy smoke matrix"]
+      "id": "compat.ps-dcc-deferred",
+      "name": "Photoshop/DCC 实时交互暂缓且无假入口",
+      "required": false,
+      "status": "deferred",
+      "evidence": ["浏览器安全模型不允许零安装直接控制本机 DCC；当前界面不暴露该入口"]
     },
     {
       "id": "security.production-data-plane",

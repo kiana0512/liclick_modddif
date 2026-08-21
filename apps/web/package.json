@@ -22,7 +22,6 @@
     "test:model-import-progress": "node scripts/test-model-import-progress.mjs",
     "test:model-export-texture-orientation": "node scripts/test-model-export-texture-orientation.mjs",
     "test:model-placement-camera-focus": "node scripts/test-model-placement-camera-focus.mjs",
-    "test:local-runtime-health": "node scripts/test-local-runtime-health.mjs",
     "test:local-repaint-bake-batching": "node scripts/test-local-repaint-bake-batching.mjs",
     "test:local-repaint-seam-harmonization": "node scripts/test-local-repaint-seam-harmonization.mjs",
     "test:local-pbr-bake": "node scripts/test-local-pbr-bake.mjs",

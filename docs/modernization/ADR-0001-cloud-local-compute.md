@@ -14,7 +14,7 @@
 - 项目、身份、权限、资产索引和 Revision 迁到云端控制面。
 - 普通贴图计算在浏览器通过 WebGPU/WebGL2、Web Worker 和 WASM 执行。
 - AI 推理保持独立远端服务，但不得作为低性能设备的隐式降级路径。
-- 莉刻构建只允许 Cloud Adapter；Desktop Legacy Adapter 仅在迁移期内部版本存在。
+- 现代化分支只允许 Browser/Cloud Adapter，不再构建或分发 Desktop Legacy Adapter。
 - 浏览器本地缓存只做加速和 checkpoint，云端项目 Revision 是权威状态。
 
 ## 后果
@@ -28,7 +28,7 @@
 代价：
 
 - 必须建立 WebGPU/WebGL2/WASM 能力分级和硬件基准。
-- Auto UV、拓扑和 High-to-low Bake 需要验证或迁移为浏览器算法。
+- Auto UV 与 High-to-low Bake 需要验证浏览器算法；自动拓扑明确由云端任务处理并返回低模产物。
 - WASM 多线程要求 HTTPS、COOP/COEP 及兼容的 CDN/CORS 配置。
 - Photoshop/DCC 实时控制不能成为莉刻核心流程；Cloud 模式改为标准资产导入导出。
 

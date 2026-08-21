@@ -259,7 +259,11 @@ function callbackHtml(success: boolean, message: string) {
     if (char === '"') return '&quot;';
     return '&#39;';
   });
-  return `<!doctype html><meta charset="utf-8"><title>Liclick 登录${success ? '成功' : '失败'}</title><body style="font-family:Arial,'Microsoft YaHei',sans-serif;padding:40px;color:#111"><h2>Liclick 登录${success ? '成功' : '失败'}</h2><p>${safeMessage}</p><script>try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:${success ? 'true' : 'false'}},'*');}catch(e){}${success ? 'setTimeout(()=>window.close(),900);' : ''}</script></body>`;
+  const frontendUrl = JSON.stringify(serverConfig.frontendUrl);
+  const successScript = success
+    ? `if(window.opener){setTimeout(()=>window.close(),500);}else{setTimeout(()=>window.location.replace(${frontendUrl}),250);}`
+    : '';
+  return `<!doctype html><meta charset="utf-8"><title>Liclick 登录${success ? '成功' : '失败'}</title><body style="font-family:Arial,'Microsoft YaHei',sans-serif;padding:40px;color:#111"><h2>Liclick 登录${success ? '成功' : '失败'}</h2><p>${safeMessage}</p><script>try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:${success ? 'true' : 'false'}},'*');}catch(e){}${successScript}</script></body>`;
 }
 
 export function isWebOAuthLoginId(loginId: string) {

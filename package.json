@@ -6,8 +6,7 @@
   "description": "Liclick 3D Texture - Web AI 3D texture studio foundation.",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "dev": "node scripts/dev-fixed.mjs --restart-all",
-    "dev:fixed": "node scripts/dev-fixed.mjs --restart-all",
+    "dev": "corepack pnpm run dev:raw",
     "dev:raw": "corepack pnpm --parallel --filter @liclick/server --filter @liclick/web dev",
     "dev:web": "corepack pnpm --filter @liclick/web dev",
     "dev:server": "corepack pnpm --filter @liclick/server dev",
@@ -43,7 +42,6 @@
     "smoke:comfy-cancel": "corepack pnpm --filter @liclick/server build && node scripts/smoke-comfyui-cancel.mjs",
     "smoke:modelview-inpaint": "corepack pnpm --filter @liclick/server build && node scripts/smoke-modelview-inpaint.mjs",
     "smoke:photoshop": "corepack pnpm --filter @liclick/server build && node scripts/smoke-photoshop-bridge.mjs",
-    "package:windows:local-component": "powershell -ExecutionPolicy Bypass -File scripts/package-windows-local-component.ps1",
     "package:photoshop": "powershell -ExecutionPolicy Bypass -File scripts/package-photoshop-uxp.ps1",
     "build": "corepack pnpm -r build",
     "build:release": "node scripts/validate-release-env.mjs && corepack pnpm -r build",

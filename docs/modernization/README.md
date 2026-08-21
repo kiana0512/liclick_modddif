@@ -59,7 +59,7 @@ Cloud control plane
 - Release Manifest、协议兼容检查和发布环境一致性校验已接入。
 - Cloud 构建已采用独立适配器：项目/设置走同源控制面，浏览器贴图入口不检测桌面组件。
 - Cloud 产物门禁会拒绝安装器、可执行文件、本地账号桥接端点和 `4618` loopback 回退。
-- 桌面组件、个人设备账号和 Photoshop/DCC 仍保留在 `desktop-legacy` 兼容路径，Cloud 构建不装载这些实现。
+- Windows 本地组件、安装器、个人设备账号桥接和 localhost 运行时已从现代化分支退役。Photoshop/DCC 实时交互暂缓，后续只能以独立方案重新立项，不能成为浏览器核心流程依赖。
 - 浏览器能力协商已形成版本化 Compute Policy；任何降级仍在用户浏览器执行，`serverFallbackAllowed` 固定为 `false`。
 - 项目保存已加入服务器签发的单调 Revision；Cloud 模式拒绝缺失或过期令牌，避免多端用客户端时间戳互相覆盖。
 - Cloud 保存、重命名和移动已统一为版本化 Project Command；网络重试具有持久化幂等回执，同一命令不会重复生成 Revision，旧桌面接口继续作为兼容适配器。

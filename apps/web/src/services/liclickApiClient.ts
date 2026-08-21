@@ -1,8 +1,6 @@
 import type { GenerateTextureInput, Generation } from '@/types/generation';
 import type { ReferenceImage } from '@/types/project';
 import type { ProviderStatus } from './authApiClient';
-import { invalidateCachedPersonalLiclickAccountStatus } from './liclickAccountApiClient';
-import { fetchWithLocalIdentityProof } from './localIdentityProofApiClient';
 import { resolveLiclickTransport, type LiclickTransport } from './liclickTransport';
 import { getUserFacingGenerationError } from './generationErrorMessage';
 import {
@@ -142,20 +140,14 @@ async function requestJson<T>(
       credentials: transport.credentials,
       headers: requestHeaders,
     } satisfies RequestInit;
-    response = transport.requiresIdentityProof
-      ? await fetchWithLocalIdentityProof(requestUrl, requestInit, {
-          signal: controller.signal,
-          timeoutMs: Math.min(timeoutMs, 8_000),
-        })
-      : await fetch(requestUrl, requestInit);
+    response = await fetch(requestUrl, requestInit);
   } catch (error) {
     if (callerSignal?.aborted) throw error;
     if (timedOut || (error instanceof DOMException && error.name === 'AbortError')) {
       throw new Error('莉刻生图服务响应超时，请稍后重试。');
     }
     if (error instanceof Error && !(error instanceof TypeError)) throw error;
-    const serviceLabel = transport.kind === 'workspace' ? '本地登录服务' : '本地贴图组件';
-    throw new Error(`无法连接莉刻生图服务（${transport.baseUrl}），请确认${serviceLabel}已启动。`);
+    throw new Error(`无法连接云端莉刻生图服务（${transport.baseUrl}），请检查网络或服务状态。`);
   } finally {
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener('abort', abortFromCaller);
@@ -166,15 +158,6 @@ async function requestJson<T>(
       payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
         ? payload.code
         : undefined;
-    if (
-      transport.kind === 'local-component' &&
-      (response.status === 401 ||
-        response.status === 403 ||
-        response.status === 428 ||
-        errorCode === 'LICLICK_ACCOUNT_EMAIL_MISMATCH')
-    ) {
-      invalidateCachedPersonalLiclickAccountStatus();
-    }
     const rawMessage =
       payload &&
       typeof payload === 'object' &&

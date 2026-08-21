@@ -581,16 +581,6 @@ server {
     root ${APP_DIR}/apps/web/dist;
     index index.html;
 
-    location = /downloads/LIclick-3D-Texture-Local-Component-Setup.exe {
-        proxy_pass http://127.0.0.1:${SERVER_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 600s;
-    }
-
     location ^~ /api/ {
         proxy_pass http://127.0.0.1:${SERVER_PORT};
         proxy_http_version 1.1;
@@ -630,16 +620,6 @@ server {
 
     location = ${PUBLIC_PATH} {
         return 302 ${PUBLIC_PATH}/;
-    }
-
-    location = ${PUBLIC_PATH}/downloads/LIclick-3D-Texture-Local-Component-Setup.exe {
-        proxy_pass http://127.0.0.1:${SERVER_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 600s;
     }
 
     location ^~ ${PUBLIC_PATH}/api/ {

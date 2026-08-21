@@ -3,25 +3,19 @@ import {
   Box,
   Boxes,
   Clock3,
-  Download,
   Flame,
   Map as MapIcon,
+  Network,
   Palette,
   Sparkles,
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
-import { useState } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
-import {
-  downloadLocalComponent as downloadLocalComponentInstaller,
-  localComponentDownloadAvailable,
-} from '@/platform/localComponentDownload';
 import { hostExtensionFeaturesAvailable } from '@/platform/runtimeCapabilities';
 import {
   trackHomeModuleEntry,
-  trackModuleAction,
   type HomeTelemetryModule,
 } from '@/services/telemetryClient';
 
@@ -280,32 +274,19 @@ function ModuleCard({
 
 export function HomePage({
   onOpenTexture,
+  onOpenRetopology,
   onOpenBake,
   onOpenToolbox,
   onOpenUv,
   onLogout,
 }: {
   onOpenTexture: () => void;
+  onOpenRetopology: () => void;
   onOpenBake: () => void;
   onOpenToolbox: () => void;
   onOpenUv: () => void;
   onLogout: () => void;
 }) {
-  const [downloadingLocalComponent, setDownloadingLocalComponent] = useState(false);
-
-  async function downloadLocalComponent() {
-    if (downloadingLocalComponent) return;
-    setDownloadingLocalComponent(true);
-    try {
-      await downloadLocalComponentInstaller();
-      trackModuleAction('local_component', 'download');
-    } catch (error) {
-      console.warn('[Li3D] Local component download failed.', error);
-    } finally {
-      setDownloadingLocalComponent(false);
-    }
-  }
-
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute left-[8%] top-36 h-72 w-72 rounded-full bg-fuchsia-500/[0.075] blur-[90px]" />
@@ -357,18 +338,6 @@ export function HomePage({
               layout="featured"
               className="h-full w-full"
             />
-            {localComponentDownloadAvailable ? (
-              <button
-                type="button"
-                disabled={downloadingLocalComponent}
-                onClick={() => void downloadLocalComponent()}
-                className="absolute bottom-5 right-5 z-20 inline-flex h-9 items-center gap-2 rounded-xl border border-fuchsia-200/20 bg-fuchsia-300/[0.09] px-3 text-[11px] font-semibold text-fuchsia-50/78 shadow-[0_10px_28px_rgba(168,85,247,0.12)] backdrop-blur-md transition hover:border-fuchsia-200/40 hover:bg-fuchsia-300/16 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-200/60"
-                aria-label="下载最新的贴图绘制本地组件安装包"
-              >
-                <Download className="h-3.5 w-3.5" />
-                {downloadingLocalComponent ? '正在下载…' : '下载最新安装包'}
-              </button>
-            ) : null}
           </div>
           <ModuleCard
             eyebrow="AUTO UV"
@@ -382,6 +351,20 @@ export function HomePage({
             hoverAction="进入自动展 UV"
             telemetryModule="auto_uv"
             onClick={onOpenUv}
+            layout="compact"
+          />
+          <ModuleCard
+            eyebrow="AI RETOPOLOGY"
+            title="自动拓扑 V6"
+            description="上传高模至云端生产服务，完成结构分析、自动拓扑与质量门禁。"
+            detail="云端任务 · 正式低模产物 · 返回浏览器"
+            icon={Network}
+            accent="blue"
+            visual="retopo"
+            badge="云端服务"
+            hoverAction="进入自动拓扑"
+            telemetryModule="auto_retopology"
+            onClick={onOpenRetopology}
             layout="compact"
           />
           <ModuleCard

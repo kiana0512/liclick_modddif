@@ -1,6 +1,4 @@
 import type { ProviderStatus } from './authApiClient';
-import { invalidateCachedPersonalLiclickAccountStatus } from './liclickAccountApiClient';
-import { fetchWithLocalIdentityProof } from './localIdentityProofApiClient';
 import { resolveLiclickTransport, type LiclickTransport } from './liclickTransport';
 
 export interface ImageEditProvider {
@@ -76,14 +74,13 @@ function readErrorMessage(payload: unknown, fallback: string) {
 }
 
 function describeNetworkFailure(error: unknown, transport: LiclickTransport) {
-  const serviceLabel = transport.kind === 'workspace' ? '本地登录服务' : '本地贴图组件';
   if (error instanceof DOMException && error.name === 'AbortError') {
     return `连接莉刻服务超时：${transport.baseUrl}`;
   }
   if (error instanceof TypeError) {
-    return `无法连接莉刻服务：${transport.baseUrl}。请确认${serviceLabel}已启动。`;
+    return `无法连接云端莉刻服务：${transport.baseUrl}。请检查网络或服务状态。`;
   }
-  return error instanceof Error ? error.message : '无法连接本地莉刻服务。';
+  return error instanceof Error ? error.message : '无法连接云端莉刻服务。';
 }
 
 async function requestJson<T>(
@@ -106,30 +103,15 @@ async function requestJson<T>(
       credentials: transport.credentials,
       headers: requestHeaders,
     } satisfies RequestInit;
-    const response = transport.requiresIdentityProof
-      ? await fetchWithLocalIdentityProof(requestUrl, requestInit, {
-          signal: controller.signal,
-          timeoutMs,
-        })
-      : await fetch(requestUrl, requestInit);
+    const response = await fetch(requestUrl, requestInit);
     const payload = (await response.json().catch(() => undefined)) as T | undefined;
     if (!response.ok) {
       const errorCode =
         payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
           ? payload.code
           : undefined;
-      if (
-        transport.kind === 'local-component' &&
-        (response.status === 401 ||
-          response.status === 403 ||
-          response.status === 428 ||
-          errorCode === 'LICLICK_ACCOUNT_EMAIL_MISMATCH')
-      ) {
-        invalidateCachedPersonalLiclickAccountStatus();
-        throw new Error('请先在此电脑绑定你自己的莉刻账号，然后再使用局部重绘。');
-      }
-      if (transport.kind === 'workspace' && response.status === 401) {
-        throw new Error('本地飞书/Atlas 登录已失效，请重新登录后再使用局部重绘。');
+      if (response.status === 401) {
+        throw new Error('平台登录已失效，请重新登录后再使用局部重绘。');
       }
       throw new Error(readErrorMessage(payload, `莉刻请求失败：${response.status}`));
     }

@@ -914,6 +914,7 @@ export function LayersPanel({
               });
             }}
             onImageEdit={(layer) => onLayerImageEdit?.(layer)}
+            imageEditAvailable={Boolean(onLayerImageEdit)}
             onImageReplace={beginReplaceLayerImage}
             onLocalRepaint={(layer) => onLayerLocalRepaint?.(layer)}
             onMergeSelectedToUvLayer={(layerIds) => onMergeSelectedToUvLayer?.(layerIds)}
@@ -1415,6 +1416,7 @@ function LayerMenu({
   onDuplicate,
   onClearMask,
   onImageEdit,
+  imageEditAvailable,
   onImageReplace,
   onLocalRepaint,
   onMergeSelectedToUvLayer,
@@ -1434,6 +1436,7 @@ function LayerMenu({
   onDuplicate: () => void;
   onClearMask: (layer: Layer) => void;
   onImageEdit: (layer: Layer) => void;
+  imageEditAvailable: boolean;
   onImageReplace: (layer: Layer) => void;
   onLocalRepaint: (layer: Layer) => void;
   onMergeSelectedToUvLayer: (layerIds: string[]) => void;
@@ -1515,13 +1518,15 @@ function LayerMenu({
           ) : null}
           {(layer.type === 'projected' || layer.type === 'uv') && (
             <>
-              <MenuButton
-                onClick={() => run(() => onImageEdit(layer))}
-                icon={<PencilLine className="h-4 w-4" />}
-                disabled={!layer.imageUrl}
-              >
-                {t('imageEditLayerMenu')}
-              </MenuButton>
+              {imageEditAvailable ? (
+                <MenuButton
+                  onClick={() => run(() => onImageEdit(layer))}
+                  icon={<PencilLine className="h-4 w-4" />}
+                  disabled={!layer.imageUrl}
+                >
+                  {t('imageEditLayerMenu')}
+                </MenuButton>
+              ) : null}
               <MenuButton
                 onClick={() => run(() => onImageReplace(layer))}
                 icon={<Upload className="h-4 w-4" />}

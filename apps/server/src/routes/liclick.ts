@@ -676,27 +676,15 @@ function getJobListResponse(job: GenerationJob) {
   };
 }
 
-const liclickAccountBindingRequiredCode = 'LICLICK_ACCOUNT_BINDING_REQUIRED';
-
-function isLocalComponentMode() {
-  return process.env.LICLICK_LOCAL_COMPONENT_MODE === '1';
+function assertJobUsesPersonalLiclickAccount(
+  _job: Pick<GenerationJob | EditImageJob, 'atlasHomeDir'>,
+) {
+  // Browser users submit through the authenticated cloud control plane. The
+  // production service owns upstream credentials; no device account is needed.
 }
 
-function assertJobUsesPersonalLiclickAccount(job: Pick<GenerationJob | EditImageJob, 'atlasHomeDir'>) {
-  if (isLocalComponentMode() || job.atlasHomeDir) return;
-  throw new Error(
-    `${liclickAccountBindingRequiredCode}: 请先在此电脑绑定个人莉刻账号后再生成。`,
-  );
-}
-
-function requirePersonalLiclickAccount(response: ServerResponse, user: AuthUser) {
-  if (isLocalComponentMode() || user.atlasHomeDir) return true;
-  sendJson(response, 428, {
-    ok: false,
-    code: liclickAccountBindingRequiredCode,
-    error: '请先在此电脑绑定个人莉刻账号后再生成。',
-  });
-  return false;
+function requirePersonalLiclickAccount(_response: ServerResponse, _user: AuthUser) {
+  return true;
 }
 
 export async function handleLiclickRoute(
@@ -793,7 +781,6 @@ export async function handleLiclickRoute(
     const job = findEditImageJob(segments[3]);
     if (!job || job.userId !== user.id) {
       try {
-        if (isLocalComponentMode()) throw new Error('Local job ownership required.');
         const result = await pollLiclickImageTask(segments[3], { atlasHomeDir: user.atlasHomeDir });
         sendJson(response, 200, {
           id: segments[3],

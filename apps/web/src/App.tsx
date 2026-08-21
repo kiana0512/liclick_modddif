@@ -107,14 +107,14 @@ function routeFromPath(pathname: string): RouteState {
     return { name: 'modelingToolbox' };
   }
   if (segments[0] === 'retopology') {
-    return { name: 'autoUv' };
+    return { name: 'autoRetopology' };
   }
   if (segments[0] === 'uv') {
     return { name: 'autoUv' };
   }
   if (segments[0] === 'project' && segments[1]) {
     if (segments[2] === 'texture') return { name: 'editor', projectId: segments[1] };
-    if (segments[2] === 'retopology') return { name: 'autoUv', projectId: segments[1] };
+    if (segments[2] === 'retopology') return { name: 'autoRetopology', projectId: segments[1] };
     if (segments[2] === 'uv') return { name: 'autoUv', projectId: segments[1] };
     if (segments[2] === 'bake') return { name: 'bake', projectId: segments[1] };
     // Delivery was removed. Keep old bookmarks useful by redirecting them to baking.
@@ -498,6 +498,7 @@ export function App() {
       <Suspense fallback={<AppRouteFallback />}>
         <HomePage
           onOpenTexture={navigation.openTextureProjects}
+          onOpenRetopology={navigation.openAutoRetopology}
           onOpenBake={navigation.openCurrentBake}
           onOpenToolbox={navigation.openModelingToolbox}
           onOpenUv={navigation.openAutoUv}

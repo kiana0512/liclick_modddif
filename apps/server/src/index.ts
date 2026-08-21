@@ -18,8 +18,6 @@ import { handleLiclickRoute } from './routes/liclick.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { handleModelviewRoute } from './routes/modelview.js';
 import { handlePerformanceRoute } from './routes/performance.js';
-import { handlePhotoshopRoute } from './routes/photoshop.js';
-import { photoshopBridge } from './photoshop/photoshopBridgeService.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
@@ -168,14 +166,8 @@ async function handleWorkspaceRequest(
   ) return;
   if (url.pathname.startsWith('/api/bake') && (await handleBakeRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/photoshop')) {
-    // Photoshop/DCC control belongs to the separately installed loopback-only
-    // local component. Never expose those launch/session endpoints on the
-    // public LI3D web server.
-    if (process.env.LICLICK_LOCAL_COMPONENT_MODE !== '1') {
-      sendJson(response, 404, { error: 'Not found.' });
-      return;
-    }
-    if (await handlePhotoshopRoute(request, response, url)) return;
+    sendJson(response, 404, { error: 'Photoshop/DCC bridge is deferred in the Browser/Cloud runtime.' });
+    return;
   }
   if (url.pathname.startsWith('/api/modelview') && (await handleModelviewRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
@@ -269,10 +261,6 @@ async function startServer() {
       sendJson(response, 500, { error: error instanceof Error ? error.message : 'Internal server error.' });
     }
   });
-
-  if (process.env.LICLICK_LOCAL_COMPONENT_MODE === '1') {
-    photoshopBridge.attach(server);
-  }
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code !== 'EADDRINUSE') {

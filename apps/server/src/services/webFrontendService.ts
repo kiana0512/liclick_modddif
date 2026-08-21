@@ -3,7 +3,9 @@ import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 
-const installerRoute = '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe';
+const retiredHostExtensionPaths = new Set([
+  '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe',
+]);
 
 const mimeTypes: Record<string, string> = {
   '.avif': 'image/avif',
@@ -30,14 +32,6 @@ const mimeTypes: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-type InstallerManifest = {
-  filename: string;
-  contentType: string;
-  bytes: number;
-  sha256: string;
-  parts: Array<{ file: string; bytes: number; sha256: string }>;
-};
-
 function isWithinDirectory(root: string, candidate: string) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -58,75 +52,6 @@ function sendUnavailable(response: ServerResponse) {
     'cache-control': 'no-store',
   });
   response.end('LI3D Web 前端尚未构建，请先运行 Web build。');
-}
-
-function readInstallerManifest() {
-  const manifestPath = path.join(
-    serverConfig.webDistDir,
-    'downloads',
-    'local-component',
-    'manifest.json',
-  );
-  if (!fs.existsSync(manifestPath)) return undefined;
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as InstallerManifest;
-  if (
-    !manifest.filename ||
-    !manifest.contentType ||
-    !Number.isFinite(manifest.bytes) ||
-    !manifest.sha256 ||
-    !Array.isArray(manifest.parts) ||
-    manifest.parts.length === 0
-  ) {
-    throw new Error('Local component installer manifest is invalid.');
-  }
-  return manifest;
-}
-
-async function pipeFile(filePath: string, response: ServerResponse) {
-  await new Promise<void>((resolve, reject) => {
-    const stream = fs.createReadStream(filePath);
-    stream.once('error', reject);
-    stream.once('end', resolve);
-    stream.pipe(response, { end: false });
-  });
-}
-
-async function serveInstaller(request: IncomingMessage, response: ServerResponse) {
-  const manifest = readInstallerManifest();
-  if (!manifest) {
-    response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
-    response.end(JSON.stringify({ error: 'Local component installer is not available.' }));
-    return;
-  }
-
-  const partsRoot = path.resolve(serverConfig.webDistDir, 'downloads', 'local-component');
-  const partPaths = manifest.parts.map((part) => {
-    const candidate = path.resolve(partsRoot, part.file);
-    if (!isWithinDirectory(partsRoot, candidate) || !fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
-      throw new Error(`Local component installer part is unavailable: ${part.file}`);
-    }
-    return candidate;
-  });
-
-  response.writeHead(200, {
-    'content-type': manifest.contentType,
-    'content-disposition': `attachment; filename="LIclick-3D-Texture-Local-Component-Setup.exe"; filename*=UTF-8''${encodeURIComponent(manifest.filename)}`,
-    'content-length': String(manifest.bytes),
-    'cache-control': 'no-store',
-    'x-content-type-options': 'nosniff',
-    'x-li3d-installer-sha256': manifest.sha256,
-  });
-  if (request.method === 'HEAD') {
-    response.end();
-    return;
-  }
-
-  try {
-    for (const partPath of partPaths) await pipeFile(partPath, response);
-    response.end();
-  } catch (error) {
-    response.destroy(error instanceof Error ? error : new Error('Installer stream failed.'));
-  }
 }
 
 function resolveStaticFile(url: URL) {
@@ -151,11 +76,14 @@ export async function serveWebFrontend(
 ) {
   if (!serverConfig.serveWeb) return false;
   if (request.method !== 'GET' && request.method !== 'HEAD') return false;
-  if (url.pathname === installerRoute) {
-    await serveInstaller(request, response);
+  if (retiredHostExtensionPaths.has(url.pathname)) {
+    response.writeHead(404, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    });
+    response.end(JSON.stringify({ error: 'Host extensions are not distributed by LI3D.' }));
     return true;
   }
-
   const filePath = resolveStaticFile(url);
   if (!filePath) {
     sendUnavailable(response);

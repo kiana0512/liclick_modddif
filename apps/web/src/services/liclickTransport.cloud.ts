@@ -4,10 +4,9 @@ import { getWorkspaceApiBase } from './workspaceApiBase.cloud';
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
 export type LiclickTransport = {
-  kind: 'workspace' | 'local-component';
+  kind: 'workspace';
   baseUrl: string;
-  credentials: RequestCredentials;
-  requiresIdentityProof: boolean;
+  credentials: 'include';
 };
 
 export function getLiclickTransportForProvider(
@@ -18,7 +17,6 @@ export function getLiclickTransportForProvider(
     kind: 'workspace',
     baseUrl: baseUrl ?? workspaceApiBase,
     credentials: 'include',
-    requiresIdentityProof: false,
   };
 }
 

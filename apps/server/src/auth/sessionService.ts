@@ -28,36 +28,13 @@ type BrowserSessionHandoff = {
   expiresAt: number;
 };
 
-type LocalIdentityProof = {
-  userId: string;
-  sessionTokenHash: string;
-  expiresAt: number;
-};
-
 const browserSessionHandoffs = new Map<string, BrowserSessionHandoff>();
 const browserSessionHandoffTtlMs = 2 * 60 * 1000;
-const localIdentityProofs = new Map<string, LocalIdentityProof>();
-const localIdentityProofTtlMs = 60 * 1000;
 
 function pruneBrowserSessionHandoffs() {
   const now = Date.now();
   for (const [code, handoff] of browserSessionHandoffs) {
     if (handoff.expiresAt <= now) browserSessionHandoffs.delete(code);
-  }
-}
-
-function hashLocalIdentityProof(proof: string) {
-  return crypto
-    .createHmac('sha256', serverConfig.sessionSecret)
-    .update('li3d-local-identity-proof\0')
-    .update(proof)
-    .digest('hex');
-}
-
-function pruneLocalIdentityProofs() {
-  const now = Date.now();
-  for (const [proofHash, proof] of localIdentityProofs) {
-    if (proof.expiresAt <= now) localIdentityProofs.delete(proofHash);
   }
 }
 
@@ -198,50 +175,6 @@ export async function verifySession(token?: string): Promise<AuthUser | undefine
   const user = database.users.find((item) => item.id === session.userId);
   if (!user || user.status !== 'active') return undefined;
   return user;
-}
-
-export async function createLocalIdentityProof(sessionToken?: string) {
-  const user = await verifySession(sessionToken);
-  const email = user?.email?.trim().toLowerCase();
-  if (!sessionToken || !user || user.authSource !== 'feishu-oauth' || !email) return undefined;
-  pruneLocalIdentityProofs();
-  const proof = crypto.randomBytes(32).toString('base64url');
-  const expiresAt = Date.now() + localIdentityProofTtlMs;
-  localIdentityProofs.set(hashLocalIdentityProof(proof), {
-    userId: user.id,
-    sessionTokenHash: hashSessionToken(sessionToken),
-    expiresAt,
-  });
-  return {
-    proof,
-    expiresAt: new Date(expiresAt).toISOString(),
-  };
-}
-
-export async function consumeLocalIdentityProof(proof?: string) {
-  if (!proof || proof.length > 256) return undefined;
-  pruneLocalIdentityProofs();
-  const proofHash = hashLocalIdentityProof(proof);
-  const pending = localIdentityProofs.get(proofHash);
-  // A proof is consumed before any asynchronous work so concurrent replays cannot win twice.
-  localIdentityProofs.delete(proofHash);
-  if (!pending || pending.expiresAt <= Date.now()) return undefined;
-  const database = await readAuthDatabase();
-  const session = database.sessions.find(
-    (item) =>
-      item.userId === pending.userId &&
-      item.sessionTokenHash === pending.sessionTokenHash &&
-      new Date(item.expiresAt).getTime() > Date.now(),
-  );
-  const user = database.users.find((item) => item.id === pending.userId);
-  const email = user?.email?.trim().toLowerCase();
-  if (!session || !user || user.status !== 'active' || !email) return undefined;
-  return {
-    id: user.id,
-    displayName: user.displayName,
-    email,
-    authSource: user.authSource,
-  };
 }
 
 export async function createBrowserSessionHandoff(sessionToken?: string) {

@@ -1,6 +1,6 @@
-import type { NativePerformanceSnapshot } from './nativePerformanceClient';
+import type { NativePerformanceSnapshot } from './nativePerformanceTypes';
 
-export type { NativePerformanceSnapshot } from './nativePerformanceClient';
+export type { NativePerformanceSnapshot } from './nativePerformanceTypes';
 
 type NavigatorWithDeviceMemory = Navigator & { deviceMemory?: number };
 

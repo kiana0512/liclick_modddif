@@ -35,17 +35,7 @@ import { devLogin } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { createModelviewApiClient } from '@/services/modelviewApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
-import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
-import {
-  getCachedPersonalLiclickAccountStatus,
-  getPersonalLiclickAccountStatus,
-  isPersonalLiclickAccountForEmail,
-} from '@/services/liclickAccountApiClient';
-import {
-  resolveLiclickAuthStrategy,
-  usesLocalAtlasLogin,
-  usesPersonalLiclickAccount,
-} from '@/services/liclickAuthStrategy';
+import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
 import {
   createLiclickApiClient,
   LiclickApiError,
@@ -778,10 +768,6 @@ export function GeneratePanel({
   const authStatus = useAuthStore((state) => state.status);
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
-  useEffect(() => {
-    if (authStatus !== 'authenticated' || !usesPersonalLiclickAccount(providerStatus)) return;
-    void getPersonalLiclickAccountStatus().catch(() => undefined);
-  }, [authStatus, providerStatus]);
   // A project has one mutation pipeline. While any generation channel owns
   // this lock, every other authoring action stays read-only.
   const submitLocksRef = useRef(new Set<GenerateChannel>());
@@ -1837,9 +1823,7 @@ export function GeneratePanel({
       pushToast({
         tone: 'warning',
         title: '需要飞书登录',
-        description: usesLocalAtlasLogin(activeProviderStatus)
-          ? '本地版使用同一个飞书/Atlas 登录完成身份验证和莉刻生图。'
-          : '服务器版使用飞书验证员工身份，莉刻生图账号将在当前电脑单独验证。',
+        description: '平台登录完成身份验证，生图任务由云端生产服务处理。',
         dedupeKey: 'ai-login-required',
       });
       if (activeProviderStatus.devLoginEnabled && !activeProviderStatus.feishuOAuthEnabled) {
@@ -1911,57 +1895,7 @@ export function GeneratePanel({
       throw new Error(message);
     }
     const authStrategy = resolveLiclickAuthStrategy(activeProviderStatus);
-    // The local build follows 7515224: its Atlas session owns both identity
-    // and generation, so it must never enter the server-only account binder.
-    if (authStrategy === 'atlas-workspace') {
-      if (activeProviderStatus.atlas?.valid !== false) return true;
-      setGenerateNotice({
-        tone: 'info',
-        message: '生图凭证已失效，正在重新打开飞书 / Atlas 授权。完成后会继续当前生成流程。',
-      });
-      pushToast({
-        tone: 'warning',
-        title: '需要重新授权生图服务',
-        description: '当前登录仍有效，但生图凭证已过期。请在弹出的窗口完成授权。',
-        dedupeKey: 'liclick-atlas-credential-refresh',
-      });
-      try {
-        const result = await runFeishuLoginFlow({
-          forceReauthorize: true,
-          onStatus: (message) => {
-            setGenerateNotice({ tone: 'info', message });
-          },
-        });
-        if (!result.user) {
-          throw new Error('授权服务没有返回用户信息，请重新尝试。');
-        }
-        setAuthenticated(
-          result.user,
-          result.authMode ?? 'feishu-oauth',
-          result.providerStatus ?? activeProviderStatus,
-        );
-        const refreshedProviderStatus = await useAuthStore.getState().refreshProviderStatus();
-        if (refreshedProviderStatus.atlas?.valid === false) {
-          throw new Error('飞书 / Atlas 授权尚未生效，请完成授权后重试。');
-        }
-        setGenerateNotice({
-          tone: 'info',
-          message: '生图凭证已恢复，正在继续生成。',
-        });
-        return true;
-      } catch (error) {
-        const message = getUserFacingGenerationError(error, '生图凭证恢复失败，请重新授权后再试。');
-        setGenerateNotice({ tone: 'error', message });
-        pushToast({
-          tone: 'error',
-          title: '生图服务授权失败',
-          description: message,
-          dedupeKey: 'liclick-atlas-credential-refresh-failed',
-        });
-        throw new Error(message);
-      }
-    }
-    if (authStrategy !== 'personal-local-component') {
+    if (authStrategy !== 'atlas-workspace') {
       const message = '当前登录方式尚未配置完成，请刷新页面或重新登录后再试。';
       setGenerateNotice({ tone: 'error', message });
       pushToast({
@@ -1972,57 +1906,7 @@ export function GeneratePanel({
       });
       throw new Error(message);
     }
-    const authenticatedUser = useAuthStore.getState().user;
-    if (!authenticatedUser) {
-      throw new Error('飞书登录已完成，但没有读取到当前用户，请刷新页面后重试。');
-    }
-    const expectedEmail = authenticatedUser.email?.trim();
-    if (
-      isPersonalLiclickAccountForEmail(
-        getCachedPersonalLiclickAccountStatus(),
-        authenticatedUser.authSource === 'dev-mock' ? undefined : expectedEmail,
-      )
-    )
-      return true;
-
-    try {
-      setGenerateNotice({
-        tone: 'warning',
-        message: '正在检查并绑定此电脑上的个人莉刻账号。',
-      });
-      pushToast({
-        tone: 'info',
-        title: '绑定个人莉刻账号',
-        description: '生图任务和费用将归属你登录的莉刻账号；凭证只保存在这台电脑。',
-        dedupeKey: 'liclick-account-binding-required',
-      });
-      const account = await ensurePersonalLiclickAccountForUser(authenticatedUser, {
-        onStatus: (message) => setGenerateNotice({ tone: 'info', message }),
-      });
-      setGenerateNotice({
-        tone: 'info',
-        message: `已绑定个人莉刻账号${account.email ? `：${account.email}` : ''}，正在继续提交任务。`,
-      });
-      pushToast({
-        tone: 'success',
-        title: '个人莉刻账号绑定成功',
-        description: account.email
-          ? `当前电脑将使用 ${account.email} 提交莉刻生图任务。`
-          : '当前电脑已使用你的个人莉刻账号提交生图任务。',
-        dedupeKey: 'liclick-account-binding-success',
-      });
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '个人莉刻账号绑定失败，请重新尝试。';
-      setGenerateNotice({ tone: 'error', message });
-      pushToast({
-        tone: 'error',
-        title: '个人莉刻账号不可用',
-        description: message,
-        dedupeKey: 'liclick-account-binding-failed',
-      });
-      throw error instanceof Error ? error : new Error(message);
-    }
+    return true;
   }
 
   async function getTextureMapMultiviewCaptures(views: CameraViewItem[]) {

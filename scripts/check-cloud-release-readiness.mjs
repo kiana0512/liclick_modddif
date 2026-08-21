@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
-const allowedStatuses = new Set(['passed', 'in_progress', 'failed', 'not_tested']);
+const allowedStatuses = new Set(['passed', 'in_progress', 'failed', 'not_tested', 'deferred']);
 const matrixPath = path.resolve('quality/cloud-release-readiness.json');
 const matrix = JSON.parse(await fs.readFile(matrixPath, 'utf8'));
 

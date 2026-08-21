@@ -30,8 +30,8 @@ if (builtAt && !Number.isFinite(Date.parse(builtAt))) {
 }
 
 const runtimeMode = process.env.LICLICK_RUNTIME_MODE?.trim() ?? '';
-if (runtimeMode && runtimeMode !== 'cloud' && runtimeMode !== 'desktop-legacy') {
-  errors.push('LICLICK_RUNTIME_MODE must be cloud or desktop-legacy for a release build.');
+if (runtimeMode && runtimeMode !== 'cloud') {
+  errors.push('LICLICK_RUNTIME_MODE must be cloud for a release build.');
 }
 
 if (errors.length > 0) {

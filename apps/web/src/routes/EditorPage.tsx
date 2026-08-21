@@ -200,7 +200,6 @@ import {
   publishPipelineRevision,
 } from '@/services/projectPipeline';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
-import { ensurePersonalLiclickAccountForUser } from '@/services/liclickAccountBindingFlow';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
 import { hasTrackedModuleAction, trackModuleActionOnce } from '@/services/telemetryClient';
 import {
@@ -3966,17 +3965,6 @@ export function EditorPage({
     if (authStrategy === 'unresolved') {
       throw new Error('无法确认当前登录方式，请刷新页面或重新登录后再试。');
     }
-    if (authStrategy === 'personal-local-component') {
-      await ensurePersonalLiclickAccountForUser(authState.user, {
-        onStatus: (message) =>
-          pushToast({
-            tone: 'info',
-            title: '个人莉刻账号',
-            description: message,
-            dedupeKey: 'local-repaint-liclick-account',
-          }),
-      });
-    }
     const source = localRepaintRuntime.workingImageData;
     const editMask =
       input.preparedEditMask ??
@@ -7164,7 +7152,6 @@ export function EditorPage({
               </div>
             )}
             <LayersPanel
-              onLayerImageEdit={openLayerImageEdit}
               onLayerImageReplace={(layer, file) => void replaceLayerImage(layer, file)}
               onLayerLocalRepaint={(layer) => void openLayerLocalRepaint(layer)}
               onMergeSelectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}

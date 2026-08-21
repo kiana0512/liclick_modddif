@@ -1,17 +1,8 @@
-import { lazy, Suspense, type ReactNode } from 'react';
-
-const requiresDesktopComponent = import.meta.env.VITE_LICLICK_RUNTIME_MODE !== 'cloud';
-const DesktopLegacyTextureRuntimeBoundary = requiresDesktopComponent
-  ? lazy(() =>
-      import('./DesktopLegacyTextureRuntimeBoundary').then((module) => ({
-        default: module.DesktopLegacyTextureRuntimeBoundary,
-      })),
-    )
-  : undefined;
+import type { ReactNode } from 'react';
 
 /**
- * A build-mode boundary: Cloud renders browser-local compute directly, while
- * desktop compatibility loads the old component gate as a separate chunk.
+ * Browser-local compute runs without an installed host component. Keeping the
+ * boundary preserves the route API while making the browser path unconditional.
  */
 export function TextureRuntimeBoundary({
   onBack,
@@ -20,12 +11,6 @@ export function TextureRuntimeBoundary({
   onBack: () => void;
   children: ReactNode;
 }) {
-  if (!DesktopLegacyTextureRuntimeBoundary) return children;
-  return (
-    <Suspense fallback={null}>
-      <DesktopLegacyTextureRuntimeBoundary onBack={onBack}>
-        {children}
-      </DesktopLegacyTextureRuntimeBoundary>
-    </Suspense>
-  );
+  void onBack;
+  return children;
 }

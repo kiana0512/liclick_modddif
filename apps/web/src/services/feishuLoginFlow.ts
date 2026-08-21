@@ -96,6 +96,19 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
       redirectUrl: started.redirectUrl,
     });
 
+    if (
+      started.redirectUrl &&
+      (providerStatus?.feishuLoginProvider === 'web-oauth' ||
+        providerStatus?.feishuLoginProvider === 'idaas-jwt')
+    ) {
+      // Web OAuth must also work in embedded browsers and mobile browsers
+      // that hide or block popups. The callback redirects this same tab back
+      // to the configured frontend after setting the HttpOnly session cookie.
+      popup.close();
+      window.location.assign(started.redirectUrl);
+      return await new Promise<never>(() => undefined);
+    }
+
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await wait(pollIntervalMs);

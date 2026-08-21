@@ -1,70 +1,9 @@
-/* global TextEncoder, TextDecoder, Headers, Response, Request, URL, ReadableStream, crypto, fetch, btoa, atob, console */
+/* global TextEncoder, TextDecoder, Headers, Response, Request, URL, crypto, fetch, btoa, atob, console */
 const encoder = new TextEncoder();
 const oauthCookieName = 'li3d_oauth_state';
 const sessionCookieName = 'li3d_session';
 const oauthTtlSeconds = 10 * 60;
 const sessionTtlSeconds = 7 * 24 * 60 * 60;
-const installerRoute = '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe';
-const installerFilename = 'LIclick 3D Texture Local Component Setup.exe';
-const installerContentType = 'application/vnd.microsoft.portable-executable';
-const installerBytes = 25_270_801;
-const installerSha256 = 'c6bce970c4384c42c3f2764da47226fb4a81e295055438a5e6c6c381cf9a551e';
-const installerParts = [
-  '/downloads/local-component/part-001.bin',
-  '/downloads/local-component/part-002.bin',
-  '/downloads/local-component/part-003.bin',
-  '/downloads/local-component/part-004.bin',
-  '/downloads/local-component/part-005.bin',
-  '/downloads/local-component/part-006.bin',
-  '/downloads/local-component/part-007.bin',
-];
-
-function installerStream(request, env) {
-  let partIndex = 0;
-  let reader;
-  return new ReadableStream({
-    async pull(controller) {
-      try {
-        while (partIndex < installerParts.length) {
-          if (!reader) {
-            const partUrl = new URL(installerParts[partIndex], request.url);
-            const response = await env.ASSETS.fetch(new Request(partUrl));
-            if (!response.ok || !response.body) {
-              throw new Error(`Installer part ${partIndex + 1} is unavailable.`);
-            }
-            reader = response.body.getReader();
-          }
-          const result = await reader.read();
-          if (!result.done) {
-            controller.enqueue(result.value);
-            return;
-          }
-          reader = undefined;
-          partIndex += 1;
-        }
-        controller.close();
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-    async cancel(reason) {
-      await reader?.cancel(reason);
-    },
-  });
-}
-
-function serveInstaller(request, env) {
-  const headers = new Headers({
-    'content-type': installerContentType,
-    'content-disposition': `attachment; filename="LIclick-3D-Texture-Local-Component-Setup.exe"; filename*=UTF-8''${encodeURIComponent(installerFilename)}`,
-    'content-length': String(installerBytes),
-    'cache-control': 'no-store',
-    'x-li3d-installer-sha256': installerSha256,
-  });
-  if (request.method === 'HEAD') return new Response(null, { headers });
-  return new Response(installerStream(request, env), { headers });
-}
-
 function json(payload, status = 200, headers = undefined) {
   const responseHeaders = new Headers(headers);
   responseHeaders.set('content-type', 'application/json; charset=utf-8');
@@ -486,12 +425,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (
-        url.pathname === installerRoute &&
-        (request.method === 'GET' || request.method === 'HEAD')
-      ) {
-        return serveInstaller(request, env);
-      }
       if (url.pathname.startsWith('/api/')) return await handleApi(request, env);
       return await serveSite(request, env);
     } catch (error) {

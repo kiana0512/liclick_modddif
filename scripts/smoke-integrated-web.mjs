@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -9,9 +8,6 @@ import { spawn } from 'node:child_process';
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const serverEntry = path.join(repoRoot, 'apps', 'server', 'dist', 'index.js');
 const webDist = path.join(repoRoot, 'apps', 'web', 'dist');
-const installerManifest = JSON.parse(
-  await fs.readFile(path.join(webDist, 'downloads', 'local-component', 'manifest.json'), 'utf8'),
-);
 
 async function reservePort() {
   const server = net.createServer();
@@ -136,20 +132,13 @@ try {
   assert.equal(unknownApi.status, 404);
   assert.match(unknownApi.headers.get('content-type') ?? '', /^application\/json/);
 
-  const installer = await fetch(
+  const retiredInstaller = await fetch(
     `${baseUrl}/downloads/LIclick-3D-Texture-Local-Component-Setup.exe`,
   );
-  assert.equal(installer.status, 200);
-  assert.match(installer.headers.get('content-disposition') ?? '', /\.exe/);
-  const installerBuffer = Buffer.from(await installer.arrayBuffer());
-  assert.equal(installerBuffer.length, installerManifest.bytes);
-  assert.equal(
-    crypto.createHash('sha256').update(installerBuffer).digest('hex'),
-    installerManifest.sha256,
-  );
+  assert.equal(retiredInstaller.status, 404);
 
   console.log(
-    `Integrated Web smoke passed: SPA, auth boundaries, JSON API boundary, and ${installerBuffer.length}-byte local component download.`,
+    'Integrated Web smoke passed: SPA, auth boundaries, JSON API boundary, and no local component download route.',
   );
 } catch (error) {
   if (output.trim()) console.error(output.trim());

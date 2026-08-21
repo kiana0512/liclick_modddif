@@ -123,7 +123,23 @@ function createObjectStorageSimulator() {
   });
 }
 
-function startCloudServer(port, objectStorageEndpoint) {
+function startMockIdentityProvider(port) {
+  const child = spawn(process.execPath, [path.join(repoRoot, 'scripts/mock-idaas-server.mjs')], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      MOCK_IDAAS_PORT: String(port),
+      MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST: 'true',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  child.stdout.on('data', (chunk) => process.stdout.write(`[idaas] ${chunk}`));
+  child.stderr.on('data', (chunk) => process.stderr.write(`[idaas] ${chunk}`));
+  return child;
+}
+
+function startCloudServer(port, objectStorageEndpoint, identityEndpoint) {
   const publicUrl = `http://127.0.0.1:${port}${publicPath}`;
   const child = spawn(process.execPath, [path.join(repoRoot, 'apps/server/dist/index.js')], {
     cwd: repoRoot,
@@ -140,9 +156,18 @@ function startCloudServer(port, objectStorageEndpoint) {
       LICLICK_WEB_DIST_DIR: path.join(repoRoot, 'apps/web/dist'),
       LICLICK_ALLOWED_ORIGINS: simulatedWebOrigin,
       LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: 'false',
-      AUTH_MODE: 'dev-mock',
+      AUTH_MODE: 'feishu-oauth',
       SESSION_SECRET: 'simulated-cloud-session-secret-only-for-tests',
       SESSION_COOKIE_SECURE: 'false',
+      FEISHU_OAUTH_CLIENT_ID: 'liclick-local-test',
+      FEISHU_OAUTH_CLIENT_SECRET: 'local-secret',
+      FEISHU_OAUTH_AUTHORIZE_URL: `${identityEndpoint}/authorize`,
+      FEISHU_OAUTH_TOKEN_URL: `${identityEndpoint}/token`,
+      FEISHU_OAUTH_USERINFO_URL: `${identityEndpoint}/userinfo`,
+      FEISHU_OAUTH_REDIRECT_URL: `${publicUrl}/api/auth/feishu/callback`,
+      FEISHU_OAUTH_SCOPE: '',
+      FEISHU_OAUTH_TOKEN_REQUEST_FORMAT: 'json',
+      FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER: 'true',
       LICLICK_OBJECT_STORAGE_ENDPOINT: objectStorageEndpoint,
       LICLICK_OBJECT_STORAGE_REGION: 'simulated-region-1',
       LICLICK_OBJECT_STORAGE_BUCKET: 'liclick-simulated',
@@ -183,14 +208,84 @@ async function jsonRequest(url, init = {}) {
   return { response, payload };
 }
 
+function cookiePair(setCookieHeader, name) {
+  const match = new RegExp(`(?:^|,\\s*)(${name}=[^;]*)`).exec(setCookieHeader ?? '');
+  assert.ok(match, `Response did not set ${name}.`);
+  return match[1];
+}
+
+async function waitForJson(url, label) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return response.json();
+    } catch {
+      // Service is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`${label} did not become healthy.`);
+}
+
+async function completeSimulatedOAuth(publicUrl, identityEndpoint) {
+  const provider = await jsonRequest(`${publicUrl}/api/auth/provider-status`);
+  assert.equal(provider.response.status, 200);
+  assert.equal(provider.payload.feishuLoginProvider, 'web-oauth');
+  assert.equal(provider.payload.devLoginEnabled, false);
+
+  const started = await jsonRequest(`${publicUrl}/api/auth/feishu/start`);
+  assert.equal(started.response.status, 200);
+  assert.ok(started.payload.loginId);
+  const browserNonce = cookiePair(started.response.headers.get('set-cookie'), 'li3d_oauth_nonce');
+  const authorizeUrl = new URL(started.payload.redirectUrl);
+  assert.equal(authorizeUrl.origin, identityEndpoint);
+  assert.ok(authorizeUrl.searchParams.get('state'));
+  assert.equal(authorizeUrl.searchParams.get('code_challenge_method'), 'S256');
+
+  const approved = await fetch(`${identityEndpoint}/approve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      redirect_uri: authorizeUrl.searchParams.get('redirect_uri') ?? '',
+      state: authorizeUrl.searchParams.get('state') ?? '',
+      code_challenge: authorizeUrl.searchParams.get('code_challenge') ?? '',
+      code_challenge_method: authorizeUrl.searchParams.get('code_challenge_method') ?? '',
+    }),
+    redirect: 'manual',
+  });
+  assert.equal(approved.status, 302);
+  const callbackUrl = approved.headers.get('location');
+  assert.ok(callbackUrl);
+  const callback = await fetch(callbackUrl, {
+    headers: { cookie: browserNonce },
+    redirect: 'manual',
+  });
+  assert.equal(callback.status, 200);
+  const callbackHtml = await callback.text();
+  assert.match(callbackHtml, /Liclick 登录成功/);
+  const cookie = cookiePair(callback.headers.get('set-cookie'), 'liclick_3d_session');
+
+  const me = await jsonRequest(`${publicUrl}/api/auth/me`, { headers: { cookie } });
+  assert.equal(me.response.status, 200);
+  assert.equal(me.payload.authenticated, true);
+  assert.equal(me.payload.authMode, 'feishu-oauth');
+  assert.ok(me.payload.user?.id);
+  return cookie;
+}
+
 await buildCloudArtifacts();
 const objectStorage = createObjectStorageSimulator();
 await listen(objectStorage);
 const objectAddress = objectStorage.address();
 assert.ok(objectAddress && typeof objectAddress === 'object');
 const objectStorageEndpoint = `http://127.0.0.1:${objectAddress.port}`;
+const identityPort = await reservePort();
+const identityEndpoint = `http://127.0.0.1:${identityPort}`;
+const identityProvider = startMockIdentityProvider(identityPort);
+await waitForJson(`${identityEndpoint}/health`, 'Simulated IDaaS');
 const cloudPort = await reservePort();
-let cloud = startCloudServer(cloudPort, objectStorageEndpoint);
+let cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint);
 
 try {
   const health = await waitForHealth(cloud.publicUrl);
@@ -203,15 +298,7 @@ try {
   assert.match(html, /<div id="root"><\/div>/);
   assert.doesNotMatch(html, /Local-Component-Setup|localhost:4618/i);
 
-  const login = await jsonRequest(`${cloud.publicUrl}/api/auth/dev-login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', origin: simulatedWebOrigin },
-    body: JSON.stringify({ displayName: 'Cloud Simulator', email: 'simulator@example.test' }),
-  });
-  assert.equal(login.response.status, 200);
-  assert.equal(login.response.headers.get('access-control-allow-origin'), simulatedWebOrigin);
-  const cookie = login.response.headers.get('set-cookie')?.split(';')[0];
-  assert.ok(cookie);
+  const cookie = await completeSimulatedOAuth(cloud.publicUrl, identityEndpoint);
   const authenticatedHeaders = {
     cookie,
     origin: simulatedWebOrigin,
@@ -319,7 +406,7 @@ try {
   assert.equal(replayedRename.payload.project.revision.number, 2);
 
   await stopCloudServer(cloud.child);
-  cloud = startCloudServer(cloudPort, objectStorageEndpoint);
+  cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint);
   await waitForHealth(cloud.publicUrl);
   const recovered = await jsonRequest(`${cloud.publicUrl}/api/projects/${projectId}`, {
     headers: { cookie, origin: simulatedWebOrigin },
@@ -333,7 +420,7 @@ try {
   });
   assert.equal(recoveredContent.status, 307);
 
-  console.log('Cloud deployment simulation passed: build, proxy path, auth, direct upload, retry, idempotency and restart recovery.');
+  console.log('Cloud deployment simulation passed: build, OAuth/PKCE cookie session, proxy path, direct upload, retry, idempotency and restart recovery.');
   if (process.argv.includes('--serve')) {
     console.log(`SIMULATED_CLOUD_URL=${cloud.publicUrl}/`);
     console.log('The simulated deployment will stay available until this process is stopped.');
@@ -344,6 +431,7 @@ try {
   }
 } finally {
   await stopCloudServer(cloud.child).catch(() => undefined);
+  await stopCloudServer(identityProvider).catch(() => undefined);
   objectStorage.closeAllConnections();
   await new Promise((resolve) => objectStorage.close(resolve));
   await fs.rm(workspace, { recursive: true, force: true });
