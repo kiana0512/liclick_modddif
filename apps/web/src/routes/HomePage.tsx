@@ -501,13 +501,13 @@ export function HomePage({
           <ModuleCard
             eyebrow="PRODUCTION TOOLS"
             title="工具箱"
-            description="保留生产工具清单，逐项迁移到浏览器或云端。"
-            detail="浏览器工具 · 云端批处理 · DCC 暂缓"
+            description="使用建模与生产辅助工具。"
+            detail="3ds Max · Blender · 独立工具"
             icon={Wrench}
             accent="cyan"
             visual="tools"
-            badge="能力保留"
-            hoverAction="查看工具箱"
+            badge="云端服务"
+            hoverAction="打开工具箱"
             telemetryModule="toolbox"
             onClick={onOpenToolbox}
             layout="compact"

@@ -39,7 +39,8 @@ function cloudPublicAssetsPlugin(): Plugin {
           const lowerRelative = relative.toLowerCase();
           if (
             lowerRelative.startsWith('downloads/local-component/') ||
-            lowerRelative.startsWith('toolbox/') ||
+            (lowerRelative.startsWith('toolbox/') &&
+              lowerRelative !== 'toolbox/modeling-toolbox-icon.png') ||
             cloudForbiddenPublicExtensions.has(path.extname(lowerRelative))
           ) {
             continue;
@@ -109,44 +110,36 @@ function eraserPerformanceDiagnosticsPlugin(base: string): Plugin {
 
 const publicBase = normalizeBase(process.env.VITE_PUBLIC_PATH ?? process.env.VITE_BASE_PATH);
 export default defineConfig({
-  plugins: [
-    cloudPublicAssetsPlugin(),
-    eraserPerformanceDiagnosticsPlugin(publicBase),
-    react(),
-  ],
+  plugins: [cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
   publicDir: false,
   base: publicBase,
   resolve: {
     alias: [
       ...[
-            {
-              find: /^\.\/workspaceApiBase$/,
-              replacement: path.resolve(rootDir, 'src/services/workspaceApiBase.cloud.ts'),
-            },
-            {
-              find: /^@\/platform\/projectApiBase$/,
-              replacement: path.resolve(rootDir, 'src/platform/projectApiBase.cloud.ts'),
-            },
-            {
-              find: /^\.\/liclickTransport$/,
-              replacement: path.resolve(rootDir, 'src/services/liclickTransport.cloud.ts'),
-            },
-            {
-              find: /^@\/services\/nativePerformanceClient$/,
-              replacement: path.resolve(rootDir, 'src/services/nativePerformanceClient.cloud.ts'),
-            },
-            {
-              find: /^@\/features\/photoshop\/photoshopBridgeClient$/,
-              replacement: path.resolve(
-                rootDir,
-                'src/features/photoshop/photoshopBridgeClient.cloud.ts',
-              ),
-            },
-            {
-              find: /^\.\/routes\/ModelingToolboxPage$/,
-              replacement: path.resolve(rootDir, 'src/routes/ModelingToolboxPage.cloud.tsx'),
-            },
-          ],
+        {
+          find: /^\.\/workspaceApiBase$/,
+          replacement: path.resolve(rootDir, 'src/services/workspaceApiBase.cloud.ts'),
+        },
+        {
+          find: /^@\/platform\/projectApiBase$/,
+          replacement: path.resolve(rootDir, 'src/platform/projectApiBase.cloud.ts'),
+        },
+        {
+          find: /^\.\/liclickTransport$/,
+          replacement: path.resolve(rootDir, 'src/services/liclickTransport.cloud.ts'),
+        },
+        {
+          find: /^@\/services\/nativePerformanceClient$/,
+          replacement: path.resolve(rootDir, 'src/services/nativePerformanceClient.cloud.ts'),
+        },
+        {
+          find: /^@\/features\/photoshop\/photoshopBridgeClient$/,
+          replacement: path.resolve(
+            rootDir,
+            'src/features/photoshop/photoshopBridgeClient.cloud.ts',
+          ),
+        },
+      ],
       { find: '@', replacement: path.resolve(rootDir, 'src') },
     ],
   },

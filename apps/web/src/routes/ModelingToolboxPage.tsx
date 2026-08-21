@@ -15,11 +15,8 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
-import { useState } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
-import { downloadBlob } from '@/engine/export/exportUtils';
-import { trackModuleAction } from '@/services/telemetryClient';
 
 type ToolItem = {
   name: string;
@@ -136,25 +133,6 @@ export function ModelingToolboxPage({
   onBack: () => void;
   onLogout: () => void;
 }) {
-  const [downloadingInstaller, setDownloadingInstaller] = useState(false);
-  const [downloadError, setDownloadError] = useState<string>();
-
-  async function downloadInstaller() {
-    if (downloadingInstaller) return;
-    setDownloadingInstaller(true);
-    setDownloadError(undefined);
-    try {
-      const response = await fetch(`${toolboxRoot}modeling-toolbox-v2.0.1.exe`);
-      if (!response.ok) throw new Error(`下载安装包失败（${response.status}）。`);
-      downloadBlob(await response.blob(), '建模工具箱-v2.0.1.exe');
-      trackModuleAction('toolbox', 'download');
-    } catch (error) {
-      setDownloadError(error instanceof Error ? error.message : '下载安装包失败。');
-    } finally {
-      setDownloadingInstaller(false);
-    }
-  }
-
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute right-[10%] top-8 h-96 w-96 rounded-full bg-cyan-400/[0.055] blur-[110px]" />
@@ -206,27 +184,24 @@ export function ModelingToolboxPage({
             <div className="relative mt-8 flex flex-wrap gap-3">
               <button
                 type="button"
-                disabled={downloadingInstaller}
-                onClick={() => void downloadInstaller()}
-                className="inline-flex h-11 items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.28)] transition hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0 disabled:cursor-wait disabled:opacity-60"
+                disabled
+                title="Cloud 浏览器版不提供 Windows 安装器"
+                className="inline-flex h-11 cursor-not-allowed items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.28)]"
               >
                 <Download className="h-4 w-4" />
-                {downloadingInstaller ? '正在下载…' : '下载 Windows 安装器'}
+                下载 Windows 安装器
               </button>
-              <a
-                href={`${toolboxRoot}manual_max.html`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-11 items-center gap-2 rounded-lg border border-white/12 bg-white/[0.045] px-5 text-sm font-semibold text-white/72 transition hover:border-white/22 hover:bg-white/[0.085] hover:text-white"
+              <button
+                type="button"
+                disabled
+                title="PS/DCC 使用说明随桌面集成一并暂缓"
+                className="inline-flex h-11 cursor-not-allowed items-center gap-2 rounded-lg border border-white/12 bg-white/[0.045] px-5 text-sm font-semibold text-white/72"
               >
                 <BookOpen className="h-4 w-4" />
                 查看使用说明
                 <ExternalLink className="h-3.5 w-3.5 text-white/38" />
-              </a>
+              </button>
             </div>
-            {downloadError ? (
-              <p className="relative mt-3 text-xs text-rose-200/70">{downloadError}</p>
-            ) : null}
           </div>
 
           <aside className="border-t border-white/[0.07] bg-black/18 p-7 lg:border-l lg:border-t-0 lg:p-9">
@@ -252,7 +227,7 @@ export function ModelingToolboxPage({
             <div className="mt-6 flex items-start gap-3 rounded-xl border border-emerald-300/12 bg-emerald-400/[0.055] p-4">
               <MonitorDown className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200/72" />
               <p className="text-xs leading-5 text-emerald-50/52">
-                安装器与说明书已上传到 Li3D，可直接从本页获取。
+                桌面历史包信息仅用于界面对齐；Cloud 版保持零安装，不提供安装器下载。
               </p>
             </div>
           </aside>

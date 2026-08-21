@@ -40,7 +40,8 @@ for (const file of files) {
   totalBytes += stat.size;
   if (
     lowerRelative.includes('local-component') ||
-    lowerRelative.startsWith('toolbox/') ||
+    (lowerRelative.startsWith('toolbox/') &&
+      lowerRelative !== 'toolbox/modeling-toolbox-icon.png') ||
     forbiddenExtensions.has(path.extname(lowerRelative))
   ) {
     violations.push(`${relative}: forbidden host-extension artifact`);
