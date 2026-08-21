@@ -52,6 +52,7 @@
     "check:cloud-boundary": "node scripts/check-cloud-boundary.mjs",
     "check:project-repository-boundary": "node scripts/check-project-repository-boundary.mjs",
     "check:cloud-artifact": "node scripts/check-cloud-artifact.mjs",
+    "check:web-bundle-budget": "node scripts/check-web-bundle-budget.mjs",
     "validate:release-env": "node scripts/validate-release-env.mjs",
     "verify:modernization": "corepack pnpm run check:cloud-boundary && corepack pnpm run check:project-repository-boundary && corepack pnpm run test:contracts",
     "format": "prettier --write ."

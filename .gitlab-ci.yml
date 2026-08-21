@@ -18,6 +18,7 @@ contracts-and-cloud-boundary:
   stage: verify
   script:
     - corepack pnpm run check:cloud-boundary
+    - corepack pnpm run check:project-repository-boundary
     - corepack pnpm run test:contracts
 
 typecheck:
@@ -49,6 +50,7 @@ build:
   script:
     - corepack pnpm run build:release
     - corepack pnpm run check:cloud-artifact
+    - corepack pnpm run check:web-bundle-budget
   artifacts:
     expire_in: 14 days
     paths:
