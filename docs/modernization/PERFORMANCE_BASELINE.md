@@ -4,7 +4,7 @@
 
 ## 当前构建基线
 
-Cloud 生产构建当前约 3.06 MB 原始 JavaScript，共 50 个按路由/Worker 拆分的脚本。新增 Auto UV 内核位于独立的约 55 KB Worker，约 225 KB xatlas WASM 不计入 JavaScript 总额且仅在进入 UV 任务时加载。主要债务为：
+Cloud 生产构建基线约 3.06 MB 原始 JavaScript，共 50 个按路由/Worker 拆分的脚本。历史 xatlas/BVH 实验内核仍以独立 Worker/WASM 块保留用于回归，但 Auto UV 与生产 Bake 页面已改为真实服务路径；后续可在确认不再需要浏览器对照后继续裁剪。主要债务为：
 
 | 边界 | 当前原始大小 | 阶段一硬上限 | 目标 |
 | --- | ---: | ---: | ---: |

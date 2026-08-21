@@ -19,12 +19,12 @@
 
 ## 第一批接入
 
-编辑器的全分辨率 UV 合并和内容识别修补已从全局重任务队列迁到项目 Engine Session 的 GPU lane；浏览器 Auto UV 的 xatlas Worker 已进入 CPU lane 并登记资源。会话尚未可用时，编辑器旧任务保留原调度器作为迁移期兼容路径，独立 Auto UV 使用自己的可取消 Worker 生命周期。
+编辑器的全分辨率 UV 图层合并和内容识别修补已从全局重任务队列迁到项目 Engine Session 的 GPU lane。浏览器 xatlas/BVH 实验内核可以登记到 CPU lane 做回归与算法对照，但 Auto UV 和生产 PBR Bake 的产品页面按 ADR-0011 提交真实服务任务，不属于 Engine Session 的本地计算职责。
 
-自动化测试覆盖 CPU 并发上限、同 key 替换、取消竞态、活动任务先于资源释放、资源逆序释放和幂等销毁。远端部署浏览器测试证明同一项目从贴图切到 UV 后 Engine Session ID 保持不变。
+自动化测试覆盖 CPU 并发上限、同 key 替换、取消竞态、活动任务先于资源释放、资源逆序释放和幂等销毁。页面切换仍复用同一项目会话，但服务端 UV/拓扑/Bake Job 的恢复由账号历史和应用服务器负责。
 
 ## 尚未完成
 
 - 将现有 Worker、WebGPU device/queue、纹理、ImageBitmap 和 OPFS checkpoint 全部登记到会话。
 - 接入设备丢失重建、内存压力降级、任务 checkpoint 与跨刷新恢复。
-- 扩大 Auto UV 的生产模型与质量矩阵；将 PBR Bake 和拓扑产品工作流迁入本地 lane。
+- 扩大浏览器贴图内核的生产模型与性能矩阵；真实 UV、拓扑和 PBR Bake 的质量矩阵由服务验收门禁维护。

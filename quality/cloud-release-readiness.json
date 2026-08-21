@@ -58,7 +58,7 @@
     },
     {
       "id": "compute.browser-policy",
-      "name": "浏览器 GPU/CPU 能力协商且禁止服务器补算",
+      "name": "普通贴图交互使用浏览器 GPU/CPU 且禁止服务器隐式补算",
       "required": true,
       "status": "passed",
       "evidence": [
@@ -88,30 +88,27 @@
       ]
     },
     {
-      "id": "uv.browser-local",
-      "name": "UV 在浏览器本地算力完成",
+      "id": "uv.production-service",
+      "name": "Auto UV 由真实 Asset V4 服务完成并返回合格产物",
       "required": true,
       "status": "in_progress",
       "evidence": [
-        "@liclick/web test:local-uv-atlas",
-        "@liclick/web test:browser-asset-kernel-matrix（多网格闭合几何、非退化 UV、xref 与范围）",
-        "browser:xatlas WASM Worker -> GLB -> UV preview -> direct upload -> Bake 2/2",
-        "quality/evidence/browser-compute-kernel-matrix.json",
-        "生产模型与质量矩阵尚未完成"
+        "2026-08-21 真实 Asset V4 容量接口返回 9 Worker / 16 槽位",
+        "真实员工提交 39.7 MB FBX，UV_PROCESS_V2 由 asset-control-4090 执行 464 秒并写入账号历史",
+        "严格 QA 以 UV_QA_FAILED 拒绝不合格输出，0 个制品发布",
+        "待修复生产 Worker UV QA，并补齐生产资产、制品、取消、超大模型与恢复矩阵"
       ]
     },
     {
-      "id": "bake.browser-local-pbr",
-      "name": "PBR Bake 在浏览器本地算力完成并可导出",
+      "id": "bake.production-substance",
+      "name": "PBR Bake 由真实 Substance Worker 完成并可导出",
       "required": true,
       "status": "in_progress",
       "evidence": [
-        "@liclick/web test:local-pbr-bake",
-        "@liclick/web test:browser-asset-kernel-matrix（闭合非平面模型六个几何通道、曲率、4K 输出与 DX/GL 方向）",
-        "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> 真实曲率与 4K RGBA 输出；账号资产直传与刷新恢复链路通过",
-        "quality/evidence/browser-local-pbr-bake-e2e.json",
-        "quality/evidence/browser-compute-kernel-matrix.json",
-        "生产模型、完整七通道 4K 峰值内存与目标硬件性能矩阵尚未完成"
+        "真实 asset-worker-3090-b-windows 状态和 TLS 校验通过",
+        "真实员工提交 xiangzi_high.fbx / xiangzi_low.fbx / Base Color，完成 4K Substance Job bake_7d44660d-9585-4caf-9643-82703fdf4057",
+        "Base Color、Normal DX、AO、Curvature、World Normal、Thickness、Position 可预览下载并恢复账号历史",
+        "仍需更多生产模型质量对照、失败/取消/恢复压力矩阵和 ID 通道规划"
       ]
     },
     {
@@ -121,10 +118,10 @@
       "status": "in_progress",
       "evidence": [
         "严格 TLS/CA 自动化环境上传 7.7 MB / 30,338 面 FBX，并验证可解析 FBX、BLEND、任务轮询、取消与产物校验协议；该条属于协议模拟器证据，不计作真实服务验收",
-        "2026-08-21 真实员工账号预览通过固定 SHA-256 CA 连接 https://10.3.34.11，并从真实 Asset V4 容量接口读取 9 Worker / 16 槽位；preview:real-auth 已改为默认连接真实服务",
-        "任务取消、历史持久化、远端模拟器与 LI3D 服务重启后结果恢复均通过",
+        "2026-08-21 真实员工提交 39.7 MB FBX，asset-worker-3090-b 运行 161 秒并写入账号历史",
+        "坐标门禁以 RETOPOLOGY_COORDINATE_MISMATCH 拒绝发布错位结果",
         "quality/evidence/browser-cloud-retopology-e2e.json",
-        "新默认预览尚需再提交一组生产代表模型，验收拓扑质量、正式 FBX/BLEND 下载与账号历史恢复"
+        "待修复生产 Worker 坐标恢复，再验收正式 FBX/BLEND、三方 SHA 与八项 QA"
       ]
     },
     {
@@ -133,7 +130,7 @@
       "required": true,
       "status": "in_progress",
       "evidence": [
-        "Cloud 首页恢复第 5 个工具箱模块",
+        "Cloud 首页保留四个工作模块，其中工具箱为第四个模块",
         "/tools 按原版结构完整登记 9 项工具，无安装器、假按钮或桌面依赖宣称",
         "UV 引擎能力已具备；其余浏览器/云端工具仍需逐项实现",
         "PS/DCC 桥接按 ADR-0010 暂缓"

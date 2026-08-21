@@ -16,12 +16,14 @@
 - [x] 清空浏览器缓存或重启服务后可以从云端恢复项目。
 - [x] Photoshop/DCC 不属于莉刻核心流程依赖。
 
-## 本地算力
+## 计算边界
 
-- [x] 普通投影、合成、蒙版、UV/PBR Bake 不调用 LI3D 服务器计算接口。
+- [x] 普通投影、图层合成、蒙版和视口交互使用浏览器 CPU/GPU，不要求安装本地组件。
 - [x] WebGPU/WebGL2/WASM 后端按能力协商，不支持时显式降级。
-- [x] 低性能设备降低本地质量或速度，不触发服务器补算。
-- [ ] 重任务支持取消、分块、进度、checkpoint 和设备丢失恢复。
+- [x] Auto UV、自动拓扑和生产 PBR Bake 只提交真实服务集群，禁止静默切换到浏览器实验内核或模拟器。
+- [x] UI 的 Worker、槽位、TLS、进度和错误来自真实状态/任务 API。
+- [ ] 浏览器重任务支持取消、分块、进度、checkpoint 和设备丢失恢复。
+- [ ] UV 与拓扑生产质量门禁通过；当前真实任务分别被 `UV_QA_FAILED` 与 `RETOPOLOGY_COORDINATE_MISMATCH` 阻断。
 
 ## 性能
 
@@ -30,7 +32,7 @@
 - [ ] 目标硬件帧耗 P95 满足 16.7ms/33ms 分级预算。
 - [ ] 主线程没有持续超过 50ms 的 Long Task。
 - [ ] 连续切换项目后 Texture、ImageBitmap 和 Worker 内存回落。
-- [ ] BFF CPU 使用不随本地 Bake 分辨率明显增长。
+- [ ] BFF 只负责任务编排和受控数据转发，不承担 Substance/Asset Worker 的计算负载。
 
 ## 安全与数据
 

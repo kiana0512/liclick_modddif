@@ -1,6 +1,8 @@
 # ADR-0009：浏览器本地 PBR Bake
 
-状态：已接受，Base Color/Normal/AO/Curvature 真实纵向切片与 4K 内核已接入；完整生产质量与硬件矩阵仍在进行中。
+状态：已被 [ADR-0011](./ADR-0011-real-production-compute-services.md) 替代。本文只保留浏览器 BVH 烘焙实验与回归内核的历史证据，不代表当前产品路径。
+
+2026-08-21 产品要求澄清：生产 PBR Bake 必须提交真实 Substance Worker。浏览器 BVH 内核可以继续用于隔离测试、算法对照和将来适合本机执行的轻量任务，但不得作为正式页面的默认执行器，也不得在真实服务不可用时静默回退。
 
 ## 问题
 
@@ -47,4 +49,4 @@
 - 2K/4K 大模型耗时、七通道峰值内存、取消、低内存、Worker 崩溃恢复和目标硬件性能矩阵。
 - GPU/WebGPU Bake 后端、UDIM、多 atlas、cage 模式和跨浏览器兼容矩阵。
 
-因此 `bake.browser-local-pbr` 从 `failed` 提升为 `in_progress`，不会因简单四边形的 Normal/AO 纵向切片通过就提前标为 `passed`。
+该实验曾使用机器门禁 ID `bake.browser-local-pbr`；当前机器真源已改为 `bake.production-substance`。浏览器几何内核证据只用于回归，不能提高生产 Substance 服务状态。

@@ -1,37 +1,36 @@
 # Feature Breakdown
 
-本表描述当前代码能力，不是竞品功能复制清单。状态含义：`Implemented` 为当前有可达实现；`Partial` 为只完成一部分；`Placeholder` 为 UI/契约占位；`Planned` 为尚无正式实现。
+本表描述 `codex/modernization` 当前代码能力。`Passed` 表示有真实输入/输出和恢复证据；`Connected, quality blocked` 表示真实链路已证明但算法质量门禁失败；`Partial` 表示仍缺生产验收；`Deferred` 表示本轮明确不交付。
 
 | Area | Current status | Actual behavior |
 | --- | --- | --- |
-| Unified home | Implemented | 四张模块卡：贴图绘制、Auto UV、模型烘焙、工具箱 |
-| Projects | Implemented | 项目/文件夹/资产/设置、缩略图、创建与恢复；保存/返回时临时用 PBR 模式捕获项目缩略图并还原当前显示模式；服务离线时首页可显示 mock 项目回退 |
-| Texture editor | Implemented | Three.js 视口、浮动 Dock、对象/参考/生成/图层/变换面板、ViewCube、显示模式 |
-| Objects | Implemented | 多模型工程、活动对象、显隐/选择、归一化、移动/旋转/缩放、居中/落地/相机适配 |
-| Model import | Implemented/experimental | GLB/glTF 为主；FBX/OBJ 实验性；当前贴图导入流程不接受 STL |
+| Unified home | Partial | 四张模块卡保留原产品信息架构：贴图绘制、Auto UV、模型烘焙、工具箱 |
+| Feishu/Atlas login | Local real-user flow passed | Server-side OAuth/IDaaS、HttpOnly LI3D 会话、真实员工姓名/邮箱；生产 HTTPS 回调仍待部署验收 |
+| Projects | Partial | 项目/文件夹/资产/设置、Revision、Command 幂等、账号级历史和恢复边界已建立；数据库/对象存储事务化尚未完成 |
+| Texture editor | Partial | Three.js 视口、浮动 Dock、对象/参考/生成/图层/变换面板、ViewCube、显示模式；完整生产回归仍进行中 |
+| Objects and model import | Partial | 多模型、活动对象、显隐/选择/变换/居中/落地；GLB/glTF 为主，FBX/OBJ 实验性 |
 | Reference images | Implemented | 导入、对象作用域、选择；支持单图/生成多视图成对分组 |
-| Liclick image generation | Implemented | 根据身份策略走 workspace Atlas 或个人 4618 本地组件；任务可恢复/取消 |
-| Texture Map single view | Implemented | 当前视角捕获 + 材质参考，结果自动保存并投影 |
-| Texture Map multiview | Implemented | 6/10/14/自定义视角；实际是多个单视图任务的批量编排，自动投影并尝试内容补缝 |
+| Liclick image generation | Partial | 浏览器经 LI3D 应用服务器连接受控生成服务；任务可恢复/取消，不再依赖 4618 本地组件 |
+| Texture Map single/multiview | Partial | 当前视角或 6/10/14/自定义视角批量编排，自动投影并尝试内容补缝；仍需生产资产矩阵 |
 | Capture passes | Implemented | Color、Mask、linear-view Depth、Normal |
-| Projected layers | Implemented | 多层实时投影、相机召回、Mask/Depth/Normal/背面约束、透明度、强度、调整、Blend/Overlay |
-| UV layers | Implemented | 空白/导入/修补/合并 UV 层；可将选中投影和 UV 源合并到新层或空白层 |
-| Local repaint/inpaint | Implemented | 画笔遮罩、加/减选区、表面约束、内容识别填充、远端编辑、Worker 边缘色彩融合、原图回退与 UV 修补提交 |
-| Projected Layer Eraser | Implemented but disabled | 完整 surface/layer eraser engine 仍在代码中，但 `PROJECTED_ERASER_TOOL_ENABLED=false`，当前发布不显示且会重置激活状态 |
-| Undo/redo | Implemented for editor operations | 底栏按当前历史状态启用，不再是统一占位按钮 |
-| Normal | Partial | Normal 视口可视化和已有材质 normalMap 导出可用；Normal 生成面板仍为 coming soon |
-| Quick Mask | Placeholder | 尚无正式生产路径 |
-| Segments/ColorID | Placeholder | Segments 工作区与 ColorID 导出未实现 |
-| Auto Retopology V6 | Implemented with route defect | 贴图发布/任务/历史/结果/继续 UV 已实现；直接刷新 retopology URL 会误进 Auto UV |
-| Auto UV | Implemented | 远端资产任务、状态、历史、结果预览/下载与烘焙交接 |
-| Model baking | Implemented | 独立高低模/PBR 工作台和远端任务代理，不等同于贴图编辑器 BaseColor UV 合并 |
-| Photoshop Live Link | Implemented | UXP 包、loopback bridge、会话/资产交换 |
-| Blender/3ds Max connectors | Placeholder | 协议包和目录存在，但 connector README/代码仍为占位 |
-| Toolbox | Implemented as catalog/download | Max、Blender 和独立工具的下载入口；不是 connector runtime |
-| Export | Implemented/partial | GLB/FBX/OBJ/STL、BaseColor、已有 Normal、PNG、WebM；ColorID/MP4/项目 zip 未实现 |
+| Projected/UV layers | Partial | 多层实时投影、相机召回、约束、调整、Blend/Overlay、手动 UV 合并和修补层；仍需完整像素金图与恢复矩阵 |
+| Local repaint/inpaint | Partial | 浏览器指针蒙版、表面约束、云端 ModelView 生成、Worker 边缘融合、Revision 保存和重启恢复已有真实证据 |
+| Projected Layer Eraser | Implemented but disabled | 底层仍在代码中，当前发布不显示且阻止激活 |
+| Undo/redo | Partial | 编辑器操作历史可用，跨全部异步任务的统一事务历史仍未完成 |
+| Normal | Partial | Normal 视口和已有 normalMap 导出可用；Normal 生成未交付 |
+| Quick Mask / Segments / ColorID | Placeholder | 尚无正式生产路径 |
+| Auto Retopology | Connected, quality blocked | 真实 39.7 MB FBX 进入 `asset-worker-3090-b`；被 `RETOPOLOGY_COORDINATE_MISMATCH` 阻断，未发布错位结果 |
+| Auto UV | Connected, quality blocked | 真实 Asset V4 容量为 9 Worker/16 槽位；任务进入 `asset-control-4090`，被 `UV_QA_FAILED` 阻断 |
+| Model baking | Real vertical slice passed | 真实 `asset-worker-3090-b-windows` TLS 连接；完成 4K Base Color、Normal、AO、Curvature、World Normal、Thickness、Position |
+| Toolbox | UI aligned | 保留原产品目录、下载信息和九项工具说明；不等同于 DCC runtime |
+| Photoshop/Blender/3ds Max live bridge | Deferred | 标记 `DEFERRED_PS_DCC_BRIDGE`，不作为零安装浏览器核心链路 |
+| Export | Partial | GLB/FBX/OBJ/STL、BaseColor、已有 Normal、PNG、WebM；ColorID/MP4/项目 zip 未实现 |
+| Windows local component | Retired | 安装器、下载资产、4618 路由、身份桥接和启动/打包脚本已从现代化分支移除 |
 
 ## Important Semantics
 
-- 没有全局 Auto UV bake 设置。Texture Map 结果先成为实时投影层；用户手动合并 UV，导出按需准备当前可见栈。
-- 多视图不是 `LiclickApiClient.generateMultiview()` 单次调用。`GeneratePanel` 捕获多个相机，再重复调用 `generateTextureSingleView()`；通用 `generateMultiview()` 方法仍会抛出未接线错误。
-- 贴图工作台的 BaseColor UV 合并与独立“模型烘焙”模块是两套流程，不能用同一个“Bake”概念描述。
+- 浏览器本机算力用于视口、绘制、蒙版、投影、图层合成和适合浏览器的交互内核；生产 UV、拓扑和 PBR Bake 由真实 GPU/AIGC 服务执行。
+- 多视图是多个单视图生成任务的批量编排，不是一次返回全部视角的占位调用。
+- 贴图工作台的 BaseColor UV 合并与独立 Substance 模型烘焙是两套流程。
+- 历史浏览器 xatlas/BVH 实验代码只用于回归和对照；正式页面不能静默回退。
+- 页面显示成功、模拟器成功或链路可达不能替代生产资产质量通过。

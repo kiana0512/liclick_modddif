@@ -14,9 +14,9 @@
 
 原组件承载的核心能力按职责迁移：
 
-- 视口、贴图绘制、投影、图层合成、Auto UV、PBR Bake：浏览器 WebGPU/WebGL/WASM/Worker，使用用户 CPU/GPU；
+- 视口、贴图绘制、投影、图层合成和蒙版交互：浏览器 WebGPU/WebGL/WASM/Worker，使用用户 CPU/GPU；
 - 项目、资产、身份、任务恢复、生图、局部重绘：同源云端控制面或受控生产服务；
-- 自动拓扑：上传高模到云端任务，服务返回正式低模，绝不以浏览器三角简化替代。
+- Auto UV、自动拓扑和生产 PBR Bake：上传输入到 LI3D 应用服务器，由独立 GPU/AIGC API 集群返回正式产物；绝不以浏览器 xatlas、三角简化或 BVH Bake 替代。
 
 ## PS/DCC 标签
 

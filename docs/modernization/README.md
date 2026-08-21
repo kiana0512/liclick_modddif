@@ -2,6 +2,8 @@
 
 状态：已批准执行，采用隔离仓库渐进迁移。
 
+2026-08-21 的分支交付规模、真实服务证据、已知阻断和评审顺序见 [HANDOFF_2026-08-21.zh-CN.md](./HANDOFF_2026-08-21.zh-CN.md)。
+
 ## 不可妥协的目标
 
 1. 莉刻 Cloud Build 不要求安装本地组件，也不允许回退到 `localhost`。
@@ -78,4 +80,4 @@ Cloud control plane
 - Auto Retopology 已完成模拟远端纵向验收：真实员工浏览器上传可解析高模，BFF 通过严格 TLS 与 SHA 固定的测试 CA 连接远端 Worker，返回正式 `_game_low.fbx` 与 `_game_low.blend`；FBX 经三方 SHA 后在浏览器解析，取消、历史和双服务重启恢复均通过。该证据不代表生产拓扑算法、生产 CA 或生产 Worker 已验收，因此门禁保持进行中。
 - 生产 Bake 已切回真实 Substance Worker：服务状态、TLS、进度、取消和输出均来自服务端任务。2026-08-21 已用真实员工会话完成一次 4K、7 通道交付，账号历史可恢复；浏览器 BVH Bake 仅保留为隔离回归内核。
 
-计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，被替代的浏览器 Auto UV 决策见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，真实生产计算边界见 [ADR-0009](./ADR-0009-real-production-compute-services.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。
+计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，被替代的浏览器 Auto UV 决策见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，被替代的浏览器 PBR Bake 决策见 [ADR-0009](./ADR-0009-browser-local-pbr-bake.md)，零安装和 DCC 暂缓见 [ADR-0010](./ADR-0010-zero-install-runtime-and-dcc-deferral.md)，真实生产计算边界见 [ADR-0011](./ADR-0011-real-production-compute-services.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。

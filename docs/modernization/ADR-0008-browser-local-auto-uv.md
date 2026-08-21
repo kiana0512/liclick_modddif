@@ -1,8 +1,8 @@
 # ADR-0008：浏览器本地 Auto UV
 
-状态：已被 ADR-0009 替代。实现和测试内核保留，但不再是产品默认路径。
+状态：已被 ADR-0011 替代。实现和测试内核保留，但不再是产品默认路径。
 
-2026-08-21 产品要求澄清：Auto UV、自动拓扑和生产烘焙必须调用真实服务集群。浏览器本地 xatlas 不能以隐藏远端功能或改变产品语义的方式取代服务器实现。后续决策见 [ADR-0009](./ADR-0009-real-production-compute-services.md)。
+2026-08-21 产品要求澄清：Auto UV、自动拓扑和生产烘焙必须调用真实服务集群。浏览器本地 xatlas 不能以隐藏远端功能或改变产品语义的方式取代服务器实现。后续决策见 [ADR-0011](./ADR-0011-real-production-compute-services.md)。
 
 ## 问题
 
@@ -39,4 +39,4 @@
 - 接缝质量、texel density、padding、翻转/重叠和与既有生产结果的量化门限。
 - 骨骼、Morph、UDIM 和多 atlas 支持。
 
-因此机器发布门禁中的 `uv.browser-local` 仍为 `in_progress`，不会因为四边形 E2E 通过就提前标记 `passed`。
+该实验曾使用机器门禁 ID `uv.browser-local`；当前机器真源已改为 `uv.production-service`。四边形浏览器 E2E 只作为回归证据，不能提高生产 UV 服务状态。
