@@ -26,6 +26,7 @@
     "test:local-repaint-seam-harmonization": "node scripts/test-local-repaint-seam-harmonization.mjs",
     "test:local-pbr-bake": "node scripts/test-local-pbr-bake.mjs",
     "test:browser-asset-kernel-matrix": "node scripts/test-local-uv-atlas.mjs && node scripts/test-local-pbr-bake.mjs && node scripts/test-model-export-texture-orientation.mjs && node scripts/test-projected-layer-visibility.mjs && node scripts/test-local-repaint-seam-harmonization.mjs",
+    "test:cloud-base-path-assets": "node scripts/test-cloud-base-path-assets.mjs",
     "test:bake-model-alignment": "node scripts/test-bake-model-alignment.mjs",
     "test:local-uv-atlas": "node scripts/test-local-uv-atlas.mjs",
     "test:performance-lab-metrics": "node scripts/test-performance-lab-metrics.mjs",

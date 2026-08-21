@@ -15,15 +15,23 @@ const workspaceApiBase = getProjectApiBase();
 const generationWorkspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 const maxWorkspaceImageBytes = 160 * 1024 * 1024;
 
-function workspacePathAtBase(url: string, base: string) {
+export function workspacePathAtBase(url: string, base: string) {
   try {
     const baseUrl = new URL(base);
     const basePath = baseUrl.pathname.replace(/\/$/, '');
     const candidate = new URL(url, `${baseUrl.origin}${basePath || '/'}`);
     if (candidate.origin !== baseUrl.origin) return undefined;
     const workspacePrefix = `${basePath}/workspace/`;
-    if (!candidate.pathname.startsWith(workspacePrefix)) return undefined;
-    return candidate.pathname.slice(basePath.length);
+    if (candidate.pathname.startsWith(workspacePrefix)) {
+      return candidate.pathname.slice(basePath.length);
+    }
+    // Projects created before a public base path was configured contain
+    // same-origin /workspace URLs. Keep recognizing them so Cloud can migrate
+    // the bytes instead of treating the URL as an untrusted remote import.
+    if (basePath && candidate.pathname.startsWith('/workspace/')) {
+      return candidate.pathname;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -218,18 +226,25 @@ function resolveCloudTransferredProjectAssets(project: Project): Project {
   };
 }
 
-function directAssetPathAtBase(url: string, base: string) {
+export function directAssetPathAtBase(url: string, base: string) {
   try {
     const baseUrl = new URL(base);
     const basePath = baseUrl.pathname.replace(/\/$/, '');
     const candidate = new URL(url, `${baseUrl.origin}${basePath || '/'}`);
     if (candidate.origin !== baseUrl.origin) return undefined;
+    const directAssetSuffix = '/api/projects/[^/]+/assets/[^/]+/content';
     const directAssetPattern = new RegExp(
-      `^${basePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/api/projects/[^/]+/assets/[^/]+/content$`,
+      `^${basePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(${directAssetSuffix})$`,
     );
-    return directAssetPattern.test(candidate.pathname)
-      ? candidate.pathname.slice(basePath.length)
-      : undefined;
+    const basedMatch = directAssetPattern.exec(candidate.pathname);
+    if (basedMatch?.[1]) return basedMatch[1];
+    // A base-path rollout must not turn an existing same-origin durable asset
+    // into a "remote URL". Canonicalize the old root API path through the
+    // current authenticated API base before resolving its signed download.
+    if (basePath && new RegExp(`^${directAssetSuffix}$`).test(candidate.pathname)) {
+      return candidate.pathname;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
