@@ -1,16 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseProjectCommand } from '@liclick/contracts';
 import {
-  createProject,
-  deleteProject,
-  duplicateProject,
-  listProjects,
-  loadProject,
-  moveProject,
-  renameProject,
-  saveProject,
+  projectRepository,
   ProjectSaveConflictError,
-} from '../services/projectFileService.js';
+} from '../repositories/projectRepository.js';
 import { executeProjectCommand } from '../services/projectCommandService.js';
 import type { WorkspaceProject } from '../types/project.js';
 import { requireAuth } from '../auth/authMiddleware.js';
@@ -33,19 +26,19 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
   if (!user) return true;
 
   if (request.method === 'GET' && segments.length === 2) {
-    sendJson(response, 200, { projects: await listProjects(user.id) });
+    sendJson(response, 200, { projects: await projectRepository.list(user.id) });
     return true;
   }
 
   if (request.method === 'POST' && segments.length === 2) {
     const body = await readJsonBody<{ name?: string; folderId?: string }>(request);
-    const result = await createProject(user.id, body);
+    const result = await projectRepository.create(user.id, body);
     sendJson(response, 201, result);
     return true;
   }
 
   if (request.method === 'GET' && projectId && segments.length === 3) {
-    const result = await loadProject(user.id, projectId);
+    const result = await projectRepository.load(user.id, projectId);
     if (!result) sendJson(response, 404, { error: 'Project not found.' });
     else sendJson(response, 200, result);
     return true;
@@ -53,9 +46,9 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
 
   if (request.method === 'PUT' && projectId && segments.length === 3) {
     const body = await readJsonBody<WorkspaceProject>(request);
-    let result: Awaited<ReturnType<typeof saveProject>>;
+    let result: Awaited<ReturnType<typeof projectRepository.save>>;
     try {
-      result = await saveProject(user.id, projectId, body);
+      result = await projectRepository.save(user.id, projectId, body);
     } catch (error) {
       if (sendProjectConflict(response, error)) return true;
       throw error;
@@ -102,10 +95,10 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
 
   if (request.method === 'PATCH' && projectId && segments.length === 3) {
     const body = await readJsonBody<{ name?: string; expectedRevisionId?: string }>(request);
-    let result: Awaited<ReturnType<typeof renameProject>>;
+    let result: Awaited<ReturnType<typeof projectRepository.rename>>;
     try {
       result = body.name
-        ? await renameProject(user.id, projectId, body.name, body.expectedRevisionId)
+        ? await projectRepository.rename(user.id, projectId, body.name, body.expectedRevisionId)
         : undefined;
     } catch (error) {
       if (sendProjectConflict(response, error)) return true;
@@ -117,14 +110,14 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
   }
 
   if (request.method === 'DELETE' && projectId && segments.length === 3) {
-    const result = await deleteProject(user.id, projectId);
+    const result = await projectRepository.delete(user.id, projectId);
     if (!result) sendJson(response, 404, { error: 'Project not found.' });
     else sendJson(response, 200, result);
     return true;
   }
 
   if (request.method === 'POST' && projectId && segments.length === 4 && segments[3] === 'duplicate') {
-    const result = await duplicateProject(user.id, projectId);
+    const result = await projectRepository.duplicate(user.id, projectId);
     if (!result) sendJson(response, 404, { error: 'Project not found.' });
     else sendJson(response, 201, result);
     return true;
@@ -132,9 +125,9 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
 
   if (request.method === 'POST' && projectId && segments.length === 4 && segments[3] === 'move') {
     const body = await readJsonBody<{ folderId?: string | null; expectedRevisionId?: string }>(request);
-    let result: Awaited<ReturnType<typeof moveProject>>;
+    let result: Awaited<ReturnType<typeof projectRepository.move>>;
     try {
-      result = await moveProject(
+      result = await projectRepository.move(
         user.id,
         projectId,
         body.folderId ?? null,

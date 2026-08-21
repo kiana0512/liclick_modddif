@@ -1,0 +1,131 @@
+generator cloudClient {
+  provider = "prisma-client-js"
+  output   = "../src/generated/cloud"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("LICLICK_CLOUD_DATABASE_URL")
+}
+
+model CloudTenant {
+  id        String         @id
+  name      String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  users     CloudUser[]
+  projects  CloudProject[]
+  assets    CloudAsset[]
+  audit     CloudAuditEvent[]
+}
+
+model CloudUser {
+  id          String         @id
+  tenantId    String
+  tenant      CloudTenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  externalId  String
+  displayName String
+  status      String         @default("active")
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  projects    CloudProject[]
+  commands    CloudProjectCommand[]
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId, status])
+}
+
+model CloudProject {
+  id                    String                 @id
+  tenantId              String
+  tenant                CloudTenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  ownerUserId           String
+  owner                 CloudUser              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  folderId              String?
+  name                  String
+  status                String                 @default("active")
+  currentRevisionId     String
+  currentRevisionNumber Int                    @default(1)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  deletedAt             DateTime?
+  revisions             CloudProjectRevision[]
+  commands              CloudProjectCommand[]
+  assets                CloudAsset[]
+
+  @@index([tenantId, ownerUserId, status])
+  @@index([tenantId, folderId])
+}
+
+model CloudProjectRevision {
+  id               String       @id
+  tenantId         String
+  projectId        String
+  project          CloudProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  number           Int
+  parentRevisionId String?
+  document         Json
+  documentSha256   String
+  createdByUserId  String
+  createdAt        DateTime     @default(now())
+
+  @@unique([projectId, number])
+  @@index([tenantId, projectId, createdAt])
+  @@index([parentRevisionId])
+}
+
+model CloudProjectCommand {
+  id                 String       @id
+  tenantId           String
+  projectId          String
+  project            CloudProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actorUserId        String
+  actor              CloudUser    @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  schemaVersion      Int
+  kind               String
+  commandSha256      String
+  expectedRevisionId String?
+  resultRevisionId   String
+  issuedAt           DateTime
+  appliedAt          DateTime     @default(now())
+
+  @@unique([tenantId, projectId, id])
+  @@index([tenantId, projectId, appliedAt])
+}
+
+model CloudAsset {
+  id               String       @id
+  tenantId         String
+  tenant           CloudTenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  projectId        String
+  project          CloudProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  objectKey        String       @unique
+  kind             String
+  filename         String
+  mimeType         String
+  sizeBytes        BigInt
+  sha256           String
+  sourceRevisionId String?
+  status           String       @default("pending")
+  createdAt        DateTime     @default(now())
+  verifiedAt       DateTime?
+  deletedAt        DateTime?
+
+  @@index([tenantId, projectId, status])
+  @@index([tenantId, sha256])
+}
+
+model CloudAuditEvent {
+  id         String      @id
+  tenantId   String
+  tenant     CloudTenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  actorId    String?
+  projectId  String?
+  action     String
+  requestId  String
+  metadata   Json?
+  occurredAt DateTime    @default(now())
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, projectId, occurredAt])
+}

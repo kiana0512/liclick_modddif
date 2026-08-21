@@ -1,15 +1,11 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { ProjectCommand, ProjectCommandKind, ProjectRevision } from '@liclick/contracts';
-import type { WorkspaceProject } from '../types/project.js';
 import {
-  findProjectSlug,
-  loadProject,
-  moveProject,
+  projectRepository,
   ProjectSaveConflictError,
-  renameProject,
-  saveProject,
-} from './projectFileService.js';
+} from '../repositories/projectRepository.js';
+import type { WorkspaceProject } from '../types/project.js';
 import {
   ensureDir,
   getUserProjectDir,
@@ -82,7 +78,7 @@ async function commandReplayResult(
   userId: string,
   command: ProjectCommand,
 ) {
-  const result = await loadProject(userId, command.projectId);
+  const result = await projectRepository.load(userId, command.projectId);
   if (!result) return undefined;
   return {
     ...result,
@@ -98,7 +94,7 @@ async function commandReplayResult(
 export async function executeProjectCommand(userId: string, command: ProjectCommand) {
   return runSerializedProjectCommand(`${userId}:${command.projectId}`, async () => {
     const sha256 = commandSha256(command);
-    const slug = await findProjectSlug(userId, command.projectId);
+    const slug = await projectRepository.findSlug(userId, command.projectId);
     if (!slug) return undefined;
 
     const existingReceipt = await readJsonFile<ProjectCommandReceipt | undefined>(
@@ -116,7 +112,7 @@ export async function executeProjectCommand(userId: string, command: ProjectComm
       return commandReplayResult(userId, command);
     }
 
-    const loaded = await loadProject(userId, command.projectId);
+    const loaded = await projectRepository.load(userId, command.projectId);
     if (!loaded) return undefined;
     const appliedCommand = loaded.project.appliedCommands?.find(
       (candidate) => candidate.id === command.id,
@@ -136,11 +132,11 @@ export async function executeProjectCommand(userId: string, command: ProjectComm
     }
 
     let result:
-      | Awaited<ReturnType<typeof saveProject>>
-      | Awaited<ReturnType<typeof renameProject>>
-      | Awaited<ReturnType<typeof moveProject>>;
+      | Awaited<ReturnType<typeof projectRepository.save>>
+      | Awaited<ReturnType<typeof projectRepository.rename>>
+      | Awaited<ReturnType<typeof projectRepository.move>>;
     if (command.kind === 'replace-project-document') {
-      result = await saveProject(
+      result = await projectRepository.save(
         userId,
         command.projectId,
         command.payload.document as WorkspaceProject,
@@ -152,7 +148,7 @@ export async function executeProjectCommand(userId: string, command: ProjectComm
         },
       );
     } else if (command.kind === 'rename-project') {
-      result = await renameProject(
+      result = await projectRepository.rename(
         userId,
         command.projectId,
         command.payload.name,
@@ -160,7 +156,7 @@ export async function executeProjectCommand(userId: string, command: ProjectComm
         { id: command.id, sha256 },
       );
     } else {
-      result = await moveProject(
+      result = await projectRepository.move(
         userId,
         command.projectId,
         command.payload.folderId,

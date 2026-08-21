@@ -1,6 +1,6 @@
 import type { WorkspaceFolder } from '../types/folder.js';
+import { projectRepository } from '../repositories/projectRepository.js';
 import { createId, getUserFoldersFile, readJsonFile, writeJsonFile } from './workspaceService.js';
-import { moveProjectsInFolderToRoot } from './projectFileService.js';
 
 let folderWriteQueue = Promise.resolve();
 
@@ -91,7 +91,7 @@ export async function deleteFolder(userId: string, folderId: string) {
     const folders = await listFoldersForUser(userId);
     const folder = folders.find((item) => item.id === folderId);
     if (!folder) return undefined;
-    const movedProjectCount = await moveProjectsInFolderToRoot(userId, folderId);
+    const movedProjectCount = await projectRepository.moveFolderProjectsToRoot(userId, folderId);
     await writeJsonFile(
       getUserFoldersFile(userId),
       folders

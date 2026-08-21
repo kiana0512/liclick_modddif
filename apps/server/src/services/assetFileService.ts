@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { serverConfig } from '../config.js';
+import { projectRepository } from '../repositories/projectRepository.js';
 import type { AssetCategory, SavedAsset } from '../types/asset.js';
-import { findProjectSlug } from './projectFileService.js';
 import { writeFileAtomically } from './atomicFileService.js';
 import {
   ensureDir,
@@ -93,7 +93,7 @@ async function writeAsset(input: {
   buffer: Buffer;
 }) {
   if (!allowedCategories.includes(input.category)) throw new Error('Invalid asset category.');
-  const slug = await findProjectSlug(input.userId, input.projectId);
+  const slug = await projectRepository.findSlug(input.userId, input.projectId);
   if (!slug) return undefined;
   const name = safeAssetName(input.filename, extensionFromMime(input.mime));
   const relativePath = path.posix.join('assets', input.category, name);

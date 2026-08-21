@@ -61,5 +61,6 @@ Cloud control plane
 - 浏览器能力协商已形成版本化 Compute Policy；任何降级仍在用户浏览器执行，`serverFallbackAllowed` 固定为 `false`。
 - 项目保存已加入服务器签发的单调 Revision；Cloud 模式拒绝缺失或过期令牌，避免多端用客户端时间戳互相覆盖。
 - Cloud 保存、重命名和移动已统一为版本化 Project Command；网络重试具有持久化幂等回执，同一命令不会重复生成 Revision，旧桌面接口继续作为兼容适配器。
+- 项目路由、命令、资产、导出和文件夹服务已收拢到单一 Project Repository；门禁阻止业务层重新绑定文件系统，并已给出 PostgreSQL/对象存储权威数据蓝图。
 
-计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)。
+计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)。
