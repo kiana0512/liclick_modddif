@@ -14,6 +14,7 @@ import type {
 } from './localPbrBakeCore';
 
 const supportedChannels = new Set<LocalBakeChannel>([
+  'baseColor',
   'normal',
   'ambientOcclusion',
   'worldNormal',
@@ -99,19 +100,39 @@ function mergeHighMeshes(meshes: LocalBakeMeshData[]): LocalBakeMeshData {
   const indexCount = meshes.reduce((sum, mesh) => sum + mesh.indices.length, 0);
   const positions = new Float32Array(vertexCount * 3);
   const normals = new Float32Array(vertexCount * 3);
+  const uvs = meshes.every((mesh) => mesh.uvs)
+    ? new Float32Array(vertexCount * 2)
+    : undefined;
   const indices = new Uint32Array(indexCount);
   let vertexOffset = 0;
   let indexOffset = 0;
   for (const mesh of meshes) {
     positions.set(mesh.positions, vertexOffset * 3);
     normals.set(mesh.normals, vertexOffset * 3);
+    if (uvs && mesh.uvs) uvs.set(mesh.uvs, vertexOffset * 2);
     for (let index = 0; index < mesh.indices.length; index += 1) {
       indices[indexOffset + index] = mesh.indices[index] + vertexOffset;
     }
     vertexOffset += mesh.positions.length / 3;
     indexOffset += mesh.indices.length;
   }
-  return { positions, normals, indices };
+  return { positions, normals, indices, uvs };
+}
+
+async function decodeTextureFile(file: File) {
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('无法创建 Base Color 采样画布。');
+    context.drawImage(bitmap, 0, 0);
+    const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+    return { width: image.width, height: image.height, data: image.data };
+  } finally {
+    bitmap.close();
+  }
 }
 
 function runBakeWorker(
@@ -160,6 +181,8 @@ function runBakeWorker(
       input.high.positions.buffer,
       input.high.normals.buffer,
       input.high.indices.buffer,
+      ...(input.high.uvs ? [input.high.uvs.buffer] : []),
+      ...(input.baseColor ? [input.baseColor.data.buffer] : []),
       ...input.low.flatMap((mesh) => [
         mesh.positions.buffer,
         mesh.normals.buffer,
@@ -192,6 +215,7 @@ export async function bakePbrFilesLocally(input: {
   objectId: string;
   high: File;
   low: File;
+  baseColor?: File;
   settings: NormalBakeSettings;
   session?: EngineSession;
   signal?: AbortSignal;
@@ -209,19 +233,21 @@ export async function bakePbrFilesLocally(input: {
   const channels = input.settings.channels as LocalBakeChannel[];
   const execute = async (taskSignal: AbortSignal) => {
     input.onProgress?.({ phase: 'loading', progress: 0.03, message: '正在浏览器本地解析高低模' });
-    const [highLoaded, lowLoaded] = await Promise.all([
+    const [highLoaded, lowLoaded, baseColor] = await Promise.all([
       loadModelFromFile(input.high, { normalize: false, ground: false, targetMaxDimension: 3, recenter: false }),
       loadModelFromFile(input.low, { normalize: false, ground: false, targetMaxDimension: 3, recenter: false }),
+      input.baseColor ? decodeTextureFile(input.baseColor) : undefined,
     ]);
     try {
       if (taskSignal.aborted) throw new DOMException('本地 PBR Bake 已取消。', 'AbortError');
       input.onProgress?.({ phase: 'preparing', progress: 0.1, message: '正在构建本地 BVH 与 UV 采样数据' });
-      const high = mergeHighMeshes(extractMeshes(highLoaded.root, false));
+      const high = mergeHighMeshes(extractMeshes(highLoaded.root, channels.includes('baseColor')));
       const low = extractMeshes(lowLoaded.root, true);
       const result = await runBakeWorker(
         {
           high,
           low,
+          baseColor,
           resolution: input.settings.resolution,
           padding: input.settings.padding,
           frontalDistance: input.settings.frontalDistance,

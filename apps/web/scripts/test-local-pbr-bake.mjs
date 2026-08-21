@@ -101,15 +101,23 @@ try {
   const indices = new Uint32Array([0, 1, 2, 0, 2, 3]);
   const uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
   const result = bakePbrMapsLocally({
-    high: { positions, normals, indices },
+    high: { positions, normals, indices, uvs: uvs.slice() },
     low: [{ positions: positions.slice(), normals: normals.slice(), indices: indices.slice(), uvs }],
+    baseColor: {
+      width: 2,
+      height: 2,
+      data: new Uint8ClampedArray([
+        17, 31, 47, 255, 17, 31, 47, 255,
+        17, 31, 47, 255, 17, 31, 47, 255,
+      ]),
+    },
     resolution: 32,
     padding: 2,
     frontalDistance: 0.1,
     rearDistance: 0.1,
     normalOrientation: 'directx',
     aoSamples: 4,
-    channels: ['normal', 'ambientOcclusion', 'worldNormal', 'position'],
+    channels: ['baseColor', 'normal', 'ambientOcclusion', 'worldNormal', 'position'],
   });
   assert.equal(result.triangleCount, 2);
   assert.ok(result.coveredPixels > 800);
@@ -117,8 +125,11 @@ try {
   const center = (16 * 32 + 16) * 4;
   const normal = result.outputs.normal;
   const ao = result.outputs.ambientOcclusion;
+  const baseColor = result.outputs.baseColor;
   assert.ok(normal);
   assert.ok(ao);
+  assert.ok(baseColor);
+  assert.deepEqual(Array.from(baseColor.slice(center, center + 4)), [17, 31, 47, 255]);
   assert.ok(Math.abs(normal[center] - 128) <= 1);
   assert.ok(Math.abs(normal[center + 1] - 128) <= 1);
   assert.equal(normal[center + 2], 255);
@@ -191,7 +202,7 @@ try {
     ) <= 2,
     `DirectX/OpenGL green channels are ${matrix.outputs.normal[orientationSample + 1]} and ${openGl.outputs.normal[orientationSample + 1]}`,
   );
-  console.log('Local BVH PBR bake flat baseline and closed-box five-channel matrix passed.');
+  console.log('Local BVH PBR bake Base Color transfer and closed-box five-channel matrix passed.');
 } finally {
   await server.close();
 }

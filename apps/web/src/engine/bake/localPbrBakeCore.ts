@@ -44,6 +44,7 @@ class Box3 {
 }
 
 export type LocalBakeChannel =
+  | 'baseColor'
   | 'normal'
   | 'ambientOcclusion'
   | 'worldNormal'
@@ -60,6 +61,11 @@ export type LocalBakeMeshData = {
 export type LocalPbrBakeInput = {
   high: LocalBakeMeshData;
   low: LocalBakeMeshData[];
+  baseColor?: {
+    width: number;
+    height: number;
+    data: Uint8ClampedArray;
+  };
   resolution: number;
   padding: number;
   frontalDistance: number;
@@ -79,7 +85,13 @@ export type LocalPbrBakeResult = {
   triangleCount: number;
 };
 
-type BvhHit = { point: Vector3; normal: Vector3; distance: number };
+type BvhHit = {
+  point: Vector3;
+  normal: Vector3;
+  distance: number;
+  triangle: number;
+  barycentric: readonly [number, number, number];
+};
 type BvhNode = {
   minX: number; minY: number; minZ: number;
   maxX: number; maxY: number; maxZ: number;
@@ -234,6 +246,8 @@ class TriangleBvh {
     ).normalize();
     return {
       distance,
+      triangle,
+      barycentric: [w, u, v],
       point: new Vector3(
         ray.origin.x + ray.direction.x * distance,
         ray.origin.y + ray.direction.y * distance,
@@ -319,6 +333,47 @@ function writeVectorPixel(output: Uint8Array, pixel: number, vector: Vector3, al
   output[offset + 1] = Math.round(MathUtils.clamp(vector.y * 0.5 + 0.5, 0, 1) * 255);
   output[offset + 2] = Math.round(MathUtils.clamp(vector.z * 0.5 + 0.5, 0, 1) * 255);
   output[offset + 3] = alpha;
+}
+
+function writeBaseColorPixel(
+  output: Uint8Array,
+  pixel: number,
+  input: LocalPbrBakeInput,
+  hit: BvhHit,
+) {
+  const texture = input.baseColor;
+  const uvs = input.high.uvs;
+  if (!texture || !uvs) return;
+  const triangleOffset = hit.triangle * 3;
+  const i0 = input.high.indices[triangleOffset] * 2;
+  const i1 = input.high.indices[triangleOffset + 1] * 2;
+  const i2 = input.high.indices[triangleOffset + 2] * 2;
+  const [a, b, c] = hit.barycentric;
+  const u = MathUtils.clamp(uvs[i0] * a + uvs[i1] * b + uvs[i2] * c, 0, 1);
+  const v = MathUtils.clamp(uvs[i0 + 1] * a + uvs[i1 + 1] * b + uvs[i2 + 1] * c, 0, 1);
+  const sourceX = u * (texture.width - 1);
+  const sourceY = (1 - v) * (texture.height - 1);
+  const x0 = Math.floor(sourceX);
+  const y0 = Math.floor(sourceY);
+  const x1 = Math.min(texture.width - 1, x0 + 1);
+  const y1 = Math.min(texture.height - 1, y0 + 1);
+  const tx = sourceX - x0;
+  const ty = sourceY - y0;
+  const weights = [(1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty];
+  const offsets = [
+    (y0 * texture.width + x0) * 4,
+    (y0 * texture.width + x1) * 4,
+    (y1 * texture.width + x0) * 4,
+    (y1 * texture.width + x1) * 4,
+  ];
+  const target = pixel * 4;
+  for (let component = 0; component < 4; component += 1) {
+    let value = 0;
+    for (let sample = 0; sample < offsets.length; sample += 1) {
+      value += texture.data[offsets[sample] + component] * weights[sample];
+    }
+    output[target + component] = Math.round(value);
+  }
 }
 
 function createOutputs(channels: LocalBakeChannel[], pixelCount: number) {
@@ -465,6 +520,9 @@ export function bakePbrMapsLocally(
   onProgress?: (progress: number) => void,
 ): LocalPbrBakeResult {
   if (!input.low.length) throw new Error('本地 Bake 缺少低模。');
+  if (input.channels.includes('baseColor') && (!input.high.uvs || !input.baseColor)) {
+    throw new Error('Base Color 本地烘焙需要高模 UV0 和颜色贴图。');
+  }
   if (input.resolution < 16 || input.resolution > 2048) {
     throw new Error('浏览器本地 Bake 当前支持 16 到 2048 分辨率。');
   }
@@ -547,6 +605,9 @@ export function bakePbrMapsLocally(
             if (scratch.highNormal.dot(scratch.lowNormal) < 0) scratch.highNormal.multiplyScalar(-1);
             if (!coverage[pixel]) coveredPixels += 1;
             coverage[pixel] = 1;
+
+            const baseColorOutput = outputs.baseColor;
+            if (baseColorOutput) writeBaseColorPixel(baseColorOutput, pixel, input, hit);
 
             const normalOutput = outputs.normal;
             if (normalOutput) {

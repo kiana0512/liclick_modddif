@@ -167,7 +167,8 @@ const resultChannelOrder: BakeChannelId[] = [
   'thickness',
   'position',
 ];
-const remoteBakeChannels = new Set<ChannelId>([
+const browserBakeChannels = new Set<ChannelId>([
+  'baseColor',
   'normal',
   'ambientOcclusion',
   'worldNormal',
@@ -887,7 +888,7 @@ export function BakeWorkspacePage({
     setBaseColorDehighlightStrength(saved.dehighlightStrength ?? 1);
     const restoredChannels = new Set(
       saved.enabledChannels.filter((channel): channel is ChannelId =>
-        remoteBakeChannels.has(channel as ChannelId),
+        browserBakeChannels.has(channel as ChannelId),
       ),
     );
     if (saved.generateRoughnessFromBakedBaseColor) {
@@ -1627,11 +1628,15 @@ export function BakeWorkspacePage({
     localBakeAbortRef.current = abortController;
     try {
       const high = await createHighFile();
+      const baseColor = requiresColor
+        ? (processedBaseColor ?? await loadSelectedBaseColorFile())
+        : undefined;
       const result = await bakePbrFilesLocally({
         projectId: project.id,
         objectId: selectedHigh.id,
         high,
         low: selectedLow,
+        baseColor,
         settings: {
           resolution: resolution as 1024 | 2048 | 4096,
           padding,
@@ -2452,7 +2457,7 @@ export function BakeWorkspacePage({
                   </span>
                   {resultChannelOrder.map((channel) => {
                     const selected = enabledChannels.has(channel);
-                    const supported = remoteBakeChannels.has(channel);
+                    const supported = browserBakeChannels.has(channel);
                     return (
                       <button
                         key={channel}
@@ -2509,7 +2514,7 @@ export function BakeWorkspacePage({
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
                     <div className="mb-4 sm:mb-0">
                       <p className="text-sm font-semibold text-white/82">输出贴图大小</p>
-                      <p className="mt-1 text-xs text-white/34">本地阶段支持 Normal、AO、World Normal、Thickness、Position</p>
+                      <p className="mt-1 text-xs text-white/34">本地阶段支持 Base Color、Normal、AO、World Normal、Thickness、Position</p>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {([1024, 2048, 4096] as const).map((size) => (

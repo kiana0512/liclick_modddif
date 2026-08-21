@@ -1,6 +1,6 @@
 # ADR-0009：浏览器本地 PBR Bake
 
-状态：已接受，Normal/AO 真实纵向切片已接入；完整生产质量与硬件矩阵仍在进行中。
+状态：已接受，Base Color/Normal/AO 真实纵向切片已接入；完整生产质量与硬件矩阵仍在进行中。
 
 ## 问题
 
@@ -9,8 +9,8 @@
 ## 决策
 
 - 高模、低模解析、UV 光栅化、BVH 构建、射线投射、AO、厚度与 Padding 全部在浏览器 Worker 中执行；计算服务器没有 fallback。
-- 当前真实输出通道为 Normal（DirectX/OpenGL）、AO、World Normal、Position、Thickness。Base Color、Roughness、Metallic、Curvature 在有真实内核前保持禁用，不用占位图冒充结果。
-- Worker 使用紧凑的原生三角形 median BVH，并通过原地 quickselect 建树，避免重复打包 Three.js/BVH 依赖和递归排序分配。Worker 构建产物为 10.95 KB；Web JavaScript 总量保持在既有 3,150,000 字节门禁以下。
+- 当前真实输出通道为 Base Color、Normal（DirectX/OpenGL）、AO、World Normal、Position、Thickness。Base Color 使用 BVH 命中的高模三角形重心坐标采样高模 UV0，再写入低模 UV；Roughness、Metallic、Curvature 在有真实内核前保持禁用，不用占位图冒充结果。
+- Worker 使用紧凑的原生三角形 median BVH，并通过原地 quickselect 建树，避免重复打包 Three.js/BVH 依赖和递归排序分配。加入 Base Color 采样后的 Worker 构建产物为 11.77 KB；Web JavaScript 总量保持在既有 3,150,000 字节门禁以下。
 - Worker 属于项目 Engine Session 的 CPU lane，可取消、切页释放；当前界面与持久化设置固定显示 CPU Worker，不虚报 GPU。
 - 每张 PNG 在浏览器编码后通过签名 URL 直接上传对象存储，项目仅保存不可变资产引用、尺寸和本地 Job ID。刷新后从项目 Bake Set 恢复结果。
 - 云端资源读取先向同源项目 API 进行 Cookie 鉴权并换取短期签名 URL，再以 `credentials: omit` 访问对象存储，禁止把 Li3D 会话 Cookie 带到数据平面。
@@ -37,12 +37,12 @@
 - `pnpm simulate:cloud-deployment -- --serve`
 - `pnpm check:web-bundle-budget`
 
-第二个命令使用闭合非平面几何同时验证 Normal、AO、World Normal、Position、Thickness 五通道、Padding、厚度灰度范围以及 DirectX/OpenGL 法线方向。机器证据位于 `quality/evidence/browser-local-pbr-bake-e2e.json` 与 `quality/evidence/browser-compute-kernel-matrix.json`。
+第二个命令使用平面高低模验证 Base Color 的 UV 采样与传递，并使用闭合非平面几何同时验证 Normal、AO、World Normal、Position、Thickness 五通道、Padding、厚度灰度范围以及 DirectX/OpenGL 法线方向。机器证据位于 `quality/evidence/browser-local-pbr-bake-e2e.json` 与 `quality/evidence/browser-compute-kernel-matrix.json`。
 
 ## 尚未宣称完成
 
 - 复杂生产模型、多个子网格/材质槽、非平面高低模、背面、穿插、退化面和重叠 UV 对照。
-- World Normal、Position、Thickness 已完成简单真实浏览器 E2E，但仍缺生产模型参考图像阈值；Curvature 尚未实现。
+- Base Color、World Normal、Position、Thickness 已完成内核回归，但仍缺多材质槽生产模型参考图像阈值；Curvature 尚未实现。
 - 2K 大模型耗时、取消、低内存、Worker 崩溃恢复和目标硬件性能矩阵。
 - GPU/WebGPU Bake 后端、UDIM、多 atlas、cage 模式和跨浏览器兼容矩阵。
 
