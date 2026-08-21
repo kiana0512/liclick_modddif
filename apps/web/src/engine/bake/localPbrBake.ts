@@ -17,6 +17,7 @@ const supportedChannels = new Set<LocalBakeChannel>([
   'baseColor',
   'normal',
   'ambientOcclusion',
+  'curvature',
   'worldNormal',
   'position',
   'thickness',
@@ -227,8 +228,8 @@ export async function bakePbrFilesLocally(input: {
   if (unsupported.length) {
     throw new Error(`浏览器本地 Bake 尚未支持这些通道：${unsupported.join(', ')}。`);
   }
-  if (input.settings.resolution > 2048) {
-    throw new Error('浏览器本地 Bake 当前最高支持 2K；4K 质量矩阵通过后再开放。');
+  if (input.settings.resolution > 4096) {
+    throw new Error('浏览器本地 Bake 当前最高支持 4K。');
   }
   const channels = input.settings.channels as LocalBakeChannel[];
   const execute = async (taskSignal: AbortSignal) => {

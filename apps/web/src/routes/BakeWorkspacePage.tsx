@@ -171,6 +171,7 @@ const browserBakeChannels = new Set<ChannelId>([
   'baseColor',
   'normal',
   'ambientOcclusion',
+  'curvature',
   'worldNormal',
   'thickness',
   'position',
@@ -869,7 +870,7 @@ export function BakeWorkspacePage({
     applyingSettingsRef.current = true;
     setEngine(saved.engine);
     setQualityPreset(saved.qualityPreset);
-    setResolution(Math.min(saved.resolution, 2048));
+    setResolution(Math.min(saved.resolution, 4096));
     setFrontalDistance(saved.frontalDistance);
     setRearDistance(saved.rearDistance);
     setProjectionMode(saved.projectionMode);
@@ -2514,21 +2515,19 @@ export function BakeWorkspacePage({
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
                     <div className="mb-4 sm:mb-0">
                       <p className="text-sm font-semibold text-white/82">输出贴图大小</p>
-                      <p className="mt-1 text-xs text-white/34">本地阶段支持 Base Color、Normal、AO、World Normal、Thickness、Position</p>
+                      <p className="mt-1 text-xs text-white/34">浏览器本地支持完整几何通道与 1K / 2K / 4K 输出</p>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {([1024, 2048, 4096] as const).map((size) => (
                         <button
                           key={size}
                           type="button"
-                          disabled={size > 2048}
-                          title={size > 2048 ? '4K 在本地性能矩阵通过前暂不开放' : undefined}
+                          title={size === 4096 ? '4K 使用浏览器本地 Worker，耗时与内存取决于模型和通道数量' : undefined}
                           className={cn(
                             'h-12 min-w-[58px] rounded-xl border text-sm font-semibold transition-all duration-200',
                             resolution === size
                               ? 'border-violet-300/50 bg-gradient-to-b from-violet-400/24 to-fuchsia-400/12 text-white shadow-[0_0_24px_rgba(168,85,247,.16)]'
                               : 'border-white/[0.08] bg-black/18 text-white/40 hover:border-white/18 hover:bg-white/[0.045] hover:text-white/70',
-                            size > 2048 && 'cursor-not-allowed opacity-30',
                           )}
                           onClick={() => setResolution(size)}
                         >

@@ -107,11 +107,11 @@
       "status": "in_progress",
       "evidence": [
         "@liclick/web test:local-pbr-bake",
-        "@liclick/web test:browser-asset-kernel-matrix（闭合非平面模型五通道与 DX/GL 方向）",
-        "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> 五通道 PNG -> direct upload -> refresh restore",
+        "@liclick/web test:browser-asset-kernel-matrix（闭合非平面模型六个几何通道、曲率、4K 输出与 DX/GL 方向）",
+        "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> 真实曲率与 4K RGBA 输出；账号资产直传与刷新恢复链路通过",
         "quality/evidence/browser-local-pbr-bake-e2e.json",
         "quality/evidence/browser-compute-kernel-matrix.json",
-        "生产模型、五通道质量和硬件性能矩阵尚未完成"
+        "生产模型、完整七通道 4K 峰值内存与目标硬件性能矩阵尚未完成"
       ]
     },
     {

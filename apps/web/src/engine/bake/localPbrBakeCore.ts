@@ -47,6 +47,7 @@ export type LocalBakeChannel =
   | 'baseColor'
   | 'normal'
   | 'ambientOcclusion'
+  | 'curvature'
   | 'worldNormal'
   | 'position'
   | 'thickness';
@@ -392,6 +393,119 @@ function buildBounds(positions: Float32Array) {
   return { box, size, diagonal: Math.max(size.length(), 1e-5) };
 }
 
+type CurvatureGroup = {
+  positionX: number;
+  positionY: number;
+  positionZ: number;
+  normalX: number;
+  normalY: number;
+  normalZ: number;
+  vertexCount: number;
+  neighborX: number;
+  neighborY: number;
+  neighborZ: number;
+  neighborCount: number;
+  raw: number;
+};
+
+/**
+ * Estimates signed mean curvature from a welded one-ring Laplacian. Working on
+ * welded positions keeps hard-edge FBX/OBJ vertex splits from erasing the edge
+ * signal, while the normalized result stays independent of model units.
+ */
+function computeVertexCurvature(mesh: LocalBakeMeshData, diagonal: number) {
+  const vertexCount = mesh.positions.length / 3;
+  const vertexGroups = new Uint32Array(vertexCount);
+  const groups: CurvatureGroup[] = [];
+  const groupByPosition = new Map<string, number>();
+  const weldScale = 1 / Math.max(diagonal * 1e-6, 1e-8);
+
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const offset = vertex * 3;
+    const x = mesh.positions[offset];
+    const y = mesh.positions[offset + 1];
+    const z = mesh.positions[offset + 2];
+    const key = `${Math.round(x * weldScale)},${Math.round(y * weldScale)},${Math.round(z * weldScale)}`;
+    let groupIndex = groupByPosition.get(key);
+    if (groupIndex === undefined) {
+      groupIndex = groups.length;
+      groupByPosition.set(key, groupIndex);
+      groups.push({
+        positionX: 0,
+        positionY: 0,
+        positionZ: 0,
+        normalX: 0,
+        normalY: 0,
+        normalZ: 0,
+        vertexCount: 0,
+        neighborX: 0,
+        neighborY: 0,
+        neighborZ: 0,
+        neighborCount: 0,
+        raw: 0,
+      });
+    }
+    const group = groups[groupIndex];
+    group.positionX += x;
+    group.positionY += y;
+    group.positionZ += z;
+    group.normalX += mesh.normals[offset];
+    group.normalY += mesh.normals[offset + 1];
+    group.normalZ += mesh.normals[offset + 2];
+    group.vertexCount += 1;
+    vertexGroups[vertex] = groupIndex;
+  }
+
+  for (const group of groups) {
+    group.positionX /= group.vertexCount;
+    group.positionY /= group.vertexCount;
+    group.positionZ /= group.vertexCount;
+    const normalLength = Math.hypot(group.normalX, group.normalY, group.normalZ) || 1;
+    group.normalX /= normalLength;
+    group.normalY /= normalLength;
+    group.normalZ /= normalLength;
+  }
+
+  const addNeighbor = (from: number, to: number) => {
+    if (from === to) return;
+    const group = groups[from];
+    const neighbor = groups[to];
+    group.neighborX += neighbor.positionX;
+    group.neighborY += neighbor.positionY;
+    group.neighborZ += neighbor.positionZ;
+    group.neighborCount += 1;
+  };
+  for (let triangle = 0; triangle < mesh.indices.length; triangle += 3) {
+    const a = vertexGroups[mesh.indices[triangle]];
+    const b = vertexGroups[mesh.indices[triangle + 1]];
+    const c = vertexGroups[mesh.indices[triangle + 2]];
+    addNeighbor(a, b); addNeighbor(a, c);
+    addNeighbor(b, a); addNeighbor(b, c);
+    addNeighbor(c, a); addNeighbor(c, b);
+  }
+
+  let maximum = 0;
+  for (const group of groups) {
+    if (!group.neighborCount) continue;
+    const laplacianX = group.neighborX / group.neighborCount - group.positionX;
+    const laplacianY = group.neighborY / group.neighborCount - group.positionY;
+    const laplacianZ = group.neighborZ / group.neighborCount - group.positionZ;
+    group.raw = -(
+      laplacianX * group.normalX
+      + laplacianY * group.normalY
+      + laplacianZ * group.normalZ
+    ) / diagonal;
+    maximum = Math.max(maximum, Math.abs(group.raw));
+  }
+
+  const values = new Float32Array(vertexCount);
+  if (maximum < 1e-8) return values;
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    values[vertex] = MathUtils.clamp(groups[vertexGroups[vertex]].raw / maximum, -1, 1);
+  }
+  return values;
+}
+
 function computeFaceBasis(
   p0: Vector3,
   p1: Vector3,
@@ -523,11 +637,14 @@ export function bakePbrMapsLocally(
   if (input.channels.includes('baseColor') && (!input.high.uvs || !input.baseColor)) {
     throw new Error('Base Color 本地烘焙需要高模 UV0 和颜色贴图。');
   }
-  if (input.resolution < 16 || input.resolution > 2048) {
-    throw new Error('浏览器本地 Bake 当前支持 16 到 2048 分辨率。');
+  if (input.resolution < 16 || input.resolution > 4096) {
+    throw new Error('浏览器本地 Bake 当前支持 16 到 4096 分辨率。');
   }
   const bvh = new TriangleBvh(input.high);
   const bounds = buildBounds(input.high.positions);
+  const curvature = input.channels.includes('curvature')
+    ? computeVertexCurvature(input.high, bounds.diagonal)
+    : undefined;
   const pixelCount = input.resolution * input.resolution;
   const outputs = createOutputs(input.channels, pixelCount);
   const coverage = new Uint8Array(pixelCount);
@@ -619,6 +736,21 @@ export function bakePbrMapsLocally(
               writeVectorPixel(normalOutput, pixel, tangentNormal);
             }
             if (outputs.worldNormal) writeVectorPixel(outputs.worldNormal, pixel, scratch.highNormal);
+            const curvatureOutput = outputs.curvature;
+            if (curvatureOutput && curvature) {
+              const triangleOffset = hit.triangle * 3;
+              const [hitA, hitB, hitC] = hit.barycentric;
+              const signedCurvature =
+                curvature[input.high.indices[triangleOffset]] * hitA
+                + curvature[input.high.indices[triangleOffset + 1]] * hitB
+                + curvature[input.high.indices[triangleOffset + 2]] * hitC;
+              const value = Math.round(MathUtils.clamp(signedCurvature * 0.5 + 0.5, 0, 1) * 255);
+              const offset = pixel * 4;
+              curvatureOutput[offset] = value;
+              curvatureOutput[offset + 1] = value;
+              curvatureOutput[offset + 2] = value;
+              curvatureOutput[offset + 3] = 255;
+            }
             const positionOutput = outputs.position;
             if (positionOutput) {
               const offset = pixel * 4;

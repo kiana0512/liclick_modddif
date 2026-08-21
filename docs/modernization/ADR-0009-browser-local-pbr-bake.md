@@ -1,6 +1,6 @@
 # ADR-0009：浏览器本地 PBR Bake
 
-状态：已接受，Base Color/Normal/AO 真实纵向切片已接入；完整生产质量与硬件矩阵仍在进行中。
+状态：已接受，Base Color/Normal/AO/Curvature 真实纵向切片与 4K 内核已接入；完整生产质量与硬件矩阵仍在进行中。
 
 ## 问题
 
@@ -9,7 +9,8 @@
 ## 决策
 
 - 高模、低模解析、UV 光栅化、BVH 构建、射线投射、AO、厚度与 Padding 全部在浏览器 Worker 中执行；计算服务器没有 fallback。
-- 当前真实输出通道为 Base Color、Normal（DirectX/OpenGL）、AO、World Normal、Position、Thickness。Base Color 使用 BVH 命中的高模三角形重心坐标采样高模 UV0，再写入低模 UV；Roughness、Metallic、Curvature 在有真实内核前保持禁用，不用占位图冒充结果。
+- 当前真实几何输出通道为 Base Color、Normal（DirectX/OpenGL）、AO、Curvature、World Normal、Position、Thickness。Base Color 使用 BVH 命中的高模三角形重心坐标采样高模 UV0，再写入低模 UV；Curvature 使用焊接顶点的一环 Laplacian 估算有符号几何曲率并按命中三角形重心坐标插值。Roughness、Metallic 只有真实输入或已启用的生成流程才可选，不用占位图冒充结果。
+- 浏览器本地内核接受 1K、2K 与 4K；4K 在 Worker 中真实生成 4096×4096 RGBA，不会静默降级。复杂生产模型的七通道峰值内存仍属于发布前性能门禁。
 - Worker 使用紧凑的原生三角形 median BVH，并通过原地 quickselect 建树，避免重复打包 Three.js/BVH 依赖和递归排序分配。加入 Base Color 采样后的 Worker 构建产物为 11.77 KB；Web JavaScript 总量保持在既有 3,150,000 字节门禁以下。
 - Worker 属于项目 Engine Session 的 CPU lane，可取消、切页释放；当前界面与持久化设置固定显示 CPU Worker，不虚报 GPU。
 - 每张 PNG 在浏览器编码后通过签名 URL 直接上传对象存储，项目仅保存不可变资产引用、尺寸和本地 Job ID。刷新后从项目 Bake Set 恢复结果。
@@ -37,13 +38,13 @@
 - `pnpm simulate:cloud-deployment -- --serve`
 - `pnpm check:web-bundle-budget`
 
-第二个命令使用平面高低模验证 Base Color 的 UV 采样与传递，并使用闭合非平面几何同时验证 Normal、AO、World Normal、Position、Thickness 五通道、Padding、厚度灰度范围以及 DirectX/OpenGL 法线方向。机器证据位于 `quality/evidence/browser-local-pbr-bake-e2e.json` 与 `quality/evidence/browser-compute-kernel-matrix.json`。
+第二个命令使用平面高低模验证 Base Color 的 UV 采样与传递，使用闭合非平面几何同时验证 Normal、AO、Curvature、World Normal、Position、Thickness 六个几何通道、Padding、厚度灰度范围与 DirectX/OpenGL 法线方向，并以真实 4096×4096 输出验证 4K 上限。机器证据位于 `quality/evidence/browser-local-pbr-bake-e2e.json` 与 `quality/evidence/browser-compute-kernel-matrix.json`。
 
 ## 尚未宣称完成
 
 - 复杂生产模型、多个子网格/材质槽、非平面高低模、背面、穿插、退化面和重叠 UV 对照。
-- Base Color、World Normal、Position、Thickness 已完成内核回归，但仍缺多材质槽生产模型参考图像阈值；Curvature 尚未实现。
-- 2K 大模型耗时、取消、低内存、Worker 崩溃恢复和目标硬件性能矩阵。
+- Base Color、Curvature、World Normal、Position、Thickness 已完成内核回归，但仍缺多材质槽生产模型参考图像阈值。
+- 2K/4K 大模型耗时、七通道峰值内存、取消、低内存、Worker 崩溃恢复和目标硬件性能矩阵。
 - GPU/WebGPU Bake 后端、UDIM、多 atlas、cage 模式和跨浏览器兼容矩阵。
 
 因此 `bake.browser-local-pbr` 从 `failed` 提升为 `in_progress`，不会因简单四边形的 Normal/AO 纵向切片通过就提前标为 `passed`。

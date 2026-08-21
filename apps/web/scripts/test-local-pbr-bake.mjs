@@ -138,7 +138,7 @@ try {
   assert.equal(ao[center + 3], 255);
 
   const closedBox = createClosedBoxFixture();
-  const channels = ['normal', 'ambientOcclusion', 'worldNormal', 'position', 'thickness'];
+  const channels = ['normal', 'ambientOcclusion', 'curvature', 'worldNormal', 'position', 'thickness'];
   const matrix = bakePbrMapsLocally({
     ...closedBox,
     resolution: 96,
@@ -166,6 +166,11 @@ try {
   assert.ok(channelRange(matrix.outputs.position, 1) > 200);
   assert.ok(channelRange(matrix.outputs.position, 2) > 200);
   assert.ok(channelRange(matrix.outputs.thickness, 0) > 10);
+  assert.ok(opaquePixelCount(matrix.outputs.curvature) > matrix.coveredPixels);
+  assert.ok(
+    matrix.outputs.curvature.some((value, offset) => offset % 4 !== 3 && value > 128),
+    'closed convex geometry should produce a positive curvature signal',
+  );
   for (let offset = 0; offset < matrix.outputs.thickness.length; offset += 4) {
     if (!matrix.outputs.thickness[offset + 3]) continue;
     assert.equal(matrix.outputs.thickness[offset], matrix.outputs.thickness[offset + 1]);
@@ -202,7 +207,34 @@ try {
     ) <= 2,
     `DirectX/OpenGL green channels are ${matrix.outputs.normal[orientationSample + 1]} and ${openGl.outputs.normal[orientationSample + 1]}`,
   );
-  console.log('Local BVH PBR bake Base Color transfer and closed-box five-channel matrix passed.');
+
+  const tinyUvScale = 1 / 4095;
+  const fourK = bakePbrMapsLocally({
+    high: { positions, normals, indices, uvs: uvs.slice() },
+    low: [{
+      positions: new Float32Array([-1, -1, 0, 1, -1, 0, -1, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([0, 1, 2]),
+      uvs: new Float32Array([0, 0, tinyUvScale, 0, 0, tinyUvScale]),
+    }],
+    resolution: 4096,
+    padding: 0,
+    frontalDistance: 0.1,
+    rearDistance: 0.1,
+    normalOrientation: 'directx',
+    aoSamples: 0,
+    channels: ['curvature'],
+  });
+  assert.equal(fourK.width, 4096);
+  assert.equal(fourK.height, 4096);
+  assert.equal(fourK.outputs.curvature.length, 4096 * 4096 * 4);
+  assert.ok(fourK.coveredPixels >= 1);
+  assert.ok(
+    fourK.outputs.curvature.some((value, offset) => offset % 4 !== 3 && value === 128),
+    'flat 4K fixture should encode neutral curvature',
+  );
+
+  console.log('Local BVH PBR bake Base Color, curvature, six-channel closed-box and 4K matrix passed.');
 } finally {
   await server.close();
 }
