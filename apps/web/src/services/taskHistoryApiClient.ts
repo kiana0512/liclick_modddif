@@ -34,17 +34,23 @@ type TaskHistoryResponse = {
   records: TaskHistoryRecord[];
 };
 
+function historyErrorMessage(payload: unknown, fallback: string) {
+  if (!payload || typeof payload !== 'object' || !('error' in payload)) return fallback;
+  const error = payload.error;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (!error || typeof error !== 'object') return fallback;
+  const errorRecord = error as Record<string, unknown>;
+  for (const key of ['summary', 'message', 'code'] as const) {
+    const value = errorRecord[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return fallback;
+}
+
 async function responseJson<T>(response: Response) {
   const payload = await response.json().catch(() => undefined);
   if (!response.ok) {
-    const message =
-      payload &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      typeof payload.error === 'string'
-        ? payload.error
-        : `历史记录请求失败（${response.status}）。`;
-    throw new Error(message);
+    throw new Error(historyErrorMessage(payload, `历史记录请求失败（${response.status}）。`));
   }
   return payload as T;
 }
@@ -89,10 +95,8 @@ export async function fetchTaskHistoryOutputBlob(output: TaskHistoryOutput) {
     cache: 'no-store',
   });
   if (!response.ok) {
-    const payload = (await response.json().catch(() => undefined)) as
-      | { error?: string }
-      | undefined;
-    throw new Error(payload?.error ?? `历史文件下载失败（${response.status}）。`);
+    const payload = await response.json().catch(() => undefined);
+    throw new Error(historyErrorMessage(payload, `历史文件下载失败（${response.status}）。`));
   }
   return response.blob();
 }

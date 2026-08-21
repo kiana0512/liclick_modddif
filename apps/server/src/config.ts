@@ -110,7 +110,18 @@ const assetServiceCaCertPath = path.resolve(
   explicitAssetServiceCaCertPath ||
     managedGpuControlLanCaPath,
 );
-const assetServiceCaCertExpectedSha256 = gpuControlLanCaExpectedSha256;
+const explicitAssetServiceCaCertExpectedSha256 = process.env.ASSET_SERVICE_CA_CERT_SHA256
+  ?.trim()
+  .toLowerCase();
+if (
+  explicitAssetServiceCaCertExpectedSha256 &&
+  !/^[a-f0-9]{64}$/.test(explicitAssetServiceCaCertExpectedSha256)
+) {
+  throw new Error('ASSET_SERVICE_CA_CERT_SHA256 must be a lowercase SHA-256 hex digest.');
+}
+const assetServiceCaCertExpectedSha256 =
+  explicitAssetServiceCaCertExpectedSha256 ||
+  (assetServiceCaCertManaged ? gpuControlLanCaExpectedSha256 : undefined);
 const assetServiceTlsRejectUnauthorized =
   (process.env.ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED ?? 'true').toLowerCase() !== 'false';
 

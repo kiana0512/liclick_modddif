@@ -1,7 +1,8 @@
 param(
   [int]$Port = 5646,
   [string]$WorkspaceDir = "",
-  [switch]$SkipBuild
+  [switch]$SkipBuild,
+  [switch]$UseConfiguredAssetService
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,6 +71,103 @@ $env:SESSION_COOKIE_SECURE = "false"
 $env:FEISHU_DIRECTORY_ENRICHMENT_ENABLED = "false"
 $env:FEISHU_BITABLE_SYNC_ENABLED = "false"
 
+if (!$UseConfiguredAssetService) {
+  $AssetTlsDir = Join-Path $env:LICLICK_WORKSPACE_DIR "asset-service-simulator-tls"
+  New-Item -ItemType Directory -Path $AssetTlsDir -Force | Out-Null
+  $AssetCaPath = Join-Path $AssetTlsDir "ca.pem"
+  $AssetCertPath = Join-Path $AssetTlsDir "server.pem"
+  $AssetKeyPath = Join-Path $AssetTlsDir "server-key.pem"
+
+  $CaRsa = [Security.Cryptography.RSA]::Create(2048)
+  $LeafRsa = [Security.Cryptography.RSA]::Create(2048)
+  $CaCertificate = $null
+  $LeafCertificateWithoutKey = $null
+  $LeafCertificate = $null
+  try {
+    $CaRequest = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+      "CN=Liclick Preview Asset CA",
+      $CaRsa,
+      [Security.Cryptography.HashAlgorithmName]::SHA256,
+      [Security.Cryptography.RSASignaturePadding]::Pkcs1
+    )
+    $CaRequest.CertificateExtensions.Add(
+      [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($true, $false, 0, $true)
+    )
+    $CaRequest.CertificateExtensions.Add(
+      [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+        [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyCertSign -bor
+          [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::CrlSign,
+        $true
+      )
+    )
+    $CaRequest.CertificateExtensions.Add(
+      [Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($CaRequest.PublicKey, $false)
+    )
+    $NotBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
+    $NotAfter = [DateTimeOffset]::UtcNow.AddDays(7)
+    $CaCertificate = $CaRequest.CreateSelfSigned($NotBefore, $NotAfter)
+
+    $LeafRequest = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+      "CN=127.0.0.1",
+      $LeafRsa,
+      [Security.Cryptography.HashAlgorithmName]::SHA256,
+      [Security.Cryptography.RSASignaturePadding]::Pkcs1
+    )
+    $LeafRequest.CertificateExtensions.Add(
+      [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true)
+    )
+    $LeafRequest.CertificateExtensions.Add(
+      [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+        [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature -bor
+          [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment,
+        $true
+      )
+    )
+    $EnhancedUsages = [Security.Cryptography.OidCollection]::new()
+    [void]$EnhancedUsages.Add([Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.1"))
+    $LeafRequest.CertificateExtensions.Add(
+      [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($EnhancedUsages, $true)
+    )
+    $SubjectAlternativeNames = [Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
+    $SubjectAlternativeNames.AddIpAddress([Net.IPAddress]::Parse("127.0.0.1"))
+    $SubjectAlternativeNames.AddDnsName("localhost")
+    $LeafRequest.CertificateExtensions.Add($SubjectAlternativeNames.Build())
+    $LeafRequest.CertificateExtensions.Add(
+      [Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($LeafRequest.PublicKey, $false)
+    )
+    $Serial = New-Object byte[] 16
+    $SerialRandom = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+      $SerialRandom.GetBytes($Serial)
+    } finally {
+      $SerialRandom.Dispose()
+    }
+    $Serial[0] = $Serial[0] -band 0x7f
+    $LeafCertificateWithoutKey = $LeafRequest.Create($CaCertificate, $NotBefore, $NotAfter, $Serial)
+    $LeafCertificate = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey(
+      $LeafCertificateWithoutKey,
+      $LeafRsa
+    )
+
+    [IO.File]::WriteAllText($AssetCaPath, $CaCertificate.ExportCertificatePem())
+    [IO.File]::WriteAllText($AssetCertPath, $LeafCertificate.ExportCertificatePem())
+    [IO.File]::WriteAllText($AssetKeyPath, $LeafRsa.ExportPkcs8PrivateKeyPem())
+  } finally {
+    if ($LeafCertificate) { $LeafCertificate.Dispose() }
+    if ($LeafCertificateWithoutKey) { $LeafCertificateWithoutKey.Dispose() }
+    if ($CaCertificate) { $CaCertificate.Dispose() }
+    $LeafRsa.Dispose()
+    $CaRsa.Dispose()
+  }
+
+  $env:LICLICK_ASSET_SIMULATOR_CERT_PATH = $AssetCertPath
+  $env:LICLICK_ASSET_SIMULATOR_KEY_PATH = $AssetKeyPath
+  $env:ASSET_SERVICE_CA_CERT_PATH = $AssetCaPath
+  $env:ASSET_SERVICE_CA_CERT_SHA256 = (Get-FileHash -LiteralPath $AssetCaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $env:ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED = "true"
+  $env:ASSET_SERVICE_API_TOKEN = "liclick-preview-asset-token"
+}
+
 # A visible preview must never silently become the OAuth mock. The mock remains
 # available only through the explicit smoke/simulator commands.
 [Environment]::SetEnvironmentVariable("FEISHU_OAUTH_CLIENT_ID", $null, "Process")
@@ -82,6 +180,9 @@ $env:FEISHU_BITABLE_SYNC_ENABLED = "false"
 Write-Host "LI3D real employee-auth preview: $Origin/li3d/" -ForegroundColor Green
 Write-Host "Atlas runs on this development server simulator only; the browser artifact remains zero-install." -ForegroundColor DarkGray
 Write-Host "Object storage is simulated inside the development server process; no cloud account is required." -ForegroundColor DarkGray
+if (!$UseConfiguredAssetService) {
+  Write-Host "Automatic retopology uses an HTTPS simulator with a generated, SHA-pinned test CA." -ForegroundColor DarkGray
+}
 
 Push-Location $Root
 try {

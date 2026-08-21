@@ -71,6 +71,7 @@ Cloud control plane
 - 项目级 Engine Session 已接管第一批全分辨率 UV/修补任务，并统一计算计划、并发、取消和资源释放边界；其余算法继续渐进迁移。
 - Auto UV 首个浏览器本地纵向切片已接入 xatlas WASM Worker：无 UV OBJ 已真实生成 GLB、完成对象直传并以高低模 `2/2` 进入 Bake；生产模型和质量矩阵未完成前保持发布阻断。
 - 局部重绘真实纵向链路已完成一次浏览器验收：真实员工会话、浏览器指针蒙版、云端 ModelView 生成、浏览器投影应用、Revision 保存、服务重启和图层像素恢复均已通过。该证据只覆盖测试模型，生产资产遮挡/导出矩阵尚未完成，因此总门禁仍保持进行中。
+- Auto Retopology 已完成模拟远端纵向验收：真实员工浏览器上传可解析高模，BFF 通过严格 TLS 与 SHA 固定的测试 CA 连接远端 Worker，返回正式 `_game_low.fbx` 与 `_game_low.blend`；FBX 经三方 SHA 后在浏览器解析，取消、历史和双服务重启恢复均通过。该证据不代表生产拓扑算法、生产 CA 或生产 Worker 已验收，因此门禁保持进行中。
 - Auto UV 的结果已经可直接进入浏览器 Bake，但尚未替换贴图编辑器当前对象；这是明确记录的跨模块交接缺口，不能以“进入 Bake 成功”冒充完整项目对象更新。
 
 计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，浏览器 Auto UV 见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。

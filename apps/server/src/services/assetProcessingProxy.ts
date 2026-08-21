@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import https, { type RequestOptions } from 'node:https';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, X509Certificate } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
@@ -65,7 +65,26 @@ function inspectCaCertificate(): CaCertificateState {
     const bytes = fs.readFileSync(resolved);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     try {
-      validateGpuControlLanCaBytes(bytes);
+      if (
+        serverConfig.assetServiceCaCertExpectedSha256 &&
+        sha256 !== serverConfig.assetServiceCaCertExpectedSha256
+      ) {
+        throw new Error(
+          `Asset service CA SHA-256 mismatch: expected ${serverConfig.assetServiceCaCertExpectedSha256}, received ${sha256}.`,
+        );
+      }
+      if (serverConfig.assetServiceCaCertManaged) {
+        validateGpuControlLanCaBytes(bytes);
+      } else {
+        const certificate = new X509Certificate(bytes);
+        if (!certificate.ca) {
+          throw new Error('Custom asset service certificate must be a CA certificate.');
+        }
+        const now = Date.now();
+        if (now < Date.parse(certificate.validFrom) || now > Date.parse(certificate.validTo)) {
+          throw new Error('Custom asset service CA certificate is outside its validity window.');
+        }
+      }
       return { available: true, integrityValid: true, sha256, bytes };
     } catch (error) {
       return {

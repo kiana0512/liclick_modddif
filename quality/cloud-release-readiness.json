@@ -113,8 +113,13 @@
       "id": "topology.cloud-service",
       "name": "高模上传云端自动拓扑并返回正式低模产物",
       "required": true,
-      "status": "not_tested",
-      "evidence": ["禁止以本地三角简化冒充自动拓扑；严格 TLS/CA 模拟和真实模型结果对照尚未完成"]
+      "status": "in_progress",
+      "evidence": [
+        "真实员工浏览器上传 7.7 MB / 30,338 面 FBX，经严格 TLS/CA 服务代理返回可解析 12 面正式 FBX 与配套 BLEND",
+        "任务取消、历史持久化、远端模拟器与 LI3D 服务重启后结果恢复均通过",
+        "quality/evidence/browser-cloud-retopology-e2e.json",
+        "生产拓扑算法质量、生产 CA 与真实服务部署仍未验收"
+      ]
     },
     {
       "id": "toolbox.capability-preservation",
