@@ -7,6 +7,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+function ConvertTo-PemBlock {
+  param(
+    [Parameter(Mandatory = $true)][byte[]]$Bytes,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  $Base64 = [Convert]::ToBase64String(
+    $Bytes,
+    [Base64FormattingOptions]::InsertLineBreaks
+  )
+  return "-----BEGIN $Label-----`r`n$Base64`r`n-----END $Label-----`r`n"
+}
 if (!$WorkspaceDir) {
   $WorkspaceDir = Join-Path $Root ".codex-tmp\real-auth-workspace"
 }
@@ -75,8 +87,8 @@ if (!$UseConfiguredAssetService) {
   $AssetTlsDir = Join-Path $env:LICLICK_WORKSPACE_DIR "asset-service-simulator-tls"
   New-Item -ItemType Directory -Path $AssetTlsDir -Force | Out-Null
   $AssetCaPath = Join-Path $AssetTlsDir "ca.pem"
-  $AssetCertPath = Join-Path $AssetTlsDir "server.pem"
-  $AssetKeyPath = Join-Path $AssetTlsDir "server-key.pem"
+  $AssetPfxPath = Join-Path $AssetTlsDir "server.pfx"
+  $AssetPfxPassphrase = "liclick-preview-asset-pfx"
 
   $CaRsa = [Security.Cryptography.RSA]::Create(2048)
   $LeafRsa = [Security.Cryptography.RSA]::Create(2048)
@@ -149,9 +161,21 @@ if (!$UseConfiguredAssetService) {
       $LeafRsa
     )
 
-    [IO.File]::WriteAllText($AssetCaPath, $CaCertificate.ExportCertificatePem())
-    [IO.File]::WriteAllText($AssetCertPath, $LeafCertificate.ExportCertificatePem())
-    [IO.File]::WriteAllText($AssetKeyPath, $LeafRsa.ExportPkcs8PrivateKeyPem())
+    $CaDer = $CaCertificate.Export(
+      [Security.Cryptography.X509Certificates.X509ContentType]::Cert
+    )
+    [IO.File]::WriteAllText(
+      $AssetCaPath,
+      (ConvertTo-PemBlock -Bytes $CaDer -Label "CERTIFICATE"),
+      [Text.Encoding]::ASCII
+    )
+    [IO.File]::WriteAllBytes(
+      $AssetPfxPath,
+      $LeafCertificate.Export(
+        [Security.Cryptography.X509Certificates.X509ContentType]::Pfx,
+        $AssetPfxPassphrase
+      )
+    )
   } finally {
     if ($LeafCertificate) { $LeafCertificate.Dispose() }
     if ($LeafCertificateWithoutKey) { $LeafCertificateWithoutKey.Dispose() }
@@ -160,12 +184,19 @@ if (!$UseConfiguredAssetService) {
     $CaRsa.Dispose()
   }
 
-  $env:LICLICK_ASSET_SIMULATOR_CERT_PATH = $AssetCertPath
-  $env:LICLICK_ASSET_SIMULATOR_KEY_PATH = $AssetKeyPath
+  [Environment]::SetEnvironmentVariable("LICLICK_ASSET_SIMULATOR_CERT_PATH", $null, "Process")
+  [Environment]::SetEnvironmentVariable("LICLICK_ASSET_SIMULATOR_KEY_PATH", $null, "Process")
+  $env:LICLICK_ASSET_SIMULATOR_PFX_PATH = $AssetPfxPath
+  $env:LICLICK_ASSET_SIMULATOR_PFX_PASSPHRASE = $AssetPfxPassphrase
   $env:ASSET_SERVICE_CA_CERT_PATH = $AssetCaPath
   $env:ASSET_SERVICE_CA_CERT_SHA256 = (Get-FileHash -LiteralPath $AssetCaPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $env:ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED = "true"
   $env:ASSET_SERVICE_API_TOKEN = "liclick-preview-asset-token"
+} else {
+  [Environment]::SetEnvironmentVariable("LICLICK_ASSET_SIMULATOR_CERT_PATH", $null, "Process")
+  [Environment]::SetEnvironmentVariable("LICLICK_ASSET_SIMULATOR_KEY_PATH", $null, "Process")
+  [Environment]::SetEnvironmentVariable("LICLICK_ASSET_SIMULATOR_PFX_PATH", $null, "Process")
+  [Environment]::SetEnvironmentVariable("LICLICK_ASSET_SIMULATOR_PFX_PASSPHRASE", $null, "Process")
 }
 
 # A visible preview must never silently become the OAuth mock. The mock remains

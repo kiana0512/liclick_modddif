@@ -23,25 +23,26 @@
 1. 开发身份登录，导入无 UV 的 OBJ 四边形；
 2. xatlas WASM Worker 生成 UV GLB，源 OBJ 和输出 GLB 均完成对象直传；
 3. Bake 恢复高模与低模，并通过 UV0、中心、尺寸和形状对齐检查；
-4. 用户本机 CPU Worker 在 1024×1024 下输出 Normal 与 AO PNG；
-5. 统计为 1,042,441 个覆盖像素、4,090 个未命中投射样本；
-6. 两张 PNG 完成 SHA-256 校验和对象直传，项目 Revision 到 5，Bake manifest 有 2 个条目；
-7. 重新加载 `/project/:id/bake` 后仍显示两张 1024×1024 PNG，证明结果不是内存占位；
+4. 用户本机 CPU Worker 在 1024×1024 下输出 Normal、AO、World Normal、Thickness、Position 五张 PNG；
+5. 统计为 1,046,529 个覆盖像素、0 个未命中投射样本；
+6. 五张 PNG 完成 SHA-256 校验和对象直传，项目 Revision 到 58，Bake manifest 有 5 个条目；
+7. 重新加载 `/project/:id/bake` 后仍显示五张 1024×1024 PNG，证明结果不是内存占位；
 8. 云构建、远端代理、直传重试/幂等、签名下载解析、服务重启恢复和 JavaScript 预算门禁通过。
 
 可重复测试：
 
 - `pnpm --filter @liclick/web test:local-pbr-bake`
+- `pnpm --filter @liclick/web test:browser-asset-kernel-matrix`
 - `pnpm --filter @liclick/web test:bake-model-alignment`
 - `pnpm simulate:cloud-deployment -- --serve`
 - `pnpm check:web-bundle-budget`
 
-机器证据位于 `quality/evidence/browser-local-pbr-bake-e2e.json`。
+第二个命令使用闭合非平面几何同时验证 Normal、AO、World Normal、Position、Thickness 五通道、Padding、厚度灰度范围以及 DirectX/OpenGL 法线方向。机器证据位于 `quality/evidence/browser-local-pbr-bake-e2e.json` 与 `quality/evidence/browser-compute-kernel-matrix.json`。
 
 ## 尚未宣称完成
 
 - 复杂生产模型、多个子网格/材质槽、非平面高低模、背面、穿插、退化面和重叠 UV 对照。
-- World Normal、Position、Thickness 三通道的浏览器 E2E 与参考图像阈值；Curvature 尚未实现。
+- World Normal、Position、Thickness 已完成简单真实浏览器 E2E，但仍缺生产模型参考图像阈值；Curvature 尚未实现。
 - 2K 大模型耗时、取消、低内存、Worker 崩溃恢复和目标硬件性能矩阵。
 - GPU/WebGPU Bake 后端、UDIM、多 atlas、cage 模式和跨浏览器兼容矩阵。
 

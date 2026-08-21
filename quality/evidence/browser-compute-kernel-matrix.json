@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "executedAt": "2026-08-21T17:08:52+08:00",
+  "environment": "Vite SSR harness executing the browser-compute kernels",
+  "command": "pnpm --filter @liclick/web test:browser-asset-kernel-matrix",
+  "assertions": {
+    "uvFlatBaselinePassed": true,
+    "uvMultiMeshClosedGeometryPassed": true,
+    "uvOutputMeshCount": 2,
+    "uvNonDegenerateTrianglesPassed": true,
+    "uvRangeAndVertexMappingPassed": true,
+    "pbrFlatNormalAoBaselinePassed": true,
+    "pbrClosedBoxTriangleCount": 12,
+    "pbrClosedBoxResolution": [96, 96],
+    "pbrChannels": ["normal", "ambientOcclusion", "worldNormal", "position", "thickness"],
+    "pbrFiveChannelPixelsPassed": true,
+    "pbrPaddingPassed": true,
+    "pbrWorldNormalAxisRangePassed": true,
+    "pbrPositionAxisRangePassed": true,
+    "pbrThicknessGrayscaleAndRangePassed": true,
+    "pbrDirectXOpenGlOrientationPassed": true,
+    "textureExportOrientationPassed": true,
+    "projectedLayerVisibilityPassed": true,
+    "localRepaintSeamHarmonizationPassed": true,
+    "serverComputeFallbackUsed": false
+  },
+  "releaseInterpretation": "The browser-compute kernels now have a repeatable multi-mesh UV and closed non-planar five-channel PBR matrix. Production-model browser E2E and target-hardware performance remain required."
+}

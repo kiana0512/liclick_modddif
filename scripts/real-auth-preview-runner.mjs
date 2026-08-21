@@ -157,7 +157,7 @@ const simulatedLowFbx = gunzipSync(
 );
 const simulatedLowBlend = Buffer.from('BLENDER-v400-LICLICK-PREVIEW-LOW-MODEL\n');
 
-function createAssetServiceSimulator({ cert, key, statePath, initialState }) {
+function createAssetServiceSimulator({ tls, statePath, initialState }) {
   const jobs = new Map(initialState.jobs ?? []);
   const jobsByIdempotencyKey = new Map(initialState.idempotencyKeys ?? []);
   const artifactBytes = new Map([
@@ -191,7 +191,7 @@ function createAssetServiceSimulator({ cert, key, statePath, initialState }) {
       statePath,
       `${JSON.stringify({ jobs: [...jobs], idempotencyKeys: [...jobsByIdempotencyKey] }, null, 2)}\n`,
     );
-  return createHttpsServer({ cert, key }, async (request, response) => {
+  return createHttpsServer(tls, async (request, response) => {
     const url = new URL(request.url ?? '/', `https://${request.headers.host}`);
     if (request.headers.authorization !== 'Bearer liclick-preview-asset-token') {
       sendJson(response, 401, {
@@ -362,11 +362,17 @@ console.log(
 let assetService;
 const assetSimulatorCertPath = process.env.LICLICK_ASSET_SIMULATOR_CERT_PATH;
 const assetSimulatorKeyPath = process.env.LICLICK_ASSET_SIMULATOR_KEY_PATH;
-if (assetSimulatorCertPath && assetSimulatorKeyPath) {
-  const [cert, key] = await Promise.all([
-    readFile(path.resolve(assetSimulatorCertPath)),
-    readFile(path.resolve(assetSimulatorKeyPath)),
-  ]);
+const assetSimulatorPfxPath = process.env.LICLICK_ASSET_SIMULATOR_PFX_PATH;
+if ((assetSimulatorCertPath && assetSimulatorKeyPath) || assetSimulatorPfxPath) {
+  const tls = assetSimulatorPfxPath
+    ? {
+        pfx: await readFile(path.resolve(assetSimulatorPfxPath)),
+        passphrase: process.env.LICLICK_ASSET_SIMULATOR_PFX_PASSPHRASE,
+      }
+    : {
+        cert: await readFile(path.resolve(assetSimulatorCertPath)),
+        key: await readFile(path.resolve(assetSimulatorKeyPath)),
+      };
   const assetStatePath = path.join(workspaceDir, 'asset-service-simulator-state.json');
   let assetInitialState = {};
   try {
@@ -375,8 +381,7 @@ if (assetSimulatorCertPath && assetSimulatorKeyPath) {
     if (error?.code !== 'ENOENT') throw error;
   }
   assetService = createAssetServiceSimulator({
-    cert,
-    key,
+    tls,
     statePath: assetStatePath,
     initialState: assetInitialState,
   });

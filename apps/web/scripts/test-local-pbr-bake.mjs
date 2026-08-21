@@ -13,6 +13,75 @@ const server = await createServer({
   server: { middlewareMode: true },
 });
 
+function createClosedBoxFixture() {
+  const faces = [
+    { normal: [1, 0, 0], vertices: [[1, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]] },
+    { normal: [-1, 0, 0], vertices: [[-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-1, -1, -1]] },
+    { normal: [0, 1, 0], vertices: [[-1, 1, -1], [-1, 1, 1], [1, 1, 1], [1, 1, -1]] },
+    { normal: [0, -1, 0], vertices: [[-1, -1, 1], [-1, -1, -1], [1, -1, -1], [1, -1, 1]] },
+    { normal: [0, 0, 1], vertices: [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]] },
+    { normal: [0, 0, -1], vertices: [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]] },
+  ];
+  const positions = [];
+  const lowNormals = [];
+  const highNormals = [];
+  const indices = [];
+  const uvs = [];
+  faces.forEach((face, faceIndex) => {
+    const vertexOffset = positions.length / 3;
+    const column = faceIndex % 3;
+    const row = Math.floor(faceIndex / 3);
+    const u0 = column / 3 + 0.025;
+    const u1 = (column + 1) / 3 - 0.025;
+    const v0 = row / 2 + 0.025;
+    const v1 = (row + 1) / 2 - 0.025;
+    const faceUvs = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    face.vertices.forEach((vertex, vertexIndex) => {
+      positions.push(...vertex);
+      lowNormals.push(...face.normal);
+      const length = Math.hypot(...vertex);
+      highNormals.push(vertex[0] / length, vertex[1] / length, vertex[2] / length);
+      uvs.push(...faceUvs[vertexIndex]);
+    });
+    indices.push(
+      vertexOffset, vertexOffset + 1, vertexOffset + 2,
+      vertexOffset, vertexOffset + 2, vertexOffset + 3,
+    );
+  });
+  return {
+    high: {
+      positions: new Float32Array(positions),
+      normals: new Float32Array(highNormals),
+      indices: new Uint32Array(indices),
+    },
+    low: [{
+      positions: new Float32Array(positions),
+      normals: new Float32Array(lowNormals),
+      indices: new Uint32Array(indices),
+      uvs: new Float32Array(uvs),
+    }],
+  };
+}
+
+function opaquePixelCount(output) {
+  let count = 0;
+  for (let index = 3; index < output.length; index += 4) {
+    if (output[index] > 0) count += 1;
+  }
+  return count;
+}
+
+function channelRange(output, component) {
+  let min = 255;
+  let max = 0;
+  for (let offset = 0; offset < output.length; offset += 4) {
+    if (!output[offset + 3]) continue;
+    min = Math.min(min, output[offset + component]);
+    max = Math.max(max, output[offset + component]);
+  }
+  return max - min;
+}
+
 try {
   const { bakePbrMapsLocally } = await server.ssrLoadModule(
     '/src/engine/bake/localPbrBakeCore.ts',
@@ -56,7 +125,73 @@ try {
   assert.equal(normal[center + 3], 255);
   assert.equal(ao[center], 255);
   assert.equal(ao[center + 3], 255);
-  console.log('Local BVH PBR bake normal/AO test passed.');
+
+  const closedBox = createClosedBoxFixture();
+  const channels = ['normal', 'ambientOcclusion', 'worldNormal', 'position', 'thickness'];
+  const matrix = bakePbrMapsLocally({
+    ...closedBox,
+    resolution: 96,
+    padding: 3,
+    frontalDistance: 0.2,
+    rearDistance: 0.2,
+    normalOrientation: 'directx',
+    aoSamples: 8,
+    channels,
+  });
+  assert.equal(matrix.triangleCount, 12);
+  assert.ok(matrix.coveredPixels > 5_000);
+  assert.equal(matrix.missedPixels, 0);
+  assert.equal(matrix.overlapPixels, 0);
+  for (const channel of channels) {
+    const output = matrix.outputs[channel];
+    assert.ok(output, `${channel} output is missing`);
+    assert.equal(output.length, 96 * 96 * 4);
+    assert.ok(opaquePixelCount(output) > matrix.coveredPixels);
+  }
+  assert.ok(channelRange(matrix.outputs.worldNormal, 0) > 200);
+  assert.ok(channelRange(matrix.outputs.worldNormal, 1) > 200);
+  assert.ok(channelRange(matrix.outputs.worldNormal, 2) > 200);
+  assert.ok(channelRange(matrix.outputs.position, 0) > 200);
+  assert.ok(channelRange(matrix.outputs.position, 1) > 200);
+  assert.ok(channelRange(matrix.outputs.position, 2) > 200);
+  assert.ok(channelRange(matrix.outputs.thickness, 0) > 10);
+  for (let offset = 0; offset < matrix.outputs.thickness.length; offset += 4) {
+    if (!matrix.outputs.thickness[offset + 3]) continue;
+    assert.equal(matrix.outputs.thickness[offset], matrix.outputs.thickness[offset + 1]);
+    assert.equal(matrix.outputs.thickness[offset], matrix.outputs.thickness[offset + 2]);
+  }
+
+  const openGl = bakePbrMapsLocally({
+    ...closedBox,
+    resolution: 96,
+    padding: 0,
+    frontalDistance: 0.2,
+    rearDistance: 0.2,
+    normalOrientation: 'opengl',
+    aoSamples: 0,
+    channels: ['normal'],
+  });
+  let orientationSample = -1;
+  for (let offset = 0; offset < matrix.outputs.normal.length; offset += 4) {
+    if (
+      matrix.outputs.normal[offset + 3]
+      && openGl.outputs.normal[offset + 3]
+      && Math.abs(matrix.outputs.normal[offset + 1] - 128) > 12
+    ) {
+      orientationSample = offset;
+      break;
+    }
+  }
+  assert.ok(orientationSample >= 0, 'fixture did not produce an orientation-sensitive normal');
+  assert.ok(
+    Math.abs(
+      matrix.outputs.normal[orientationSample + 1]
+      + openGl.outputs.normal[orientationSample + 1]
+      - 255,
+    ) <= 2,
+    `DirectX/OpenGL green channels are ${matrix.outputs.normal[orientationSample + 1]} and ${openGl.outputs.normal[orientationSample + 1]}`,
+  );
+  console.log('Local BVH PBR bake flat baseline and closed-box five-channel matrix passed.');
 } finally {
   await server.close();
 }

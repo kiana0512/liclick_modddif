@@ -28,7 +28,7 @@
 5. 创建项目、保存 texture/UV 两个 Revision，进入 Bake；
 6. Bake 显示高模 `local-uv-e2e.obj` 与低模 `local-uv-e2e_local_uv.glb` 均已导入，素材状态为 `2/2`。
 
-可重复的内核测试为 `pnpm --filter @liclick/web test:local-uv-atlas`；模拟部署为 `pnpm simulate:cloud-deployment -- --serve`，浏览器诊断入口为 `/li3d/uv?perfLab=1`。
+可重复的内核测试为 `pnpm --filter @liclick/web test:local-uv-atlas`；多网格闭合几何矩阵纳入 `pnpm --filter @liclick/web test:browser-asset-kernel-matrix`，会检查每个输出三角形非退化、UV 范围和 xref。模拟部署为 `pnpm simulate:cloud-deployment -- --serve`，浏览器诊断入口为 `/li3d/uv?perfLab=1`。
 
 ## 尚未宣称完成
 

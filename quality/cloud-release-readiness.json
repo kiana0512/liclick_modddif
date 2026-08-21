@@ -83,6 +83,7 @@
         "真实 UV 模型完成浏览器蒙版绘制、云端 ModelView 生图、浏览器局部重绘投影和 Revision 保存",
         "服务重启后源图、蒙版、深度和图层可恢复；图层开关产生真实视口像素差异",
         "quality/evidence/browser-local-repaint-e2e.json",
+        "quality/evidence/browser-compute-kernel-matrix.json（纹理方向、投影层可见性、接缝协调回归）",
         "完整生产模型投影、遮挡、导出和撤销矩阵尚未完成"
       ]
     },
@@ -93,7 +94,9 @@
       "status": "in_progress",
       "evidence": [
         "@liclick/web test:local-uv-atlas",
+        "@liclick/web test:browser-asset-kernel-matrix（多网格闭合几何、非退化 UV、xref 与范围）",
         "browser:xatlas WASM Worker -> GLB -> UV preview -> direct upload -> Bake 2/2",
+        "quality/evidence/browser-compute-kernel-matrix.json",
         "生产模型与质量矩阵尚未完成"
       ]
     },
@@ -104,8 +107,10 @@
       "status": "in_progress",
       "evidence": [
         "@liclick/web test:local-pbr-bake",
-        "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> Normal/AO PNG -> direct upload -> refresh restore",
+        "@liclick/web test:browser-asset-kernel-matrix（闭合非平面模型五通道与 DX/GL 方向）",
+        "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> 五通道 PNG -> direct upload -> refresh restore",
         "quality/evidence/browser-local-pbr-bake-e2e.json",
+        "quality/evidence/browser-compute-kernel-matrix.json",
         "生产模型、五通道质量和硬件性能矩阵尚未完成"
       ]
     },
