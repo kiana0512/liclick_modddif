@@ -1021,10 +1021,9 @@ export async function bakeVisibleProjectedLayersToTexture(
     return {
       ...layer,
       maskUrl: input.debugIgnoreMask ? undefined : layer.maskUrl,
-      // A repaint's brush mask is its only coverage authority. Legacy rows may
-      // still carry capture visibility metadata, so normalize it away here as
-      // well as in the live renderer.
-      depthUrl: localRepaint || input.debugIgnoreDepth ? undefined : layer.depthUrl,
+      // Source alpha must not punch holes in a repaint, but capture depth is
+      // still the front-surface authority that prevents projection-through.
+      depthUrl: input.debugIgnoreDepth ? undefined : layer.depthUrl,
       normalUrl: localRepaint || input.debugIgnoreDepth ? undefined : layer.normalUrl,
       ignoreSourceAlpha: layer.ignoreSourceAlpha ?? localRepaint,
     };

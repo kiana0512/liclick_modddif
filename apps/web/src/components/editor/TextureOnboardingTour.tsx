@@ -12,6 +12,7 @@ type TourTarget =
   | 'import-model'
   | 'reference-images'
   | 'generate-texture'
+  | 'multiview-retry'
   | 'edit-tools'
   | 'single-view';
 
@@ -21,6 +22,7 @@ type TourStep = {
   title: string;
   body: string;
   placement: 'right' | 'above';
+  manualAdvance?: boolean;
 };
 
 type TargetRect = {
@@ -32,7 +34,8 @@ type TargetRect = {
   height: number;
 };
 
-const TOUR_VERSION = 1;
+const TOUR_VERSION = 2;
+const LEGACY_TOUR_VERSION = 1;
 const NEW_PROJECT_WINDOW_MS = 30 * 60 * 1000;
 const TARGET_PADDING = 8;
 const CARD_WIDTH = 304;
@@ -62,15 +65,23 @@ const tourSteps: TourStep[] = [
     placement: 'right',
   },
   {
+    target: 'multiview-retry',
+    eyebrow: '第四步',
+    title: '添加更多预设视角',
+    body: '纹理效果不满意时，先清空当前图层，再选择其他预设视角重新生成。',
+    placement: 'right',
+    manualAdvance: true,
+  },
+  {
     target: 'single-view',
-    eyebrow: '第四步 · 1/2',
+    eyebrow: '第五步',
     title: '修改单视图',
     body: '切换到单视图，修改想要调整视角的纹理。',
     placement: 'right',
   },
   {
     target: 'edit-tools',
-    eyebrow: '第四步 · 2/2',
+    eyebrow: '第六步',
     title: '局部重绘',
     body: '局部修改按蒙版 → 局部生图 → 重绘使用。',
     placement: 'above',
@@ -79,6 +90,10 @@ const tourSteps: TourStep[] = [
 
 function getStorageKey(projectId: string) {
   return `li3d:texture-onboarding:v${TOUR_VERSION}:${projectId}`;
+}
+
+function getLegacyStorageKey(projectId: string) {
+  return `li3d:texture-onboarding:v${LEGACY_TOUR_VERSION}:${projectId}`;
 }
 
 function readSavedStep(storageKey: string) {
@@ -129,7 +144,19 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
   const step = tourSteps[stepIndex];
 
   useEffect(() => {
-    const saved = readSavedStep(storageKey);
+    let saved = readSavedStep(storageKey);
+    if (!saved.exists) {
+      const legacySaved = readSavedStep(getLegacyStorageKey(projectId));
+      if (legacySaved.exists) {
+        saved = legacySaved.done
+          ? legacySaved
+          : {
+              ...legacySaved,
+              step: legacySaved.step >= 3 ? legacySaved.step + 1 : legacySaved.step,
+            };
+        writeSavedStep(storageKey, saved.done ? 'done' : saved.step);
+      }
+    }
     const forcePreview = new URLSearchParams(window.location.search).get('textureTour') === '1';
     const createdAt = Date.parse(projectCreatedAt);
     const isNewProject =
@@ -138,7 +165,7 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
       Date.now() - createdAt <= NEW_PROJECT_WINDOW_MS;
     setStepIndex(forcePreview ? 0 : saved.step);
     setActive(forcePreview || (!saved.done && (isNewProject || saved.exists)));
-  }, [projectCreatedAt, storageKey]);
+  }, [projectCreatedAt, projectId, storageKey]);
 
   useEffect(() => {
     if (!active) return;
@@ -174,7 +201,12 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
     let completionScheduled = false;
 
     const scheduleAdvanceWhenCompleted = (element: HTMLElement | null) => {
-      if (completionScheduled || element?.dataset.onboardingComplete !== 'true') return;
+      if (
+        step.manualAdvance ||
+        completionScheduled ||
+        element?.dataset.onboardingComplete !== 'true'
+      )
+        return;
       completionScheduled = true;
       completionTimer = window.setTimeout(advance, STEP_COMPLETION_DELAY_MS);
     };
@@ -240,14 +272,17 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
   const cardWidth = Math.min(CARD_WIDTH, viewportWidth - 32);
+  const cardHeightEstimate = step.manualAdvance
+    ? CARD_HEIGHT_ESTIMATE + 42
+    : CARD_HEIGHT_ESTIMATE;
   const preferredRight = targetRect && targetRect.right + 18 + cardWidth <= viewportWidth - 16;
-  const preferredAbove = targetRect && targetRect.top >= CARD_HEIGHT_ESTIMATE + 24;
+  const preferredAbove = targetRect && targetRect.top >= cardHeightEstimate + 24;
   const placement =
     step.placement === 'right' && preferredRight
       ? 'right'
       : preferredAbove
         ? 'above'
-        : targetRect && targetRect.bottom + CARD_HEIGHT_ESTIMATE + 18 <= viewportHeight
+        : targetRect && targetRect.bottom + cardHeightEstimate + 18 <= viewportHeight
           ? 'below'
           : 'center';
   const cardLeft = !targetRect
@@ -260,18 +295,18 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
           viewportWidth - cardWidth - 16,
         );
   const cardTop = !targetRect
-    ? (viewportHeight - CARD_HEIGHT_ESTIMATE) / 2
+    ? (viewportHeight - cardHeightEstimate) / 2
     : placement === 'right'
       ? clamp(
-          targetRect.top + targetRect.height / 2 - CARD_HEIGHT_ESTIMATE / 2,
+          targetRect.top + targetRect.height / 2 - cardHeightEstimate / 2,
           16,
-          viewportHeight - CARD_HEIGHT_ESTIMATE - 16,
+          viewportHeight - cardHeightEstimate - 16,
         )
       : placement === 'above'
-        ? targetRect.top - CARD_HEIGHT_ESTIMATE - 18
+        ? targetRect.top - cardHeightEstimate - 18
         : placement === 'below'
           ? targetRect.bottom + 18
-          : (viewportHeight - CARD_HEIGHT_ESTIMATE) / 2;
+          : (viewportHeight - cardHeightEstimate) / 2;
   return createPortal(
     <div className="pointer-events-none fixed inset-0 z-[180] text-white" aria-live="polite">
       {targetRect ? (
@@ -316,6 +351,15 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
           </button>
         </div>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-white/72">{step.body}</p>
+        {step.manualAdvance ? (
+          <button
+            type="button"
+            className="mt-3 h-8 w-full rounded-md bg-gradient-to-r from-liclick-pink to-liclick-purple text-sm font-semibold text-white transition hover:brightness-110"
+            onClick={advance}
+          >
+            下一步
+          </button>
+        ) : null}
       </section>
     </div>,
     document.body,

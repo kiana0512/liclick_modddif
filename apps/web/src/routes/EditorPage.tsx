@@ -3460,7 +3460,7 @@ export function EditorPage({
     }
   }
 
-  async function handleImportReferenceImages(files: File[]) {
+  async function handleImportReferenceImages(files: File[], sourceUrls: string[] = []) {
     if (editorTaskRunning) {
       notifyEditorTaskRunning();
       return;
@@ -3468,22 +3468,85 @@ export function EditorPage({
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name),
     );
-    if (imageFiles.length === 0) return;
+    if (imageFiles.length === 0 && sourceUrls.length === 0) return;
     try {
-      const importedReferences: ReferenceImage[] = [];
-      for (const [index, file] of imageFiles.entries()) {
-        const url = await fileToDataUrl(file);
-        const size = await getImageSize(url);
-        importedReferences.push({
-          id: createId('reference'),
-          name: file.name || `Reference ${index + 1}`,
-          url,
-          width: size.width,
-          height: size.height,
-          isPrimary: true,
-        });
+      // Start every FileReader while the drop event still owns valid temporary
+      // file handles. Reading sequentially can make later virtual files expire.
+      const fileResults = await Promise.allSettled(
+        imageFiles.map(async (file, index): Promise<ReferenceImage> => {
+          const url = await fileToDataUrl(file);
+          const size = await getImageSize(url);
+          if (!size.width || !size.height) throw new Error(`无法读取图片：${file.name}`);
+          return {
+            id: createId('reference'),
+            name: file.name || `Reference ${index + 1}`,
+            url,
+            width: size.width,
+            height: size.height,
+            isPrimary: true,
+          };
+        }),
+      );
+      const importedReferences = fileResults.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      );
+      const failedFileCount = fileResults.length - importedReferences.length;
+      const fallbackLimit = imageFiles.length === 0 ? sourceUrls.length : failedFileCount;
+      let recoveredFallbackCount = 0;
+
+      for (const [index, sourceUrl] of sourceUrls.entries()) {
+        if (recoveredFallbackCount >= fallbackLimit) break;
+        try {
+          let url = sourceUrl;
+          if (!url.startsWith('data:image/')) {
+            try {
+              url = await urlToDataUrl(url);
+            } catch {
+              // A remote image can still be displayed and persisted even when
+              // its server does not allow a browser-side CORS fetch.
+            }
+          }
+          const size = await getImageSize(url);
+          if (!size.width || !size.height) continue;
+          const sourceName = (() => {
+            if (sourceUrl.startsWith('data:') || sourceUrl.startsWith('blob:')) return undefined;
+            try {
+              return decodeURIComponent(new URL(sourceUrl).pathname.split('/').pop() || '');
+            } catch {
+              return undefined;
+            }
+          })();
+          importedReferences.push({
+            id: createId('reference'),
+            name: sourceName || `Reference ${imageFiles.length + index + 1}`,
+            url,
+            width: size.width,
+            height: size.height,
+            isPrimary: true,
+          });
+          recoveredFallbackCount += 1;
+        } catch {
+          // Continue through alternative drag payloads from the same source.
+        }
+      }
+
+      if (importedReferences.length === 0) {
+        const firstFailure = fileResults.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        throw (
+          firstFailure?.reason ??
+          new Error('拖入的图片临时文件已失效，请先保存到本地后重新拖入。')
+        );
       }
       setPendingReferenceImport(importedReferences);
+      if (failedFileCount > recoveredFallbackCount) {
+        pushToast({
+          tone: 'warning',
+          title: '部分参考图未能导入',
+          description: `已导入 ${importedReferences.length} 张，${failedFileCount - recoveredFallbackCount} 张临时文件已失效。`,
+        });
+      }
     } catch (error) {
       console.error('[Liclick 3D Texture] Import references failed:', error);
       pushToast({
@@ -7360,12 +7423,12 @@ export function EditorPage({
                 }
                 void handleImportModels(files);
               }}
-              onImportReferenceImages={(files) => {
+              onImportReferenceImages={(files, sourceUrls) => {
                 if (editorTaskRunning) {
                   notifyEditorTaskRunning();
                   return;
                 }
-                void handleImportReferenceImages(files);
+                void handleImportReferenceImages(files, sourceUrls);
               }}
               onOpenImport={() => {
                 if (modelMutationLocked) {

@@ -116,7 +116,7 @@ type SurfacePaintTarget = {
 type ViewportCanvasProps = {
   hasImportedModel: boolean;
   onImportModels: (files: File[]) => void;
-  onImportReferenceImages: (files: File[]) => void;
+  onImportReferenceImages: (files: File[], sourceUrls?: string[]) => void;
   onOpenImport: () => void;
   importDisabled?: boolean;
   isActive?: boolean;
@@ -155,6 +155,7 @@ function getFileExtension(file: File) {
 
 function getDragPayload(event: DragEvent<HTMLDivElement>) {
   const files = Array.from(event.dataTransfer.files);
+  const items = Array.from(event.dataTransfer.items);
   const modelFiles = files.filter((file) => {
     const extension = getFileExtension(file);
     return Boolean(extension && MODEL_FILE_EXTENSIONS.has(extension));
@@ -168,8 +169,52 @@ function getDragPayload(event: DragEvent<HTMLDivElement>) {
     modelFiles,
     imageFiles,
     dragType:
-      modelFiles.length > 0 ? 'model-file' : imageFiles.length > 0 ? 'asset-file' : undefined,
+      modelFiles.length > 0
+        ? 'model-file'
+        : imageFiles.length > 0 ||
+            items.some(
+              (item) =>
+                (item.kind === 'file' && item.type.startsWith('image/')) ||
+                item.type === 'text/html' ||
+                item.type === 'text/uri-list',
+            )
+          ? 'asset-file'
+          : undefined,
   } as const;
+}
+
+function getDraggedImageSourceUrls(dataTransfer: DataTransfer) {
+  const urls = new Set<string>();
+  const addUrl = (value?: string | null) => {
+    const url = value?.trim().replace(/^['"]|['"]$/g, '');
+    if (!url) return;
+    if (/^(?:data:image\/|blob:|https?:\/\/)/i.test(url)) urls.add(url);
+  };
+
+  try {
+    dataTransfer
+      .getData('text/uri-list')
+      .split(/\r?\n/)
+      .filter((line) => line && !line.startsWith('#'))
+      .forEach(addUrl);
+
+    dataTransfer
+      .getData('text/plain')
+      .split(/\s+/)
+      .forEach(addUrl);
+
+    const html = dataTransfer.getData('text/html');
+    if (html) {
+      const document = new DOMParser().parseFromString(html, 'text/html');
+      document.querySelectorAll<HTMLImageElement>('img[src]').forEach((image) => {
+        addUrl(image.getAttribute('src'));
+      });
+    }
+  } catch {
+    // Some drag sources expose only File objects and reject string payload reads.
+  }
+
+  return Array.from(urls);
 }
 
 const UV_PAINT_RESOLUTION = 512;
@@ -6521,6 +6566,8 @@ function SurfacePaintOverlay() {
         seamHarmonizationVersion: activePaintLayer.localRepaintSeamHarmonizationVersion,
         autoActivate: false,
         allowedMaskUrl,
+        depthUrl: activePaintLayer.depthUrl,
+        depthEncoding: activePaintLayer.depthEncoding,
         objectId: activePaintLayer.objectId,
         objectMatrixWorld: activePaintLayer.objectMatrixWorld,
         camera: projectionCamera,
@@ -9327,8 +9374,8 @@ function SurfacePaintOverlay() {
         imageUrl:
           localRepaintSourceImageRef.current?.previewImageUrl ?? localRepaintSource.imageUrl,
         maskUrl: composite.maskUrl,
-        depthUrl: undefined,
-        depthEncoding: undefined,
+        depthUrl: localRepaintSource.depthUrl,
+        depthEncoding: localRepaintSource.depthEncoding,
         normalUrl: undefined,
         objectId: localRepaintSource.objectId ?? model.objectId,
         objectMatrixWorld:
@@ -9470,6 +9517,13 @@ function SurfacePaintOverlay() {
       const previewImageUrl = localRepaintSourceImageRef.current?.previewImageUrl;
       if (!previewImageUrl) return undefined;
       model.group.updateMatrixWorld(true);
+      const runtimeDepth =
+        localRepaintRuntimeDepthRef.current?.sourceKey === sourceKey
+          ? localRepaintRuntimeDepthRef.current
+          : undefined;
+      const visibilityDepthUrl = runtimeDepth?.depthUrl ?? source.depthUrl;
+      const visibilityDepthIsLinearView =
+        Boolean(runtimeDepth) || source.depthEncoding === 'linear-view';
       const compileStartedAt = performance.now();
       const persistedPresentationLayer = useLayerStore
         .getState()
@@ -9479,6 +9533,8 @@ function SurfacePaintOverlay() {
         imageUrl: previewImageUrl,
         maskUrl: composite.maskUrl,
         maskSpace: 'projection',
+        depthUrl: visibilityDepthUrl,
+        depthIsLinearView: visibilityDepthIsLinearView,
         // Capture normals are smooth-shaded for image generation, while this
         // material evaluates flat derivative normals. Comparing the two clips
         // valid curved and low-poly regions into permanent paint dead zones.
@@ -9499,7 +9555,7 @@ function SurfacePaintOverlay() {
         lightness: (persistedPresentationLayer?.adjustments?.lightness ?? 0) / 100,
         depthTest: true,
         useMask: true,
-        useDepthCheck: false,
+        useDepthCheck: Boolean(visibilityDepthUrl),
         useNormalCheck: false,
         renderedColor: false,
         transparentProjectionOnly: true,
@@ -10741,8 +10797,8 @@ function SurfacePaintOverlay() {
             // active GPU overlay only and must not become durable layer data.
             imageUrl: source.persistentImageUrl ?? source.imageUrl,
             maskUrl: composite.maskUrl,
-            depthUrl: undefined,
-            depthEncoding: undefined,
+            depthUrl: source.depthUrl,
+            depthEncoding: source.depthEncoding,
             normalUrl: undefined,
             objectId: source.objectId ?? model.objectId,
             objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
@@ -10886,8 +10942,8 @@ function SurfacePaintOverlay() {
           type: 'projected',
           imageUrl: source.imageUrl,
           maskUrl: maskSnapshotUrl,
-          depthUrl: undefined,
-          depthEncoding: undefined,
+          depthUrl: source.depthUrl,
+          depthEncoding: source.depthEncoding,
           normalUrl: undefined,
           objectId: source.objectId ?? model.objectId,
           objectMatrixWorld: source.objectMatrixWorld ?? model.group.matrixWorld.toArray(),
@@ -13104,12 +13160,15 @@ export function ViewportCanvas({
       return;
     }
     const payload = getDragPayload(event);
+    const imageSourceUrls = getDraggedImageSourceUrls(event.dataTransfer);
     if (payload.modelFiles.length > 0) {
       if (!importDisabled) onImportModels(payload.modelFiles);
       clearDrag();
       return;
     }
-    if (payload.imageFiles.length > 0) onImportReferenceImages(payload.imageFiles);
+    if (payload.imageFiles.length > 0 || imageSourceUrls.length > 0) {
+      onImportReferenceImages(payload.imageFiles, imageSourceUrls);
+    }
     clearDrag();
   }
 
