@@ -77,6 +77,11 @@ export type WorkspaceProject = {
   dirty?: boolean;
   deletedObjectIds?: string[];
   revision?: ProjectRevision;
+  /**
+   * Server-owned, bounded idempotency journal. Incoming project documents
+   * cannot replace this field.
+   */
+  appliedCommands?: Array<{ id: string; sha256: string }>;
 };
 
 export type ProjectSummary = {

@@ -1,6 +1,12 @@
-import { isProjectRevision, type ProjectRevision } from '@liclick/contracts';
+import {
+  PROJECT_COMMAND_SCHEMA_VERSION,
+  isProjectRevision,
+  type ProjectCommand,
+  type ProjectRevision,
+} from '@liclick/contracts';
 import type { Project } from '@/types/project';
 import { getProjectApiBase } from '@/platform/projectApiBase';
+import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getProjectApiBase();
@@ -136,7 +142,53 @@ export async function loadProject(projectId: string) {
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}`);
 }
 
+type ProjectCommandResponse = {
+  project: Project;
+  slug: string;
+  command: {
+    id: string;
+    kind: ProjectCommand['kind'];
+    replayed: boolean;
+    revision?: ProjectRevision;
+  };
+};
+
+function createProjectCommandId() {
+  return `command-${crypto.randomUUID()}`;
+}
+
+async function executeProjectCommand(command: ProjectCommand, timeoutMs = 3000) {
+  const init = {
+    method: 'POST',
+    body: JSON.stringify(command),
+    timeoutMs,
+  };
+  try {
+    return await requestJson<ProjectCommandResponse>(
+      `/api/projects/${command.projectId}/commands`,
+      init,
+    );
+  } catch (error) {
+    if (!(error instanceof WorkspaceApiError) || ![0, 408].includes(error.status)) throw error;
+    return requestJson<ProjectCommandResponse>(
+      `/api/projects/${command.projectId}/commands`,
+      init,
+    );
+  }
+}
+
 export async function renameProject(projectId: string, name: string, expectedRevisionId?: string) {
+  if (isCloudBuild) {
+    return executeProjectCommand({
+      schemaVersion: PROJECT_COMMAND_SCHEMA_VERSION,
+      id: createProjectCommandId(),
+      projectId,
+      expectedRevisionId,
+      issuedAt: new Date().toISOString(),
+      kind: 'rename-project',
+      payload: { name },
+    });
+  }
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}`, {
     method: 'PATCH',
     body: JSON.stringify({ name, expectedRevisionId }),
@@ -162,6 +214,17 @@ export async function moveProject(
   folderId: string | null,
   expectedRevisionId?: string,
 ) {
+  if (isCloudBuild) {
+    return executeProjectCommand({
+      schemaVersion: PROJECT_COMMAND_SCHEMA_VERSION,
+      id: createProjectCommandId(),
+      projectId,
+      expectedRevisionId,
+      issuedAt: new Date().toISOString(),
+      kind: 'move-project',
+      payload: { folderId },
+    });
+  }
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}/move`, {
     method: 'POST',
     body: JSON.stringify({ folderId, expectedRevisionId }),
@@ -169,6 +232,24 @@ export async function moveProject(
 }
 
 export async function saveProject(project: Project) {
+  if (isCloudBuild) {
+    const document = {
+      ...project,
+      workspaceVersion: project.workspaceVersion ?? '0.6.0',
+    } as unknown as Record<string, unknown>;
+    return executeProjectCommand(
+      {
+        schemaVersion: PROJECT_COMMAND_SCHEMA_VERSION,
+        id: createProjectCommandId(),
+        projectId: project.id,
+        expectedRevisionId: project.revision?.id,
+        issuedAt: new Date().toISOString(),
+        kind: 'replace-project-document',
+        payload: { document },
+      },
+      30_000,
+    );
+  }
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${project.id}`, {
     method: 'PUT',
     body: JSON.stringify({ ...project, workspaceVersion: project.workspaceVersion ?? '0.6.0' }),

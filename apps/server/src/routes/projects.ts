@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { parseProjectCommand } from '@liclick/contracts';
 import {
   createProject,
   deleteProject,
@@ -10,6 +11,7 @@ import {
   saveProject,
   ProjectSaveConflictError,
 } from '../services/projectFileService.js';
+import { executeProjectCommand } from '../services/projectCommandService.js';
 import type { WorkspaceProject } from '../types/project.js';
 import { requireAuth } from '../auth/authMiddleware.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
@@ -54,6 +56,41 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
     let result: Awaited<ReturnType<typeof saveProject>>;
     try {
       result = await saveProject(user.id, projectId, body);
+    } catch (error) {
+      if (sendProjectConflict(response, error)) return true;
+      throw error;
+    }
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 200, result);
+    return true;
+  }
+
+  if (
+    request.method === 'POST' &&
+    projectId &&
+    segments.length === 4 &&
+    segments[3] === 'commands'
+  ) {
+    let command;
+    try {
+      command = parseProjectCommand(await readJsonBody<unknown>(request));
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : 'Invalid project command.',
+        code: 'INVALID_PROJECT_COMMAND',
+      });
+      return true;
+    }
+    if (command.projectId !== projectId) {
+      sendJson(response, 400, {
+        error: 'Project command projectId does not match the request path.',
+        code: 'PROJECT_COMMAND_PROJECT_MISMATCH',
+      });
+      return true;
+    }
+    let result: Awaited<ReturnType<typeof executeProjectCommand>>;
+    try {
+      result = await executeProjectCommand(user.id, command);
     } catch (error) {
       if (sendProjectConflict(response, error)) return true;
       throw error;

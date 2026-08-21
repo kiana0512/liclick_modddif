@@ -21,6 +21,7 @@ import {
 
 const assetFolders = ['models', 'references', 'captures', 'generations', 'layers', 'baked'];
 const MIN_SAVED_PROJECTED_BAKE_COVERAGE_RATIO = 0.35;
+const MAX_APPLIED_PROJECT_COMMAND_IDS = 64;
 const projectSaveTails = new Map<string, Promise<void>>();
 
 async function runSerializedProjectSave<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -60,6 +61,27 @@ function createNextProjectRevision(project: WorkspaceProject | undefined, savedA
     id: createId('revision'),
     savedAt,
   });
+}
+
+function nextAppliedCommands(
+  project: WorkspaceProject | undefined,
+  commandId: string | undefined,
+  commandSha256: string | undefined,
+) {
+  const existing = (project?.appliedCommands ?? []).filter(
+    (value) =>
+      typeof value?.id === 'string' &&
+      /^command-[a-zA-Z0-9_-]{8,128}$/.test(value.id) &&
+      typeof value.sha256 === 'string' &&
+      /^[a-f0-9]{64}$/.test(value.sha256),
+  );
+  if (!commandId || !commandSha256) return existing.slice(-MAX_APPLIED_PROJECT_COMMAND_IDS);
+  return [
+    ...existing.filter((value) => value.id !== commandId),
+    { id: commandId, sha256: commandSha256 },
+  ].slice(
+    -MAX_APPLIED_PROJECT_COMMAND_IDS,
+  );
 }
 
 function assertExpectedProjectRevision(
@@ -780,6 +802,7 @@ async function saveProjectUnlocked(
   userId: string,
   projectId: string,
   inputProject: WorkspaceProject,
+  options: SaveProjectOptions,
 ) {
   const slug =
     (await findProjectSlug(userId, projectId)) ??
@@ -801,7 +824,10 @@ async function saveProjectUnlocked(
   if (existingProject) {
     assertExpectedProjectRevision(
       existingProject,
-      isProjectRevision(inputProject.revision) ? inputProject.revision.id : undefined,
+      options.revisionSource === 'explicit'
+        ? options.expectedRevisionId
+        : options.expectedRevisionId ??
+            (isProjectRevision(inputProject.revision) ? inputProject.revision.id : undefined),
     );
     const incomingUpdatedAt = Date.parse(inputProject.updatedAt);
     const existingUpdatedAt = Date.parse(existingProject.updatedAt);
@@ -867,6 +893,11 @@ async function saveProjectUnlocked(
     workspaceMode: 'local-server',
     workspaceName: slug,
     revision: createNextProjectRevision(existingProject, now),
+    appliedCommands: nextAppliedCommands(
+      existingProject,
+      options.commandId,
+      options.commandSha256,
+    ),
   };
   await ensureProjectFolders(projectDir);
   await writeJsonFile(getProjectFile(projectDir), project);
@@ -874,13 +905,21 @@ async function saveProjectUnlocked(
   return { project: resolveProjectAssets(userId, slug, project), slug };
 }
 
+export type SaveProjectOptions = {
+  commandId?: string;
+  commandSha256?: string;
+  expectedRevisionId?: string;
+  revisionSource?: 'input' | 'explicit';
+};
+
 export async function saveProject(
   userId: string,
   projectId: string,
   inputProject: WorkspaceProject,
+  options: SaveProjectOptions = {},
 ) {
   return runSerializedProjectSave(`${userId}:${projectId}`, () =>
-    saveProjectUnlocked(userId, projectId, inputProject),
+    saveProjectUnlocked(userId, projectId, inputProject, options),
   );
 }
 
@@ -896,6 +935,7 @@ async function updateProjectById(
   projectId: string,
   updater: (project: WorkspaceProject, slug: string) => WorkspaceProject,
   expectedRevisionId?: string,
+  command?: { id: string; sha256: string },
 ) {
   const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
@@ -912,6 +952,7 @@ async function updateProjectById(
     workspaceMode: 'local-server',
     workspaceName: slug,
     revision: createNextProjectRevision(project, now),
+    appliedCommands: nextAppliedCommands(project, command?.id, command?.sha256),
   };
   await writeJsonFile(getProjectFile(getProjectDir(userId, slug)), nextProject);
   return { project: resolveProjectAssets(userId, slug, nextProject), slug };
@@ -922,6 +963,7 @@ export async function renameProject(
   projectId: string,
   name: string,
   expectedRevisionId?: string,
+  command?: { id: string; sha256: string },
 ) {
   const nextName = name.trim();
   if (!nextName) return undefined;
@@ -931,6 +973,7 @@ export async function renameProject(
       projectId,
       (project) => ({ ...project, name: nextName }),
       expectedRevisionId,
+      command,
     ),
   );
 }
@@ -940,6 +983,7 @@ export async function moveProject(
   projectId: string,
   folderId: string | null,
   expectedRevisionId?: string,
+  command?: { id: string; sha256: string },
 ) {
   return runSerializedProjectSave(`${userId}:${projectId}`, () =>
     updateProjectById(
@@ -947,6 +991,7 @@ export async function moveProject(
       projectId,
       (project) => ({ ...project, folderId }),
       expectedRevisionId,
+      command,
     ),
   );
 }
@@ -974,7 +1019,11 @@ export async function duplicateProject(userId: string, projectId: string) {
   const nextSlug = `${slugify(name)}-${id.slice(-8)}`;
   const sourceDir = getProjectDir(userId, slug);
   const targetDir = getProjectDir(userId, nextSlug);
-  await fs.cp(sourceDir, targetDir, { recursive: true, errorOnExist: true });
+  await fs.cp(sourceDir, targetDir, {
+    recursive: true,
+    errorOnExist: true,
+    filter: (source) => path.basename(source) !== '.commands',
+  });
   const duplicatedProject: WorkspaceProject = {
     ...project,
     id,
@@ -986,6 +1035,7 @@ export async function duplicateProject(userId: string, projectId: string) {
     workspaceMode: 'local-server',
     dirty: false,
     revision: createNextProjectRevision(undefined, now),
+    appliedCommands: [],
   };
   await writeJsonFile(getProjectFile(targetDir), duplicatedProject);
   return { project: resolveProjectAssets(userId, nextSlug, duplicatedProject), slug: nextSlug };

@@ -18,6 +18,9 @@ async function main() {
   const { createProject, loadProject, saveProject } = await import(
     '../dist/services/projectFileService.js'
   );
+  const { executeProjectCommand } = await import(
+    '../dist/services/projectCommandService.js'
+  );
 
   const userId = 'pipeline-test-user';
   const created = await createProject(userId, { name: 'Pipeline persistence' });
@@ -168,6 +171,67 @@ async function main() {
   assert.deepEqual(
     deletionSave.project.objects.map((object) => object.id),
     ['anchor-model'],
+  );
+
+  const renameCommand = {
+    schemaVersion: 1,
+    id: 'command-idempotent-0001',
+    projectId: created.project.id,
+    expectedRevisionId: deletionSave.project.revision.id,
+    issuedAt: '2026-08-21T00:00:00.000Z',
+    kind: 'rename-project',
+    payload: { name: 'Command-renamed project' },
+  };
+  const commandResult = await executeProjectCommand(userId, renameCommand);
+  assert.ok(commandResult);
+  assert.equal(commandResult.command.replayed, false);
+  assert.equal(commandResult.project.name, 'Command-renamed project');
+  assert.equal(commandResult.project.revision.number, 5);
+
+  const commandReceiptPath = path.join(
+    workspace,
+    'users',
+    userId,
+    'projects',
+    created.slug,
+    '.commands',
+    `${renameCommand.id}.json`,
+  );
+  const receipt = JSON.parse(await fs.readFile(commandReceiptPath, 'utf8'));
+  assert.equal(receipt.commandId, renameCommand.id);
+  assert.equal(receipt.revision.id, commandResult.project.revision.id);
+
+  // Simulate a crash after the project write but before receipt persistence.
+  // The bounded project journal must restore the receipt without a second save.
+  await fs.rm(commandReceiptPath);
+  const replayedCommand = await executeProjectCommand(userId, renameCommand);
+  assert.ok(replayedCommand);
+  assert.equal(replayedCommand.command.replayed, true);
+  assert.equal(replayedCommand.project.revision.id, commandResult.project.revision.id);
+  assert.equal(replayedCommand.project.revision.number, 5);
+  await fs.access(commandReceiptPath);
+
+  await assert.rejects(
+    () =>
+      executeProjectCommand(userId, {
+        ...renameCommand,
+        payload: { name: 'Malicious id reuse' },
+      }),
+    (error) => error?.code === 'PROJECT_COMMAND_ID_REUSE_CONFLICT',
+  );
+
+  await assert.rejects(
+    () =>
+      executeProjectCommand(userId, {
+        schemaVersion: 1,
+        id: 'command-stale-move-0001',
+        projectId: created.project.id,
+        expectedRevisionId: deletionSave.project.revision.id,
+        issuedAt: '2026-08-21T00:01:00.000Z',
+        kind: 'move-project',
+        payload: { folderId: null },
+      }),
+    (error) => error?.code === 'PROJECT_REVISION_CONFLICT',
   );
 
   const legacy = await createProject(userId, { name: 'Legacy project' });

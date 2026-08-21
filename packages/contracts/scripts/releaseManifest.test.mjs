@@ -8,6 +8,7 @@ import {
   isProjectRevision,
   nextProjectRevision,
   projectRevisionMatches,
+  parseProjectCommand,
   selectLocalComputePlan,
 } from '../dist/index.js';
 
@@ -113,4 +114,26 @@ test('creates a monotonic opaque project revision chain', () => {
   assert.equal(isProjectRevision(second), true);
   assert.equal(projectRevisionMatches(first.id, first), true);
   assert.equal(projectRevisionMatches(first.id, second), false);
+});
+
+test('parses versioned project commands and rejects malformed payloads', () => {
+  const command = parseProjectCommand({
+    schemaVersion: 1,
+    id: 'command-00000001',
+    projectId: 'project-00000001',
+    expectedRevisionId: 'revision-00000001',
+    issuedAt: '2026-08-21T00:00:00.000Z',
+    kind: 'rename-project',
+    payload: { name: '  New name  ' },
+  });
+  assert.equal(command.kind, 'rename-project');
+  assert.equal(command.payload.name, 'New name');
+  assert.throws(
+    () => parseProjectCommand({ ...command, kind: 'delete-everything' }),
+    /Unsupported project command kind/,
+  );
+  assert.throws(
+    () => parseProjectCommand({ ...command, id: '../escape' }),
+    /command id/,
+  );
 });
