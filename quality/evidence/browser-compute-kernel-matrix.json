@@ -21,6 +21,9 @@
     "pbrDirectXOpenGlOrientationPassed": true,
     "textureExportOrientationPassed": true,
     "projectedLayerVisibilityPassed": true,
+    "ordinaryGenerationUsesSourceAlphaAndDepthWithoutCaptureMask": true,
+    "localRepaintGeometryMaskAppliedExactlyOnce": true,
+    "localRepaintReturnedRgbPreservedAtSoftMaskEdge": true,
     "localRepaintSeamHarmonizationPassed": true,
     "serverComputeFallbackUsed": false
   },

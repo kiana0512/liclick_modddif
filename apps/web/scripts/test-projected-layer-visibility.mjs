@@ -787,6 +787,9 @@ try {
     };
   }
   const projection = await server.ssrLoadModule('/src/engine/projection/ProjectedLayerMaterial.ts');
+  const maskedProjection = await server.ssrLoadModule(
+    '/src/engine/projection/createMaskedProjectedImage.ts',
+  );
   const repaintPreviewUtils = await server.ssrLoadModule(
     '/src/engine/localRepaint/resultPreviewUtils.ts',
   );
@@ -794,6 +797,43 @@ try {
     repaintPreviewUtils.LOCAL_REPAINT_RESULT_PREVIEW_CUTOUT_ENABLED,
     false,
     'Local repaint preview cutout must stay disabled so the returned image is shown intact.',
+  );
+  const alphaSource = new ImageData(
+    new Uint8ClampedArray([
+      20, 30, 40, 128,
+      50, 60, 70, 64,
+    ]),
+    2,
+    1,
+  );
+  const authoredMask = new ImageData(
+    new Uint8ClampedArray([
+      255, 255, 255, 128,
+      128, 128, 128, 255,
+    ]),
+    2,
+    1,
+  );
+  const sourceAlphaMasked = maskedProjection.applyProjectedAlphaMask(alphaSource, authoredMask);
+  assert.equal(sourceAlphaMasked.data[3], 64);
+  assert.equal(sourceAlphaMasked.data[7], 32);
+  const repaintMaskOnly = maskedProjection.applyProjectedAlphaMask(alphaSource, authoredMask, {
+    ignoreSourceAlpha: true,
+  });
+  assert.equal(
+    repaintMaskOnly.data[3],
+    128,
+    'A local repaint mask must not multiply a previously damaged generated-image alpha.',
+  );
+  assert.equal(
+    repaintMaskOnly.data[7],
+    128,
+    'Local repaint coverage must be authored by the geometry/brush mask exactly once.',
+  );
+  assert.deepEqual(
+    Array.from(repaintMaskOnly.data.slice(0, 3)),
+    [20, 30, 40],
+    'Mask-only repaint must preserve returned RGB instead of creating a dark fringe.',
   );
   const packedDepthPixels = new Uint8ClampedArray([
     255, 255, 255, 255,
