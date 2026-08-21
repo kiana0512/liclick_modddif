@@ -672,9 +672,8 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
           ...sources.flatMap(({ source }) =>
             source
               ? [
-                  ('naturalWidth' in source
-                    ? source.naturalWidth || source.width
-                    : source.width) || 1,
+                  ('naturalWidth' in source ? source.naturalWidth || source.width : source.width) ||
+                    1,
                 ]
               : [],
           ),
@@ -1063,7 +1062,7 @@ function TopologyWireframeOverlay({
       }
       if (!cancelled) document.body.dataset.topologyWireframeReady = '1';
     };
-    void compile().catch(() => {
+    const compilePromise = compile().catch(() => {
       if (!cancelled) document.body.dataset.topologyWireframeReady = 'error';
     });
     return () => {
@@ -1071,7 +1070,16 @@ function TopologyWireframeOverlay({
       delete document.body.dataset.topologyWireframeMeshCount;
       delete document.body.dataset.topologyWireframeReady;
       overlay.group.removeFromParent();
-      overlay.material.dispose();
+      // Three.js' parallel shader poller keeps the material in its internal Set
+      // until compileAsync settles. Disposing it during rapid multi-model
+      // restore clears currentProgram and makes that poller dereference
+      // undefined (`currentProgram.isReady()`). Keep the tiny wire material alive
+      // until the pending compile has finished, then release it.
+      if (compilePromise) {
+        void compilePromise.finally(() => overlay.material.dispose());
+      } else {
+        overlay.material.dispose();
+      }
     };
   }, [camera, gl, overlay]);
 
@@ -2123,9 +2131,7 @@ function ImportedModel({
       // keep warming at the same conservative per-frame budget afterwards.
       if (!(await uploadLayers(visibleLayers))) return;
       document.body.dataset.residentUvVisiblePrewarmCount = String(visibleLayers.length);
-      document.body.dataset.residentUvVisiblePrewarmMs = (
-        performance.now() - startedAt
-      ).toFixed(1);
+      document.body.dataset.residentUvVisiblePrewarmMs = (performance.now() - startedAt).toFixed(1);
       if (visibleLayers.length > 0) {
         document.body.dataset.textureRestoreUvReady = '1';
         document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
@@ -2907,7 +2913,7 @@ function ImportedModel({
   ].join('|');
   const showWhiteMembrane = Boolean(
     transientWhitePresentationObjectId === importedModel.objectId ||
-      (!hasAuthoritativeVisibleTextureLayer && !liveTopUvTexture && !liveSurfacePaintPreview),
+    (!hasAuthoritativeVisibleTextureLayer && !liveTopUvTexture && !liveSurfacePaintPreview),
   );
 
   const projectedProgramWarmupSourceSignature = useMemo(

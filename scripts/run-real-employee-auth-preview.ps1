@@ -50,6 +50,7 @@ try {
 
 $Origin = "http://127.0.0.1:$Port"
 $env:NODE_ENV = "production"
+$env:LICLICK_RUNTIME_MODE = "cloud"
 $env:SERVER_HOST = "127.0.0.1"
 $env:SERVER_PORT = [string]$Port
 $env:LICLICK_SERVE_WEB = "true"
@@ -63,6 +64,7 @@ $env:LICLICK_ENABLE_ATLAS_LOCAL_LOGIN = "true"
 $env:ATLAS_LOGIN_MODE = "interactive"
 $env:ATLAS_SKILLHUB_PATH = $AtlasScript
 $env:ATLAS_BROWSER = "echo"
+$env:LICLICK_REAL_AUTH_SERVER_ENTRY = $ServerEntry
 $env:SESSION_SECRET = [Convert]::ToBase64String($SessionBytes)
 $env:SESSION_COOKIE_SECURE = "false"
 $env:FEISHU_DIRECTORY_ENRICHMENT_ENABLED = "false"
@@ -79,10 +81,11 @@ $env:FEISHU_BITABLE_SYNC_ENABLED = "false"
 
 Write-Host "LI3D real employee-auth preview: $Origin/li3d/" -ForegroundColor Green
 Write-Host "Atlas runs on this development server simulator only; the browser artifact remains zero-install." -ForegroundColor DarkGray
+Write-Host "Object storage is simulated inside the development server process; no cloud account is required." -ForegroundColor DarkGray
 
 Push-Location $Root
 try {
-  & node $ServerEntry
+  & node (Join-Path $Root "scripts\real-auth-preview-runner.mjs")
   exit $LASTEXITCODE
 } finally {
   Pop-Location

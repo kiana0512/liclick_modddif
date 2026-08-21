@@ -12,9 +12,7 @@ import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getProjectApiBase();
-const generationWorkspaceApiBase = getWorkspaceApiBase(
-  import.meta.env.VITE_LICLICK_WORKSPACE_API,
-);
+const generationWorkspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 const maxWorkspaceImageBytes = 160 * 1024 * 1024;
 
 function workspacePathAtBase(url: string, base: string) {
@@ -74,9 +72,18 @@ export type ProjectSummary = {
   revision?: ProjectRevision;
 };
 
-export type AssetCategory = 'models' | 'references' | 'captures' | 'generations' | 'layers' | 'baked';
+export type AssetCategory =
+  | 'models'
+  | 'references'
+  | 'captures'
+  | 'generations'
+  | 'layers'
+  | 'baked';
 
-async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number },
+): Promise<T> {
   const { timeoutMs = 3000, headers, ...fetchInit } = init ?? {};
   const requestHeaders = new Headers(headers);
   if (fetchInit.body && !requestHeaders.has('content-type')) {
@@ -103,11 +110,17 @@ async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: n
   if (!response.ok) {
     const payload = await response.json().catch(() => undefined);
     const message =
-      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+      payload &&
+      typeof payload === 'object' &&
+      'error' in payload &&
+      typeof payload.error === 'string'
         ? payload.error
         : `Workspace request failed: ${response.status}`;
     const code =
-      payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
+      payload &&
+      typeof payload === 'object' &&
+      'code' in payload &&
+      typeof payload.code === 'string'
         ? payload.code
         : undefined;
     const currentRevisionCandidate =
@@ -123,9 +136,12 @@ async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: n
 }
 
 export async function getWorkspaceHealth() {
-  return requestJson<{ ok: boolean; workspaceDir: string; workspaceVersion: string }>('/api/health', {
-    timeoutMs: 900,
-  });
+  return requestJson<{ ok: boolean; workspaceDir: string; workspaceVersion: string }>(
+    '/api/health',
+    {
+      timeoutMs: 900,
+    },
+  );
 }
 
 export async function listProjects() {
@@ -141,7 +157,65 @@ export async function createProject(input: { name?: string; folderId?: string })
 }
 
 export async function loadProject(projectId: string) {
-  return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}`);
+  const result = await requestJson<{ project: Project; slug: string }>(
+    `/api/projects/${projectId}`,
+  );
+  return {
+    ...result,
+    project: resolveCloudTransferredProjectAssets(result.project),
+  };
+}
+
+function resolveCloudTransferredAssetUrl(projectId: string, url?: string) {
+  if (!isCloudBuild || !url) return url;
+  try {
+    const candidate = new URL(url, window.location.href);
+    const match = /\/objects\/(asset-[a-zA-Z0-9-]+)$/.exec(candidate.pathname);
+    if (!match?.[1]) return url;
+    return `${workspaceApiBase}/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(match[1])}/content`;
+  } catch {
+    return url;
+  }
+}
+
+function resolveCloudTransferredProjectAssets(project: Project): Project {
+  const resolve = (url?: string) => resolveCloudTransferredAssetUrl(project.id, url);
+  return {
+    ...project,
+    thumbnail: resolve(project.thumbnail) ?? '',
+    objects: project.objects.map((object) => ({
+      ...object,
+      sourcePath: resolve(object.sourcePath),
+    })),
+    references: project.references.map((reference) => ({
+      ...reference,
+      url: resolve(reference.url) ?? reference.url,
+    })),
+    captures: project.captures.map((capture) => ({
+      ...capture,
+      colorUrl: resolve(capture.colorUrl) ?? capture.colorUrl,
+      maskUrl: resolve(capture.maskUrl) ?? capture.maskUrl,
+      depthUrl: resolve(capture.depthUrl),
+      normalUrl: resolve(capture.normalUrl),
+    })),
+    generations: project.generations.map((generation) => ({
+      ...generation,
+      resultUrl: resolve(generation.resultUrl),
+    })),
+    layers: project.layers.map((layer) => ({
+      ...layer,
+      imageUrl: resolve(layer.imageUrl) ?? layer.imageUrl,
+      maskUrl: resolve(layer.maskUrl),
+      depthUrl: resolve(layer.depthUrl),
+      renderedColorMaskUrl: resolve(layer.renderedColorMaskUrl),
+      localRepaintSourceUrl: resolve(layer.localRepaintSourceUrl),
+      localRepaintMaskUrl: resolve(layer.localRepaintMaskUrl),
+    })),
+    bakedTextures: project.bakedTextures.map((texture) => ({
+      ...texture,
+      imageUrl: resolve(texture.imageUrl) ?? texture.imageUrl,
+    })),
+  };
 }
 
 function directAssetPathAtBase(url: string, base: string) {
@@ -189,10 +263,7 @@ async function executeProjectCommand(command: ProjectCommand, timeoutMs = 3000) 
     );
   } catch (error) {
     if (!(error instanceof WorkspaceApiError) || ![0, 408].includes(error.status)) throw error;
-    return requestJson<ProjectCommandResponse>(
-      `/api/projects/${command.projectId}/commands`,
-      init,
-    );
+    return requestJson<ProjectCommandResponse>(`/api/projects/${command.projectId}/commands`, init);
   }
 }
 
@@ -296,9 +367,12 @@ export async function renameFolder(folderId: string, name: string) {
 }
 
 export async function deleteFolder(folderId: string) {
-  return requestJson<{ folder: WorkspaceFolder; movedProjectCount: number }>(`/api/folders/${folderId}`, {
-    method: 'DELETE',
-  });
+  return requestJson<{ folder: WorkspaceFolder; movedProjectCount: number }>(
+    `/api/folders/${folderId}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function saveDataUrlAsset(input: {
@@ -340,7 +414,9 @@ type SavedAssetResponse = {
 
 async function blobSha256(blob: Blob) {
   const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join(
+    '',
+  );
 }
 
 function putDirectAsset(
@@ -377,8 +453,7 @@ function putDirectAsset(
     };
     request.onerror = () =>
       reject(new WorkspaceApiError(0, '对象存储网络连接失败，项目资源尚未保存。'));
-    request.ontimeout = () =>
-      reject(new WorkspaceApiError(408, '对象存储直传超时，请稍后重试。'));
+    request.ontimeout = () => reject(new WorkspaceApiError(408, '对象存储直传超时，请稍后重试。'));
     request.send(blob);
   });
 }
@@ -474,12 +549,7 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
       resolve(payload as SavedAssetResponse);
     };
     request.onerror = () => {
-      reject(
-        new WorkspaceApiError(
-          0,
-          '无法连接本地工作区服务，项目资源尚未上传。',
-        ),
-      );
+      reject(new WorkspaceApiError(0, '无法连接本地工作区服务，项目资源尚未上传。'));
     };
     request.ontimeout = () => {
       reject(new WorkspaceApiError(408, '项目资源上传超时，请稍后重试。'));
@@ -500,15 +570,18 @@ export async function saveBlobAsset(input: SaveBlobAssetInput) {
   });
   let response: Response;
   try {
-    response = await fetch(`${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`, {
-      method: 'POST',
-      body: input.blob,
-      headers: {
-        'content-type': input.blob.type || 'application/octet-stream',
+    response = await fetch(
+      `${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`,
+      {
+        method: 'POST',
+        body: input.blob,
+        headers: {
+          'content-type': input.blob.type || 'application/octet-stream',
+        },
+        signal: controller.signal,
+        credentials: 'include',
       },
-      signal: controller.signal,
-      credentials: 'include',
-    });
+    );
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new WorkspaceApiError(408, '项目资源上传超时，请稍后重试。');
@@ -520,7 +593,10 @@ export async function saveBlobAsset(input: SaveBlobAssetInput) {
   if (!response.ok) {
     const payload = await response.json().catch(() => undefined);
     const message =
-      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+      payload &&
+      typeof payload === 'object' &&
+      'error' in payload &&
+      typeof payload.error === 'string'
         ? payload.error
         : `Workspace request failed: ${response.status}`;
     throw new WorkspaceApiError(response.status, message);
@@ -600,8 +676,14 @@ export async function urlToDataUrl(url: string) {
 export function isWorkspaceAssetUrl(url?: string) {
   return Boolean(
     url &&
-      (workspacePathAtBase(url, workspaceApiBase) || directAssetPathAtBase(url, workspaceApiBase)),
+    (workspacePathAtBase(url, workspaceApiBase) || directAssetPathAtBase(url, workspaceApiBase)),
   );
+}
+
+/** Legacy project files stored bytes below /workspace; cloud projects must
+ * migrate those bytes to object storage before considering them durable. */
+export function isLegacyWorkspaceAssetUrl(url?: string) {
+  return Boolean(url && workspacePathAtBase(url, workspaceApiBase));
 }
 
 /**
@@ -613,14 +695,14 @@ export async function readWorkspaceAssetBlob(url: string) {
   const directAssetPath = directAssetPathAtBase(url, workspaceApiBase);
   if (isCloudBuild && directAssetPath) {
     const separator = directAssetPath.includes('?') ? '&' : '?';
-    const resolution = await fetch(
-      `${workspaceApiBase}${directAssetPath}${separator}resolve=1`,
-      { credentials: 'include', redirect: 'error' },
-    );
+    const resolution = await fetch(`${workspaceApiBase}${directAssetPath}${separator}resolve=1`, {
+      credentials: 'include',
+      redirect: 'error',
+    });
     if (!resolution.ok) {
       throw new WorkspaceApiError(resolution.status, `无法解析云端资源（${resolution.status}）。`);
     }
-    const payload = await resolution.json() as { downloadUrl?: unknown };
+    const payload = (await resolution.json()) as { downloadUrl?: unknown };
     if (typeof payload.downloadUrl !== 'string') {
       throw new WorkspaceApiError(502, '云端资源缺少签名下载地址。');
     }
@@ -637,6 +719,7 @@ export async function readWorkspaceAssetBlob(url: string) {
   const response = await fetch(url, {
     credentials: directAssetPath ? 'include' : 'same-origin',
   });
-  if (!response.ok) throw new WorkspaceApiError(response.status, `无法读取资源（${response.status}）。`);
+  if (!response.ok)
+    throw new WorkspaceApiError(response.status, `无法读取资源（${response.status}）。`);
   return response.blob();
 }

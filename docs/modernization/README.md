@@ -67,7 +67,10 @@ Cloud control plane
 - 项目路由、命令、资产、导出和文件夹服务已收拢到单一 Project Repository；门禁阻止业务层重新绑定文件系统，并已给出 PostgreSQL/对象存储权威数据蓝图。
 - Cloud 最终产物已加入分块和总 JavaScript 体积 ratchet；当前性能债务、拆分顺序和 demand-render 前置条件记录在性能基线中。
 - Cloud 大资产已采用签名对象存储直传；本地远端部署模拟器已覆盖失败重试、校验、幂等完成、签名下载和控制面重启恢复。
+- 真实员工预览环境的对象存储模拟器已改为磁盘持久化；服务重启后仍可恢复已验证对象，浏览器无签名探测只返回 `403`，不会终止模拟服务器。
 - 项目级 Engine Session 已接管第一批全分辨率 UV/修补任务，并统一计算计划、并发、取消和资源释放边界；其余算法继续渐进迁移。
 - Auto UV 首个浏览器本地纵向切片已接入 xatlas WASM Worker：无 UV OBJ 已真实生成 GLB、完成对象直传并以高低模 `2/2` 进入 Bake；生产模型和质量矩阵未完成前保持发布阻断。
+- 局部重绘真实纵向链路已完成一次浏览器验收：真实员工会话、浏览器指针蒙版、云端 ModelView 生成、浏览器投影应用、Revision 保存、服务重启和图层像素恢复均已通过。该证据只覆盖测试模型，生产资产遮挡/导出矩阵尚未完成，因此总门禁仍保持进行中。
+- Auto UV 的结果已经可直接进入浏览器 Bake，但尚未替换贴图编辑器当前对象；这是明确记录的跨模块交接缺口，不能以“进入 Bake 成功”冒充完整项目对象更新。
 
 计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，浏览器 Auto UV 见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。

@@ -20,7 +20,10 @@
       "name": "登录、项目 Revision/Command、重启恢复",
       "required": true,
       "status": "passed",
-      "evidence": ["simulate:cloud-deployment"]
+      "evidence": [
+        "simulate:cloud-deployment",
+        "2026-08-21 真实员工会话重新建立后恢复同一项目、Revision 与局部重绘层"
+      ]
     },
     {
       "id": "deployment.remote-simulator",
@@ -37,7 +40,8 @@
       "evidence": [
         "simulate:cloud-deployment",
         "browser:源 OBJ 与 UV GLB 直传并在 Bake 恢复",
-        "quality/evidence/browser-local-uv-e2e.json"
+        "quality/evidence/browser-local-uv-e2e.json",
+        "浏览器读取磁盘持久对象；无签名探测返回 403 后对象存储健康检查仍为 200"
       ]
     },
     {
@@ -47,6 +51,7 @@
       "status": "in_progress",
       "evidence": [
         "2026-08-21 浏览器真实员工账号登录、退出、再登录通过（server-side Atlas/IDaaS 测试适配器）",
+        "开发服务器重启后再次完成真实员工授权并恢复任田账号工作区",
         "真实 feishu-oauth 身份、稳定用户 ID 与有效 Atlas gateway 凭据已核验",
         "生产 HTTPS 回调与企业应用发布尚未验收"
       ]
@@ -74,7 +79,12 @@
       "name": "真实模型贴图、投影、图层、蒙版、局部重绘、撤销恢复",
       "required": true,
       "status": "in_progress",
-      "evidence": ["编辑器空项目 UI/路由通过；真实资产结果与像素回归尚未完成"]
+      "evidence": [
+        "真实 UV 模型完成浏览器蒙版绘制、云端 ModelView 生图、浏览器局部重绘投影和 Revision 保存",
+        "服务重启后源图、蒙版、深度和图层可恢复；图层开关产生真实视口像素差异",
+        "quality/evidence/browser-local-repaint-e2e.json",
+        "完整生产模型投影、遮挡、导出和撤销矩阵尚未完成"
+      ]
     },
     {
       "id": "uv.browser-local",

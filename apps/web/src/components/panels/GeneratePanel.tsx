@@ -34,6 +34,7 @@ import {
 import { devLogin } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { createModelviewApiClient } from '@/services/modelviewApiClient';
+import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
 import {
@@ -75,6 +76,8 @@ import {
 } from '@/utils/generationTiming';
 import {
   isWorkspaceAssetUrl,
+  isLegacyWorkspaceAssetUrl,
+  readWorkspaceAssetBlob,
   saveBlobAsset,
   saveDataUrlAsset,
   saveProject as saveWorkspaceProject,
@@ -776,6 +779,7 @@ export function GeneratePanel({
   const generationPollFailureCountsRef = useRef(new Map<string, number>());
   const generationAbortControllersRef = useRef(new Map<string, AbortController>());
   const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const criticalProjectSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pairedGenerationPersistenceRef = useRef(new Set<string>());
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const dockDensity = useWorkspaceLayoutStore((state) => state.dockDensity);
@@ -826,8 +830,8 @@ export function GeneratePanel({
     displayedReferenceGroupGenerationState?.status === 'generating';
   const snapshotPreparing = Boolean(
     texturePipelineProgress?.active &&
-      (texturePipelineProgress.label === '准备多视角快照' ||
-        texturePipelineProgress.label.startsWith('多视角快照 ')),
+    (texturePipelineProgress.label === '准备多视角快照' ||
+      texturePipelineProgress.label.startsWith('多视角快照 ')),
   );
   const workflowConfigurationLocked = interactionLocked || snapshotPreparing;
   const workflowSubmissionLocked = interactionLocked || panelTaskRunning;
@@ -1731,22 +1735,23 @@ export function GeneratePanel({
     if (textureBatchId) cancelledTextureBatchIdsRef.current.add(textureBatchId);
 
     const liveGenerations = useGenerationStore.getState().generations;
-    const generationsToCancel = isTextureMap || isLocalRepaint
-      ? liveGenerations.filter((generation) => {
-          if (!isRunningGeneration(generation)) return false;
-          if (isTextureMap && !isTextureMapGeneration(generation)) return false;
-          if (isLocalRepaint && !isLocalRepaintGeneration(generation)) return false;
-          const generationProjectId =
-            typeof generation.metadata.projectId === 'string'
-              ? generation.metadata.projectId
-              : undefined;
-          const sameProject =
-            !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
-          const sameBatch =
-            !textureBatchId || generation.metadata.textureBatchId === textureBatchId;
-          return sameProject && sameBatch;
-        })
-      : [generationToCancel];
+    const generationsToCancel =
+      isTextureMap || isLocalRepaint
+        ? liveGenerations.filter((generation) => {
+            if (!isRunningGeneration(generation)) return false;
+            if (isTextureMap && !isTextureMapGeneration(generation)) return false;
+            if (isLocalRepaint && !isLocalRepaintGeneration(generation)) return false;
+            const generationProjectId =
+              typeof generation.metadata.projectId === 'string'
+                ? generation.metadata.projectId
+                : undefined;
+            const sameProject =
+              !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
+            const sameBatch =
+              !textureBatchId || generation.metadata.textureBatchId === textureBatchId;
+            return sameProject && sameBatch;
+          })
+        : [generationToCancel];
     if (!generationsToCancel.some((generation) => generation.id === generationToCancel.id)) {
       generationsToCancel.push(generationToCancel);
     }
@@ -2746,26 +2751,28 @@ export function GeneratePanel({
         persistedPaintMaskUrlPromise,
         persistedViewportReferenceUrlPromise,
       ])
-        .then(async ([persistedResultUrl, persistedPaintMaskUrl, persistedViewportReferenceUrl]) => {
-          const latestCompletedRecord =
-            useGenerationStore
-              .getState()
-              .generations.find((candidate) => candidate.id === completedGeneration.id) ??
-            completedGeneration;
-          const durableGeneration: Generation = {
-            ...latestCompletedRecord,
-            resultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
-            metadata: {
-              ...completedGeneration.metadata,
-              ...latestCompletedRecord.metadata,
-              maskUrl: persistedPaintMaskUrl,
-              rawResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
-              viewportReferenceUrl: persistedViewportReferenceUrl,
-            },
-          };
-          syncGeneration(durableGeneration);
-          await saveGenerationStateBestEffort();
-        })
+        .then(
+          async ([persistedResultUrl, persistedPaintMaskUrl, persistedViewportReferenceUrl]) => {
+            const latestCompletedRecord =
+              useGenerationStore
+                .getState()
+                .generations.find((candidate) => candidate.id === completedGeneration.id) ??
+              completedGeneration;
+            const durableGeneration: Generation = {
+              ...latestCompletedRecord,
+              resultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+              metadata: {
+                ...completedGeneration.metadata,
+                ...latestCompletedRecord.metadata,
+                maskUrl: persistedPaintMaskUrl,
+                rawResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+                viewportReferenceUrl: persistedViewportReferenceUrl,
+              },
+            };
+            syncGeneration(durableGeneration);
+            await saveGenerationStateBestEffort();
+          },
+        )
         .catch((error) => {
           // The completed server result remains usable in memory. The normal
           // project save/recovery path will retry persistence without reviving
@@ -3123,9 +3130,18 @@ export function GeneratePanel({
     if (
       !targetProject ||
       targetProject.workspaceMode !== 'local-server' ||
-      isWorkspaceAssetUrl(url)
+      (isWorkspaceAssetUrl(url) && (!isCloudBuild || !isLegacyWorkspaceAssetUrl(url)))
     )
       return url;
+    if (isCloudBuild && isLegacyWorkspaceAssetUrl(url)) {
+      const result = await saveBlobAsset({
+        projectId: targetProject.id,
+        category,
+        blob: await readWorkspaceAssetBlob(url),
+        filename,
+      });
+      return result.asset.url;
+    }
     if (blob) {
       const result = await saveBlobAsset({
         projectId: targetProject.id,
@@ -3261,7 +3277,7 @@ export function GeneratePanel({
     return persistedReferences;
   }
 
-  async function saveCriticalProjectState(overrides: {
+  async function saveCriticalProjectStateNow(overrides: {
     layers?: Layer[];
     references?: ReferenceImage[];
     captures?: Capture[];
@@ -3272,7 +3288,8 @@ export function GeneratePanel({
     let savedProjectSnapshot:
       | ReturnType<typeof useProjectStore.getState>['projects'][number]
       | undefined;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const maximumAttempts = 5;
+    for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
       const projectState = useProjectStore.getState();
       const project = projectState.projects.find((item) => item.id === targetProjectId);
       if (!project || project.workspaceMode !== 'local-server') return;
@@ -3319,7 +3336,14 @@ export function GeneratePanel({
           error instanceof WorkspaceApiError &&
           error.status === 409 &&
           error.message.includes('stale project snapshot');
-        if (!staleSnapshot || attempt > 0) throw error;
+        if (!staleSnapshot || attempt >= maximumAttempts - 1) throw error;
+        if (error.currentRevision) {
+          updateProjectById(targetProjectId, { revision: error.currentRevision });
+        }
+        // Editor auto-save and a completed cloud job can legitimately arrive in
+        // the same frame. Rebuild from the latest stores and let the winning
+        // revision settle before retrying instead of surfacing a false failure.
+        await new Promise((resolve) => window.setTimeout(resolve, 25 * (attempt + 1)));
       }
     }
     if (!result || !savedProjectSnapshot) return;
@@ -3349,6 +3373,7 @@ export function GeneratePanel({
       lastSavedAt: result.project.lastSavedAt,
       dirty: !savedLatestSnapshot,
       assetManifest: result.project.assetManifest,
+      revision: result.project.revision,
     });
     if (
       !savedLatestSnapshot &&
@@ -3357,6 +3382,21 @@ export function GeneratePanel({
     ) {
       window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
     }
+  }
+
+  async function saveCriticalProjectState(overrides: {
+    layers?: Layer[];
+    references?: ReferenceImage[];
+    captures?: Capture[];
+  }) {
+    const operation = criticalProjectSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveCriticalProjectStateNow(overrides));
+    criticalProjectSaveQueueRef.current = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   async function saveGenerationStateBestEffort() {

@@ -40,10 +40,7 @@ import {
   AutoBakeProgressBar,
   type AutoBakeProgress,
 } from '@/components/panels/AutoBakeProgressBar';
-import {
-  GeneratePanel,
-  type GeneratePanelTaskState,
-} from '@/components/panels/GeneratePanel';
+import { GeneratePanel, type GeneratePanelTaskState } from '@/components/panels/GeneratePanel';
 import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel';
 import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
 import { ObjectTransformPanel } from '@/components/panels/ObjectTransformPanel';
@@ -201,11 +198,13 @@ import {
 } from '@/services/projectPipeline';
 import { liclickImageEditProvider } from '@/services/imageEditProvider';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
+import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { hasTrackedModuleAction, trackModuleActionOnce } from '@/services/telemetryClient';
 import {
   fileToDataUrl,
   getWorkspaceHealth,
   isTrustedGenerationWorkspaceAssetUrl,
+  isLegacyWorkspaceAssetUrl,
   isWorkspaceAssetUrl,
   loadProject as loadWorkspaceProject,
   readWorkspaceAssetBlob,
@@ -1275,12 +1274,14 @@ export function EditorPage({
     // the whole editor exclusively locked. Give a fresh click time to enter
     // the panel, then release only a request with no backing activity.
     const orphanedRequestTimeout = window.setTimeout(() => {
-      const hasBackingGeneration = useGenerationStore.getState().generations.some(
-        (generation) =>
-          (generation.status === 'queued' || generation.status === 'running') &&
-          isLocalRepaintGeneration(generation) &&
-          (!generation.metadata.projectId || generation.metadata.projectId === projectId),
-      );
+      const hasBackingGeneration = useGenerationStore
+        .getState()
+        .generations.some(
+          (generation) =>
+            (generation.status === 'queued' || generation.status === 'running') &&
+            isLocalRepaintGeneration(generation) &&
+            (!generation.metadata.projectId || generation.metadata.projectId === projectId),
+        );
       if (!hasBackingGeneration) {
         useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
         setLocalImageGenerationRequested(false);
@@ -1332,7 +1333,12 @@ export function EditorPage({
             : '生成任务仍绑定当前模型，暂不能删除、替换模型或启动另一项生成任务。',
       dedupeKey: 'editor-task-preview-only',
     });
-  }, [contentAwareRepairRunning, localImageGenerationRunning, pushToast, snapshotPreparationLocked]);
+  }, [
+    contentAwareRepairRunning,
+    localImageGenerationRunning,
+    pushToast,
+    snapshotPreparationLocked,
+  ]);
 
   const handleLockedEditorInteraction = useCallback(
     (event: SyntheticEvent<HTMLElement>) => {
@@ -1476,7 +1482,11 @@ export function EditorPage({
       const currentProject = useProjectStore
         .getState()
         .projects.find((item) => item.id === projectId);
-      if (objectId && currentProject && !currentProject.objects.some((item) => item.id === objectId)) {
+      if (
+        objectId &&
+        currentProject &&
+        !currentProject.objects.some((item) => item.id === objectId)
+      ) {
         return;
       }
       setPresentedViewportProjectId(projectId);
@@ -1486,9 +1496,7 @@ export function EditorPage({
       markPresentedIfCurrentProject(document.body.dataset.atomicModelRevealPaintedObjectId);
     };
     const handleInitialModelFramePresented = (event: Event) => {
-      markPresentedIfCurrentProject(
-        (event as CustomEvent<{ objectId?: string }>).detail?.objectId,
-      );
+      markPresentedIfCurrentProject((event as CustomEvent<{ objectId?: string }>).detail?.objectId);
     };
     window.addEventListener(
       'liclick:initial-model-frame-presented',
@@ -2292,6 +2300,12 @@ export function EditorPage({
   function getObjectFileName(object: SceneObject) {
     const sourcePath = object.sourcePath?.split('?')[0].split('#')[0];
     const fromPath = sourcePath?.split('/').pop();
+    const supportedExtension = /\.(?:glb|gltf|fbx|obj)$/i;
+    if (fromPath && supportedExtension.test(fromPath)) return fromPath;
+    if (supportedExtension.test(object.name)) return object.name;
+    if (['glb', 'gltf', 'fbx', 'obj'].includes(object.format)) {
+      return `${fromPath || object.name}.${object.format}`;
+    }
     return fromPath || object.name;
   }
 
@@ -2654,12 +2668,22 @@ export function EditorPage({
       }
     };
     try {
-      if (!url || isWorkspaceAssetUrl(url)) return url;
+      if (!url) return url;
+      if (isWorkspaceAssetUrl(url)) {
+        if (!isCloudBuild || !isLegacyWorkspaceAssetUrl(url)) return url;
+        const result = await saveBlobAsset({
+          projectId,
+          category,
+          blob: await readWorkspaceAssetBlob(url),
+          filename,
+        });
+        return result.asset.url;
+      }
       if (url.startsWith('http')) {
         if (!isPersistableRemoteAssetUrl(url)) return url;
         try {
           const result = await saveRemoteUrlAsset({ projectId, category, url, filename });
-          return result.asset.relativePath;
+          return result.asset.url;
         } catch (serverDownloadError) {
           // Some managed desktop environments allow the signed image in the
           // browser but block direct Node egress. Download it in the renderer
@@ -2671,7 +2695,7 @@ export function EditorPage({
               blob: await urlToBlob(url),
               filename,
             });
-            return result.asset.relativePath;
+            return result.asset.url;
           } catch (browserDownloadError) {
             const serverMessage =
               serverDownloadError instanceof Error
@@ -2689,13 +2713,13 @@ export function EditorPage({
         const blob = getRegisteredObjectUrlBlob(url);
         if (blob) {
           const result = await saveBlobAsset({ projectId, category, blob, filename });
-          return result.asset.relativePath;
+          return result.asset.url;
         }
       }
       if (!url.startsWith('data:') && !url.startsWith('blob:')) return url;
       const dataUrl = url.startsWith('data:') ? url : await urlToDataUrl(url);
       const result = await saveDataUrlWithFallback(dataUrl);
-      return result.asset.relativePath;
+      return result.asset.url;
     } catch (error) {
       throw new Error(
         `保存资源失败 ${category}/${filename}: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -2729,7 +2753,7 @@ export function EditorPage({
             blob: await blobPromise,
             filename,
           });
-          return result.asset.relativePath;
+          return result.asset.url;
         }
         return await persistAssetUrl(projectForSave.id, url, category, filename);
       } catch (error) {
@@ -3045,11 +3069,7 @@ export function EditorPage({
     }
 
     try {
-      const result = await renameWorkspaceProject(
-        project.id,
-        trimmedName,
-        project.revision?.id,
-      );
+      const result = await renameWorkspaceProject(project.id, trimmedName, project.revision?.id);
       updateProjectById(project.id, {
         name: result.project.name,
         workspaceName: result.project.workspaceName,
@@ -3305,7 +3325,7 @@ export function EditorPage({
                 t('modelImportSavingFile'),
               ),
           });
-          object = { ...object, sourcePath: saved.asset.relativePath };
+          object = { ...object, sourcePath: saved.asset.url };
         } catch (saveError) {
           if (saveError instanceof WorkspaceApiError && saveError.status === 401) {
             pushToast({
@@ -3545,8 +3565,7 @@ export function EditorPage({
           (result): result is PromiseRejectedResult => result.status === 'rejected',
         );
         throw (
-          firstFailure?.reason ??
-          new Error('拖入的图片临时文件已失效，请先保存到本地后重新拖入。')
+          firstFailure?.reason ?? new Error('拖入的图片临时文件已失效，请先保存到本地后重新拖入。')
         );
       }
       setPendingReferenceImport(importedReferences);
@@ -5416,18 +5435,14 @@ export function EditorPage({
       const seamMode = getLocalRepaintSeamMode();
       const metadata = generation.metadata;
       const rawResultUrl =
-        typeof metadata.rawResultUrl === 'string'
-          ? metadata.rawResultUrl
-          : generation.resultUrl;
+        typeof metadata.rawResultUrl === 'string' ? metadata.rawResultUrl : generation.resultUrl;
       if (!rawResultUrl) return Promise.reject(new Error('Local repaint result is missing.'));
       const referenceUrl =
         typeof metadata.viewportReferenceUrl === 'string'
           ? metadata.viewportReferenceUrl
           : undefined;
       const harmonizedResultUrl =
-        typeof metadata.harmonizedResultUrl === 'string'
-          ? metadata.harmonizedResultUrl
-          : undefined;
+        typeof metadata.harmonizedResultUrl === 'string' ? metadata.harmonizedResultUrl : undefined;
       const reusableHarmonizedResultUrl =
         metadata.seamHarmonizationVersion === 2 ? harmonizedResultUrl : undefined;
       const selectedResultUrl =
@@ -5613,9 +5628,11 @@ export function EditorPage({
         ? latestLocalRepaintGeneration.metadata.maskUrl
         : paintMaskDataUrl;
     if (!generationMaskUrl) return;
-    void getLocalRepaintProjectionImage(latestLocalRepaintGeneration, generationMaskUrl).catch((error) => {
-      console.warn('[Liclick 3D Texture] Could not preload local repaint result:', error);
-    });
+    void getLocalRepaintProjectionImage(latestLocalRepaintGeneration, generationMaskUrl).catch(
+      (error) => {
+        console.warn('[Liclick 3D Texture] Could not preload local repaint result:', error);
+      },
+    );
   }, [
     generations,
     getLocalRepaintProjectionImage,
@@ -6468,8 +6485,7 @@ export function EditorPage({
                         detail: t('contentAwareRepairScanning'),
                         progress:
                           phaseRange[0] +
-                          (phaseRange[1] - phaseRange[0]) *
-                            Math.max(0, Math.min(1, phaseProgress)),
+                          (phaseRange[1] - phaseRange[0]) * Math.max(0, Math.min(1, phaseProgress)),
                       });
                     },
               },

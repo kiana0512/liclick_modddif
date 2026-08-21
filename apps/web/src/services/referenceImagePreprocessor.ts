@@ -1,4 +1,5 @@
 import type { ReferenceImage } from '@/types/project';
+import { isWorkspaceAssetUrl, readWorkspaceAssetBlob } from './workspaceApiClient';
 
 // Atlas receives call-tool files as Base64 inside a JSON-RPC body. The observed
 // gateway boundary is 4 MiB, so keep 512 KiB for the JSON-RPC envelope and
@@ -54,9 +55,19 @@ function blobToDataUrl(blob: Blob) {
 }
 
 async function referenceUrlToBlob(url: string) {
+  if (isWorkspaceAssetUrl(url)) {
+    try {
+      return await readWorkspaceAssetBlob(url);
+    } catch {
+      throw new Error('无法读取参考图，请重新导入后重试。');
+    }
+  }
   let response: Response;
   try {
-    response = await fetch(url, { credentials: 'omit' });
+    const candidate = new URL(url, window.location.href);
+    response = await fetch(url, {
+      credentials: candidate.origin === window.location.origin ? 'include' : 'omit',
+    });
   } catch {
     throw new Error('无法读取参考图，请确认图片仍然存在后重试。');
   }
