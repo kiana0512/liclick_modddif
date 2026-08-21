@@ -29,7 +29,7 @@ const gpuUvBakeRendererSource = readFileSync(
   path.join(root, 'src/engine/bake/gpuUvBakeRenderer.ts'),
   'utf8',
 );
-const maskedProjectedImageSource = readFileSync(
+const projectionMaskedImageSource = readFileSync(
   path.join(root, 'src/engine/projection/createMaskedProjectedImage.ts'),
   'utf8',
 );
@@ -50,6 +50,7 @@ const viewportPanelSource = readFileSync(
   'utf8',
 );
 const sceneStoreSource = readFileSync(path.join(root, 'src/stores/sceneStore.ts'), 'utf8');
+const layerStoreSource = readFileSync(path.join(root, 'src/stores/layerStore.ts'), 'utf8');
 const editorShellSource = readFileSync(path.join(root, 'src/layouts/EditorShell.tsx'), 'utf8');
 const localRepaintDialogSource = readFileSync(
   path.join(root, 'src/components/localRepaint/LocalRepaintDialog.tsx'),
@@ -78,9 +79,24 @@ assert.match(
   'Projected preview compositing must preserve continuous mask alpha.',
 );
 assert.match(
-  maskedProjectedImageSource,
-  /createMaskedProjectedImage[\s\S]*?processMaskedProjectedImageInWorker\(sourceImage, projectionMask, 'mask-only'\)/,
-  'Generated projection staging must retain the capture silhouette without running a colour-key cutout.',
+  generatePanelSource,
+  /const sourceResultUrl = generation\.resultUrl\.startsWith\('http'\)[\s\S]*?persistGeneratedImage\('layers', sourceResultUrl, `\$\{layerId\}\.png`\)[\s\S]*?maskUrl: undefined[\s\S]*?depthUrl/,
+  'Ordinary generated layers must preserve the returned image alpha and bind depth without a capture mask.',
+);
+assert.doesNotMatch(
+  generatePanelSource,
+  /createMaskedProjectedImage/,
+  'Ordinary generation staging must not bake the capture silhouette into source alpha.',
+);
+assert.doesNotMatch(
+  `${projectionMaskedImageSource}\n${maskedProjectedImageWorkerSource}`,
+  /export (?:async )?function createMaskedProjectedImage|['"]mask-only['"]/,
+  'The projection image helper must expose only the dedicated repaint-mask flattening path.',
+);
+assert.match(
+  layerStoreSource,
+  /addProjectedLayerFromGeneration:[\s\S]*?imageUrl: generation\.resultUrl[\s\S]*?maskUrl: undefined[\s\S]*?depthUrl: capture\?\.depthUrl/,
+  'A newly created ordinary projected layer must use source alpha plus capture depth only.',
 );
 assert.doesNotMatch(
   maskedProjectedImageWorkerSource,
@@ -861,6 +877,45 @@ try {
     viewMatrix: identity,
     aspect: 1,
   };
+  const layerStore = await server.ssrLoadModule('/src/stores/layerStore.ts');
+  layerStore.useLayerStore.setState({ layers: [], activeProjectedLayerId: undefined });
+  const generatedSourceAlphaLayer = layerStore.useLayerStore
+    .getState()
+    .addProjectedLayerFromGeneration(
+      {
+        id: 'generation-source-alpha',
+        prompt: '',
+        resultUrl: 'memory://complete-generated-rgba',
+        captureId: 'capture-source-alpha',
+        metadata: {},
+      },
+      {
+        id: 'capture-source-alpha',
+        colorUrl: 'memory://capture-color',
+        maskUrl: 'memory://capture-silhouette',
+        depthUrl: 'memory://capture-depth',
+        depthEncoding: 'linear-view',
+        camera,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      'object-source-alpha',
+    );
+  assert.equal(
+    generatedSourceAlphaLayer.imageUrl,
+    'memory://complete-generated-rgba',
+    'An ordinary generated layer must keep the complete returned image.',
+  );
+  assert.equal(
+    generatedSourceAlphaLayer.maskUrl,
+    undefined,
+    'An ordinary generated layer must not retain the capture silhouette as a layer mask.',
+  );
+  assert.equal(
+    generatedSourceAlphaLayer.depthUrl,
+    'memory://capture-depth',
+    'An ordinary generated layer must retain capture depth as its geometry occlusion authority.',
+  );
+  layerStore.useLayerStore.setState({ layers: [], activeProjectedLayerId: undefined });
   const layers = Array.from({ length: 6 }, (_, index) => {
     const imageUrl = `memory://projected-layer-${index}`;
     projection.primeProjectedImageTexture(imageUrl, { width: 2, height: 2 });

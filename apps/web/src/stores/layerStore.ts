@@ -228,7 +228,9 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       objectId: objectId ?? capture?.objectId,
       objectMatrixWorld: getObjectMatrixWorld(generation),
       camera: capture?.camera,
-      maskUrl: capture?.maskUrl,
+      // Capture silhouettes guide generation and remain available to repaint
+      // workflows, but ordinary projected layers use their own alpha plus depth.
+      maskUrl: undefined,
       depthUrl: capture?.depthUrl,
       depthEncoding: capture?.depthEncoding,
       generationId: generation.id,

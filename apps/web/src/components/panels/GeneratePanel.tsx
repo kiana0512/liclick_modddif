@@ -15,7 +15,6 @@ import {
   withStableClayTargetPresentation,
 } from '@/engine/capture/captureCurrentView';
 import { requestContentAwareRepair } from '@/engine/contentAware';
-import { createMaskedProjectedImage } from '@/engine/projection/createMaskedProjectedImage';
 import {
   createCaptureMaskedPreview,
   createSubjectFilledPreview,
@@ -3521,13 +3520,13 @@ export function GeneratePanel({
         `${String(generation.metadata.cameraViewLabel ?? '当前')}视角缺少对应相机捕获，已停止投影以避免贴到错误方向。`,
       );
     }
-    const maskedResultUrl = await createMaskedProjectedImage(
-      generation.resultUrl.startsWith('http')
-        ? await urlToDataUrl(generation.resultUrl)
-        : generation.resultUrl,
-      generationCapture.maskUrl,
-    );
-    // Image download and masking can outlive the editor route. Never apply the
+    // Preserve the generated image as the layer's coverage authority. The
+    // capture silhouette remains available to local repaint and surface-lock
+    // workflows, while ordinary projection uses source alpha plus depth.
+    const sourceResultUrl = generation.resultUrl.startsWith('http')
+      ? await urlToDataUrl(generation.resultUrl)
+      : generation.resultUrl;
+    // Image download can outlive the editor route. Never apply the
     // old project's layer to whichever project became current in the meantime.
     if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
       return undefined;
@@ -3538,7 +3537,7 @@ export function GeneratePanel({
       existingLayer: existing,
       layerId,
       generationCapture,
-      maskedResultUrl,
+      sourceResultUrl,
       targetProjectId,
       shouldPersist: true as const,
     };
@@ -3550,7 +3549,7 @@ export function GeneratePanel({
       existingLayer?: Layer;
       layerId: string;
       generationCapture: Capture;
-      maskedResultUrl: string;
+      sourceResultUrl: string;
       targetProjectId?: string;
       shouldPersist: true;
     },
@@ -3561,7 +3560,7 @@ export function GeneratePanel({
       existingLayer,
       generationCapture,
       layerId,
-      maskedResultUrl,
+      sourceResultUrl,
       targetProjectId,
     } = prepared;
     let persistedGenerationCapture = generationCapture;
@@ -3580,18 +3579,10 @@ export function GeneratePanel({
         captures.find((capture) => capture.id === generationCapture.id) ?? generationCapture;
     }
     let imageUrl: string;
-    let maskUrl: string | undefined;
     let depthUrl: string | undefined;
     try {
-      [imageUrl, maskUrl, depthUrl] = await Promise.all([
-        persistGeneratedImage('layers', maskedResultUrl, `${layerId}.png`),
-        persistedGenerationCapture?.maskUrl
-          ? persistGeneratedImage(
-              'layers',
-              persistedGenerationCapture.maskUrl,
-              `${layerId}-mask.png`,
-            )
-          : Promise.resolve(undefined),
+      [imageUrl, depthUrl] = await Promise.all([
+        persistGeneratedImage('layers', sourceResultUrl, `${layerId}.png`),
         persistedGenerationCapture?.depthUrl
           ? persistGeneratedImage(
               'layers',
@@ -3627,9 +3618,12 @@ export function GeneratePanel({
       layer = {
         ...currentExisting,
         imageUrl,
-        maskUrl,
+        maskUrl: undefined,
+        maskSpace: undefined,
         depthUrl,
         camera: persistedGenerationCapture.camera,
+        ignoreSourceAlpha: false,
+        projectionVisibilityPolicy: 'standard',
         contentRevision: (currentExisting.contentRevision ?? 0) + 1,
         isBaked: false,
         needsRebake: true,
@@ -3642,12 +3636,11 @@ export function GeneratePanel({
           resultUrl: imageUrl,
           metadata: {
             ...generation.metadata,
-            alphaMode: 'solid-background-cutout',
+            alphaMode: 'source-alpha',
           },
         },
         {
           ...persistedGenerationCapture,
-          maskUrl: maskUrl ?? persistedGenerationCapture.maskUrl,
           depthUrl: depthUrl ?? persistedGenerationCapture.depthUrl,
         },
         persistedGenerationCapture.objectId,

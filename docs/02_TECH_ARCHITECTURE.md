@@ -61,7 +61,7 @@ React/Vite browser
 ## Projection And UV Route
 
 - `ProjectedLayerMaterial.ts` 是自研 shader 路径，没有依赖 `three-projected-material`。
-- 预览依据 frustum、Mask、linear depth、normal、backface、source alpha 和边缘权重筛选投影样本。
+- 普通生成层预览依据 frustum、linear depth、backface、source alpha 和边缘权重筛选投影样本，不重复使用捕获截图蒙版；局部重绘、表面锁定和用户擦除仍使用各自的专用 Mask。
 - Blend 层按质量组合，Overlay 层按栈顺序覆盖；未覆盖片元回退到底层材质。
 - 手动 UV 合并调用 GPU-first UV-space bake，并在不支持或验证失败时使用 CPU 路径；合并结果成为 UV layer。
 - 本地重绘修补和内容补缝各自生成/更新 UV 层。

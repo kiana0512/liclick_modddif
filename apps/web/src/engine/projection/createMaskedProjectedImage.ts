@@ -764,31 +764,16 @@ function getMaskedProjectedWorker() {
   return worker;
 }
 
-function processMaskedProjectedImageInWorker(
-  source: ImageData,
-  mask?: ImageData,
-  mode: 'mask-only' | 'projection-alpha-only' = 'mask-only',
-) {
+function processProjectionMaskedImageInWorker(source: ImageData, mask: ImageData) {
   const worker = getMaskedProjectedWorker();
   if (!worker) {
-    if (mode === 'projection-alpha-only') {
-      return Promise.resolve(
-        mask ? applyProjectedAlphaMask(source, mask, { ignoreSourceAlpha: true }) : source,
-      );
-    }
-    // The generated image is already the authoritative result. Only retain the
-    // capture silhouette; never infer transparency again from pixel colour.
-    return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
+    return Promise.resolve(applyProjectedAlphaMask(source, mask, { ignoreSourceAlpha: true }));
   }
   const id = ++maskedProjectedRequestId;
   const sourceBuffer = source.data.buffer as ArrayBuffer;
-  const transfer: Transferable[] = [sourceBuffer];
-  let maskPayload: { width: number; height: number; data: ArrayBuffer } | undefined;
-  if (mask) {
-    const maskBuffer = mask.data.buffer as ArrayBuffer;
-    maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
-    transfer.push(maskBuffer);
-  }
+  const maskBuffer = mask.data.buffer as ArrayBuffer;
+  const transfer: Transferable[] = [sourceBuffer, maskBuffer];
+  const maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
   return new Promise<ImageData>((resolve, reject) => {
     maskedProjectedRequests.set(id, { resolve, reject });
     worker.postMessage(
@@ -796,39 +781,25 @@ function processMaskedProjectedImageInWorker(
         id,
         source: { width: source.width, height: source.height, data: sourceBuffer },
         mask: maskPayload,
-        mode,
       },
       transfer,
     );
   });
 }
 
-export async function createMaskedProjectedImage(imageUrl: string, projectionMaskUrl?: string) {
-  const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
-  const projectionMask = projectionMaskUrl
-    ? await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask')
-    : undefined;
-  return imageDataToPngUrl(
-    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'mask-only'),
-  );
-}
-
 /**
  * Flattens a projection-space mask into the source alpha before UV baking.
- * This is deliberately separate from createMaskedProjectedImage: a local
- * repaint result is a complete rendered frame and must not run through the
- * solid-background cutout heuristic. Its source alpha is also ignored: the
- * authored brush mask is the only coverage source. Baking the mask into alpha makes the
- * merge robust if an optional mask texture cannot be loaded by the GPU path.
+ * A local repaint result is a complete rendered frame, so its source alpha is
+ * ignored and the authored brush mask is the only coverage source. Baking that
+ * dedicated mask into alpha makes the merge robust if an optional mask texture
+ * cannot be loaded by the GPU path. Ordinary generated layers never use this.
  */
 export async function createProjectionMaskedImage(imageUrl: string, projectionMaskUrl: string) {
   const [sourceImage, projectionMask] = await Promise.all([
     loadImageData(imageUrl, maxCutoutDimension),
     loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
   ]);
-  return imageDataToPngUrl(
-    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'projection-alpha-only'),
-  );
+  return imageDataToPngUrl(await processProjectionMaskedImageInWorker(sourceImage, projectionMask));
 }
 
 export function prewarmMaskedProjectedImageWorker() {

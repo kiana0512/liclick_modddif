@@ -7,9 +7,9 @@
 1. 用保存的 camera projection/view matrix 投影当前 world position。
 2. 应用 capture object matrix 到当前 object matrix 的 delta。
 3. 拒绝 `clip.w <= 0`、NDC/frustum 外和 image UV 外样本。
-4. 应用 image-edge feather 与 source alpha。
-5. 读取 capture mask。
-6. 将 projected view depth 与 `depthEncoding='linear-view'` 的捕获深度比较；在邻域内允许有限 tolerance。
+4. 应用 image-edge feather 与原始 source alpha；普通生成图必须保留服务返回的完整 RGBA，禁止提前乘入 capture mask。
+5. 仅局部重绘、表面锁定和用户擦除读取各自的专用蒙版；普通生成层不读取 capture mask。
+6. 将 projected view depth 与 `depthEncoding='linear-view'` 的捕获深度比较；在邻域内允许有限 tolerance，作为普通生成层的几何遮挡权限。
 7. 以 depth 作为前表面权限；角度过渡使用插值后的顶点法线。捕获 Normal 只作为显式启用的辅助校验，不再作为普通投影或局部重绘的默认 alpha 权限。
 8. 应用 backface policy、minimum facing、opacity、strength 和 HSL。
 9. 计算连续 coverage 与 quality；surface-locked local repaint 保留 authored alpha/mask 的硬权限，但 depth 邻域和角度边缘连续衰减，禁止按三角形阈值二值化。

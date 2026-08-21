@@ -49,8 +49,8 @@ Normal 可视化已实现；Normal 生成未接线。顶部 Texture/Normal/Segme
 每个可见 Projected Layer 使用保存的相机和对象矩阵，将当前 world position 投回生成图。样本会经过：
 
 1. projector frustum 与 image bounds；
-2. source alpha 与 capture mask；
-3. linear depth 与 normal 邻域可见性；
+2. 普通生成层使用 source alpha，不把 capture mask 烘入图片或再次挂到图层；
+3. linear depth 与显式启用的 normal 邻域可见性；局部重绘、表面锁定和用户擦除另用专用蒙版；
 4. backface/facing 和边缘衰减；
 5. opacity、projection strength 与 HSL adjustments。
 

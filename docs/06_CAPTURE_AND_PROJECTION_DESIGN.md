@@ -21,7 +21,7 @@ Projected Layer 保存 source image、camera、object matrix、Mask、Depth、No
 
 1. 使用保存相机将 world position 投影到 clip/image UV。
 2. 拒绝 projector 后方、frustum 外和图片边界外样本。
-3. 应用 source alpha 与 capture mask。
+3. 普通生成层应用原始 source alpha，不把 capture mask 烘入图片或绑定到图层；局部重绘、表面锁定和用户擦除继续应用各自的专用蒙版。
 4. 比较 projected view depth 与捕获的 linear-view depth；缺失/legacy depth 才后台重建。Normal 邻域仅在显式 opt-in 时参与拒绝。
 5. 使用插值顶点法线计算连续 backface/facing 与 edge feather，再应用 opacity、strength 和 HSL adjustments；禁止用 triangle-constant 法线或 hard step 写入边缘 alpha。
 6. 将 Blend candidates 按质量合成，再按顺序加入 Overlay layers。
