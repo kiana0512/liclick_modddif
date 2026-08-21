@@ -6,6 +6,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
+const cloudBuild = process.env.VITE_LICLICK_RUNTIME_MODE?.trim() === 'cloud';
 
 type LocalInstallerManifest = {
   filename: string;
@@ -111,6 +112,50 @@ function localInstallerPlugin(base: string): Plugin {
   };
 }
 
+const cloudForbiddenPublicExtensions = new Set([
+  '.bat',
+  '.bin',
+  '.cmd',
+  '.dll',
+  '.exe',
+  '.msi',
+  '.ps1',
+]);
+
+function cloudPublicAssetsPlugin(): Plugin {
+  const publicRoot = path.resolve(rootDir, 'public');
+  return {
+    name: 'li3d-cloud-public-assets',
+    apply: 'build',
+    buildStart() {
+      const visit = (directory: string) => {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+          const candidate = path.join(directory, entry.name);
+          if (entry.isDirectory()) {
+            visit(candidate);
+            continue;
+          }
+          const relative = path.relative(publicRoot, candidate).replaceAll('\\', '/');
+          const lowerRelative = relative.toLowerCase();
+          if (
+            lowerRelative.startsWith('downloads/local-component/') ||
+            lowerRelative.startsWith('toolbox/') ||
+            cloudForbiddenPublicExtensions.has(path.extname(lowerRelative))
+          ) {
+            continue;
+          }
+          this.emitFile({
+            type: 'asset',
+            fileName: relative,
+            source: fs.readFileSync(candidate),
+          });
+        }
+      };
+      visit(publicRoot);
+    },
+  };
+}
+
 function eraserPerformanceDiagnosticsPlugin(base: string): Plugin {
   const basePrefix = base === '/' ? '' : base.slice(0, -1);
   const diagnosticsRoute = `${basePrefix}/__li3d_eraser_perf`;
@@ -168,23 +213,77 @@ const localComponentDevProxyPath = '/__li3d-local-component';
 
 export default defineConfig({
   plugins: [
-    localInstallerPlugin(publicBase),
-    eraserPerformanceDiagnosticsPlugin(publicBase),
+    ...(cloudBuild
+      ? [cloudPublicAssetsPlugin()]
+      : [localInstallerPlugin(publicBase), eraserPerformanceDiagnosticsPlugin(publicBase)]),
     react(),
   ],
+  publicDir: cloudBuild ? false : 'public',
   base: publicBase,
   resolve: {
-    alias: {
-      '@': path.resolve(rootDir, 'src'),
-    },
+    alias: [
+      ...(cloudBuild
+        ? [
+            {
+              find: /^\.\/workspaceApiBase$/,
+              replacement: path.resolve(rootDir, 'src/services/workspaceApiBase.cloud.ts'),
+            },
+            {
+              find: /^@\/platform\/projectApiBase$/,
+              replacement: path.resolve(rootDir, 'src/platform/projectApiBase.cloud.ts'),
+            },
+            {
+              find: /^@\/platform\/localComponentDownload$/,
+              replacement: path.resolve(rootDir, 'src/platform/localComponentDownload.cloud.ts'),
+            },
+            {
+              find: /^@\/services\/liclickAccountApiClient$/,
+              replacement: path.resolve(rootDir, 'src/services/liclickAccountApiClient.cloud.ts'),
+            },
+            {
+              find: /^\.\/liclickAccountApiClient$/,
+              replacement: path.resolve(rootDir, 'src/services/liclickAccountApiClient.cloud.ts'),
+            },
+            {
+              find: /^\.\/liclickTransport$/,
+              replacement: path.resolve(rootDir, 'src/services/liclickTransport.cloud.ts'),
+            },
+            {
+              find: /^\.\/localIdentityProofApiClient$/,
+              replacement: path.resolve(
+                rootDir,
+                'src/services/localIdentityProofApiClient.cloud.ts',
+              ),
+            },
+            {
+              find: /^@\/services\/nativePerformanceClient$/,
+              replacement: path.resolve(rootDir, 'src/services/nativePerformanceClient.cloud.ts'),
+            },
+            {
+              find: /^@\/features\/photoshop\/photoshopBridgeClient$/,
+              replacement: path.resolve(
+                rootDir,
+                'src/features/photoshop/photoshopBridgeClient.cloud.ts',
+              ),
+            },
+            {
+              find: /^\.\/routes\/ModelingToolboxPage$/,
+              replacement: path.resolve(rootDir, 'src/routes/ModelingToolboxPage.cloud.tsx'),
+            },
+          ]
+        : []),
+      { find: '@', replacement: path.resolve(rootDir, 'src') },
+    ],
   },
   server: {
-    proxy: {
-      [localComponentDevProxyPath]: {
-        target: `http://127.0.0.1:${localComponentPort}`,
-        changeOrigin: false,
-        rewrite: (requestPath) => requestPath.slice(localComponentDevProxyPath.length) || '/',
-      },
-    },
+    proxy: cloudBuild
+      ? {}
+      : {
+          [localComponentDevProxyPath]: {
+            target: `http://127.0.0.1:${localComponentPort}`,
+            changeOrigin: false,
+            rewrite: (requestPath) => requestPath.slice(localComponentDevProxyPath.length) || '/',
+          },
+        },
   },
 });

@@ -1,4 +1,4 @@
-import { getLocalTextureRuntimeApiBase } from '@/services/localTextureRuntimeClient';
+import { getProjectApiBase } from '@/platform/projectApiBase';
 import { urlToBlob } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
 import {
@@ -9,7 +9,7 @@ import {
 export type ImageSample = [number, number, number, number];
 const COLOR_ALPHA_REJECT_THRESHOLD = 3;
 const MAX_CACHED_IMAGE_DATA_BYTES = 192 * 1024 * 1024;
-const workspaceApiBase = getLocalTextureRuntimeApiBase();
+const workspaceApiBase = getProjectApiBase();
 const imageDataCache = new Map<string, { imageData: ImageData; bytes: number; usedAt: number }>();
 let cachedImageDataBytes = 0;
 

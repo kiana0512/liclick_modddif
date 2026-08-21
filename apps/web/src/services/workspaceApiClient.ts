@@ -1,8 +1,8 @@
 import type { Project } from '@/types/project';
-import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
+import { getProjectApiBase } from '@/platform/projectApiBase';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 
-const workspaceApiBase = getLocalTextureRuntimeApiBase();
+const workspaceApiBase = getProjectApiBase();
 const generationWorkspaceApiBase = getWorkspaceApiBase(
   import.meta.env.VITE_LICLICK_WORKSPACE_API,
 );

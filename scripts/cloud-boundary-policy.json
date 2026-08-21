@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "roots": ["apps/web/src"],
+  "forbiddenReferences": [
+    "getLocalTextureRuntimeApiBase",
+    "checkLocalTextureRuntime",
+    "downloadLocalTextureRuntimeInstaller",
+    "useLocalTextureRuntime",
+    "localTextureRuntimeClient",
+    "LIclick-3D-Texture-Local-Component-Setup.exe"
+  ],
+  "legacyAllowlist": [
+    "apps/web/src/components/runtime/TextureRuntimeGate.tsx",
+    "apps/web/src/components/runtime/DesktopLegacyTextureRuntimeBoundary.tsx",
+    "apps/web/src/features/photoshop/photoshopBridgeClient.ts",
+    "apps/web/src/hooks/localTextureRuntimePolicy.ts",
+    "apps/web/src/hooks/useLocalTextureRuntime.ts",
+    "apps/web/src/platform/projectApiBase.ts",
+    "apps/web/src/platform/localComponentDownload.ts",
+    "apps/web/src/services/liclickAccountApiClient.ts",
+    "apps/web/src/services/liclickTransport.ts",
+    "apps/web/src/services/localTextureRuntimeClient.ts",
+    "apps/web/src/services/nativePerformanceClient.ts"
+  ]
+}

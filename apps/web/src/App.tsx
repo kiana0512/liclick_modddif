@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { TextureRuntimeGate } from './components/runtime/TextureRuntimeGate';
+import { TextureRuntimeBoundary } from './components/runtime/TextureRuntimeBoundary';
 import { resolveBakeEntryProject } from './features/workflow/resolveBakeEntryProject';
-import { useLocalTextureRuntime } from './hooks/useLocalTextureRuntime';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { getIdentityStatus } from './services/identityApiClient';
@@ -156,11 +155,6 @@ export function App() {
       route.projectId &&
       residentTextureProjectIdRef.current === route.projectId,
   );
-  const textureRouteActive =
-    route.name === 'editor' ||
-    preserveTextureWorkspaceForUv ||
-    (route.name === 'projects' && route.module === 'texture');
-  const localTextureRuntime = useLocalTextureRuntime(textureRouteActive);
   const setChecking = useAuthStore((state) => state.setChecking);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
@@ -337,12 +331,7 @@ export function App() {
     const textureWorkspaceActive = route.name === 'editor';
     return (
       <>
-        <TextureRuntimeGate
-          state={localTextureRuntime.state}
-          hasReadySession={localTextureRuntime.hasReadySession}
-          onRetry={() => void localTextureRuntime.refresh()}
-          onBack={navigation.openHome}
-        >
+        <TextureRuntimeBoundary onBack={navigation.openHome}>
           <div className="h-screen" hidden={!textureWorkspaceActive} aria-hidden={!textureWorkspaceActive}>
             <Suspense fallback={<AppRouteFallback />}>
               <EditorPage
@@ -357,7 +346,7 @@ export function App() {
               />
             </Suspense>
           </div>
-        </TextureRuntimeGate>
+        </TextureRuntimeBoundary>
         {route.name === 'autoUv' ? (
           <Suspense fallback={<AppRouteFallback />}>
             <AutoUvPage
@@ -413,14 +402,9 @@ export function App() {
     return (
       <>
         {route.module === 'texture' ? (
-          <TextureRuntimeGate
-            state={localTextureRuntime.state}
-            hasReadySession={localTextureRuntime.hasReadySession}
-            onRetry={() => void localTextureRuntime.refresh()}
-            onBack={navigation.openHome}
-          >
+          <TextureRuntimeBoundary onBack={navigation.openHome}>
             {page}
-          </TextureRuntimeGate>
+          </TextureRuntimeBoundary>
         ) : (
           page
         )}

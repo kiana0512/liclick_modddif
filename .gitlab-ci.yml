@@ -1,0 +1,57 @@
+stages:
+  - verify
+  - build
+
+default:
+  image: node:22-bookworm
+  before_script:
+    - corepack enable
+    - corepack pnpm install --frozen-lockfile
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+
+contracts-and-cloud-boundary:
+  stage: verify
+  script:
+    - corepack pnpm run check:cloud-boundary
+    - corepack pnpm run test:contracts
+
+typecheck:
+  stage: verify
+  script:
+    - corepack pnpm run typecheck
+
+# Existing lint debt is tracked separately. This job is visible immediately but
+# does not become a release blocker until the baseline is green.
+lint-baseline:
+  stage: verify
+  allow_failure: true
+  script:
+    - corepack pnpm run lint
+
+build:
+  stage: build
+  variables:
+    LICLICK_RELEASE_ID: "$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    LICLICK_GIT_SHA: "$CI_COMMIT_SHA"
+    LICLICK_RELEASE_VERSION: "0.1.13"
+    LICLICK_BUILD_TIME: "$CI_JOB_STARTED_AT"
+    VITE_LICLICK_RELEASE_ID: "$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    VITE_LICLICK_GIT_SHA: "$CI_COMMIT_SHA"
+    VITE_LICLICK_RELEASE_VERSION: "0.1.13"
+    VITE_LICLICK_BUILD_TIME: "$CI_JOB_STARTED_AT"
+    LICLICK_RUNTIME_MODE: "cloud"
+    VITE_LICLICK_RUNTIME_MODE: "cloud"
+  script:
+    - corepack pnpm run build:release
+    - corepack pnpm run check:cloud-artifact
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - apps/server/dist/
+      - apps/web/dist/
+      - packages/contracts/dist/

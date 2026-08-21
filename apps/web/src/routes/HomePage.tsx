@@ -14,7 +14,11 @@ import {
 import { useState } from 'react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
-import { downloadLocalTextureRuntimeInstaller } from '@/services/localTextureRuntimeClient';
+import {
+  downloadLocalComponent as downloadLocalComponentInstaller,
+  localComponentDownloadAvailable,
+} from '@/platform/localComponentDownload';
+import { hostExtensionFeaturesAvailable } from '@/platform/runtimeCapabilities';
 import {
   trackHomeModuleEntry,
   trackModuleAction,
@@ -293,7 +297,7 @@ export function HomePage({
     if (downloadingLocalComponent) return;
     setDownloadingLocalComponent(true);
     try {
-      await downloadLocalTextureRuntimeInstaller();
+      await downloadLocalComponentInstaller();
       trackModuleAction('local_component', 'download');
     } catch (error) {
       console.warn('[Li3D] Local component download failed.', error);
@@ -320,7 +324,9 @@ export function HomePage({
               LI3D CREATION SUITE
             </div>
             <h1 className="mt-5 text-4xl font-semibold tracking-[-0.045em] text-white sm:text-5xl">选择工作模块</h1>
-            <p className="mt-3 text-base text-white/44">一个入口，连接云端生产服务与本地贴图能力。</p>
+            <p className="mt-3 text-base text-white/44">
+              一个入口，连接云端生产服务与浏览器本地算力。
+            </p>
           </div>
 
           <div className="flex items-center gap-5 text-xs text-white/36">
@@ -351,16 +357,18 @@ export function HomePage({
               layout="featured"
               className="h-full w-full"
             />
-            <button
-              type="button"
-              disabled={downloadingLocalComponent}
-              onClick={() => void downloadLocalComponent()}
-              className="absolute bottom-5 right-5 z-20 inline-flex h-9 items-center gap-2 rounded-xl border border-fuchsia-200/20 bg-fuchsia-300/[0.09] px-3 text-[11px] font-semibold text-fuchsia-50/78 shadow-[0_10px_28px_rgba(168,85,247,0.12)] backdrop-blur-md transition hover:border-fuchsia-200/40 hover:bg-fuchsia-300/16 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-200/60"
-              aria-label="下载最新的贴图绘制本地组件安装包"
-            >
-              <Download className="h-3.5 w-3.5" />
-              {downloadingLocalComponent ? '正在下载…' : '下载最新安装包'}
-            </button>
+            {localComponentDownloadAvailable ? (
+              <button
+                type="button"
+                disabled={downloadingLocalComponent}
+                onClick={() => void downloadLocalComponent()}
+                className="absolute bottom-5 right-5 z-20 inline-flex h-9 items-center gap-2 rounded-xl border border-fuchsia-200/20 bg-fuchsia-300/[0.09] px-3 text-[11px] font-semibold text-fuchsia-50/78 shadow-[0_10px_28px_rgba(168,85,247,0.12)] backdrop-blur-md transition hover:border-fuchsia-200/40 hover:bg-fuchsia-300/16 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-200/60"
+                aria-label="下载最新的贴图绘制本地组件安装包"
+              >
+                <Download className="h-3.5 w-3.5" />
+                {downloadingLocalComponent ? '正在下载…' : '下载最新安装包'}
+              </button>
+            ) : null}
           </div>
           <ModuleCard
             eyebrow="AUTO UV"
@@ -390,20 +398,22 @@ export function HomePage({
             onClick={onOpenBake}
             layout="compact"
           />
-          <ModuleCard
-            eyebrow="PRODUCTION TOOLS"
-            title="工具箱"
-            description="使用建模与生产辅助工具。"
-            detail="3ds Max · Blender · 独立工具"
-            icon={Wrench}
-            accent="cyan"
-            visual="tools"
-            badge="云端服务"
-            hoverAction="打开工具箱"
-            telemetryModule="toolbox"
-            onClick={onOpenToolbox}
-            layout="compact"
-          />
+          {hostExtensionFeaturesAvailable ? (
+            <ModuleCard
+              eyebrow="PRODUCTION TOOLS"
+              title="工具箱"
+              description="使用建模与生产辅助工具。"
+              detail="3ds Max · Blender · 独立工具"
+              icon={Wrench}
+              accent="cyan"
+              visual="tools"
+              badge="桌面扩展"
+              hoverAction="打开工具箱"
+              telemetryModule="toolbox"
+              onClick={onOpenToolbox}
+              layout="compact"
+            />
+          ) : null}
         </div>
       </section>
     </main>

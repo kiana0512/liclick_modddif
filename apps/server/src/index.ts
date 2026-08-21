@@ -27,6 +27,7 @@ import { identityTelemetryStorage } from './services/identityTelemetryService.js
 import { syncTelemetryAggregateToBitable } from './services/feishuPlatformService.js';
 import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
 import { serveWebFrontend } from './services/webFrontendService.js';
+import { serverReleaseManifest } from './release/releaseManifest.js';
 
 const mimeTypes: Record<string, string> = {
   '.json': 'application/json',
@@ -130,6 +131,7 @@ async function handleWorkspaceRequest(
     sendJson(response, 200, {
       ok: true,
       workspaceVersion: '0.6.0',
+      release: serverReleaseManifest,
       host: serverConfig.host,
       features: {
         webOAuthCookieSession:
@@ -143,6 +145,11 @@ async function handleWorkspaceRequest(
         feishuBitableSync: serverConfig.feishuPlatform.bitable.enabled,
       },
     });
+    return;
+  }
+  if (url.pathname === '/api/release') {
+    response.setHeader('cache-control', 'no-store');
+    sendJson(response, 200, serverReleaseManifest);
     return;
   }
   if (url.pathname.startsWith('/workspace/')) {

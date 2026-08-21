@@ -45,8 +45,14 @@
     "package:windows:local-component": "powershell -ExecutionPolicy Bypass -File scripts/package-windows-local-component.ps1",
     "package:photoshop": "powershell -ExecutionPolicy Bypass -File scripts/package-photoshop-uxp.ps1",
     "build": "corepack pnpm -r build",
+    "build:release": "node scripts/validate-release-env.mjs && corepack pnpm -r build",
     "lint": "corepack pnpm -r lint",
     "typecheck": "corepack pnpm -r typecheck",
+    "test:contracts": "corepack pnpm --filter @liclick/contracts test",
+    "check:cloud-boundary": "node scripts/check-cloud-boundary.mjs",
+    "check:cloud-artifact": "node scripts/check-cloud-artifact.mjs",
+    "validate:release-env": "node scripts/validate-release-env.mjs",
+    "verify:modernization": "corepack pnpm run check:cloud-boundary && corepack pnpm run test:contracts",
     "format": "prettier --write ."
   },
   "devDependencies": {

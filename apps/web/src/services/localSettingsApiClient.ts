@@ -1,7 +1,7 @@
 import type { ShortcutOverrides } from '@/stores/shortcutStore';
-import { getLocalTextureRuntimeApiBase } from './localTextureRuntimeClient';
+import { getProjectApiBase } from '@/platform/projectApiBase';
 
-const workspaceApiBase = getLocalTextureRuntimeApiBase();
+const workspaceApiBase = getProjectApiBase();
 
 export type LocalProfile = {
   customId: string;
