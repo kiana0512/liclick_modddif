@@ -209,6 +209,7 @@ import {
   isTrustedGenerationWorkspaceAssetUrl,
   isWorkspaceAssetUrl,
   loadProject as loadWorkspaceProject,
+  readWorkspaceAssetBlob,
   renameProject as renameWorkspaceProject,
   saveBlobAsset,
   saveDataUrlAsset,
@@ -5142,9 +5143,7 @@ export function EditorPage({
         try {
           sourceBlob = getRegisteredObjectUrlBlob(sourceUrl);
           if (!sourceBlob) {
-            const response = await fetch(sourceUrl, { credentials: 'include' });
-            if (!response.ok) throw new Error(`读取模型失败（${response.status}）`);
-            sourceBlob = await response.blob();
+            sourceBlob = await readWorkspaceAssetBlob(sourceUrl);
           }
           if (sourceBlob) break;
         } catch (reason) {

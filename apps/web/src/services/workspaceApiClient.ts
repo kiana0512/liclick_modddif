@@ -603,3 +603,40 @@ export function isWorkspaceAssetUrl(url?: string) {
       (workspacePathAtBase(url, workspaceApiBase) || directAssetPathAtBase(url, workspaceApiBase)),
   );
 }
+
+/**
+ * Reads a durable project asset without forwarding the Li3D session cookie to
+ * cloud object storage. Cloud URLs are resolved through an authenticated,
+ * same-origin request and the short-lived signed URL is fetched credentialless.
+ */
+export async function readWorkspaceAssetBlob(url: string) {
+  const directAssetPath = directAssetPathAtBase(url, workspaceApiBase);
+  if (isCloudBuild && directAssetPath) {
+    const separator = directAssetPath.includes('?') ? '&' : '?';
+    const resolution = await fetch(
+      `${workspaceApiBase}${directAssetPath}${separator}resolve=1`,
+      { credentials: 'include', redirect: 'error' },
+    );
+    if (!resolution.ok) {
+      throw new WorkspaceApiError(resolution.status, `无法解析云端资源（${resolution.status}）。`);
+    }
+    const payload = await resolution.json() as { downloadUrl?: unknown };
+    if (typeof payload.downloadUrl !== 'string') {
+      throw new WorkspaceApiError(502, '云端资源缺少签名下载地址。');
+    }
+    const signedUrl = new URL(payload.downloadUrl);
+    if (signedUrl.protocol !== 'https:' && signedUrl.protocol !== 'http:') {
+      throw new WorkspaceApiError(502, '云端资源签名下载协议无效。');
+    }
+    const response = await fetch(signedUrl, { credentials: 'omit', redirect: 'follow' });
+    if (!response.ok) {
+      throw new WorkspaceApiError(response.status, `无法读取云端资源（${response.status}）。`);
+    }
+    return response.blob();
+  }
+  const response = await fetch(url, {
+    credentials: directAssetPath ? 'include' : 'same-origin',
+  });
+  if (!response.ok) throw new WorkspaceApiError(response.status, `无法读取资源（${response.status}）。`);
+  return response.blob();
+}

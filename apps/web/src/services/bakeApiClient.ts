@@ -217,7 +217,9 @@ export function normalBakeOutputUrl(job: NormalBakeJob) {
 
 export function bakeOutputUrl(job: NormalBakeJob, channel: BakeChannelId) {
   const output = job.outputs?.[channel] ?? (channel === 'normal' ? job.output : undefined);
-  return output ? `${workspaceApiBase}${output.url}` : undefined;
+  if (!output) return undefined;
+  if (/^(?:blob:|data:|https?:)/i.test(output.url)) return output.url;
+  return `${workspaceApiBase}${output.url}`;
 }
 
 function triggerBlobDownload(blob: Blob, filename: string) {

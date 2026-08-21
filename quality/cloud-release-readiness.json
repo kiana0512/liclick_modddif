@@ -70,8 +70,8 @@
       "id": "bake.browser-local-pbr",
       "name": "PBR Bake 在浏览器本地算力完成并可导出",
       "required": true,
-      "status": "failed",
-      "evidence": ["现 UI 显示远端 Substance/3090；只验证了页面加载"]
+      "status": "in_progress",
+      "evidence": ["@liclick/web test:local-pbr-bake", "browser:OBJ -> xatlas UV GLB -> local BVH Worker -> Normal/AO PNG -> direct upload -> refresh restore", "quality/evidence/browser-local-pbr-bake-e2e.json", "生产模型、五通道质量和硬件性能矩阵尚未完成"]
     },
     {
       "id": "topology.browser-local",
@@ -99,7 +99,7 @@
       "name": "PostgreSQL 事务、对象回收、内容验证和安全扫描",
       "required": true,
       "status": "in_progress",
-      "evidence": ["签名和 ownership 已实现；生产事务与内容扫描未完成"]
+      "evidence": ["签名和 ownership 已实现；浏览器通过同源鉴权换取短期签名 URL，并以 credentials=omit 读取对象；生产事务与内容扫描未完成"]
     }
   ]
 }

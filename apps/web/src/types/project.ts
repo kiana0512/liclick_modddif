@@ -60,6 +60,8 @@ export type BakeAssetReference = {
   url: string;
   relativePath?: string;
   mimeType?: string;
+  /** Physical centimeters represented by one coordinate unit in this asset. */
+  sourceUnitScaleFactor?: number;
 };
 
 export type ProjectPipelineStage = 'texture' | 'retopology' | 'uv' | 'bake';
@@ -194,6 +196,13 @@ export type ProjectBakeSetState = {
   ignoreProjectColor?: boolean;
   settings?: BakeDraftSettings;
   lastJobId?: string;
+  /** Browser-local baked maps persisted through the normal project asset store. */
+  localBakeOutputs?: Partial<
+    Record<
+      BakeDraftSettings['enabledChannels'][number],
+      BakeAssetReference & { width: number; height: number }
+    >
+  >;
 };
 
 export type ProjectBakeWorkspace = {

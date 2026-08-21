@@ -42,9 +42,15 @@ const scripts = await Promise.all(
 const failures = [];
 for (const budget of budgets) {
   const prefixes = budget.prefixes ?? [budget.prefix];
-  const matches = scripts.filter((script) =>
+  const prefixMatches = scripts.filter((script) =>
     prefixes.some((prefix) => script.name.startsWith(prefix)),
   );
+  // A tiny route helper can legitimately keep the exportUtils facade while
+  // Rollup names the actual shared 3D graph projectPipeline (or vice versa).
+  // Budget the single substantial graph, not an unrelated 1 kB facade.
+  const matches = prefixes.length > 1
+    ? prefixMatches.filter((script) => script.bytes >= 100_000)
+    : prefixMatches;
   if (matches.length !== 1) {
     failures.push(
       `${budget.label}: expected one of ${prefixes.join(', ')}*.js, found ${matches.length}`,

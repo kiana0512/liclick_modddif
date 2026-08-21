@@ -2,6 +2,7 @@ import { GLTFExporter } from 'three-stdlib';
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import type { EngineSession } from '@/engine/session/engineSession';
+import type { SceneObject } from '@/types/model';
 import type {
   LocalUvAtlasInputMesh,
   LocalUvAtlasResult,
@@ -24,6 +25,7 @@ export type LocalUvUnwrapResult = {
   utilization: number;
   atlasWidth: number;
   atlasHeight: number;
+  sourceObject: SceneObject;
 };
 
 type PreparedMesh = {
@@ -217,6 +219,12 @@ export async function unwrapModelFileLocally(input: {
         utilization: atlas.utilization,
         atlasWidth: atlas.width,
         atlasHeight: atlas.height,
+        sourceObject: {
+          ...loaded.object,
+          materialSlots: loaded.object.materialSlots.map((slot) => ({ ...slot })),
+          uvSets: [...loaded.object.uvSets],
+          transform: { ...loaded.object.transform },
+        },
       };
     } finally {
       disposeLoadedModel(loaded.root, loaded.sourceUrl);

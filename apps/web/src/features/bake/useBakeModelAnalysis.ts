@@ -4,7 +4,12 @@ import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import { canonicalizeBakeBoundingBox } from './bakeModelAlignment';
 import type { ModelBoundingBox, ModelFormat } from '@/types/model';
 
-export type BakeModelFileInput = { objectId: string; file: File };
+export type BakeModelFileInput = {
+  objectId: string;
+  file: File;
+  /** Overrides a container-format default for derived assets such as OBJ -> GLB Auto UV. */
+  sourceUnitScaleFactor?: number;
+};
 
 export type BakeModelInfo = {
   name: string;
@@ -32,7 +37,7 @@ function disposeLoadedRoot(root: THREE.Object3D) {
   });
 }
 
-async function inspectModel({ objectId, file }: BakeModelFileInput) {
+async function inspectModel({ objectId, file, sourceUnitScaleFactor }: BakeModelFileInput) {
   const loaded = await loadModelFromFile(file, {
     normalize: false,
     ground: false,
@@ -47,13 +52,13 @@ async function inspectModel({ objectId, file }: BakeModelFileInput) {
         boundingBox: canonicalizeBakeBoundingBox(
           loaded.result.originalBoundingBox,
           loaded.result.format,
-          loaded.result.sourceUnitScaleFactor,
+          sourceUnitScaleFactor ?? loaded.result.sourceUnitScaleFactor,
         ),
         uvSets: loaded.object.uvSets,
         childMeshCount: loaded.result.childMeshCount,
         warnings: loaded.result.warnings,
         format: loaded.result.format,
-        sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
+        sourceUnitScaleFactor: sourceUnitScaleFactor ?? loaded.result.sourceUnitScaleFactor,
       } satisfies BakeModelInfo,
     };
   } finally {

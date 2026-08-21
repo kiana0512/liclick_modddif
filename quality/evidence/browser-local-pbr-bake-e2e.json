@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "executedAt": "2026-08-21T14:14:00+08:00",
+  "environment": "remote-deployment-simulator",
+  "entry": "/li3d/uv -> /li3d/project/:id/bake",
+  "fixture": "apps/web/test-fixtures/local-bake-e2e.obj",
+  "assertions": {
+    "developmentIdentityAuthenticated": true,
+    "autoUvWorkerCompleted": true,
+    "derivedGlbInheritedSourceUnitScaleFactor": 1,
+    "bakeAlignment": "passed",
+    "browserLocalBvhWorkerCompleted": true,
+    "serverComputeFallbackUsed": false,
+    "resolution": [1024, 1024],
+    "channels": ["normal", "ambientOcclusion"],
+    "coveredPixels": 1042441,
+    "missedProjectionSamples": 4090,
+    "normalPngBytes": 7550,
+    "ambientOcclusionPngBytes": 7493,
+    "normalDirectUploadVerified": true,
+    "ambientOcclusionDirectUploadVerified": true,
+    "durableBakeManifestEntries": 2,
+    "projectRevisionAfterBake": 5,
+    "refreshRestorePassed": true,
+    "credentiallessSignedObjectReadPassed": true,
+    "cloudBundleBudgetBytes": 3076907
+  },
+  "releaseInterpretation": "Normal/AO vertical slice passed in a real browser against the remote simulator; the production five-channel model and hardware matrix remains in_progress."
+}

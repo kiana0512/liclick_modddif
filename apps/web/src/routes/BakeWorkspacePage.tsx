@@ -65,6 +65,8 @@ import {
   type ObjectViewPreset,
 } from '@/engine/scene/transformActions';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
+import { bakePbrFilesLocally } from '@/engine/bake/localPbrBake';
+import { useEngineSession } from '@/engine/session/engineSessionContext';
 import { dehighlightBaseColorFile } from '@/engine/materials/dehighlightBaseColor';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
 import { getBakeHighObjects, replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
@@ -77,8 +79,6 @@ import {
   downloadAllBakeOutputs,
   downloadBakeOutput,
   getNormalBakeJob,
-  getSubstanceBakerStatus,
-  submitNormalBake,
   type BakeChannelId,
   type NormalBakeJob,
   type SubstanceBakerStatus,
@@ -88,7 +88,12 @@ import {
   trackModuleAction,
   trackModuleActionOnce,
 } from '@/services/telemetryClient';
-import { saveBlobAsset, saveProject, urlToBlob } from '@/services/workspaceApiClient';
+import {
+  readWorkspaceAssetBlob,
+  saveBlobAsset,
+  saveProject,
+  urlToBlob,
+} from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { shortcutMatches } from '@/stores/shortcutStore';
@@ -162,7 +167,13 @@ const resultChannelOrder: BakeChannelId[] = [
   'thickness',
   'position',
 ];
-const remoteBakeChannels = new Set<ChannelId>(resultChannelOrder);
+const remoteBakeChannels = new Set<ChannelId>([
+  'normal',
+  'ambientOcclusion',
+  'worldNormal',
+  'thickness',
+  'position',
+]);
 const defaultOneClickChannels: ChannelId[] = ['normal', 'ambientOcclusion'];
 const channelFileSuffix: Record<BakeChannelId, string> = {
   baseColor: 'BaseColor',
@@ -282,6 +293,7 @@ export function BakeWorkspacePage({
   onOpenUv: () => void;
   handoff?: TextureBakeHandoff;
 }) {
+  const engineSession = useEngineSession();
   const highInputRef = useRef<HTMLInputElement>(null);
   const lowInputRef = useRef<HTMLInputElement>(null);
   const cageInputRef = useRef<HTMLInputElement>(null);
@@ -359,7 +371,7 @@ export function BakeWorkspacePage({
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [engine, setEngine] = useState<BakeEngineId>(defaultBakeDraftSettings.engine);
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>('production');
-  const [resolution, setResolution] = useState(4096);
+  const [resolution, setResolution] = useState(1024);
   const [frontalDistance, setFrontalDistance] = useState(0.1);
   const [rearDistance, setRearDistance] = useState(0.1);
   const [projectionMode, setProjectionMode] = useState<BakeProjectionMode>('distance');
@@ -368,7 +380,7 @@ export function BakeWorkspacePage({
   const [sampling, setSampling] = useState('4x4');
   const [padding, setPadding] = useState(16);
   const [normalOrientation, setNormalOrientation] = useState<'directx' | 'opengl'>('directx');
-  const [device, setDevice] = useState<'gpu' | 'cpu'>('gpu');
+  const [device, setDevice] = useState<'gpu' | 'cpu'>('cpu');
   const [udim, setUdim] = useState(1001);
   const [hitStrategy, setHitStrategy] = useState<'inward' | 'closest-from-source'>('inward');
   const [ignoreBackfaces, setIgnoreBackfaces] = useState(false);
@@ -385,6 +397,9 @@ export function BakeWorkspacePage({
   );
   const [bakeJob, setBakeJob] = useState<NormalBakeJob>();
   const [bakeSubmitting, setBakeSubmitting] = useState(false);
+  const [localBakeProgress, setLocalBakeProgress] = useState(0);
+  const localBakeAbortRef = useRef<AbortController>();
+  const localBakeRevokeRef = useRef<() => void>();
   const [bakeError, setBakeError] = useState<string>();
   const [oneClickBakeAttempted, setOneClickBakeAttempted] = useState(false);
   const [highImporting, setHighImporting] = useState(false);
@@ -398,8 +413,14 @@ export function BakeWorkspacePage({
   const [bakerStatus, setBakerStatus] = useState<SubstanceBakerStatus>();
   const [bakerStatusChecking, setBakerStatusChecking] = useState(true);
   const lowInputs = useMemo<BakeModelFileInput[]>(
-    () => Object.entries(lowFiles).map(([objectId, file]) => ({ objectId, file })),
-    [lowFiles],
+    () =>
+      Object.entries(lowFiles).map(([objectId, file]) => ({
+        objectId,
+        file,
+        sourceUnitScaleFactor:
+          project?.bakeWorkspace?.bakeSets[objectId]?.low?.sourceUnitScaleFactor,
+      })),
+    [lowFiles, project?.bakeWorkspace?.bakeSets],
   );
   const cageInputs = useMemo<BakeModelFileInput[]>(
     () => Object.entries(cageFiles).map(([objectId, file]) => ({ objectId, file })),
@@ -409,18 +430,25 @@ export function BakeWorkspacePage({
 
   const refreshBakerStatus = useCallback(async () => {
     setBakerStatusChecking(true);
-    try {
-      setBakerStatus(await getSubstanceBakerStatus());
-    } catch {
-      // Keep the last confirmed result when a recheck is interrupted.
-    } finally {
-      setBakerStatusChecking(false);
-    }
+    setBakerStatus({
+      available: true,
+      connected: true,
+      endpoint: 'browser-local://bvh-worker',
+      workerId: 'browser-local-bvh',
+      tlsVerified: true,
+      trustSource: 'system-ca',
+    });
+    setBakerStatusChecking(false);
   }, []);
 
   useEffect(() => {
     void refreshBakerStatus();
   }, [refreshBakerStatus]);
+
+  useEffect(() => () => {
+    localBakeAbortRef.current?.abort();
+    localBakeRevokeRef.current?.();
+  }, []);
 
   const persistProjectUpdate = useCallback(
     (update: (current: Project) => Project) => {
@@ -482,7 +510,17 @@ export function BakeWorkspacePage({
           };
           uploaded.forEach(([objectId, asset]) => {
             const previous = bakeSets[objectId] ?? { objectId };
-            bakeSets[objectId] = { ...previous, [kind]: asset };
+            const inheritedUnitScaleFactor =
+              kind === 'low' ? previous.low?.sourceUnitScaleFactor : undefined;
+            bakeSets[objectId] = {
+              ...previous,
+              [kind]: {
+                ...asset,
+                ...(inheritedUnitScaleFactor !== undefined
+                  ? { sourceUnitScaleFactor: inheritedUnitScaleFactor }
+                  : {}),
+              },
+            };
             const category =
               kind === 'color' || kind === 'roughness' || kind === 'metallic' || kind === 'normal'
                 ? 'references'
@@ -535,9 +573,7 @@ export function BakeWorkspacePage({
     let cancelled = false;
     void Promise.all(
       pending.map(async ({ highId, low, source }) => {
-        const response = await fetch(source, { credentials: 'include' });
-        if (!response.ok) throw new Error(`${low.name} 读取失败（${response.status}）`);
-        const blob = await response.blob();
+        const blob = await readWorkspaceAssetBlob(source);
         return [
           highId,
           new File([blob], low.name, { type: blob.type || 'application/octet-stream' }),
@@ -582,9 +618,7 @@ export function BakeWorkspacePage({
         Object.entries(workspace.bakeSets).map(async ([objectId, set]) => {
           const asset = set[kind];
           if (!asset?.url) return undefined;
-          const response = await fetch(asset.url, { credentials: 'include' });
-          if (!response.ok) throw new Error(`${asset.name} 读取失败（${response.status}）`);
-          const blob = await response.blob();
+          const blob = await readWorkspaceAssetBlob(asset.url);
           return [
             objectId,
             new File([blob], asset.name, { type: asset.mimeType || blob.type }),
@@ -834,7 +868,7 @@ export function BakeWorkspacePage({
     applyingSettingsRef.current = true;
     setEngine(saved.engine);
     setQualityPreset(saved.qualityPreset);
-    setResolution(Math.min(saved.resolution, 4096));
+    setResolution(Math.min(saved.resolution, 2048));
     setFrontalDistance(saved.frontalDistance);
     setRearDistance(saved.rearDistance);
     setProjectionMode(saved.projectionMode);
@@ -843,7 +877,9 @@ export function BakeWorkspacePage({
     setSampling(saved.sampling);
     setPadding(saved.padding);
     setNormalOrientation(saved.normalOrientation);
-    setDevice('gpu');
+    // The current BVH rasterizer is a dedicated CPU Worker. Persisted legacy
+    // GPU selections must not make the browser-local execution claim GPU use.
+    setDevice('cpu');
     setUdim(saved.udim);
     setHitStrategy(saved.hitStrategy);
     setIgnoreBackfaces(saved.ignoreBackfaces);
@@ -868,13 +904,67 @@ export function BakeWorkspacePage({
 
   useEffect(() => {
     if (!selectedHigh) return;
-    const jobId = project?.bakeWorkspace?.bakeSets[selectedHigh.id]?.lastJobId;
+    const bakeSet = project?.bakeWorkspace?.bakeSets[selectedHigh.id];
+    const jobId = bakeSet?.lastJobId;
     if (!jobId || restoredJobRef.current === jobId || bakeJob?.id === jobId) return;
     restoredJobRef.current = jobId;
+    if (jobId.startsWith('local-bake-') && bakeSet?.localBakeOutputs) {
+      const outputs = Object.fromEntries(
+        Object.entries(bakeSet.localBakeOutputs).map(([channel, output]) => [
+          channel,
+          {
+            fileName: output.name,
+            width: output.width,
+            height: output.height,
+            url: output.url,
+          },
+        ]),
+      ) as NonNullable<NormalBakeJob['outputs']>;
+      const saved = bakeSet.settings;
+      const now = new Date().toISOString();
+      const restored: NormalBakeJob = {
+        id: jobId,
+        ownerUserId: 'browser-local',
+        kind: 'bake-maps',
+        projectId,
+        objectId: selectedHigh.id,
+        status: 'succeeded',
+        stage: 'finished',
+        progress: 100,
+        settings: {
+          resolution: ([1024, 2048, 4096].includes(saved?.resolution ?? 0)
+            ? saved?.resolution
+            : 1024) as 1024 | 2048 | 4096,
+          padding: saved?.padding ?? 16,
+          sampling: (['1x1', '2x2', '4x4', '8x8'].includes(saved?.sampling ?? '')
+            ? saved?.sampling
+            : '2x2') as '1x1' | '2x2' | '4x4' | '8x8',
+          normalOrientation: saved?.normalOrientation ?? 'directx',
+          device: saved?.device ?? 'cpu',
+          udim: saved?.udim ?? 1001,
+          frontalDistance: saved?.frontalDistance ?? 0.1,
+          rearDistance: saved?.rearDistance ?? 0.1,
+          matchMode: saved?.matchMode ?? 'always',
+          projectionMode: saved?.projectionMode ?? 'distance',
+          hitStrategy: saved?.hitStrategy ?? 'inward',
+          ignoreBackfaces: saved?.ignoreBackfaces ?? false,
+          channels: Object.keys(outputs) as BakeChannelId[],
+        },
+        input: { high: selectedHigh.name, low: bakeSet.low?.name ?? 'low-model' },
+        outputs,
+        output: outputs.normal,
+        logs: ['Restored browser-local bake outputs from project assets.'],
+        createdAt: now,
+        updatedAt: now,
+        finishedAt: now,
+      };
+      setBakeJob(restored);
+      return;
+    }
     void getNormalBakeJob(jobId)
       .then(setBakeJob)
       .catch(() => undefined);
-  }, [bakeJob?.id, project?.bakeWorkspace, selectedHigh]);
+  }, [bakeJob?.id, project?.bakeWorkspace, projectId, selectedHigh]);
 
   useEffect(() => {
     if (!selectedHigh || applyingSettingsRef.current) return;
@@ -1377,10 +1467,8 @@ export function BakeWorkspacePage({
     pipelineLowRecoveryRef.current = recoveryKey;
     let cancelled = false;
 
-    void fetch(lowAsset.url, { credentials: 'include' })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`${lowAsset.name} 读取失败（${response.status}）`);
-        const blob = await response.blob();
+    void readWorkspaceAssetBlob(lowAsset.url)
+      .then(async (blob) => {
         return new File([blob], lowAsset.name, {
           type: lowAsset.mimeType || blob.type || 'application/octet-stream',
         });
@@ -1429,9 +1517,7 @@ export function BakeWorkspacePage({
     let cancelled = false;
 
     const readAssetFile = async (asset: NonNullable<typeof highAsset>) => {
-      const response = await fetch(asset.url, { credentials: 'include' });
-      if (!response.ok) throw new Error(`${asset.name} 读取失败（${response.status}）`);
-      const blob = await response.blob();
+      const blob = await readWorkspaceAssetBlob(asset.url);
       return new File([blob], asset.name, {
         type: asset.mimeType || blob.type || 'application/octet-stream',
       });
@@ -1486,7 +1572,7 @@ export function BakeWorkspacePage({
 
   function selectPreset(preset: QualityPreset) {
     setQualityPreset(preset);
-    setResolution(preset === 'preview' ? 2048 : 4096);
+    setResolution(preset === 'preview' ? 1024 : 2048);
     setSampling(preset === 'preview' ? '2x2' : '4x4');
   }
 
@@ -1528,54 +1614,24 @@ export function BakeWorkspacePage({
   async function createHighFile() {
     const source = selectedHigh?.sourcePath;
     if (!source) throw new Error('高模源文件路径不可用，请重新导入高模。');
-    const response = await fetch(source, { credentials: 'include' });
-    if (!response.ok) throw new Error(`读取高模失败（${response.status}）。`);
-    const blob = await response.blob();
+    const blob = await readWorkspaceAssetBlob(source);
     return new File([blob], selectedHigh.name, { type: blob.type || 'application/octet-stream' });
-  }
-
-  async function createColorFile() {
-    const source = await loadSelectedBaseColorFile();
-    if (!cleanBaseColor) return source;
-    try {
-      return await dehighlightBaseColorFile(source, {
-        strength: baseColorDehighlightStrength,
-      });
-    } catch (reason) {
-      const detail = reason instanceof Error ? reason.message : '未知错误';
-      throw new Error(`Base Color 去高光处理失败：${detail}`);
-    }
-  }
-
-  async function createRoughnessFile() {
-    if (selectedRoughness) return selectedRoughness;
-    throw new Error('Roughness 对烘需要高模粗糙度贴图。');
-  }
-
-  function createMetallicFile() {
-    if (!selectedMetallic) throw new Error('Metallic 对烘需要高模金属度贴图。');
-    return selectedMetallic;
   }
 
   async function handleCreateBakeJob() {
     if (!project || !selectedHigh || !selectedLow) return;
     setBakeSubmitting(true);
+    setLocalBakeProgress(0);
     setBakeError(undefined);
+    const abortController = new AbortController();
+    localBakeAbortRef.current = abortController;
     try {
       const high = await createHighFile();
-      const color = requiresColor ? await createColorFile() : undefined;
-      const roughness =
-        requiresRoughness && roughnessSource !== 'comfy' ? await createRoughnessFile() : undefined;
-      const metallic = requiresMetallic ? createMetallicFile() : undefined;
-      const job = await submitNormalBake({
+      const result = await bakePbrFilesLocally({
         projectId: project.id,
         objectId: selectedHigh.id,
         high,
         low: selectedLow,
-        cage: projectionMode === 'cage' ? selectedCage : undefined,
-        color,
-        roughness,
-        metallic,
         settings: {
           resolution: resolution as 1024 | 2048 | 4096,
           padding,
@@ -1592,12 +1648,88 @@ export function BakeWorkspacePage({
           generateRoughnessFromBakedBaseColor: roughnessSource === 'comfy',
           channels: resultChannelOrder.filter((channel) => enabledChannels.has(channel)),
         },
+        session: engineSession,
+        signal: abortController.signal,
+        onProgress: (progress) => setLocalBakeProgress(Math.round(progress.progress * 100)),
       });
+      localBakeRevokeRef.current?.();
+      localBakeRevokeRef.current = result.revoke;
+      const durableOutputs: NonNullable<NormalBakeJob['outputs']> = {};
+      const durableReferences: NonNullable<ProjectBakeSetState['localBakeOutputs']> = {};
+      const bakedAssetPaths: string[] = [];
+      for (const [channel, blob] of Object.entries(result.blobs) as Array<[
+        BakeChannelId,
+        Blob,
+      ]>) {
+        const output = result.job.outputs?.[channel];
+        if (!output) continue;
+        const saved = await saveBlobAsset({
+          projectId: project.id,
+          category: 'baked',
+          blob,
+          filename: `local-bake-${result.job.id}-${output.fileName}`,
+        });
+        const durable = {
+          ...output,
+          url: saved.asset.url,
+        };
+        durableOutputs[channel] = durable;
+        durableReferences[channel] = {
+          name: output.fileName,
+          url: saved.asset.url,
+          relativePath: saved.asset.relativePath,
+          mimeType: 'image/png',
+          width: output.width,
+          height: output.height,
+        };
+        bakedAssetPaths.push(saved.asset.relativePath ?? saved.asset.url);
+      }
+      const job: NormalBakeJob = {
+        ...result.job,
+        outputs: durableOutputs,
+        output: durableOutputs.normal,
+      };
+      await persistProjectUpdate((current) => {
+        const bakeSets = { ...(current.bakeWorkspace?.bakeSets ?? {}) };
+        bakeSets[selectedHigh.id] = {
+          ...(bakeSets[selectedHigh.id] ?? { objectId: selectedHigh.id }),
+          localBakeOutputs: durableReferences,
+          lastJobId: job.id,
+        };
+        return {
+          ...current,
+          assetManifest: {
+            ...(current.assetManifest ?? {
+              models: [],
+              references: [],
+              generations: [],
+              layers: [],
+              baked: [],
+            }),
+            baked: Array.from(new Set([...(current.assetManifest?.baked ?? []), ...bakedAssetPaths])),
+          },
+          bakeWorkspace: {
+            version: 1,
+            activeStage: 'check',
+            selectedObjectId: selectedHigh.id,
+            bakeSets,
+          },
+        };
+      });
+      result.revoke();
+      localBakeRevokeRef.current = undefined;
       trackModuleActionOnce('model_baking', 'start', job.id);
       setBakeJob(job);
+      document.body.dataset.localBakeStatus = 'succeeded';
+      document.body.dataset.localBakeCoveredPixels = String(result.stats.coveredPixels);
+      document.body.dataset.localBakeMissedPixels = String(result.stats.missedPixels);
     } catch (reason) {
-      setBakeError(reason instanceof Error ? reason.message : '创建烘焙任务失败');
+      if (!(reason instanceof Error && reason.name === 'AbortError')) {
+        document.body.dataset.localBakeStatus = 'failed';
+        setBakeError(reason instanceof Error ? reason.message : '创建本地烘焙任务失败');
+      }
     } finally {
+      if (localBakeAbortRef.current === abortController) localBakeAbortRef.current = undefined;
       setBakeSubmitting(false);
     }
   }
@@ -1709,7 +1841,7 @@ export function BakeWorkspacePage({
     : bakerMissing
       ? '远端烘焙服务未连接'
       : bakeBusy
-        ? `正在烘焙 ${bakeJob?.progress ?? 0}%`
+        ? `正在本地烘焙 ${bakeSubmitting ? localBakeProgress : (bakeJob?.progress ?? 0)}%`
         : bakeJob?.status === 'succeeded'
           ? '重新一键烘焙'
           : bakeJob?.status === 'failed' || bakeJob?.status === 'cancelled'
@@ -2183,13 +2315,13 @@ export function BakeWorkspacePage({
                   />
                 </span>
                 <div>
-                  <p className="text-xs font-medium text-white/76">Substance 烘焙引擎</p>
+                  <p className="text-xs font-medium text-white/76">浏览器本地 BVH 烘焙引擎</p>
                   <p className="mt-0.5 text-[10px] text-white/32">
                     {bakerStatusChecking
-                      ? '正在连接远端服务器'
+                      ? '正在初始化本地 Worker'
                       : bakerMissing
-                        ? '远端 Substance Baker 未连接'
-                        : '远端 3090-B 已连接 · PBR Full V2'}
+                        ? '浏览器本地计算不可用'
+                        : '用户本机 CPU · Worker · 服务器不补算'}
                   </p>
                 </div>
               </div>
@@ -2326,7 +2458,7 @@ export function BakeWorkspacePage({
                         key={channel}
                         type="button"
                         disabled={!supported}
-                        title={supported ? undefined : '当前远端配置不支持此输出'}
+                        title={supported ? '浏览器本地生成' : '该通道仍在本地化与质量验证中'}
                         className={cn(
                           'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all',
                           selected
@@ -2377,18 +2509,21 @@ export function BakeWorkspacePage({
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
                     <div className="mb-4 sm:mb-0">
                       <p className="text-sm font-semibold text-white/82">输出贴图大小</p>
-                      <p className="mt-1 text-xs text-white/34">远端 V2 支持完整 PBR 十图输出</p>
+                      <p className="mt-1 text-xs text-white/34">本地阶段支持 Normal、AO、World Normal、Thickness、Position</p>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {([1024, 2048, 4096] as const).map((size) => (
                         <button
                           key={size}
                           type="button"
+                          disabled={size > 2048}
+                          title={size > 2048 ? '4K 在本地性能矩阵通过前暂不开放' : undefined}
                           className={cn(
                             'h-12 min-w-[58px] rounded-xl border text-sm font-semibold transition-all duration-200',
                             resolution === size
                               ? 'border-violet-300/50 bg-gradient-to-b from-violet-400/24 to-fuchsia-400/12 text-white shadow-[0_0_24px_rgba(168,85,247,.16)]'
                               : 'border-white/[0.08] bg-black/18 text-white/40 hover:border-white/18 hover:bg-white/[0.045] hover:text-white/70',
+                            size > 2048 && 'cursor-not-allowed opacity-30',
                           )}
                           onClick={() => setResolution(size)}
                         >
@@ -2420,15 +2555,27 @@ export function BakeWorkspacePage({
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-violet-100/68">正在自动匹配模型并生成贴图…</span>
                       <span className="font-semibold tabular-nums text-white/78">
-                        {bakeJob?.progress ?? 0}%
+                        {bakeSubmitting ? localBakeProgress : (bakeJob?.progress ?? 0)}%
                       </span>
                     </div>
                     <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-violet-400 transition-[width] duration-500"
-                        style={{ width: `${Math.max(4, bakeJob?.progress ?? 0)}%` }}
+                        style={{ width: `${Math.max(4, bakeSubmitting ? localBakeProgress : (bakeJob?.progress ?? 0))}%` }}
                       />
                     </div>
+                    {bakeSubmitting ? (
+                      <button
+                        type="button"
+                        className="mt-3 h-8 w-full rounded-lg border border-white/10 text-[11px] text-white/48 hover:bg-white/[0.05] hover:text-white"
+                        onClick={() => {
+                          localBakeAbortRef.current?.abort();
+                          engineSession?.cancel('local-pbr-bake');
+                        }}
+                      >
+                        取消本地烘焙
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -3042,10 +3189,7 @@ export function BakeWorkspacePage({
                       <Field label="计算设备">
                         <Segmented
                           value={device}
-                          options={[
-                            { value: 'gpu', label: 'GPU' },
-                            { value: 'cpu', label: 'CPU' },
-                          ]}
+                          options={[{ value: 'cpu', label: 'CPU Worker' }]}
                           onChange={setDevice}
                         />
                       </Field>

@@ -287,6 +287,12 @@ try {
   });
   assert.equal(content.status, 307);
   assert.equal(new URL(content.headers.get('location')).origin, objectStorageEndpoint);
+  const resolvedContent = await jsonRequest(`${completed.payload.asset.url}?resolve=1`, {
+    headers: { cookie, origin: simulatedWebOrigin },
+  });
+  assert.equal(resolvedContent.response.status, 200);
+  assert.equal(new URL(resolvedContent.payload.downloadUrl).origin, objectStorageEndpoint);
+  assert.match(resolvedContent.response.headers.get('cache-control') ?? '', /no-store/);
 
   const renameCommand = {
     schemaVersion: 1,

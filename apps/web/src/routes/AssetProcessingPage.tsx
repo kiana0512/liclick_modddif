@@ -84,9 +84,11 @@ import {
 } from '@/services/projectPipeline';
 import {
   createProject,
+  readWorkspaceAssetBlob,
   saveBlobAsset,
   saveProject as saveWorkspaceProject,
 } from '@/services/workspaceApiClient';
+import { bakeSourceUnitScaleFactor } from '@/features/bake/bakeModelAlignment';
 import { useProjectStore } from '@/stores/projectStore';
 import { useEngineSession } from '@/engine/session/engineSessionContext';
 import {
@@ -257,9 +259,7 @@ function preferredPipelineInputAsset(project: Project | undefined, mode: AssetPr
 }
 
 async function fileFromPipelineAsset(asset: ProjectPipelineAssetReference) {
-  const response = await fetch(asset.url, { credentials: 'include' });
-  if (!response.ok) throw new Error(`读取上游模型失败（${response.status}）`);
-  const blob = await response.blob();
+  const blob = await readWorkspaceAssetBlob(asset.url);
   return new File([blob], asset.name, {
     type: asset.mimeType || blob.type || 'application/octet-stream',
     // A deterministic timestamp lets a restored job prove that the freshly
@@ -2619,6 +2619,7 @@ export function AssetProcessingPage({
     historyRecordId?: string;
     sourceMode?: 'processing-job' | 'manual' | 'browser-local';
     objectId?: string;
+    highObject?: SceneObject;
   }) {
     let targetProject = projectId
       ? useProjectStore.getState().projects.find((item) => item.id === projectId) ?? project
@@ -2724,6 +2725,14 @@ export function AssetProcessingPage({
       mimeType: input.outputBlob.type || 'application/octet-stream',
       sha256: input.outputSha256,
       sizeBytes: input.outputSize ?? input.outputBlob.size,
+      ...(mode === 'uv' && input.highObject
+        ? {
+            sourceUnitScaleFactor: bakeSourceUnitScaleFactor(
+              input.highObject.format,
+              input.highObject.sourceUnitScaleFactor,
+            ),
+          }
+        : {}),
     };
     const stage = pipelineStageForMode(mode);
     if (pipeline) pipeline = markDownstreamPipelineRevisionsStale(pipeline, stage);
@@ -2774,7 +2783,20 @@ export function AssetProcessingPage({
       const format = highAsset ? getModelFormatFromFileName(highAsset.name) : undefined;
       const fallbackHighObject: SceneObject | undefined =
         highAsset && format
-          ? {
+          ? input.highObject
+            ? {
+                ...input.highObject,
+                id: objectId,
+                name: highAsset.name,
+                sourcePath: highAsset.url,
+                format,
+                materialSlots: input.highObject.materialSlots.map((slot) => ({ ...slot })),
+                uvSets: [...input.highObject.uvSets],
+                transform: { ...input.highObject.transform },
+                visible: true,
+                selected: true,
+              }
+            : {
               id: objectId,
               name: highAsset.name,
               type: 'group',
@@ -2823,6 +2845,7 @@ export function AssetProcessingPage({
                 url: outputAsset.url,
                 relativePath: outputAsset.relativePath,
                 mimeType: outputAsset.mimeType,
+                sourceUnitScaleFactor: outputAsset.sourceUnitScaleFactor,
               },
             },
           },
@@ -2863,6 +2886,7 @@ export function AssetProcessingPage({
           pipelineInputAsset && initialAsset === result.sourceFile,
         ),
         sourceMode: 'browser-local',
+        highObject: result.sourceObject,
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '本地 UV 结果保存失败。');

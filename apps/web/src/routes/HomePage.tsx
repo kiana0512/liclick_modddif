@@ -387,12 +387,12 @@ export function HomePage({
           <ModuleCard
             eyebrow="MODEL BAKING"
             title="模型烘焙"
-            description="完成高低模烘焙与 PBR 贴图输出。"
-            detail="高低模 · PBR · 检查"
+            description="浏览器本机完成高低模投射与 PBR 贴图输出。"
+            detail="本机 CPU · Worker · 服务器不补算"
             icon={Flame}
             accent="orange"
             visual="bake"
-            badge="云端服务"
+            badge="本机运行"
             hoverAction="进入烘焙工作台"
             telemetryModule="model_baking"
             onClick={onOpenBake}

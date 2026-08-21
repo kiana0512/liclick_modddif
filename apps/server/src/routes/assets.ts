@@ -85,6 +85,9 @@ export async function handleAssetsRoute(request: IncomingMessage, response: Serv
       const downloadUrl = await createAssetDownloadUrl(user.id, projectId, segments[4]);
       if (!downloadUrl) {
         sendJson(response, 404, { error: 'Asset not found.' });
+      } else if (url.searchParams.get('resolve') === '1') {
+        response.setHeader('cache-control', 'private, no-store');
+        sendJson(response, 200, { downloadUrl });
       } else {
         response.writeHead(307, {
           ...corsHeaders(response),
