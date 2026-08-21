@@ -2,7 +2,7 @@ param(
   [int]$Port = 5646,
   [string]$WorkspaceDir = "",
   [switch]$SkipBuild,
-  [switch]$UseConfiguredAssetService
+  [switch]$UseAssetServiceSimulator
 )
 
 $ErrorActionPreference = "Stop"
@@ -94,7 +94,7 @@ $env:SESSION_COOKIE_SECURE = "false"
 $env:FEISHU_DIRECTORY_ENRICHMENT_ENABLED = "false"
 $env:FEISHU_BITABLE_SYNC_ENABLED = "false"
 
-if (!$UseConfiguredAssetService) {
+if ($UseAssetServiceSimulator) {
   $AssetTlsDir = Join-Path $env:LICLICK_WORKSPACE_DIR "asset-service-simulator-tls"
   New-Item -ItemType Directory -Path $AssetTlsDir -Force | Out-Null
   $AssetCaPath = Join-Path $AssetTlsDir "ca.pem"
@@ -222,8 +222,10 @@ if (!$UseConfiguredAssetService) {
 Write-Host "LI3D real employee-auth preview: $Origin/li3d/" -ForegroundColor Green
 Write-Host "Atlas runs on this development server simulator only; the browser artifact remains zero-install." -ForegroundColor DarkGray
 Write-Host "Object storage is simulated inside the development server process; no cloud account is required." -ForegroundColor DarkGray
-if (!$UseConfiguredAssetService) {
+if ($UseAssetServiceSimulator) {
   Write-Host "Automatic retopology uses an HTTPS simulator with a generated, SHA-pinned test CA." -ForegroundColor DarkGray
+} else {
+  Write-Host "Automatic retopology uses the configured real Asset V4 service with strict TLS." -ForegroundColor Green
 }
 
 Push-Location $Root
