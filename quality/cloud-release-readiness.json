@@ -10,9 +10,9 @@
       "status": "passed",
       "evidence": [
         "check:cloud-artifact",
-        "smoke:web（旧安装 URL 404）",
+        "smoke:web（旧本地组件与工具箱安装 URL 404；本机性能与 Photoshop/DCC 接口 404）",
         "simulate:cloud-deployment",
-        "browser:/li3d/ 与 /li3d/uv"
+        "browser:/li3d/、/li3d/uv 与 /li3d/tools"
       ]
     },
     {
@@ -133,7 +133,7 @@
       "status": "in_progress",
       "evidence": [
         "Cloud 首页恢复第 5 个工具箱模块",
-        "/tools 完整登记原 9 项工具且无安装器或假按钮",
+        "/tools 按原版结构完整登记 9 项工具，无安装器、假按钮或桌面依赖宣称",
         "UV 引擎能力已具备；其余浏览器/云端工具仍需逐项实现",
         "PS/DCC 桥接按 ADR-0010 暂缓"
       ]

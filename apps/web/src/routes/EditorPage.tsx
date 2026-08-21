@@ -1813,7 +1813,7 @@ export function EditorPage({
             description: authRequired
               ? '当前工程的模型、参考图、图层和生成记录需要登录后才能保存到你的用户工作区。'
               : blockedEmptySave
-                ? '当前页面尝试把已有模型/图层保存为空项目，已被本地服务拦截。请刷新项目重新加载。'
+                ? '当前页面尝试把已有模型/图层保存为空项目，已被项目服务拦截。请刷新项目重新加载。'
                 : workspaceOnline
                   ? error instanceof Error
                     ? error.message

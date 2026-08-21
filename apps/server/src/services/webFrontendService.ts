@@ -5,6 +5,7 @@ import { serverConfig } from '../config.js';
 
 const retiredHostExtensionPaths = new Set([
   '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe',
+  '/toolbox/modeling-toolbox-v2.0.1.exe',
 ]);
 
 const mimeTypes: Record<string, string> = {

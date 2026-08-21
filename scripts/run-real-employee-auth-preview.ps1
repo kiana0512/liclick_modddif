@@ -7,6 +7,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$PublicPath = "/li3d"
+$env:VITE_PUBLIC_PATH = $PublicPath
+$env:LICLICK_PUBLIC_PATH = $PublicPath
 
 function ConvertTo-PemBlock {
   param(
@@ -49,6 +52,14 @@ $ServerEntry = Join-Path $Root "apps\server\dist\index.js"
 if (!(Test-Path -LiteralPath $WebDist -PathType Container)) {
   throw "Web build was not found: $WebDist"
 }
+$WebIndex = Join-Path $WebDist "index.html"
+if (!(Test-Path -LiteralPath $WebIndex -PathType Leaf)) {
+  throw "Web index was not found: $WebIndex"
+}
+$WebIndexContent = Get-Content -LiteralPath $WebIndex -Raw
+if (!$WebIndexContent.Contains("src=`"$PublicPath/assets/")) {
+  throw "Web build public path does not match $PublicPath. Run the preview without -SkipBuild."
+}
 if (!(Test-Path -LiteralPath $ServerEntry -PathType Leaf)) {
   throw "Server build was not found: $ServerEntry"
 }
@@ -69,7 +80,7 @@ $env:SERVER_PORT = [string]$Port
 $env:LICLICK_SERVE_WEB = "true"
 $env:LICLICK_WEB_DIST_DIR = $WebDist
 $env:LICLICK_PUBLIC_WORKSPACE_URL = $Origin
-$env:LICLICK_FRONTEND_URL = "$Origin/li3d/"
+$env:LICLICK_FRONTEND_URL = "$Origin$PublicPath/"
 $env:LICLICK_ALLOWED_ORIGINS = $Origin
 $env:LICLICK_WORKSPACE_DIR = [IO.Path]::GetFullPath($WorkspaceDir)
 $env:AUTH_MODE = "feishu-oauth"

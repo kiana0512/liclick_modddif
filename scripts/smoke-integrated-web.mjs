@@ -106,6 +106,9 @@ try {
   const cloudPhotoshopBridge = await fetch(`${baseUrl}/api/photoshop/status`);
   assert.equal(cloudPhotoshopBridge.status, 404);
 
+  const cloudNativeTelemetry = await fetch(`${baseUrl}/api/performance/native-snapshot`);
+  assert.equal(cloudNativeTelemetry.status, 404);
+
   const anonymousWorkspaceFile = await fetch(
     `${baseUrl}/workspace/users/victim/projects/example/assets/private.png`,
   );
@@ -137,8 +140,13 @@ try {
   );
   assert.equal(retiredInstaller.status, 404);
 
+  const retiredToolboxInstaller = await fetch(
+    `${baseUrl}/toolbox/modeling-toolbox-v2.0.1.exe`,
+  );
+  assert.equal(retiredToolboxInstaller.status, 404);
+
   console.log(
-    'Integrated Web smoke passed: SPA, auth boundaries, JSON API boundary, and no local component download route.',
+    'Integrated Web smoke passed: SPA, auth boundaries, JSON API boundary, and no host install/telemetry surface.',
   );
 } catch (error) {
   if (output.trim()) console.error(output.trim());

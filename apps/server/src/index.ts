@@ -17,7 +17,6 @@ import { handleIdentityRoute } from './routes/identity.js';
 import { handleLiclickRoute } from './routes/liclick.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { handleModelviewRoute } from './routes/modelview.js';
-import { handlePerformanceRoute } from './routes/performance.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
@@ -158,7 +157,12 @@ async function handleWorkspaceRequest(
   if (url.pathname.startsWith('/api/identity') && (await handleIdentityRoute(request, response, url))) return;
   if (url.pathname === '/api/events' && (await handleEventsRoute(request, response, url))) return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
-  if (url.pathname.startsWith('/api/performance') && (await handlePerformanceRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/performance')) {
+    sendJson(response, 404, {
+      error: 'Native host telemetry is not exposed by the Browser/Cloud runtime.',
+    });
+    return;
+  }
   if (url.pathname === '/api/history' && (await handleHistoryRoute(request, response, url))) return;
   if (
     url.pathname.startsWith('/api/asset-processing') &&

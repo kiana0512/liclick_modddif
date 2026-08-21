@@ -1,13 +1,10 @@
 import {
   ArrowLeft,
-  BookOpen,
   Box,
   Boxes,
-  Check,
-  Download,
   ExternalLink,
   Layers3,
-  MonitorDown,
+  MonitorCheck,
   Network,
   Palette,
   ScanLine,
@@ -38,7 +35,7 @@ const categories: ToolCategory[] = [
   {
     eyebrow: '3DS MAX',
     title: 'Max 工具箱',
-    description: '安装到 3ds Max 顶部“我的工具”工具栏。',
+    description: '原 3ds Max 工具清单已完整登记，DCC 集成按暂缓计划迁移。',
     accent: 'orange',
     tools: [
       { name: '模型批量整理', description: '批量整理、检查与导出模型', icon: Boxes },
@@ -51,7 +48,7 @@ const categories: ToolCategory[] = [
   {
     eyebrow: 'BLENDER',
     title: 'Blender 工具箱',
-    description: '安装到 Blender 插件目录，按需启用。',
+    description: '原 Blender 工具清单已完整登记，DCC 集成按暂缓计划迁移。',
     accent: 'violet',
     tools: [
       { name: 'Blender 批量图生 3D', description: '批量生成并自动导入 Blender', icon: Sparkles },
@@ -61,7 +58,7 @@ const categories: ToolCategory[] = [
   {
     eyebrow: 'STANDALONE',
     title: '独立工具',
-    description: '无需进入 DCC，安装后从桌面直接使用。',
+    description: '原独立工具清单已完整登记，后续逐项迁移到浏览器或云端。',
     accent: 'cyan',
     tools: [
       { name: '贴图通道工具', description: '贴图通道混合、打包与分离', icon: Palette },
@@ -118,7 +115,9 @@ function CategoryCard({ category }: { category: ToolCategory }) {
               </span>
               <span className="mt-0.5 block truncate text-[11px] text-white/30">{description}</span>
             </span>
-            <Check className="h-3.5 w-3.5 shrink-0 text-emerald-300/64" />
+            <span className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.035] px-2 py-1 text-[9px] font-medium tracking-[0.08em] text-white/34">
+              已登记
+            </span>
           </div>
         ))}
       </div>
@@ -175,45 +174,33 @@ export function ModelingToolboxPage({
                   建模工具箱
                 </h1>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-                  面向 3ds Max 与 Blender 的生产工具集合。一个安装器集中管理 9
-                  项工具，并支持后续自动更新。
+                  原 9 项生产工具的功能清单与界面结构完整保留。Cloud 核心工作流直接在浏览器运行；
+                  PS / DCC 集成已明确暂缓，不作为使用贴图、UV、拓扑和烘焙的前置条件。
                 </p>
               </div>
             </div>
 
-            <div className="relative mt-8 flex flex-wrap gap-3">
-              <button
-                type="button"
-                disabled
-                title="Cloud 浏览器版不提供 Windows 安装器"
-                className="inline-flex h-11 cursor-not-allowed items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.28)]"
-              >
-                <Download className="h-4 w-4" />
-                下载 Windows 安装器
-              </button>
-              <button
-                type="button"
-                disabled
-                title="PS/DCC 使用说明随桌面集成一并暂缓"
-                className="inline-flex h-11 cursor-not-allowed items-center gap-2 rounded-lg border border-white/12 bg-white/[0.045] px-5 text-sm font-semibold text-white/72"
-              >
-                <BookOpen className="h-4 w-4" />
-                查看使用说明
-                <ExternalLink className="h-3.5 w-3.5 text-white/38" />
-              </button>
+            <div className="relative mt-8 flex flex-wrap gap-3 text-sm">
+              <span className="inline-flex h-11 items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500/80 to-violet-500/80 px-5 font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.2)]">
+                <MonitorCheck className="h-4 w-4" />
+                核心能力 · 浏览器直接运行
+              </span>
+              <span className="inline-flex h-11 items-center rounded-lg border border-white/12 bg-white/[0.045] px-5 font-semibold text-white/54">
+                PS / DCC · 已暂缓
+              </span>
             </div>
           </div>
 
           <aside className="border-t border-white/[0.07] bg-black/18 p-7 lg:border-l lg:border-t-0 lg:p-9">
             <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/32">
-              PACKAGE INFO
+              CLOUD STATUS
             </div>
             <div className="mt-6 space-y-4">
               {[
-                ['版本', '2.0.1'],
-                ['平台', 'Windows'],
-                ['安装包', '11.0 MB'],
-                ['包含工具', '9 项'],
+                ['界面基线', '2.0.1'],
+                ['运行平台', '现代浏览器'],
+                ['核心安装', '不需要'],
+                ['登记工具', '9 项'],
               ].map(([label, value]) => (
                 <div
                   key={label}
@@ -225,9 +212,9 @@ export function ModelingToolboxPage({
               ))}
             </div>
             <div className="mt-6 flex items-start gap-3 rounded-xl border border-emerald-300/12 bg-emerald-400/[0.055] p-4">
-              <MonitorDown className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200/72" />
+              <MonitorCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200/72" />
               <p className="text-xs leading-5 text-emerald-50/52">
-                桌面历史包信息仅用于界面对齐；Cloud 版保持零安装，不提供安装器下载。
+                Cloud 版不提供安装器或本机桥接入口。9 项原工具按迁移状态如实登记，不展示不可用的假按钮。
               </p>
             </div>
           </aside>

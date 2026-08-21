@@ -7,7 +7,9 @@
     "downloadLocalTextureRuntimeInstaller",
     "useLocalTextureRuntime",
     "localTextureRuntimeClient",
-    "LIclick-3D-Texture-Local-Component-Setup.exe"
+    "LIclick-3D-Texture-Local-Component-Setup.exe",
+    "下载 Windows 安装器",
+    "一个安装器集中管理"
   ],
   "legacyAllowlist": []
 }
