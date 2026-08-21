@@ -1336,7 +1336,10 @@ export async function cancelNormalBakeJob(id: string, userId: string) {
 export async function getSubstanceBakerStatus() {
   const endpoint = serverConfig.substanceBakerBaseUrl;
   try {
-    const trust = remoteTrust();
+    const endpointUrl = remoteUrl(endpoint);
+    const trust: RemoteTrust = endpointUrl.protocol === 'https:'
+      ? remoteTrust()
+      : { source: 'node-default-ca' };
     const response = await requestRemote('/api/v1/assets/jobs/liclick-connection-probe', {
       timeoutMs: 5000,
       maxBytes: 1024 * 1024,
@@ -1348,7 +1351,7 @@ export async function getSubstanceBakerStatus() {
       connected,
       endpoint,
       workerId: 'asset-worker-3090-b-windows',
-      tlsVerified: true,
+      tlsVerified: endpointUrl.protocol === 'https:' || endpointUrl.hostname === '127.0.0.1',
       trustSource: trust.source,
       ...(trust.caPath ? { caPath: trust.caPath } : {}),
       ...(connected && authorized ? {} : { error: remoteErrorMessage(response) }),

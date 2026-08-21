@@ -5,8 +5,8 @@
 ## 不可妥协的目标
 
 1. 莉刻 Cloud Build 不要求安装本地组件，也不允许回退到 `localhost`。
-2. 投影、图层合成、蒙版、UV/PBR Bake 等普通贴图计算使用用户浏览器的 CPU/GPU。
-3. 云端只负责身份、权限、项目 Revision、对象存储、同步、审计和明确的 AI 推理服务。
+2. 投影、图层合成、蒙版和视口交互使用用户浏览器的 CPU/GPU；Auto UV、自动拓扑和生产烘焙按产品要求提交真实服务集群。
+3. LI3D 应用服务器负责身份、权限、项目 Revision、对象存储、同步、审计和任务编排；独立 GPU/AIGC API 集群负责 UV、拓扑、Substance 烘焙和 AI 推理。
 4. 一个 Git SHA 只构建一次；Web、Server、协议和数据 Schema 必须具有同一 Release Manifest。
 5. 迁移采用适配器和可回滚阶段，不通过验收门禁的替代实现不得删除旧路径。
 
@@ -25,6 +25,10 @@ Cloud control plane
       -> PostgreSQL metadata
       -> signed object-storage URLs
       -> audit and observability
+      -> GPU/AIGC API cluster
+           -> Asset V4 UV / Retopology Workers
+           -> Substance Baker Workers
+           -> Generation / Inpaint services
 ```
 
 浏览器缓存不是项目权威数据。大模型、图片和贴图使用签名 URL 在浏览器和对象存储之间直传，BFF 不代理普通贴图中间像素。
@@ -45,8 +49,8 @@ Cloud control plane
 | 1. 发布与契约 | Release Manifest、CI、Cloud 边界门禁  | 混合版本可检测，新债务被阻断   |
 | 2. 项目领域   | 权威 Schema、Command、Revision、迁移  | 项目协议只有一个实现           |
 | 3. 云端数据面 | PostgreSQL、对象存储、签名直传、SSO   | 无本地组件可保存和恢复项目     |
-| 4. 本地计算面 | Engine Session、Scheduler、资源预算   | 重任务不阻塞交互，服务器不补算 |
-| 5. 算法迁移   | WebGPU/WASM Bake、Auto UV、拓扑       | 核心贴图计算全部在浏览器       |
+| 4. 本地计算面 | Engine Session、Scheduler、资源预算   | 浏览器交互任务不阻塞主线程     |
+| 5. 算法迁移   | 浏览器贴图内核、真实 UV/拓扑/Bake API | 本地与远端任务边界可验证       |
 | 6. 切换       | Cloud Build 清零 localhost 依赖、灰度 | 干净设备纯浏览器 E2E 通过      |
 
 详细门禁见 [ACCEPTANCE_GATES.md](./ACCEPTANCE_GATES.md)，首个架构决策见 [ADR-0001](./ADR-0001-cloud-local-compute.md)。
@@ -69,9 +73,9 @@ Cloud control plane
 - Cloud 大资产已采用签名对象存储直传；本地远端部署模拟器已覆盖失败重试、校验、幂等完成、签名下载和控制面重启恢复。
 - 真实员工预览环境的对象存储模拟器已改为磁盘持久化；服务重启后仍可恢复已验证对象，浏览器无签名探测只返回 `403`，不会终止模拟服务器。
 - 项目级 Engine Session 已接管第一批全分辨率 UV/修补任务，并统一计算计划、并发、取消和资源释放边界；其余算法继续渐进迁移。
-- Auto UV 首个浏览器本地纵向切片已接入 xatlas WASM Worker：无 UV OBJ 已真实生成 GLB、完成对象直传并以高低模 `2/2` 进入 Bake；生产模型和质量矩阵未完成前保持发布阻断。
+- Auto UV 产品路径已切回真实 Asset V4 集群：页面读取实时 Worker/槽位，模型由 LI3D 应用服务器代理提交，任务、产物和历史按真实账号隔离；浏览器 xatlas 仅保留为已隔离的实验/回归内核，不再作为产品默认路径。
 - 局部重绘真实纵向链路已完成一次浏览器验收：真实员工会话、浏览器指针蒙版、云端 ModelView 生成、浏览器投影应用、Revision 保存、服务重启和图层像素恢复均已通过。该证据只覆盖测试模型，生产资产遮挡/导出矩阵尚未完成，因此总门禁仍保持进行中。
 - Auto Retopology 已完成模拟远端纵向验收：真实员工浏览器上传可解析高模，BFF 通过严格 TLS 与 SHA 固定的测试 CA 连接远端 Worker，返回正式 `_game_low.fbx` 与 `_game_low.blend`；FBX 经三方 SHA 后在浏览器解析，取消、历史和双服务重启恢复均通过。该证据不代表生产拓扑算法、生产 CA 或生产 Worker 已验收，因此门禁保持进行中。
-- Auto UV 的结果已经可直接进入浏览器 Bake，但尚未替换贴图编辑器当前对象；这是明确记录的跨模块交接缺口，不能以“进入 Bake 成功”冒充完整项目对象更新。
+- 生产 Bake 已切回真实 Substance Worker：服务状态、TLS、进度、取消和输出均来自服务端任务。2026-08-21 已用真实员工会话完成一次 4K、7 通道交付，账号历史可恢复；浏览器 BVH Bake 仅保留为隔离回归内核。
 
-计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，浏览器 Auto UV 见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。
+计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，被替代的浏览器 Auto UV 决策见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，真实生产计算边界见 [ADR-0009](./ADR-0009-real-production-compute-services.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。

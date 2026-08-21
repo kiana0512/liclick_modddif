@@ -65,8 +65,6 @@ import {
   type ObjectViewPreset,
 } from '@/engine/scene/transformActions';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
-import { bakePbrFilesLocally } from '@/engine/bake/localPbrBake';
-import { useEngineSession } from '@/engine/session/engineSessionContext';
 import { dehighlightBaseColorFile } from '@/engine/materials/dehighlightBaseColor';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
 import { getBakeHighObjects, replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
@@ -76,9 +74,12 @@ import {
 } from '@/services/projectPipeline';
 import {
   bakeOutputUrl,
+  cancelNormalBake,
   downloadAllBakeOutputs,
   downloadBakeOutput,
   getNormalBakeJob,
+  getSubstanceBakerStatus,
+  submitNormalBake,
   type BakeChannelId,
   type NormalBakeJob,
   type SubstanceBakerStatus,
@@ -295,7 +296,6 @@ export function BakeWorkspacePage({
   onOpenUv: () => void;
   handoff?: TextureBakeHandoff;
 }) {
-  const engineSession = useEngineSession();
   const highInputRef = useRef<HTMLInputElement>(null);
   const lowInputRef = useRef<HTMLInputElement>(null);
   const cageInputRef = useRef<HTMLInputElement>(null);
@@ -399,9 +399,6 @@ export function BakeWorkspacePage({
   );
   const [bakeJob, setBakeJob] = useState<NormalBakeJob>();
   const [bakeSubmitting, setBakeSubmitting] = useState(false);
-  const [localBakeProgress, setLocalBakeProgress] = useState(0);
-  const localBakeAbortRef = useRef<AbortController>();
-  const localBakeRevokeRef = useRef<() => void>();
   const [bakeError, setBakeError] = useState<string>();
   const [oneClickBakeAttempted, setOneClickBakeAttempted] = useState(false);
   const [highImporting, setHighImporting] = useState(false);
@@ -432,25 +429,24 @@ export function BakeWorkspacePage({
 
   const refreshBakerStatus = useCallback(async () => {
     setBakerStatusChecking(true);
-    setBakerStatus({
-      available: true,
-      connected: true,
-      endpoint: 'browser-local://bvh-worker',
-      workerId: 'browser-local-bvh',
-      tlsVerified: true,
-      trustSource: 'system-ca',
-    });
-    setBakerStatusChecking(false);
+    try {
+      setBakerStatus(await getSubstanceBakerStatus());
+    } catch (reason) {
+      setBakerStatus({
+        available: false,
+        connected: false,
+        endpoint: '',
+        tlsVerified: false,
+        error: reason instanceof Error ? reason.message : '无法连接真实 Substance Baker。',
+      });
+    } finally {
+      setBakerStatusChecking(false);
+    }
   }, []);
 
   useEffect(() => {
     void refreshBakerStatus();
   }, [refreshBakerStatus]);
-
-  useEffect(() => () => {
-    localBakeAbortRef.current?.abort();
-    localBakeRevokeRef.current?.();
-  }, []);
 
   const persistProjectUpdate = useCallback(
     (update: (current: Project) => Project) => {
@@ -1623,21 +1619,22 @@ export function BakeWorkspacePage({
   async function handleCreateBakeJob() {
     if (!project || !selectedHigh || !selectedLow) return;
     setBakeSubmitting(true);
-    setLocalBakeProgress(0);
     setBakeError(undefined);
-    const abortController = new AbortController();
-    localBakeAbortRef.current = abortController;
     try {
       const high = await createHighFile();
       const baseColor = requiresColor
         ? (processedBaseColor ?? await loadSelectedBaseColorFile())
         : undefined;
-      const result = await bakePbrFilesLocally({
+      const job = await submitNormalBake({
         projectId: project.id,
         objectId: selectedHigh.id,
         high,
         low: selectedLow,
-        baseColor,
+        cage: projectionMode === 'cage' ? selectedCage : undefined,
+        color: baseColor,
+        normalMap: selectedNormal,
+        roughness: selectedRoughness,
+        metallic: selectedMetallic,
         settings: {
           resolution: resolution as 1024 | 2048 | 4096,
           padding,
@@ -1654,89 +1651,22 @@ export function BakeWorkspacePage({
           generateRoughnessFromBakedBaseColor: roughnessSource === 'comfy',
           channels: resultChannelOrder.filter((channel) => enabledChannels.has(channel)),
         },
-        session: engineSession,
-        signal: abortController.signal,
-        onProgress: (progress) => setLocalBakeProgress(Math.round(progress.progress * 100)),
       });
-      localBakeRevokeRef.current?.();
-      localBakeRevokeRef.current = result.revoke;
-      const durableOutputs: NonNullable<NormalBakeJob['outputs']> = {};
-      const durableReferences: NonNullable<ProjectBakeSetState['localBakeOutputs']> = {};
-      const bakedAssetPaths: string[] = [];
-      for (const [channel, blob] of Object.entries(result.blobs) as Array<[
-        BakeChannelId,
-        Blob,
-      ]>) {
-        const output = result.job.outputs?.[channel];
-        if (!output) continue;
-        const saved = await saveBlobAsset({
-          projectId: project.id,
-          category: 'baked',
-          blob,
-          filename: `local-bake-${result.job.id}-${output.fileName}`,
-        });
-        const durable = {
-          ...output,
-          url: saved.asset.url,
-        };
-        durableOutputs[channel] = durable;
-        durableReferences[channel] = {
-          name: output.fileName,
-          url: saved.asset.url,
-          relativePath: saved.asset.relativePath,
-          mimeType: 'image/png',
-          width: output.width,
-          height: output.height,
-        };
-        bakedAssetPaths.push(saved.asset.relativePath ?? saved.asset.url);
-      }
-      const job: NormalBakeJob = {
-        ...result.job,
-        outputs: durableOutputs,
-        output: durableOutputs.normal,
-      };
-      await persistProjectUpdate((current) => {
-        const bakeSets = { ...(current.bakeWorkspace?.bakeSets ?? {}) };
-        bakeSets[selectedHigh.id] = {
-          ...(bakeSets[selectedHigh.id] ?? { objectId: selectedHigh.id }),
-          localBakeOutputs: durableReferences,
-          lastJobId: job.id,
-        };
-        return {
-          ...current,
-          assetManifest: {
-            ...(current.assetManifest ?? {
-              models: [],
-              references: [],
-              generations: [],
-              layers: [],
-              baked: [],
-            }),
-            baked: Array.from(new Set([...(current.assetManifest?.baked ?? []), ...bakedAssetPaths])),
-          },
-          bakeWorkspace: {
-            version: 1,
-            activeStage: 'check',
-            selectedObjectId: selectedHigh.id,
-            bakeSets,
-          },
-        };
-      });
-      result.revoke();
-      localBakeRevokeRef.current = undefined;
       trackModuleActionOnce('model_baking', 'start', job.id);
       setBakeJob(job);
-      document.body.dataset.localBakeStatus = 'succeeded';
-      document.body.dataset.localBakeCoveredPixels = String(result.stats.coveredPixels);
-      document.body.dataset.localBakeMissedPixels = String(result.stats.missedPixels);
     } catch (reason) {
-      if (!(reason instanceof Error && reason.name === 'AbortError')) {
-        document.body.dataset.localBakeStatus = 'failed';
-        setBakeError(reason instanceof Error ? reason.message : '创建本地烘焙任务失败');
-      }
+      setBakeError(reason instanceof Error ? reason.message : '创建真实 Substance 烘焙任务失败');
     } finally {
-      if (localBakeAbortRef.current === abortController) localBakeAbortRef.current = undefined;
       setBakeSubmitting(false);
+    }
+  }
+
+  async function handleCancelBake() {
+    if (!bakeJob || !['queued', 'running', 'cancelling'].includes(bakeJob.status)) return;
+    try {
+      setBakeJob(await cancelNormalBake(bakeJob.id));
+    } catch (reason) {
+      setBakeError(reason instanceof Error ? reason.message : '取消远端烘焙失败');
     }
   }
 
@@ -1847,7 +1777,9 @@ export function BakeWorkspacePage({
     : bakerMissing
       ? '远端烘焙服务未连接'
       : bakeBusy
-        ? `正在本地烘焙 ${bakeSubmitting ? localBakeProgress : (bakeJob?.progress ?? 0)}%`
+        ? bakeSubmitting
+          ? '正在上传到 Substance Baker'
+          : `远端烘焙中 ${bakeJob?.progress ?? 0}%`
         : bakeJob?.status === 'succeeded'
           ? '重新一键烘焙'
           : bakeJob?.status === 'failed' || bakeJob?.status === 'cancelled'
@@ -2321,13 +2253,13 @@ export function BakeWorkspacePage({
                   />
                 </span>
                 <div>
-                  <p className="text-xs font-medium text-white/76">浏览器本地 BVH 烘焙引擎</p>
+                  <p className="text-xs font-medium text-white/76">Substance 烘焙引擎</p>
                   <p className="mt-0.5 text-[10px] text-white/32">
                     {bakerStatusChecking
-                      ? '正在初始化本地 Worker'
+                      ? '正在检测远端服务'
                       : bakerMissing
-                        ? '浏览器本地计算不可用'
-                        : '用户本机 CPU · Worker · 服务器不补算'}
+                        ? '远端服务不可用'
+                        : `${bakerStatus?.workerId ?? '远端 Worker'} 已连接 · TLS 已验证`}
                   </p>
                 </div>
               </div>
@@ -2464,7 +2396,7 @@ export function BakeWorkspacePage({
                         key={channel}
                         type="button"
                         disabled={!supported}
-                        title={supported ? '浏览器本地生成' : '该通道仍在本地化与质量验证中'}
+                        title={supported ? '由真实 Substance Baker 生成' : '当前服务版本暂不支持该通道'}
                         className={cn(
                           'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all',
                           selected
@@ -2515,14 +2447,14 @@ export function BakeWorkspacePage({
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
                     <div className="mb-4 sm:mb-0">
                       <p className="text-sm font-semibold text-white/82">输出贴图大小</p>
-                      <p className="mt-1 text-xs text-white/34">浏览器本地支持完整几何通道与 1K / 2K / 4K 输出</p>
+                      <p className="mt-1 text-xs text-white/34">远端 Substance Baker 支持完整 PBR 通道与 1K / 2K / 4K 输出</p>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {([1024, 2048, 4096] as const).map((size) => (
                         <button
                           key={size}
                           type="button"
-                          title={size === 4096 ? '4K 使用浏览器本地 Worker，耗时与内存取决于模型和通道数量' : undefined}
+                          title={size === 4096 ? '4K 由远端 Substance Worker 处理，耗时取决于模型和通道数量' : undefined}
                           className={cn(
                             'h-12 min-w-[58px] rounded-xl border text-sm font-semibold transition-all duration-200',
                             resolution === size
@@ -2559,25 +2491,22 @@ export function BakeWorkspacePage({
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-violet-100/68">正在自动匹配模型并生成贴图…</span>
                       <span className="font-semibold tabular-nums text-white/78">
-                        {bakeSubmitting ? localBakeProgress : (bakeJob?.progress ?? 0)}%
+                        {bakeSubmitting ? '上传中' : `${bakeJob?.progress ?? 0}%`}
                       </span>
                     </div>
                     <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-violet-400 transition-[width] duration-500"
-                        style={{ width: `${Math.max(4, bakeSubmitting ? localBakeProgress : (bakeJob?.progress ?? 0))}%` }}
+                        style={{ width: `${Math.max(4, bakeSubmitting ? 4 : (bakeJob?.progress ?? 0))}%` }}
                       />
                     </div>
-                    {bakeSubmitting ? (
+                    {bakeJob && ['queued', 'running', 'cancelling'].includes(bakeJob.status) ? (
                       <button
                         type="button"
                         className="mt-3 h-8 w-full rounded-lg border border-white/10 text-[11px] text-white/48 hover:bg-white/[0.05] hover:text-white"
-                        onClick={() => {
-                          localBakeAbortRef.current?.abort();
-                          engineSession?.cancel('local-pbr-bake');
-                        }}
+                        onClick={() => void handleCancelBake()}
                       >
-                        取消本地烘焙
+                        取消远端烘焙
                       </button>
                     ) : null}
                   </div>

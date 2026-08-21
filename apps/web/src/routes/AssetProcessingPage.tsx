@@ -52,6 +52,7 @@ import {
   getAssetJob,
   getAssetProcessingStatus,
   submitRetopologyProcessing,
+  submitUvProcessing,
   subscribeAssetJobEvents,
   AssetProcessingHttpError,
   type AssetArtifact,
@@ -91,10 +92,7 @@ import {
 } from '@/services/workspaceApiClient';
 import { bakeSourceUnitScaleFactor } from '@/features/bake/bakeModelAlignment';
 import { useProjectStore } from '@/stores/projectStore';
-import { useEngineSession } from '@/engine/session/engineSessionContext';
 import {
-  unwrapModelFileLocally,
-  type LocalUvUnwrapProgress,
   type LocalUvUnwrapResult,
 } from '@/engine/uv/localUvUnwrap';
 import { downloadBlob } from '@/engine/export/exportUtils';
@@ -1190,15 +1188,6 @@ function ServiceBadge({
   );
 }
 
-function LocalComputeBadge() {
-  return (
-    <div className="inline-flex self-start items-center gap-2.5 rounded-full border border-emerald-300/12 bg-emerald-400/[0.045] px-3.5 py-2">
-      <span className="h-2 w-2 rounded-full bg-emerald-300" />
-      <span className="text-xs font-medium text-white/58">浏览器本地 xatlas WASM</span>
-    </div>
-  );
-}
-
 function ArtifactList({
   mode,
   job,
@@ -1572,6 +1561,7 @@ function AutoUvWorkspace({
   onSubmissionInputsChange,
   serviceReady,
   serviceBlockReason,
+  onJob,
   job,
   error,
   onCancel,
@@ -1580,7 +1570,6 @@ function AutoUvWorkspace({
   setError,
   localResult,
   onLocalResult,
-  onPersistLocal,
   onContinueLocal,
 }: {
   initialAsset?: File;
@@ -1588,6 +1577,7 @@ function AutoUvWorkspace({
   onSubmissionInputsChange: () => void;
   serviceReady: boolean;
   serviceBlockReason?: string;
+  onJob: (job: AssetJob, snapshot: SubmissionSnapshot) => void;
   job?: AssetJob;
   error?: string;
   onCancel: () => void;
@@ -1596,16 +1586,13 @@ function AutoUvWorkspace({
   setError: (error?: string) => void;
   localResult?: LocalUvUnwrapResult;
   onLocalResult: (result?: LocalUvUnwrapResult) => void;
-  onPersistLocal: (result: LocalUvUnwrapResult) => Promise<void>;
   onContinueLocal: (result: LocalUvUnwrapResult) => Promise<void>;
 }) {
-  const engineSession = useEngineSession();
   const [asset, setAsset] = useState<File>();
   const [resolution, setResolution] = useState<1024 | 2048 | 4096 | 8192>(2048);
   const padding = 10;
-  const [localProgress, setLocalProgress] = useState<LocalUvUnwrapProgress>();
   const [publishing, setPublishing] = useState(false);
-  const localAbortControllerRef = useRef<AbortController>();
+  const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const perfLabEnabled = useMemo(
     () => new URLSearchParams(window.location.search).has('perfLab'),
     [],
@@ -1615,7 +1602,7 @@ function AutoUvWorkspace({
 
   const progress = Math.min(
     100,
-    Math.max(0, (localProgress?.progress ?? job?.progress ?? 0) * 100),
+    Math.max(0, job?.progress ?? 0),
   );
   const succeeded = Boolean(localResult) || job?.status === 'SUCCEEDED';
   const failed = job?.status === 'FAILED';
@@ -1632,7 +1619,6 @@ function AutoUvWorkspace({
 
   function selectAsset(file?: File) {
     setAsset(file);
-    setLocalProgress(undefined);
     onLocalResult(undefined);
     onAssetChange?.(file);
     delete document.body.dataset.localUvStatus;
@@ -1665,45 +1651,51 @@ function AutoUvWorkspace({
   async function submit() {
     if (!asset || busy || !serviceReady) return;
     onSubmissionInputsChange();
+    const fingerprint = JSON.stringify({
+      file: [asset.name, asset.size, asset.lastModified],
+      resolution,
+      padding,
+    });
+    if (
+      submissionKeyRef.current?.fingerprint !== fingerprint ||
+      !validSubmissionIdentity(submissionKeyRef.current?.key)
+    ) {
+      submissionKeyRef.current = stableSubmissionKey('uv', fingerprint);
+    }
     setBusy(true);
     setError(undefined);
-    const abortController = new AbortController();
-    localAbortControllerRef.current = abortController;
     try {
-      const result = await unwrapModelFileLocally({
-        file: asset,
-        resolution,
-        padding,
-        session: engineSession,
-        signal: abortController.signal,
-        onProgress: setLocalProgress,
+      const submission = await submitUvProcessing({
+        asset,
+        metadata: {
+          external_asset_id: submissionKeyRef.current.key,
+          options: {
+            hidden_axis: 'auto',
+            hard_edge_angle_degrees: 75,
+            resolution,
+            padding_px: padding,
+            texel_density_mode: 'uniform',
+            qa_profile: 'pbr-v1',
+          },
+        },
       });
-      onLocalResult(result);
-      document.body.dataset.localUvStatus = 'succeeded';
-      document.body.dataset.localUvCharts = String(result.chartCount);
-      document.body.dataset.localUvUtilization = String(result.utilization);
       trackModuleAction('auto_uv', 'start');
-      trackModuleAction('auto_uv', 'complete');
+      onJob(
+        {
+          ...submission,
+          status: 'QUEUED',
+          progress: 0,
+          stage: 'QUEUED',
+          stage_message: '任务已提交，等待真实 Asset Worker。',
+        },
+        { fingerprint, sourceFile: asset },
+      );
       clearPendingSubmission('uv');
-      try {
-        await onPersistLocal(result);
-      } catch (persistError) {
-        setError(
-          persistError instanceof Error
-            ? `Auto UV 已完成，但账号历史保存失败：${persistError.message}`
-            : 'Auto UV 已完成，但账号历史保存失败。',
-        );
-      }
+      submissionKeyRef.current = undefined;
     } catch (submitError) {
-      if (!(submitError instanceof Error && submitError.name === 'AbortError')) {
-        document.body.dataset.localUvStatus = 'failed';
-        setError(submissionErrorMessage(submitError, '浏览器本地 Auto UV 失败。'));
-        trackModuleAction('auto_uv', 'fail');
-      }
+      setError(submissionErrorMessage(submitError, '真实 Asset UV 任务提交失败。'));
+      trackModuleAction('auto_uv', 'fail');
     } finally {
-      if (localAbortControllerRef.current === abortController) {
-        localAbortControllerRef.current = undefined;
-      }
       setBusy(false);
     }
   }
@@ -1783,7 +1775,6 @@ function AutoUvWorkspace({
             onChange={(value) => {
               onSubmissionInputsChange();
               setResolution(value);
-              setLocalProgress(undefined);
               onLocalResult(undefined);
             }}
             tone="emerald"
@@ -1808,7 +1799,7 @@ function AutoUvWorkspace({
                 ? '开始自动展 UV'
                 : '请先导入模型'}
           </span>
-          {busy || localProgress ? (
+          {busy || job ? (
             <span className="absolute inset-x-0 bottom-0 z-[2] h-1 bg-black/20">
               <span
                 className="block h-full rounded-r-full bg-white/80 transition-[width] duration-500"
@@ -1852,15 +1843,11 @@ function AutoUvWorkspace({
         {busy ? (
           <button
             type="button"
-            onClick={() => {
-              localAbortControllerRef.current?.abort();
-              engineSession?.cancel('local-auto-uv');
-              onCancel();
-            }}
+            onClick={onCancel}
             className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.025] text-[11px] text-white/42 transition hover:bg-white/[0.065] hover:text-white"
           >
             <X className="h-3.5 w-3.5" />
-            取消本地 Auto UV
+            取消服务器 Auto UV
           </button>
         ) : null}
         {(failed || error || downloadError) ? (
@@ -1875,7 +1862,7 @@ function AutoUvWorkspace({
               <span className="text-amber-100/52">{submitBlockReason}</span>
             </>
           ) : (
-            <span>浏览器本地计算 · 源文件不会被修改</span>
+            <span>真实 Asset Worker 计算 · 源文件不会被修改</span>
           )}
         </div>
       </div>
@@ -2406,11 +2393,6 @@ export function AssetProcessingPage({
   ]);
 
   useEffect(() => {
-    if (mode === 'uv') {
-      setServiceLoading(false);
-      setServiceError(undefined);
-      return undefined;
-    }
     let active = true;
     let retryTimer: number | undefined;
 
@@ -2939,33 +2921,6 @@ export function AssetProcessingPage({
     return true;
   }
 
-  async function handleLocalUvPersist(result: LocalUvUnwrapResult) {
-    const jobId = localUvJobId(result);
-    if (findLocalUvRevision(jobId)) return;
-    await publishOutputToNextStage({
-      jobId,
-      outputBlob: result.blob,
-      outputName: result.file.name,
-      outputSize: result.blob.size,
-      outputSha256: result.sha256,
-      sourceFile: result.sourceFile,
-      usePipelineParent: Boolean(pipelineInputAsset && initialAsset === result.sourceFile),
-      sourceMode: 'browser-local',
-      highObject: result.sourceObject,
-      navigateToNextStage: false,
-      revisionSettings: {
-        resolution: result.resolution,
-        padding: result.padding,
-        meshCount: result.meshCount,
-        triangleCount: result.triangleCount,
-        chartCount: result.chartCount,
-        utilization: result.utilization,
-        atlasWidth: result.atlasWidth,
-        atlasHeight: result.atlasHeight,
-      },
-    });
-  }
-
   async function handleLocalUvContinue(result: LocalUvUnwrapResult) {
     try {
       setError(undefined);
@@ -3173,19 +3128,19 @@ export function AssetProcessingPage({
     navigation.onOpenUv();
   }
 
-  const serviceReady =
-    mode === 'uv' ||
-    Boolean(
-      !serviceLoading &&
-        !serviceError &&
-        serviceStatus?.available === true &&
-        serviceStatus.capacityCheckPassed === true &&
-        serviceStatus.capabilities[mode] === true,
-    );
-  const serviceBlockReason =
-    mode === 'uv'
-      ? undefined
-      : serviceUnavailableReason(serviceStatus, serviceLoading, mode, serviceError);
+  const serviceReady = Boolean(
+    !serviceLoading &&
+      !serviceError &&
+      serviceStatus?.available === true &&
+      serviceStatus.capacityCheckPassed === true &&
+      serviceStatus.capabilities[mode] === true,
+  );
+  const serviceBlockReason = serviceUnavailableReason(
+    serviceStatus,
+    serviceLoading,
+    mode,
+    serviceError,
+  );
   const pageGlow = mode === 'uv' ? 'bg-emerald-400/[0.055]' : 'bg-blue-400/[0.06]';
   const iconStyle = mode === 'uv'
     ? 'border-emerald-300/18 bg-emerald-400/[0.075] text-emerald-100'
@@ -3358,21 +3313,17 @@ export function AssetProcessingPage({
               <p className="mt-2 max-w-2xl text-sm leading-6 text-white/38">{copy.description}</p>
             </div>
           </div>
-          {mode === 'uv' ? (
-            <LocalComputeBadge />
-          ) : (
-            <ServiceBadge
-              status={serviceStatus}
-              loading={serviceLoading}
-              error={serviceError}
-              onRetry={() => {
-                serviceRetryAttemptRef.current = 0;
-                setServiceLoading(true);
-                setServiceError(undefined);
-                setServiceCheck((value) => value + 1);
-              }}
-            />
-          )}
+          <ServiceBadge
+            status={serviceStatus}
+            loading={serviceLoading}
+            error={serviceError}
+            onRetry={() => {
+              serviceRetryAttemptRef.current = 0;
+              setServiceLoading(true);
+              setServiceError(undefined);
+              setServiceCheck((value) => value + 1);
+            }}
+          />
         </div>
 
         {(inputLoadError || projectError) && (
@@ -3390,6 +3341,7 @@ export function AssetProcessingPage({
               onSubmissionInputsChange={invalidateJobForInputChange}
               serviceReady={serviceReady}
               serviceBlockReason={serviceBlockReason}
+              onJob={handleSubmittedJob}
               job={job}
               error={error}
               onCancel={() => void handleCancel()}
@@ -3398,7 +3350,6 @@ export function AssetProcessingPage({
               setError={setError}
               localResult={localUvResult}
               onLocalResult={setLocalUvResult}
-              onPersistLocal={handleLocalUvPersist}
               onContinueLocal={handleLocalUvContinue}
             />
           {localUvResult || job?.status === 'SUCCEEDED' ? (
@@ -3508,7 +3459,7 @@ export function AssetProcessingPage({
           <span className="inline-flex items-center gap-2">
             <Sparkles className="h-3.5 w-3.5" />
             {mode === 'uv'
-              ? 'Auto UV 在浏览器 xatlas WASM Worker 中完成；源文件不会被覆盖。'
+              ? 'Auto UV 由真实 Asset Worker 集群完成；源文件不会被覆盖。'
               : '源高模不会被覆盖；八项质量门禁全部通过后才会发布正式 BLEND 与 FBX。'}
           </span>
         </div>
