@@ -25,6 +25,7 @@
     "test:local-runtime-health": "node scripts/test-local-runtime-health.mjs",
     "test:local-repaint-bake-batching": "node scripts/test-local-repaint-bake-batching.mjs",
     "test:local-repaint-seam-harmonization": "node scripts/test-local-repaint-seam-harmonization.mjs",
+    "test:local-uv-atlas": "node scripts/test-local-uv-atlas.mjs",
     "test:performance-lab-metrics": "node scripts/test-performance-lab-metrics.mjs",
     "test:project-thumbnail-policy": "node scripts/test-project-thumbnail-policy.mjs",
     "test:project-default-name": "node scripts/test-project-default-name.mjs",
@@ -37,8 +38,8 @@
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-sc": "^5.2.10",
-    "@liclick/core": "workspace:*",
     "@liclick/contracts": "workspace:*",
+    "@liclick/core": "workspace:*",
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.17.10",
     "@tanstack/react-query": "^5.80.7",
@@ -52,6 +53,7 @@
     "three": "^0.171.0",
     "three-stdlib": "^2.35.13",
     "uuid": "^11.1.0",
+    "watlas": "1.0.1",
     "zod": "^3.25.64",
     "zustand": "^5.0.5"
   },

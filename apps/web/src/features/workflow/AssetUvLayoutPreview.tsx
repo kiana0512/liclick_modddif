@@ -209,7 +209,17 @@ function UvCanvas({ data }: { data: UvLayoutData }) {
   return <canvas ref={canvasRef} className="block h-full w-full" aria-label="UV 展开线框预览" />;
 }
 
-export function AssetUvLayoutPreview({ job, busy, error }: { job?: AssetJob; busy: boolean; error?: string }) {
+export function AssetUvLayoutPreview({
+  job,
+  localFile,
+  busy,
+  error,
+}: {
+  job?: AssetJob;
+  localFile?: File;
+  busy: boolean;
+  error?: string;
+}) {
   const artifact = useMemo(() => uvFbxArtifact(job), [job]);
   const [layout, setLayout] = useState<UvLayoutData>();
   const [loading, setLoading] = useState(false);
@@ -222,30 +232,35 @@ export function AssetUvLayoutPreview({ job, busy, error }: { job?: AssetJob; bus
     let sourceUrl: string | undefined;
     setLayout(undefined);
     setPreviewError(undefined);
-    if (!job || job.status !== 'SUCCEEDED') {
+    if (!localFile && (!job || job.status !== 'SUCCEEDED')) {
       setLoading(false);
       return undefined;
     }
-    if (!artifact) {
+    if (!localFile && !artifact) {
       setLoading(false);
       setPreviewError('UV 交付中没有找到可预览的 FBX。');
       return undefined;
     }
 
     setLoading(true);
-    void fetchVerifiedArtifactBlob(assetJobId(job), artifact)
-      .then((blob) => {
+    const sourceFile = localFile
+      ? Promise.resolve(localFile)
+      : fetchVerifiedArtifactBlob(assetJobId(job!), artifact!).then(
+          (blob) =>
+            new File([blob], artifactName(artifact!), {
+              type: artifact!.content_type || 'application/octet-stream',
+            }),
+        );
+    void sourceFile
+      .then((file) => {
         if (cancelled) return undefined;
-        const file = new File([blob], artifactName(artifact), {
-          type: artifact.content_type || 'application/octet-stream',
-        });
         return loadModelFromFile(file, { normalize: false, ground: false, targetMaxDimension: 3 });
       })
       .then((loaded) => {
         if (!loaded) return;
         loadedRoot = loaded.root;
         sourceUrl = loaded.sourceUrl;
-        const nextLayout = collectUvLayout(loaded.root, artifactName(artifact));
+        const nextLayout = collectUvLayout(loaded.root, localFile?.name ?? artifactName(artifact!));
         if (!cancelled) setLayout(nextLayout);
       })
       .catch((reason: unknown) => {
@@ -264,10 +279,16 @@ export function AssetUvLayoutPreview({ job, busy, error }: { job?: AssetJob; bus
       if (loadedRoot) disposeLoadedRoot(loadedRoot);
       if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     };
-  }, [artifact, job]);
+  }, [artifact, job, localFile]);
 
   const failedMessage = job?.status === 'FAILED' ? assetJobError(job) || error || 'UV 任务失败。' : undefined;
-  const processing = Boolean(job && job.status !== 'SUCCEEDED' && job.status !== 'FAILED' && job.status !== 'CANCELLED');
+  const processing = Boolean(
+    !localFile &&
+      job &&
+      job.status !== 'SUCCEEDED' &&
+      job.status !== 'FAILED' &&
+      job.status !== 'CANCELLED',
+  );
 
   return (
     <section className="relative flex min-h-[560px] h-full flex-col overflow-hidden rounded-2xl border border-white/[0.075] bg-[#0b0d15] shadow-[0_20px_60px_rgba(0,0,0,.2)]">
@@ -308,7 +329,7 @@ export function AssetUvLayoutPreview({ job, busy, error }: { job?: AssetJob; bus
             <div className="text-white/26">
               <MapIcon className="mx-auto h-10 w-10 stroke-[1.2]" />
               <p className="mt-4 text-sm font-medium text-white/42">完成自动展 UV 后在这里显示 UV0</p>
-              <p className="mt-2 text-xs text-white/24">预览由交付 FBX 在本地生成</p>
+              <p className="mt-2 text-xs text-white/24">预览由本地 UV 模型生成</p>
             </div>
           </div>
         ) : null}

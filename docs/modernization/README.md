@@ -67,5 +67,6 @@ Cloud control plane
 - Cloud 最终产物已加入分块和总 JavaScript 体积 ratchet；当前性能债务、拆分顺序和 demand-render 前置条件记录在性能基线中。
 - Cloud 大资产已采用签名对象存储直传；本地远端部署模拟器已覆盖失败重试、校验、幂等完成、签名下载和控制面重启恢复。
 - 项目级 Engine Session 已接管第一批全分辨率 UV/修补任务，并统一计算计划、并发、取消和资源释放边界；其余算法继续渐进迁移。
+- Auto UV 首个浏览器本地纵向切片已接入 xatlas WASM Worker：无 UV OBJ 已真实生成 GLB、完成对象直传并以高低模 `2/2` 进入 Bake；生产模型和质量矩阵未完成前保持发布阻断。
 
-计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。
+计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，浏览器 Auto UV 见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。

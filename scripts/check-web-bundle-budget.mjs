@@ -9,7 +9,13 @@ const budgets = [
   { label: 'application shell', prefix: 'index-', maxBytes: 270_000 },
   { label: 'editor route', prefix: 'EditorPage-', maxBytes: 510_000 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 720_000 },
-  { label: 'shared 3D pipeline', prefix: 'projectPipeline-', maxBytes: 980_000 },
+  {
+    label: 'shared 3D pipeline',
+    // Rollup chooses the facade name from the shared module graph. Adding the
+    // browser GLTF exporter changed only this generated name, not the boundary.
+    prefixes: ['projectPipeline-', 'exportUtils-'],
+    maxBytes: 980_000,
+  },
 ];
 const maxTotalJavaScriptBytes = 3_150_000;
 
@@ -35,9 +41,14 @@ const scripts = await Promise.all(
 
 const failures = [];
 for (const budget of budgets) {
-  const matches = scripts.filter((script) => script.name.startsWith(budget.prefix));
+  const prefixes = budget.prefixes ?? [budget.prefix];
+  const matches = scripts.filter((script) =>
+    prefixes.some((prefix) => script.name.startsWith(prefix)),
+  );
   if (matches.length !== 1) {
-    failures.push(`${budget.label}: expected one ${budget.prefix}*.js chunk, found ${matches.length}`);
+    failures.push(
+      `${budget.label}: expected one of ${prefixes.join(', ')}*.js, found ${matches.length}`,
+    );
     continue;
   }
   if (matches[0].bytes > budget.maxBytes) {

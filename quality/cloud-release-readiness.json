@@ -28,8 +28,8 @@
       "id": "cloud.asset-direct-transfer",
       "name": "真实浏览器对象直传、校验、重试、幂等和 ownership",
       "required": true,
-      "status": "in_progress",
-      "evidence": ["协议与远端模拟器通过；真实 UI 资产上传 E2E 尚待执行"]
+      "status": "passed",
+      "evidence": ["simulate:cloud-deployment", "browser:源 OBJ 与 UV GLB 直传并在 Bake 恢复", "quality/evidence/browser-local-uv-e2e.json"]
     },
     {
       "id": "auth.liclick-production-sso",
@@ -63,8 +63,8 @@
       "id": "uv.browser-local",
       "name": "UV 在浏览器本地算力完成",
       "required": true,
-      "status": "failed",
-      "evidence": ["现 UI 显示远端 Worker 容量；只验证了页面加载"]
+      "status": "in_progress",
+      "evidence": ["@liclick/web test:local-uv-atlas", "browser:xatlas WASM Worker -> GLB -> UV preview -> direct upload -> Bake 2/2", "生产模型与质量矩阵尚未完成"]
     },
     {
       "id": "bake.browser-local-pbr",

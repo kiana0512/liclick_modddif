@@ -4,7 +4,7 @@
 
 ## 当前构建基线
 
-Cloud 生产构建当前约 2.99 MB 原始 JavaScript，共 49 个按路由/Worker 拆分的脚本。主要债务为：
+Cloud 生产构建当前约 3.06 MB 原始 JavaScript，共 50 个按路由/Worker 拆分的脚本。新增 Auto UV 内核位于独立的约 55 KB Worker，约 225 KB xatlas WASM 不计入 JavaScript 总额且仅在进入 UV 任务时加载。主要债务为：
 
 | 边界 | 当前原始大小 | 阶段一硬上限 | 目标 |
 | --- | ---: | ---: | ---: |
@@ -12,9 +12,11 @@ Cloud 生产构建当前约 2.99 MB 原始 JavaScript，共 49 个按路由/Work
 | Editor route | 486 KB | 510 KB | 小于 350 KB |
 | High bake snapshot | 691 KB | 720 KB | 小于 450 KB |
 | Shared 3D pipeline | 947 KB | 980 KB | 拆为稳定引擎、格式加载器和按需算法块 |
-| 全部 JavaScript | 2.99 MB | 3.15 MB | 小于 2.4 MB |
+| 全部 JavaScript | 3.06 MB | 3.15 MB | 小于 2.4 MB |
 
 当前上限是防止继续恶化的 ratchet，不代表最终合格。CI 在 Cloud 构建后检查真实最终产物；预算只能随可验证的拆分和删除向下调整，不能通过提高阈值掩盖回归。
+
+共享 3D 图依赖由 Rollup 自动选择 facade 名；加入浏览器 GLTF 导出后名称从 `projectPipeline-*` 变为 `exportUtils-*`。门禁接受这两个生成名之一，但仍要求恰好一个共享块，且 980 KB 单块上限和 3.15 MB 总上限均未提高。
 
 ## 运行时审计结论
 

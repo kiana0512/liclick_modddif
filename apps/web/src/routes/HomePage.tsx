@@ -373,12 +373,12 @@ export function HomePage({
           <ModuleCard
             eyebrow="AUTO UV"
             title="自动展 UV"
-            description="自动切缝、展开并完成 UV 排布。"
-            detail="自动切缝 · UV Pack"
+            description="浏览器本机完成自动切缝、展开与 UV 排布。"
+            detail="本机 CPU · xatlas WASM · UV Pack"
             icon={MapIcon}
             accent="emerald"
             visual="uv"
-            badge="云端服务"
+            badge="本机运行"
             hoverAction="进入自动展 UV"
             telemetryModule="auto_uv"
             onClick={onOpenUv}

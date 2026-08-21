@@ -52,7 +52,6 @@ import {
   getAssetJob,
   getAssetProcessingStatus,
   submitRetopologyProcessing,
-  submitUvProcessing,
   subscribeAssetJobEvents,
   AssetProcessingHttpError,
   type AssetArtifact,
@@ -89,6 +88,15 @@ import {
   saveProject as saveWorkspaceProject,
 } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
+import { useEngineSession } from '@/engine/session/engineSessionContext';
+import {
+  unwrapModelFileLocally,
+  type LocalUvUnwrapProgress,
+  type LocalUvUnwrapResult,
+} from '@/engine/uv/localUvUnwrap';
+import { downloadBlob } from '@/engine/export/exportUtils';
+import { getModelFormatFromFileName } from '@/engine/loaders/loadModelFromFile';
+import type { SceneObject } from '@/types/model';
 import type {
   Project,
   ProjectPipelineAssetReference,
@@ -1180,6 +1188,15 @@ function ServiceBadge({
   );
 }
 
+function LocalComputeBadge() {
+  return (
+    <div className="inline-flex self-start items-center gap-2.5 rounded-full border border-emerald-300/12 bg-emerald-400/[0.045] px-3.5 py-2">
+      <span className="h-2 w-2 rounded-full bg-emerald-300" />
+      <span className="text-xs font-medium text-white/58">浏览器本地 xatlas WASM</span>
+    </div>
+  );
+}
+
 function ArtifactList({
   mode,
   job,
@@ -1553,40 +1570,51 @@ function AutoUvWorkspace({
   onSubmissionInputsChange,
   serviceReady,
   serviceBlockReason,
-  onJob,
   job,
   error,
   onCancel,
   setBusy,
   busy,
   setError,
+  localResult,
+  onLocalResult,
+  onContinueLocal,
 }: {
   initialAsset?: File;
   onAssetChange?: (file?: File) => void;
   onSubmissionInputsChange: () => void;
   serviceReady: boolean;
   serviceBlockReason?: string;
-  onJob: (job: AssetJob, snapshot: SubmissionSnapshot) => void;
   job?: AssetJob;
   error?: string;
   onCancel: () => void;
   setBusy: (busy: boolean) => void;
   busy: boolean;
   setError: (error?: string) => void;
+  localResult?: LocalUvUnwrapResult;
+  onLocalResult: (result?: LocalUvUnwrapResult) => void;
+  onContinueLocal: (result: LocalUvUnwrapResult) => Promise<void>;
 }) {
+  const engineSession = useEngineSession();
   const [asset, setAsset] = useState<File>();
   const [resolution, setResolution] = useState<1024 | 2048 | 4096 | 8192>(2048);
-  const hiddenAxis = 'y+' as const;
-  const hardEdgeAngle = 75;
   const padding = 10;
-  const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
+  const [localProgress, setLocalProgress] = useState<LocalUvUnwrapProgress>();
+  const [publishing, setPublishing] = useState(false);
+  const localAbortControllerRef = useRef<AbortController>();
+  const perfLabEnabled = useMemo(
+    () => new URLSearchParams(window.location.search).has('perfLab'),
+    [],
+  );
   const [downloadingUv, setDownloadingUv] = useState(false);
   const [downloadError, setDownloadError] = useState<string>();
 
-  const progress = Math.min(100, Math.max(0, job?.progress ?? 0));
-  const succeeded = job?.status === 'SUCCEEDED';
+  const progress = Math.min(
+    100,
+    Math.max(0, (localProgress?.progress ?? job?.progress ?? 0) * 100),
+  );
+  const succeeded = Boolean(localResult) || job?.status === 'SUCCEEDED';
   const failed = job?.status === 'FAILED';
-  const active = Boolean(job && !terminalStatuses.has(job.status));
   const uvArtifacts = assetJobArtifacts(job);
   const uvFbxArtifact = succeeded
     ? primaryArtifacts(uvArtifacts).find((artifact) => /\.fbx$/i.test(artifact.filename))
@@ -1600,10 +1628,20 @@ function AutoUvWorkspace({
 
   function selectAsset(file?: File) {
     setAsset(file);
+    setLocalProgress(undefined);
+    onLocalResult(undefined);
     onAssetChange?.(file);
+    delete document.body.dataset.localUvStatus;
+    delete document.body.dataset.localUvCharts;
+    delete document.body.dataset.localUvUtilization;
   }
 
   async function downloadUvFbx() {
+    if (localResult) {
+      downloadBlob(localResult.blob, localResult.file.name);
+      trackModuleAction('auto_uv', 'download');
+      return;
+    }
     const currentJobId = job ? assetJobId(job) : '';
     if (!currentJobId || !uvFbxArtifact || downloadingUv) return;
     setDownloadingUv(true);
@@ -1625,50 +1663,34 @@ function AutoUvWorkspace({
     onSubmissionInputsChange();
     setBusy(true);
     setError(undefined);
+    const abortController = new AbortController();
+    localAbortControllerRef.current = abortController;
     try {
-      const fingerprint = JSON.stringify({
-        file: [asset.name, asset.size, asset.lastModified],
+      const result = await unwrapModelFileLocally({
+        file: asset,
         resolution,
-        hiddenAxis,
-        hardEdgeAngle,
         padding,
+        session: engineSession,
+        signal: abortController.signal,
+        onProgress: setLocalProgress,
       });
-      if (
-        submissionKeyRef.current?.fingerprint !== fingerprint ||
-        !validSubmissionIdentity(submissionKeyRef.current?.key)
-      ) {
-        submissionKeyRef.current = stableSubmissionKey('uv', fingerprint);
-      }
-      const submission = await submitUvProcessing({
-        asset,
-        metadata: {
-          external_asset_id: submissionKeyRef.current.key,
-          options: {
-            hidden_axis: hiddenAxis,
-            hard_edge_angle_degrees: hardEdgeAngle,
-            resolution,
-            padding_px: padding,
-            texel_density_mode: 'uniform',
-            qa_profile: 'pbr-v1',
-          },
-        },
-      });
-      const submissionJobId = assetJobId(submission);
-      if (submissionJobId) trackModuleActionOnce('auto_uv', 'start', submissionJobId);
-      onJob(
-        {
-          ...submission,
-          progress: 0,
-          stage: 'QUEUED',
-          stage_message: '任务已提交，等待 Asset Worker',
-        },
-        { fingerprint, sourceFile: asset },
-      );
+      onLocalResult(result);
+      document.body.dataset.localUvStatus = 'succeeded';
+      document.body.dataset.localUvCharts = String(result.chartCount);
+      document.body.dataset.localUvUtilization = String(result.utilization);
+      trackModuleAction('auto_uv', 'start');
+      trackModuleAction('auto_uv', 'complete');
       clearPendingSubmission('uv');
-      submissionKeyRef.current = undefined;
     } catch (submitError) {
-      setError(submissionErrorMessage(submitError, '自动展 UV 提交失败。'));
+      if (!(submitError instanceof Error && submitError.name === 'AbortError')) {
+        document.body.dataset.localUvStatus = 'failed';
+        setError(submissionErrorMessage(submitError, '浏览器本地 Auto UV 失败。'));
+        trackModuleAction('auto_uv', 'fail');
+      }
     } finally {
+      if (localAbortControllerRef.current === abortController) {
+        localAbortControllerRef.current = undefined;
+      }
       setBusy(false);
     }
   }
@@ -1695,16 +1717,42 @@ function AutoUvWorkspace({
       <fieldset disabled={busy} className="min-w-0 space-y-4 overflow-hidden p-5 disabled:opacity-55">
         <FileDropCard
           file={asset}
-          accept=".fbx,.obj,.glb,.gltf,.blend"
+          accept=".fbx,.obj,.glb,.gltf"
           title="模型文件"
           description="拖入模型，或点击选择"
-          extensions="FBX · OBJ · GLB · GLTF · BLEND"
+          extensions="FBX · OBJ · GLB · GLTF"
           icon={FileBox}
           tone="emerald"
           onFile={selectAsset}
           disabled={busy}
           horizontal
         />
+
+        {perfLabEnabled ? (
+          <button
+            type="button"
+            onClick={() =>
+              selectAsset(
+                new File(
+                  [
+                    'o LocalUvQuad\n',
+                    'v -1 -1 0\n',
+                    'v 1 -1 0\n',
+                    'v 1 1 0\n',
+                    'v -1 1 0\n',
+                    'f 1 2 3\n',
+                    'f 1 3 4\n',
+                  ],
+                  'local-uv-e2e.obj',
+                  { type: 'text/plain' },
+                ),
+              )
+            }
+            className="h-9 w-full rounded-lg border border-dashed border-emerald-300/20 bg-emerald-400/[0.04] text-[11px] text-emerald-100/60"
+          >
+            加载本地 UV E2E 模型
+          </button>
+        ) : null}
 
         <div className="flex min-w-0 max-w-full flex-col justify-between gap-3 overflow-hidden rounded-2xl border border-white/[0.065] bg-black/10 px-4 py-3.5 sm:flex-row sm:items-center">
           <div>
@@ -1722,6 +1770,8 @@ function AutoUvWorkspace({
             onChange={(value) => {
               onSubmissionInputsChange();
               setResolution(value);
+              setLocalProgress(undefined);
+              onLocalResult(undefined);
             }}
             tone="emerald"
             label="UV 输出尺寸"
@@ -1739,13 +1789,13 @@ function AutoUvWorkspace({
         >
           <span className="relative z-[1] flex h-full w-full items-center justify-center gap-3">
             {busy ? <LoaderCircle className="h-4.5 w-4.5 animate-spin" /> : <MapIcon className="h-4.5 w-4.5" />}
-            {active
+            {busy
               ? `正在自动展 UV · ${Math.round(progress)}%`
               : asset
                 ? '开始自动展 UV'
                 : '请先导入模型'}
           </span>
-          {job ? (
+          {busy || localProgress ? (
             <span className="absolute inset-x-0 bottom-0 z-[2] h-1 bg-black/20">
               <span
                 className="block h-full rounded-r-full bg-white/80 transition-[width] duration-500"
@@ -1755,7 +1805,7 @@ function AutoUvWorkspace({
           ) : null}
         </button>
 
-        {uvFbxArtifact ? (
+        {localResult || uvFbxArtifact ? (
           <button
             type="button"
             disabled={downloadingUv}
@@ -1767,17 +1817,37 @@ function AutoUvWorkspace({
             ) : (
               <Download className="h-3.5 w-3.5" />
             )}
-            {downloadingUv ? '正在校验并下载…' : '下载 UV FBX'}
+            {downloadingUv ? '正在校验并下载…' : `下载 ${localResult ? '本地 UV GLB' : 'UV FBX'}`}
           </button>
         ) : null}
-        {active ? (
+        {localResult ? (
           <button
             type="button"
-            onClick={onCancel}
+            disabled={publishing}
+            onClick={() => {
+              setPublishing(true);
+              void onContinueLocal(localResult)
+                .catch(() => undefined)
+                .finally(() => setPublishing(false));
+            }}
+            className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-xs font-semibold text-white transition hover:brightness-110 disabled:opacity-40"
+          >
+            {publishing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+            {publishing ? '正在保存…' : '保存并传入烘焙'}
+          </button>
+        ) : null}
+        {busy ? (
+          <button
+            type="button"
+            onClick={() => {
+              localAbortControllerRef.current?.abort();
+              engineSession?.cancel('local-auto-uv');
+              onCancel();
+            }}
             className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.025] text-[11px] text-white/42 transition hover:bg-white/[0.065] hover:text-white"
           >
             <X className="h-3.5 w-3.5" />
-            取消自动展 UV
+            取消本地 Auto UV
           </button>
         ) : null}
         {(failed || error || downloadError) ? (
@@ -1792,7 +1862,7 @@ function AutoUvWorkspace({
               <span className="text-amber-100/52">{submitBlockReason}</span>
             </>
           ) : (
-            <span>源文件不会被修改</span>
+            <span>浏览器本地计算 · 源文件不会被修改</span>
           )}
         </div>
       </div>
@@ -2145,6 +2215,7 @@ export function AssetProcessingPage({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [localUvResult, setLocalUvResult] = useState<LocalUvUnwrapResult>();
   const [retopologyInputFiles, setRetopologyInputFiles] = useState<File[]>([]);
   const [selectedRetopologyInputIndex, setSelectedRetopologyInputIndex] = useState(0);
   const [retopologyResultPreview, setRetopologyResultPreview] = useState<RetopologyResultPreview>();
@@ -2318,6 +2389,11 @@ export function AssetProcessingPage({
   ]);
 
   useEffect(() => {
+    if (mode === 'uv') {
+      setServiceLoading(false);
+      setServiceError(undefined);
+      return undefined;
+    }
     let active = true;
     let retryTimer: number | undefined;
 
@@ -2356,7 +2432,7 @@ export function AssetProcessingPage({
       active = false;
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, [serviceCheck]);
+  }, [mode, serviceCheck]);
 
   useEffect(() => {
     if (jobId && jobBinding?.jobId === jobId) {
@@ -2541,7 +2617,7 @@ export function AssetProcessingPage({
     sourceFile?: File;
     usePipelineParent: boolean;
     historyRecordId?: string;
-    sourceMode?: 'processing-job' | 'manual';
+    sourceMode?: 'processing-job' | 'manual' | 'browser-local';
     objectId?: string;
   }) {
     let targetProject = projectId
@@ -2577,7 +2653,8 @@ export function AssetProcessingPage({
             pipelineInputAsset?.objectId,
             validWorkspaceObjectId,
           )
-        : undefined);
+        : undefined) ??
+      (mode === 'uv' && !parentRevision && input.sourceFile ? createId() : undefined);
     const modelAssetPaths: string[] = [];
     const revisionId = createId();
 
@@ -2591,7 +2668,7 @@ export function AssetProcessingPage({
       });
       const sourceAsset: ProjectPipelineAssetReference = {
         id: sourceSnapshotId,
-        kind: mode === 'retopology' ? 'high-model' : 'low-model',
+        kind: mode === 'retopology' || mode === 'uv' ? 'high-model' : 'low-model',
         objectId: inheritedObjectId,
         name: input.sourceFile.name,
         url: savedSource.asset.url,
@@ -2601,9 +2678,9 @@ export function AssetProcessingPage({
       };
       modelAssetPaths.push(savedSource.asset.relativePath ?? savedSource.asset.url);
 
-      // A manually started retopology session still establishes a durable high-model
-      // root, so its later bake stage can resolve the original source without back-writing.
-      if (mode === 'retopology') {
+      // A standalone retopology or UV session still establishes a durable high-model
+      // root, so Bake can hydrate the original source and pair it with the generated low model.
+      if (mode === 'retopology' || mode === 'uv') {
         const timestamp = new Date().toISOString();
         const textureRoot = {
           id: createId(),
@@ -2611,7 +2688,7 @@ export function AssetProcessingPage({
           sourceMode: 'manual' as const,
           inputAssets: [] as ProjectPipelineAssetReference[],
           outputAssets: [sourceAsset],
-          settings: { entry: 'standalone-retopology' },
+          settings: { entry: `standalone-${mode}` },
           status: 'ready' as const,
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -2688,17 +2765,59 @@ export function AssetProcessingPage({
       updatedAt: timestamp,
     };
 
-    if (mode === 'uv' && objectId && nextProject.bakeWorkspace?.bakeSets[objectId]) {
+    if (mode === 'uv' && objectId) {
+      const previousWorkspace = nextProject.bakeWorkspace;
+      const previousSet = previousWorkspace?.bakeSets[objectId];
+      const highAsset = inputAssets.find(
+        (asset) => asset.kind === 'high-model' || asset.kind === 'model',
+      );
+      const format = highAsset ? getModelFormatFromFileName(highAsset.name) : undefined;
+      const fallbackHighObject: SceneObject | undefined =
+        highAsset && format
+          ? {
+              id: objectId,
+              name: highAsset.name,
+              type: 'group',
+              sourcePath: highAsset.url,
+              format,
+              materialSlots: [],
+              uvSets: [],
+              transform: {
+                position: [0, 0, 0],
+                rotation: [0, 0, 0],
+                scale: [1, 1, 1],
+              },
+              visible: true,
+              selected: true,
+            }
+          : undefined;
+      const highObject =
+        previousSet?.highObject ??
+        nextProject.objects.find((object) => object.id === objectId) ??
+        fallbackHighObject;
       nextProject = {
         ...nextProject,
         bakeWorkspace: {
-          ...nextProject.bakeWorkspace,
+          version: 1,
+          ...previousWorkspace,
           activeStage: 'alignment',
           selectedObjectId: objectId,
           bakeSets: {
-            ...nextProject.bakeWorkspace.bakeSets,
+            ...(previousWorkspace?.bakeSets ?? {}),
             [objectId]: {
-              ...nextProject.bakeWorkspace.bakeSets[objectId],
+              objectId,
+              ...previousSet,
+              ...(highAsset
+                ? {
+                    high: {
+                      name: highAsset.name,
+                      url: highAsset.url,
+                      relativePath: highAsset.relativePath,
+                      mimeType: highAsset.mimeType,
+                    },
+                  }
+                : {}),
+              ...(highObject ? { highObject } : {}),
               low: {
                 name: outputAsset.name,
                 url: outputAsset.url,
@@ -2728,6 +2847,27 @@ export function AssetProcessingPage({
           }
         : undefined;
     onContinue(savedProject.project.id, handoff);
+  }
+
+  async function handleLocalUvContinue(result: LocalUvUnwrapResult) {
+    try {
+      setError(undefined);
+      await publishOutputToNextStage({
+        jobId: `local-uv-${result.sha256.slice(0, 16)}`,
+        outputBlob: result.blob,
+        outputName: result.file.name,
+        outputSize: result.blob.size,
+        outputSha256: result.sha256,
+        sourceFile: result.sourceFile,
+        usePipelineParent: Boolean(
+          pipelineInputAsset && initialAsset === result.sourceFile,
+        ),
+        sourceMode: 'browser-local',
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '本地 UV 结果保存失败。');
+      throw reason;
+    }
   }
 
   async function handleContinue(artifact: AssetArtifact) {
@@ -2896,19 +3036,19 @@ export function AssetProcessingPage({
     navigation.onOpenUv();
   }
 
-  const serviceReady = Boolean(
-    !serviceLoading &&
-      !serviceError &&
-      serviceStatus?.available === true &&
-      serviceStatus.capacityCheckPassed === true &&
-      serviceStatus.capabilities[mode] === true,
-  );
-  const serviceBlockReason = serviceUnavailableReason(
-    serviceStatus,
-    serviceLoading,
-    mode,
-    serviceError,
-  );
+  const serviceReady =
+    mode === 'uv' ||
+    Boolean(
+      !serviceLoading &&
+        !serviceError &&
+        serviceStatus?.available === true &&
+        serviceStatus.capacityCheckPassed === true &&
+        serviceStatus.capabilities[mode] === true,
+    );
+  const serviceBlockReason =
+    mode === 'uv'
+      ? undefined
+      : serviceUnavailableReason(serviceStatus, serviceLoading, mode, serviceError);
   const pageGlow = mode === 'uv' ? 'bg-emerald-400/[0.055]' : 'bg-blue-400/[0.06]';
   const iconStyle = mode === 'uv'
     ? 'border-emerald-300/18 bg-emerald-400/[0.075] text-emerald-100'
@@ -3081,17 +3221,21 @@ export function AssetProcessingPage({
               <p className="mt-2 max-w-2xl text-sm leading-6 text-white/38">{copy.description}</p>
             </div>
           </div>
-          <ServiceBadge
-            status={serviceStatus}
-            loading={serviceLoading}
-            error={serviceError}
-            onRetry={() => {
-              serviceRetryAttemptRef.current = 0;
-              setServiceLoading(true);
-              setServiceError(undefined);
-              setServiceCheck((value) => value + 1);
-            }}
-          />
+          {mode === 'uv' ? (
+            <LocalComputeBadge />
+          ) : (
+            <ServiceBadge
+              status={serviceStatus}
+              loading={serviceLoading}
+              error={serviceError}
+              onRetry={() => {
+                serviceRetryAttemptRef.current = 0;
+                setServiceLoading(true);
+                setServiceError(undefined);
+                setServiceCheck((value) => value + 1);
+              }}
+            />
+          )}
         </div>
 
         {(inputLoadError || projectError) && (
@@ -3109,18 +3253,21 @@ export function AssetProcessingPage({
               onSubmissionInputsChange={invalidateJobForInputChange}
               serviceReady={serviceReady}
               serviceBlockReason={serviceBlockReason}
-              onJob={handleSubmittedJob}
               job={job}
               error={error}
               onCancel={() => void handleCancel()}
               setBusy={setBusy}
               busy={busy || jobActive}
               setError={setError}
+              localResult={localUvResult}
+              onLocalResult={setLocalUvResult}
+              onContinueLocal={handleLocalUvContinue}
             />
-          {job?.status === 'SUCCEEDED' ? (
+          {localUvResult || job?.status === 'SUCCEEDED' ? (
             <div className="min-h-[560px]">
               <AssetUvLayoutPreview
                 job={job}
+                localFile={localUvResult?.file}
                 busy={false}
                 error={assetJobError(job) ?? error}
               />
@@ -3223,7 +3370,7 @@ export function AssetProcessingPage({
           <span className="inline-flex items-center gap-2">
             <Sparkles className="h-3.5 w-3.5" />
             {mode === 'uv'
-              ? '源文件不会被覆盖；五项交付物仅在严格 QA 通过后原子发布。'
+              ? 'Auto UV 在浏览器 xatlas WASM Worker 中完成；源文件不会被覆盖。'
               : '源高模不会被覆盖；八项质量门禁全部通过后才会发布正式 BLEND 与 FBX。'}
           </span>
         </div>

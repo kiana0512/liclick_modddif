@@ -73,6 +73,7 @@ export type ProjectPipelineRevisionSourceMode =
   | 'project'
   | 'handoff'
   | 'manual'
+  | 'browser-local'
   | 'processing-job'
   | 'system';
 
