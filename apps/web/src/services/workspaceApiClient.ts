@@ -1,3 +1,4 @@
+import { isProjectRevision, type ProjectRevision } from '@liclick/contracts';
 import type { Project } from '@/types/project';
 import { getProjectApiBase } from '@/platform/projectApiBase';
 import { getWorkspaceApiBase } from './workspaceApiBase';
@@ -27,11 +28,19 @@ const trustedGenerationWorkspacePath =
 
 export class WorkspaceApiError extends Error {
   status: number;
+  code?: string;
+  currentRevision?: ProjectRevision;
 
-  constructor(status: number, message: string) {
+  constructor(
+    status: number,
+    message: string,
+    details: { code?: string; currentRevision?: ProjectRevision } = {},
+  ) {
     super(message);
     this.name = 'WorkspaceApiError';
     this.status = status;
+    this.code = details.code;
+    this.currentRevision = details.currentRevision;
   }
 }
 
@@ -54,6 +63,7 @@ export type ProjectSummary = {
   slug: string;
   localPath?: string;
   status?: 'local';
+  revision?: ProjectRevision;
 };
 
 export type AssetCategory = 'models' | 'references' | 'captures' | 'generations' | 'layers' | 'baked';
@@ -88,7 +98,18 @@ async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: n
       payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
         ? payload.error
         : `Workspace request failed: ${response.status}`;
-    throw new WorkspaceApiError(response.status, message);
+    const code =
+      payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
+        ? payload.code
+        : undefined;
+    const currentRevisionCandidate =
+      payload && typeof payload === 'object' && 'currentRevision' in payload
+        ? payload.currentRevision
+        : undefined;
+    const currentRevision = isProjectRevision(currentRevisionCandidate)
+      ? currentRevisionCandidate
+      : undefined;
+    throw new WorkspaceApiError(response.status, message, { code, currentRevision });
   }
   return response.json() as Promise<T>;
 }
@@ -115,10 +136,10 @@ export async function loadProject(projectId: string) {
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}`);
 }
 
-export async function renameProject(projectId: string, name: string) {
+export async function renameProject(projectId: string, name: string, expectedRevisionId?: string) {
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}`, {
     method: 'PATCH',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, expectedRevisionId }),
   });
 }
 
@@ -136,10 +157,14 @@ export async function duplicateProject(projectId: string) {
   });
 }
 
-export async function moveProject(projectId: string, folderId: string | null) {
+export async function moveProject(
+  projectId: string,
+  folderId: string | null,
+  expectedRevisionId?: string,
+) {
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${projectId}/move`, {
     method: 'POST',
-    body: JSON.stringify({ folderId }),
+    body: JSON.stringify({ folderId, expectedRevisionId }),
   });
 }
 

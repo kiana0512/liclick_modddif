@@ -59,5 +59,6 @@ Cloud control plane
 - Cloud 产物门禁会拒绝安装器、可执行文件、本地账号桥接端点和 `4618` loopback 回退。
 - 桌面组件、个人设备账号和 Photoshop/DCC 仍保留在 `desktop-legacy` 兼容路径，Cloud 构建不装载这些实现。
 - 浏览器能力协商已形成版本化 Compute Policy；任何降级仍在用户浏览器执行，`serverFallbackAllowed` 固定为 `false`。
+- 项目保存已加入服务器签发的单调 Revision；Cloud 模式拒绝缺失或过期令牌，避免多端用客户端时间戳互相覆盖。
 
-计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)。
+计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)。

@@ -53,6 +53,7 @@ function projectFromSummary(summary: ProjectSummary): Project {
     folderId: summary.folderId ?? null,
     createdAt: summary.createdAt,
     updatedAt: summary.updatedAt,
+    revision: summary.revision,
     thumbnail: summary.thumbnail,
     objects: [],
     references: [],
@@ -547,7 +548,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
             const { project } = nameDialog;
             setNameDialog(undefined);
             void runWorkspaceAction(async () => {
-              await renameProject(project.id, name);
+              await renameProject(project.id, name, project.revision?.id);
             });
           }}
         />
@@ -577,7 +578,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
             const project = moveTarget;
             setMoveTarget(undefined);
             void runWorkspaceAction(async () => {
-              await moveProject(project.id, folderId);
+              await moveProject(project.id, folderId, project.revision?.id);
             });
           }}
         />

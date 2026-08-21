@@ -1,3 +1,4 @@
+import type { ProjectRevision } from '@liclick/contracts';
 import type { Capture } from './capture';
 import type { Generation } from './generation';
 import type { Layer } from './layer';
@@ -241,6 +242,8 @@ export type Project = {
   dirty?: boolean;
   /** Transient save intent; the workspace server removes these objects and then clears this list. */
   deletedObjectIds?: string[];
+  /** Opaque server-issued token used for optimistic concurrency. */
+  revision?: ProjectRevision;
   assetManifest?: AssetManifest;
   settings: ProjectSettings;
 };

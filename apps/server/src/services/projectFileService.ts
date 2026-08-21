@@ -1,5 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  isProjectRevision,
+  nextProjectRevision,
+  type ProjectRevision,
+} from '@liclick/contracts';
 import type { ProjectSummary, WorkspaceProject } from '../types/project.js';
 import { writeAutosave } from './autosaveService.js';
 import {
@@ -36,10 +41,40 @@ async function runSerializedProjectSave<T>(key: string, operation: () => Promise
 export class ProjectSaveConflictError extends Error {
   statusCode = 409;
 
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly code = 'PROJECT_SAVE_CONFLICT',
+    readonly currentRevision?: ProjectRevision,
+  ) {
     super(message);
     this.name = 'ProjectSaveConflictError';
   }
+}
+
+function currentProjectRevision(project: WorkspaceProject | undefined) {
+  return isProjectRevision(project?.revision) ? project.revision : undefined;
+}
+
+function createNextProjectRevision(project: WorkspaceProject | undefined, savedAt: string) {
+  return nextProjectRevision(currentProjectRevision(project), {
+    id: createId('revision'),
+    savedAt,
+  });
+}
+
+function assertExpectedProjectRevision(
+  existingProject: WorkspaceProject,
+  expectedRevisionId: string | undefined,
+) {
+  const currentRevision = currentProjectRevision(existingProject);
+  if (!currentRevision) return;
+  if (expectedRevisionId === currentRevision.id) return;
+  if (expectedRevisionId === undefined && process.env.LICLICK_RUNTIME_MODE !== 'cloud') return;
+  throw new ProjectSaveConflictError(
+    'Blocked saving a stale project snapshot over a newer project revision. Reload and retry the save.',
+    'PROJECT_REVISION_CONFLICT',
+    currentRevision,
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -535,6 +570,7 @@ export async function createProject(userId: string, input: { name?: string; fold
     workspaceName: slug,
     workspaceMode: 'local-server',
     dirty: false,
+    revision: createNextProjectRevision(undefined, now),
     assetManifest: {
       models: [],
       references: [],
@@ -573,6 +609,7 @@ export async function listProjects(userId: string): Promise<ProjectSummary[]> {
           slug: entry.name,
           localPath: getProjectDir(userId, entry.name),
           status: 'local',
+          revision: currentProjectRevision(project),
         };
         return summary;
       }),
@@ -762,6 +799,10 @@ async function saveProjectUnlocked(
   const explicitDeletionIds = new Set(pipelineSafeInput.deletedObjectIds ?? []);
   const deletionAwareInput = applyExplicitObjectDeletions(pipelineSafeInput);
   if (existingProject) {
+    assertExpectedProjectRevision(
+      existingProject,
+      isProjectRevision(inputProject.revision) ? inputProject.revision.id : undefined,
+    );
     const incomingUpdatedAt = Date.parse(inputProject.updatedAt);
     const existingUpdatedAt = Date.parse(existingProject.updatedAt);
     if (
@@ -825,6 +866,7 @@ async function saveProjectUnlocked(
     workspaceVersion: inputProject.workspaceVersion ?? '0.6.0',
     workspaceMode: 'local-server',
     workspaceName: slug,
+    revision: createNextProjectRevision(existingProject, now),
   };
   await ensureProjectFolders(projectDir);
   await writeJsonFile(getProjectFile(projectDir), project);
@@ -853,11 +895,13 @@ async function updateProjectById(
   userId: string,
   projectId: string,
   updater: (project: WorkspaceProject, slug: string) => WorkspaceProject,
+  expectedRevisionId?: string,
 ) {
   const slug = await findProjectSlug(userId, projectId);
   if (!slug) return undefined;
   const project = await loadRawProjectBySlug(userId, slug);
   if (!project) return undefined;
+  assertExpectedProjectRevision(project, expectedRevisionId);
   const now = new Date().toISOString();
   const nextProject = {
     ...updater(project, slug),
@@ -867,25 +911,54 @@ async function updateProjectById(
     dirty: false,
     workspaceMode: 'local-server',
     workspaceName: slug,
+    revision: createNextProjectRevision(project, now),
   };
   await writeJsonFile(getProjectFile(getProjectDir(userId, slug)), nextProject);
   return { project: resolveProjectAssets(userId, slug, nextProject), slug };
 }
 
-export async function renameProject(userId: string, projectId: string, name: string) {
+export async function renameProject(
+  userId: string,
+  projectId: string,
+  name: string,
+  expectedRevisionId?: string,
+) {
   const nextName = name.trim();
   if (!nextName) return undefined;
-  return updateProjectById(userId, projectId, (project) => ({ ...project, name: nextName }));
+  return runSerializedProjectSave(`${userId}:${projectId}`, () =>
+    updateProjectById(
+      userId,
+      projectId,
+      (project) => ({ ...project, name: nextName }),
+      expectedRevisionId,
+    ),
+  );
 }
 
-export async function moveProject(userId: string, projectId: string, folderId: string | null) {
-  return updateProjectById(userId, projectId, (project) => ({ ...project, folderId }));
+export async function moveProject(
+  userId: string,
+  projectId: string,
+  folderId: string | null,
+  expectedRevisionId?: string,
+) {
+  return runSerializedProjectSave(`${userId}:${projectId}`, () =>
+    updateProjectById(
+      userId,
+      projectId,
+      (project) => ({ ...project, folderId }),
+      expectedRevisionId,
+    ),
+  );
 }
 
 export async function moveProjectsInFolderToRoot(userId: string, folderId: string) {
   const projects = await listProjects(userId);
   const matchingProjects = projects.filter((project) => project.folderId === folderId);
-  await Promise.all(matchingProjects.map((project) => moveProject(userId, project.id, null)));
+  await Promise.all(
+    matchingProjects.map((project) =>
+      moveProject(userId, project.id, null, project.revision?.id),
+    ),
+  );
   return matchingProjects.length;
 }
 
@@ -912,6 +985,7 @@ export async function duplicateProject(userId: string, projectId: string) {
     workspaceName: nextSlug,
     workspaceMode: 'local-server',
     dirty: false,
+    revision: createNextProjectRevision(undefined, now),
   };
   await writeJsonFile(getProjectFile(targetDir), duplicatedProject);
   return { project: resolveProjectAssets(userId, nextSlug, duplicatedProject), slug: nextSlug };

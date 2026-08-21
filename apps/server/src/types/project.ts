@@ -1,3 +1,5 @@
+import type { ProjectRevision } from '@liclick/contracts';
+
 export type WorkspaceProjectSettings = {
   resolution: '1K' | '2K' | '4K' | '8K';
   displayMode: string;
@@ -74,6 +76,7 @@ export type WorkspaceProject = {
   lastSavedAt?: string;
   dirty?: boolean;
   deletedObjectIds?: string[];
+  revision?: ProjectRevision;
 };
 
 export type ProjectSummary = {
@@ -87,4 +90,5 @@ export type ProjectSummary = {
   slug: string;
   localPath?: string;
   status?: 'local';
+  revision?: ProjectRevision;
 };

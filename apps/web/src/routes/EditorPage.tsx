@@ -2909,6 +2909,7 @@ export function EditorPage({
       lastSavedAt: result.project.lastSavedAt,
       dirty: !savedLatestSnapshot,
       assetManifest: result.project.assetManifest,
+      revision: result.project.revision,
     });
     return { ...result, savedLatestSnapshot };
   }
@@ -2982,7 +2983,8 @@ export function EditorPage({
       const staleSnapshot =
         error instanceof WorkspaceApiError &&
         error.status === 409 &&
-        error.message.includes('stale project snapshot');
+        (error.code === 'PROJECT_REVISION_CONFLICT' ||
+          error.message.includes('stale project snapshot'));
       if (staleSnapshot) {
         const latestSnapshot = getProjectSnapshot({ refreshThumbnail: false });
         if (latestSnapshot) {
@@ -2997,7 +2999,8 @@ export function EditorPage({
             const supersededAgain =
               retryError instanceof WorkspaceApiError &&
               retryError.status === 409 &&
-              retryError.message.includes('stale project snapshot');
+              (retryError.code === 'PROJECT_REVISION_CONFLICT' ||
+                retryError.message.includes('stale project snapshot'));
             if (supersededAgain) {
               // Another module saved an even newer snapshot while this retry
               // was uploading assets. Keep the editor retryable instead of
@@ -3040,11 +3043,16 @@ export function EditorPage({
     }
 
     try {
-      const result = await renameWorkspaceProject(project.id, trimmedName);
+      const result = await renameWorkspaceProject(
+        project.id,
+        trimmedName,
+        project.revision?.id,
+      );
       updateProjectById(project.id, {
         name: result.project.name,
         workspaceName: result.project.workspaceName,
         updatedAt: result.project.updatedAt,
+        revision: result.project.revision,
       });
     } catch (error) {
       pushToast({

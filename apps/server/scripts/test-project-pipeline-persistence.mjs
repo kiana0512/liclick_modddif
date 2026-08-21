@@ -1,3 +1,5 @@
+/* global console, process */
+
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -19,6 +21,7 @@ async function main() {
 
   const userId = 'pipeline-test-user';
   const created = await createProject(userId, { name: 'Pipeline persistence' });
+  assert.equal(created.project.revision.number, 1);
   const projectUrlPrefix = `${process.env.LICLICK_PUBLIC_WORKSPACE_URL}/workspace/users/${userId}/projects/${created.slug}`;
   const modelObject = { id: 'pipeline-model', sourcePath: `${projectUrlPrefix}/assets/models/a.glb` };
   const anchorObject = { id: 'anchor-model', sourcePath: `${projectUrlPrefix}/assets/models/b.glb` };
@@ -78,6 +81,9 @@ async function main() {
     'project.liclick.json',
   );
   const raw = JSON.parse(await fs.readFile(rawProjectPath, 'utf8'));
+  assert.equal(firstSave.project.revision.number, 2);
+  assert.equal(firstSave.project.revision.parentRevisionId, created.project.revision.id);
+  assert.equal(raw.revision.id, firstSave.project.revision.id);
   assert.equal(raw.pipeline.futureMetadata.preserved, true);
   assert.equal(raw.pipeline.revisions[0].futureRevisionField[0], 'keep-me-too');
   assert.equal(raw.pipeline.revisions[0].inputAssets[0].futureAssetField, 'keep-me');
@@ -99,6 +105,28 @@ async function main() {
     loaded.project.pipeline.revisions[0].outputAssets[0].url,
     `${projectUrlPrefix}/assets/generations/a.png`,
   );
+
+  await assert.rejects(
+    () =>
+      saveProject(userId, created.project.id, {
+        ...created.project,
+        name: 'stale overwrite attempt',
+        objects: [modelObject, anchorObject],
+      }),
+    (error) => error?.code === 'PROJECT_REVISION_CONFLICT',
+  );
+
+  const revisionlessProject = { ...loaded.project };
+  delete revisionlessProject.revision;
+  process.env.LICLICK_RUNTIME_MODE = 'cloud';
+  try {
+    await assert.rejects(
+      () => saveProject(userId, created.project.id, revisionlessProject),
+      (error) => error?.code === 'PROJECT_REVISION_CONFLICT',
+    );
+  } finally {
+    delete process.env.LICLICK_RUNTIME_MODE;
+  }
   const loadedLocalRepaint = loaded.project.layers.find(
     (layer) => layer.id === 'local-repaint-projection-test',
   );
@@ -114,12 +142,15 @@ async function main() {
   // Simulate an older/partial client that knows neither the pipeline field nor
   // the model metadata it owns. Existing pipeline state must be retained, and
   // its object reference must prevent data loss.
-  const { pipeline: _omittedPipeline, ...legacyClientProject } = loaded.project;
+  const legacyClientProject = { ...loaded.project };
+  delete legacyClientProject.pipeline;
   const secondSave = await saveProject(userId, created.project.id, {
     ...legacyClientProject,
     updatedAt: firstSave.project.updatedAt,
     objects: [anchorObject],
   });
+  assert.equal(secondSave.project.revision.number, 3);
+  assert.equal(secondSave.project.revision.parentRevisionId, firstSave.project.revision.id);
   assert.equal(secondSave.project.pipeline.revisions[0].id, 'texture-r1');
   assert.deepEqual(
     secondSave.project.objects.map((object) => object.id).sort(),
@@ -133,6 +164,7 @@ async function main() {
     objects: [anchorObject],
     deletedObjectIds: [modelObject.id],
   });
+  assert.equal(deletionSave.project.revision.number, 4);
   assert.deepEqual(
     deletionSave.project.objects.map((object) => object.id),
     ['anchor-model'],

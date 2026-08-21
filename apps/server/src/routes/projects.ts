@@ -14,6 +14,16 @@ import type { WorkspaceProject } from '../types/project.js';
 import { requireAuth } from '../auth/authMiddleware.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
+function sendProjectConflict(response: ServerResponse, error: unknown) {
+  if (!(error instanceof ProjectSaveConflictError)) return false;
+  sendJson(response, error.statusCode, {
+    error: error.message,
+    code: error.code,
+    currentRevision: error.currentRevision,
+  });
+  return true;
+}
+
 export async function handleProjectsRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
   const segments = getPathSegments(url);
   const projectId = segments[2];
@@ -45,10 +55,7 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
     try {
       result = await saveProject(user.id, projectId, body);
     } catch (error) {
-      if (error instanceof ProjectSaveConflictError) {
-        sendJson(response, error.statusCode, { error: error.message });
-        return true;
-      }
+      if (sendProjectConflict(response, error)) return true;
       throw error;
     }
     if (!result) sendJson(response, 404, { error: 'Project not found.' });
@@ -57,8 +64,16 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
   }
 
   if (request.method === 'PATCH' && projectId && segments.length === 3) {
-    const body = await readJsonBody<{ name?: string }>(request);
-    const result = body.name ? await renameProject(user.id, projectId, body.name) : undefined;
+    const body = await readJsonBody<{ name?: string; expectedRevisionId?: string }>(request);
+    let result: Awaited<ReturnType<typeof renameProject>>;
+    try {
+      result = body.name
+        ? await renameProject(user.id, projectId, body.name, body.expectedRevisionId)
+        : undefined;
+    } catch (error) {
+      if (sendProjectConflict(response, error)) return true;
+      throw error;
+    }
     if (!result) sendJson(response, 404, { error: 'Project not found.' });
     else sendJson(response, 200, result);
     return true;
@@ -79,8 +94,19 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
   }
 
   if (request.method === 'POST' && projectId && segments.length === 4 && segments[3] === 'move') {
-    const body = await readJsonBody<{ folderId?: string | null }>(request);
-    const result = await moveProject(user.id, projectId, body.folderId ?? null);
+    const body = await readJsonBody<{ folderId?: string | null; expectedRevisionId?: string }>(request);
+    let result: Awaited<ReturnType<typeof moveProject>>;
+    try {
+      result = await moveProject(
+        user.id,
+        projectId,
+        body.folderId ?? null,
+        body.expectedRevisionId,
+      );
+    } catch (error) {
+      if (sendProjectConflict(response, error)) return true;
+      throw error;
+    }
     if (!result) sendJson(response, 404, { error: 'Project not found.' });
     else sendJson(response, 200, result);
     return true;

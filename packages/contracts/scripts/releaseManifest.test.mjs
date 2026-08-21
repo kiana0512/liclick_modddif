@@ -5,6 +5,9 @@ import {
   createReleaseManifest,
   evaluateReleaseCompatibility,
   parseReleaseManifest,
+  isProjectRevision,
+  nextProjectRevision,
+  projectRevisionMatches,
   selectLocalComputePlan,
 } from '../dist/index.js';
 
@@ -93,4 +96,21 @@ test('degrades locally when GPU and workers are unavailable', () => {
   assert.equal(plan.qualityTier, 'limited');
   assert.equal(plan.serverFallbackAllowed, false);
   assert.ok(plan.limitations.length >= 3);
+});
+
+test('creates a monotonic opaque project revision chain', () => {
+  const first = nextProjectRevision(undefined, {
+    id: 'revision-00000001',
+    savedAt: '2026-08-21T00:00:00.000Z',
+  });
+  const second = nextProjectRevision(first, {
+    id: 'revision-00000002',
+    savedAt: '2026-08-21T00:01:00.000Z',
+  });
+  assert.equal(first.number, 1);
+  assert.equal(second.number, 2);
+  assert.equal(second.parentRevisionId, first.id);
+  assert.equal(isProjectRevision(second), true);
+  assert.equal(projectRevisionMatches(first.id, first), true);
+  assert.equal(projectRevisionMatches(first.id, second), false);
 });
