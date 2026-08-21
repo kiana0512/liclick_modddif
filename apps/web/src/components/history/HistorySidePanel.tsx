@@ -33,6 +33,7 @@ const telemetryModules: Record<TaskHistoryModule, TelemetryModule> = {
   uv: 'auto_uv',
   retopology: 'auto_retopology',
 };
+const emptyHistoryRecords: TaskHistoryRecord[] = [];
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '';
@@ -111,7 +112,11 @@ function HistoryRecordCard({
   const completed = ['succeeded', 'success', 'completed', 'complete'].includes(
     record.status.toLowerCase(),
   );
-  const transferableOutput = record.outputs?.find((output) => /\.fbx$/i.test(output.filename));
+  const transferableOutput = record.outputs?.find((output) =>
+    module === 'uv'
+      ? /\.(fbx|glb|gltf|obj)$/i.test(output.filename)
+      : /\.fbx$/i.test(output.filename),
+  );
 
   async function download(output: TaskHistoryOutput) {
     if (!output.downloadUrl || downloading) return;
@@ -531,6 +536,7 @@ export function HistorySidePanel({
   module,
   refreshKey,
   activeTask,
+  supplementalRecords = emptyHistoryRecords,
   onContinue,
   selectedOutputId,
   onSelect,
@@ -538,11 +544,12 @@ export function HistorySidePanel({
   module: TaskHistoryModule;
   refreshKey?: string;
   activeTask?: Pick<TaskHistoryRecord, 'id' | 'status' | 'progress'>;
+  supplementalRecords?: TaskHistoryRecord[];
   onContinue?: (record: TaskHistoryRecord, output: TaskHistoryOutput) => Promise<void>;
   selectedOutputId?: string;
   onSelect?: (record: TaskHistoryRecord, output?: TaskHistoryOutput) => void;
 }) {
-  const [records, setRecords] = useState<TaskHistoryRecord[]>([]);
+  const [serverRecords, setServerRecords] = useState<TaskHistoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -556,7 +563,7 @@ export function HistorySidePanel({
     void getTaskHistory(module, 30)
       .then((nextRecords) => {
         if (!active) return;
-        setRecords(nextRecords);
+        setServerRecords(nextRecords);
         setError(undefined);
       })
       .catch((historyError) => {
@@ -570,6 +577,15 @@ export function HistorySidePanel({
       active = false;
     };
   }, [module, refreshKey, reload]);
+
+  const records = useMemo(() => {
+    const byId = new Map<string, TaskHistoryRecord>();
+    for (const record of serverRecords) byId.set(record.id, record);
+    for (const record of supplementalRecords) byId.set(record.id, record);
+    return Array.from(byId.values())
+      .sort((a, b) => Date.parse(b.finishedAt ?? b.createdAt) - Date.parse(a.finishedAt ?? a.createdAt))
+      .slice(0, 100);
+  }, [serverRecords, supplementalRecords]);
 
   useEffect(() => {
     if (!drawerOpen) return undefined;

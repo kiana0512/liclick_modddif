@@ -19,6 +19,8 @@ export type LocalUvUnwrapResult = {
   file: File;
   sha256: string;
   sourceFile: File;
+  resolution: 1024 | 2048 | 4096 | 8192;
+  padding: number;
   meshCount: number;
   triangleCount: number;
   chartCount: number;
@@ -213,6 +215,8 @@ export async function unwrapModelFileLocally(input: {
         file,
         sha256: await sha256(blob),
         sourceFile: input.file,
+        resolution: input.resolution,
+        padding: input.padding,
         meshCount: prepared.length,
         triangleCount,
         chartCount: atlas.chartCount,

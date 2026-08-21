@@ -73,6 +73,7 @@ import {
 import {
   downloadTaskHistoryOutput,
   fetchTaskHistoryOutputBlob,
+  getProjectPipelineTaskHistory,
   type TaskHistoryOutput,
   type TaskHistoryRecord,
 } from '@/services/taskHistoryApiClient';
@@ -102,6 +103,7 @@ import type { SceneObject } from '@/types/model';
 import type {
   Project,
   ProjectPipelineAssetReference,
+  ProjectPipelineSettingValue,
   ProjectPipelineStage,
   TextureBakeHandoff,
 } from '@/types/project';
@@ -1578,6 +1580,7 @@ function AutoUvWorkspace({
   setError,
   localResult,
   onLocalResult,
+  onPersistLocal,
   onContinueLocal,
 }: {
   initialAsset?: File;
@@ -1593,6 +1596,7 @@ function AutoUvWorkspace({
   setError: (error?: string) => void;
   localResult?: LocalUvUnwrapResult;
   onLocalResult: (result?: LocalUvUnwrapResult) => void;
+  onPersistLocal: (result: LocalUvUnwrapResult) => Promise<void>;
   onContinueLocal: (result: LocalUvUnwrapResult) => Promise<void>;
 }) {
   const engineSession = useEngineSession();
@@ -1681,6 +1685,15 @@ function AutoUvWorkspace({
       trackModuleAction('auto_uv', 'start');
       trackModuleAction('auto_uv', 'complete');
       clearPendingSubmission('uv');
+      try {
+        await onPersistLocal(result);
+      } catch (persistError) {
+        setError(
+          persistError instanceof Error
+            ? `Auto UV 已完成，但账号历史保存失败：${persistError.message}`
+            : 'Auto UV 已完成，但账号历史保存失败。',
+        );
+      }
     } catch (submitError) {
       if (!(submitError instanceof Error && submitError.name === 'AbortError')) {
         document.body.dataset.localUvStatus = 'failed';
@@ -2190,6 +2203,10 @@ export function AssetProcessingPage({
   const traceStorageKey = `li3d:asset-processing:${storageScope}:${mode}:trace`;
   const { project, isLoading: projectLoading, error: projectError } = useWorkflowProject(projectId);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
+  const accountProjectHistory = useMemo(
+    () => getProjectPipelineTaskHistory(project, mode),
+    [mode, project],
+  );
   const pipelineInputAsset = preferredPipelineInputAsset(project, mode);
   const hydratedInputRef = useRef('');
   const [initialAsset, setInitialAsset] = useState<File>();
@@ -2620,6 +2637,8 @@ export function AssetProcessingPage({
     sourceMode?: 'processing-job' | 'manual' | 'browser-local';
     objectId?: string;
     highObject?: SceneObject;
+    revisionSettings?: Record<string, ProjectPipelineSettingValue>;
+    navigateToNextStage?: boolean;
   }) {
     let targetProject = projectId
       ? useProjectStore.getState().projects.find((item) => item.id === projectId) ?? project
@@ -2748,6 +2767,7 @@ export function AssetProcessingPage({
         jobId: input.jobId,
         ...(input.sourceMode === 'manual' ? { entry: 'external-model' } : {}),
         ...(input.historyRecordId ? { historyRecordId: input.historyRecordId } : {}),
+        ...input.revisionSettings,
       },
       status: 'ready',
       createdAt: timestamp,
@@ -2869,25 +2889,111 @@ export function AssetProcessingPage({
             },
           }
         : undefined;
-    onContinue(savedProject.project.id, handoff);
+    if (input.navigateToNextStage !== false) {
+      onContinue(savedProject.project.id, handoff);
+    }
+    return {
+      project: savedProject.project,
+      revisionId,
+      outputAsset,
+      handoff,
+    };
+  }
+
+  function localUvJobId(result: LocalUvUnwrapResult) {
+    return `local-uv-${result.sha256.slice(0, 16)}`;
+  }
+
+  function findLocalUvRevision(jobId: string) {
+    const currentProject = projectId
+      ? useProjectStore.getState().projects.find((item) => item.id === projectId) ?? project
+      : project;
+    return [...(currentProject?.pipeline?.revisions ?? [])]
+      .reverse()
+      .find(
+        (revision) =>
+          revision.stage === 'uv' &&
+          revision.sourceMode === 'browser-local' &&
+          revision.status === 'ready' &&
+          revision.settings.jobId === jobId,
+      );
+  }
+
+  function navigateWithLocalUvRevision(revisionId: string) {
+    const currentProject = projectId
+      ? useProjectStore.getState().projects.find((item) => item.id === projectId) ?? project
+      : project;
+    const revision = currentProject?.pipeline?.revisions.find((item) => item.id === revisionId);
+    const outputAsset = revision?.outputAssets[0];
+    if (!currentProject || !revision || !outputAsset) return false;
+    const objectId = resolvePipelineAssetObjectId(revision.outputAssets, outputAsset.objectId);
+    if (!objectId) return false;
+    onContinue(currentProject.id, {
+      objectId,
+      lowModel: {
+        name: outputAsset.name,
+        url: outputAsset.url,
+        mimeType: outputAsset.mimeType,
+      },
+    });
+    return true;
+  }
+
+  async function handleLocalUvPersist(result: LocalUvUnwrapResult) {
+    const jobId = localUvJobId(result);
+    if (findLocalUvRevision(jobId)) return;
+    await publishOutputToNextStage({
+      jobId,
+      outputBlob: result.blob,
+      outputName: result.file.name,
+      outputSize: result.blob.size,
+      outputSha256: result.sha256,
+      sourceFile: result.sourceFile,
+      usePipelineParent: Boolean(pipelineInputAsset && initialAsset === result.sourceFile),
+      sourceMode: 'browser-local',
+      highObject: result.sourceObject,
+      navigateToNextStage: false,
+      revisionSettings: {
+        resolution: result.resolution,
+        padding: result.padding,
+        meshCount: result.meshCount,
+        triangleCount: result.triangleCount,
+        chartCount: result.chartCount,
+        utilization: result.utilization,
+        atlasWidth: result.atlasWidth,
+        atlasHeight: result.atlasHeight,
+      },
+    });
   }
 
   async function handleLocalUvContinue(result: LocalUvUnwrapResult) {
     try {
       setError(undefined);
-      await publishOutputToNextStage({
-        jobId: `local-uv-${result.sha256.slice(0, 16)}`,
+      const jobId = localUvJobId(result);
+      const revision = findLocalUvRevision(jobId);
+      if (revision && navigateWithLocalUvRevision(revision.id)) return;
+      const published = await publishOutputToNextStage({
+        jobId,
         outputBlob: result.blob,
         outputName: result.file.name,
         outputSize: result.blob.size,
         outputSha256: result.sha256,
         sourceFile: result.sourceFile,
-        usePipelineParent: Boolean(
-          pipelineInputAsset && initialAsset === result.sourceFile,
-        ),
+        usePipelineParent: Boolean(pipelineInputAsset && initialAsset === result.sourceFile),
         sourceMode: 'browser-local',
         highObject: result.sourceObject,
+        revisionSettings: {
+          resolution: result.resolution,
+          padding: result.padding,
+          meshCount: result.meshCount,
+          triangleCount: result.triangleCount,
+          chartCount: result.chartCount,
+          utilization: result.utilization,
+          atlasWidth: result.atlasWidth,
+          atlasHeight: result.atlasHeight,
+        },
       });
+      if (published.handoff) return;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '本地 UV 结果保存失败。');
       throw reason;
@@ -2915,6 +3021,13 @@ export function AssetProcessingPage({
   }
 
   async function handleHistoryContinue(record: TaskHistoryRecord, output: TaskHistoryOutput) {
+    if (record.id.startsWith('pipeline:')) {
+      const revisionId = record.id.slice('pipeline:'.length);
+      if (!navigateWithLocalUvRevision(revisionId)) {
+        throw new Error('这条账号历史记录的项目输出已不可用。');
+      }
+      return;
+    }
     await publishOutputToNextStage({
       jobId: record.id,
       outputBlob: await fetchTaskHistoryOutputBlob(output),
@@ -3285,6 +3398,7 @@ export function AssetProcessingPage({
               setError={setError}
               localResult={localUvResult}
               onLocalResult={setLocalUvResult}
+              onPersistLocal={handleLocalUvPersist}
               onContinueLocal={handleLocalUvContinue}
             />
           {localUvResult || job?.status === 'SUCCEEDED' ? (
@@ -3403,6 +3517,7 @@ export function AssetProcessingPage({
       )}
       <HistorySidePanel
         module={mode}
+        supplementalRecords={accountProjectHistory}
         refreshKey={historyRefreshKey}
         activeTask={job ? {
           id: jobId,
