@@ -8,7 +8,6 @@ import { handleAssetsRoute } from './routes/assets.js';
 import { handleAssetProcessingRoute } from './routes/assetProcessing.js';
 import { handleAuthRoute } from './routes/auth.js';
 import { handleBakeRoute } from './routes/bake.js';
-import { handleComfyuiRoute } from './routes/comfyui.js';
 import { handleEventsRoute } from './routes/events.js';
 import { handleExportRoute } from './routes/export.js';
 import { handleFoldersRoute } from './routes/folders.js';
@@ -199,7 +198,6 @@ async function handleWorkspaceRequest(
     return;
   }
   if (url.pathname.startsWith('/api/modelview') && (await handleModelviewRoute(request, response, url))) return;
-  if (url.pathname.startsWith('/api/comfyui') && (await handleComfyuiRoute(request, response, url))) return;
   if (
     (url.pathname.startsWith('/api/liclick') || url.pathname === '/api/generate-image') &&
     (await handleLiclickRoute(request, response, url))

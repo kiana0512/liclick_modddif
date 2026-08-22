@@ -6,6 +6,7 @@ import type {
   NormalBakeSettings,
 } from '@/services/bakeApiClient';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
+import { createId } from '@/utils/id';
 import type {
   LocalBakeChannel,
   LocalBakeMeshData,
@@ -147,7 +148,7 @@ function runBakeWorker(
       type: 'module',
       name: 'li3d-local-pbr-bake',
     });
-    const resourceId = `pbr-bake-worker-${crypto.randomUUID()}`;
+    const resourceId = createId('pbr-bake-worker');
     let settled = false;
     const release = session?.registerResource({
       id: resourceId,
@@ -287,7 +288,7 @@ export async function bakePbrFilesLocally(input: {
       }
       const now = new Date().toISOString();
       const job: NormalBakeJob = {
-        id: `local-bake-${crypto.randomUUID()}`,
+        id: createId('local-bake'),
         ownerUserId: 'browser-local',
         kind: 'bake-maps',
         projectId: input.projectId,

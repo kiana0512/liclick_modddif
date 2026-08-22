@@ -115,19 +115,10 @@ try {
   const loggedIn = await login.json();
   assert(loggedIn.user?.id, 'Dev login must return the authenticated user id.');
 
-  const missingComfyCancelJob = await fetch(`${baseUrl}/api/comfyui/cancel`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
-    body: JSON.stringify({}),
+  const retiredComfyApi = await fetch(`${baseUrl}/api/comfyui/status`, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
   });
-  assert.equal(missingComfyCancelJob.status, 400);
-
-  const unknownComfyCancelJob = await fetch(`${baseUrl}/api/comfyui/cancel`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
-    body: JSON.stringify({ jobId: 'not-an-active-job' }),
-  });
-  assert.equal(unknownComfyCancelJob.status, 404);
+  assert.equal(retiredComfyApi.status, 404, 'The retired local ComfyUI API must not be exposed.');
 
   const createProject = await fetch(`${baseUrl}/api/projects`, {
     method: 'POST',
@@ -378,7 +369,7 @@ try {
   assert.equal(deniedAsset.status, 403, 'Workspace assets must reject untrusted Origins.');
 
   await verifyExternalBindRequiresSecret();
-  console.log('Local server smoke passed: auth, safe cancellation, project creation, upload, repaint recovery, CORS, HEAD, and workspace isolation.');
+  console.log('Local server smoke passed: auth, retired ComfyUI API boundary, project creation, upload, repaint recovery, CORS, HEAD, and workspace isolation.');
 } catch (error) {
   if (output.trim()) console.error(output.trim());
   throw error;

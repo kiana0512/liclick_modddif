@@ -1,5 +1,6 @@
 import { getWorkspaceApiBase } from './workspaceApiBase';
 import { slugifyExportName } from '@/engine/export/exportUtils';
+import { createId } from '@/utils/id';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
@@ -142,7 +143,7 @@ export async function generateRoughnessMap(image: File) {
     method: 'POST',
     body,
     credentials: 'include',
-    headers: { 'idempotency-key': `roughness_${crypto.randomUUID()}` },
+    headers: { 'idempotency-key': createId('roughness') },
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => undefined)) as

@@ -61,6 +61,7 @@ import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
+import { createId } from '@/utils/id';
 import { Grid } from './Grid';
 import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
 import { mergeAuthoritativeLocalRepaintLayers } from './projectedPreviewLayerAuthority';
@@ -544,7 +545,7 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
     texture: THREE.Texture;
   }>();
   const { gl } = useThree();
-  const workerOwnerKeyRef = useRef(`uv-composite:${crypto.randomUUID()}`);
+  const workerOwnerKeyRef = useRef(createId('uv-composite'));
   const runtimeRef = useRef<{
     refresh: () => void;
     liveRevisions: Map<string, number>;

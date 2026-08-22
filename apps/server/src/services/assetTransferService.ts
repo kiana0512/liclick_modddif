@@ -204,6 +204,49 @@ export async function createAssetUploadIntent(
   };
 }
 
+export async function saveProxiedObjectStorageAsset(input: {
+  userId: string;
+  projectId: string;
+  category: AssetTransferCategory;
+  filename: string;
+  mimeType: string;
+  buffer: Buffer;
+}): Promise<SavedAsset | undefined> {
+  const sha256 = createHash('sha256').update(input.buffer).digest('hex');
+  const intent = await createAssetUploadIntent(input.userId, input.projectId, {
+    protocolVersion: ASSET_TRANSFER_PROTOCOL_VERSION,
+    category: input.category,
+    filename: input.filename,
+    mimeType: input.mimeType,
+    sizeBytes: input.buffer.byteLength,
+    sha256,
+  });
+  if (!intent) return undefined;
+  const upload = await fetch(intent.upload.url, {
+    method: intent.upload.method,
+    headers: intent.upload.headers,
+    body: Uint8Array.from(input.buffer),
+  });
+  if (!upload.ok) {
+    throw new AssetTransferError(
+      `Object storage proxy upload failed (${upload.status}).`,
+      502,
+      'ASSET_PROXY_UPLOAD_FAILED',
+    );
+  }
+  const result = await completeAssetUploadIntent(
+    input.userId,
+    input.projectId,
+    intent.intentId,
+    {
+      protocolVersion: ASSET_TRANSFER_PROTOCOL_VERSION,
+      assetId: intent.assetId,
+      sha256,
+    },
+  );
+  return result.asset;
+}
+
 export async function completeAssetUploadIntent(
   userId: string,
   projectId: string,

@@ -32,7 +32,6 @@ import {
   type ReferenceGroupGenerationState,
 } from '@/components/panels/referenceGroup';
 import { devLogin } from '@/services/authApiClient';
-import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { createModelviewApiClient } from '@/services/modelviewApiClient';
 import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
@@ -1791,11 +1790,12 @@ export function GeneratePanel({
         generation.metadata.provider === 'modelview-int8'
       )
         return;
-      cancelRequests.push(
-        generation.metadata.provider === 'comfyui-local'
-          ? createComfyuiApiClient().cancelTextureMap(jobId)
-          : createLiclickApiClient().cancelGenerationJob(jobId),
-      );
+      // The retired local ComfyUI provider has no server-side job in the
+      // zero-install cloud runtime. Historical entries are cancelled locally;
+      // every current remote generation job belongs to LiClick/Atlas.
+      if (generation.metadata.provider !== 'comfyui-local') {
+        cancelRequests.push(createLiclickApiClient().cancelGenerationJob(jobId));
+      }
     });
 
     const cancelsTexturePipeline = isTextureMap || texturePipelineProgress?.active === true;

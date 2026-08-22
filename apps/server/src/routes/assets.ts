@@ -4,12 +4,14 @@ import {
   parseCreateAssetUploadIntent,
 } from '@liclick/contracts';
 import { requireAuth } from '../auth/authMiddleware.js';
+import { serverConfig } from '../config.js';
 import { maxLocalAssetBytes, saveBinaryAsset, saveDataUrlAsset, saveRemoteImageAsset } from '../services/assetFileService.js';
 import {
   AssetTransferError,
   completeAssetUploadIntent,
   createAssetDownloadUrl,
   createAssetUploadIntent,
+  saveProxiedObjectStorageAsset,
 } from '../services/assetTransferService.js';
 import type { AssetCategory } from '../types/asset.js';
 import { corsHeaders, getPathSegments, readBinaryBody, readJsonBody, sendJson } from './httpUtils.js';
@@ -120,14 +122,23 @@ export async function handleAssetsRoute(request: IncomingMessage, response: Serv
       sendJson(response, 413, { error: error instanceof Error ? error.message : 'Asset is too large.' });
       return true;
     }
-    const asset = await saveBinaryAsset({
-      userId: user.id,
-      projectId,
-      category,
-      mime,
-      buffer,
-      filename,
-    });
+    const asset = serverConfig.objectStorage.enabled
+      ? await saveProxiedObjectStorageAsset({
+          userId: user.id,
+          projectId,
+          category,
+          mimeType: mime,
+          buffer,
+          filename,
+        })
+      : await saveBinaryAsset({
+          userId: user.id,
+          projectId,
+          category,
+          mime,
+          buffer,
+          filename,
+        });
     if (!asset) sendJson(response, 404, { error: 'Project not found.' });
     else sendJson(response, 201, { asset });
     return true;

@@ -55,13 +55,6 @@ const serveWeb = process.env.LICLICK_SERVE_WEB === 'true';
 const webDistDir = path.resolve(
   process.env.LICLICK_WEB_DIST_DIR ?? path.join(repoRoot, 'apps', 'web', 'dist'),
 );
-const comfyuiBaseUrl = (process.env.COMFYUI_BASE_URL ?? 'http://127.0.0.1:8188').replace(/\/$/, '');
-const comfyuiMaterialRepaintBaseUrl = (
-  process.env.COMFYUI_MATERIAL_REPAINT_BASE_URL ?? 'http://10.3.2.59:49230'
-).replace(/\/$/, '');
-const comfyuiTextureWorkflowPath =
-  process.env.COMFYUI_TEXTURE_WORKFLOW_PATH ??
-  'C:/Users/rentian/Downloads/li3d_zimage_web3d_fast_1024_to_4k_16gb.json';
 const modelviewInpaintUrl =
   process.env.LICLICK_MODELVIEW_INPAINT_URL?.trim() ||
   'https://10.3.34.11/api/v1/services/modelview-inpaint';
@@ -197,6 +190,11 @@ const objectStorageAccessKeyId = process.env.LICLICK_OBJECT_STORAGE_ACCESS_KEY_I
 const objectStorageSecretAccessKey =
   process.env.LICLICK_OBJECT_STORAGE_SECRET_ACCESS_KEY?.trim() ?? '';
 const objectStorageSessionToken = process.env.LICLICK_OBJECT_STORAGE_SESSION_TOKEN?.trim() || undefined;
+const objectStorageAllowInsecureHttp = booleanFlag(
+  process.env.LICLICK_OBJECT_STORAGE_ALLOW_INSECURE_HTTP,
+  false,
+  'LICLICK_OBJECT_STORAGE_ALLOW_INSECURE_HTTP',
+);
 const objectStorageConfiguredValues = [
   objectStorageEndpointRaw,
   objectStorageBucket,
@@ -242,7 +240,9 @@ if (objectStorageBucket && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(objectStor
   throw new Error('LICLICK_OBJECT_STORAGE_BUCKET has an invalid format.');
 }
 const objectStorageEndpoint = objectStorageEndpointRaw
-  ? serverHttpUrl(objectStorageEndpointRaw, 'LICLICK_OBJECT_STORAGE_ENDPOINT')
+  ? serverHttpUrl(objectStorageEndpointRaw, 'LICLICK_OBJECT_STORAGE_ENDPOINT', {
+      allowNonLoopbackHttp: objectStorageAllowInsecureHttp,
+    })
   : '';
 const objectStorageSignedUrlTtlSeconds = Math.min(
   900,
@@ -606,9 +606,6 @@ export const serverConfig = {
   frontendUrl,
   serveWeb,
   webDistDir,
-  comfyuiBaseUrl,
-  comfyuiMaterialRepaintBaseUrl,
-  comfyuiTextureWorkflowPath,
   modelviewInpaintUrl,
   modelviewInpaintCaPath,
   modelviewInpaintCaManaged,
@@ -631,6 +628,10 @@ export const serverConfig = {
   objectStorage: {
     enabled: objectStorageEnabled,
     endpoint: objectStorageEndpoint,
+    insecureHttpActive:
+      objectStorageEnabled &&
+      objectStorageAllowInsecureHttp &&
+      isNonLoopbackHttpUrl(objectStorageEndpoint),
     region: objectStorageRegion,
     bucket: objectStorageBucket,
     accessKeyId: objectStorageAccessKeyId,

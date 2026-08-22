@@ -1,5 +1,6 @@
 import type { LocalComputePlan } from '@liclick/contracts';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
+import { createId } from '@/utils/id';
 
 export type EngineTaskLane = 'gpu' | 'cpu' | 'io';
 export type EngineSessionState = 'active' | 'suspended' | 'disposed';
@@ -55,7 +56,7 @@ function priorityValue(priority: EngineTaskOptions<unknown>['priority']) {
 }
 
 export class EngineSession {
-  readonly id = `engine-${crypto.randomUUID()}`;
+  readonly id = createId('engine');
   private state: EngineSessionState = 'active';
   private nextTaskId = 1;
   private queue: ScheduledTask[] = [];

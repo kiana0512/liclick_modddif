@@ -11,6 +11,7 @@ import type {
 } from './uvBakeTypes';
 import { useLayerStore } from '@/stores/layerStore';
 import { useSceneStore } from '@/stores/sceneStore';
+import { createId } from '@/utils/id';
 
 const COVERAGE_ALPHA_THRESHOLD = 8;
 
@@ -545,13 +546,13 @@ export async function debugCompareCpuGpuUvBake(options: DebugCompareOptions = {}
     const cpuResult = await bakeVisibleProjectedLayersToTexture({
       ...commonInput,
       method: 'cpu',
-      cacheKey: `debug-cpu-${crypto.randomUUID()}`,
+      cacheKey: createId('debug-cpu'),
       onProgress: makeProgressLogger('cpu', options.logProgress),
     });
     const gpuResult = await bakeVisibleProjectedLayersToTexture({
       ...commonInput,
       method: 'gpu',
-      cacheKey: `debug-gpu-${crypto.randomUUID()}`,
+      cacheKey: createId('debug-gpu'),
       disableGpuFallback: true,
       onProgress: makeProgressLogger('gpu', options.logProgress),
     });

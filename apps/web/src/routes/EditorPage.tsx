@@ -2957,7 +2957,7 @@ export function EditorPage({
     }
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
-    if (!currentProject || currentProject.workspaceMode !== 'local-server') {
+    if (!currentProject || (!isCloudBuild && currentProject.workspaceMode !== 'local-server')) {
       pushToast({
         tone: 'warning',
         title: '当前项目没有连接本地工作区',

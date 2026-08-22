@@ -1,6 +1,8 @@
 import { GLTFExporter } from 'three-stdlib';
 import * as THREE from 'three';
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
+import { createId } from '@/utils/id';
+import { sha256Hex } from '@/utils/sha256';
 import type { EngineSession } from '@/engine/session/engineSession';
 import type { SceneObject } from '@/types/model';
 import type {
@@ -119,7 +121,7 @@ function runAtlasWorker(
       type: 'module',
       name: 'li3d-local-uv-atlas',
     });
-    const resourceId = `uv-worker-${crypto.randomUUID()}`;
+    const resourceId = createId('uv-worker');
     let settled = false;
     const terminate = () => worker.terminate();
     const release = session?.registerResource({
@@ -167,8 +169,7 @@ function disposeLoadedModel(root: THREE.Object3D, sourceUrl: string) {
 }
 
 async function sha256(blob: Blob) {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(blob);
 }
 
 export async function unwrapModelFileLocally(input: {

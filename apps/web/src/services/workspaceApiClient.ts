@@ -9,6 +9,8 @@ import {
 import type { Project } from '@/types/project';
 import { getProjectApiBase } from '@/platform/projectApiBase';
 import { isCloudBuild } from '@/platform/runtimeCapabilities';
+import { createId } from '@/utils/id';
+import { sha256Hex } from '@/utils/sha256';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getProjectApiBase();
@@ -262,7 +264,7 @@ type ProjectCommandResponse = {
 };
 
 function createProjectCommandId() {
-  return `command-${crypto.randomUUID()}`;
+  return createId('command');
 }
 
 async function executeProjectCommand(command: ProjectCommand, timeoutMs = 3000) {
@@ -398,7 +400,7 @@ export async function saveDataUrlAsset(input: {
 }) {
   if (isCloudBuild) {
     const blob = await fetch(input.dataUrl).then((response) => response.blob());
-    return saveDirectBlobAsset({ ...input, blob });
+    return saveBlobAsset({ ...input, blob });
   }
   return requestJson<{ asset: { category: AssetCategory; relativePath: string; url: string } }>(
     `/api/projects/${input.projectId}/assets`,
@@ -428,10 +430,7 @@ type SavedAssetResponse = {
 };
 
 async function blobSha256(blob: Blob) {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join(
-    '',
-  );
+  return sha256Hex(blob);
 }
 
 function putDirectAsset(
@@ -564,7 +563,14 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
       resolve(payload as SavedAssetResponse);
     };
     request.onerror = () => {
-      reject(new WorkspaceApiError(0, '无法连接本地工作区服务，项目资源尚未上传。'));
+      reject(
+        new WorkspaceApiError(
+          0,
+          isCloudBuild
+            ? '无法连接云端项目服务，项目资源尚未上传。'
+            : '无法连接本地工作区服务，项目资源尚未上传。',
+        ),
+      );
     };
     request.ontimeout = () => {
       reject(new WorkspaceApiError(408, '项目资源上传超时，请稍后重试。'));
@@ -574,7 +580,11 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
 }
 
 export async function saveBlobAsset(input: SaveBlobAssetInput) {
-  if (isCloudBuild) return saveDirectBlobAsset(input);
+  if (isCloudBuild && globalThis.crypto?.subtle) return saveDirectBlobAsset(input);
+  // Web Crypto is disabled by browsers on plain HTTP non-loopback origins.
+  // Keep the zero-install test deployment functional by streaming through the
+  // authenticated cloud server; the server hashes the bytes and still stores
+  // the verified object in the configured S3/MinIO bucket.
   if (input.onProgress) return saveBlobAssetWithProgress(input);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 60_000);
@@ -601,7 +611,7 @@ export async function saveBlobAsset(input: SaveBlobAssetInput) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new WorkspaceApiError(408, '项目资源上传超时，请稍后重试。');
     }
-    throw new WorkspaceApiError(0, '无法连接本地工作区服务，项目资源尚未上传。');
+    throw new WorkspaceApiError(0, '无法连接云端项目服务，项目资源尚未上传。');
   } finally {
     window.clearTimeout(timeout);
   }
