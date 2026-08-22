@@ -4,6 +4,8 @@ stages:
 
 default:
   image: node:22-bookworm
+  tags:
+    - k8s-local-rdcenter
   before_script:
     - corepack enable
     - corepack pnpm install --frozen-lockfile
