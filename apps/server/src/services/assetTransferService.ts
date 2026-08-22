@@ -8,6 +8,7 @@ import {
 } from '@liclick/contracts';
 import { serverConfig } from '../config.js';
 import { projectRepository } from '../repositories/projectRepository.js';
+import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 import type { SavedAsset } from '../types/asset.js';
 import { createS3Presigner } from './s3PresignedUrlService.js';
 import {
@@ -124,7 +125,23 @@ function savedAsset(record: StoredAssetTransfer): SavedAsset {
 }
 
 async function readIntent(userId: string, intentId: string) {
+  if (postgresControlRepository) {
+    return postgresControlRepository.getAssetTransferByIntent<StoredAssetTransfer>(userId, intentId);
+  }
   return readJsonFile<StoredAssetTransfer | undefined>(intentPath(userId, intentId), undefined);
+}
+
+async function persistTransfer(record: StoredAssetTransfer) {
+  if (postgresControlRepository) {
+    await postgresControlRepository.putAssetTransfer(record);
+    return;
+  }
+  await ensureDir(path.dirname(intentPath(record.userId, record.intentId)));
+  await writeJsonFile(intentPath(record.userId, record.intentId), record);
+  if (record.status === 'verified') {
+    await ensureDir(path.dirname(assetPath(record.userId, record.assetId)));
+    await writeJsonFile(assetPath(record.userId, record.assetId), record);
+  }
 }
 
 export async function createAssetUploadIntent(
@@ -161,8 +178,7 @@ export async function createAssetUploadIntent(
     createdAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
   };
-  await ensureDir(path.dirname(intentPath(userId, intentId)));
-  await writeJsonFile(intentPath(userId, intentId), record);
+  await persistTransfer(record);
   return {
     protocolVersion: ASSET_TRANSFER_PROTOCOL_VERSION,
     intentId,
@@ -203,8 +219,7 @@ export async function completeAssetUploadIntent(
     throw new AssetTransferError('Asset upload checksum does not match the intent.', 409, 'ASSET_CHECKSUM_MISMATCH');
   }
   if (record.status === 'verified') {
-    await ensureDir(path.dirname(assetPath(userId, record.assetId)));
-    await writeJsonFile(assetPath(userId, record.assetId), record);
+    await persistTransfer(record);
     return { asset: savedAsset(record), replayed: true };
   }
   if (Date.parse(record.expiresAt) < Date.now()) {
@@ -247,11 +262,7 @@ export async function completeAssetUploadIntent(
     status: 'verified',
     verifiedAt: new Date().toISOString(),
   };
-  await ensureDir(path.dirname(assetPath(userId, record.assetId)));
-  await Promise.all([
-    writeJsonFile(intentPath(userId, intentId), verified),
-    writeJsonFile(assetPath(userId, record.assetId), verified),
-  ]);
+  await persistTransfer(verified);
   return { asset: savedAsset(verified), replayed: false };
 }
 
@@ -261,10 +272,9 @@ export async function createAssetDownloadUrl(
   assetId: string,
 ) {
   const config = assertObjectStorageConfigured();
-  const record = await readJsonFile<StoredAssetTransfer | undefined>(
-    assetPath(userId, assetId),
-    undefined,
-  );
+  const record = postgresControlRepository
+    ? await postgresControlRepository.getAssetTransferByAsset<StoredAssetTransfer>(userId, assetId)
+    : await readJsonFile<StoredAssetTransfer | undefined>(assetPath(userId, assetId), undefined);
   if (!record || record.projectId !== projectId || record.status !== 'verified') return undefined;
   return presigner()({
     method: 'GET',

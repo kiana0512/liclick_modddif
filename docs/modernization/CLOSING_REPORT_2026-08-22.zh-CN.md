@@ -66,7 +66,7 @@
 | 层 | 权威内容/职责 | 实际计算位置 | 证据 |
 | --- | --- | --- | --- |
 | 浏览器 | 当前打开的模型缓冲区、Canvas、GPU 纹理、临时缓存 | 用户电脑的浏览器进程、Web Worker、WASM、WebGL/WebGPU | [`browserComputeCapabilities.ts`](../../apps/web/src/platform/browserComputeCapabilities.ts)、[`gpuComputeBackend.ts`](../../apps/web/src/engine/performance/gpuComputeBackend.ts) |
-| LI3D 应用服务器 | 登录会话、账号 ownership、项目当前快照、不可变 Revision、Command 回执、任务编排 | Web/API 服务器 CPU；不替普通贴图交互补算 | [`postgresProjectRepository.ts`](../../apps/server/src/repositories/postgresProjectRepository.ts) |
+| LI3D 应用服务器 | 登录会话、账号 ownership、项目当前快照、不可变 Revision、Command 回执、文件夹、用户设置、任务历史与任务编排 | Web/API 服务器 CPU；不替普通贴图交互补算 | [`postgresProjectRepository.ts`](../../apps/server/src/repositories/postgresProjectRepository.ts)、[`postgresControlRepository.ts`](../../apps/server/src/repositories/postgresControlRepository.ts) |
 | 对象存储 | 模型、贴图、导出物和任务交付物的权威二进制对象 | 存储服务；浏览器通过签名 URL 直传/直下 | [`assetTransferService.ts`](../../apps/server/src/services/assetTransferService.ts) |
 | 独立 GPU/AIGC 集群 | Auto UV、自动拓扑、Substance Bake、ComfyUI/AIGC 正式任务 | 独立远端 Worker/GPU，不是 LI3D 应用服务器，也不是用户本机 | [ADR-0011](./ADR-0011-real-production-compute-services.md) |
 
@@ -141,15 +141,48 @@ Chromium 源码也明确说明 Windows WebGL 继续使用 ANGLE 的 D3D11 device
 - 支持跨实例重复命令幂等、乐观并发冲突保护、软删除、重命名、移动和复制。
 - 正式环境选择 PostgreSQL 时缺少数据库地址会直接失败，不会静默退回本地文件。
 - 4 实例、4 账号、15 轮、240 次重复请求、事务回滚注入和重启恢复通过；高压复验 8 实例、4 账号、120 轮、3,840 次重复请求通过。
+- 2026-08-22 进一步把原先仍落在应用节点 JSON/内存的用户、Cookie Session、OAuth state/PKCE 事务、文件夹、用户设置、UV/拓扑任务历史、对象上传 Intent/资产元数据迁入共享 PostgreSQL 控制面。每张业务表的主键或查询条件都包含 `user_id`，对象 key 使用用户 ID 的 SHA-256 分区；OAuth state 由数据库原子地一次性消费，回调被负载均衡到另一副本也能完成且不能重放。
+- 新增 100 账号、8 应用副本验收：每个账号各自创建项目、会话、文件夹、任务历史、对象元数据和设置；从不同副本读取后逐一尝试相邻账号的 Project ID、Job ID、Asset ID，全部不可见；OAuth state 跨副本只消费一次；关闭并重启数据库后全部恢复。该测试约 2.4 秒完成，属于隔离/一致性契约，不冒充完整生产网络容量测试。
 
-### 5.2 服务生命周期与压力
+### 5.2 100 人同时在线时为何不会共用应用服务器显卡
+
+100 人同时旋转模型、绘制、投影、显示 PBR 和合成图层时，实际形成的是 100 个互相独立的浏览器图形上下文：
+
+```text
+用户 1 浏览器 ─ WebGL2/ANGLE/D3D11 + WebGPU/Dawn/D3D12(或 D3D11) ┐
+用户 2 浏览器 ─ WebGL2/ANGLE/D3D11 + WebGPU/Dawn/D3D12(或 D3D11) ├─ 各用各的电脑 GPU/CPU
+……                                                               │
+用户 100 浏览器 ─ 同上                                           ┘
+
+浏览器 ── HTTPS 元数据/Command/签名 URL ── LI3D 无状态应用副本 ── PostgreSQL
+浏览器 ── 签名 PUT/GET ──────────────────────────────── 对象存储/CDN
+需要正式生产算力的 Auto UV/拓扑/Bake/AIGC ─────────── 独立 GPU/AIGC API 集群
+```
+
+因此，视口每帧 300,000 个三角形、3 个 Draw Call 或贴图 GPU RenderTarget 不会乘以 100 后在 LI3D 应用服务器渲染；应用服务器没有 Three.js Canvas，也不接收逐帧 Draw Call。其负载只随登录、项目命令、历史查询、签名 URL 和任务编排请求增长。大模型二进制应由浏览器通过签名 URL 直传/直下对象存储，避免 100 份文件穿过 Node.js 进程；AIGC 峰值由独立集群的队列和槽位控制，不占 LI3D Web/App Server 显卡。
+
+代码层存在三道防回退证据：`selectLocalComputePlan()` 固定 `serverFallbackAllowed: false`；Cloud Boundary/Artifact 门禁阻止本地组件和 loopback bridge 回归；`/api/health` 明确报告 `browserLocalGraphics=true`、`serverGraphicsFallback=false`。应用入口另有默认 256 个在途请求的 admission 上限，超过时返回 503 + `Retry-After`，避免单节点因突发连接耗尽；Kubernetes/反向代理仍应按 readiness、连接数和 P95 横向扩容。
+
+### 5.3 100 人上线的部署硬条件
+
+只有满足下列配置，才能获得上述性质；把单机预览直接开放给 100 人不在承诺范围：
+
+1. 所有 LI3D App 副本设置同一个 `LICLICK_CLOUD_DATABASE_URL`，并设置 `LICLICK_PROJECT_REPOSITORY=postgres`；发布前运行 `pnpm --filter @liclick/server db:cloud:migrate`，其中 `001` 建项目 Revision/Command，`002` 建共享账号控制面。
+2. 所有副本共享同一个强随机 `SESSION_SECRET`，Cookie 在 HTTPS 下启用 `Secure + HttpOnly + SameSite`；禁止各节点生成不同 Secret，否则用户切换节点会掉登录。
+3. 必须配置 S3 兼容对象存储；模型、纹理与交付物通过用户/项目分区的短期签名 URL 直传直下。应用节点本机磁盘只能是临时缓存，不能作为多人权威数据源。
+4. 至少两个 LI3D App 副本置于负载均衡后，readiness 失败或 draining 时摘流；默认数据库连接池每副本 20，需按 PostgreSQL 最大连接数计算副本上限，不能盲目扩容。
+5. GPU/AIGC 集群保持独立，按账号/租户设置并发额度、队列长度、超时和取消；LI3D 应用节点仅代理控制请求，不部署用户视口或浏览器烘焙 GPU。
+6. 上线前追加真实环境的 100 浏览器会话、典型项目保存频率、对象存储带宽、SSO、故障切换和 8 小时 soak。当前自动测试已证明 100 账号隔离与重启恢复，但尚未证明目标机房在 100 个大模型同时首次下载时的带宽容量。
+
+### 5.4 服务生命周期与压力
 
 - `/api/health` 与 `/api/ready` 分离存活和可接流量状态。
 - SIGTERM/SIGINT 进入 draining，拒绝新业务并等待在途请求，随后同端口重启恢复。
 - HTTP 健康接口 60 并发持续 30 秒：367,658 次请求、0 失败、P95 9ms。
+- 本轮使用新构建的 Server 再执行 100 并发持续 15 秒：176,246 次 `/api/health` 请求、0 失败、全部 HTTP 200、P95 13.5ms。该数据证明单节点轻量入口和 admission 机制未在 100 并发下崩溃，不代表 176,246 次模型上传或 GPU 任务吞吐。
 - Cloud 部署模拟器覆盖构建、readiness、OAuth/PKCE、对象直传、首次失败重试、幂等、优雅停机和重启恢复。
 
-### 5.3 浏览器性能与资源边界
+### 5.5 浏览器性能与资源边界
 
 - GLTF/GLB、FBX、OBJ 解析器改为按实际格式动态加载，避免用户只打开一种模型时下载全部解析器。
 - Engine Session 最多保留 3 个空闲项目会话；24 项目、每项目 8 MiB 的切换回归中，21 个旧会话立即释放，宽限期结束后资源估算归零。
@@ -164,7 +197,7 @@ Chromium 源码也明确说明 Windows WebGL 继续使用 ANGLE 的 D3D11 device
 - 全仓 `lint`：通过。
 - 全仓 `typecheck`：通过。
 - Web 回归：31 项契约通过。
-- Server 回归：7 项契约通过。
+- Server 回归新增共享控制面契约：100 账号、8 副本，项目/会话/文件夹/任务历史/对象元数据/用户设置隔离与重启恢复通过。
 - Release/Compute/Project/Asset 契约：9 项通过。
 - Cloud 边界：0 个已知本地组件遗留文件，无依赖扩散。
 - Project Repository 边界：通过。
@@ -180,7 +213,8 @@ Chromium 源码也明确说明 Windows WebGL 继续使用 ANGLE 的 D3D11 device
 | P0 | 大型 Auto UV 质量 | 修复 Worker/QA，用至少三类生产模型验证成功制品、取消、失败恢复和超大模型。 |
 | P0 | 自动拓扑坐标恢复 | 修复 `RETOPOLOGY_COORDINATE_MISMATCH`，验证 FBX/BLEND、三方 SHA 和八项 QA。 |
 | P1 | 贴图生产金图 | 补齐遮挡、多对象、多材质、完整图层/撤销、导出和跨浏览器像素对照。 |
-| P1 | 数据安全面 | PostgreSQL 已完成；仍需真实对象存储回收、文件魔数/解压炸弹/内容扫描、备份恢复与迁移演练。 |
+| P1 | 数据安全面 | 项目与账号控制面 PostgreSQL 已完成；仍需真实对象存储回收、文件魔数/解压炸弹/内容扫描、备份恢复与迁移演练。 |
+| P1 | 100 人真实容量 | 自动测试已覆盖 100 账号/8 副本隔离和入口限流；仍需在目标 LB、PostgreSQL、对象存储上执行真实 100 浏览器/大文件/8 小时 soak 后确定副本数与带宽。 |
 | P1 | 目标硬件性能 | 补齐低中高三档设备的 input-to-present、Long Task、显存/内存和设备丢失恢复采样。 |
 
 ## 8. 合并与部署建议

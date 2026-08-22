@@ -146,7 +146,7 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
         throw new Error(serverConfig.feishuWebOAuthBlockedReason);
       }
       if (serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled) {
-        result = startWebOAuthLogin();
+        result = await startWebOAuthLogin();
       } else if (serverConfig.atlasLocalLoginEnabled) {
         result = await startAtlasLogin(request, response);
       } else {
@@ -183,7 +183,7 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
         throw new Error('莉刻/Atlas gateway 登录已禁用。');
       }
       const result = isWebOAuthLoginId(segments[4])
-        ? pollWebOAuthLogin(segments[4])
+        ? await pollWebOAuthLogin(segments[4])
         : await pollAtlasLogin(segments[4], request, response);
       sendJson(response, 200, {
         ...result,

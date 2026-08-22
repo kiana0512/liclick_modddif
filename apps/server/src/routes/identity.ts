@@ -94,7 +94,7 @@ export async function handleIdentityRoute(
         });
         return true;
       }
-      const result = startWebOAuthLogin({ bindingDevice: device });
+      const result = await startWebOAuthLogin({ bindingDevice: device });
       setWebOAuthBrowserCookie(response, result.browserNonce);
       sendJson(response, 200, {
         ok: true,

@@ -8,6 +8,7 @@ import {
   type DeviceIdentityInput,
 } from '../services/identityTelemetryService.js';
 import { enrichFeishuUserByOpenId } from '../services/feishuPlatformService.js';
+import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 
 type PendingWebOAuthLogin = {
   id: string;
@@ -270,7 +271,18 @@ export function isWebOAuthLoginId(loginId: string) {
   return pendingWebOAuthLogins.has(loginId) || loginId.startsWith('web-oauth-');
 }
 
-export function startWebOAuthLogin(options: { bindingDevice?: DeviceIdentityInput } = {}) {
+async function persistWebOAuthLogin(login: PendingWebOAuthLogin) {
+  if (postgresControlRepository) {
+    await postgresControlRepository.putOAuthLogin(
+      login.id,
+      login.state,
+      login,
+      new Date(login.startedAt + pendingWebOAuthTtlMs).toISOString(),
+    );
+  }
+}
+
+export async function startWebOAuthLogin(options: { bindingDevice?: DeviceIdentityInput } = {}) {
   if (!serverConfig.feishuWebOAuthEnabled && !serverConfig.idaasJwtSsoEnabled) {
     throw new Error('服务器未配置 IDaaS/飞书网页登录。');
   }
@@ -290,6 +302,7 @@ export function startWebOAuthLogin(options: { bindingDevice?: DeviceIdentityInpu
   };
   pendingWebOAuthLogins.set(id, login);
   pendingWebOAuthByState.set(state, login);
+  await persistWebOAuthLogin(login);
 
   let redirectUrl: string;
   if (serverConfig.feishuWebOAuthEnabled) {
@@ -342,7 +355,11 @@ export async function handleWebOAuthCallback(
     url.searchParams.get('assertion') ??
     '';
   const error = url.searchParams.get('error') ?? '';
-  const login = state ? pendingWebOAuthByState.get(state) : undefined;
+  const login = state
+    ? postgresControlRepository
+      ? await postgresControlRepository.consumeOAuthState<PendingWebOAuthLogin>(state)
+      : pendingWebOAuthByState.get(state)
+    : undefined;
   if (!login) {
     response.writeHead(409, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     response.end(callbackHtml(false, '登录任务已过期，请回到 Liclick 重新点击飞书登录。'));
@@ -425,28 +442,34 @@ export async function handleWebOAuthCallback(
     await createSession(user.id, 'feishu-oauth', request, response);
     login.user = user;
     login.completedAt = Date.now();
+    await persistWebOAuthLogin(login);
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     response.end(callbackHtml(true, '授权已完成，可以回到 Liclick 页面继续使用。'));
   } catch (callbackError) {
     login.error = callbackError instanceof Error ? callbackError.message : 'Web OAuth 登录失败。';
+    await persistWebOAuthLogin(login);
     response.writeHead(409, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     response.end(callbackHtml(false, login.error));
   }
   return true;
 }
 
-export function pollWebOAuthLogin(loginId: string) {
+export async function pollWebOAuthLogin(loginId: string) {
   prunePendingWebOAuthLogins();
-  const login = pendingWebOAuthLogins.get(loginId);
+  const login = postgresControlRepository
+    ? await postgresControlRepository.getOAuthLogin<PendingWebOAuthLogin>(loginId)
+    : pendingWebOAuthLogins.get(loginId);
   if (!login) throw new Error('登录任务已过期，请重新点击飞书登录。');
   if (login.error) {
     pendingWebOAuthByState.delete(login.state);
     pendingWebOAuthLogins.delete(login.id);
+    await postgresControlRepository?.deleteOAuthLogin(login.id);
     throw new Error(login.error);
   }
   if (login.user) {
     pendingWebOAuthByState.delete(login.state);
     pendingWebOAuthLogins.delete(login.id);
+    await postgresControlRepository?.deleteOAuthLogin(login.id);
     return {
       done: true,
       user: login.user,

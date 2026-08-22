@@ -156,6 +156,9 @@ async function handleWorkspaceRequest(
         usageTelemetry: true,
         feishuDirectoryEnrichment: serverConfig.feishuPlatform.directory.enabled,
         feishuBitableSync: serverConfig.feishuPlatform.bitable.enabled,
+        sharedPostgresControlPlane: process.env.LICLICK_PROJECT_REPOSITORY === 'postgres',
+        browserLocalGraphics: true,
+        serverGraphicsFallback: false,
       },
     });
     return;
@@ -289,6 +292,12 @@ async function startServer() {
   let activeRequests = 0;
 
   const server = createServer(async (request, response) => {
+    if (activeRequests >= serverConfig.serverMaxInFlightRequests) {
+      response.setHeader('connection', 'close');
+      response.setHeader('retry-after', '1');
+      sendJson(response, 503, { error: 'Server admission limit reached. Retry with backoff.' });
+      return;
+    }
     activeRequests += 1;
     let requestCompleted = false;
     const completeRequest = () => {

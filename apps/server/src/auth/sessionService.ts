@@ -14,6 +14,7 @@ import {
   writeJsonFile,
 } from '../services/workspaceService.js';
 import type { AuthDatabase, AuthSource, AuthUser, UserSession } from './authTypes.js';
+import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 
 const emptyAuthDatabase: AuthDatabase = {
   users: [],
@@ -100,6 +101,7 @@ async function updateAuthDatabase(updater: (database: AuthDatabase) => AuthDatab
 }
 
 export async function ensureUserWorkspace(userId: string) {
+  if (postgresControlRepository) return;
   await ensureDir(getUserProjectsDir(userId));
   await ensureDir(getUserTrashProjectsDir(userId));
   await writeJsonFile(getUserFoldersFile(userId), await readJsonFile(getUserFoldersFile(userId), []));
@@ -158,16 +160,23 @@ export async function createSession(
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   };
-  await updateAuthDatabase((database) => ({
-    ...database,
-    sessions: [...database.sessions.filter((item) => new Date(item.expiresAt).getTime() > now.getTime()), session],
-  }));
+  if (postgresControlRepository) {
+    await postgresControlRepository.createSession(session);
+  } else {
+    await updateAuthDatabase((database) => ({
+      ...database,
+      sessions: [...database.sessions.filter((item) => new Date(item.expiresAt).getTime() > now.getTime()), session],
+    }));
+  }
   setSessionCookie(response, token);
   return session;
 }
 
 export async function verifySession(token?: string): Promise<AuthUser | undefined> {
   if (!token) return undefined;
+  if (postgresControlRepository) {
+    return postgresControlRepository.verifySession(hashSessionToken(token));
+  }
   const database = await readAuthDatabase();
   const tokenHash = hashSessionToken(token);
   const session = database.sessions.find((item) => item.sessionTokenHash === tokenHash);
@@ -201,6 +210,10 @@ export function consumeBrowserSessionHandoff(code?: string) {
 export async function revokeSession(token?: string) {
   if (!token) return;
   const tokenHash = hashSessionToken(token);
+  if (postgresControlRepository) {
+    await postgresControlRepository.revokeSession(tokenHash);
+    return;
+  }
   await updateAuthDatabase((database) => ({
     ...database,
     sessions: database.sessions.filter((session) => session.sessionTokenHash !== tokenHash),
@@ -215,6 +228,17 @@ export async function upsertUser(input: {
   authSource: AuthSource;
   atlasHomeDir?: string;
 }) {
+  if (postgresControlRepository) {
+    const savedUser = await postgresControlRepository.upsertUser({
+      id: input.id ?? createId('user'),
+      displayName: input.displayName,
+      email: input.email,
+      avatarUrl: input.avatarUrl,
+      authSource: input.authSource,
+      atlasHomeDir: input.atlasHomeDir,
+    });
+    return savedUser;
+  }
   let savedUser: AuthUser | undefined;
   await updateAuthDatabase((database) => {
     const now = new Date().toISOString();

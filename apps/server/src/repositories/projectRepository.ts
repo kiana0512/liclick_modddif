@@ -12,8 +12,8 @@ import {
   saveProject,
 } from '../services/projectFileService.js';
 import {
-  createPgProjectSqlDatabase,
   createPostgresProjectRepository,
+  getSharedPgProjectSqlDatabase,
 } from './postgresProjectRepository.js';
 
 /**
@@ -57,7 +57,7 @@ function selectProjectRepository(): ProjectRepository {
       'LICLICK_PROJECT_REPOSITORY=postgres requires LICLICK_CLOUD_DATABASE_URL; refusing to fall back to local files.',
     );
   }
-  return createPostgresProjectRepository(createPgProjectSqlDatabase(connectionString));
+  return createPostgresProjectRepository(getSharedPgProjectSqlDatabase(connectionString));
 }
 
 // Adapter selection remains centralized so every route and domain service has

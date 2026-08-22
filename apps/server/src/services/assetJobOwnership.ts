@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { serverConfig } from '../config.js';
 import { readJsonFile, writeJsonFile } from './workspaceService.js';
+import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 
 export type AssetHistoryMode = 'uv' | 'retopology';
 
@@ -211,6 +212,30 @@ export async function registerAssetJobOwner(
   if (!normalizedJobId) throw new Error('Asset service did not return a job id.');
   if (!normalizedUserId) throw new Error('Authenticated user id is required.');
 
+  if (postgresControlRepository) {
+    const current = await postgresControlRepository.getAssetJob(normalizedUserId, normalizedJobId);
+    const now = new Date().toISOString();
+    const sourceName = cleanSourceName(registration?.sourceName);
+    const parameters = sanitizeAssetHistoryParameters(registration?.parameters);
+    const record: AssetJobHistoryRecord = {
+      ...(current ?? { userId: normalizedUserId, createdAt: now }),
+      userId: normalizedUserId,
+      updatedAt: now,
+      ...(registration
+        ? {
+            mode: registration.mode,
+            ...(sourceName ? { sourceName } : {}),
+            parameters,
+            ...(cleanText(registration.batchId, 240) ? { batchId: cleanText(registration.batchId, 240) } : {}),
+            ...(Number.isInteger(registration.batchIndex) && registration.batchIndex! >= 0 ? { batchIndex: registration.batchIndex } : {}),
+            ...(Number.isInteger(registration.batchSize) && registration.batchSize! > 0 && registration.batchSize! <= 100 ? { batchSize: registration.batchSize } : {}),
+          }
+        : {}),
+    };
+    await postgresControlRepository.putAssetJob(normalizedJobId, record);
+    return;
+  }
+
   await mutateDatabase((database) => {
     const current = database.jobs[normalizedJobId];
     if (current && current.userId !== normalizedUserId) {
@@ -260,6 +285,34 @@ export async function updateAssetJobSnapshot(
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
   const snapshot = payload as Record<string, unknown>;
 
+  if (postgresControlRepository) {
+    const current = await postgresControlRepository.getAssetJob(normalizedUserId, normalizedJobId);
+    if (!current) return false;
+    const status = cleanText(snapshot.status, 40);
+    const rawProgress = Number(snapshot.progress);
+    const nestedResult = snapshot.result && typeof snapshot.result === 'object' && !Array.isArray(snapshot.result)
+      ? snapshot.result as Record<string, unknown>
+      : undefined;
+    const artifacts = sanitizeArtifacts(snapshot.artifacts ?? nestedResult?.artifacts);
+    const rawError = snapshot.error && typeof snapshot.error === 'object' && !Array.isArray(snapshot.error)
+      ? snapshot.error as Record<string, unknown>
+      : undefined;
+    const error = cleanText(rawError?.summary ?? rawError?.message ?? snapshot.error, 1_000);
+    const updatedAt = cleanDate(snapshot.updated_at) ?? new Date().toISOString();
+    const terminal = status && ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(status.toUpperCase());
+    await postgresControlRepository.putAssetJob(normalizedJobId, {
+      ...current,
+      updatedAt,
+      ...(terminal ? { finishedAt: cleanDate(snapshot.finished_at) ?? current.finishedAt ?? updatedAt } : {}),
+      ...(current.mode ?? inferredMode(snapshot.kind) ? { mode: current.mode ?? inferredMode(snapshot.kind) } : {}),
+      ...(status ? { status } : {}),
+      ...(Number.isFinite(rawProgress) ? { progress: Math.min(100, Math.max(0, rawProgress)) } : {}),
+      ...(error ? { error } : {}),
+      ...(artifacts.length ? { artifacts } : {}),
+    });
+    return true;
+  }
+
   let updated = false;
   await mutateDatabase((database) => {
     const current = database.jobs[normalizedJobId];
@@ -308,6 +361,12 @@ export async function listAssetJobHistory(
   mode: AssetHistoryMode | undefined,
   limit = 30,
 ) {
+  if (postgresControlRepository) {
+    const rows = await postgresControlRepository.listAssetJobs(userId, Math.min(100, Math.max(1, Math.trunc(limit) || 30)));
+    return rows
+      .filter(({ record }) => !mode || record.mode === mode)
+      .map(({ jobId, record }) => ({ jobId, ...record }));
+  }
   const database = await readOwnershipDatabase();
   return Object.entries(database.jobs)
     .filter(([, record]) => record.userId === userId && (!mode || record.mode === mode))
@@ -320,6 +379,7 @@ export async function listAssetJobHistory(
 }
 
 export async function userOwnsAssetJob(jobId: string, userId: string) {
+  if (postgresControlRepository) return Boolean(await postgresControlRepository.getAssetJob(userId, jobId));
   const database = await readOwnershipDatabase();
   return database.jobs[jobId]?.userId === userId;
 }

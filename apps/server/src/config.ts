@@ -230,6 +230,14 @@ const serverShutdownGraceMs = positiveNumber(
   30_000,
   'LICLICK_SERVER_SHUTDOWN_GRACE_MS',
 );
+const serverMaxInFlightRequests = Math.max(
+  100,
+  Math.floor(positiveNumber(
+    process.env.LICLICK_SERVER_MAX_IN_FLIGHT_REQUESTS,
+    256,
+    'LICLICK_SERVER_MAX_IN_FLIGHT_REQUESTS',
+  )),
+);
 if (objectStorageBucket && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(objectStorageBucket)) {
   throw new Error('LICLICK_OBJECT_STORAGE_BUCKET has an invalid format.');
 }
@@ -549,6 +557,7 @@ export const serverConfig = {
   serverHeadersTimeoutMs,
   serverKeepAliveTimeoutMs,
   serverShutdownGraceMs,
+  serverMaxInFlightRequests,
   workspaceDir,
   localSettingsPath: path.resolve(
     process.env.LICLICK_LOCAL_SETTINGS_PATH ??

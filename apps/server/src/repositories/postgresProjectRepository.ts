@@ -72,6 +72,16 @@ export function createPgProjectSqlDatabase(connectionString: string): ProjectSql
   };
 }
 
+const sharedPgDatabases = new Map<string, ProjectSqlDatabase>();
+
+export function getSharedPgProjectSqlDatabase(connectionString: string) {
+  const existing = sharedPgDatabases.get(connectionString);
+  if (existing) return existing;
+  const database = createPgProjectSqlDatabase(connectionString);
+  sharedPgDatabases.set(connectionString, database);
+  return database;
+}
+
 type ProjectDocumentRow = {
   user_id: string;
   project_id: string;

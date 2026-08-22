@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { serverConfig } from '../config.js';
+import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 
 export type LocalProfile = {
   customId: string;
@@ -210,6 +211,11 @@ function createView(document: LocalSettingsDocument, requestedUserId?: string): 
 }
 
 export async function getLocalSettings(userId?: string) {
+  if (postgresControlRepository) {
+    const normalizedUserId = normalizeUserId(userId);
+    const stored = await postgresControlRepository.getUserSettings<LocalSettingsDocument>(normalizedUserId);
+    return createView(normalizeDocument(stored ?? { ...defaultDocument, activeUserId: normalizedUserId }), normalizedUserId);
+  }
   return createView(await readDocument(), userId);
 }
 
@@ -223,7 +229,15 @@ export async function updateLocalSettings(input: {
   migrationShortcutOverrides?: unknown;
   photoshop?: unknown;
 }) {
-  const document = await readDocument();
+  const requestedUserId = normalizeUserId(input.userId);
+  const document = postgresControlRepository
+    ? normalizeDocument(
+        await postgresControlRepository.getUserSettings<LocalSettingsDocument>(requestedUserId) ?? {
+          ...defaultDocument,
+          activeUserId: requestedUserId,
+        },
+      )
+    : await readDocument();
   const userId = normalizeUserId(input.userId ?? document.activeUserId);
   if (input.activate) document.activeUserId = userId;
   if (typeof input.performanceTestModeEnabled === 'boolean') {
@@ -248,6 +262,7 @@ export async function updateLocalSettings(input: {
     document.shortcutsConfiguredByUser[userId] = true;
   }
   if (input.photoshop !== undefined) document.photoshop = normalizePhotoshopSettings(input.photoshop);
-  await writeDocument(document);
+  if (postgresControlRepository) await postgresControlRepository.putUserSettings(userId, document);
+  else await writeDocument(document);
   return createView(document, userId);
 }
