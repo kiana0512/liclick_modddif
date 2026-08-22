@@ -50,6 +50,10 @@ function commandSha256(command: ProjectCommand) {
   return createHash('sha256').update(JSON.stringify(command)).digest('hex');
 }
 
+function usesDatabaseProjectRepository() {
+  return process.env.LICLICK_PROJECT_REPOSITORY === 'postgres';
+}
+
 async function writeReceipt(
   userId: string,
   slug: string,
@@ -97,10 +101,12 @@ export async function executeProjectCommand(userId: string, command: ProjectComm
     const slug = await projectRepository.findSlug(userId, command.projectId);
     if (!slug) return undefined;
 
-    const existingReceipt = await readJsonFile<ProjectCommandReceipt | undefined>(
-      receiptPath(userId, slug, command.id),
-      undefined,
-    );
+    const existingReceipt = usesDatabaseProjectRepository()
+      ? undefined
+      : await readJsonFile<ProjectCommandReceipt | undefined>(
+          receiptPath(userId, slug, command.id),
+          undefined,
+        );
     if (existingReceipt?.status === 'applied') {
       if (existingReceipt.commandSha256 !== sha256) {
         throw new ProjectSaveConflictError(
@@ -125,7 +131,7 @@ export async function executeProjectCommand(userId: string, command: ProjectComm
           loaded.project.revision,
         );
       }
-      if (loaded.project.revision) {
+      if (loaded.project.revision && !usesDatabaseProjectRepository()) {
         await writeReceipt(userId, slug, command, loaded.project.revision, sha256);
       }
       return commandReplayResult(userId, command);
@@ -135,37 +141,65 @@ export async function executeProjectCommand(userId: string, command: ProjectComm
       | Awaited<ReturnType<typeof projectRepository.save>>
       | Awaited<ReturnType<typeof projectRepository.rename>>
       | Awaited<ReturnType<typeof projectRepository.move>>;
-    if (command.kind === 'replace-project-document') {
-      result = await projectRepository.save(
-        userId,
-        command.projectId,
-        command.payload.document as WorkspaceProject,
-        {
-          commandId: command.id,
-          commandSha256: sha256,
-          expectedRevisionId: command.expectedRevisionId,
-          revisionSource: 'explicit',
-        },
-      );
-    } else if (command.kind === 'rename-project') {
-      result = await projectRepository.rename(
-        userId,
-        command.projectId,
-        command.payload.name,
-        command.expectedRevisionId,
-        { id: command.id, sha256 },
-      );
-    } else {
-      result = await projectRepository.move(
-        userId,
-        command.projectId,
-        command.payload.folderId,
-        command.expectedRevisionId,
-        { id: command.id, sha256 },
-      );
+    try {
+      if (command.kind === 'replace-project-document') {
+        result = await projectRepository.save(
+          userId,
+          command.projectId,
+          command.payload.document as WorkspaceProject,
+          {
+            commandId: command.id,
+            commandSha256: sha256,
+            expectedRevisionId: command.expectedRevisionId,
+            revisionSource: 'explicit',
+          },
+        );
+      } else if (command.kind === 'rename-project') {
+        result = await projectRepository.rename(
+          userId,
+          command.projectId,
+          command.payload.name,
+          command.expectedRevisionId,
+          { id: command.id, sha256 },
+        );
+      } else {
+        result = await projectRepository.move(
+          userId,
+          command.projectId,
+          command.payload.folderId,
+          command.expectedRevisionId,
+          { id: command.id, sha256 },
+        );
+      }
+    } catch (error) {
+      // Two API replicas may receive the same command before either observes
+      // the other's commit. The database revision check lets only one write;
+      // the loser reloads the authoritative journal and returns a replay.
+      if (
+        error instanceof ProjectSaveConflictError &&
+        error.code === 'PROJECT_REVISION_CONFLICT'
+      ) {
+        const concurrentProject = await projectRepository.load(userId, command.projectId);
+        const concurrentCommand = concurrentProject?.project.appliedCommands?.find(
+          (candidate) => candidate.id === command.id,
+        );
+        if (concurrentCommand?.sha256 === sha256) {
+          return commandReplayResult(userId, command);
+        }
+        if (concurrentCommand) {
+          throw new ProjectSaveConflictError(
+            'A different project command already used this command id.',
+            'PROJECT_COMMAND_ID_REUSE_CONFLICT',
+            concurrentProject?.project.revision,
+          );
+        }
+      }
+      throw error;
     }
     if (!result?.project.revision) return result;
-    await writeReceipt(userId, result.slug, command, result.project.revision, sha256);
+    if (!usesDatabaseProjectRepository()) {
+      await writeReceipt(userId, result.slug, command, result.project.revision, sha256);
+    }
     return {
       ...result,
       command: {

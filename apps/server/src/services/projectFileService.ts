@@ -537,6 +537,45 @@ function defaultSettings() {
   };
 }
 
+export function createInitialProjectDocument(input: {
+  id: string;
+  name: string;
+  folderId?: string | null;
+  slug: string;
+  now: string;
+  workspaceMode?: string;
+}): WorkspaceProject {
+  return {
+    id: input.id,
+    name: input.name,
+    folderId: input.folderId ?? null,
+    createdAt: input.now,
+    updatedAt: input.now,
+    thumbnail: '',
+    objects: [],
+    references: [],
+    captures: [],
+    generations: [],
+    layers: [],
+    bakedTextures: [],
+    settings: defaultSettings(),
+    currentMode: 'texture',
+    workspaceVersion: '0.6.0',
+    workspaceName: input.slug,
+    workspaceMode: input.workspaceMode ?? 'local-server',
+    dirty: false,
+    revision: createNextProjectRevision(undefined, input.now),
+    assetManifest: {
+      models: [],
+      references: [],
+      captures: [],
+      generations: [],
+      layers: [],
+      baked: [],
+    },
+  };
+}
+
 function getProjectFile(projectDir: string) {
   return path.join(projectDir, 'project.liclick.json');
 }
@@ -573,35 +612,13 @@ export async function createProject(userId: string, input: { name?: string; fold
   const projectDir = getUserProjectDir(userId, slug);
   await ensureProjectFolders(projectDir);
 
-  const project: WorkspaceProject = {
+  const project = createInitialProjectDocument({
     id,
     name: baseName,
-    folderId: input.folderId ?? null,
-    createdAt: now,
-    updatedAt: now,
-    thumbnail: '',
-    objects: [],
-    references: [],
-    captures: [],
-    generations: [],
-    layers: [],
-    bakedTextures: [],
-    settings: defaultSettings(),
-    currentMode: 'texture',
-    workspaceVersion: '0.6.0',
-    workspaceName: slug,
-    workspaceMode: 'local-server',
-    dirty: false,
-    revision: createNextProjectRevision(undefined, now),
-    assetManifest: {
-      models: [],
-      references: [],
-      captures: [],
-      generations: [],
-      layers: [],
-      baked: [],
-    },
-  };
+    folderId: input.folderId,
+    slug,
+    now,
+  });
   await writeJsonFile(getProjectFile(projectDir), project);
   return { project, slug };
 }
@@ -677,7 +694,7 @@ export function resolveProjectAssetUrl(userId: string, slug: string, relativePat
   return toWorkspaceUrl(path.join('users', userId, 'projects', slug, relativePath));
 }
 
-function resolveProjectAssets(
+export function resolveProjectAssets(
   userId: string,
   slug: string,
   project: WorkspaceProject,
@@ -798,20 +815,25 @@ export async function loadProject(userId: string, projectId: string) {
   return { project: resolveProjectAssets(userId, slug, repairedProject), slug };
 }
 
-async function saveProjectUnlocked(
-  userId: string,
-  projectId: string,
-  inputProject: WorkspaceProject,
-  options: SaveProjectOptions,
-) {
-  const slug =
-    (await findProjectSlug(userId, projectId)) ??
-    (await allocateProjectSlug(userId, projectId, inputProject.name));
-  const projectDir = getProjectDir(userId, slug);
-  const rawExistingProject = await loadRawProjectBySlug(userId, slug);
-  const existingProject = rawExistingProject
-    ? await repairMissingLayerImageReferences(userId, slug, rawExistingProject)
-    : undefined;
+export type SaveProjectOptions = {
+  commandId?: string;
+  commandSha256?: string;
+  expectedRevisionId?: string;
+  revisionSource?: 'input' | 'explicit';
+};
+
+export function prepareProjectDocumentForSave(input: {
+  userId: string;
+  slug: string;
+  projectId: string;
+  inputProject: WorkspaceProject;
+  existingProject?: WorkspaceProject;
+  options?: SaveProjectOptions;
+  workspaceMode?: string;
+  now?: string;
+}): WorkspaceProject {
+  const options = input.options ?? {};
+  const { existingProject, inputProject } = input;
   // Older clients do not know about pipeline checkpoints and therefore omit
   // the field entirely. Treat omission as "leave unchanged"; a current client
   // can still explicitly clear it by saving an empty pipeline state.
@@ -844,17 +866,11 @@ async function saveProjectUnlocked(
       existingProject.objects.length > 0 || existingProject.layers.length > 0;
     const incomingClearsSceneData =
       deletionAwareInput.objects.length === 0 && deletionAwareInput.layers.length === 0;
-    const explicitlyDeletesEveryExistingObject = existingProject.objects.every(
-      (object) => {
-        const objectId = isRecord(object) ? readString(object.id) : undefined;
-        return Boolean(objectId && explicitDeletionIds.has(objectId));
-      },
-    );
-    if (
-      existingHasSceneData &&
-      incomingClearsSceneData &&
-      !explicitlyDeletesEveryExistingObject
-    ) {
+    const explicitlyDeletesEveryExistingObject = existingProject.objects.every((object) => {
+      const objectId = isRecord(object) ? readString(object.id) : undefined;
+      return Boolean(objectId && explicitDeletionIds.has(objectId));
+    });
+    if (existingHasSceneData && incomingClearsSceneData && !explicitlyDeletesEveryExistingObject) {
       throw new ProjectSaveConflictError(
         'Blocked saving an empty scene over an existing project with model or layer data.',
       );
@@ -873,25 +889,25 @@ async function saveProjectUnlocked(
       );
     }
   }
-  const now = new Date().toISOString();
+  const now = input.now ?? new Date().toISOString();
   const objectSafeProject = preserveReferencedObjects(existingProject, deletionAwareInput);
   const sanitizedProject = normalizeProjectAssetReferences(
-    userId,
-    slug,
+    input.userId,
+    input.slug,
     sanitizeLowCoverageProjectedBakes(
       sanitizeVolatileLayerAssets(objectSafeProject, existingProject),
     ),
   );
   delete sanitizedProject.deletedObjectIds;
-  const project = {
+  return {
     ...sanitizedProject,
-    id: projectId,
+    id: input.projectId,
     updatedAt: now,
     lastSavedAt: now,
     dirty: false,
     workspaceVersion: inputProject.workspaceVersion ?? '0.6.0',
-    workspaceMode: 'local-server',
-    workspaceName: slug,
+    workspaceMode: input.workspaceMode ?? 'local-server',
+    workspaceName: input.slug,
     revision: createNextProjectRevision(existingProject, now),
     appliedCommands: nextAppliedCommands(
       existingProject,
@@ -899,18 +915,35 @@ async function saveProjectUnlocked(
       options.commandSha256,
     ),
   };
+}
+
+async function saveProjectUnlocked(
+  userId: string,
+  projectId: string,
+  inputProject: WorkspaceProject,
+  options: SaveProjectOptions,
+) {
+  const slug =
+    (await findProjectSlug(userId, projectId)) ??
+    (await allocateProjectSlug(userId, projectId, inputProject.name));
+  const projectDir = getProjectDir(userId, slug);
+  const rawExistingProject = await loadRawProjectBySlug(userId, slug);
+  const existingProject = rawExistingProject
+    ? await repairMissingLayerImageReferences(userId, slug, rawExistingProject)
+    : undefined;
+  const project = prepareProjectDocumentForSave({
+    userId,
+    slug,
+    projectId,
+    inputProject,
+    existingProject,
+    options,
+  });
   await ensureProjectFolders(projectDir);
   await writeJsonFile(getProjectFile(projectDir), project);
   await writeAutosave(projectDir, project);
   return { project: resolveProjectAssets(userId, slug, project), slug };
 }
-
-export type SaveProjectOptions = {
-  commandId?: string;
-  commandSha256?: string;
-  expectedRevisionId?: string;
-  revisionSource?: 'input' | 'explicit';
-};
 
 export async function saveProject(
   userId: string,

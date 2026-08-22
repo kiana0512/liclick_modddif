@@ -7,6 +7,7 @@ import process from 'node:process';
 const sourceRoot = path.resolve('apps/server/src');
 const allowedImporters = new Set([
   path.normalize('repositories/projectRepository.ts'),
+  path.normalize('repositories/postgresProjectRepository.ts'),
   path.normalize('services/projectFileService.ts'),
 ]);
 
@@ -39,5 +40,5 @@ if (violations.length > 0) {
   console.error('Import projectRepository instead of projectFileService.');
   process.exitCode = 1;
 } else {
-  console.log('Project repository boundary passed: file persistence has one adapter entry point.');
+  console.log('Project repository boundary passed: persistence is isolated behind repository adapters.');
 }

@@ -94,6 +94,6 @@ export type ProjectSummary = {
   local: boolean;
   slug: string;
   localPath?: string;
-  status?: 'local';
+  status?: 'local' | 'cloud';
   revision?: ProjectRevision;
 };

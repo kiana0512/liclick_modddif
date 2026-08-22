@@ -11,6 +11,10 @@ import {
   renameProject,
   saveProject,
 } from '../services/projectFileService.js';
+import {
+  createPgProjectSqlDatabase,
+  createPostgresProjectRepository,
+} from './postgresProjectRepository.js';
 
 /**
  * The authoritative project persistence port used by routes and domain
@@ -43,9 +47,22 @@ export const fileProjectRepository: ProjectRepository = {
   save: saveProject,
 };
 
-// The adapter selection stays centralized here. During the migration this is
-// deliberately the file adapter for both runtime modes; Cloud may switch only
-// after the PostgreSQL parity suite passes.
-export const projectRepository: ProjectRepository = fileProjectRepository;
+function selectProjectRepository(): ProjectRepository {
+  if (process.env.LICLICK_PROJECT_REPOSITORY !== 'postgres') {
+    return fileProjectRepository;
+  }
+  const connectionString = process.env.LICLICK_CLOUD_DATABASE_URL?.trim();
+  if (!connectionString) {
+    throw new Error(
+      'LICLICK_PROJECT_REPOSITORY=postgres requires LICLICK_CLOUD_DATABASE_URL; refusing to fall back to local files.',
+    );
+  }
+  return createPostgresProjectRepository(createPgProjectSqlDatabase(connectionString));
+}
+
+// Adapter selection remains centralized so every route and domain service has
+// identical behavior. Production can opt in to PostgreSQL explicitly, while
+// local file workspaces remain available for isolated development.
+export const projectRepository: ProjectRepository = selectProjectRepository();
 
 export { ProjectSaveConflictError };
