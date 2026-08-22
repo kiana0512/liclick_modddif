@@ -1142,6 +1142,7 @@ function ServiceBadge({
   const configured = Boolean(status?.configured);
   const summary = capacitySummary(status);
   const caInvalid = status?.tls.customCaIntegrityValid === false;
+  const loginRequired = error?.startsWith('请先使用右上角飞书登录') === true;
   const failureDetail =
     error ||
     (status
@@ -1171,6 +1172,8 @@ function ServiceBadge({
             ? summary ?? '服务可用'
             : caInvalid
               ? 'CA 证书校验失败'
+              : loginRequired
+                ? '请先登录'
               : status?.reachable && status.authorized && status.capacityCheckPassed !== true
                 ? '容量检查失败'
                 : !status
@@ -2420,9 +2423,19 @@ export function AssetProcessingPage({
       })
       .catch((statusError) => {
         if (!active) return;
-        const message = statusError instanceof Error ? statusError.message : '无法读取资产服务配置。';
+        const loginRequired =
+          statusError instanceof AssetProcessingHttpError && statusError.status === 401;
+        const message = loginRequired
+          ? '请先使用右上角飞书登录，登录后才能检测和提交真实云端任务。'
+          : statusError instanceof Error
+            ? statusError.message
+            : '无法读取资产服务配置。';
         setServiceError(message);
-        scheduleRetry();
+        // An unauthenticated request cannot recover through background polling.
+        // Stop retrying until navigation/login remounts the authenticated page,
+        // avoiding noisy 401 traffic and a misleading "service failure" loop.
+        if (loginRequired) serviceRetryAttemptRef.current = 0;
+        else scheduleRetry();
       })
       .finally(() => {
         if (active) setServiceLoading(false);
