@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-08-21",
+  "updatedAt": "2026-08-22",
   "rule": "Every required capability must be passed before a Cloud release can be declared ready.",
   "capabilities": [
     {
@@ -39,7 +39,7 @@
       "status": "passed",
       "evidence": [
         "simulate:cloud-deployment",
-        "browser:源 OBJ 与 UV GLB 直传并在 Bake 恢复",
+        "browser:源 OBJ 与真实服务器 UV FBX 直传并在 Bake 恢复",
         "quality/evidence/browser-local-uv-e2e.json",
         "浏览器读取磁盘持久对象；无签名探测返回 403 后对象存储健康检查仍为 200"
       ]
@@ -72,7 +72,11 @@
       "name": "按项目 Engine Session、取消、并发和资源释放边界",
       "required": true,
       "status": "passed",
-      "evidence": ["@liclick/web test:engine-session", "浏览器贴图到 UV 保持相同 Engine Session ID"]
+      "evidence": [
+        "@liclick/web test:engine-session",
+        "@liclick/web test:engine-session-registry（24 项目切换、最多 3 个空闲会话、宽限期后资源估算归零）",
+        "浏览器贴图到 UV 保持相同 Engine Session ID"
+      ]
     },
     {
       "id": "texture.real-workflow",
@@ -93,10 +97,11 @@
       "required": true,
       "status": "in_progress",
       "evidence": [
-        "2026-08-21 真实 Asset V4 容量接口返回 9 Worker / 16 槽位",
+        "2026-08-22 真实员工浏览器复验 Asset V4 容量接口返回 9 Worker / 16 槽位",
+        "真实 Job 29a7bf45-bc4a-4d42-a83e-1ec8e8997db5 对 2 面 OBJ 返回 5 个合格制品；UV FBX 经校验写入账号项目 Revision 并传入 Bake",
         "真实员工提交 39.7 MB FBX，UV_PROCESS_V2 由 asset-control-4090 执行 464 秒并写入账号历史",
         "严格 QA 以 UV_QA_FAILED 拒绝不合格输出，0 个制品发布",
-        "待修复生产 Worker UV QA，并补齐生产资产、制品、取消、超大模型与恢复矩阵"
+        "小模型成功不覆盖大型生产模型质量；待修复 Worker UV QA，并补齐三类生产资产、取消、超大模型与恢复矩阵"
       ]
     },
     {
@@ -140,8 +145,14 @@
       "id": "performance.interaction",
       "name": "交互帧耗、Long Task、静止渲染和内存预算",
       "required": true,
-      "status": "not_tested",
-      "evidence": ["尚未完成目标硬件自动性能采样"]
+      "status": "in_progress",
+      "evidence": [
+        "61 个生产 JS chunk、约 3.02 MB，总量与四个关键 chunk 受阻断式预算约束",
+        "模型解析器按 GLTF/FBX/OBJ 格式动态加载",
+        "24 项目 Engine Session 切换资源释放回归通过",
+        "HTTP 60 并发持续 30 秒：367,658 请求、0 失败、P95 9ms",
+        "低中高目标硬件 input-to-present、Long Task 和真实显存/内存采样尚未完成"
+      ]
     },
     {
       "id": "compat.ps-dcc-deferred",
@@ -156,7 +167,10 @@
       "required": true,
       "status": "in_progress",
       "evidence": [
-        "签名和 ownership 已实现；浏览器通过同源鉴权换取短期签名 URL，并以 credentials=omit 读取对象；生产事务与内容扫描未完成"
+        "PostgreSQL 事务 Repository 已覆盖项目快照、不可变 Revision、Command 回执与账号 ownership",
+        "4 实例/4 账号/240 次重复请求与 8 实例/3,840 次高压复验、回滚注入和重启恢复通过",
+        "签名对象 ownership 已实现；浏览器通过同源鉴权换取短期签名 URL，并以 credentials=omit 读取对象",
+        "真实对象存储回收、文件魔数/解压炸弹/内容扫描和生产备份恢复仍未完成"
       ]
     }
   ]

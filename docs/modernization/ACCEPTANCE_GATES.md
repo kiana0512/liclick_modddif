@@ -36,8 +36,9 @@
 
 ## 安全与数据
 
-- [ ] Cloud 项目写入只使用版本化 Command，并在重复投递时返回同一 Revision。
-- [ ] Command 幂等键、项目 Revision、资产清单和审计事件在同一数据库事务提交。
+- [x] Cloud 项目写入只使用版本化 Command，并在重复投递时返回同一 Revision。
+- [x] Command 幂等键、项目 Revision、项目资产清单和账号 ownership 在同一数据库事务提交。
+- [ ] 独立审计事件与项目事务关联，并在生产 PostgreSQL、备份和恢复演练中验证。
 - [ ] SSO Token 不进入浏览器持久存储，使用 Secure/HttpOnly 会话。
 - [ ] 所有项目、资产和任务访问都验证 tenant/user/project ownership。
 - [ ] 签名 URL 绑定对象、大小、类型、哈希和短 TTL。

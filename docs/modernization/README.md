@@ -2,7 +2,7 @@
 
 状态：已批准执行，采用隔离仓库渐进迁移。
 
-2026-08-21 的分支交付规模、真实服务证据、已知阻断和评审顺序见 [HANDOFF_2026-08-21.zh-CN.md](./HANDOFF_2026-08-21.zh-CN.md)。
+2026-08-22 的功能对齐、稳定性、真实服务成功/失败证据和剩余发布阻断见 [CLOSING_REPORT_2026-08-22.zh-CN.md](./CLOSING_REPORT_2026-08-22.zh-CN.md)；上一轮记录保留在 [HANDOFF_2026-08-21.zh-CN.md](./HANDOFF_2026-08-21.zh-CN.md)。
 
 ## 不可妥协的目标
 
@@ -80,6 +80,9 @@ Cloud control plane
 - 局部重绘真实纵向链路已完成一次浏览器验收：真实员工会话、浏览器指针蒙版、云端 ModelView 生成、浏览器投影应用、Revision 保存、服务重启和图层像素恢复均已通过。该证据只覆盖测试模型，生产资产遮挡/导出矩阵尚未完成，因此总门禁仍保持进行中。
 - Auto Retopology 已完成模拟远端纵向验收：真实员工浏览器上传可解析高模，BFF 通过严格 TLS 与 SHA 固定的测试 CA 连接远端 Worker，返回正式 `_game_low.fbx` 与 `_game_low.blend`；FBX 经三方 SHA 后在浏览器解析，取消、历史和双服务重启恢复均通过。该证据不代表生产拓扑算法、生产 CA 或生产 Worker 已验收，因此门禁保持进行中。
 - 生产 Bake 已切回真实 Substance Worker：服务状态、TLS、进度、取消和输出均来自服务端任务。2026-08-21 已用真实员工会话完成一次 4K、7 通道交付，账号历史可恢复；浏览器 BVH Bake 仅保留为隔离回归内核。
+- PostgreSQL 项目 Repository 已实现事务化项目快照、不可变 Revision、Command 回执和账号 ownership，并通过多实例重复投递、回滚注入、冲突保护和重启恢复测试。
+- 2026-08-22 使用真实员工会话和真实 Asset Worker 完成一个 Auto UV 成功任务，5 个服务器制品通过校验，UV FBX 写入账号项目 Revision 并成功传入烘焙页；大型生产模型质量门禁仍保持进行中。
+- 模型解析器已按 GLTF/FBX/OBJ 格式拆包；Engine Session 注册表最多保留 3 个空闲项目会话，项目切换后会主动释放旧 GPU/Worker 资源。
 
 计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，被替代的浏览器 Auto UV 决策见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，被替代的浏览器 PBR Bake 决策见 [ADR-0009](./ADR-0009-browser-local-pbr-bake.md)，零安装和 DCC 暂缓见 [ADR-0010](./ADR-0010-zero-install-runtime-and-dcc-deferral.md)，真实生产计算边界见 [ADR-0011](./ADR-0011-real-production-compute-services.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。
 
