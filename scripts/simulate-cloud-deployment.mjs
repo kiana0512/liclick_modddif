@@ -183,9 +183,16 @@ function startCloudServer(port, objectStorageEndpoint, identityEndpoint) {
 }
 
 async function stopCloudServer(child) {
-  if (child.exitCode !== null) return;
-  child.kill();
-  await new Promise((resolve) => child.once('exit', resolve));
+  if (child.exitCode !== null) return { code: child.exitCode, signal: child.signalCode, elapsedMs: 0 };
+  const startedAt = Date.now();
+  child.kill('SIGTERM');
+  const result = await Promise.race([
+    new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Cloud server did not stop within 10 seconds.')), 10_000),
+    ),
+  ]);
+  return { ...result, elapsedMs: Date.now() - startedAt };
 }
 
 async function waitForHealth(publicUrl) {
@@ -291,6 +298,11 @@ try {
   const health = await waitForHealth(cloud.publicUrl);
   assert.equal(health.ok, true);
   assert.equal(health.release.runtimeMode, 'cloud');
+  assert.equal(health.ready, true);
+  assert.equal(health.state, 'ready');
+  const ready = await jsonRequest(`${cloud.publicUrl}/api/ready`);
+  assert.equal(ready.response.status, 200);
+  assert.deepEqual(ready.payload.ok, true);
 
   const shell = await fetch(`${cloud.publicUrl}/`);
   assert.equal(shell.status, 200);
@@ -405,7 +417,12 @@ try {
   assert.equal(replayedRename.payload.command.replayed, true);
   assert.equal(replayedRename.payload.project.revision.number, 2);
 
-  await stopCloudServer(cloud.child);
+  const shutdown = await stopCloudServer(cloud.child);
+  assert.ok(shutdown.elapsedMs < 10_000);
+  if (process.platform !== 'win32') {
+    assert.equal(shutdown.code, 0);
+    assert.equal(shutdown.signal, null);
+  }
   cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint);
   await waitForHealth(cloud.publicUrl);
   const recovered = await jsonRequest(`${cloud.publicUrl}/api/projects/${projectId}`, {
@@ -420,7 +437,7 @@ try {
   });
   assert.equal(recoveredContent.status, 307);
 
-  console.log('Cloud deployment simulation passed: build, OAuth/PKCE cookie session, proxy path, direct upload, retry, idempotency and restart recovery.');
+  console.log('Cloud deployment simulation passed: build, readiness, OAuth/PKCE cookie session, proxy path, direct upload, retry, idempotency, graceful shutdown and restart recovery.');
   if (process.argv.includes('--serve')) {
     console.log(`SIMULATED_CLOUD_URL=${cloud.publicUrl}/`);
     console.log('The simulated deployment will stay available until this process is stopped.');

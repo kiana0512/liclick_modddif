@@ -26,6 +26,10 @@ import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
 import { serveWebFrontend } from './services/webFrontendService.js';
 import { serverReleaseManifest } from './release/releaseManifest.js';
 
+type ServiceState = 'starting' | 'ready' | 'draining';
+
+let serviceState: ServiceState = 'starting';
+
 const mimeTypes: Record<string, string> = {
   '.json': 'application/json',
   '.png': 'image/png',
@@ -124,9 +128,21 @@ async function handleWorkspaceRequest(
     sendNoContent(response);
     return;
   }
+  if (url.pathname === '/api/ready') {
+    const ready = serviceState === 'ready';
+    response.setHeader('cache-control', 'no-store');
+    sendJson(response, ready ? 200 : 503, {
+      ok: ready,
+      state: serviceState,
+      releaseId: serverReleaseManifest.releaseId,
+    });
+    return;
+  }
   if (url.pathname === '/api/health') {
     sendJson(response, 200, {
       ok: true,
+      ready: serviceState === 'ready',
+      state: serviceState,
       workspaceVersion: '0.6.0',
       release: serverReleaseManifest,
       host: serverConfig.host,
@@ -161,6 +177,12 @@ async function handleWorkspaceRequest(
     sendJson(response, 404, {
       error: 'Native host telemetry is not exposed by the Browser/Cloud runtime.',
     });
+    return;
+  }
+  if (serviceState === 'draining') {
+    response.setHeader('connection', 'close');
+    response.setHeader('retry-after', '5');
+    sendJson(response, 503, { error: 'Server is draining for a rolling restart.' });
     return;
   }
   if (url.pathname === '/api/history' && (await handleHistoryRoute(request, response, url))) return;
@@ -228,16 +250,23 @@ async function syncPendingTelemetryAggregates() {
 }
 
 function startTelemetryAggregateWorker() {
-  if (!serverConfig.feishuPlatform.bitable.enabled) return;
+  if (!serverConfig.feishuPlatform.bitable.enabled) return () => undefined;
   const baseInterval = serverConfig.feishuPlatform.bitable.syncIntervalMs;
+  let stopped = false;
+  let pendingTimer: NodeJS.Timeout | undefined;
   const scheduleNext = () => {
+    if (stopped) return;
     const backoff = 2 ** telemetrySyncFailureStreak;
-    const timer = setTimeout(() => {
+    pendingTimer = setTimeout(() => {
       void syncPendingTelemetryAggregates().finally(scheduleNext);
     }, Math.min(baseInterval * backoff, 30 * 60_000));
-    timer.unref();
+    pendingTimer.unref();
   };
   void syncPendingTelemetryAggregates().finally(scheduleNext);
+  return () => {
+    stopped = true;
+    if (pendingTimer) clearTimeout(pendingTimer);
+  };
 }
 
 async function startServer() {
@@ -255,9 +284,20 @@ async function startServer() {
   );
   await initializeWorkspace();
   await identityTelemetryStorage.initialize();
-  startTelemetryAggregateWorker();
+  const stopTelemetryAggregateWorker = startTelemetryAggregateWorker();
+
+  let activeRequests = 0;
 
   const server = createServer(async (request, response) => {
+    activeRequests += 1;
+    let requestCompleted = false;
+    const completeRequest = () => {
+      if (requestCompleted) return;
+      requestCompleted = true;
+      activeRequests = Math.max(0, activeRequests - 1);
+    };
+    response.once('finish', completeRequest);
+    response.once('close', completeRequest);
     try {
       await handleWorkspaceRequest(request, response);
     } catch (error) {
@@ -265,6 +305,48 @@ async function startServer() {
       sendJson(response, 500, { error: error instanceof Error ? error.message : 'Internal server error.' });
     }
   });
+
+  server.requestTimeout = serverConfig.serverRequestTimeoutMs;
+  server.headersTimeout = serverConfig.serverHeadersTimeoutMs;
+  server.keepAliveTimeout = serverConfig.serverKeepAliveTimeoutMs;
+  server.maxRequestsPerSocket = 1_000;
+
+  let shutdownStarted = false;
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    serviceState = 'draining';
+    stopTelemetryAggregateWorker();
+    console.log(
+      `[Liclick Workspace Server] ${signal} received; draining ${activeRequests} active request(s).`,
+    );
+
+    let forced = false;
+    const forceTimer = setTimeout(() => {
+      forced = true;
+      console.error(
+        `[Liclick Workspace Server] Graceful shutdown exceeded ${serverConfig.serverShutdownGraceMs}ms; forcing remaining connections closed.`,
+      );
+      server.closeAllConnections();
+      process.exitCode = 1;
+    }, serverConfig.serverShutdownGraceMs);
+    forceTimer.unref();
+
+    server.close((error) => {
+      clearTimeout(forceTimer);
+      if (error) {
+        console.error('[Liclick Workspace Server] Graceful shutdown failed.', error);
+        process.exitCode = 1;
+        return;
+      }
+      console.log('[Liclick Workspace Server] Graceful shutdown complete.');
+      process.exitCode = forced ? 1 : 0;
+    });
+    server.closeIdleConnections();
+  };
+
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code !== 'EADDRINUSE') {
@@ -290,9 +372,13 @@ async function startServer() {
   });
 
   server.listen(serverConfig.port, serverConfig.host, () => {
+    serviceState = 'ready';
     console.log(`Liclick workspace server running at http://${serverConfig.host}:${serverConfig.port}`);
     console.log(`Workspace: ${serverConfig.workspaceDir}`);
   });
 }
 
-void startServer();
+void startServer().catch((error) => {
+  console.error('[Liclick Workspace Server] Startup failed.', error);
+  process.exitCode = 1;
+});

@@ -82,3 +82,10 @@ Cloud control plane
 - 生产 Bake 已切回真实 Substance Worker：服务状态、TLS、进度、取消和输出均来自服务端任务。2026-08-21 已用真实员工会话完成一次 4K、7 通道交付，账号历史可恢复；浏览器 BVH Bake 仅保留为隔离回归内核。
 
 计算策略见 [ADR-0002](./ADR-0002-browser-compute-policy.md)，项目并发策略见 [ADR-0003](./ADR-0003-project-revisions.md)，写入协议见 [ADR-0004](./ADR-0004-project-commands.md)，Cloud 数据边界见 [ADR-0005](./ADR-0005-project-repository-cloud-data.md)，对象直传见 [ADR-0006](./ADR-0006-direct-object-storage.md)，Engine Session 见 [ADR-0007](./ADR-0007-engine-session.md)，被替代的浏览器 Auto UV 决策见 [ADR-0008](./ADR-0008-browser-local-auto-uv.md)，被替代的浏览器 PBR Bake 决策见 [ADR-0009](./ADR-0009-browser-local-pbr-bake.md)，零安装和 DCC 暂缓见 [ADR-0010](./ADR-0010-zero-install-runtime-and-dcc-deferral.md)，真实生产计算边界见 [ADR-0011](./ADR-0011-real-production-compute-services.md)，当前性能预算见 [PERFORMANCE_BASELINE](./PERFORMANCE_BASELINE.md)。
+
+## 服务生命周期门禁
+
+- `/api/health` 是进程存活探针，并报告 `starting`、`ready` 或 `draining`；`/api/ready` 只在服务可接收流量时返回 200。
+- 收到 `SIGTERM`/`SIGINT` 后先切换为 `draining`，拒绝新业务请求、停止后台同步调度、关闭空闲连接并等待正在处理的请求结束；超过 `LICLICK_SERVER_SHUTDOWN_GRACE_MS`（默认 30 秒）才强制关闭。
+- HTTP headers、request、keep-alive 均有明确预算，可分别通过 `LICLICK_SERVER_HEADERS_TIMEOUT_MS`、`LICLICK_SERVER_REQUEST_TIMEOUT_MS`、`LICLICK_SERVER_KEEP_ALIVE_TIMEOUT_MS` 调整。
+- Cloud 部署模拟器必须验证 readiness、真实 OAuth/PKCE 会话、对象直传重试、命令幂等、Linux 优雅停机和同端口重启恢复，任一失败都会阻断发布构建。

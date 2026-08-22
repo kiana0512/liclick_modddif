@@ -210,6 +210,26 @@ if (objectStoragePartiallyConfigured && !objectStorageEnabled) {
     'Object storage configuration is incomplete. Endpoint, bucket, access key ID and secret access key are all required.',
   );
 }
+const serverRequestTimeoutMs = positiveNumber(
+  process.env.LICLICK_SERVER_REQUEST_TIMEOUT_MS,
+  300_000,
+  'LICLICK_SERVER_REQUEST_TIMEOUT_MS',
+);
+const serverHeadersTimeoutMs = positiveNumber(
+  process.env.LICLICK_SERVER_HEADERS_TIMEOUT_MS,
+  30_000,
+  'LICLICK_SERVER_HEADERS_TIMEOUT_MS',
+);
+const serverKeepAliveTimeoutMs = positiveNumber(
+  process.env.LICLICK_SERVER_KEEP_ALIVE_TIMEOUT_MS,
+  5_000,
+  'LICLICK_SERVER_KEEP_ALIVE_TIMEOUT_MS',
+);
+const serverShutdownGraceMs = positiveNumber(
+  process.env.LICLICK_SERVER_SHUTDOWN_GRACE_MS,
+  30_000,
+  'LICLICK_SERVER_SHUTDOWN_GRACE_MS',
+);
 if (objectStorageBucket && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(objectStorageBucket)) {
   throw new Error('LICLICK_OBJECT_STORAGE_BUCKET has an invalid format.');
 }
@@ -525,6 +545,10 @@ if (!loopbackHosts.has(host) && sessionSecret === 'dev-only-change-me') {
 export const serverConfig = {
   port,
   host,
+  serverRequestTimeoutMs,
+  serverHeadersTimeoutMs,
+  serverKeepAliveTimeoutMs,
+  serverShutdownGraceMs,
   workspaceDir,
   localSettingsPath: path.resolve(
     process.env.LICLICK_LOCAL_SETTINGS_PATH ??
