@@ -444,7 +444,7 @@ export function HomePage({
               eyebrow="TEXTURE PAINTING"
               title="贴图绘制"
               description="浏览器本机运行绘制，局部重绘连接云端 ComfyUI。"
-              detail="本机绘制 · 云端 AI · 本地保存"
+              detail="本机绘制 · 云端 AI · 账号保存"
               icon={Palette}
               accent="violet"
               visual="paint"

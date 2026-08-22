@@ -18,6 +18,8 @@ const moduleSource = (eyebrow) => {
 const texture = moduleSource('TEXTURE PAINTING');
 assert.match(texture, /浏览器本机运行绘制/);
 assert.match(texture, /badge="本机运行"/);
+assert.match(texture, /本机绘制 · 云端 AI · 账号保存/);
+assert.doesNotMatch(texture, /本地保存/);
 assert.match(texture, /局部重绘连接云端 ComfyUI/);
 
 for (const [module, required] of [
