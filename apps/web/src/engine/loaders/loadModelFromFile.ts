@@ -1,11 +1,24 @@
 import type { LoadedModel, SupportedImportFormat } from './modelImportTypes';
-import { loadFbxModel } from './loadFbxModel';
-import { loadGltfModel } from './loadGltfModel';
-import { loadObjModel } from './loadObjModel';
 import type { NormalizeImportedModelOptions } from '@/engine/scene/normalizeImportedModel';
 import type { ModelImportProgressCallback } from './modelImportProgress';
 
 export const supportedModelExtensions = ['glb', 'gltf', 'fbx', 'obj'] as const;
+
+async function loadModelByFormat(
+  format: SupportedImportFormat,
+  options: Parameters<typeof import('./loadGltfModel').loadGltfModel>[0],
+) {
+  if (format === 'glb' || format === 'gltf') {
+    const { loadGltfModel } = await import('./loadGltfModel');
+    return loadGltfModel(options);
+  }
+  if (format === 'fbx') {
+    const { loadFbxModel } = await import('./loadFbxModel');
+    return loadFbxModel(options);
+  }
+  const { loadObjModel } = await import('./loadObjModel');
+  return loadObjModel(options);
+}
 
 export function getModelFormatFromFileName(fileName: string): SupportedImportFormat | undefined {
   const extension = fileName.split('.').pop()?.toLowerCase();
@@ -68,9 +81,7 @@ export async function loadModelFromFile(
     onProgress,
   };
 
-  if (format === 'glb' || format === 'gltf') return loadGltfModel(options);
-  if (format === 'fbx') return loadFbxModel(options);
-  return loadObjModel(options);
+  return loadModelByFormat(format, options);
 }
 
 export async function loadModelFromUrl(input: {
@@ -91,7 +102,5 @@ export async function loadModelFromUrl(input: {
     sourceBuffer: input.sourceBuffer,
   };
 
-  if (format === 'glb' || format === 'gltf') return loadGltfModel(options);
-  if (format === 'fbx') return loadFbxModel(options);
-  return loadObjModel(options);
+  return loadModelByFormat(format, options);
 }

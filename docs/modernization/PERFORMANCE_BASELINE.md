@@ -4,19 +4,19 @@
 
 ## 当前构建基线
 
-Cloud 生产构建基线约 3.06 MB 原始 JavaScript，共 50 个按路由/Worker 拆分的脚本。历史 xatlas/BVH 实验内核仍以独立 Worker/WASM 块保留用于回归，但 Auto UV 与生产 Bake 页面已改为真实服务路径；后续可在确认不再需要浏览器对照后继续裁剪。主要债务为：
+Cloud 生产构建基线已从约 3.06 MB 收敛到约 3.02 MB 原始 JavaScript，共 61 个按路由、模型格式和 Worker 拆分的脚本。FBX、GLTF、OBJ 解析器不再同时进入共享 3D 块，只在用户实际导入对应格式时加载。历史 xatlas/BVH 实验内核仍以独立 Worker/WASM 块保留用于回归，但 Auto UV 与生产 Bake 页面走真实服务路径；后续可在确认不再需要浏览器对照后继续裁剪。主要债务为：
 
 | 边界 | 当前原始大小 | 阶段一硬上限 | 目标 |
 | --- | ---: | ---: | ---: |
-| Application shell | 254 KB | 270 KB | 小于 180 KB |
-| Editor route | 486 KB | 510 KB | 小于 350 KB |
-| High bake snapshot | 691 KB | 720 KB | 小于 450 KB |
-| Shared 3D pipeline | 947 KB | 980 KB | 拆为稳定引擎、格式加载器和按需算法块 |
-| 全部 JavaScript | 3.06 MB | 3.15 MB | 小于 2.4 MB |
+| Application shell | 263 KB | 265 KB | 小于 180 KB |
+| Editor route | 482 KB | 490 KB | 小于 350 KB |
+| High bake snapshot | 690 KB | 700 KB | 小于 450 KB |
+| Shared 3D pipeline | 832 KB | 850 KB | 继续拆为稳定引擎和按需算法块 |
+| 全部 JavaScript | 3.02 MB | 3.05 MB | 小于 2.4 MB |
 
 当前上限是防止继续恶化的 ratchet，不代表最终合格。CI 在 Cloud 构建后检查真实最终产物；预算只能随可验证的拆分和删除向下调整，不能通过提高阈值掩盖回归。
 
-共享 3D 图依赖由 Rollup 自动选择 facade 名；加入浏览器 GLTF 导出后名称从 `projectPipeline-*` 变为 `exportUtils-*`。门禁接受这两个生成名之一，但仍要求恰好一个共享块，且 980 KB 单块上限和 3.15 MB 总上限均未提高。
+共享 3D 图依赖由 Rollup 自动选择 facade 名；加入浏览器 GLTF 导出后名称从 `projectPipeline-*` 变为 `exportUtils-*`。门禁接受这两个生成名之一，但仍要求恰好一个共享块；本轮已把单块上限从 980 KB 降到 850 KB、总上限从 3.15 MB 降到 3.05 MB。
 
 ## 运行时审计结论
 
@@ -24,6 +24,7 @@ Cloud 生产构建基线约 3.06 MB 原始 JavaScript，共 50 个按路由/Work
 - 当前活动编辑器使用连续 `frameloop`；切换 demand-render 前必须为实时投影合成、性能采样、自动旋转和绘制状态补齐显式失效信号，不能直接改一行造成静态画面不刷新。
 - 全分辨率工作已有可取消的 Heavy Task Scheduler、Worker 和帧预算 governor，应迁移进按项目生命周期创建/销毁的 Engine Session，而不是推翻有效优化。
 - Project/React UI 只提交 Command 和展示进度；GPU Texture、RenderTarget、ImageBitmap、Worker、WASM Memory 与 OPFS 临时对象由 Engine Session 统一拥有和释放。
+- Engine Session Registry 只允许保留最近 3 个空闲项目会话；快速返回项目仍可复用，连续切换大量项目时会立即释放更早的 GPU/Worker 资源。24 项目切换测试验证空闲资源峰值被限制在 3 个会话，并在宽限期后归零。
 
 ## 下一阶段可验证退出条件
 

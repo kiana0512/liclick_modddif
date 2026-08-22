@@ -329,7 +329,7 @@ export function AssetUvLayoutPreview({
             <div className="text-white/26">
               <MapIcon className="mx-auto h-10 w-10 stroke-[1.2]" />
               <p className="mt-4 text-sm font-medium text-white/42">完成自动展 UV 后在这里显示 UV0</p>
-              <p className="mt-2 text-xs text-white/24">预览由本地 UV 模型生成</p>
+              <p className="mt-2 text-xs text-white/24">服务器 UV 结果在浏览器中预览</p>
             </div>
           </div>
         ) : null}

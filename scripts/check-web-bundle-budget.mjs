@@ -6,18 +6,18 @@ import process from 'node:process';
 
 const assetsDir = path.resolve('apps/web/dist/assets');
 const budgets = [
-  { label: 'application shell', prefix: 'index-', maxBytes: 270_000 },
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 510_000 },
-  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 720_000 },
+  { label: 'application shell', prefix: 'index-', maxBytes: 265_000 },
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 490_000 },
+  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',
     // Rollup chooses the facade name from the shared module graph. Adding the
     // browser GLTF exporter changed only this generated name, not the boundary.
     prefixes: ['projectPipeline-', 'exportUtils-'],
-    maxBytes: 980_000,
+    maxBytes: 850_000,
   },
 ];
-const maxTotalJavaScriptBytes = 3_150_000;
+const maxTotalJavaScriptBytes = 3_050_000;
 
 let entries;
 try {
