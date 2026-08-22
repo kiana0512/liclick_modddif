@@ -28,6 +28,20 @@ typecheck:
   script:
     - corepack pnpm run typecheck
 
+web-regression:
+  stage: verify
+  variables:
+    LICLICK_TEST_TIMEOUT_MS: "180000"
+  script:
+    - corepack pnpm --filter @liclick/web run test:regression
+
+server-regression:
+  stage: verify
+  variables:
+    LICLICK_TEST_TIMEOUT_MS: "180000"
+  script:
+    - corepack pnpm --filter @liclick/server run test:regression
+
 # Lint includes Hooks lifecycle and Fast Refresh rules. Keep it release-blocking
 # so stale effects and component-boundary regressions cannot reach production.
 lint:
@@ -52,6 +66,7 @@ build:
     - corepack pnpm run build:release
     - corepack pnpm run check:cloud-artifact
     - corepack pnpm run check:web-bundle-budget
+    - corepack pnpm run simulate:cloud-deployment -- --skip-build
   artifacts:
     expire_in: 14 days
     paths:

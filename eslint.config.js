@@ -25,6 +25,7 @@ export default tseslint.config(
         crypto: 'readonly',
         document: 'readonly',
         performance: 'readonly',
+        process: 'readonly',
         setTimeout: 'readonly',
         window: 'readonly',
       },
