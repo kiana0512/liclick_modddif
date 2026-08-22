@@ -64,7 +64,9 @@
       "evidence": [
         "browser:data-texture-backend=webgpu-worker",
         "browser:data-cpu-backend=wasm-worker",
-        "browser:data-server-fallback=forbidden"
+        "browser:data-server-fallback=forbidden",
+        "browser:WebGPU runtime ready，自检 compute dispatch + copy/readback 1 次通过",
+        "quality/evidence/browser-runtime-compute-2026-08-22.json"
       ]
     },
     {

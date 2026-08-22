@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-22T14:29:25+08:00",
+  "page": "http://127.0.0.1:5646/li3d/project/project-7f07784a-9880-4024-9569-298eb835037b/texture?perfLab=1",
+  "environmentNotice": "该 URL 是本地部署预览，LI3D 应用服务器进程运行在测试电脑；Asset/Substance/AIGC 为真实远端服务。它验证浏览器零组件运行与远端 API 链路，不代表生产域名已经部署。",
+  "cloudArtifact": {
+    "files": 168,
+    "sizeMiB": 10.73,
+    "hostComponentArtifacts": 0,
+    "loopbackBridgeReferences": 0,
+    "verificationCommand": "corepack pnpm check:cloud-artifact"
+  },
+  "browserComputePolicy": {
+    "textureBackend": "webgpu-worker",
+    "cpuBackend": "wasm-worker",
+    "qualityTier": "high",
+    "serverComputeFallback": "forbidden",
+    "evidenceSource": "documentElement data-li3d-* attributes written after runtime capability detection"
+  },
+  "webGpuRuntime": {
+    "kind": "webgpu",
+    "status": "ready",
+    "selfTestDispatches": 1,
+    "productionDispatchesAtCapture": 0,
+    "selfTestContract": "GPU compute shader writes 0x4c693344, GPU copy/readback must return the same value",
+    "interpretation": "WebGPU adapter/device/queue/compute pipeline and GPU readback succeeded. At capture time this panel had not yet observed a production WebGPU composition dispatch, so the document does not claim every texture operation used WebGPU."
+  },
+  "viewportRuntime": {
+    "engine": "Three.js 0.171.0 + React Three Fiber 8.18.0",
+    "api": "WebGLRenderer/WebGL2",
+    "gpuTimerP95Ms": 0.5,
+    "gpuFrameBudgetPercent": 3,
+    "drawCalls": 3,
+    "trianglesPerFrame": 300000,
+    "textures": 10,
+    "geometries": 5,
+    "programs": 12,
+    "textureUnits": 16,
+    "maxTextureSize": 16384,
+    "canvas": "1600x900",
+    "devicePixelRatio": 1.3,
+    "jsHeapMiB": 593
+  },
+  "testMachine": {
+    "cpu": {
+      "name": "13th Gen Intel(R) Core(TM) i7-13700KF",
+      "physicalCores": 16,
+      "logicalProcessors": 24,
+      "maxClockMHzReportedByWmi": 3400
+    },
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "driver": "591.74",
+      "memoryMiB": 16376,
+      "source": "nvidia-smi"
+    }
+  },
+  "windowsGraphicsBackend": {
+    "webgl": "Chromium WebGL on Windows normally uses ANGLE's D3D11 device",
+    "webgpu": "Chromium WebGPU uses Dawn; the Windows backend can be D3D12 or D3D11 according to Chromium configuration",
+    "exactBackendAtCapture": "not exposed by the normal Web API and therefore not asserted",
+    "confidence": "engine/API is directly measured; D3D mapping is a Chromium implementation fact, while the exact D3D11/D3D12 choice for this session remains unverified"
+  }
+}

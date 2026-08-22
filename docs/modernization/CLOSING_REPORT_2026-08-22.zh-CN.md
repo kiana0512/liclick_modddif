@@ -2,7 +2,7 @@
 
 ## 1. 结论
 
-当前隔离分支已经证明：LI3D 可以迁移为不要求用户安装本地组件的浏览器产品，并保留原版的首页、项目、贴图、UV、烘焙、账号历史和工具箱信息架构。浏览器继续使用用户设备的 CPU/GPU 负责视口、投影、图层、蒙版、合成和适合浏览器的交互计算；LI3D 应用服务器负责登录、项目、历史、权限和任务编排；独立 GPU/AIGC API 集群负责 Auto UV、自动拓扑、Substance Bake 与 AIGC 推理。
+当前隔离分支已经证明：LI3D 可以迁移为不要求用户安装本地组件的浏览器产品，并保留原版的首页、项目、贴图、UV、自动拓扑、烘焙、账号历史和工具箱信息架构。浏览器继续使用用户设备的 CPU/GPU 负责视口、投影、图层、蒙版、合成和适合浏览器的交互计算；LI3D 应用服务器负责登录、项目、历史、权限和任务编排；独立 GPU/AIGC API 集群负责 Auto UV、自动拓扑、Substance Bake 与 AIGC 推理。
 
 这不是“已经可以直接上生产”的结论。代码迁移与核心纵向链路已经可行，发布前仍有三个必须明确的外部阻断：生产 HTTPS SSO 回调尚未验收，大型生产模型 Auto UV 仍可能触发 `UV_QA_FAILED`，自动拓扑仍会触发 `RETOPOLOGY_COORDINATE_MISMATCH`。机器发布闸门继续保持关闭，不能把测试页可用等同于生产就绪。
 
@@ -10,7 +10,7 @@
 
 | 原版能力 | 当前结果 | 说明 |
 | --- | --- | --- |
-| 首页与四模块入口 | 已对齐 | 保留贴图绘制、自动展 UV、模型烘焙、工具箱布局；没有改成无关仪表盘。 |
+| 首页与五模块入口 | 已对齐 | 保留贴图绘制、自动展 UV、自动拓扑、模型烘焙、工具箱布局；没有改成无关仪表盘。 |
 | 飞书/莉刻账号 | 真实员工链路通过 | 2026-08-22 再次由浏览器完成真实员工“任田”登录；页面恢复真实用户身份并读取账号任务历史。正式 HTTPS 企业 OAuth 回调仍待部署验收。 |
 | 文件夹、项目和项目卡片 | 已实现 | 创建、列举、加载、保存、重命名、移动、复制、软删除、Revision、Command 幂等和账号隔离均有自动回归。 |
 | 贴图工作台 | 核心功能已保留 | 模型加载、视口、相机、图层、投影、蒙版、多视角/单视角生成、局部重绘、内容修补、撤销恢复与导出链路仍在；完整生产模型像素金图矩阵尚未封板。 |
@@ -45,23 +45,111 @@
 
 这条证据证明真实服务器成功返回和 Browser → App Server → GPU/AIGC Cluster → App Server → Browser → Project Revision → Bake 的完整交接已经成立。它不能覆盖大型生产模型质量：此前 39.7 MB 工业模型任务仍以 `UV_QA_FAILED` 结束，因此 Auto UV 总门禁保持“进行中”。
 
-## 4. 架构与稳定性优化
+## 4. 零本地组件、服务器数据与用户本机算力证明
 
-### 4.1 多实例数据一致性
+### 4.1 先定义清楚“零本地组件”
+
+“零本地组件”不是“不下载任何代码”，而是用户只访问标准网页，不安装 LI3D 的 EXE/MSI、Windows Service、托盘程序、DLL、浏览器扩展或 `localhost:4618` 守护进程。浏览器仍会像普通网站一样从服务器下载 HTML、CSS、JavaScript、Worker 和 WASM；这些文件在浏览器沙箱内运行，随页面/缓存生命周期管理，不具有系统服务权限，也不等于额外安装的本地组件。
+
+当前证明链如下：
+
+1. Cloud 构建插件在打包时排除 `.bat/.bin/.cmd/.dll/.exe/.msi/.ps1`、旧组件下载目录和工具箱安装资产；生产 alias 强制选择 cloud transport、cloud project API、cloud 性能接口和禁用版 PS bridge，见 [`apps/web/vite.config.ts`](../../apps/web/vite.config.ts)。
+2. [`TextureRuntimeBoundary.tsx`](../../apps/web/src/components/runtime/TextureRuntimeBoundary.tsx) 不再执行安装检测、版本门禁或本机守护进程握手，只渲染浏览器工作区。
+3. [`check-cloud-boundary.mjs`](../../scripts/check-cloud-boundary.mjs) 禁止 Web 源码重新引入旧运行时 client、安装器文案和下载逻辑，且当前 allowlist 为 0。
+4. [`check-cloud-artifact.mjs`](../../scripts/check-cloud-artifact.mjs) 对最终 `dist` 逐文件扫描可执行扩展名，并扫描 `127.0.0.1:4618`、`localhost:4618`、组件安装器、identity proof 和旧 API 字符串。
+5. 2026-08-22 最新复验结果为：`168 files / 10.73 MiB / 0 host component / 0 loopback bridge`。`smoke:web` 同时验证旧组件下载 URL、本机性能 API 和 PS/DCC bridge API 在 Cloud Build 中返回 404。
+
+所以能证明的是：发布给用户的 Cloud Web 产物没有 LI3D 原生宿主组件，也没有向用户电脑上的 4618 端口回退。不能仅凭当前 `127.0.0.1:5646` 地址证明“已经部署到生产服务器”；该地址是本轮测试电脑上的应用服务器预览。它模拟正式 Web/App Server 的部署形态，并连接了真实 Asset/Substance/AIGC API，生产域名部署仍属于发布门禁。
+
+### 4.2 数据在哪里，计算在哪里
+
+| 层 | 权威内容/职责 | 实际计算位置 | 证据 |
+| --- | --- | --- | --- |
+| 浏览器 | 当前打开的模型缓冲区、Canvas、GPU 纹理、临时缓存 | 用户电脑的浏览器进程、Web Worker、WASM、WebGL/WebGPU | [`browserComputeCapabilities.ts`](../../apps/web/src/platform/browserComputeCapabilities.ts)、[`gpuComputeBackend.ts`](../../apps/web/src/engine/performance/gpuComputeBackend.ts) |
+| LI3D 应用服务器 | 登录会话、账号 ownership、项目当前快照、不可变 Revision、Command 回执、任务编排 | Web/API 服务器 CPU；不替普通贴图交互补算 | [`postgresProjectRepository.ts`](../../apps/server/src/repositories/postgresProjectRepository.ts) |
+| 对象存储 | 模型、贴图、导出物和任务交付物的权威二进制对象 | 存储服务；浏览器通过签名 URL 直传/直下 | [`assetTransferService.ts`](../../apps/server/src/services/assetTransferService.ts) |
+| 独立 GPU/AIGC 集群 | Auto UV、自动拓扑、Substance Bake、ComfyUI/AIGC 正式任务 | 独立远端 Worker/GPU，不是 LI3D 应用服务器，也不是用户本机 | [ADR-0011](./ADR-0011-real-production-compute-services.md) |
+
+项目数据的完整循环是：账号登录 → 应用服务器返回 Project Revision/签名资产 URL → 浏览器下载工作副本 → 本机 CPU/GPU 进行视口、投影、蒙版、图层和合成 → 结果经签名上传 → 应用服务器用带 expected Revision 的幂等 Command 提交 → PostgreSQL/对象存储成为新权威版本。`localStorage`、IndexedDB、OPFS 只允许保存布局、缓存或断点恢复辅助，不是账号项目的权威数据库。
+
+Auto UV、自动拓扑、生产 Bake 和 AIGC 是例外：这些任务按产品要求把模型/输入交给独立 GPU/AIGC API 集群，集群返回正式产物。它们不冒充“用户本机算力”；“调用用户本机 CPU/GPU”的范围是浏览器贴图交互、3D 视口、投影、蒙版、图层合成、编码/解码和其他适合浏览器的计算。
+
+### 4.3 浏览器 CPU 证明
+
+页面启动时会真实检测 `Worker`、`WebAssembly`、`OffscreenCanvas`、OPFS、共享内存、逻辑处理器和设备内存，并由 [`localComputePolicy.ts`](../../packages/contracts/src/localComputePolicy.ts) 选择本地计划，缺少能力只会降级为 WebGL2/Worker/主线程，不允许切换到 LI3D 服务器补算。
+
+本轮页面实际写出的 DOM 运行态为：
+
+| 字段 | 实测值 | 含义 |
+| --- | --- | --- |
+| `data-li3d-cpu-backend` | `wasm-worker` | Worker 与 WebAssembly 均可用，CPU 重任务可离开 UI 主线程 |
+| `data-li3d-compute-quality` | `high` | 运行时门槛要求 WebGPU、至少 8 个逻辑处理器、至少 8 GB 可报告内存 |
+| `data-li3d-server-compute-fallback` | `forbidden` | 普通浏览器计算不能静默改由 LI3D 服务器执行 |
+| Worker 创建点 | 21 处 | 图像解码、PNG 编码、蒙版准备、接缝协调、图层合成、GPU 读回、UV 光栅等均有独立 Worker 边界 |
+| 模型解析时间线 | FBX 主线程解析 `546.4 ms` | 直接证明测试模型解析发生在浏览器页面，而不是服务器返回预解析占位结果 |
+
+测试电脑硬件盘点为 Intel i7-13700KF，16 个物理核、24 个逻辑处理器；这是本次证据机器，不是所有用户机器的最低配置承诺。
+
+### 4.4 浏览器 GPU、Three.js 与 D3D 关系
+
+当前不是直接编写 D3D 引擎，也不是 Unity/Unreal Native Runtime。基础栈是：
+
+```text
+React 18
+  └─ React Three Fiber 8.18
+      └─ Three.js 0.171 WebGLRenderer / WebGL2（3D 视口、材质、投影与 GPU RenderTarget）
+
+Web Worker
+  └─ WebGPU API（RGBA 合成、质量混合、UV 拓扑光栅等重计算）
+      └─ Chromium Dawn
+
+Windows 浏览器驱动层
+  ├─ WebGL → ANGLE → 通常 D3D11
+  └─ WebGPU → Dawn → 由 Chromium/驱动选择 D3D12 或 D3D11
+```
+
+视口 [`ViewportCanvas.tsx`](../../apps/web/src/engine/viewport/ViewportCanvas.tsx) 创建 Three.js `WebGLRenderer`，请求 `powerPreference: high-performance`，并处理 WebGL context lost/restored。WebGPU 不是只做 `navigator.gpu` 布尔探测：[`gpuComputeBackend.ts`](../../apps/web/src/engine/performance/gpuComputeBackend.ts) 会申请高性能 adapter/device，创建 compute shader 和 pipeline，让 GPU 写入 `0x4c693344`，提交队列后复制回读；返回值一致才标记 `ready`。
+
+本轮真实页面性能面板记录：
+
+| GPU 指标 | 实测值 |
+| --- | --- |
+| 计算后端 | `webgpu · ready` |
+| GPU 自检 | `验证 1`，真实 shader dispatch + copy/readback 成功 |
+| 当时已记录的生产 WebGPU dispatch | `0`；因此不把该瞬间的所有贴图步骤宣称为 WebGPU 计算 |
+| WebGL GPU Timer P95 | `0.5 ms`，约占 16.7ms 帧预算 3% |
+| Draw Calls / 三角形 | `3 / 300,000 每帧` |
+| 纹理 / 几何 / Program | `10 / 5 / 12` |
+| 纹理单元 / 最大纹理 | `16 / 16384` |
+| Canvas / DPR / JS Heap | `1600×900 / 1.3 / 593 MiB` |
+
+测试机 GPU 为 `NVIDIA GeForce RTX 4070 Ti SUPER`，驱动 `591.74`，`nvidia-smi` 报告显存 `16,376 MiB`。WebGPU adapter 自检和 WebGL GPU timer 证明页面确实获得了浏览器 GPU 设备与 GPU 计时能力；操作系统硬件盘点证明该机器存在这块显卡。但普通网页 API 出于隐私/安全不会稳定暴露“本次上下文最终选中的 D3D11/D3D12 backend”字符串，所以报告不伪造一个精确结论：可以确认 WebGL/WebGPU，Windows Chromium 的实现映射是 ANGLE/Dawn；当前会话究竟由 Dawn 选了 D3D12 还是 D3D11，需要用户在目标浏览器的 `chrome://gpu`/企业诊断页人工留档后才能封板。
+
+Chromium 源码也明确说明 Windows WebGL 继续使用 ANGLE 的 D3D11 device，而 Dawn/Chromium 具备 D3D12 与 D3D11 backend：[Chromium GL feature implementation](https://chromium.googlesource.com/chromium/src/+/master/ui/gl/gl_features.cc)、[Chromium WebGPU technical report](https://chromium.googlesource.com/chromium/src/+/main/docs/security/research/graphics/webgpu_technical_report.md)、[ANGLE repository](https://chromium.googlesource.com/angle/angle)。
+
+### 4.5 如何进一步做成上线级证明
+
+上线验收不能只看开发机。每个目标浏览器/硬件档需要导出一份同结构证据：浏览器版本、CPU 核数、GPU/驱动、`chrome://gpu` 后端、WebGPU 自检、至少一次生产 dispatch、WebGL context、长任务、显存/内存、设备丢失恢复和网络请求清单。还需在干净 Windows 沙箱中验证：没有安装 LI3D 软件、没有 4618 监听端口、浏览器只连接正式域名/对象存储/远端 API，刷新和重启后账号项目仍从服务器恢复。
+
+本轮机器可读证据已保存到 [`quality/evidence/browser-runtime-compute-2026-08-22.json`](../../quality/evidence/browser-runtime-compute-2026-08-22.json)。
+
+## 5. 架构与稳定性优化
+
+### 5.1 多实例数据一致性
 
 - 新增 PostgreSQL 事务 Repository，项目当前快照、不可变 Revision、Command 回执和账号 ownership 进入同一事务边界。
 - 支持跨实例重复命令幂等、乐观并发冲突保护、软删除、重命名、移动和复制。
 - 正式环境选择 PostgreSQL 时缺少数据库地址会直接失败，不会静默退回本地文件。
 - 4 实例、4 账号、15 轮、240 次重复请求、事务回滚注入和重启恢复通过；高压复验 8 实例、4 账号、120 轮、3,840 次重复请求通过。
 
-### 4.2 服务生命周期与压力
+### 5.2 服务生命周期与压力
 
 - `/api/health` 与 `/api/ready` 分离存活和可接流量状态。
 - SIGTERM/SIGINT 进入 draining，拒绝新业务并等待在途请求，随后同端口重启恢复。
 - HTTP 健康接口 60 并发持续 30 秒：367,658 次请求、0 失败、P95 9ms。
 - Cloud 部署模拟器覆盖构建、readiness、OAuth/PKCE、对象直传、首次失败重试、幂等、优雅停机和重启恢复。
 
-### 4.3 浏览器性能与资源边界
+### 5.3 浏览器性能与资源边界
 
 - GLTF/GLB、FBX、OBJ 解析器改为按实际格式动态加载，避免用户只打开一种模型时下载全部解析器。
 - Engine Session 最多保留 3 个空闲项目会话；24 项目、每项目 8 MiB 的切换回归中，21 个旧会话立即释放，宽限期结束后资源估算归零。
@@ -69,7 +157,7 @@
 - Bundle 门禁收紧为：Shell 265 KB、编辑器 490 KB、高模 Bake 700 KB、共享 3D 管线 850 KB、总 JS 3.05 MB。
 - 仍存在两个超过 500 KB 的重型 3D chunk 警告；门禁没有通过抬高警告阈值掩盖该债务。
 
-## 5. 自动化验证汇总
+## 6. 自动化验证汇总
 
 最新分支已通过：
 
@@ -84,7 +172,7 @@
 - Cloud 部署模拟器：构建、登录、代理、直传、重试、幂等、停机、重启全部通过。
 - 浏览器人工自动联测：真实登录、真实容量、真实 UV 成功、账号历史、项目保存、烘焙交接通过。
 
-## 6. 仍未关闭的发布阻断
+## 7. 仍未关闭的发布阻断
 
 | 优先级 | 阻断 | 发布前完成标准 |
 | --- | --- | --- |
@@ -95,17 +183,19 @@
 | P1 | 数据安全面 | PostgreSQL 已完成；仍需真实对象存储回收、文件魔数/解压炸弹/内容扫描、备份恢复与迁移演练。 |
 | P1 | 目标硬件性能 | 补齐低中高三档设备的 input-to-present、Long Task、显存/内存和设备丢失恢复采样。 |
 
-## 7. 合并与部署建议
+## 8. 合并与部署建议
 
 1. 继续只在 `codex/modernization` 或新的集成测试分支验证，不直接合并 `master`。
 2. 以当前提交构建不可变 Web/Server 镜像，同一 SHA 在测试、预发、生产逐级晋级，不在服务器现场重新构建。
 3. 先完成 P0 Worker 与 SSO 阻断，再执行生产对象存储、PostgreSQL、备份和灰度回滚演练。
 4. 机器发布闸门全部变为 `passed` 之前，不对外宣称“原版全部功能生产等价”。当前准确表述是：核心功能迁移可行、零安装架构成立、主要纵向链路已通，生产质量与外部部署验收尚未全部关闭。
 
-## 8. 本轮中文提交
+## 9. 本轮中文提交
 
 - `f30c296 实现：项目数据多实例事务与幂等保存`
 - `8909399 测试：增加多实例故障恢复与长稳压测`
 - `b6116a95 优化：收紧真实UV交付与浏览器资源边界`
+- `c880029 文档：汇总零组件迁移验收与生产阻断`
+- `93aa8b3 修复：首页贴图保存语义对齐账号数据`
 
 后续提交继续使用中文标题。
