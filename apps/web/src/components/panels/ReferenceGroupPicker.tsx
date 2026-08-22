@@ -14,7 +14,6 @@ import {
   Eye,
   ImagePlus,
   LoaderCircle,
-  Maximize2,
   MoreHorizontal,
   Minus,
   Plus,
@@ -30,12 +29,10 @@ import {
   ReferenceImportDialog,
   type ReferenceImportRole,
 } from '@/components/panels/ReferenceImportDialog';
-
-export type ReferenceGroupGenerationState = {
-  groupId: string;
-  status: 'generating' | 'failed';
-  error?: string;
-};
+import {
+  referenceGroupId,
+  type ReferenceGroupGenerationState,
+} from '@/components/panels/referenceGroup';
 
 type ReferenceGroupPickerProps = {
   disabled?: boolean;
@@ -48,10 +45,6 @@ const MULTIVIEW_REFERENCE_EXAMPLE_URL = '/examples/reference-multiview.jpg';
 
 function referenceRole(reference: ReferenceImage) {
   return reference.referenceRole ?? 'single-view';
-}
-
-export function referenceGroupId(reference: ReferenceImage) {
-  return reference.referenceGroupId ?? reference.id;
 }
 
 function fileToDataUrl(file: File) {

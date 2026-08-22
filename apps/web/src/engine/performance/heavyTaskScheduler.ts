@@ -150,7 +150,7 @@ export function scheduleHeavyTask<T>(options: HeavyTaskOptions<T>) {
   });
 
   if (options.replace !== false) {
-    activeTask?.key === options.key && activeTask.controller.abort();
+    if (activeTask?.key === options.key) activeTask.controller.abort();
     for (let index = queue.length - 1; index >= 0; index -= 1) {
       const stale = queue[index];
       if (stale.key !== options.key) continue;

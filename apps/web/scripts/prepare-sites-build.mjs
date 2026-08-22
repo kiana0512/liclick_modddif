@@ -1,4 +1,3 @@
-/* global URL */
 import { copyFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';

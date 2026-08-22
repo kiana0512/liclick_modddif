@@ -1,5 +1,3 @@
-/* global console, crypto, DOMException, document, window */
-
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

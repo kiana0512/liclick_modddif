@@ -106,10 +106,6 @@ async function requestJson<T>(
     const response = await fetch(requestUrl, requestInit);
     const payload = (await response.json().catch(() => undefined)) as T | undefined;
     if (!response.ok) {
-      const errorCode =
-        payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
-          ? payload.code
-          : undefined;
       if (response.status === 401) {
         throw new Error('平台登录已失效，请重新登录后再使用局部重绘。');
       }

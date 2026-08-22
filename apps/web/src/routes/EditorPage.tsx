@@ -1086,7 +1086,6 @@ export function EditorPage({
   const paintTool = useSceneStore((state) => state.paintTool);
   const setPaintTool = useSceneStore((state) => state.setPaintTool);
   const paintMaskDataUrl = useSceneStore((state) => state.paintMaskDataUrl);
-  const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
   const setLocalRepaintProjectionSource = useSceneStore(
     (state) => state.setLocalRepaintProjectionSource,
   );
@@ -3805,6 +3804,10 @@ export function EditorPage({
     });
   }
 
+  // Photoshop/DCC launch is intentionally detached from the zero-install browser
+  // release. Keep the implementation available for the deferred integration
+  // without exposing a local-component action in the production UI.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deferred PS/DCC integration
   async function openLayerImageEdit(layer: Layer) {
     if (photoshopEditSessionRef.current) {
       pushToast({
@@ -6127,7 +6130,6 @@ export function EditorPage({
     importedModel,
     notifyEditorTaskRunning,
     paintMaskDataUrl,
-    paintMaskHasContent,
     project,
     projectId,
     pushToast,
@@ -6659,7 +6661,15 @@ export function EditorPage({
         }
       }
     },
-    [addUvContentAwareRepairLayer, captureHistory, pushToast, setProjectLayers, t],
+    [
+      addUvContentAwareRepairLayer,
+      captureHistory,
+      project?.id,
+      projectId,
+      pushToast,
+      setProjectLayers,
+      t,
+    ],
   );
 
   const runContentAwareRepair = useCallback(

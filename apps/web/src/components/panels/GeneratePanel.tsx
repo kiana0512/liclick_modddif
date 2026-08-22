@@ -26,11 +26,11 @@ import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
 } from '@/engine/scene/transformActions';
+import { ReferenceGroupPicker } from '@/components/panels/ReferenceGroupPicker';
 import {
-  ReferenceGroupPicker,
   referenceGroupId,
   type ReferenceGroupGenerationState,
-} from '@/components/panels/ReferenceGroupPicker';
+} from '@/components/panels/referenceGroup';
 import { devLogin } from '@/services/authApiClient';
 import { createComfyuiApiClient } from '@/services/comfyuiApiClient';
 import { createModelviewApiClient } from '@/services/modelviewApiClient';
@@ -781,6 +781,9 @@ export function GeneratePanel({
   const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
   const criticalProjectSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pairedGenerationPersistenceRef = useRef(new Set<string>());
+  const persistPairedMultiviewReferenceRef = useRef<
+    (singleReference: ReferenceImage, generation: Generation) => Promise<ReferenceImage>
+  >();
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
   const dockDensity = useWorkspaceLayoutStore((state) => state.dockDensity);
   const generatePanelExpanded = useWorkspaceLayoutStore(
@@ -1334,7 +1337,7 @@ export function GeneratePanel({
         return next;
       });
     };
-  }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, viewport]);
+  }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, setGenerateNotice, viewport]);
 
   useEffect(() => {
     const generationToPoll = activeReferenceGeneration ?? previewGeneration;
@@ -1519,6 +1522,7 @@ export function GeneratePanel({
     markGenerationFailed,
     previewGeneration,
     pushToast,
+    setGenerateNotice,
     syncGeneration,
   ]);
 
@@ -1560,6 +1564,8 @@ export function GeneratePanel({
       (reference) => reference.id === sourceReferenceId && !isMultiviewReference(reference),
     );
     if (!sourceReference) return;
+    const persistPairedMultiviewReference = persistPairedMultiviewReferenceRef.current;
+    if (!persistPairedMultiviewReference) return;
     pairedGenerationPersistenceRef.current.add(completedReferenceGeneration.id);
     void persistPairedMultiviewReference(sourceReference, completedReferenceGeneration)
       .then(() => {
@@ -2880,6 +2886,7 @@ export function GeneratePanel({
     await saveCriticalProjectState({ references: nextReferences });
     return multiviewReference;
   }
+  persistPairedMultiviewReferenceRef.current = persistPairedMultiviewReference;
 
   async function generatePairedMultiviewReference(singleReference: ReferenceImage) {
     const groupId = referenceGroupId(singleReference);

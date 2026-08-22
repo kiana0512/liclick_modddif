@@ -49,7 +49,6 @@ export function createVisibleSurfaceCompletionPolicy(
   if (!Number.isSafeInteger(pixelCount) || pixelCount > 0xffffffff) {
     throw new RangeError(`Visible-surface completion is too large: ${width}x${height}.`);
   }
-  const repairResolution = Math.max(width, height);
   const megapixelScale = pixelCount / (1024 * 1024);
   return {
     gapMask: {
@@ -67,18 +66,26 @@ export function createVisibleSurfaceCompletionPolicy(
       // Only one verified physical seam may provide a donor. Never cascade
       // through an arbitrary chain of UV islands.
       maxSeamCrossings: 1,
-      sourcePaddingPixels: Math.max(2, Math.min(4, Math.round(repairResolution / 768))),
-      maxDistance: Math.max(64, Math.min(128, Math.round(repairResolution / 16))),
+      // The mask has already rejected weak projection fringe. Padding the source
+      // exclusion again removes the only valid border texel on thin UV islands
+      // and turns a reachable gap into a false no-donor component.
+      sourcePaddingPixels: 0,
+      // The queue is linear and stops when no reachable texels remain, so a
+      // pixel-count upper bound guarantees completion without adding work past
+      // the actual topology diameter. A fixed 64/128px radius left the centre
+      // of large visible gaps transparent.
+      maxDistance: pixelCount,
       minSourceAlpha: 64,
       sourceColorOutlierThreshold: 64,
       connectivity: 4,
       coverageSkirtPixels: 1,
       coverageSkirtMaxInputAlpha: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       outputBleedPixels: 4,
-      // The global-average fallback introduced after the original algorithm
-      // paints unrelated/unseen UV islands skin-coloured or brown. A component
-      // without local/verified-seam evidence must remain untouched.
-      fillUnreachableWithGlobalAverage: false,
+      // Gap selection is already restricted to strict visible UV coverage. If a
+      // selected component has no local/seam donor, use the authored-source mean
+      // as a final opaque fallback so the viewport never exposes hatch/alpha.
+      // Empty atlas space remains outside writeMask and is never painted.
+      fillUnreachableWithGlobalAverage: true,
       lockToDominantSourceRegion: true,
       dominantSourceColorThreshold: 18,
       requireCompleteComponents: false,

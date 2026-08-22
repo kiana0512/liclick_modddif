@@ -727,7 +727,7 @@ export function BakeWorkspacePage({
   );
   const projectColorForObject = useCallback(
     (objectId: string) => selectBakeBaseColor(project, objectId, handoff),
-    [handoff, project?.bakedTextures, project?.layers],
+    [handoff, project],
   );
 
   const selectedLow = selectedHigh ? lowFiles[selectedHigh.id] : undefined;

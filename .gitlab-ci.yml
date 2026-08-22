@@ -28,11 +28,10 @@ typecheck:
   script:
     - corepack pnpm run typecheck
 
-# Existing lint debt is tracked separately. This job is visible immediately but
-# does not become a release blocker until the baseline is green.
-lint-baseline:
+# Lint includes Hooks lifecycle and Fast Refresh rules. Keep it release-blocking
+# so stale effects and component-boundary regressions cannot reach production.
+lint:
   stage: verify
-  allow_failure: true
   script:
     - corepack pnpm run lint
 

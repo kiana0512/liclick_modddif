@@ -1029,7 +1029,7 @@ function capacitySummary(status?: AssetProcessingStatus) {
   return `${capacity.onlineWorkers} Worker · ${capacity.totalSlots} 槽位`;
 }
 
-function ReferenceImages({
+export function ReferenceImages({
   files,
   onFiles,
   disabled = false,
@@ -1300,7 +1300,7 @@ function QualitySummary({ mode, job }: { mode: AssetProcessingMode; job: AssetJo
   );
 }
 
-function JobPanel({
+export function JobPanel({
   mode,
   job,
   busy,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
 import { IMMEDIATE_PROJECT_SAVE_EVENT } from '@/stores/projectStore';

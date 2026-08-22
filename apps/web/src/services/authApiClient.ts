@@ -36,26 +36,40 @@ export type ProviderStatus = {
   };
 };
 
-async function requestJson<T>(path: string, init?: RequestInit) {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number },
+) {
+  const { timeoutMs = 30_000, signal: callerSignal, ...fetchInit } = init ?? {};
+  const headers = new Headers(fetchInit.headers);
+  if (fetchInit.body && !headers.has('content-type'))
+    headers.set('content-type', 'application/json');
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 30_000);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   let response: Response;
   try {
     response = await fetch(`${workspaceApiBase}${path}`, {
-      ...init,
+      ...fetchInit,
       signal: controller.signal,
       headers,
       credentials: 'include',
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (callerSignal?.aborted) throw error;
+    if (timedOut || (error instanceof DOMException && error.name === 'AbortError')) {
       throw new Error('登录服务响应超时，请稍后重试。');
     }
     throw new Error('无法连接登录服务，请确认 LI3D Web 后端已启动并可访问。');
   } finally {
     window.clearTimeout(timeout);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
   }
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
   if (!contentType.includes('application/json')) {
@@ -76,8 +90,8 @@ async function requestJson<T>(path: string, init?: RequestInit) {
   return payload as T;
 }
 
-export function getAuthMe() {
-  return requestJson<AuthMeResponse>('/api/auth/me');
+export function getAuthMe(options?: { signal?: AbortSignal; timeoutMs?: number }) {
+  return requestJson<AuthMeResponse>('/api/auth/me', options);
 }
 
 export function getProviderStatus() {

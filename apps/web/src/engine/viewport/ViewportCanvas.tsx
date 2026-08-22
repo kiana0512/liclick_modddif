@@ -66,7 +66,6 @@ import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
-import { encodeProjectionMaskInWorker } from '@/engine/localRepaint/projectionMaskEncodeWorker';
 import { getCanvasAlphaBoundsAsync } from '@/utils/getCanvasAlphaBounds';
 import {
   applyTargetOnlyMaterial,
@@ -3943,7 +3942,7 @@ function restoreInpaintPatchedMaterial(material: THREE.Material) {
 function createInpaintPatchedMaterial(
   source: THREE.Material,
   layer: UvPaintLayer,
-  mesh: THREE.Mesh,
+  _mesh: THREE.Mesh,
 ) {
   layer.directMaskReadyMeshes ??= new Set();
   const material = source;
@@ -5681,60 +5680,6 @@ function createInpaintMaskCaptureMaterial(
   });
   bindInpaintDepthTarget(material, depthTarget);
   return material;
-}
-
-function hasCanvasAlpha(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) {
-  const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  for (let index = 3; index < data.length; index += 4) {
-    if (data[index] > 0) return true;
-  }
-  return false;
-}
-
-async function projectionMaskToDataUrl(source: HTMLCanvasElement) {
-  try {
-    const startedAt = performance.now();
-    const result = await encodeProjectionMaskInWorker(source);
-    document.body.dataset.localRepaintProjectionMaskEncodeBackend = 'worker';
-    document.body.dataset.localRepaintProjectionMaskEncodeWorkerMs = result.processMs.toFixed(1);
-    document.body.dataset.localRepaintProjectionMaskEncodeTotalMs = (
-      performance.now() - startedAt
-    ).toFixed(1);
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () =>
-        typeof reader.result === 'string'
-          ? resolve(reader.result)
-          : reject(new Error('Could not read encoded local repaint mask.'));
-      reader.onerror = () =>
-        reject(reader.error ?? new Error('Could not read encoded local repaint mask.'));
-      reader.readAsDataURL(result.blob);
-    });
-  } catch (workerError) {
-    document.body.dataset.localRepaintProjectionMaskEncodeBackend = 'main-thread-fallback';
-    console.warn(
-      '[Liclick 3D Texture] Projection mask Worker unavailable; using compatible encoder.',
-      workerError,
-    );
-  }
-  const canvas = document.createElement('canvas');
-  canvas.width = source.width;
-  canvas.height = source.height;
-  const context = canvas.getContext('2d');
-  if (!context) return canvasToPngDataUrl(source);
-  context.fillStyle = '#000000';
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(source, 0, 0);
-  const image = context.getImageData(0, 0, canvas.width, canvas.height);
-  for (let index = 0; index < image.data.length; index += 4) {
-    const value = Math.max(image.data[index], image.data[index + 1], image.data[index + 2]);
-    image.data[index] = value;
-    image.data[index + 1] = value;
-    image.data[index + 2] = value;
-    image.data[index + 3] = 255;
-  }
-  context.putImageData(image, 0, 0);
-  return canvasToPngDataUrl(canvas);
 }
 
 const LOCAL_REPAINT_IMAGE_CACHE_LIMIT = 6;
@@ -8242,6 +8187,7 @@ function SurfacePaintOverlay() {
     hideInpaintMaskPresentation,
     inpaintDepthMaterial,
     paintTool,
+    shouldShowColorPaintOverlays,
     syncInpaintMaskProjection,
   ]);
 
@@ -8418,7 +8364,7 @@ function SurfacePaintOverlay() {
     } finally {
       materials.forEach((material) => material.dispose());
     }
-  }, [archiveCurrentInpaintProjection, camera, getTargetModel, gl, scene]);
+  }, [camera, getTargetModel, gl, scene]);
 
   useEffect(() => {
     setPaintMaskCapture(capturePaintMask);
@@ -8760,7 +8706,7 @@ function SurfacePaintOverlay() {
       cancelled = true;
       traceSourceEffect('cleanup');
     };
-  }, [clearLocalRepaintGpuOverlay, localRepaintProjectionSource]);
+  }, [clearLocalRepaintGpuOverlay, localRepaintProjectionSource, selectedObjectId]);
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -10478,8 +10424,6 @@ function SurfacePaintOverlay() {
       getUvPaintLayer,
       hasLocalRepaintSourceContent,
       hideInpaintMaskPresentation,
-      isInpaintMode,
-      isLocalRepaintApplyMode,
       localRepaintBrushSettings.brushFeather,
       paintTool,
       paintToolSettings.brushHardness,
@@ -10630,11 +10574,8 @@ function SurfacePaintOverlay() {
       gl.domElement,
       invalidate,
       ensureLiveLocalRepaintComposite,
-      isInpaintMode,
-      isLocalRepaintApplyMode,
       paintTool,
       paintToolSettings.color,
-      readShouldShowInpaintMask,
       resolveLocalRepaintStrokeSource,
     ],
   );
@@ -13058,6 +12999,7 @@ function SurfacePaintOverlay() {
     };
   }, [
     activePaintLayer,
+    activePaintLayerId,
     commitMaskIfDirty,
     cancelIdleInpaintArchive,
     beginStrokeHistory,

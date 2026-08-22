@@ -525,7 +525,7 @@ assert.match(
   'Surface-locked repaint must retain smooth facing coverage so the base UV shows through without black seams.',
 );
 const uvSamplerWarmupSource = sceneRootSource.match(
-  /const prewarmProjectedUvSamplers = async \([\s\S]*?\r?\n    async function applyMaterials/,
+  /const prewarmProjectedUvSamplers = async \([\s\S]*?\r?\n {4}async function applyMaterials/,
 )?.[0];
 assert(uvSamplerWarmupSource, 'Expected the projected UV sampler warmup implementation.');
 assert.match(

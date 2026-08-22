@@ -1,5 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
@@ -404,14 +404,25 @@ function isProjectedLayerAboveMergedUv(layer: Layer, mergedUvBoundaryOrder: numb
   return !Number.isFinite(mergedUvBoundaryOrder) || layer.order < mergedUvBoundaryOrder;
 }
 
-export { getPreviewLighting } from './previewLighting';
-
 function useStableValueBySignature<T>(value: T, signature: string) {
   const stableRef = useRef<{ signature: string; value: T }>();
   if (!stableRef.current || stableRef.current.signature !== signature) {
     stableRef.current = { signature, value };
   }
   return stableRef.current.value;
+}
+
+function readAuthoritativeLocalRepaintLayers(
+  _layerRenderSignature: string,
+  _uvVisibilityRenderRevision: number,
+  objectId: string,
+) {
+  const layerState = useLayerStore.getState();
+  return mergeAuthoritativeLocalRepaintLayers(
+    layerState.layers,
+    layerState.projectedPreviewLayers,
+    objectId,
+  );
 }
 
 type LoadedPreviewTextureState = {
@@ -1001,7 +1012,7 @@ function TopologyWireframeOverlay({
       group.add(wireMesh);
     });
 
-    group.visible = visible;
+    group.visible = false;
     return { group, material };
   }, [object]);
 
@@ -1184,14 +1195,15 @@ function ImportedModel({
       )
       .join('|'),
   );
-  const layers = useMemo(() => {
-    const layerState = useLayerStore.getState();
-    return mergeAuthoritativeLocalRepaintLayers(
-      layerState.layers,
-      layerState.projectedPreviewLayers,
-      importedModel.objectId,
-    );
-  }, [layerRenderSignature, uvVisibilityRenderRevision]);
+  const layers = useMemo(
+    () =>
+      readAuthoritativeLocalRepaintLayers(
+        layerRenderSignature,
+        uvVisibilityRenderRevision,
+        importedModel.objectId,
+      ),
+    [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision],
+  );
   const visibleMergedUvBoundaryOrder = useMemo(
     () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
     [importedModel.objectId, layers],
@@ -1230,13 +1242,13 @@ function ImportedModel({
     (importedModel.restoreStage === 'outline' &&
       importedModel.group.userData.liclickRestoreOutlinePrepared === true) ||
     initialMaterialPresentationReadyForGroup;
-  const revealInitialMaterialPresentation = () => {
+  const revealInitialMaterialPresentation = useCallback(() => {
     // Progressive restore replaces the Group while retaining the same object id.
     // Store the exact published Group instead of a boolean: writing `true` again
     // after a replacement is a React no-op and leaves the new white membrane
     // permanently hidden.
     setPresentedMaterialGroup(importedModel.group);
-  };
+  }, [importedModel.group]);
   useEffect(() => {
     document.body.dataset.atomicModelRevealObjectId = importedModel.objectId;
     document.body.dataset.atomicModelRevealStage = importedModel.restoreStage ?? 'imported';
@@ -1920,7 +1932,7 @@ function ImportedModel({
     return () => {
       unsubscribe();
     };
-  }, [importedModel, invalidate, localRepaintPreviewLayerId, visibleLocalRepaintPreviewLayer]);
+  }, [gl, importedModel, invalidate, localRepaintPreviewLayerId, visibleLocalRepaintPreviewLayer]);
   useEffect(() => {
     // Display-mode buttons are latency-sensitive too. React effects can land a
     // frame or two after the Zustand write under a busy 4K viewport, leaving
@@ -2012,6 +2024,11 @@ function ImportedModel({
     invalidate();
   }, [importedModel, invalidate, localRepaintPreviewLayerId]);
   const contentAwareUvUnderlayLayers = useMemo(() => {
+    // The signature is an intentional recompute token for relevant LayerStore
+    // fields while the source rows are read atomically from getState().
+    if (!contentAwareLayerDisplaySignature && useLayerStore.getState().layers.length === 0) {
+      return [];
+    }
     const liveLayers = useLayerStore.getState().layers;
     return texturedRestoreReady
       ? liveLayers.filter(
@@ -4608,9 +4625,16 @@ function ImportedModel({
     contentAwareUnderlayOpacity,
     loadedUvTexture,
     gl.capabilities.maxTextures,
+    hasLiveProjectedPreview,
+    hasResidentUvOverlaySampler,
+    initialProjectedMaterialReady,
+    invalidate,
     liveTopUvLayer,
     liveTopUvTexture,
+    liveProjectedEraserMaskTexture,
+    liveSurfacePaintPreview,
     liveSurfaceMaskTexture,
+    localRepaintPreviewLayerId,
     previewLighting,
     previewBakedTextureRecord,
     previewProjectionInputs,
@@ -4626,6 +4650,9 @@ function ImportedModel({
     projectedPreviewNeedsComposition,
     projectedTextureArrayStructureSignature,
     showWhiteMembrane,
+    revealInitialMaterialPresentation,
+    stableResidentUvToggleLayers,
+    stableVisibleProjectedLayers,
     textureArrayCompositionFallbackRequired,
     useProjectedTextureArrays,
     activeProjectedPreviewInput,

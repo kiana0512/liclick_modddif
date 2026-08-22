@@ -1,4 +1,3 @@
-/* global URL, Response, Request, console */
 import assert from 'node:assert/strict';
 import worker from '../worker/sites-worker.js';
 

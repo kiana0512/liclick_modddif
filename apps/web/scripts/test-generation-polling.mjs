@@ -44,7 +44,7 @@ try {
       else init.signal?.addEventListener('abort', rejectAsAborted, { once: true });
     });
 
-  const identity = await server.ssrLoadModule('/src/services/localIdentityProofApiClient.ts');
+  const auth = await server.ssrLoadModule('/src/services/authApiClient.ts');
   const generationTiming = await server.ssrLoadModule('/src/utils/generationTiming.ts');
   const generationIdentity = await server.ssrLoadModule('/src/utils/generationIdentity.ts');
   const generationStore = await server.ssrLoadModule('/src/stores/generationStore.ts');
@@ -128,7 +128,7 @@ try {
 
   const timeoutStartedAt = Date.now();
   await assert.rejects(
-    identity.getLocalIdentityProof({ timeoutMs: 25 }),
+    auth.getAuthMe({ timeoutMs: 25 }),
     /登录服务响应超时/,
   );
   assert(
@@ -137,7 +137,7 @@ try {
   );
 
   const callerController = new globalThis.AbortController();
-  const cancelledRequest = identity.getLocalIdentityProof({
+  const cancelledRequest = auth.getAuthMe({
     signal: callerController.signal,
     timeoutMs: 5_000,
   });
