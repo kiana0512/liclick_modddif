@@ -18,6 +18,7 @@
     "test:fbx-legacy-repair": "node scripts/test-fbx-legacy-repair.mjs",
     "test:frame-budget-governor": "node scripts/test-frame-budget-governor.mjs",
     "test:heavy-task-scheduler": "node scripts/test-heavy-task-scheduler.mjs",
+    "test:home-service-boundaries": "node scripts/test-home-service-boundaries.mjs",
     "test:liclick-auth-separation": "node scripts/test-liclick-auth-separation.mjs",
     "test:model-import-progress": "node scripts/test-model-import-progress.mjs",
     "test:model-export-texture-orientation": "node scripts/test-model-export-texture-orientation.mjs",

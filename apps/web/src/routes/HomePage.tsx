@@ -459,12 +459,12 @@ export function HomePage({
           <ModuleCard
             eyebrow="AUTO UV"
             title="自动展 UV"
-            description="浏览器本机完成自动切缝、展开与 UV 排布。"
-            detail="本机 CPU · xatlas WASM · UV Pack"
+            description="上传模型至云端生产服务，完成自动切缝、展开、排布与质量门禁。"
+            detail="云端任务 · 正式 UV 产物 · 返回浏览器"
             icon={MapIcon}
             accent="emerald"
             visual="uv"
-            badge="本机运行"
+            badge="云端服务"
             hoverAction="进入自动展 UV"
             telemetryModule="auto_uv"
             onClick={onOpenUv}
@@ -487,12 +487,12 @@ export function HomePage({
           <ModuleCard
             eyebrow="MODEL BAKING"
             title="模型烘焙"
-            description="浏览器本机完成高低模投射与 PBR 贴图输出。"
-            detail="本机 CPU · Worker · 服务器不补算"
+            description="上传高低模与材质贴图至云端 Substance 服务，完成生产级 PBR 烘焙。"
+            detail="云端任务 · 1K / 2K / 4K · PBR 贴图返回浏览器"
             icon={Flame}
             accent="orange"
             visual="bake"
-            badge="本机运行"
+            badge="云端服务"
             hoverAction="进入烘焙工作台"
             telemetryModule="model_baking"
             onClick={onOpenBake}
