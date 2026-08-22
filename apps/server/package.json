@@ -12,6 +12,7 @@
     "test:bake-artifact-plan": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-bake-artifact-plan.mjs",
     "test:pipeline-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-project-pipeline-persistence.mjs",
     "test:postgres-project-repository": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-project-repository.mjs",
+    "test:postgres-project-soak": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-project-soak.mjs",
     "test:asset-transfer": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-asset-transfer.mjs",
     "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
     "test:task-history": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node ../../scripts/smoke-task-history.mjs",
