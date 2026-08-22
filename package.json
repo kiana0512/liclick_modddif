@@ -48,7 +48,7 @@
     "build": "corepack pnpm -r build",
     "build:release": "node scripts/validate-release-env.mjs && corepack pnpm -r build",
     "lint": "corepack pnpm -r lint",
-    "typecheck": "corepack pnpm -r typecheck",
+    "typecheck": "corepack pnpm --filter @liclick/contracts build && corepack pnpm -r typecheck",
     "test:contracts": "corepack pnpm --filter @liclick/contracts test",
     "check:cloud-boundary": "node scripts/check-cloud-boundary.mjs",
     "check:project-repository-boundary": "node scripts/check-project-repository-boundary.mjs",
