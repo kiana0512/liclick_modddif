@@ -13,7 +13,7 @@
     "test:pipeline-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-project-pipeline-persistence.mjs",
     "test:asset-transfer": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-asset-transfer.mjs",
     "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
-    "test:regression": "node scripts/run-regression-suite.mjs",
+    "test:regression": "corepack pnpm --filter @liclick/contracts build && node scripts/run-regression-suite.mjs",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "node scripts/prisma.mjs generate",
