@@ -10,6 +10,8 @@ const workflowSource = fs.readFileSync(path.join(root, 'src/routes/AssetProcessi
 assert.match(apiSource, /export async function updateLatestProject\(/);
 assert.match(apiSource, /await loadProject\(projectId\)/);
 assert.match(apiSource, /error\.status !== 409/);
+assert.match(apiSource, /latestUpdatedAt \+ 1/);
+assert.match(apiSource, /candidateUpdatedAt > latestUpdatedAt/);
 assert.match(workflowSource, /updateLatestProject\(targetProject\.id/);
 assert.match(workflowSource, /revisionsToPublish/);
 assert.match(workflowSource, /latestManifest\.models, \.\.\.modelAssetPaths/);

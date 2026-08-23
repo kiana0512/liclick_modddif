@@ -377,8 +377,25 @@ export async function updateLatestProject(
   let lastConflict: WorkspaceApiError | undefined;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const latest = (await loadProject(projectId)).project;
+    const candidate = update(latest);
+    const latestUpdatedAt = Date.parse(latest.updatedAt);
+    const candidateUpdatedAt = Date.parse(candidate.updatedAt);
+    // The file repository guards both revision id and updatedAt. Browser clocks
+    // can trail the server and a retry can outlive the timestamp captured by
+    // the workflow, so keep the outgoing document monotonic against the
+    // authoritative project rather than weakening the server's stale guard.
+    const monotonicUpdatedAt = Number.isFinite(latestUpdatedAt)
+      ? new Date(Math.max(Date.now(), latestUpdatedAt + 1)).toISOString()
+      : new Date().toISOString();
     try {
-      return await saveProject(update(latest));
+      return await saveProject({
+        ...candidate,
+        updatedAt:
+          Number.isFinite(candidateUpdatedAt) &&
+          (!Number.isFinite(latestUpdatedAt) || candidateUpdatedAt > latestUpdatedAt)
+            ? candidate.updatedAt
+            : monotonicUpdatedAt,
+      });
     } catch (error) {
       if (!(error instanceof WorkspaceApiError) || error.status !== 409) throw error;
       lastConflict = error;
