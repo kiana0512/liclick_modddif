@@ -2983,11 +2983,25 @@ export function AssetProcessingPage({
       }
       return;
     }
+    const outputBlob = await fetchTaskHistoryOutputBlob(output);
+    // Automatic UV preserves the submitted geometry and adds/updates UV data.
+    // Older account-history records did not retain a second source download,
+    // so the verified UV result is also the durable high snapshot for Bake.
+    // This keeps historical handoff self-contained without inventing a local
+    // workspace dependency; retopology must not use this fallback because it
+    // intentionally changes geometry.
+    const historicalUvSource =
+      mode === 'uv'
+        ? new File([outputBlob], record.sourceName || output.filename, {
+            type: outputBlob.type || 'application/octet-stream',
+          })
+        : undefined;
     await publishOutputToNextStage({
       jobId: record.id,
-      outputBlob: await fetchTaskHistoryOutputBlob(output),
+      outputBlob,
       outputName: output.filename,
       outputSize: output.sizeBytes,
+      sourceFile: historicalUvSource,
       usePipelineParent: Boolean(projectId),
       historyRecordId: record.id,
     });

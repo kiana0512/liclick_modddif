@@ -16,6 +16,9 @@ assert.match(workflowSource, /updateLatestProject\(targetProject\.id/);
 assert.match(workflowSource, /revisionsToPublish/);
 assert.match(workflowSource, /latestManifest\.models, \.\.\.modelAssetPaths/);
 assert.match(workflowSource, /\[objectId\]: publishedBakeSet/);
+assert.match(workflowSource, /const historicalUvSource/);
+assert.match(workflowSource, /sourceFile: historicalUvSource/);
+assert.match(workflowSource, /mode === 'uv'/);
 assert.doesNotMatch(workflowSource, /saveWorkspaceProject\(nextProject\)/);
 
 console.log('UV 历史传入烘焙的最新 revision 合并与冲突重试门禁通过。');
