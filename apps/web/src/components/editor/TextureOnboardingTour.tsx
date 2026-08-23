@@ -6,6 +6,7 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 type TextureOnboardingTourProps = {
   projectId: string;
   projectCreatedAt: string;
+  forceStart?: boolean;
 };
 
 type TourTarget =
@@ -133,7 +134,11 @@ function sameRect(left: TargetRect | undefined, right: TargetRect) {
   );
 }
 
-export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOnboardingTourProps) {
+export function TextureOnboardingTour({
+  projectId,
+  projectCreatedAt,
+  forceStart = false,
+}: TextureOnboardingTourProps) {
   const storageKey = useMemo(() => getStorageKey(projectId), [projectId]);
   const [active, setActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
@@ -157,7 +162,8 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
         writeSavedStep(storageKey, saved.done ? 'done' : saved.step);
       }
     }
-    const forcePreview = new URLSearchParams(window.location.search).get('textureTour') === '1';
+    const forcePreview =
+      forceStart || new URLSearchParams(window.location.search).get('textureTour') === '1';
     const createdAt = Date.parse(projectCreatedAt);
     const isNewProject =
       Number.isFinite(createdAt) &&
@@ -165,7 +171,7 @@ export function TextureOnboardingTour({ projectId, projectCreatedAt }: TextureOn
       Date.now() - createdAt <= NEW_PROJECT_WINDOW_MS;
     setStepIndex(forcePreview ? 0 : saved.step);
     setActive(forcePreview || (!saved.done && (isNewProject || saved.exists)));
-  }, [projectCreatedAt, projectId, storageKey]);
+  }, [forceStart, projectCreatedAt, projectId, storageKey]);
 
   useEffect(() => {
     if (!active) return;

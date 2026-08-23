@@ -36,6 +36,7 @@
     "test:performance-lab-metrics": "node scripts/test-performance-lab-metrics.mjs",
     "test:project-thumbnail-policy": "node scripts/test-project-thumbnail-policy.mjs",
     "test:project-default-name": "node scripts/test-project-default-name.mjs",
+    "test:project-onboarding-entry": "node scripts/test-project-onboarding-entry.mjs",
     "test:projection-layers": "node scripts/test-projected-layer-visibility.mjs",
     "test:real-uv-handoff": "node scripts/test-real-uv-handoff.mjs",
     "test:toolbox-parity": "node scripts/test-toolbox-parity.mjs",

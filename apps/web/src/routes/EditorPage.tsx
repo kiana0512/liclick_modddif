@@ -255,6 +255,7 @@ type EditorPageProps = {
   onOpenBake: (handoff?: TextureBakeHandoff) => void;
   autoOpenBake?: boolean;
   pendingBakeHandoff?: TextureBakeHandoff;
+  showOnboarding?: boolean;
   isActive?: boolean;
 };
 
@@ -964,6 +965,7 @@ export function EditorPage({
   onOpenBake,
   autoOpenBake = false,
   pendingBakeHandoff,
+  showOnboarding = false,
   isActive = true,
 }: EditorPageProps) {
   const engineSession = useEngineSession();
@@ -7467,7 +7469,11 @@ export function EditorPage({
         />
       </div>
       {!editorTaskRunning && (
-        <TextureOnboardingTour projectId={project.id} projectCreatedAt={project.createdAt} />
+        <TextureOnboardingTour
+          projectId={project.id}
+          projectCreatedAt={project.createdAt}
+          forceStart={showOnboarding}
+        />
       )}
       {pendingReferenceImport ? (
         <ReferenceImportDialog

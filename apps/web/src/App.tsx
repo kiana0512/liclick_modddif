@@ -4,8 +4,6 @@ import { EngineSessionBoundary } from './engine/session/EngineSessionBoundary';
 import { resolveBakeEntryProject } from './features/workflow/resolveBakeEntryProject';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
-import { getIdentityStatus } from './services/identityApiClient';
-import { initializeTelemetry } from './services/telemetryClient';
 import { createProject, listProjects, loadProject } from './services/workspaceApiClient';
 import { useAuthStore } from './stores/authStore';
 import { useProjectStore } from './stores/projectStore';
@@ -20,6 +18,7 @@ type RouteState =
   | {
       name: 'editor';
       projectId: string;
+      showOnboarding?: boolean;
       continueToBake?: boolean;
       bakeHandoff?: TextureBakeHandoff;
     }
@@ -284,8 +283,12 @@ export function App() {
           const nextRoute: RouteState = { name: 'autoUv', projectId };
           navigate(nextRoute);
         },
-        openEditor: (projectId: string) => {
-          const nextRoute: RouteState = { name: 'editor', projectId };
+        openEditor: (projectId: string, options?: { showOnboarding?: boolean }) => {
+          const nextRoute: RouteState = {
+            name: 'editor',
+            projectId,
+            showOnboarding: options?.showOnboarding,
+          };
           navigate(nextRoute);
         },
         openBake: (projectId: string, handoff?: TextureBakeHandoff) => {
@@ -307,11 +310,19 @@ export function App() {
     void refreshAuth().catch(() => setAnonymous());
     // A status check can associate an existing authenticated browser session
     // with its random app IDs. It is non-blocking and never reads hardware data.
-    void getIdentityStatus().catch(() => undefined);
+    void import('./services/identityApiClient')
+      .then(({ getIdentityStatus }) => getIdentityStatus())
+      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => initializeTelemetry(), []);
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void import('./services/telemetryClient').then(({ initializeTelemetry }) => {
+      dispose = initializeTelemetry();
+    });
+    return () => dispose?.();
+  }, []);
 
   useEffect(() => {
     const refresh = () => void refreshLocalSettings().catch(() => undefined);
@@ -357,6 +368,7 @@ export function App() {
                 onOpenBake={(handoff) => navigation.openBake(textureProjectId, handoff)}
                 autoOpenBake={route.name === 'editor' ? route.continueToBake : false}
                 pendingBakeHandoff={route.name === 'editor' ? route.bakeHandoff : undefined}
+                showOnboarding={route.name === 'editor' ? route.showOnboarding : false}
                 isActive={textureWorkspaceActive}
               />
             </Suspense>
@@ -403,7 +415,10 @@ export function App() {
   }
 
   if (route.name === 'projects') {
-    const openProject = route.module === 'texture' ? navigation.openEditor : navigation.openBake;
+    const openProject = (projectId: string, options?: { showOnboarding?: boolean }) => {
+      if (route.module === 'texture') navigation.openEditor(projectId, options);
+      else navigation.openBake(projectId);
+    };
     const page = (
       <Suspense fallback={<AppRouteFallback />}>
         <ProjectsPage

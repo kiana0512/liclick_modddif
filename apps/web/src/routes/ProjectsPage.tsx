@@ -34,7 +34,7 @@ import {
 type ProjectsPageProps = {
   module: 'texture' | 'bake';
   onBack: () => void;
-  onOpenProject: (projectId: string) => void;
+  onOpenProject: (projectId: string, options?: { showOnboarding?: boolean }) => void;
   onLogout: () => void;
 };
 
@@ -461,7 +461,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
         folderId: typeof activeFolderId === 'string' ? activeFolderId : undefined,
       });
       replaceCurrentProject(result.project);
-      onOpenProject(result.project.id);
+      onOpenProject(result.project.id, { showOnboarding: module === 'texture' });
     });
   }
 

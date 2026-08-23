@@ -10,7 +10,6 @@ import type { Project } from '@/types/project';
 import { getProjectApiBase } from '@/platform/projectApiBase';
 import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { createId } from '@/utils/id';
-import { sha256Hex } from '@/utils/sha256';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getProjectApiBase();
@@ -430,6 +429,10 @@ type SavedAssetResponse = {
 };
 
 async function blobSha256(blob: Blob) {
+  // Asset hashing is only needed after a user selects a file. Keeping the
+  // fallback implementation out of the application shell avoids charging
+  // every visitor for the insecure-HTTP compatibility path at startup.
+  const { sha256Hex } = await import('@/utils/sha256');
   return sha256Hex(blob);
 }
 
