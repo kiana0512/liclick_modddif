@@ -363,6 +363,30 @@ export async function saveProject(project: Project) {
   });
 }
 
+/**
+ * Apply a project mutation to the newest server document and retry revision
+ * conflicts. Long-running cloud tasks and direct asset uploads can advance a
+ * project while a workflow page is still open, so handing an old React/store
+ * snapshot straight to saveProject would correctly be rejected by the server.
+ */
+export async function updateLatestProject(
+  projectId: string,
+  update: (latest: Project) => Project,
+  maxAttempts = 3,
+) {
+  let lastConflict: WorkspaceApiError | undefined;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const latest = (await loadProject(projectId)).project;
+    try {
+      return await saveProject(update(latest));
+    } catch (error) {
+      if (!(error instanceof WorkspaceApiError) || error.status !== 409) throw error;
+      lastConflict = error;
+    }
+  }
+  throw lastConflict ?? new WorkspaceApiError(409, '项目正在被其他操作更新，请稍后重试。');
+}
+
 export async function listFolders() {
   const result = await requestJson<{ folders?: unknown }>('/api/folders');
   return { folders: Array.isArray(result.folders) ? (result.folders as WorkspaceFolder[]) : [] };

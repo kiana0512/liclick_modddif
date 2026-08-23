@@ -88,7 +88,7 @@ import {
   createProject,
   readWorkspaceAssetBlob,
   saveBlobAsset,
-  saveProject as saveWorkspaceProject,
+  updateLatestProject,
 } from '@/services/workspaceApiClient';
 import { bakeSourceUnitScaleFactor } from '@/features/bake/bakeModelAlignment';
 import { useProjectStore } from '@/stores/projectStore';
@@ -2849,7 +2849,66 @@ export function AssetProcessingPage({
       };
     }
 
-    const savedProject = await saveWorkspaceProject(nextProject);
+    const originalRevisionIds = new Set(
+      targetProject.pipeline?.revisions.map((revision) => revision.id) ?? [],
+    );
+    const revisionsToPublish =
+      nextProject.pipeline?.revisions.filter(
+        (revision) => !originalRevisionIds.has(revision.id),
+      ) ?? [];
+    const publishedBakeSet =
+      mode === 'uv' && objectId
+        ? nextProject.bakeWorkspace?.bakeSets[objectId]
+        : undefined;
+    const savedProject = await updateLatestProject(targetProject.id, (latestProject) => {
+      let rebasedPipeline = latestProject.pipeline;
+      for (const revision of revisionsToPublish) {
+        if (rebasedPipeline?.revisions.some((candidate) => candidate.id === revision.id)) {
+          continue;
+        }
+        if (rebasedPipeline) {
+          rebasedPipeline = markDownstreamPipelineRevisionsStale(
+            rebasedPipeline,
+            revision.stage,
+          );
+        }
+        rebasedPipeline = publishPipelineRevision(rebasedPipeline, revision);
+      }
+
+      const latestManifest = latestProject.assetManifest ?? {
+        models: [],
+        references: [],
+        generations: [],
+        captures: [],
+        layers: [],
+        baked: [],
+      };
+      const latestWorkspace = latestProject.bakeWorkspace;
+      return {
+        ...latestProject,
+        pipeline: rebasedPipeline,
+        assetManifest: {
+          ...latestManifest,
+          models: Array.from(new Set([...latestManifest.models, ...modelAssetPaths])),
+        },
+        ...(publishedBakeSet && objectId
+          ? {
+              bakeWorkspace: {
+                version: 1 as const,
+                ...latestWorkspace,
+                activeStage: 'alignment' as const,
+                selectedObjectId: objectId,
+                bakeSets: {
+                  ...(latestWorkspace?.bakeSets ?? {}),
+                  [objectId]: publishedBakeSet,
+                },
+              },
+            }
+          : {}),
+        dirty: true,
+        updatedAt: timestamp,
+      };
+    });
     replaceCurrentProject(savedProject.project);
     const handoff =
       mode === 'uv' && objectId
