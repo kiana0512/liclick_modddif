@@ -16,15 +16,16 @@
 | systemd 单元 | `/etc/systemd/system/li3d-modernization.service` |
 | Node 可执行文件 | `/data/ai_art_comfyui/envs/comfyui-cu130/bin/node` |
 | 应用日志 | `/home/aigc/li3d-modernization-a100/runtime/systemd-server.log` |
-| 当前基础发布 | `modernization-dcd0eb9` / `0.1.13` |
+| 当前候选发布 | `modernization-4d8a8bd` / `4d8a8bd6c19c2f9620e624c6eec826f64709d5c8` / `0.1.13` |
 | 监听 | `0.0.0.0:44770` |
 
-2026-08-23 03:54 UTC 实机采集结果：
+2026-08-23 04:08 UTC 完成候选制品切换后的实机采集结果：
 
 - `ActiveState=active`、`SubState=running`、`UnitFileState=enabled`；
-- 主进程 PID `392868`，从 2026-08-22 12:16:52 UTC 持续运行；
-- systemd 重启计数为 1，该次重启是验收时主动发送 `SIGKILL`，PID 从 `392844` 切换到 `392868`；
-- `GET /li3d/api/ready` 返回 `200` 和 `modernization-dcd0eb9`；
+- 新主进程 PID `396740`，服务为 `active/running/enabled`；
+- 旧候选曾做主动 `SIGKILL` 自动恢复验证；本次通过受控 `SIGTERM` 停止、制品切换和 systemd 启动完成升级，日志显示 0 个活动请求被排空并正常退出；
+- `GET /li3d/api/ready` 返回 `200` 和 `modernization-4d8a8bd`，`GET /li3d/api/release` 返回完整 Git SHA；
+- 外部首页、health、release 均为 `200`，旧 `/li3d/api/comfyui/status` 为预期的 `404`；真实员工会话恢复为“任田”，浏览器控制台无本次发布产生的 warning/error；
 - 根分区约 25 TB，已使用约 22 TB，利用率 **95%**，仅余约 1.4 TB。这是当前最高优先级运维风险，必须设置容量告警并由服务器管理员清理/扩容；不得由 Li3D 发布脚本擅自删除共享数据。
 
 ## 3. systemd 生命周期
