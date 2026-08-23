@@ -16,15 +16,15 @@
 | systemd 单元 | `/etc/systemd/system/li3d-modernization.service` |
 | Node 可执行文件 | `/data/ai_art_comfyui/envs/comfyui-cu130/bin/node` |
 | 应用日志 | `/home/aigc/li3d-modernization-a100/runtime/systemd-server.log` |
-| 当前候选发布 | `modernization-4d8a8bd` / `4d8a8bd6c19c2f9620e624c6eec826f64709d5c8` / `0.1.13` |
+| 当前候选发布 | `modernization-cf76e22` / `cf76e224a28f1b0f7f185139cdf306f397563534` / `0.1.13` |
 | 监听 | `0.0.0.0:44770` |
 
-2026-08-23 04:08 UTC 完成候选制品切换后的实机采集结果：
+2026-08-23 05:12 UTC 完成候选制品切换后的实机采集结果：
 
 - `ActiveState=active`、`SubState=running`、`UnitFileState=enabled`；
-- 新主进程 PID `396740`，服务为 `active/running/enabled`；
+- 服务由 systemd 重新拉起并保持 `active/running/enabled`；主进程 PID 随发布和自动恢复变化，不作为发布身份，发布身份以 `/api/release` 为准；
 - 旧候选曾做主动 `SIGKILL` 自动恢复验证；本次通过受控 `SIGTERM` 停止、制品切换和 systemd 启动完成升级，日志显示 0 个活动请求被排空并正常退出；
-- `GET /li3d/api/ready` 返回 `200` 和 `modernization-4d8a8bd`，`GET /li3d/api/release` 返回完整 Git SHA；
+- `GET /li3d/api/ready` 返回 `200` 和 `modernization-cf76e22`，`GET /li3d/api/release` 返回完整 Git SHA `cf76e224a28f1b0f7f185139cdf306f397563534`；
 - 外部首页、health、release 均为 `200`，旧 `/li3d/api/comfyui/status` 为预期的 `404`；真实员工会话恢复为“任田”，浏览器控制台无本次发布产生的 warning/error；
 - 根分区约 25 TB，已使用约 22 TB，利用率 **95%**，仅余约 1.4 TB。这是当前最高优先级运维风险，必须设置容量告警并由服务器管理员清理/扩容；不得由 Li3D 发布脚本擅自删除共享数据。
 
@@ -207,3 +207,32 @@ UV、拓扑等长任务完成时，服务器项目 revision 可能已经被资�
 对应回归门禁覆盖最新 revision 读取、409 专项重试、pipeline 增量重放、资产清单并集和 Bake Set 定点合并。它验证的是“历史任务 → 最新项目 → 服务器资源 → 烘焙工作区 → 路由”的完整交接，不是单纯解除按钮禁用。
 
 旧 UV 历史记录只保存可交付结果，没有额外保存原输入下载地址。由于自动展 UV 不改变模型几何，只增加或更新 UV，网页会把经过服务器校验的 UV 结果同时作为烘焙高模快照和带 UV 低模写入新项目，使旧历史也能形成完整的 2/2 烘焙素材。该兼容策略严格限定为 UV；拓扑任务会改变几何，禁止把拓扑结果伪装成原高模。
+
+## 11. UV 历史传入烘焙实机验收
+
+2026-08-23 在 A100 地址、真实员工会话“任田”下复验旧历史记录 `CC_Base_Body_Head.fbx`：
+
+1. 展开账号级“展 UV 历史”，点击“传入烘焙”；
+2. 网页重新读取服务器项目并完成 revision/时间戳冲突保护保存；
+3. 自动进入新项目烘焙页，高模为 `CC_Base_Body_Head.fbx`，带 UV 低模为 `CC_Base_Body_Head_PBR_UV.fbx`；
+4. 烘焙素材显示 `2/2`，UV0 与模型匹配检查通过；
+5. 页面识别真实 Substance 服务 `asset-worker-3090-b-windows`，CA/TLS 校验通过，1K/2K/4K 入口可见；
+6. 浏览器 warning/error 日志均为 0。
+
+“高低模未对齐”是进入烘焙后的下一步模型空间检查结果，不是历史交接失败；在用户主动执行对齐前不得伪造成已对齐或已完成烘焙。
+
+本轮相关网页回归为 33/33，通过项覆盖历史交接、409 重放、时间戳单调递增、旧 UV 素材补全、Base Color/Curvature/4K 烘焙入口和账号级历史。服务端回归仍为 8/8，contracts 为 9/9；发布制品边界扫描确认不含本地组件、安装器或 loopback bridge。
+
+## 12. API 与页面功能对齐规则
+
+“界面可点”不等于“功能对齐”。每项原版功能必须同时满足以下五层契约：
+
+| 层级 | 必须对齐的内容 | 失败时的处理 |
+| --- | --- | --- |
+| 页面 | 入口、状态、禁用条件、提示、历史恢复、路由 | 明确报错，不显示假成功 |
+| Web 客户端 | 请求字段、revision、幂等键、超时、重试、产物下载 | 只重试契约允许的错误 |
+| Li3D API | 登录态、账号所有权、项目版本、资产签名、任务归属 | 未登录/越权/旧版本必须拒绝 |
+| 独立服务 | Asset UV/拓扑、Substance、Liclick AIGC、ModelView 的 CA、任务和产物契约 | 服务不可用时保留任务并支持历史恢复 |
+| 持久化 | PostgreSQL 项目与历史、对象存储原始文件和产物 | 刷新、重登、切换用户后仍可恢复且账号隔离 |
+
+接口不能因迁移而悄悄改成模拟结果。正式 UV/拓扑继续走 Asset 服务，正式烘焙走 Substance，生图走 Liclick，局部重绘走 ModelView；Li3D 负责认证、所有权、项目 revision、资产和任务编排。旧 `/api/comfyui/status` 以及 `/api/comfyui/*` 已退役并必须返回 404，不能再作为首页在线状态或功能门禁。
