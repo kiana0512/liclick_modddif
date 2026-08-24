@@ -7,6 +7,11 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const artifactRoot = path.resolve(repoRoot, process.argv[2] ?? 'apps/web/dist');
 const forbiddenExtensions = new Set(['.bat', '.bin', '.cmd', '.dll', '.exe', '.msi', '.ps1']);
+const allowedToolboxAssets = new Map([
+  ['toolbox/manual_max.html', 1_000],
+  ['toolbox/modeling-toolbox-icon.png', 1_000],
+  ['toolbox/modeling-toolbox-v2.0.1.exe', 1_000_000],
+]);
 const textExtensions = new Set(['.css', '.html', '.js', '.json', '.map', '.mjs', '.txt']);
 const forbiddenText = [
   '127.0.0.1:4618',
@@ -16,7 +21,6 @@ const forbiddenText = [
   '/api/local-liclick-account',
   '/api/auth/local-proof',
   'x-li3d-identity-proof',
-  'modeling-toolbox-v2.0.1.exe',
 ];
 
 if (!fs.existsSync(path.join(artifactRoot, 'index.html'))) {
@@ -38,11 +42,11 @@ for (const file of files) {
   const lowerRelative = relative.toLowerCase();
   const stat = fs.statSync(file);
   totalBytes += stat.size;
+  const isAllowedToolboxAsset = allowedToolboxAssets.has(lowerRelative);
   if (
     lowerRelative.includes('local-component') ||
-    (lowerRelative.startsWith('toolbox/') &&
-      lowerRelative !== 'toolbox/modeling-toolbox-icon.png') ||
-    forbiddenExtensions.has(path.extname(lowerRelative))
+    (lowerRelative.startsWith('toolbox/') && !isAllowedToolboxAsset) ||
+    (forbiddenExtensions.has(path.extname(lowerRelative)) && !isAllowedToolboxAsset)
   ) {
     violations.push(`${relative}: forbidden host-extension artifact`);
   }
@@ -53,12 +57,23 @@ for (const file of files) {
   }
 }
 
+for (const [relative, minimumBytes] of allowedToolboxAssets) {
+  const file = path.join(artifactRoot, ...relative.split('/'));
+  if (!fs.existsSync(file)) {
+    violations.push(`${relative}: missing optional toolbox asset`);
+    continue;
+  }
+  if (fs.statSync(file).size < minimumBytes) {
+    violations.push(`${relative}: optional toolbox asset is unexpectedly small`);
+  }
+}
+
 if (violations.length > 0) {
   console.error('Cloud artifact verification failed:');
   for (const violation of violations) console.error(`- ${violation}`);
   process.exitCode = 1;
 } else {
   console.log(
-    `Cloud artifact verified: ${files.length} files, ${(totalBytes / 1024 / 1024).toFixed(2)} MiB, no host component or loopback bridge.`,
+    `Cloud artifact verified: ${files.length} files, ${(totalBytes / 1024 / 1024).toFixed(2)} MiB, no Li3D host component or loopback bridge; optional toolbox assets are present.`,
   );
 }

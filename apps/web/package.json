@@ -18,6 +18,7 @@
     "test:engine-session": "node scripts/test-engine-session.mjs",
     "test:engine-session-registry": "node scripts/test-engine-session-registry.mjs",
     "test:fbx-legacy-repair": "node scripts/test-fbx-legacy-repair.mjs",
+    "test:feishu-login-popup": "node scripts/test-feishu-login-popup.mjs",
     "test:frame-budget-governor": "node scripts/test-frame-budget-governor.mjs",
     "test:heavy-task-scheduler": "node scripts/test-heavy-task-scheduler.mjs",
     "test:home-service-boundaries": "node scripts/test-home-service-boundaries.mjs",

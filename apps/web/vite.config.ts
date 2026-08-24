@@ -22,6 +22,12 @@ const cloudForbiddenPublicExtensions = new Set([
   '.ps1',
 ]);
 
+const cloudAllowedToolboxAssets = new Set([
+  'toolbox/manual_max.html',
+  'toolbox/modeling-toolbox-icon.png',
+  'toolbox/modeling-toolbox-v2.0.1.exe',
+]);
+
 function cloudPublicAssetsPlugin(): Plugin {
   const publicRoot = path.resolve(rootDir, 'public');
   return {
@@ -37,11 +43,12 @@ function cloudPublicAssetsPlugin(): Plugin {
           }
           const relative = path.relative(publicRoot, candidate).replaceAll('\\', '/');
           const lowerRelative = relative.toLowerCase();
+          const isAllowedToolboxAsset = cloudAllowedToolboxAssets.has(lowerRelative);
           if (
             lowerRelative.startsWith('downloads/local-component/') ||
-            (lowerRelative.startsWith('toolbox/') &&
-              lowerRelative !== 'toolbox/modeling-toolbox-icon.png') ||
-            cloudForbiddenPublicExtensions.has(path.extname(lowerRelative))
+            (lowerRelative.startsWith('toolbox/') && !isAllowedToolboxAsset) ||
+            (cloudForbiddenPublicExtensions.has(path.extname(lowerRelative)) &&
+              !isAllowedToolboxAsset)
           ) {
             continue;
           }

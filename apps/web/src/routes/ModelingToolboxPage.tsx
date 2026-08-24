@@ -1,11 +1,13 @@
 import {
   ArrowLeft,
+  BookOpen,
   Box,
   Boxes,
   Check,
+  Download,
   ExternalLink,
   Layers3,
-  MonitorCheck,
+  MonitorDown,
   Network,
   Palette,
   ScanLine,
@@ -36,7 +38,7 @@ const categories: ToolCategory[] = [
   {
     eyebrow: '3DS MAX',
     title: 'Max 工具箱',
-    description: '原版工具清单，PS / DCC 集成暂缓。',
+    description: '安装到 3ds Max 顶部“我的工具”工具栏。',
     accent: 'orange',
     tools: [
       { name: '模型批量整理', description: '批量整理、检查与导出模型', icon: Boxes },
@@ -49,7 +51,7 @@ const categories: ToolCategory[] = [
   {
     eyebrow: 'BLENDER',
     title: 'Blender 工具箱',
-    description: '原版工具清单，PS / DCC 集成暂缓。',
+    description: '安装到 Blender 插件目录，按需启用。',
     accent: 'violet',
     tools: [
       { name: 'Blender 批量图生 3D', description: '批量生成并自动导入 Blender', icon: Sparkles },
@@ -59,7 +61,7 @@ const categories: ToolCategory[] = [
   {
     eyebrow: 'STANDALONE',
     title: '独立工具',
-    description: '原版独立工具清单，迁移暂缓。',
+    description: '无需进入 DCC，安装后从桌面直接使用。',
     accent: 'cyan',
     tools: [
       { name: '贴图通道工具', description: '贴图通道混合、打包与分离', icon: Palette },
@@ -173,20 +175,31 @@ export function ModelingToolboxPage({
                   建模工具箱
                 </h1>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-                  面向 3ds Max 与 Blender 的生产工具集合。Cloud 版无需本地组件， PS / DCC
-                  集成已明确暂缓。
+                  面向 3ds Max 与 Blender 的生产工具集合。一个安装器集中管理 9
+                  项工具，并支持后续自动更新。
                 </p>
               </div>
             </div>
 
             <div className="relative mt-8 flex flex-wrap gap-3">
-              <span className="inline-flex h-11 items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500/80 to-violet-500/80 px-5 font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.2)]">
-                <MonitorCheck className="h-4 w-4" />
-                Cloud 版无需安装
-              </span>
-              <span className="inline-flex h-11 items-center rounded-lg border border-white/12 bg-white/[0.045] px-5 text-sm font-semibold text-white/54">
-                PS / DCC · 已暂缓
-              </span>
+              <a
+                href={`${toolboxRoot}modeling-toolbox-v2.0.1.exe`}
+                download="建模工具箱-v2.0.1.exe"
+                className="inline-flex h-11 items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-violet-500 px-5 text-sm font-semibold text-white shadow-[0_12px_32px_rgba(72,112,220,0.28)] transition hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0"
+              >
+                <Download className="h-4 w-4" />
+                下载 Windows 安装器
+              </a>
+              <a
+                href={`${toolboxRoot}manual_max.html`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-11 items-center gap-2 rounded-lg border border-white/12 bg-white/[0.045] px-5 text-sm font-semibold text-white/72 transition hover:border-white/22 hover:bg-white/[0.085] hover:text-white"
+              >
+                <BookOpen className="h-4 w-4" />
+                查看使用说明
+                <ExternalLink className="h-3.5 w-3.5 text-white/38" />
+              </a>
             </div>
           </div>
 
@@ -197,8 +210,8 @@ export function ModelingToolboxPage({
             <div className="mt-6 space-y-4">
               {[
                 ['版本', '2.0.1'],
-                ['平台', '现代浏览器'],
-                ['本地组件', '不需要'],
+                ['平台', 'Windows'],
+                ['安装包', '11.0 MB'],
                 ['包含工具', '9 项'],
               ].map(([label, value]) => (
                 <div
@@ -211,10 +224,9 @@ export function ModelingToolboxPage({
               ))}
             </div>
             <div className="mt-6 flex items-start gap-3 rounded-xl border border-emerald-300/12 bg-emerald-400/[0.055] p-4">
-              <MonitorCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200/72" />
+              <MonitorDown className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200/72" />
               <p className="text-xs leading-5 text-emerald-50/52">
-                Cloud 版不提供安装器或本机桥接入口。9
-                项原工具按迁移状态如实登记，不展示不可用的假按钮。
+                安装器与说明书已上传到 Li3D，可直接从本页获取。
               </p>
             </div>
           </aside>

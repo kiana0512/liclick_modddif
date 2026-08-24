@@ -96,7 +96,7 @@ try {
   assert.equal(providerPayload.feishuLoginProvider, 'not-configured');
   assert.deepEqual(providerPayload.missingConfigKeys, [
     'FEISHU_OAUTH_CLIENT_ID or IDAAS_OAUTH_CLIENT_ID',
-    'FEISHU_OAUTH_CLIENT_SECRET or IDAAS_OAUTH_CLIENT_SECRET',
+    'FEISHU_OAUTH_CLIENT_SECRET or IDAAS_OAUTH_CLIENT_SECRET (unless FEISHU_OAUTH_PUBLIC_CLIENT=true)',
   ]);
 
   const unavailableLogin = await fetch(`${baseUrl}/api/auth/feishu/start`);
@@ -140,13 +140,18 @@ try {
   );
   assert.equal(retiredInstaller.status, 404);
 
-  const retiredToolboxInstaller = await fetch(
+  const optionalToolboxInstaller = await fetch(
     `${baseUrl}/toolbox/modeling-toolbox-v2.0.1.exe`,
   );
-  assert.equal(retiredToolboxInstaller.status, 404);
+  assert.equal(optionalToolboxInstaller.status, 200);
+  assert.equal(Number(optionalToolboxInstaller.headers.get('content-length')) > 1_000_000, true);
+
+  const toolboxManual = await fetch(`${baseUrl}/toolbox/manual_max.html`);
+  assert.equal(toolboxManual.status, 200);
+  assert.match(toolboxManual.headers.get('content-type') ?? '', /^text\/html/);
 
   console.log(
-    'Integrated Web smoke passed: SPA, auth boundaries, JSON API boundary, and no host install/telemetry surface.',
+    'Integrated Web smoke passed: SPA, auth boundaries, JSON API boundary, optional toolbox delivery, and no Li3D host install/telemetry surface.',
   );
 } catch (error) {
   if (output.trim()) console.error(output.trim());

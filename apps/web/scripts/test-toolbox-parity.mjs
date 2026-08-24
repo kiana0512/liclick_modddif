@@ -23,11 +23,14 @@ for (const tool of originalTools) {
   assert.match(source, new RegExp(`name: '${tool.replaceAll('/', '\\/')}'`), `工具箱缺少：${tool}`);
 }
 assert.match(source, /5 Max · 2 Blender · 2 独立工具/);
-assert.match(source, /PS \/ DCC\s+集成已明确暂缓/);
-assert.match(source, /Cloud 版不提供安装器或本机桥接入口/);
-assert.doesNotMatch(
-  source,
-  /modeling-toolbox-v2\.0\.1\.exe|manual_max\.html|下载 Windows 安装器|查看使用说明/,
-);
+assert.match(source, /modeling-toolbox-v2\.0\.1\.exe/);
+assert.match(source, /download="建模工具箱-v2\.0\.1\.exe"/);
+assert.match(source, /manual_max\.html/);
+assert.match(source, /下载 Windows 安装器/);
+assert.match(source, /查看使用说明/);
+assert.match(source, /\['平台', 'Windows'\]/);
+assert.match(source, /\['安装包', '11\.0 MB'\]/);
+assert.match(source, /安装器与说明书已上传到 Li3D，可直接从本页获取/);
+assert.doesNotMatch(source, /LIclick-3D-Texture-Local-Component-Setup\.exe/);
 
-console.log('原版建模工具箱 9 项清单、暂缓边界与零安装门禁通过。');
+console.log('原版建模工具箱下载入口、9 项清单与零组件边界门禁通过。');
