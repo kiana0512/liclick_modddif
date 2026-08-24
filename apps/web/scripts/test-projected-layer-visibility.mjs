@@ -29,7 +29,7 @@ const gpuUvBakeRendererSource = readFileSync(
   path.join(root, 'src/engine/bake/gpuUvBakeRenderer.ts'),
   'utf8',
 );
-const projectionMaskedImageSource = readFileSync(
+const maskedProjectedImageSource = readFileSync(
   path.join(root, 'src/engine/projection/createMaskedProjectedImage.ts'),
   'utf8',
 );
@@ -80,23 +80,28 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /const sourceResultUrl = generation\.resultUrl\.startsWith\('http'\)[\s\S]*?persistGeneratedImage\('layers', sourceResultUrl, `\$\{layerId\}\.png`\)[\s\S]*?maskUrl: undefined[\s\S]*?depthUrl/,
-  'Ordinary generated layers must preserve the returned image alpha and bind depth without a capture mask.',
+  /const projectedResultUrl = readableResultUrl;[\s\S]*?persistGeneratedImage\('layers', projectedResultUrl,[\s\S]*?persistedGenerationCapture\.maskUrl[\s\S]*?alphaMode: 'geometry-mask-separated'/,
+  'Generated image pixels and geometry coverage must be persisted separately so projection alpha is never clipped twice.',
 );
 assert.doesNotMatch(
   generatePanelSource,
   /createMaskedProjectedImage/,
   'Ordinary generation staging must not bake the capture silhouette into source alpha.',
 );
-assert.doesNotMatch(
-  `${projectionMaskedImageSource}\n${maskedProjectedImageWorkerSource}`,
-  /export (?:async )?function createMaskedProjectedImage|['"]mask-only['"]/,
-  'The projection image helper must expose only the dedicated repaint-mask flattening path.',
+assert.match(
+  maskedProjectedImageSource,
+  /createMaskedProjectedImage[\s\S]*?processMaskedProjectedImageInWorker\(sourceImage, projectionMask, 'mask-only'\)/,
+  'The explicit repaint masked-image utility must preserve RGB while applying the authored projection mask exactly once.',
 );
 assert.match(
   layerStoreSource,
-  /addProjectedLayerFromGeneration:[\s\S]*?imageUrl: generation\.resultUrl[\s\S]*?maskUrl: undefined[\s\S]*?depthUrl: capture\?\.depthUrl/,
-  'A newly created ordinary projected layer must use source alpha plus capture depth only.',
+  /addProjectedLayerFromGeneration:[\s\S]*?imageUrl: generation\.resultUrl[\s\S]*?maskUrl: undefined[\s\S]*?depthUrl: capture\?\.depthUrl[\s\S]*?generation\.metadata\.alphaMode === 'geometry-mask-separated'[\s\S]*?'source-alpha-depth'/,
+  'A newly created ordinary projected layer must use source alpha plus capture depth while retaining separated coverage metadata.',
+);
+assert.match(
+  sceneRootSource,
+  /function shouldUseProjectionCaptureMask\([\s\S]*?localRepaint \|\| layer\.projectionVisibilityPolicy === 'surface-locked-v1'[\s\S]*?layer\.projectionCoverageMode === 'source-alpha-depth' \|\| Boolean\(layer\.generationId\)/,
+  'Resident generated projections must not reapply their persisted capture mask, while local repaint keeps authored mask coverage.',
 );
 assert.doesNotMatch(
   maskedProjectedImageWorkerSource,
@@ -248,20 +253,19 @@ assert.match(
   /erasesLocalRepaint && paintTool === 'eraser'[\s\S]*?paintToolSettings\.eraserFeather/,
   'The dedicated eraser feather must also control completed local-repaint masks.',
 );
-assert.match(
-  readFileSync(path.join(root, 'src/components/editor/BottomToolDock.tsx'), 'utf8'),
-  /paintToolSettings\.eraserFeather[\s\S]*?setPaintToolSettings\(\{ eraserFeather:/,
-  'The eraser parameter popover must expose a feather control.',
+const bottomToolDockSource = readFileSync(
+  path.join(root, 'src/components/editor/BottomToolDock.tsx'),
+  'utf8',
+);
+assert.doesNotMatch(
+  bottomToolDockSource,
+  /eraserFeather|PROJECTED_ERASER_TOOL_ENABLED|<Eraser/,
+  'The A100 integration must not expose or ship the projected-layer eraser entry.',
 );
 assert.match(
   viewportCanvasInteractionSource,
   /previewOwnsOverlay &&[\s\S]*?sceneState\.localRepaintGenerationPresentationActive[\s\S]*?localRepaintGenerationPresentationActive,[\s\S]*?paintTool/,
   'A running local generation must keep the previous renderer-owned repaint visible while editing is locked.',
-);
-assert.match(
-  readFileSync(path.join(root, 'src/components/editor/BottomToolDock.tsx'), 'utf8'),
-  /const PROJECTED_ERASER_TOOL_ENABLED = false;[\s\S]*?\{PROJECTED_ERASER_TOOL_ENABLED && \(/,
-  'The projected-layer eraser implementation must remain hidden until rollout is enabled.',
 );
 assert.match(
   generatePanelSource,
@@ -329,12 +333,12 @@ assert.match(
 );
 assert.match(
   editorPageSource,
-  /const editorTaskRunning = localImageGenerationRunning \|\| contentAwareRepairRunning;[\s\S]*?const snapshotPreparationLocked = generatePanelTaskState\.snapshotPreparing;[\s\S]*?const modelMutationLocked =[\s\S]*?projectGenerationRunning[\s\S]*?const editorToolsLocked = editorTaskRunning \|\| snapshotPreparationLocked;/,
-  'The editor must retain exclusive locks only for local generation/content repair and use narrower multiview guards.',
+  /const generationConflictLocked =[\s\S]*?localImageGenerationRunning \|\| projectGenerationRunning \|\| generatePanelTaskState\.running;[\s\S]*?const editorTaskRunning = localImageGenerationRunning \|\| contentAwareRepairRunning;[\s\S]*?const snapshotPreparationLocked = generatePanelTaskState\.snapshotPreparing;[\s\S]*?const modelMutationLocked = editorTaskRunning \|\| generationConflictLocked;[\s\S]*?const editorToolsLocked = editorTaskRunning \|\| snapshotPreparationLocked;/,
+  'The editor must prevent conflicting generation/model mutations while keeping ordinary editor tools locked only for exclusive local work or snapshot preparation.',
 );
 assert.match(
   generatePanelSource,
-  /failUnsubmittedGeneration[\s\S]*?submissionTimedOut: true[\s\S]*?generationAbortControllersRef\.current\.get\(generation\.id\)\?\.abort\(\)[\s\S]*?setSubmissionActive\([\s\S]*?onLocalImageGenerationSettled\?\.\(false\)/,
+  /failUnsubmittedGeneration[\s\S]*?submissionTimedOut: true[\s\S]*?generationAbortControllersRef\.current\.get\(generation\.id\)\?\.abort\(\)[\s\S]*?setSubmissionActive\([\s\S]*?onLocalImageGenerationSettled\?\.\(\{ succeeded: false \}\)/,
   'A generation that never reaches the remote service must abort its request and release every local task lock.',
 );
 assert.match(
@@ -629,8 +633,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /if \(!shouldRender && hasPersistedLayer && previewOwnsOverlay\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)[\s\S]*?else if \(shouldRender && persistedLayer && !previewOwnsOverlay\)/,
-  'Eye toggles must transfer repaint ownership according to actual GPU submission state.',
+  /if \(!shouldRender && hasPersistedLayer && previewOwnsOverlay && !orderedStackOwnsPreview\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)[\s\S]*?else if \(\(shouldRender \|\| orderedStackOwnsPreview\) && persistedLayer && !previewOwnsOverlay\)/,
+  'Eye toggles and ordered-stack presentation must transfer repaint ownership according to the actual GPU submission path.',
 );
 assert.match(
   viewportCanvasSource,
@@ -1130,8 +1134,13 @@ try {
   );
   assert.match(
     material.fragmentShader,
-    /float overlayAlpha = clamp\(coverage \* mix\(0\.75, 1\.0, qualityFade\), 0\.0, 1\.0\)/,
-    'Live overlays must use the same alpha formula as merged UV overlays.',
+    /float computeOrderedOverlayAlpha\(float coverage, float quality, float overlayMode\)[\s\S]*?float featheredAlpha = clamp\(coverage \* mix\(0\.75, 1\.0, qualityFade\), 0\.0, 1\.0\)[\s\S]*?return mix\(featheredAlpha, priorityAlpha, step\(1\.5, overlayMode\)\)/,
+    'Live overlays must share one ordered-alpha function for feathered and priority projection modes.',
+  );
+  assert.match(
+    material.fragmentShader,
+    /float overlayAlpha = computeOrderedOverlayAlpha\([\s\S]*?layerOverlayMode/,
+    'Projected overlay composition must route through the shared ordered-alpha function.',
   );
   assert.match(
     material.fragmentShader,
