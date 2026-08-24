@@ -12,8 +12,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowDown,
-  ArrowUp,
   Copy,
   Download,
   Eraser,
@@ -366,6 +364,8 @@ type LayersPanelProps = {
   onLayerLocalRepaint?: (layer: Layer) => void;
   onMergeSelectedToUvLayer?: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer?: (layerIds: string[], blankUvLayerId: string) => void;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
 };
 
 export function LayersPanel({
@@ -375,6 +375,8 @@ export function LayersPanel({
   onLayerLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
+  mutationLocked = false,
+  onMutationLocked,
 }: LayersPanelProps = {}) {
   const t = useT();
   const layers = useInteractionDeferredLayers();
@@ -441,6 +443,16 @@ export function LayersPanel({
       return `${names[0]} 等 ${names.length} 个图层`;
     },
     [layerById],
+  );
+
+  const blockMutation = useCallback(
+    (action: string) => {
+      if (!mutationLocked) return false;
+      setMenu(undefined);
+      onMutationLocked?.(action);
+      return true;
+    },
+    [mutationLocked, onMutationLocked],
   );
 
   useEffect(() => {
@@ -617,6 +629,7 @@ export function LayersPanel({
 
   const deleteSelectedLayers = useCallback(
     (layerIdsToDelete: string[]) => {
+      if (blockMutation('删除图层')) return;
       const ids = layerIdsToDelete.filter(
         (id, index) => layerIdsToDelete.indexOf(id) === index && layerIdSet.has(id),
       );
@@ -664,7 +677,7 @@ export function LayersPanel({
       setSelectedLayerIds([]);
       setLastSelectedLayerId(undefined);
     },
-    [captureHistory, deleteLayers, describeLayerSelection, layerIdSet, setLayerVisibility],
+    [blockMutation, captureHistory, deleteLayers, describeLayerSelection, layerIdSet, setLayerVisibility],
   );
 
   useEffect(() => {
@@ -859,6 +872,10 @@ export function LayersPanel({
             onDrop={(event) => {
               event.preventDefault();
               if (draggingLayerId) {
+                if (blockMutation('移动图层')) {
+                  setDraggingLayerId(undefined);
+                  return;
+                }
                 const rect = event.currentTarget.getBoundingClientRect();
                 const placement = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
                 captureHistory(`移动图层：${describeLayerSelection([draggingLayerId])}`);
@@ -891,36 +908,24 @@ export function LayersPanel({
               setActiveLayer(menu.layerId);
               setPreviewLayerId(menu.layerId);
             }}
-            onMoveUp={() => {
-              captureHistory(`上移图层：${describeLayerSelection([menu.layerId])}`);
-              moveLayer(menu.layerId, 'up');
-            }}
-            onMoveDown={() => {
-              captureHistory(`下移图层：${describeLayerSelection([menu.layerId])}`);
-              moveLayer(menu.layerId, 'down');
-            }}
             onDuplicate={() => {
+              if (blockMutation('复制图层')) return;
               captureHistory(`复制图层：${describeLayerSelection([menu.layerId])}`);
               duplicateLayer(menu.layerId);
             }}
-            onClearMask={(layer) => {
-              captureHistory(`清空图层蒙版：${layer.name}`);
-              updateLayer(layer.id, {
-                maskUrl: undefined,
-                maskSpace: undefined,
-                contentRevision: (layer.contentRevision ?? 0) + 1,
-                isBaked: false,
-                needsRebake: layer.type === 'projected',
-              });
+            onImageEdit={(layer) => {
+              if (blockMutation('编辑图层图片')) return;
+              onLayerImageEdit?.(layer);
             }}
-            onImageEdit={(layer) => onLayerImageEdit?.(layer)}
             imageEditAvailable={Boolean(onLayerImageEdit)}
-            onImageReplace={beginReplaceLayerImage}
-            onLocalRepaint={(layer) => onLayerLocalRepaint?.(layer)}
-            onMergeSelectedToUvLayer={(layerIds) => onMergeSelectedToUvLayer?.(layerIds)}
-            onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
-              onMergeIntoSelectedBlankUvLayer?.(layerIds, blankUvLayerId)
-            }
+            onMergeSelectedToUvLayer={(layerIds) => {
+              if (blockMutation('合并图层')) return;
+              onMergeSelectedToUvLayer?.(layerIds);
+            }}
+            onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) => {
+              if (blockMutation('合并图层')) return;
+              onMergeIntoSelectedBlankUvLayer?.(layerIds, blankUvLayerId);
+            }}
             onDownloadImage={(layer) => {
               void downloadImageAsset(layer.imageUrl, `liclick_layer_${layer.name || layer.id}`);
             }}
@@ -1007,6 +1012,8 @@ type LayersPanelActionsProps = {
   onMergeVisibleProjectedToUvLayer?: (layerIds: string[]) => void;
   adjustmentsOpen?: boolean;
   onToggleAdjustments?: () => void;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
 };
 
 export function LayersPanelActions({
@@ -1014,6 +1021,8 @@ export function LayersPanelActions({
   onMergeVisibleProjectedToUvLayer,
   adjustmentsOpen = false,
   onToggleAdjustments,
+  mutationLocked = false,
+  onMutationLocked,
 }: LayersPanelActionsProps = {}) {
   const t = useT();
   const layers = useInteractionDeferredLayers();
@@ -1027,7 +1036,15 @@ export function LayersPanelActions({
   const pushToast = useToastStore((state) => state.pushToast);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
+  function blockMutation(action: string) {
+    if (!mutationLocked) return false;
+    setClearConfirmOpen(false);
+    onMutationLocked?.(action);
+    return true;
+  }
+
   function handleAddLayer() {
+    if (blockMutation('新建图层')) return;
     captureHistory('创建空图层');
     addEmptyLayer();
   }
@@ -1055,6 +1072,7 @@ export function LayersPanelActions({
     .map((layer) => layer.id);
 
   function handleClearLayers() {
+    if (blockMutation('清空当前模型图层')) return;
     const latestLayers = useLayerStore.getState().layers;
     const currentLayerIds = latestLayers
       .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
@@ -1102,7 +1120,10 @@ export function LayersPanelActions({
         <LayerHeaderButton
           title="一键清空当前模型图层"
           disabled={clearableLayerIds.length === 0}
-          onClick={() => setClearConfirmOpen(true)}
+          onClick={() => {
+            if (blockMutation('清空当前模型图层')) return;
+            setClearConfirmOpen(true);
+          }}
         >
           <Trash2 className="h-4 w-4" />
         </LayerHeaderButton>
@@ -1140,7 +1161,10 @@ export function LayersPanelActions({
         <LayerHeaderButton
           title={t('mergeVisibleProjectedLayersToUvLayer')}
           disabled={visibleProjectedLayerIds.length < 1 || !onMergeVisibleProjectedToUvLayer}
-          onClick={() => onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds)}
+          onClick={() => {
+            if (blockMutation('合并图层')) return;
+            onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds);
+          }}
         >
           <Scissors className="h-4 w-4" />
         </LayerHeaderButton>
@@ -1411,14 +1435,9 @@ function LayerMenu({
   selectedLayers,
   onClose,
   onView,
-  onMoveUp,
-  onMoveDown,
   onDuplicate,
-  onClearMask,
   onImageEdit,
   imageEditAvailable,
-  onImageReplace,
-  onLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
   onDownloadImage,
@@ -1431,14 +1450,9 @@ function LayerMenu({
   selectedLayers: Layer[];
   onClose: () => void;
   onView: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
   onDuplicate: () => void;
-  onClearMask: (layer: Layer) => void;
   onImageEdit: (layer: Layer) => void;
   imageEditAvailable: boolean;
-  onImageReplace: (layer: Layer) => void;
-  onLocalRepaint: (layer: Layer) => void;
   onMergeSelectedToUvLayer: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer: (layerIds: string[], blankUvLayerId: string) => void;
   onDownloadImage: (layer: Layer) => void;
@@ -1502,47 +1516,16 @@ function LayerMenu({
           <MenuButton onClick={() => run(onView)} icon={<Eye className="h-4 w-4" />}>
             {t('view')}
           </MenuButton>
-          <MenuButton onClick={() => run(onMoveUp)} icon={<ArrowUp className="h-4 w-4" />}>
-            {t('moveLayerUp')}
-          </MenuButton>
-          <MenuButton onClick={() => run(onMoveDown)} icon={<ArrowDown className="h-4 w-4" />}>
-            {t('moveLayerDown')}
-          </MenuButton>
-          {layer.maskUrl ? (
-            <MenuButton
-              onClick={() => run(() => onClearMask(layer))}
-              icon={<Eraser className="h-4 w-4" />}
-            >
-              {t('clearMask')}
-            </MenuButton>
-          ) : null}
           {(layer.type === 'projected' || layer.type === 'uv') && (
-            <>
-              {imageEditAvailable ? (
-                <MenuButton
-                  onClick={() => run(() => onImageEdit(layer))}
-                  icon={<PencilLine className="h-4 w-4" />}
-                  disabled={!layer.imageUrl}
-                >
-                  {t('imageEditLayerMenu')}
-                </MenuButton>
-              ) : null}
+            imageEditAvailable ? (
               <MenuButton
-                onClick={() => run(() => onImageReplace(layer))}
-                icon={<Upload className="h-4 w-4" />}
+                onClick={() => run(() => onImageEdit(layer))}
+                icon={<PencilLine className="h-4 w-4" />}
                 disabled={!layer.imageUrl}
               >
-                {t('replaceLayerImage')}
+                {t('imageEditLayerMenu')}
               </MenuButton>
-            </>
-          )}
-          {layer.type === 'projected' && (
-            <MenuButton
-              onClick={() => run(() => onLocalRepaint(layer))}
-              icon={<WandSparkles className="h-4 w-4" />}
-            >
-              {t('localRepaintEditLayer')}
-            </MenuButton>
+            ) : null
           )}
           <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
             {t('duplicate')}

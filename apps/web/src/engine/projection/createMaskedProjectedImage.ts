@@ -764,16 +764,29 @@ function getMaskedProjectedWorker() {
   return worker;
 }
 
-function processProjectionMaskedImageInWorker(source: ImageData, mask: ImageData) {
+function processMaskedProjectedImageInWorker(
+  source: ImageData,
+  mask?: ImageData,
+  mode: 'mask-only' | 'projection-alpha-only' = 'mask-only',
+) {
   const worker = getMaskedProjectedWorker();
   if (!worker) {
-    return Promise.resolve(applyProjectedAlphaMask(source, mask, { ignoreSourceAlpha: true }));
+    if (mode === 'projection-alpha-only') {
+      return Promise.resolve(
+        mask ? applyProjectedAlphaMask(source, mask, { ignoreSourceAlpha: true }) : source,
+      );
+    }
+    return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
   }
   const id = ++maskedProjectedRequestId;
   const sourceBuffer = source.data.buffer as ArrayBuffer;
-  const maskBuffer = mask.data.buffer as ArrayBuffer;
-  const transfer: Transferable[] = [sourceBuffer, maskBuffer];
-  const maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
+  const transfer: Transferable[] = [sourceBuffer];
+  let maskPayload: { width: number; height: number; data: ArrayBuffer } | undefined;
+  if (mask) {
+    const maskBuffer = mask.data.buffer as ArrayBuffer;
+    maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
+    transfer.push(maskBuffer);
+  }
   return new Promise<ImageData>((resolve, reject) => {
     maskedProjectedRequests.set(id, { resolve, reject });
     worker.postMessage(
@@ -781,10 +794,21 @@ function processProjectionMaskedImageInWorker(source: ImageData, mask: ImageData
         id,
         source: { width: source.width, height: source.height, data: sourceBuffer },
         mask: maskPayload,
+        mode,
       },
       transfer,
     );
   });
+}
+
+export async function createMaskedProjectedImage(imageUrl: string, projectionMaskUrl?: string) {
+  const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
+  const projectionMask = projectionMaskUrl
+    ? await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask')
+    : undefined;
+  return imageDataToPngUrl(
+    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'mask-only'),
+  );
 }
 
 /**
@@ -799,7 +823,9 @@ export async function createProjectionMaskedImage(imageUrl: string, projectionMa
     loadImageData(imageUrl, maxCutoutDimension),
     loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
   ]);
-  return imageDataToPngUrl(await processProjectionMaskedImageInWorker(sourceImage, projectionMask));
+  return imageDataToPngUrl(
+    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'projection-alpha-only'),
+  );
 }
 
 export function prewarmMaskedProjectedImageWorker() {

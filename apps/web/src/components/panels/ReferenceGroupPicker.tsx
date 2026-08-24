@@ -494,12 +494,18 @@ export function ReferenceGroupPicker({
                       : 'shadow-[0_0_0_1px_rgba(255,255,255,0.08)] hover:shadow-[0_0_0_1px_rgba(255,255,255,0.22)]'
                   }`}
                   style={checkerboardStyle()}
-                  onClick={() => selectReference(reference)}
-                  onDoubleClick={() => {
-                    setPreviewReference(reference);
-                    setOpenReferenceMenuId(undefined);
+                  onClick={() => {
+                    if (selected) {
+                      setPreviewReference(reference);
+                      return;
+                    }
+                    selectReference(reference);
                   }}
-                  title={`单击选中${role === 'multi-view' ? '多视图' : '单视图'}，双击预览`}
+                  title={
+                    selected
+                      ? `再次单击预览${role === 'multi-view' ? '多视图' : '单视图'}`
+                      : `单击选择${role === 'multi-view' ? '多视图' : '单视图'}`
+                  }
                 >
                   <img
                     src={reference.url}

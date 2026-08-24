@@ -40,6 +40,8 @@ type ReferenceImagePickerProps = {
   inputId?: string;
   selectionMode?: 'multiple' | 'single';
   filterBySelectedObject?: boolean;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
 };
 
 type MenuState = {
@@ -52,6 +54,8 @@ export function ReferenceImagePicker({
   compact = false,
   inputId,
   selectionMode = 'multiple',
+  mutationLocked = false,
+  onMutationLocked,
 }: ReferenceImagePickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
@@ -78,6 +82,13 @@ export function ReferenceImagePicker({
       ? references.find((reference) => reference.id === hoveredReferenceId)
       : undefined;
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
+
+  function blockMutation(action: string) {
+    if (!mutationLocked) return false;
+    setMenu(undefined);
+    onMutationLocked?.(action);
+    return true;
+  }
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -109,6 +120,7 @@ export function ReferenceImagePicker({
   }, []);
 
   async function importFiles(files: FileList | File[]) {
+    if (blockMutation('导入参考图')) return;
     const imageFiles = Array.isArray(files) ? files.filter((file) => file.type.startsWith('image/')) : getImageFiles(files);
     if (imageFiles.length === 0) return;
     const nextReferences: ReferenceImage[] = await Promise.all(
@@ -130,6 +142,7 @@ export function ReferenceImagePicker({
 
   function confirmPendingImport(role: ReferenceImportRole) {
     if (!pendingImport) return;
+    if (blockMutation('导入参考图')) return;
     const classifiedReferences = pendingImport.map((reference, index) => ({
       ...reference,
       isPrimary: index === 0,
@@ -239,6 +252,7 @@ export function ReferenceImagePicker({
                     title="Shift"
                     onClick={(event) => {
                       event.stopPropagation();
+                      if (blockMutation('切换参考图')) return;
                       toggleReference(reference.id, selectionMode);
                     }}
                     onMouseEnter={() => setHoveredReferenceId(reference.id)}
@@ -306,6 +320,7 @@ export function ReferenceImagePicker({
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-white/10"
               onClick={() => {
+                if (blockMutation('切换参考图')) return;
                 toggleReference(menu.referenceId, selectionMode);
                 setMenu(undefined);
               }}
@@ -339,6 +354,7 @@ export function ReferenceImagePicker({
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-white/10"
               onClick={() => {
+                if (blockMutation('复制参考图')) return;
                 duplicateReference(menu.referenceId);
                 setMenu(undefined);
               }}
@@ -361,6 +377,7 @@ export function ReferenceImagePicker({
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-red-200 hover:bg-red-500/18"
               onClick={() => {
+                if (blockMutation('删除参考图')) return;
                 deleteReference(menu.referenceId);
                 setMenu(undefined);
               }}

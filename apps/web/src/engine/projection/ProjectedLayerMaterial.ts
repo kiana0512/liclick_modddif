@@ -20,6 +20,15 @@ import {
   createClayModelMaterial,
 } from '@/engine/materials/clayModelMaterial';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import {
+  PRIORITY_PROJECTION_BOUNDARY_ALPHA_MIN,
+  PRIORITY_PROJECTION_BOUNDARY_QUALITY_END,
+  PRIORITY_PROJECTION_BOUNDARY_QUALITY_START,
+  PRIORITY_PROJECTION_CORE_COVERAGE_END,
+  PRIORITY_PROJECTION_CORE_COVERAGE_START,
+  PRIORITY_PROJECTION_CORE_QUALITY_END,
+  PRIORITY_PROJECTION_CORE_QUALITY_START,
+} from './priorityProjectionComposition';
 
 const DEFAULT_PREVIEW_COLOR = CLAY_MODEL_COLOR;
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
@@ -119,6 +128,37 @@ const COVERAGE_FEATHER_END = 0.12;
 const MIN_BLEND_COVERAGE = 0.0001;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
+const ORDERED_OVERLAY_ALPHA_GLSL = `
+  float computeOrderedOverlayAlpha(float coverage, float quality, float overlayMode) {
+    float qualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
+    float featheredAlpha = clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
+    float boundaryConfidence = smoothstep(
+      ${PRIORITY_PROJECTION_BOUNDARY_QUALITY_START.toFixed(2)},
+      ${PRIORITY_PROJECTION_BOUNDARY_QUALITY_END.toFixed(2)},
+      max(quality, 0.0)
+    );
+    float boundaryAlpha = coverage * mix(
+      ${PRIORITY_PROJECTION_BOUNDARY_ALPHA_MIN.toFixed(2)},
+      1.0,
+      boundaryConfidence
+    );
+    float coreConfidence = smoothstep(
+      ${PRIORITY_PROJECTION_CORE_COVERAGE_START.toFixed(2)},
+      ${PRIORITY_PROJECTION_CORE_COVERAGE_END.toFixed(2)},
+      coverage
+    ) * smoothstep(
+      ${PRIORITY_PROJECTION_CORE_QUALITY_START.toFixed(2)},
+      ${PRIORITY_PROJECTION_CORE_QUALITY_END.toFixed(2)},
+      max(quality, 0.0)
+    );
+    float priorityAlpha = clamp(
+      boundaryAlpha + (1.0 - boundaryAlpha) * coreConfidence,
+      0.0,
+      1.0
+    );
+    return mix(featheredAlpha, priorityAlpha, step(1.5, overlayMode));
+  }
+`;
 // Large turns should still receive projection when the capture depth/normal
 // neighbourhood proves that the surface was visible. At grazing angles we
 // require much broader support instead of accepting isolated scan-line samples.
@@ -500,6 +540,8 @@ const fragmentShader = `
     float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
     return smoothstep(0.0, edge, edgeDistance);
   }
+
+  ${ORDERED_OVERLAY_ALPHA_GLSL}
 
   ${BASE_COLOR_PREVIEW_LIGHT_GLSL}
 
@@ -924,6 +966,7 @@ function buildStackFragmentShader(
     projectionVisibilityPolicy?: ProjectionLayerStackInput['layers'][number]['projectionVisibilityPolicy'];
     blendMode?: ProjectionLayerStackInput['layers'][number]['blendMode'];
     compositeRole?: ProjectionLayerStackInput['layers'][number]['compositeRole'];
+    priorityOverlay?: ProjectionLayerStackInput['layers'][number]['priorityOverlay'];
   }>,
   requestedFeatures: ProjectedLayerSamplerFeatures = {},
 ) {
@@ -1504,15 +1547,10 @@ function buildStackFragmentShader(
               )) * step(0.5, compactOverlayModes[layerIndex])
             );
             if (isOverlay > 0.5) {
-              float qualityFade = smoothstep(
-                0.0,
-                0.15,
-                max(quality, coverage * 0.25)
-              );
-              float overlayAlpha = clamp(
-                coverage * mix(0.75, 1.0, qualityFade),
-                0.0,
-                1.0
+              float overlayAlpha = computeOrderedOverlayAlpha(
+                coverage,
+                quality,
+                compactOverlayModes[layerIndex]
               );
               projectedDepthCoverage = max(
                 projectedDepthCoverage,
@@ -1618,8 +1656,11 @@ function buildStackFragmentShader(
         ${
           role === 'normal'
             ? `if (layerOverlayMode${index} > 0.5) {
-          float qualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
-          float overlayAlpha = clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
+          float overlayAlpha = computeOrderedOverlayAlpha(
+            coverage,
+            quality,
+            layerOverlayMode${index}
+          );
           pendingOverlayColor${index} = texel.rgb;
           pendingOverlayAlpha${index} = overlayAlpha;
         } else {
@@ -1711,10 +1752,13 @@ function buildStackFragmentShader(
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
       if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
-        float qualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
         // Keep live projected overlays equivalent to applyOverlayRasters in the
         // UV bake. The shared coverage term still supplies a soft transition.
-        float overlayAlpha = clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
+        float overlayAlpha = computeOrderedOverlayAlpha(
+          coverage,
+          quality,
+          layerOverlayMode${index}
+        );
         projectedDepthCoverage = max(projectedDepthCoverage, overlayAlpha);
         mixedColor = mix(mixedColor, texel.rgb, overlayAlpha);
       }
@@ -1938,6 +1982,8 @@ function buildStackFragmentShader(
     float edgeDistance = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
     return smoothstep(0.0, edge, edgeDistance);
   }
+
+  ${ORDERED_OVERLAY_ALPHA_GLSL}
 
   ${BASE_COLOR_PREVIEW_LIGHT_GLSL}
 
@@ -2374,6 +2420,7 @@ function getProjectionLayerStructureSignature(
           layer.renderedColor ? 1 : 0,
           layer.minimumProjectionFacing ?? 0,
           layer.projectionVisibilityPolicy ?? 'standard',
+          layer.priorityOverlay ? 1 : 0,
           layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
           getLayerCameraSignature(layer.camera),
@@ -2428,7 +2475,15 @@ function updateLayerDisplayUniforms(
   if (lightnessUniform) lightnessUniform.value = layer.lightness ?? 0;
   if (binding.overlayUniform) {
     const overlayUniform = material.uniforms[binding.overlayUniform];
-    if (overlayUniform) overlayUniform.value = layer.blendMode === 'overlay' ? 1 : 0;
+    if (overlayUniform) {
+      overlayUniform.value =
+        layer.compositeRole !== 'underlay' &&
+        (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
+          ? layer.priorityOverlay
+            ? 2
+            : 1
+          : 0;
+    }
   }
   if (binding.arrayIndex !== undefined) {
     const assignCompact = (name: string, value: number) => {
@@ -2440,7 +2495,15 @@ function updateLayerDisplayUniforms(
     assignCompact('compactHueShifts', layer.hue ?? 0);
     assignCompact('compactSaturationShifts', layer.saturation ?? 0);
     assignCompact('compactLightnessShifts', layer.lightness ?? 0);
-    assignCompact('compactOverlayModes', layer.blendMode === 'overlay' ? 1 : 0);
+    assignCompact(
+      'compactOverlayModes',
+      layer.compositeRole !== 'underlay' &&
+        (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
+        ? layer.priorityOverlay
+          ? 2
+          : 1
+        : 0,
+    );
   }
 }
 
@@ -3478,6 +3541,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     strength: input.strength,
     blendMode: input.blendMode,
     compositeRole: input.compositeRole,
+    priorityOverlay: input.priorityOverlay,
     visible: input.visible,
     hue: input.hue,
     saturation: input.saturation,
@@ -3774,6 +3838,7 @@ export async function createProjectedLayerStackMaterial(
       strength: layer.strength,
       blendMode: layer.blendMode,
       compositeRole: layer.compositeRole,
+      priorityOverlay: layer.priorityOverlay,
       visible: layer.visible,
       hue: layer.hue,
       saturation: layer.saturation,
@@ -4040,7 +4105,9 @@ export async function createProjectedLayerStackMaterial(
       value:
         layer.compositeRole !== 'underlay' &&
         (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
-          ? 1
+          ? layer.priorityOverlay
+            ? 2
+            : 1
           : 0,
     };
     captureObjectMatrices.push(captureObjectMatrixWorld);
@@ -4363,7 +4430,9 @@ export async function createProjectedLayerStackMaterial(
             value: loadedLayers.map((layer) =>
               layer.compositeRole !== 'underlay' &&
               (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
-                ? 1
+                ? layer.priorityOverlay
+                  ? 2
+                  : 1
                 : 0,
             ),
           },

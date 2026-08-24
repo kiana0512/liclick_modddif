@@ -137,7 +137,7 @@ export function ObjectsPanel({
   onMutationLocked,
 }: {
   mutationLocked?: boolean;
-  onMutationLocked?: () => void;
+  onMutationLocked?: (action?: string) => void;
 }) {
   const t = useT();
   const objects = useSceneStore((state) => state.objects);
@@ -181,11 +181,19 @@ export function ObjectsPanel({
   }, [menu]);
 
   function handleSelectObject(objectId: string) {
+    if (mutationLocked && objectId !== selectedObjectId) {
+      onMutationLocked?.('切换当前模型');
+      return;
+    }
     selectObject(objectId);
     updateCurrentProject({ objects: useSceneStore.getState().objects, activeObjectId: objectId });
   }
 
   function handleToggleVisibility(objectId: string) {
+    if (mutationLocked) {
+      onMutationLocked?.('切换模型显隐');
+      return;
+    }
     const object = objects.find((item) => item.id === objectId);
     captureHistory(`${object?.visible ? '隐藏' : '显示'}对象：${object?.name ?? '模型'}`);
     toggleObjectVisibility(objectId);
@@ -209,7 +217,7 @@ export function ObjectsPanel({
   function handleDeleteObject(objectId: string) {
     if (mutationLocked) {
       setDeleteCandidateId(undefined);
-      onMutationLocked?.();
+      onMutationLocked?.('删除模型');
       return;
     }
     const object = objects.find((item) => item.id === objectId);
@@ -228,7 +236,7 @@ export function ObjectsPanel({
 
   function handleDuplicateObject(objectId: string) {
     if (mutationLocked) {
-      onMutationLocked?.();
+      onMutationLocked?.('复制模型');
       return;
     }
     const object = objects.find((item) => item.id === objectId);
@@ -394,7 +402,7 @@ export function ObjectsPanel({
             onDialog={(type) => setDialog({ type, objectId: menu.objectId })}
             onDelete={() => {
               if (mutationLocked) {
-                onMutationLocked?.();
+                onMutationLocked?.('删除模型');
                 return;
               }
               setDeleteCandidateId(menu.objectId);
@@ -519,9 +527,13 @@ function DeleteObjectConfirmDialog({
 export function ObjectsPanelActions({
   onImportModelClick,
   importDisabled = false,
+  mutationLocked = false,
+  onMutationLocked,
 }: {
   onImportModelClick?: () => void;
   importDisabled?: boolean;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
 }) {
   const t = useT();
   const objects = useSceneStore((state) => state.objects);
@@ -534,6 +546,10 @@ export function ObjectsPanelActions({
 
   function handleToggleAllVisibility() {
     if (objects.length === 0) return;
+    if (mutationLocked) {
+      onMutationLocked?.('切换全部模型显隐');
+      return;
+    }
     captureHistory(allVisible ? '隐藏全部对象' : '显示全部对象');
     setAllObjectsVisible(!allVisible);
     setProjectObjects(useSceneStore.getState().objects);
@@ -541,6 +557,10 @@ export function ObjectsPanelActions({
 
   function handleArrangeModels() {
     if (objects.length === 0) return;
+    if (mutationLocked) {
+      onMutationLocked?.('排列模型');
+      return;
+    }
     captureHistory(t('arrangeModels'));
     arrangeImportedModels();
     setProjectObjects(useSceneStore.getState().objects);

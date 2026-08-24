@@ -13,7 +13,8 @@ type SerializedImageData = {
 type MaskedProjectedWorkerRequest = {
   id: number;
   source: SerializedImageData;
-  mask: SerializedImageData;
+  mask?: SerializedImageData;
+  mode?: 'mask-only' | 'projection-alpha-only';
 };
 
 function deserializeImage(input: SerializedImageData) {
@@ -21,13 +22,18 @@ function deserializeImage(input: SerializedImageData) {
 }
 
 self.addEventListener('message', (event: MessageEvent<MaskedProjectedWorkerRequest>) => {
-  const { id, source, mask } = event.data;
+  const { id, source, mask, mode = 'mask-only' } = event.data;
   try {
     const sourceImage = deserializeImage(source);
-    const projectionMask = deserializeImage(mask);
-    const output = applyProjectedAlphaMask(sourceImage, projectionMask, {
-      ignoreSourceAlpha: true,
-    });
+    const projectionMask = mask ? deserializeImage(mask) : undefined;
+    const output =
+      mode === 'projection-alpha-only'
+        ? projectionMask
+          ? applyProjectedAlphaMask(sourceImage, projectionMask, { ignoreSourceAlpha: true })
+          : sourceImage
+        : projectionMask
+          ? applyProjectedAlphaMask(sourceImage, projectionMask)
+          : sourceImage;
     const outputBuffer = output.data.buffer as ArrayBuffer;
     self.postMessage(
       { id, width: output.width, height: output.height, data: outputBuffer },

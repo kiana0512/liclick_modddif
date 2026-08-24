@@ -10,6 +10,8 @@ export type LayerRole =
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-light';
 export type LayerMaskSpace = 'projection' | 'uv';
 export type ProjectionVisibilityPolicy = 'standard' | 'surface-locked-v1';
+export type ProjectionCoverageMode = 'capture-mask' | 'source-alpha-depth';
+export type ProjectionCompositeMode = 'single-view-priority-v1';
 
 export type LayerAdjustments = {
   hue: number;
@@ -52,6 +54,10 @@ export type Layer = {
   minimumProjectionFacing?: number;
   /** Local repaint visibility must remain attached to the captured front surface. */
   projectionVisibilityPolicy?: ProjectionVisibilityPolicy;
+  /** Selects whether coverage comes from the capture mask or source alpha plus depth. */
+  projectionCoverageMode?: ProjectionCoverageMode;
+  /** Single-view paintovers composite above quality-blended multiview projections. */
+  projectionCompositeMode?: ProjectionCompositeMode;
   visible: boolean;
   opacity: number;
   strength?: number;

@@ -15,7 +15,12 @@ export type LocalRepaintSessionLayerResult = {
 export function ensureLocalRepaintSessionLayer(input: {
   objectId: string;
   generationId?: string;
+  /** Passive preparation must not tear down the repaint currently visible. */
+  preserveActiveProjection?: boolean;
+  /** Passive preparation must not steal the selected layer row. */
+  preserveActiveLayer?: boolean;
 }): LocalRepaintSessionLayerResult {
+  const activeLayerIdBeforeEnsure = useLayerStore.getState().activeProjectedLayerId;
   const belongsToObject = (layer: Layer) => layer.objectId === input.objectId;
   const isSessionTarget = (layer: Layer) =>
     belongsToObject(layer) &&
@@ -81,7 +86,9 @@ export function ensureLocalRepaintSessionLayer(input: {
     ) ??
     // Reuse only an uncommitted placeholder. A destination that already owns a
     // visible result is historical content and must never be rebound.
-    sessionTargets.find((item) => !item.imageUrl && !claimedTargetIds.has(item.id));
+    sessionTargets.find(
+      (item) => !item.generationId && !item.imageUrl && !claimedTargetIds.has(item.id),
+    );
   let mutated = migratedRuntimeUrls || normalizedBindings.changed;
   let boundGeneration = false;
 
@@ -158,7 +165,7 @@ export function ensureLocalRepaintSessionLayer(input: {
   const sceneState = useSceneStore.getState();
   const currentSource = sceneState.localRepaintProjectionSource;
   const sourceOwnsTarget = currentSource?.targetLayerId === canonicalTargetId;
-  if (!sourceOwnsTarget) {
+  if (!input.preserveActiveProjection && !sourceOwnsTarget) {
     // A persisted result is not itself a renderer-owned live preview. Publishing
     // it here used to mute the stored row before any GPU overlay existed. This
     // effect runs again as soon as a remote generation succeeds, so the previous
@@ -187,6 +194,13 @@ export function ensureLocalRepaintSessionLayer(input: {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
     }
+  }
+  if (
+    input.preserveActiveLayer &&
+    activeLayerIdBeforeEnsure &&
+    useLayerStore.getState().layers.some((item) => item.id === activeLayerIdBeforeEnsure)
+  ) {
+    useLayerStore.getState().setActiveLayer(activeLayerIdBeforeEnsure);
   }
   return { layer, created, boundGeneration };
 }

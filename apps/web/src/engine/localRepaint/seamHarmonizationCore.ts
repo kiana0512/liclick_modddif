@@ -1,13 +1,24 @@
 export type LocalRepaintSeamHarmonizationOptions = {
   minBlendWidth?: number;
   maxBlendWidth?: number;
+  minSampleWidth?: number;
+  maxSampleWidth?: number;
+  edgeOpacity?: number;
+  localSampleCellSize?: number;
+  correctionDepth?: number;
+  coreColorMatchStrength?: number;
   enableColorMatch?: boolean;
 };
 
 export type LocalRepaintSeamHarmonizationReport = {
   applied: boolean;
   blendWidth: number;
+  innerBlendWidth: number;
+  sampleWidth: number;
   sampledPixels: number;
+  outerSampledPixels: number;
+  localColorRegions: number;
+  colorMatchApplied: boolean;
   reason?:
     | 'empty-mask'
     | 'full-frame-mask'
@@ -26,7 +37,6 @@ const INF = 1_000_000;
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
-
 function smoothstep(edge0: number, edge1: number, value: number) {
   const t = clamp((value - edge0) / Math.max(edge1 - edge0, 0.0001), 0, 1);
   return t * t * (3 - 2 * t);
@@ -216,54 +226,290 @@ function boxBlurRgb(input: Uint8ClampedArray, width: number, height: number, rad
   return output;
 }
 
-function applyLowFrequencyLabCorrection(
-  generated: Uint8ClampedArray,
+type LabTransfer = {
+  sourceMean: [number, number, number];
+  targetMean: [number, number, number];
+  scale: [number, number, number];
+};
+
+function createLabTransfer(source: LabStats, target: LabStats): LabTransfer {
+  const maximumMeanShift = [12, 10, 10] as const;
+  const targetMean = source.mean.map((value, channel) =>
+    value + clamp(target.mean[channel] - value, -maximumMeanShift[channel], maximumMeanShift[channel]),
+  ) as [number, number, number];
+  return {
+    sourceMean: source.mean,
+    targetMean,
+    scale: [
+      clamp(target.standardDeviation[0] / Math.max(source.standardDeviation[0], 1), 0.82, 1.18),
+      clamp(target.standardDeviation[1] / Math.max(source.standardDeviation[1], 1), 0.88, 1.12),
+      clamp(target.standardDeviation[2] / Math.max(source.standardDeviation[2], 1), 0.88, 1.12),
+    ],
+  };
+}
+
+function estimateReferenceBackground(
+  pixels: Uint8ClampedArray,
   width: number,
   height: number,
-  sourceStats: LabStats,
-  targetStats: LabStats,
-  blurRadius: number,
+): [number, number, number] {
+  const inset = Math.max(1, Math.round(Math.min(width, height) * 0.01));
+  const points = [
+    [inset, inset],
+    [width - 1 - inset, inset],
+    [inset, height - 1 - inset],
+    [width - 1 - inset, height - 1 - inset],
+  ] as const;
+  const sum = [0, 0, 0];
+  for (const [x, y] of points) {
+    const offset = (y * width + x) * 4;
+    sum[0] += pixels[offset] ?? 0;
+    sum[1] += pixels[offset + 1] ?? 0;
+    sum[2] += pixels[offset + 2] ?? 0;
+  }
+  return [sum[0] / points.length, sum[1] / points.length, sum[2] / points.length];
+}
+
+function rgbDistanceFrom(
+  pixels: Uint8ClampedArray,
+  offset: number,
+  color: [number, number, number],
 ) {
-  const lowFrequency = boxBlurRgb(generated, width, height, blurRadius);
+  const red = (pixels[offset] ?? 0) - color[0];
+  const green = (pixels[offset + 1] ?? 0) - color[1];
+  const blue = (pixels[offset + 2] ?? 0) - color[2];
+  return Math.sqrt(red * red + green * green + blue * blue);
+}
+
+function applyBoundaryAwareLowFrequencyLabCorrection(input: {
+  generated: Uint8ClampedArray;
+  reference: Uint8ClampedArray;
+  hardMask: Uint8Array;
+  insideDistance: Float32Array;
+  outsideDistance: Float32Array;
+  width: number;
+  height: number;
+  sampleWidth: number;
+  blendWidth: number;
+  options?: LocalRepaintSeamHarmonizationOptions;
+}) {
+  const {
+    generated,
+    reference,
+    hardMask,
+    insideDistance,
+    outsideDistance,
+    width,
+    height,
+    sampleWidth,
+    blendWidth,
+  } = input;
+  const blurRadius = Math.max(8, Math.round(sampleWidth * 0.75));
+  const generatedLow = boxBlurRgb(generated, width, height, blurRadius);
+  const referenceLow = boxBlurRgb(reference, width, height, blurRadius);
+  const background = estimateReferenceBackground(reference, width, height);
+  const isInnerSample = (index: number) =>
+    hardMask[index] === 1 &&
+    (insideDistance[index] ?? INF) >= 1 &&
+    (insideDistance[index] ?? INF) <= sampleWidth;
+  const isOuterSample = (index: number) => {
+    if (
+      hardMask[index] !== 0 ||
+      (outsideDistance[index] ?? INF) < 1 ||
+      (outsideDistance[index] ?? INF) > sampleWidth
+    ) {
+      return false;
+    }
+    const offset = index * 4;
+    return (
+      (reference[offset + 3] ?? 0) >= 16 &&
+      rgbDistanceFrom(reference, offset, background) >= 24 &&
+      rgbDistanceFrom(referenceLow, offset, background) >= 16
+    );
+  };
+  const sourceStats = collectLabStats(generatedLow, isInnerSample);
+  const targetStats = collectLabStats(referenceLow, isOuterSample);
+  const minimumSamples = Math.max(128, Math.round(sampleWidth * 8));
+  if (sourceStats.count < minimumSamples || targetStats.count < minimumSamples) {
+    return {
+      pixels: new Uint8ClampedArray(generated),
+      sourceSamples: sourceStats.count,
+      outerSamples: targetStats.count,
+      localRegions: 0,
+      applied: false,
+    };
+  }
+
+  const cellSize = clamp(
+    Math.round(input.options?.localSampleCellSize ?? Math.min(width, height) * 0.0625),
+    64,
+    160,
+  );
+  const gridWidth = Math.max(1, Math.ceil(width / cellSize));
+  const gridHeight = Math.max(1, Math.ceil(height / cellSize));
+  const cellCount = gridWidth * gridHeight;
+  const sourceCounts = new Uint32Array(cellCount);
+  const targetCounts = new Uint32Array(cellCount);
+  const sourceSums = new Float64Array(cellCount * 6);
+  const targetSums = new Float64Array(cellCount * 6);
+  const addSample = (
+    sums: Float64Array,
+    counts: Uint32Array,
+    cellIndex: number,
+    lab: [number, number, number],
+  ) => {
+    counts[cellIndex] = (counts[cellIndex] ?? 0) + 1;
+    const base = cellIndex * 6;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const value = lab[channel];
+      sums[base + channel] = (sums[base + channel] ?? 0) + value;
+      sums[base + 3 + channel] = (sums[base + 3 + channel] ?? 0) + value * value;
+    }
+  };
+  for (let index = 0; index < hardMask.length; index += 1) {
+    const inner = isInnerSample(index);
+    const outer = isOuterSample(index);
+    if (!inner && !outer) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    const cellIndex = Math.floor(y / cellSize) * gridWidth + Math.floor(x / cellSize);
+    const offset = index * 4;
+    if (inner) {
+      addSample(
+        sourceSums,
+        sourceCounts,
+        cellIndex,
+        rgbToLab(generatedLow[offset] ?? 0, generatedLow[offset + 1] ?? 0, generatedLow[offset + 2] ?? 0),
+      );
+    }
+    if (outer) {
+      addSample(
+        targetSums,
+        targetCounts,
+        cellIndex,
+        rgbToLab(referenceLow[offset] ?? 0, referenceLow[offset + 1] ?? 0, referenceLow[offset + 2] ?? 0),
+      );
+    }
+  }
+
+  const statsFromGrid = (
+    sums: Float64Array,
+    counts: Uint32Array,
+    cellX: number,
+    cellY: number,
+  ): LabStats => {
+    const sum = [0, 0, 0];
+    const sumSquares = [0, 0, 0];
+    let count = 0;
+    for (let y = Math.max(0, cellY - 1); y <= Math.min(gridHeight - 1, cellY + 1); y += 1) {
+      for (let x = Math.max(0, cellX - 1); x <= Math.min(gridWidth - 1, cellX + 1); x += 1) {
+        const cellIndex = y * gridWidth + x;
+        count += counts[cellIndex] ?? 0;
+        const base = cellIndex * 6;
+        for (let channel = 0; channel < 3; channel += 1) {
+          sum[channel] += sums[base + channel] ?? 0;
+          sumSquares[channel] += sums[base + 3 + channel] ?? 0;
+        }
+      }
+    }
+    const mean = sum.map((value) => value / Math.max(count, 1)) as [number, number, number];
+    return {
+      mean,
+      standardDeviation: sumSquares.map((value, channel) =>
+        Math.sqrt(Math.max(0, value / Math.max(count, 1) - mean[channel] * mean[channel])),
+      ) as [number, number, number],
+      count,
+    };
+  };
+
+  const globalTransfer = createLabTransfer(sourceStats, targetStats);
+  const sourceMeanField = new Float32Array(cellCount * 3);
+  const targetMeanField = new Float32Array(cellCount * 3);
+  const scaleField = new Float32Array(cellCount * 3);
+  let localRegions = 0;
+  for (let cellY = 0; cellY < gridHeight; cellY += 1) {
+    for (let cellX = 0; cellX < gridWidth; cellX += 1) {
+      const source = statsFromGrid(sourceSums, sourceCounts, cellX, cellY);
+      const target = statsFromGrid(targetSums, targetCounts, cellX, cellY);
+      const usesLocal = source.count >= 32 && target.count >= 32;
+      const transfer = usesLocal ? createLabTransfer(source, target) : globalTransfer;
+      if (usesLocal) localRegions += 1;
+      const base = (cellY * gridWidth + cellX) * 3;
+      for (let channel = 0; channel < 3; channel += 1) {
+        sourceMeanField[base + channel] = transfer.sourceMean[channel];
+        targetMeanField[base + channel] = transfer.targetMean[channel];
+        scaleField[base + channel] = transfer.scale[channel];
+      }
+    }
+  }
+
   const output = new Uint8ClampedArray(generated);
-  const scale: [number, number, number] = [
-    clamp(
-      targetStats.standardDeviation[0] / Math.max(sourceStats.standardDeviation[0], 1),
-      0.78,
-      1.22,
-    ),
-    clamp(
-      targetStats.standardDeviation[1] / Math.max(sourceStats.standardDeviation[1], 1),
-      0.85,
-      1.15,
-    ),
-    clamp(
-      targetStats.standardDeviation[2] / Math.max(sourceStats.standardDeviation[2], 1),
-      0.85,
-      1.15,
-    ),
-  ];
-  for (let index = 0; index < generated.length / 4; index += 1) {
+  const correctionDepth = clamp(
+    Math.round(input.options?.correctionDepth ?? Math.min(width, height) * 0.05),
+    48,
+    128,
+  );
+  const coreStrength = clamp(input.options?.coreColorMatchStrength ?? 0.35, 0, 1);
+  for (let index = 0; index < hardMask.length; index += 1) {
+    const inside = hardMask[index] === 1;
+    if (!inside && (outsideDistance[index] ?? INF) >= blendWidth) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    const gridX = clamp(x / cellSize - 0.5, 0, gridWidth - 1);
+    const gridY = clamp(y / cellSize - 0.5, 0, gridHeight - 1);
+    const x0 = Math.floor(gridX);
+    const y0 = Math.floor(gridY);
+    const x1 = Math.min(gridWidth - 1, x0 + 1);
+    const y1 = Math.min(gridHeight - 1, y0 + 1);
+    const tx = gridX - x0;
+    const ty = gridY - y0;
+    const interpolate = (field: Float32Array, channel: number) => {
+      const top =
+        (field[(y0 * gridWidth + x0) * 3 + channel] ?? 0) * (1 - tx) +
+        (field[(y0 * gridWidth + x1) * 3 + channel] ?? 0) * tx;
+      const bottom =
+        (field[(y1 * gridWidth + x0) * 3 + channel] ?? 0) * (1 - tx) +
+        (field[(y1 * gridWidth + x1) * 3 + channel] ?? 0) * tx;
+      return top * (1 - ty) + bottom * ty;
+    };
     const offset = index * 4;
     const originalLow = [
-      lowFrequency[offset] ?? 0,
-      lowFrequency[offset + 1] ?? 0,
-      lowFrequency[offset + 2] ?? 0,
+      generatedLow[offset] ?? 0,
+      generatedLow[offset + 1] ?? 0,
+      generatedLow[offset + 2] ?? 0,
     ] as const;
     const lab = rgbToLab(originalLow[0], originalLow[1], originalLow[2]);
-    const correctedLab: [number, number, number] = [
-      clamp((lab[0] - sourceStats.mean[0]) * scale[0] + targetStats.mean[0], 0, 100),
-      clamp((lab[1] - sourceStats.mean[1]) * scale[1] + targetStats.mean[1], -128, 127),
-      clamp((lab[2] - sourceStats.mean[2]) * scale[2] + targetStats.mean[2], -128, 127),
-    ];
-    const correctedLow = labToRgb(correctedLab[0], correctedLab[1], correctedLab[2]);
+    const correctedLab = [0, 0, 0] as [number, number, number];
     for (let channel = 0; channel < 3; channel += 1) {
-      const delta = correctedLow[channel] - originalLow[channel];
-      output[offset + channel] = Math.round(clamp((generated[offset + channel] ?? 0) + delta, 0, 255));
+      correctedLab[channel] =
+        (lab[channel] - interpolate(sourceMeanField, channel)) *
+          interpolate(scaleField, channel) +
+        interpolate(targetMeanField, channel);
+    }
+    correctedLab[0] = clamp(correctedLab[0], 0, 100);
+    correctedLab[1] = clamp(correctedLab[1], -128, 127);
+    correctedLab[2] = clamp(correctedLab[2], -128, 127);
+    const correctedLow = labToRgb(correctedLab[0], correctedLab[1], correctedLab[2]);
+    const boundaryStrength = inside
+      ? coreStrength +
+        (1 - coreStrength) *
+          (1 - smoothstep(1, correctionDepth, insideDistance[index] ?? correctionDepth))
+      : 1;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const delta = (correctedLow[channel] - originalLow[channel]) * boundaryStrength;
+      output[offset + channel] = Math.round(
+        clamp((generated[offset + channel] ?? 0) + delta, 0, 255),
+      );
     }
     output[offset + 3] = generated[offset + 3] ?? 255;
   }
-  return output;
+  return {
+    pixels: output,
+    sourceSamples: sourceStats.count,
+    outerSamples: targetStats.count,
+    localRegions,
+    applied: true,
+  };
 }
 
 export function harmonizeLocalRepaintPixels(input: {
@@ -286,132 +532,126 @@ export function harmonizeLocalRepaintPixels(input: {
   if (hardMaskResult.insideCount === 0) {
     return {
       pixels: new Uint8ClampedArray(generated),
-      report: { applied: false, blendWidth: 0, sampledPixels: 0, reason: 'empty-mask' },
+      report: {
+        applied: false,
+        blendWidth: 0,
+        innerBlendWidth: 0,
+        sampleWidth: 0,
+        sampledPixels: 0,
+        outerSampledPixels: 0,
+        localColorRegions: 0,
+        colorMatchApplied: false,
+        reason: 'empty-mask',
+      },
     };
   }
   if (hardMaskResult.insideCount === hardMaskResult.mask.length) {
     return {
       pixels: new Uint8ClampedArray(generated),
-      report: { applied: false, blendWidth: 0, sampledPixels: 0, reason: 'full-frame-mask' },
+      report: {
+        applied: false,
+        blendWidth: 0,
+        innerBlendWidth: 0,
+        sampleWidth: 0,
+        sampledPixels: 0,
+        outerSampledPixels: 0,
+        localColorRegions: 0,
+        colorMatchApplied: false,
+        reason: 'full-frame-mask',
+      },
     };
   }
-  const requestedMinimumBlendWidth = input.options?.minBlendWidth ?? 8;
-  const requestedMaximumBlendWidth = input.options?.maxBlendWidth ?? 32;
+  // The authored mask is an absolute replacement contract: every pixel inside
+  // it uses the corrected generated frame at 100% opacity. A single opacity
+  // ramp is applied only outside that boundary. RGB is never spatially blurred.
+  const requestedMinimumBlendWidth = input.options?.minBlendWidth ?? 12;
+  const requestedMaximumBlendWidth = input.options?.maxBlendWidth ?? 40;
   const requestedBlendWidth = clamp(
-    Math.round(Math.min(width, height) * 0.018),
+    Math.round(Math.min(width, height) * 0.012),
     requestedMinimumBlendWidth,
     requestedMaximumBlendWidth,
   );
-  const insideDistance = distanceToValue(hardMaskResult.mask, width, height, 0);
   const outsideDistance = distanceToValue(hardMaskResult.mask, width, height, 1);
-  let maximumInsideDistance = 0;
-  for (let index = 0; index < hardMaskResult.mask.length; index += 1) {
-    if (hardMaskResult.mask[index] === 1) {
-      maximumInsideDistance = Math.max(maximumInsideDistance, insideDistance[index] ?? 0);
-    }
-  }
-  // A fixed 8-32 px band can consume a thin or fragmented brush selection in
-  // its entirety. Reserve at least the inner two thirds of the mask for the
-  // authored generation result and only harmonize the outermost ring. A
-  // one-pixel selection has no separable edge/interior, so leave it untouched.
-  if (maximumInsideDistance < 2) {
-    return {
-      pixels: new Uint8ClampedArray(generated),
-      report: { applied: false, blendWidth: 0, sampledPixels: 0, reason: 'mask-too-thin' },
-    };
-  }
-  const blendWidth = Math.min(
-    requestedBlendWidth,
-    Math.max(2, Math.floor(maximumInsideDistance / 3)),
+  const insideDistance = distanceToValue(hardMaskResult.mask, width, height, 0);
+  const blendWidth = requestedBlendWidth;
+  const edgeOpacity = clamp(input.options?.edgeOpacity ?? 1, 0, 1);
+  const innerBlendWidth = 0;
+  const sampleWidth = clamp(
+    Math.round(Math.min(width, height) * 0.012),
+    input.options?.minSampleWidth ?? 8,
+    input.options?.maxSampleWidth ?? 32,
   );
-  const innerStart = Math.max(2, Math.round(blendWidth * 0.2));
   let sampledPixels = 0;
+  let outerSampledPixels = 0;
+  let localColorRegions = 0;
+  let colorMatchApplied = false;
   let corrected = new Uint8ClampedArray(generated);
-  // The Lab matcher is intentionally dormant for now. Keeping it behind an
-  // explicit option lets us evaluate it later without coupling this release's
-  // boundary-only blend to a global colour change.
   if (input.options?.enableColorMatch === true) {
-    const sourceStats = collectLabStats(
+    const correction = applyBoundaryAwareLowFrequencyLabCorrection({
       generated,
-      (index) =>
-        hardMaskResult.mask[index] === 1 &&
-        (insideDistance[index] ?? INF) >= innerStart &&
-        (insideDistance[index] ?? INF) <= blendWidth,
-    );
-    const targetStats = collectLabStats(
       reference,
-      (index) =>
-        (hardMaskResult.mask[index] === 1 &&
-          (insideDistance[index] ?? INF) >= innerStart &&
-          (insideDistance[index] ?? INF) <= blendWidth) ||
-        (hardMaskResult.mask[index] === 0 &&
-          (outsideDistance[index] ?? INF) >= 1 &&
-          (outsideDistance[index] ?? INF) <= blendWidth),
-    );
-    sampledPixels = Math.min(sourceStats.count, targetStats.count);
-    const minimumSamples = Math.max(64, Math.round(blendWidth * 4));
-    if (sourceStats.count >= minimumSamples && targetStats.count >= minimumSamples) {
-      corrected = applyLowFrequencyLabCorrection(
-        generated,
-        width,
-        height,
-        sourceStats,
-        targetStats,
-        Math.max(4, Math.round(blendWidth / 2)),
-      );
-    }
+      hardMask: hardMaskResult.mask,
+      insideDistance,
+      outsideDistance,
+      width,
+      height,
+      sampleWidth,
+      blendWidth,
+      options: input.options,
+    });
+    sampledPixels = correction.sourceSamples;
+    outerSampledPixels = correction.outerSamples;
+    localColorRegions = correction.localRegions;
+    corrected = correction.pixels;
+    colorMatchApplied = correction.applied;
   }
-  const mediumRadius = Math.max(2, Math.round(blendWidth / 6));
-  const lowRadius = Math.max(mediumRadius + 1, Math.round(blendWidth / 2));
-  const generatedMedium = boxBlurRgb(corrected, width, height, mediumRadius);
-  const generatedLow = boxBlurRgb(corrected, width, height, lowRadius);
-  const referenceMedium = boxBlurRgb(reference, width, height, mediumRadius);
-  const referenceLow = boxBlurRgb(reference, width, height, lowRadius);
   const output = new Uint8ClampedArray(corrected.length);
   for (let index = 0; index < hardMaskResult.mask.length; index += 1) {
     const offset = index * 4;
     const isInside = hardMaskResult.mask[index] === 1;
-    const distance = isInside ? (insideDistance[index] ?? 0) : 0;
-    if (!isInside || distance >= blendWidth) {
+    if (isInside) {
       output[offset] = corrected[offset] ?? 0;
       output[offset + 1] = corrected[offset + 1] ?? 0;
       output[offset + 2] = corrected[offset + 2] ?? 0;
       output[offset + 3] = generated[offset + 3] ?? 255;
       continue;
     }
-    const lowWeight = smoothstep(0, blendWidth, distance);
-    const mediumWeight = smoothstep(0, Math.max(2, blendWidth * 0.55), distance);
-    const fineWeight = smoothstep(0, Math.max(1, blendWidth * 0.24), distance);
-    for (let channel = 0; channel < 3; channel += 1) {
-      const referenceLowValue = referenceLow[offset + channel] ?? 0;
-      const generatedLowValue = generatedLow[offset + channel] ?? 0;
-      const referenceMediumBand =
-        (referenceMedium[offset + channel] ?? 0) - referenceLowValue;
-      const generatedMediumBand =
-        (generatedMedium[offset + channel] ?? 0) - generatedLowValue;
-      const referenceFineBand =
-        (reference[offset + channel] ?? 0) - (referenceMedium[offset + channel] ?? 0);
-      const generatedFineBand =
-        (corrected[offset + channel] ?? 0) - (generatedMedium[offset + channel] ?? 0);
-      const value =
-        referenceLowValue * (1 - lowWeight) +
-        generatedLowValue * lowWeight +
-        referenceMediumBand * (1 - mediumWeight) +
-        generatedMediumBand * mediumWeight +
-        referenceFineBand * (1 - fineWeight) +
-        generatedFineBand * fineWeight;
-      output[offset + channel] = Math.round(clamp(value, 0, 255));
+    const distance = outsideDistance[index] ?? INF;
+    if (distance >= blendWidth) {
+      output[offset] = reference[offset] ?? 0;
+      output[offset + 1] = reference[offset + 1] ?? 0;
+      output[offset + 2] = reference[offset + 2] ?? 0;
+      output[offset + 3] = reference[offset + 3] ?? 255;
+      continue;
     }
-    // Projection coverage and authored brush feather remain the sole authority
-    // for alpha. Seam harmonization only changes RGB.
-    output[offset + 3] = generated[offset + 3] ?? 255;
+    // Source-over compositing with a declining generated-layer opacity. RGB is
+    // not blurred or filtered: every pixel remains sampled at its original 2K
+    // coordinate and only the overlay opacity changes across the outer ring.
+    const falloff = 1 - smoothstep(1, blendWidth, distance);
+    const generatedOpacity =
+      edgeOpacity * falloff * ((generated[offset + 3] ?? 255) / 255);
+    for (let channel = 0; channel < 3; channel += 1) {
+      output[offset + channel] = Math.round(
+        (reference[offset + channel] ?? 0) * (1 - generatedOpacity) +
+          (corrected[offset + channel] ?? 0) * generatedOpacity,
+      );
+    }
+    const referenceAlpha = (reference[offset + 3] ?? 255) / 255;
+    output[offset + 3] = Math.round(
+      (generatedOpacity + referenceAlpha * (1 - generatedOpacity)) * 255,
+    );
   }
   return {
     pixels: output,
     report: {
       applied: true,
       blendWidth,
+      innerBlendWidth,
+      sampleWidth,
       sampledPixels,
+      outerSampledPixels,
+      localColorRegions,
+      colorMatchApplied,
     },
   };
 }

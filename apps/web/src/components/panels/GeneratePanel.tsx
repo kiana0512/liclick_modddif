@@ -20,6 +20,9 @@ import {
   createSubjectFilledPreview,
   LOCAL_REPAINT_RESULT_PREVIEW_CUTOUT_ENABLED,
 } from '@/engine/localRepaint/resultPreviewUtils';
+import { blobToDataUrl } from '@/engine/localRepaint/imageUtils';
+import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
+import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
 import {
@@ -45,6 +48,7 @@ import {
   type LiclickImageSize,
 } from '@/services/liclickApiClient';
 import { getUserFacingGenerationError } from '@/services/generationErrorMessage';
+import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
 import {
   hasTrackedModuleAction,
   trackModuleAction,
@@ -149,6 +153,8 @@ const resolutionToSize = {
   '4K': 4096,
   '8K': 8192,
 } as const;
+
+const LOCAL_REPAINT_COMPOSITE_RESOLUTION = 2048;
 
 const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
   front: { value: 'front', labelKey: 'frontView' },
@@ -522,7 +528,9 @@ function getImportedModelMatrixWorld(objectId?: string) {
 
 type GeneratePanelProps = {
   localImageGenerationRequestKey?: number;
-  onLocalImageGenerationSettled?: (succeeded: boolean) => void;
+  onRequestLocalImageGeneration?: () => void;
+  onLocalImageGenerationSettled?: (result: LocalImageGenerationSettledResult) => void;
+  cancelActiveGenerationRequestKey?: number;
   interactionLocked?: boolean;
   onInteractionLocked?: () => void;
   onTaskRunningChange?: (state: GeneratePanelTaskState) => void;
@@ -533,9 +541,15 @@ export type GeneratePanelTaskState = {
   snapshotPreparing: boolean;
 };
 
+export type LocalImageGenerationSettledResult =
+  | { succeeded: true; generationId: string }
+  | { succeeded: false; generationId?: never };
+
 export function GeneratePanel({
   localImageGenerationRequestKey = 0,
+  onRequestLocalImageGeneration,
   onLocalImageGenerationSettled,
+  cancelActiveGenerationRequestKey = 0,
   interactionLocked = false,
   onInteractionLocked,
   onTaskRunningChange,
@@ -567,6 +581,8 @@ export function GeneratePanel({
     useState(0);
   const [submissionActive, setSubmissionActive] = useState(false);
   const handledLocalImageGenerationRequestKeyRef = useRef(0);
+  const handledCancelActiveGenerationRequestKeyRef = useRef(0);
+  const lastCompletedLocalRepaintGenerationIdRef = useRef<string>();
   const handleLocalRepaintGenerateRef = useRef<() => Promise<boolean>>(async () => false);
 
   const updateTexturePipelineProgress = useCallback((progress: number, label: string) => {
@@ -597,8 +613,15 @@ export function GeneratePanel({
     handledLocalImageGenerationRequestKeyRef.current = pendingLocalImageGenerationRequestKey;
     setPendingLocalImageGenerationRequestKey(0);
     void handleLocalRepaintGenerateRef.current().then(
-      (succeeded) => onLocalImageGenerationSettled?.(succeeded),
-      () => onLocalImageGenerationSettled?.(false),
+      (succeeded) => {
+        const generationId = lastCompletedLocalRepaintGenerationIdRef.current;
+        onLocalImageGenerationSettled?.(
+          succeeded && generationId
+            ? { succeeded: true, generationId }
+            : { succeeded: false },
+        );
+      },
+      () => onLocalImageGenerationSettled?.({ succeeded: false }),
     );
   }, [onLocalImageGenerationSettled, pendingLocalImageGenerationRequestKey, tab]);
 
@@ -717,18 +740,28 @@ export function GeneratePanel({
   }, [captureObjectId, currentProject?.captures, currentProjectId, generations]);
   const latestLocalRepaintGenerationId = latestLocalRepaintGeneration?.id;
   const ensureLocalRepaintSessionLayer = useCallback(
-    (generationId = latestLocalRepaintGenerationId) => {
+    (
+      generationId = latestLocalRepaintGenerationId,
+      options?: {
+        preserveActiveProjection?: boolean;
+        preserveActiveLayer?: boolean;
+      },
+    ) => {
       if (!currentProjectId || !captureObjectId) return undefined;
       return ensurePersistentLocalRepaintSessionLayer({
         objectId: captureObjectId,
         generationId,
+        ...options,
       }).layer;
     },
     [captureObjectId, currentProjectId, latestLocalRepaintGenerationId],
   );
   useEffect(() => {
     if (!isLocalRepaintTab) return;
-    ensureLocalRepaintSessionLayer();
+    ensureLocalRepaintSessionLayer(undefined, {
+      preserveActiveProjection: true,
+      preserveActiveLayer: true,
+    });
   }, [ensureLocalRepaintSessionLayer, isLocalRepaintTab]);
   const viewport = useSceneStore((state) => state.viewport);
   const activeReferences = references;
@@ -880,6 +913,17 @@ export function GeneratePanel({
   const displayedPreviewFailed = displayedPreviewGeneration?.status === 'failed';
   const displayedPreviewCancelled = displayedPreviewGeneration?.metadata.cancelled === true;
   const canCancelGeneration = Boolean(activeWorkflowGeneration);
+
+  useEffect(() => {
+    if (
+      cancelActiveGenerationRequestKey <= 0 ||
+      cancelActiveGenerationRequestKey === handledCancelActiveGenerationRequestKeyRef.current
+    ) {
+      return;
+    }
+    handledCancelActiveGenerationRequestKeyRef.current = cancelActiveGenerationRequestKey;
+    if (activeWorkflowGeneration) setCancelConfirmGeneration(activeWorkflowGeneration);
+  }, [activeWorkflowGeneration, cancelActiveGenerationRequestKey]);
   const previewRawResultUrl = displayedPreviewGeneration?.resultUrl;
   const previewCapture = displayedPreviewGeneration?.captureId
     ? lastCapture?.id === displayedPreviewGeneration.captureId
@@ -1191,7 +1235,9 @@ export function GeneratePanel({
       generationAbortControllersRef.current.delete(generation.id);
       submitLocksRef.current.delete(getGenerationChannel(generation));
       setSubmissionActive(submitLocksRef.current.size > 0);
-      if (isLocalRepaintGeneration(generation)) onLocalImageGenerationSettled?.(false);
+      if (isLocalRepaintGeneration(generation)) {
+        onLocalImageGenerationSettled?.({ succeeded: false });
+      }
       window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
     },
     [markGenerationFailed, onLocalImageGenerationSettled],
@@ -2426,6 +2472,7 @@ export function GeneratePanel({
   }
 
   async function handleLocalRepaintGenerate() {
+    lastCompletedLocalRepaintGenerationIdRef.current = undefined;
     let pendingGeneration: Generation | undefined;
     let requestAbortController: AbortController | undefined;
     try {
@@ -2440,16 +2487,12 @@ export function GeneratePanel({
       const captureAspect = 1;
       const captureCameraSnapshot = snapshotCurrentCaptureCamera(captureAspect);
       const captureObjectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
-      submitLocksRef.current.add('repaint');
-      setSubmissionActive(true);
-      // Keep the previous completed repaint on its already-resident GPU path
-      // while this task locks paint tools and prepares detached snapshots. The
-      // persisted row remains authoritative; this flag only prevents the live
-      // twin from being hidden before the atomic handoff can reveal that row.
-      useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
-      if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
       const objectId = captureObjectId;
-      const textureMapCandidates = generations
+      const referenceStateAtSubmission = useReferenceStore.getState();
+      const referencesAtSubmission = referenceStateAtSubmission.references;
+      const textureMapCandidates = useGenerationStore
+        .getState()
+        .generations
         .filter((generation) => {
           if (!isTextureMapGeneration(generation)) return false;
           const generationProjectId = generation.metadata.projectId;
@@ -2465,7 +2508,7 @@ export function GeneratePanel({
           const referenceId = generation.metadata.materialReferenceId;
           return (
             typeof referenceId === 'string' &&
-            references.some(
+            referencesAtSubmission.some(
               (reference) => reference.id === referenceId && isMultiviewReference(reference),
             )
           );
@@ -2484,24 +2527,33 @@ export function GeneratePanel({
           };
           return recency(right) - recency(left);
         });
-      const textureMaterialReferenceId = textureMapCandidates[0]?.metadata.materialReferenceId;
-      const materialReference =
-        (typeof textureMaterialReferenceId === 'string'
-          ? references.find((reference) => reference.id === textureMaterialReferenceId)
-          : undefined) ?? selectedMultiviewReference;
-      if (!materialReference || !isMultiviewReference(materialReference)) {
+      const historicalReferenceId = textureMapCandidates[0]?.metadata.materialReferenceId;
+      const materialReference = resolveLocalRepaintMaterialReference({
+        references: referencesAtSubmission,
+        selectedReferenceIds: referenceStateAtSubmission.selectedReferenceIds,
+        historicalReferenceId:
+          typeof historicalReferenceId === 'string' ? historicalReferenceId : undefined,
+      });
+      if (!materialReference) {
         setGenerateNotice({
           tone: 'warning',
-          message: '请先在纹理贴图中选择或使用一张多视图材质参考图。',
+          message: '请先在纹理贴图中选择一张单视图或多视图材质参考图。',
         });
         pushToast({
           tone: 'warning',
-          title: '缺少多视图材质参考',
-          description: '局部重绘会自动使用当前模型最近一次纹理贴图对应的多视图参考图。',
+          title: '缺少材质参考图',
+          description: '局部生图优先使用当前选择；未选择时才复用最近一次纹理任务的材质参考。',
           dedupeKey: 'generate-local-repaint-material-reference-required',
         });
         return false;
       }
+      submitLocksRef.current.add('repaint');
+      setSubmissionActive(true);
+      // Keep the previous completed repaint on its resident GPU path while the
+      // next request prepares detached browser snapshots.
+      useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
+      if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
+      await saveCriticalProjectState({ references: referencesAtSubmission });
       const initialMaskState = useSceneStore.getState();
       const hasUserPaintMask = initialMaskState.paintMaskHasContent;
       setGenerateNotice({
@@ -2530,6 +2582,7 @@ export function GeneratePanel({
           (await useSceneStore.getState().paintMaskCapture?.({
             aspect: captureAspect,
             camera: captureCameraSnapshot.camera,
+            resolution: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
           })) ?? useSceneStore.getState().paintMaskDataUrl;
         document.body.dataset.localRepaintButton2MaskCaptureMs = (
           performance.now() - maskCaptureStartedAt
@@ -2564,7 +2617,7 @@ export function GeneratePanel({
       const viewportReferenceCaptureStartedAt = performance.now();
       const viewportReference = await captureCurrentColorPreview({
         objectId,
-        resolution: 1024,
+        resolution: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
         framing: 'current',
         // ModelView must receive authored BaseColor rather than a PBR-lit
         // presentation. The generated result is painted back as BaseColor and
@@ -2661,7 +2714,7 @@ export function GeneratePanel({
           materialReferenceId: materialReference.id,
           image: { path: 'white-model.png', dataUrl: whiteModelDataUrl },
           materialImage: {
-            path: 'multiview-material-reference.png',
+            path: `${generationId}-${materialReference.id}-material-reference.png`,
             dataUrl: materialReferenceDataUrl,
           },
           viewportReference: {
@@ -2706,16 +2759,65 @@ export function GeneratePanel({
         setLastCapture(capture);
       }
       if (isCancelledGeneration(pendingGeneration)) return false;
-      // A returned image is the terminal foreground event. Local asset writes
-      // can cold-start the desktop component and occasionally take seconds (or
-      // stall while it reconnects); they must never keep the generate button,
-      // submit lock or progress spinner alive after the server result exists.
+      let processedResultUrl = generation.resultUrl;
+      let processedResultBlob: Blob | undefined;
+      let seamHarmonizationBlendWidth: number | undefined;
+      let seamHarmonizationSampleWidth: number | undefined;
+      let seamHarmonizationSampleCount: number | undefined;
+      let seamHarmonizationOuterSampleCount: number | undefined;
+      let seamHarmonizationLocalColorRegions: number | undefined;
+      let seamHarmonizationColorMatchApplied: boolean | undefined;
+      let seamHarmonizationProcessMs: number | undefined;
+      const seamHarmonizationMode = getLocalRepaintSeamMode();
+      const seamHarmonizationVersion = seamHarmonizationMode === 'enhanced' ? 10 : 5;
+      if (generation.resultUrl) {
+        setGenerateNotice({ tone: 'info', message: '正在融合局部重绘结果。' });
+        const processed = await harmonizeLocalRepaintInWorker({
+          generatedUrl: generation.resultUrl,
+          referenceUrl: viewportReference.colorUrl,
+          maskUrl: currentPaintMaskDataUrl,
+          width: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
+          height: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
+          options:
+            seamHarmonizationMode === 'enhanced'
+              ? {
+                  minBlendWidth: 12,
+                  maxBlendWidth: 40,
+                  minSampleWidth: 8,
+                  maxSampleWidth: 32,
+                  edgeOpacity: 1,
+                  localSampleCellSize: 64,
+                  correctionDepth: 96,
+                  coreColorMatchStrength: 0.35,
+                  enableColorMatch: true,
+                }
+              : {
+                  minBlendWidth: 4,
+                  maxBlendWidth: 8,
+                  edgeOpacity: 1,
+                  enableColorMatch: false,
+                },
+        });
+        if (processed.report.applied) {
+          processedResultBlob = processed.blob;
+          processedResultUrl = await blobToDataUrl(processed.blob);
+          seamHarmonizationBlendWidth = processed.report.blendWidth;
+          seamHarmonizationSampleWidth = processed.report.sampleWidth;
+          seamHarmonizationSampleCount = processed.report.sampledPixels;
+          seamHarmonizationOuterSampleCount = processed.report.outerSampledPixels;
+          seamHarmonizationLocalColorRegions = processed.report.localColorRegions;
+          seamHarmonizationColorMatchApplied = processed.report.colorMatchApplied;
+          seamHarmonizationProcessMs = processed.processMs;
+        }
+      }
+      if (isCancelledGeneration(pendingGeneration)) return false;
       const completedGeneration: Generation = {
         ...generation,
         // Keep one canonical client id from start through completion. Some
         // legacy ModelView responses used the remote id here, leaving the
         // persisted client-id record permanently `running` beside the result.
         id: pendingGeneration.id,
+        resultUrl: processedResultUrl,
         captureId: generation.captureId ?? capture.id,
         metadata: {
           ...pendingGeneration.metadata,
@@ -2723,14 +2825,37 @@ export function GeneratePanel({
           objectMatrixWorld: captureObjectMatrixWorld,
           maskUrl: currentPaintMaskDataUrl,
           viewportReferenceUrl: viewportReference.colorUrl,
+          rawResultUrl: generation.resultUrl,
+          harmonizedResultUrl: processedResultUrl,
+          seamHarmonizationVersion,
+          seamHarmonizationMode,
+          seamHarmonizationBlendWidth,
+          seamHarmonizationSampleWidth,
+          seamHarmonizationSampleCount,
+          seamHarmonizationOuterSampleCount,
+          seamHarmonizationLocalColorRegions,
+          seamHarmonizationColorMatchApplied,
+          seamHarmonizationProcessMs,
           paintMaskRevision: currentPaintMaskRevision,
           sourceColorMode: 'clay-target',
           completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },
       };
       syncGeneration(completedGeneration);
+      const liveMaskState = useSceneStore.getState();
+      if (
+        hasUserPaintMask &&
+        liveMaskState.paintMaskHasContent &&
+        liveMaskState.paintMaskRevision === currentPaintMaskRevision
+      ) {
+        liveMaskState.clearPaintMask();
+      }
+      lastCompletedLocalRepaintGenerationIdRef.current = completedGeneration.id;
       if (completedGeneration.resultUrl) {
-        ensureLocalRepaintSessionLayer(completedGeneration.id);
+        ensureLocalRepaintSessionLayer(completedGeneration.id, {
+          preserveActiveProjection: true,
+          preserveActiveLayer: true,
+        });
       }
       setGenerateNotice(undefined);
       setTexturePreviewMode('repaint');
@@ -2744,21 +2869,39 @@ export function GeneratePanel({
         ? persistGeneratedImage(
             'generations',
             completedGeneration.resultUrl,
-            `${generationId}.png`,
-            undefined,
+            `${generationId}-composited-v${seamHarmonizationVersion}-2k-lab-seam.png`,
+            processedResultBlob,
             currentProject.id,
           ).catch((error) => {
             console.warn('[Liclick 3D Texture] Could not localize repaint result:', error);
             return completedGeneration.resultUrl;
           })
         : Promise.resolve(undefined);
+      const persistedRawResultUrlPromise = generation.resultUrl
+        ? persistGeneratedImage(
+            'generations',
+            generation.resultUrl,
+            `${generationId}-raw.png`,
+            undefined,
+            currentProject.id,
+          ).catch((error) => {
+            console.warn('[Liclick 3D Texture] Could not localize raw repaint result:', error);
+            return generation.resultUrl;
+          })
+        : Promise.resolve(undefined);
       void Promise.all([
         persistedResultUrlPromise,
+        persistedRawResultUrlPromise,
         persistedPaintMaskUrlPromise,
         persistedViewportReferenceUrlPromise,
       ])
         .then(
-          async ([persistedResultUrl, persistedPaintMaskUrl, persistedViewportReferenceUrl]) => {
+          async ([
+            persistedResultUrl,
+            persistedRawResultUrl,
+            persistedPaintMaskUrl,
+            persistedViewportReferenceUrl,
+          ]) => {
             const latestCompletedRecord =
               useGenerationStore
                 .getState()
@@ -2771,7 +2914,10 @@ export function GeneratePanel({
                 ...completedGeneration.metadata,
                 ...latestCompletedRecord.metadata,
                 maskUrl: persistedPaintMaskUrl,
-                rawResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+                rawResultUrl: persistedRawResultUrl ?? generation.resultUrl,
+                harmonizedResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+                seamHarmonizationVersion,
+                seamHarmonizationMode,
                 viewportReferenceUrl: persistedViewportReferenceUrl,
               },
             };
@@ -3041,6 +3187,10 @@ export function GeneratePanel({
     // click between two batched state updates: a repaint preview must never
     // fall through to the multi-view texture pipeline.
     if (displayedTexturePreviewMode === 'repaint') {
+      if (onRequestLocalImageGeneration) {
+        onRequestLocalImageGeneration();
+        return;
+      }
       await handleLocalRepaintGenerate();
       return;
     }
@@ -3451,12 +3601,12 @@ export function GeneratePanel({
         `${String(generation.metadata.cameraViewLabel ?? '当前')}视角缺少对应相机捕获，已停止投影以避免贴到错误方向。`,
       );
     }
-    // Preserve the generated image as the layer's coverage authority. The
-    // capture silhouette remains available to local repaint and surface-lock
-    // workflows, while ordinary projection uses source alpha plus depth.
-    const sourceResultUrl = generation.resultUrl.startsWith('http')
+    const readableResultUrl = generation.resultUrl.startsWith('http')
       ? await urlToDataUrl(generation.resultUrl)
       : generation.resultUrl;
+    // Keep generated colour/alpha intact. Geometry coverage is persisted as a
+    // separate mask and applied once by the projected material.
+    const projectedResultUrl = readableResultUrl;
     // Image download can outlive the editor route. Never apply the
     // old project's layer to whichever project became current in the meantime.
     if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
@@ -3468,7 +3618,7 @@ export function GeneratePanel({
       existingLayer: existing,
       layerId,
       generationCapture,
-      sourceResultUrl,
+      projectedResultUrl,
       targetProjectId,
       shouldPersist: true as const,
     };
@@ -3480,7 +3630,7 @@ export function GeneratePanel({
       existingLayer?: Layer;
       layerId: string;
       generationCapture: Capture;
-      sourceResultUrl: string;
+      projectedResultUrl: string;
       targetProjectId?: string;
       shouldPersist: true;
     },
@@ -3491,7 +3641,7 @@ export function GeneratePanel({
       existingLayer,
       generationCapture,
       layerId,
-      sourceResultUrl,
+      projectedResultUrl,
       targetProjectId,
     } = prepared;
     let persistedGenerationCapture = generationCapture;
@@ -3510,10 +3660,18 @@ export function GeneratePanel({
         captures.find((capture) => capture.id === generationCapture.id) ?? generationCapture;
     }
     let imageUrl: string;
+    let maskUrl: string | undefined;
     let depthUrl: string | undefined;
     try {
-      [imageUrl, depthUrl] = await Promise.all([
-        persistGeneratedImage('layers', sourceResultUrl, `${layerId}.png`),
+      [imageUrl, maskUrl, depthUrl] = await Promise.all([
+        persistGeneratedImage('layers', projectedResultUrl, `${layerId}.png`),
+        persistedGenerationCapture?.maskUrl
+          ? persistGeneratedImage(
+              'layers',
+              persistedGenerationCapture.maskUrl,
+              `${layerId}-mask.png`,
+            )
+          : Promise.resolve(undefined),
         persistedGenerationCapture?.depthUrl
           ? persistGeneratedImage(
               'layers',
@@ -3549,11 +3707,11 @@ export function GeneratePanel({
       layer = {
         ...currentExisting,
         imageUrl,
-        maskUrl: undefined,
-        maskSpace: undefined,
+        maskUrl,
+        maskSpace: maskUrl ? 'projection' : undefined,
         depthUrl,
         camera: persistedGenerationCapture.camera,
-        ignoreSourceAlpha: false,
+        ignoreSourceAlpha: true,
         projectionVisibilityPolicy: 'standard',
         contentRevision: (currentExisting.contentRevision ?? 0) + 1,
         isBaked: false,
@@ -3567,11 +3725,12 @@ export function GeneratePanel({
           resultUrl: imageUrl,
           metadata: {
             ...generation.metadata,
-            alphaMode: 'source-alpha',
+            alphaMode: 'geometry-mask-separated',
           },
         },
         {
           ...persistedGenerationCapture,
+          maskUrl: maskUrl ?? persistedGenerationCapture.maskUrl,
           depthUrl: depthUrl ?? persistedGenerationCapture.depthUrl,
         },
         persistedGenerationCapture.objectId,

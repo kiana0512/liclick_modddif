@@ -92,7 +92,15 @@ import {
 } from '@/services/workspaceApiClient';
 import { bakeSourceUnitScaleFactor } from '@/features/bake/bakeModelAlignment';
 import { useProjectStore } from '@/stores/projectStore';
-import { getModelFormatFromFileName } from '@/engine/loaders/loadModelFromFile';
+import {
+  getModelFormatFromFileName,
+  loadModelFromFile,
+} from '@/engine/loaders/loadModelFromFile';
+import {
+  assertModelTriangleLimit,
+  AUTO_UV_MODEL_TRIANGLE_LIMIT,
+  disposeRejectedModel,
+} from '@/engine/loaders/modelTriangleLimit';
 import type { SceneObject } from '@/types/model';
 import type {
   Project,
@@ -1584,10 +1592,12 @@ function AutoUvWorkspace({
   onContinueArtifact: (artifact: AssetArtifact) => Promise<void>;
 }) {
   const [asset, setAsset] = useState<File>();
+  const [validatingAsset, setValidatingAsset] = useState(false);
   const [resolution, setResolution] = useState<1024 | 2048 | 4096 | 8192>(2048);
   const padding = 10;
   const [publishing, setPublishing] = useState(false);
   const submissionKeyRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
+  const assetValidationRevisionRef = useRef(0);
   const perfLabEnabled = useMemo(
     () => new URLSearchParams(window.location.search).has('perfLab'),
     [],
@@ -1609,12 +1619,52 @@ function AutoUvWorkspace({
 
   useEffect(() => {
     if (!initialAsset) return;
-    setAsset(initialAsset);
+    void selectAsset(initialAsset);
+    // File identity is the handoff boundary. Callback changes must not restart
+    // an expensive browser-side parse for the same asset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialAsset]);
 
-  function selectAsset(file?: File) {
-    setAsset(file);
-    onAssetChange?.(file);
+  async function selectAsset(file?: File) {
+    const revision = assetValidationRevisionRef.current + 1;
+    assetValidationRevisionRef.current = revision;
+    if (!file) {
+      setValidatingAsset(false);
+      setAsset(undefined);
+      setError(undefined);
+      onAssetChange?.(undefined);
+      return;
+    }
+
+    setValidatingAsset(true);
+    setAsset(undefined);
+    setError(undefined);
+    onAssetChange?.(undefined);
+    let loaded: Awaited<ReturnType<typeof loadModelFromFile>> | undefined;
+    try {
+      loaded = await loadModelFromFile(file, {
+        normalize: false,
+        ground: false,
+        targetMaxDimension: 3,
+      });
+      assertModelTriangleLimit(loaded.root, AUTO_UV_MODEL_TRIANGLE_LIMIT);
+      if (assetValidationRevisionRef.current !== revision) return;
+      setAsset(file);
+      onAssetChange?.(file);
+    } catch (validationError) {
+      if (assetValidationRevisionRef.current !== revision) return;
+      setError(
+        validationError instanceof Error
+          ? validationError.message
+          : '无法检测模型面数，请更换模型后重试。',
+      );
+    } finally {
+      if (loaded) {
+        disposeRejectedModel(loaded.root);
+        if (loaded.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(loaded.sourceUrl);
+      }
+      if (assetValidationRevisionRef.current === revision) setValidatingAsset(false);
+    }
   }
 
   async function downloadUvFbx() {
@@ -1635,7 +1685,7 @@ function AutoUvWorkspace({
   }
 
   async function submit() {
-    if (!asset || busy || !serviceReady) return;
+    if (!asset || busy || validatingAsset || !serviceReady) return;
     onSubmissionInputsChange();
     const fingerprint = JSON.stringify({
       file: [asset.name, asset.size, asset.lastModified],

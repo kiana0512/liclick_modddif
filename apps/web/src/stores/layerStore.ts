@@ -132,9 +132,15 @@ function normalizeProjectedLayerName(layer: Layer) {
 
 function normalizeLayer(layer: Layer) {
   const imageUrl = typeof layer.imageUrl === 'string' ? layer.imageUrl : '';
+  const name = normalizeProjectedLayerName(layer);
+  const legacySingleViewPriority =
+    layer.type === 'projected' &&
+    Boolean(layer.generationId) &&
+    name === '投射贴图 · 当前视角' &&
+    !layer.replacementTargetLayerId;
   return {
     ...layer,
-    name: normalizeProjectedLayerName(layer),
+    name,
     imageUrl: imageUrl === legacyTransparentImage ? '' : imageUrl,
     adjustments: {
       hue: layer.adjustments?.hue ?? 0,
@@ -142,7 +148,18 @@ function normalizeLayer(layer: Layer) {
       lightness: layer.adjustments?.lightness ?? 0,
     },
     strength: layer.strength ?? 1,
+    projectionCompositeMode:
+      layer.projectionCompositeMode ??
+      (legacySingleViewPriority ? 'single-view-priority-v1' : undefined),
   };
+}
+
+function isSingleViewTextureGeneration(generation: Generation) {
+  return (
+    generation.mode === 'single' &&
+    generation.metadata.workflow === 'texture-map' &&
+    generation.metadata.multiview !== true
+  );
 }
 
 function getObjectMatrixWorld(generation: Generation) {
@@ -234,6 +251,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       depthUrl: capture?.depthUrl,
       depthEncoding: capture?.depthEncoding,
       generationId: generation.id,
+      projectionCoverageMode:
+        generation.metadata.alphaMode === 'geometry-mask-separated'
+          ? 'source-alpha-depth'
+          : undefined,
+      projectionCompositeMode: isSingleViewTextureGeneration(generation)
+        ? 'single-view-priority-v1'
+        : undefined,
       captureId: capture?.id ?? generation.captureId,
       visible: true,
       opacity: 1,

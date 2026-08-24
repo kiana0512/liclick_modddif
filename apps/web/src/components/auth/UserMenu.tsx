@@ -4,6 +4,7 @@ import { devLogin, logout } from '@/services/authApiClient';
 import { clearClientIdentity } from '@/services/clientIdentity';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { useAuthStore } from '@/stores/authStore';
+import { useGenerationStore } from '@/stores/generationStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
 import { useToastStore } from '@/stores/toastStore';
 
@@ -23,6 +24,7 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
   const refreshProviderStatus = useAuthStore((state) => state.refreshProviderStatus);
   const pushToast = useToastStore((state) => state.pushToast);
+  const generationRunning = useGenerationStore((state) => state.isGenerating);
 
   async function handleLogin(forceReauthorize = false) {
     if (busy) return;
@@ -74,6 +76,12 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   }
 
   async function handleLogout() {
+    if (
+      generationRunning &&
+      !window.confirm('当前生图任务仍在运行。退出登录可能导致任务进度或结果丢失，确定退出吗？')
+    ) {
+      return;
+    }
     await logout().catch(() => undefined);
     setAnonymous();
     onLogout();
@@ -86,6 +94,12 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   }
 
   async function handleUnlinkAccount() {
+    if (
+      generationRunning &&
+      !window.confirm('当前生图任务仍在运行。解除莉刻账号可能导致任务轮询或结果获取失败，确定解除吗？')
+    ) {
+      return;
+    }
     setOpen(false);
     clearClientIdentity();
     await handleLogout();

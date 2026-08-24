@@ -8,7 +8,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Plus } from 'lucide-react';
+import { AlertTriangle, Download, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -40,7 +40,11 @@ import {
   AutoBakeProgressBar,
   type AutoBakeProgress,
 } from '@/components/panels/AutoBakeProgressBar';
-import { GeneratePanel, type GeneratePanelTaskState } from '@/components/panels/GeneratePanel';
+import {
+  GeneratePanel,
+  type GeneratePanelTaskState,
+  type LocalImageGenerationSettledResult,
+} from '@/components/panels/GeneratePanel';
 import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel';
 import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
 import { ObjectTransformPanel } from '@/components/panels/ObjectTransformPanel';
@@ -95,6 +99,11 @@ import {
   syncProjectedLayerMaterialProjection,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
+import {
+  assertModelTriangleLimit,
+  disposeRejectedModel,
+  TEXTURE_MODEL_TRIANGLE_LIMIT,
+} from '@/engine/loaders/modelTriangleLimit';
 import {
   getModelImportBatchProgress,
   isModelImportProgressIndeterminate,
@@ -233,6 +242,7 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { shortcutMatches, type ShortcutActionId } from '@/stores/shortcutStore';
 import { useToastStore } from '@/stores/toastStore';
+import { runPaintMaskHistoryAction } from '@/engine/paint/paintMaskHistoryActions';
 import type { BakeProgress, BakeReport, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { LocalRepaintRuntime, MaskBitmap, Rect } from '@/types/localRepaint';
 import type { SerializedCamera } from '@/types/capture';
@@ -257,6 +267,10 @@ type EditorPageProps = {
   pendingBakeHandoff?: TextureBakeHandoff;
   showOnboarding?: boolean;
   isActive?: boolean;
+};
+
+type GenerationConflictDialogState = {
+  action: string;
 };
 
 declare global {
@@ -1022,6 +1036,7 @@ export function EditorPage({
   );
   const localRepaintToolRequestRevisionRef = useRef(0);
   const localRepaintObjectScopeRef = useRef<string>();
+  const preferredLocalRepaintGenerationIdRef = useRef<string>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
@@ -1041,6 +1056,9 @@ export function EditorPage({
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
   const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
   const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
+  const [cancelActiveGenerationRequestKey, setCancelActiveGenerationRequestKey] = useState(0);
+  const [generationConflictDialog, setGenerationConflictDialog] =
+    useState<GenerationConflictDialogState>();
   const [generatePanelTaskState, setGeneratePanelTaskState] = useState<GeneratePanelTaskState>({
     running: false,
     snapshotPreparing: false,
@@ -1307,39 +1325,57 @@ export function EditorPage({
     () =>
       generations.some((generation) => {
         if (generation.status !== 'queued' && generation.status !== 'running') return false;
+        // 局部重绘仍允许用户查看和编辑画布；这里只阻止重复提交生图任务。
+        if (isLocalRepaintGeneration(generation)) return false;
         const generationProjectId = generation.metadata.projectId;
         return typeof generationProjectId !== 'string' || generationProjectId === projectId;
       }),
     [generations, projectId],
   );
-  // Local repaint generation and content-aware repair own mutable paint/bake
-  // resources, so they retain the exclusive editor lock. Multiview generation
-  // uses narrower stage-specific guards below.
+  const generationConflictLocked =
+    localImageGenerationRunning || projectGenerationRunning || generatePanelTaskState.running;
+  // 局部生图和内容识别修补都依赖当前模型与遮罩快照，运行期间保持
+  // 编辑器互斥，避免用户继续变更后把结果写回到错误的项目状态。
   const editorTaskRunning = localImageGenerationRunning || contentAwareRepairRunning;
   const snapshotPreparationLocked = generatePanelTaskState.snapshotPreparing;
-  const modelMutationLocked =
-    editorTaskRunning || projectGenerationRunning || generatePanelTaskState.running;
+  const modelMutationLocked = editorTaskRunning || generationConflictLocked;
   const generationOperationLocked = modelMutationLocked;
   const editorToolsLocked = editorTaskRunning || snapshotPreparationLocked;
-  const notifyEditorTaskRunning = useCallback(() => {
+  const showGenerationConflict = useCallback((action = '当前操作') => {
+    setGenerationConflictDialog({ action });
+  }, []);
+  const notifyEditorTaskRunning = useCallback((action = '当前操作') => {
+    if (generationConflictLocked) {
+      showGenerationConflict(action);
+      return;
+    }
     pushToast({
       tone: 'info',
       title: '任务正在运行',
       description: contentAwareRepairRunning
         ? '正在进行内容识别补缝，完成前仅支持预览。'
-        : localImageGenerationRunning
-          ? '局部生图正在运行，完成前暂不能修改当前工程。'
-          : snapshotPreparationLocked
+        : snapshotPreparationLocked
             ? '正在准备多视角快照，模型变换和绘画会在快照完成后自动解锁。'
             : '生成任务仍绑定当前模型，暂不能删除、替换模型或启动另一项生成任务。',
       dedupeKey: 'editor-task-preview-only',
     });
   }, [
     contentAwareRepairRunning,
-    localImageGenerationRunning,
+    generationConflictLocked,
     pushToast,
+    showGenerationConflict,
     snapshotPreparationLocked,
   ]);
+
+  useEffect(() => {
+    if (!generationConflictLocked) return undefined;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [generationConflictLocked]);
 
   const handleLockedEditorInteraction = useCallback(
     (event: SyntheticEvent<HTMLElement>) => {
@@ -1721,6 +1757,10 @@ export function EditorPage({
     function handleUndoRedo(event: KeyboardEvent) {
       if (document.querySelector('[data-shortcut-dialog]')) return;
       if (document.querySelector('[data-editor-shortcut-scope]')) return;
+      const eventTarget = event.target instanceof Element ? event.target : null;
+      if (eventTarget?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) {
+        return;
+      }
       if (shortcutMatches(event, 'history.undo')) {
         event.preventDefault();
         if (editorTaskRunning) {
@@ -3089,6 +3129,10 @@ export function EditorPage({
   }
 
   function handleBackToProjects() {
+    if (generationConflictLocked) {
+      showGenerationConflict('返回项目列表');
+      return;
+    }
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
     if (!currentProject || currentProject.workspaceMode !== 'local-server') {
@@ -3293,17 +3337,25 @@ export function EditorPage({
   ) {
     try {
       onProgress?.({ phase: 'preparing', phaseProgress: 0 });
+      const parsedModel = await loadModelFromFile(
+        file,
+        {
+          normalize: importSettings.normalizeOnImport,
+          ground: importSettings.groundOnImport,
+          targetMaxDimension: 3,
+        },
+        resourceFiles,
+        (event) => onProgress?.(event),
+      );
+      try {
+        assertModelTriangleLimit(parsedModel.root, TEXTURE_MODEL_TRIANGLE_LIMIT);
+      } catch (limitError) {
+        disposeRejectedModel(parsedModel.root);
+        if (parsedModel.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(parsedModel.sourceUrl);
+        throw limitError;
+      }
       const loaded = placeImportedModelBesideScene(
-        await loadModelFromFile(
-          file,
-          {
-            normalize: importSettings.normalizeOnImport,
-            ground: importSettings.groundOnImport,
-            targetMaxDimension: 3,
-          },
-          resourceFiles,
-          (event) => onProgress?.(event),
-        ),
+        parsedModel,
         useSceneStore.getState().importedModels,
       );
       if (!isCurrentImport()) return false;
@@ -3589,6 +3641,10 @@ export function EditorPage({
 
   function confirmReferenceImageImport(role: ReferenceImportRole) {
     if (!pendingReferenceImport?.length) return;
+    if (generationConflictLocked) {
+      showGenerationConflict('导入参考图');
+      return;
+    }
     const classifiedReferences = pendingReferenceImport.map((reference, index) => ({
       ...reference,
       isPrimary: index === 0,
@@ -5002,6 +5058,10 @@ export function EditorPage({
   }
 
   function handleOpenBake(requestedHandoff?: TextureBakeHandoff) {
+    if (generationConflictLocked) {
+      showGenerationConflict('进入烘焙工作区');
+      return;
+    }
     if (publishingToBakeRef.current || manualBakeRunningRef.current) return;
     const objectId = requestedHandoff?.objectId ?? selectedObjectId ?? importedModel?.objectId;
     if (!project || !objectId) {
@@ -5033,6 +5093,14 @@ export function EditorPage({
       publishingToBakeRef.current = false;
       setPublishingToBake(false);
     }
+  }
+
+  function handleOpenUv() {
+    if (generationConflictLocked) {
+      showGenerationConflict('进入 UV 工作区');
+      return;
+    }
+    onOpenUv();
   }
 
   useEffect(() => {
@@ -5113,6 +5181,10 @@ export function EditorPage({
   });
 
   async function handlePublishToRetopology() {
+    if (generationConflictLocked) {
+      showGenerationConflict('进入拓扑工作区');
+      return;
+    }
     if (!project || publishingToRetopology) return;
     const sourceObjectId = selectedObjectId ?? importedModel?.objectId;
     if (!sourceObjectId) {
@@ -5448,10 +5520,29 @@ export function EditorPage({
           : undefined;
       const harmonizedResultUrl =
         typeof metadata.harmonizedResultUrl === 'string' ? metadata.harmonizedResultUrl : undefined;
+      const seamHarmonizationVersion =
+        typeof metadata.seamHarmonizationVersion === 'number'
+          ? metadata.seamHarmonizationVersion
+          : undefined;
       const reusableHarmonizedResultUrl =
-        metadata.seamHarmonizationVersion === 2 ? harmonizedResultUrl : undefined;
+        seamHarmonizationVersion === 2 ||
+        seamHarmonizationVersion === 3 ||
+        seamHarmonizationVersion === 4 ||
+        seamHarmonizationVersion === 5 ||
+        seamHarmonizationVersion === 6 ||
+        seamHarmonizationVersion === 7 ||
+        seamHarmonizationVersion === 8 ||
+        seamHarmonizationVersion === 9 ||
+        seamHarmonizationVersion === 10
+          ? harmonizedResultUrl
+          : undefined;
       const selectedResultUrl =
-        seamMode === 'enhanced' && reusableHarmonizedResultUrl
+        (seamHarmonizationVersion === 3 ||
+          seamHarmonizationVersion === 4 ||
+          seamHarmonizationVersion === 5) &&
+        reusableHarmonizedResultUrl
+          ? reusableHarmonizedResultUrl
+          : seamMode === 'enhanced' && reusableHarmonizedResultUrl
           ? reusableHarmonizedResultUrl
           : rawResultUrl;
       const cacheKey = [
@@ -5472,6 +5563,23 @@ export function EditorPage({
         seamHarmonizationVersion: undefined,
       };
       const promise = (async () => {
+        // Versions 3-5 are historical canonical full-frame composites. Version
+        // 6+ keep both the raw and enhanced results so the explicit legacy
+        // switch can still restore the old projection path.
+        if (
+          (seamHarmonizationVersion === 3 ||
+            seamHarmonizationVersion === 4 ||
+            seamHarmonizationVersion === 5) &&
+          reusableHarmonizedResultUrl
+        ) {
+          return {
+            imageUrl: reusableHarmonizedResultUrl,
+            persistentImageUrl: reusableHarmonizedResultUrl,
+            rawImageUrl: rawResultUrl,
+            seamMode,
+            seamHarmonizationVersion,
+          };
+        }
         // This is an explicit bypass, not an approximation of the old path.
         // Old projects without the archived flat-colour reference also retain
         // their exact legacy behaviour.
@@ -5482,7 +5590,7 @@ export function EditorPage({
             persistentImageUrl: reusableHarmonizedResultUrl,
             rawImageUrl: rawResultUrl,
             seamMode,
-            seamHarmonizationVersion: 2,
+            seamHarmonizationVersion,
           };
         }
         try {
@@ -5532,7 +5640,7 @@ export function EditorPage({
               ...latestGeneration.metadata,
               rawResultUrl: persistentRawResultUrl,
               harmonizedResultUrl: persistentImageUrl,
-              seamHarmonizationVersion: 2,
+              seamHarmonizationVersion: 10,
               seamHarmonizationBlendWidth: result.report.blendWidth,
               seamHarmonizationSampleCount: result.report.sampledPixels,
               seamHarmonizationProcessMs: result.processMs,
@@ -5544,7 +5652,7 @@ export function EditorPage({
             persistentImageUrl,
             rawImageUrl: persistentRawResultUrl,
             seamMode,
-            seamHarmonizationVersion: 2,
+            seamHarmonizationVersion: 10,
           };
         } catch (error) {
           // Enhancements are never allowed to make projection unavailable.
@@ -5616,14 +5724,21 @@ export function EditorPage({
 
   useEffect(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
-    const latestLocalRepaintGeneration = generations.find(
-      (generation) =>
-        generation.resultUrl &&
+    const matchesUsableLocalRepaintGeneration = (generation: Generation) =>
+      Boolean(generation.resultUrl) &&
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
-    );
+      generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []);
+    const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
+    const latestLocalRepaintGeneration =
+      (preferredGenerationId
+        ? generations.find(
+            (generation) =>
+              generation.id === preferredGenerationId &&
+              matchesUsableLocalRepaintGeneration(generation),
+          )
+        : undefined) ?? generations.find(matchesUsableLocalRepaintGeneration);
     if (!latestLocalRepaintGeneration?.resultUrl) return;
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
     // apply button should only bind an already warm source, regardless of which
@@ -5642,6 +5757,7 @@ export function EditorPage({
     generations,
     getLocalRepaintProjectionImage,
     importedModel?.objectId,
+    localImageGenerationSuccessKey,
     paintMaskDataUrl,
     project?.captures,
     projectId,
@@ -5662,14 +5778,21 @@ export function EditorPage({
     )
       return undefined;
     const preferredObjectId = selectedObjectId ?? importedModel.objectId;
-    const latestLocalRepaintGeneration = generations.find(
-      (generation) =>
-        generation.resultUrl &&
+    const matchesUsableLocalRepaintGeneration = (generation: Generation) =>
+      Boolean(generation.resultUrl) &&
         generation.status === 'succeeded' &&
         isLocalRepaintGeneration(generation) &&
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-        generationBelongsToObject(generation, preferredObjectId, project.captures),
-    );
+      generationBelongsToObject(generation, preferredObjectId, project.captures);
+    const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
+    const latestLocalRepaintGeneration =
+      (preferredGenerationId
+        ? generations.find(
+            (generation) =>
+              generation.id === preferredGenerationId &&
+              matchesUsableLocalRepaintGeneration(generation),
+          )
+        : undefined) ?? generations.find(matchesUsableLocalRepaintGeneration);
     if (!latestLocalRepaintGeneration?.resultUrl) return undefined;
     const generationCapture =
       project.captures.find((capture) => capture.id === latestLocalRepaintGeneration.captureId) ??
@@ -5723,6 +5846,8 @@ export function EditorPage({
           targetLayer = ensureLocalRepaintSessionLayer({
             objectId,
             generationId: latestLocalRepaintGeneration.id,
+            preserveActiveProjection: true,
+            preserveActiveLayer: true,
           }).layer;
           if (
             activeLayerId &&
@@ -5756,6 +5881,16 @@ export function EditorPage({
           // A pending idle task may have started before the user selected an
           // older repaint row. Historical-layer editing owns the source now;
           // never let "warm newest result" steal it back after image decoding.
+          return;
+        }
+        const latestSceneState = useSceneStore.getState();
+        const visibleProjectionSource = latestSceneState.localRepaintProjectionSource;
+        const visiblePreviewLayer = latestSceneState.localRepaintPreviewLayer;
+        if (
+          (visibleProjectionSource &&
+            visibleProjectionSource.targetLayerId !== currentTarget.id) ||
+          (!visibleProjectionSource && visiblePreviewLayer)
+        ) {
           return;
         }
         importedModel.group.updateMatrixWorld(true);
@@ -5859,10 +5994,12 @@ export function EditorPage({
     t,
   ]);
 
-  const handleLocalImageGenerationSettled = useCallback((succeeded: boolean) => {
+  const handleLocalImageGenerationSettled = useCallback((result: LocalImageGenerationSettledResult) => {
     useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
     setLocalImageGenerationRequested(false);
-    if (succeeded) setLocalImageGenerationSuccessKey((current) => current + 1);
+    if (!result.succeeded) return;
+    preferredLocalRepaintGenerationIdRef.current = result.generationId;
+    setLocalImageGenerationSuccessKey((current) => current + 1);
   }, []);
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
@@ -5902,14 +6039,21 @@ export function EditorPage({
         return;
       }
       const preferredObjectId = selectedObjectId ?? importedModel.objectId;
-      const latestLocalRepaintGeneration = generations.find(
-        (generation) =>
-          generation.resultUrl &&
+      const matchesUsableLocalRepaintGeneration = (generation: Generation) =>
+        Boolean(generation.resultUrl) &&
           generation.status === 'succeeded' &&
           isLocalRepaintGeneration(generation) &&
           (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
-          generationBelongsToObject(generation, preferredObjectId, project.captures),
-      );
+        generationBelongsToObject(generation, preferredObjectId, project.captures);
+      const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
+      const latestLocalRepaintGeneration =
+        (preferredGenerationId
+          ? generations.find(
+              (generation) =>
+                generation.id === preferredGenerationId &&
+                matchesUsableLocalRepaintGeneration(generation),
+            )
+          : undefined) ?? generations.find(matchesUsableLocalRepaintGeneration);
       const generationCapture = latestLocalRepaintGeneration
         ? (project.captures.find(
             (capture) => capture.id === latestLocalRepaintGeneration.captureId,
@@ -6892,7 +7036,7 @@ export function EditorPage({
 
       if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.clearMask')) {
         event.preventDefault();
-        sceneState.clearPaintMask();
+        if (!runPaintMaskHistoryAction('clear')) sceneState.clearPaintMask();
         return;
       }
       if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.duplicateLayer')) {
@@ -6910,7 +7054,7 @@ export function EditorPage({
       }
       if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.invertMask')) {
         event.preventDefault();
-        sceneState.invertPaintMask();
+        if (!runPaintMaskHistoryAction('invert')) sceneState.invertPaintMask();
         return;
       }
       if (currentWorkspaceMode === 'texture' && shortcutMatches(event, 'texture.newLayer')) {
@@ -7068,6 +7212,8 @@ export function EditorPage({
               modelInputRef.current?.click();
             }}
             importDisabled={modelImportBusy || modelMutationLocked}
+            mutationLocked={modelMutationLocked}
+            onMutationLocked={notifyEditorTaskRunning}
           />
         ),
         content: (
@@ -7104,7 +7250,9 @@ export function EditorPage({
         content: (
           <GeneratePanel
             localImageGenerationRequestKey={localImageGenerationRequestKey}
+            onRequestLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
+            cancelActiveGenerationRequestKey={cancelActiveGenerationRequestKey}
             // GeneratePanel owns its own local/multiview generation state. Do
             // not feed the toolbar-to-panel local request bridge back as an
             // external lock: the panel must be allowed to consume that exact
@@ -7153,6 +7301,8 @@ export function EditorPage({
             compact
             inputId="scene-reference-upload"
             filterBySelectedObject={false}
+            mutationLocked={modelMutationLocked}
+            onMutationLocked={notifyEditorTaskRunning}
           />
         ),
       },
@@ -7170,6 +7320,8 @@ export function EditorPage({
             onMergeVisibleProjectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
             adjustmentsOpen={layerAdjustmentsOpen}
             onToggleAdjustments={() => setLayerAdjustmentsOpen((open) => !open)}
+            mutationLocked={modelMutationLocked}
+            onMutationLocked={notifyEditorTaskRunning}
           />
         ),
         content: (
@@ -7186,6 +7338,8 @@ export function EditorPage({
               onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
                 void mergeLayersToUvLayer(layerIds, blankUvLayerId)
               }
+              mutationLocked={modelMutationLocked}
+              onMutationLocked={notifyEditorTaskRunning}
             />
           </div>
         ),
@@ -7363,7 +7517,7 @@ export function EditorPage({
               }
               onOpenTexture={() => undefined}
               onOpenRetopology={() => void handlePublishToRetopology()}
-              onOpenUv={onOpenUv}
+              onOpenUv={handleOpenUv}
               onOpenBake={() => void handleOpenBake()}
             />
           }
@@ -7511,6 +7665,62 @@ export function EditorPage({
           onLaunch={() => void handlePhotoshopLaunch()}
         />
       ) : null}
+      {generationConflictDialog
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[150] grid place-items-center bg-black/48 px-4"
+              onPointerDown={() => setGenerationConflictDialog(undefined)}
+            >
+              <section
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="generation-conflict-title"
+                aria-describedby="generation-conflict-description"
+                className="w-full max-w-[360px] rounded-xl border border-white/12 bg-[#18181f] p-4 text-white shadow-[0_20px_56px_rgba(0,0,0,0.56)]"
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-amber-400/10 text-amber-200">
+                    <AlertTriangle className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 id="generation-conflict-title" className="text-sm font-semibold">
+                      生图任务进行中
+                    </h2>
+                    <p
+                      id="generation-conflict-description"
+                      className="mt-1 text-xs leading-5 text-white/55"
+                    >
+                      任务完成前无法执行“{generationConflictDialog.action}”。
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-8 px-3 text-xs"
+                    onClick={() => setGenerationConflictDialog(undefined)}
+                  >
+                    继续等待
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    className="h-8 px-3 text-xs"
+                    onClick={() => {
+                      setGenerationConflictDialog(undefined);
+                      setCancelActiveGenerationRequestKey((key) => key + 1);
+                    }}
+                  >
+                    终止任务
+                  </Button>
+                </div>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
       {modelImportProgress
         ? createPortal(<AutoBakeProgressBar progress={modelImportProgress} />, document.body)
         : manualBakeProgress
