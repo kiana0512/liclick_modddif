@@ -38,6 +38,11 @@ try {
     }
   }
   if (!$Values.Contains("SESSION_SECRET")) { $Values["SESSION_SECRET"] = New-SessionSecret }
+  $Values["SERVER_PORT"] = "4517"
+  $Values["LICLICK_WORKSPACE_PORT"] = "4517"
+  $Values["LICLICK_PUBLIC_WORKSPACE_URL"] = "http://127.0.0.1:4517"
+  $Values["LICLICK_FRONTEND_URL"] = "http://127.0.0.1:5173"
+  $Values["LICLICK_ALLOWED_ORIGINS"] = "http://127.0.0.1:5173,http://localhost:5173"
   $Values["AUTH_MODE"] = "feishu-oauth"
   $Values["LICLICK_ENABLE_ATLAS_LOCAL_LOGIN"] = "false"
   $Values["FEISHU_OAUTH_CLIENT_ID"] = $AppId
