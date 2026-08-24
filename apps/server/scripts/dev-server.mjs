@@ -7,11 +7,28 @@ const children = new Set();
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
 const tscCli = path.resolve(serverRoot, '..', '..', 'node_modules', 'typescript', 'bin', 'tsc');
 const serverEntry = path.join(serverRoot, 'dist', 'index.js');
+const devEnvironmentFile = path.resolve(serverRoot, '..', '..', 'secrets', 'li3d-dev.env');
 let repairInProgress = false;
 let repairTimer;
 let restartTimer;
 let serverChild;
 let shuttingDown = false;
+
+function loadDevelopmentEnvironment() {
+  if (!fs.existsSync(devEnvironmentFile)) return;
+  for (const rawLine of fs.readFileSync(devEnvironmentFile, 'utf8').split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const separator = line.indexOf('=');
+    if (separator < 1) continue;
+    const key = line.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || process.env[key] !== undefined) continue;
+    process.env[key] = line.slice(separator + 1);
+  }
+  process.env.LICLICK_ENABLE_ATLAS_LOCAL_LOGIN = 'false';
+}
+
+loadDevelopmentEnvironment();
 
 function runInitialBuild({ fatal = true } = {}) {
   const result = spawnSync(process.execPath, [tscCli, '-p', 'tsconfig.json'], {

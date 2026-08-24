@@ -1,4 +1,4 @@
-import type { AuthMode, AuthUser, ProviderStatus } from './authApiClient';
+import type { AuthMode, AuthUser } from './authApiClient';
 import { getClientIdentity } from './clientIdentity';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 
@@ -19,7 +19,6 @@ export type IdentityBindStart = {
   user?: AuthUser;
   authMode?: AuthMode;
   message?: string;
-  atlas?: ProviderStatus['atlas'];
 };
 
 export class IdentityApiError extends Error {

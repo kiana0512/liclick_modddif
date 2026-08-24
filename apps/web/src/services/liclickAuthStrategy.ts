@@ -1,15 +1,10 @@
 import type { ProviderStatus } from "./authApiClient";
 
-export type LiclickAuthStrategy =
-  | "atlas-workspace"
-  | "unresolved";
+export type LiclickAuthStrategy = "atlas-workspace" | "unresolved";
 
 export function resolveLiclickAuthStrategy(
   providerStatus: ProviderStatus | undefined,
 ): LiclickAuthStrategy {
-  if (providerStatus?.feishuLoginProvider === "atlas-cli") {
-    return "atlas-workspace";
-  }
   if (
     providerStatus?.feishuLoginProvider === "web-oauth" ||
     providerStatus?.feishuLoginProvider === "idaas-jwt" ||
@@ -22,7 +17,7 @@ export function resolveLiclickAuthStrategy(
 }
 
 export function usesLocalAtlasLogin(
-  providerStatus: ProviderStatus | undefined,
+  _providerStatus: ProviderStatus | undefined,
 ) {
-  return providerStatus?.feishuLoginProvider === "atlas-cli";
+  return false;
 }

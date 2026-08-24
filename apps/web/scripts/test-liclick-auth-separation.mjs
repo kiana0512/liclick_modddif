@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -12,25 +13,16 @@ const server = await createServer({
   server: { middlewareMode: true },
 });
 
-const atlasProvider = {
+const webProvider = {
   authMode: 'feishu-oauth',
   devLoginEnabled: false,
   feishuOAuthEnabled: true,
   feishuConfigured: true,
-  feishuLoginProvider: 'atlas-cli',
-  atlasLoginMode: 'service-token',
+  feishuLoginProvider: 'web-oauth',
   missingConfigKeys: [],
 };
-const interactiveAtlasProvider = {
-  ...atlasProvider,
-  atlasLoginMode: 'interactive',
-};
-const webProvider = {
-  ...atlasProvider,
-  feishuLoginProvider: 'web-oauth',
-};
 const idaasProvider = {
-  ...atlasProvider,
+  ...webProvider,
   feishuLoginProvider: 'idaas-jwt',
 };
 const user = {
@@ -72,6 +64,12 @@ function assertCloudOnlyRequest(request, pathName) {
 }
 
 try {
+  const userMenuSource = await fs.readFile(path.join(root, 'src/components/auth/UserMenu.tsx'), 'utf8');
+  for (const requiredLabel of ['此电脑的莉刻账号', '更换', '解除当前电脑的莉刻账号']) {
+    assert.match(userMenuSource, new RegExp(requiredLabel));
+  }
+  assert.doesNotMatch(userMenuSource, /startAtlasLogin|pollAtlasLogin|localhost:20265/);
+
   globalThis.window = {
     setTimeout: globalThis.setTimeout,
     clearTimeout: globalThis.clearTimeout,
@@ -97,7 +95,7 @@ try {
   const { resolveLiclickAuthStrategy } = strategyModule;
   const { getLiclickTransportForProvider } = transportModule;
 
-  for (const provider of [atlasProvider, interactiveAtlasProvider, webProvider, idaasProvider]) {
+  for (const provider of [webProvider, idaasProvider]) {
     assert.equal(resolveLiclickAuthStrategy(provider), 'atlas-workspace');
     assert.deepEqual(getLiclickTransportForProvider(provider, cloudApiBase), {
       kind: 'workspace',
@@ -120,13 +118,13 @@ try {
   });
 
   const { useAuthStore } = await server.ssrLoadModule('/src/stores/authStore.ts');
-  useAuthStore.getState().setAnonymous('feishu-oauth', atlasProvider);
-  assert.equal(useAuthStore.getState().providerStatus.feishuLoginProvider, 'atlas-cli');
+  useAuthStore.getState().setAnonymous('feishu-oauth', webProvider);
+  assert.equal(useAuthStore.getState().providerStatus.feishuLoginProvider, 'web-oauth');
   useAuthStore.getState().setAuthenticated(user, 'feishu-oauth');
-  assert.equal(useAuthStore.getState().providerStatus.feishuLoginProvider, 'atlas-cli');
+  assert.equal(useAuthStore.getState().providerStatus.feishuLoginProvider, 'web-oauth');
   useAuthStore.getState().setAnonymous();
   assert.equal(useAuthStore.getState().authMode, 'feishu-oauth');
-  assert.equal(useAuthStore.getState().providerStatus.feishuLoginProvider, 'atlas-cli');
+  assert.equal(useAuthStore.getState().providerStatus.feishuLoginProvider, 'web-oauth');
 
   const { createLiclickApiClient } = await server.ssrLoadModule(
     '/src/services/liclickApiClient.ts',
@@ -146,7 +144,7 @@ try {
     resolution: '2K',
   };
 
-  for (const providerStatus of [atlasProvider, webProvider, idaasProvider]) {
+  for (const providerStatus of [webProvider, idaasProvider]) {
     const requests = [];
     globalThis.fetch = async (url, init = {}) => {
       requests.push(requestRecord(url, init));
@@ -160,7 +158,7 @@ try {
     assertCloudOnlyRequest(requests[0], '/api/liclick/generate-image');
   }
 
-  for (const providerStatus of [atlasProvider, webProvider, idaasProvider]) {
+  for (const providerStatus of [webProvider, idaasProvider]) {
     const requests = [];
     globalThis.fetch = async (url, init = {}) => {
       requests.push(requestRecord(url, init));

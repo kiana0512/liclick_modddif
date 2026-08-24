@@ -147,8 +147,8 @@ async function handleWorkspaceRequest(
       host: serverConfig.host,
       features: {
         webOAuthCookieSession:
-          serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled || serverConfig.atlasLocalLoginEnabled,
-        atlasCliLogin: serverConfig.atlasLocalLoginEnabled,
+          serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled,
+        atlasCliLogin: false,
         browserHttpUuidFallback: true,
         integratedWeb: serverConfig.serveWeb,
         identityBinding: true,

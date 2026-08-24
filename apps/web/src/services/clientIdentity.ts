@@ -60,6 +60,13 @@ export function getClientIdentity(): ClientIdentity {
   };
 }
 
+export function clearClientIdentity() {
+  memoryFallback.clear();
+  window.localStorage.removeItem(storageKeys.machine);
+  window.localStorage.removeItem(storageKeys.install);
+  window.sessionStorage.removeItem(storageKeys.session);
+}
+
 export function createEventId() {
   return `evt_${randomUuid()}`;
 }

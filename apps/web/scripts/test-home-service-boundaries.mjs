@@ -20,7 +20,8 @@ assert.match(texture, /浏览器本机运行绘制/);
 assert.match(texture, /badge="本机运行"/);
 assert.match(texture, /本机绘制 · 云端 AI · 账号保存/);
 assert.doesNotMatch(texture, /本地保存/);
-assert.match(texture, /局部重绘连接云端 ComfyUI/);
+assert.match(texture, /局部重绘连接云端生成服务/);
+assert.doesNotMatch(texture, /ComfyUI/);
 
 for (const [module, required] of [
   ['AUTO UV', /正式 UV 产物/],
@@ -37,5 +38,18 @@ for (const [module, required] of [
 const toolbox = moduleSource('PRODUCTION TOOLS');
 assert.match(toolbox, /工具箱/);
 assert.match(toolbox, /3ds Max · Blender · 独立工具/);
+
+const visualOrder = [
+  'TEXTURE PAINTING',
+  'AUTO UV',
+  'MODEL BAKING',
+  'PRODUCTION TOOLS',
+  'AI RETOPOLOGY',
+].map((eyebrow) => source.indexOf(`eyebrow="${eyebrow}"`));
+assert.deepEqual(
+  visualOrder,
+  [...visualOrder].sort((left, right) => left - right),
+  '新增模块不得挤动原版 UV、烘焙和工具箱的卡片位置',
+);
 
 console.log('首页五个原版功能入口与真实计算服务边界回归通过。');

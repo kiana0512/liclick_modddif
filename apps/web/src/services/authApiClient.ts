@@ -26,14 +26,8 @@ export type ProviderStatus = {
   devLoginEnabled: boolean;
   feishuOAuthEnabled: boolean;
   feishuConfigured: boolean;
-  feishuLoginProvider?: 'web-oauth' | 'idaas-jwt' | 'atlas-cli' | 'not-configured';
-  atlasLoginMode?: 'interactive' | 'service-token';
+  feishuLoginProvider?: 'web-oauth' | 'idaas-jwt' | 'not-configured';
   missingConfigKeys: string[];
-  atlas?: {
-    valid?: boolean;
-    expiresAt?: string;
-    message?: string;
-  };
 };
 
 async function requestJson<T>(
@@ -119,7 +113,6 @@ export function startFeishuLogin() {
     user?: AuthUser;
     authMode?: AuthMode;
     message?: string;
-    atlas?: ProviderStatus['atlas'];
   }>('/api/auth/feishu/start');
 }
 
@@ -131,7 +124,6 @@ export function pollFeishuLogin(loginId: string) {
     user?: AuthUser;
     authMode?: AuthMode;
     message?: string;
-    atlas?: ProviderStatus['atlas'];
   }>(`/api/auth/feishu/poll/${encodeURIComponent(loginId)}`);
 }
 

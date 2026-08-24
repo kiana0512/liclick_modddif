@@ -1,11 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 import { optionalAuth } from '../auth/authMiddleware.js';
-import {
-  getAtlasStatus,
-  pollAtlasLogin,
-  startAtlasLogin,
-} from '../auth/atlasAuthService.js';
 import { toPublicUser } from '../auth/currentUser.js';
 import { loginDevUser } from '../auth/devMockAuthService.js';
 import {
@@ -41,53 +36,22 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
   }
 
   if (request.method === 'GET' && route === 'provider-status') {
-    const user = await optionalAuth(request);
-    const shouldCheckAtlas =
-      Boolean(user?.atlasHomeDir) ||
-      (!serverConfig.feishuWebOAuthEnabled &&
-        !serverConfig.idaasJwtSsoEnabled &&
-        serverConfig.atlasLocalLoginEnabled &&
-        serverConfig.atlasLoginMode === 'service-token');
-    const atlasStatus = shouldCheckAtlas
-      ? await getAtlasStatus(user?.atlasHomeDir).catch((error) => ({
-          valid: false,
-          message: error instanceof Error ? error.message : 'Atlas status unavailable.',
-        }))
-      : {
-          valid: false,
-          message:
-            serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled
-              ? 'IDaaS/飞书网页登录已配置。'
-              : serverConfig.atlasLocalLoginEnabled
-                ? '莉刻/Atlas gateway 登录已启用。'
-                : '需要先完成飞书/IDaaS 登录。',
-        };
     sendJson(response, 200, {
       authMode: serverConfig.authMode,
       devLoginEnabled: serverConfig.authMode === 'dev-mock',
-      feishuOAuthEnabled:
-        serverConfig.feishuWebOAuthEnabled ||
-        serverConfig.idaasJwtSsoEnabled ||
-        serverConfig.atlasLocalLoginEnabled,
-      feishuConfigured:
-        serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled || serverConfig.atlasLocalLoginEnabled,
+      feishuOAuthEnabled: serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled,
+      feishuConfigured: serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled,
       feishuLoginProvider: serverConfig.feishuWebOAuthEnabled
         ? 'web-oauth'
         : serverConfig.idaasJwtSsoEnabled
           ? 'idaas-jwt'
-          : serverConfig.atlasLocalLoginEnabled
-            ? 'atlas-cli'
-            : 'not-configured',
+          : 'not-configured',
       feishuWebOAuthBlockedReason: serverConfig.feishuWebOAuthBlockedReason || undefined,
       insecureHttpCallback: serverConfig.feishuWebOAuthInsecureHttpCallbackActive,
-      atlasLoginMode: serverConfig.atlasLoginMode,
       missingConfigKeys:
         serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled
           ? []
-          : serverConfig.atlasLocalLoginEnabled
-            ? []
           : serverConfig.feishuWebOAuthMissingConfigKeys,
-      atlas: atlasStatus,
     });
     return true;
   }
@@ -140,51 +104,43 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
   }
 
   if (request.method === 'GET' && route === 'feishu' && segments[3] === 'start') {
-    let result: Awaited<ReturnType<typeof startAtlasLogin>> | ReturnType<typeof startWebOAuthLogin>;
+    let result: Awaited<ReturnType<typeof startWebOAuthLogin>>;
     try {
       if (serverConfig.feishuWebOAuthBlockedReason) {
         throw new Error(serverConfig.feishuWebOAuthBlockedReason);
       }
       if (serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled) {
         result = await startWebOAuthLogin();
-      } else if (serverConfig.atlasLocalLoginEnabled) {
-        result = await startAtlasLogin(request, response);
       } else {
         throw new Error(
-          `服务器未配置真实登录方式。请安装 @lilith/atlas-skillhub 或配置 Web OAuth/IDaaS。缺少 OAuth 配置：${serverConfig.feishuWebOAuthMissingConfigKeys.join(', ') || '未知'}`,
+          `服务器未配置真实飞书 Web OAuth/IDaaS 登录。缺少 OAuth 配置：${serverConfig.feishuWebOAuthMissingConfigKeys.join(', ') || '未知'}`,
         );
       }
     } catch (error) {
       sendJson(response, 409, {
-        error: error instanceof Error ? error.message : '莉刻/Atlas 登录不可用。',
-        atlasLoginMode: serverConfig.atlasLoginMode,
+        error: error instanceof Error ? error.message : '飞书 Web OAuth/IDaaS 登录不可用。',
       });
       return true;
     }
-    const user = 'user' in result ? result.user : undefined;
-    const loginId = 'loginId' in result ? result.loginId : undefined;
+    const loginId = result.loginId;
     if ('browserNonce' in result && typeof result.browserNonce === 'string') {
       setWebOAuthBrowserCookie(response, result.browserNonce);
     }
     sendJson(response, 200, {
-      user: user ? toPublicUser(user) : undefined,
       loginId,
-      redirectUrl: 'redirectUrl' in result ? result.redirectUrl : undefined,
+      redirectUrl: result.redirectUrl,
       authMode: 'feishu-oauth',
-      atlas: result.status,
-      message: result.message ?? '莉刻/Atlas 登录已可用。',
+      message: result.message ?? '飞书 Web OAuth/IDaaS 登录已可用。',
     });
     return true;
   }
 
   if (request.method === 'GET' && route === 'feishu' && segments[3] === 'poll' && segments[4]) {
     try {
-      if (!isWebOAuthLoginId(segments[4]) && !serverConfig.atlasLocalLoginEnabled) {
-        throw new Error('莉刻/Atlas gateway 登录已禁用。');
+      if (!isWebOAuthLoginId(segments[4])) {
+        throw new Error('无效的飞书 Web OAuth/IDaaS 登录任务。');
       }
-      const result = isWebOAuthLoginId(segments[4])
-        ? await pollWebOAuthLogin(segments[4])
-        : await pollAtlasLogin(segments[4], request, response);
+      const result = await pollWebOAuthLogin(segments[4]);
       sendJson(response, 200, {
         ...result,
         user: result.user ? toPublicUser(result.user) : undefined,
@@ -193,7 +149,6 @@ export async function handleAuthRoute(request: IncomingMessage, response: Server
     } catch (error) {
       sendJson(response, 409, {
         error: error instanceof Error ? error.message : '飞书/IDaaS 登录任务不可用。',
-        atlasLoginMode: serverConfig.atlasLoginMode,
       });
     }
     return true;

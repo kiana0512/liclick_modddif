@@ -34,7 +34,6 @@
     "smoke:bake-high-snapshot": "node scripts/smoke-bake-high-snapshot.mjs",
     "smoke:model-filenames": "node scripts/smoke-model-filenames.mjs",
     "smoke:retopology-filenames": "corepack pnpm --filter @liclick/server build && node scripts/smoke-retopology-filenames.mjs",
-    "smoke:local-liclick-callback": "corepack pnpm --filter @liclick/server build && node scripts/smoke-local-liclick-query-callback.mjs",
     "smoke:web": "corepack pnpm --filter @liclick/server build && corepack pnpm --filter @liclick/web build && node scripts/smoke-integrated-web.mjs",
     "simulate:cloud-deployment": "node scripts/simulate-cloud-deployment.mjs",
     "preview:real-auth": "powershell -ExecutionPolicy Bypass -File scripts/run-real-employee-auth-preview.ps1",

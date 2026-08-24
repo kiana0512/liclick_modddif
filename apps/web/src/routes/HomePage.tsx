@@ -443,7 +443,7 @@ export function HomePage({
             <ModuleCard
               eyebrow="TEXTURE PAINTING"
               title="贴图绘制"
-              description="浏览器本机运行绘制，局部重绘连接云端 ComfyUI。"
+              description="浏览器本机运行绘制，局部重绘连接云端生成服务。"
               detail="本机绘制 · 云端 AI · 账号保存"
               icon={Palette}
               accent="violet"
@@ -459,8 +459,8 @@ export function HomePage({
           <ModuleCard
             eyebrow="AUTO UV"
             title="自动展 UV"
-            description="上传模型至云端生产服务，完成自动切缝、展开、排布与质量门禁。"
-            detail="云端任务 · 正式 UV 产物 · 返回浏览器"
+            description="自动切缝、展开并完成 UV 排布。"
+            detail="云端服务 · 正式 UV 产物"
             icon={MapIcon}
             accent="emerald"
             visual="uv"
@@ -471,24 +471,10 @@ export function HomePage({
             layout="compact"
           />
           <ModuleCard
-            eyebrow="AI RETOPOLOGY"
-            title="自动拓扑 V6"
-            description="上传高模至云端生产服务，完成结构分析、自动拓扑与质量门禁。"
-            detail="云端任务 · 正式低模产物 · 返回浏览器"
-            icon={Network}
-            accent="blue"
-            visual="retopo"
-            badge="云端服务"
-            hoverAction="进入自动拓扑"
-            telemetryModule="auto_retopology"
-            onClick={onOpenRetopology}
-            layout="compact"
-          />
-          <ModuleCard
             eyebrow="MODEL BAKING"
             title="模型烘焙"
-            description="上传高低模与材质贴图至云端 Substance 服务，完成生产级 PBR 烘焙。"
-            detail="云端任务 · 1K / 2K / 4K · PBR 贴图返回浏览器"
+            description="完成高低模烘焙与 PBR 贴图输出。"
+            detail="云端服务 · PBR 贴图返回浏览器"
             icon={Flame}
             accent="orange"
             visual="bake"
@@ -510,6 +496,20 @@ export function HomePage({
             hoverAction="打开工具箱"
             telemetryModule="toolbox"
             onClick={onOpenToolbox}
+            layout="compact"
+          />
+          <ModuleCard
+            eyebrow="AI RETOPOLOGY"
+            title="自动拓扑 V6"
+            description="分析模型结构并完成自动拓扑。"
+            detail="云端服务 · 正式低模产物"
+            icon={Network}
+            accent="blue"
+            visual="retopo"
+            badge="云端服务"
+            hoverAction="进入自动拓扑"
+            telemetryModule="auto_retopology"
+            onClick={onOpenRetopology}
             layout="compact"
           />
         </div>

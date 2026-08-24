@@ -306,12 +306,6 @@ function parseCsv(value?: string) {
     .filter(Boolean);
 }
 
-function getAtlasLoginMode() {
-  const value = process.env.ATLAS_LOGIN_MODE?.trim();
-  if (value === 'interactive' || value === 'service-token') return value;
-  return 'interactive';
-}
-
 function parseKeyValueList(value?: string) {
   return Object.fromEntries(
     parseCsv(value)
@@ -350,6 +344,11 @@ const feishuWebOAuth = {
   clientId: process.env.FEISHU_OAUTH_CLIENT_ID ?? process.env.IDAAS_OAUTH_CLIENT_ID ?? '',
   clientSecret:
     process.env.FEISHU_OAUTH_CLIENT_SECRET ?? process.env.IDAAS_OAUTH_CLIENT_SECRET ?? '',
+  publicClient: booleanFlag(
+    process.env.FEISHU_OAUTH_PUBLIC_CLIENT,
+    false,
+    'FEISHU_OAUTH_PUBLIC_CLIENT',
+  ),
   authorizeUrl:
     process.env.FEISHU_OAUTH_AUTHORIZE_URL ??
     process.env.IDAAS_OAUTH_AUTHORIZE_URL ??
@@ -414,14 +413,17 @@ const idaasJwtSsoEffectiveServiceUrl =
 
 const feishuWebOAuthMissingConfigKeys = [
   ['FEISHU_OAUTH_CLIENT_ID or IDAAS_OAUTH_CLIENT_ID', feishuWebOAuth.clientId],
-  ['FEISHU_OAUTH_CLIENT_SECRET or IDAAS_OAUTH_CLIENT_SECRET', feishuWebOAuth.clientSecret],
+  [
+    'FEISHU_OAUTH_CLIENT_SECRET or IDAAS_OAUTH_CLIENT_SECRET (unless FEISHU_OAUTH_PUBLIC_CLIENT=true)',
+    feishuWebOAuth.clientSecret || feishuWebOAuth.publicClient,
+  ],
   ['FEISHU_OAUTH_AUTHORIZE_URL or IDAAS_OAUTH_AUTHORIZE_URL', feishuWebOAuth.authorizeUrl],
   ['FEISHU_OAUTH_TOKEN_URL or IDAAS_OAUTH_TOKEN_URL', feishuWebOAuth.tokenUrl],
 ].flatMap(([key, value]) => (value ? [] : [key]));
 
 const feishuWebOAuthConfigured = Boolean(
   feishuWebOAuth.clientId &&
-    feishuWebOAuth.clientSecret &&
+    (feishuWebOAuth.clientSecret || feishuWebOAuth.publicClient) &&
     feishuWebOAuth.authorizeUrl &&
     feishuWebOAuth.tokenUrl,
 );
@@ -540,7 +542,6 @@ const idaasJwtSsoBlockedReason =
 const idaasJwtSsoEnabled = Boolean(
   idaasJwtSso.enabled && idaasJwtSso.url && !idaasJwtSsoBlockedReason,
 );
-const atlasLocalLoginEnabled = process.env.LICLICK_ENABLE_ATLAS_LOCAL_LOGIN !== 'false';
 const sessionSecret = process.env.SESSION_SECRET ?? 'dev-only-change-me';
 const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -571,7 +572,6 @@ export const serverConfig = {
   publicPath: normalizePublicPath(process.env.LICLICK_PUBLIC_PATH),
   repoRoot,
   authMode: (process.env.AUTH_MODE ?? 'feishu-oauth') as 'dev-mock' | 'feishu-oauth',
-  atlasLoginMode: getAtlasLoginMode(),
   feishuWebOAuthConfigured,
   feishuWebOAuthEnabled,
   feishuWebOAuthBlockedReason,
@@ -598,7 +598,6 @@ export const serverConfig = {
   idaasJwtSso,
   idaasJwtSsoBlockedReason,
   idaasJwtSsoEnabled,
-  atlasLocalLoginEnabled,
   sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'liclick_3d_session',
   sessionSecret,
   sessionMaxAgeDays: Number(process.env.SESSION_MAX_AGE_DAYS ?? 14),

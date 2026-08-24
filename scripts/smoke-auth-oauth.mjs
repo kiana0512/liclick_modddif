@@ -91,7 +91,7 @@ async function main() {
     SESSION_SECRET: 'oauth-smoke-test-secret',
     SESSION_COOKIE_SECURE: 'false',
     FEISHU_OAUTH_CLIENT_ID: 'liclick-local-test',
-    FEISHU_OAUTH_CLIENT_SECRET: 'local-secret',
+    FEISHU_OAUTH_PUBLIC_CLIENT: 'true',
     FEISHU_OAUTH_AUTHORIZE_URL: `${mockIssuer}/authorize`,
     FEISHU_OAUTH_TOKEN_URL: `${mockIssuer}/token`,
     FEISHU_OAUTH_USERINFO_URL: `${mockIssuer}/userinfo`,
@@ -113,10 +113,16 @@ async function main() {
     if (status.payload.feishuLoginProvider !== 'web-oauth') {
       throw new Error(`Expected web-oauth provider, got ${JSON.stringify(status.payload)}`);
     }
+    if (status.payload.missingConfigKeys?.length) {
+      throw new Error(`Public-client OAuth was treated as incomplete: ${JSON.stringify(status.payload)}`);
+    }
 
     const start = await requestJson(`${serverOrigin}/api/auth/feishu/start`);
     if (!start.payload.loginId || !start.payload.redirectUrl) {
       throw new Error(`Login did not return loginId/redirectUrl: ${JSON.stringify(start.payload)}`);
+    }
+    if (start.payload.redirectUrl.includes('localhost:20265')) {
+      throw new Error(`Web OAuth unexpectedly fell back to an Atlas CLI callback: ${start.payload.redirectUrl}`);
     }
     const oauthBrowserCookie = cookiePair(
       start.response.headers.get('set-cookie'),
@@ -157,6 +163,48 @@ async function main() {
       throw new Error(`Session cookie did not authenticate: ${JSON.stringify(me.payload)}`);
     }
 
+    await requestJson(`${serverOrigin}/api/auth/logout`, {
+      method: 'POST',
+      headers: { cookie: sessionCookie },
+    });
+    const loggedOut = await requestJson(`${serverOrigin}/api/auth/me`, {
+      headers: { cookie: sessionCookie },
+    });
+    if (loggedOut.payload.authenticated) {
+      throw new Error(`Logout did not revoke the browser session: ${JSON.stringify(loggedOut.payload)}`);
+    }
+
+    const reloginStart = await requestJson(`${serverOrigin}/api/auth/feishu/start`);
+    if (
+      !reloginStart.payload.loginId ||
+      !reloginStart.payload.redirectUrl ||
+      reloginStart.payload.redirectUrl.includes('localhost:20265')
+    ) {
+      throw new Error(`Re-login did not start a Web OAuth flow: ${JSON.stringify(reloginStart.payload)}`);
+    }
+    const reloginBrowserCookie = cookiePair(
+      reloginStart.response.headers.get('set-cookie'),
+      'li3d_oauth_nonce',
+    );
+    const reloginAuthorize = await fetch(reloginStart.payload.redirectUrl, { redirect: 'manual' });
+    const reloginCallbackUrl = reloginAuthorize.headers.get('location');
+    if (!reloginCallbackUrl) throw new Error('Re-login authorize did not return a callback URL.');
+    const reloginCallback = await fetch(reloginCallbackUrl, {
+      redirect: 'manual',
+      headers: { cookie: reloginBrowserCookie },
+    });
+    const reloginSetCookie = reloginCallback.headers.get('set-cookie');
+    if (!reloginCallback.ok || !reloginSetCookie) {
+      throw new Error(`Re-login callback failed: status=${reloginCallback.status}`);
+    }
+    const reloginSessionCookie = cookiePair(reloginSetCookie, 'liclick_3d_session');
+    const reloggedIn = await requestJson(`${serverOrigin}/api/auth/me`, {
+      headers: { cookie: reloginSessionCookie },
+    });
+    if (!reloggedIn.payload.authenticated || reloggedIn.payload.user?.id !== me.payload.user.id) {
+      throw new Error(`Re-login did not restore the same user: ${JSON.stringify(reloggedIn.payload)}`);
+    }
+
     const crossBrowserStart = await requestJson(`${serverOrigin}/api/auth/feishu/start`);
     const crossBrowserCookie = cookiePair(
       crossBrowserStart.response.headers.get('set-cookie'),
@@ -182,7 +230,7 @@ async function main() {
       throw new Error('Failed browser verification did not consume the OAuth state.');
     }
 
-    console.log('\nOAuth smoke test passed.');
+    console.log('\nOAuth login, logout, and re-login smoke test passed.');
     console.log(JSON.stringify({ provider: status.payload.feishuLoginProvider, user: me.payload.user }, null, 2));
   } finally {
     await stopProcess(server);

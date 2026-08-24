@@ -39,7 +39,14 @@ try {
   }
   if (!$Values.Contains("SESSION_SECRET")) { $Values["SESSION_SECRET"] = New-SessionSecret }
   $Values["AUTH_MODE"] = "feishu-oauth"
-  $Values["LICLICK_ENABLE_ATLAS_LOCAL_LOGIN"] = "true"
+  $Values["LICLICK_ENABLE_ATLAS_LOCAL_LOGIN"] = "false"
+  $Values["FEISHU_OAUTH_CLIENT_ID"] = $AppId
+  $Values["FEISHU_OAUTH_CLIENT_SECRET"] = $PlainSecret
+  $Values["FEISHU_OAUTH_AUTHORIZE_URL"] = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+  $Values["FEISHU_OAUTH_TOKEN_URL"] = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+  $Values["FEISHU_OAUTH_USERINFO_URL"] = "https://open.feishu.cn/open-apis/authen/v1/user_info"
+  $Values["FEISHU_OAUTH_REDIRECT_URL"] = "http://127.0.0.1:4517/api/auth/feishu/callback"
+  $Values["FEISHU_OAUTH_ALLOW_INSECURE_HTTP_CALLBACK"] = "false"
   $Values["FEISHU_PLATFORM_APP_ID"] = $AppId
   $Values["FEISHU_PLATFORM_APP_SECRET"] = $PlainSecret
   $Values["FEISHU_DIRECTORY_ENRICHMENT_ENABLED"] = "true"

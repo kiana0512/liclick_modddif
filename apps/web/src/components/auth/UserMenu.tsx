@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Languages, LogIn, LogOut } from 'lucide-react';
+import { KeyRound, Languages, LogIn, LogOut, Unlink } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
+import { clearClientIdentity } from '@/services/clientIdentity';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { useAuthStore } from '@/stores/authStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
@@ -23,7 +24,7 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   const refreshProviderStatus = useAuthStore((state) => state.refreshProviderStatus);
   const pushToast = useToastStore((state) => state.pushToast);
 
-  async function handleLogin() {
+  async function handleLogin(forceReauthorize = false) {
     if (busy) return;
     setBusy(true);
     setLoginStatus('正在启动飞书授权...');
@@ -35,6 +36,7 @@ export function UserMenu({ onLogout }: UserMenuProps) {
         return;
       }
       const result = await runFeishuLoginFlow({
+        forceReauthorize,
         onStatus: (message) => {
           setLoginStatus(message);
           pushToast({
@@ -75,6 +77,18 @@ export function UserMenu({ onLogout }: UserMenuProps) {
     await logout().catch(() => undefined);
     setAnonymous();
     onLogout();
+  }
+
+  async function handleSwitchAccount() {
+    if (busy) return;
+    setOpen(false);
+    await handleLogin(true);
+  }
+
+  async function handleUnlinkAccount() {
+    setOpen(false);
+    clearClientIdentity();
+    await handleLogout();
   }
 
   if (!user) {
@@ -130,6 +144,31 @@ export function UserMenu({ onLogout }: UserMenuProps) {
           >
             <span className="inline-flex min-w-0 items-center gap-2"><Languages className="h-4 w-4 shrink-0" /><span className="truncate">{t('language')}</span></span>
             <span className="shrink-0 text-xs font-semibold text-liclick-pink">{language === 'zh' ? t('switchToEnglish') : t('switchToChinese')}</span>
+          </button>
+          <div className="my-1 h-px bg-white/28" />
+          <div className="flex items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/88">
+            <span className="inline-flex min-w-0 items-start gap-2">
+              <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0">
+                <span className="block truncate font-medium">此电脑的莉刻账号</span>
+                <span className="block truncate text-xs font-medium text-emerald-400">{user.email ?? user.displayName}</span>
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleSwitchAccount()}
+              disabled={busy}
+              className="shrink-0 text-xs font-semibold text-liclick-pink transition hover:text-white disabled:opacity-50"
+            >
+              更换
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleUnlinkAccount()}
+            className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
+          >
+            <Unlink className="h-4 w-4" />解除当前电脑的莉刻账号
           </button>
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />{t('logout')}

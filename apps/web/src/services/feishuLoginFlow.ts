@@ -56,21 +56,18 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
     }
 
     let started;
-    if (providerStatus?.feishuLoginProvider === 'atlas-cli') {
-      // Device-binding start is a browser OAuth endpoint. The local development
-      // server may instead authenticate through the already installed Atlas
-      // CLI/token cache; use the normal auth endpoint and bind the device after
-      // that endpoint has created the Feishu-authenticated browser session.
-      started = await startFeishuLogin();
-    } else {
-      try {
-        started = await startIdentityBinding();
-      } catch (error) {
-        if (!(error instanceof IdentityApiError && (error.status === 404 || error.status === 409))) {
-          throw error;
-        }
-        started = await startFeishuLogin();
+    try {
+      // Changing accounts must start a fresh server-side Web OAuth
+      // transaction. The binding endpoint intentionally restores an existing
+      // signed-in account and therefore cannot be used for account switching.
+      started = options.forceReauthorize
+        ? await startFeishuLogin()
+        : await startIdentityBinding();
+    } catch (error) {
+      if (!(error instanceof IdentityApiError && (error.status === 404 || error.status === 409))) {
+        throw error;
       }
+      started = await startFeishuLogin();
     }
     if (started.user) {
       await getIdentityStatus().catch(() => undefined);
@@ -96,11 +93,7 @@ export async function runFeishuLoginFlow(options: FeishuLoginFlowOptions = {}) {
       redirectUrl: started.redirectUrl,
     });
 
-    if (
-      started.redirectUrl &&
-      (providerStatus?.feishuLoginProvider === 'web-oauth' ||
-        providerStatus?.feishuLoginProvider === 'idaas-jwt')
-    ) {
+    if (started.redirectUrl) {
       // Web OAuth must also work in embedded browsers and mobile browsers
       // that hide or block popups. The callback redirects this same tab back
       // to the configured frontend after setting the HttpOnly session cookie.

@@ -187,6 +187,9 @@ function extractProfile(token: TokenResponse, userInfo?: OAuthClaims) {
 
 async function exchangeCodeForToken(code: string, codeVerifier?: string) {
   const config = serverConfig.feishuWebOAuth;
+  if (config.publicClient && !codeVerifier) {
+    throw new Error('飞书公开客户端必须使用 PKCE code_verifier。');
+  }
   const parameters: Record<string, string> = {
     grant_type: 'authorization_code',
     code,
@@ -197,7 +200,7 @@ async function exchangeCodeForToken(code: string, codeVerifier?: string) {
     accept: 'application/json',
   };
 
-  if (config.tokenAuthMethod === 'client_secret_basic') {
+  if (config.tokenAuthMethod === 'client_secret_basic' && !config.publicClient) {
     headers.authorization = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64')}`;
     parameters.client_id = config.clientId;
   } else {

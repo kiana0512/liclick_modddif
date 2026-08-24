@@ -43,6 +43,27 @@ for (const allowedFile of normalizedAllowlist) {
   }
 }
 
+const webAuthOnlyFiles = [
+  'apps/server/src/routes/auth.ts',
+  'apps/web/src/services/feishuLoginFlow.ts',
+];
+for (const relative of webAuthOnlyFiles) {
+  const source = fs.readFileSync(path.resolve(repoRoot, relative), 'utf8');
+  for (const forbidden of ['atlas-cli', 'startAtlasLogin', 'pollAtlasLogin', 'localhost:20265']) {
+    if (source.includes(forbidden)) {
+      violations.push(`${relative}: Web login must not reference ${forbidden}`);
+    }
+  }
+}
+
+const a100Setup = fs.readFileSync(path.resolve(repoRoot, 'scripts/setup-linux-a100.sh'), 'utf8');
+if (!a100Setup.includes('LICLICK_ENABLE_ATLAS_LOCAL_LOGIN="false"')) {
+  violations.push('scripts/setup-linux-a100.sh: Atlas local login must be unconditionally disabled');
+}
+if (a100Setup.includes('LICLICK_ENABLE_ATLAS_LOCAL_LOGIN="${LICLICK_ENABLE_ATLAS_LOCAL_LOGIN:-true}"')) {
+  violations.push('scripts/setup-linux-a100.sh: Atlas local login must never default to true');
+}
+
 if (violations.length > 0) {
   console.error('Cloud boundary check failed. New local-runtime dependencies are forbidden:');
   for (const violation of violations) console.error(`- ${violation}`);
