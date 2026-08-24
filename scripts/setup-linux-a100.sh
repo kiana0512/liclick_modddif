@@ -80,6 +80,21 @@ RETOPOLOGY_PREPARE_MAX_FILE_BYTES="${RETOPOLOGY_PREPARE_MAX_FILE_BYTES:-10737418
 RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES="${RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES:-2147483648}"
 LICLICK_AUTO_KILL_PORTS="${LICLICK_AUTO_KILL_PORTS:-1}"
 
+resolve_git_sha() {
+  if [[ -n "${LICLICK_GIT_SHA:-}" ]]; then
+    printf '%s' "${LICLICK_GIT_SHA}"
+    return
+  fi
+  git -C "${SOURCE_DIR}" rev-parse HEAD 2>/dev/null || printf '%s' development
+}
+
+LICLICK_GIT_SHA="$(resolve_git_sha)"
+LICLICK_RELEASE_VERSION="${LICLICK_RELEASE_VERSION:-$(
+  node -e "try{process.stdout.write(require('${SOURCE_DIR}/package.json').version)}catch{process.stdout.write('0.0.0')}"
+)}"
+LICLICK_RELEASE_ID="${LICLICK_RELEASE_ID:-${APP_NAME}-${LICLICK_GIT_SHA:0:8}}"
+LICLICK_BUILD_TIME="${LICLICK_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run as root: sudo PUBLIC_URL=https://your-domain.example bash scripts/setup-linux-a100.sh"
   exit 1
@@ -271,7 +286,14 @@ echo "==> Building backend"
 corepack pnpm --filter @liclick/server build
 
 echo "==> Building frontend for ${PUBLIC_URL}"
-VITE_PUBLIC_PATH="${PUBLIC_PATH}" VITE_LICLICK_WORKSPACE_API="${PUBLIC_URL}" corepack pnpm --filter @liclick/web build
+VITE_PUBLIC_PATH="${PUBLIC_PATH}" \
+VITE_LICLICK_WORKSPACE_API="${PUBLIC_URL}" \
+VITE_LICLICK_RELEASE_ID="${LICLICK_RELEASE_ID}" \
+VITE_LICLICK_GIT_SHA="${LICLICK_GIT_SHA}" \
+VITE_LICLICK_RELEASE_VERSION="${LICLICK_RELEASE_VERSION}" \
+VITE_LICLICK_BUILD_TIME="${LICLICK_BUILD_TIME}" \
+VITE_LICLICK_RUNTIME_MODE="cloud" \
+corepack pnpm --filter @liclick/web build
 
 env_value() {
   local key="$1"
@@ -356,6 +378,11 @@ LICLICK_FRONTEND_URL=${PUBLIC_URL}
 LICLICK_ALLOWED_ORIGINS=${PUBLIC_URL},http://127.0.0.1,http://localhost
 LICLICK_SERVE_WEB=${LICLICK_SERVE_WEB}
 LICLICK_WEB_DIST_DIR=${LICLICK_WEB_DIST_DIR}
+LICLICK_RELEASE_ID=${LICLICK_RELEASE_ID}
+LICLICK_GIT_SHA=${LICLICK_GIT_SHA}
+LICLICK_RELEASE_VERSION=${LICLICK_RELEASE_VERSION}
+LICLICK_BUILD_TIME=${LICLICK_BUILD_TIME}
+LICLICK_RUNTIME_MODE=cloud
 AUTH_MODE=feishu-oauth
 ATLAS_LOGIN_MODE=${ATLAS_LOGIN_MODE}
 LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=${LICLICK_ENABLE_ATLAS_LOCAL_LOGIN}
