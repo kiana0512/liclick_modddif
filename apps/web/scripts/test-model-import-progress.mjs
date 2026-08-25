@@ -33,6 +33,14 @@ try {
     [residentModel],
     'Reopening the same project must retain its fully loaded model and GPU material inputs.',
   );
+  assert.deepEqual(
+    restoreReuse.getReusableProjectModels(
+      [persistedObject],
+      [{ ...residentModel, restoreStage: 'proxy' }],
+    ),
+    [{ ...residentModel, restoreStage: 'proxy' }],
+    'Switching back to texture painting must reuse a resident proxy instead of reparsing the model.',
+  );
   assert.equal(
     restoreReuse.getReusableFullProjectModels(
       [persistedObject],
@@ -50,9 +58,7 @@ try {
     'A revised model asset must never reuse stale geometry or textures.',
   );
 
-  const progress = await server.ssrLoadModule(
-    '/src/engine/loaders/modelImportProgress.ts',
-  );
+  const progress = await server.ssrLoadModule('/src/engine/loaders/modelImportProgress.ts');
   const events = [
     { phase: 'preparing', phaseProgress: 0 },
     { phase: 'preparing', phaseProgress: 1 },

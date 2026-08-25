@@ -60,7 +60,6 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
-import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { createId } from '@/utils/id';
 import { Grid } from './Grid';
 import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
@@ -464,13 +463,20 @@ type LoadedPreviewTextureState = {
 
 function useLoadedPreviewTextureState(
   imageUrl?: string,
-  options?: { preserveWhenEmpty?: boolean; colorSpace?: THREE.ColorSpace },
+  options?: {
+    preserveWhenEmpty?: boolean;
+    colorSpace?: THREE.ColorSpace;
+    maxSize?: number;
+  },
 ): LoadedPreviewTextureState {
   const [loadedState, setLoadedState] = useState<{
     key: string;
     texture: THREE.Texture;
   }>();
   const { gl } = useThree();
+  const requestKey = imageUrl
+    ? `${imageUrl}::${options?.maxSize ? `proxy-${options.maxSize}` : 'full'}`
+    : '';
 
   useEffect(() => {
     if (!imageUrl) {
@@ -485,10 +491,10 @@ function useLoadedPreviewTextureState(
       let lastError: unknown;
       for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
         try {
-          const texture = await loadPreviewTexture(imageUrl);
+          const texture = await loadPreviewTexture(imageUrl, { maxSize: options?.maxSize });
           if (options?.colorSpace) texture.colorSpace = options.colorSpace;
           await uploadPreviewTextureInStripes(gl, texture);
-          if (!cancelled) setLoadedState({ key: imageUrl, texture });
+          if (!cancelled) setLoadedState({ key: requestKey, texture });
           return;
         } catch (error) {
           lastError = error;
@@ -509,27 +515,33 @@ function useLoadedPreviewTextureState(
     return () => {
       cancelled = true;
     };
-  }, [gl, imageUrl, options?.colorSpace, options?.preserveWhenEmpty]);
+  }, [gl, imageUrl, options?.colorSpace, options?.maxSize, options?.preserveWhenEmpty, requestKey]);
 
   // `prewarmPreviewTextures` publishes the exact texture into the resident
   // cache before the layer eye is committed. Read that cache synchronously on
   // the first render of the new URL instead of waiting one extra React effect
   // turn; that turn used to expose the reserved white sampler.
-  const residentTexture = getReadyResidentPreviewTexture(imageUrl, gl);
-  const state = residentTexture ? { key: imageUrl!, texture: residentTexture } : loadedState;
+  const residentTexture = getReadyResidentPreviewTexture(imageUrl, gl, {
+    maxSize: options?.maxSize,
+  });
+  const state = residentTexture ? { key: requestKey, texture: residentTexture } : loadedState;
   const texture = state?.texture;
   if (texture && options?.colorSpace) texture.colorSpace = options.colorSpace;
   return {
     texture,
     key: state?.key,
-    requestedKey: imageUrl ?? '',
-    ready: Boolean(imageUrl && texture && state?.key === imageUrl),
+    requestedKey: requestKey,
+    ready: Boolean(imageUrl && texture && state?.key === requestKey),
   };
 }
 
 function useLoadedPreviewTexture(
   imageUrl?: string,
-  options?: { preserveWhenEmpty?: boolean; colorSpace?: THREE.ColorSpace },
+  options?: {
+    preserveWhenEmpty?: boolean;
+    colorSpace?: THREE.ColorSpace;
+    maxSize?: number;
+  },
 ) {
   return useLoadedPreviewTextureState(imageUrl, options).texture;
 }
@@ -568,7 +580,10 @@ type CompositedUvTextureState = {
   ready: boolean;
 };
 
-function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState {
+function useCompositedUvTextureState(
+  layers: Layer[],
+  options?: { maxSize?: number },
+): CompositedUvTextureState {
   const [textureState, setTextureState] = useState<{
     key: string;
     texture: THREE.Texture;
@@ -581,7 +596,10 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
   }>();
   const currentTextureRef = useRef<THREE.Texture>();
   const textureCacheRef = useRef(new Map<string, THREE.Texture>());
-  const layerKey = useMemo(() => uvLayerStackPreviewSignature(layers), [layers]);
+  const layerKey = useMemo(
+    () => `${uvLayerStackPreviewSignature(layers)}::${options?.maxSize ?? 'full'}`,
+    [layers, options?.maxSize],
+  );
   const stableLayers = useStableValueBySignature(layers, layerKey);
 
   useFrame(() => {
@@ -733,8 +751,11 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
         );
         // Keep the composited material at the source UV resolution. Interactive paint and
         // eraser work must never trade the user's texture resolution for viewport speed.
-        let width = sourceWidth;
-        let height = sourceHeight;
+        const compositeScale = options?.maxSize
+          ? Math.min(1, options.maxSize / Math.max(sourceWidth, sourceHeight))
+          : 1;
+        let width = Math.max(1, Math.round(sourceWidth * compositeScale));
+        let height = Math.max(1, Math.round(sourceHeight * compositeScale));
         const sortedSources = [...sources].sort((left, right) =>
           compareUvLayersForComposition(left.layer, right.layer, 'bottom-to-top'),
         );
@@ -780,14 +801,27 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
                     ),
                     workerOwnerKeyRef.current,
                   );
-              if (staticSources) {
-                width = bitmap.width;
-                height = bitmap.height;
+              if (options?.maxSize && bitmap.width > options.maxSize) {
+                const resizedScale = options.maxSize / Math.max(bitmap.width, bitmap.height);
+                const resizedBitmap = await createImageBitmap(bitmap, {
+                  resizeWidth: Math.max(1, Math.round(bitmap.width * resizedScale)),
+                  resizeHeight: Math.max(1, Math.round(bitmap.height * resizedScale)),
+                  resizeQuality: 'medium',
+                });
+                bitmap.close();
+                nextTexture = new THREE.Texture(resizedBitmap);
+                width = resizedBitmap.width;
+                height = resizedBitmap.height;
+              } else {
+                if (staticSources) {
+                  width = bitmap.width;
+                  height = bitmap.height;
+                }
+                nextTexture = new THREE.Texture(bitmap);
               }
               document.body.dataset.uvCompositeDecodeBackend = staticSources
                 ? 'worker-fetch-image-bitmap'
                 : 'main-thread-live-bitmap';
-              nextTexture = new THREE.Texture(bitmap);
             } else {
               document.body.dataset.uvCompositeBackend = 'main-thread-fallback';
               const canvas = document.createElement('canvas');
@@ -886,7 +920,7 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
       cancelled = true;
       runtimeRef.current = undefined;
     };
-  }, [gl, layerKey, stableLayers]);
+  }, [gl, layerKey, options?.maxSize, stableLayers]);
 
   return {
     texture: textureState?.texture,
@@ -896,8 +930,8 @@ function useCompositedUvTextureState(layers: Layer[]): CompositedUvTextureState 
   };
 }
 
-function useCompositedUvTexture(layers: Layer[]) {
-  return useCompositedUvTextureState(layers).texture;
+function useCompositedUvTexture(layers: Layer[], options?: { maxSize?: number }) {
+  return useCompositedUvTextureState(layers, options).texture;
 }
 
 function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
@@ -1129,10 +1163,12 @@ function TopologyWireframeOverlay({
 
 function ImportedModel({
   importedModel,
+  onSelect,
   showSelectionGlow,
   workspaceVisible,
 }: {
   importedModel: ModelLoadResult;
+  onSelect: (objectId: string) => void;
   showSelectionGlow: boolean;
   workspaceVisible: boolean;
 }) {
@@ -1143,7 +1179,6 @@ function ImportedModel({
     (state) =>
       state.objects.find((object) => object.id === importedModel.objectId)?.visible ?? true,
   );
-  const selectObject = useSceneStore((state) => state.selectObject);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
@@ -1196,7 +1231,11 @@ function ImportedModel({
     texture?: THREE.Texture;
     opacity: number;
   }>({ opacity: 0 });
-  const texturedRestoreReady = !importedModel.restoreStage || importedModel.restoreStage === 'full';
+  const proxyTextureMaxSize = importedModel.restoreStage === 'proxy' ? 512 : undefined;
+  const texturedRestoreReady =
+    !importedModel.restoreStage ||
+    importedModel.restoreStage === 'proxy' ||
+    importedModel.restoreStage === 'full';
   const layerRenderSignature = useLayerStore((state) =>
     importedModelLayerRenderSignature(
       mergeAuthoritativeLocalRepaintLayers(
@@ -1272,8 +1311,7 @@ function ImportedModel({
     // same React commit so progressive restore cannot produce a one-frame wipe.
     !hasAuthoritativeVisibleTextureLayer ||
     importedModel.restoreStage === 'bounds' ||
-    (importedModel.restoreStage === 'outline' &&
-      importedModel.group.userData.liclickRestoreOutlinePrepared === true) ||
+    importedModel.group.userData.liclickRestoreOutlinePrepared === true ||
     initialMaterialPresentationReadyForGroup;
   const revealInitialMaterialPresentation = useCallback(() => {
     // Progressive restore replaces the Group while retaining the same object id.
@@ -2170,7 +2208,9 @@ function ImportedModel({
             let lastError: unknown;
             for (let attempt = 0; attempt < 3; attempt += 1) {
               try {
-                return await loadPreviewTexture(layer.imageUrl);
+                return await loadPreviewTexture(layer.imageUrl, {
+                  maxSize: proxyTextureMaxSize,
+                });
               } catch (error) {
                 lastError = error;
                 if (attempt < 2) {
@@ -2225,7 +2265,7 @@ function ImportedModel({
     return () => {
       cancelled = true;
     };
-  }, [gl, residentUvToggleSignature, stableResidentUvToggleLayers]);
+  }, [gl, proxyTextureMaxSize, residentUvToggleSignature, stableResidentUvToggleLayers]);
   // Reserve the UV handoff sampler in the initial projected material. The first
   // projected-to-UV conversion can then bind its already-uploaded texture and
   // hide the source projections in one commit, without compiling a replacement
@@ -2354,14 +2394,11 @@ function ImportedModel({
     );
     return active ? [active] : [];
   }, [activeLayerId, previewProjectionInputs, visibleLocalRepaintPreviewLayer]);
-  const progressiveBackgroundInputs = useMemo(
-    () => {
-      if (activeProjectedPreviewInputs.length === 0) return previewProjectionInputs;
-      const activeIds = new Set(activeProjectedPreviewInputs.map((layer) => layer.layerId));
-      return previewProjectionInputs.filter((layer) => !activeIds.has(layer.layerId));
-    },
-    [activeProjectedPreviewInputs, previewProjectionInputs],
-  );
+  const progressiveBackgroundInputs = useMemo(() => {
+    if (activeProjectedPreviewInputs.length === 0) return previewProjectionInputs;
+    const activeIds = new Set(activeProjectedPreviewInputs.map((layer) => layer.layerId));
+    return previewProjectionInputs.filter((layer) => !activeIds.has(layer.layerId));
+  }, [activeProjectedPreviewInputs, previewProjectionInputs]);
   const progressiveBackgroundSignature = useMemo(
     () =>
       `${importedObjectId ?? 'no-object'}:${RESOLUTION_TO_SIZE[resolution]}:${progressiveBackgroundInputs
@@ -2540,10 +2577,11 @@ function ImportedModel({
   const stableVisibleUvLayers = useStableValueBySignature(visibleUvLayers, visibleUvLayerSignature);
   const residentContentAwareUnderlayState = useLoadedPreviewTextureState(
     residentContentAwareUvUnderlayLayer?.imageUrl,
-    { preserveWhenEmpty: true },
+    { preserveWhenEmpty: true, maxSize: proxyTextureMaxSize },
   );
   const compositedContentAwareUnderlayState = useCompositedUvTextureState(
     visibleCompositedContentAwareUvUnderlayLayers,
+    { maxSize: proxyTextureMaxSize },
   );
   const exactContentAwareUnderlayTexture = residentContentAwareUvUnderlayLayer
     ? residentContentAwareUnderlayState.ready
@@ -2646,7 +2684,9 @@ function ImportedModel({
       : undefined;
   }, [importedObjectId, project, resolution, stableVisibleProjectedLayers]);
   const previewBakedTextureRecord = exactBakedTextureRecord;
-  const loadedBakedTexture = useLoadedPreviewTexture(previewBakedTextureRecord?.imageUrl);
+  const loadedBakedTexture = useLoadedPreviewTexture(previewBakedTextureRecord?.imageUrl, {
+    maxSize: proxyTextureMaxSize,
+  });
   const liveTopUvLayer = useMemo(() => {
     const topLayer = stableVisibleUvLayers[0];
     if (
@@ -2701,7 +2741,9 @@ function ImportedModel({
     : compositedUvLayers.length > 0
       ? 1
       : 0;
-  const compositedUvTextureState = useCompositedUvTextureState(compositedUvLayers);
+  const compositedUvTextureState = useCompositedUvTextureState(compositedUvLayers, {
+    maxSize: proxyTextureMaxSize,
+  });
   const residentAllVisibleUvLayers = useMemo(
     () =>
       residentUvTogglePrewarmReady && stableResidentUvToggleLayers.length > 1
@@ -2715,13 +2757,16 @@ function ImportedModel({
     () => residentUvVisibilityKey(residentAllVisibleUvLayers),
     [residentAllVisibleUvLayers],
   );
-  const residentAllVisibleUvTexture = useCompositedUvTexture(residentAllVisibleUvLayers);
+  const residentAllVisibleUvTexture = useCompositedUvTexture(residentAllVisibleUvLayers, {
+    maxSize: proxyTextureMaxSize,
+  });
   const directUvTextureState = useLoadedPreviewTextureState(directUvLayer?.imageUrl, {
     preserveWhenEmpty: true,
+    maxSize: proxyTextureMaxSize,
   });
   const directUvRenderedColorMaskTexture = useLoadedPreviewTexture(
     directUvLayer?.renderedColorMaskUrl,
-    { colorSpace: THREE.NoColorSpace },
+    { colorSpace: THREE.NoColorSpace, maxSize: proxyTextureMaxSize },
   );
   const exactUvTexture = directUvLayer
     ? directUvTextureState.ready
@@ -2805,6 +2850,7 @@ function ImportedModel({
     liveTopUvLayer && !getLiveProjectedCanvasState(liveTopUvLayer.imageUrl)
       ? liveTopUvLayer.imageUrl
       : undefined,
+    { maxSize: proxyTextureMaxSize },
   );
   const liveTopUvTexture = useMemo(
     () =>
@@ -2877,7 +2923,10 @@ function ImportedModel({
     Boolean(previewBakedTextureRecord) &&
     !visibleStackNeedsLivePreview &&
     !hasResidentProjectedLayers;
-  const canPreviewProjectedLayers = !visibleStackHasBakedPreview && hasResidentProjectedLayers;
+  const canPreviewProjectedLayers =
+    importedModel.restoreStage !== 'proxy' &&
+    !visibleStackHasBakedPreview &&
+    hasResidentProjectedLayers;
   const previewLighting = useMemo(
     () =>
       getPreviewLighting({
@@ -3563,6 +3612,19 @@ function ImportedModel({
         // present one canonical flat material and keep it resident until the
         // complete UV/projected material replaces it. Bounds placeholders and
         // partial one-camera projections remain gated out.
+        revealInitialMaterialPresentation();
+        return;
+      }
+      if (
+        model.restoreStage === 'proxy' &&
+        !loadedUvTexture &&
+        !loadedBakedTexture &&
+        !loadedContentAwareUnderlayTexture &&
+        !liveTopUvTexture
+      ) {
+        // Keep the prepared neutral material until a complete proxy sampler is
+        // resident. Publishing an empty PBR/UV material here caused the dark
+        // flash seen between the white membrane and the first texture frame.
         revealInitialMaterialPresentation();
         return;
       }
@@ -4734,7 +4796,7 @@ function ImportedModel({
         visible={initialMaterialPresentationVisibleForGroup}
         onClick={(event: { stopPropagation: () => void }) => {
           event.stopPropagation();
-          selectObject(importedModel.objectId);
+          onSelect(importedModel.objectId);
         }}
       />
       {initialMaterialPresentationReadyForGroup && importedModel.restoreStage !== 'bounds' && (
@@ -4749,11 +4811,9 @@ function ImportedModel({
 
 export function SceneRoot() {
   const importedModels = useSceneStore((state) => state.importedModels);
-  const importedModel = useSceneStore((state) => state.importedModel);
-  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const selectObject = useSceneStore((state) => state.selectObject);
+  const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const displayMode = useSceneStore((state) => state.displayMode);
-  const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
   const pbrEnvironmentIntensity = useSettingsStore((state) => state.pbrEnvironmentIntensity);
@@ -4778,15 +4838,21 @@ export function SceneRoot() {
   const ambientIntensity = previewLighting.ambientIntensity;
   const keyIntensity = previewLighting.keyLightIntensity;
   const fillIntensity = previewLighting.ambientIntensity * 0.52;
-  const activeObjectId = selectedObjectId ?? importedModel?.objectId ?? importedModels[0]?.objectId;
-  const isSceneWorkspace = workspaceMode === 'scene' || workspaceMode === 'export';
-  const workspaceVisibleModels = isSceneWorkspace
-    ? importedModels
-    : importedModels.filter((model) => model.objectId === activeObjectId);
+  const workspaceVisibleModels = importedModels;
   const workspaceVisibleModelIds = new Set(workspaceVisibleModels.map((model) => model.objectId));
-  const showSelectionGlow = isSceneWorkspace;
+  const showSelectionGlow = true;
   const hasProgressiveRestore = workspaceVisibleModels.some(
-    (model) => model.restoreStage && model.restoreStage !== 'full',
+    (model) => model.restoreStage === 'bounds' || model.restoreStage === 'outline',
+  );
+  const selectImportedObject = useCallback(
+    (objectId: string) => {
+      selectObject(objectId);
+      updateCurrentProject({
+        objects: useSceneStore.getState().objects,
+        activeObjectId: objectId,
+      });
+    },
+    [selectObject, updateCurrentProject],
   );
 
   return (
@@ -4804,6 +4870,7 @@ export function SceneRoot() {
         <ImportedModel
           key={model.objectId}
           importedModel={model}
+          onSelect={selectImportedObject}
           showSelectionGlow={showSelectionGlow}
           workspaceVisible={workspaceVisibleModelIds.has(model.objectId)}
         />

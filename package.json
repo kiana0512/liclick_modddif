@@ -37,6 +37,7 @@
     "smoke:web": "corepack pnpm --filter @liclick/server build && corepack pnpm --filter @liclick/web build && node scripts/smoke-integrated-web.mjs",
     "simulate:cloud-deployment": "node scripts/simulate-cloud-deployment.mjs",
     "preview:real-auth": "powershell -ExecutionPolicy Bypass -File scripts/run-real-employee-auth-preview.ps1",
+    "preview:real-local": "powershell -ExecutionPolicy Bypass -File scripts/run-real-local-preview.ps1",
     "preview:real-auth:simulated-asset": "powershell -ExecutionPolicy Bypass -File scripts/run-real-employee-auth-preview.ps1 -UseAssetServiceSimulator",
     "smoke:remote-bake": "corepack pnpm --filter @liclick/server build && node scripts/smoke-remote-substance-bake.mjs",
     "recover:remote-bake": "corepack pnpm --filter @liclick/server build && node scripts/recover-remote-substance-bakes.mjs",
