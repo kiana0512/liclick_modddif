@@ -20,6 +20,60 @@ function Import-EnvironmentFile {
   }
 }
 
+function Resolve-AtlasRuntime {
+  $Candidates = @(
+    $env:ATLAS_SKILLHUB_PATH,
+    (Join-Path $env:APPDATA "npm\node_modules\@lilith\atlas-skillhub\dist\index.js")
+  ) | Where-Object { $_ }
+
+  foreach ($Candidate in $Candidates) {
+    if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+      return (Resolve-Path -LiteralPath $Candidate).Path
+    }
+  }
+  throw "Atlas Skillhub runtime was not found. Install @lilith/atlas-skillhub before starting real local preview."
+}
+
+function Read-AtlasStatus {
+  param(
+    [Parameter(Mandatory = $true)][string]$Runtime,
+    [Parameter(Mandatory = $true)][string]$TokenFile
+  )
+
+  $StatusText = (& node $Runtime gateway status --token-file $TokenFile 2>$null | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or !$StatusText) { return $null }
+  try {
+    return $StatusText | ConvertFrom-Json
+  } catch {
+    return $null
+  }
+}
+
+function Ensure-AtlasGenerationCredential {
+  $Runtime = Resolve-AtlasRuntime
+  $TokenFile = if ($env:ATLAS_TOKEN_FILE) {
+    $env:ATLAS_TOKEN_FILE
+  } else {
+    Join-Path $env:USERPROFILE ".atlas-ai-gateway-oauth.json"
+  }
+  $Status = Read-AtlasStatus -Runtime $Runtime -TokenFile $TokenFile
+
+  if (!$Status -or !$Status.valid) {
+    Write-Host "Generation credential is missing or expired. Opening real Atlas/Liclick authorization..." -ForegroundColor Yellow
+    & node $Runtime gateway login --token-file $TokenFile
+    if ($LASTEXITCODE -ne 0) { throw "Atlas/Liclick authorization failed." }
+    $Status = Read-AtlasStatus -Runtime $Runtime -TokenFile $TokenFile
+  }
+
+  if (!$Status -or !$Status.valid) {
+    throw "Atlas/Liclick generation credential is still invalid after authorization."
+  }
+
+  $env:ATLAS_SKILLHUB_PATH = $Runtime
+  $env:ATLAS_TOKEN_FILE = $TokenFile
+  Write-Host "Generation gateway: real Atlas credential valid until $($Status.expires_at)" -ForegroundColor Green
+}
+
 if (!(Test-Path -LiteralPath $EnvironmentFile -PathType Leaf)) {
   throw "Real Feishu configuration was not found: $EnvironmentFile"
 }
@@ -37,6 +91,7 @@ if (!$SkipBuild) {
 }
 
 Import-EnvironmentFile -Path $EnvironmentFile
+Ensure-AtlasGenerationCredential
 
 # Local acceptance is one integrated backend. Clear external object-storage
 # configuration so uploads stay inside the authenticated 4517 workspace.
