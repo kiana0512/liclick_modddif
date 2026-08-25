@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { serverConfig } from '../config.js';
@@ -52,6 +53,12 @@ function safeAssetName(filename: string, fallbackExtension: string) {
   return `${base}${extension || `.${fallbackExtension}`}`;
 }
 
+function uniqueAssetName(filename: string, fallbackExtension: string) {
+  const safeName = safeAssetName(filename, fallbackExtension);
+  const parsed = path.parse(safeName);
+  return `${parsed.name}-${crypto.randomUUID()}${parsed.ext}`;
+}
+
 function assertAllowedRemoteUrl(url: string) {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') throw new Error('Only HTTPS remote assets can be imported.');
@@ -95,7 +102,11 @@ async function writeAsset(input: {
   if (!allowedCategories.includes(input.category)) throw new Error('Invalid asset category.');
   const slug = await projectRepository.findSlug(input.userId, input.projectId);
   if (!slug) return undefined;
-  const name = safeAssetName(input.filename, extensionFromMime(input.mime));
+  // Project assets are immutable records. Keeping every upload on a unique
+  // path prevents concurrent model/reference restoration from attempting to
+  // replace the same Windows file, which otherwise surfaces as EPERM during
+  // the temporary-file rename.
+  const name = uniqueAssetName(input.filename, extensionFromMime(input.mime));
   const relativePath = path.posix.join('assets', input.category, name);
   const absolutePath = path.join(getUserProjectDir(input.userId, slug), 'assets', input.category, name);
   await ensureDir(path.dirname(absolutePath));

@@ -55,6 +55,7 @@ import {
   getVisibleProjectedLayerStack,
 } from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
+import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { translations, useI18nStore } from '@/stores/i18nStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -4811,6 +4812,8 @@ function ImportedModel({
 
 export function SceneRoot() {
   const importedModels = useSceneStore((state) => state.importedModels);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const selectObject = useSceneStore((state) => state.selectObject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const displayMode = useSceneStore((state) => state.displayMode);
@@ -4838,7 +4841,14 @@ export function SceneRoot() {
   const ambientIntensity = previewLighting.ambientIntensity;
   const keyIntensity = previewLighting.keyLightIntensity;
   const fillIntensity = previewLighting.ambientIntensity * 0.52;
-  const workspaceVisibleModels = importedModels;
+  // Texture authoring is scoped to one selected object. Keep every imported
+  // model mounted so its geometry/material cache survives object switches,
+  // but only attach the active model to the visible scene. Other workspaces
+  // retain the full arrangement for scene review and project thumbnails.
+  const workspaceVisibleModels =
+    workspaceMode === 'texture'
+      ? importedModels.filter((model) => model.objectId === selectedObjectId)
+      : importedModels;
   const workspaceVisibleModelIds = new Set(workspaceVisibleModels.map((model) => model.objectId));
   const showSelectionGlow = true;
   const hasProgressiveRestore = workspaceVisibleModels.some(

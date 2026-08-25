@@ -89,8 +89,8 @@ try {
   );
   assert.match(
     sceneRootSource,
-    /const workspaceVisibleModels = importedModels;/,
-    'all visible project models must remain selectable in every editor workspace',
+    /workspaceMode === 'texture'[\s\S]{0,180}importedModels\.filter\(\(model\) => model\.objectId === selectedObjectId\)[\s\S]{0,80}: importedModels/,
+    'texture authoring must render only the selected model while other workspaces retain the scene arrangement',
   );
   assert.match(
     sceneRootSource,
