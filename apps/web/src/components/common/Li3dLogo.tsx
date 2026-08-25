@@ -23,7 +23,7 @@ export function Li3dLogo({ title = 'Li3D', ...props }: Li3dLogoProps) {
         </filter>
       </defs>
       <image
-        href={`${import.meta.env.BASE_URL}branding/li3d-logo-dark-source.png`}
+        href={`${import.meta.env.BASE_URL}branding/li3d-logo-dark-source.png?v=li3d-stacked-20260825`}
         width="1254"
         height="1254"
         preserveAspectRatio="xMidYMid meet"
