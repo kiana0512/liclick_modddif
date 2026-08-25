@@ -48,7 +48,8 @@ assert.match(viewport, /new WeakMap<THREE\.Object3D, PaintableSurfaceCache>/);
 
 assert.doesNotMatch(workflow, /id: 'retopology'/);
 assert.doesNotMatch(workflow, /ChevronRight/);
-assert.match(home, /5 个工作模块/);
+assert.match(home, /4 个工作模块/);
+assert.doesNotMatch(home, /AI RETOPOLOGY|自动拓扑 V6|onOpenRetopology/);
 assert.match(asset, /直接传入烘焙/);
 assert.match(app, /segments\[0\] === 'retopology'[\s\S]*name: 'autoUv'/);
 

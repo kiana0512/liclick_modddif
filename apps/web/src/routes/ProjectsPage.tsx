@@ -6,6 +6,10 @@ import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
 import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
 import { getNextDefaultProjectName } from '@/features/projects/projectDefaultName';
+import {
+  selectProjectCardThumbnail,
+  withProjectThumbnailVersion,
+} from '@/features/projects/projectThumbnailPolicy';
 import { useT } from '@/stores/i18nStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectStore } from '@/stores/projectStore';
@@ -54,7 +58,7 @@ function projectFromSummary(summary: ProjectSummary): Project {
     createdAt: summary.createdAt,
     updatedAt: summary.updatedAt,
     revision: summary.revision,
-    thumbnail: summary.thumbnail,
+    thumbnail: withProjectThumbnailVersion(summary.thumbnail, summary.updatedAt),
     objects: [],
     references: [],
     captures: [],
@@ -97,7 +101,6 @@ function mergeWorkspaceProjects(
   const currentProjectById = new Map(currentProjects.map((project) => [project.id, project]));
   for (const project of formalProjects) {
     const currentProject = currentProjectById.get(project.id);
-    const currentThumbnail = currentProject?.thumbnail;
     merged.set(project.id, {
       ...project,
       // Project list responses contain summaries only. Never replace a project that has
@@ -123,10 +126,7 @@ function mergeWorkspaceProjects(
             dirty: currentProject.dirty,
           }
         : {}),
-      thumbnail:
-        currentThumbnail && (currentThumbnail.startsWith('data:') || currentThumbnail.startsWith('blob:'))
-          ? currentThumbnail
-          : project.thumbnail,
+      thumbnail: selectProjectCardThumbnail(project, currentProject),
     });
   }
   return [...merged.values()];

@@ -528,7 +528,6 @@ export function App() {
       <Suspense fallback={<AppRouteFallback />}>
         <HomePage
           onOpenTexture={navigation.openTextureProjects}
-          onOpenRetopology={navigation.openAutoRetopology}
           onOpenBake={navigation.openCurrentBake}
           onOpenToolbox={navigation.openModelingToolbox}
           onOpenUv={navigation.openAutoUv}

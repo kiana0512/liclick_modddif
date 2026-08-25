@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +20,8 @@ try {
     getContainedImageDrawRect,
     getFrontProjectThumbnailCameraFrame,
     getProjectThumbnailFraming,
+    selectProjectCardThumbnail,
+    withProjectThumbnailVersion,
     withProjectThumbnailPbrMode,
   } = await server.ssrLoadModule('/src/features/projects/projectThumbnailPolicy.ts');
   const { neutralizeUntexturedThumbnailMaterials } = await server.ssrLoadModule(
@@ -30,6 +33,56 @@ try {
     height: 2048,
     matchCameraToRenderAspect: true,
   });
+
+  const thumbnailUpdatedAt = '2026-08-25T08:30:00.000Z';
+  const thumbnailVersion = String(Date.parse(thumbnailUpdatedAt));
+  assert.equal(
+    withProjectThumbnailVersion(
+      'http://127.0.0.1:4518/workspace/users/user/projects/demo/assets/captures/project-thumbnail.png',
+      thumbnailUpdatedAt,
+    ),
+    `http://127.0.0.1:4518/workspace/users/user/projects/demo/assets/captures/project-thumbnail.png?li3dThumbnail=${thumbnailVersion}`,
+  );
+  assert.equal(
+    withProjectThumbnailVersion(
+      '/workspace/project-thumbnail.png?download=0#preview',
+      thumbnailUpdatedAt,
+    ),
+    `/workspace/project-thumbnail.png?download=0&li3dThumbnail=${thumbnailVersion}#preview`,
+  );
+  assert.equal(
+    withProjectThumbnailVersion('data:image/png;base64,new', thumbnailUpdatedAt),
+    'data:image/png;base64,new',
+  );
+  assert.equal(
+    withProjectThumbnailVersion('/workspace/project-thumbnail.png', 'invalid'),
+    '/workspace/project-thumbnail.png',
+  );
+
+  const serverProject = {
+    thumbnail: '/workspace/project-thumbnail.png',
+    updatedAt: '2026-08-25T08:30:00.000Z',
+  };
+  assert.equal(
+    selectProjectCardThumbnail(serverProject),
+    `/workspace/project-thumbnail.png?li3dThumbnail=${thumbnailVersion}`,
+  );
+  assert.equal(
+    selectProjectCardThumbnail(serverProject, {
+      thumbnail: 'data:image/png;base64,new',
+      updatedAt: '2026-08-25T08:31:00.000Z',
+      dirty: true,
+    }),
+    'data:image/png;base64,new',
+  );
+  assert.equal(
+    selectProjectCardThumbnail(serverProject, {
+      thumbnail: 'data:image/png;base64,old',
+      updatedAt: '2026-08-25T08:29:00.000Z',
+      dirty: false,
+    }),
+    `/workspace/project-thumbnail.png?li3dThumbnail=${thumbnailVersion}`,
+  );
 
   for (const displayMode of ['flat', 'normal', 'wire']) {
     const displayModeTransitions = [];
@@ -190,6 +243,13 @@ try {
     width: 0,
     height: 0,
   });
+
+  const homePageSource = await readFile(path.join(root, 'src/routes/HomePage.tsx'), 'utf8');
+  const appSource = await readFile(path.join(root, 'src/App.tsx'), 'utf8');
+  assert.doesNotMatch(homePageSource, /自动拓扑 V6|AI RETOPOLOGY/);
+  assert.doesNotMatch(homePageSource, /onOpenRetopology/);
+  assert.doesNotMatch(appSource, /<HomePage[\s\S]*?onOpenRetopology/);
+  assert.match(homePageSource, /4 个工作模块/);
 
   stdout.write('Project thumbnail policy regression test passed.\n');
 } finally {

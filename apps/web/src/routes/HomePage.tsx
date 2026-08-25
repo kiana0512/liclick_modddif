@@ -5,7 +5,6 @@ import {
   Clock3,
   Flame,
   Map as MapIcon,
-  Network,
   Palette,
   Sparkles,
   Wrench,
@@ -388,14 +387,12 @@ function ModuleCard({
 
 export function HomePage({
   onOpenTexture,
-  onOpenRetopology,
   onOpenBake,
   onOpenToolbox,
   onOpenUv,
   onLogout,
 }: {
   onOpenTexture: () => void;
-  onOpenRetopology: () => void;
   onOpenBake: () => void;
   onOpenToolbox: () => void;
   onOpenUv: () => void;
@@ -433,7 +430,7 @@ export function HomePage({
             </span>
             <span className="hidden h-3 w-px bg-white/12 sm:block" />
             <span className="hidden items-center gap-2 sm:inline-flex">
-              <Boxes className="h-3.5 w-3.5" />5 个工作模块
+              <Boxes className="h-3.5 w-3.5" />4 个工作模块
             </span>
           </div>
         </div>
@@ -496,20 +493,6 @@ export function HomePage({
             hoverAction="打开工具箱"
             telemetryModule="toolbox"
             onClick={onOpenToolbox}
-            layout="compact"
-          />
-          <ModuleCard
-            eyebrow="AI RETOPOLOGY"
-            title="自动拓扑 V6"
-            description="分析模型结构并完成自动拓扑。"
-            detail="云端服务 · 正式低模产物"
-            icon={Network}
-            accent="blue"
-            visual="retopo"
-            badge="云端服务"
-            hoverAction="进入自动拓扑"
-            telemetryModule="auto_retopology"
-            onClick={onOpenRetopology}
             layout="compact"
           />
         </div>

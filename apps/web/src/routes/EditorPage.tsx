@@ -19,6 +19,7 @@ import {
   getFrontProjectThumbnailCameraFrame,
   getContainedImageDrawRect,
   getProjectThumbnailFraming,
+  withProjectThumbnailVersion,
   withProjectThumbnailPbrMode,
 } from '@/features/projects/projectThumbnailPolicy';
 import { neutralizeUntexturedThumbnailMaterials } from '@/features/projects/projectThumbnailMaterials';
@@ -2986,6 +2987,14 @@ export function EditorPage({
       dirty: !savedLatestSnapshot,
       assetManifest: result.project.assetManifest,
       revision: result.project.revision,
+      ...(savedLatestSnapshot && result.project.thumbnail
+        ? {
+            thumbnail: withProjectThumbnailVersion(
+              result.project.thumbnail,
+              result.project.updatedAt,
+            ),
+          }
+        : {}),
     });
     return { ...result, savedLatestSnapshot };
   }

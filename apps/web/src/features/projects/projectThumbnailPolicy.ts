@@ -6,6 +6,53 @@ export const frontProjectThumbnailCapture = {
   matchCameraToRenderAspect: true,
 } as const;
 
+const PROJECT_THUMBNAIL_VERSION_PARAM = 'li3dThumbnail';
+
+function isTransientThumbnailUrl(thumbnail: string | undefined) {
+  return Boolean(thumbnail?.startsWith('data:') || thumbnail?.startsWith('blob:'));
+}
+
+/**
+ * Project thumbnail assets intentionally keep a stable filename. Add the
+ * project revision time to card URLs so an overwritten PNG cannot reuse an
+ * older browser/CDN response.
+ */
+export function withProjectThumbnailVersion(thumbnail: string, updatedAt: string) {
+  if (!thumbnail || isTransientThumbnailUrl(thumbnail)) return thumbnail;
+  const version = Date.parse(updatedAt);
+  if (!Number.isFinite(version)) return thumbnail;
+
+  const hashIndex = thumbnail.indexOf('#');
+  const hash = hashIndex >= 0 ? thumbnail.slice(hashIndex) : '';
+  const withoutHash = hashIndex >= 0 ? thumbnail.slice(0, hashIndex) : thumbnail;
+  const queryIndex = withoutHash.indexOf('?');
+  const pathname = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+  const search = new URLSearchParams(queryIndex >= 0 ? withoutHash.slice(queryIndex + 1) : '');
+  search.set(PROJECT_THUMBNAIL_VERSION_PARAM, String(version));
+  return `${pathname}?${search.toString()}${hash}`;
+}
+
+export function selectProjectCardThumbnail(
+  serverProject: { thumbnail: string; updatedAt: string },
+  currentProject?: { thumbnail?: string; updatedAt?: string; dirty?: boolean },
+) {
+  const serverThumbnail = withProjectThumbnailVersion(
+    serverProject.thumbnail,
+    serverProject.updatedAt,
+  );
+  if (!isTransientThumbnailUrl(currentProject?.thumbnail)) return serverThumbnail;
+
+  const serverUpdatedAt = Date.parse(serverProject.updatedAt);
+  const currentUpdatedAt = Date.parse(currentProject?.updatedAt ?? '');
+  const currentThumbnailIsLatest =
+    currentProject?.dirty === true ||
+    !Number.isFinite(serverUpdatedAt) ||
+    (Number.isFinite(currentUpdatedAt) && currentUpdatedAt >= serverUpdatedAt);
+  return currentThumbnailIsLatest
+    ? (currentProject?.thumbnail ?? serverThumbnail)
+    : serverThumbnail;
+}
+
 /**
  * Project cards always use the textured PBR presentation. The editor defaults
  * to flat mode and users may leave from normal/wire mode, so thumbnail capture

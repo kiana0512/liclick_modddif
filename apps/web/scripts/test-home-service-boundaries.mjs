@@ -25,7 +25,6 @@ assert.doesNotMatch(texture, /ComfyUI/);
 
 for (const [module, required] of [
   ['AUTO UV', /正式 UV 产物/],
-  ['AI RETOPOLOGY', /正式低模产物/],
   ['MODEL BAKING', /PBR 贴图返回浏览器/],
 ]) {
   const card = moduleSource(module);
@@ -38,13 +37,14 @@ for (const [module, required] of [
 const toolbox = moduleSource('PRODUCTION TOOLS');
 assert.match(toolbox, /工具箱/);
 assert.match(toolbox, /3ds Max · Blender · 独立工具/);
+assert.doesNotMatch(source, /AI RETOPOLOGY|自动拓扑 V6|onOpenRetopology/);
+assert.match(source, /4 个工作模块/);
 
 const visualOrder = [
   'TEXTURE PAINTING',
   'AUTO UV',
   'MODEL BAKING',
   'PRODUCTION TOOLS',
-  'AI RETOPOLOGY',
 ].map((eyebrow) => source.indexOf(`eyebrow="${eyebrow}"`));
 assert.deepEqual(
   visualOrder,
@@ -52,4 +52,4 @@ assert.deepEqual(
   '新增模块不得挤动原版 UV、烘焙和工具箱的卡片位置',
 );
 
-console.log('首页五个原版功能入口与真实计算服务边界回归通过。');
+console.log('首页四个可用功能入口、隐藏自动拓扑与真实计算服务边界回归通过。');
