@@ -63,3 +63,12 @@ powershell -ExecutionPolicy Bypass -File scripts/run-real-local-preview.ps1 -Ski
 - Web typecheck、回归测试、生产构建和 CI/CD 全部通过后才可合并 `main`。
 - A100 发布后核对 `/li3d/api/ready`、`/li3d/api/health`、`/li3d/api/release` 与真实浏览器页面。
 
+本地自动化门禁命令：
+
+```powershell
+corepack pnpm --filter @liclick/web test:regression
+corepack pnpm --filter @liclick/web test:real-local-workspace-upload
+corepack pnpm --filter @liclick/web build
+corepack pnpm --filter @liclick/server build
+git diff --check
+```
