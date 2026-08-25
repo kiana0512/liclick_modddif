@@ -76,9 +76,9 @@ curl -fsS http://127.0.0.1:4517/api/health
 ## 5. GitLab CI (`.gitlab-ci.yml`, repo root)
 
 Modeled on the sibling `lipixel` project's pipeline. Only runs on the
-`release` branch **— li3d doesn't actually have one; confirm and update
-`workflow.rules` in `.gitlab-ci.yml` before relying on this.** The deploy
-stage additionally requires `[deploy]` in the commit message (same
+`release` branch (created 2026-08-25 from the fixed `feat/ci` tip and pushed
+to origin). The deploy stage additionally requires `[deploy]` in the commit
+message (same
 double-gate lipixel uses). It builds `build:server` and `build:web` via
 Kaniko (one Dockerfile, two `--target`s), then `deploy:k8s` applies
 `deploy/k8s/overlays/zprod` and updates both Deployments' images —
@@ -117,12 +117,16 @@ real file, unlike lipixel's imperative `kubectl create secret`) and shreds
 it immediately after. Optional: `KUBE_CONTEXT` if the kubeconfig has more
 than one context (ours only has one, `zprod`, so this isn't needed).
 
-**Before this runs for real, confirm:**
-- The `release` branch gate above matches li3d's actual workflow.
-- An ACR mirror exists for `node:22-bookworm-slim` and
-  `nginxinc/nginx-unprivileged:1.27-alpine` (`NODE_IMAGE` / `NGINX_IMAGE`
-  variables), the way lipixel's README documents its own mirrored bases —
-  otherwise the Kaniko job needs outbound network access to Docker Hub.
+`NODE_IMAGE` / `NGINX_IMAGE` point at ACR mirrors under `devops/` — pushed
+there 2026-08-25 (`node:22-bookworm-slim` and
+`nginxinc/nginx-unprivileged:1.27-alpine` specifically; neither is one of
+lipixel's existing mirrored bases, which only covers `node:22-alpine`), so
+Kaniko doesn't need outbound network access to Docker Hub.
+
+**Before this runs for real, still need:** `KUBE_CONFIG_B64`,
+`LI3D_SESSION_SECRET`, `LI3D_FEISHU_CLIENT_ID`, `LI3D_FEISHU_CLIENT_SECRET`
+set as CI/CD variables on the li3d project (see above) — none of these can
+be set from this environment.
 
 ## Things worth knowing before you run this for real
 

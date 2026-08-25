@@ -29,6 +29,11 @@
 # nginxinc/nginx-unprivileged:1.27-alpine specifically, since deploy/Dockerfile
 # needs exactly those, not lipixel's node:22-alpine), so the Kaniko job
 # doesn't need outbound network access to Docker Hub.
+#
+# No top-level `workflow.rules` here (unlike lipixel's, which gates the
+# whole pipeline to `release`) — verify/build must keep running on every
+# branch/MR as main's existing quality gate. Only containerize/deploy are
+# restricted to `release`, via each job's own `rules:` below.
 
 stages:
   - verify
