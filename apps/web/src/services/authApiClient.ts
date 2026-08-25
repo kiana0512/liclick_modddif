@@ -2,6 +2,8 @@ import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
+let cachedProviderStatus: ProviderStatus | undefined;
+
 export type AuthMode = 'dev-mock' | 'feishu-oauth';
 
 export type AuthUser = {
@@ -24,26 +26,53 @@ export type ProviderStatus = {
   devLoginEnabled: boolean;
   feishuOAuthEnabled: boolean;
   feishuConfigured: boolean;
-  feishuLoginProvider?: 'web-oauth' | 'idaas-jwt' | 'atlas-cli' | 'not-configured';
-  atlasLoginMode?: 'interactive' | 'service-token';
+  feishuLoginProvider?: 'web-oauth' | 'idaas-jwt' | 'not-configured';
   missingConfigKeys: string[];
-  atlas?: {
-    valid?: boolean;
-    expiresAt?: string;
-    message?: string;
-  };
 };
 
-async function requestJson<T>(path: string, init?: RequestInit) {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
-  const response = await fetch(`${workspaceApiBase}${path}`, {
-    ...init,
-    headers,
-    credentials: 'include',
-  });
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number },
+) {
+  const { timeoutMs = 30_000, signal: callerSignal, ...fetchInit } = init ?? {};
+  const headers = new Headers(fetchInit.headers);
+  if (fetchInit.body && !headers.has('content-type'))
+    headers.set('content-type', 'application/json');
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(`${workspaceApiBase}${path}`, {
+      ...fetchInit,
+      signal: controller.signal,
+      headers,
+      credentials: 'include',
+    });
+  } catch (error) {
+    if (callerSignal?.aborted) throw error;
+    if (timedOut || (error instanceof DOMException && error.name === 'AbortError')) {
+      throw new Error('登录服务响应超时，请稍后重试。');
+    }
+    throw new Error('无法连接登录服务，请确认 LI3D Web 后端已启动并可访问。');
+  } finally {
+    window.clearTimeout(timeout);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
+  }
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      '当前网址只部署了前端页面，尚未连接 LI3D Web 后端。请从已部署前后端一体服务的网址访问。',
+    );
+  }
+  const payload: unknown = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const payload: unknown = await response.json().catch(() => ({}));
     const error = payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;
     const missingConfigKeys =
       payload && typeof payload === 'object' && 'missingConfigKeys' in payload && Array.isArray(payload.missingConfigKeys)
@@ -52,15 +81,22 @@ async function requestJson<T>(path: string, init?: RequestInit) {
     const message = typeof error === 'string' ? error : `Auth request failed: ${response.status}`;
     throw new Error(missingConfigKeys.length > 0 ? `${message} Missing: ${missingConfigKeys.join(', ')}` : message);
   }
-  return response.json() as Promise<T>;
+  return payload as T;
 }
 
-export function getAuthMe() {
-  return requestJson<AuthMeResponse>('/api/auth/me');
+export function getAuthMe(options?: { signal?: AbortSignal; timeoutMs?: number }) {
+  return requestJson<AuthMeResponse>('/api/auth/me', options);
 }
 
 export function getProviderStatus() {
-  return requestJson<ProviderStatus>('/api/auth/provider-status');
+  return requestJson<ProviderStatus>('/api/auth/provider-status').then((providerStatus) => {
+    cachedProviderStatus = providerStatus;
+    return providerStatus;
+  });
+}
+
+export function getCachedProviderStatus() {
+  return cachedProviderStatus;
 }
 
 export function devLogin(input: { displayName?: string; email?: string }) {
@@ -77,7 +113,6 @@ export function startFeishuLogin() {
     user?: AuthUser;
     authMode?: AuthMode;
     message?: string;
-    atlas?: ProviderStatus['atlas'];
   }>('/api/auth/feishu/start');
 }
 
@@ -89,7 +124,6 @@ export function pollFeishuLogin(loginId: string) {
     user?: AuthUser;
     authMode?: AuthMode;
     message?: string;
-    atlas?: ProviderStatus['atlas'];
   }>(`/api/auth/feishu/poll/${encodeURIComponent(loginId)}`);
 }
 

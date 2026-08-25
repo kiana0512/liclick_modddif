@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -10,10 +11,35 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Download, Eye, EyeOff, Focus, MoreVertical, PaintBucket, PencilLine, Plus, Scissors, Trash2, Upload, WandSparkles } from 'lucide-react';
+import {
+  Copy,
+  Download,
+  Eraser,
+  Eye,
+  EyeOff,
+  Focus,
+  MoreVertical,
+  PaintBucket,
+  PencilLine,
+  Plus,
+  Scissors,
+  SlidersHorizontal,
+  TextCursorInput,
+  Trash2,
+  Upload,
+  WandSparkles,
+} from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
-import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import {
+  getLiveProjectedCanvasState,
+  getLiveProjectedTextureSourceState,
+} from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
+import {
+  isViewportInteractionBusy,
+  subscribeViewportInteraction,
+} from '@/engine/viewport/viewportInteractionState';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -33,60 +59,245 @@ type RenameState = {
   value: string;
 };
 
-function LayerThumbnail({ layer }: { layer: Layer }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const liveCanvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
+function useLayerImageSource(url: string, enabled: boolean) {
+  const [image, setImage] = useState<HTMLImageElement>();
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !liveCanvas) return;
-    const context = canvas.getContext('2d');
-    if (!context) return;
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(liveCanvas, 0, 0, canvas.width, canvas.height);
-  }, [layer.contentRevision, liveCanvas]);
+    if (!enabled || !url) {
+      setImage(undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    const nextImage = new Image();
+    nextImage.decoding = 'async';
+    nextImage.onload = () => {
+      if (!cancelled) setImage(nextImage);
+    };
+    nextImage.onerror = () => {
+      if (!cancelled) setImage(undefined);
+    };
+    nextImage.src = url;
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, url]);
 
-  if (liveCanvas) return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
-  if (!layer.imageUrl) return null;
-  return <img src={layer.imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />;
+  return image;
 }
 
-function LayerPreviewImage({ layer }: { layer: Layer }) {
+function useInteractionDeferredLayers() {
+  const [layers, setLayers] = useState(() => useLayerStore.getState().layers);
+  useEffect(() => {
+    let committedLayers = useLayerStore.getState().layers;
+    let pendingLayers: Layer[] | undefined;
+    let timer: number | undefined;
+    const commit = (nextLayers: Layer[], deferred: boolean) => {
+      if (nextLayers === committedLayers) return;
+      committedLayers = nextLayers;
+      if (deferred) {
+        startTransition(() => setLayers(nextLayers));
+      } else {
+        setLayers(nextLayers);
+      }
+    };
+    const flush = () => {
+      timer = undefined;
+      if (!pendingLayers) return;
+      if (isViewportInteractionBusy()) {
+        timer = window.setTimeout(flush, 32);
+        return;
+      }
+      const targetLayers = pendingLayers;
+      pendingLayers = undefined;
+      commit(targetLayers, true);
+    };
+    const schedule = () => {
+      if (timer === undefined && pendingLayers) timer = window.setTimeout(flush, 32);
+    };
+    const unsubscribeLayers = useLayerStore.subscribe((state, previousState) => {
+      if (state.layers === previousState.layers) return;
+      if (isViewportInteractionBusy()) {
+        pendingLayers = state.layers;
+        schedule();
+        return;
+      }
+      pendingLayers = undefined;
+      commit(state.layers, false);
+    });
+    const unsubscribeInteraction = subscribeViewportInteraction(schedule);
+    return () => {
+      unsubscribeLayers();
+      unsubscribeInteraction();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
+  return layers;
+}
+
+function LayerThumbnail({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const liveCanvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
-  const maxPreviewDimension = 1600;
-  const scale = liveCanvas
-    ? Math.min(1, maxPreviewDimension / Math.max(liveCanvas.width, liveCanvas.height, 1))
-    : 1;
-  const width = liveCanvas ? Math.max(1, Math.round(liveCanvas.width * scale)) : 1;
-  const height = liveCanvas ? Math.max(1, Math.round(liveCanvas.height * scale)) : 1;
+  const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
+  const liveMaskState = layer.maskUrl ? getLiveProjectedCanvasState(layer.maskUrl) : undefined;
+  const liveSource = liveSourceState?.source;
+  const liveMaskCanvas = liveMaskState?.canvas;
+  // A persisted local-repaint layer intentionally combines a durable colour
+  // URL with a GPU-resident live mask URL. CSS cannot resolve the registry URL,
+  // so decode the colour image and composite both sources on a canvas instead.
+  const decodedSource = useLayerImageSource(layer.imageUrl, !liveSource && Boolean(liveMaskCanvas));
+  const thumbnailSource = liveSource ?? decodedSource;
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !liveCanvas) return;
+    if (!canvas || !thumbnailSource) return;
     const context = canvas.getContext('2d');
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(liveCanvas, 0, 0, canvas.width, canvas.height);
-  }, [height, layer.contentRevision, liveCanvas, width]);
+    context.drawImage(thumbnailSource, 0, 0, canvas.width, canvas.height);
+    if (layer.replacementTargetLayerId && liveMaskCanvas) {
+      context.save();
+      context.globalCompositeOperation = 'destination-in';
+      context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
+      context.restore();
+    }
+  }, [
+    layer.contentRevision,
+    layer.replacementTargetLayerId,
+    liveMaskCanvas,
+    liveMaskState?.revision,
+    liveSourceState?.revision,
+    thumbnailSource,
+  ]);
 
-  if (liveCanvas) {
-    return (
-      <canvas
-        ref={canvasRef}
-        width={width}
-        height={height}
-        className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
-      />
-    );
-  }
+  if (liveSource || liveMaskCanvas)
+    return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
+  if (!layer.imageUrl) return null;
+  const localRepaintMaskStyle =
+    layer.replacementTargetLayerId && layer.maskUrl
+      ? {
+          WebkitMaskImage: `url("${layer.maskUrl}")`,
+          maskImage: `url("${layer.maskUrl}")`,
+          WebkitMaskSize: '100% 100%',
+          maskSize: '100% 100%',
+          WebkitMaskRepeat: 'no-repeat',
+          maskRepeat: 'no-repeat',
+        }
+      : undefined;
   return (
     <img
       src={layer.imageUrl}
       alt=""
-      className="max-h-[88vh] max-w-[92vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+      loading="lazy"
+      decoding="async"
+      className="h-full w-full object-cover"
+      style={localRepaintMaskStyle}
       draggable={false}
     />
+  );
+}
+
+function LayerPreviewImage({ layer }: { layer: Layer }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
+  const liveMaskState = layer.maskUrl ? getLiveProjectedCanvasState(layer.maskUrl) : undefined;
+  const liveSource = liveSourceState?.source;
+  const liveMaskCanvas = liveMaskState?.canvas;
+  const decodedSource = useLayerImageSource(layer.imageUrl, !liveSource && Boolean(liveMaskCanvas));
+  const previewSource = liveSource ?? decodedSource;
+  const maxPreviewDimension = 1600;
+  const sourceWidth = previewSource
+    ? 'naturalWidth' in previewSource
+      ? previewSource.naturalWidth
+      : previewSource.width
+    : 1;
+  const sourceHeight = previewSource
+    ? 'naturalHeight' in previewSource
+      ? previewSource.naturalHeight
+      : previewSource.height
+    : 1;
+  const scale = previewSource
+    ? Math.min(1, maxPreviewDimension / Math.max(sourceWidth, sourceHeight, 1))
+    : 1;
+  const width = previewSource ? Math.max(1, Math.round(sourceWidth * scale)) : 1;
+  const height = previewSource ? Math.max(1, Math.round(sourceHeight * scale)) : 1;
+  const isLocalRepaintPreview = Boolean(layer.replacementTargetLayerId);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !previewSource) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(previewSource, 0, 0, canvas.width, canvas.height);
+    if (layer.replacementTargetLayerId && liveMaskCanvas) {
+      context.save();
+      context.globalCompositeOperation = 'destination-in';
+      context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
+      context.restore();
+    }
+  }, [
+    height,
+    layer.contentRevision,
+    layer.replacementTargetLayerId,
+    liveMaskCanvas,
+    liveMaskState?.revision,
+    liveSourceState?.revision,
+    previewSource,
+    width,
+  ]);
+
+  if (liveSource || liveMaskCanvas) {
+    const preview = (
+      <canvas
+        ref={canvasRef}
+        width={width}
+        height={height}
+        className="block max-h-[88vh] max-w-[92vw] object-contain"
+      />
+    );
+    return isLocalRepaintPreview ? (
+      <div
+        className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+        style={checkerStyle}
+      >
+        {preview}
+      </div>
+    ) : (
+      <div className="overflow-hidden rounded-md border border-white/16 bg-[#181818] shadow-2xl">
+        {preview}
+      </div>
+    );
+  }
+  const localRepaintMaskStyle =
+    layer.replacementTargetLayerId && layer.maskUrl
+      ? {
+          WebkitMaskImage: `url("${layer.maskUrl}")`,
+          maskImage: `url("${layer.maskUrl}")`,
+          WebkitMaskSize: '100% 100%',
+          maskSize: '100% 100%',
+          WebkitMaskRepeat: 'no-repeat',
+          maskRepeat: 'no-repeat',
+        }
+      : undefined;
+  const preview = (
+    <img
+      src={layer.imageUrl}
+      alt=""
+      className="block max-h-[88vh] max-w-[92vw] object-contain"
+      style={localRepaintMaskStyle}
+      draggable={false}
+    />
+  );
+  return isLocalRepaintPreview ? (
+    <div
+      className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+      style={checkerStyle}
+    >
+      {preview}
+    </div>
+  ) : (
+    <div className="overflow-hidden rounded-md border border-white/16 bg-[#181818] shadow-2xl">
+      {preview}
+    </div>
   );
 }
 
@@ -105,6 +316,39 @@ type OpacityDrag = {
   y: number;
 };
 
+function isLocalRepaintVisibilityLayer(layer: Layer) {
+  return Boolean(
+    layer.role === 'local-repaint-draft' ||
+    layer.role === 'local-repaint-overlay' ||
+    layer.id.startsWith('local-repaint-projection') ||
+    layer.id.startsWith('local-repaint-brush-projection') ||
+    layer.id.startsWith('local-repaint-uv-merge'),
+  );
+}
+
+/**
+ * One local repaint result is represented by a visible projected row and an
+ * implementation-only UV destination. Eye gestures must update both in one
+ * store transaction or the remaining representation keeps the effect visible.
+ */
+function expandLocalRepaintVisibilityIds(layers: Layer[], layerIds: string[]) {
+  const expanded = new Set(layerIds);
+  for (const layerId of layerIds) {
+    const layer = layers.find((item) => item.id === layerId);
+    if (!layer || !isLocalRepaintVisibilityLayer(layer)) continue;
+    if (layer.replacementTargetLayerId) expanded.add(layer.replacementTargetLayerId);
+    layers.forEach((candidate) => {
+      if (
+        isLocalRepaintVisibilityLayer(candidate) &&
+        candidate.replacementTargetLayerId === layer.id
+      ) {
+        expanded.add(candidate.id);
+      }
+    });
+  }
+  return [...expanded];
+}
+
 const checkerStyle = {
   backgroundColor: '#d6d6d6',
   backgroundImage:
@@ -120,6 +364,8 @@ type LayersPanelProps = {
   onLayerLocalRepaint?: (layer: Layer) => void;
   onMergeSelectedToUvLayer?: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer?: (layerIds: string[], blankUvLayerId: string) => void;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
 };
 
 export function LayersPanel({
@@ -129,9 +375,12 @@ export function LayersPanel({
   onLayerLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
+  mutationLocked = false,
+  onMutationLocked,
 }: LayersPanelProps = {}) {
   const t = useT();
-  const layers = useLayerStore((state) => state.layers);
+  const layers = useInteractionDeferredLayers();
+  const authoritativeLayers = useLayerStore((state) => state.layers);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
@@ -150,13 +399,13 @@ export function LayersPanel({
   const [draggingLayerId, setDraggingLayerId] = useState<string>();
   const [visibilityDrag, setVisibilityDrag] = useState<VisibilityDrag>();
   const [opacityDrag, setOpacityDrag] = useState<OpacityDrag>();
-  const [hoveredLayerId, setHoveredLayerId] = useState<string>();
   const [previewLayerId, setPreviewLayerId] = useState<string>();
-  const [isShiftPressed, setIsShiftPressed] = useState(false);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() =>
     activeProjectedLayerId ? [activeProjectedLayerId] : [],
   );
-  const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(activeProjectedLayerId);
+  const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(
+    activeProjectedLayerId,
+  );
   const capturedOpacityDragRef = useRef(false);
   const replaceImageInputRef = useRef<HTMLInputElement>(null);
   const replaceImageLayerIdRef = useRef<string>();
@@ -169,7 +418,15 @@ export function LayersPanel({
     y: number;
   }>();
   const visibleLayers = useMemo(
-    () => layers.filter((layer) => !layer.objectId || layer.objectId === selectedObjectId),
+    () =>
+      layers.filter(
+        (layer) =>
+          (!layer.objectId || layer.objectId === selectedObjectId) &&
+          // This UV row is an implementation target for the renderer. The
+          // actual local repaint result is the visible projected row above it;
+          // exposing both made one user operation look like multiple layers.
+          layer.role !== 'local-repaint-draft',
+      ),
     [layers, selectedObjectId],
   );
   const layerIds = useMemo(() => visibleLayers.map((layer) => layer.id), [visibleLayers]);
@@ -177,22 +434,38 @@ export function LayersPanel({
   const selectedLayerIdSet = useMemo(() => new Set(selectedLayerIds), [selectedLayerIds]);
   const layerById = useMemo(() => new Map(layers.map((layer) => [layer.id, layer])), [layers]);
   const previewLayer = useMemo(() => {
-    const layerId = previewLayerId ?? (isShiftPressed ? hoveredLayerId ?? lastSelectedLayerId ?? activeProjectedLayerId : undefined);
-    return visibleLayers.find((layer) => layer.id === layerId && layer.imageUrl);
-  }, [activeProjectedLayerId, hoveredLayerId, isShiftPressed, lastSelectedLayerId, previewLayerId, visibleLayers]);
-  const describeLayerSelection = useCallback((ids: string[]) => {
-    const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);
-    if (names.length === 0) return '图层';
-    if (names.length === 1) return names[0];
-    return `${names[0]} 等 ${names.length} 个图层`;
-  }, [layerById]);
+    return authoritativeLayers.find((layer) => layer.id === previewLayerId && layer.imageUrl);
+  }, [authoritativeLayers, previewLayerId]);
+  const describeLayerSelection = useCallback(
+    (ids: string[]) => {
+      const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);
+      if (names.length === 0) return '图层';
+      if (names.length === 1) return names[0];
+      return `${names[0]} 等 ${names.length} 个图层`;
+    },
+    [layerById],
+  );
+
+  const blockMutation = useCallback(
+    (action: string) => {
+      if (!mutationLocked) return false;
+      setMenu(undefined);
+      onMutationLocked?.(action);
+      return true;
+    },
+    [mutationLocked, onMutationLocked],
+  );
 
   useEffect(() => {
     setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
   }, [layerIds]);
 
   useEffect(() => {
-    if (!activeProjectedLayerId || visibleLayers.some((layer) => layer.id === activeProjectedLayerId)) return;
+    if (
+      !activeProjectedLayerId ||
+      visibleLayers.some((layer) => layer.id === activeProjectedLayerId)
+    )
+      return;
     const nextActiveLayer = visibleLayers.find((layer) => layer.type === 'projected');
     if (nextActiveLayer) {
       setActiveLayer(nextActiveLayer.id);
@@ -205,10 +478,15 @@ export function LayersPanel({
   }, [activeProjectedLayerId, setActiveLayer, visibleLayers]);
 
   useEffect(() => {
-    if (!activeProjectedLayerId || selectedLayerIds.length > 0) return;
+    if (
+      !activeProjectedLayerId ||
+      !layerIdSet.has(activeProjectedLayerId) ||
+      selectedLayerIds.includes(activeProjectedLayerId)
+    )
+      return;
     setSelectedLayerIds([activeProjectedLayerId]);
     setLastSelectedLayerId(activeProjectedLayerId);
-  }, [activeProjectedLayerId, selectedLayerIds.length]);
+  }, [activeProjectedLayerId, layerIdSet, selectedLayerIds]);
 
   useEffect(() => {
     if (!menu) return undefined;
@@ -234,8 +512,14 @@ export function LayersPanel({
       if (!layerId) return;
       setVisibilityDrag((current) => {
         if (!current || current.touched.has(layerId)) return current;
-        setLayerVisibility([layerId], current.visible);
-        return { visible: current.visible, touched: new Set([...current.touched, layerId]) };
+        const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [
+          layerId,
+        ]);
+        setLayerVisibility(affectedIds, current.visible);
+        return {
+          visible: current.visible,
+          touched: new Set([...current.touched, ...affectedIds]),
+        };
       });
     };
     window.addEventListener('pointermove', continueFromPointer);
@@ -328,41 +612,74 @@ export function LayersPanel({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') setIsShiftPressed(true);
       if (event.key === 'Escape') {
         setPreviewLayerId(undefined);
         setRenameState(undefined);
-        setIsShiftPressed(false);
       }
-    };
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') setIsShiftPressed(false);
     };
     const handleBlur = () => {
       setPreviewLayerId(undefined);
-      setIsShiftPressed(false);
     };
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('blur', handleBlur);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', handleBlur);
     };
   }, []);
 
-  const deleteSelectedLayers = useCallback((layerIdsToDelete: string[]) => {
-    const ids = layerIdsToDelete.filter(
-      (id, index) => layerIdsToDelete.indexOf(id) === index && layerIdSet.has(id),
-    );
-    if (ids.length === 0) return;
-    captureHistory(`删除图层：${describeLayerSelection(ids)}`);
-    deleteLayers(ids);
-    setMenu(undefined);
-    setSelectedLayerIds([]);
-    setLastSelectedLayerId(undefined);
-  }, [captureHistory, deleteLayers, describeLayerSelection, layerIdSet]);
+  const deleteSelectedLayers = useCallback(
+    (layerIdsToDelete: string[]) => {
+      if (blockMutation('删除图层')) return;
+      const ids = layerIdsToDelete.filter(
+        (id, index) => layerIdsToDelete.indexOf(id) === index && layerIdSet.has(id),
+      );
+      if (ids.length === 0) return;
+      captureHistory(`删除图层：${describeLayerSelection(ids)}`);
+      const sceneState = useSceneStore.getState();
+      const latestLayers = useLayerStore.getState().layers;
+      const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, ids);
+      const expandedIdSet = new Set(expandedIds);
+      const deletesLocalRepaint = ids.some((id) =>
+        latestLayers.some((layer) => layer.id === id && isLocalRepaintVisibilityLayer(layer)),
+      );
+      if (deletesLocalRepaint) {
+        // Hide the renderer inputs synchronously so the very next frame reflects
+        // deletion. Row removal and resource disposal can reconcile one frame
+        // later without blocking camera input or rebuilding the 14-layer stack.
+        setLayerVisibility(expandedIds, false);
+        // The local-repaint row has a renderer-only twin backed by a live canvas.
+        // Deleting the persisted row must also end that live session, otherwise
+        // SurfacePaintOverlay republishes the orphaned projection after deletion.
+        const currentPreview = sceneState.localRepaintPreviewLayer;
+        const currentSource = sceneState.localRepaintProjectionSource;
+        const deletesCurrentSession = Boolean(
+          (currentPreview && expandedIdSet.has(currentPreview.id)) ||
+          (currentPreview?.replacementTargetLayerId &&
+            expandedIdSet.has(currentPreview.replacementTargetLayerId)) ||
+          (currentSource?.targetLayerId && expandedIdSet.has(currentSource.targetLayerId)),
+        );
+        if (deletesCurrentSession) {
+          sceneState.setLocalRepaintPreviewLayer(undefined);
+          sceneState.setLocalRepaintProjectionSource(undefined);
+          sceneState.setPaintTool('none');
+          sceneState.clearPaintMask();
+        }
+        setMenu(undefined);
+        setSelectedLayerIds([]);
+        setLastSelectedLayerId(undefined);
+        window.requestAnimationFrame(() => {
+          startTransition(() => deleteLayers(expandedIds));
+        });
+        return;
+      }
+      deleteLayers(ids);
+      setMenu(undefined);
+      setSelectedLayerIds([]);
+      setLastSelectedLayerId(undefined);
+    },
+    [blockMutation, captureHistory, deleteLayers, describeLayerSelection, layerIdSet, setLayerVisibility],
+  );
 
   useEffect(() => {
     const handleDeleteKey = (event: KeyboardEvent) => {
@@ -423,21 +740,30 @@ export function LayersPanel({
   }
 
   function getAffectedLayerIds(layerId: string) {
-    return selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+    const selectedIds =
+      selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+    return expandLocalRepaintVisibilityIds(layers, selectedIds);
   }
 
   function beginVisibilityDrag(layer: Layer) {
     const nextVisible = !layer.visible;
     const ids = getAffectedLayerIds(layer.id);
-    setLayerVisibility(ids, nextVisible);
+    // The renderer's Zustand subscriber applies the visibility uniform
+    // synchronously. React can reconcile the large layer/editor tree at
+    // transition priority so pointer-driven viewport frames stay responsive.
+    startTransition(() => setLayerVisibility(ids, nextVisible));
     setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
   }
 
   function continueVisibilityDrag(layerId: string) {
     if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
-    visibilityDrag.touched.add(layerId);
-    setLayerVisibility([layerId], visibilityDrag.visible);
-    setVisibilityDrag({ visible: visibilityDrag.visible, touched: new Set(visibilityDrag.touched) });
+    const affectedIds = expandLocalRepaintVisibilityIds(layers, [layerId]);
+    affectedIds.forEach((id) => visibilityDrag.touched.add(id));
+    startTransition(() => setLayerVisibility(affectedIds, visibilityDrag.visible));
+    setVisibilityDrag({
+      visible: visibilityDrag.visible,
+      touched: new Set(visibilityDrag.touched),
+    });
   }
 
   function beginOpacityDrag(layer: Layer, event: React.PointerEvent<HTMLButtonElement>) {
@@ -510,8 +836,6 @@ export function LayersPanel({
             active={layer.id === activeProjectedLayerId}
             selected={selectedLayerIdSet.has(layer.id)}
             dragging={draggingLayerId === layer.id}
-            onHover={() => setHoveredLayerId(layer.id)}
-            onHoverEnd={() => setHoveredLayerId((current) => (current === layer.id ? undefined : current))}
             onSelect={(event) => selectLayer(layer.id, event)}
             onDoubleClick={() => {
               setActiveLayer(layer.id);
@@ -520,7 +844,9 @@ export function LayersPanel({
               onLayerDoubleClick?.(layer);
             }}
             onVisibilityPointerDown={(event) => {
+              if (event.button !== 0) return;
               event.stopPropagation();
+              event.preventDefault();
               beginVisibilityDrag(layer);
             }}
             onVisibilityPointerEnter={() => continueVisibilityDrag(layer.id)}
@@ -547,6 +873,10 @@ export function LayersPanel({
             onDrop={(event) => {
               event.preventDefault();
               if (draggingLayerId) {
+                if (blockMutation('移动图层')) {
+                  setDraggingLayerId(undefined);
+                  return;
+                }
                 const rect = event.currentTarget.getBoundingClientRect();
                 const placement = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
                 captureHistory(`移动图层：${describeLayerSelection([draggingLayerId])}`);
@@ -569,48 +899,42 @@ export function LayersPanel({
             y={menu.y}
             layer={layerById.get(menu.layerId)}
             selectedLayers={layers.filter((layer) =>
-              (selectedLayerIdSet.has(menu.layerId) ? selectedLayerIdSet : new Set([menu.layerId])).has(layer.id),
+              (selectedLayerIdSet.has(menu.layerId)
+                ? selectedLayerIdSet
+                : new Set([menu.layerId])
+              ).has(layer.id),
             )}
             onClose={() => setMenu(undefined)}
             onView={() => {
               setActiveLayer(menu.layerId);
               setPreviewLayerId(menu.layerId);
             }}
-            onMoveUp={() => {
-              captureHistory(`上移图层：${describeLayerSelection([menu.layerId])}`);
-              moveLayer(menu.layerId, 'up');
-            }}
-            onMoveDown={() => {
-              captureHistory(`下移图层：${describeLayerSelection([menu.layerId])}`);
-              moveLayer(menu.layerId, 'down');
-            }}
             onDuplicate={() => {
+              if (blockMutation('复制图层')) return;
               captureHistory(`复制图层：${describeLayerSelection([menu.layerId])}`);
               duplicateLayer(menu.layerId);
             }}
-            onClearMask={(layer) => {
-              captureHistory(`清空图层蒙版：${layer.name}`);
-              updateLayer(layer.id, {
-                maskUrl: undefined,
-                maskSpace: undefined,
-                contentRevision: (layer.contentRevision ?? 0) + 1,
-                isBaked: false,
-                needsRebake: layer.type === 'projected',
-              });
+            onImageEdit={(layer) => {
+              if (blockMutation('编辑图层图片')) return;
+              onLayerImageEdit?.(layer);
             }}
-            onImageEdit={(layer) => onLayerImageEdit?.(layer)}
-            onImageReplace={beginReplaceLayerImage}
-            onLocalRepaint={(layer) => onLayerLocalRepaint?.(layer)}
-            onMergeSelectedToUvLayer={(layerIds) => onMergeSelectedToUvLayer?.(layerIds)}
-            onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) =>
-              onMergeIntoSelectedBlankUvLayer?.(layerIds, blankUvLayerId)
-            }
+            imageEditAvailable={Boolean(onLayerImageEdit)}
+            onMergeSelectedToUvLayer={(layerIds) => {
+              if (blockMutation('合并图层')) return;
+              onMergeSelectedToUvLayer?.(layerIds);
+            }}
+            onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) => {
+              if (blockMutation('合并图层')) return;
+              onMergeIntoSelectedBlankUvLayer?.(layerIds, blankUvLayerId);
+            }}
             onDownloadImage={(layer) => {
               void downloadImageAsset(layer.imageUrl, `liclick_layer_${layer.name || layer.id}`);
             }}
             onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
             onDelete={() => {
-              const ids = selectedLayerIds.includes(menu.layerId) ? selectedLayerIds : [menu.layerId];
+              const ids = selectedLayerIds.includes(menu.layerId)
+                ? selectedLayerIds
+                : [menu.layerId];
               deleteSelectedLayers(ids);
             }}
           />,
@@ -687,18 +1011,41 @@ export function LayersPanel({
 type LayersPanelActionsProps = {
   onContentAwareRepair?: () => void;
   onMergeVisibleProjectedToUvLayer?: (layerIds: string[]) => void;
+  adjustmentsOpen?: boolean;
+  onToggleAdjustments?: () => void;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
 };
 
-export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProjectedToUvLayer }: LayersPanelActionsProps = {}) {
+export function LayersPanelActions({
+  onContentAwareRepair,
+  onMergeVisibleProjectedToUvLayer,
+  adjustmentsOpen = false,
+  onToggleAdjustments,
+  mutationLocked = false,
+  onMutationLocked,
+}: LayersPanelActionsProps = {}) {
   const t = useT();
-  const layers = useLayerStore((state) => state.layers);
+  const layers = useInteractionDeferredLayers();
   const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const deleteLayers = useLayerStore((state) => state.deleteLayers);
+  const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
   const pushToast = useToastStore((state) => state.pushToast);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+
+  function blockMutation(action: string) {
+    if (!mutationLocked) return false;
+    setClearConfirmOpen(false);
+    onMutationLocked?.(action);
+    return true;
+  }
 
   function handleAddLayer() {
+    if (blockMutation('新建图层')) return;
     captureHistory('创建空图层');
     addEmptyLayer();
   }
@@ -721,39 +1068,161 @@ export function LayersPanelActions({ onContentAwareRepair, onMergeVisibleProject
     )
     .map((layer) => layer.id);
 
+  const clearableLayerIds = layers
+    .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
+    .map((layer) => layer.id);
+
+  function handleClearLayers() {
+    if (blockMutation('清空当前模型图层')) return;
+    const latestLayers = useLayerStore.getState().layers;
+    const currentLayerIds = latestLayers
+      .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
+      .map((layer) => layer.id);
+    if (currentLayerIds.length === 0) {
+      setClearConfirmOpen(false);
+      return;
+    }
+
+    const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, currentLayerIds);
+    const expandedIdSet = new Set(expandedIds);
+    captureHistory(`清空当前模型图层（${expandedIds.length} 个）`);
+    setLayerVisibility(expandedIds, false);
+
+    const sceneState = useSceneStore.getState();
+    const currentPreview = sceneState.localRepaintPreviewLayer;
+    const currentSource = sceneState.localRepaintProjectionSource;
+    if (
+      (currentPreview && expandedIdSet.has(currentPreview.id)) ||
+      (currentPreview?.replacementTargetLayerId &&
+        expandedIdSet.has(currentPreview.replacementTargetLayerId)) ||
+      (currentSource?.targetLayerId && expandedIdSet.has(currentSource.targetLayerId))
+    ) {
+      sceneState.setLocalRepaintPreviewLayer(undefined);
+      sceneState.setLocalRepaintProjectionSource(undefined);
+      sceneState.setPaintTool('none');
+      sceneState.clearPaintMask();
+    }
+
+    setClearConfirmOpen(false);
+    window.requestAnimationFrame(() => {
+      startTransition(() => deleteLayers(expandedIds));
+    });
+    pushToast({
+      tone: 'success',
+      title: '图层已清空',
+      description: '已清空当前模型的图层，可使用撤销恢复。',
+      dedupeKey: 'layers-cleared',
+    });
+  }
+
   return (
-    <div className="flex items-center gap-1.5">
-      <LayerHeaderButton title={`${t('fitCamera')} (F)`} onClick={handleFitCamera}>
-        <Focus className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton
-        title={t('contentAwareRepair')}
-        onClick={() => {
-          if (!onContentAwareRepair) {
-            pushToast({
-              tone: 'info',
-              title: t('localRepaint'),
-              description: t('localRepaintToolHelp'),
-              dedupeKey: 'layer-content-aware-repair',
-            });
-            return;
-          }
-          onContentAwareRepair();
-        }}
-      >
-        <PaintBucket className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton title={`${t('addLayer')} (Ctrl+Shift+N)`} onClick={handleAddLayer}>
-        <Plus className="h-4 w-4" />
-      </LayerHeaderButton>
-      <LayerHeaderButton
-        title={t('mergeVisibleProjectedLayersToUvLayer')}
-        disabled={visibleProjectedLayerIds.length < 1 || !onMergeVisibleProjectedToUvLayer}
-        onClick={() => onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds)}
-      >
-        <Scissors className="h-4 w-4" />
-      </LayerHeaderButton>
-    </div>
+    <>
+      <div className="flex items-center gap-1.5">
+        <LayerHeaderButton
+          title="一键清空当前模型图层"
+          disabled={clearableLayerIds.length === 0}
+          onClick={() => {
+            if (blockMutation('清空当前模型图层')) return;
+            setClearConfirmOpen(true);
+          }}
+        >
+          <Trash2 className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton title={`${t('fitCamera')} (F)`} onClick={handleFitCamera}>
+          <Focus className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('contentAwareRepair')}
+          onClick={() => {
+            if (!onContentAwareRepair) {
+              pushToast({
+                tone: 'info',
+                title: t('localRepaint'),
+                description: t('localRepaintToolHelp'),
+                dedupeKey: 'layer-content-aware-repair',
+              });
+              return;
+            }
+            onContentAwareRepair();
+          }}
+        >
+          <PaintBucket className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('layerAdjustments')}
+          active={adjustmentsOpen}
+          disabled={!activeProjectedLayerId || !onToggleAdjustments}
+          onClick={onToggleAdjustments}
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton title={`${t('addLayer')} (Ctrl+Shift+N)`} onClick={handleAddLayer}>
+          <Plus className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('mergeVisibleProjectedLayersToUvLayer')}
+          disabled={visibleProjectedLayerIds.length < 1 || !onMergeVisibleProjectedToUvLayer}
+          onClick={() => {
+            if (blockMutation('合并图层')) return;
+            onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds);
+          }}
+        >
+          <Scissors className="h-4 w-4" />
+        </LayerHeaderButton>
+      </div>
+
+      {clearConfirmOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[98] grid place-items-center bg-black/58 px-4 backdrop-blur-sm"
+            onPointerDown={() => setClearConfirmOpen(false)}
+          >
+            <section
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="clear-layers-title"
+              aria-describedby="clear-layers-description"
+              className="w-full max-w-md overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.62)]"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 border-b border-white/12 px-4 py-4">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-rose-300/20 bg-rose-500/12 text-rose-200">
+                  <Trash2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="clear-layers-title" className="text-base font-semibold text-white">
+                    清空当前模型图层
+                  </h2>
+                  <div className="text-xs text-white/48">共 {clearableLayerIds.length} 个图层</div>
+                </div>
+              </div>
+              <div className="px-4 py-4">
+                <p id="clear-layers-description" className="text-sm leading-6 text-white/64">
+                  将删除当前模型的全部贴图和局部重绘图层。清空后可以使用撤销恢复。
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="h-9 rounded-md px-3 text-sm font-semibold text-white/72 transition hover:bg-white/10 hover:text-white"
+                    onClick={() => setClearConfirmOpen(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="h-9 rounded-md bg-rose-500 px-3 text-sm font-semibold text-white transition hover:bg-rose-400"
+                    onClick={handleClearLayers}
+                    autoFocus
+                  >
+                    全部清空
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -764,8 +1233,6 @@ function LayerRow({
   dragging,
   onSelect,
   onDoubleClick,
-  onHover,
-  onHoverEnd,
   onVisibilityPointerDown,
   onVisibilityPointerEnter,
   onOpacityPointerDown,
@@ -784,8 +1251,6 @@ function LayerRow({
   dragging: boolean;
   onSelect: MouseEventHandler<HTMLDivElement>;
   onDoubleClick: () => void;
-  onHover: () => void;
-  onHoverEnd: () => void;
   onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
   onVisibilityPointerEnter: PointerEventHandler<HTMLButtonElement>;
   onOpacityPointerDown: PointerEventHandler<HTMLButtonElement>;
@@ -799,12 +1264,16 @@ function LayerRow({
   onDragEnd: () => void;
 }) {
   const hasMask = Boolean(layer.maskUrl);
-  const modeLabel = layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
+  const modeLabel =
+    layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
   const opacityLabel = `Layer opacity ${Math.round(layer.opacity * 100)}%. Drag up or down to adjust.`;
 
   return (
     <div
       role="button"
+      data-layer-id={layer.id}
+      data-layer-type={layer.type}
+      data-layer-role={layer.role ?? ''}
       tabIndex={0}
       draggable
       onClick={onSelect}
@@ -813,8 +1282,6 @@ function LayerRow({
         event.preventDefault();
         onDoubleClick();
       }}
-      onPointerEnter={onHover}
-      onPointerLeave={onHoverEnd}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
@@ -830,7 +1297,7 @@ function LayerRow({
       onDrop={onDrop}
       onDragEnd={onDragEnd}
       className={cn(
-        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition hover:bg-white/[0.06]',
+        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition [contain-intrinsic-size:58px] [content-visibility:auto] hover:bg-white/[0.06]',
         selected && 'bg-white/[0.22]',
         active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
         dragging && 'opacity-45',
@@ -840,6 +1307,12 @@ function LayerRow({
         type="button"
         onPointerDown={onVisibilityPointerDown}
         onPointerEnter={onVisibilityPointerEnter}
+        onClick={(event) => {
+          // pointerdown owns the visibility gesture. Do not let the following
+          // click select the row and reactivate the layer that was just hidden.
+          event.stopPropagation();
+          event.preventDefault();
+        }}
         data-layer-visibility-id={layer.id}
         className="grid h-8 w-8 shrink-0 place-items-center rounded text-white transition hover:bg-white/10"
         title="Toggle visibility"
@@ -963,13 +1436,9 @@ function LayerMenu({
   selectedLayers,
   onClose,
   onView,
-  onMoveUp,
-  onMoveDown,
   onDuplicate,
-  onClearMask,
   onImageEdit,
-  onImageReplace,
-  onLocalRepaint,
+  imageEditAvailable,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
   onDownloadImage,
@@ -982,13 +1451,9 @@ function LayerMenu({
   selectedLayers: Layer[];
   onClose: () => void;
   onView: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
   onDuplicate: () => void;
-  onClearMask: (layer: Layer) => void;
   onImageEdit: (layer: Layer) => void;
-  onImageReplace: (layer: Layer) => void;
-  onLocalRepaint: (layer: Layer) => void;
+  imageEditAvailable: boolean;
   onMergeSelectedToUvLayer: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer: (layerIds: string[], blankUvLayerId: string) => void;
   onDownloadImage: (layer: Layer) => void;
@@ -998,6 +1463,9 @@ function LayerMenu({
   const t = useT();
   if (!layer) return null;
   const selectedProjectedLayers = selectedLayers.filter((item) => item.type === 'projected');
+  const selectedMergeSourceLayers = selectedLayers.filter(
+    (item) => item.type === 'projected' || isFlattenableUvMergeSource(item),
+  );
   const selectedBlankUvLayer = selectedLayers.find((item) => item.type === 'uv' && !item.imageUrl);
   const isMulti = selectedLayers.length > 1;
 
@@ -1017,7 +1485,9 @@ function LayerMenu({
       {isMulti ? (
         <>
           <MenuButton
-            onClick={() => run(() => onMergeSelectedToUvLayer(selectedProjectedLayers.map((item) => item.id)))}
+            onClick={() =>
+              run(() => onMergeSelectedToUvLayer(selectedMergeSourceLayers.map((item) => item.id)))
+            }
             icon={<Scissors className="h-4 w-4" />}
             disabled={selectedProjectedLayers.length === 0}
           >
@@ -1028,7 +1498,7 @@ function LayerMenu({
               selectedBlankUvLayer &&
               run(() =>
                 onMergeIntoSelectedBlankUvLayer(
-                  selectedProjectedLayers.map((item) => item.id),
+                  selectedMergeSourceLayers.map((item) => item.id),
                   selectedBlankUvLayer.id,
                 ),
               )
@@ -1044,17 +1514,11 @@ function LayerMenu({
         </>
       ) : (
         <>
-          <MenuButton onClick={() => run(onView)}>
+          <MenuButton onClick={() => run(onView)} icon={<Eye className="h-4 w-4" />}>
             {t('view')}
-            <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">SHIFT</span>
           </MenuButton>
-          <MenuButton onClick={() => run(onMoveUp)}>{t('moveLayerUp')}</MenuButton>
-          <MenuButton onClick={() => run(onMoveDown)}>{t('moveLayerDown')}</MenuButton>
-          {layer.maskUrl ? (
-            <MenuButton onClick={() => run(() => onClearMask(layer))}>{t('clearMask')}</MenuButton>
-          ) : null}
           {(layer.type === 'projected' || layer.type === 'uv') && (
-            <>
+            imageEditAvailable ? (
               <MenuButton
                 onClick={() => run(() => onImageEdit(layer))}
                 icon={<PencilLine className="h-4 w-4" />}
@@ -1062,30 +1526,26 @@ function LayerMenu({
               >
                 {t('imageEditLayerMenu')}
               </MenuButton>
-              <MenuButton
-                onClick={() => run(() => onImageReplace(layer))}
-                icon={<Upload className="h-4 w-4" />}
-                disabled={!layer.imageUrl}
-              >
-                {t('replaceLayerImage')}
-              </MenuButton>
-            </>
-          )}
-          {layer.type === 'projected' && (
-            <MenuButton onClick={() => run(() => onLocalRepaint(layer))} icon={<WandSparkles className="h-4 w-4" />}>
-              {t('localRepaintEditLayer')}
-            </MenuButton>
+            ) : null
           )}
           <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
             {t('duplicate')}
             <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">CTRL D</span>
           </MenuButton>
           {layer.imageUrl && (
-            <MenuButton onClick={() => run(() => onDownloadImage(layer))} icon={<Download className="h-4 w-4" />}>
+            <MenuButton
+              onClick={() => run(() => onDownloadImage(layer))}
+              icon={<Download className="h-4 w-4" />}
+            >
               {t('downloadImage')}
             </MenuButton>
           )}
-          <MenuButton onClick={() => run(() => onRename(layer))}>{t('rename')}</MenuButton>
+          <MenuButton
+            onClick={() => run(() => onRename(layer))}
+            icon={<TextCursorInput className="h-4 w-4" />}
+          >
+            {t('rename')}
+          </MenuButton>
           <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
             {t('delete')}
           </MenuButton>
@@ -1124,11 +1584,13 @@ function LayerHeaderButton({
   children,
   onClick,
   disabled,
+  active,
 }: {
   title: string;
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  active?: boolean;
 }) {
   return (
     <button
@@ -1137,7 +1599,10 @@ function LayerHeaderButton({
       disabled={disabled}
       title={title}
       aria-label={title}
-      className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
+      className={cn(
+        'grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35',
+        active && 'bg-liclick-pink/18 text-liclick-pink',
+      )}
     >
       {children}
     </button>

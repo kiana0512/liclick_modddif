@@ -1,5 +1,9 @@
 # Project Structure And Deployment Audit
 
+> Audit snapshot, not the current architecture source of truth. In particular,
+> runtime ports and the Browser Service + Local Component boundary have changed;
+> see `README.md`, `docs/02_TECH_ARCHITECTURE.md`, and `docs/60`–`docs/61`.
+
 ## Repository Shape
 
 - `apps/web`: React/Vite frontend for Projects and the Web3D editor.

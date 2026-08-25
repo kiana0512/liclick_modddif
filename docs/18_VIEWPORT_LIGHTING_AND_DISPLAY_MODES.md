@@ -1,5 +1,8 @@
 # Viewport Lighting And Display Modes
 
+> Historical Phase 8 note. Renderer details may still be useful, but current
+> modes and feature status are defined in `docs/03_WEB3D_ENGINE_DESIGN.md`.
+
 Phase 8 improves model readability in the Web3D viewport.
 
 ## Renderer

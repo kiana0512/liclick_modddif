@@ -1,6 +1,7 @@
 import type { WorkspaceFolder } from '../types/folder.js';
+import { projectRepository } from '../repositories/projectRepository.js';
 import { createId, getUserFoldersFile, readJsonFile, writeJsonFile } from './workspaceService.js';
-import { moveProjectsInFolderToRoot } from './projectFileService.js';
+import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 
 let folderWriteQueue = Promise.resolve();
 
@@ -34,11 +35,8 @@ function normalizeFolders(value: unknown) {
   return [];
 }
 
-export async function listFolders() {
-  return listFoldersForUser('legacy');
-}
-
 export async function listFoldersForUser(userId: string) {
+  if (postgresControlRepository) return postgresControlRepository.listFolders(userId);
   const foldersFile = getUserFoldersFile(userId);
   const rawFolders = await readJsonFile<unknown>(foldersFile, []);
   const folders = normalizeFolders(rawFolders);
@@ -49,6 +47,17 @@ export async function listFoldersForUser(userId: string) {
 }
 
 export async function createFolder(userId: string, name: string) {
+  if (postgresControlRepository) {
+    const folders = await postgresControlRepository.listFolders(userId);
+    const now = new Date().toISOString();
+    return postgresControlRepository.createFolder(userId, {
+      id: createId('folder'),
+      name: name.trim() || 'New Folder',
+      createdAt: now,
+      updatedAt: now,
+      order: folders.length,
+    });
+  }
   const task = folderWriteQueue.then(async () => {
     const folders = await listFoldersForUser(userId);
     const now = new Date().toISOString();
@@ -70,6 +79,15 @@ export async function createFolder(userId: string, name: string) {
 }
 
 export async function renameFolder(userId: string, folderId: string, name: string) {
+  if (postgresControlRepository) {
+    const nextName = name.trim();
+    if (!nextName) return undefined;
+    const folder = (await postgresControlRepository.listFolders(userId)).find((item) => item.id === folderId);
+    if (!folder) return undefined;
+    const updatedAt = new Date().toISOString();
+    const renamed = await postgresControlRepository.renameFolder(userId, folderId, nextName, updatedAt);
+    return renamed ? { ...folder, name: nextName, updatedAt } : undefined;
+  }
   const task = folderWriteQueue.then(async () => {
     const nextName = name.trim();
     if (!nextName) return undefined;
@@ -91,11 +109,18 @@ export async function renameFolder(userId: string, folderId: string, name: strin
 }
 
 export async function deleteFolder(userId: string, folderId: string) {
+  if (postgresControlRepository) {
+    const folder = (await postgresControlRepository.listFolders(userId)).find((item) => item.id === folderId);
+    if (!folder) return undefined;
+    const movedProjectCount = await projectRepository.moveFolderProjectsToRoot(userId, folderId);
+    const deleted = await postgresControlRepository.deleteFolder(userId, folderId, new Date().toISOString());
+    return deleted ? { folder, movedProjectCount } : undefined;
+  }
   const task = folderWriteQueue.then(async () => {
     const folders = await listFoldersForUser(userId);
     const folder = folders.find((item) => item.id === folderId);
     if (!folder) return undefined;
-    const movedProjectCount = await moveProjectsInFolderToRoot(userId, folderId);
+    const movedProjectCount = await projectRepository.moveFolderProjectsToRoot(userId, folderId);
     await writeJsonFile(
       getUserFoldersFile(userId),
       folders

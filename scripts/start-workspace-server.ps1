@@ -1,7 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$port = if ($env:LICLICK_WORKSPACE_PORT) { [int]$env:LICLICK_WORKSPACE_PORT } else { 4517 }
+$port = if ($env:LICLICK_WORKSPACE_PORT) { [int]$env:LICLICK_WORKSPACE_PORT } else { 4518 }
+$env:SERVER_PORT = [string]$port
+$env:LICLICK_WORKSPACE_PORT = [string]$port
 $logDir = Join-Path $root "logs"
 $logFile = Join-Path $logDir "workspace-server.log"
 $errFile = Join-Path $logDir "workspace-server.err.log"

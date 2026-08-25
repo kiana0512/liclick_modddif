@@ -1,99 +1,70 @@
-# Project Workspace And Package
+# Project Workspace And Packaging
 
-Phase 6 introduces a local workspace server so Liclick behaves more like a project-based creative tool than a browser demo.
+早期 Electron launcher、`4617/5673` 端口对、`package:windows` 和 `dist-installer` 已退役。当前产品是 Browser Service + 单独 Windows Local Component。
 
-## Local Workspace Server
+## Main Workspace Service
 
-The server lives in `apps/server` and uses Node.js built-in HTTP and filesystem modules. It does not require Express or other runtime dependencies.
+`apps/server` 使用 Node 原生 HTTP，并增加 `busboy`、`sharp`、`ws` 等当前能力所需依赖；它不是“完全无 runtime dependencies”的早期服务器。
 
-The normal local startup command is:
+开发启动：
 
-```text
+```bash
 corepack pnpm dev
 ```
 
-The root `dev` script starts both the web app and the local workspace server. Use `corepack pnpm dev:web` or `corepack pnpm dev:server` only when debugging one side in isolation.
+该命令启动：
 
-If a workspace server is already healthy on the configured port, starting another server process keeps the dev script alive instead of crashing with `EADDRINUSE`. This prevents `corepack pnpm dev` from failing when a previous local session is already using the workspace server.
+- Vite：`127.0.0.1:5173`；
+- main workspace service：默认 `127.0.0.1:4518`。
 
-For longer Windows sessions, a detached local server can be started with:
+也可单独运行：
 
-```text
+```bash
+corepack pnpm dev:web
+corepack pnpm dev:server
 corepack pnpm workspace:up
 ```
 
-This is a convenience for local work. Production deployment should run the server through a real process manager.
+主服务端口读取 `SERVER_PORT`，再回退到 `LICLICK_WORKSPACE_PORT`，源码默认 `4518`。LAN/集成部署文档常显式设置 `4517`，这不是源码默认值。
 
-Default workspace path:
+当前浏览器的 Texture `workspaceApiClient` 将 project/folder/asset 请求发往 Local Component；主服务主要拥有 Web auth、远端模块代理、服务端 job/history/recovery，并保留兼容 workspace routes。两者共享部分项目/资产服务代码，但不能据此把 4518 和 4618 当成同一数据所有者。
 
-```text
-workspace/
-```
+默认工作区为仓库 `workspace/`，通过 `LICLICK_WORKSPACE_DIR` 改写。长期部署应使用 systemd/Windows service/process manager，而不是把开发脚本当作生产 supervisor。
 
-The path can be overridden with:
+## Windows Local Component
 
-```text
-LICLICK_WORKSPACE_DIR
-```
-
-Server default port:
+本地组件默认监听：
 
 ```text
-4517
+127.0.0.1:4618
 ```
 
-The port can be overridden with:
+它复用 `apps/server` 的受限路由，以 `LICLICK_LOCAL_COMPONENT_MODE=1` 启动，当前 capabilities 包括：
 
-```text
-LICLICK_WORKSPACE_PORT
+- texture painting；
+- local files/project storage/settings；
+- personal Atlas/Liclick auth and generation；
+- Photoshop/DCC bridge boundary；
+- local performance telemetry。
+
+它不承载统一 Web 首页、远端 Auto UV/Retopology/Bake 服务，也不打包 ComfyUI/AI model。打包命令：
+
+```bash
+corepack pnpm package:windows:local-component
 ```
 
-## Windows Installed App
+Photoshop UXP 单独打包：
 
-The Windows installed app keeps the same local-server architecture but uses a separate port pair from development:
-
-```text
-backend: 127.0.0.1:4617
-frontend: 127.0.0.1:5673
+```bash
+corepack pnpm package:photoshop
 ```
-
-The installer is built with:
-
-```text
-corepack pnpm package:windows
-```
-
-The generated setup file is:
-
-```text
-dist-installer/Liclick 3D Texture Setup.exe
-```
-
-The desktop shortcut opens the Electron launcher. Its hidden managed service process:
-
-- prepares `%LocalAppData%\Liclick 3D Texture\runtime`
-- installs missing dependencies when needed
-- starts the local workspace server
-- starts the local web UI
-- exposes the workspace through the launcher's `打开工作台` action
-- mirrors stdout/stderr into the launcher log view and log files
-
-Closing the window hides the launcher to the tray by default; using the tray's full quit action stops the local services. Updating the installer replaces program files but keeps `%LocalAppData%\Liclick 3D Texture\workspace` so user projects survive upgrades.
 
 ## Workspace Layout
 
-```text
-workspace/
-  projects/
-  folders.json
-  recent-projects.json
-  settings.json
-```
-
-Each project is stored as:
+主服务与本地组件都按用户隔离工程，具体 user root 由身份模式决定。项目逻辑布局：
 
 ```text
-workspace/projects/<projectSlug>/
+projects/<projectSlug>/
   project.liclick.json
   assets/
     models/
@@ -107,70 +78,24 @@ workspace/projects/<projectSlug>/
   autosave/
 ```
 
-## project.liclick.json
+目录级 metadata 还包括 folders、recent projects、settings、auth/job/telemetry 等服务文件。`workspace/` 整体属于 runtime/user data，不能提交到 Git。
 
-The project document stores project metadata, object records, references, captures, generations, layers, baked textures, settings, current workspace mode, active object/layer ids, and `workspaceVersion`.
+## Autosave And Assets
 
-Asset paths should be project-relative:
-
-```text
-assets/models/chair.fbx
-assets/captures/capture-001-color.png
-assets/baked/basecolor-001.png
-```
-
-The web app resolves these paths through:
-
-```text
-http://127.0.0.1:<port>/workspace/projects/<projectSlug>/...
-```
-
-## Autosave
-
-When a local-server project is dirty, the web app debounces for 1.5 seconds and sends the latest project snapshot to the server. The server writes:
-
-- `project.liclick.json`
-- a rolling autosave copy under `autosave/`
-
-The server keeps the newest five autosave files.
-
-## .liclick3d Package
-
-`.liclick3d` is the planned portable package format. It will be a zip containing:
-
-- `project.liclick.json`
-- `assets/models`
-- `assets/references`
-- `assets/captures`
-- `assets/generations`
-- `assets/layers`
-- `assets/baked`
-- `thumbnails`
-
-Phase 6 exposes an Export Project Package API stub. The zip writer is not implemented yet.
+- Dirty project 在约 1.5 秒 debounce 后保存。
+- JSON 写入采用临时文件 + rename；autosave 保留有限滚动副本。
+- Capture/generation/layer/baked 图像和模型写入二进制 assets，项目 JSON 保存相对路径/安全 URL。
+- 服务公开 workspace 文件时只允许匹配的用户/项目资产路径，并检查 path traversal 与 realpath 边界。
+- 远端生成资产只从 HTTPS allowlisted hosts 导入。
 
 ## Browser Fallback
 
-The older File System Access / JSON download path remains as a fallback for mock or offline use. The intended primary flow is the local workspace server.
+File System Access API 与 JSON 下载/导入仍保留为离线或不支持工作区服务时的 fallback。Blob URL 是会话态，必须在保存时物化；单纯下载 JSON 不保证包含所有未物化的大资产。
 
-## Workspace Home UX
+## Portable Package
 
-The project home sidebar routes to Projects, Folders, Assets, and Settings sections. Settings owns the Chinese / English language switch and the local startup command reminder.
+`.liclick3d` zip 仍未实现。当前 export package endpoint/概念不能描述成可用的便携工程交付。目标内容仍可包含 project JSON、models、references、captures、generations、layers、baked 和 thumbnails，但实现前应补安全 manifest、版本迁移和完整性校验。
 
-New Folder uses an in-app modal rather than `window.prompt`, so folder creation stays visually consistent with the Liclick workspace style.
+## Multi-user Boundary
 
-When the local workspace server is offline, the mock starter projects remain visible. This keeps the first-run experience usable and visually rich instead of showing an empty error state.
-
-Project cards use the saved project thumbnail when available. The editor captures the current WebGL viewport during project saves so imported-model projects can be identified visually on the home page. Thumbnail capture temporarily hides viewport helpers such as the floor grid and paint overlays, then restores them immediately after capture.
-
-Workspace health checks intentionally use a short timeout. When the server is not running, the UI should return to the offline state quickly instead of making the project page feel delayed.
-
-## Concurrent Local Writes
-
-Folder creation is queued inside the local server because it reads and rewrites `folders.json`. JSON writes use a temporary file followed by rename, reducing the chance of partial reads while the workspace is being written.
-
-This is suitable for local MVP use and light team testing. A production multi-user deployment should move shared workspace metadata to a database or another transactional storage layer.
-
-## Model Restore
-
-Imported model files are saved under `assets/models/` for local-server projects. When a project is loaded through the workspace server, relative model paths are resolved into `http://127.0.0.1:<port>/workspace/...` URLs. The web editor then reloads the saved FBX / GLB / GLTF / OBJ into Three.js and reapplies the stored object id and transform.
+当前 per-user 文件工作区适合单节点。多实例/大规模多人需要数据库事务、共享对象存储、分布式任务/锁和迁移策略；Prisma schema 目前只是目标契约。

@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { getBarycentric, isInsideBarycentric } from './barycentric';
 import { dilateImageData } from './dilation';
-import { sampleImageBilinear, sampleImageBilinearCleanColor, sampleImageNearest } from './imageSampler';
+import {
+  sampleImageBilinear,
+  sampleImageBilinearCleanColor,
+  sampleImageBilinearIgnoringAlpha,
+  sampleImageNearest,
+} from './imageSampler';
 import type { BakeProjectedLayerInput } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
@@ -32,7 +37,7 @@ const DEPTH_EPSILON = 0.08;
 const IMAGE_COVERAGE_EDGE_FADE = 0.015;
 const IMAGE_QUALITY_EDGE_FADE = 0.035;
 const COVERAGE_THRESHOLD = 0.025;
-const SOURCE_ALPHA_REJECT = 0.035;
+const SOURCE_ALPHA_REJECT = 0.01;
 
 export type RasterizeOutput = {
   canvas: HTMLCanvasElement;
@@ -173,8 +178,13 @@ function applyLooseProjectionWeights(
   ndv: number,
   strength: number,
   depthWeight: number,
+  maskCoverage: number,
+  ignoreSourceAlpha: boolean,
 ): ProjectedLayerSample | undefined {
-  const sourceAlpha = color[3] / 255;
+  // Keep CPU fallback identical to the live/GPU paths. The projected mask is
+  // alpha coverage, including the automatic brush feather, rather than a
+  // threshold that turns every surviving pixel fully opaque.
+  const sourceAlpha = (ignoreSourceAlpha ? 1 : color[3] / 255) * maskCoverage;
   if (sourceAlpha < SOURCE_ALPHA_REJECT) return undefined;
   if (ndv < NDV_HARD_REJECT) return undefined;
 
@@ -291,11 +301,14 @@ function resolveProjectedSample({
   }
   const imageUv = scratch.imageUv;
 
+  let maskCoverage = 1;
   if (input.maskImage) {
     const maskUv = input.layer.maskSpace === 'uv' ? textureUv : imageUv;
     const maskSample = sampleImageBilinear(input.maskImage, maskUv.u, maskUv.v);
-    const maskValue = Math.max(maskSample[0], maskSample[1], maskSample[2]);
-    if (maskValue < 24) {
+    const maskLuminance =
+      maskSample[0] * 0.299 + maskSample[1] * 0.587 + maskSample[2] * 0.114;
+    maskCoverage = (maskLuminance / 255) * (maskSample[3] / 255);
+    if (maskCoverage < SOURCE_ALPHA_REJECT) {
       return { inFrustum: true, maskRejected: true, depthRejected: false, backfaceRejected: false };
     }
   }
@@ -308,12 +321,17 @@ function resolveProjectedSample({
     depthWeight = 0.2 + 0.8 * Math.exp(-((depthErr / DEPTH_EPSILON) ** 2));
   }
 
+  const projectedColor = input.layer.ignoreSourceAlpha
+    ? sampleImageBilinearIgnoringAlpha(input.projectedImage, imageUv.u, imageUv.v)
+    : sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v);
   const sample = applyLooseProjectionWeights(
-    applyLayerAdjustments(sampleImageBilinearCleanColor(input.projectedImage, imageUv.u, imageUv.v), input.layer),
+    applyLayerAdjustments(projectedColor, input.layer),
     imageUv,
     ndv,
     input.layer.strength ?? 1,
     depthWeight,
+    maskCoverage,
+    Boolean(input.layer.ignoreSourceAlpha),
   );
   if (!sample) return { inFrustum: true, maskRejected: false, depthRejected: false, backfaceRejected: false };
   if (sample.coverage <= COVERAGE_THRESHOLD) {

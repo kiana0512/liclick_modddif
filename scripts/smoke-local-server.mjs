@@ -112,6 +112,13 @@ try {
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie')?.split(';', 1)[0];
   assert(cookie, 'Dev login must set a session cookie.');
+  const loggedIn = await login.json();
+  assert(loggedIn.user?.id, 'Dev login must return the authenticated user id.');
+
+  const retiredComfyApi = await fetch(`${baseUrl}/api/comfyui/status`, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
+  });
+  assert.equal(retiredComfyApi.status, 404, 'The retired local ComfyUI API must not be exposed.');
 
   const createProject = await fetch(`${baseUrl}/api/projects`, {
     method: 'POST',
@@ -134,7 +141,184 @@ try {
   const uploaded = await upload.json();
   assert(uploaded.asset?.url, 'Asset upload must return a workspace URL.');
 
-  const asset = await fetch(uploaded.asset.url, { headers: { Origin: allowedOrigin } });
+  const layerAssetResponses = await Promise.all(
+    [
+      ['smoke-layer.png', 'local-smoke-layer-image'],
+      ['smoke-layer-mask.png', 'local-smoke-layer-mask'],
+      ['smoke-layer-depth.png', 'local-smoke-layer-depth'],
+    ].map(([filename, contents]) =>
+      fetch(
+        `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}/assets?format=blob&category=layers&filename=${encodeURIComponent(filename)}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'image/png', Cookie: cookie, Origin: allowedOrigin },
+          body: Buffer.from(contents),
+        },
+      ),
+    ),
+  );
+  layerAssetResponses.forEach((response) => assert.equal(response.status, 201));
+  const [layerImageAsset, layerMaskAsset, layerDepthAsset] = await Promise.all(
+    layerAssetResponses.map((response) => response.json()),
+  );
+
+  const objectWithLayer = {
+    ...created.project,
+    objects: [
+      {
+        id: 'smoke-object',
+        name: 'Smoke object',
+        type: 'model',
+        sourcePath: uploaded.asset.url,
+        format: 'fbx',
+        materialSlots: [],
+        uvSets: [],
+        warnings: [],
+      },
+    ],
+    layers: [
+      {
+        id: 'smoke-layer',
+        name: 'Smoke layer',
+        type: 'projected',
+        objectId: 'smoke-object',
+        imageUrl: layerImageAsset.asset.url,
+        maskUrl: layerMaskAsset.asset.url,
+        depthUrl: layerDepthAsset.asset.url,
+        visible: true,
+        opacity: 1,
+      },
+    ],
+  };
+  const saveLayeredProject = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify(objectWithLayer),
+    },
+  );
+  assert.equal(saveLayeredProject.status, 200, 'A project with models and layers must save normally.');
+  const savedLayeredProject = await saveLayeredProject.json();
+
+  const accidentalLayerClear = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({ ...savedLayeredProject.project, layers: [] }),
+    },
+  );
+  assert.equal(
+    accidentalLayerClear.status,
+    409,
+    'A stale client snapshot must not clear every layer while project models remain.',
+  );
+
+  const preserveExistingLayerAsset = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({
+        ...savedLayeredProject.project,
+        layers: savedLayeredProject.project.layers.map((layer) => ({
+          ...layer,
+          imageUrl: 'blob:http://127.0.0.1/still-uploading',
+        })),
+      }),
+    },
+  );
+  assert.equal(
+    preserveExistingLayerAsset.status,
+    200,
+    'A transient Blob URL must preserve the existing durable projected-layer asset.',
+  );
+  const preservedProject = await preserveExistingLayerAsset.json();
+  assert.equal(preservedProject.project.layers[0].imageUrl, layerImageAsset.asset.url);
+
+  const staleProjectSave = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({ ...preservedProject.project, updatedAt: '2000-01-01T00:00:00.000Z' }),
+    },
+  );
+  assert.equal(
+    staleProjectSave.status,
+    409,
+    'An older full-project snapshot must not overwrite newer captures or projected layers.',
+  );
+
+  const rejectNewVolatileLayer = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({
+        ...preservedProject.project,
+        layers: [
+          {
+            ...preservedProject.project.layers[0],
+            id: 'new-volatile-projected-layer',
+            imageUrl: 'blob:http://127.0.0.1/not-uploaded-yet',
+          },
+          ...preservedProject.project.layers,
+        ],
+      }),
+    },
+  );
+  assert.equal(
+    rejectNewVolatileLayer.status,
+    409,
+    'A new projected layer must not be persisted before its image upload completes.',
+  );
+
+  const rawProjectPath = path.join(
+    workspaceDir,
+    'users',
+    loggedIn.user.id,
+    'projects',
+    created.slug,
+    'project.liclick.json',
+  );
+  const damagedProject = JSON.parse(await fs.readFile(rawProjectPath, 'utf8'));
+  const foreignWorkspaceRecoveryUrl =
+    'http://127.0.0.1:9/workspace/users/atlas-user/recoveries/modelview-inpaint/result.png';
+  damagedProject.generations = [
+    {
+      id: 'foreign-repaint-result',
+      mode: 'inpaint',
+      prompt: 'smoke repaint',
+      referenceIds: [],
+      status: 'succeeded',
+      resultUrl: foreignWorkspaceRecoveryUrl,
+      metadata: { provider: 'modelview-seedvr2', workflow: 'local-repaint' },
+    },
+  ];
+  delete damagedProject.layers[0].imageUrl;
+  delete damagedProject.layers[0].maskUrl;
+  delete damagedProject.layers[0].depthUrl;
+  await fs.writeFile(rawProjectPath, `${JSON.stringify(damagedProject, null, 2)}\n`, 'utf8');
+  const repairedProjectResponse = await fetch(
+    `${baseUrl}/api/projects/${encodeURIComponent(created.project.id)}`,
+    { headers: { Cookie: cookie, Origin: allowedOrigin } },
+  );
+  assert.equal(repairedProjectResponse.status, 200);
+  const repairedProject = await repairedProjectResponse.json();
+  assert.equal(repairedProject.project.layers[0].imageUrl, layerImageAsset.asset.url);
+  assert.equal(repairedProject.project.layers[0].maskUrl, layerMaskAsset.asset.url);
+  assert.equal(repairedProject.project.layers[0].depthUrl, layerDepthAsset.asset.url);
+  assert.equal(
+    repairedProject.project.generations[0].resultUrl,
+    foreignWorkspaceRecoveryUrl,
+    'Loading a local project must not rewrite a different workspace origin to this server.',
+  );
+
+  const asset = await fetch(uploaded.asset.url, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
+  });
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get('access-control-allow-origin'), allowedOrigin);
   assert.equal(asset.headers.get('x-content-type-options'), 'nosniff');
@@ -142,26 +326,50 @@ try {
 
   const assetHead = await fetch(uploaded.asset.url, {
     method: 'HEAD',
-    headers: { Origin: allowedOrigin },
+    headers: { Cookie: cookie, Origin: allowedOrigin },
   });
   assert.equal(assetHead.status, 200);
   assert.equal(await assetHead.text(), '');
 
+  const recoveryDirectory = path.join(
+    workspaceDir,
+    'users',
+    loggedIn.user.id,
+    'recoveries',
+    'modelview-inpaint',
+  );
+  await fs.mkdir(recoveryDirectory, { recursive: true });
+  await fs.writeFile(path.join(recoveryDirectory, 'local-repaint-result.png'), 'local-repaint');
+  const recoveryAsset = await fetch(
+    `${baseUrl}/workspace/users/${encodeURIComponent(loggedIn.user.id)}/recoveries/modelview-inpaint/local-repaint-result.png`,
+    { headers: { Cookie: cookie, Origin: allowedOrigin } },
+  );
+  assert.equal(
+    recoveryAsset.status,
+    200,
+    'Local repaint recovery images must remain readable by the owning workspace.',
+  );
+  assert.equal(await recoveryAsset.text(), 'local-repaint');
+
   const privateWorkspaceFile = await fetch(`${baseUrl}/workspace/auth.json`, {
-    headers: { Origin: allowedOrigin },
+    headers: { Cookie: cookie, Origin: allowedOrigin },
   });
   assert.equal(privateWorkspaceFile.status, 403, 'Workspace metadata must never be publicly served.');
 
   const assetUrl = new URL(uploaded.asset.url);
   const traversalUrl = `${baseUrl}${assetUrl.pathname.replace(/\/assets\/references\/[^/]+$/, '/assets/references/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/auth.json')}`;
-  const traversal = await fetch(traversalUrl, { headers: { Origin: allowedOrigin } });
+  const traversal = await fetch(traversalUrl, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
+  });
   assert.notEqual(traversal.status, 200, 'Traversal from a public asset directory must not reach workspace metadata.');
 
-  const deniedAsset = await fetch(uploaded.asset.url, { headers: { Origin: deniedOrigin } });
+  const deniedAsset = await fetch(uploaded.asset.url, {
+    headers: { Cookie: cookie, Origin: deniedOrigin },
+  });
   assert.equal(deniedAsset.status, 403, 'Workspace assets must reject untrusted Origins.');
 
   await verifyExternalBindRequiresSecret();
-  console.log('Local server smoke passed: auth, project creation, upload, CORS, HEAD, and workspace isolation.');
+  console.log('Local server smoke passed: auth, retired ComfyUI API boundary, project creation, upload, repaint recovery, CORS, HEAD, and workspace isolation.');
 } catch (error) {
   if (output.trim()) console.error(output.trim());
   throw error;

@@ -3,13 +3,24 @@ import { v4 as uuid } from 'uuid';
 import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import type { Layer, LayerAdjustments } from '@/types/layer';
+import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
+import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { useSceneStore } from './sceneStore';
 
 type LayerStore = {
   layers: Layer[];
   activeProjectedLayerId?: string;
+  projectedPreviewBatchDepth: number;
+  projectedPreviewLayers?: Layer[];
   setLayers: (layers: Layer[]) => void;
-  addEmptyLayer: () => Layer;
+  beginProjectedPreviewBatch: () => void;
+  endProjectedPreviewBatch: () => void;
+  addEmptyLayer: (input?: {
+    name?: string;
+    objectId?: string;
+    role?: Layer['role'];
+    generationId?: string;
+  }) => Layer;
   addUvLayer: (input: {
     name?: string;
     imageUrl: string;
@@ -23,11 +34,16 @@ type LayerStore = {
     objectId?: string;
     targetUvLayerId?: string;
     name?: string;
+    renderedColor?: boolean;
+    renderedColorMaskUrl?: string;
+    role?: Layer['role'];
+    uvMergeVersion?: number;
   }) => Layer;
   addProjectedLayerFromGeneration: (
     generation: Generation,
     capture?: Capture,
     objectId?: string,
+    layerId?: string,
   ) => Layer;
   toggleLayer: (layerId: string) => void;
   setLayerVisibility: (layerIds: string[], visible: boolean) => void;
@@ -51,6 +67,41 @@ type LayerStore = {
 
 const legacyTransparentImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
+
+function createEmptyLayer(
+  input: {
+    name?: string;
+    objectId?: string;
+    role?: Layer['role'];
+    generationId?: string;
+  } = {},
+): Layer {
+  return {
+    id: uuid(),
+    name: input.name ?? 'New layer',
+    type: 'uv',
+    role: input.role,
+    imageUrl: '',
+    objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
+    generationId: input.generationId,
+    visible: true,
+    opacity: 1,
+    strength: 1,
+    blendMode: 'normal',
+    adjustments: { hue: 0, saturation: 0, lightness: 0 },
+    order: 0,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function ensureSelectedObjectHasLayer(layers: Layer[]) {
+  const selectedObjectId = useSceneStore.getState().selectedObjectId;
+  const hasLayerForSelectedObject = layers.some(
+    (layer) => !layer.objectId || layer.objectId === selectedObjectId,
+  );
+  if (hasLayerForSelectedObject) return layers;
+  return [createEmptyLayer({ objectId: selectedObjectId }), ...layers];
+}
 
 function withOrder(layers: Layer[]) {
   return layers.map((layer, index) => ({ ...layer, order: index }));
@@ -80,17 +131,35 @@ function normalizeProjectedLayerName(layer: Layer) {
 }
 
 function normalizeLayer(layer: Layer) {
+  const imageUrl = typeof layer.imageUrl === 'string' ? layer.imageUrl : '';
+  const name = normalizeProjectedLayerName(layer);
+  const legacySingleViewPriority =
+    layer.type === 'projected' &&
+    Boolean(layer.generationId) &&
+    name === '投射贴图 · 当前视角' &&
+    !layer.replacementTargetLayerId;
   return {
     ...layer,
-    name: normalizeProjectedLayerName(layer),
-    imageUrl: layer.imageUrl === legacyTransparentImage ? '' : layer.imageUrl,
+    name,
+    imageUrl: imageUrl === legacyTransparentImage ? '' : imageUrl,
     adjustments: {
       hue: layer.adjustments?.hue ?? 0,
       saturation: layer.adjustments?.saturation ?? 0,
       lightness: layer.adjustments?.lightness ?? 0,
     },
     strength: layer.strength ?? 1,
+    projectionCompositeMode:
+      layer.projectionCompositeMode ??
+      (legacySingleViewPriority ? 'single-view-priority-v1' : undefined),
   };
+}
+
+function isSingleViewTextureGeneration(generation: Generation) {
+  return (
+    generation.mode === 'single' &&
+    generation.metadata.workflow === 'texture-map' &&
+    generation.metadata.multiview !== true
+  );
 }
 
 function getObjectMatrixWorld(generation: Generation) {
@@ -109,30 +178,48 @@ function markVisibleStackNeedsRebake(layers: Layer[]) {
   );
 }
 
+function isLocalRepaintRuntimeLayer(layer: Layer) {
+  return Boolean(layer.replacementTargetLayerId) && !layer.isBaked;
+}
+
+let projectedPreviewReleaseRevision = 0;
+
 export const useLayerStore = create<LayerStore>((set, get) => ({
   layers: [],
   activeProjectedLayerId: undefined,
+  projectedPreviewBatchDepth: 0,
+  projectedPreviewLayers: undefined,
   setLayers: (layers) =>
     set({
       layers: withOrder(layers.map(normalizeLayer)),
       activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
     }),
-  addEmptyLayer: () => {
-    const objectId = useSceneStore.getState().selectedObjectId;
-    const layer: Layer = {
-      id: uuid(),
-      name: 'New layer',
-      type: 'uv',
-      imageUrl: '',
-      objectId,
-      visible: true,
-      opacity: 1,
-      strength: 1,
-      blendMode: 'normal',
-      adjustments: { hue: 0, saturation: 0, lightness: 0 },
-      order: 0,
-      createdAt: new Date().toISOString(),
+  beginProjectedPreviewBatch: () =>
+    set((state) => ({
+      projectedPreviewBatchDepth: state.projectedPreviewBatchDepth + 1,
+      projectedPreviewLayers:
+        state.projectedPreviewBatchDepth === 0 ? state.layers : state.projectedPreviewLayers,
+    })),
+  endProjectedPreviewBatch: () => {
+    const revision = ++projectedPreviewReleaseRevision;
+    const nextDepth = Math.max(0, get().projectedPreviewBatchDepth - 1);
+    set({ projectedPreviewBatchDepth: nextDepth });
+    if (nextDepth > 0) return;
+
+    const releaseWhenIdle = () => {
+      if (revision !== projectedPreviewReleaseRevision) return;
+      const state = get();
+      if (state.projectedPreviewBatchDepth > 0) return;
+      if (isViewportInteractionBusy()) {
+        window.setTimeout(releaseWhenIdle, 24);
+        return;
+      }
+      if (state.projectedPreviewLayers) set({ projectedPreviewLayers: undefined });
     };
+    releaseWhenIdle();
+  },
+  addEmptyLayer: (input) => {
+    const layer = createEmptyLayer(input);
 
     set((state) => ({
       layers: withOrder([layer, ...state.layers]),
@@ -141,13 +228,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
 
     return layer;
   },
-  addProjectedLayerFromGeneration: (generation, capture, objectId) => {
+  addProjectedLayerFromGeneration: (generation, capture, objectId, layerId) => {
     const cameraViewLabel =
       typeof generation.metadata.cameraViewLabel === 'string'
         ? generation.metadata.cameraViewLabel.trim()
         : '';
     const layer: Layer = {
-      id: uuid(),
+      id: layerId ?? uuid(),
       name: cameraViewLabel
         ? `投射贴图 · ${cameraViewLabel}`
         : generation.prompt
@@ -158,9 +245,19 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       objectId: objectId ?? capture?.objectId,
       objectMatrixWorld: getObjectMatrixWorld(generation),
       camera: capture?.camera,
-      maskUrl: capture?.maskUrl,
+      // Capture silhouettes guide generation and remain available to repaint
+      // workflows, but ordinary projected layers use their own alpha plus depth.
+      maskUrl: undefined,
       depthUrl: capture?.depthUrl,
+      depthEncoding: capture?.depthEncoding,
       generationId: generation.id,
+      projectionCoverageMode:
+        generation.metadata.alphaMode === 'geometry-mask-separated'
+          ? 'source-alpha-depth'
+          : undefined,
+      projectionCompositeMode: isSingleViewTextureGeneration(generation)
+        ? 'single-view-priority-v1'
+        : undefined,
       captureId: capture?.id ?? generation.captureId,
       visible: true,
       opacity: 1,
@@ -228,12 +325,17 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
             name: layer.name || input.name || 'Merged UV Layer',
             imageUrl: input.imageUrl,
             objectId: input.objectId ?? layer.objectId,
+            renderedColor: input.renderedColor,
+            renderedColorMaskUrl: input.renderedColorMaskUrl,
+            role: input.role ?? layer.role,
+            uvMergeVersion: input.uvMergeVersion,
             visible: true,
             opacity: 1,
             strength: 1,
             blendMode: 'normal',
             isBaked: false,
             needsRebake: false,
+            contentRevision: (layer.contentRevision ?? 0) + 1,
           };
           nextLayers[index] = mergedLayer;
         });
@@ -246,6 +348,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           type: 'uv',
           imageUrl: input.imageUrl,
           objectId: input.objectId ?? useSceneStore.getState().selectedObjectId,
+          renderedColor: input.renderedColor,
+          renderedColorMaskUrl: input.renderedColorMaskUrl,
+          role: input.role,
+          uvMergeVersion: input.uvMergeVersion,
           visible: true,
           opacity: 1,
           strength: 1,
@@ -254,6 +360,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
           order: insertIndex,
           isBaked: false,
           needsRebake: false,
+          contentRevision: 1,
           createdAt,
         };
         nextLayers.splice(Math.min(insertIndex, nextLayers.length), 0, mergedLayer);
@@ -266,7 +373,13 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     });
     return mergedLayer!;
   },
-  toggleLayer: (layerId) =>
+  toggleLayer: (layerId) => {
+    const target = get().layers.find((layer) => layer.id === layerId);
+    markPerformanceEvent('layers', 'toggle-layer', {
+      layerId,
+      layerType: target?.type,
+      nextVisible: !target?.visible,
+    });
     set((state) => {
       const target = state.layers.find((layer) => layer.id === layerId);
       const nextVisible = !target?.visible;
@@ -276,26 +389,32 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       return {
         layers,
         activeProjectedLayerId:
-          layers.find((layer) => layer.id === layerId && layer.visible)?.id ??
-          layers.find((layer) => layer.visible)?.id,
+          state.activeProjectedLayerId ?? layers.find((layer) => layer.visible)?.id,
       };
-    }),
-  setLayerVisibility: (layerIds, visible) =>
+    });
+  },
+  setLayerVisibility: (layerIds, visible) => {
+    const currentLayers = get().layers;
+    markPerformanceEvent('layers', 'set-layer-visibility', {
+      layerIds,
+      layerTypes: layerIds.map(
+        (layerId) => currentLayers.find((layer) => layer.id === layerId)?.type ?? 'missing',
+      ),
+      visible,
+    });
     set((state) => {
       const layerIdSet = new Set(layerIds);
       const layers = state.layers.map((layer) =>
         layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
       );
-      const activeStillVisible = layers.some(
-        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
-      );
       return {
         layers,
-        activeProjectedLayerId: activeStillVisible
+        activeProjectedLayerId: layers.some((layer) => layer.id === state.activeProjectedLayerId)
           ? state.activeProjectedLayerId
           : layers.find((layer) => layer.visible)?.id,
       };
-    }),
+    });
+  },
   setOpacity: (layerId, opacity) =>
     set((state) => ({
       layers: state.layers.map((layer) =>
@@ -432,18 +551,33 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     }),
   deleteLayer: (layerId) =>
     set((state) => {
-      const layers = state.layers.filter((layer) => layer.id !== layerId);
+      const removedLayer = state.layers.find((layer) => layer.id === layerId);
+      const layers = ensureSelectedObjectHasLayer(
+        state.layers.filter((layer) => layer.id !== layerId),
+      );
+      const orderedLayers = withOrder(layers);
       return {
-        layers: markVisibleStackNeedsRebake(withOrder(layers)),
+        layers:
+          removedLayer && isLocalRepaintRuntimeLayer(removedLayer)
+            ? orderedLayers
+            : markVisibleStackNeedsRebake(orderedLayers),
         activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),
   deleteLayers: (layerIds) =>
     set((state) => {
       const layerIdSet = new Set(layerIds);
-      const layers = state.layers.filter((layer) => !layerIdSet.has(layer.id));
+      const removedLayers = state.layers.filter((layer) => layerIdSet.has(layer.id));
+      const layers = ensureSelectedObjectHasLayer(
+        state.layers.filter((layer) => !layerIdSet.has(layer.id)),
+      );
+      const orderedLayers = withOrder(layers);
+      const removesOnlyLocalRepaintLayers =
+        removedLayers.length > 0 && removedLayers.every(isLocalRepaintRuntimeLayer);
       return {
-        layers: markVisibleStackNeedsRebake(withOrder(layers)),
+        layers: removesOnlyLocalRepaintLayers
+          ? orderedLayers
+          : markVisibleStackNeedsRebake(orderedLayers),
         activeProjectedLayerId: layers.find((layer) => layer.visible)?.id,
       };
     }),

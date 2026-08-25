@@ -6,6 +6,8 @@ export type NormalizeImportedModelOptions = {
   normalize: boolean;
   ground: boolean;
   targetMaxDimension: number;
+  /** Keep source-space position intact; useful when multiple meshes share one coordinate system. */
+  recenter?: boolean;
 };
 
 export function normalizeImportedModel(group: THREE.Group, options: NormalizeImportedModelOptions) {
@@ -21,10 +23,15 @@ export function normalizeImportedModel(group: THREE.Group, options: NormalizeImp
   const scaledCenter = new THREE.Vector3();
   scaledBox.getCenter(scaledCenter);
 
-  const offset = new THREE.Vector3(-scaledCenter.x, 0, -scaledCenter.z);
+  const recenter = options.recenter ?? true;
+  const offset = new THREE.Vector3(
+    recenter ? -scaledCenter.x : 0,
+    0,
+    recenter ? -scaledCenter.z : 0,
+  );
   if (options.ground) {
     offset.y = -scaledBox.min.y;
-  } else {
+  } else if (recenter) {
     offset.y = -scaledCenter.y;
   }
 

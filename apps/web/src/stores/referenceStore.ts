@@ -14,11 +14,18 @@ function asProjectReference(reference: ReferenceImage): ReferenceImage {
   return projectReference;
 }
 
+function isSelectableReference(reference: ReferenceImage) {
+  return reference.referenceRole !== 'multi-view';
+}
+
 type ReferenceStore = {
   references: ReferenceImage[];
   selectedReferenceIds: string[];
   setReferences: (references: ReferenceImage[]) => void;
-  addReferences: (references: ReferenceImage[]) => void;
+  addReferences: (
+    references: ReferenceImage[],
+    selectionBehavior?: 'select-new' | 'clear-all',
+  ) => void;
   setSelectedReferences: (referenceIds: string[]) => void;
   toggleReference: (referenceId: string, selectionMode?: 'multiple' | 'single') => void;
   renameReference: (referenceId: string, name: string) => void;
@@ -34,23 +41,34 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
       const nextReferences = withoutLegacyMockReferences(references).map(asProjectReference);
       return {
         references: nextReferences,
-        selectedReferenceIds: nextReferences.filter((reference) => reference.isPrimary).map((reference) => reference.id),
+        selectedReferenceIds: nextReferences
+          .filter((reference) => reference.isPrimary)
+          .map((reference) => reference.id),
       };
     }),
-  addReferences: (references) =>
+  addReferences: (references, selectionBehavior = 'select-new') =>
     set((state) => {
       const projectReferences = references.map(asProjectReference);
-      const selectedReferenceIds = [
-        ...projectReferences.map((reference) => reference.id),
-        ...state.selectedReferenceIds,
-      ];
+      const selectedReferenceIds =
+        selectionBehavior === 'clear-all'
+          ? []
+          : [
+              ...projectReferences.filter(isSelectableReference).map((reference) => reference.id),
+              ...state.selectedReferenceIds,
+            ];
       return {
-        references: [...projectReferences.map((reference) => ({ ...reference, isPrimary: true })), ...state.references],
+        references: [...projectReferences, ...state.references].map((reference) => ({
+          ...reference,
+          isPrimary: selectedReferenceIds.includes(reference.id),
+        })),
         selectedReferenceIds,
       };
     }),
   setSelectedReferences: (referenceIds) =>
     set((state) => {
+      // Paired reference groups may contain only a multi-view image. Explicit
+      // group selection therefore accepts every stored reference, while the
+      // generic reference toggler still hides generated multi-view helpers.
       const availableIds = new Set(state.references.map((reference) => reference.id));
       const selectedReferenceIds = referenceIds.filter((id, index) => availableIds.has(id) && referenceIds.indexOf(id) === index);
       return {
@@ -63,6 +81,8 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
     }),
   toggleReference: (referenceId, selectionMode = 'multiple') =>
     set((state) => {
+      const target = state.references.find((reference) => reference.id === referenceId);
+      if (!target || !isSelectableReference(target)) return state;
       const selectedReferenceIds =
         selectionMode === 'single'
           ? state.selectedReferenceIds.includes(referenceId)

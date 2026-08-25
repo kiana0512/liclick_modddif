@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   BarChart3,
@@ -7,12 +7,10 @@ import {
   Download,
   Eye,
   EyeOff,
-  Image,
   LocateFixed,
   MoreVertical,
   Pencil,
   Plus,
-  Scissors,
   Trash2,
   UnfoldHorizontal,
 } from 'lucide-react';
@@ -22,15 +20,16 @@ import { cn } from '@/components/common/cn';
 import { Button } from '@/components/ui/Button';
 import { downloadBlob, getExportFilename } from '@/engine/export/exportUtils';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
-import { fitCameraToObjectId, transformFromObject } from '@/engine/scene/transformActions';
+import { transformFromObject } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
+import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
-import { useProjectStore } from '@/stores/projectStore';
+import { useLayerStore } from '@/stores/layerStore';
+import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { SceneObject } from '@/types/model';
-import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
 
 type ObjectMenuState = {
@@ -47,10 +46,7 @@ type RenameState = {
 
 type ObjectDialogState =
   | { type: 'statistics'; objectId: string }
-  | { type: 'download'; objectId: string }
-  | { type: 'simplify'; objectId: string }
-  | { type: 'recreateUv'; objectId: string }
-  | { type: 'references'; objectId: string };
+  | { type: 'download'; objectId: string };
 
 type ObjectStats = {
   meshes: number;
@@ -77,7 +73,7 @@ function countObjectStats(model?: ModelLoadResult): ObjectStats {
     triangles: 0,
     materials: 0,
     uvMeshes: 0,
-    dimensions: model ? [...model.boundingBox.size] as [number, number, number] : undefined,
+    dimensions: model ? ([...model.boundingBox.size] as [number, number, number]) : undefined,
   };
   if (!model) return stats;
   model.group.updateMatrixWorld(true);
@@ -91,7 +87,9 @@ function countObjectStats(model?: ModelLoadResult): ObjectStats {
     if (!position) return;
     stats.meshes += 1;
     stats.vertices += position.count;
-    stats.triangles += geometry.index ? Math.floor(geometry.index.count / 3) : Math.floor(position.count / 3);
+    stats.triangles += geometry.index
+      ? Math.floor(geometry.index.count / 3)
+      : Math.floor(position.count / 3);
     if (geometry.getAttribute('uv')) stats.uvMeshes += 1;
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     materials.forEach((material) => materialIds.add(material.uuid));
@@ -134,7 +132,13 @@ function cloneRuntimeModel(
   return { result: duplicatedResult, object: duplicatedObject };
 }
 
-export function ObjectsPanel() {
+export function ObjectsPanel({
+  mutationLocked = false,
+  onMutationLocked,
+}: {
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
+}) {
   const t = useT();
   const objects = useSceneStore((state) => state.objects);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
@@ -142,8 +146,8 @@ export function ObjectsPanel() {
   const toggleObjectVisibility = useSceneStore((state) => state.toggleObjectVisibility);
   const renameObject = useSceneStore((state) => state.renameObject);
   const deleteObject = useSceneStore((state) => state.deleteObject);
+  const deleteProjectObject = useProjectStore((state) => state.deleteProjectObject);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
-  const currentProject = useProjectStore((state) => state.getCurrentProject());
   const setProjectObjects = useProjectStore((state) => state.setProjectObjects);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
@@ -152,6 +156,15 @@ export function ObjectsPanel() {
   const [renameState, setRenameState] = useState<RenameState>();
   const [dialog, setDialog] = useState<ObjectDialogState>();
   const [deleteCandidateId, setDeleteCandidateId] = useState<string>();
+  const objectListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selectedObjectId) return;
+    const selectedRow = objectListRef.current?.querySelector<HTMLElement>(
+      `[data-object-id="${CSS.escape(selectedObjectId)}"]`,
+    );
+    selectedRow?.scrollIntoView({ block: 'nearest' });
+  }, [selectedObjectId, objects.length]);
 
   useEffect(() => {
     if (!menu) return undefined;
@@ -168,12 +181,19 @@ export function ObjectsPanel() {
   }, [menu]);
 
   function handleSelectObject(objectId: string) {
+    if (mutationLocked && objectId !== selectedObjectId) {
+      onMutationLocked?.('切换当前模型');
+      return;
+    }
     selectObject(objectId);
     updateCurrentProject({ objects: useSceneStore.getState().objects, activeObjectId: objectId });
-    window.requestAnimationFrame(() => fitCameraToObjectId(objectId));
   }
 
   function handleToggleVisibility(objectId: string) {
+    if (mutationLocked) {
+      onMutationLocked?.('切换模型显隐');
+      return;
+    }
     const object = objects.find((item) => item.id === objectId);
     captureHistory(`${object?.visible ? '隐藏' : '显示'}对象：${object?.name ?? '模型'}`);
     toggleObjectVisibility(objectId);
@@ -195,20 +215,38 @@ export function ObjectsPanel() {
   }
 
   function handleDeleteObject(objectId: string) {
+    if (mutationLocked) {
+      setDeleteCandidateId(undefined);
+      onMutationLocked?.('删除模型');
+      return;
+    }
     const object = objects.find((item) => item.id === objectId);
     if (!object) return;
     captureHistory(`${t('objectDeleteHistory')}：${object?.name ?? t('model')}`);
+    const layerStore = useLayerStore.getState();
+    layerStore.setLayers(layerStore.layers.filter((layer) => layer.objectId !== objectId));
+    useGenerationStore.getState().deleteObjectData(objectId);
     deleteObject(objectId);
+    deleteProjectObject(objectId);
     const scene = useSceneStore.getState();
     updateCurrentProject({ objects: scene.objects, activeObjectId: scene.selectedObjectId });
     setDeleteCandidateId(undefined);
+    window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
   }
 
   function handleDuplicateObject(objectId: string) {
+    if (mutationLocked) {
+      onMutationLocked?.('复制模型');
+      return;
+    }
     const object = objects.find((item) => item.id === objectId);
     const model = getImportedModelForObject(objectId);
     if (!object || !model) {
-      pushToast({ tone: 'warning', title: t('objectDuplicateFailed'), description: t('objectRuntimeModelMissing') });
+      pushToast({
+        tone: 'warning',
+        title: t('objectDuplicateFailed'),
+        description: t('objectRuntimeModelMissing'),
+      });
       return;
     }
     captureHistory(`${t('objectDuplicateHistory')}：${object.name}`);
@@ -216,8 +254,11 @@ export function ObjectsPanel() {
     setImportedModel(duplicated.result, duplicated.object);
     const scene = useSceneStore.getState();
     updateCurrentProject({ objects: scene.objects, activeObjectId: duplicated.object.id });
-    window.requestAnimationFrame(() => fitCameraToObjectId(duplicated.object.id));
-    pushToast({ tone: 'success', title: t('objectDuplicated'), description: duplicated.object.name });
+    pushToast({
+      tone: 'success',
+      title: t('objectDuplicated'),
+      description: duplicated.object.name,
+    });
   }
 
   async function handleDownloadObject(objectId: string) {
@@ -225,12 +266,20 @@ export function ObjectsPanel() {
     const model = getImportedModelForObject(objectId);
     const object = objects.find((item) => item.id === objectId);
     if (!project || !model || !object) {
-      pushToast({ tone: 'warning', title: t('objectDownloadUnavailable'), description: t('objectRuntimeModelMissing') });
+      pushToast({
+        tone: 'warning',
+        title: t('objectDownloadUnavailable'),
+        description: t('objectRuntimeModelMissing'),
+      });
       return;
     }
     try {
       const exporter = new GLTFExporter();
-      const result = await exporter.parseAsync(model.group.clone(true), { binary: true, onlyVisible: true, embedImages: true });
+      const result = await exporter.parseAsync(model.group.clone(true), {
+        binary: true,
+        onlyVisible: true,
+        embedImages: true,
+      });
       const buffer = result instanceof ArrayBuffer ? result : JSON.stringify(result);
       const blob = new Blob([buffer], { type: 'model/gltf-binary' });
       downloadBlob(blob, getExportFilename(project.name, object.name || 'object', 'glb'));
@@ -246,12 +295,15 @@ export function ObjectsPanel() {
 
   function openObjectMenu(objectId: string, rect: DOMRect) {
     const menuWidth = 208;
-    const menuHeight = 392;
+    const menuHeight = 280;
     const margin = 8;
     const spaceBelow = window.innerHeight - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
     const openAbove = spaceBelow < menuHeight && spaceAbove > spaceBelow;
-    const availableHeight = Math.max(180, Math.min(menuHeight, openAbove ? spaceAbove - 6 : spaceBelow - 6));
+    const availableHeight = Math.max(
+      180,
+      Math.min(menuHeight, openAbove ? spaceAbove - 6 : spaceBelow - 6),
+    );
     const y = openAbove ? rect.top - availableHeight - 6 : rect.bottom + 6;
     setMenu({
       objectId,
@@ -263,29 +315,37 @@ export function ObjectsPanel() {
 
   if (objects.length === 0) {
     return (
-      <div className="grid min-h-48 place-items-center text-sm font-semibold text-white/48">
+      <div
+        className="grid min-h-48 place-items-center text-sm font-semibold text-white/48"
+      >
         {t('noImportedModel')}
       </div>
     );
   }
 
   return (
-    <div className="min-h-48 overflow-hidden rounded-md border border-white/24">
+    <div
+      ref={objectListRef}
+      className="max-h-40 overflow-y-auto overflow-x-hidden rounded-md border border-white/24 overscroll-contain"
+    >
       {objects.map((object) => {
         const selected = selectedObjectId === object.id;
         return (
           <div
             key={object.id}
+            data-object-id={object.id}
             role="button"
             tabIndex={0}
+            aria-current={selected ? 'true' : undefined}
             onClick={() => handleSelectObject(object.id)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') handleSelectObject(object.id);
             }}
             className={cn(
               'flex h-10 w-full items-center gap-2 border-b border-white/24 bg-black/82 px-2 text-left transition hover:bg-white/[0.06]',
-              selected && 'border-liclick-pink bg-liclick-pink/12 text-white shadow-[inset_0_0_0_1px_rgba(255,92,207,0.44)]',
-              !object.visible && 'opacity-48',
+              selected &&
+                'relative z-[1] border-liclick-pink bg-gradient-to-r from-liclick-pink/28 to-violet-500/16 text-white shadow-[inset_3px_0_0_#ff5ccf,inset_0_0_0_1px_rgba(255,92,207,0.9),0_0_18px_rgba(236,72,189,0.28)]',
+              !object.visible && !selected && 'opacity-48',
             )}
           >
             <button
@@ -298,12 +358,21 @@ export function ObjectsPanel() {
               title={t('toggleVisibility')}
               aria-label={t('toggleVisibility')}
             >
-              {object.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-white/45" />}
+              {object.visible ? (
+                <Eye className="h-4 w-4" />
+              ) : (
+                <EyeOff className="h-4 w-4 text-white/45" />
+              )}
             </button>
             <Box className="h-4 w-4 shrink-0 text-liclick-pink" />
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold text-white">{object.name}</div>
             </div>
+            {selected && (
+              <span className="shrink-0 rounded border border-liclick-pink/70 bg-liclick-pink/20 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-pink-100">
+                当前
+              </span>
+            )}
             <button
               type="button"
               className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-white transition hover:bg-white/18"
@@ -331,7 +400,13 @@ export function ObjectsPanel() {
             onDuplicate={() => handleDuplicateObject(menu.objectId)}
             onFocus={() => handleSelectObject(menu.objectId)}
             onDialog={(type) => setDialog({ type, objectId: menu.objectId })}
-            onDelete={() => setDeleteCandidateId(menu.objectId)}
+            onDelete={() => {
+              if (mutationLocked) {
+                onMutationLocked?.('删除模型');
+                return;
+              }
+              setDeleteCandidateId(menu.objectId);
+            }}
           />,
           document.body,
         )}
@@ -341,7 +416,6 @@ export function ObjectsPanel() {
             state={dialog}
             object={objects.find((object) => object.id === dialog.objectId)}
             model={getImportedModelForObject(dialog.objectId)}
-            references={currentProject?.references ?? []}
             onClose={() => setDialog(undefined)}
             onDownload={() => void handleDownloadObject(dialog.objectId)}
           />,
@@ -450,7 +524,17 @@ function DeleteObjectConfirmDialog({
   );
 }
 
-export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick?: () => void }) {
+export function ObjectsPanelActions({
+  onImportModelClick,
+  importDisabled = false,
+  mutationLocked = false,
+  onMutationLocked,
+}: {
+  onImportModelClick?: () => void;
+  importDisabled?: boolean;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
+}) {
   const t = useT();
   const objects = useSceneStore((state) => state.objects);
   const setAllObjectsVisible = useSceneStore((state) => state.setAllObjectsVisible);
@@ -462,6 +546,10 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
 
   function handleToggleAllVisibility() {
     if (objects.length === 0) return;
+    if (mutationLocked) {
+      onMutationLocked?.('切换全部模型显隐');
+      return;
+    }
     captureHistory(allVisible ? '隐藏全部对象' : '显示全部对象');
     setAllObjectsVisible(!allVisible);
     setProjectObjects(useSceneStore.getState().objects);
@@ -469,6 +557,10 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
 
   function handleArrangeModels() {
     if (objects.length === 0) return;
+    if (mutationLocked) {
+      onMutationLocked?.('排列模型');
+      return;
+    }
     captureHistory(t('arrangeModels'));
     arrangeImportedModels();
     setProjectObjects(useSceneStore.getState().objects);
@@ -504,8 +596,11 @@ export function ObjectsPanelActions({ onImportModelClick }: { onImportModelClick
       </button>
       <button
         type="button"
+        data-texture-onboarding="import-model"
+        data-onboarding-complete={objects.length > 0 ? 'true' : 'false'}
         onClick={onImportModelClick}
-        className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink"
+        disabled={importDisabled}
+        className="grid h-7 w-7 place-items-center rounded text-white transition hover:bg-liclick-pink/18 hover:text-liclick-pink disabled:cursor-wait disabled:opacity-35"
         title={t('importModel')}
         aria-label={t('importModel')}
       >
@@ -554,20 +649,17 @@ function ObjectMenu({
     >
       <div className="truncate px-2 pb-2 text-white/86">{object.name}</div>
       <div className="mb-1 h-px bg-white/24" />
-      <MenuButton onClick={() => run(() => onDialog('statistics'))} icon={<BarChart3 className="h-4 w-4" />}>
+      <MenuButton
+        onClick={() => run(() => onDialog('statistics'))}
+        icon={<BarChart3 className="h-4 w-4" />}
+      >
         {t('objectMenuStatistics')}
       </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('download'))} icon={<Download className="h-4 w-4" />}>
+      <MenuButton
+        onClick={() => run(() => onDialog('download'))}
+        icon={<Download className="h-4 w-4" />}
+      >
         {t('objectMenuDownload')}
-      </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('simplify'))} icon={<Scissors className="h-4 w-4" />}>
-        {t('objectMenuSimplify')}
-      </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('recreateUv'))} icon={<UnfoldHorizontal className="h-4 w-4" />}>
-        {t('objectMenuRecreateUv')}
-      </MenuButton>
-      <MenuButton onClick={() => run(() => onDialog('references'))} icon={<Image className="h-4 w-4" />}>
-        {t('objectMenuViewReferenceImage')}
       </MenuButton>
       <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
         {t('duplicate')}
@@ -589,14 +681,12 @@ function ObjectDialog({
   state,
   object,
   model,
-  references,
   onClose,
   onDownload,
 }: {
   state: ObjectDialogState;
   object?: SceneObject;
   model?: ModelLoadResult;
-  references: ReferenceImage[];
   onClose: () => void;
   onDownload: () => void;
 }) {
@@ -606,39 +696,33 @@ function ObjectDialog({
   const title =
     state.type === 'statistics'
       ? t('objectMenuStatistics')
-      : state.type === 'download'
-        ? t('objectMenuDownload')
-        : state.type === 'simplify'
-          ? t('objectMenuSimplify')
-          : state.type === 'recreateUv'
-            ? t('objectMenuRecreateUv')
-            : t('objectMenuViewReferenceImage');
+      : t('objectMenuDownload');
 
   return (
-    <div className="fixed inset-0 z-[96] grid place-items-center bg-black/52 px-4 backdrop-blur-sm" onPointerDown={onClose}>
+    <div
+      className="fixed inset-0 z-[96] grid place-items-center bg-black/52 px-4 backdrop-blur-sm"
+      onPointerDown={onClose}
+    >
       <section
-        className="max-h-[82vh] w-full max-w-xl overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
+        className="min-w-0 max-h-[82vh] w-full max-w-xl overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <div className="flex h-12 items-center justify-between border-b border-white/12 px-4">
-          <div className="min-w-0">
+        <div className="flex h-12 items-center justify-between gap-3 border-b border-white/12 px-4">
+          <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-white">{title}</div>
             <div className="truncate text-[11px] text-white/48">{object.name}</div>
           </div>
           <button
             type="button"
-            className="h-8 rounded-md px-3 text-xs font-semibold text-white/64 hover:bg-white/8"
+            className="h-8 shrink-0 rounded-md px-3 text-xs font-semibold text-white/64 hover:bg-white/8"
             onClick={onClose}
           >
             {t('close')}
           </button>
         </div>
-        <div className="max-h-[calc(82vh-48px)] overflow-auto p-4">
+        <div className="min-w-0 max-h-[calc(82vh-48px)] overflow-x-hidden overflow-y-auto p-4">
           {state.type === 'statistics' && <StatisticsDialogBody object={object} stats={stats} />}
           {state.type === 'download' && <DownloadDialogBody onDownload={onDownload} />}
-          {state.type === 'simplify' && <SimplifyDialogBody stats={stats} />}
-          {state.type === 'recreateUv' && <RecreateUvDialogBody object={object} />}
-          {state.type === 'references' && <ReferencesDialogBody references={references} />}
         </div>
       </section>
     </div>
@@ -648,19 +732,31 @@ function ObjectDialog({
 function StatisticsDialogBody({ object, stats }: { object: SceneObject; stats: ObjectStats }) {
   const t = useT();
   const dimensions = stats.dimensions?.map((value) => value.toFixed(2)).join(' x ') ?? '-';
+  const source = object.sourcePath ?? t('objectRuntimeSource');
   return (
-    <div className="grid gap-3">
-      <div className="grid grid-cols-2 gap-2">
+    <div className="grid min-w-0 gap-3">
+      <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] gap-2">
         <StatTile label={t('objectMeshes')} value={formatNumber(stats.meshes)} />
         <StatTile label={t('objectTriangles')} value={formatNumber(stats.triangles)} />
         <StatTile label={t('objectVertices')} value={formatNumber(stats.vertices)} />
         <StatTile label={t('objectMaterials')} value={formatNumber(stats.materials)} />
       </div>
-      <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs leading-6 text-white/72">
-        <div>{t('format')}: {object.format.toUpperCase()}</div>
-        <div>{t('objectUvMeshes')}: {formatNumber(stats.uvMeshes)}</div>
-        <div>{t('objectDimensions')}: {dimensions}</div>
-        <div className="truncate">{t('objectSource')}: {object.sourcePath ?? t('objectRuntimeSource')}</div>
+      <div className="min-w-0 rounded-md border border-white/12 bg-black/24 p-3 text-xs leading-6 text-white/72">
+        <div>
+          {t('format')}: {object.format.toUpperCase()}
+        </div>
+        <div>
+          {t('objectUvMeshes')}: {formatNumber(stats.uvMeshes)}
+        </div>
+        <div>
+          {t('objectDimensions')}: {dimensions}
+        </div>
+        <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-1">
+          <span>{t('objectSource')}:</span>
+          <span className="break-all" title={source}>
+            {source}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -682,67 +778,26 @@ function DownloadDialogBody({ onDownload }: { onDownload: () => void }) {
   );
 }
 
-function SimplifyDialogBody({ stats }: { stats: ObjectStats }) {
-  const t = useT();
-  return (
-    <div className="grid gap-3 text-sm leading-6 text-white/72">
-      <p>{t('objectSimplifyHelp')}</p>
-      <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs">
-        {t('objectSimplifyBudget')
-          .replace('{triangles}', formatNumber(stats.triangles))
-          .replace('{vertices}', formatNumber(stats.vertices))}
-      </div>
-      <button type="button" disabled className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38">
-        {t('objectSimplifyComingSoon')}
-      </button>
-    </div>
-  );
-}
-
-function RecreateUvDialogBody({ object }: { object: SceneObject }) {
-  const t = useT();
-  return (
-    <div className="grid gap-3 text-sm leading-6 text-white/72">
-      <p>{t('objectRecreateUvHelp')}</p>
-      <div className="rounded-md border border-white/12 bg-black/24 p-3 text-xs">
-        {t('objectUvSets')}: {object.uvSets.length > 0 ? object.uvSets.join(', ') : t('objectUvNoneDetected')}
-      </div>
-      <button type="button" disabled className="h-9 justify-self-start rounded-md border border-white/18 px-4 text-sm font-semibold text-white/38">
-        {t('objectUvServiceMissing')}
-      </button>
-    </div>
-  );
-}
-
-function ReferencesDialogBody({ references }: { references: ReferenceImage[] }) {
-  const t = useT();
-  if (references.length === 0) {
-    return <div className="rounded-md border border-white/12 bg-black/24 p-4 text-sm text-white/58">{t('objectNoReferenceImages')}</div>;
-  }
-  return (
-    <div className="grid grid-cols-3 gap-3">
-      {references.map((reference) => (
-        <div key={reference.id} className="overflow-hidden rounded-md border border-white/14 bg-black/24">
-          <div className="aspect-square bg-[#333]">
-            <img src={reference.url} alt={reference.name} className="h-full w-full object-contain" />
-          </div>
-          <div className="truncate px-2 py-1 text-xs font-semibold text-white/72">{reference.name}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-white/12 bg-black/24 p-3">
-      <div className="text-[11px] font-semibold uppercase tracking-normal text-white/42">{label}</div>
-      <div className="mt-1 text-lg font-semibold text-white">{value}</div>
+    <div className="min-w-0 rounded-md border border-white/12 bg-black/24 p-3">
+      <div className="text-[11px] font-semibold uppercase tracking-normal text-white/42">
+        {label}
+      </div>
+      <div className="mt-1 break-words text-lg font-semibold tabular-nums text-white">{value}</div>
     </div>
   );
 }
 
-function MenuButton({ children, icon, onClick }: { children: ReactNode; icon?: ReactNode; onClick: () => void }) {
+function MenuButton({
+  children,
+  icon,
+  onClick,
+}: {
+  children: ReactNode;
+  icon?: ReactNode;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"

@@ -1,0 +1,75 @@
+stages:
+  - verify
+  - build
+
+default:
+  image: node:22-bookworm
+  tags:
+    - k8s-local-rdcenter
+  before_script:
+    - corepack enable
+    - corepack pnpm install --frozen-lockfile
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+
+contracts-and-cloud-boundary:
+  stage: verify
+  script:
+    - corepack pnpm run check:cloud-boundary
+    - corepack pnpm run check:project-repository-boundary
+    - corepack pnpm run test:contracts
+
+typecheck:
+  stage: verify
+  script:
+    - corepack pnpm run typecheck
+
+web-regression:
+  stage: verify
+  variables:
+    LICLICK_TEST_TIMEOUT_MS: "180000"
+  script:
+    - corepack pnpm --filter @liclick/web run test:regression
+
+server-regression:
+  stage: verify
+  variables:
+    LICLICK_TEST_TIMEOUT_MS: "180000"
+  script:
+    - corepack pnpm --filter @liclick/server run test:regression
+
+# Lint includes Hooks lifecycle and Fast Refresh rules. Keep it release-blocking
+# so stale effects and component-boundary regressions cannot reach production.
+lint:
+  stage: verify
+  script:
+    - corepack pnpm run lint
+
+build:
+  stage: build
+  variables:
+    LICLICK_RELEASE_ID: "$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    LICLICK_GIT_SHA: "$CI_COMMIT_SHA"
+    LICLICK_RELEASE_VERSION: "0.1.13"
+    LICLICK_BUILD_TIME: "$CI_JOB_STARTED_AT"
+    VITE_LICLICK_RELEASE_ID: "$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    VITE_LICLICK_GIT_SHA: "$CI_COMMIT_SHA"
+    VITE_LICLICK_RELEASE_VERSION: "0.1.13"
+    VITE_LICLICK_BUILD_TIME: "$CI_JOB_STARTED_AT"
+    LICLICK_RUNTIME_MODE: "cloud"
+    VITE_LICLICK_RUNTIME_MODE: "cloud"
+  script:
+    - corepack pnpm run build:release
+    - corepack pnpm run check:cloud-artifact
+    - corepack pnpm run check:web-bundle-budget
+    - corepack pnpm run simulate:cloud-deployment -- --skip-build
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - apps/server/dist/
+      - apps/web/dist/
+      - packages/contracts/dist/

@@ -14,6 +14,7 @@ import {
   writeJsonFile,
 } from '../services/workspaceService.js';
 import type { AuthDatabase, AuthSource, AuthUser, UserSession } from './authTypes.js';
+import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 
 const emptyAuthDatabase: AuthDatabase = {
   users: [],
@@ -22,6 +23,21 @@ const emptyAuthDatabase: AuthDatabase = {
 };
 
 let writeQueue = Promise.resolve();
+
+type BrowserSessionHandoff = {
+  sessionToken: string;
+  expiresAt: number;
+};
+
+const browserSessionHandoffs = new Map<string, BrowserSessionHandoff>();
+const browserSessionHandoffTtlMs = 2 * 60 * 1000;
+
+function pruneBrowserSessionHandoffs() {
+  const now = Date.now();
+  for (const [code, handoff] of browserSessionHandoffs) {
+    if (handoff.expiresAt <= now) browserSessionHandoffs.delete(code);
+  }
+}
 
 export function parseCookies(request: IncomingMessage) {
   const header = request.headers.cookie ?? '';
@@ -54,7 +70,19 @@ export async function readAuthDatabase() {
   return {
     users: Array.isArray(database.users) ? database.users : [],
     feishuAccounts: Array.isArray(database.feishuAccounts) ? database.feishuAccounts : [],
-    sessions: Array.isArray(database.sessions) ? database.sessions : [],
+    // Rebuild session objects from the allow-listed fields. This also strips
+    // historical user-agent/IP metadata the next time the database is written.
+    sessions: Array.isArray(database.sessions)
+      ? database.sessions.map((session) => ({
+          id: session.id,
+          userId: session.userId,
+          sessionTokenHash: session.sessionTokenHash,
+          source: session.source,
+          expiresAt: session.expiresAt,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+        }))
+      : [],
   };
 }
 
@@ -73,6 +101,7 @@ async function updateAuthDatabase(updater: (database: AuthDatabase) => AuthDatab
 }
 
 export async function ensureUserWorkspace(userId: string) {
+  if (postgresControlRepository) return;
   await ensureDir(getUserProjectsDir(userId));
   await ensureDir(getUserTrashProjectsDir(userId));
   await writeJsonFile(getUserFoldersFile(userId), await readJsonFile(getUserFoldersFile(userId), []));
@@ -99,11 +128,18 @@ function sessionCookieValue(token: string, maxAgeSeconds: number) {
 
 export function setSessionCookie(response: ServerResponse, token: string) {
   const maxAgeSeconds = Math.max(1, serverConfig.sessionMaxAgeDays) * 24 * 60 * 60;
-  response.setHeader('set-cookie', sessionCookieValue(token, maxAgeSeconds));
+  appendSetCookie(response, sessionCookieValue(token, maxAgeSeconds));
 }
 
 export function clearSessionCookie(response: ServerResponse) {
-  response.setHeader('set-cookie', sessionCookieValue('', 0));
+  appendSetCookie(response, sessionCookieValue('', 0));
+}
+
+function appendSetCookie(response: ServerResponse, value: string) {
+  const existing = response.getHeader('set-cookie');
+  if (Array.isArray(existing)) response.setHeader('set-cookie', [...existing, value]);
+  else if (typeof existing === 'string') response.setHeader('set-cookie', [existing, value]);
+  else response.setHeader('set-cookie', value);
 }
 
 export async function createSession(
@@ -123,19 +159,24 @@ export async function createSession(
     expiresAt: expiresAt.toISOString(),
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
-    userAgent: request.headers['user-agent'],
-    ipAddress: request.socket.remoteAddress,
   };
-  await updateAuthDatabase((database) => ({
-    ...database,
-    sessions: [...database.sessions.filter((item) => new Date(item.expiresAt).getTime() > now.getTime()), session],
-  }));
+  if (postgresControlRepository) {
+    await postgresControlRepository.createSession(session);
+  } else {
+    await updateAuthDatabase((database) => ({
+      ...database,
+      sessions: [...database.sessions.filter((item) => new Date(item.expiresAt).getTime() > now.getTime()), session],
+    }));
+  }
   setSessionCookie(response, token);
   return session;
 }
 
 export async function verifySession(token?: string): Promise<AuthUser | undefined> {
   if (!token) return undefined;
+  if (postgresControlRepository) {
+    return postgresControlRepository.verifySession(hashSessionToken(token));
+  }
   const database = await readAuthDatabase();
   const tokenHash = hashSessionToken(token);
   const session = database.sessions.find((item) => item.sessionTokenHash === tokenHash);
@@ -145,9 +186,34 @@ export async function verifySession(token?: string): Promise<AuthUser | undefine
   return user;
 }
 
+export async function createBrowserSessionHandoff(sessionToken?: string) {
+  const user = await verifySession(sessionToken);
+  if (!sessionToken || !user) return undefined;
+  pruneBrowserSessionHandoffs();
+  const code = crypto.randomBytes(32).toString('base64url');
+  browserSessionHandoffs.set(code, {
+    sessionToken,
+    expiresAt: Date.now() + browserSessionHandoffTtlMs,
+  });
+  return code;
+}
+
+export function consumeBrowserSessionHandoff(code?: string) {
+  if (!code) return undefined;
+  pruneBrowserSessionHandoffs();
+  const handoff = browserSessionHandoffs.get(code);
+  browserSessionHandoffs.delete(code);
+  if (!handoff || handoff.expiresAt <= Date.now()) return undefined;
+  return handoff.sessionToken;
+}
+
 export async function revokeSession(token?: string) {
   if (!token) return;
   const tokenHash = hashSessionToken(token);
+  if (postgresControlRepository) {
+    await postgresControlRepository.revokeSession(tokenHash);
+    return;
+  }
   await updateAuthDatabase((database) => ({
     ...database,
     sessions: database.sessions.filter((session) => session.sessionTokenHash !== tokenHash),
@@ -162,6 +228,17 @@ export async function upsertUser(input: {
   authSource: AuthSource;
   atlasHomeDir?: string;
 }) {
+  if (postgresControlRepository) {
+    const savedUser = await postgresControlRepository.upsertUser({
+      id: input.id ?? createId('user'),
+      displayName: input.displayName,
+      email: input.email,
+      avatarUrl: input.avatarUrl,
+      authSource: input.authSource,
+      atlasHomeDir: input.atlasHomeDir,
+    });
+    return savedUser;
+  }
   let savedUser: AuthUser | undefined;
   await updateAuthDatabase((database) => {
     const now = new Date().toISOString();

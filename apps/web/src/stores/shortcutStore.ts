@@ -3,6 +3,7 @@ import { create } from 'zustand';
 export type ShortcutScope = 'global' | 'scene' | 'texture' | 'image' | 'repaint';
 
 export type ShortcutActionId =
+  | 'project.save'
   | 'history.undo'
   | 'history.redo'
   | 'view.front'
@@ -27,8 +28,6 @@ export type ShortcutActionId =
   | 'texture.showAllLayers'
   | 'texture.toggleLayer'
   | 'texture.select'
-  | 'texture.brush'
-  | 'texture.eraser'
   | 'texture.brushSmaller'
   | 'texture.brushLarger'
   | 'texture.maskAdd'
@@ -73,6 +72,7 @@ const binding = (
 ): ShortcutBinding => ({ code, ...modifiers });
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
+  { id: 'project.save', scope: 'global', categoryZh: '通用', categoryEn: 'General', labelZh: '保存项目', labelEn: 'Save project', defaults: [binding('KeyS', { primary: true })] },
   { id: 'history.undo', scope: 'global', categoryZh: '通用', categoryEn: 'General', labelZh: '撤销', labelEn: 'Undo', defaults: [binding('KeyZ', { primary: true })] },
   { id: 'history.redo', scope: 'global', categoryZh: '通用', categoryEn: 'General', labelZh: '重做', labelEn: 'Redo', defaults: [binding('KeyY', { primary: true }), binding('KeyZ', { primary: true, shift: true })] },
   { id: 'view.front', scope: 'global', categoryZh: '视口', categoryEn: 'Viewport', labelZh: '前视图', labelEn: 'Front view', defaults: [binding('Numpad1')] },
@@ -97,8 +97,6 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { id: 'texture.showAllLayers', scope: 'texture', categoryZh: '纹理编辑', categoryEn: 'Texture editing', labelZh: '显示全部图层', labelEn: 'Show all layers', defaults: [binding('KeyH', { alt: true })] },
   { id: 'texture.toggleLayer', scope: 'texture', categoryZh: '纹理编辑', categoryEn: 'Texture editing', labelZh: '切换当前图层显隐', labelEn: 'Toggle active layer', defaults: [binding('KeyH')] },
   { id: 'texture.select', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '选择工具', labelEn: 'Select tool', defaults: [binding('KeyQ')] },
-  { id: 'texture.brush', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '画笔', labelEn: 'Brush', defaults: [binding('KeyB')] },
-  { id: 'texture.eraser', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '橡皮', labelEn: 'Eraser', defaults: [binding('KeyE')] },
   { id: 'texture.brushSmaller', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '减小画笔', labelEn: 'Decrease brush size', defaults: [binding('BracketLeft')] },
   { id: 'texture.brushLarger', scope: 'texture', categoryZh: '纹理画笔', categoryEn: 'Texture brush', labelZh: '增大画笔', labelEn: 'Increase brush size', defaults: [binding('BracketRight')] },
   { id: 'texture.maskAdd', scope: 'texture', categoryZh: '局部重绘', categoryEn: 'Local repaint', labelZh: '添加蒙版', labelEn: 'Add mask', defaults: [binding('KeyK')] },
@@ -130,6 +128,7 @@ type ShortcutStore = {
   overrides: ShortcutOverrides;
   setActiveUser: (userId?: string) => void;
   setBindings: (actionId: ShortcutActionId, bindings: ShortcutBinding[]) => void;
+  replaceOverrides: (overrides: ShortcutOverrides) => void;
   resetAll: () => void;
 };
 
@@ -171,6 +170,15 @@ export const useShortcutStore = create<ShortcutStore>((set, get) => ({
   },
   setBindings: (actionId, bindings) => {
     const nextOverrides = { ...get().overrides, [actionId]: bindings };
+    saveOverrides(get().activeUserId, nextOverrides);
+    set({ overrides: nextOverrides });
+  },
+  replaceOverrides: (overrides) => {
+    const nextOverrides = Object.fromEntries(
+      Object.entries(overrides).filter(([actionId, bindings]) =>
+        definitionById.has(actionId as ShortcutActionId) && Array.isArray(bindings),
+      ),
+    ) as ShortcutOverrides;
     saveOverrides(get().activeUserId, nextOverrides);
     set({ overrides: nextOverrides });
   },

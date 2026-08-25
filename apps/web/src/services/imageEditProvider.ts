@@ -1,6 +1,5 @@
-import { getWorkspaceApiBase } from './workspaceApiBase';
-
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+import type { ProviderStatus } from './authApiClient';
+import { resolveLiclickTransport, type LiclickTransport } from './liclickTransport';
 
 export interface ImageEditProvider {
   startEditImage(params: ImageEditParams): Promise<ImageEditJobResult>;
@@ -74,33 +73,42 @@ function readErrorMessage(payload: unknown, fallback: string) {
   return fallback;
 }
 
-function describeNetworkFailure(error: unknown, baseUrl: string) {
+function describeNetworkFailure(error: unknown, transport: LiclickTransport) {
   if (error instanceof DOMException && error.name === 'AbortError') {
-    return `连接本地莉刻服务超时：${baseUrl}`;
+    return `连接莉刻服务超时：${transport.baseUrl}`;
   }
   if (error instanceof TypeError) {
-    return `无法连接本地莉刻服务：${baseUrl}。请确认桌面启动窗口仍在运行，或重新打开 Liclick 3D Texture。`;
+    return `无法连接云端莉刻服务：${transport.baseUrl}。请检查网络或服务状态。`;
   }
-  return error instanceof Error ? error.message : '无法连接本地莉刻服务。';
+  return error instanceof Error ? error.message : '无法连接云端莉刻服务。';
 }
 
-async function requestJson<T>(baseUrl: string, path: string, init: RequestInit & { timeoutMs?: number } = {}) {
+async function requestJson<T>(
+  transport: LiclickTransport,
+  path: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+) {
   const { timeoutMs = 30_000, headers, signal, ...fetchInit } = init;
+  const requestHeaders = new Headers(headers);
   const controller = new AbortController();
   const abortFromSignal = () => controller.abort();
   if (signal?.aborted) controller.abort();
   signal?.addEventListener('abort', abortFromSignal, { once: true });
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${baseUrl}${path}`, {
+    const requestUrl = `${transport.baseUrl}${path}`;
+    const requestInit = {
       ...fetchInit,
       signal: controller.signal,
-      credentials: 'include',
-      headers,
-    });
+      credentials: transport.credentials,
+      headers: requestHeaders,
+    } satisfies RequestInit;
+    const response = await fetch(requestUrl, requestInit);
     const payload = (await response.json().catch(() => undefined)) as T | undefined;
     if (!response.ok) {
-      if (response.status === 401) throw new Error('请先完成飞书/莉刻登录，然后再使用局部重绘。');
+      if (response.status === 401) {
+        throw new Error('平台登录已失效，请重新登录后再使用局部重绘。');
+      }
       throw new Error(readErrorMessage(payload, `莉刻请求失败：${response.status}`));
     }
     return payload as T;
@@ -112,7 +120,7 @@ async function requestJson<T>(baseUrl: string, path: string, init: RequestInit &
     ) {
       throw error;
     }
-    throw new Error(describeNetworkFailure(error, baseUrl));
+    throw new Error(describeNetworkFailure(error, transport));
   } finally {
     window.clearTimeout(timeout);
     signal?.removeEventListener('abort', abortFromSignal);
@@ -120,12 +128,20 @@ async function requestJson<T>(baseUrl: string, path: string, init: RequestInit &
 }
 
 export class LiClickImageEditProvider implements ImageEditProvider {
-  constructor(private readonly baseUrl = workspaceApiBase) {}
+  constructor(
+    private readonly baseUrl?: string,
+    private readonly providerStatus?: ProviderStatus,
+  ) {}
+
+  private resolveTransport() {
+    return resolveLiclickTransport(this.providerStatus, this.baseUrl);
+  }
 
   async startEditImage(params: ImageEditParams) {
-    await requestJson(this.baseUrl, '/api/health', { method: 'GET', timeoutMs: 8_000, signal: params.signal });
+    const transport = await this.resolveTransport();
+    await requestJson(transport, '/api/health', { method: 'GET', timeoutMs: 8_000, signal: params.signal });
     const status = await requestJson<{ ok?: boolean; message?: string; tools?: string[] }>(
-      this.baseUrl,
+      transport,
       '/api/liclick/status',
       { method: 'GET', timeoutMs: 45_000, signal: params.signal },
     );
@@ -150,7 +166,7 @@ export class LiClickImageEditProvider implements ImageEditProvider {
       activeProjectJob?: boolean;
       message?: string;
     }>(
-      this.baseUrl,
+      transport,
       '/api/liclick/edit-image',
       {
         method: 'POST',
@@ -180,6 +196,7 @@ export class LiClickImageEditProvider implements ImageEditProvider {
   }
 
   async getEditImageJob(jobId: string) {
+    const transport = await this.resolveTransport();
     const payload = await requestJson<{
       id: string;
       status: ImageEditJobResult['status'];
@@ -191,7 +208,7 @@ export class LiClickImageEditProvider implements ImageEditProvider {
       error?: string;
       startedAt?: string;
       updatedAt?: string;
-    }>(this.baseUrl, `/api/liclick/edit-image/${encodeURIComponent(jobId)}`, {
+    }>(transport, `/api/liclick/edit-image/${encodeURIComponent(jobId)}`, {
       method: 'GET',
       timeoutMs: 30_000,
     });
@@ -203,6 +220,7 @@ export class LiClickImageEditProvider implements ImageEditProvider {
   }
 
   async cancelEditImageJob(jobId: string) {
+    const transport = await this.resolveTransport();
     const payload = await requestJson<{
       id: string;
       status: ImageEditJobResult['status'];
@@ -211,7 +229,7 @@ export class LiClickImageEditProvider implements ImageEditProvider {
       error?: string;
       startedAt?: string;
       updatedAt?: string;
-    }>(this.baseUrl, `/api/liclick/edit-image/${encodeURIComponent(jobId)}`, {
+    }>(transport, `/api/liclick/edit-image/${encodeURIComponent(jobId)}`, {
       method: 'DELETE',
       timeoutMs: 30_000,
     });

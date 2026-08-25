@@ -1,5 +1,6 @@
-import { loadImageData } from '@/engine/bake/imageSampler';
+import { loadImageData, sampleImageBilinear } from '@/engine/bake/imageSampler';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
+import { removeEdgeConnectedNeutralBackground } from '@/engine/localRepaint/resultPreviewUtils';
 
 type LabColor = [number, number, number];
 type RgbColor = [number, number, number];
@@ -78,7 +79,9 @@ function labToRgb(lab: LabColor): RgbColor {
 
   function encode(value: number) {
     const clamped = clamp(value, 0, 1);
-    return Math.round((clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055) * 255);
+    return Math.round(
+      (clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055) * 255,
+    );
   }
 
   return [encode(linearRed), encode(linearGreen), encode(linearBlue)];
@@ -98,7 +101,12 @@ function getBorderCoordinateCount(width: number, height: number, borderWidth: nu
   return width * height - innerWidth * innerHeight;
 }
 
-function getSampledBorderCoordinates(width: number, height: number, borderWidth: number, maxSamples = 60000) {
+function getSampledBorderCoordinates(
+  width: number,
+  height: number,
+  borderWidth: number,
+  maxSamples = 60000,
+) {
   const totalCoordinates = getBorderCoordinateCount(width, height, borderWidth);
   const stride = totalCoordinates > maxSamples ? Math.ceil(totalCoordinates / maxSamples) : 1;
   const coordinates: Array<[number, number]> = [];
@@ -121,11 +129,19 @@ function getLabAt(image: ImageData, x: number, y: number): LabColor {
 }
 
 function medianLab(samples: LabColor[]): LabColor {
-  return [0, 1, 2].map((channel) => percentile(samples.map((sample) => sample[channel]), 0.5)) as LabColor;
+  return [0, 1, 2].map((channel) =>
+    percentile(
+      samples.map((sample) => sample[channel]),
+      0.5,
+    ),
+  ) as LabColor;
 }
 
 function estimateBackground(image: ImageData, options: CutoutOptions) {
-  const borderWidth = Math.max(4, Math.round(Math.min(image.width, image.height) * options.borderFrac));
+  const borderWidth = Math.max(
+    4,
+    Math.round(Math.min(image.width, image.height) * options.borderFrac),
+  );
   const borderCoordinates = getSampledBorderCoordinates(image.width, image.height, borderWidth);
   const labs = borderCoordinates.map(([x, y]) => getLabAt(image, x, y));
   const sortedLabs = [...labs].sort((a, b) => a[0] - b[0]);
@@ -154,7 +170,9 @@ function estimateBackground(image: ImageData, options: CutoutOptions) {
     }
     centers = centers.map((center, index) => {
       const count = sums[index][3];
-      return count > 0 ? [sums[index][0] / count, sums[index][1] / count, sums[index][2] / count] : center;
+      return count > 0
+        ? [sums[index][0] / count, sums[index][1] / count, sums[index][2] / count]
+        : center;
     }) as LabColor[];
   }
 
@@ -182,7 +200,8 @@ function estimateBackground(image: ImageData, options: CutoutOptions) {
   const maxCornerDistance = Math.max(...cornerDistances, 1);
   const bgIndex = centers.reduce((bestIndex, center, index) => {
     const score = counts[index] / maxCount - 0.15 * (cornerDistances[index] / maxCornerDistance);
-    const bestScore = counts[bestIndex] / maxCount - 0.15 * (cornerDistances[bestIndex] / maxCornerDistance);
+    const bestScore =
+      counts[bestIndex] / maxCount - 0.15 * (cornerDistances[bestIndex] / maxCornerDistance);
     return score > bestScore ? index : bestIndex;
   }, 0);
   const bgLab = centers[bgIndex];
@@ -270,7 +289,12 @@ function floodBackground(maybeBackground: Uint8Array, width: number, height: num
   return connected;
 }
 
-function removeSmallForegroundComponents(foreground: Uint8Array, width: number, height: number, minArea: number) {
+function removeSmallForegroundComponents(
+  foreground: Uint8Array,
+  width: number,
+  height: number,
+  minArea: number,
+) {
   const output = new Uint8Array(foreground.length);
   const visited = new Uint8Array(foreground.length);
   const queue = new Int32Array(foreground.length);
@@ -427,10 +451,12 @@ function makeAlpha(foreground: Uint8Array, image: ImageData, options: CutoutOpti
   const alpha = gaussianBlurAlpha(hardAlpha, image.width, image.height, options.featherPx);
   const bandRadius = Math.max(1, Math.round(options.featherPx));
   const eroded = erode(foreground, image.width, image.height, bandRadius);
-  const dilated = dilate(foreground, image.width, image.height, bandRadius);
   for (let i = 0; i < alpha.length; i += 1) {
     if (eroded[i]) alpha[i] = 255;
-    if (!dilated[i]) alpha[i] = 0;
+    // Feather only toward the inside of the detected object. Allowing blurred
+    // alpha outside the hard foreground creates a light silhouette around the
+    // whole model once the cutout is projected.
+    if (!foreground[i]) alpha[i] = 0;
     alpha[i] = Math.min(alpha[i], image.data[i * 4 + 3]);
   }
   return alpha;
@@ -468,7 +494,13 @@ function growForegroundBleed(image: ImageData, radius: number) {
         const [ox, oy] = neighborOffsets[offsetIndex];
         const nx = x + ox;
         const ny = y + oy;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height || data[(ny * width + nx) * 4 + 3] < 220) {
+        if (
+          nx < 0 ||
+          ny < 0 ||
+          nx >= width ||
+          ny >= height ||
+          data[(ny * width + nx) * 4 + 3] < 220
+        ) {
           isBoundary = true;
           break;
         }
@@ -495,7 +527,9 @@ function growForegroundBleed(image: ImageData, radius: number) {
         output.data[targetOffset] = output.data[sourceOffset];
         output.data[targetOffset + 1] = output.data[sourceOffset + 1];
         output.data[targetOffset + 2] = output.data[sourceOffset + 2];
-        output.data[targetOffset + 3] = 255;
+        // RGB bleed prevents dark filtering seams, but it must stay invisible.
+        // Expanding alpha here used to add an opaque 18px outline to both the
+        // generated preview and the projection layer.
         nextFrontier.push(nextPixelIndex);
       }
     }
@@ -505,25 +539,45 @@ function growForegroundBleed(image: ImageData, radius: number) {
   return output;
 }
 
-function removeSolidBackground(image: ImageData, options: CutoutOptions = defaultOptions) {
-  const { maybeBackground, bgRgb } = createBackgroundCandidateMask(image, options);
-  const connectedBackground = floodBackground(maybeBackground, image.width, image.height);
+export function removeSolidBackground(image: ImageData, options: CutoutOptions = defaultOptions) {
+  // ModelView can return a transparent outer canvas containing a second,
+  // opaque near-black rectangle. The Lab border estimator sees the transparent
+  // outer edge first and otherwise treats that inner rectangle as foreground.
+  // Strip all edge-connected dark regions before the existing colour-agnostic
+  // matte pass, then keep the established inward feather/bleed behaviour.
+  const darkRemoved = removeEdgeConnectedNeutralBackground(image, 'dark-only').imageData;
+  const { maybeBackground, bgRgb } = createBackgroundCandidateMask(darkRemoved, options);
+  const connectedBackground = floodBackground(
+    maybeBackground,
+    darkRemoved.width,
+    darkRemoved.height,
+  );
   let foreground = new Uint8Array(connectedBackground.length);
   for (let i = 0; i < foreground.length; i += 1) foreground[i] = connectedBackground[i] ? 0 : 1;
 
-  const minArea = Math.max(16, Math.floor(image.width * image.height * options.minAreaFrac));
-  foreground = removeSmallForegroundComponents(foreground, image.width, image.height, minArea);
-  if (options.closePx > 0) foreground = closeMask(foreground, image.width, image.height, options.closePx);
-  if (options.openPx > 0) foreground = openMask(foreground, image.width, image.height, options.openPx);
+  const minArea = Math.max(
+    16,
+    Math.floor(darkRemoved.width * darkRemoved.height * options.minAreaFrac),
+  );
+  foreground = removeSmallForegroundComponents(
+    foreground,
+    darkRemoved.width,
+    darkRemoved.height,
+    minArea,
+  );
+  if (options.closePx > 0)
+    foreground = closeMask(foreground, darkRemoved.width, darkRemoved.height, options.closePx);
+  if (options.openPx > 0)
+    foreground = openMask(foreground, darkRemoved.width, darkRemoved.height, options.openPx);
 
-  const alpha = makeAlpha(foreground, image, options);
-  const output = new ImageData(image.width, image.height);
+  const alpha = makeAlpha(foreground, darkRemoved, options);
+  const output = new ImageData(darkRemoved.width, darkRemoved.height);
   for (let i = 0; i < alpha.length; i += 1) {
     const offset = i * 4;
     const nextAlpha = alpha[i];
-    let red = image.data[offset];
-    let green = image.data[offset + 1];
-    let blue = image.data[offset + 2];
+    let red = darkRemoved.data[offset];
+    let green = darkRemoved.data[offset + 1];
+    let blue = darkRemoved.data[offset + 2];
     const alphaRatio = nextAlpha / 255;
     if (alphaRatio > 0.001 && alphaRatio < 0.999) {
       const safeAlpha = Math.max(alphaRatio, 0.05);
@@ -555,22 +609,30 @@ async function imageDataToPngUrl(imageData: ImageData) {
   return createRegisteredObjectUrl(blob);
 }
 
-function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
+export function applyProjectedAlphaMask(
+  image: ImageData,
+  mask: ImageData,
+  options: { ignoreSourceAlpha?: boolean } = {},
+) {
   const output = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
-  const maskMaxX = Math.max(0, mask.width - 1);
-  const maskMaxY = Math.max(0, mask.height - 1);
   for (let y = 0; y < image.height; y += 1) {
     const v = image.height <= 1 ? 0 : y / (image.height - 1);
-    const maskY = Math.min(maskMaxY, Math.max(0, Math.round(v * maskMaxY)));
     for (let x = 0; x < image.width; x += 1) {
       const u = image.width <= 1 ? 0 : x / (image.width - 1);
-      const maskX = Math.min(maskMaxX, Math.max(0, Math.round(u * maskMaxX)));
       const sourceOffset = (y * image.width + x) * 4;
-      const maskOffset = (maskY * mask.width + maskX) * 4;
-      const maskValue = Math.max(mask.data[maskOffset], mask.data[maskOffset + 1], mask.data[maskOffset + 2]) / 255;
-      const nextAlpha = Math.round(output.data[sourceOffset + 3] * maskValue);
+      const maskSample = sampleImageBilinear(mask, u, v);
+      const maskLuminance = maskSample[0] * 0.299 + maskSample[1] * 0.587 + maskSample[2] * 0.114;
+      const maskCoverage = (maskLuminance / 255) * (maskSample[3] / 255);
+      // Local repaint and other explicitly mask-authored projections use the
+      // camera/brush mask as their only coverage authority. Generated-image
+      // alpha may have already been damaged by an earlier dark-background
+      // heuristic, so it must not be allowed to punch new holes in the model.
+      const sourceAlpha = options.ignoreSourceAlpha
+        ? 255
+        : output.data[sourceOffset + 3];
+      const nextAlpha = Math.round(sourceAlpha * maskCoverage);
       output.data[sourceOffset + 3] = nextAlpha;
-      if (nextAlpha <= 0) {
+      if (nextAlpha <= 0 && !options.ignoreSourceAlpha) {
         output.data[sourceOffset] = 0;
         output.data[sourceOffset + 1] = 0;
         output.data[sourceOffset + 2] = 0;
@@ -580,10 +642,192 @@ function applyProjectedAlphaMask(image: ImageData, mask: ImageData) {
   return output;
 }
 
+type PixelBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+function getContentBounds(
+  image: ImageData,
+  getCoverage: (offset: number) => number,
+  threshold = 12,
+): PixelBounds | undefined {
+  let left = image.width;
+  let top = image.height;
+  let right = -1;
+  let bottom = -1;
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      if (getCoverage(offset) <= threshold) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < left || bottom < top) return undefined;
+  return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+export function alignCutoutToProjectionMask(cutout: ImageData, projectionMask: ImageData) {
+  const sourceBounds = getContentBounds(cutout, (offset) => cutout.data[offset + 3]);
+  const targetBounds = getContentBounds(projectionMask, (offset) => {
+    const luminance =
+      projectionMask.data[offset] * 0.299 +
+      projectionMask.data[offset + 1] * 0.587 +
+      projectionMask.data[offset + 2] * 0.114;
+    return luminance * (projectionMask.data[offset + 3] / 255);
+  });
+  if (!sourceBounds || !targetBounds) return cutout;
+
+  const sourceCanvas =
+    typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(cutout.width, cutout.height)
+      : document.createElement('canvas');
+  sourceCanvas.width = cutout.width;
+  sourceCanvas.height = cutout.height;
+  const sourceContext = sourceCanvas.getContext('2d');
+  if (!sourceContext) return cutout;
+  sourceContext.putImageData(cutout, 0, 0);
+
+  const outputCanvas =
+    typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(projectionMask.width, projectionMask.height)
+      : document.createElement('canvas');
+  outputCanvas.width = projectionMask.width;
+  outputCanvas.height = projectionMask.height;
+  const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
+  if (!outputContext) return cutout;
+  outputContext.imageSmoothingEnabled = true;
+  outputContext.imageSmoothingQuality = 'high';
+  // GPT may recenter or resize the subject even when the requested camera view
+  // is unchanged. Normalize its foreground bounds back onto the capture mask so
+  // the saved projection camera and returned pixels share one coordinate frame.
+  outputContext.drawImage(
+    sourceCanvas,
+    sourceBounds.x,
+    sourceBounds.y,
+    sourceBounds.width,
+    sourceBounds.height,
+    targetBounds.x,
+    targetBounds.y,
+    targetBounds.width,
+    targetBounds.height,
+  );
+  return outputContext.getImageData(0, 0, outputCanvas.width, outputCanvas.height);
+}
+
+type MaskedProjectedWorkerResponse = {
+  id: number;
+  width?: number;
+  height?: number;
+  data?: ArrayBuffer;
+  error?: string;
+};
+
+let maskedProjectedWorker: Worker | undefined;
+let maskedProjectedRequestId = 0;
+const maskedProjectedRequests = new Map<
+  number,
+  { resolve: (image: ImageData) => void; reject: (error: Error) => void }
+>();
+
+function getMaskedProjectedWorker() {
+  if (maskedProjectedWorker) return maskedProjectedWorker;
+  if (typeof Worker === 'undefined') return undefined;
+  const worker = new Worker(new URL('./maskedProjectedImage.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+  worker.addEventListener('message', (event: MessageEvent<MaskedProjectedWorkerResponse>) => {
+    const pending = maskedProjectedRequests.get(event.data.id);
+    if (!pending) return;
+    maskedProjectedRequests.delete(event.data.id);
+    if (event.data.error || !event.data.data || !event.data.width || !event.data.height) {
+      pending.reject(new Error(event.data.error || 'Projected image worker returned no pixels.'));
+      return;
+    }
+    pending.resolve(
+      new ImageData(new Uint8ClampedArray(event.data.data), event.data.width, event.data.height),
+    );
+  });
+  worker.addEventListener('error', (event) => {
+    const error = new Error(event.message || 'Projected image worker failed.');
+    for (const pending of maskedProjectedRequests.values()) pending.reject(error);
+    maskedProjectedRequests.clear();
+    worker.terminate();
+    maskedProjectedWorker = undefined;
+  });
+  maskedProjectedWorker = worker;
+  return worker;
+}
+
+function processMaskedProjectedImageInWorker(
+  source: ImageData,
+  mask?: ImageData,
+  mode: 'mask-only' | 'projection-alpha-only' = 'mask-only',
+) {
+  const worker = getMaskedProjectedWorker();
+  if (!worker) {
+    if (mode === 'projection-alpha-only') {
+      return Promise.resolve(
+        mask ? applyProjectedAlphaMask(source, mask, { ignoreSourceAlpha: true }) : source,
+      );
+    }
+    return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
+  }
+  const id = ++maskedProjectedRequestId;
+  const sourceBuffer = source.data.buffer as ArrayBuffer;
+  const transfer: Transferable[] = [sourceBuffer];
+  let maskPayload: { width: number; height: number; data: ArrayBuffer } | undefined;
+  if (mask) {
+    const maskBuffer = mask.data.buffer as ArrayBuffer;
+    maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
+    transfer.push(maskBuffer);
+  }
+  return new Promise<ImageData>((resolve, reject) => {
+    maskedProjectedRequests.set(id, { resolve, reject });
+    worker.postMessage(
+      {
+        id,
+        source: { width: source.width, height: source.height, data: sourceBuffer },
+        mask: maskPayload,
+        mode,
+      },
+      transfer,
+    );
+  });
+}
+
 export async function createMaskedProjectedImage(imageUrl: string, projectionMaskUrl?: string) {
   const sourceImage = await loadImageData(imageUrl, maxCutoutDimension);
-  const cutout = removeSolidBackground(sourceImage);
-  if (!projectionMaskUrl) return imageDataToPngUrl(cutout);
-  const projectionMask = await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask');
-  return imageDataToPngUrl(applyProjectedAlphaMask(cutout, projectionMask));
+  const projectionMask = projectionMaskUrl
+    ? await loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask')
+    : undefined;
+  return imageDataToPngUrl(
+    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'mask-only'),
+  );
+}
+
+/**
+ * Flattens a projection-space mask into the source alpha before UV baking.
+ * A local repaint result is a complete rendered frame, so its source alpha is
+ * ignored and the authored brush mask is the only coverage source. Baking that
+ * dedicated mask into alpha makes the merge robust if an optional mask texture
+ * cannot be loaded by the GPU path. Ordinary generated layers never use this.
+ */
+export async function createProjectionMaskedImage(imageUrl: string, projectionMaskUrl: string) {
+  const [sourceImage, projectionMask] = await Promise.all([
+    loadImageData(imageUrl, maxCutoutDimension),
+    loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
+  ]);
+  return imageDataToPngUrl(
+    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'projection-alpha-only'),
+  );
+}
+
+export function prewarmMaskedProjectedImageWorker() {
+  return Boolean(getMaskedProjectedWorker());
 }

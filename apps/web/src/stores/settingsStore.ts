@@ -4,6 +4,14 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 type Resolution = '1K' | '2K' | '4K' | '8K';
 export type EnvironmentPreset = 'color' | 'studio' | 'soft' | 'dark';
 
+const DEFAULT_VIEWPORT_LIGHTING = {
+  exposure: 1,
+  pbrEnvironmentIntensity: 0.42,
+  pbrKeyLightIntensity: 1,
+  pbrLightAzimuth: 38,
+  environmentPreset: 'studio' as const,
+};
+
 type SettingsStore = {
   resolution: Resolution;
   exposure: number;
@@ -26,11 +34,7 @@ export const useSettingsStore = create<SettingsStore>()(
   persist(
     (set) => ({
       resolution: '2K',
-      exposure: 1,
-      pbrEnvironmentIntensity: 0.42,
-      pbrKeyLightIntensity: 1,
-      pbrLightAzimuth: 38,
-      environmentPreset: 'studio',
+      ...DEFAULT_VIEWPORT_LIGHTING,
       performanceTestModeEnabled: false,
       setResolution: (resolution) => set({ resolution }),
       setExposure: (exposure) => set({ exposure }),
@@ -39,8 +43,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setPbrLightAzimuth: (pbrLightAzimuth) => set({ pbrLightAzimuth }),
       setEnvironmentPreset: (environmentPreset) => set({ environmentPreset }),
       setPerformanceTestModeEnabled: (performanceTestModeEnabled) => set({ performanceTestModeEnabled }),
-      resetViewportLighting: () =>
-        set({ exposure: 1, pbrEnvironmentIntensity: 0.42, pbrKeyLightIntensity: 1, pbrLightAzimuth: 38, environmentPreset: 'studio' }),
+      resetViewportLighting: () => set(DEFAULT_VIEWPORT_LIGHTING),
     }),
     {
       name: 'liclick-render-settings-v1',

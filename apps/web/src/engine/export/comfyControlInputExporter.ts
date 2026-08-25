@@ -1,5 +1,6 @@
 import { zlibSync } from 'fflate';
 import * as THREE from 'three';
+import { createClayModelMaterial } from '@/engine/materials/clayModelMaterial';
 import { createZipBlob } from './exportZip';
 import { downloadBlob, slugifyExportName } from './exportUtils';
 import { validateComfyControlExportPackage } from './comfyControlInputExporterValidation';
@@ -293,7 +294,7 @@ export async function createComfyControlInputPackage({
     height,
     clearColor: '#000000',
     clearAlpha: 1,
-    materialForMesh: () => new THREE.MeshStandardMaterial({ color: '#d7d2c7', roughness: 0.9, metalness: 0 }),
+    materialForMesh: () => createClayModelMaterial(),
   });
   await addFile('render/02_clay_render.png', clay.blob, pngEntry(width, height, 'Clay debug render of current MVP view'));
 

@@ -1,197 +1,97 @@
 # Liclick 3D Texture
 
-Liclick 3D Texture is the foundation for a Web AI 3D Texture Studio. The current MVP creates a long-lived React + Three.js workspace with Projects, Editor, Web3D viewport, floating dock panels, real local model import, viewport capture, Liclick generation, projected layers, background UV bake, transform controls, and local workspace persistence.
+Liclick 3D Texture（LI3D）现代化分支是一套零安装浏览器工作台。统一首页连接贴图绘制、自动展 UV、模型烘焙和生产工具箱；用户不需要下载 LI3D 本地组件。
 
-## Install
+当前隔离开发分支为 `codex/modernization`，基线为远端 `master@ea86557`。本页描述该分支的真实行为；完整交付说明见 [2026-08-21 现代化交付记录](docs/modernization/HANDOFF_2026-08-21.zh-CN.md)，文档分类见 [docs/README.md](docs/README.md)。
+
+## 产品与计算边界
+
+```text
+Browser
+  ├─ React / Three.js UI
+  ├─ viewport, painting, masks, projection, layer composition
+  └─ WebGPU / WebGL2 / Worker / WASM browser compute
+          │
+          ▼
+LI3D application server
+  ├─ Feishu/Atlas identity and HttpOnly session
+  ├─ projects, revisions, commands, account history and audit
+  ├─ object-storage orchestration and signed transfers
+  └─ production job orchestration
+          │
+          ▼
+Independent GPU/AIGC API cluster
+  ├─ Asset V4 Auto UV / Retopology workers
+  ├─ Substance Baker workers
+  └─ generation / inpaint services
+```
+
+- 浏览器使用用户本机 CPU/GPU 完成视口、绘制、投影、图层合成、蒙版和适合浏览器执行的交互内核。
+- Auto UV、自动拓扑和生产 PBR Bake 把模型提交给真实 GPU/AIGC API 集群；正式模式不回退到本地 xatlas、三角简化、BVH Bake 或模拟成功。
+- LI3D 应用服务器与 GPU/AIGC 集群是两个独立服务器边界。应用服务器负责身份、数据和编排，不替 GPU Worker 执行算法。
+- 浏览器缓存不是项目权威数据；项目、任务历史和产物归属真实账号。
+
+## 当前模块状态
+
+| 模块 | 当前状态 | 真实边界 |
+| --- | --- | --- |
+| 贴图绘制 | 进行中，可测试 | 浏览器视口/投影/图层与本机算力；生成、局部重绘连接受控服务；不依赖本地组件 |
+| 自动展 UV | 真实链路已通，生产质量失败 | 容量 API 返回 `9 Worker · 16 槽位`；真实 39.7 MB 任务进入 `asset-control-4090`，被 `UV_QA_FAILED` 阻断，未发布不合格产物 |
+| 自动拓扑 | 真实链路已通，生产质量失败 | 真实任务进入 `asset-worker-3090-b`，被 `RETOPOLOGY_COORDINATE_MISMATCH` 阻断，未发布错位低模 |
+| 模型烘焙 | 真实服务纵向通过 | `asset-worker-3090-b-windows` 通过 TLS；真实员工完成 4K 七通道 Substance Bake，结果和历史可恢复 |
+| 工具箱 | 界面与原产品保持一致 | 保留工具目录、安装包信息和能力说明；PS/Blender/3ds Max 实时桥接暂缓，不作为零安装核心链路 |
+| 登录与账号 | 本地真实账号链路通过 | Server-side Atlas/IDaaS OAuth、HttpOnly 会话、真实员工信息和账号级历史；生产 HTTPS 回调仍需部署验收 |
+
+功能状态必须以 [验收矩阵](docs/modernization/FEATURE_ACCEPTANCE_MATRIX.md) 为准。页面可打开、Mock 成功或按钮存在不等于生产功能通过。
+
+## 贴图工作台能力
+
+- 多模型项目、活动对象、变换、居中、落地和相机适配。
+- PBR、Flat、Normal、Wire 显示模式与 ViewCube。
+- 单图/多视图参考、颜色/Mask/深度/法线捕获和单/多视图 Texture Map。
+- 实时投影层、UV 层、透明度/强度/混合调整、手动 UV 合并和内容补缝。
+- 局部重绘的浏览器指针蒙版、表面约束、云端生成、Worker 边缘融合和项目恢复。
+- GLB/FBX/OBJ/STL、BaseColor、已有 Normal 与 WebM 等现有导出路径。
+
+尚未作为正式能力验收：普通自由绘制 Brush、Quick Mask、Segments/ColorID、Normal 生成、MP4、`.liclick3d` 便携包以及 PS/DCC 实时双向桥接。
+
+## 本地开发与测试预览
 
 ```bash
 pnpm install
+pnpm typecheck
+pnpm build
+pnpm verify:modernization
 ```
 
-## Run
+零安装浏览器模拟部署：
 
 ```bash
-pnpm dev
+pnpm simulate:cloud-deployment -- --serve
 ```
 
-The root dev script starts both the local workspace server and the web app. If another Liclick workspace server is already running on `4517`, the server dev process now reuses it instead of failing the whole dev script.
+真实员工身份与真实服务联调预览：
 
-```bash
-pnpm dev:web
-pnpm dev:server
-pnpm workspace:up
+```powershell
+.\scripts\run-real-employee-auth-preview.ps1 -Port 5646 -WorkspaceDir .codex-tmp\real-auth-workspace
 ```
 
-The local workspace server runs on `127.0.0.1:4517` by default and stores projects in `workspace/`.
-`pnpm workspace:up` starts the workspace server as a background Windows process for longer local sessions. The web app keeps the mock project gallery visible when the server is offline.
+预览地址为 `http://127.0.0.1:5646/li3d/`。该命令只在开发机启动 LI3D 应用服务器；UV、拓扑和 Substance Bake 仍调用配置的真实 GPU/AIGC 服务。正式部署必须改用已登记的 HTTPS 域名、OAuth 回调、受保护的 Secret 和生产对象存储。
 
-For Linux, Docker, or long-running A100 deployment, build first and run the compiled server through a process manager. See `docs/26_PROJECT_STRUCTURE_AND_DEPLOYMENT_AUDIT.md`.
+## 发布与数据规则
 
-## Windows Desktop Installer
+- `master` 保留原始产品基线，现代化修改只进入 `codex/modernization`，通过验收前不得直接合并主线。
+- Web、Server、协议和 Schema 必须来自同一 Git SHA 与 Release Manifest；同一 SHA 只构建一次。
+- 生产 Secret、OAuth Token、Cookie、证书私钥、工作区资产和测试账号数据不得提交 Git。
+- Cloud 构建不得包含安装器、`127.0.0.1:4618`、本地守护进程或本地身份桥接回退。
+- 历史实验内核保留用于回归，不得改变正式产品的远端服务语义。
 
-The Windows desktop build uses a lightweight Electron launcher. It starts the local backend and frontend with hidden child windows, shows their health in the launcher, and keeps them available from the system tray.
+## 已知阻断项
 
-```bash
-corepack pnpm package:windows
-```
+1. Auto UV 真实任务当前被生产 Worker 的 `UV_QA_FAILED` 阻断。
+2. 自动拓扑真实任务当前被 `RETOPOLOGY_COORDINATE_MISMATCH` 阻断。
+3. 生产 HTTPS OAuth 回调、企业应用发布、PostgreSQL/对象存储事务化和目标域名部署尚未完成最终验收。
+4. 性能需要继续完成 input-to-present、帧耗、Long Task、静止渲染和内存回落矩阵。
+5. 仓库仍有历史 lint 基线问题；不能把 typecheck/build/smoke 通过描述成 lint 全绿。
 
-The installer output is:
-
-```text
-dist-installer/Liclick 3D Texture Setup.exe
-```
-
-Installed builds use dedicated ports so they can run beside development:
-
-- installed backend: `127.0.0.1:4617`
-- installed frontend: `127.0.0.1:5673`
-- development backend: `127.0.0.1:4517`
-- development frontend: `127.0.0.1:5173`
-
-The installed app stores runtime, workspace data, and logs under `%LocalAppData%\Liclick 3D Texture`. Updating the installer replaces program files but keeps user workspace data.
-
-## Auth And Liclick Login
-
-The Projects homepage and local editor can be viewed without login. Workspace operations and AI features that call authenticated APIs require the Liclick session. The visible `飞书登录` entry calls the server, the server starts the local `@lilith/atlas-skillhub` gateway login, and then stores only its own httpOnly Liclick session cookie.
-
-`dev-mock` is only a deliberate development fallback. The current real login path does not require Liclick to register a localhost Service URL in IDaaS. It relies on the local Atlas gateway runtime used by Liclick services. If Atlas needs authorization, it opens the company IDaaS / Feishu flow itself and writes the local Atlas token cache.
-
-```bash
-AUTH_MODE=feishu-oauth
-LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=true
-IDAAS_JWT_SSO_ENABLED=false
-```
-
-The frontend never receives Atlas tokens, Feishu tokens, API keys, or session token values. User name and email are decoded server-side from the Atlas gateway token claims and copied into the local user session. Avatar currently falls back to a deterministic local avatar when the token does not include a profile image URL.
-
-`GET /api/liclick/status` verifies whether the logged-in user can reach the Liclick API through Atlas and lists the discovered Liclick tools.
-
-Database setup:
-
-```bash
-corepack pnpm db:generate
-corepack pnpm db:push
-```
-
-## Tech Stack
-
-- React, Vite, TypeScript
-- Three.js, React Three Fiber, Drei
-- Zustand and TanStack Query
-- Tailwind CSS with Radix-style local UI primitives
-- lucide-react icons
-- zod, uuid
-- pnpm workspace
-
-## Current Status
-
-- Projects home page with mock project cards.
-- Project home sidebar now opens Projects, Folders, Assets, and Settings instead of firing placeholder toasts.
-- Settings includes a Chinese / English language switch; Chinese is the default UX language.
-- Editor workspace shell with a full-height viewport, floating dock panels, overlay icon toolbars, synchronized 3D view cube, and normal / compact dock density.
-- Texture workspace now follows the Modddif-style spatial model more closely: project/function controls on the left, ViewCube reserved on the right, left/right docks lowered below the top controls, and fully collapsed docks tucked to the bottom.
-- Editor panels default to a quieter contextual layout: Objects and Viewport stay available, while Generate, References, Layers, and Transform panels expand when their workflow needs them.
-- Local workspace server for project listing, creation, folders, autosave, project files, and asset files.
-- `pnpm dev` starts the web app and local workspace server together. `pnpm dev:web` and `pnpm dev:server` remain available for isolated debugging.
-- Web3D viewport renders a default primitive model until a real model is imported.
-- Import Model supports local `.glb` and `.gltf`, with experimental `.fbx` and `.obj`.
-- The main viewport accepts drag-and-drop for models and reference images. Model files become objects; image files become reference images for the currently selected object.
-- Imported models are mounted as real Three.js groups, centered on XZ, grounded to Y=0, scaled to a practical editor size, measured, and shown in Objects.
-- Multiple imported models can live in one project. Texture mode edits one active model at a time, selected from the Objects panel.
-- Imported model metadata records original bounding box, normalization transform, user transform, mesh count, UV status, and import warnings.
-- Move / Rotate / Scale controls work for the selected imported model, with Reset, Center, Ground, and Fit Camera actions.
-- Viewport capture now renders real color, mask, normal, and grayscale depth PNGs from WebGL render targets. Browser captures use registered Blob URLs in memory and local-server saves materialize them as binary assets instead of inflating project JSON with base64.
-- Generate calls the authenticated Liclick / Atlas gateway through the local workspace server. The old frontend mock generation service has been removed; the mock project gallery remains only as an offline homepage fallback.
-- Liclick image generation and Texture Map generation keep separate prompts. Liclick image generation can be stopped from the Generate panel so the UI does not stay locked until the remote task finishes.
-- Local repaint opens a focused current-view repair dialog. The brush is continuous, clipped to the visible model silhouette, and submits image + mask through the same authenticated Atlas/Liclick gateway used by normal generation.
-- Add as Projected Layer applies a real shader-based projection preview to the imported model.
-- Projected preview now separates loose coverage from strict quality, rejects out-of-frustum, backface, masked, and approximate depth-failed fragments, and falls back to the model/base material for uncovered fragments instead of showing black or white artifacts.
-- Layer visibility, blend/overlay mode, opacity, projection strength, delete, and go-to-camera work for projected layer preview.
-- Texture Map projected layers queue the current background GPU-first UV bake workflow for the visible projected-layer stack. The user-facing Auto UV bake toggle has been removed. The bake keeps the selected resolution, falls back to CPU only at that same resolution, shows a top progress bar, and keeps projection or in-memory baked preview visible while persisted baked assets load.
-- Local-server projects persist captures, generated layer images, and baked textures as binary PNG uploads instead of large base64 JSON payloads, reducing main-thread string work and server JSON parsing during 4K/8K workflows.
-- Save Project / Save As / Load Project now target a local workspace folder through the File System Access API when available, writing `project.liclick.json` and asset folders. Unsupported browsers fall back to JSON download/import.
-- Local-server projects autosave to `workspace/projects/<projectSlug>/project.liclick.json`; browser-only save remains as fallback.
-- Saved local-server projects resolve model asset paths back into viewport-loadable URLs, so imported FBX / GLB models restore after browser refresh.
-- Project thumbnails are captured from the real WebGL viewport and shown on the Projects page when saved. Grid lines and paint/helper overlays are hidden during capture so the card shows the textured model, not the editor background.
-- Export now supports Scene GLB / OBJ / STL, selected Object GLB / OBJ / STL, baked BaseColor PNG, normal-map PNG when the model provides one, viewport PNG snapshot, and 5 second WebM turntable recording.
-- Paint, Eraser, Quick Mask, Segments, Multiview, Normal generation, and DCC connectors are either disabled with a tooltip or shown as mode-specific coming-soon panels. Repeated coming-soon toast noise is deduped.
-
-## Phase 2 Workflow
-
-1. Open the Editor and click `Import Model`, or drag a model file into the viewport.
-2. Use `Capture Current View` to create color, mask, depth, and normal captures from the active camera.
-3. Use `Generate Image`; if no capture exists, the app auto-captures first.
-4. Click `Add as Projected Layer` to preview the generated image projected onto the model.
-5. Use the Layers panel to toggle visibility, adjust opacity, delete, or return to the capture camera.
-6. Accept a Texture Map result with `Add as Projected Layer`; the current workflow keeps the live projected preview and queues the visible projected-layer stack for background bake at the selected viewport resolution.
-7. Use `Download BaseColor` to save `basecolor.png`, or keep the baked texture applied in PBR / Flat preview.
-8. Use `Save Project` / `Save As...` / `Load Project` for `project.liclick.json` workspace persistence. In unsupported browsers, Save downloads JSON.
-
-## Import And Workspace MVP
-
-Phase 4 adds model normalization, object transform controls, and local workspace save/load.
-
-- Import settings expose Normalize, Ground, and Auto Fit toggles.
-- Normalization does not mutate mesh geometry. It applies a parent group transform and records both original and normalized bounds.
-- Transform controls use Move, Rotate, and Scale modes from the bottom toolbar. OrbitControls are disabled while the gizmo is dragged.
-- The right panel shows format, mesh count, UV status, bounding size, normalized scale, and live transform values.
-- `project.liclick.json` is the current project file name. Relative asset paths are used for saved data URLs when a workspace directory is selected.
-- Normal viewport mode is a debug preview: colors visualize surface normals, not the final texture.
-
-## Workspace UI Refactor
-
-Phase 5 changes the editor from a fixed three-column layout to floating dock panels over a large Web3D viewport.
-
-- Texture mode defaults to Objects, Generate, References, Viewport, Layers, Layer Adjustments, and Object Transform.
-- References, Layer Adjustments, and Object Transform can start collapsed and expand when their state becomes relevant.
-- Normal, Segments, and Export switch to their own lightweight dock panels instead of firing disruptive toasts.
-- Panel collapse, visibility, dock side, order, and current mode persist to localStorage.
-- Panel headers can be dragged only from the handle to reorder panels or move them between left and right docks. Dragged panels glow, valid docks highlight, and `Reset Layout` restores defaults.
-- Internal panel drags are tracked separately from file drags so dragging a panel over the viewport does not trigger the model import overlay.
-
-## Project Workspace MVP
-
-Phase 6 adds project-system behavior:
-
-- `apps/server` provides local workspace APIs without external runtime dependencies.
-- `New Project` writes a real project directory and opens it.
-- `New Folder` uses an in-app modal, writes `folders.json`, and avoids native browser prompts.
-- Workspace health checks use short timeouts so a stopped server does not make the UI feel stuck.
-- Folder writes are queued and JSON writes are atomic to reduce local-server race conditions under concurrent use.
-- Dirty local-server projects autosave after 1.5 seconds.
-- Imported model files and data URL assets are saved into project-relative `assets/` paths where possible.
-- `.liclick3d` is documented as the future portable zip package; current export package is a stub.
-
-## UV Bake MVP
-
-Phase 3 introduced UV baking. The current automatic bake path composites the visible projected-layer stack into one BaseColor PNG through a GPU-first UV-space render target. The shader reads imported mesh position, UV, normal, and index buffers, projects UV-space fragments back through the saved capture camera, applies frustum/mask/depth/source-alpha/backface gates, samples the generated image, applies opacity and blend/overlay mode, then dilates seams, reports progress, and immediately applies the result as a material map. If GPU allocation or rendering fails, the CPU rasterizer runs at the same selected resolution.
-
-Test flow:
-
-1. Import a UV-mapped GLB/GLTF, or experimental FBX/OBJ.
-2. Capture current view.
-3. Generate image.
-4. Add as Projected Layer.
-5. Watch the automatic bake progress bar complete.
-6. Switch to PBR or Flat; the baked texture should stay visible without a white-model gap while persisted assets load.
-7. Toggle projected layer visibility and confirm the baked texture remains visible.
-8. Click `Download BaseColor`.
-
-## Current Limits
-
-- GLB / glTF are the primary formats. FBX / OBJ are experimental.
-- Texture mode edits one active imported object at a time. Projects can keep multiple imported objects and switch the active object from the Objects panel.
-- Background UV bake composites the visible projected-layer stack into one BaseColor texture. Only one bake runs at a time and newer requests are coalesced.
-- Projected preview is shader-based and supports blend/overlay stack preview with a live-preview guard for very large unbaked stacks.
-- Depth capture is grayscale viewport depth, not a calibrated linear depth asset.
-- File System Access save requires a Chromium-style browser and user-selected directory permission. Other browsers use JSON download fallback.
-- UV bake supports one object, one UV channel, and basecolor only.
-- UV bake uses the same frustum/mask/depth/backface visibility gates as projected preview, with grayscale depth as an MVP approximation.
-- 4K and 8K bake keep the selected output quality. Automatic bake is GPU-first; remaining cost can still come from GPU readback, browser PNG encoding, workspace persistence, the low-resolution CPU coverage validation pass, and same-resolution CPU fallback on unsupported hardware.
-- Segments ColorID, MP4, and portable project package zip are still coming soon.
-
-See `docs/30_LOCAL_DESKTOP_RELEASE_AND_AUDIT.md` for desktop release notes and `docs/33_COMPREHENSIVE_CODE_AUDIT_2026-07-15.md` for the latest test, security, and residual-risk audit.
-
-## Development Rules
-
-Read `docs/10_DEVELOPMENT_RULES.md` before adding features. New functionality should update the relevant docs, keep core data typed, keep engine logic outside UI components, and avoid hard-coded API keys.
+架构决策见 [现代化总纲](docs/modernization/README.md)，发布门禁见 [ACCEPTANCE_GATES](docs/modernization/ACCEPTANCE_GATES.md)。

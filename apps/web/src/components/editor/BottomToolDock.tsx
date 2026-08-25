@@ -1,16 +1,16 @@
 import {
-  Brush,
+  ChevronRight,
   ChevronUp,
-  Eraser,
-  Minus,
+  ImagePlus,
+  LoaderCircle,
   MousePointer2,
   Move3D,
-  Plus,
+  Paintbrush,
   Redo2,
   Rotate3D,
   Scaling,
-  Sparkles,
   Undo2,
+  WandSparkles,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/common/cn';
@@ -22,7 +22,9 @@ import {
   type PaintToolMode,
   type TransformMode,
 } from '@/stores/sceneStore';
+import { useToastStore } from '@/stores/toastStore';
 import type { WorkspaceMode } from '@/components/workspace/workspacePanelTypes';
+import { runPaintMaskHistoryAction } from '@/engine/paint/paintMaskHistoryActions';
 
 type BottomToolDockProps = {
   mode: WorkspaceMode;
@@ -30,29 +32,30 @@ type BottomToolDockProps = {
   paintTool: PaintToolMode;
   onTransformModeChange: (mode: TransformMode) => void;
   onPaintToolChange: (mode: PaintToolMode) => void;
+  onLocalImageGeneration: () => void;
   onLocalRepaint: () => void;
+  localImageGenerationRunning: boolean;
+  localImageGenerationSuccessKey: number;
+  canLocalRepaint: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  interactionLocked?: boolean;
+  onInteractionLocked?: () => void;
   labels: {
     select: string;
     move: string;
     rotate: string;
     scale: string;
     layers: string;
-    brush: string;
-    eraser: string;
-    eraserSize: string;
-    eraserHardness: string;
     localRepaint: string;
     inpaintSelect: string;
     inpaintUnselect: string;
     undo: string;
     redo: string;
     brushSize: string;
-    brushHardness: string;
-    brushColor: string;
+    brushFeather: string;
     resetInpaintRegion: string;
     invertInpaintRegion: string;
     selectHelp: string;
@@ -60,8 +63,6 @@ type BottomToolDockProps = {
     rotateHelp: string;
     scaleHelp: string;
     layersHelp: string;
-    brushHelp: string;
-    eraserHelp: string;
     localRepaintHelp: string;
     inpaintSelectHelp: string;
     inpaintUnselectHelp: string;
@@ -79,9 +80,6 @@ const tools: Array<{
   { mode: 'rotate', icon: Rotate3D, labelKey: 'rotate', shortcut: 'E' },
   { mode: 'scale', icon: Scaling, labelKey: 'scale', shortcut: 'R' },
 ];
-const selectTool = tools[0];
-
-const paintSwatches = ['#ffffff', '#ff6b4a', '#f7c948', '#56d364', '#3dd6ff', '#8b5cf6', '#f35bce', '#111111'];
 
 export function BottomToolDock({
   mode,
@@ -89,34 +87,124 @@ export function BottomToolDock({
   paintTool,
   onTransformModeChange,
   onPaintToolChange,
+  onLocalImageGeneration,
   onLocalRepaint,
+  localImageGenerationRunning,
+  localImageGenerationSuccessKey,
+  canLocalRepaint,
   canUndo,
   canRedo,
   onUndo,
   onRedo,
+  interactionLocked = false,
+  onInteractionLocked,
   labels,
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   const [activeMenu, setActiveMenu] = useState<
-    'brush' | 'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
+    'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
-  const paintSettings = useSceneStore((state) => state.paintToolSettings);
-  const setPaintSettings = useSceneStore((state) => state.setPaintToolSettings);
+  const [generationGuideActive, setGenerationGuideActive] = useState(false);
+  const [repaintGuideActive, setRepaintGuideActive] = useState(false);
+  const previousGenerationSuccessKeyRef = useRef(localImageGenerationSuccessKey);
+  const previousApplyToolSelectedRef = useRef(paintTool === 'inpaint-apply');
+  const previousMaskToolSelectedRef = useRef(
+    paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract',
+  );
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
+  const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
+  const setLocalRepaintBrushSettings = useSceneStore((state) => state.setLocalRepaintBrushSettings);
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
+  const pushToast = useToastStore((state) => state.pushToast);
   const baseButton =
     'grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:border-white/22 hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/45 disabled:cursor-not-allowed disabled:opacity-42';
-  const activeMaskButton =
-    'border-[#ff8a68]/70 bg-[#8b4a38] text-white shadow-[0_0_0_1px_rgba(255,138,104,0.26)]';
+  const workflowButton =
+    'grid h-10 w-10 shrink-0 place-items-center rounded-md border border-transparent bg-transparent text-white/72 transition hover:bg-white/[0.08] hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/35';
+  const activeWorkflowButton =
+    'bg-liclick-pink/16 text-white shadow-[inset_0_-2px_0_rgba(236,72,189,0.72)]';
+  const lockedWorkflowButton =
+    'cursor-not-allowed bg-transparent text-white/20 opacity-35 grayscale hover:bg-transparent hover:text-white/20';
+  const runningWorkflowButton =
+    'bg-liclick-pink/12 text-liclick-pink shadow-[inset_0_-2px_0_rgba(236,72,189,0.55)]';
+  const guideWorkflowButton =
+    'animate-pulse border-liclick-pink/70 bg-liclick-pink/20 text-white shadow-[0_0_14px_rgba(236,72,189,0.62),inset_0_-2px_0_rgba(236,72,189,0.8)]';
   const divider = <div className="mx-1 h-6 w-px shrink-0 bg-white/10" />;
   const isTextureMode = mode === 'texture';
+  const isMaskPaintTool = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
+  const localRepaintReady = canLocalRepaint;
   const inpaintMenuVisible =
-    activeMenu === 'inpaint-add' || activeMenu === 'inpaint-subtract' || activeMenu === 'inpaint-apply';
+    activeMenu === 'inpaint-add' ||
+    activeMenu === 'inpaint-subtract' ||
+    activeMenu === 'inpaint-apply';
+
+  useEffect(() => {
+    if (isTextureMode && paintTool === 'brush') onPaintToolChange('none');
+  }, [isTextureMode, onPaintToolChange, paintTool]);
+
+  useEffect(() => {
+    if (localImageGenerationRunning) {
+      setRepaintGuideActive(false);
+    } else if (
+      previousGenerationSuccessKeyRef.current !== localImageGenerationSuccessKey &&
+      localRepaintReady
+    ) {
+      setRepaintGuideActive(true);
+    }
+    previousGenerationSuccessKeyRef.current = localImageGenerationSuccessKey;
+  }, [localImageGenerationRunning, localImageGenerationSuccessKey, localRepaintReady]);
+
+  useEffect(() => {
+    const applyToolSelected = paintTool === 'inpaint-apply';
+    if (!previousApplyToolSelectedRef.current && applyToolSelected) {
+      // Applying the returned repaint hides the mask presentation, but keeps
+      // the single live mask authored for reuse or later editing.
+      setRepaintGuideActive(false);
+    }
+    previousApplyToolSelectedRef.current = applyToolSelected;
+  }, [paintTool]);
+
+  useEffect(() => {
+    if (!previousMaskToolSelectedRef.current && isMaskPaintTool) {
+      setGenerationGuideActive(true);
+      setRepaintGuideActive(false);
+    }
+    previousMaskToolSelectedRef.current = isMaskPaintTool;
+  }, [isMaskPaintTool]);
 
   function toggleMenu(menu: typeof activeMenu) {
     setActiveMenu((current) => (current === menu ? undefined : menu));
+  }
+
+  function notifyGenerationRequired() {
+    pushToast({
+      tone: 'warning',
+      title: '请先完成局部生图',
+      description: '局部生图成功返回结果后，局部重绘画笔才会解锁。',
+      dedupeKey: 'local-workflow-generation-required',
+    });
+  }
+
+  function notifyGenerationInProgress() {
+    pushToast({
+      tone: 'info',
+      title: '局部生图正在处理',
+      description: '生成完成后会自动解锁“应用重绘”。',
+      dedupeKey: 'local-workflow-generation-running',
+    });
+  }
+
+  function renderWorkflowRunningStatus(running: boolean) {
+    if (!running) return null;
+    return (
+      <span
+        className="pointer-events-none absolute -bottom-0.5 -right-0.5 z-10 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#3a1736] text-liclick-pink shadow-sm"
+        aria-hidden="true"
+      >
+        <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
+      </span>
+    );
   }
 
   useEffect(() => {
@@ -177,12 +265,24 @@ export function BottomToolDock({
     return (
       <>
         <IconTooltip label={labels.undo} shortcut="Ctrl Z">
-          <button type="button" className={baseButton} disabled={!canUndo} onClick={onUndo} aria-label={labels.undo}>
+          <button
+            type="button"
+            className={baseButton}
+            disabled={!canUndo}
+            onClick={onUndo}
+            aria-label={labels.undo}
+          >
             <Undo2 className="h-4.5 w-4.5" />
           </button>
         </IconTooltip>
-        <IconTooltip label={labels.redo} shortcut="Ctrl Y">
-          <button type="button" className={baseButton} disabled={!canRedo} onClick={onRedo} aria-label={labels.redo}>
+        <IconTooltip label={labels.redo} shortcut="Ctrl Y / Ctrl Shift Z">
+          <button
+            type="button"
+            className={baseButton}
+            disabled={!canRedo}
+            onClick={onRedo}
+            aria-label={labels.redo}
+          >
             <Redo2 className="h-4.5 w-4.5" />
           </button>
         </IconTooltip>
@@ -193,7 +293,31 @@ export function BottomToolDock({
   return (
     <div
       ref={dockRef}
-      className="mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
+      onPointerDownCapture={(event) => {
+        if (!interactionLocked) return;
+        const target = event.target as HTMLElement;
+        if (!target.closest('button, input, select, textarea')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onInteractionLocked?.();
+      }}
+      onClickCapture={(event) => {
+        if (!interactionLocked) return;
+        const target = event.target as HTMLElement;
+        if (!target.closest('button, input, select, textarea')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onInteractionLocked?.();
+      }}
+      data-texture-onboarding="edit-tools"
+      data-onboarding-complete={
+        paintTool === 'inpaint-add' ||
+        paintTool === 'inpaint-subtract' ||
+        paintTool === 'inpaint-apply'
+          ? 'true'
+          : 'false'
+      }
+      className="relative mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
     >
       {!isTextureMode && (
         <>
@@ -205,250 +329,262 @@ export function BottomToolDock({
 
       {isTextureMode && (
         <>
-          {selectTool && renderTransformButton(selectTool)}
-          {divider}
-
-          <span className="relative inline-flex">
-        {activeMenu === 'brush' && (
-          <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[300px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-            <label className="grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.brushSize}</span>
-                <input
-                  value={paintSettings.brushSize.toFixed(1)}
-                  onChange={(event) =>
-                    setPaintSettings({ brushSize: Number(event.target.value) || 1 })
-                  }
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </span>
-              <input
-                type="range"
-                min="0.5"
-                max="80"
-                step="0.1"
-                value={paintSettings.brushSize}
-                onChange={(event) =>
-                  setPaintSettings({ brushSize: Number(event.target.value) })
-                }
-                className="w-full accent-[#ff8a68]"
+          <div className="ml-1 flex items-center gap-1.5">
+            <span className="pointer-events-none flex shrink-0 items-center gap-1.5 whitespace-nowrap px-0.5 text-[12px] font-semibold tracking-wide text-white/62">
+              <span
+                className="h-6 w-px shrink-0 bg-liclick-pink/55 shadow-[0_0_8px_rgba(236,72,189,0.28)]"
+                aria-hidden="true"
               />
-            </label>
-            <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-              <span>{labels.brushColor}</span>
-              <div className="grid grid-cols-[1fr_88px] items-center gap-2">
-                <div className="flex gap-1.5">
-                  {paintSwatches.map((swatch) => (
-                    <button
-                      key={swatch}
-                      type="button"
-                      className={cn(
-                        'h-6 w-6 rounded-full border border-white/24 shadow-[0_0_0_1px_rgba(0,0,0,0.36)] transition hover:scale-105',
-                        paintSettings.color.toLowerCase() === swatch && 'ring-2 ring-white',
+              局部重绘
+            </span>
+            <div className="flex items-center rounded-md bg-white/[0.035] p-1">
+              <span className="relative inline-flex">
+                {inpaintMenuVisible && (
+                  <div className="absolute bottom-full left-0 z-50 mb-2 w-[284px] max-w-[calc(100vw-24px)] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+                    <div className="mb-2 rounded-md bg-white/[0.07] px-2.5 py-2 text-xs font-semibold text-white/78">
+                      {activeMenu === 'inpaint-apply'
+                        ? '局部重绘画笔参数 · 左键绘制，右键擦除'
+                        : '蒙版画笔参数 · 左键绘制，右键擦除'}
+                    </div>
+                    <label className="grid gap-1.5 text-[13px] font-semibold">
+                      <span className="flex items-center justify-between">
+                        <span>{labels.brushSize}</span>
+                        <input
+                          value={
+                            activeMenu === 'inpaint-apply'
+                              ? localRepaintBrushSettings.brushSize.toFixed(1)
+                              : paintMaskSettings.brushSize.toFixed(1)
+                          }
+                          onChange={(event) => {
+                            const brushSize = Number(event.target.value) || 1;
+                            if (activeMenu === 'inpaint-apply') {
+                              setLocalRepaintBrushSettings({ brushSize });
+                            } else {
+                              setPaintMaskSettings({ brushSize });
+                            }
+                          }}
+                          className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                        />
+                      </span>
+                      <input
+                        type="range"
+                        min={MIN_PAINT_MASK_BRUSH_SIZE}
+                        max={MAX_PAINT_MASK_BRUSH_SIZE}
+                        step="0.1"
+                        value={
+                          activeMenu === 'inpaint-apply'
+                            ? localRepaintBrushSettings.brushSize
+                            : paintMaskSettings.brushSize
+                        }
+                        onChange={(event) => {
+                          const brushSize = Number(event.target.value);
+                          if (activeMenu === 'inpaint-apply') {
+                            setLocalRepaintBrushSettings({ brushSize });
+                          } else {
+                            setPaintMaskSettings({ brushSize });
+                          }
+                        }}
+                        className="w-full accent-[#ff8a68]"
+                      />
+                    </label>
+                    {activeMenu === 'inpaint-apply' && (
+                      <div className="mt-2 grid gap-2 border-t border-white/16 pt-2">
+                        <label className="grid gap-1.5 text-[13px] font-semibold">
+                          <span className="flex items-center justify-between">
+                            <span>{labels.brushFeather}</span>
+                            <span className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="1"
+                                value={Math.round(localRepaintBrushSettings.brushFeather)}
+                                onChange={(event) =>
+                                  setLocalRepaintBrushSettings({
+                                    brushFeather: Number(event.target.value),
+                                  })
+                                }
+                                className="h-8 w-20 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
+                              />
+                              <span className="text-xs text-white/60">%</span>
+                            </span>
+                          </span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value={localRepaintBrushSettings.brushFeather}
+                            onChange={(event) =>
+                              setLocalRepaintBrushSettings({
+                                brushFeather: Number(event.target.value),
+                              })
+                            }
+                            className="w-full accent-[#ff8a68]"
+                          />
+                        </label>
+                      </div>
+                    )}
+                    {activeMenu !== 'inpaint-apply' && (
+                      <div className="mt-2 grid gap-1.5 border-t border-white/16 pt-2">
+                        <button
+                          type="button"
+                          className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
+                          onClick={() => {
+                            if (!runPaintMaskHistoryAction('clear')) clearPaintMask();
+                          }}
+                        >
+                          <span>{labels.resetInpaintRegion}</span>
+                          <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
+                            CTRL SHIFT D
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
+                          onClick={() => {
+                            if (!runPaintMaskHistoryAction('invert')) invertPaintMask();
+                          }}
+                        >
+                          <span>{labels.invertInpaintRegion}</span>
+                          <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
+                            CTRL I
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <IconTooltip label="步骤 1 · 绘制蒙版" shortcut="K">
+                  <button
+                    type="button"
+                    className={cn(workflowButton, isMaskPaintTool && activeWorkflowButton)}
+                    onClick={() => {
+                      // The mask step is a mode selector, not an on/off toggle.
+                      // Repeated clicks only open or close its settings menu so
+                      // the resident repaint presentation stays mounted.
+                      if (!isMaskPaintTool) {
+                        onPaintToolChange('inpaint-add');
+                        setGenerationGuideActive(true);
+                        setRepaintGuideActive(false);
+                      }
+                      toggleMenu('inpaint-add');
+                    }}
+                    aria-label="蒙版绘制：左键绘制，右键擦除"
+                  >
+                    <span className="relative grid place-items-center">
+                      <Paintbrush className="h-4.5 w-4.5" />
+                      {isMaskPaintTool && (
+                        <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
                       )}
-                      style={{ backgroundColor: swatch }}
-                      onClick={() => setPaintSettings({ color: swatch })}
-                      aria-label={swatch}
-                    />
-                  ))}
-                </div>
-                <input
-                  value={paintSettings.color}
-                  onChange={(event) => setPaintSettings({ color: event.target.value })}
-                  className="h-8 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
-              </div>
-            </label>
-          </div>
-        )}
-        <IconTooltip label={labels.brush} description={labels.brushHelp} shortcut="B">
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'brush' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'brush' ? 'none' : 'brush');
-              toggleMenu('brush');
-            }}
-            aria-label={labels.brush}
-          >
-            <Brush className="h-4.5 w-4.5" />
-          </button>
-        </IconTooltip>
-          </span>
-          <span className="relative inline-flex">
-        {activeMenu === 'eraser' && (
-          <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-            <label className="grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.eraserSize}</span>
-                <input
-                  value={paintSettings.eraserSize.toFixed(1)}
-                  onChange={(event) =>
-                    setPaintSettings({ eraserSize: Number(event.target.value) || 1 })
-                  }
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
+                    </span>
+                  </button>
+                </IconTooltip>
               </span>
-              <input
-                type="range"
-                min="0.5"
-                max="120"
-                step="0.5"
-                value={paintSettings.eraserSize}
-                onChange={(event) =>
-                  setPaintSettings({ eraserSize: Number(event.target.value) })
-                }
-                className="w-full accent-[#ff8a68]"
+              <ChevronRight
+                className="mx-0.5 h-3.5 w-3.5 shrink-0 text-white/16 transition-colors"
+                aria-hidden="true"
               />
-            </label>
-            <label className="mt-2 grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.eraserHardness}</span>
-                <input
-                  value={paintSettings.eraserHardness.toFixed(1)}
-                  onChange={(event) =>
-                    setPaintSettings({ eraserHardness: Number(event.target.value) || 0 })
-                  }
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
+              <span className="relative inline-flex">
+                <IconTooltip
+                  label="步骤 2 · 局部生图"
+                  description="请先绘制蒙版；每次提交都会锁定当前蒙版，运行期间不可重复提交。"
+                >
+                  <button
+                    type="button"
+                    className={cn(
+                      workflowButton,
+                      generationGuideActive && !localImageGenerationRunning && guideWorkflowButton,
+                      localImageGenerationRunning && runningWorkflowButton,
+                    )}
+                    onClick={() => {
+                      if (localImageGenerationRunning) {
+                        notifyGenerationInProgress();
+                        return;
+                      }
+                      setGenerationGuideActive(false);
+                      setRepaintGuideActive(false);
+                      onLocalImageGeneration();
+                      setActiveMenu(undefined);
+                    }}
+                    aria-label={localImageGenerationRunning ? '局部生图（处理中）' : '局部生图'}
+                  >
+                    <ImagePlus className="h-4.5 w-4.5" />
+                  </button>
+                </IconTooltip>
+                {renderWorkflowRunningStatus(localImageGenerationRunning)}
               </span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="0.5"
-                value={paintSettings.eraserHardness}
-                onChange={(event) =>
-                  setPaintSettings({ eraserHardness: Number(event.target.value) })
-                }
-                className="w-full accent-[#ff8a68]"
+              <ChevronRight
+                className={cn(
+                  'mx-0.5 h-3.5 w-3.5 shrink-0 transition-colors',
+                  localImageGenerationRunning
+                    ? 'animate-pulse text-liclick-pink/65'
+                    : localRepaintReady
+                      ? 'text-liclick-pink/80'
+                      : 'text-white/16',
+                )}
+                aria-hidden="true"
               />
-            </label>
-          </div>
-        )}
-        <IconTooltip label={labels.eraser} description={labels.eraserHelp} shortcut="E">
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'eraser' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'eraser' ? 'none' : 'eraser');
-              toggleMenu('eraser');
-            }}
-            aria-label={labels.eraser}
-          >
-            <Eraser className="h-4.5 w-4.5" />
-          </button>
-        </IconTooltip>
-          </span>
-          <span className="relative inline-flex">
-        {inpaintMenuVisible && (
-          <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[284px] -translate-x-1/2 rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
-            <label className="grid gap-1.5 text-[13px] font-semibold">
-              <span className="flex items-center justify-between">
-                <span>{labels.brushSize}</span>
-                <input
-                  value={paintMaskSettings.brushSize.toFixed(1)}
-                  onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) || 1 })}
-                  className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#ff8a68]"
-                />
+              <span className="relative inline-flex">
+                <IconTooltip
+                  label="步骤 3 · 应用重绘"
+                  description="使用局部生图结果在当前模型表面重绘：左键涂上，右键擦除。"
+                  shortcut="I"
+                >
+                  <button
+                    type="button"
+                    className={cn(
+                      workflowButton,
+                      paintTool === 'inpaint-apply' && activeWorkflowButton,
+                      repaintGuideActive &&
+                        localRepaintReady &&
+                        !localImageGenerationRunning &&
+                        paintTool !== 'inpaint-apply' &&
+                        guideWorkflowButton,
+                      (!localRepaintReady || localImageGenerationRunning) && lockedWorkflowButton,
+                    )}
+                    onClick={() => {
+                      if (localImageGenerationRunning) {
+                        notifyGenerationInProgress();
+                        return;
+                      }
+                      if (!localRepaintReady) {
+                        notifyGenerationRequired();
+                        return;
+                      }
+                      setRepaintGuideActive(false);
+                      if (paintTool === 'inpaint-apply') {
+                        toggleMenu('inpaint-apply');
+                        return;
+                      } else {
+                        onLocalRepaint();
+                      }
+                      toggleMenu('inpaint-apply');
+                    }}
+                    aria-label={
+                      localImageGenerationRunning
+                        ? '应用局部重绘（等待局部生图完成）'
+                        : localRepaintReady
+                          ? '应用局部重绘'
+                          : '应用局部重绘（需先完成局部生图）'
+                    }
+                  >
+                    <span className="relative grid place-items-center">
+                      <WandSparkles className="h-4.5 w-4.5" />
+                      {paintTool === 'inpaint-apply' && (
+                        <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
+                      )}
+                    </span>
+                  </button>
+                </IconTooltip>
               </span>
-              <input
-                type="range"
-                min={MIN_PAINT_MASK_BRUSH_SIZE}
-                max={MAX_PAINT_MASK_BRUSH_SIZE}
-                step="0.1"
-                value={paintMaskSettings.brushSize}
-                onChange={(event) => setPaintMaskSettings({ brushSize: Number(event.target.value) })}
-                className="w-full accent-[#ff8a68]"
-              />
-            </label>
-            <div className="mt-2 grid gap-1.5 border-t border-white/16 pt-2">
-              <button
-                type="button"
-                className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
-                onClick={clearPaintMask}
-              >
-                <span>{labels.resetInpaintRegion}</span>
-                <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL SHIFT D</span>
-              </button>
-              <button
-                type="button"
-                className="flex h-9 items-center justify-between rounded-md border border-white/16 bg-[#0b0b11] px-2.5 text-left text-[13px] font-semibold text-white transition hover:border-[#ff8a68]/70 hover:text-[#ffb199]"
-                onClick={invertPaintMask}
-              >
-                <span>{labels.invertInpaintRegion}</span>
-                <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">CTRL I</span>
-              </button>
             </div>
           </div>
-        )}
-        <IconTooltip
-          label={labels.inpaintSelect}
-          description={labels.inpaintSelectHelp}
-          shortcut="K"
-        >
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'inpaint-add' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'inpaint-add' ? 'none' : 'inpaint-add');
-              toggleMenu('inpaint-add');
-            }}
-            aria-label={labels.inpaintSelect}
-          >
-            <span className="relative grid place-items-center">
-              <Sparkles className="h-4.5 w-4.5" />
-              <Plus className="absolute -left-2 -top-2 h-3.5 w-3.5 stroke-[3]" />
-              {paintTool === 'inpaint-add' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
-            </span>
-          </button>
-        </IconTooltip>
-          </span>
-          <IconTooltip
-        label={labels.inpaintUnselect}
-        description={labels.inpaintUnselectHelp}
-        shortcut="O"
-          >
-        <button
-          type="button"
-          className={cn(baseButton, paintTool === 'inpaint-subtract' && activeMaskButton)}
-            onClick={() => {
-              onPaintToolChange(paintTool === 'inpaint-subtract' ? 'none' : 'inpaint-subtract');
-            toggleMenu('inpaint-subtract');
-          }}
-          aria-label={labels.inpaintUnselect}
-        >
-          <span className="relative grid place-items-center">
-            <Sparkles className="h-4.5 w-4.5" />
-            <Minus className="absolute -left-2 -top-2 h-3.5 w-3.5 stroke-[3]" />
-            {paintTool === 'inpaint-subtract' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
-          </span>
-        </button>
-          </IconTooltip>
-          <span className="relative inline-flex">
-        <IconTooltip
-          label={labels.localRepaint}
-          description={labels.localRepaintHelp}
-          shortcut="I"
-        >
-          <button
-            type="button"
-            className={cn(baseButton, paintTool === 'inpaint-apply' && activeMaskButton)}
-            onClick={() => {
-              onLocalRepaint();
-              toggleMenu('inpaint-apply');
-            }}
-            aria-label={labels.localRepaint}
-          >
-            <span className="relative grid place-items-center">
-              <Sparkles className="h-4.5 w-4.5" />
-              {paintTool === 'inpaint-apply' && <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />}
-            </span>
-          </button>
-        </IconTooltip>
-          </span>
 
-          {divider}
+          <div
+            className="mx-1 h-6 w-px shrink-0 bg-liclick-pink/55 shadow-[0_0_8px_rgba(236,72,189,0.28)]"
+            aria-hidden="true"
+          />
           {renderUndoRedo()}
         </>
       )}

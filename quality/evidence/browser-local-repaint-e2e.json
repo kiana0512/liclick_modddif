@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-21",
+  "environment": "real-employee-auth preview with server-side Atlas and disk-backed object-storage simulator",
+  "projectId": "project-97a7bfb2-94f5-4efb-a85e-a21cb750cd54",
+  "objectId": "object-857081d7-37b8-420a-87bf-0d4b7de4ca59",
+  "generationId": "local-repaint-69d29789-bdb6-446b-9844-59eca7b683e4",
+  "cloudJobId": "7f21ba3b-cac5-4567-80b4-2c0e7cb4eaba",
+  "layerId": "local-repaint-projection-d7cc70a6-bbe7-4af7-825d-d88f002e8260",
+  "assertions": {
+    "realEmployeeSession": "passed",
+    "browserMaskStroke": "passed",
+    "cloudModelViewGeneration": "passed",
+    "browserProjectionApplication": "passed",
+    "sourceMaskAndDepthDurable": "passed",
+    "projectRevisionSaved": "passed",
+    "serverRestartRecovery": "passed",
+    "layerVisibilityPixelDifference": "passed",
+    "freshLoadConsoleErrors": 0
+  },
+  "notes": [
+    "The browser drew the selection and repaint strokes through real pointer input.",
+    "After restarting the development server and re-establishing the real employee session, enabling the persisted layer restored the striped mask region and white repaint stroke.",
+    "The object-storage simulator rejected an unsigned probe with HTTP 403 and remained healthy with HTTP 200."
+  ]
+}

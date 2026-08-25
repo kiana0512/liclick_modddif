@@ -1,5 +1,9 @@
 # Performance And Stability Audit
 
+> Historical audit snapshot from 2026-07-08. Statements about the global Auto UV
+> bake setting, desktop packaging, and then-current performance paths are not
+> current product behavior. See `docs/README.md` and the performance test protocol.
+
 Updated: 2026-07-08
 
 ## Current Fixes

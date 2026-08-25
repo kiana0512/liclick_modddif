@@ -1,0 +1,66 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+
+const sourceRoot = new URL('../src/', import.meta.url);
+const [editorPage, generatePanel, bottomToolDock] = await Promise.all([
+  readFile(new URL('routes/EditorPage.tsx', sourceRoot), 'utf8'),
+  readFile(new URL('components/panels/GeneratePanel.tsx', sourceRoot), 'utf8'),
+  readFile(new URL('components/editor/BottomToolDock.tsx', sourceRoot), 'utf8'),
+]);
+
+assert.match(
+  generatePanel,
+  /onRequestLocalImageGeneration\?: \(\) => void/,
+  'the panel CTA must expose the shared EditorPage generation request boundary',
+);
+assert.match(
+  generatePanel,
+  /if \(displayedTexturePreviewMode === 'repaint'\) \{\s*if \(onRequestLocalImageGeneration\) \{[\s\S]*?onRequestLocalImageGeneration\(\);\s*return;/,
+  'the panel repaint CTA must use the same request bridge as the bottom workflow button',
+);
+assert.match(
+  editorPage,
+  /onRequestLocalImageGeneration=\{handleLocalImageGenerationFromToolbar\}/,
+  'both UI entry points must converge on one owner for tool suspension and task state',
+);
+assert.match(
+  editorPage,
+  /if \(!useSceneStore\.getState\(\)\.paintMaskHasContent\) \{[\s\S]*dedupeKey: 'local-repaint-mask-required',[\s\S]*return;[\s\S]*setLocalRepaintGenerationPresentationActive\(true\)/,
+  'the shared UI boundary must reject an empty mask before changing generation presentation state',
+);
+assert.match(
+  generatePanel,
+  /\{ succeeded: true; generationId: string \}/,
+  'a successful local generation settlement must carry its exact generation id',
+);
+assert.match(
+  generatePanel,
+  /lastCompletedLocalRepaintGenerationIdRef\.current = completedGeneration\.id/,
+  'the completion payload must be bound to the returned task instead of list ordering',
+);
+assert.match(
+  editorPage,
+  /preferredLocalRepaintGenerationIdRef\.current = result\.generationId/,
+  'EditorPage must retain the exact generation selected for the next repaint activation',
+);
+assert.match(
+  editorPage,
+  /generation\.id === preferredGenerationId &&\s*matchesUsableLocalRepaintGeneration\(generation\)/,
+  'brush activation must prefer the settled generation before falling back to history ordering',
+);
+const applyToolLifecycle = bottomToolDock.slice(
+  bottomToolDock.indexOf("const applyToolSelected = paintTool === 'inpaint-apply'"),
+  bottomToolDock.indexOf('previousMaskToolSelectedRef.current = isMaskPaintTool'),
+);
+assert.doesNotMatch(
+  applyToolLifecycle,
+  /clearPaintMask\(\)/,
+  'entering the repaint apply brush must hide presentation without deleting the live mask',
+);
+assert.match(
+  bottomToolDock,
+  /description="请先绘制蒙版；每次提交都会锁定当前蒙版，运行期间不可重复提交。"/,
+  'the workflow tooltip must communicate that local generation requires a mask',
+);
+
+console.log('Local generation entry alignment regression checks passed.');

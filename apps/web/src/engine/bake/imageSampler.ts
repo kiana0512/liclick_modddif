@@ -1,11 +1,15 @@
-import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
+import { getProjectApiBase } from '@/platform/projectApiBase';
+import { urlToBlob } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
-import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import {
+  getLiveProjectedTextureSourceState,
+  isLiveProjectedCanvasUrl,
+} from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 export type ImageSample = [number, number, number, number];
 const COLOR_ALPHA_REJECT_THRESHOLD = 3;
 const MAX_CACHED_IMAGE_DATA_BYTES = 192 * 1024 * 1024;
-const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const workspaceApiBase = getProjectApiBase();
 const imageDataCache = new Map<string, { imageData: ImageData; bytes: number; usedAt: number }>();
 let cachedImageDataBytes = 0;
 
@@ -91,6 +95,7 @@ function rememberImageData(cacheKey: string, imageData: ImageData) {
 
 function describeUrlKind(url: string) {
   if (!url) return 'empty URL';
+  if (isLiveProjectedCanvasUrl(url)) return 'live projected texture';
   if (url.startsWith('blob:')) return 'temporary blob URL';
   if (url.startsWith('data:')) return 'embedded data URL';
   if (url.startsWith('http')) return 'HTTP URL';
@@ -110,9 +115,9 @@ export async function loadImageData(
   maxDimension = Number.POSITIVE_INFINITY,
   label = 'projected layer image',
 ): Promise<ImageData> {
-  const liveCanvasState = getLiveProjectedCanvasState(url);
-  const resolvedUrl = liveCanvasState
-    ? `${url}#${liveCanvasState.revision}`
+  const liveTextureState = getLiveProjectedTextureSourceState(url);
+  const resolvedUrl = liveTextureState
+    ? `${url}#${liveTextureState.revision}`
     : resolveImageAssetUrl(url);
   if (!resolvedUrl) throw new Error(`Could not load ${label}: image URL is empty.`);
   const cacheKey = getImageDataCacheKey(url, resolvedUrl, maxDimension);
@@ -124,27 +129,45 @@ export async function loadImageData(
   let source: CanvasImageSource;
   let sourceWidth: number;
   let sourceHeight: number;
-  if (liveCanvasState) {
-    source = liveCanvasState.canvas;
-    sourceWidth = liveCanvasState.canvas.width;
-    sourceHeight = liveCanvasState.canvas.height;
+  if (liveTextureState) {
+    source = liveTextureState.source;
+    sourceWidth =
+      liveTextureState.source instanceof HTMLImageElement
+        ? liveTextureState.source.naturalWidth || liveTextureState.source.width
+        : liveTextureState.source.width;
+    sourceHeight =
+      liveTextureState.source instanceof HTMLImageElement
+        ? liveTextureState.source.naturalHeight || liveTextureState.source.height
+        : liveTextureState.source.height;
   } else {
     const image = new Image();
-    image.crossOrigin = 'anonymous';
     image.decoding = 'async';
-    image.src = resolvedUrl;
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () =>
-        reject(
-          new Error(
-            `Could not load ${label} for baking (${describeUrlKind(url)}). ` +
-              (url.startsWith('blob:')
-                ? 'The temporary blob URL is no longer available; regenerate or re-add this layer.'
-                : 'Check that the workspace asset exists and the workspace server is running.'),
-          ),
-        );
-    });
+    let fetchedObjectUrl: string | undefined;
+    try {
+      if (/^https?:/i.test(resolvedUrl)) {
+        fetchedObjectUrl = URL.createObjectURL(await urlToBlob(resolvedUrl));
+        image.src = fetchedObjectUrl;
+      } else {
+        image.crossOrigin = 'anonymous';
+        image.src = resolvedUrl;
+      }
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () =>
+          reject(
+            new Error(
+              `Could not load ${label} for baking (${describeUrlKind(url)}). ` +
+                (url.startsWith('blob:')
+                  ? 'The temporary blob URL is no longer available; regenerate or re-add this layer.'
+                  : isLiveProjectedCanvasUrl(url)
+                    ? 'The live projected texture is no longer registered; reopen or regenerate this layer.'
+                  : 'Check that the workspace asset exists and the workspace server is running.'),
+            ),
+          );
+      });
+    } finally {
+      if (fetchedObjectUrl) URL.revokeObjectURL(fetchedObjectUrl);
+    }
     source = image;
     sourceWidth = image.naturalWidth || image.width;
     sourceHeight = image.naturalHeight || image.height;
@@ -230,6 +253,43 @@ export function sampleImageBilinear(image: ImageData, u: number, v: number): Ima
     Math.round(blue / alpha),
     Math.round(alpha * 255),
   ];
+}
+
+/** Bilinear RGB sampling for mask-authored projections whose source alpha is not coverage. */
+export function sampleImageBilinearIgnoringAlpha(
+  image: ImageData,
+  u: number,
+  v: number,
+): ImageSample {
+  const clampedU = Math.min(1, Math.max(0, u));
+  const clampedV = Math.min(1, Math.max(0, v));
+  const sourceX = clampedU * (image.width - 1);
+  const sourceY = clampedV * (image.height - 1);
+  const x0 = Math.max(0, Math.min(image.width - 1, Math.floor(sourceX)));
+  const y0 = Math.max(0, Math.min(image.height - 1, Math.floor(sourceY)));
+  const x1 = Math.max(0, Math.min(image.width - 1, x0 + 1));
+  const y1 = Math.max(0, Math.min(image.height - 1, y0 + 1));
+  const tx = sourceX - x0;
+  const ty = sourceY - y0;
+  const data = image.data;
+  const offsets = [
+    (y0 * image.width + x0) * 4,
+    (y0 * image.width + x1) * 4,
+    (y1 * image.width + x0) * 4,
+    (y1 * image.width + x1) * 4,
+  ];
+  const weights = [(1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty];
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  for (let index = 0; index < offsets.length; index += 1) {
+    const offset = offsets[index];
+    const weight = weights[index];
+    red += data[offset] * weight;
+    green += data[offset + 1] * weight;
+    blue += data[offset + 2] * weight;
+  }
+  return [Math.round(red), Math.round(green), Math.round(blue), 255];
 }
 
 export function sampleImageBilinearCleanColor(image: ImageData, u: number, v: number): ImageSample {

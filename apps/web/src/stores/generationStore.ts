@@ -2,13 +2,17 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
+import {
+  collapseGenerationRecords,
+  generationsReferToSameJob,
+  upsertGenerationByIdentity,
+} from '@/utils/generationIdentity';
 
 const generationStorageKeyV1 = 'liclick-generation-state-v1';
 const generationStorageKeyV2 = 'liclick-generation-state-v2';
 
 if (typeof window !== 'undefined') {
   window.localStorage.removeItem(generationStorageKeyV1);
-  window.localStorage.removeItem(generationStorageKeyV2);
 }
 
 type GenerationStore = {
@@ -21,6 +25,7 @@ type GenerationStore = {
   addGeneration: (generation: Generation) => void;
   setLastCapture: (capture: Capture) => void;
   setGenerations: (generations: Generation[], projectId?: string) => void;
+  deleteObjectData: (objectId: string) => void;
 };
 
 function isPendingGeneration(generation: Generation, projectId?: string) {
@@ -40,11 +45,26 @@ function isActiveGenerationRunning(generation?: Generation) {
   );
 }
 
-function upsertGeneration(generations: Generation[], generation: Generation) {
-  const exists = generations.some((item) => item.id === generation.id);
-  return exists
-    ? generations.map((item) => (item.id === generation.id ? generation : item))
-    : [generation, ...generations];
+function isUnrecoverableRestoredLocalRepaint(generation: Generation) {
+  return (
+    isActiveGenerationRunning(generation) &&
+    generation.metadata.workflow === 'local-repaint' &&
+    (generation.metadata.provider === 'modelview-int8' ||
+      generation.metadata.provider === 'modelview-seedvr2')
+  );
+}
+
+function markRestoredLocalRepaintInterrupted(generation: Generation): Generation {
+  return {
+    ...generation,
+    status: 'failed',
+    metadata: {
+      ...generation.metadata,
+      interrupted: true,
+      error: '应用重载后无法恢复局部重绘等待，已自动解除任务锁定。',
+      completedAt: new Date().toISOString(),
+    },
+  };
 }
 
 export const useGenerationStore = create<GenerationStore>()(
@@ -57,7 +77,7 @@ export const useGenerationStore = create<GenerationStore>()(
       start: (generation) =>
         set((state) => {
           const generations = generation
-            ? upsertGeneration(state.generations, generation)
+            ? upsertGenerationByIdentity(state.generations, generation)
             : state.generations;
           return {
             generations,
@@ -65,10 +85,15 @@ export const useGenerationStore = create<GenerationStore>()(
             isGenerating: true,
           };
         }),
-      finish: () => set({ isGenerating: false }),
+      finish: () =>
+        set((state) => ({
+          isGenerating: state.generations.some((generation) =>
+            isActiveGenerationRunning(generation),
+          ),
+        })),
       addGeneration: (generation) =>
         set((state) => {
-          const generations = upsertGeneration(state.generations, generation);
+          const generations = upsertGenerationByIdentity(state.generations, generation);
           return {
             generations,
             currentGeneration: generation,
@@ -78,16 +103,47 @@ export const useGenerationStore = create<GenerationStore>()(
       setLastCapture: (lastCapture) => set({ lastCapture }),
       setGenerations: (generations, projectId) =>
         set((state) => {
-          const pending = state.generations.filter(
-            (generation) =>
-              isPendingGeneration(generation, projectId) &&
-              !generations.some((item) => item.id === generation.id),
+          const persistedPending = state.generations.filter((generation) =>
+            isPendingGeneration(generation, projectId),
           );
-          const nextGenerations = [...pending, ...generations];
+          const nextGenerations = collapseGenerationRecords([
+            ...persistedPending,
+            ...generations,
+          ]).map((generation) =>
+            isUnrecoverableRestoredLocalRepaint(generation)
+              ? markRestoredLocalRepaintInterrupted(generation)
+              : generation,
+          );
+          const restoredCurrentGeneration = state.currentGeneration
+            ? nextGenerations.find((generation) =>
+                generationsReferToSameJob(generation, state.currentGeneration),
+              )
+            : undefined;
           return {
             generations: nextGenerations,
-            currentGeneration: nextGenerations[0],
-            isGenerating: state.isGenerating || isActiveGenerationRunning(nextGenerations[0]),
+            currentGeneration: restoredCurrentGeneration ?? nextGenerations[0],
+            isGenerating: nextGenerations.some((generation) =>
+              isActiveGenerationRunning(generation),
+            ),
+          };
+        }),
+      deleteObjectData: (objectId) =>
+        set((state) => {
+          const generations = state.generations.filter(
+            (generation) => generation.metadata.objectId !== objectId,
+          );
+          const currentGeneration =
+            state.currentGeneration?.metadata.objectId === objectId
+              ? generations[0]
+              : state.currentGeneration;
+          return {
+            generations,
+            currentGeneration,
+            lastCapture:
+              state.lastCapture?.objectId === objectId ? undefined : state.lastCapture,
+            isGenerating: generations.some((generation) =>
+              isActiveGenerationRunning(generation),
+            ),
           };
         }),
     }),

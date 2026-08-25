@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "executedAt": "2026-08-21T05:50:00+08:00",
+  "environment": "remote-deployment-simulator",
+  "entry": "/li3d/uv?perfLab=1",
+  "fixture": "quality/fixtures/local-uv-quad.obj",
+  "assertions": {
+    "browserWorkerWasmCompleted": true,
+    "sourceTriangleCount": 2,
+    "outputMeshCount": 1,
+    "outputChartCount": 1,
+    "outputAtlasCount": 1,
+    "outputUvPreviewLoaded": true,
+    "sourceDirectUploadCompleted": true,
+    "outputDirectUploadCompleted": true,
+    "projectUvRevisionSourceMode": "browser-local",
+    "bakeHighImported": "local-uv-e2e.obj",
+    "bakeLowImported": "local-uv-e2e_local_uv.glb",
+    "bakeAssetReadiness": "2/2",
+    "serverComputeFallbackUsed": false
+  },
+  "releaseInterpretation": "Vertical slice passed; production UV model and quality matrix remains in_progress."
+}

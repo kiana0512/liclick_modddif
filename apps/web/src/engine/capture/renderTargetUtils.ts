@@ -1,26 +1,135 @@
 import * as THREE from 'three';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { CapturePassRequest, SceneMaterialSnapshot } from './captureTypes';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
+import { encodeFlippedGpuReadbackPngInWorker } from './gpuReadbackPngWorker';
 
 type RenderSceneToPngOptions = {
   applyDisplayTransform?: boolean;
+  dataTexture?: boolean;
+  samples?: number;
+  ignoreSceneBackground?: boolean;
+  /** Split the exact target into scissored GPU jobs so the visible renderer
+   * can present between expensive depth/normal fragments. */
+  tileSize?: number;
+  waitForViewportIdle?: () => Promise<void>;
+  performancePhasePrefix?: string;
+  /** Encode to this size in the PNG worker after the GPU readback. This keeps
+   * expensive interactive captures small without changing the service input
+   * contract or doing image resampling on the main thread. */
+  encodedWidth?: number;
+  encodedHeight?: number;
+  /**
+   * Applies capture-only scene state immediately before each submitted draw
+   * and restores it synchronously afterwards. Tiled captures must use this
+   * instead of holding visibility/material mutations across browser frames,
+   * otherwise the live viewport can present a hidden grid/background.
+   */
+  prepareScene?: () => () => void;
+  /**
+   * Runs as soon as the offscreen render and readback have been submitted,
+   * before this function yields while waiting for the pixels. Callers that
+   * temporarily mutate the live scene can restore it here so the viewport
+   * never presents the capture-only materials or visibility state.
+   */
+  onRenderSubmitted?: () => void;
+};
+
+function markCapturePerformancePhase(prefix: string | undefined, suffix: string) {
+  if (!prefix || typeof document === 'undefined') return;
+  if (
+    !prefix.startsWith('button2-') &&
+    document.body.dataset.perfSimulatedViewportInteraction !== '1' &&
+    document.body.dataset.perfContentAwareRepairMeasuring !== '1' &&
+    document.body.dataset.perfUvMergeMeasuring !== '1'
+  ) {
+    return;
+  }
+  document.body.dataset.perfUvBakePhase = `${prefix}-${suffix}`;
+  if (prefix.startsWith('button2-')) {
+    document.body.dataset.perfLocalRepaintPhase = `${prefix}-${suffix}`;
+  }
+}
+
+type RenderScenePass = {
+  /**
+   * Applies the material/visibility state for one accumulation pass and returns
+   * a restorer. The restorer runs immediately after renderer submission.
+   */
+  prepare: () => () => void;
 };
 
 let displayOutputPass: OutputPass | undefined;
+const INTERACTIVE_CAPTURE_GPU_BUDGET_MS = 4;
+
+type SharedRendererState = {
+  target: THREE.WebGLRenderTarget | null;
+  clearColor: THREE.Color;
+  clearAlpha: number;
+  viewport: THREE.Vector4;
+  scissor: THREE.Vector4;
+  scissorTest: boolean;
+  autoClear: boolean;
+  xrEnabled: boolean;
+};
+
+function captureSharedRendererState(gl: THREE.WebGLRenderer): SharedRendererState {
+  return {
+    target: gl.getRenderTarget(),
+    clearColor: gl.getClearColor(new THREE.Color()),
+    clearAlpha: gl.getClearAlpha(),
+    viewport: gl.getViewport(new THREE.Vector4()),
+    scissor: gl.getScissor(new THREE.Vector4()),
+    scissorTest: gl.getScissorTest(),
+    autoClear: gl.autoClear,
+    xrEnabled: gl.xr.enabled,
+  };
+}
+
+function restoreSharedRendererState(gl: THREE.WebGLRenderer, state: SharedRendererState) {
+  gl.setRenderTarget(state.target);
+  gl.setClearColor(state.clearColor, state.clearAlpha);
+  gl.setViewport(state.viewport);
+  gl.setScissor(state.scissor);
+  gl.setScissorTest(state.scissorTest);
+  gl.autoClear = state.autoClear;
+  gl.xr.enabled = state.xrEnabled;
+}
+
+async function waitForSubmittedGpuWork(renderer: THREE.WebGLRenderer) {
+  const context = renderer.getContext();
+  if (!(context instanceof WebGL2RenderingContext)) {
+    context.flush();
+    return;
+  }
+  const fence = context.fenceSync(context.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  context.flush();
+  if (!fence) return;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const probe = () => {
+        const status = context.clientWaitSync(fence, 0, 0);
+        if (status === context.WAIT_FAILED) {
+          reject(new Error('Offscreen capture GPU fence failed.'));
+          return;
+        }
+        if (status === context.TIMEOUT_EXPIRED) {
+          window.setTimeout(probe, 4);
+          return;
+        }
+        resolve();
+      };
+      window.setTimeout(probe, 0);
+    });
+  } finally {
+    context.deleteSync(fence);
+  }
+}
 
 function getDisplayOutputPass() {
   displayOutputPass ??= new OutputPass();
   return displayOutputPass;
-}
-
-function canvasToPngBlob(canvas: HTMLCanvasElement) {
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error('Could not encode capture PNG.'));
-    }, 'image/png');
-  });
 }
 
 export async function renderSceneToPngUrl(
@@ -30,11 +139,12 @@ export async function renderSceneToPngUrl(
   // Three.js intentionally skips renderer tone mapping for ordinary render
   // targets. Color captures therefore need a linear intermediate followed by
   // the same display transform used by the on-screen viewport.
+  markCapturePerformancePhase(options.performancePhasePrefix, 'target-setup');
   const sceneTarget = new THREE.WebGLRenderTarget(request.width, request.height, {
-    samples: request.width > 1024 || request.height > 1024 ? 0 : 2,
+    samples: options.samples ?? (request.width > 1024 || request.height > 1024 ? 0 : 2),
     ...(options.applyDisplayTransform
       ? { type: THREE.HalfFloatType, colorSpace: THREE.LinearSRGBColorSpace }
-      : { colorSpace: THREE.SRGBColorSpace }),
+      : { colorSpace: options.dataTexture ? THREE.NoColorSpace : THREE.SRGBColorSpace }),
   });
   const outputTarget = options.applyDisplayTransform
     ? new THREE.WebGLRenderTarget(request.width, request.height, {
@@ -42,22 +152,92 @@ export async function renderSceneToPngUrl(
       })
     : undefined;
   const readTarget = outputTarget ?? sceneTarget;
-  const previousTarget = request.gl.getRenderTarget();
-  const previousClearColor = new THREE.Color();
-  request.gl.getClearColor(previousClearColor);
-  const previousClearAlpha = request.gl.getClearAlpha();
+  const previousRendererState = captureSharedRendererState(request.gl);
+  const previousBackground = request.scene.background;
   const pixels = new Uint8Array(request.width * request.height * 4);
   try {
+    if (options.ignoreSceneBackground) request.scene.background = null;
     request.gl.setRenderTarget(sceneTarget);
     request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
+    request.gl.setScissorTest(false);
     request.gl.clear();
-    request.gl.render(request.scene, request.camera);
+    const tileSize = Math.max(
+      1,
+      Math.min(
+        Math.floor(options.tileSize ?? Math.max(request.width, request.height)),
+        Math.max(request.width, request.height),
+      ),
+    );
+    const tiled = tileSize < request.width || tileSize < request.height;
+    if (tiled) {
+      const tiles: Array<{ x: number; y: number; width: number; height: number }> = [];
+      for (let y = 0; y < request.height; y += tileSize) {
+        for (let x = 0; x < request.width; x += tileSize) {
+          tiles.push({
+            x,
+            y,
+            width: Math.min(tileSize, request.width - x),
+            height: Math.min(tileSize, request.height - y),
+          });
+        }
+      }
+      let presentationBudgetStartedAt = performance.now();
+      for (let index = 0; index < tiles.length; index += 1) {
+        await options.waitForViewportIdle?.();
+        const tile = tiles[index];
+        markCapturePerformancePhase(options.performancePhasePrefix, 'render-tile');
+        request.gl.setRenderTarget(sceneTarget);
+        request.gl.setScissorTest(true);
+        request.gl.setScissor(tile.x, tile.y, tile.width, tile.height);
+        const restorePreparedScene = options.prepareScene?.();
+        try {
+          request.gl.render(request.scene, request.camera);
+        } finally {
+          restorePreparedScene?.();
+        }
+        // Do not let a detached depth/normal capture queue outrun the physical
+        // GPU. A flush only submits work; it does not prevent several 256px
+        // tiles accumulating behind the onscreen renderer and stealing a later
+        // presentation interval. The asynchronous fence drains this tile while
+        // leaving the main thread and viewport fully responsive.
+        const tileCompletion = waitForSubmittedGpuWork(request.gl);
+        // The capture target retains every completed tile. Restore the live
+        // renderer before yielding so React Three Fiber cannot inherit our
+        // target/scissor state.
+        restoreSharedRendererState(request.gl, previousRendererState);
+        markCapturePerformancePhase(options.performancePhasePrefix, 'gpu-wait');
+        await tileCompletion;
+        if (
+          index + 1 < tiles.length &&
+          performance.now() - presentationBudgetStartedAt >= INTERACTIVE_CAPTURE_GPU_BUDGET_MS
+        ) {
+          // Resume after every rAF callback (including R3F presentation) has
+          // submitted for this frame. Resolving directly inside rAF resumes in
+          // a microtask and can put the next detached capture tile in front of
+          // the visible viewport. Fast tiles may share the same bounded 4ms
+          // window; this removes dozens of empty 16.7ms waits without allowing
+          // background capture to monopolize a presentation interval.
+          await waitForBrowserPaint();
+          presentationBudgetStartedAt = performance.now();
+        }
+      }
+      request.gl.setRenderTarget(sceneTarget);
+      request.gl.setScissorTest(false);
+    } else {
+      const restorePreparedScene = options.prepareScene?.();
+      try {
+        request.gl.render(request.scene, request.camera);
+      } finally {
+        restorePreparedScene?.();
+      }
+    }
 
     if (outputTarget) {
       getDisplayOutputPass().render(request.gl, outputTarget, sceneTarget, 0, false);
     }
 
-    request.gl.readRenderTargetPixels(
+    markCapturePerformancePhase(options.performancePhasePrefix, 'readback-submit');
+    const readbackPromise = request.gl.readRenderTargetPixelsAsync(
       readTarget,
       0,
       0,
@@ -65,34 +245,145 @@ export async function renderSceneToPngUrl(
       request.height,
       pixels,
     );
+    // The async PBO read owns the submitted frame. Restore the shared renderer
+    // before waiting so React Three Fiber can keep drawing the viewport.
+    request.scene.background = previousBackground;
+    restoreSharedRendererState(request.gl, previousRendererState);
+    options.onRenderSubmitted?.();
+    markCapturePerformancePhase(options.performancePhasePrefix, 'readback-wait');
+    await readbackPromise;
   } finally {
-    request.gl.setRenderTarget(previousTarget);
-    request.gl.setClearColor(previousClearColor, previousClearAlpha);
+    request.scene.background = previousBackground;
+    restoreSharedRendererState(request.gl, previousRendererState);
     sceneTarget.dispose();
     outputTarget?.dispose();
   }
 
-  const canvas = document.createElement('canvas');
-  canvas.width = request.width;
-  canvas.height = request.height;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Could not create 2D canvas context for capture.');
+  markCapturePerformancePhase(options.performancePhasePrefix, 'encode-worker');
+  const png = await encodeFlippedGpuReadbackPngInWorker(
+    pixels,
+    request.width,
+    request.height,
+    options.encodedWidth && options.encodedHeight
+      ? { width: options.encodedWidth, height: options.encodedHeight }
+      : undefined,
+  );
+  markCapturePerformancePhase(options.performancePhasePrefix, 'publish');
+  return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
+}
 
-  const imageData = context.createImageData(request.width, request.height);
-  const rowStride = request.width * 4;
-  for (let y = 0; y < request.height; y += 1) {
-    const sourceStart = (request.height - y - 1) * rowStride;
-    const targetStart = y * rowStride;
-    imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowStride), targetStart);
+/**
+ * Renders several material passes into one target and performs exactly one GPU
+ * readback + PNG encode. This is used by the accumulated repaint selection:
+ * reading/encoding every archived camera projection separately made button 2
+ * scale linearly to multi-second stalls.
+ */
+export async function renderScenePassesToPngUrl(
+  request: CapturePassRequest,
+  passes: RenderScenePass[],
+  options: Pick<
+    RenderSceneToPngOptions,
+    'dataTexture' | 'ignoreSceneBackground' | 'onRenderSubmitted' | 'waitForViewportIdle'
+  > = {},
+) {
+  const target = new THREE.WebGLRenderTarget(request.width, request.height, {
+    samples: 0,
+    colorSpace: options.dataTexture ? THREE.NoColorSpace : THREE.SRGBColorSpace,
+  });
+  const previousRendererState = captureSharedRendererState(request.gl);
+  const previousBackground = request.scene.background;
+  const pixels = new Uint8Array(request.width * request.height * 4);
+  try {
+    if (options.ignoreSceneBackground) request.scene.background = null;
+    request.gl.autoClear = false;
+    request.gl.setRenderTarget(target);
+    request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
+    request.gl.clear(true, true, true);
+    for (let index = 0; index < passes.length; index += 1) {
+      await options.waitForViewportIdle?.();
+      request.gl.setRenderTarget(target);
+      request.gl.setScissorTest(false);
+      request.gl.autoClear = false;
+      const restore = passes[index].prepare();
+      try {
+        request.gl.render(request.scene, request.camera);
+      } finally {
+        restore();
+      }
+      // A repaint mask may contain many archived projector strokes. Submitting
+      // every pass in one uninterrupted loop made button 2 monopolise the GPU
+      // and prevented Chromium from presenting (or even dispatching CDP) for
+      // several seconds. Drain one projector at a time, restore the shared
+      // renderer and let the visible R3F frame present before continuing.
+      const passCompletion = waitForSubmittedGpuWork(request.gl);
+      restoreSharedRendererState(request.gl, previousRendererState);
+      await passCompletion;
+      // Every pass uses the same viewer camera but a different projector. Keep
+      // accumulated colour while allowing the next projection to rasterize the
+      // same front-most surface again.
+      if (index + 1 < passes.length) {
+        await waitForBrowserPaint();
+        request.gl.setRenderTarget(target);
+        request.gl.setScissorTest(false);
+        request.gl.autoClear = false;
+        request.gl.clearDepth();
+      }
+    }
+    request.gl.setRenderTarget(target);
+    request.gl.setScissorTest(false);
+    request.gl.autoClear = false;
+    const readbackPromise = request.gl.readRenderTargetPixelsAsync(
+      target,
+      0,
+      0,
+      request.width,
+      request.height,
+      pixels,
+    );
+    request.scene.background = previousBackground;
+    restoreSharedRendererState(request.gl, previousRendererState);
+    options.onRenderSubmitted?.();
+    await readbackPromise;
+  } finally {
+    request.scene.background = previousBackground;
+    restoreSharedRendererState(request.gl, previousRendererState);
+    target.dispose();
   }
-  context.putImageData(imageData, 0, 0);
-  return createRegisteredObjectUrl(await canvasToPngBlob(canvas));
+
+  const png = await encodeFlippedGpuReadbackPngInWorker(pixels, request.width, request.height);
+  return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
+}
+
+/**
+ * Copies the live viewport camera for an offscreen target without changing the
+ * authored view. The vertical framing is preserved while the horizontal field
+ * of view is recalculated for the target aspect ratio. Rendering a wide camera
+ * directly into a square target would otherwise squeeze the model.
+ */
+export function cloneCameraForCaptureAspect(source: THREE.Camera, aspect: number) {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const camera = source.clone();
+
+  if (camera instanceof THREE.PerspectiveCamera) {
+    camera.aspect = safeAspect;
+    camera.updateProjectionMatrix();
+  } else if (camera instanceof THREE.OrthographicCamera) {
+    const centerX = (camera.left + camera.right) * 0.5;
+    const halfHeight = Math.max((camera.top - camera.bottom) * 0.5, 0.0001);
+    const halfWidth = halfHeight * safeAspect;
+    camera.left = centerX - halfWidth;
+    camera.right = centerX + halfWidth;
+    camera.updateProjectionMatrix();
+  }
+
+  camera.updateMatrixWorld(true);
+  return camera;
 }
 
 export function applyTargetOnlyMaterial(
   scene: THREE.Scene,
   objectId: string,
-  materialFactory?: () => THREE.Material,
+  materialFactory?: (sourceMaterial: THREE.Material) => THREE.Material,
 ) {
   const snapshots: SceneMaterialSnapshot[] = [];
   const targetMeshes = new Set<THREE.Mesh>();
@@ -101,6 +392,14 @@ export function applyTargetOnlyMaterial(
   scene.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     if (object.userData.liclickObjectId !== objectId) return;
+    if (
+      object.userData.liclickRestorePlaceholder ||
+      object.userData.liclickViewportHelper ||
+      object.userData.liclickPaintOverlay ||
+      object.userData.liclickSelectionGlow ||
+      object.userData.liclickWireframeOverlay
+    )
+      return;
     targetMeshes.add(object);
     let parent: THREE.Object3D | null = object.parent;
     while (parent) {
@@ -119,7 +418,11 @@ export function applyTargetOnlyMaterial(
       material: object instanceof THREE.Mesh ? object.material : undefined,
     });
     object.visible = isTarget || isTargetAncestor;
-    if (isTarget && materialFactory) object.material = materialFactory();
+    if (isTarget && materialFactory) {
+      object.material = Array.isArray(object.material)
+        ? object.material.map((material) => materialFactory(material))
+        : materialFactory(object.material);
+    }
   });
 
   return () => {

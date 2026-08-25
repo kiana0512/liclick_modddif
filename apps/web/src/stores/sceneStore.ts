@@ -4,6 +4,7 @@ import type * as THREE from 'three';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import type { SerializedCamera } from '@/types/capture';
+import type { Layer } from '@/types/layer';
 import type {
   DisplayMode,
   ModelBoundingBox,
@@ -23,8 +24,18 @@ export type PaintToolMode =
 
 export type LocalRepaintProjectionSource = {
   imageUrl: string;
+  /** Original server/project URL used by autosave without data-URL readback. */
+  persistentImageUrl?: string;
+  /** Untouched generated result retained for an exact legacy-mode rollback. */
+  rawImageUrl?: string;
+  /** Version of boundary-only seam harmonization used by imageUrl. */
+  seamHarmonizationVersion?: number;
+  /** Background source staging must not switch tools without an explicit click. */
+  autoActivate?: boolean;
   allowedMaskUrl: string;
   depthUrl?: string;
+  depthEncoding?: 'linear-view';
+  normalUrl?: string;
   objectId?: string;
   objectMatrixWorld?: number[];
   camera: SerializedCamera;
@@ -38,7 +49,12 @@ export type LocalRepaintProjectionSource = {
 
 export type PaintMaskSettings = {
   brushSize: number;
-  brushHardness: number;
+};
+
+export type LocalRepaintBrushSettings = {
+  brushSize: number;
+  /** Width of the soft edge as a percentage of the brush radius. */
+  brushFeather: number;
 };
 
 export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
@@ -50,6 +66,8 @@ export type PaintToolSettings = {
   brushHardness: number;
   eraserSize: number;
   eraserHardness: number;
+  /** Width of the eraser's soft edge as a percentage of its radius. */
+  eraserFeather: number;
   color: string;
 };
 
@@ -67,8 +85,15 @@ export type ViewportRuntime = {
     target: THREE.Vector3;
     update: () => void;
     setEnabled: (enabled: boolean) => void;
+    subscribeChange?: (listener: () => void) => () => void;
   };
 };
+
+export type PaintMaskCapture = (options?: {
+  aspect?: number;
+  camera?: THREE.Camera;
+  resolution?: number;
+}) => Promise<string | undefined>;
 
 type SceneStore = {
   objects: SceneObject[];
@@ -85,14 +110,30 @@ type SceneStore = {
   paintMaskInvertRevision: number;
   paintMaskDataUrl?: string;
   paintMaskHasContent: boolean;
+  paintMaskCapture?: PaintMaskCapture;
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
+  localRepaintPreviewLayer?: Layer;
+  /**
+   * Renderer-only handoff guard used while a local image generation is in
+   * flight. The previous repaint remains visible through its already-resident
+   * GPU overlay, while authoring stays locked by EditorPage.
+   */
+  localRepaintGenerationPresentationActive: boolean;
+  /**
+   * Renderer-only presentation override used while multiview snapshots are
+   * captured. It deliberately stays out of persisted project/preferences
+   * state so authored layer and material changes can continue underneath it.
+   */
+  transientWhitePresentationObjectId?: string;
   paintMaskSettings: PaintMaskSettings;
+  localRepaintBrushSettings: LocalRepaintBrushSettings;
   paintToolSettings: PaintToolSettings;
   importSettings: ImportSettings;
   importWarnings: string[];
   restoreCameraRequest?: { camera: SerializedCamera; nonce: number };
   setObjects: (objects: SceneObject[]) => void;
   setImportedModel: (model: ModelLoadResult, object: SceneObject) => void;
+  restoreImportedModels: (models: ModelLoadResult[], activeObjectId?: string) => void;
   setActiveImportedModel: (objectId: string) => void;
   clearImportedModel: () => void;
   renameObject: (objectId: string, name: string) => void;
@@ -107,8 +148,13 @@ type SceneStore = {
   setPaintTool: (mode: PaintToolMode) => void;
   markPaintMaskChanged: () => void;
   setPaintMaskDataUrl: (dataUrl?: string, hasContent?: boolean) => void;
+  setPaintMaskCapture: (capture?: PaintMaskCapture) => void;
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
+  setLocalRepaintPreviewLayer: (layer?: Layer) => void;
+  setLocalRepaintGenerationPresentationActive: (active: boolean) => void;
+  setTransientWhitePresentationObject: (objectId?: string) => void;
   setPaintMaskSettings: (settings: Partial<PaintMaskSettings>) => void;
+  setLocalRepaintBrushSettings: (settings: Partial<LocalRepaintBrushSettings>) => void;
   setPaintToolSettings: (settings: Partial<PaintToolSettings>) => void;
   clearPaintMask: () => void;
   invertPaintMask: () => void;
@@ -123,14 +169,33 @@ type SceneStore = {
   requestCameraRestore: (camera: SerializedCamera) => void;
 };
 
+function resetLocalRepaintForObjectChange(
+  state: SceneStore,
+  nextObjectId: string | undefined,
+) {
+  if (state.selectedObjectId === nextObjectId) return {};
+  return {
+    paintTool: 'none' as const,
+    paintMaskDataUrl: undefined,
+    paintMaskHasContent: false,
+    localRepaintProjectionSource: undefined,
+    localRepaintPreviewLayer: undefined,
+    localRepaintGenerationPresentationActive: false,
+    paintMaskRevision: state.paintMaskRevision + 1,
+    paintMaskResetRevision: state.paintMaskResetRevision + 1,
+  };
+}
+
 function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObject[]) {
   const modelWidths = models.map((model) => {
     const boundingBox = getBoundingBoxForObject(model.group);
     return Math.max(boundingBox.size[0], 0.01);
   });
-  const modelGaps = modelWidths.slice(0, -1).map((width, index) =>
-    Math.max(0.45, Math.min(1.2, Math.max(width, modelWidths[index + 1]) * 0.18)),
-  );
+  const modelGaps = modelWidths
+    .slice(0, -1)
+    .map((width, index) =>
+      Math.max(0.45, Math.min(1.2, Math.max(width, modelWidths[index + 1]) * 0.18)),
+    );
   const rowWidth =
     modelWidths.reduce((total, width) => total + width, 0) +
     modelGaps.reduce((total, gap) => total + gap, 0);
@@ -150,11 +215,11 @@ function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObj
       boundingBox,
       importNormalizationTransform: {
         ...model.importNormalizationTransform,
-        position: [
-          model.group.position.x,
-          model.group.position.y,
-          model.group.position.z,
-        ] as [number, number, number],
+        position: [model.group.position.x, model.group.position.y, model.group.position.z] as [
+          number,
+          number,
+          number,
+        ],
       },
     };
   });
@@ -168,11 +233,11 @@ function arrangeModelsInCenteredRow(models: ModelLoadResult[], objects: SceneObj
         ...object,
         transform: {
           ...object.transform,
-          position: [
-            model.group.position.x,
-            model.group.position.y,
-            model.group.position.z,
-          ] as [number, number, number],
+          position: [model.group.position.x, model.group.position.y, model.group.position.z] as [
+            number,
+            number,
+            number,
+          ],
         },
         boundingBox: model.boundingBox,
         importNormalizationTransform: model.importNormalizationTransform,
@@ -189,7 +254,7 @@ export const useSceneStore = create<SceneStore>()(
       importedModel: undefined,
       viewport: undefined,
       selectedObjectId: undefined,
-      displayMode: 'pbr',
+      displayMode: 'flat',
       projectionMode: 'perspective',
       transformMode: 'select',
       paintTool: 'none',
@@ -198,16 +263,25 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskInvertRevision: 0,
       paintMaskDataUrl: undefined,
       paintMaskHasContent: false,
+      paintMaskCapture: undefined,
       localRepaintProjectionSource: undefined,
+      localRepaintPreviewLayer: undefined,
+      localRepaintGenerationPresentationActive: false,
+      transientWhitePresentationObjectId: undefined,
       paintMaskSettings: {
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
-        brushHardness: 50,
+      },
+      localRepaintBrushSettings: {
+        brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
+        // Preserve the former fixed soft edge (solid through 55% of the radius).
+        brushFeather: 45,
       },
       paintToolSettings: {
         brushSize: 32,
         brushHardness: 50,
         eraserSize: 42,
         eraserHardness: 50,
+        eraserFeather: 50,
         color: '#ffffff',
       },
       importSettings: {
@@ -225,6 +299,7 @@ export const useSceneStore = create<SceneStore>()(
           );
           const selectedObjectId = objects.find((object) => object.selected)?.id ?? objects[0]?.id;
           return {
+            ...resetLocalRepaintForObjectChange(state, selectedObjectId),
             objects,
             importedModels,
             importedModel: importedModels.find((model) => model.objectId === selectedObjectId),
@@ -248,11 +323,32 @@ export const useSceneStore = create<SceneStore>()(
               )
             : [...state.objects.map((item) => ({ ...item, selected: false })), nextObject];
           return {
+            ...resetLocalRepaintForObjectChange(state, object.id),
             importedModels,
             importedModel: model,
             objects,
             selectedObjectId: object.id,
             importWarnings: model.warnings,
+          };
+        }),
+      restoreImportedModels: (models, requestedActiveObjectId) =>
+        set((state) => {
+          const activeObjectId =
+            (requestedActiveObjectId &&
+            models.some((model) => model.objectId === requestedActiveObjectId)
+              ? requestedActiveObjectId
+              : models[0]?.objectId) ?? state.objects[0]?.id;
+          const importedModel = models.find((model) => model.objectId === activeObjectId);
+          return {
+            ...resetLocalRepaintForObjectChange(state, activeObjectId),
+            importedModels: models,
+            importedModel,
+            selectedObjectId: activeObjectId,
+            objects: state.objects.map((object) => ({
+              ...object,
+              selected: object.id === activeObjectId,
+            })),
+            importWarnings: importedModel?.warnings ?? [],
           };
         }),
       setActiveImportedModel: (objectId) =>
@@ -261,6 +357,7 @@ export const useSceneStore = create<SceneStore>()(
             state.importedModels.find((model) => model.objectId === objectId) ??
             state.importedModel;
           return {
+            ...resetLocalRepaintForObjectChange(state, objectId),
             importedModel,
             selectedObjectId: objectId,
             objects: state.objects.map((object) => ({
@@ -271,13 +368,14 @@ export const useSceneStore = create<SceneStore>()(
           };
         }),
       clearImportedModel: () =>
-        set({
+        set((state) => ({
+          ...resetLocalRepaintForObjectChange(state, undefined),
           importedModels: [],
           importedModel: undefined,
           objects: [],
           selectedObjectId: undefined,
           importWarnings: [],
-        }),
+        })),
       renameObject: (objectId, name) =>
         set((state) => ({
           objects: state.objects.map((object) =>
@@ -309,6 +407,9 @@ export const useSceneStore = create<SceneStore>()(
           const importedModel = selectedObjectId
             ? importedModels.find((model) => model.objectId === selectedObjectId)
             : undefined;
+          const removesLocalRepaint =
+            state.localRepaintProjectionSource?.objectId === objectId ||
+            state.localRepaintPreviewLayer?.objectId === objectId;
 
           return {
             objects: arranged.objects.map((object) => ({
@@ -319,6 +420,17 @@ export const useSceneStore = create<SceneStore>()(
             importedModel,
             selectedObjectId,
             importWarnings: importedModel?.warnings ?? [],
+            ...(removesLocalRepaint
+              ? {
+                  paintTool: 'none' as const,
+                  paintMaskDataUrl: undefined,
+                  paintMaskHasContent: false,
+                  localRepaintProjectionSource: undefined,
+                  localRepaintPreviewLayer: undefined,
+                  localRepaintGenerationPresentationActive: false,
+                  paintMaskResetRevision: state.paintMaskResetRevision + 1,
+                }
+              : {}),
           };
         }),
       arrangeImportedModels: () =>
@@ -350,6 +462,7 @@ export const useSceneStore = create<SceneStore>()(
               state.importedModel)
             : state.importedModel;
           return {
+            ...resetLocalRepaintForObjectChange(state, objectId),
             importedModel,
             selectedObjectId: objectId,
             objects: state.objects.map((object) => ({
@@ -382,8 +495,16 @@ export const useSceneStore = create<SceneStore>()(
             paintMaskHasContent ?? (paintMaskDataUrl ? state.paintMaskHasContent : false),
           paintMaskRevision: state.paintMaskRevision + 1,
         })),
+      setPaintMaskCapture: (paintMaskCapture) => set({ paintMaskCapture }),
       setLocalRepaintProjectionSource: (localRepaintProjectionSource) =>
         set({ localRepaintProjectionSource }),
+      setLocalRepaintPreviewLayer: (localRepaintPreviewLayer) =>
+        set({ localRepaintPreviewLayer }),
+      setLocalRepaintGenerationPresentationActive: (
+        localRepaintGenerationPresentationActive,
+      ) => set({ localRepaintGenerationPresentationActive }),
+      setTransientWhitePresentationObject: (transientWhitePresentationObjectId) =>
+        set({ transientWhitePresentationObjectId }),
       setPaintMaskSettings: (settings) =>
         set((state) => ({
           paintMaskSettings: {
@@ -394,9 +515,24 @@ export const useSceneStore = create<SceneStore>()(
                 settings.brushSize ?? state.paintMaskSettings.brushSize,
               ),
             ),
-            brushHardness: Math.max(
+          },
+        })),
+      setLocalRepaintBrushSettings: (settings) =>
+        set((state) => ({
+          localRepaintBrushSettings: {
+            brushSize: Math.max(
+              MIN_PAINT_MASK_BRUSH_SIZE,
+              Math.min(
+                MAX_PAINT_MASK_BRUSH_SIZE,
+                settings.brushSize ?? state.localRepaintBrushSettings.brushSize,
+              ),
+            ),
+            brushFeather: Math.max(
               0,
-              Math.min(100, settings.brushHardness ?? state.paintMaskSettings.brushHardness),
+              Math.min(
+                100,
+                settings.brushFeather ?? state.localRepaintBrushSettings.brushFeather,
+              ),
             ),
           },
         })),
@@ -418,6 +554,10 @@ export const useSceneStore = create<SceneStore>()(
             eraserHardness: Math.max(
               0,
               Math.min(100, settings.eraserHardness ?? state.paintToolSettings.eraserHardness),
+            ),
+            eraserFeather: Math.max(
+              0,
+              Math.min(100, settings.eraserFeather ?? state.paintToolSettings.eraserFeather ?? 50),
             ),
             color: settings.color ?? state.paintToolSettings.color,
           },
@@ -472,6 +612,12 @@ export const useSceneStore = create<SceneStore>()(
     {
       name: 'liclick-viewport-preferences-v1',
       storage: createJSONStorage(() => localStorage),
+      version: 2,
+      migrate: (persistedState, version) => {
+        const preferences = persistedState as Partial<SceneStore>;
+        if (version < 2) return { ...preferences, displayMode: 'flat' as const };
+        return preferences;
+      },
       partialize: (state) => ({
         displayMode: state.displayMode,
         projectionMode: state.projectionMode,

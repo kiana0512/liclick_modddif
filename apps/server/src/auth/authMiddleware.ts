@@ -1,12 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { setCurrentUser } from './currentUser.js';
 import { getSessionCookie, verifySession } from './sessionService.js';
 import { sendJson } from '../routes/httpUtils.js';
 
 export async function optionalAuth(request: IncomingMessage) {
-  const user = await verifySession(getSessionCookie(request));
-  if (user) setCurrentUser(request, user);
-  return user;
+  return verifySession(getSessionCookie(request));
 }
 
 export async function requireAuth(request: IncomingMessage, response: ServerResponse) {

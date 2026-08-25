@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { Layers3, X } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { useToastStore, type ToastTone } from '@/stores/toastStore';
 
@@ -14,10 +14,15 @@ export function ToastHost() {
   const dismissToast = useToastStore((state) => state.dismissToast);
 
   return (
-    <div className="pointer-events-none fixed left-1/2 top-4 z-[120] flex w-[min(420px,calc(100vw-32px))] -translate-x-1/2 flex-col gap-2">
+    <div
+      className="pointer-events-none fixed left-1/2 top-4 z-[120] flex w-[min(420px,calc(100vw-32px))] -translate-x-1/2 flex-col gap-2"
+      aria-live="polite"
+      aria-relevant="additions text"
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}
+          role={toast.tone === 'error' ? 'alert' : 'status'}
           className={cn('pointer-events-auto rounded-md border p-3 shadow-[0_18px_58px_rgba(0,0,0,0.42)]', tones[toast.tone])}
         >
           <div className="flex items-start gap-3">
@@ -25,6 +30,23 @@ export function ToastHost() {
               <div className="text-[13px] font-semibold">{toast.title}</div>
               {toast.description && (
                 <div className="mt-1 text-xs leading-5 opacity-72">{toast.description}</div>
+              )}
+              {toast.action && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      toast.action?.onClick();
+                    } finally {
+                      dismissToast(toast.id);
+                    }
+                  }}
+                  className="mt-2.5 inline-flex h-8 items-center gap-1.5 rounded-md border border-current/20 bg-white/8 px-2.5 text-xs font-semibold transition hover:bg-white/14"
+                  title={toast.action.label}
+                >
+                  {toast.action.icon === 'add-layer' && <Layers3 className="h-4 w-4" />}
+                  <span>{toast.action.label}</span>
+                </button>
               )}
             </div>
             <button

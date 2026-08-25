@@ -37,8 +37,6 @@ export type UserSession = {
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
-  userAgent?: string;
-  ipAddress?: string;
 };
 
 export type AuthDatabase = {

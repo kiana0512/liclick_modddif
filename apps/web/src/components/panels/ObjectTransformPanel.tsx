@@ -17,7 +17,13 @@ function formatNumber(value?: number) {
   return typeof value === 'number' ? value.toFixed(2) : '-';
 }
 
-export function ObjectTransformPanel() {
+export function ObjectTransformPanel({
+  transformLocked = false,
+  onTransformLocked,
+}: {
+  transformLocked?: boolean;
+  onTransformLocked?: () => void;
+}) {
   const t = useT();
   const object = useSceneStore((state) => state.objects.find((item) => item.id === state.selectedObjectId));
   const importedModel = useSceneStore((state) => state.importedModel);
@@ -34,6 +40,10 @@ export function ObjectTransformPanel() {
   }, [importedModel, object, selectObject]);
 
   function runTransformAction(action: () => void, title: string, captureLabel?: string) {
+    if (transformLocked && captureLabel) {
+      onTransformLocked?.();
+      return;
+    }
     if (!importedModel) {
       pushToast({ tone: 'warning', title: t('importModelFirst') });
       return;
@@ -94,6 +104,7 @@ export function ObjectTransformPanel() {
             className="w-full"
             icon={<RotateCcw className="h-4 w-4" />}
             onClick={() => runTransformAction(resetImportedModelTransform, 'Transform reset', `重置对象变换：${objectLabel}`)}
+            aria-disabled={transformLocked}
           >
             {t('reset')}
           </Button>
@@ -101,6 +112,7 @@ export function ObjectTransformPanel() {
             className="w-full"
             icon={<Crosshair className="h-4 w-4" />}
             onClick={() => runTransformAction(centerImportedModel, 'Object centered', `居中对象：${objectLabel}`)}
+            aria-disabled={transformLocked}
           >
             {t('center')}
           </Button>
@@ -108,6 +120,7 @@ export function ObjectTransformPanel() {
             className="w-full"
             icon={<LocateFixed className="h-4 w-4" />}
             onClick={() => runTransformAction(groundImportedModel, 'Object grounded', `对象落地：${objectLabel}`)}
+            aria-disabled={transformLocked}
           >
             {t('ground')}
           </Button>

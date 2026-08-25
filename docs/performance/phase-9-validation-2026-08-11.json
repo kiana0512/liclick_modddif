@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "phase": 9,
+  "capturedAt": "2026-08-11T18:40:00+08:00",
+  "status": "partial-pass-performance-open",
+  "sourceCommit": "c1403bf3d76620aa2d4a538ef0f83c4ac75de896",
+  "workspaceDirty": true,
+  "environment": {
+    "url": "http://127.0.0.1:5173/project/project-8becd4ff-4708-4d0d-b614-3955e47bfeef/texture?perfLab=1&perfOrbit=1&perfWebGpuAb=1",
+    "project": "工业切割机器人",
+    "resolution": 4096,
+    "projectedLayerCount": 14,
+    "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER",
+    "graphicsApi": "ANGLE D3D11",
+    "viewportDpr": 1.25,
+    "node": "v24.15.0",
+    "npm": "11.12.1"
+  },
+  "qualityGates": {
+    "expectedCoveragePercent": 48.41,
+    "observedCoveragePercent": 48.41,
+    "rgbaByteMismatches": 0,
+    "rgbaMaximumByteDelta": 0,
+    "topologyFinalMismatchedPixels": 0,
+    "contentAwareColdChecksum": "212ee7ea",
+    "contentAwareWarmChecksum": "212ee7ea",
+    "result": "pass"
+  },
+  "s4Runs": [
+    {
+      "label": "dpr-restored-baseline",
+      "frameP95Ms": 16.8,
+      "frameMaxMs": 233.6,
+      "slowestPhase": "png-encode",
+      "coveragePercent": 48.41,
+      "rgbaByteMismatches": 0,
+      "outputMiB": 20.52
+    },
+    {
+      "label": "isolated-renderer-run-1",
+      "frameP95Ms": 16.8,
+      "frameMaxMs": 450.4,
+      "slowestPhase": "finalize-canvas",
+      "gpuBakeMs": 38764,
+      "runtimeDepthMs": 6080,
+      "gpuRasterReadbackMs": 14004,
+      "qualityBlendMs": 5811,
+      "coveragePercent": 48.41,
+      "rgbaByteMismatches": 0,
+      "outputMiB": 18.79
+    },
+    {
+      "label": "isolated-renderer-diagnostic",
+      "frameP95Ms": 16.8,
+      "frameMaxMs": 467.1,
+      "slowestPhase": "uv-underlay-composite-encode",
+      "gpuBakeMs": 36390,
+      "runtimeDepthMs": 6142,
+      "gpuRasterReadbackMs": 13952,
+      "qualityBlendMs": 5795,
+      "seamMs": 2003,
+      "coverageRepairMs": 5768,
+      "gutterMs": 2530,
+      "pngEncodeMs": 439,
+      "coveragePercent": 48.41,
+      "rgbaByteMismatches": 0,
+      "rgbaMaximumByteDelta": 0,
+      "topologyFinalMismatchedPixels": 0,
+      "outputMiB": 18.87
+    },
+    {
+      "label": "rejected-pure-worker-png",
+      "frameP95Ms": 16.8,
+      "frameMaxMs": 834.0,
+      "slowestPhase": "finalize-cleanup",
+      "gpuBakeMs": 51895,
+      "pngEncodeMs": 5071,
+      "coveragePercent": 48.41,
+      "rgbaByteMismatches": 0,
+      "outputMiB": 20.82,
+      "accepted": false,
+      "reason": "Main-frame maximum and total time regressed; implementation reverted."
+    }
+  ],
+  "s9Runs": [
+    {
+      "temperature": "cold",
+      "totalMs": 16412,
+      "projectionBakeMs": 10949,
+      "topologyMs": 3887,
+      "repairWorkerMs": 646,
+      "publishMs": 930,
+      "runtimeDepthMs": 0,
+      "gpuRasterReadbackMs": 9208,
+      "qualityBlendMs": 1601,
+      "frameP95Ms": 16.8,
+      "frameMaxMs": 166.8,
+      "droppedFramePercent": 4,
+      "publishToVisibleMs": 24.6,
+      "materialRebuilds": 0,
+      "checksum": "212ee7ea",
+      "safe": true,
+      "textureReady": true,
+      "eyeVisible": true,
+      "stateRestored": true
+    },
+    {
+      "temperature": "warm",
+      "totalMs": 11763,
+      "projectionBakeMs": 10385,
+      "topologyMs": 8,
+      "repairWorkerMs": 569,
+      "publishMs": 801,
+      "runtimeDepthMs": 0,
+      "gpuRasterReadbackMs": 9267,
+      "qualityBlendMs": 990,
+      "frameP95Ms": 33.3,
+      "frameMaxMs": 50.0,
+      "droppedFramePercent": 6,
+      "publishToVisibleMs": 28.7,
+      "materialRebuilds": 0,
+      "checksum": "212ee7ea",
+      "safe": true,
+      "textureReady": true,
+      "eyeVisible": true,
+      "stateRestored": true
+    }
+  ],
+  "interactionRuns": {
+    "s3": { "frameP95Ms": 16.8, "frameMaxMs": 16.8 },
+    "s3S5Publish": { "frameP95Ms": 16.8, "frameMaxMs": 16.9 },
+    "s7": {
+      "status": "partial",
+      "frameP95Ms": 16.8,
+      "frameMaxMs": 16.8,
+      "materialRebuilds": 0,
+      "stateErrors": 0,
+      "coverageErrors": 0,
+      "additionalRun": "aborted-before-measurement: full projected material prewarm timeout"
+    },
+    "s8": {
+      "status": "pass",
+      "totalMs": 3000,
+      "hydrationMs": 473,
+      "modelMs": 2881,
+      "uvMs": 2895,
+      "projectionMs": 0,
+      "uvPrewarmMs": 440.6,
+      "textureFrameP95Ms": 83.3,
+      "textureFrameMaxMs": 83.3,
+      "textureDroppedFramePercent": 50
+    }
+  },
+  "automatedChecks": {
+    "typecheck": "pass",
+    "productionBuild": "pass",
+    "gitDiffCheck": "pass",
+    "heavyTaskScheduler": "pass",
+    "uvCompositeBackpressure": "pass",
+    "projectionLayerVisibility": "pass",
+    "performanceLabMetrics": "pass"
+  },
+  "acceptance": {
+    "stability": "partial",
+    "quality": "pass",
+    "speed": "fail",
+    "correctness": "pass",
+    "blockingFindings": [
+      "S4 maximum frame remains 467.1ms; target is <=50ms.",
+      "S9 cold 16.412s exceeds 15s target.",
+      "S9 warm 11.763s exceeds 7s target.",
+      "S9 cold maximum frame 166.8ms exceeds 50ms target.",
+      "S8 texture phase P95/max 83.3ms exceeds frame target."
+    ]
+  },
+  "consoleHealth": {
+    "status": "fail",
+    "findings": [
+      "Three.js checkMaterialsReady read undefined isReady during material prewarm.",
+      "Manual workspace save blocked a stale project snapshot from overwriting newer data.",
+      "Local repaint GPU background-material prewarm timed out.",
+      "One S7 attempt was safely aborted after full projected-material prewarm timed out."
+    ]
+  },
+  "protocolCoverage": {
+    "coldWarmTenRoundsEach": "not-completed",
+    "eyeAndDisplayMode100Toggles": "covered-by-s7-built-in-stress-not-100-manual-rounds",
+    "refreshRestore20Rounds": "1-of-20",
+    "glbFbxExport": "not-retested-in-phase-9",
+    "reason": "No unexecuted test is reported as passed."
+  }
+}

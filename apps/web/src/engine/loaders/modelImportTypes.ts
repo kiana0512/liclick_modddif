@@ -7,6 +7,7 @@ import type {
   SceneObject,
 } from '@/types/model';
 import type { NormalizeImportedModelOptions } from '@/engine/scene/normalizeImportedModel';
+import type { ModelImportProgressCallback } from './modelImportProgress';
 
 export type ModelLoadResult = {
   objectId: string;
@@ -20,8 +21,11 @@ export type ModelLoadResult = {
   boundingBox: ModelBoundingBox;
   originalBoundingBox: ModelBoundingBox;
   importNormalizationTransform: ImportNormalizationTransform;
+  /** Physical centimeters represented by one source-space unit. */
+  sourceUnitScaleFactor?: number;
   childMeshCount: number;
   warnings: string[];
+  restoreStage?: 'bounds' | 'outline' | 'full';
 };
 
 export type LoadedModel = {
@@ -36,7 +40,9 @@ export type ModelImportOptions = {
   fileName: string;
   normalizeOptions?: NormalizeImportedModelOptions;
   sourceBuffer?: ArrayBuffer;
+  sourceByteLength?: number;
   resourceFiles?: File[];
+  onProgress?: ModelImportProgressCallback;
 };
 
 export type SupportedImportFormat = ModelLoadResult['format'];

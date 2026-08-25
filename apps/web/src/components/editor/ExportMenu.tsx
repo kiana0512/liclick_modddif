@@ -59,7 +59,6 @@ export function ExportMenu({
   canExportScene,
   canExportObject,
   canExportColor,
-  canExportNormal,
   canRecordTurntable,
   onExport,
   labels,
@@ -84,7 +83,6 @@ export function ExportMenu({
       icon: Camera,
       rows: [
         { id: 'texture-color', label: labels.color, disabled: !canExportColor, disabledReason: labels.bakeFirst },
-        { id: 'texture-normal', label: labels.normal, disabled: !canExportNormal, disabledReason: labels.normalTextureMissing },
       ],
     },
     {

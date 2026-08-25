@@ -2,10 +2,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSession, upsertUser } from './sessionService.js';
 import { serverConfig } from '../config.js';
+import { enrichFeishuUserByEmail } from '../services/feishuPlatformService.js';
 import type { AuthUser } from './authTypes.js';
 
 type AtlasCommandResult = {
@@ -47,6 +49,10 @@ type AtlasTokenCache = {
   gateway_url?: string;
 };
 
+type AtlasTokenCacheModule = {
+  readCache?: (tokenFile: string) => AtlasTokenCache | undefined;
+};
+
 type AtlasClaims = {
   email?: string;
   name?: string;
@@ -80,8 +86,11 @@ function atlasNodePath() {
   return process.env.ATLAS_NODE_PATH || process.execPath || 'node';
 }
 
-function atlasTokenFile(homeDir = os.homedir()) {
-  return path.join(homeDir, '.atlas-ai-gateway-oauth.json');
+function atlasTokenFile(homeDir?: string) {
+  if (homeDir) return path.join(homeDir, '.atlas-ai-gateway-oauth.json');
+  const configuredTokenFile = process.env.ATLAS_TOKEN_FILE?.trim();
+  if (configuredTokenFile) return path.resolve(configuredTokenFile);
+  return path.join(os.homedir(), '.atlas-ai-gateway-oauth.json');
 }
 
 function userAtlasHomesRoot() {
@@ -135,6 +144,25 @@ function atlasEnv(homeDir?: string, extraEnv: NodeJS.ProcessEnv = {}) {
   };
 }
 
+function terminateAtlasProcessTree(child: ChildProcessWithoutNullStreams) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform !== 'win32') {
+    child.kill('SIGTERM');
+    const fallback = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }, 1_500);
+    fallback.unref();
+    return;
+  }
+
+  const killer = spawn(
+    'taskkill.exe',
+    ['/pid', String(child.pid), '/t', '/f'],
+    { shell: false, windowsHide: true, stdio: 'ignore' },
+  );
+  killer.once('error', () => child.kill('SIGKILL'));
+}
+
 export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false, homeDir?: string, extraEnv: NodeJS.ProcessEnv = {}) {
   const script = atlasScriptPath();
   if (!script) {
@@ -143,7 +171,11 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
     );
   }
   return new Promise<AtlasCommandResult>((resolve, reject) => {
-    const child = spawn(atlasNodePath(), [script, ...args], {
+    const commandArgs = [...args];
+    if (commandArgs[0] === 'gateway' && !commandArgs.includes('--token-file')) {
+      commandArgs.push('--token-file', atlasTokenFile(homeDir));
+    }
+    const child = spawn(atlasNodePath(), [script, ...commandArgs], {
       cwd: process.cwd(),
       env: atlasEnv(homeDir, extraEnv),
       shell: false,
@@ -151,9 +183,22 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
     });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let forcedSettlement: NodeJS.Timeout | undefined;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forcedSettlement) clearTimeout(forcedSettlement);
+      callback();
+    };
     const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      reject(new Error(`atlas-skillhub ${args.join(' ')} 超时`));
+      timedOut = true;
+      terminateAtlasProcessTree(child);
+      forcedSettlement = setTimeout(() => {
+        settle(() => reject(new Error('atlas-skillhub 调用超时，子进程已强制清理。')));
+      }, 3_000);
     }, timeoutMs);
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -161,14 +206,19 @@ export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
+    child.once('error', (error) => {
+      settle(() => reject(error));
     });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0 || allowNonZero) resolve({ code, stdout, stderr });
-      else reject(new Error(trimOutput(stderr || stdout || `atlas-skillhub exited ${code}`)));
+    child.once('close', (code) => {
+      settle(() => {
+        if (timedOut) {
+          reject(new Error('atlas-skillhub 调用超时，子进程已清理。'));
+        } else if (code === 0 || allowNonZero) {
+          resolve({ code, stdout, stderr });
+        } else {
+          reject(new Error(trimOutput(stderr || stdout || `atlas-skillhub exited ${code}`)));
+        }
+      });
     });
   });
 }
@@ -187,8 +237,19 @@ function extractFirstUrl(text: string) {
   return text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
 }
 
+function sanitizeAtlasLoginMessage(text: string) {
+  return trimOutput(
+    text
+      .replace(/https?:\/\/[^\s"'<>]+/g, '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join('\n'),
+  );
+}
+
 function loginMessage(login: PendingAtlasLogin, fallback: string) {
-  return trimOutput(`${login.stderr}\n${login.stdout}`) || fallback;
+  return sanitizeAtlasLoginMessage(`${login.stderr}\n${login.stdout}`) || fallback;
 }
 
 function cancelPendingAtlasLogins() {
@@ -214,16 +275,20 @@ function startAtlasLoginProcess() {
     };
     pendingAtlasLogins.set(id, login);
 
-    const child = spawn('node', [script, 'gateway', 'login'], {
-      cwd: process.cwd(),
-      env: atlasEnv(homeDir, {
-        // Many CLI browser openers print the URL when BROWSER is echo.
-        // If atlas-skillhub opens a browser directly, polling still catches the token file once it is written.
-        BROWSER: process.env.ATLAS_BROWSER ?? 'echo',
-      }),
-      shell: false,
-      windowsHide: true,
-    });
+    const child = spawn(
+      atlasNodePath(),
+      [script, 'gateway', 'login', '--token-file', atlasTokenFile(homeDir)],
+      {
+        cwd: process.cwd(),
+        env: atlasEnv(homeDir, {
+          // Many CLI browser openers print the URL when BROWSER is echo.
+          // If atlas-skillhub opens a browser directly, polling still catches the token file once it is written.
+          BROWSER: process.env.ATLAS_BROWSER ?? 'echo',
+        }),
+        shell: false,
+        windowsHide: true,
+      },
+    );
     login.child = child;
 
     child.stdout.on('data', (chunk) => {
@@ -255,6 +320,39 @@ function readAtlasTokenCache(homeDir?: string) {
   }
 }
 
+let encryptedTokenCacheReaderPromise:
+  | Promise<(tokenFile: string) => AtlasTokenCache | undefined>
+  | undefined;
+
+function getEncryptedTokenCacheReader() {
+  encryptedTokenCacheReaderPromise ??= (async () => {
+    const script = atlasScriptPath();
+    if (!script) throw new Error('Atlas runtime is unavailable.');
+    const runtimeDir = path.dirname(script);
+    const candidates = fs
+      .readdirSync(runtimeDir)
+      .filter((name) => name.endsWith('.js') && name !== path.basename(script));
+
+    for (const name of candidates) {
+      const candidate = path.join(runtimeDir, name);
+      const source = fs.readFileSync(candidate, 'utf8');
+      if (!source.includes('function readCache(') || !source.includes('readCache,')) continue;
+      const module = (await import(pathToFileURL(candidate).href)) as AtlasTokenCacheModule;
+      if (typeof module.readCache === 'function') return module.readCache;
+    }
+    throw new Error('Installed Atlas runtime does not expose its secure token cache reader.');
+  })();
+  return encryptedTokenCacheReaderPromise;
+}
+
+async function readCompatibleAtlasTokenCache(homeDir?: string) {
+  const tokenFile = atlasTokenFile(homeDir);
+  const plainCache = readAtlasTokenCache(homeDir);
+  if (plainCache.access_token) return plainCache;
+  const readSecureCache = await getEncryptedTokenCacheReader();
+  return readSecureCache(tokenFile) ?? {};
+}
+
 function assertValidAtlasToken(cache: AtlasTokenCache, tokenFile: string) {
   if (!cache.access_token) throw new Error(`Atlas token cache is missing access_token: ${tokenFile}`);
   if (!cache.gateway_url) throw new Error(`Atlas token cache is missing gateway_url: ${tokenFile}`);
@@ -273,7 +371,7 @@ export async function callAtlasToolJson(
   homeDir?: string,
 ): Promise<AtlasToolCallResult> {
   const tokenFile = atlasTokenFile(homeDir);
-  const cache = readAtlasTokenCache(homeDir);
+  const cache = await readCompatibleAtlasTokenCache(homeDir);
   assertValidAtlasToken(cache, tokenFile);
   const gatewayUrl = String(cache.gateway_url).replace(/\/+$/, '');
   const body = JSON.stringify({
@@ -332,8 +430,8 @@ function decodeJwtClaims(token?: string) {
   }
 }
 
-export function getAtlasIdentity(homeDir?: string) {
-  const tokenCache = readAtlasTokenCache(homeDir);
+export async function getAtlasIdentity(homeDir?: string) {
+  const tokenCache = await readCompatibleAtlasTokenCache(homeDir);
   const claims = decodeJwtClaims(tokenCache.access_token);
   const email = claims.email ?? claims.username ?? claims.sub;
   const displayName = claims.name ?? claims.ouName ?? claims.idpUsername ?? email ?? 'Liclick User';
@@ -364,80 +462,28 @@ export async function getAtlasStatus(homeDir?: string) {
 }
 
 async function createLoggedInSession(homeDir: string, request: IncomingMessage, response: ServerResponse) {
-  const { email, displayName } = getAtlasIdentity(homeDir);
+  const atlasIdentity = await getAtlasIdentity(homeDir);
+  const directoryProfile = atlasIdentity.email
+    ? await enrichFeishuUserByEmail(atlasIdentity.email).catch((error) => {
+        console.warn(
+          '[LI3D Atlas profile] Optional Feishu avatar enrichment failed:',
+          error instanceof Error ? error.message : 'unknown error',
+        );
+        return undefined;
+      })
+    : undefined;
+  const email = directoryProfile?.email ?? atlasIdentity.email;
+  const displayName = directoryProfile?.name || atlasIdentity.displayName;
   const user = await upsertUser({
     id: email ? `atlas-${email.toLowerCase()}` : undefined,
     displayName,
     email,
-    avatarUrl: avatarDataUrl(displayName, email),
+    avatarUrl: directoryProfile?.avatarUrl ?? avatarDataUrl(displayName, email),
     authSource: 'feishu-oauth',
     atlasHomeDir: homeDir,
   });
   await createSession(user.id, 'feishu-oauth', request, response);
   return user;
-}
-
-export async function startAtlasLogin(request: IncomingMessage, response: ServerResponse) {
-  if (serverConfig.atlasLoginMode === 'service-token') {
-    const status = await getAtlasStatus().catch((error) => ({
-      valid: false,
-      message: error instanceof Error ? error.message : 'Atlas status unavailable.',
-    }));
-    if (!status.valid) {
-      throw new Error('服务器还没有配置莉刻/Atlas 登录凭证，或者当前用户授权未完成。');
-    }
-    const user = await createLoggedInSession(os.homedir(), request, response);
-    return { user, status };
-  }
-
-  prunePendingAtlasLogins();
-  cancelPendingAtlasLogins();
-  const login = await startAtlasLoginProcess();
-
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  const status = await getAtlasStatus(login.homeDir).catch((error) => ({
-    valid: false,
-    message: error instanceof Error ? error.message : 'Atlas status unavailable.',
-  })) as PublicAtlasStatus;
-  if (status.valid) {
-    const user = await createLoggedInSession(login.homeDir, request, response);
-    pendingAtlasLogins.delete(login.id);
-    return { user, status };
-  }
-
-  const output = `${login.stdout}\n${login.stderr}`;
-  return {
-    loginId: login.id,
-    redirectUrl: extractFirstUrl(output),
-    status,
-    message: loginMessage(login, 'Atlas gateway 登录任务已启动，请在浏览器中完成授权。'),
-  };
-}
-
-export async function pollAtlasLogin(loginId: string, request: IncomingMessage, response: ServerResponse) {
-  prunePendingAtlasLogins();
-  const login = pendingAtlasLogins.get(loginId);
-  if (!login) throw new Error('登录任务已过期，请重新点击飞书登录。');
-  const status = await getAtlasStatus(login.homeDir).catch((error) => ({
-    valid: false,
-    message: error instanceof Error ? error.message : 'Atlas status unavailable.',
-  })) as PublicAtlasStatus;
-  if (status.valid) {
-    const user = await createLoggedInSession(login.homeDir, request, response);
-    pendingAtlasLogins.delete(login.id);
-    return { done: true, user, status };
-  }
-  if (login.closed && login.closeCode !== 0) {
-    pendingAtlasLogins.delete(login.id);
-    throw new Error(loginMessage(login, `飞书/IDaaS 登录任务已结束但没有拿到授权，退出码 ${login.closeCode ?? 'unknown'}。`));
-  }
-  return {
-    done: false,
-    loginId,
-    redirectUrl: extractFirstUrl(`${login.stdout}\n${login.stderr}`),
-    status,
-    message: loginMessage(login, '等待 Atlas gateway 授权完成。'),
-  };
 }
 
 export async function checkLiclickApiAccess(user?: AuthUser) {

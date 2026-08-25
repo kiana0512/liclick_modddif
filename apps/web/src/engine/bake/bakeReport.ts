@@ -20,6 +20,7 @@ export function createBakeReport(input: Omit<BakeReport, 'id' | 'durationMs'> & 
     backfaceRejectedTexels: input.backfaceRejectedTexels,
     writtenTexels: input.writtenTexels,
     coverageRatio: input.coverageRatio,
+    performanceBreakdown: input.performanceBreakdown,
     warnings: [
       ...input.warnings,
       ...(input.coverageRatio > 0.92

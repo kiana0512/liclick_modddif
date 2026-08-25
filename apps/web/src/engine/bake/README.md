@@ -1,25 +1,43 @@
-# Bake Pipeline
+# Projection-to-UV Engine
 
-The current browser bake pipeline composites visible projected layers into one BaseColor PNG for the selected imported object.
+This directory provides the GPU-first/CPU-parity engine used when a caller needs
+to project camera layers into UV space. It is not a global automatic-bake mode.
 
-Flow:
+Current callers include:
 
-1. Collect projected, UV, and patch layers for a selected object.
-2. Prefer GPU UV-space sampling for the visible projected-layer stack.
-3. Fall back to CPU UV rasterization at the same resolution when GPU allocation/rendering fails.
-4. Composite normal projected layers with the CPU golden quality-blend compositor. A clearly dominant candidate wins; near-tie candidates blend softly. Overlay layers remain order-sensitive and paint above the blended base.
-5. Dilate seams, encode BaseColor PNG, apply it to the viewport, and persist it when a local workspace is available.
+- explicit Layer-panel merge to a new or blank UV layer;
+- local-repaint UV repair commit;
+- content-aware coverage repair;
+- on-demand BaseColor/GLB/FBX/OBJ export preparation.
 
-Current limits are one imported object, one UV set, BaseColor output, and no UDIM. Output resolution follows the viewport selector and is never reduced automatically by the bake path.
+Adding a Texture Map result creates a live Projected Layer. It does not, by itself,
+flatten the whole visible stack in the background.
 
-Production defaults:
+## Core Flow
 
-- `method: gpu`, with CPU fallback on GPU failure.
-- `gpuCompositeMode: cpu-parity`, so GPU performs projected image/mask/depth sampling and the CPU golden compositor performs layer selection, soft blending, overlays, dilation, sharpening, and viewport fill.
-- `gpuProjectedImageUvFlipY: true`, because GPU projected image, mask, and depth textures need Y-flipped sampling to match the CPU image-data convention.
+1. Collect the exact projected sources requested by the caller.
+2. Render target geometry in UV space and reconstruct world position/normal.
+3. Apply frustum, source-alpha, mask, linear-view depth, normal, backface,
+   opacity, strength, adjustment, Blend, and Overlay rules.
+4. Prefer GPU projection sampling; use CPU/parity/fallback paths where the caller
+   and resource limits allow it.
+5. Resolve candidate quality in a Worker/WebGPU path when available, with CPU
+   calibration/fallback preserving output semantics.
+6. Return straight RGBA, coverage/report data, and optional encoded PNG. The
+   caller decides whether to create a UV layer, cache a baked texture, apply it,
+   or persist it.
 
-GPU coverage parity validation is disabled in normal production use because it requires an extra CPU rasterization pass. Enable it only while debugging projection divergence:
+## Production Constraints
 
-```js
-localStorage.setItem('liclick-debug-gpu-coverage-validation', '1')
-```
+- One active object, one `uv` attribute, BaseColor RGBA, no UDIM.
+- Requested resolution is not silently reduced by this engine.
+- Merge/repair callers may add topology-constrained gutter, hole, and seam
+  processing after projection; generic dilation is not the complete seam policy.
+- Current Three.js/glTF orientation uses `texture.flipY = false`; projected source
+  textures use the GPU sampling transform required to match CPU image data.
+- GPU allocation, texture arrays/samplers, readback, PNG encoding, browser memory,
+  and preview upload remain hard limits at 4K/8K.
+
+GPU/CPU debug calibration and performance switches are implementation diagnostics,
+not user-facing bake modes. Validate changes with the projection, export-orientation,
+UV-composite, and performance protocol tests.

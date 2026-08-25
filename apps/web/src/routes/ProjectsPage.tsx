@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Folder, FolderPlus, Plus } from 'lucide-react';
+import { Check, ChevronDown, Flame, Folder, FolderPlus, Palette, Plus } from 'lucide-react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
 import { ContextMenu, ModalShell } from '@/components/common/ContextMenu';
 import { Button } from '@/components/ui/Button';
 import { ProjectCard } from '@/components/project/ProjectCard';
-import { mockProjects } from '@/mock/mockProjects';
-import { useI18nStore, useT } from '@/stores/i18nStore';
+import { getNextDefaultProjectName } from '@/features/projects/projectDefaultName';
+import {
+  selectProjectCardThumbnail,
+  withProjectThumbnailVersion,
+} from '@/features/projects/projectThumbnailPolicy';
+import { useT } from '@/stores/i18nStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -25,13 +29,16 @@ import {
   moveProject,
   renameFolder,
   renameProject,
+  saveProject as saveWorkspaceProject,
   WorkspaceApiError,
   type ProjectSummary,
   type WorkspaceFolder,
 } from '@/services/workspaceApiClient';
 
 type ProjectsPageProps = {
-  onOpenProject: (projectId: string) => void;
+  module: 'texture' | 'bake';
+  onBack: () => void;
+  onOpenProject: (projectId: string, options?: { showOnboarding?: boolean }) => void;
   onLogout: () => void;
 };
 
@@ -50,7 +57,8 @@ function projectFromSummary(summary: ProjectSummary): Project {
     folderId: summary.folderId ?? null,
     createdAt: summary.createdAt,
     updatedAt: summary.updatedAt,
-    thumbnail: summary.thumbnail,
+    revision: summary.revision,
+    thumbnail: withProjectThumbnailVersion(summary.thumbnail, summary.updatedAt),
     objects: [],
     references: [],
     captures: [],
@@ -63,7 +71,7 @@ function projectFromSummary(summary: ProjectSummary): Project {
     dirty: false,
     settings: {
       resolution: '2K',
-      displayMode: 'pbr',
+      displayMode: 'flat',
       projectionMode: 'perspective',
       colorManagement: 'srgb',
     },
@@ -79,7 +87,7 @@ function sortProjects(projects: Project[], sortMode: SortMode) {
   });
 }
 
-function mergeProjectsWithMock(
+function mergeWorkspaceProjects(
   serverProjects: Project[],
   currentProjects: Project[] = [],
   serverProjectsAuthoritative = true,
@@ -87,19 +95,38 @@ function mergeProjectsWithMock(
   const formalProjects = serverProjectsAuthoritative
     ? serverProjects
     : currentProjects.filter((project) => project.workspaceMode === 'local-server');
-  if (formalProjects.length === 0) return mockProjects;
+  if (formalProjects.length === 0) return [];
 
   const merged = new Map<string, Project>();
   const currentProjectById = new Map(currentProjects.map((project) => [project.id, project]));
   for (const project of formalProjects) {
     const currentProject = currentProjectById.get(project.id);
-    const currentThumbnail = currentProject?.thumbnail;
     merged.set(project.id, {
       ...project,
-      thumbnail:
-        currentThumbnail && (currentThumbnail.startsWith('data:') || currentThumbnail.startsWith('blob:'))
-          ? currentThumbnail
-          : project.thumbnail,
+      // Project list responses contain summaries only. Never replace a project that has
+      // already been hydrated with the summary's placeholder empty collections: a late
+      // list refresh can otherwise race project opening and make the editor autosave an
+      // empty layer stack over the real project.
+      ...(currentProject
+        ? {
+            objects: currentProject.objects,
+            references: currentProject.references,
+            captures: currentProject.captures,
+            generations: currentProject.generations,
+            layers: currentProject.layers,
+            bakedTextures: currentProject.bakedTextures,
+            settings: currentProject.settings,
+            bakeWorkspace: currentProject.bakeWorkspace,
+            pipeline: currentProject.pipeline,
+            currentMode: currentProject.currentMode,
+            activeObjectId: currentProject.activeObjectId,
+            activeLayerId: currentProject.activeLayerId,
+            assetManifest: currentProject.assetManifest,
+            lastSavedAt: currentProject.lastSavedAt,
+            dirty: currentProject.dirty,
+          }
+        : {}),
+      thumbnail: selectProjectCardThumbnail(project, currentProject),
     });
   }
   return [...merged.values()];
@@ -180,6 +207,7 @@ function NameDialog({
           autoFocus
           value={name}
           onChange={(event) => setName(event.target.value)}
+          onFocus={(event) => event.currentTarget.select()}
           placeholder={placeholder}
           className="mt-4 h-10 w-full rounded-md border border-white/12 bg-black/30 px-3 text-sm text-white outline-none focus:border-liclick-pink"
         />
@@ -257,13 +285,14 @@ function MoveDialog({
   );
 }
 
-export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
+export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: ProjectsPageProps) {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>('updated-desc');
-  const [serverState, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
   const [pageNotice, setPageNotice] = useState<PageNotice | undefined>();
   const [activeFolderId, setActiveFolderId] = useState<FolderFilter>(undefined);
   const [nameDialog, setNameDialog] = useState<
+    | { type: 'new-project' }
     | { type: 'new-folder' }
     | { type: 'rename-folder'; folder: WorkspaceFolder }
     | { type: 'rename-project'; project: Project }
@@ -283,7 +312,6 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
   const providerStatus = useAuthStore((state) => state.providerStatus);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const pushToast = useToastStore((state) => state.pushToast);
-  const language = useI18nStore((state) => state.language);
   const t = useT();
   const visibleProjects = useMemo(() => {
     const filtered =
@@ -300,7 +328,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       const [projectResult, folderResult] = await Promise.all([listProjects(), listFolders()]);
       setFolders(folderResult.folders);
       setProjects(
-        mergeProjectsWithMock(
+        mergeWorkspaceProjects(
           projectResult.projects.map(projectFromSummary),
           useProjectStore.getState().projects,
         ),
@@ -312,7 +340,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       setServerState(isAuthRequired ? 'online' : 'offline');
       if (isAuthRequired) {
         setFolders([]);
-        setProjects(mergeProjectsWithMock([], useProjectStore.getState().projects, false));
+        setProjects(mergeWorkspaceProjects([], useProjectStore.getState().projects, false));
         setPageNotice({
           tone: 'warning',
           title: '需要飞书登录',
@@ -385,7 +413,11 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             },
           });
           if (!result.user) throw new Error('登录服务没有返回用户信息。');
-          setAuthenticated(result.user, result.authMode ?? 'feishu-oauth', providerStatus);
+          setAuthenticated(
+            result.user,
+            result.authMode ?? 'feishu-oauth',
+            result.providerStatus ?? providerStatus,
+          );
           setPageNotice({
             tone: 'info',
             title: '飞书登录成功',
@@ -422,14 +454,14 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
     }
   }
 
-  async function handleNewProject() {
+  async function handleNewProject(name: string) {
     await runWorkspaceAction(async () => {
       const result = await createProject({
-        name: language === 'zh' ? '未命名项目' : 'Untitled Project',
+        name,
         folderId: typeof activeFolderId === 'string' ? activeFolderId : undefined,
       });
       replaceCurrentProject(result.project);
-      onOpenProject(result.project.id);
+      onOpenProject(result.project.id, { showOnboarding: module === 'texture' });
     });
   }
 
@@ -438,20 +470,43 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
       const result = await loadProject(projectId);
       replaceCurrentProject(result.project);
     } catch {
-      // Mock fallback projects can still open without the local workspace server.
+      const fallbackProject = useProjectStore
+        .getState()
+        .projects.find((project) => project.id === projectId);
+      if (fallbackProject) {
+        try {
+          const result = await saveWorkspaceProject({
+            ...fallbackProject,
+            workspaceMode: 'local-server',
+            dirty: true,
+          });
+          replaceCurrentProject(result.project);
+        } catch {
+          // Keep an already loaded project available if workspace persistence is temporarily offline.
+        }
+      }
     }
     onOpenProject(projectId);
   }
 
-  const statusText =
-    serverState === 'online'
-      ? t('workspaceConnected')
-      : serverState === 'checking'
-        ? t('workspaceChecking')
-        : t('workspaceOffline');
-
   return (
     <main className="li3d-home-surface min-h-screen text-white">
+      {nameDialog?.type === 'new-project' && (
+        <NameDialog
+          title={t('newProject')}
+          initialName={getNextDefaultProjectName(
+            projects.map((project) => project.name),
+            t('defaultProjectNamePrefix'),
+          )}
+          placeholder={t('projectName')}
+          confirmLabel={t('create')}
+          onClose={() => setNameDialog(undefined)}
+          onConfirm={(name) => {
+            setNameDialog(undefined);
+            void handleNewProject(name);
+          }}
+        />
+      )}
       {nameDialog?.type === 'new-folder' && (
         <NameDialog
           title={t('createFolder')}
@@ -493,7 +548,7 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             const { project } = nameDialog;
             setNameDialog(undefined);
             void runWorkspaceAction(async () => {
-              await renameProject(project.id, name);
+              await renameProject(project.id, name, project.revision?.id);
             });
           }}
         />
@@ -523,18 +578,35 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             const project = moveTarget;
             setMoveTarget(undefined);
             void runWorkspaceAction(async () => {
-              await moveProject(project.id, folderId);
+              await moveProject(project.id, folderId, project.revision?.id);
             });
           }}
         />
       )}
 
-      <header className="flex h-16 items-center px-4 sm:px-6">
-        <BrandMark />
+      <header className="flex h-16 items-center border-b border-white/[0.055] px-4 sm:px-6">
+        <BrandMark onBack={onBack} backLabel="返回功能首页" />
       </header>
 
-      <section className="mx-auto w-full max-w-[1240px] px-4 pb-16 pt-1 sm:px-7 lg:px-8">
-        <div className="flex items-center justify-end gap-2">
+      <section className="mx-auto w-full max-w-[1240px] px-4 pb-16 pt-8 sm:px-7 lg:px-8">
+        <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
+          <div>
+            <div className="flex items-center gap-3">
+              <span className={`grid h-10 w-10 place-items-center rounded-xl border ${module === 'texture' ? 'border-fuchsia-300/24 bg-fuchsia-400/10 text-fuchsia-100' : 'border-orange-300/24 bg-orange-400/10 text-orange-100'}`}>
+                {module === 'texture' ? <Palette className="h-5 w-5" /> : <Flame className="h-5 w-5" />}
+              </span>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-[-0.025em] text-white">
+                  {module === 'texture' ? '贴图绘制' : '模型烘焙'}
+                </h1>
+                <p className="mt-1 text-xs text-white/36">
+                  {module === 'texture' ? '选择项目进入贴图创作工作台' : '选择项目进入独立烘焙工作台'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
             <Button
               className="h-10 border-white/16 bg-transparent px-4 hover:border-white/28 hover:bg-white/8"
               icon={<FolderPlus className="h-4 w-4" />}
@@ -542,18 +614,16 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
             >
               {t('newFolder')}
             </Button>
-            <Button className="h-10 px-4" icon={<Plus className="h-4 w-4" />} variant="primary" onClick={() => void handleNewProject()}>
+            <Button
+              className="h-10 px-4"
+              icon={<Plus className="h-4 w-4" />}
+              variant="primary"
+              onClick={() => setNameDialog({ type: 'new-project' })}
+            >
               {t('newProject')}
             </Button>
-            <UserMenu
-              onLogout={onLogout}
-              workspaceStatus={{
-                label: statusText,
-                state: serverState,
-                retryLabel: t('retry'),
-                onRetry: () => void refreshWorkspace(true),
-              }}
-            />
+            <UserMenu onLogout={onLogout} />
+          </div>
         </div>
 
         {pageNotice && (
@@ -618,13 +688,11 @@ export function ProjectsPage({ onOpenProject, onLogout }: ProjectsPageProps) {
         <section className="mt-11">
           <div className="mb-4 flex items-center justify-between gap-4">
             <h2 className="text-[19px] font-medium tracking-[-0.01em] text-white/88">{t('projects')}</h2>
-            <SortDropdown value={sortMode} onChange={setSortMode} />
+            {visibleProjects.length > 0 && (
+              <SortDropdown value={sortMode} onChange={setSortMode} />
+            )}
           </div>
-          {visibleProjects.length === 0 ? (
-            <div className="rounded-md border border-white/10 bg-[#1d1d1d]/72 px-4 py-8 text-sm text-white/48">
-              {t('noProjects')}
-            </div>
-          ) : (
+          {visibleProjects.length > 0 && (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {visibleProjects.map((project) => (
                 <ProjectCard

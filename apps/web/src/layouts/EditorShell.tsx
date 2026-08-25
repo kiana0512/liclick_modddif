@@ -1,7 +1,6 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  ArrowLeft,
-  Boxes,
+  Check,
   ChevronDown,
   Download,
   Globe2,
@@ -9,6 +8,7 @@ import {
   Palette,
   PanelLeft,
   PanelRight,
+  PencilLine,
   ScanLine,
   X,
 } from 'lucide-react';
@@ -31,18 +31,19 @@ import { useT } from '@/stores/i18nStore';
 type EditorShellProps = {
   projectName: string;
   workspaceLabel?: string;
+  onRenameProject?: (name: string) => void | Promise<void>;
   onBack: () => void;
   exportMenu: ReactNode;
   bottomToolbar: ReactNode;
   center: ReactNode;
   panels: WorkspacePanelDefinition[];
+  workflowSwitcher?: ReactNode;
 };
 
 const modeIcons: Record<WorkspaceMode, typeof Palette> = {
   scene: Globe2,
   texture: Palette,
   normal: ScanLine,
-  segments: Boxes,
   export: Download,
 };
 
@@ -60,7 +61,10 @@ function DockDrawer({
   const visiblePanels = useMemo(
     () =>
       panels
-        .filter((panel) => panel.visible && panel.dock === side && (panel.mode === 'all' || panel.mode === mode))
+        .filter(
+          (panel) =>
+            panel.visible && panel.dock === side && (panel.mode === 'all' || panel.mode === mode),
+        )
         .sort((a, b) => a.order - b.order),
     [mode, panels, side],
   );
@@ -102,14 +106,19 @@ function DockDrawer({
 export function EditorShell({
   projectName,
   workspaceLabel,
+  onRenameProject,
   onBack,
   exportMenu,
   bottomToolbar,
   center,
   panels,
+  workflowSwitcher,
 }: EditorShellProps) {
   const [mobileDock, setMobileDock] = useState<DockSide>();
   const [resolutionMenuOpen, setResolutionMenuOpen] = useState(false);
+  const [editingProjectName, setEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState(projectName);
+  const [renamingProject, setRenamingProject] = useState(false);
   const t = useT();
   const mode = useWorkspaceLayoutStore((state) => state.mode);
   const setMode = useWorkspaceLayoutStore((state) => state.setMode);
@@ -118,32 +127,122 @@ export function EditorShell({
   const setResolution = useSettingsStore((state) => state.setResolution);
   const setDisplayMode = useSceneStore((state) => state.setDisplayMode);
 
+  useEffect(() => {
+    if (!editingProjectName) setProjectNameDraft(projectName);
+  }, [editingProjectName, projectName]);
+
+  function cancelProjectRename() {
+    setProjectNameDraft(projectName);
+    setEditingProjectName(false);
+  }
+
+  async function commitProjectRename() {
+    const nextName = projectNameDraft.trim();
+    if (!nextName || nextName === projectName) {
+      cancelProjectRename();
+      return;
+    }
+    if (!onRenameProject) return;
+
+    setRenamingProject(true);
+    try {
+      await onRenameProject(nextName);
+      setEditingProjectName(false);
+    } catch {
+      // The parent reports the persistence error. Keep the input open so the name can be retried.
+    } finally {
+      setRenamingProject(false);
+    }
+  }
+
   function handleModeChange(nextMode: WorkspaceMode) {
     setMode(nextMode);
     if (nextMode === 'scene') setDisplayMode('pbr');
     if (nextMode === 'normal') setDisplayMode('normal');
-    if (nextMode === 'texture') setDisplayMode('pbr');
+    if (nextMode === 'texture') setDisplayMode('flat');
   }
 
   const modeOptions: Array<{ value: WorkspaceMode; label: string }> = [
     { value: 'scene', label: t('scene') },
     { value: 'texture', label: t('texture') },
     { value: 'normal', label: t('normal') },
-    { value: 'segments', label: t('segments') },
   ];
 
   return (
     <main className="relative h-screen min-h-[680px] overflow-hidden bg-ink text-white">
-      <header className="pointer-events-none absolute left-3 right-32 top-3 z-30 flex flex-wrap items-start justify-start gap-2">
-        <div className="pointer-events-auto flex min-w-0 items-center gap-2 rounded-lg border border-white/10 bg-black/42 px-2 py-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
-          <Button variant="ghost" className="h-8 w-8 px-0" icon={<ArrowLeft className="h-4 w-4" />} onClick={onBack} />
-          <BrandMark compact className="hidden sm:flex" />
-          <div className="min-w-0 border-l border-white/12 pl-2 sm:pl-3">
-            <div className="truncate text-sm font-semibold">{projectName}</div>
-            <div className="text-[11px] text-white/42">{workspaceLabel ?? 'No workspace'}</div>
+      <header className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex items-start gap-2">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="pointer-events-auto flex min-w-0 shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-black/42 px-2 py-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
+            <BrandMark
+              compact
+              className="flex"
+              onBack={onBack}
+              backLabel="返回项目列表"
+            />
+            <div className="min-w-0 border-l border-white/12 pl-2 sm:pl-3">
+              {editingProjectName ? (
+                <form
+                  className="flex min-w-0 items-center gap-1"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void commitProjectRename();
+                  }}
+                >
+                  <input
+                    autoFocus
+                    aria-label={t('projectName')}
+                    className="h-7 w-[180px] min-w-0 rounded border border-liclick-pink/55 bg-black/55 px-2 text-sm font-semibold text-white outline-none transition focus:border-liclick-pink focus:ring-2 focus:ring-liclick-pink/20"
+                    disabled={renamingProject}
+                    maxLength={120}
+                    value={projectNameDraft}
+                    onChange={(event) => setProjectNameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') cancelProjectRename();
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    aria-label={t('rename')}
+                    title={t('rename')}
+                    disabled={!projectNameDraft.trim() || renamingProject}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded text-emerald-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t('cancel')}
+                    title={t('cancel')}
+                    disabled={renamingProject}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded text-white/55 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
+                    onClick={cancelProjectRename}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </form>
+              ) : onRenameProject ? (
+                <button
+                  type="button"
+                  className="group flex max-w-[220px] items-center gap-1.5 text-left"
+                  title={t('renameProject')}
+                  onClick={() => setEditingProjectName(true)}
+                >
+                  <span className="truncate text-sm font-semibold">{projectName}</span>
+                  <PencilLine className="h-3 w-3 shrink-0 text-white/32 transition group-hover:text-white/75" />
+                </button>
+              ) : (
+                <div className="truncate text-sm font-semibold">{projectName}</div>
+              )}
+              <div className="text-[11px] text-white/42">{workspaceLabel ?? 'No workspace'}</div>
+            </div>
           </div>
+          {workflowSwitcher ? (
+            <div className="pointer-events-auto hidden min-w-0 overflow-x-auto sm:block">
+              {workflowSwitcher}
+            </div>
+          ) : null}
         </div>
-        <div className="pointer-events-auto flex flex-wrap items-center justify-start gap-2 rounded-lg border border-white/10 bg-black/42 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
+        <div className="pointer-events-auto flex shrink-0 items-center justify-start gap-2 rounded-lg border border-white/10 bg-black/42 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
           <div className="flex gap-1 lg:hidden">
             <Button
               variant="secondary"
@@ -241,8 +340,8 @@ export function EditorShell({
         className="relative h-full overflow-hidden bg-[#080914]"
         style={
           {
-            '--workspace-left-top-offset': '84px',
-            '--workspace-right-top-offset': '176px',
+            '--workspace-left-top-offset': '76px',
+            '--workspace-right-top-offset': '76px',
             '--workspace-bottom-offset': '16px',
             '--dock-left-width': dockDensity === 'normal' ? '320px' : '300px',
             '--dock-right-width': dockDensity === 'normal' ? '400px' : '360px',
@@ -257,7 +356,9 @@ export function EditorShell({
         </div>
       </section>
 
-      {mobileDock && <DockDrawer side={mobileDock} panels={panels} onClose={() => setMobileDock(undefined)} />}
+      {mobileDock && (
+        <DockDrawer side={mobileDock} panels={panels} onClose={() => setMobileDock(undefined)} />
+      )}
     </main>
   );
 }

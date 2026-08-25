@@ -1,5 +1,8 @@
 # Draggable Dock Panels
 
+> Historical Phase 7 implementation note. Current toolbar/import/export behavior
+> is summarized in `docs/17_EXPORT_MVP_IMPLEMENTATION.md`.
+
 Phase 7 polishes the draggable dock implementation.
 
 ## Scope
@@ -40,7 +43,7 @@ During drag:
 - `isPanelDragging`
 - `isFileDragging`
 
-The viewport import overlay checks this store and only appears for real model file drags (`.glb`, `.gltf`, `.fbx`, `.obj`, `.stl`). A panel drag sets `activeDragType='panel'`, so dragging panels over the viewport no longer shows `Drop model to import`.
+The viewport import overlay checks this store and only appears for accepted model-file drags. The current texture importer accepts `.glb`, `.gltf`, `.fbx`, and `.obj`; `.stl` is export-only. A panel drag sets `activeDragType='panel'`, so dragging panels over the viewport no longer shows `Drop model to import`.
 
 This split also leaves room for future reference-image asset drops without accidentally activating model import.
 

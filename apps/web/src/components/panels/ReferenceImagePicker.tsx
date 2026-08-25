@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
+import { IMMEDIATE_PROJECT_SAVE_EVENT } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
+import {
+  ReferenceImportDialog,
+  type ReferenceImportRole,
+} from '@/components/panels/ReferenceImportDialog';
 
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -35,6 +40,8 @@ type ReferenceImagePickerProps = {
   inputId?: string;
   selectionMode?: 'multiple' | 'single';
   filterBySelectedObject?: boolean;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
 };
 
 type MenuState = {
@@ -47,6 +54,8 @@ export function ReferenceImagePicker({
   compact = false,
   inputId,
   selectionMode = 'multiple',
+  mutationLocked = false,
+  onMutationLocked,
 }: ReferenceImagePickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
@@ -73,6 +82,13 @@ export function ReferenceImagePicker({
       ? references.find((reference) => reference.id === hoveredReferenceId)
       : undefined;
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
+
+  function blockMutation(action: string) {
+    if (!mutationLocked) return false;
+    setMenu(undefined);
+    onMutationLocked?.(action);
+    return true;
+  }
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -104,6 +120,7 @@ export function ReferenceImagePicker({
   }, []);
 
   async function importFiles(files: FileList | File[]) {
+    if (blockMutation('导入参考图')) return;
     const imageFiles = Array.isArray(files) ? files.filter((file) => file.type.startsWith('image/')) : getImageFiles(files);
     if (imageFiles.length === 0) return;
     const nextReferences: ReferenceImage[] = await Promise.all(
@@ -123,13 +140,27 @@ export function ReferenceImagePicker({
     setPendingImport(nextReferences);
   }
 
-  function confirmPendingImport() {
+  function confirmPendingImport(role: ReferenceImportRole) {
     if (!pendingImport) return;
-    addReferences(pendingImport);
-    if (selectionMode === 'single' && pendingImport[0]) {
-      setSelectedReferences([pendingImport[0].id]);
-    }
+    if (blockMutation('导入参考图')) return;
+    const classifiedReferences = pendingImport.map((reference, index) => ({
+      ...reference,
+      isPrimary: index === 0,
+      referenceGroupId: createId('reference-group'),
+      referenceRole: role,
+      referenceSource: 'uploaded' as const,
+    }));
+    const isBatchImport = selectionMode === 'multiple' && classifiedReferences.length > 1;
+    // Batch imports should populate the reference library without making an
+    // implicit generation choice. The user explicitly selects the references
+    // that should constrain the next generation.
+    addReferences(classifiedReferences, isBatchImport ? 'clear-all' : 'select-new');
+    if (classifiedReferences[0]) setSelectedReferences([classifiedReferences[0].id]);
     setPendingImport(undefined);
+    // The editor snapshot reads the reference store directly, so this event can
+    // persist the newly imported pixels immediately instead of waiting for the
+    // five-second autosave window (where a refresh would otherwise lose them).
+    window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
@@ -221,6 +252,7 @@ export function ReferenceImagePicker({
                     title="Shift"
                     onClick={(event) => {
                       event.stopPropagation();
+                      if (blockMutation('切换参考图')) return;
                       toggleReference(reference.id, selectionMode);
                     }}
                     onMouseEnter={() => setHoveredReferenceId(reference.id)}
@@ -288,6 +320,7 @@ export function ReferenceImagePicker({
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-white/10"
               onClick={() => {
+                if (blockMutation('切换参考图')) return;
                 toggleReference(menu.referenceId, selectionMode);
                 setMenu(undefined);
               }}
@@ -321,6 +354,7 @@ export function ReferenceImagePicker({
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-white/10"
               onClick={() => {
+                if (blockMutation('复制参考图')) return;
                 duplicateReference(menu.referenceId);
                 setMenu(undefined);
               }}
@@ -343,6 +377,7 @@ export function ReferenceImagePicker({
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-red-200 hover:bg-red-500/18"
               onClick={() => {
+                if (blockMutation('删除参考图')) return;
                 deleteReference(menu.referenceId);
                 setMenu(undefined);
               }}
@@ -354,59 +389,13 @@ export function ReferenceImagePicker({
         </>,
         portalRoot,
       )}
-      {portalRoot && pendingImport && createPortal(
-        <div className="fixed inset-0 z-[128] grid place-items-center bg-black/70 px-4">
-          <div className="grid w-full max-w-[320px] gap-3 rounded-lg border border-white/14 bg-[#151515] p-3 text-white shadow-2xl">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold">{pendingImport[0]?.name}</div>
-                {pendingImport.length > 1 && (
-                  <div className="mt-0.5 text-xs text-white/58">
-                    {pendingImport.length} {t('images')}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-white/70 hover:bg-white/10 hover:text-white"
-                aria-label={t('cancel')}
-                onClick={() => setPendingImport(undefined)}
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            {pendingImport[0] && (
-              <img
-                src={pendingImport[0].url}
-                alt=""
-                className="max-h-[320px] w-full rounded-md bg-white object-contain"
-              />
-            )}
-            <button
-              type="button"
-              className="h-10 rounded-md border border-white/16 bg-white/10 text-sm font-semibold text-white hover:bg-white/16"
-              onClick={confirmPendingImport}
-            >
-              {t('importAsReferenceImage')}
-            </button>
-            <button
-              type="button"
-              className="h-10 rounded-md border border-white/10 bg-white/[0.045] text-sm font-semibold text-white/46"
-              disabled
-            >
-              {t('create3dObjectFromImage')}
-            </button>
-            <button
-              type="button"
-              className="h-9 rounded-md text-sm font-semibold text-white/70 hover:bg-white/8 hover:text-white"
-              onClick={() => setPendingImport(undefined)}
-            >
-              {t('cancel')}
-            </button>
-          </div>
-        </div>,
-        portalRoot,
-      )}
+      {pendingImport ? (
+        <ReferenceImportDialog
+          references={pendingImport}
+          onImport={confirmPendingImport}
+          onClose={() => setPendingImport(undefined)}
+        />
+      ) : null}
       {portalRoot && previewReference && createPortal(
         <button
           type="button"

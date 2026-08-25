@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "roots": ["apps/web/src"],
+  "forbiddenReferences": [
+    "getLocalTextureRuntimeApiBase",
+    "checkLocalTextureRuntime",
+    "downloadLocalTextureRuntimeInstaller",
+    "useLocalTextureRuntime",
+    "localTextureRuntimeClient",
+    "LIclick-3D-Texture-Local-Component-Setup.exe"
+  ],
+  "legacyAllowlist": []
+}

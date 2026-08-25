@@ -31,6 +31,7 @@ export function WorkspacePanel({
     <section
       className={cn(
         'overflow-hidden rounded-lg border border-white/30 bg-black/88 shadow-[0_16px_46px_rgba(0,0,0,0.44)] backdrop-blur-sm transition-[border,box-shadow,opacity,transform]',
+        id === 'generate' && !collapsed && 'flex min-h-0 flex-col',
         isDragging &&
           'z-40 scale-[1.01] cursor-grabbing border-liclick-pink/55 opacity-80 shadow-[0_0_0_1px_rgba(238,77,214,0.28),0_20px_58px_rgba(158,90,255,0.35)]',
         className,
@@ -46,11 +47,12 @@ export function WorkspacePanel({
       <div
         className={cn(
           'grid transition-[grid-template-rows,opacity] duration-200 ease-out',
+          id === 'generate' && !collapsed && 'min-h-0 flex-1',
           collapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100',
         )}
       >
-        <div className="min-h-0 overflow-hidden">
-          <WorkspacePanelBody>{children}</WorkspacePanelBody>
+        <div className={cn('min-h-0 overflow-hidden', id === 'generate' && !collapsed && 'h-full')}>
+          <WorkspacePanelBody scrollable={id !== 'generate'}>{children}</WorkspacePanelBody>
         </div>
       </div>
     </section>

@@ -14,8 +14,12 @@ export function corsHeaders(response: ServerResponse) {
   return {
     'access-control-allow-origin': allowOrigin,
     'access-control-allow-credentials': 'true',
-    'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-private-network': 'true',
+    'access-control-allow-methods': 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS',
+    'access-control-allow-headers':
+      'content-type,x-liclick-session-token,x-li3d-feishu-email,x-li3d-identity-proof,x-li3d-history-source-name,x-li3d-history-metadata,x-li3d-history-batch-id,x-li3d-history-batch-index,x-li3d-history-batch-size,x-request-id,idempotency-key,last-event-id',
+    'access-control-expose-headers':
+      'content-disposition,x-job-id,x-request-id,x-li3d-request-id,x-artifact-sha256,x-li3d-artifact-verified',
     vary: 'Origin',
   };
 }

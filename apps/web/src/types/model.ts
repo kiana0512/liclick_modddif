@@ -38,6 +38,8 @@ export type SceneObject = {
   boundingBox?: ModelBoundingBox;
   originalBoundingBox?: ModelBoundingBox;
   importNormalizationTransform?: ImportNormalizationTransform;
+  /** Physical centimeters represented by one source-space unit. */
+  sourceUnitScaleFactor?: number;
   userTransform?: Transform;
   childMeshCount?: number;
   warnings?: string[];

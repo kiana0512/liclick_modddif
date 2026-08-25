@@ -1,14 +1,14 @@
 import * as THREE from 'three';
 
-type Endpoint = {
+export type UvSeamEndpoint = {
   position: THREE.Vector3;
   normal: THREE.Vector3;
   uv: THREE.Vector2;
 };
 
-type EdgeRecord = {
-  a: Endpoint;
-  b: Endpoint;
+export type UvSeamEdgeRecord = {
+  a: UvSeamEndpoint;
+  b: UvSeamEndpoint;
   insideUv: THREE.Vector2;
 };
 
@@ -28,7 +28,7 @@ function edgeKey(a: THREE.Vector3, b: THREE.Vector3) {
   return aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`;
 }
 
-function uvEdgeKey(edge: EdgeRecord) {
+function uvEdgeKey(edge: UvSeamEdgeRecord) {
   const a = `${quantize(edge.a.uv.x, 1000000)},${quantize(edge.a.uv.y, 1000000)}`;
   const b = `${quantize(edge.b.uv.x, 1000000)},${quantize(edge.b.uv.y, 1000000)}`;
   return a < b ? `${a}|${b}` : `${b}|${a}`;
@@ -52,7 +52,7 @@ function inwardPixelNormal(edgeStart: PixelPoint, edgeEnd: PixelPoint, inside: P
   return { x, y };
 }
 
-function orientedLike(reference: EdgeRecord, candidate: EdgeRecord) {
+function orientedLike(reference: UvSeamEdgeRecord, candidate: UvSeamEdgeRecord) {
   const direct = reference.a.position.distanceToSquared(candidate.a.position) +
     reference.b.position.distanceToSquared(candidate.b.position);
   const crossed = reference.a.position.distanceToSquared(candidate.b.position) +
@@ -61,12 +61,12 @@ function orientedLike(reference: EdgeRecord, candidate: EdgeRecord) {
   return { ...candidate, a: candidate.b, b: candidate.a };
 }
 
-function normalsAreContinuous(a: EdgeRecord, b: EdgeRecord) {
+function normalsAreContinuous(a: UvSeamEdgeRecord, b: UvSeamEdgeRecord) {
   return a.a.normal.dot(b.a.normal) > 0.55 && a.b.normal.dot(b.b.normal) > 0.55;
 }
 
-function collectUvSeamPairs(root: THREE.Object3D) {
-  const groupedEdges = new Map<string, EdgeRecord[]>();
+export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) {
+  const groupedEdges = new Map<string, UvSeamEdgeRecord[]>();
   root.updateMatrixWorld(true);
 
   root.traverse((object) => {
@@ -86,7 +86,7 @@ function collectUvSeamPairs(root: THREE.Object3D) {
       const indices = [0, 1, 2].map((offset) =>
         index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
       );
-      const endpoints = indices.map((vertexIndex): Endpoint => ({
+      const endpoints = indices.map((vertexIndex): UvSeamEndpoint => ({
         position: new THREE.Vector3(
           position.getX(vertexIndex),
           position.getY(vertexIndex),
@@ -102,7 +102,7 @@ function collectUvSeamPairs(root: THREE.Object3D) {
 
       const edgeIndices = [[0, 1, 2], [1, 2, 0], [2, 0, 1]] as const;
       for (const [start, end, inside] of edgeIndices) {
-        const record: EdgeRecord = {
+        const record: UvSeamEdgeRecord = {
           a: endpoints[start],
           b: endpoints[end],
           insideUv: endpoints[inside].uv,
@@ -115,17 +115,19 @@ function collectUvSeamPairs(root: THREE.Object3D) {
     }
   });
 
-  const pairs: Array<[EdgeRecord, EdgeRecord]> = [];
+  const pairs: Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]> = [];
   groupedEdges.forEach((records) => {
     if (records.length < 2) return;
-    const uniqueByUv = new Map<string, EdgeRecord>();
+    const uniqueByUv = new Map<string, UvSeamEdgeRecord>();
     records.forEach((record) => uniqueByUv.set(uvEdgeKey(record), record));
     const unique = [...uniqueByUv.values()];
     if (unique.length < 2) return;
     const reference = unique[0];
     for (let index = 1; index < unique.length; index += 1) {
       const candidate = orientedLike(reference, unique[index]);
-      if (normalsAreContinuous(reference, candidate)) pairs.push([reference, candidate]);
+      if (includeDiscontinuous || normalsAreContinuous(reference, candidate)) {
+        pairs.push([reference, candidate]);
+      }
     }
   });
   return pairs;
@@ -141,11 +143,15 @@ export function reconcileUvSeams(
   imageData: ImageData,
   root: THREE.Object3D,
   coverage: Uint8Array,
+  options: { repairMissingCoverage?: boolean; bandPixels?: number } = {},
 ) {
   const { width, height, data } = imageData;
   const source = new Uint8ClampedArray(data);
-  const seamPairs = collectUvSeamPairs(root);
-  const bandPixels = Math.max(2, Math.min(6, Math.round(Math.max(width, height) / 1024)));
+  const seamPairs = collectUvSeamPairs(root, Boolean(options.repairMissingCoverage));
+  const bandPixels = Math.max(
+    2,
+    Math.min(32, options.bandPixels ?? Math.round(Math.max(width, height) / 1024)),
+  );
   let adjustedPixels = 0;
 
   for (const [first, second] of seamPairs) {
@@ -188,10 +194,32 @@ export function reconcileUvSeams(
         };
         const firstIndex = pixelIndex(firstPoint, width, height);
         const secondIndex = pixelIndex(secondPoint, width, height);
-        if (!coverage[firstIndex] || !coverage[secondIndex]) continue;
         const firstOffset = firstIndex * 4;
         const secondOffset = secondIndex * 4;
-        if (source[firstOffset + 3] === 0 || source[secondOffset + 3] === 0) continue;
+        const firstCovered = Boolean(coverage[firstIndex] && source[firstOffset + 3]);
+        const secondCovered = Boolean(coverage[secondIndex] && source[secondOffset + 3]);
+
+        if (options.repairMissingCoverage && firstCovered !== secondCovered) {
+          const sourceOffset = firstCovered ? firstOffset : secondOffset;
+          const targetOffset = firstCovered ? secondOffset : firstOffset;
+          const targetIndex = firstCovered ? secondIndex : firstIndex;
+          for (let channel = 0; channel < 4; channel += 1) {
+            data[targetOffset + channel] = source[sourceOffset + channel];
+            // Let a repaired seam become a source for another geometrically
+            // connected UV edge later in this pass. This closes fragmented
+            // high-poly islands without leaking across unrelated atlas space.
+            source[targetOffset + channel] = source[sourceOffset + channel];
+          }
+          coverage[targetIndex] = 1;
+          adjustedPixels += 1;
+          continue;
+        }
+
+        // Transparent merged projections only need missing-coverage transfer.
+        // Do not average two already valid texels across a hard/noisy high-poly
+        // edge, because that would blur legitimate material boundaries.
+        if (options.repairMissingCoverage) continue;
+        if (!firstCovered || !secondCovered) continue;
         const strength = 0.9 * (1 - depth / bandPixels);
 
         for (let channel = 0; channel < 3; channel += 1) {

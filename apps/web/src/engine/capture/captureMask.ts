@@ -11,7 +11,7 @@ export async function captureMask(request: CapturePassRequest): Promise<CaptureP
 
   try {
     return {
-      url: await renderSceneToPngUrl(request),
+      url: await renderSceneToPngUrl(request, { onRenderSubmitted: restore }),
       warnings: [],
     };
   } finally {
