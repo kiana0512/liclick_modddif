@@ -830,20 +830,20 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isLiclickRoute && segments[2] === 'edit-image') {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
-    if (
-      user.atlasHomeDir &&
-      user.email &&
-      atlasIdentity.email &&
-      user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
-    ) {
-      sendJson(response, 403, {
-        error:
-          'Current Atlas / Liclick account does not match this browser session. Please log in again.',
-        sessionEmail: user.email,
-        atlasEmail: atlasIdentity.email,
-      });
-      return true;
+    if (user.atlasHomeDir && user.email) {
+      const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
+      if (
+        atlasIdentity.email &&
+        user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
+      ) {
+        sendJson(response, 403, {
+          error:
+            'Current Atlas / Liclick account does not match this browser session. Please log in again.',
+          sessionEmail: user.email,
+          atlasEmail: atlasIdentity.email,
+        });
+        return true;
+      }
     }
     const input = await readJsonBody<EditImageInput>(request);
     if (!input.image || !input.mask || !input.prompt?.trim()) {
@@ -878,20 +878,20 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isGenerateImageRoute) {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
-    if (
-      user.atlasHomeDir &&
-      user.email &&
-      atlasIdentity.email &&
-      user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
-    ) {
-      sendJson(response, 403, {
-        error:
-          'Current Atlas / Liclick account does not match this browser session. Please log in again.',
-        sessionEmail: user.email,
-        atlasEmail: atlasIdentity.email,
-      });
-      return true;
+    if (user.atlasHomeDir && user.email) {
+      const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
+      if (
+        atlasIdentity.email &&
+        user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
+      ) {
+        sendJson(response, 403, {
+          error:
+            'Current Atlas / Liclick account does not match this browser session. Please log in again.',
+          sessionEmail: user.email,
+          atlasEmail: atlasIdentity.email,
+        });
+        return true;
+      }
     }
     const input = await readJsonBody<GenerateImageInput>(request);
     const projectId = input.projectId ?? 'default';
