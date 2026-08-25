@@ -4,7 +4,7 @@ metadata:
   name: li3d
 spec:
   rules:
-    - host: li3d.your-real-domain.com
+    - host: li3d.lilithgames.com
       http:
         paths:
           - path: /

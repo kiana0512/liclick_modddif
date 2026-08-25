@@ -1,0 +1,10 @@
+# zprod has no default StorageClass — pin an explicit one. zstack-csi-rbd
+# (Ceph RBD) is picked because it's network-attached block storage, so the
+# pod (and its data) can be rescheduled to any node, unlike the local-disk
+# edge-lvm class. Swap this if platform/ops prefers a different class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: li3d-server-workspace
+spec:
+  storageClassName: zstack-csi-rbd

@@ -7,9 +7,11 @@ Kubernetes lives under this directory:
 deploy/
   Dockerfile                          multi-stage build, two targets: server, web
   Dockerfile.dockerignore             build-context excludes (BuildKit auto-picks this up)
+  docker-compose.yml                  local build/run of both images, no k8s needed
   docker/nginx/default.conf.template  nginx conf for the web image (SPA + reverse proxy)
   k8s/base/                           Kustomize base: Deployments, Services, PVC, Ingress
-  k8s/overlays/prod/                  example overlay: image tags, replicas, resources, host
+  k8s/overlays/prod/                  generic example overlay
+  k8s/overlays/zprod/                 the real overlay for the company zprod cluster
 ```
 
 Two images come out of one pnpm monorepo, mirroring the split
@@ -18,58 +20,107 @@ Two images come out of one pnpm monorepo, mirroring the split
 (nginx serving the built SPA, reverse-proxying `/api` and `/workspace` to
 the backend Service).
 
-## 1. Build and push images
+There are two overlays:
+
+- **`k8s/overlays/prod`** — a generic, illustrative example (placeholder
+  `registry.example.com` / `example.com`). Copy this pattern for a new
+  environment.
+- **`k8s/overlays/zprod`** — the real overlay for the company `zprod`
+  cluster (kubectl context `zprod`, cluster `kubernetes-h657hbh267`),
+  namespace `li3d`, ingress host `li3d.lilithgames.com`, PVC pinned to
+  the `zstack-csi-rbd` StorageClass (zprod has no default StorageClass —
+  confirmed via `kubectl get storageclass`, none carry the
+  `storageclass.kubernetes.io/is-default-class` annotation).
+
+## 1. Build and push images (you run this — no Docker in this environment)
 
 Build context is the **repo root**, not `deploy/` — the Dockerfile `COPY`s
-`apps/`, `packages/`, etc. Always pass `-f`:
+`apps/`, `packages/`, etc. Always pass `-f`. `zprod` already runs other
+internal services (`p4-account-service`, `swarm-event-gateway`, in the
+`liycolith-svcs` namespace) out of this registry, so the zprod overlay
+targets the same one:
 
 ```bash
-docker build -f deploy/Dockerfile --target server -t <registry>/li3d/server:0.1.3 .
-docker build -f deploy/Dockerfile --target web    -t <registry>/li3d/web:0.1.3    .
-docker push <registry>/li3d/server:0.1.3
-docker push <registry>/li3d/web:0.1.3
+TAG=0.1.3   # or a git short SHA, whatever you want to roll back to later
+REGISTRY=tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops
+
+docker build -f deploy/Dockerfile --target server -t $REGISTRY/li3d-server:$TAG .
+docker build -f deploy/Dockerfile --target web    -t $REGISTRY/li3d-web:$TAG    .
+docker push $REGISTRY/li3d-server:$TAG
+docker push $REGISTRY/li3d-web:$TAG
 ```
+
+Then point the zprod overlay at the tag you just pushed:
+
+```bash
+cd deploy/k8s/overlays/zprod
+kustomize edit set image \
+  li3d-server=$REGISTRY/li3d-server:$TAG \
+  li3d-web=$REGISTRY/li3d-web:$TAG
+```
+
+(or just edit the `REPLACE_ME` tags in
+[`k8s/overlays/zprod/kustomization.yaml`](k8s/overlays/zprod/kustomization.yaml)
+directly).
+
+**Local build without any registry/cluster**, e.g. to sanity-check the
+images build and boot before pushing anywhere:
+
+```bash
+docker compose -f deploy/docker-compose.yml build
+docker compose -f deploy/docker-compose.yml up
+curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:4517/api/health
+```
+
+This runs `AUTH_MODE=dev-mock` (no real Feishu/IDaaS needed) with a named
+Docker volume standing in for the PVC — it's a dev convenience, not how
+`k8s/` actually deploys the app.
 
 ## 2. Fill in secrets
 
 ```bash
 cp deploy/k8s/base/secrets/server.env.example deploy/k8s/base/secrets/server.env
-# edit deploy/k8s/base/secrets/server.env:
-#   SESSION_SECRET                -> openssl rand -hex 32
-#   FEISHU_OAUTH_CLIENT_ID/SECRET -> from your IDaaS/Feishu app registration
 ```
 
+Edit `deploy/k8s/base/secrets/server.env` **directly in an editor** (don't
+paste the client secret into chat/tickets):
+
+- `SESSION_SECRET` → `openssl rand -hex 32`
+- `FEISHU_OAUTH_CLIENT_ID` / `FEISHU_OAUTH_CLIENT_SECRET` → from the
+  IDaaS/Feishu app registration for `li3d.lilithgames.com`'s callback
+  (`https://li3d.lilithgames.com/api/auth/feishu/callback`, already set in
+  the zprod overlay's config override)
+
 This file is gitignored — never commit it. `kubectl apply -k` reads it at
-apply time via `secretGenerator`.
+apply time via `secretGenerator`, shared by every overlay under `base/`.
 
-## 3. Review non-secret config
+Also set `FEISHU_OAUTH_AUTHORIZE_URL` / `FEISHU_OAUTH_TOKEN_URL` /
+`FEISHU_OAUTH_USERINFO_URL` in
+[`k8s/base/server-config.env`](k8s/base/server-config.env) (or a zprod
+override) — they're blank placeholders in the base config and
+`AUTH_MODE=feishu-oauth` won't come up healthy without them.
 
-Edit [`k8s/base/server-config.env`](k8s/base/server-config.env) — at
-minimum set `LICLICK_PUBLIC_WORKSPACE_URL` / `LICLICK_FRONTEND_URL` /
-`LICLICK_ALLOWED_ORIGINS` / `FEISHU_OAUTH_REDIRECT_URL` to your real domain,
-and `COMFYUI_BASE_URL` / `COMFYUI_INPAINT_BASE_URL` to your GPU inference
-endpoints. Set the same host on [`k8s/base/ingress.yaml`](k8s/base/ingress.yaml)
-(or override it in an overlay — see `k8s/overlays/prod`).
+## 3. Review remaining config
 
-For a first smoke test without setting up OAuth, set `AUTH_MODE=dev-mock`
-instead of `feishu-oauth`.
+`COMFYUI_BASE_URL` / `COMFYUI_INPAINT_BASE_URL` in
+[`k8s/base/server-config.env`](k8s/base/server-config.env) still point at
+placeholder hosts — set them to your real GPU inference endpoints before
+deploying, or image generation will fail even though the app itself comes
+up healthy.
 
 ## 4. Deploy
 
 ```bash
-# base only (edit image tags in deploy/k8s/base/kustomization.yaml first), or:
-kubectl apply -k deploy/k8s/base
-
-# a per-environment overlay with pinned image tags/replicas/resources:
-kubectl apply -k deploy/k8s/overlays/prod
+kubectl --context zprod apply -k deploy/k8s/overlays/zprod
 ```
 
 Verify:
 
 ```bash
-kubectl -n li3d get pods
-kubectl -n li3d logs deploy/liclick-server -c db-push   # schema push, once per pod start
-kubectl -n li3d port-forward svc/liclick-server 4517:4517 &
+kubectl --context zprod -n li3d get pods
+kubectl --context zprod -n li3d logs deploy/liclick-server -c db-push   # schema push, once per pod start
+kubectl --context zprod -n li3d port-forward svc/liclick-server 4517:4517 &
 curl -fsS http://127.0.0.1:4517/api/health
 ```
 
