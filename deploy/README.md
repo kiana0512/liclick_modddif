@@ -73,6 +73,57 @@ kubectl -n li3d port-forward svc/liclick-server 4517:4517 &
 curl -fsS http://127.0.0.1:4517/api/health
 ```
 
+## 5. GitLab CI (`.gitlab-ci.yml`, repo root)
+
+Modeled on the sibling `lipixel` project's pipeline. Only runs on the
+`release` branch **— li3d doesn't actually have one; confirm and update
+`workflow.rules` in `.gitlab-ci.yml` before relying on this.** The deploy
+stage additionally requires `[deploy]` in the commit message (same
+double-gate lipixel uses). It builds `build:server` and `build:web` via
+Kaniko (one Dockerfile, two `--target`s), then `deploy:k8s` applies
+`deploy/k8s/overlays/zprod` and updates both Deployments' images —
+`liclick-server`'s `db-push` initContainer and `server` container always
+move together, same tag.
+
+**Runner**: no new runner — li3d's project Settings > CI/CD > Runners
+showed lipixel's existing runner (`#3274`, unlocked, physically running in
+the **ztest** cluster) as an assignable project runner, and it's now
+assigned to li3d. That's why the tags below are `ztest, k8s` — a subset of
+that runner's actual tags (`ztest, lipixel, k8s`), specific enough that no
+other k8s-tagged runner in the group would match. Where the runner
+physically runs doesn't matter for the deploy job: it authenticates to
+zprod at runtime via `KUBE_CONFIG_B64`, the same way it already
+authenticates to the ACR registry regardless of which cluster it builds in.
+
+Required GitLab CI/CD variables (masked + protected, set on the li3d
+project — Settings > CI/CD > Variables):
+
+```text
+KUBE_CONFIG_B64          base64-encoded kubeconfig for a scoped
+                          ServiceAccount (li3d-ci-deployer, see
+                          deploy/k8s/infra/ci-deployer/rbac.yaml — NOT
+                          cluster-admin, confined to the resource kinds
+                          deploy/k8s/overlays/zprod actually contains,
+                          inside the li3d namespace)
+LI3D_SESSION_SECRET       becomes SESSION_SECRET
+LI3D_FEISHU_CLIENT_ID     becomes FEISHU_OAUTH_CLIENT_ID
+LI3D_FEISHU_CLIENT_SECRET becomes FEISHU_OAUTH_CLIENT_SECRET
+```
+
+The deploy job writes those last three into
+`deploy/k8s/base/secrets/server.env` right before `kubectl apply -k` (that
+path is gitignored — kustomize's `secretGenerator` needs it to exist as a
+real file, unlike lipixel's imperative `kubectl create secret`) and shreds
+it immediately after. Optional: `KUBE_CONTEXT` if the kubeconfig has more
+than one context (ours only has one, `zprod`, so this isn't needed).
+
+**Before this runs for real, confirm:**
+- The `release` branch gate above matches li3d's actual workflow.
+- An ACR mirror exists for `node:22-bookworm-slim` and
+  `nginxinc/nginx-unprivileged:1.27-alpine` (`NODE_IMAGE` / `NGINX_IMAGE`
+  variables), the way lipixel's README documents its own mirrored bases —
+  otherwise the Kaniko job needs outbound network access to Docker Hub.
+
 ## Things worth knowing before you run this for real
 
 - **SQLite ⇒ one backend replica.** `liclick-server` is pinned to

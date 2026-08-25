@@ -17,6 +17,21 @@ server {
         return 200 "ok\n";
     }
 
+    # The local-component installer is served by the backend (it stitches
+    # apps/web/public/downloads/local-component/manifest.json + part-*.bin
+    # together — see webFrontendService.ts), not as a static file here, so
+    # this needs its own exact-match proxy rather than falling through to
+    # try_files. Matches scripts/setup-linux-a100.sh's bare-metal nginx site.
+    location = /downloads/LIclick-3D-Texture-Local-Component-Setup.exe {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+
     location ^~ /api/ {
         proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
         proxy_http_version 1.1;

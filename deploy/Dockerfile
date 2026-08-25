@@ -18,6 +18,7 @@
 
 ARG NODE_IMAGE=node:22-bookworm-slim
 ARG PNPM_VERSION=9.15.4
+ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine
 
 ########################################################################
 # deps: install the full workspace (incl. devDependencies) once, cached
@@ -79,6 +80,12 @@ COPY --from=build --chown=liclick:liclick /out/server/node_modules ./node_module
 COPY --from=build --chown=liclick:liclick /out/server/package.json ./package.json
 COPY --from=build --chown=liclick:liclick /repo/apps/server/dist ./dist
 COPY --from=build --chown=liclick:liclick /repo/apps/server/prisma ./prisma
+# apps/web/dist (not just the app bundle — public/downloads/local-component's
+# manifest.json + part-*.bin come along via Vite's public/ passthrough) so
+# webFrontendService.ts can serve the local-component installer route when
+# LICLICK_SERVE_WEB=true. In this split-image topology nginx (the "web"
+# target) still owns every other path — see docker/nginx/default.conf.template.
+COPY --from=build --chown=liclick:liclick /repo/apps/web/dist ./web-dist
 
 RUN mkdir -p /data/workspace && chown -R liclick:liclick /data
 
@@ -103,7 +110,7 @@ CMD ["node", "dist/index.js"]
 ########################################################################
 # web: runtime image for apps/web (static SPA + reverse proxy to server)
 ########################################################################
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS web
+FROM ${NGINX_IMAGE} AS web
 COPY deploy/docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
 
