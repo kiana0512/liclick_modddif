@@ -29,12 +29,14 @@ type WorkerSlot = {
   worker: Worker;
   task?: PackTask;
   cancellationPoll?: number;
+  taskTimeout?: number;
 };
 
 let nextRequestId = 1;
 const slots: WorkerSlot[] = [];
 const queue: PackTask[] = [];
 let peakActiveCount = 0;
+const PROJECTED_ARRAY_WORKER_TIMEOUT_MS = 45_000;
 
 function clearCancellationPoll(slot: WorkerSlot) {
   if (slot.cancellationPoll === undefined) return;
@@ -42,8 +44,15 @@ function clearCancellationPoll(slot: WorkerSlot) {
   slot.cancellationPoll = undefined;
 }
 
+function clearTaskTimeout(slot: WorkerSlot) {
+  if (slot.taskTimeout === undefined) return;
+  window.clearTimeout(slot.taskTimeout);
+  slot.taskTimeout = undefined;
+}
+
 function removeWorkerSlot(slot: WorkerSlot) {
   clearCancellationPoll(slot);
+  clearTaskTimeout(slot);
   const index = slots.indexOf(slot);
   if (index >= 0) slots.splice(index, 1);
 }
@@ -106,6 +115,7 @@ function createWorkerSlot(): WorkerSlot {
     const task = slot.task;
     if (!task || task.id !== event.data.id) return;
     clearCancellationPoll(slot);
+    clearTaskTimeout(slot);
     slot.task = undefined;
     if (task.isCancelled?.()) {
       task.reject(new Error('Projected texture-array worker task was superseded.'));
@@ -123,7 +133,17 @@ function createWorkerSlot(): WorkerSlot {
   };
   slot.worker.onerror = (event) => {
     clearCancellationPoll(slot);
+    clearTaskTimeout(slot);
     slot.task?.reject(new Error(event.message || 'Projected texture-array worker failed.'));
+    slot.task = undefined;
+    slot.worker.terminate();
+    removeWorkerSlot(slot);
+    dispatchQueuedPacks();
+  };
+  slot.worker.onmessageerror = () => {
+    clearCancellationPoll(slot);
+    clearTaskTimeout(slot);
+    slot.task?.reject(new Error('Projected texture-array worker response was invalid.'));
     slot.task = undefined;
     slot.worker.terminate();
     removeWorkerSlot(slot);
@@ -154,8 +174,17 @@ function dispatchQueuedPacks() {
         { transfer: task.input.sources.flatMap(({ bitmap }) => (bitmap ? [bitmap] : [])) },
       );
       monitorActiveTaskCancellation(slot, task);
+      slot.taskTimeout = window.setTimeout(() => {
+        if (slot.task !== task) return;
+        slot.task = undefined;
+        slot.worker.terminate();
+        removeWorkerSlot(slot);
+        task.reject(new Error('Projected texture-array worker timed out.'));
+        dispatchQueuedPacks();
+      }, PROJECTED_ARRAY_WORKER_TIMEOUT_MS);
     } catch (error) {
       slot.task = undefined;
+      clearTaskTimeout(slot);
       task.input.sources.forEach((source) => source.bitmap?.close());
       task.reject(
         error instanceof Error ? error : new Error('Could not dispatch projected texture pack.'),

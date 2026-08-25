@@ -187,6 +187,7 @@ import { WorkflowModuleSwitcher } from '@/features/workflow/WorkflowModuleSwitch
 import {
   findMergedUvBakeLayer,
   isBakeMergeModelReady,
+  resolveBakeUvMergePlan,
   selectBakeBaseColor,
 } from '@/features/workflow/selectBakeBaseColor';
 import { EditorShell } from '@/layouts/EditorShell';
@@ -2865,6 +2866,7 @@ export function EditorPage({
       // relative/previous-server URL after reopening an older project.
       const persistedImageSource = layer.imageUrl ?? layer.localRepaintSourceUrl;
       const persistedMaskSource = layer.maskUrl ?? layer.localRepaintMaskUrl;
+      const persistedLocalRepaintMaskSource = layer.localRepaintMaskUrl;
       persistenceTasks.push(async () => {
         layer.imageUrl =
           (await persistOptionalAsset(persistedImageSource, 'layers', `${layer.id}.png`)) ??
@@ -2875,6 +2877,14 @@ export function EditorPage({
           persistedMaskSource,
           'layers',
           `${layer.id}-mask.png`,
+          undefined,
+        );
+      });
+      persistenceTasks.push(async () => {
+        layer.localRepaintMaskUrl = await persistOptionalAsset(
+          persistedLocalRepaintMaskSource,
+          'layers',
+          `${layer.id}-local-repaint-authored-mask.png`,
           undefined,
         );
       });
@@ -2917,7 +2927,6 @@ export function EditorPage({
     projectForSave.layers.forEach((layer) => {
       if (!layer.localRepaintSourceUrl && !layer.localRepaintMaskUrl) return;
       layer.localRepaintSourceUrl = layer.imageUrl;
-      layer.localRepaintMaskUrl = layer.maskUrl;
     });
 
     return projectForSave;
@@ -3702,20 +3711,41 @@ export function EditorPage({
     return 'Saved';
   }
 
+  async function autoMergeUvAndExportBaseColor() {
+    if (!project || !importedModel) throw new Error(t('importModelFirst'));
+    const objectId = selectedObjectId ?? importedModel.objectId;
+    const mergePlan = resolveBakeUvMergePlan(useLayerStore.getState().layers, objectId);
+    let colorTextureUrl: string | undefined;
+
+    if (mergePlan.action === 'merge') {
+      const mergedLayer = await mergeLayersToUvLayer(
+        mergePlan.sourceLayerIds,
+        mergePlan.baseUvLayerId,
+        {
+          objectId,
+          suppressErrorToast: true,
+          throwOnError: true,
+        },
+      );
+      colorTextureUrl = mergedLayer && 'imageUrl' in mergedLayer ? mergedLayer.imageUrl : undefined;
+      if (!colorTextureUrl) throw new Error('UV 合并已取消，未导出颜色贴图。');
+    } else if (mergePlan.action === 'reuse') {
+      colorTextureUrl = mergePlan.mergedLayer.imageUrl;
+    } else {
+      colorTextureUrl = currentObjectBaseColor?.imageUrl;
+    }
+
+    if (!colorTextureUrl) {
+      throw new Error('当前模型没有可合并或导出的颜色图层。');
+    }
+    const currentProject =
+      useProjectStore.getState().projects.find((item) => item.id === project.id) ?? project;
+    const { exportTextureUrl } = await import('@/engine/export/exportTexture');
+    await exportTextureUrl(currentProject, colorTextureUrl, 'basecolor');
+  }
+
   function handleExportBaseColorDownload() {
-    if (!project || !importedModel) return;
-    const exportInput = {
-      project,
-      importedModel,
-      selectedObjectId,
-      target: 'scene' as const,
-      onProgress: updateExportBakeProgress,
-    };
-    void runExportAction(t('exporting'), () =>
-      import('@/engine/export/exportTexture').then(({ exportCompositedBaseColor }) =>
-        exportCompositedBaseColor(exportInput),
-      ),
-    );
+    void runExportAction(t('exporting'), autoMergeUvAndExportBaseColor);
   }
 
   const restoreExistingLocalRepaintSession = useCallback(() => {
@@ -5468,17 +5498,7 @@ export function EditorPage({
           exportModelStl({ ...modelInput, target: 'object' }),
         );
       },
-      'texture-color': () => {
-        if (modelInput) {
-          return import('@/engine/export/exportTexture').then(({ exportCompositedBaseColor }) =>
-            exportCompositedBaseColor({ ...modelInput, target: 'scene' }),
-          );
-        }
-        if (!activeColorTextureUrl) throw new Error(t('bakeBaseColorFirst'));
-        return import('@/engine/export/exportTexture').then(({ exportTextureUrl }) =>
-          exportTextureUrl(project, activeColorTextureUrl, 'basecolor'),
-        );
-      },
+      'texture-color': autoMergeUvAndExportBaseColor,
       'texture-normal': () => {
         if (normalLayer?.imageUrl) {
           return import('@/engine/export/exportTexture').then(({ exportTextureUrl }) =>
@@ -5533,7 +5553,11 @@ export function EditorPage({
         seamHarmonizationVersion === 7 ||
         seamHarmonizationVersion === 8 ||
         seamHarmonizationVersion === 9 ||
-        seamHarmonizationVersion === 10
+        seamHarmonizationVersion === 10 ||
+        seamHarmonizationVersion === 11 ||
+        seamHarmonizationVersion === 12 ||
+        seamHarmonizationVersion === 13 ||
+        seamHarmonizationVersion === 14
           ? harmonizedResultUrl
           : undefined;
       const selectedResultUrl =
@@ -5961,6 +5985,15 @@ export function EditorPage({
         tone: 'warning',
         title: t('localRepaintUnavailable'),
         description: t('importModelFirst'),
+      });
+      return;
+    }
+    if (!useSceneStore.getState().paintMaskHasContent) {
+      pushToast({
+        tone: 'warning',
+        title: '请先绘制蒙版',
+        description: '请标记需要生成的区域，再点击局部生图。',
+        dedupeKey: 'local-repaint-mask-required',
       });
       return;
     }

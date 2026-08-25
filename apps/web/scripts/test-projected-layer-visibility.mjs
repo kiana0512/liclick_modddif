@@ -720,13 +720,13 @@ assert.doesNotMatch(
 );
 assert.match(
   viewportCanvasSource,
-  /imageUrl: source\.persistentImageUrl \?\? source\.imageUrl[\s\S]*?maskUrl: composite\.maskUrl[\s\S]*?depthUrl: source\.depthUrl[\s\S]*?depthEncoding: source\.depthEncoding/,
-  'Persisted local repaint projection must retain capture depth to reject rear surfaces.',
+  /imageUrl: source\.persistentImageUrl \?\? source\.imageUrl[\s\S]*?maskUrl: composite\.blendMaskUrl[\s\S]*?depthUrl: source\.depthUrl[\s\S]*?depthEncoding: source\.depthEncoding[\s\S]*?localRepaintMaskUrl: composite\.maskUrl/,
+  'Persisted local repaint projection must retain the editable authored mask, inward blend mask and capture depth used to reject rear surfaces.',
 );
 assert.match(
   viewportCanvasSource,
-  /const visibilityDepthUrl =[\s\S]*?runtimeDepth\?\.depthUrl \?\? source\.depthUrl[\s\S]*?createProjectedLayerMaterial\(\{[\s\S]*?maskUrl: composite\.maskUrl[\s\S]*?depthUrl: visibilityDepthUrl[\s\S]*?useDepthCheck: Boolean\(visibilityDepthUrl\)[\s\S]*?useNormalCheck: false/,
-  'The live local repaint projection must bind front-surface depth without normal cutout checks.',
+  /const visibilityDepthUrl =[\s\S]*?runtimeDepth\?\.depthUrl \?\? source\.depthUrl[\s\S]*?createProjectedLayerMaterial\(\{[\s\S]*?maskUrl: composite\.blendMaskUrl[\s\S]*?depthUrl: visibilityDepthUrl[\s\S]*?useDepthCheck: Boolean\(visibilityDepthUrl\)[\s\S]*?useNormalCheck: false/,
+  'The live local repaint projection must bind the inward blend mask and front-surface depth without normal cutout checks.',
 );
 assert.match(
   generatePanelSource,

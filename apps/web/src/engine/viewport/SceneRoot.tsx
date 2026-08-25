@@ -1825,12 +1825,38 @@ function ImportedModel({
       }
       const currentDisplayMode = useSceneStore.getState().displayMode;
       const currentSettings = useSettingsStore.getState();
+      const previousLayerVisibilityById = new Map(
+        previousState.layers.map((layer) => [layer.id, layer.visible] as const),
+      );
+      const previousLayerById = new Map(
+        previousState.layers.map((layer) => [layer.id, layer] as const),
+      );
       const objectUvLayers = state.layers.filter(
         (layer) =>
           layer.type === 'uv' &&
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedModel.objectId),
       );
+      const reopenedUvLayer = objectUvLayers.some(
+        (layer) => layer.visible && previousLayerVisibilityById.get(layer.id) === false,
+      );
+      const reopenedProjectedLayer = state.layers.some(
+        (layer) =>
+          layer.type === 'projected' &&
+          layer.visible &&
+          previousLayerVisibilityById.get(layer.id) === false &&
+          (!layer.objectId || layer.objectId === importedModel.objectId),
+      );
+      const visibleUvContentChanged = objectUvLayers.some((layer) => {
+        if (!layer.visible) return false;
+        const previousLayer = previousLayerById.get(layer.id);
+        return (
+          !previousLayer ||
+          previousLayer.imageUrl !== layer.imageUrl ||
+          previousLayer.contentRevision !== layer.contentRevision ||
+          previousLayer.role !== layer.role
+        );
+      });
       const visibleOrdinaryUvLayers = objectUvLayers.filter(
         (layer) =>
           layer.visible &&
@@ -1931,6 +1957,9 @@ function ImportedModel({
         visibleLocalRepaintUvLayers.length > 0 ||
         visibleContentAwareUvLayers.length > 0;
       const hasVisibleProjectedContribution = displayLayers.some((layer) => layer.visible);
+      if (reopenedUvLayer || reopenedProjectedLayer || visibleUvContentChanged) {
+        requiresMaterialReconciliation = true;
+      }
       // Visibility normally stays on the zero-allocation uniform path. A cold
       // restore with every eye closed is the one state where there is no
       // resident shader on the model to receive those uniforms: the viewport
@@ -3361,8 +3390,7 @@ function ImportedModel({
           !simulatedInteractionIsPrewarm) ||
         document.body.dataset.perfViewportStressMeasuring === '1' ||
         paintTool === 'inpaint-add' ||
-        paintTool === 'inpaint-subtract' ||
-        paintTool === 'inpaint-apply',
+        paintTool === 'inpaint-subtract',
       );
     };
     const waitForViewportInteractionIdle = async () => {

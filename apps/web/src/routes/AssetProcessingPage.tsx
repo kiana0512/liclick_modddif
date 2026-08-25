@@ -1528,7 +1528,7 @@ export function JobPanel({
                   )}
                   {continuing
                     ? '正在保存并传递…'
-                    : continueLabel ?? (mode === 'uv' ? '保存并传入烘焙' : '保存并传入 UV')}
+                    : continueLabel ?? (mode === 'uv' ? '直接传入烘焙' : '保存并传入 UV')}
                 </button>
               )}
               {deliveryDownloadError && (
@@ -1872,7 +1872,7 @@ function AutoUvWorkspace({
             className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-xs font-semibold text-white transition hover:brightness-110 disabled:opacity-40"
           >
             {publishing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            {publishing ? '正在保存服务器 UV 结果…' : '保存并传入烘焙'}
+            {publishing ? '正在保存服务器 UV 结果…' : '直接传入烘焙'}
           </button>
         ) : null}
         {busy ? (

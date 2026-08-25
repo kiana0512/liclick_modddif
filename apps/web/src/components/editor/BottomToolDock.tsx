@@ -158,13 +158,12 @@ export function BottomToolDock({
   useEffect(() => {
     const applyToolSelected = paintTool === 'inpaint-apply';
     if (!previousApplyToolSelectedRef.current && applyToolSelected) {
-      // The generation keeps its own archived mask. Once its apply brush is
-      // actually ready, discard the transient selection drawn for generation.
-      clearPaintMask();
+      // Applying the returned repaint hides the mask presentation, but keeps
+      // the single live mask authored for reuse or later editing.
       setRepaintGuideActive(false);
     }
     previousApplyToolSelectedRef.current = applyToolSelected;
-  }, [clearPaintMask, paintTool]);
+  }, [paintTool]);
 
   useEffect(() => {
     if (!previousMaskToolSelectedRef.current && isMaskPaintTool) {
@@ -461,9 +460,11 @@ export function BottomToolDock({
                     type="button"
                     className={cn(workflowButton, isMaskPaintTool && activeWorkflowButton)}
                     onClick={() => {
-                      const willSelectMaskTool = !isMaskPaintTool;
-                      onPaintToolChange(willSelectMaskTool ? 'inpaint-add' : 'none');
-                      if (willSelectMaskTool) {
+                      // The mask step is a mode selector, not an on/off toggle.
+                      // Repeated clicks only open or close its settings menu so
+                      // the resident repaint presentation stays mounted.
+                      if (!isMaskPaintTool) {
+                        onPaintToolChange('inpaint-add');
                         setGenerationGuideActive(true);
                         setRepaintGuideActive(false);
                       }
@@ -487,7 +488,7 @@ export function BottomToolDock({
               <span className="relative inline-flex">
                 <IconTooltip
                   label="步骤 2 · 局部生图"
-                  description="蒙版可选；未绘制时按全图范围生成，运行期间不可重复提交。"
+                  description="请先绘制蒙版；每次提交都会锁定当前蒙版，运行期间不可重复提交。"
                 >
                   <button
                     type="button"

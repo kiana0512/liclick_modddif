@@ -73,7 +73,6 @@ import {
   applyTargetOnlyMaterial,
   cloneCameraForCaptureAspect,
   renderSceneToPngUrl,
-  renderScenePassesToPngUrl,
 } from '@/engine/capture/renderTargetUtils';
 import {
   clearPerformanceTimelineEvents,
@@ -98,6 +97,7 @@ import {
 } from '@/services/nativePerformanceClient';
 import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
+import { updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import {
   isViewportInteractionBusy,
@@ -4422,6 +4422,10 @@ type LocalRepaintCompositeState = {
   maskTexture: THREE.CanvasTexture;
   maskCanvas: HTMLCanvasElement;
   maskContext: CanvasRenderingContext2D;
+  blendMaskUrl: string;
+  blendMaskTexture: THREE.CanvasTexture;
+  blendMaskCanvas: HTMLCanvasElement;
+  blendMaskContext: CanvasRenderingContext2D;
   scratchCanvas: HTMLCanvasElement;
   scratchContext: CanvasRenderingContext2D;
   falloffCanvas: HTMLCanvasElement;
@@ -4740,11 +4744,36 @@ function createLocalRepaintFalloffCanvasAsync(
   return pending;
 }
 
-type PaintableMeshCache = {
-  objectId: string;
-  groupUuid: string;
-  meshes: THREE.Mesh[];
+type PaintableSurfaceCache = {
+  positionedMeshes: THREE.Mesh[];
+  uvMeshes: THREE.Mesh[];
 };
+
+const paintableSurfaceCache = new WeakMap<THREE.Object3D, PaintableSurfaceCache>();
+
+function getPaintableSurfaceCache(group: THREE.Object3D) {
+  const cached = paintableSurfaceCache.get(group);
+  if (cached) return cached;
+
+  const positionedMeshes: THREE.Mesh[] = [];
+  const uvMeshes: THREE.Mesh[] = [];
+  group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    if (
+      child.userData.liclickPaintOverlay ||
+      child.userData.liclickViewportHelper ||
+      child.userData.liclickSelectionGlow ||
+      child.userData.liclickWireframeOverlay ||
+      !child.geometry.getAttribute('position')
+    )
+      return;
+    positionedMeshes.push(child);
+    if (child.geometry.getAttribute('uv')) uvMeshes.push(child);
+  });
+  const result = { positionedMeshes, uvMeshes };
+  paintableSurfaceCache.set(group, result);
+  return result;
+}
 
 function createPaintCanvas(size = UV_PAINT_RESOLUTION, willReadFrequently = true) {
   const canvas = document.createElement('canvas');
@@ -5851,7 +5880,11 @@ function hasEditableEnhancedLocalRepaintSource(layer: Layer) {
     layer.localRepaintSeamHarmonizationVersion === 7 ||
     layer.localRepaintSeamHarmonizationVersion === 8 ||
     layer.localRepaintSeamHarmonizationVersion === 9 ||
-    layer.localRepaintSeamHarmonizationVersion === 10
+    layer.localRepaintSeamHarmonizationVersion === 10 ||
+    layer.localRepaintSeamHarmonizationVersion === 11 ||
+    layer.localRepaintSeamHarmonizationVersion === 12 ||
+    layer.localRepaintSeamHarmonizationVersion === 13 ||
+    layer.localRepaintSeamHarmonizationVersion === 14
   );
 }
 
@@ -5942,14 +5975,24 @@ function createLocalRepaintComposite(
   maskCanvas.width = width;
   maskCanvas.height = height;
   const maskContext = maskCanvas.getContext('2d');
+  const blendMaskCanvas = document.createElement('canvas');
+  blendMaskCanvas.width = width;
+  blendMaskCanvas.height = height;
+  const blendMaskContext = blendMaskCanvas.getContext('2d');
   const scratchCanvas = document.createElement('canvas');
   scratchCanvas.width = width;
   scratchCanvas.height = height;
   const scratchContext = scratchCanvas.getContext('2d');
-  if (!maskContext || !scratchContext) return undefined;
+  if (!maskContext || !blendMaskContext || !scratchContext) return undefined;
   const maskUrl = registerLiveProjectedCanvasTexture(layerId, maskCanvas, THREE.NoColorSpace);
   const maskTexture = getLiveProjectedCanvasTexture(maskUrl, THREE.NoColorSpace);
-  if (!maskTexture) return undefined;
+  const blendMaskUrl = registerLiveProjectedCanvasTexture(
+    `${layerId}:inward-crossfade`,
+    blendMaskCanvas,
+    THREE.NoColorSpace,
+  );
+  const blendMaskTexture = getLiveProjectedCanvasTexture(blendMaskUrl, THREE.NoColorSpace);
+  if (!maskTexture || !blendMaskTexture) return undefined;
   return {
     sourceKey,
     layerId,
@@ -5957,6 +6000,10 @@ function createLocalRepaintComposite(
     maskTexture,
     maskCanvas,
     maskContext,
+    blendMaskUrl,
+    blendMaskTexture,
+    blendMaskCanvas,
+    blendMaskContext,
     scratchCanvas,
     scratchContext,
     falloffCanvas:
@@ -5969,6 +6016,21 @@ function createLocalRepaintComposite(
     restoredMaskReady: true,
     hasContent: false,
   };
+}
+
+function refreshLocalRepaintInwardCrossfadeMask(
+  composite: LocalRepaintCompositeState,
+  dirtyRect?: PaintDirtyRect,
+) {
+  updateLocalRepaintInwardCrossfadeCanvas({
+    sourceContext: composite.maskContext,
+    targetContext: composite.blendMaskContext,
+    width: composite.maskCanvas.width,
+    height: composite.maskCanvas.height,
+    dirtyRect,
+  });
+  markLiveProjectedCanvasTextureUpdated(composite.blendMaskUrl);
+  composite.blendMaskTexture.needsUpdate = true;
 }
 
 const localRepaintProjectionScratch = {
@@ -6170,6 +6232,7 @@ function mergeLocalRepaintScratchPatch(
   );
   composite.maskContext.restore();
   composite.scratchContext.clearRect(x, y, width, height);
+  refreshLocalRepaintInwardCrossfadeMask(composite, { x, y, width, height });
 }
 
 function canvasToPngDataUrl(canvas: HTMLCanvasElement) {
@@ -6404,7 +6467,6 @@ function SurfacePaintOverlay() {
   const cursorOverlayRef = useRef<SVGSVGElement>();
   const cursorCircleRef = useRef<SVGCircleElement>();
   const layerRef = useRef<UvPaintLayer>();
-  const paintableMeshCacheRef = useRef<PaintableMeshCache>();
   const raycasterRef = useRef(
     new THREE.Raycaster() as THREE.Raycaster & { firstHitOnly?: boolean },
   );
@@ -7361,23 +7423,7 @@ function SurfacePaintOverlay() {
   }, [importedModel, scene, selectedObjectId]);
 
   const getPaintableMeshes = useCallback((model: SurfacePaintTarget) => {
-    const cached = paintableMeshCacheRef.current;
-    if (cached?.objectId === model.objectId && cached.groupUuid === model.group.uuid)
-      return cached.meshes;
-
-    const meshes: THREE.Mesh[] = [];
-    model.group.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      if (child.userData.liclickPaintOverlay) return;
-      if (!child.geometry.getAttribute('uv')) return;
-      meshes.push(child);
-    });
-    paintableMeshCacheRef.current = {
-      objectId: model.objectId,
-      groupUuid: model.group.uuid,
-      meshes,
-    };
-    return meshes;
+    return getPaintableSurfaceCache(model.group).uvMeshes;
   }, []);
 
   const getUvPaintLayer = useCallback(
@@ -7802,7 +7848,8 @@ function SurfacePaintOverlay() {
       sceneState.paintTool === 'inpaint-apply' ||
       erasesPersistedLocalRepaint ||
       (previewOwnsOverlay &&
-        (sceneState.paintTool === 'inpaint-add' ||
+        (sceneState.paintTool === 'none' ||
+          sceneState.paintTool === 'inpaint-add' ||
           sceneState.paintTool === 'inpaint-subtract' ||
           sceneState.localRepaintGenerationPresentationActive));
     // An empty prewarmed overlay used to rasterize the complete model even
@@ -8198,19 +8245,7 @@ function SurfacePaintOverlay() {
         return;
       }
       syncInpaintMaskProjection(model);
-      const meshes: THREE.Mesh[] = [];
-      model.group.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        if (
-          child.userData.liclickPaintOverlay ||
-          child.userData.liclickViewportHelper ||
-          child.userData.liclickSelectionGlow ||
-          child.userData.liclickWireframeOverlay ||
-          !child.geometry.getAttribute('position')
-        )
-          return;
-        meshes.push(child);
-      });
+      const meshes = getPaintableSurfaceCache(model.group).positionedMeshes;
       for (let index = 0; index < meshes.length; index += 1) {
         if (!canContinuePrewarm()) {
           hidePrewarmedMaskIfInactive();
@@ -8549,7 +8584,6 @@ function SurfacePaintOverlay() {
     getTargetModel,
     getUvPaintLayer,
     invalidate,
-    paintMaskInvertRevision,
     readShouldShowInpaintMask,
     setPaintMaskDataUrl,
   ]);
@@ -9453,7 +9487,7 @@ function SurfacePaintOverlay() {
       // Prefer the workspace-resolved canonical field. Older project files can
       // retain a relative localRepaintMaskUrl even though maskUrl is already an
       // absolute runtime URL after reload.
-      const savedMaskUrl = existingLayer?.maskUrl ?? existingLayer?.localRepaintMaskUrl;
+      const savedMaskUrl = existingLayer?.localRepaintMaskUrl ?? existingLayer?.maskUrl;
       // Live repaint masks use a stable registry URL derived from layerId. Read
       // the old canvas before createLocalRepaintComposite registers the new one
       // at that same URL, otherwise switching back to an older repaint replaces
@@ -9499,6 +9533,7 @@ function SurfacePaintOverlay() {
             composite.maskContext.restore();
             composite.hasContent = true;
             composite.restoredMaskReady = true;
+            refreshLocalRepaintInwardCrossfadeMask(composite);
             document.body.dataset.localRepaintMaskRestoreState = `ready:${composite.layerId}`;
             delete document.body.dataset.localRepaintMaskRestoreErrorUrl;
             markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
@@ -9528,7 +9563,9 @@ function SurfacePaintOverlay() {
         type: 'projected',
         imageUrl:
           localRepaintSourceImageRef.current?.previewImageUrl ?? localRepaintSource.imageUrl,
-        maskUrl: composite.maskUrl,
+        maskUrl: composite.blendMaskUrl,
+        localRepaintMaskUrl: composite.maskUrl,
+        localRepaintStackBlendMode: 'inward-crossfade-v1',
         depthUrl: localRepaintSource.depthUrl,
         depthEncoding: localRepaintSource.depthEncoding,
         normalUrl: undefined,
@@ -9655,7 +9692,7 @@ function SurfacePaintOverlay() {
           syncLocalRepaintGpuOverlayBinding(currentOverlay, {
             modelGroup: model.group,
             sourceTexture,
-            maskTexture: composite.maskTexture,
+            maskTexture: composite.blendMaskTexture,
             visible,
             ...presentation,
           })
@@ -9686,7 +9723,7 @@ function SurfacePaintOverlay() {
       const material = await createProjectedLayerMaterial({
         layerId: composite.layerId,
         imageUrl: previewImageUrl,
-        maskUrl: composite.maskUrl,
+        maskUrl: composite.blendMaskUrl,
         maskSpace: 'projection',
         depthUrl: visibilityDepthUrl,
         depthIsLinearView: visibilityDepthIsLinearView,
@@ -9788,7 +9825,7 @@ function SurfacePaintOverlay() {
         syncLocalRepaintGpuOverlayBinding(currentOverlay, {
           modelGroup: model.group,
           sourceTexture: material.uniforms.projectedMap?.value as THREE.Texture | undefined,
-          maskTexture: composite.maskTexture,
+          maskTexture: composite.blendMaskTexture,
           visible: isLocalRepaintOverlayVisible(useSceneStore.getState().displayMode, layerVisible),
           ...presentation,
         });
@@ -9806,19 +9843,7 @@ function SurfacePaintOverlay() {
 
       clearLocalRepaintGpuOverlay();
 
-      const targets: THREE.Mesh[] = [];
-      model.group.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        if (
-          child.userData.liclickPaintOverlay ||
-          child.userData.liclickViewportHelper ||
-          child.userData.liclickSelectionGlow ||
-          child.userData.liclickWireframeOverlay ||
-          !child.geometry.getAttribute('position')
-        )
-          return;
-        targets.push(child);
-      });
+      const targets = getPaintableSurfaceCache(model.group).positionedMeshes;
       const root = new THREE.Group();
       root.name = 'Liclick Live Local Repaint GPU Overlay';
       root.userData.liclickPaintOverlay = true;
@@ -10827,7 +10852,8 @@ function SurfacePaintOverlay() {
         sceneStateAtCommit.paintTool === 'inpaint-apply' ||
         erasesPersistedLocalRepaint ||
         (previewOwnsComposite &&
-          (sceneStateAtCommit.paintTool === 'inpaint-add' ||
+          (sceneStateAtCommit.paintTool === 'none' ||
+            sceneStateAtCommit.paintTool === 'inpaint-add' ||
             sceneStateAtCommit.paintTool === 'inpaint-subtract'));
       if (
         keepsLiveLocalRepaintPreview &&
@@ -10860,6 +10886,7 @@ function SurfacePaintOverlay() {
             composite.scratchCanvas.height,
           );
           markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
+          refreshLocalRepaintInwardCrossfadeMask(composite);
         }
         if (currentPreview?.id === composite.layerId) {
           const stillEditingLocalRepaintMask =
@@ -10873,6 +10900,7 @@ function SurfacePaintOverlay() {
           );
           const keepInteractivePathWarm =
             (sceneState.paintTool === 'inpaint-apply' ||
+              sceneState.paintTool === 'none' ||
               stillEditingLocalRepaintMask ||
               stillErasingPersistedLocalRepaint) &&
             localRepaintCompositeRef.current?.sourceKey === sourceKey;
@@ -10973,7 +11001,7 @@ function SurfacePaintOverlay() {
             // preview registry URL. Runtime URLs are an optimization for the
             // active GPU overlay only and must not become durable layer data.
             imageUrl: source.persistentImageUrl ?? source.imageUrl,
-            maskUrl: composite.maskUrl,
+            maskUrl: composite.blendMaskUrl,
             depthUrl: source.depthUrl,
             depthEncoding: source.depthEncoding,
             normalUrl: undefined,
@@ -10987,6 +11015,7 @@ function SurfacePaintOverlay() {
             localRepaintRawSourceUrl: source.rawImageUrl,
             localRepaintSeamHarmonizationVersion: source.seamHarmonizationVersion,
             localRepaintMaskUrl: composite.maskUrl,
+            localRepaintStackBlendMode: 'inward-crossfade-v1',
             ignoreSourceAlpha: true,
             renderedColor: false,
             minimumProjectionFacing: LOCAL_REPAINT_MINIMUM_FACE_ON,
@@ -11965,6 +11994,7 @@ function SurfacePaintOverlay() {
         composite.hasContent = side === 'before' ? beforeHasContent : afterHasContent;
         markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
         composite.maskTexture.needsUpdate = true;
+        refreshLocalRepaintInwardCrossfadeMask(composite, draft.bounds);
         syncLocalRepaintGpuOverlayActivity();
         invalidate();
         queueLocalRepaintUvCommit(model, source, composite);
@@ -13152,7 +13182,7 @@ function SurfacePaintOverlay() {
             syncLocalRepaintGpuOverlayBinding(overlay, {
               modelGroup: result.model.group,
               sourceTexture,
-              maskTexture: composite.maskTexture,
+              maskTexture: composite.blendMaskTexture,
               visible,
               ...presentation,
             })

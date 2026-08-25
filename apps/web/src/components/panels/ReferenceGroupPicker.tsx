@@ -33,6 +33,7 @@ import {
   referenceGroupId,
   type ReferenceGroupGenerationState,
 } from '@/components/panels/referenceGroup';
+import { fitImagePreview } from '@/components/panels/imagePreviewFit';
 
 type ReferenceGroupPickerProps = {
   disabled?: boolean;
@@ -181,8 +182,38 @@ function EmptyUploadTarget({
 
 function ImagePreviewDialog({ reference, onClose }: { reference: ReferenceImage; onClose: () => void }) {
   const [zoom, setZoom] = useState(1);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [sourceSize, setSourceSize] = useState({
+    width: reference.width,
+    height: reference.height,
+  });
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const measure = () => {
+      const style = window.getComputedStyle(viewport);
+      const horizontalPadding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      const verticalPadding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+      setViewportSize({
+        width: Math.max(1, viewport.clientWidth - horizontalPadding),
+        height: Math.max(1, viewport.clientHeight - verticalPadding),
+      });
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
+
   if (typeof document === 'undefined') return null;
   const updateZoom = (next: number) => setZoom(Math.min(4, Math.max(0.5, next)));
+  const fittedImage = fitImagePreview(sourceSize, viewportSize, zoom);
   return createPortal(
     <div
       className="fixed inset-0 z-[180] grid place-items-center bg-black/78 p-6 backdrop-blur-sm"
@@ -205,7 +236,7 @@ function ImagePreviewDialog({ reference, onClose }: { reference: ReferenceImage;
               <Minus className="h-3.5 w-3.5" />
             </button>
             <button type="button" className="h-7 min-w-12 rounded px-2 text-[10px] text-white/60 hover:bg-white/8 hover:text-white" onClick={() => setZoom(1)} title="适合窗口">
-              {Math.round(zoom * 100)}%
+              {zoom === 1 ? '适配' : `${Math.round(zoom * 100)}%`}
             </button>
             <button type="button" className="grid h-7 w-7 place-items-center rounded text-white/58 hover:bg-white/8 hover:text-white" onClick={() => updateZoom(zoom + 0.25)} title="放大">
               <Plus className="h-3.5 w-3.5" />
@@ -216,6 +247,7 @@ function ImagePreviewDialog({ reference, onClose }: { reference: ReferenceImage;
           </div>
         </div>
         <div
+          ref={viewportRef}
           className="overflow-auto p-4"
           style={checkerboardStyle()}
           onWheel={(event) => {
@@ -224,13 +256,30 @@ function ImagePreviewDialog({ reference, onClose }: { reference: ReferenceImage;
             updateZoom(zoom + (event.deltaY < 0 ? 0.25 : -0.25));
           }}
         >
-          <div className="flex min-h-full min-w-full items-center justify-center">
+          <div
+            className="grid min-h-full min-w-full place-items-center"
+            style={{
+              width: fittedImage.width > 0 ? `max(100%, ${fittedImage.width}px)` : '100%',
+              height: fittedImage.height > 0 ? `max(100%, ${fittedImage.height}px)` : '100%',
+            }}
+          >
             <img
               src={reference.url}
               alt={reference.name}
               draggable={false}
-              className="h-auto object-contain transition-[width] duration-150"
-              style={{ width: `${zoom * 100}%`, maxWidth: 'none' }}
+              className="max-w-none object-contain transition-[width,height] duration-150"
+              style={
+                fittedImage.width > 0
+                  ? { width: fittedImage.width, height: fittedImage.height }
+                  : { maxWidth: '100%', maxHeight: '100%' }
+              }
+              onLoad={(event) => {
+                setSourceSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                });
+              }}
+              onDoubleClick={() => setZoom(1)}
             />
           </div>
         </div>

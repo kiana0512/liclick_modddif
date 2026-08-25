@@ -120,6 +120,12 @@ export default defineConfig({
   plugins: [cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
   publicDir: false,
   base: publicBase,
+  build: {
+    // The zero-install client already requires modern browser primitives such as
+    // Web Workers, WebGL2 and the File System APIs. Avoid transpiling the same
+    // code back to legacy syntax that those supported browsers do not need.
+    target: 'es2022',
+  },
   resolve: {
     alias: [
       ...[

@@ -15,6 +15,30 @@ import { getWorkspaceApiBase } from './workspaceApiBase';
 const workspaceApiBase = getProjectApiBase();
 const generationWorkspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 const maxWorkspaceImageBytes = 160 * 1024 * 1024;
+const projectMutationTails = new Map<string, Promise<void>>();
+
+async function withProjectMutationLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
+  const previous = projectMutationTails.get(projectId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  projectMutationTails.set(projectId, tail);
+
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (projectMutationTails.get(projectId) === tail) projectMutationTails.delete(projectId);
+  }
+}
+
+function waitForRevisionRetry(attempt: number) {
+  const delayMs = Math.min(500, 40 * 2 ** attempt);
+  return new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+}
 
 export function workspacePathAtBase(url: string, base: string) {
   try {
@@ -168,6 +192,7 @@ export async function createProject(input: { name?: string; folderId?: string })
 export async function loadProject(projectId: string) {
   const result = await requestJson<{ project: Project; slug: string }>(
     `/api/projects/${projectId}`,
+    { cache: 'no-store' },
   );
   return {
     ...result,
@@ -337,7 +362,7 @@ export async function moveProject(
   });
 }
 
-export async function saveProject(project: Project) {
+async function saveProjectDirect(project: Project) {
   if (isCloudBuild) {
     const document = {
       ...project,
@@ -363,6 +388,10 @@ export async function saveProject(project: Project) {
   });
 }
 
+export async function saveProject(project: Project) {
+  return withProjectMutationLock(project.id, () => saveProjectDirect(project));
+}
+
 /**
  * Apply a project mutation to the newest server document and retry revision
  * conflicts. Long-running cloud tasks and direct asset uploads can advance a
@@ -374,34 +403,37 @@ export async function updateLatestProject(
   update: (latest: Project) => Project,
   maxAttempts = 3,
 ) {
-  let lastConflict: WorkspaceApiError | undefined;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const latest = (await loadProject(projectId)).project;
-    const candidate = update(latest);
-    const latestUpdatedAt = Date.parse(latest.updatedAt);
-    const candidateUpdatedAt = Date.parse(candidate.updatedAt);
-    // The file repository guards both revision id and updatedAt. Browser clocks
-    // can trail the server and a retry can outlive the timestamp captured by
-    // the workflow, so keep the outgoing document monotonic against the
-    // authoritative project rather than weakening the server's stale guard.
-    const monotonicUpdatedAt = Number.isFinite(latestUpdatedAt)
-      ? new Date(Math.max(Date.now(), latestUpdatedAt + 1)).toISOString()
-      : new Date().toISOString();
-    try {
-      return await saveProject({
-        ...candidate,
-        updatedAt:
-          Number.isFinite(candidateUpdatedAt) &&
-          (!Number.isFinite(latestUpdatedAt) || candidateUpdatedAt > latestUpdatedAt)
-            ? candidate.updatedAt
-            : monotonicUpdatedAt,
-      });
-    } catch (error) {
-      if (!(error instanceof WorkspaceApiError) || error.status !== 409) throw error;
-      lastConflict = error;
+  return withProjectMutationLock(projectId, async () => {
+    let lastConflict: WorkspaceApiError | undefined;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const latest = (await loadProject(projectId)).project;
+      const candidate = update(latest);
+      const latestUpdatedAt = Date.parse(latest.updatedAt);
+      const candidateUpdatedAt = Date.parse(candidate.updatedAt);
+      // The file repository guards both revision id and updatedAt. Browser clocks
+      // can trail the server and a retry can outlive the timestamp captured by
+      // the workflow, so keep the outgoing document monotonic against the
+      // authoritative project rather than weakening the server's stale guard.
+      const monotonicUpdatedAt = Number.isFinite(latestUpdatedAt)
+        ? new Date(Math.max(Date.now(), latestUpdatedAt + 1)).toISOString()
+        : new Date().toISOString();
+      try {
+        return await saveProjectDirect({
+          ...candidate,
+          updatedAt:
+            Number.isFinite(candidateUpdatedAt) &&
+            (!Number.isFinite(latestUpdatedAt) || candidateUpdatedAt > latestUpdatedAt)
+              ? candidate.updatedAt
+              : monotonicUpdatedAt,
+        });
+      } catch (error) {
+        if (!(error instanceof WorkspaceApiError) || error.status !== 409) throw error;
+        lastConflict = error;
+        if (attempt + 1 < maxAttempts) await waitForRevisionRetry(attempt);
+      }
     }
-  }
-  throw lastConflict ?? new WorkspaceApiError(409, '项目正在被其他操作更新，请稍后重试。');
+    throw lastConflict ?? new WorkspaceApiError(409, '项目正在被其他操作更新，请稍后重试。');
+  });
 }
 
 export async function listFolders() {

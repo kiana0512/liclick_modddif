@@ -27,6 +27,9 @@ const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = INITIAL_TEXTURE_UPLOAD_
 // timeout-zero clientWaitSync still blocked the UI thread for 134-150ms on
 // NVIDIA under load. Both renderer paths rely on exact same-context ordering.
 const PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH = 4;
+const PREVIEW_BITMAP_DECODE_TIMEOUT_MS = 15_000;
+const PREVIEW_BITMAP_STRIPE_TIMEOUT_MS = 15_000;
+const PREVIEW_TEXTURE_FALLBACK_TIMEOUT_MS = 20_000;
 let registeredPreviewRenderer: THREE.WebGLRenderer | undefined;
 
 /**
@@ -117,7 +120,20 @@ function getBitmapWorker() {
 function decodePreviewBitmapInWorker(imageUrl: string) {
   const id = nextBitmapId++;
   return new Promise<{ id: number; width: number; height: number }>((resolve, reject) => {
-    pendingBitmapMetadata.set(id, { resolve, reject });
+    const timeoutId = window.setTimeout(() => {
+      if (!pendingBitmapMetadata.has(id)) return;
+      resetBitmapWorker(new Error('Preview texture decode timed out.'));
+    }, PREVIEW_BITMAP_DECODE_TIMEOUT_MS);
+    pendingBitmapMetadata.set(id, {
+      resolve: (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      reject: (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    });
     getBitmapWorker().postMessage({
       type: 'decode',
       id,
@@ -129,8 +145,53 @@ function decodePreviewBitmapInWorker(imageUrl: string) {
 function requestPreviewBitmapStripe(id: number, y: number, height: number) {
   const requestId = nextStripeRequestId++;
   return new Promise<ImageBitmap>((resolve, reject) => {
-    pendingBitmapStripes.set(requestId, { resolve, reject });
+    const timeoutId = window.setTimeout(() => {
+      if (!pendingBitmapStripes.has(requestId)) return;
+      resetBitmapWorker(new Error('Preview texture upload stripe timed out.'));
+    }, PREVIEW_BITMAP_STRIPE_TIMEOUT_MS);
+    pendingBitmapStripes.set(requestId, {
+      resolve: (bitmap) => {
+        window.clearTimeout(timeoutId);
+        resolve(bitmap);
+      },
+      reject: (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    });
     getBitmapWorker().postMessage({ type: 'stripe', id, requestId, y, height });
+  });
+}
+
+function loadPreviewTextureFallback(imageUrl: string) {
+  return new Promise<THREE.Texture>((resolve, reject) => {
+    let settled = false;
+    const loader = new THREE.TextureLoader();
+    const texture = loader.load(
+      imageUrl,
+      (loadedTexture) => {
+        if (settled) {
+          loadedTexture.dispose();
+          return;
+        }
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve(loadedTexture);
+      },
+      undefined,
+      (error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(error instanceof Error ? error : new Error('Preview texture load failed.'));
+      },
+    );
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      texture.dispose();
+      reject(new Error('Preview texture fallback load timed out.'));
+    }, PREVIEW_TEXTURE_FALLBACK_TIMEOUT_MS);
   });
 }
 
@@ -197,6 +258,16 @@ function configurePreviewTexture(texture: THREE.Texture) {
   return texture;
 }
 
+function invalidatePreviewTextureAfterUploadFailure(texture: THREE.Texture) {
+  const sourceUrl = texture.userData.liclickPreviewSourceUrl;
+  if (typeof sourceUrl !== 'string') return;
+  if (residentPreviewTextureCache.get(sourceUrl) !== texture) return;
+  bakedTextureCache.delete(sourceUrl);
+  residentPreviewTextureCache.delete(sourceUrl);
+  releaseWorkerBitmap(getWorkerBitmapId(texture));
+  texture.dispose();
+}
+
 export function loadPreviewTexture(imageUrl: string) {
   const cached = bakedTextureCache.get(imageUrl);
   if (cached) {
@@ -228,9 +299,10 @@ export function loadPreviewTexture(imageUrl: string) {
     } catch {
       // Compatibility path for non-fetchable/CORS assets. TextureLoader keeps
       // the previous behavior and the same retry/cache semantics.
-      texture = await new THREE.TextureLoader().loadAsync(imageUrl);
+      texture = await loadPreviewTextureFallback(imageUrl);
       texture.flipY = true;
     }
+    texture.userData.liclickPreviewSourceUrl = imageUrl;
     configurePreviewTexture(texture);
     residentPreviewTextureCache.set(imageUrl, texture);
     document.body.dataset.previewTextureLoadReadyUnixMs = String(Date.now());
@@ -522,6 +594,7 @@ export function uploadPreviewTextureInStripes(
     } catch (error) {
       texture.source.dataReady = true;
       texture.needsUpdate = true;
+      invalidatePreviewTextureAfterUploadFailure(texture);
       throw error;
     } finally {
       frameMonitor?.stop();

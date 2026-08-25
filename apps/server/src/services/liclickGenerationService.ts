@@ -433,7 +433,6 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
   const aspectRatio = input.aspectRatio ?? 'auto';
   const imageSize = input.imageSize ?? 'auto';
   const gptImage2Size = imageSize === 'auto' ? (aspectRatio === 'auto' ? 'auto' : '1K') : imageSize;
-  const submitAspectRatio = model === 'gpt-image-2' && aspectRatio === 'auto' && gptImage2Size !== 'auto' ? '1:1' : aspectRatio;
   const referenceImages = uploadedReferences.map((reference) => ({
     asset_id: reference.assetId,
     type: 'image',
@@ -453,7 +452,10 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
     };
     extraParams.size = sizeMap[aspectRatio] ?? 'auto';
   } else {
-    extraParams.aspect_ratio = submitAspectRatio;
+    // Resolution and aspect ratio are independent in GPT-Image 2. Keeping
+    // automatic framing avoids an unexpected 1:1 crop that breaks projection
+    // alignment when the user selects 1K/2K explicitly.
+    extraParams.aspect_ratio = aspectRatio;
     if (model === 'gpt-image-2') {
       extraParams.image_size = gptImage2Size;
     } else if (model === 'nano_banana_2' || model === 'nano_banana_pro') {

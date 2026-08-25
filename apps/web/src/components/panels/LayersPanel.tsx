@@ -380,6 +380,7 @@ export function LayersPanel({
 }: LayersPanelProps = {}) {
   const t = useT();
   const layers = useInteractionDeferredLayers();
+  const authoritativeLayers = useLayerStore((state) => state.layers);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
@@ -433,8 +434,8 @@ export function LayersPanel({
   const selectedLayerIdSet = useMemo(() => new Set(selectedLayerIds), [selectedLayerIds]);
   const layerById = useMemo(() => new Map(layers.map((layer) => [layer.id, layer])), [layers]);
   const previewLayer = useMemo(() => {
-    return visibleLayers.find((layer) => layer.id === previewLayerId && layer.imageUrl);
-  }, [previewLayerId, visibleLayers]);
+    return authoritativeLayers.find((layer) => layer.id === previewLayerId && layer.imageUrl);
+  }, [authoritativeLayers, previewLayerId]);
   const describeLayerSelection = useCallback(
     (ids: string[]) => {
       const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);

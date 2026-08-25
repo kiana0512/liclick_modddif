@@ -12,6 +12,7 @@ export type LayerMaskSpace = 'projection' | 'uv';
 export type ProjectionVisibilityPolicy = 'standard' | 'surface-locked-v1';
 export type ProjectionCoverageMode = 'capture-mask' | 'source-alpha-depth';
 export type ProjectionCompositeMode = 'single-view-priority-v1';
+export type LocalRepaintStackBlendMode = 'inward-crossfade-v1';
 
 export type LayerAdjustments = {
   hue: number;
@@ -45,6 +46,8 @@ export type Layer = {
   localRepaintSeamHarmonizationVersion?: number;
   /** Cumulative projection-space brush alpha retained without RGBA readback. */
   localRepaintMaskUrl?: string;
+  /** Ordered local-repaint layers crossfade inward instead of alpha-stacking at their seams. */
+  localRepaintStackBlendMode?: LocalRepaintStackBlendMode;
   /** Ignore the generated image alpha; the authored brush mask is the only repaint coverage. */
   ignoreSourceAlpha?: boolean;
   renderedColor?: boolean;

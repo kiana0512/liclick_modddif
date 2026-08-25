@@ -22,6 +22,9 @@ export type ModelviewInpaintInput = {
     dataUrl: string;
   };
   materialReferenceId?: string;
+  materialReferenceGroupId?: string;
+  materialReferenceName?: string;
+  materialReferenceRole?: 'multi-view' | 'single-view';
 };
 
 async function requestJson<T>(
@@ -102,6 +105,9 @@ export function createModelviewApiClient() {
           output: result.output,
           objectId: input.objectId,
           materialReferenceId: input.materialReferenceId,
+          materialReferenceGroupId: input.materialReferenceGroupId,
+          materialReferenceName: input.materialReferenceName,
+          materialReferenceRole: input.materialReferenceRole,
           serverSubmitted: true,
         },
       };

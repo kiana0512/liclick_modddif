@@ -17,8 +17,12 @@ export function getLiclickUserErrorMessage(
   ) {
     return '共享生图服务凭证未配置或已过期，请联系管理员。';
   }
-  if (/billing[_\s-]*(hard[_\s-]*)?limit|计费.*上限|账单.*限额|额度.*用完/.test(normalized)) {
-    return '当前账号的生图额度已用完，请检查莉刻账户额度后重试。';
+  if (
+    /\b402\b|payment required|billing[_\s-]*(hard[_\s-]*)?limit|insufficient.*(?:credit|balance|quota)|(?:credit|balance|quota).*(?:insufficient|exhausted|exceeded|empty)|quota[_\s-]*(?:exceeded|exhausted)|计费.*(?:上限|权限)|账单.*限额|(?:额度|余额|积分|资源点).*(?:不足|用完|耗尽|超限)/.test(
+      normalized,
+    )
+  ) {
+    return '当前莉刻账号的生图额度或计费权限不足，请在莉刻检查账号额度后重试。';
   }
   if (
     /413|payload too large|request body is too large|文件过大|图片过大|参考图.*过大/.test(

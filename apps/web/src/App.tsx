@@ -27,6 +27,9 @@ type RouteState =
 const HomePage = lazy(() =>
   import('./routes/HomePage').then((module) => ({ default: module.HomePage })),
 );
+const AppAuthGate = lazy(() =>
+  import('./components/auth/AppAuthGate').then((module) => ({ default: module.AppAuthGate })),
+);
 const ProjectsPage = lazy(() =>
   import('./routes/ProjectsPage').then((module) => ({ default: module.ProjectsPage })),
 );
@@ -170,6 +173,7 @@ export function App() {
       residentTextureProjectIdRef.current === route.projectId,
   );
   const setChecking = useAuthStore((state) => state.setChecking);
+  const authStatus = useAuthStore((state) => state.status);
   const setAnonymous = useAuthStore((state) => state.setAnonymous);
   const setAuthenticated = useAuthStore((state) => state.setAuthenticated);
   const refreshLocalSettings = useAuthStore((state) => state.refreshLocalSettings);
@@ -350,6 +354,17 @@ export function App() {
     // This effect installs browser navigation once. Route changes are pushed explicitly by navigation helpers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  if (authStatus !== 'authenticated') {
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <AppAuthGate />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
 
   if (route.name === 'editor' || preserveTextureWorkspaceForUv) {
     const textureProjectId =

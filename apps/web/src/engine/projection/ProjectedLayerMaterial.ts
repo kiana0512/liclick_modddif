@@ -2907,6 +2907,39 @@ export function updateProjectedLayerStackMaterial(
 export type ProjectedTextureProfile = 'image' | 'mask' | 'depth' | 'normal';
 
 const projectedTextureCache = new Map<string, Promise<THREE.Texture>>();
+const PROJECTED_TEXTURE_REQUEST_TIMEOUT_MS = 20_000;
+
+function loadProjectedTextureFallback(imageUrl: string) {
+  return new Promise<THREE.Texture>((resolve, reject) => {
+    let settled = false;
+    const loader = new THREE.TextureLoader();
+    const texture = loader.load(
+      imageUrl,
+      (loadedTexture) => {
+        if (settled) {
+          loadedTexture.dispose();
+          return;
+        }
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve(loadedTexture);
+      },
+      undefined,
+      (error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(error instanceof Error ? error : new Error('Projected texture load failed.'));
+      },
+    );
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      texture.dispose();
+      reject(new Error('Projected texture fallback load timed out.'));
+    }, PROJECTED_TEXTURE_REQUEST_TIMEOUT_MS);
+  });
+}
 
 function getProjectedTextureCacheKey(
   imageUrl: string,
@@ -2958,7 +2991,20 @@ export async function loadProjectedTexture(
       if (typeof createImageBitmap !== 'function') {
         throw new Error('ImageBitmap is unavailable.');
       }
-      const response = await fetch(imageUrl, { credentials: 'same-origin' });
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(
+        () => controller.abort(),
+        PROJECTED_TEXTURE_REQUEST_TIMEOUT_MS,
+      );
+      let response: Response;
+      try {
+        response = await fetch(imageUrl, {
+          credentials: 'same-origin',
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
       if (!response.ok) {
         throw new Error(`Projected texture request failed (${response.status}).`);
       }
@@ -2972,7 +3018,7 @@ export async function loadProjectedTexture(
         document.body.dataset.projectedTextureDecodeBackend = 'image-bitmap';
       }
     } catch {
-      texture = await new THREE.TextureLoader().loadAsync(imageUrl);
+      texture = await loadProjectedTextureFallback(imageUrl);
       texture.flipY = false;
       if (typeof document !== 'undefined') {
         document.body.dataset.projectedTextureDecodeBackend = 'texture-loader-fallback';

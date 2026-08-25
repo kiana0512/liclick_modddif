@@ -15,7 +15,7 @@ assert.match(source, /onContinueArtifact=\{handleContinue\}/,
   '自动展 UV 工作区必须接入项目保存和烘焙交接');
 assert.match(source, /void onContinueArtifact\(uvFbxArtifact\)/,
   '成功任务必须使用服务器返回的 UV FBX 交付物');
-assert.match(source, /保存并传入烘焙/,
+assert.match(source, /直接传入烘焙/,
   '服务器 UV 成功结果必须向用户提供明确的下一阶段入口');
 assert.doesNotMatch(source, /LocalUvUnwrapResult|localUvResult|sourceMode: 'browser-local'/,
   '生产 UV 页面不得回退到浏览器本地拆分或伪造本地任务历史');
