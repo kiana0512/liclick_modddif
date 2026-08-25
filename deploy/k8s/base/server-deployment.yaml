@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: liclick-server
+  labels:
+    app: li3d
+    component: server
+spec:
+  replicas: 1
+  # SQLite lives on the PVC below — never run more than one replica, and
+  # use Recreate so the old pod releases the ReadWriteOnce volume before
+  # the new one claims it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: li3d
+      component: server
+  template:
+    metadata:
+      labels:
+        app: li3d
+        component: server
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+      initContainers:
+        # Applies the Prisma schema to the SQLite file on the persistent
+        # volume (`prisma db push`, the same workflow as `pnpm db:push`).
+        # Runs once per pod start; it never runs on a plain container
+        # restart, and it is additive-only unless run manually with
+        # --accept-data-loss (see k8s/README.md).
+        - name: db-push
+          image: li3d-server
+          command: ["node_modules/.bin/prisma", "db", "push", "--schema", "prisma/schema.prisma", "--skip-generate"]
+          envFrom:
+            - configMapRef:
+                name: li3d-server-config
+            - secretRef:
+                name: li3d-server-secrets
+          volumeMounts:
+            - name: workspace
+              mountPath: /data/workspace
+      containers:
+        - name: server
+          image: li3d-server
+          ports:
+            - name: http
+              containerPort: 4517
+          envFrom:
+            - configMapRef:
+                name: li3d-server-config
+            - secretRef:
+                name: li3d-server-secrets
+          volumeMounts:
+            - name: workspace
+              mountPath: /data/workspace
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: li3d-server-workspace

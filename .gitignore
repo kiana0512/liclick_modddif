@@ -42,3 +42,7 @@ workspace-smoke*/
 # Adobe working documents are local recovery data, never source assets.
 *.psd
 *.psb
+
+# Real k8s secret values — copy from *.env.example and fill in locally.
+deploy/k8s/base/secrets/server.env
+deploy/k8s/overlays/*/secrets/*.env

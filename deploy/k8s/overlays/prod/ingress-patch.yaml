@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: li3d
+spec:
+  rules:
+    - host: li3d.your-real-domain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: li3d-web
+                port:
+                  number: 80

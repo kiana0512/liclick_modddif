@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: liclick-server
+  labels:
+    app: li3d
+    component: server
+spec:
+  selector:
+    app: li3d
+    component: server
+  ports:
+    - name: http
+      port: 4517
+      targetPort: http
