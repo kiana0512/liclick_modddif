@@ -25,7 +25,7 @@ export type ModelLoadResult = {
   sourceUnitScaleFactor?: number;
   childMeshCount: number;
   warnings: string[];
-  restoreStage?: 'bounds' | 'outline' | 'full';
+  restoreStage?: 'bounds' | 'outline' | 'proxy' | 'full';
 };
 
 export type LoadedModel = {

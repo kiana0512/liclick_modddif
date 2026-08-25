@@ -656,7 +656,19 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
 }
 
 export async function saveBlobAsset(input: SaveBlobAssetInput) {
-  if (isCloudBuild && globalThis.crypto?.subtle) return saveDirectBlobAsset(input);
+  if (isCloudBuild && globalThis.crypto?.subtle) {
+    try {
+      return await saveDirectBlobAsset(input);
+    } catch (error) {
+      // The integrated local workspace intentionally has no external object-storage
+      // component. When the 4517 backend reports that cloud storage is absent,
+      // stream the same blob into its authenticated workspace route instead.
+      // A100 keeps using the direct object-storage path because its intent request
+      // succeeds and never reaches this fallback.
+      if (!(error instanceof WorkspaceApiError) || error.status !== 503) throw error;
+      return saveBlobAssetWithProgress(input);
+    }
+  }
   // Web Crypto is disabled by browsers on plain HTTP non-loopback origins.
   // Keep the zero-install test deployment functional by streaming through the
   // authenticated cloud server; the server hashes the bytes and still stores

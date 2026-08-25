@@ -11,7 +11,10 @@ import {
   waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle,
 } from './viewportInteractionState';
 
-const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 12;
+// Enough for a nine-model scene to retain one 512px proxy and one upgrading
+// exact texture per model. Older proxies naturally retire as full textures win
+// the LRU, keeping the fast path without turning the cache into unbounded VRAM.
+const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 18;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 export const residentPreviewTextureCache = new Map<string, THREE.Texture>();
 const previewTextureUploadPromises = new WeakMap<
@@ -39,9 +42,19 @@ let registeredPreviewRenderer: THREE.WebGLRenderer | undefined;
  * later eye toggle invalidates the material. Only publish cache entries after
  * the exact upload has completed.
  */
-export function getReadyResidentPreviewTexture(imageUrl?: string, renderer?: THREE.WebGLRenderer) {
+export type PreviewTextureLoadOptions = { maxSize?: number };
+
+function getPreviewTextureCacheKey(imageUrl: string, options?: PreviewTextureLoadOptions) {
+  return options?.maxSize ? `${imageUrl}::li3d-proxy-${options.maxSize}` : imageUrl;
+}
+
+export function getReadyResidentPreviewTexture(
+  imageUrl?: string,
+  renderer?: THREE.WebGLRenderer,
+  options?: PreviewTextureLoadOptions,
+) {
   if (!imageUrl) return undefined;
-  const texture = residentPreviewTextureCache.get(imageUrl);
+  const texture = residentPreviewTextureCache.get(getPreviewTextureCacheKey(imageUrl, options));
   if (!texture) return undefined;
   if (renderer) {
     return previewTextureReadyRenderers.get(texture)?.has(renderer) ? texture : undefined;
@@ -117,7 +130,7 @@ function getBitmapWorker() {
   return worker;
 }
 
-function decodePreviewBitmapInWorker(imageUrl: string) {
+function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
   const id = nextBitmapId++;
   return new Promise<{ id: number; width: number; height: number }>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
@@ -138,6 +151,7 @@ function decodePreviewBitmapInWorker(imageUrl: string) {
       type: 'decode',
       id,
       url: new URL(imageUrl, window.location.href).href,
+      ...(maxSize ? { maxSize } : {}),
     });
   });
 }
@@ -259,20 +273,21 @@ function configurePreviewTexture(texture: THREE.Texture) {
 }
 
 function invalidatePreviewTextureAfterUploadFailure(texture: THREE.Texture) {
-  const sourceUrl = texture.userData.liclickPreviewSourceUrl;
-  if (typeof sourceUrl !== 'string') return;
-  if (residentPreviewTextureCache.get(sourceUrl) !== texture) return;
-  bakedTextureCache.delete(sourceUrl);
-  residentPreviewTextureCache.delete(sourceUrl);
+  const cacheKey = texture.userData.liclickPreviewCacheKey;
+  if (typeof cacheKey !== 'string') return;
+  if (residentPreviewTextureCache.get(cacheKey) !== texture) return;
+  bakedTextureCache.delete(cacheKey);
+  residentPreviewTextureCache.delete(cacheKey);
   releaseWorkerBitmap(getWorkerBitmapId(texture));
   texture.dispose();
 }
 
-export function loadPreviewTexture(imageUrl: string) {
-  const cached = bakedTextureCache.get(imageUrl);
+export function loadPreviewTexture(imageUrl: string, options?: PreviewTextureLoadOptions) {
+  const cacheKey = getPreviewTextureCacheKey(imageUrl, options);
+  const cached = bakedTextureCache.get(cacheKey);
   if (cached) {
-    bakedTextureCache.delete(imageUrl);
-    bakedTextureCache.set(imageUrl, cached);
+    bakedTextureCache.delete(cacheKey);
+    bakedTextureCache.set(cacheKey, cached);
     return cached;
   }
   const loadStartedAt = performance.now();
@@ -283,7 +298,7 @@ export function loadPreviewTexture(imageUrl: string) {
       // Decode and retain the full image in a worker. The UI thread receives
       // only metadata here and 1MB bitmap stripes during upload; transferring a
       // complete 2K/4K ImageBitmap caused a repeatable 134-150ms task.
-      const result = await decodePreviewBitmapInWorker(imageUrl);
+      const result = await decodePreviewBitmapInWorker(imageUrl, options?.maxSize);
       texture = new THREE.DataTexture(
         null,
         result.width,
@@ -303,8 +318,10 @@ export function loadPreviewTexture(imageUrl: string) {
       texture.flipY = true;
     }
     texture.userData.liclickPreviewSourceUrl = imageUrl;
+    texture.userData.liclickPreviewCacheKey = cacheKey;
+    texture.userData.liclickPreviewMaxSize = options?.maxSize;
     configurePreviewTexture(texture);
-    residentPreviewTextureCache.set(imageUrl, texture);
+    residentPreviewTextureCache.set(cacheKey, texture);
     document.body.dataset.previewTextureLoadReadyUnixMs = String(Date.now());
     document.body.dataset.previewTextureLoadDurationMs = (
       performance.now() - loadStartedAt
@@ -312,24 +329,26 @@ export function loadPreviewTexture(imageUrl: string) {
     document.body.dataset.previewTextureFirstReadyMs ??= performance.now().toFixed(1);
     return texture;
   })().catch((error) => {
-    if (bakedTextureCache.get(imageUrl) === texturePromise) {
-      bakedTextureCache.delete(imageUrl);
+    if (bakedTextureCache.get(cacheKey) === texturePromise) {
+      bakedTextureCache.delete(cacheKey);
     }
-    residentPreviewTextureCache.delete(imageUrl);
+    residentPreviewTextureCache.delete(cacheKey);
     throw error;
   });
-  bakedTextureCache.set(imageUrl, texturePromise);
+  bakedTextureCache.set(cacheKey, texturePromise);
   trimBakedTextureCache();
   return texturePromise;
 }
 
 export async function prewarmPreviewTextures(
   imageUrls: string[],
-  options?: { allowWhileInteracting?: boolean },
+  options?: { allowWhileInteracting?: boolean; maxSize?: number },
 ) {
   const uniqueUrls = [...new Set(imageUrls.filter(Boolean))];
   const startedAt = performance.now();
-  const results = await Promise.allSettled(uniqueUrls.map((url) => loadPreviewTexture(url)));
+  const results = await Promise.allSettled(
+    uniqueUrls.map((url) => loadPreviewTexture(url, { maxSize: options?.maxSize })),
+  );
   const renderer = registeredPreviewRenderer;
   if (renderer) {
     for (const result of results) {
@@ -590,7 +609,9 @@ export function uploadPreviewTextureInStripes(
       document.body.dataset.previewTextureStripedUploadMaxStripeMs = maximumStripeMs.toFixed(1);
       document.body.dataset.previewTextureStripedUploadCount = String(stripeCount);
       document.body.dataset.previewTextureUploadBudgetRange = `${minimumUploadPixels}-${maximumUploadPixels}`;
-      document.body.dataset.previewTextureUploadGovernor = adaptiveVisibleUpload ? 'adaptive' : 'fixed';
+      document.body.dataset.previewTextureUploadGovernor = adaptiveVisibleUpload
+        ? 'adaptive'
+        : 'fixed';
     } catch (error) {
       texture.source.dataReady = true;
       texture.needsUpdate = true;

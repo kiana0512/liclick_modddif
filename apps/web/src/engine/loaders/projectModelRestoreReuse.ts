@@ -11,10 +11,7 @@ function isRestorableProjectObject(object: SceneObject) {
  * primitives, so these groups retain their decoded geometry, textures and
  * shader inputs while the UV route is active.
  */
-export function getReusableFullProjectModels(
-  objects: SceneObject[],
-  loadedModels: ModelLoadResult[],
-) {
+export function getReusableProjectModels(objects: SceneObject[], loadedModels: ModelLoadResult[]) {
   const restorableObjects = objects.filter(isRestorableProjectObject);
   if (restorableObjects.length === 0 || loadedModels.length !== restorableObjects.length) {
     return undefined;
@@ -27,7 +24,7 @@ export function getReusableFullProjectModels(
     if (
       !model ||
       model.objectUrl !== object.sourcePath ||
-      (model.restoreStage && model.restoreStage !== 'full') ||
+      (model.restoreStage && model.restoreStage !== 'proxy' && model.restoreStage !== 'full') ||
       model.group.userData.liclickRestorePlaceholder === true
     ) {
       return undefined;
@@ -36,3 +33,6 @@ export function getReusableFullProjectModels(
   }
   return reusableModels;
 }
+
+/** @deprecated Use getReusableProjectModels; retained for compatibility tests. */
+export const getReusableFullProjectModels = getReusableProjectModels;

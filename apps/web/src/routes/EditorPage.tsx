@@ -23,6 +23,7 @@ import {
   withProjectThumbnailPbrMode,
 } from '@/features/projects/projectThumbnailPolicy';
 import { neutralizeUntexturedThumbnailMaterials } from '@/features/projects/projectThumbnailMaterials';
+import { getProjectThumbnailCaptureModels } from '@/engine/scene/progressiveModelPolicy';
 import {
   closePhotoshopSession,
   createPhotoshopSession,
@@ -112,7 +113,7 @@ import {
   type ModelImportProgressEvent,
 } from '@/engine/loaders/modelImportProgress';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
-import { getReusableFullProjectModels } from '@/engine/loaders/projectModelRestoreReuse';
+import { getReusableProjectModels } from '@/engine/loaders/projectModelRestoreReuse';
 import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModelBesideScene';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import {
@@ -425,16 +426,12 @@ function cloneProjectionBakeImageData(imageData: ImageData) {
   return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
 }
 
-async function waitForProjectRestoreIdle(timeoutMs = 800) {
+async function waitForBackgroundModelUpgrade(timeoutMs = 900) {
   while (isViewportInteractionBusy()) {
-    if (document.visibilityState === 'hidden') break;
+    if (document.visibilityState === 'hidden') return;
     await waitForBrowserPaint();
   }
   await waitForBrowserIdle(timeoutMs);
-  if (isViewportInteractionBusy()) {
-    if (document.visibilityState === 'hidden') return;
-    await waitForProjectRestoreIdle(timeoutMs);
-  }
 }
 
 function getPlaceholderBoundingBox(object: SceneObject): ModelLoadResult['boundingBox'] {
@@ -1099,6 +1096,7 @@ export function EditorPage({
   const objects = useSceneStore((state) => state.objects);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
   const restoreImportedModels = useSceneStore((state) => state.restoreImportedModels);
+  const setImportedModelRestoreStage = useSceneStore((state) => state.setImportedModelRestoreStage);
   const clearImportedModel = useSceneStore((state) => state.clearImportedModel);
   const importedModel = useSceneStore((state) => state.importedModel);
   const viewport = useSceneStore((state) => state.viewport);
@@ -1112,6 +1110,114 @@ export function EditorPage({
     (state) => state.setLocalRepaintProjectionSource,
   );
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const progressiveModelStageSignature = useSceneStore((state) =>
+    state.importedModels
+      .map((model) => `${model.objectId}:${model.restoreStage ?? 'full'}`)
+      .join('|'),
+  );
+
+  useEffect(() => {
+    if (!selectedObjectId || importedModel?.objectId !== selectedObjectId) return undefined;
+    if (importedModel.restoreStage !== 'proxy') return undefined;
+
+    let cancelled = false;
+    const selectedGroup = importedModel.group;
+    const promoteSelectedModel = async () => {
+      const exactVisibleUvUrls = useLayerStore
+        .getState()
+        .layers.filter(
+          (layer) =>
+            layer.type === 'uv' &&
+            layer.visible &&
+            Boolean(layer.imageUrl) &&
+            (!layer.objectId || layer.objectId === selectedObjectId),
+        )
+        .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : []));
+      if (exactVisibleUvUrls.length > 0) {
+        await prewarmPreviewTextures(exactVisibleUvUrls, { allowWhileInteracting: true });
+      }
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const sceneState = useSceneStore.getState();
+      const currentModel = sceneState.importedModels.find(
+        (model) => model.objectId === selectedObjectId,
+      );
+      if (
+        cancelled ||
+        sceneState.selectedObjectId !== selectedObjectId ||
+        currentModel?.group !== selectedGroup ||
+        currentModel.restoreStage !== 'proxy'
+      ) {
+        return;
+      }
+      setImportedModelRestoreStage(selectedObjectId, 'full');
+      document.body.dataset.textureRestoreModelFull = '1';
+      document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
+    };
+    void promoteSelectedModel();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    importedModel?.group,
+    importedModel?.objectId,
+    importedModel?.restoreStage,
+    selectedObjectId,
+    setImportedModelRestoreStage,
+  ]);
+
+  useEffect(() => {
+    const sceneState = useSceneStore.getState();
+    if (
+      sceneState.importedModels.length === 0 ||
+      sceneState.importedModels.some(
+        (model) =>
+          (model.restoreStage === 'bounds' && model.group.userData.liclickRestoreFailed !== true) ||
+          model.restoreStage === 'outline',
+      )
+    ) {
+      return undefined;
+    }
+    const candidate = sceneState.importedModels.find(
+      (model) => model.restoreStage === 'proxy' && model.objectId !== sceneState.selectedObjectId,
+    );
+    if (!candidate) return undefined;
+
+    let cancelled = false;
+    const upgradeProxyInBackground = async () => {
+      await waitForBackgroundModelUpgrade();
+      if (cancelled || isViewportInteractionBusy()) return;
+      const exactVisibleUvUrls = useLayerStore
+        .getState()
+        .layers.filter(
+          (layer) =>
+            layer.type === 'uv' &&
+            layer.visible &&
+            Boolean(layer.imageUrl) &&
+            (!layer.objectId || layer.objectId === candidate.objectId),
+        )
+        .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : []));
+      if (exactVisibleUvUrls.length > 0) await prewarmPreviewTextures(exactVisibleUvUrls);
+      const latestScene = useSceneStore.getState();
+      const latestCandidate = latestScene.importedModels.find(
+        (model) => model.objectId === candidate.objectId,
+      );
+      if (
+        cancelled ||
+        latestScene.selectedObjectId === candidate.objectId ||
+        latestCandidate?.group !== candidate.group ||
+        latestCandidate.restoreStage !== 'proxy'
+      ) {
+        return;
+      }
+      setImportedModelRestoreStage(candidate.objectId, 'full');
+      document.body.dataset.backgroundFullMaterialObjectId = candidate.objectId;
+    };
+    void upgradeProxyInBackground();
+    return () => {
+      cancelled = true;
+    };
+  }, [progressiveModelStageSignature, setImportedModelRestoreStage]);
 
   useEffect(() => {
     const activeObjectId = selectedObjectId ?? importedModel?.objectId;
@@ -1346,28 +1452,31 @@ export function EditorPage({
   const showGenerationConflict = useCallback((action = '当前操作') => {
     setGenerationConflictDialog({ action });
   }, []);
-  const notifyEditorTaskRunning = useCallback((action = '当前操作') => {
-    if (generationConflictLocked) {
-      showGenerationConflict(action);
-      return;
-    }
-    pushToast({
-      tone: 'info',
-      title: '任务正在运行',
-      description: contentAwareRepairRunning
-        ? '正在进行内容识别补缝，完成前仅支持预览。'
-        : snapshotPreparationLocked
+  const notifyEditorTaskRunning = useCallback(
+    (action = '当前操作') => {
+      if (generationConflictLocked) {
+        showGenerationConflict(action);
+        return;
+      }
+      pushToast({
+        tone: 'info',
+        title: '任务正在运行',
+        description: contentAwareRepairRunning
+          ? '正在进行内容识别补缝，完成前仅支持预览。'
+          : snapshotPreparationLocked
             ? '正在准备多视角快照，模型变换和绘画会在快照完成后自动解锁。'
             : '生成任务仍绑定当前模型，暂不能删除、替换模型或启动另一项生成任务。',
-      dedupeKey: 'editor-task-preview-only',
-    });
-  }, [
-    contentAwareRepairRunning,
-    generationConflictLocked,
-    pushToast,
-    showGenerationConflict,
-    snapshotPreparationLocked,
-  ]);
+        dedupeKey: 'editor-task-preview-only',
+      });
+    },
+    [
+      contentAwareRepairRunning,
+      generationConflictLocked,
+      pushToast,
+      showGenerationConflict,
+      snapshotPreparationLocked,
+    ],
+  );
 
   useEffect(() => {
     if (!generationConflictLocked) return undefined;
@@ -1760,7 +1869,9 @@ export function EditorPage({
       if (document.querySelector('[data-shortcut-dialog]')) return;
       if (document.querySelector('[data-editor-shortcut-scope]')) return;
       const eventTarget = event.target instanceof Element ? event.target : null;
-      if (eventTarget?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) {
+      if (
+        eventTarget?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')
+      ) {
         return;
       }
       if (shortcutMatches(event, 'history.undo')) {
@@ -2118,12 +2229,9 @@ export function EditorPage({
 
   function getStandardProjectThumbnailDataUrl() {
     const sceneState = useSceneStore.getState();
-    const models = sceneState.importedModels;
+    const models = getProjectThumbnailCaptureModels(sceneState.importedModels);
     const viewportRuntime = sceneState.viewport;
     if (!viewportRuntime || models.length === 0) return getViewportThumbnailDataUrl();
-    if (models.some((model) => model.restoreStage && model.restoreStage !== 'full')) {
-      return undefined;
-    }
 
     const framing = getProjectThumbnailFraming(
       models.map((model) => getBoundingBoxForObject(model.group)),
@@ -2370,7 +2478,10 @@ export function EditorPage({
     skipProjectStoreSyncRef.current.layers = true;
     skipProjectStoreSyncRef.current.generations = true;
     skipProjectStoreSyncRef.current.references = true;
-    setObjects(projectToHydrate.objects.filter((object) => object.format !== 'primitive'));
+    setObjects(
+      projectToHydrate.objects.filter((object) => object.format !== 'primitive'),
+      projectToHydrate.activeObjectId,
+    );
     const normalizedLocalRepaintLayers = normalizeLocalRepaintObjectBindings({
       layers: projectToHydrate.layers,
       generations: projectToHydrate.generations,
@@ -2403,6 +2514,7 @@ export function EditorPage({
       visibleTextureLayers
         .filter((layer) => layer.type === 'uv')
         .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : [])),
+      { maxSize: 512 },
     );
     setGenerations(projectToHydrate.generations, projectToHydrate.id);
     const recoveredProjectGenerations = useGenerationStore
@@ -2512,7 +2624,7 @@ export function EditorPage({
       );
     }
     if (restorableObjects.length === 0) return;
-    const reusableModels = getReusableFullProjectModels(
+    const reusableModels = getReusableProjectModels(
       restorableObjects,
       useSceneStore.getState().importedModels,
     );
@@ -2522,8 +2634,10 @@ export function EditorPage({
         model.group.userData.liclickProjectId = projectToRestore.id;
       });
       restoreImportedModels(reusableModels, activeObjectId);
-      document.body.dataset.textureRestoreModelFull = '1';
-      document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
+      if (reusableModels.some((model) => model.restoreStage === 'full')) {
+        document.body.dataset.textureRestoreModelFull = '1';
+        document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
+      }
       document.body.dataset.textureRestoreModelReuse = '1';
       return;
     }
@@ -2596,54 +2710,11 @@ export function EditorPage({
       }
     }
 
-    let textureRestoreQueue = Promise.resolve();
-    const queueFullTextureRestore = (objectId: string) => {
-      textureRestoreQueue = textureRestoreQueue.then(async () => {
-        await waitForProjectRestoreIdle(1200);
-        if (restoreRequest !== modelRestoreRequestRef.current) return;
-        const outlineModel = restoredModelByObjectId.get(objectId);
-        if (!outlineModel || outlineModel.restoreStage !== 'outline') return;
-        if (objectId === activeObjectId) {
-          const exactVisibleUvUrls = projectToRestore.layers
-            .filter(
-              (layer) =>
-                layer.type === 'uv' &&
-                layer.visible &&
-                Boolean(layer.imageUrl) &&
-                (!layer.objectId || layer.objectId === objectId),
-            )
-            .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : []));
-          if (exactVisibleUvUrls.length > 0) {
-            await prewarmPreviewTextures(exactVisibleUvUrls);
-          }
-          // Guarantee that the outline material has replaced and disposed the
-          // imported temporary material stack before the final stage is
-          // admitted. Two presentation turns are bounded and avoid a single
-          // monolithic restore frame without delaying background downloads.
-          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-        }
-        if (restoreRequest !== modelRestoreRequestRef.current) return;
-        restoredModelByObjectId.set(objectId, {
-          ...outlineModel,
-          restoreStage: 'full',
-        });
-        publishRestoreProgress();
-        if (objectId === activeObjectId) {
-          document.body.dataset.textureRestoreModelFull = '1';
-          document.body.dataset.textureRestoreModelFullMs = performance.now().toFixed(1);
-        }
-        // Let image decoding and the first lightweight texture-array slices run
-        // before admitting the next model's complete material stack.
-        await waitForProjectRestoreIdle(1200);
-      });
-    };
-
     const allResults: Array<Awaited<ReturnType<typeof loadRestoredModel>>> = [];
     // Model downloads run concurrently, but parsing is admitted one model at a
-    // time. Each parsed model first replaces its bounds with a cheap clay
-    // silhouette. A separate queue then enables UV/projected textures one model
-    // at a time, so geometry and texture restoration can progress independently.
+    // time. Each parsed model replaces its bounds with a cached 512px material
+    // proxy. Exact textures upgrade independently after the full scene becomes
+    // usable, while selecting an object immediately promotes that object first.
     for (const object of prioritizedObjects) {
       if (restoreRequest !== modelRestoreRequestRef.current) return;
       const result = await loadRestoredModel(object);
@@ -2652,28 +2723,24 @@ export function EditorPage({
       allResults.push(result);
       const placeholder = restoredModelByObjectId.get(result.object.id);
       if (!result.model) {
-        restoredModelByObjectId.delete(result.object.id);
+        if (placeholder) {
+          placeholder.group.userData.liclickRestoreFailed = true;
+          restoredModelByObjectId.set(result.object.id, {
+            ...placeholder,
+            warnings: [...placeholder.warnings, '模型源文件加载失败，已保留场景占位。'],
+          });
+        }
         publishRestoreProgress();
-        disposeProjectModelBoundsPlaceholder(placeholder);
         continue;
       }
-      restoredModelByObjectId.set(result.object.id, result.model);
+      restoredModelByObjectId.set(result.object.id, {
+        ...result.model,
+        restoreStage: 'proxy',
+      });
       publishRestoreProgress();
       window.requestAnimationFrame(() => disposeProjectModelBoundsPlaceholder(placeholder));
-      queueFullTextureRestore(result.object.id);
     }
-    await textureRestoreQueue;
     if (restoreRequest !== modelRestoreRequestRef.current) return;
-
-    const restoredModels = restorableObjects.flatMap((object) => {
-      const model = restoredModelByObjectId.get(object.id);
-      return model && model.restoreStage !== 'bounds' ? [model] : [];
-    });
-    if (restoredModels.length > 0) {
-      restoreImportedModels(restoredModels, activeObjectId);
-    } else {
-      restoredModelKeyRef.current = undefined;
-    }
 
     const failedResults = allResults.filter((result) => result.error);
     if (failedResults.length > 0) {
@@ -3690,7 +3757,7 @@ export function EditorPage({
       const importedProject = await importProjectJson(file);
       loadedProjectIdRef.current = importedProject.id;
       replaceCurrentProject(importedProject);
-      setObjects(importedProject.objects);
+      setObjects(importedProject.objects, importedProject.activeObjectId);
       setLayers(importedProject.layers);
       setGenerations(importedProject.generations, importedProject.id);
       setReferences(importedProject.references);
@@ -5576,8 +5643,8 @@ export function EditorPage({
         reusableHarmonizedResultUrl
           ? reusableHarmonizedResultUrl
           : seamMode === 'enhanced' && reusableHarmonizedResultUrl
-          ? reusableHarmonizedResultUrl
-          : rawResultUrl;
+            ? reusableHarmonizedResultUrl
+            : rawResultUrl;
       const cacheKey = [
         seamMode,
         generation.id,
@@ -5759,9 +5826,9 @@ export function EditorPage({
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     const matchesUsableLocalRepaintGeneration = (generation: Generation) =>
       Boolean(generation.resultUrl) &&
-        generation.status === 'succeeded' &&
-        isLocalRepaintGeneration(generation) &&
-        (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+      generation.status === 'succeeded' &&
+      isLocalRepaintGeneration(generation) &&
+      (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
       generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []);
     const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
     const latestLocalRepaintGeneration =
@@ -5813,9 +5880,9 @@ export function EditorPage({
     const preferredObjectId = selectedObjectId ?? importedModel.objectId;
     const matchesUsableLocalRepaintGeneration = (generation: Generation) =>
       Boolean(generation.resultUrl) &&
-        generation.status === 'succeeded' &&
-        isLocalRepaintGeneration(generation) &&
-        (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+      generation.status === 'succeeded' &&
+      isLocalRepaintGeneration(generation) &&
+      (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
       generationBelongsToObject(generation, preferredObjectId, project.captures);
     const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
     const latestLocalRepaintGeneration =
@@ -5920,8 +5987,7 @@ export function EditorPage({
         const visibleProjectionSource = latestSceneState.localRepaintProjectionSource;
         const visiblePreviewLayer = latestSceneState.localRepaintPreviewLayer;
         if (
-          (visibleProjectionSource &&
-            visibleProjectionSource.targetLayerId !== currentTarget.id) ||
+          (visibleProjectionSource && visibleProjectionSource.targetLayerId !== currentTarget.id) ||
           (!visibleProjectionSource && visiblePreviewLayer)
         ) {
           return;
@@ -6036,13 +6102,16 @@ export function EditorPage({
     t,
   ]);
 
-  const handleLocalImageGenerationSettled = useCallback((result: LocalImageGenerationSettledResult) => {
-    useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
-    setLocalImageGenerationRequested(false);
-    if (!result.succeeded) return;
-    preferredLocalRepaintGenerationIdRef.current = result.generationId;
-    setLocalImageGenerationSuccessKey((current) => current + 1);
-  }, []);
+  const handleLocalImageGenerationSettled = useCallback(
+    (result: LocalImageGenerationSettledResult) => {
+      useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
+      setLocalImageGenerationRequested(false);
+      if (!result.succeeded) return;
+      preferredLocalRepaintGenerationIdRef.current = result.generationId;
+      setLocalImageGenerationSuccessKey((current) => current + 1);
+    },
+    [],
+  );
 
   const handleLocalRepaintFromToolbar = useCallback(() => {
     const clickedAt = performance.now();
@@ -6083,9 +6152,9 @@ export function EditorPage({
       const preferredObjectId = selectedObjectId ?? importedModel.objectId;
       const matchesUsableLocalRepaintGeneration = (generation: Generation) =>
         Boolean(generation.resultUrl) &&
-          generation.status === 'succeeded' &&
-          isLocalRepaintGeneration(generation) &&
-          (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+        generation.status === 'succeeded' &&
+        isLocalRepaintGeneration(generation) &&
+        (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
         generationBelongsToObject(generation, preferredObjectId, project.captures);
       const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
       const latestLocalRepaintGeneration =

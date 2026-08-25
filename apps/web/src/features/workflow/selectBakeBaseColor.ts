@@ -27,7 +27,7 @@ type BakeEntryProject = {
 
 type BakeMergeModel = {
   objectId: string;
-  restoreStage?: 'bounds' | 'outline' | 'full';
+  restoreStage?: 'bounds' | 'outline' | 'proxy' | 'full';
 };
 
 export type BakeUvMergePlan =
@@ -71,10 +71,7 @@ function compareLayers(left: Layer, right: Layer) {
   return timestamp(right.createdAt) - timestamp(left.createdAt);
 }
 
-export function findMergedUvBakeLayer(
-  layers: readonly Layer[],
-  objectId: string | undefined,
-) {
+export function findMergedUvBakeLayer(layers: readonly Layer[], objectId: string | undefined) {
   if (!objectId) return undefined;
   return layers
     .filter(
@@ -159,9 +156,7 @@ export function resolveBakeUvMergePlan(
       : [];
   const projectedLayerIds = [
     ...visibleProjectedLayerIds,
-    ...legacyLocalRepaintLayerIds.filter(
-      (layerId) => !visibleProjectedLayerIds.includes(layerId),
-    ),
+    ...legacyLocalRepaintLayerIds.filter((layerId) => !visibleProjectedLayerIds.includes(layerId)),
   ];
   const uvUnderlayLayerIds = findVisibleContentAwareUvLayerIdsForBake(layers, objectId);
   const sourceLayerIds = [...projectedLayerIds, ...uvUnderlayLayerIds];
@@ -214,9 +209,9 @@ export function isBakeMergeModelReady(
 ) {
   return Boolean(
     model &&
-      objectId &&
-      model.objectId === objectId &&
-      (!model.restoreStage || model.restoreStage === 'full'),
+    objectId &&
+    model.objectId === objectId &&
+    (!model.restoreStage || model.restoreStage === 'full'),
   );
 }
 
@@ -227,7 +222,7 @@ export function hasWorkflowBakeBaseColor(
 ) {
   return Boolean(
     (handoff?.objectId === objectId && handoff.baseColor?.imageUrl) ||
-      resolveBakeUvMergePlan(layers, objectId).action === 'reuse',
+    resolveBakeUvMergePlan(layers, objectId).action === 'reuse',
   );
 }
 
@@ -248,8 +243,8 @@ export function requiresTextureUvMergeBeforeBake(
     project.bakeWorkspace?.selectedObjectId,
   ].filter((objectId): objectId is string => Boolean(objectId));
   if (preferredObjectIds.length > 0) {
-    return !preferredObjectIds.some((objectId) =>
-      resolveBakeUvMergePlan(project.layers, objectId).action === 'reuse',
+    return !preferredObjectIds.some(
+      (objectId) => resolveBakeUvMergePlan(project.layers, objectId).action === 'reuse',
     );
   }
   const mergedObjectIds = new Set(

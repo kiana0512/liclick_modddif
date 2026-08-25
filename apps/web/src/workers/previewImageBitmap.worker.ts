@@ -1,7 +1,7 @@
 export {};
 
 type Request =
-  | { type: 'decode'; id: number; url: string }
+  | { type: 'decode'; id: number; url: string; maxSize?: number }
   | { type: 'stripe'; id: number; requestId: number; y: number; height: number }
   | { type: 'release'; id: number };
 type Response =
@@ -31,10 +31,23 @@ scope.onmessage = (event) => {
       if (request.type === 'decode') {
         const response = await fetch(request.url, { credentials: 'same-origin' });
         if (!response.ok) throw new Error(`Texture request failed (${response.status}).`);
-        const bitmap = await createImageBitmap(await response.blob(), {
+        const sourceBitmap = await createImageBitmap(await response.blob(), {
           imageOrientation: 'flipY',
           premultiplyAlpha: 'none',
         });
+        const scale = request.maxSize
+          ? Math.min(1, request.maxSize / Math.max(sourceBitmap.width, sourceBitmap.height))
+          : 1;
+        const bitmap =
+          scale < 1
+            ? await createImageBitmap(sourceBitmap, {
+                resizeWidth: Math.max(1, Math.round(sourceBitmap.width * scale)),
+                resizeHeight: Math.max(1, Math.round(sourceBitmap.height * scale)),
+                resizeQuality: 'medium',
+                premultiplyAlpha: 'none',
+              })
+            : sourceBitmap;
+        if (bitmap !== sourceBitmap) sourceBitmap.close();
         bitmaps.get(request.id)?.close();
         bitmaps.set(request.id, bitmap);
         scope.postMessage({
