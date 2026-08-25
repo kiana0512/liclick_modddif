@@ -32,8 +32,11 @@
 #
 # No top-level `workflow.rules` here (unlike lipixel's, which gates the
 # whole pipeline to `release`) — verify/build must keep running on every
-# branch/MR as main's existing quality gate. Only containerize/deploy are
-# restricted to `release`, via each job's own `rules:` below.
+# other branch/MR as main's existing quality gate. `release` itself is the
+# opposite: it only carries already-verified code, so verify/build are
+# explicitly skipped there (each of those jobs' own `rules:` below) and
+# only containerize/deploy run — hence containerize's `needs: build` is
+# `optional: true`, since `build` never exists in a `release` pipeline.
 
 stages:
   - verify
@@ -55,8 +58,18 @@ default:
     paths:
       - .pnpm-store/
 
+# .verify_rules / rules: below on each verify+build job — release only
+# carries code that already passed these on another branch/MR, so skip
+# re-running them there; run on everything else as before.
+.skip_on_release: &skip_on_release
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "release"'
+      when: never
+    - when: on_success
+
 contracts-and-cloud-boundary:
   stage: verify
+  <<: *skip_on_release
   script:
     - corepack pnpm run check:cloud-boundary
     - corepack pnpm run check:project-repository-boundary
@@ -64,11 +77,13 @@ contracts-and-cloud-boundary:
 
 typecheck:
   stage: verify
+  <<: *skip_on_release
   script:
     - corepack pnpm run typecheck
 
 web-regression:
   stage: verify
+  <<: *skip_on_release
   variables:
     LICLICK_TEST_TIMEOUT_MS: "180000"
   script:
@@ -76,20 +91,25 @@ web-regression:
 
 server-regression:
   stage: verify
+  <<: *skip_on_release
   variables:
     LICLICK_TEST_TIMEOUT_MS: "180000"
   script:
     - corepack pnpm --filter @liclick/server run test:regression
 
-# Lint includes Hooks lifecycle and Fast Refresh rules. Keep it release-blocking
-# so stale effects and component-boundary regressions cannot reach production.
+# Lint includes Hooks lifecycle and Fast Refresh rules — must pass on the
+# branch/MR before it's allowed to merge into release (not run on release
+# itself, like the rest of this stage; see .skip_on_release above), so
+# stale effects and component-boundary regressions cannot reach production.
 lint:
   stage: verify
+  <<: *skip_on_release
   script:
     - corepack pnpm run lint
 
 build:
   stage: build
+  <<: *skip_on_release
   variables:
     LICLICK_RELEASE_ID: "$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
     LICLICK_GIT_SHA: "$CI_COMMIT_SHA"
@@ -136,8 +156,13 @@ variables:
   tags:
     - ztest
     - k8s
+  # optional: build never runs on release (see .skip_on_release), so this
+  # dependency only actually applies to a hypothetical non-release pipeline
+  # that opts into containerize — without optional:true, GitLab errors at
+  # pipeline-creation time on release ("needs job build not present").
   needs:
-    - build
+    - job: build
+      optional: true
   rules:
     - if: '$CI_COMMIT_BRANCH == "release"'
       when: on_success
