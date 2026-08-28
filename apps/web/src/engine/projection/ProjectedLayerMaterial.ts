@@ -3477,6 +3477,9 @@ async function uploadProjectedTextureArrayInStripes(input: {
       const previousUnpackSkipImages = input.context.getParameter(
         input.context.UNPACK_SKIP_IMAGES,
       ) as number;
+      const previousPixelUnpackBuffer = input.context.getParameter(
+        input.context.PIXEL_UNPACK_BUFFER_BINDING,
+      ) as WebGLBuffer | null;
       try {
         const stripeStartedAt = performance.now();
         // R3F may upload another texture while this array uploader yields.
@@ -3490,6 +3493,13 @@ async function uploadProjectedTextureArrayInStripes(input: {
         input.context.pixelStorei(input.context.UNPACK_SKIP_PIXELS, 0);
         input.context.pixelStorei(input.context.UNPACK_SKIP_ROWS, 0);
         input.context.pixelStorei(input.context.UNPACK_SKIP_IMAGES, 0);
+        // R3F/Three or another asynchronous uploader may leave a pixel-unpack
+        // buffer bound between our yielded stripes. With a PBO bound WebGL
+        // interprets the TypedArray overload below as an invalid operation
+        // (1282), opens the projected-array circuit and strands the model on a
+        // stale UV/bootstrap material. Our source is always client memory, so
+        // explicitly unbind the PBO for every stripe and restore it afterwards.
+        input.context.bindBuffer(input.context.PIXEL_UNPACK_BUFFER, null);
         input.context.bindTexture(input.context.TEXTURE_2D_ARRAY, input.texture);
         input.context.texSubImage3D(
           input.context.TEXTURE_2D_ARRAY,
@@ -3517,6 +3527,7 @@ async function uploadProjectedTextureArrayInStripes(input: {
         input.context.pixelStorei(input.context.UNPACK_SKIP_PIXELS, previousUnpackSkipPixels);
         input.context.pixelStorei(input.context.UNPACK_SKIP_ROWS, previousUnpackSkipRows);
         input.context.pixelStorei(input.context.UNPACK_SKIP_IMAGES, previousUnpackSkipImages);
+        input.context.bindBuffer(input.context.PIXEL_UNPACK_BUFFER, previousPixelUnpackBuffer);
       }
       uploadYieldCount += 1;
     }

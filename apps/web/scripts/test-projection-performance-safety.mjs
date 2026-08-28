@@ -42,6 +42,16 @@ assert.match(
   'projected arrays must normalize per-stripe unpack state and reset Three renderer state before presentation',
 );
 assert.match(
+  materialSource,
+  /PIXEL_UNPACK_BUFFER_BINDING[\s\S]*?bindBuffer\(input\.context\.PIXEL_UNPACK_BUFFER, null\)[\s\S]*?bindBuffer\(input\.context\.PIXEL_UNPACK_BUFFER, previousPixelUnpackBuffer\)/,
+  'striped projected-array uploads must isolate and restore the pixel-unpack buffer binding',
+);
+assert.match(
+  sceneRootSource,
+  /canUseDirectVisibleStackAfterArrayFailure[\s\S]*?textureArrayCompositionFallbackRequired && directProjectedSamplerBudget\.withinBudget/,
+  'an array failure must use the complete direct stack whenever the GPU can carry it',
+);
+assert.match(
   compositorSource,
   /const overlayMaterial = createFullscreenMaterial\(overlayFragmentShader,[\s\S]*?priorityOverlay: 0/,
   'overlay compositor must declare the priorityOverlay uniform before step writes it',
@@ -140,6 +150,21 @@ assert.match(
   sceneRootSource,
   /layer\.visible \|\| selectedObjectId === importedObjectId[\s\S]*?prewarmPreviewTextures\(imageUrls,[\s\S]*?maxSize: proxyTextureMaxSize/,
   'multi-model restore must pin only the selected object\'s hidden UV toggle working set',
+);
+assert.match(
+  sceneRootSource,
+  /if \(!workspaceVisible\) \{[\s\S]*?hiddenBuild\.cancelled = true;[\s\S]*?projectedTextureArrayBuildRef\.current = undefined;[\s\S]*?return undefined;/,
+  'hidden texture-workspace models must cancel and forget partial 4K projected-array builds',
+);
+assert.match(
+  sceneRootSource,
+  /!workspaceVisible \|\|\s*selectedObjectId !== importedModel\.objectId \|\|\s*typeof gl\.compileAsync/,
+  'projected shader warmup must be reserved for the selected visible model',
+);
+assert.match(
+  sceneRootSource,
+  /!workspaceVisible \|\|\s*selectedObjectId !== importedModel\.objectId \|\|\s*!texturedRestoreReady/,
+  'runtime projection visibility repair must not compete across hidden or unselected models',
 );
 assert.match(
   compositorSource,

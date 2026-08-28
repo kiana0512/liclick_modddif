@@ -1406,6 +1406,7 @@ function ImportedModel({
   const acquiredProjectedProgramSignaturesRef = useRef(new Set<string>());
   const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   useEffect(() => {
+    if (!workspaceVisible || selectedObjectId !== importedModel.objectId) return undefined;
     let cancelled = false;
     const prepare = async () => {
       await waitForProjectionVisibilityIdle(0);
@@ -1425,13 +1426,19 @@ function ImportedModel({
     return () => {
       cancelled = true;
     };
-  }, [gl]);
+  }, [gl, importedModel.objectId, selectedObjectId, workspaceVisible]);
   useEffect(() => {
     // Restore the saved projection stack before rebuilding runtime depth and
     // normal textures. Starting both jobs together changes the material
     // signature during the first texture-array upload and can strand local
     // repaint in its disabled preparation state.
-    if (!texturedRestoreReady || !initialProjectedMaterialReady) return undefined;
+    if (
+      !workspaceVisible ||
+      selectedObjectId !== importedModel.objectId ||
+      !texturedRestoreReady ||
+      !initialProjectedMaterialReady
+    )
+      return undefined;
     let cancelled = false;
     const candidates = [
       ...layers,
@@ -1546,6 +1553,8 @@ function ImportedModel({
     layers,
     texturedRestoreReady,
     visibleLocalRepaintPreviewLayer,
+    selectedObjectId,
+    workspaceVisible,
   ]);
   const importedObjectId = importedModel?.objectId;
   const liveProjectedEraserMaskTexture = useMemo(() => {
@@ -2377,7 +2386,13 @@ function ImportedModel({
     failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature,
   );
   const canUseDirectVisibleStackAfterArrayFailure = Boolean(
-    textureArrayCompositionFallbackRequired && directProjectedSamplerStable,
+    // Once the array path has failed, correctness is more important than the
+    // normal headroom preference. A six-view image+depth stack needs most of the
+    // 16 available samplers on common WebGL2 devices and is still a valid exact
+    // material. Sending it to the progressive compositor instead can leave the
+    // last UV/bootstrap material resident if that asynchronous publication is
+    // superseded by an eye toggle or eraser clear.
+    textureArrayCompositionFallbackRequired && directProjectedSamplerBudget.withinBudget,
   );
   // Prefer an exact projected material. If the device still rejects a downscaled
   // array, preserve every visible layer through the tiled compositor rather than
@@ -2502,12 +2517,14 @@ function ImportedModel({
 
   useEffect(() => {
     if (
+      !workspaceVisible ||
       !projectedPreviewNeedsComposition ||
       !canUseProgressiveUvFallback ||
       progressiveBackgroundInputs.length === 0 ||
       !importedModel
     ) {
       projectedPreviewCompositorRef.current?.cancelPending();
+      if (!workspaceVisible) setProgressiveProjectedPreview(undefined);
       return;
     }
     const compositor =
@@ -2535,6 +2552,7 @@ function ImportedModel({
     projectedPreviewNeedsComposition,
     previewProjectionInputs.length,
     resolution,
+    workspaceVisible,
   ]);
 
   useEffect(
@@ -3153,6 +3171,8 @@ function ImportedModel({
 
   useEffect(() => {
     if (
+      !workspaceVisible ||
+      selectedObjectId !== importedModel.objectId ||
       typeof gl.compileAsync !== 'function' ||
       projectedProgramWarmupInputs.length <= 1 ||
       !projectedProgramWarmupSignature
@@ -3265,7 +3285,9 @@ function ImportedModel({
     progressivePreviewBase?.renderedColorMaskTexture,
     projectedProgramWarmupSignature,
     projectedProgramWarmupStructureSignature,
+    selectedObjectId,
     useProjectedProgramWarmupTextureArrays,
+    workspaceVisible,
   ]);
 
   useEffect(
@@ -3282,6 +3304,8 @@ function ImportedModel({
 
   useEffect(() => {
     if (
+      !workspaceVisible ||
+      selectedObjectId !== importedModel.objectId ||
       importedModel.restoreStage !== 'outline' ||
       !useProjectedProgramWarmupTextureArrays ||
       projectedProgramWarmupInputs.length <= 1 ||
@@ -3418,12 +3442,24 @@ function ImportedModel({
     previewLighting,
     projectedProgramWarmupInputs,
     projectedProgramWarmupTextureArrayStructureSignature,
+    selectedObjectId,
     textureArrayCompositionFallbackRequired,
     topUvProjectedOverlayInput,
     useProjectedProgramWarmupTextureArrays,
+    workspaceVisible,
   ]);
 
   useEffect(() => {
+    if (!workspaceVisible) {
+      // Hidden texture-workspace objects must not keep packing and uploading
+      // independent 4K projection arrays. Cancel and forget the partial build
+      // so selecting the object later starts a fresh authoritative generation
+      // instead of reusing a cancelled promise that can only yield white.
+      const hiddenBuild = projectedTextureArrayBuildRef.current;
+      if (hiddenBuild) hiddenBuild.cancelled = true;
+      projectedTextureArrayBuildRef.current = undefined;
+      return undefined;
+    }
     if (!importedModel) return;
     let hasResidentProjectedMaterial = false;
     let hasPresentedMaterial = false;
@@ -4959,6 +4995,7 @@ function ImportedModel({
     visibleMergedUvBoundaryOrder,
     visibleLocalRepaintPreviewLayer,
     visibleStackHasBakedPreview,
+    workspaceVisible,
   ]);
 
   if (!importedModel) return null;

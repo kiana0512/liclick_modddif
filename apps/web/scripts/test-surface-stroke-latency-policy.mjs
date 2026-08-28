@@ -71,6 +71,21 @@ try {
     /waitForPaintCommitIdle\(\s*undefined,\s*PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS/,
     'Projected eraser commit must wait for an interaction-free idle window.',
   );
+  assert.match(
+    viewportSource,
+    /previousLayer\.objectId !== model\.objectId \|\|[\s\S]*?previousLayer\.layerId !== activePaintLayerId[\s\S]*?previousLayer\.pendingPaintCommits > 0[\s\S]*?paintLayerHandoffPromiseRef\.current = handoffPromise;[\s\S]*?await handoffPromise;[\s\S]*?const layer = getUvPaintLayer\(model\);/,
+    'Layer or model selection must keep the previous live eraser mask resident until its queued commit is authoritative.',
+  );
+  assert.match(
+    viewportSource,
+    /layer\.pendingPaintCommits \+= 1;[\s\S]*?layer\.paintCommitChain = queuedCommit[\s\S]*?\.finally\(\(\) => \{\s*layer\.pendingPaintCommits = Math\.max\(0, layer\.pendingPaintCommits - 1\);/,
+    'Projected paint commits must expose an exact pending count for the layer handoff barrier.',
+  );
+  assert.match(
+    viewportSource,
+    /if \(paintLayerHandoffPromiseRef\.current\) \{\s*event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);\s*return;/,
+    'A new stroke must not dispose or paint through the old layer while its mask handoff is pending.',
+  );
 
   process.stdout.write('surface stroke latency policy tests passed\n');
 } finally {

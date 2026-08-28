@@ -3869,6 +3869,7 @@ type UvPaintLayer = {
   paintBackingInitialized: boolean;
   paintDefaultResolution: number;
   paintCommitChain: Promise<void>;
+  pendingPaintCommits: number;
   pendingBaseImage?: HTMLImageElement;
   paintCanvas: HTMLCanvasElement;
   paintContext: CanvasRenderingContext2D;
@@ -6512,6 +6513,7 @@ function SurfacePaintOverlay() {
   const cursorOverlayRef = useRef<SVGSVGElement>();
   const cursorCircleRef = useRef<SVGCircleElement>();
   const layerRef = useRef<UvPaintLayer>();
+  const paintLayerHandoffPromiseRef = useRef<Promise<void>>();
   const raycasterRef = useRef(
     new THREE.Raycaster() as THREE.Raycaster & { firstHitOnly?: boolean },
   );
@@ -7530,6 +7532,7 @@ function SurfacePaintOverlay() {
         const needsAccumulatedMeshMigration = !layerRef.current.accumulatedMaskMeshes;
         layerRef.current.accumulatedMaskMeshes ??= new Set();
         layerRef.current.currentProjectionMeshes ??= new Set();
+        layerRef.current.pendingPaintCommits ??= 0;
         if (needsAccumulatedMeshMigration && layerRef.current.accumulatedMaskReady) {
           getPaintableMeshes(model).forEach((mesh) =>
             layerRef.current?.accumulatedMaskMeshes.add(mesh),
@@ -7613,6 +7616,7 @@ function SurfacePaintOverlay() {
         paintBackingInitialized: Boolean(existingLiveCanvas),
         paintDefaultResolution: paintResolution,
         paintCommitChain: Promise.resolve(),
+        pendingPaintCommits: 0,
         paintCanvas: paint.canvas,
         paintContext,
         paintTexture,
@@ -7681,26 +7685,53 @@ function SurfacePaintOverlay() {
       if (previousLayer?.liveEraserPreviewActive) endLiveEraserPreview(previousLayer);
       return;
     }
-    const model = getTargetModel();
-    if (!model) return;
-    const prewarmStartedAt = performance.now();
-    const layer = getUvPaintLayer(model);
-    if (paintTool === 'eraser') {
-      // Attach the neutral GPU multiplier as soon as the tool is selected.
-      // Waiting for pointer-down made SceneRoot add the sampler and rebuild the
-      // projected material inside the first stroke, which could expose the clay
-      // material for one frame. The all-white multiplier is visually neutral,
-      // so it is safe to prewarm before any pixels are erased.
-      beginLiveEraserPreview(layer, model.group);
-      invalidate();
-      measureEraserPerformanceEvent('layer-eraser-prewarm', prewarmStartedAt, {
-        activeLayerId: activePaintLayerId,
-        target: layer.target,
-        ready: layer.isReady,
-      });
-    } else if (layer.liveEraserPreviewActive) {
-      endLiveEraserPreview(layer);
-    }
+    let cancelled = false;
+    const prepareActivePaintLayer = async () => {
+      const model = getTargetModel();
+      if (!model) return;
+      const previousLayer = layerRef.current;
+      if (
+        previousLayer &&
+        (previousLayer.objectId !== model.objectId ||
+          previousLayer.layerId !== activePaintLayerId) &&
+        previousLayer.pendingPaintCommits > 0
+      ) {
+        // Pointer-up publishes a projected eraser stroke from the idle commit
+        // queue. Keep the old live multiplier resident until that authoritative
+        // mask is in the layer store; otherwise selecting another row disposes
+        // the only copy of the stroke and the erased area appears to vanish.
+        const handoffPromise = previousLayer.paintCommitChain;
+        paintLayerHandoffPromiseRef.current = handoffPromise;
+        await handoffPromise;
+        if (paintLayerHandoffPromiseRef.current === handoffPromise) {
+          paintLayerHandoffPromiseRef.current = undefined;
+        }
+        if (cancelled) return;
+      }
+      if (cancelled) return;
+      const prewarmStartedAt = performance.now();
+      const layer = getUvPaintLayer(model);
+      if (paintTool === 'eraser') {
+        // Attach the neutral GPU multiplier as soon as the tool is selected.
+        // Waiting for pointer-down made SceneRoot add the sampler and rebuild the
+        // projected material inside the first stroke, which could expose the clay
+        // material for one frame. The all-white multiplier is visually neutral,
+        // so it is safe to prewarm before any pixels are erased.
+        beginLiveEraserPreview(layer, model.group);
+        invalidate();
+        measureEraserPerformanceEvent('layer-eraser-prewarm', prewarmStartedAt, {
+          activeLayerId: activePaintLayerId,
+          target: layer.target,
+          ready: layer.isReady,
+        });
+      } else if (layer.liveEraserPreviewActive) {
+        endLiveEraserPreview(layer);
+      }
+    };
+    void prepareActivePaintLayer();
+    return () => {
+      cancelled = true;
+    };
   }, [
     activePaintLayerId,
     canUseSurfacePaint,
@@ -12063,20 +12094,25 @@ function SurfacePaintOverlay() {
         }
       };
 
+      layer.pendingPaintCommits += 1;
       const queuedCommit = layer.paintCommitChain.then(() => layer.ready).then(finalizePaintStroke);
-      layer.paintCommitChain = queuedCommit.catch((error) => {
-        finishProjectedPreview();
-        console.warn('[Liclick 3D Texture] Could not commit UV paint stroke:', error);
-        pushToast({
-          tone: 'error',
-          title: '橡皮笔画未保存',
-          description:
-            error instanceof Error
-              ? error.message
-              : '当前分辨率的图层覆盖写入失败；没有降级为低分辨率结果。',
-          dedupeKey: `layer-eraser-commit:${layer.layerId}`,
+      layer.paintCommitChain = queuedCommit
+        .catch((error) => {
+          finishProjectedPreview();
+          console.warn('[Liclick 3D Texture] Could not commit UV paint stroke:', error);
+          pushToast({
+            tone: 'error',
+            title: '橡皮笔画未保存',
+            description:
+              error instanceof Error
+                ? error.message
+                : '当前分辨率的图层覆盖写入失败；没有降级为低分辨率结果。',
+            dedupeKey: `layer-eraser-commit:${layer.layerId}`,
+          });
+        })
+        .finally(() => {
+          layer.pendingPaintCommits = Math.max(0, layer.pendingPaintCommits - 1);
         });
-      });
       return;
     }
 
@@ -13292,6 +13328,14 @@ function SurfacePaintOverlay() {
       // background. stopImmediatePropagation is necessary because both input
       // systems have native listeners on this same canvas element.
       if (!result) return;
+      // During a projected-mask handoff the old live multiplier is still the
+      // authoritative visual result. Ignore a new stroke for this very short
+      // interval instead of disposing it and painting into the wrong layer.
+      if (paintLayerHandoffPromiseRef.current) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (isInpaintMode) {
         cancelIdleInpaintArchive();
         const selectionLayer = syncInpaintMaskProjection(result.model);

@@ -836,6 +836,8 @@ export class ProjectedLayerPreviewCompositor {
   private revision = 0;
   private job?: CompositeJob;
   private failedSignature?: string;
+  private failedAttemptCount = 0;
+  private retryTimer?: number;
   private publishedTarget?: THREE.WebGLRenderTarget;
   private readonly neutralRenderedColorMask = (() => {
     const texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
@@ -845,13 +847,13 @@ export class ProjectedLayerPreviewCompositor {
   })();
 
   request(request: ProjectedPreviewCompositeRequest) {
-    if (
-      this.job?.request.signature === request.signature ||
-      this.failedSignature === request.signature
-    ) {
-      return;
+    if (this.job?.request.signature === request.signature) return;
+    if (this.failedSignature === request.signature && this.retryTimer !== undefined) return;
+    if (this.failedSignature !== request.signature) {
+      this.clearRetry();
+      this.failedSignature = undefined;
+      this.failedAttemptCount = 0;
     }
-    if (this.failedSignature !== request.signature) this.failedSignature = undefined;
     const revision = ++this.revision;
     request.onProgress?.({
       signature: request.signature,
@@ -865,17 +867,51 @@ export class ProjectedLayerPreviewCompositor {
     }
     void this.prepareJob(request, revision).catch((error) => {
       if (revision === this.revision) {
-        this.failedSignature = request.signature;
-        request.onError(error);
+        this.handleFailure(request, error);
       }
     });
   }
 
+  private clearRetry() {
+    if (this.retryTimer !== undefined) window.clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+  }
+
+  private handleFailure(request: ProjectedPreviewCompositeRequest, error: unknown) {
+    this.failedSignature = request.signature;
+    this.failedAttemptCount += 1;
+    request.onError(error);
+    // Texture decode, GPU allocation and framebuffer work can fail transiently
+    // while another model is releasing its 4K arrays. A permanent signature
+    // latch leaves projection-only models white until some unrelated edit
+    // changes the stack. Retry a bounded number of times with backoff; model
+    // hide/show calls cancelPending(), which resets this budget for a fresh run.
+    if (this.failedAttemptCount >= 4) return;
+    const failedRevision = this.revision;
+    const retryDelayMs = Math.min(2000, 250 * 2 ** (this.failedAttemptCount - 1));
+    this.clearRetry();
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = undefined;
+      if (
+        this.revision !== failedRevision ||
+        this.failedSignature !== request.signature ||
+        this.job
+      )
+        return;
+      // Keep failedSignature and failedAttemptCount intact while retrying the
+      // same stack. Clearing the signature here makes request() treat every
+      // retry as a brand-new failure series and defeats the four-attempt cap.
+      this.request(request);
+    }, retryDelayMs);
+  }
+
   cancelPending() {
     this.revision += 1;
+    this.clearRetry();
     if (this.job) disposeJob(this.job);
     this.job = undefined;
     this.failedSignature = undefined;
+    this.failedAttemptCount = 0;
   }
 
   private async prepareJob(request: ProjectedPreviewCompositeRequest, revision: number) {
@@ -1020,9 +1056,8 @@ export class ProjectedLayerPreviewCompositor {
       this.reportProgress(job);
     } catch (error) {
       if (this.job === job) this.job = undefined;
-      this.failedSignature = job.request.signature;
       disposeJob(job);
-      job.request.onError(error);
+      this.handleFailure(job.request, error);
     }
   }
 
@@ -1239,7 +1274,9 @@ export class ProjectedLayerPreviewCompositor {
 
   private publish(job: CompositeJob) {
     if (job.revision !== this.revision) return;
+    this.clearRetry();
     this.failedSignature = undefined;
+    this.failedAttemptCount = 0;
     const previousPublished = this.publishedTarget;
     this.publishedTarget = job.outputTarget;
     job.outputTarget = createMrt(1, 1, 2);
@@ -1264,9 +1301,11 @@ export class ProjectedLayerPreviewCompositor {
 
   dispose() {
     this.revision += 1;
+    this.clearRetry();
     if (this.job) disposeJob(this.job);
     this.job = undefined;
     this.failedSignature = undefined;
+    this.failedAttemptCount = 0;
     this.publishedTarget?.dispose();
     this.publishedTarget = undefined;
     this.neutralRenderedColorMask.dispose();

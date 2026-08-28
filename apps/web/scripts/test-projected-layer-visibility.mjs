@@ -79,8 +79,13 @@ const gpuReadbackWorkerSource = readFileSync(
 
 assert.match(
   projectedPreviewCompositorSource,
-  /this\.failedSignature === request\.signature/,
-  'A failed projected-preview signature must be latched instead of being resubmitted every render.',
+  /private handleFailure[\s\S]*?failedAttemptCount \+= 1[\s\S]*?failedAttemptCount >= 4[\s\S]*?retryDelayMs[\s\S]*?this\.request\(request\)/,
+  'A transient projected-preview failure must retry with bounded backoff instead of leaving a projection-only model permanently white.',
+);
+assert.doesNotMatch(
+  projectedPreviewCompositorSource,
+  /this\.retryTimer = window\.setTimeout\([\s\S]*?this\.failedSignature = undefined;[\s\S]*?this\.request\(request\)/,
+  'A same-signature retry must preserve its attempt counter so the retry budget stays bounded.',
 );
 assert.doesNotMatch(
   sceneRootSource,
