@@ -77,3 +77,79 @@ export class ProjectSaveCoordinator {
     this.maxWaitTimer = undefined;
   }
 }
+
+type ProjectSaveExecutionRequest = {
+  snapshot: { id: string };
+  editVersion: number;
+};
+
+type PendingProjectSave<Request, Result> = {
+  request: Request;
+  waiters: Array<{
+    resolve: (result: Result) => void;
+    reject: (error: unknown) => void;
+  }>;
+};
+
+/**
+ * Serializes project saves without preserving obsolete intermediate snapshots.
+ * An active write is allowed to finish because it may already have uploaded
+ * assets, while every request arriving behind it shares one latest-pending
+ * execution. This keeps Ctrl+S from waiting behind a backlog of autosaves.
+ */
+export class LatestProjectSaveExecutor<
+  Request extends ProjectSaveExecutionRequest,
+  Result,
+> {
+  private active?: { request: Request; promise: Promise<Result> };
+  private pending?: PendingProjectSave<Request, Result>;
+
+  constructor(private readonly execute: (request: Request) => Promise<Result>) {}
+
+  enqueue(request: Request): Promise<Result> {
+    if (!this.active) return this.start(request);
+
+    const sameProject = this.active.request.snapshot.id === request.snapshot.id;
+    if (
+      sameProject &&
+      request.editVersion <= this.active.request.editVersion &&
+      !this.pending
+    ) {
+      return this.active.promise;
+    }
+
+    return new Promise<Result>((resolve, reject) => {
+      if (!this.pending) {
+        this.pending = { request, waiters: [{ resolve, reject }] };
+        return;
+      }
+      const pendingSameProject = this.pending.request.snapshot.id === request.snapshot.id;
+      if (!pendingSameProject || request.editVersion >= this.pending.request.editVersion) {
+        this.pending.request = request;
+      }
+      this.pending.waiters.push({ resolve, reject });
+    });
+  }
+
+  private start(request: Request): Promise<Result> {
+    const promise = Promise.resolve().then(() => this.execute(request));
+    this.active = { request, promise };
+    void promise.then(
+      () => this.drain(),
+      () => this.drain(),
+    );
+    return promise;
+  }
+
+  private drain() {
+    this.active = undefined;
+    const pending = this.pending;
+    this.pending = undefined;
+    if (!pending) return;
+    const promise = this.start(pending.request);
+    void promise.then(
+      (result) => pending.waiters.forEach((waiter) => waiter.resolve(result)),
+      (error) => pending.waiters.forEach((waiter) => waiter.reject(error)),
+    );
+  }
+}

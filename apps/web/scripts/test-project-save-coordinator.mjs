@@ -55,8 +55,27 @@ try {
     /async function handleManualSave[\s\S]*?getProjectSaveRequest\(\{ refreshThumbnail: false \}\)/,
     'Ctrl+S must not synchronously read back and encode the WebGL thumbnail.',
   );
-  const { PROJECT_AUTOSAVE_MAX_WAIT_MS, PROJECT_AUTOSAVE_TRAILING_MS, ProjectSaveCoordinator } =
-    await server.ssrLoadModule('/src/services/projectSaveCoordinator.ts');
+  assert.match(
+    editorPageSource,
+    /persistedProjectAssetBySlot\.get\(assetSlotKey\)\?\.get\(url\)/,
+    'Unchanged durable assets must not be uploaded again on every save.',
+  );
+  assert.match(
+    editorPageSource,
+    /integratedLoopbackAsset[\s\S]*?return url;/,
+    'The integrated 4517 workspace must not re-upload its own durable assets.',
+  );
+  assert.match(
+    editorPageSource,
+    /beginSaveStatusOperation\(\)[\s\S]*?finishSaveStatusOperation/,
+    'Older autosave completions must not overwrite the latest visible save status.',
+  );
+  const {
+    LatestProjectSaveExecutor,
+    PROJECT_AUTOSAVE_MAX_WAIT_MS,
+    PROJECT_AUTOSAVE_TRAILING_MS,
+    ProjectSaveCoordinator,
+  } = await server.ssrLoadModule('/src/services/projectSaveCoordinator.ts');
   const { useProjectStore } = await server.ssrLoadModule('/src/stores/projectStore.ts');
 
   {
@@ -88,6 +107,35 @@ try {
     }
     advance(1_000);
     assert.equal(saves, 1, 'Continuous edits must not postpone autosave beyond maxWait.');
+  }
+
+  {
+    const startedVersions = [];
+    const completions = [];
+    const executor = new LatestProjectSaveExecutor(
+      (request) =>
+        new Promise((resolve) => {
+          startedVersions.push(request.editVersion);
+          completions.push(() => resolve(`saved-${request.editVersion}`));
+        }),
+    );
+    const request = (editVersion) => ({ snapshot: { id: 'queue-project' }, editVersion });
+    const first = executor.enqueue(request(1));
+    const obsolete = executor.enqueue(request(2));
+    const latest = executor.enqueue(request(3));
+    await Promise.resolve();
+    assert.deepEqual(startedVersions, [1], 'Only one project save may execute at a time.');
+    completions.shift()();
+    assert.equal(await first, 'saved-1');
+    await Promise.resolve();
+    assert.deepEqual(
+      startedVersions,
+      [1, 3],
+      'Queued autosaves must collapse to the newest edit version.',
+    );
+    completions.shift()();
+    assert.equal(await obsolete, 'saved-3');
+    assert.equal(await latest, 'saved-3');
   }
 
   const projectId = 'project-save-coordinator-test';

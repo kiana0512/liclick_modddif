@@ -213,7 +213,10 @@ import { liclickImageEditProvider } from '@/services/imageEditProvider';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
 import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { hasTrackedModuleAction, trackModuleActionOnce } from '@/services/telemetryClient';
-import { ProjectSaveCoordinator } from '@/services/projectSaveCoordinator';
+import {
+  LatestProjectSaveExecutor,
+  ProjectSaveCoordinator,
+} from '@/services/projectSaveCoordinator';
 import {
   fileToDataUrl,
   getWorkspaceHealth,
@@ -278,6 +281,10 @@ type EditorPageProps = {
 type ProjectSaveRequest = {
   snapshot: Project;
   editVersion: number;
+};
+
+type WorkspaceServerSaveResult = Awaited<ReturnType<typeof saveWorkspaceProject>> & {
+  savedLatestSnapshot: boolean;
 };
 
 type GenerationConflictDialogState = {
@@ -1007,6 +1014,20 @@ async function restorePersistedLocalRepaintRuntime(
 // the same GPU canvas. Cache the durable asset produced for each exact canvas
 // revision; otherwise every unchanged autosave encodes and uploads it again.
 const persistedLiveProjectedAssetByRevision = new Map<string, string>();
+const persistedProjectAssetBySlot = new Map<string, Map<string, string>>();
+
+function rememberPersistedProjectAsset(slotKey: string, sourceUrl: string, assetUrl: string) {
+  const slot = persistedProjectAssetBySlot.get(slotKey) ?? new Map<string, string>();
+  slot.set(sourceUrl, assetUrl);
+  while (slot.size > 8) slot.delete(slot.keys().next().value as string);
+  persistedProjectAssetBySlot.set(slotKey, slot);
+  while (persistedProjectAssetBySlot.size > 512) {
+    const oldestKey = persistedProjectAssetBySlot.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    persistedProjectAssetBySlot.delete(oldestKey);
+  }
+  return assetUrl;
+}
 
 export function EditorPage({
   projectId,
@@ -1044,7 +1065,9 @@ export function EditorPage({
   const flushProjectLayerSyncRef = useRef<() => void>(() => undefined);
   const manualSaveRunningRef = useRef(false);
   const pendingImmediateSaveRef = useRef(false);
-  const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const workspaceSaveExecutorRef = useRef<
+    LatestProjectSaveExecutor<ProjectSaveRequest, WorkspaceServerSaveResult>
+  >();
   const backNavigationPendingRef = useRef(false);
   const manualBakeRunningRef = useRef(false);
   const manualBakeProgressTimerRef = useRef<number>();
@@ -1060,6 +1083,7 @@ export function EditorPage({
     promise: ReturnType<typeof buildContentAwareSurfaceTopology>;
   }>();
   const contentAwareRepairTaskTokenRef = useRef<symbol>();
+  const saveStatusOperationRef = useRef(0);
   // Keep at most one pristine projection composite per workflow (64 MiB for
   // 4K merge + 16 MiB for 2K repair). Reads are cloned before UV underlays are
   // applied, so later compositing can never corrupt the reusable source.
@@ -1094,6 +1118,19 @@ export function EditorPage({
   const [publishingToRetopology, setPublishingToRetopology] = useState(false);
   const publishingToBakeRef = useRef(false);
   const [publishingToBake, setPublishingToBake] = useState(false);
+
+  function beginSaveStatusOperation() {
+    const operation = ++saveStatusOperationRef.current;
+    setSaveStatus('saving');
+    return operation;
+  }
+
+  function finishSaveStatusOperation(
+    operation: number,
+    status: 'idle' | 'saved' | 'failed' | 'offline',
+  ) {
+    if (saveStatusOperationRef.current === operation) setSaveStatus(status);
+  }
   const [manualBakeProgress, setManualBakeProgress] = useState<AutoBakeProgress | undefined>();
   const [modelImportBusy, setModelImportBusy] = useState(false);
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
@@ -1959,16 +1996,16 @@ export function EditorPage({
     }
     const request = getProjectSaveRequest({ refreshThumbnail: false });
     if (!request) return;
-    setSaveStatus('saving');
+    const saveStatusOperation = beginSaveStatusOperation();
     void saveToWorkspaceServer(request)
       .then((result) => {
         if (result.savedLatestSnapshot) {
-          setSaveStatus('saved');
+          finishSaveStatusOperation(saveStatusOperation, 'saved');
           return;
         }
         // Edits made while assets were uploading must remain dirty and get a
         // follow-up save instead of being incorrectly marked as persisted.
-        setSaveStatus('idle');
+        finishSaveStatusOperation(saveStatusOperation, 'idle');
         setAutosaveRetryToken((token) => token + 1);
       })
       .catch(async (error) => {
@@ -1981,7 +2018,7 @@ export function EditorPage({
         );
         const blockedEmptySave = saveConflict && !retryableConflict;
         if (retryableConflict) {
-          setSaveStatus('idle');
+          finishSaveStatusOperation(saveStatusOperation, 'idle');
           setAutosaveRetryToken((token) => token + 1);
           return;
         }
@@ -1992,7 +2029,10 @@ export function EditorPage({
                 () => false,
               )
             : false;
-        setSaveStatus(blockedEmptySave ? 'idle' : workspaceOnline ? 'failed' : 'offline');
+        finishSaveStatusOperation(
+          saveStatusOperation,
+          blockedEmptySave ? 'idle' : workspaceOnline ? 'failed' : 'offline',
+        );
         if (workspaceOnline && !authRequired && !blockedEmptySave) {
           console.error('[Liclick 3D Texture] Workspace autosave failed.', error);
           return;
@@ -2850,6 +2890,13 @@ export function EditorPage({
     category: 'models' | 'references' | 'captures' | 'generations' | 'layers' | 'baked',
     filename: string,
   ) {
+    const assetSlotKey = [projectId, category, filename].join('|');
+    const cachedAssetUrl = url
+      ? persistedProjectAssetBySlot.get(assetSlotKey)?.get(url)
+      : undefined;
+    if (cachedAssetUrl) return cachedAssetUrl;
+    const rememberAsset = (assetUrl: string) =>
+      url ? rememberPersistedProjectAsset(assetSlotKey, url, assetUrl) : assetUrl;
     const saveDataUrlWithFallback = async (dataUrl: string) => {
       const preferBlob = dataUrl.length > LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD;
       const asDataUrl = () => saveDataUrlAsset({ projectId, category, dataUrl, filename });
@@ -2871,20 +2918,35 @@ export function EditorPage({
     try {
       if (!url) return url;
       if (isWorkspaceAssetUrl(url)) {
-        if (!isCloudBuild || !isLegacyWorkspaceAssetUrl(url)) return url;
+        const resolvedWorkspaceUrl = new URL(url, window.location.href);
+        const integratedLoopbackAsset =
+          resolvedWorkspaceUrl.origin === window.location.origin &&
+          ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(
+            resolvedWorkspaceUrl.hostname,
+          );
+        // The production-shaped 4517 bundle uses cloud aliases, but its
+        // same-origin /workspace files are already durable local assets. Do
+        // not migrate hundreds of them through upload routes on first save.
+        if (
+          !isCloudBuild ||
+          !isLegacyWorkspaceAssetUrl(url) ||
+          integratedLoopbackAsset
+        ) {
+          return url;
+        }
         const result = await saveBlobAsset({
           projectId,
           category,
           blob: await readWorkspaceAssetBlob(url),
           filename,
         });
-        return result.asset.url;
+        return rememberAsset(result.asset.url);
       }
       if (url.startsWith('http')) {
         if (!isPersistableRemoteAssetUrl(url)) return url;
         try {
           const result = await saveRemoteUrlAsset({ projectId, category, url, filename });
-          return result.asset.url;
+          return rememberAsset(result.asset.url);
         } catch (serverDownloadError) {
           // Some managed desktop environments allow the signed image in the
           // browser but block direct Node egress. Download it in the renderer
@@ -2896,7 +2958,7 @@ export function EditorPage({
               blob: await urlToBlob(url),
               filename,
             });
-            return result.asset.url;
+            return rememberAsset(result.asset.url);
           } catch (browserDownloadError) {
             const serverMessage =
               serverDownloadError instanceof Error
@@ -2914,13 +2976,13 @@ export function EditorPage({
         const blob = getRegisteredObjectUrlBlob(url);
         if (blob) {
           const result = await saveBlobAsset({ projectId, category, blob, filename });
-          return result.asset.url;
+          return rememberAsset(result.asset.url);
         }
       }
       if (!url.startsWith('data:') && !url.startsWith('blob:')) return url;
       const dataUrl = url.startsWith('data:') ? url : await urlToDataUrl(url);
       const result = await saveDataUrlWithFallback(dataUrl);
-      return result.asset.url;
+      return rememberAsset(result.asset.url);
     } catch (error) {
       throw new Error(
         `保存资源失败 ${category}/${filename}: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -3137,14 +3199,12 @@ export function EditorPage({
   }
 
   function saveToWorkspaceServer(request: ProjectSaveRequest) {
-    const operation = workspaceSaveQueueRef.current
-      .catch(() => undefined)
-      .then(() => performWorkspaceServerSave(request));
-    workspaceSaveQueueRef.current = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    return operation;
+    if (!workspaceSaveExecutorRef.current) {
+      workspaceSaveExecutorRef.current = new LatestProjectSaveExecutor((nextRequest) =>
+        performWorkspaceServerSave(nextRequest),
+      );
+    }
+    return workspaceSaveExecutorRef.current.enqueue(request);
   }
 
   async function handleManualSave(showSuccessToast = true) {
@@ -3179,7 +3239,7 @@ export function EditorPage({
 
     manualSaveRunningRef.current = true;
     autosaveCoordinatorRef.current?.cancel();
-    setSaveStatus('saving');
+    const saveStatusOperation = beginSaveStatusOperation();
     try {
       let result = await saveToWorkspaceServer(request);
       if (!result.savedLatestSnapshot) {
@@ -3187,7 +3247,7 @@ export function EditorPage({
         if (latestRequest) result = await saveToWorkspaceServer(latestRequest);
       }
       if (result.savedLatestSnapshot) {
-        setSaveStatus('saved');
+        finishSaveStatusOperation(saveStatusOperation, 'saved');
         if (showSuccessToast)
           pushToast({
             tone: 'success',
@@ -3196,7 +3256,7 @@ export function EditorPage({
             dedupeKey: 'manual-project-save-success',
           });
       } else {
-        setSaveStatus('idle');
+        finishSaveStatusOperation(saveStatusOperation, 'idle');
         setAutosaveRetryToken((token) => token + 1);
       }
     } catch (error) {
@@ -3211,7 +3271,10 @@ export function EditorPage({
         if (latestRequest) {
           try {
             const result = await saveToWorkspaceServer(latestRequest);
-            setSaveStatus(result.savedLatestSnapshot ? 'saved' : 'idle');
+            finishSaveStatusOperation(
+              saveStatusOperation,
+              result.savedLatestSnapshot ? 'saved' : 'idle',
+            );
             if (!result.savedLatestSnapshot) {
               setAutosaveRetryToken((token) => token + 1);
             }
@@ -3227,7 +3290,7 @@ export function EditorPage({
               // was uploading assets. Keep the editor retryable instead of
               // presenting a false permanent failure; autosave reads all
               // current stores again on its next pass.
-              setSaveStatus('idle');
+              finishSaveStatusOperation(saveStatusOperation, 'idle');
               setAutosaveRetryToken((token) => token + 1);
               return;
             }
@@ -3235,7 +3298,7 @@ export function EditorPage({
           }
         }
       }
-      setSaveStatus('failed');
+      finishSaveStatusOperation(saveStatusOperation, 'failed');
       console.error('[Liclick 3D Texture] Manual workspace save failed.', reportedError);
     } finally {
       manualSaveRunningRef.current = false;
