@@ -16,6 +16,17 @@ const workspaceApiBase = getProjectApiBase();
 const generationWorkspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 const maxWorkspaceImageBytes = 160 * 1024 * 1024;
 const projectMutationTails = new Map<string, Promise<void>>();
+const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+function isIntegratedLoopbackWorkspace() {
+  if (typeof window === 'undefined') return false;
+  try {
+    const apiBase = new URL(workspaceApiBase || '/', window.location.href);
+    return apiBase.origin === window.location.origin && loopbackHosts.has(apiBase.hostname);
+  } catch {
+    return false;
+  }
+}
 
 async function withProjectMutationLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
   const previous = projectMutationTails.get(projectId) ?? Promise.resolve();
@@ -656,6 +667,12 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
 }
 
 export async function saveBlobAsset(input: SaveBlobAssetInput) {
+  // The integrated 4517 workspace deliberately has no object-storage service.
+  // Going through the cloud upload-intent endpoint first produces a guaranteed
+  // 503 for every image plane. Multi-view projection amplifies that into
+  // hundreds of failed requests before falling back, delaying or preventing
+  // result persistence. Stream directly to the authenticated local workspace.
+  if (isIntegratedLoopbackWorkspace()) return saveBlobAssetWithProgress(input);
   if (isCloudBuild && globalThis.crypto?.subtle) {
     try {
       return await saveDirectBlobAsset(input);
@@ -804,6 +821,11 @@ export function isWorkspaceAssetUrl(url?: string) {
  * migrate those bytes to object storage before considering them durable. */
 export function isLegacyWorkspaceAssetUrl(url?: string) {
   return Boolean(url && workspacePathAtBase(url, workspaceApiBase));
+}
+
+/** A durable /workspace asset already owned by the integrated loopback server. */
+export function isIntegratedLoopbackWorkspaceAssetUrl(url?: string) {
+  return Boolean(url && isIntegratedLoopbackWorkspace() && isLegacyWorkspaceAssetUrl(url));
 }
 
 /**

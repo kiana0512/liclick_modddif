@@ -83,6 +83,7 @@ import {
 } from '@/utils/generationTiming';
 import {
   isWorkspaceAssetUrl,
+  isIntegratedLoopbackWorkspaceAssetUrl,
   isLegacyWorkspaceAssetUrl,
   readWorkspaceAssetBlob,
   saveBlobAsset,
@@ -3514,7 +3515,10 @@ export function GeneratePanel({
     if (
       !targetProject ||
       targetProject.workspaceMode !== 'local-server' ||
-      (isWorkspaceAssetUrl(url) && (!isCloudBuild || !isLegacyWorkspaceAssetUrl(url)))
+      (isWorkspaceAssetUrl(url) &&
+        (!isCloudBuild ||
+          !isLegacyWorkspaceAssetUrl(url) ||
+          isIntegratedLoopbackWorkspaceAssetUrl(url)))
     )
       return url;
     if (isCloudBuild && isLegacyWorkspaceAssetUrl(url)) {
