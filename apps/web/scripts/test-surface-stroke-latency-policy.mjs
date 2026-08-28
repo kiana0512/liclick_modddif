@@ -13,8 +13,11 @@ const server = await createServer({
 });
 
 try {
-  const { shouldCollapseSurfaceStrokeToLatestSample, shouldDeferSurfaceStrokeCommit } =
-    await server.ssrLoadModule('/src/engine/paint/surfaceStrokeLatencyPolicy.ts');
+  const {
+    shouldCollapseSurfaceStrokeToLatestSample,
+    shouldDeferSurfaceStrokeCommit,
+    shouldUploadSurfaceStrokeProjectionTexture,
+  } = await server.ssrLoadModule('/src/engine/paint/surfaceStrokeLatencyPolicy.ts');
 
   assert.equal(
     shouldCollapseSurfaceStrokeToLatestSample({
@@ -52,6 +55,20 @@ try {
     'UV erasing must keep its existing immediate handoff because it has no projected live mask.',
   );
 
+  assert.equal(
+    shouldUploadSurfaceStrokeProjectionTexture({
+      operation: 'eraser',
+      target: 'projected-mask',
+    }),
+    false,
+    'Projected eraser frames must not upload the refinement-only projection texture.',
+  );
+  assert.equal(
+    shouldUploadSurfaceStrokeProjectionTexture({ operation: 'brush', target: 'projected-mask' }),
+    true,
+    'Projected brush feedback must continue uploading its visible projection texture.',
+  );
+
   const viewportSource = fs.readFileSync(
     path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
     'utf8',
@@ -68,8 +85,18 @@ try {
   );
   assert.match(
     viewportSource,
-    /waitForPaintCommitIdle\(\s*undefined,\s*PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS/,
-    'Projected eraser commit must wait for an interaction-free idle window.',
+    /waitForPaintCommitIdle\(\s*undefined,\s*PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS,\s*\(\) =>[\s\S]*?paintCommitHandoffLayerIdRef\.current === layer\.layerId[\s\S]*?false,/,
+    'Projected eraser commit must yield during a stroke burst, flush immediately for a layer handoff, and avoid a long requestIdleCallback wait.',
+  );
+  assert.match(
+    viewportSource,
+    /shouldUploadSurfaceStrokeProjectionTexture\(\{\s*operation: 'eraser',[\s\S]*?target: layer\.target,[\s\S]*?\}\)[\s\S]*?scheduleTextureUpdate\(layer\.projectionTexture\)/,
+    'Projected eraser frames must guard the refinement-only GPU upload with the latency policy.',
+  );
+  assert.match(
+    viewportSource,
+    /const canvasRect = strokeCanvasRectRef\.current \?\? canvas\.getBoundingClientRect\(\);/,
+    'Paint batches must reuse pointer-down canvas bounds instead of forcing layout every frame.',
   );
   assert.match(
     viewportSource,

@@ -76,6 +76,7 @@ import {
 import {
   shouldCollapseSurfaceStrokeToLatestSample,
   shouldDeferSurfaceStrokeCommit,
+  shouldUploadSurfaceStrokeProjectionTexture,
 } from '@/engine/paint/surfaceStrokeLatencyPolicy';
 import { getCanvasAlphaBoundsAsync } from '@/utils/getCanvasAlphaBounds';
 import {
@@ -260,7 +261,7 @@ const LOCAL_REPAINT_INTERACTIVE_UV_BAKE_ENABLED = false;
 const LOCAL_REPAINT_HIGH_RES_IDLE_MS = 3000;
 const LOCAL_REPAINT_HANDOFF_DURATION_MS = 160;
 const PROJECTED_ERASER_HIGH_RES_IDLE_MS = 3000;
-const PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS = 120;
+const PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS = 48;
 // Depth is authoritative for generated local repaint sources. Keep only a
 // near-grazing fallback guard for legacy sources without capture depth; a high
 // face-on threshold creates permanent brush dead zones on curved/hard-edge
@@ -6514,6 +6515,7 @@ function SurfacePaintOverlay() {
   const cursorCircleRef = useRef<SVGCircleElement>();
   const layerRef = useRef<UvPaintLayer>();
   const paintLayerHandoffPromiseRef = useRef<Promise<void>>();
+  const paintCommitHandoffLayerIdRef = useRef<string>();
   const raycasterRef = useRef(
     new THREE.Raycaster() as THREE.Raycaster & { firstHitOnly?: boolean },
   );
@@ -6524,6 +6526,7 @@ function SurfacePaintOverlay() {
   const lastSampleRef = useRef<UvPaintSample>();
   const lastPointerClientRef = useRef<ClientPoint>();
   const pendingPaintTargetsRef = useRef<ClientPoint[]>([]);
+  const strokeCanvasRectRef = useRef<DOMRect>();
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
   const pointerCancelRecoveryTimerRef = useRef<number>();
@@ -7701,10 +7704,14 @@ function SurfacePaintOverlay() {
         // mask is in the layer store; otherwise selecting another row disposes
         // the only copy of the stroke and the erased area appears to vanish.
         const handoffPromise = previousLayer.paintCommitChain;
+        paintCommitHandoffLayerIdRef.current = previousLayer.layerId;
         paintLayerHandoffPromiseRef.current = handoffPromise;
         await handoffPromise;
         if (paintLayerHandoffPromiseRef.current === handoffPromise) {
           paintLayerHandoffPromiseRef.current = undefined;
+        }
+        if (paintCommitHandoffLayerIdRef.current === previousLayer.layerId) {
+          paintCommitHandoffLayerIdRef.current = undefined;
         }
         if (cancelled) return;
       }
@@ -8689,7 +8696,12 @@ function SurfacePaintOverlay() {
   }, [invertPaintMaskRuntime, paintMaskInvertRevision]);
 
   const waitForPaintCommitIdle = useCallback(
-    (isCancelled?: () => boolean, minimumIdleOverrideMs?: number) =>
+    (
+      isCancelled?: () => boolean,
+      minimumIdleOverrideMs?: number,
+      shouldCommitImmediately?: () => boolean,
+      requireIdleDeadline = true,
+    ) =>
       new Promise<boolean>((resolve) => {
         const tryCommit = () => {
           if (isCancelled?.()) {
@@ -8700,14 +8712,24 @@ function SurfacePaintOverlay() {
           // publish once after a real pause. Once the user leaves the tool the
           // live overlay must hand off immediately; retaining the three-second
           // delay kept a duplicate full-model pass alive during ordinary zoom.
-          const minimumIdleMs =
-            minimumIdleOverrideMs ??
-            (useSceneStore.getState().paintTool === 'inpaint-apply'
-              ? LOCAL_REPAINT_HIGH_RES_IDLE_MS
-              : 0);
+          const minimumIdleMs = shouldCommitImmediately?.()
+            ? 0
+            : (minimumIdleOverrideMs ??
+              (useSceneStore.getState().paintTool === 'inpaint-apply'
+                ? LOCAL_REPAINT_HIGH_RES_IDLE_MS
+                : 0));
           const idleFor = performance.now() - lastPaintActivityAtRef.current;
           if (isPaintingRef.current || idleFor < minimumIdleMs) {
             window.setTimeout(tryCommit, Math.max(16, Math.min(50, minimumIdleMs - idleFor)));
+            return;
+          }
+          if (!requireIdleDeadline) {
+            // The 512px live keep-mask has already presented the stroke. Yield
+            // one task before touching the 4K backing canvas, but do not wait
+            // for requestIdleCallback: on a continuously rendering many-layer
+            // scene Chromium can withhold that callback until its 5s timeout,
+            // which made ordinary layer selection appear frozen.
+            window.setTimeout(() => resolve(!isCancelled?.()), 0);
             return;
           }
           const requestIdle = window.requestIdleCallback;
@@ -10468,7 +10490,14 @@ function SurfacePaintOverlay() {
           'screen',
           eraserFeather,
         );
-        scheduleTextureUpdate(layer.projectionTexture);
+        if (
+          shouldUploadSurfaceStrokeProjectionTexture({
+            operation: 'eraser',
+            target: layer.target,
+          })
+        ) {
+          scheduleTextureUpdate(layer.projectionTexture);
+        }
         if (layer.liveEraserPreviewActive) {
           drawSurfaceBrushSegment(
             layer.liveResultContext,
@@ -11927,6 +11956,10 @@ function SurfacePaintOverlay() {
           !(await waitForPaintCommitIdle(
             undefined,
             PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS,
+            () =>
+              paintCommitHandoffLayerIdRef.current === layer.layerId ||
+              useLayerStore.getState().activeProjectedLayerId !== layer.layerId,
+            false,
           ))
         ) {
           finishProjectedPreview();
@@ -12946,8 +12979,7 @@ function SurfacePaintOverlay() {
     if (enabled) canvas.style.touchAction = 'none';
     const isMaskStroke = isInpaintMode || isLocalRepaintApplyMode;
     const isProjectedLayerEraser =
-      paintTool === 'eraser' &&
-      getEraserTargetPolicy(activePaintLayer).kind === 'projected-mask';
+      paintTool === 'eraser' && getEraserTargetPolicy(activePaintLayer).kind === 'projected-mask';
     let hoverCursorFrame = 0;
     let pendingHoverPoint: Pick<globalThis.PointerEvent, 'clientX' | 'clientY'> | undefined;
     const cancelPendingHoverCursor = () => {
@@ -12979,7 +13011,9 @@ function SurfacePaintOverlay() {
     });
     const paintClientPath = (targets: ClientPoint[]) => {
       const telemetry = strokeTelemetryRef.current;
-      const canvasRect = canvas.getBoundingClientRect();
+      // Pointer capture keeps the canvas stationary for the gesture. Reusing
+      // these bounds avoids a forced layout read in every paint frame.
+      const canvasRect = strokeCanvasRectRef.current ?? canvas.getBoundingClientRect();
 
       if (usesProjectedLiveStroke) {
         // Projected live strokes only need the latest surface hit for each display
@@ -13094,7 +13128,15 @@ function SurfacePaintOverlay() {
         window.cancelAnimationFrame(paintInputFrameRef.current);
         paintInputFrameRef.current = undefined;
       }
-      const targets = [...pendingPaintTargetsRef.current, ...extraTargets];
+      const pendingTargets = pendingPaintTargetsRef.current;
+      const latestProjectedTarget = usesProjectedLiveStroke
+        ? (extraTargets.at(-1) ?? pendingTargets.at(-1))
+        : undefined;
+      const targets = usesProjectedLiveStroke
+        ? latestProjectedTarget
+          ? [latestProjectedTarget]
+          : []
+        : [...pendingTargets, ...extraTargets];
       pendingPaintTargetsRef.current = [];
       if (targets.length === 0) return undefined;
       const paintStartedAt = performance.now();
@@ -13178,7 +13220,7 @@ function SurfacePaintOverlay() {
         // path; only a genuinely new final sample needs the canvas boundary.
         const pointerUpInsideCanvas = shouldSamplePointerUp
           ? (() => {
-              const canvasRect = canvas.getBoundingClientRect();
+              const canvasRect = strokeCanvasRectRef.current ?? canvas.getBoundingClientRect();
               return (
                 event.clientX >= canvasRect.left &&
                 event.clientX <= canvasRect.right &&
@@ -13205,6 +13247,7 @@ function SurfacePaintOverlay() {
       lastUvRef.current = undefined;
       lastSampleRef.current = undefined;
       lastPointerClientRef.current = undefined;
+      strokeCanvasRectRef.current = undefined;
       strokePaintToolRef.current = undefined;
       setOrbitControlsEnabled(true);
       commitPaintStroke();
@@ -13316,7 +13359,8 @@ function SurfacePaintOverlay() {
           (isEditingPersistedLocalRepaint && event.button === 0));
       const isPaintButton =
         event.button === 0 || penEraserContact || rightMaskEraseContact || localRepaintEraseContact;
-      const result = raycastModel(event);
+      const strokeCanvasRect = canvas.getBoundingClientRect();
+      const result = raycastModel(event, strokeCanvasRect);
 
       // Navigation buttons must reach the camera controls even when the drag
       // starts on the model. Only the primary/pen-eraser paint gesture belongs
@@ -13452,6 +13496,7 @@ function SurfacePaintOverlay() {
         if (!projectedUv || !hasLocalRepaintSourceContent(projectedUv)) return;
       }
       isPaintingRef.current = true;
+      strokeCanvasRectRef.current = strokeCanvasRect;
       pendingPaintTargetsRef.current = [];
       if (paintInputFrameRef.current !== undefined) {
         window.cancelAnimationFrame(paintInputFrameRef.current);
@@ -13551,6 +13596,7 @@ function SurfacePaintOverlay() {
         if (pointerListenerGenerationRef.current !== listenerGeneration) return;
         if (isPaintingRef.current) flushPendingPaintTargets();
         pendingPaintTargetsRef.current = [];
+        strokeCanvasRectRef.current = undefined;
         cancelPendingHoverCursor();
         if (paintInputFrameRef.current !== undefined) {
           window.cancelAnimationFrame(paintInputFrameRef.current);
