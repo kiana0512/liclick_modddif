@@ -21,7 +21,7 @@ assert.match(
 
 assert.match(
   layersPanelSource,
-  /const authoritativeLayers = useLayerStore\(\(state\) => state\.layers\);[\s\S]*?return authoritativeLayers\.find\(\(layer\) => layer\.id === previewLayerId && layer\.imageUrl\)/,
+  /const layers = useLayerStore\(\(state\) => state\.layers\);[\s\S]*?const authoritativeLayers = layers;[\s\S]*?return authoritativeLayers\.find\(\(layer\) => layer\.id === previewLayerId && layer\.imageUrl\)/,
   'Layer image preview must resolve from the authoritative store during the UV-merge handoff.',
 );
 

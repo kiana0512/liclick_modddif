@@ -171,7 +171,7 @@ try {
   );
   assert.match(
     viewport,
-    /const layerVisible = readLocalRepaintGpuOverlayLayerVisibility\(overlay\);[\s\S]*?const visible = isLocalRepaintOverlayVisible\([\s\S]*?&& !shouldPresentLocalRepaintInOrderedStack\(/,
+    /const layerVisible = readLocalRepaintGpuOverlayLayerVisibility\(overlay\);[\s\S]*?const visible =\s*isLocalRepaintOverlayVisible\([\s\S]*?&&\s*!shouldPresentLocalRepaintInOrderedStack\([\s\S]*?syncLocalRepaintGpuOverlayBinding\(overlay,\s*\{[\s\S]*?visible,/,
     'pointer-down must not force the renderer overlay on while the ordered stack is authoritative',
   );
 
