@@ -108,10 +108,7 @@ import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
 import { updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
-import {
-  isViewportInteractionBusy,
-  markViewportInteractionEnd,
-} from './viewportInteractionState';
+import { isViewportInteractionBusy, markViewportInteractionEnd } from './viewportInteractionState';
 import {
   markEraserPerformanceEvent,
   measureEraserNextFrame,
@@ -209,10 +206,7 @@ function getDraggedImageSourceUrls(dataTransfer: DataTransfer) {
       .filter((line) => line && !line.startsWith('#'))
       .forEach(addUrl);
 
-    dataTransfer
-      .getData('text/plain')
-      .split(/\s+/)
-      .forEach(addUrl);
+    dataTransfer.getData('text/plain').split(/\s+/).forEach(addUrl);
 
     const html = dataTransfer.getData('text/html');
     if (html) {
@@ -1733,8 +1727,7 @@ function PerformanceTestHud() {
             .filter(
               (event) =>
                 event.unixMs >= longestTextureTask.unixMs - 250 &&
-                event.unixMs <=
-                  longestTextureTask.unixMs + longestTextureTask.durationMs + 250,
+                event.unixMs <= longestTextureTask.unixMs + longestTextureTask.durationMs + 250,
             )
             .map((event) => ({
               unixMs: event.unixMs,
@@ -1747,10 +1740,7 @@ function PerformanceTestHud() {
         });
       }
       const pacing = summarizeFramePacing(textureStageSamples, STRICT_60_HZ_FRAME_BUDGET_MS);
-      const postModelPacing = summarizeFramePacing(
-        postModelSamples,
-        STRICT_60_HZ_FRAME_BUDGET_MS,
-      );
+      const postModelPacing = summarizeFramePacing(postModelSamples, STRICT_60_HZ_FRAME_BUDGET_MS);
       const result: RefreshRestoreBenchmarkResult = {
         success,
         totalMs: performance.now(),
@@ -2120,7 +2110,7 @@ function PerformanceTestHud() {
             ? `当前对象只有 ${targets.length} 个可用投影图层，需要 14 个。`
             : scenario === 'uv-projected'
               ? '当前对象没有可用的真实投影图层。'
-            : '当前对象没有可用的内容识别修补图层。',
+              : '当前对象没有可用的内容识别修补图层。',
         );
       }
       if (scenario === 'uv-projected' && !uvTarget) {
@@ -2599,8 +2589,7 @@ function PerformanceTestHud() {
         // uncontested 3-second interaction window. Then release the synthetic
         // input and let the exact full-resolution job resume to completion.
         let repairSettled = false;
-        const pendingRepair = target.LiclickPerfContentAwareRepair
-          .run(selectedObjectId)
+        const pendingRepair = target.LiclickPerfContentAwareRepair.run(selectedObjectId)
           .then(
             (value) => ({ ok: true as const, value }),
             (error: unknown) => ({ ok: false as const, error }),
@@ -2614,10 +2603,7 @@ function PerformanceTestHud() {
         delete document.body.dataset.perfSimulatedViewportInteraction;
         delete document.body.dataset.perfAutoOrbit;
         markViewportInteractionEnd();
-        const waitForRepairPhase = async (
-          matches: () => boolean,
-          maximumWaitMs: number,
-        ) => {
+        const waitForRepairPhase = async (matches: () => boolean, maximumWaitMs: number) => {
           const deadline = performance.now() + maximumWaitMs;
           while (!repairSettled && performance.now() < deadline && !matches()) {
             await waitForFrame();
@@ -2647,9 +2633,7 @@ function PerformanceTestHud() {
         if (
           await waitForRepairPhase(
             () =>
-              (document.body.dataset.perfContentAwareRepairPhase ?? '').startsWith(
-                's9-topology-',
-              ),
+              (document.body.dataset.perfContentAwareRepairPhase ?? '').startsWith('s9-topology-'),
             60_000,
           )
         ) {
@@ -3597,9 +3581,7 @@ function PerformanceTestHud() {
               : '等待压测'
           }
           tone={metricTone(
-            uvMergeBenchmarkResult?.fullFrameMax ??
-              uvMergeBenchmarkResult?.protectedFrameMax ??
-              0,
+            uvMergeBenchmarkResult?.fullFrameMax ?? uvMergeBenchmarkResult?.protectedFrameMax ?? 0,
             20,
             33,
           )}
@@ -5932,10 +5914,10 @@ function isLocalRepaintProjectionLayer(layer: Layer) {
 function isEditableLocalRepaintProjectionLayer(layer?: Layer): layer is Layer {
   return Boolean(
     layer &&
-      isLocalRepaintProjectionLayer(layer) &&
-      layer.camera &&
-      (layer.localRepaintSourceUrl || layer.imageUrl) &&
-      (layer.localRepaintMaskUrl || layer.maskUrl),
+    isLocalRepaintProjectionLayer(layer) &&
+    layer.camera &&
+    (layer.localRepaintSourceUrl || layer.imageUrl) &&
+    (layer.localRepaintMaskUrl || layer.maskUrl),
   );
 }
 
@@ -6233,10 +6215,7 @@ function computeLocalRepaintBrushTransform(
   // cursor scale (with perspective headroom) so a numerical/grazing outlier can
   // never turn a dot into a model-wide erase.
   const fallbackUvRadius = Math.max(1, fallbackRadius) / UV_PAINT_RESOLUTION;
-  const maximumProjectedRadius = Math.min(
-    0.25,
-    Math.max(fallbackUvRadius, fallbackUvRadius * 4),
-  );
+  const maximumProjectedRadius = Math.min(0.25, Math.max(fallbackUvRadius, fallbackUvRadius * 4));
   const fallbackBrush = createCircularBrushTransform(fallbackRadius);
   const clampProjectedAxis = (axis: THREE.Vector2, fallbackAxis: THREE.Vector2) => {
     const length = axis.length();
@@ -6567,9 +6546,7 @@ function SurfacePaintOverlay() {
   const localRepaintUvCommitRevisionRef = useRef(0);
   const localRepaintUvCommitChainRef = useRef(Promise.resolve());
   const localRepaintProjectedPublishRevisionsRef = useRef(new Map<string, number>());
-  const localRepaintProjectedPublishRequestsRef = useRef(
-    new Map<string, () => Promise<void>>(),
-  );
+  const localRepaintProjectedPublishRequestsRef = useRef(new Map<string, () => Promise<void>>());
   const localRepaintProjectedPublishPumpsRef = useRef(new Map<string, Promise<void>>());
   const localRepaintProjectedPublishDisposedRef = useRef(false);
   const localRepaintLastCommitReportRef = useRef<LocalRepaintUvCommitReport>();
@@ -6662,7 +6639,7 @@ function SurfacePaintOverlay() {
   const importedModel = useSceneStore((state) => state.importedModel);
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const activePaintLayer = useLayerStore((state) =>
-    state.layers.find((layer) => layer.id === state.activeProjectedLayerId),
+    state.layers.find((layer) => layer.id === state.activeProjectedLayerId && layer.visible),
   );
   const activePaintLayerId = activePaintLayer?.id;
 
@@ -6696,11 +6673,7 @@ function SurfacePaintOverlay() {
     // makes the very first accepted sample pay canvas allocation and raster work.
     // Keep the current feather preset resident alongside the GPU edit resources.
     getFeatheredBrushStamp(localRepaintBrushSettings.brushFeather);
-  }, [
-    localRepaintBrushSettings.brushFeather,
-    paintTool,
-    shouldPrewarmPersistedLocalRepaint,
-  ]);
+  }, [localRepaintBrushSettings.brushFeather, paintTool, shouldPrewarmPersistedLocalRepaint]);
 
   useEffect(() => {
     if (paintTool !== 'eraser') return;
@@ -7265,8 +7238,8 @@ function SurfacePaintOverlay() {
             const overlayComposite = localRepaintCompositeRef.current;
             const overlayHasLiveContent = Boolean(
               expectedOverlayState &&
-                overlayComposite?.sourceKey === expectedOverlayState.sourceKey &&
-                overlayComposite.hasContent,
+              overlayComposite?.sourceKey === expectedOverlayState.sourceKey &&
+              overlayComposite.hasContent,
             );
             const overlayOwnsOrderedPreview = shouldPresentLocalRepaintInOrderedStack(
               useLayerStore.getState().layers,
@@ -7526,7 +7499,12 @@ function SurfacePaintOverlay() {
       const layerState = useLayerStore.getState();
       const selectedLayer =
         paintTool === 'brush' || paintTool === 'eraser'
-          ? layerState.layers.find((layer) => layer.id === layerState.activeProjectedLayerId)
+          ? layerState.layers.find(
+              (layer) =>
+                layer.id === layerState.activeProjectedLayerId &&
+                layer.visible &&
+                (!layer.objectId || layer.objectId === model.objectId),
+            )
           : undefined;
       const target =
         selectedLayer?.type === 'projected'
@@ -8154,11 +8132,7 @@ function SurfacePaintOverlay() {
   );
 
   const archiveCurrentInpaintProjection = useCallback(
-    (
-      layer: UvPaintLayer,
-      model: SurfacePaintTarget,
-      operation: 'add' | 'subtract' = 'add',
-    ) => {
+    (layer: UvPaintLayer, model: SurfacePaintTarget, operation: 'add' | 'subtract' = 'add') => {
       if (!currentProjectionHasContentRef.current) return false;
       // Never persist an unoccluded projector into UV space. In normal use the
       // depth pass is prewarmed on tool activation and refreshed synchronously
@@ -8325,8 +8299,7 @@ function SurfacePaintOverlay() {
       new Promise<void>((resolve) => {
         frameId = window.requestAnimationFrame(() => resolve());
       });
-    const canContinuePrewarm = () =>
-      !cancelled && useSceneStore.getState().paintTool === 'none';
+    const canContinuePrewarm = () => !cancelled && useSceneStore.getState().paintTool === 'none';
     const hidePrewarmedMaskIfInactive = () => {
       const currentTool = useSceneStore.getState().paintTool;
       if (currentTool !== 'inpaint-add' && currentTool !== 'inpaint-subtract') {
@@ -8549,97 +8522,88 @@ function SurfacePaintOverlay() {
     ],
   );
 
-  const capturePaintMask = useCallback(async (options?: {
-    aspect?: number;
-    camera?: THREE.Camera;
-    resolution?: number;
-  }) => {
-    const model = getTargetModel();
-    const layer = layerRef.current;
-    if (!model || !layer || layer.objectId !== model.objectId || !maskHasContentRef.current)
-      return undefined;
+  const capturePaintMask = useCallback(
+    async (options?: { aspect?: number; camera?: THREE.Camera; resolution?: number }) => {
+      const model = getTargetModel();
+      const layer = layerRef.current;
+      if (!model || !layer || layer.objectId !== model.objectId || !maskHasContentRef.current)
+        return undefined;
 
-    // Freeze the exact add/subtract selection shown by the overlay before
-    // capture. The canonical accumulated UV mask is the only submitted source;
-    // rendering projector snapshots again would union erased pixels back in.
-    if (
-      currentProjectionHasContentRef.current &&
-      !archiveCurrentInpaintProjection(layer, model, currentProjectionOperationRef.current)
-    ) {
-      throw new Error('无法固定当前局部重绘蒙版，请稍后重试。');
-    }
-    if (!layer.accumulatedMaskReady && !layer.maskInverted) return undefined;
+      // Freeze the exact add/subtract selection shown by the overlay before
+      // capture. The canonical accumulated UV mask is the only submitted source;
+      // rendering projector snapshots again would union erased pixels back in.
+      if (
+        currentProjectionHasContentRef.current &&
+        !archiveCurrentInpaintProjection(layer, model, currentProjectionOperationRef.current)
+      ) {
+        throw new Error('无法固定当前局部重绘蒙版，请稍后重试。');
+      }
+      if (!layer.accumulatedMaskReady && !layer.maskInverted) return undefined;
 
-    const viewportRect = gl.domElement.getBoundingClientRect();
-    const viewportAspect = viewportRect.width / Math.max(viewportRect.height, 1);
-    const aspect =
-      Number.isFinite(options?.aspect) && (options?.aspect ?? 0) > 0
-        ? options!.aspect!
-        : viewportAspect;
-    const captureSize = Math.max(
-      1,
-      Math.min(2048, Math.round(options?.resolution ?? PROJECTION_PAINT_MAX_SIZE)),
-    );
-    const width =
-      aspect >= 1
-        ? captureSize
-        : Math.max(1, Math.round(captureSize * aspect));
-    const height =
-      aspect >= 1
-        ? Math.max(1, Math.round(captureSize / aspect))
-        : captureSize;
-    const material = createInpaintMaskCaptureMaterial(
-      layer.accumulatedMaskTarget.texture,
-      undefined,
-      true,
-    );
-    material.depthWrite = true;
-    material.transparent = true;
-    material.uniforms.maskInverted.value = layer.maskInverted ? 1 : 0;
-    const capturedMeshes = layer.maskInverted
-      ? undefined
-      : new Set(layer.accumulatedMaskMeshes);
-    const startedAt = performance.now();
-    try {
-      const maskUrl = await renderSceneToPngUrl(
-        {
-          gl,
-          scene,
-          camera: cloneCameraForCaptureAspect(options?.camera ?? camera, aspect),
-          objectId: model.objectId,
-          width,
-          height,
-          clearColor: '#000000',
-          clearAlpha: 1,
-        },
-        {
-          dataTexture: true,
-          ignoreSceneBackground: true,
-          tileSize: PROJECTION_PAINT_MAX_SIZE,
-          performancePhasePrefix: 'button2-mask-capture',
-          waitForViewportIdle: waitForBrowserPaint,
-          prepareScene: () => {
-            const restoreScene = applyTargetOnlyMaterial(scene, model.objectId, () => material);
-            if (capturedMeshes) {
-              scene.traverse((object) => {
-                if (!(object instanceof THREE.Mesh)) return;
-                if (object.userData.liclickObjectId !== model.objectId) return;
-                if (!capturedMeshes.has(object)) object.visible = false;
-              });
-            }
-            return restoreScene;
-          },
-        },
+      const viewportRect = gl.domElement.getBoundingClientRect();
+      const viewportAspect = viewportRect.width / Math.max(viewportRect.height, 1);
+      const aspect =
+        Number.isFinite(options?.aspect) && (options?.aspect ?? 0) > 0
+          ? options!.aspect!
+          : viewportAspect;
+      const captureSize = Math.max(
+        1,
+        Math.min(2048, Math.round(options?.resolution ?? PROJECTION_PAINT_MAX_SIZE)),
       );
-      document.body.dataset.localRepaintButton2MaskCaptureMs = (
-        performance.now() - startedAt
-      ).toFixed(1);
-      document.body.dataset.localRepaintButton2MaskProjectionCount = '1';
-      return maskUrl;
-    } finally {
-      material.dispose();
-    }
-  }, [archiveCurrentInpaintProjection, camera, getTargetModel, gl, scene]);
+      const width = aspect >= 1 ? captureSize : Math.max(1, Math.round(captureSize * aspect));
+      const height = aspect >= 1 ? Math.max(1, Math.round(captureSize / aspect)) : captureSize;
+      const material = createInpaintMaskCaptureMaterial(
+        layer.accumulatedMaskTarget.texture,
+        undefined,
+        true,
+      );
+      material.depthWrite = true;
+      material.transparent = true;
+      material.uniforms.maskInverted.value = layer.maskInverted ? 1 : 0;
+      const capturedMeshes = layer.maskInverted ? undefined : new Set(layer.accumulatedMaskMeshes);
+      const startedAt = performance.now();
+      try {
+        const maskUrl = await renderSceneToPngUrl(
+          {
+            gl,
+            scene,
+            camera: cloneCameraForCaptureAspect(options?.camera ?? camera, aspect),
+            objectId: model.objectId,
+            width,
+            height,
+            clearColor: '#000000',
+            clearAlpha: 1,
+          },
+          {
+            dataTexture: true,
+            ignoreSceneBackground: true,
+            tileSize: PROJECTION_PAINT_MAX_SIZE,
+            performancePhasePrefix: 'button2-mask-capture',
+            waitForViewportIdle: waitForBrowserPaint,
+            prepareScene: () => {
+              const restoreScene = applyTargetOnlyMaterial(scene, model.objectId, () => material);
+              if (capturedMeshes) {
+                scene.traverse((object) => {
+                  if (!(object instanceof THREE.Mesh)) return;
+                  if (object.userData.liclickObjectId !== model.objectId) return;
+                  if (!capturedMeshes.has(object)) object.visible = false;
+                });
+              }
+              return restoreScene;
+            },
+          },
+        );
+        document.body.dataset.localRepaintButton2MaskCaptureMs = (
+          performance.now() - startedAt
+        ).toFixed(1);
+        document.body.dataset.localRepaintButton2MaskProjectionCount = '1';
+        return maskUrl;
+      } finally {
+        material.dispose();
+      }
+    },
+    [archiveCurrentInpaintProjection, camera, getTargetModel, gl, scene],
+  );
 
   useEffect(() => {
     setPaintMaskCapture(capturePaintMask);
@@ -9699,11 +9663,11 @@ function SurfacePaintOverlay() {
       const currentOverlay = localRepaintGpuOverlayRef.current;
       const persistedOverlayCanOwnPresentation = Boolean(
         !existingLayer ||
-          (composite.hasContent &&
-            composite.gpuOverlayReady &&
-            currentOverlay?.sourceKey === sourceKey &&
-            currentOverlay.layerId === projectedLayer.id &&
-            currentOverlay.root.visible),
+        (composite.hasContent &&
+          composite.gpuOverlayReady &&
+          currentOverlay?.sourceKey === sourceKey &&
+          currentOverlay.layerId === projectedLayer.id &&
+          currentOverlay.root.visible),
       );
       const previewAlreadyPublished =
         currentPreviewLayer?.id === projectedLayer.id &&
@@ -9775,8 +9739,7 @@ function SurfacePaintOverlay() {
           composite.layerId,
           layerState.layers,
         );
-        const previewOwnsOverlay =
-          sceneState.localRepaintPreviewLayer?.id === composite.layerId;
+        const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === composite.layerId;
         const visible = Boolean(
           composite.hasContent &&
           !shouldPresentLocalRepaintInOrderedStack(
@@ -9926,11 +9889,8 @@ function SurfacePaintOverlay() {
         const presentation = readLocalRepaintGpuOverlayPresentation(currentOverlay);
         const sceneState = useSceneStore.getState();
         const layerState = useLayerStore.getState();
-        const hasPersistedLayer = layerState.layers.some(
-          (layer) => layer.id === composite.layerId,
-        );
-        const previewOwnsOverlay =
-          sceneState.localRepaintPreviewLayer?.id === composite.layerId;
+        const hasPersistedLayer = layerState.layers.some((layer) => layer.id === composite.layerId);
+        const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === composite.layerId;
         const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
           sceneState.paintTool,
           layerState.activeProjectedLayerId,
@@ -10006,17 +9966,14 @@ function SurfacePaintOverlay() {
       const applyVisibility = (layerVisible: boolean) => {
         const sceneState = useSceneStore.getState();
         const layerState = useLayerStore.getState();
-        const hasPersistedLayer = layerState.layers.some(
-          (layer) => layer.id === composite.layerId,
-        );
+        const hasPersistedLayer = layerState.layers.some((layer) => layer.id === composite.layerId);
         const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
           sceneState.paintTool,
           layerState.activeProjectedLayerId,
           composite.layerId,
           layerState.layers,
         );
-        const previewOwnsOverlay =
-          sceneState.localRepaintPreviewLayer?.id === composite.layerId;
+        const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === composite.layerId;
         const visible = Boolean(
           composite.hasContent &&
           !shouldPresentLocalRepaintInOrderedStack(
@@ -10088,13 +10045,7 @@ function SurfacePaintOverlay() {
       invalidate();
       return overlayState;
     },
-    [
-      camera,
-      clearLocalRepaintGpuOverlay,
-      gl,
-      invalidate,
-      syncLocalRepaintGpuOverlayActivity,
-    ],
+    [camera, clearLocalRepaintGpuOverlay, gl, invalidate, syncLocalRepaintGpuOverlayActivity],
   );
 
   // The target layer is bound when the user enters apply mode. Never mutate it
@@ -10172,7 +10123,10 @@ function SurfacePaintOverlay() {
         const canReuseCapturedDepth = Boolean(
           source.depthUrl && source.depthEncoding === 'linear-view',
         );
-        if (!canReuseCapturedDepth && localRepaintRuntimeDepthRef.current?.sourceKey !== sourceKey) {
+        if (
+          !canReuseCapturedDepth &&
+          localRepaintRuntimeDepthRef.current?.sourceKey !== sourceKey
+        ) {
           const visibilityStartedAt = performance.now();
           const visibility = await createRuntimeProjectionDepth({
             renderer: gl,
@@ -10369,11 +10323,7 @@ function SurfacePaintOverlay() {
   );
 
   const paintAt = useCallback(
-    (
-      result: UvPaintHit,
-      pressure = 1,
-      strokePaintTool: SurfaceStrokePaintTool = paintTool,
-    ) => {
+    (result: UvPaintHit, pressure = 1, strokePaintTool: SurfaceStrokePaintTool = paintTool) => {
       const pressureSizeScale = getPressureSizeScale(pressure);
       // Surface masks consume the projected footprint; ordinary paint consumes
       // the UV-density-aware footprint computed for the current triangle. The
@@ -10668,10 +10618,7 @@ function SurfacePaintOverlay() {
             ).length,
           });
         }
-      } else if (
-        strokePaintTool === 'inpaint-apply' ||
-        strokePaintTool === 'inpaint-apply-erase'
-      ) {
+      } else if (strokePaintTool === 'inpaint-apply' || strokePaintTool === 'inpaint-apply-erase') {
         const erasesLocalRepaint = strokePaintTool === 'inpaint-apply-erase';
         const draft = strokeDraftRef.current;
         const composite = draft?.localRepaintComposite;
@@ -11066,8 +11013,7 @@ function SurfacePaintOverlay() {
         }
         if (currentPreview?.id === composite.layerId) {
           const stillEditingLocalRepaintMask =
-            sceneState.paintTool === 'inpaint-add' ||
-            sceneState.paintTool === 'inpaint-subtract';
+            sceneState.paintTool === 'inpaint-add' || sceneState.paintTool === 'inpaint-subtract';
           const stillErasingPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
             sceneState.paintTool,
             layerState.activeProjectedLayerId,
@@ -11143,10 +11089,7 @@ function SurfacePaintOverlay() {
         const publishSourceKey = composite.sourceKey;
         const publishRevision =
           (localRepaintProjectedPublishRevisionsRef.current.get(publishSourceKey) ?? 0) + 1;
-        localRepaintProjectedPublishRevisionsRef.current.set(
-          publishSourceKey,
-          publishRevision,
-        );
+        localRepaintProjectedPublishRevisionsRef.current.set(publishSourceKey, publishRevision);
         const publishWasSuperseded = () =>
           localRepaintProjectedPublishDisposedRef.current ||
           localRepaintProjectedPublishRevisionsRef.current.get(publishSourceKey) !==
@@ -11278,9 +11221,7 @@ function SurfacePaintOverlay() {
             }
           };
           const pump = drainLatestProjectedPublish().finally(() => {
-            if (
-              localRepaintProjectedPublishPumpsRef.current.get(publishSourceKey) === pump
-            ) {
+            if (localRepaintProjectedPublishPumpsRef.current.get(publishSourceKey) === pump) {
               localRepaintProjectedPublishPumpsRef.current.delete(publishSourceKey);
             }
           });
@@ -11860,10 +11801,7 @@ function SurfacePaintOverlay() {
     const layer = draft?.layer;
     const localRepaintSource = draft?.localRepaintSource ?? localRepaintProjectionSource;
     if (!draft?.bounds) {
-      if (
-        layer &&
-        !(draft?.paintOperation === 'eraser' && layer.target === 'projected-mask')
-      )
+      if (layer && !(draft?.paintOperation === 'eraser' && layer.target === 'projected-mask'))
         endLiveEraserPreview(layer);
       return;
     }
@@ -12229,9 +12167,7 @@ function SurfacePaintOverlay() {
         queueLocalRepaintUvCommit(model, source, composite);
       };
       useEditorHistoryStore.getState().captureRuntime({
-        label: draft.localRepaintHistoryBeforeHasContent
-          ? '局部重绘笔画'
-          : '局部重绘首笔',
+        label: draft.localRepaintHistoryBeforeHasContent ? '局部重绘笔画' : '局部重绘首笔',
         undo: () => applyTiles('before'),
         redo: () => applyTiles('after'),
       });
@@ -12254,10 +12190,8 @@ function SurfacePaintOverlay() {
         draft.inpaintHistoryBefore.currentProjectionOperation === 'subtract'
           ? '蒙版减选笔画'
           : '蒙版加选笔画',
-      undo: () =>
-        restoreInpaintMaskHistoryState(draft.layer!, draft.inpaintHistoryModel!, before),
-      redo: () =>
-        restoreInpaintMaskHistoryState(draft.layer!, draft.inpaintHistoryModel!, after),
+      undo: () => restoreInpaintMaskHistoryState(draft.layer!, draft.inpaintHistoryModel!, before),
+      redo: () => restoreInpaintMaskHistoryState(draft.layer!, draft.inpaintHistoryModel!, after),
     });
   }, [
     archiveCurrentInpaintProjection,
@@ -12924,9 +12858,7 @@ function SurfacePaintOverlay() {
           delete document.body.dataset.perfSimulatedViewportInteraction;
           delete document.body.dataset.perfLocalRepaintPhase;
           useSceneStore.getState().setPaintMaskSettings(originalMaskSettings);
-          useSceneStore
-            .getState()
-            .setLocalRepaintBrushSettings(originalLocalRepaintBrushSettings);
+          useSceneStore.getState().setLocalRepaintBrushSettings(originalLocalRepaintBrushSettings);
           useSceneStore.getState().setPaintTool(originalPaintTool);
           isPaintingRef.current = false;
           setOrbitControlsEnabled(true);
@@ -13333,10 +13265,7 @@ function SurfacePaintOverlay() {
           penEraserContact ||
           (isEditingPersistedLocalRepaint && event.button === 0));
       const isPaintButton =
-        event.button === 0 ||
-        penEraserContact ||
-        rightMaskEraseContact ||
-        localRepaintEraseContact;
+        event.button === 0 || penEraserContact || rightMaskEraseContact || localRepaintEraseContact;
       const result = raycastModel(event);
 
       // Navigation buttons must reach the camera controls even when the drag
@@ -13410,14 +13339,13 @@ function SurfacePaintOverlay() {
           const layerVisible = readLocalRepaintGpuOverlayLayerVisibility(overlay);
           const sceneState = useSceneStore.getState();
           const layerState = useLayerStore.getState();
-          const visible = isLocalRepaintOverlayVisible(
-            sceneState.displayMode,
-            layerVisible,
-          ) && !shouldPresentLocalRepaintInOrderedStack(
-            layerState.layers,
-            sceneState.localRepaintPreviewLayer ??
-              layerState.layers.find((layer) => layer.id === composite.layerId),
-          );
+          const visible =
+            isLocalRepaintOverlayVisible(sceneState.displayMode, layerVisible) &&
+            !shouldPresentLocalRepaintInOrderedStack(
+              layerState.layers,
+              sceneState.localRepaintPreviewLayer ??
+                layerState.layers.find((layer) => layer.id === composite.layerId),
+            );
           const presentation = readLocalRepaintGpuOverlayPresentation(overlay);
           if (
             syncLocalRepaintGpuOverlayBinding(overlay, {

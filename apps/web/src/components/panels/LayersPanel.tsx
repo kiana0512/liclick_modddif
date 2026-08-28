@@ -98,9 +98,7 @@ function useProjectedLayerDisplayPreview(layer: Layer) {
     (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string }) | undefined
   >();
   const enabled =
-    layer.type === 'projected' &&
-    Boolean(layer.imageUrl) &&
-    !isLocalRepaintPreviewLayer(layer);
+    layer.type === 'projected' && Boolean(layer.imageUrl) && !isLocalRepaintPreviewLayer(layer);
 
   useEffect(() => {
     let cancelled = false;
@@ -476,8 +474,10 @@ export function LayersPanel({
 }: LayersPanelProps = {}) {
   const t = useT();
   const pushToast = useToastStore((state) => state.pushToast);
-  const layers = useInteractionDeferredLayers();
-  const authoritativeLayers = useLayerStore((state) => state.layers);
+  // Visibility is interactive renderer state. Rendering it from the deferred
+  // snapshot made rapid clicks calculate the next value from an older frame.
+  const layers = useLayerStore((state) => state.layers);
+  const authoritativeLayers = layers;
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
@@ -778,7 +778,14 @@ export function LayersPanel({
       setSelectedLayerIds([]);
       setLastSelectedLayerId(undefined);
     },
-    [blockMutation, captureHistory, deleteLayers, describeLayerSelection, layerIdSet, setLayerVisibility],
+    [
+      blockMutation,
+      captureHistory,
+      deleteLayers,
+      describeLayerSelection,
+      layerIdSet,
+      setLayerVisibility,
+    ],
   );
 
   useEffect(() => {
@@ -872,27 +879,27 @@ export function LayersPanel({
     setSelectedLayerIds([layerId]);
   }
 
-  function getAffectedLayerIds(layerId: string) {
+  function getAffectedLayerIds(layerId: string, currentLayers: Layer[]) {
     const selectedIds =
       selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
-    return expandLocalRepaintVisibilityIds(layers, selectedIds);
+    return expandLocalRepaintVisibilityIds(currentLayers, selectedIds);
   }
 
   function beginVisibilityDrag(layer: Layer) {
-    const nextVisible = !layer.visible;
-    const ids = getAffectedLayerIds(layer.id);
-    // The renderer's Zustand subscriber applies the visibility uniform
-    // synchronously. React can reconcile the large layer/editor tree at
-    // transition priority so pointer-driven viewport frames stay responsive.
-    startTransition(() => setLayerVisibility(ids, nextVisible));
+    const currentLayers = useLayerStore.getState().layers;
+    const currentLayer = currentLayers.find((item) => item.id === layer.id);
+    if (!currentLayer) return;
+    const nextVisible = !currentLayer.visible;
+    const ids = getAffectedLayerIds(layer.id, currentLayers);
+    setLayerVisibility(ids, nextVisible);
     setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
   }
 
   function continueVisibilityDrag(layerId: string) {
     if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
-    const affectedIds = expandLocalRepaintVisibilityIds(layers, [layerId]);
+    const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [layerId]);
     affectedIds.forEach((id) => visibilityDrag.touched.add(id));
-    startTransition(() => setLayerVisibility(affectedIds, visibilityDrag.visible));
+    setLayerVisibility(affectedIds, visibilityDrag.visible);
     setVisibilityDrag({
       visible: visibilityDrag.visible,
       touched: new Set(visibilityDrag.touched),
@@ -1670,8 +1677,8 @@ function LayerMenu({
           <MenuButton onClick={() => run(onView)} icon={<Eye className="h-4 w-4" />}>
             {t('view')}
           </MenuButton>
-          {(layer.type === 'projected' || layer.type === 'uv') && (
-            imageEditAvailable ? (
+          {(layer.type === 'projected' || layer.type === 'uv') &&
+            (imageEditAvailable ? (
               <MenuButton
                 onClick={() => run(() => onImageEdit(layer))}
                 icon={<PencilLine className="h-4 w-4" />}
@@ -1679,8 +1686,7 @@ function LayerMenu({
               >
                 {t('imageEditLayerMenu')}
               </MenuButton>
-            ) : null
-          )}
+            ) : null)}
           <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
             {t('duplicate')}
             <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">CTRL D</span>

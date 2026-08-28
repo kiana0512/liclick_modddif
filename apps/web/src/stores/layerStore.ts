@@ -172,9 +172,7 @@ function normalizeLayer(layer: Layer) {
       layer.ignoreSourceAlpha ?? (singleViewGeneratedProjection ? true : undefined),
     minimumProjectionFacing:
       layer.minimumProjectionFacing ??
-      (singleViewGeneratedProjection
-        ? SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING
-        : undefined),
+      (singleViewGeneratedProjection ? SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING : undefined),
     projectionVisibilityPolicy:
       layer.projectionVisibilityPolicy ??
       (singleViewGeneratedProjection ? 'surface-locked-v1' : undefined),
@@ -288,9 +286,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
         generation.metadata.alphaMode === 'geometry-mask-separated'
           ? 'source-alpha-depth'
           : undefined,
-      projectionCompositeMode: singleViewTexture
-        ? 'single-view-priority-v1'
-        : undefined,
+      projectionCompositeMode: singleViewTexture ? 'single-view-priority-v1' : undefined,
       // Fresh single-view overlays may carry an editor-authored distance-field
       // alpha. Legacy/provider PNG alpha remains ignored unless this explicit
       // contract is present.
@@ -421,16 +417,21 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       layerType: target?.type,
       nextVisible: !target?.visible,
     });
+    if (target?.visible && get().activeProjectedLayerId === layerId) {
+      useSceneStore.getState().setPaintTool('none');
+    }
     set((state) => {
       const target = state.layers.find((layer) => layer.id === layerId);
       const nextVisible = !target?.visible;
       const layers = state.layers.map((layer) =>
         layer.id === layerId ? { ...layer, visible: nextVisible } : layer,
       );
+      const activeLayer = layers.find(
+        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
+      );
       return {
         layers,
-        activeProjectedLayerId:
-          state.activeProjectedLayerId ?? layers.find((layer) => layer.visible)?.id,
+        activeProjectedLayerId: activeLayer?.id ?? layers.find((layer) => layer.visible)?.id,
       };
     });
   },
@@ -443,16 +444,24 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       ),
       visible,
     });
+    if (
+      !visible &&
+      get().activeProjectedLayerId &&
+      layerIds.includes(get().activeProjectedLayerId!)
+    ) {
+      useSceneStore.getState().setPaintTool('none');
+    }
     set((state) => {
       const layerIdSet = new Set(layerIds);
       const layers = state.layers.map((layer) =>
         layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
       );
+      const activeLayer = layers.find(
+        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
+      );
       return {
         layers,
-        activeProjectedLayerId: layers.some((layer) => layer.id === state.activeProjectedLayerId)
-          ? state.activeProjectedLayerId
-          : layers.find((layer) => layer.visible)?.id,
+        activeProjectedLayerId: activeLayer?.id ?? layers.find((layer) => layer.visible)?.id,
       };
     });
   },

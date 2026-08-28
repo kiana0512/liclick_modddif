@@ -3125,6 +3125,31 @@ export async function loadProjectedTextureWithRetry(
   throw lastError;
 }
 
+export async function prewarmProjectedLayerTextureSources(
+  layers: ReadonlyArray<{
+    imageUrl?: string;
+    maskUrl?: string;
+    depthUrl?: string;
+    normalUrl?: string;
+  }>,
+) {
+  await mapWithConcurrency(layers, getProjectedLayerPreparationConcurrency(), async (layer) => {
+    if (!layer.imageUrl) return;
+    await Promise.allSettled([
+      loadProjectedTextureWithRetry(layer.imageUrl),
+      layer.maskUrl
+        ? loadProjectedTextureWithRetry(layer.maskUrl, THREE.NoColorSpace, 'mask')
+        : Promise.resolve(),
+      layer.depthUrl
+        ? loadProjectedTexture(layer.depthUrl, THREE.NoColorSpace, 'depth')
+        : Promise.resolve(),
+      layer.normalUrl
+        ? loadProjectedTexture(layer.normalUrl, THREE.NoColorSpace, 'normal')
+        : Promise.resolve(),
+    ]);
+  });
+}
+
 type ProjectedTextureArrayBundle = {
   texture: THREE.DataArrayTexture;
   uvScales: THREE.Vector2[];

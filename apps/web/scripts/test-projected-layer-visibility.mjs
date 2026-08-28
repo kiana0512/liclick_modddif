@@ -229,6 +229,16 @@ assert.match(
   'Repeated short eraser strokes must not republish an identical live preview and restart the projected-material effect.',
 );
 assert.match(
+  layersPanelSource,
+  /function beginVisibilityDrag[\s\S]*?useLayerStore\.getState\(\)\.layers[\s\S]*?currentLayer\.visible/,
+  'Rapid eye toggles must calculate their next value from the authoritative store, not a deferred row snapshot.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /state\.activeProjectedLayerId && layer\.visible/,
+  'A hidden active row must be excluded from the surface-paint target immediately.',
+);
+assert.match(
   sceneRootSource,
   /if \(projectedMaterial && projectedLayerInput\) \{[\s\S]*?updateProjectedLayerStackMaterial\(projectedMaterial,[\s\S]*?topUvProjectedOverlayInput/,
   'A reused asynchronous texture-array material must receive the current effect live-erasure uniforms before publication.',
@@ -480,13 +490,18 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /const hasAuthoritativeVisibleProjectedLayer = useLayerStore\([\s\S]*?layer\.type === 'projected'[\s\S]*?Boolean\(layer\.camera\)/,
-  'Cold restore must determine visible projected content directly from the authoritative layer store.',
+  /const canPresentUvBootstrap = Boolean\([\s\S]*?exactBakedBootstrapTexture \|\|[\s\S]*?loadedUvTexture && uvOverlayOpacity > 0/,
+  'Cold restore must present a decoded UV contribution while the complete projected arrays are building.',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /const canPresentUvBootstrap = Boolean\([\s\S]*?!hasAuthoritativeVisibleProjectedLayer/,
+  'A visible projected stack must not force a white membrane when a safe UV underlay is already resident.',
 );
 assert.match(
   sceneRootSource,
-  /!hasAuthoritativeVisibleProjectedLayer &&[\s\S]*?loadedUvTexture/,
-  'A UV bootstrap must never cover a visible projected stack while its final material is building.',
+  /const authoritativeResidentUvTexture =\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture[\s\S]*?: undefined/,
+  'A late projected-material publication must not resurrect a resident UV texture whose eye is closed.',
 );
 assert.match(
   sceneRootSource,
@@ -895,19 +910,9 @@ try {
     2,
     'Black generated material inside geometry must remain untouched.',
   );
-  const alphaSource = new ImageData(
-    new Uint8ClampedArray([
-      20, 30, 40, 128,
-      50, 60, 70, 64,
-    ]),
-    2,
-    1,
-  );
+  const alphaSource = new ImageData(new Uint8ClampedArray([20, 30, 40, 128, 50, 60, 70, 64]), 2, 1);
   const authoredMask = new ImageData(
-    new Uint8ClampedArray([
-      255, 255, 255, 128,
-      128, 128, 128, 255,
-    ]),
+    new Uint8ClampedArray([255, 255, 255, 128, 128, 128, 128, 255]),
     2,
     1,
   );
@@ -933,9 +938,7 @@ try {
     'Mask-only repaint must preserve returned RGB instead of creating a dark fringe.',
   );
   const packedDepthPixels = new Uint8ClampedArray([
-    255, 255, 255, 255,
-    8, 9, 12, 255,
-    253, 255, 255, 255,
+    255, 255, 255, 255, 8, 9, 12, 255, 253, 255, 255, 255,
   ]);
   const packedDepthVisibility = repaintPreviewUtils.createPackedDepthVisibilityMask(
     new ImageData(packedDepthPixels, 3, 1),
@@ -1015,6 +1018,35 @@ try {
     aspect: 1,
   };
   const layerStore = await server.ssrLoadModule('/src/stores/layerStore.ts');
+  const sceneStore = await server.ssrLoadModule('/src/stores/sceneStore.ts');
+  const visibilityLayers = [
+    { id: 'visibility-a', type: 'projected', visible: true, order: 0 },
+    { id: 'visibility-b', type: 'projected', visible: true, order: 1 },
+  ];
+  layerStore.useLayerStore.setState({
+    layers: visibilityLayers,
+    activeProjectedLayerId: 'visibility-a',
+  });
+  sceneStore.useSceneStore.getState().setPaintTool('eraser');
+  layerStore.useLayerStore.getState().setLayerVisibility(['visibility-a'], false);
+  assert.equal(
+    layerStore.useLayerStore.getState().activeProjectedLayerId,
+    'visibility-b',
+    'Hiding the active layer must synchronously select the next visible row.',
+  );
+  assert.equal(
+    sceneStore.useSceneStore.getState().paintTool,
+    'none',
+    'Hiding the active layer must synchronously detach the eraser.',
+  );
+  layerStore.useLayerStore.getState().toggleLayer('visibility-b');
+  layerStore.useLayerStore.getState().toggleLayer('visibility-b');
+  assert.equal(
+    layerStore.useLayerStore.getState().layers.find((layer) => layer.id === 'visibility-b')
+      ?.visible,
+    true,
+    'Two immediate toggles must round-trip visibility without reading a stale frame.',
+  );
   layerStore.useLayerStore.setState({ layers: [], activeProjectedLayerId: undefined });
   const generatedSourceAlphaLayer = layerStore.useLayerStore
     .getState()

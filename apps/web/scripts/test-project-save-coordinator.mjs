@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const editorPageSource = readFileSync(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8');
 const server = await createServer({
   root,
   appType: 'custom',
@@ -43,6 +45,16 @@ function createFakeClock() {
 }
 
 try {
+  assert.match(
+    editorPageSource,
+    /flushProjectLayerSyncRef\.current\(\);[\s\S]*?const snapshot = getProjectSnapshot/,
+    'Every save request must flush delayed layer edits before capturing editVersion.',
+  );
+  assert.match(
+    editorPageSource,
+    /async function handleManualSave[\s\S]*?getProjectSaveRequest\(\{ refreshThumbnail: false \}\)/,
+    'Ctrl+S must not synchronously read back and encode the WebGL thumbnail.',
+  );
   const { PROJECT_AUTOSAVE_MAX_WAIT_MS, PROJECT_AUTOSAVE_TRAILING_MS, ProjectSaveCoordinator } =
     await server.ssrLoadModule('/src/services/projectSaveCoordinator.ts');
   const { useProjectStore } = await server.ssrLoadModule('/src/stores/projectStore.ts');

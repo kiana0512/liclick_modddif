@@ -98,6 +98,7 @@ import { isLocalRepaintProjectedLayer } from '@/engine/bake/projectedOverlayComp
 import {
   createFlatPreviewMaterial,
   disposeGeneratedMaterialTree,
+  prewarmProjectedLayerTextureSources,
   syncProjectedLayerMaterialProjection,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
@@ -1040,6 +1041,7 @@ export function EditorPage({
   }
   const manualSaveHandlerRef = useRef<() => void>(() => undefined);
   const immediateSaveHandlerRef = useRef<() => void>(() => undefined);
+  const flushProjectLayerSyncRef = useRef<() => void>(() => undefined);
   const manualSaveRunningRef = useRef(false);
   const pendingImmediateSaveRef = useRef(false);
   const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1789,7 +1791,7 @@ export function EditorPage({
       if (syncTimer !== undefined || !pendingLayers) return;
       syncTimer = window.setTimeout(flushSync, 220);
     };
-    const flushSync = () => {
+    const flushSync = (force = false) => {
       syncTimer = undefined;
       if (!pendingLayers) return;
       const interactionReserved =
@@ -1798,21 +1800,28 @@ export function EditorPage({
         document.body.dataset.perfSimulatedViewportInteraction === '1' ||
         document.body.dataset.perfScenarioMeasuring === '1';
       if (
-        interactionReserved ||
+        (!force && interactionReserved) ||
         document.body.dataset.perfSuppressProjectLayerSync === '1' ||
         suppressProjectLayerSyncRef.current > 0
       ) {
         scheduleSync();
         return;
       }
+      const layersToSync = pendingLayers;
       pendingLayers = undefined;
       // Project snapshots and saves already read the authoritative layer store.
       // Only mark the project dirty here; mirroring the whole array caused the
       // 6k-line route to rerender for every eye/projector update.
       const projectState = useProjectStore.getState();
       const currentProject = projectState.projects.find((item) => item.id === projectId);
-      if (currentProject) startTransition(() => projectState.markProjectEdited(projectId));
+      // Some paint paths already mirrored this exact array into ProjectStore and
+      // advanced editVersion. Do not advance it a second time after a save.
+      if (currentProject && currentProject.layers !== layersToSync) {
+        projectState.markProjectEdited(projectId);
+      }
     };
+    const flushBeforeSave = () => flushSync(true);
+    flushProjectLayerSyncRef.current = flushBeforeSave;
     const unsubscribeLayers = useLayerStore.subscribe((state, previousState) => {
       if (state.layers === previousState.layers) return;
       // A performance transaction restores the original array before releasing
@@ -1834,6 +1843,9 @@ export function EditorPage({
       unsubscribeLayers();
       unsubscribeInteraction();
       if (syncTimer !== undefined) window.clearTimeout(syncTimer);
+      if (flushProjectLayerSyncRef.current === flushBeforeSave) {
+        flushProjectLayerSyncRef.current = () => undefined;
+      }
     };
   }, [projectId, serverReadyProjectId, setLayers]);
 
@@ -2098,6 +2110,9 @@ export function EditorPage({
   function getProjectSaveRequest(
     options: { refreshThumbnail?: boolean } = {},
   ): ProjectSaveRequest | undefined {
+    // Capture the edit version only after delayed layer visibility/paint state
+    // has been promoted to the project dirty/version state.
+    flushProjectLayerSyncRef.current();
     const snapshot = getProjectSnapshot(options);
     if (!snapshot) return undefined;
     return {
@@ -2575,6 +2590,23 @@ export function EditorPage({
         .flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : [])),
       { maxSize: 512 },
     );
+    const projectedPrewarmObjectId =
+      projectToHydrate.activeObjectId ?? projectToHydrate.objects[0]?.id;
+    const projectedPrewarmLayers = normalizedLocalRepaintLayers.filter(
+      (layer) =>
+        layer.type === 'projected' &&
+        Boolean(layer.imageUrl) &&
+        (!layer.objectId || layer.objectId === projectedPrewarmObjectId),
+    );
+    const projectedPrewarmStartedAt = performance.now();
+    void prewarmProjectedLayerTextureSources(projectedPrewarmLayers).then(() => {
+      document.body.dataset.textureRestoreProjectedSourcePrewarmCount = String(
+        projectedPrewarmLayers.length,
+      );
+      document.body.dataset.textureRestoreProjectedSourcePrewarmMs = (
+        performance.now() - projectedPrewarmStartedAt
+      ).toFixed(1);
+    });
     setGenerations(projectToHydrate.generations, projectToHydrate.id);
     const recoveredProjectGenerations = useGenerationStore
       .getState()
@@ -3140,10 +3172,9 @@ export function EditorPage({
       });
       return;
     }
-    // Immediate/background saves must not synchronously encode the WebGL
-    // viewport. That work can create a visible long frame while switching
-    // modules; the normal autosave or an explicit Ctrl+S will refresh it.
-    const request = getProjectSaveRequest({ refreshThumbnail: showSuccessToast });
+    // Saving project state must not wait for a synchronous WebGL readback and
+    // PNG encode. Thumbnail refresh remains an explicit navigation/import task.
+    const request = getProjectSaveRequest({ refreshThumbnail: false });
     if (!request) return;
 
     manualSaveRunningRef.current = true;
@@ -6009,8 +6040,7 @@ export function EditorPage({
           latestLocalRepaintGeneration,
           generationMaskUrl,
         );
-        if (cancelled || document.body.dataset.perfUseCurrentLocalRepaintMask === '1')
-          return;
+        if (cancelled || document.body.dataset.perfUseCurrentLocalRepaintMask === '1') return;
         const currentTarget = useLayerStore
           .getState()
           .layers.find((layer) => layer.id === targetLayerId);
@@ -6052,8 +6082,7 @@ export function EditorPage({
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
           depthUrl: generationCapture?.depthUrl ?? generationResultLayer?.depthUrl,
-          depthEncoding:
-            generationCapture?.depthEncoding ?? generationResultLayer?.depthEncoding,
+          depthEncoding: generationCapture?.depthEncoding ?? generationResultLayer?.depthEncoding,
           normalUrl: generationCapture?.normalUrl ?? generationResultLayer?.normalUrl,
           objectId,
           objectMatrixWorld:

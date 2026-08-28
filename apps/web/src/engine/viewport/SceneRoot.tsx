@@ -1241,16 +1241,6 @@ function ImportedModel({
         (layer.type === 'uv' || (layer.type === 'projected' && Boolean(layer.camera))),
     ),
   );
-  const hasAuthoritativeVisibleProjectedLayer = useLayerStore((state) =>
-    state.layers.some(
-      (layer) =>
-        layer.type === 'projected' &&
-        layer.visible &&
-        Boolean(layer.imageUrl) &&
-        Boolean(layer.camera) &&
-        (!layer.objectId || layer.objectId === importedModel.objectId),
-    ),
-  );
   const [uvVisibilityRenderRevision, setUvVisibilityRenderRevision] = useState(0);
   const residentUvPresentationCacheRef = useRef(new Map<string, THREE.Texture>());
   const pendingUvVisibilityRenderKeyRef = useRef('');
@@ -2981,8 +2971,7 @@ function ImportedModel({
     // visibility from that snapshot: a late effect would reopen a layer that
     // the user has already hidden.
     const authoritativeProjectionLayers = useLayerStore.getState().layers;
-    const authoritativePreviewLayerId =
-      useSceneStore.getState().localRepaintPreviewLayer?.id;
+    const authoritativePreviewLayerId = useSceneStore.getState().localRepaintPreviewLayer?.id;
     const authoritativeMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
       authoritativeProjectionLayers,
       importedModel.objectId,
@@ -3255,7 +3244,10 @@ function ImportedModel({
         compileMesh.removeFromParent();
         compileGeometry.dispose();
       });
-    sharedWarmups.set(sharedWarmupSignature, sharedWarmupPromise.then(() => undefined));
+    sharedWarmups.set(
+      sharedWarmupSignature,
+      sharedWarmupPromise.then(() => undefined),
+    );
     void sharedWarmupPromise;
   }, [
     camera,
@@ -3890,10 +3882,9 @@ function ImportedModel({
         !hasPresentedProjectedMaterial &&
         !hasPresentedBootstrapMaterial &&
         (exactBakedBootstrapTexture ||
-          (!hasAuthoritativeVisibleProjectedLayer &&
-            ((loadedUvTexture && uvOverlayOpacity > 0) ||
-              liveTopUvTexture ||
-              (loadedContentAwareUnderlayTexture && contentAwareUnderlayOpacity > 0)))),
+          (loadedUvTexture && uvOverlayOpacity > 0) ||
+          liveTopUvTexture ||
+          (loadedContentAwareUnderlayTexture && contentAwareUnderlayOpacity > 0)),
       );
       if (canPresentUvBootstrap) {
         // A cold restore needs several seconds to decode, resize and upload the
@@ -4680,8 +4671,14 @@ function ImportedModel({
               maxSize: 512,
             })
           : undefined;
+      // A previously decoded texture may remain resident for the next eye-open,
+      // but it must never count as a visible contribution when every ordinary
+      // UV row is authoritatively hidden. The old fallback resurrected the
+      // merged UV at opacity 1 when an async projected material published late.
       const authoritativeResidentUvTexture =
-        authoritativeExactUvTexture ?? loadedUvTexture ?? authoritativeProxyUvTexture;
+        authoritativeOrdinaryUvLayers.length > 0
+          ? (authoritativeExactUvTexture ?? loadedUvTexture ?? authoritativeProxyUvTexture)
+          : undefined;
       const authoritativeUvTextureSource = authoritativeExactUvTexture
         ? 'exact'
         : loadedUvTexture
@@ -4915,7 +4912,6 @@ function ImportedModel({
     directUvRenderedColor,
     directUvRenderedColorMaskTexture,
     gl,
-    hasAuthoritativeVisibleProjectedLayer,
     importedModel,
     loadedBakedTexture,
     loadedContentAwareUnderlayTexture,
