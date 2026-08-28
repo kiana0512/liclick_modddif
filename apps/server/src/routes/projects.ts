@@ -1,0 +1,146 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { parseProjectCommand } from '@liclick/contracts';
+import {
+  projectRepository,
+  ProjectSaveConflictError,
+} from '../repositories/projectRepository.js';
+import { executeProjectCommand } from '../services/projectCommandService.js';
+import type { WorkspaceProject } from '../types/project.js';
+import { requireAuth } from '../auth/authMiddleware.js';
+import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
+
+function sendProjectConflict(response: ServerResponse, error: unknown) {
+  if (!(error instanceof ProjectSaveConflictError)) return false;
+  sendJson(response, error.statusCode, {
+    error: error.message,
+    code: error.code,
+    currentRevision: error.currentRevision,
+  });
+  return true;
+}
+
+export async function handleProjectsRoute(request: IncomingMessage, response: ServerResponse, url: URL) {
+  const segments = getPathSegments(url);
+  const projectId = segments[2];
+  const user = await requireAuth(request, response);
+  if (!user) return true;
+
+  if (request.method === 'GET' && segments.length === 2) {
+    sendJson(response, 200, { projects: await projectRepository.list(user.id) });
+    return true;
+  }
+
+  if (request.method === 'POST' && segments.length === 2) {
+    const body = await readJsonBody<{ name?: string; folderId?: string }>(request);
+    const result = await projectRepository.create(user.id, body);
+    sendJson(response, 201, result);
+    return true;
+  }
+
+  if (request.method === 'GET' && projectId && segments.length === 3) {
+    const result = await projectRepository.load(user.id, projectId);
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 200, result);
+    return true;
+  }
+
+  if (request.method === 'PUT' && projectId && segments.length === 3) {
+    const body = await readJsonBody<WorkspaceProject>(request);
+    let result: Awaited<ReturnType<typeof projectRepository.save>>;
+    try {
+      result = await projectRepository.save(user.id, projectId, body);
+    } catch (error) {
+      if (sendProjectConflict(response, error)) return true;
+      throw error;
+    }
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 200, result);
+    return true;
+  }
+
+  if (
+    request.method === 'POST' &&
+    projectId &&
+    segments.length === 4 &&
+    segments[3] === 'commands'
+  ) {
+    let command;
+    try {
+      command = parseProjectCommand(await readJsonBody<unknown>(request));
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : 'Invalid project command.',
+        code: 'INVALID_PROJECT_COMMAND',
+      });
+      return true;
+    }
+    if (command.projectId !== projectId) {
+      sendJson(response, 400, {
+        error: 'Project command projectId does not match the request path.',
+        code: 'PROJECT_COMMAND_PROJECT_MISMATCH',
+      });
+      return true;
+    }
+    let result: Awaited<ReturnType<typeof executeProjectCommand>>;
+    try {
+      result = await executeProjectCommand(user.id, command);
+    } catch (error) {
+      if (sendProjectConflict(response, error)) return true;
+      throw error;
+    }
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 200, result);
+    return true;
+  }
+
+  if (request.method === 'PATCH' && projectId && segments.length === 3) {
+    const body = await readJsonBody<{ name?: string; expectedRevisionId?: string }>(request);
+    let result: Awaited<ReturnType<typeof projectRepository.rename>>;
+    try {
+      result = body.name
+        ? await projectRepository.rename(user.id, projectId, body.name, body.expectedRevisionId)
+        : undefined;
+    } catch (error) {
+      if (sendProjectConflict(response, error)) return true;
+      throw error;
+    }
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 200, result);
+    return true;
+  }
+
+  if (request.method === 'DELETE' && projectId && segments.length === 3) {
+    const result = await projectRepository.delete(user.id, projectId);
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 200, result);
+    return true;
+  }
+
+  if (request.method === 'POST' && projectId && segments.length === 4 && segments[3] === 'duplicate') {
+    const result = await projectRepository.duplicate(user.id, projectId);
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 201, result);
+    return true;
+  }
+
+  if (request.method === 'POST' && projectId && segments.length === 4 && segments[3] === 'move') {
+    const body = await readJsonBody<{ folderId?: string | null; expectedRevisionId?: string }>(request);
+    let result: Awaited<ReturnType<typeof projectRepository.move>>;
+    try {
+      result = await projectRepository.move(
+        user.id,
+        projectId,
+        body.folderId ?? null,
+        body.expectedRevisionId,
+      );
+    } catch (error) {
+      if (sendProjectConflict(response, error)) return true;
+      throw error;
+    }
+    if (!result) sendJson(response, 404, { error: 'Project not found.' });
+    else sendJson(response, 200, result);
+    return true;
+  }
+
+  return false;
+}

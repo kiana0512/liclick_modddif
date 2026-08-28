@@ -1,0 +1,46 @@
+node_modules
+.pnpm-store/
+dist
+dist-installer/
+dist-local-component/
+dist-plugins/
+.build-cache/
+.vite
+.turbo
+.DS_Store
+Thumbs.db
+~$*.docx
+*.log
+*.tsbuildinfo
+__pycache__/
+*.pyc
+*.local
+*.tmp
+*.bak
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.env
+.atlas-ai-gateway-oauth.json
+*.atlas-ai-gateway-oauth.json
+secrets/*
+!secrets/.gitkeep
+!secrets/README.md
+apps/server/.env
+logs/
+
+# Runtime/user data. Recovery PSDs, projects, auth, caches, logs, and generated
+# validation outputs belong to the local machine and must never enter Git.
+workspace/
+workspace-auth-smoke/
+workspace-auth-smoke-feishu/
+.codex-tmp/
+tmp/
+workspace-smoke*/
+.codex/*.png
+*_contact_sheet.png
+
+# Adobe working documents are local recovery data, never source assets.
+*.psd
+*.psb

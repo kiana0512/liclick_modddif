@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-22",
+  "rule": "Every required capability must be passed before a Cloud release can be declared ready.",
+  "capabilities": [
+    {
+      "id": "cloud.zero-install-artifact",
+      "name": "Cloud 产物零安装、无 localhost 回退",
+      "required": true,
+      "status": "passed",
+      "evidence": [
+        "check:cloud-artifact",
+        "smoke:web（旧本地组件与工具箱安装 URL 404；本机性能与 Photoshop/DCC 接口 404）",
+        "simulate:cloud-deployment",
+        "browser:/li3d/、/li3d/uv 与 /li3d/tools"
+      ]
+    },
+    {
+      "id": "cloud.control-plane-recovery",
+      "name": "登录、项目 Revision/Command、重启恢复",
+      "required": true,
+      "status": "passed",
+      "evidence": [
+        "simulate:cloud-deployment",
+        "2026-08-21 真实员工会话重新建立后恢复同一项目、Revision 与局部重绘层"
+      ]
+    },
+    {
+      "id": "deployment.remote-simulator",
+      "name": "远端部署模拟器构建、代理、故障和重启场景",
+      "required": true,
+      "status": "passed",
+      "evidence": ["simulate:cloud-deployment"]
+    },
+    {
+      "id": "cloud.asset-direct-transfer",
+      "name": "真实浏览器对象直传、校验、重试、幂等和 ownership",
+      "required": true,
+      "status": "passed",
+      "evidence": [
+        "simulate:cloud-deployment",
+        "browser:源 OBJ 与真实服务器 UV FBX 直传并在 Bake 恢复",
+        "quality/evidence/browser-local-uv-e2e.json",
+        "浏览器读取磁盘持久对象；无签名探测返回 403 后对象存储健康检查仍为 200"
+      ]
+    },
+    {
+      "id": "auth.liclick-production-sso",
+      "name": "莉刻真实 SSO 登录与退出",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "2026-08-21 浏览器真实员工账号登录、退出、再登录通过（server-side Atlas/IDaaS 测试适配器）",
+        "开发服务器重启后再次完成真实员工授权并恢复任田账号工作区",
+        "真实 feishu-oauth 身份、稳定用户 ID 与有效 Atlas gateway 凭据已核验",
+        "生产 HTTPS 回调与企业应用发布尚未验收"
+      ]
+    },
+    {
+      "id": "compute.browser-policy",
+      "name": "普通贴图交互使用浏览器 GPU/CPU 且禁止服务器隐式补算",
+      "required": true,
+      "status": "passed",
+      "evidence": [
+        "browser:data-texture-backend=webgpu-worker",
+        "browser:data-cpu-backend=wasm-worker",
+        "browser:data-server-fallback=forbidden",
+        "browser:WebGPU runtime ready，自检 compute dispatch + copy/readback 1 次通过",
+        "quality/evidence/browser-runtime-compute-2026-08-22.json"
+      ]
+    },
+    {
+      "id": "compute.engine-session-foundation",
+      "name": "按项目 Engine Session、取消、并发和资源释放边界",
+      "required": true,
+      "status": "passed",
+      "evidence": [
+        "@liclick/web test:engine-session",
+        "@liclick/web test:engine-session-registry（24 项目切换、最多 3 个空闲会话、宽限期后资源估算归零）",
+        "浏览器贴图到 UV 保持相同 Engine Session ID"
+      ]
+    },
+    {
+      "id": "texture.real-workflow",
+      "name": "真实模型贴图、投影、图层、蒙版、局部重绘、撤销恢复",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "真实 UV 模型完成浏览器蒙版绘制、云端 ModelView 生图、浏览器局部重绘投影和 Revision 保存",
+        "服务重启后源图、蒙版、深度和图层可恢复；图层开关产生真实视口像素差异",
+        "quality/evidence/browser-local-repaint-e2e.json",
+        "quality/evidence/browser-compute-kernel-matrix.json（纹理方向、投影层可见性、接缝协调回归）",
+        "完整生产模型投影、遮挡、导出和撤销矩阵尚未完成"
+      ]
+    },
+    {
+      "id": "uv.production-service",
+      "name": "Auto UV 由真实 Asset V4 服务完成并返回合格产物",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "2026-08-22 真实员工浏览器复验 Asset V4 容量接口返回 9 Worker / 16 槽位",
+        "真实 Job 29a7bf45-bc4a-4d42-a83e-1ec8e8997db5 对 2 面 OBJ 返回 5 个合格制品；UV FBX 经校验写入账号项目 Revision 并传入 Bake",
+        "真实员工提交 39.7 MB FBX，UV_PROCESS_V2 由 asset-control-4090 执行 464 秒并写入账号历史",
+        "严格 QA 以 UV_QA_FAILED 拒绝不合格输出，0 个制品发布",
+        "小模型成功不覆盖大型生产模型质量；待修复 Worker UV QA，并补齐三类生产资产、取消、超大模型与恢复矩阵"
+      ]
+    },
+    {
+      "id": "bake.production-substance",
+      "name": "PBR Bake 由真实 Substance Worker 完成并可导出",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "真实 asset-worker-3090-b-windows 状态和 TLS 校验通过",
+        "真实员工提交 xiangzi_high.fbx / xiangzi_low.fbx / Base Color，完成 4K Substance Job bake_7d44660d-9585-4caf-9643-82703fdf4057",
+        "Base Color、Normal DX、AO、Curvature、World Normal、Thickness、Position 可预览下载并恢复账号历史",
+        "仍需更多生产模型质量对照、失败/取消/恢复压力矩阵和 ID 通道规划"
+      ]
+    },
+    {
+      "id": "topology.cloud-service",
+      "name": "高模上传云端自动拓扑并返回正式低模产物",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "严格 TLS/CA 自动化环境上传 7.7 MB / 30,338 面 FBX，并验证可解析 FBX、BLEND、任务轮询、取消与产物校验协议；该条属于协议模拟器证据，不计作真实服务验收",
+        "2026-08-21 真实员工提交 39.7 MB FBX，asset-worker-3090-b 运行 161 秒并写入账号历史",
+        "坐标门禁以 RETOPOLOGY_COORDINATE_MISMATCH 拒绝发布错位结果",
+        "quality/evidence/browser-cloud-retopology-e2e.json",
+        "待修复生产 Worker 坐标恢复，再验收正式 FBX/BLEND、三方 SHA 与八项 QA"
+      ]
+    },
+    {
+      "id": "toolbox.capability-preservation",
+      "name": "工具箱非 DCC 能力保留并迁移到浏览器/云端",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "Cloud 首页保留四个工作模块，其中工具箱为第四个模块",
+        "/tools 按原版结构完整登记 9 项工具，无安装器、假按钮或桌面依赖宣称",
+        "UV 引擎能力已具备；其余浏览器/云端工具仍需逐项实现",
+        "PS/DCC 桥接按 ADR-0010 暂缓"
+      ]
+    },
+    {
+      "id": "performance.interaction",
+      "name": "交互帧耗、Long Task、静止渲染和内存预算",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "61 个生产 JS chunk、约 3.02 MB，总量与四个关键 chunk 受阻断式预算约束",
+        "模型解析器按 GLTF/FBX/OBJ 格式动态加载",
+        "24 项目 Engine Session 切换资源释放回归通过",
+        "HTTP 60 并发持续 30 秒：367,658 请求、0 失败、P95 9ms",
+        "低中高目标硬件 input-to-present、Long Task 和真实显存/内存采样尚未完成"
+      ]
+    },
+    {
+      "id": "compat.ps-dcc-deferred",
+      "name": "Photoshop/DCC 实时交互暂缓且无假入口",
+      "required": false,
+      "status": "deferred",
+      "evidence": ["浏览器安全模型不允许零安装直接控制本机 DCC；当前界面不暴露该入口"]
+    },
+    {
+      "id": "security.production-data-plane",
+      "name": "PostgreSQL 事务、对象回收、内容验证和安全扫描",
+      "required": true,
+      "status": "in_progress",
+      "evidence": [
+        "PostgreSQL 事务 Repository 已覆盖项目快照、不可变 Revision、Command 回执与账号 ownership",
+        "4 实例/4 账号/240 次重复请求与 8 实例/3,840 次高压复验、回滚注入和重启恢复通过",
+        "签名对象 ownership 已实现；浏览器通过同源鉴权换取短期签名 URL，并以 credentials=omit 读取对象",
+        "真实对象存储回收、文件魔数/解压炸弹/内容扫描和生产备份恢复仍未完成"
+      ]
+    }
+  ]
+}

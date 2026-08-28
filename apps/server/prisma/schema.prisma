@@ -1,0 +1,157 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String           @id
+  displayName    String
+  email          String?
+  avatarUrl      String?
+  role           String           @default("user")
+  status         String           @default("active")
+  authSource     String
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  lastLoginAt    DateTime?
+  feishuAccounts FeishuAccount[]
+  sessions       UserSession[]
+  folders        ProjectFolder[]
+  projects       Project[]
+  assets         ProjectAsset[]
+  generationJobs GenerationJob[]
+}
+
+model FeishuAccount {
+  id                    String   @id
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+  feishuOpenId          String?
+  feishuUnionId         String?
+  feishuUserId          String?
+  tenantKey             String?
+  name                  String?
+  email                 String?
+  avatarUrl             String?
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  tokenExpiresAt        DateTime?
+  rawProfileJson        String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([userId])
+  @@index([feishuOpenId])
+  @@index([feishuUnionId])
+}
+
+model UserSession {
+  id               String   @id
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  sessionTokenHash String
+  source           String
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  userAgent        String?
+  ipAddress        String?
+
+  @@index([userId])
+  @@unique([sessionTokenHash])
+}
+
+model ProjectFolder {
+  id        String    @id
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  name      String
+  order     Int?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  projects  Project[]
+
+  @@index([userId])
+}
+
+model Project {
+  id            String          @id
+  userId        String
+  user          User            @relation(fields: [userId], references: [id])
+  folderId      String?
+  folder        ProjectFolder?  @relation(fields: [folderId], references: [id])
+  slug          String
+  name          String
+  status        String          @default("active")
+  localPath     String
+  thumbnailPath String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  deletedAt     DateTime?
+  assets        ProjectAsset[]
+  generationJobs GenerationJob[]
+
+  @@index([userId])
+  @@unique([userId, slug])
+}
+
+model ProjectAsset {
+  id           String   @id
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id])
+  type         String
+  name         String
+  relativePath String
+  mimeType     String?
+  sizeBytes    Int?
+  width        Int?
+  height       Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId])
+  @@index([projectId])
+}
+
+model GenerationJob {
+  id             String   @id
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id])
+  provider       String
+  mode           String
+  status         String
+  prompt         String?
+  negativePrompt String?
+  inputJson      String
+  resultAssetId  String?
+  error          String?
+  progress       Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId])
+  @@index([projectId])
+}
+
+model ApiAuditLog {
+  id           String   @id
+  userId       String?
+  action       String
+  path         String
+  method       String
+  statusCode   Int
+  durationMs   Int
+  createdAt    DateTime @default(now())
+  metadataJson String?
+
+  @@index([userId])
+}

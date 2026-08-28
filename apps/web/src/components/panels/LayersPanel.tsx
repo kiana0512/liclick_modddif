@@ -1,0 +1,1778 @@
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEventHandler,
+  type MouseEventHandler,
+  type PointerEventHandler,
+  type ReactNode,
+} from 'react';
+import { createPortal } from 'react-dom';
+import {
+  Copy,
+  Download,
+  Eraser,
+  Eye,
+  EyeOff,
+  Focus,
+  MoreVertical,
+  PaintBucket,
+  PencilLine,
+  Plus,
+  Scissors,
+  SlidersHorizontal,
+  TextCursorInput,
+  Trash2,
+  Upload,
+  WandSparkles,
+} from 'lucide-react';
+import { cn } from '@/components/common/cn';
+import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
+import {
+  getLiveProjectedCanvasState,
+  getLiveProjectedTextureSourceState,
+} from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
+import {
+  createGeneratedDisplayPreview,
+  type GeneratedDisplayPreview,
+} from '@/engine/localRepaint/resultPreviewUtils';
+import {
+  getEraserTargetPolicy,
+  hasClearableProjectedEraserMask,
+} from '@/engine/paint/eraserTargetPolicy';
+import {
+  isViewportInteractionBusy,
+  subscribeViewportInteraction,
+} from '@/engine/viewport/viewportInteractionState';
+import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
+import { useLayerStore } from '@/stores/layerStore';
+import { useSceneStore } from '@/stores/sceneStore';
+import { useT } from '@/stores/i18nStore';
+import { useToastStore } from '@/stores/toastStore';
+import type { Layer } from '@/types/layer';
+import { downloadImageAsset } from '@/utils/downloadImage';
+
+type MenuState = {
+  layerId: string;
+  x: number;
+  y: number;
+};
+
+type RenameState = {
+  layerId: string;
+  value: string;
+};
+
+function useLayerImageSource(url: string, enabled: boolean) {
+  const [image, setImage] = useState<HTMLImageElement>();
+
+  useEffect(() => {
+    if (!enabled || !url) {
+      setImage(undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    const nextImage = new Image();
+    nextImage.decoding = 'async';
+    nextImage.onload = () => {
+      if (!cancelled) setImage(nextImage);
+    };
+    nextImage.onerror = () => {
+      if (!cancelled) setImage(undefined);
+    };
+    nextImage.src = url;
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, url]);
+
+  return image;
+}
+
+function useProjectedLayerDisplayPreview(layer: Layer) {
+  const [preview, setPreview] = useState<
+    (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string }) | undefined
+  >();
+  const enabled =
+    layer.type === 'projected' &&
+    Boolean(layer.imageUrl) &&
+    !isLocalRepaintPreviewLayer(layer);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(undefined);
+    if (!enabled) return undefined;
+    const sourceUrl = layer.imageUrl;
+    const depthUrl = layer.depthUrl;
+    void createGeneratedDisplayPreview(sourceUrl, depthUrl)
+      .then((nextPreview) => {
+        if (!cancelled) setPreview({ ...nextPreview, sourceUrl, depthUrl });
+      })
+      .catch((error) => {
+        if (!cancelled)
+          console.warn('[Liclick 3D Texture] Could not prepare projected display preview.', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, layer.contentRevision, layer.depthUrl, layer.imageUrl]);
+
+  return preview?.sourceUrl === layer.imageUrl && preview.depthUrl === layer.depthUrl
+    ? preview
+    : undefined;
+}
+
+function useInteractionDeferredLayers() {
+  const [layers, setLayers] = useState(() => useLayerStore.getState().layers);
+  useEffect(() => {
+    let committedLayers = useLayerStore.getState().layers;
+    let pendingLayers: Layer[] | undefined;
+    let timer: number | undefined;
+    const commit = (nextLayers: Layer[], deferred: boolean) => {
+      if (nextLayers === committedLayers) return;
+      committedLayers = nextLayers;
+      if (deferred) {
+        startTransition(() => setLayers(nextLayers));
+      } else {
+        setLayers(nextLayers);
+      }
+    };
+    const flush = () => {
+      timer = undefined;
+      if (!pendingLayers) return;
+      if (isViewportInteractionBusy()) {
+        timer = window.setTimeout(flush, 32);
+        return;
+      }
+      const targetLayers = pendingLayers;
+      pendingLayers = undefined;
+      commit(targetLayers, true);
+    };
+    const schedule = () => {
+      if (timer === undefined && pendingLayers) timer = window.setTimeout(flush, 32);
+    };
+    const unsubscribeLayers = useLayerStore.subscribe((state, previousState) => {
+      if (state.layers === previousState.layers) return;
+      if (isViewportInteractionBusy()) {
+        pendingLayers = state.layers;
+        schedule();
+        return;
+      }
+      pendingLayers = undefined;
+      commit(state.layers, false);
+    });
+    const unsubscribeInteraction = subscribeViewportInteraction(schedule);
+    return () => {
+      unsubscribeLayers();
+      unsubscribeInteraction();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
+  return layers;
+}
+
+function isLocalRepaintPreviewLayer(layer: Layer) {
+  return Boolean(
+    layer.replacementTargetLayerId ||
+    layer.localRepaintMaskUrl ||
+    layer.localRepaintSourceUrl ||
+    isLocalRepaintVisibilityLayer(layer) ||
+    (layer.type === 'projected' && layer.generationId?.startsWith('local-repaint-')),
+  );
+}
+
+function getLocalRepaintPreviewMaskUrl(layer: Layer) {
+  if (!isLocalRepaintPreviewLayer(layer)) return undefined;
+  return layer.localRepaintMaskUrl || layer.maskUrl;
+}
+
+function LayerThumbnail({ layer }: { layer: Layer }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const displayPreview = useProjectedLayerDisplayPreview(layer);
+  const isLocalRepaintPreview = isLocalRepaintPreviewLayer(layer);
+  const previewMaskUrl = getLocalRepaintPreviewMaskUrl(layer);
+  const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
+  const liveMaskState = previewMaskUrl ? getLiveProjectedCanvasState(previewMaskUrl) : undefined;
+  const liveSource = liveSourceState?.source;
+  const liveMaskCanvas = liveMaskState?.canvas;
+  // A persisted local-repaint layer intentionally combines a durable colour
+  // URL with a GPU-resident live mask URL. CSS cannot resolve the registry URL,
+  // so decode the colour image and composite both sources on a canvas instead.
+  const decodedSource = useLayerImageSource(layer.imageUrl, !liveSource && Boolean(liveMaskCanvas));
+  const thumbnailSource = liveSource ?? decodedSource;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !thumbnailSource) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(thumbnailSource, 0, 0, canvas.width, canvas.height);
+    if (isLocalRepaintPreview && liveMaskCanvas) {
+      context.save();
+      context.globalCompositeOperation = 'destination-in';
+      context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
+      context.restore();
+    }
+  }, [
+    layer.contentRevision,
+    isLocalRepaintPreview,
+    liveMaskCanvas,
+    liveMaskState?.revision,
+    liveSourceState?.revision,
+    thumbnailSource,
+  ]);
+
+  if (displayPreview)
+    return (
+      <img
+        src={displayPreview.fittedUrl}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        className="h-full w-full object-contain"
+        draggable={false}
+      />
+    );
+
+  if (liveSource || liveMaskCanvas)
+    return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
+  if (!layer.imageUrl) return null;
+  if (isLocalRepaintPreview && !previewMaskUrl) return null;
+  const localRepaintMaskStyle =
+    isLocalRepaintPreview && previewMaskUrl
+      ? {
+          WebkitMaskImage: `url("${previewMaskUrl}")`,
+          maskImage: `url("${previewMaskUrl}")`,
+          WebkitMaskSize: '100% 100%',
+          maskSize: '100% 100%',
+          WebkitMaskRepeat: 'no-repeat',
+          maskRepeat: 'no-repeat',
+        }
+      : undefined;
+  return (
+    <img
+      src={layer.imageUrl}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      className="h-full w-full object-cover"
+      style={localRepaintMaskStyle}
+      draggable={false}
+    />
+  );
+}
+
+function LayerPreviewImage({ layer }: { layer: Layer }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const displayPreview = useProjectedLayerDisplayPreview(layer);
+  const isLocalRepaintPreview = isLocalRepaintPreviewLayer(layer);
+  const previewMaskUrl = getLocalRepaintPreviewMaskUrl(layer);
+  const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
+  const liveMaskState = previewMaskUrl ? getLiveProjectedCanvasState(previewMaskUrl) : undefined;
+  const liveSource = liveSourceState?.source;
+  const liveMaskCanvas = liveMaskState?.canvas;
+  const decodedSource = useLayerImageSource(layer.imageUrl, !liveSource && Boolean(liveMaskCanvas));
+  const previewSource = liveSource ?? decodedSource;
+  const maxPreviewDimension = 1600;
+  const sourceWidth = previewSource
+    ? 'naturalWidth' in previewSource
+      ? previewSource.naturalWidth
+      : previewSource.width
+    : 1;
+  const sourceHeight = previewSource
+    ? 'naturalHeight' in previewSource
+      ? previewSource.naturalHeight
+      : previewSource.height
+    : 1;
+  const scale = previewSource
+    ? Math.min(1, maxPreviewDimension / Math.max(sourceWidth, sourceHeight, 1))
+    : 1;
+  const width = previewSource ? Math.max(1, Math.round(sourceWidth * scale)) : 1;
+  const height = previewSource ? Math.max(1, Math.round(sourceHeight * scale)) : 1;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !previewSource) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(previewSource, 0, 0, canvas.width, canvas.height);
+    if (isLocalRepaintPreview && liveMaskCanvas) {
+      context.save();
+      context.globalCompositeOperation = 'destination-in';
+      context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
+      context.restore();
+    }
+  }, [
+    height,
+    layer.contentRevision,
+    isLocalRepaintPreview,
+    liveMaskCanvas,
+    liveMaskState?.revision,
+    liveSourceState?.revision,
+    previewSource,
+    width,
+  ]);
+
+  if (displayPreview)
+    return (
+      <div
+        className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+        style={checkerStyle}
+      >
+        <img
+          src={displayPreview.fittedUrl}
+          alt=""
+          className="block max-h-[88vh] max-w-[92vw] object-contain"
+          draggable={false}
+        />
+      </div>
+    );
+
+  if (liveSource || liveMaskCanvas) {
+    const preview = (
+      <canvas
+        ref={canvasRef}
+        width={width}
+        height={height}
+        className="block max-h-[88vh] max-w-[92vw] object-contain"
+      />
+    );
+    return isLocalRepaintPreview ? (
+      <div
+        className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+        style={checkerStyle}
+      >
+        {preview}
+      </div>
+    ) : (
+      <div className="overflow-hidden rounded-md border border-white/16 bg-[#181818] shadow-2xl">
+        {preview}
+      </div>
+    );
+  }
+  if (isLocalRepaintPreview && !previewMaskUrl) {
+    return (
+      <div className="rounded-md border border-white/30 bg-[#181818] px-5 py-4 text-sm text-white/62 shadow-2xl">
+        该旧局部重绘图层缺少涂绘蒙版，无法显示区域预览。
+      </div>
+    );
+  }
+  const localRepaintMaskStyle =
+    isLocalRepaintPreview && previewMaskUrl
+      ? {
+          WebkitMaskImage: `url("${previewMaskUrl}")`,
+          maskImage: `url("${previewMaskUrl}")`,
+          WebkitMaskSize: '100% 100%',
+          maskSize: '100% 100%',
+          WebkitMaskRepeat: 'no-repeat',
+          maskRepeat: 'no-repeat',
+        }
+      : undefined;
+  const preview = (
+    <img
+      src={layer.imageUrl}
+      alt=""
+      className="block max-h-[88vh] max-w-[92vw] object-contain"
+      style={localRepaintMaskStyle}
+      draggable={false}
+    />
+  );
+  return isLocalRepaintPreview ? (
+    <div
+      className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+      style={checkerStyle}
+    >
+      {preview}
+    </div>
+  ) : (
+    <div className="overflow-hidden rounded-md border border-white/16 bg-[#181818] shadow-2xl">
+      {preview}
+    </div>
+  );
+}
+
+type VisibilityDrag = {
+  visible: boolean;
+  touched: Set<string>;
+};
+
+type OpacityDrag = {
+  layerId: string;
+  startY: number;
+  startOpacity: number;
+  value: number;
+  moved: boolean;
+  x: number;
+  y: number;
+};
+
+function isLocalRepaintVisibilityLayer(layer: Layer) {
+  return Boolean(
+    layer.role === 'local-repaint-draft' ||
+    layer.role === 'local-repaint-overlay' ||
+    layer.id.startsWith('local-repaint-projection') ||
+    layer.id.startsWith('local-repaint-brush-projection') ||
+    layer.id.startsWith('local-repaint-uv-merge'),
+  );
+}
+
+/**
+ * One local repaint result is represented by a visible projected row and an
+ * implementation-only UV destination. Eye gestures must update both in one
+ * store transaction or the remaining representation keeps the effect visible.
+ */
+function expandLocalRepaintVisibilityIds(layers: Layer[], layerIds: string[]) {
+  const expanded = new Set(layerIds);
+  for (const layerId of layerIds) {
+    const layer = layers.find((item) => item.id === layerId);
+    if (!layer || !isLocalRepaintVisibilityLayer(layer)) continue;
+    if (layer.replacementTargetLayerId) expanded.add(layer.replacementTargetLayerId);
+    layers.forEach((candidate) => {
+      if (
+        isLocalRepaintVisibilityLayer(candidate) &&
+        candidate.replacementTargetLayerId === layer.id
+      ) {
+        expanded.add(candidate.id);
+      }
+    });
+  }
+  return [...expanded];
+}
+
+const checkerStyle = {
+  backgroundColor: '#d6d6d6',
+  backgroundImage:
+    'linear-gradient(45deg, #9e9e9e 25%, transparent 25%), linear-gradient(-45deg, #9e9e9e 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #9e9e9e 75%), linear-gradient(-45deg, transparent 75%, #9e9e9e 75%)',
+  backgroundPosition: '0 0, 0 7px, 7px -7px, -7px 0',
+  backgroundSize: '14px 14px',
+};
+
+type LayersPanelProps = {
+  onLayerDoubleClick?: (layer: Layer) => void;
+  onLayerImageEdit?: (layer: Layer) => void;
+  onLayerImageReplace?: (layer: Layer, file: File) => void;
+  onLayerLocalRepaint?: (layer: Layer) => void;
+  onMergeSelectedToUvLayer?: (layerIds: string[]) => void;
+  onMergeIntoSelectedBlankUvLayer?: (layerIds: string[], blankUvLayerId: string) => void;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
+};
+
+export function LayersPanel({
+  onLayerDoubleClick,
+  onLayerImageEdit,
+  onLayerImageReplace,
+  onLayerLocalRepaint,
+  onMergeSelectedToUvLayer,
+  onMergeIntoSelectedBlankUvLayer,
+  mutationLocked = false,
+  onMutationLocked,
+}: LayersPanelProps = {}) {
+  const t = useT();
+  const pushToast = useToastStore((state) => state.pushToast);
+  const layers = useInteractionDeferredLayers();
+  const authoritativeLayers = useLayerStore((state) => state.layers);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
+  const setOpacity = useLayerStore((state) => state.setOpacity);
+  const setBlendMode = useLayerStore((state) => state.setBlendMode);
+  const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
+  const deleteLayers = useLayerStore((state) => state.deleteLayers);
+  const duplicateLayer = useLayerStore((state) => state.duplicateLayer);
+  const duplicateContentAwareLayerAsEditableUv = useLayerStore(
+    (state) => state.duplicateContentAwareLayerAsEditableUv,
+  );
+  const renameLayer = useLayerStore((state) => state.renameLayer);
+  const updateLayer = useLayerStore((state) => state.updateLayer);
+  const moveLayer = useLayerStore((state) => state.moveLayer);
+  const reorderLayer = useLayerStore((state) => state.reorderLayer);
+  const captureHistory = useEditorHistoryStore((state) => state.capture);
+  const [menu, setMenu] = useState<MenuState>();
+  const [renameState, setRenameState] = useState<RenameState>();
+  const [draggingLayerId, setDraggingLayerId] = useState<string>();
+  const [visibilityDrag, setVisibilityDrag] = useState<VisibilityDrag>();
+  const [opacityDrag, setOpacityDrag] = useState<OpacityDrag>();
+  const [previewLayerId, setPreviewLayerId] = useState<string>();
+  const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() =>
+    activeProjectedLayerId ? [activeProjectedLayerId] : [],
+  );
+  const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(
+    activeProjectedLayerId,
+  );
+  const capturedOpacityDragRef = useRef(false);
+  const replaceImageInputRef = useRef<HTMLInputElement>(null);
+  const replaceImageLayerIdRef = useRef<string>();
+  const opacityDragFrameRef = useRef<number>();
+  const pendingOpacityDragRef = useRef<{
+    layerId: string;
+    value: number;
+    moved: boolean;
+    x: number;
+    y: number;
+  }>();
+  const visibleLayers = useMemo(
+    () =>
+      layers.filter(
+        (layer) =>
+          (!layer.objectId || layer.objectId === selectedObjectId) &&
+          // This UV row is an implementation target for the renderer. The
+          // actual local repaint result is the visible projected row above it;
+          // exposing both made one user operation look like multiple layers.
+          layer.role !== 'local-repaint-draft',
+      ),
+    [layers, selectedObjectId],
+  );
+  const layerIds = useMemo(() => visibleLayers.map((layer) => layer.id), [visibleLayers]);
+  const layerIdSet = useMemo(() => new Set(layerIds), [layerIds]);
+  const selectedLayerIdSet = useMemo(() => new Set(selectedLayerIds), [selectedLayerIds]);
+  const layerById = useMemo(() => new Map(layers.map((layer) => [layer.id, layer])), [layers]);
+  const previewLayer = useMemo(() => {
+    return authoritativeLayers.find((layer) => layer.id === previewLayerId && layer.imageUrl);
+  }, [authoritativeLayers, previewLayerId]);
+  const describeLayerSelection = useCallback(
+    (ids: string[]) => {
+      const names = ids.map((id) => layerById.get(id)?.name).filter(Boolean);
+      if (names.length === 0) return '图层';
+      if (names.length === 1) return names[0];
+      return `${names[0]} 等 ${names.length} 个图层`;
+    },
+    [layerById],
+  );
+
+  const blockMutation = useCallback(
+    (action: string) => {
+      if (!mutationLocked) return false;
+      setMenu(undefined);
+      onMutationLocked?.(action);
+      return true;
+    },
+    [mutationLocked, onMutationLocked],
+  );
+
+  useEffect(() => {
+    setSelectedLayerIds((ids) => ids.filter((id) => layerIds.includes(id)));
+  }, [layerIds]);
+
+  useEffect(() => {
+    if (
+      !activeProjectedLayerId ||
+      visibleLayers.some((layer) => layer.id === activeProjectedLayerId)
+    )
+      return;
+    const nextActiveLayer = visibleLayers.find((layer) => layer.type === 'projected');
+    if (nextActiveLayer) {
+      setActiveLayer(nextActiveLayer.id);
+      setSelectedLayerIds([nextActiveLayer.id]);
+      setLastSelectedLayerId(nextActiveLayer.id);
+    } else {
+      setSelectedLayerIds([]);
+      setLastSelectedLayerId(undefined);
+    }
+  }, [activeProjectedLayerId, setActiveLayer, visibleLayers]);
+
+  useEffect(() => {
+    if (
+      !activeProjectedLayerId ||
+      !layerIdSet.has(activeProjectedLayerId) ||
+      selectedLayerIds.includes(activeProjectedLayerId)
+    )
+      return;
+    setSelectedLayerIds([activeProjectedLayerId]);
+    setLastSelectedLayerId(activeProjectedLayerId);
+  }, [activeProjectedLayerId, layerIdSet, selectedLayerIds]);
+
+  useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => setMenu(undefined);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenu(undefined);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    if (!visibilityDrag) return undefined;
+    const stopDrag = () => setVisibilityDrag(undefined);
+    const continueFromPointer = (event: PointerEvent) => {
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const trigger = element?.closest<HTMLElement>('[data-layer-visibility-id]');
+      const layerId = trigger?.dataset.layerVisibilityId;
+      if (!layerId) return;
+      setVisibilityDrag((current) => {
+        if (!current || current.touched.has(layerId)) return current;
+        const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [
+          layerId,
+        ]);
+        setLayerVisibility(affectedIds, current.visible);
+        return {
+          visible: current.visible,
+          touched: new Set([...current.touched, ...affectedIds]),
+        };
+      });
+    };
+    window.addEventListener('pointermove', continueFromPointer);
+    window.addEventListener('pointerup', stopDrag);
+    window.addEventListener('pointercancel', stopDrag);
+    return () => {
+      window.removeEventListener('pointermove', continueFromPointer);
+      window.removeEventListener('pointerup', stopDrag);
+      window.removeEventListener('pointercancel', stopDrag);
+    };
+  }, [setLayerVisibility, visibilityDrag]);
+
+  useEffect(() => {
+    if (!opacityDrag) {
+      capturedOpacityDragRef.current = false;
+      if (opacityDragFrameRef.current) {
+        window.cancelAnimationFrame(opacityDragFrameRef.current);
+        opacityDragFrameRef.current = undefined;
+      }
+      pendingOpacityDragRef.current = undefined;
+      return undefined;
+    }
+
+    const flushOpacityDrag = () => {
+      const pending = pendingOpacityDragRef.current;
+      pendingOpacityDragRef.current = undefined;
+      opacityDragFrameRef.current = undefined;
+      if (!pending) return;
+      setOpacity(pending.layerId, pending.value);
+      setOpacityDrag((current) =>
+        current && current.layerId === pending.layerId
+          ? {
+              ...current,
+              value: pending.value,
+              moved: current.moved || pending.moved,
+              x: pending.x,
+              y: pending.y,
+            }
+          : current,
+      );
+    };
+
+    const continueOpacityDrag = (event: PointerEvent) => {
+      setOpacityDrag((current) => {
+        if (!current) return current;
+        if (!capturedOpacityDragRef.current) {
+          captureHistory(`调整图层不透明度：${describeLayerSelection([current.layerId])}`);
+          capturedOpacityDragRef.current = true;
+        }
+        const delta = current.startY - event.clientY;
+        const nextOpacity = Math.max(0, Math.min(1, current.startOpacity + delta / 140));
+        pendingOpacityDragRef.current = {
+          layerId: current.layerId,
+          value: nextOpacity,
+          moved: Math.abs(event.clientY - current.startY) > 2,
+          x: event.clientX,
+          y: event.clientY,
+        };
+        if (!opacityDragFrameRef.current) {
+          opacityDragFrameRef.current = window.requestAnimationFrame(flushOpacityDrag);
+        }
+        return current;
+      });
+    };
+    const stopOpacityDrag = () => {
+      if (opacityDragFrameRef.current) {
+        window.cancelAnimationFrame(opacityDragFrameRef.current);
+        opacityDragFrameRef.current = undefined;
+      }
+      const pending = pendingOpacityDragRef.current;
+      pendingOpacityDragRef.current = undefined;
+      if (pending) setOpacity(pending.layerId, pending.value);
+      setOpacityDrag(undefined);
+    };
+
+    window.addEventListener('pointermove', continueOpacityDrag);
+    window.addEventListener('pointerup', stopOpacityDrag);
+    window.addEventListener('pointercancel', stopOpacityDrag);
+    return () => {
+      window.removeEventListener('pointermove', continueOpacityDrag);
+      window.removeEventListener('pointerup', stopOpacityDrag);
+      window.removeEventListener('pointercancel', stopOpacityDrag);
+      if (opacityDragFrameRef.current) {
+        window.cancelAnimationFrame(opacityDragFrameRef.current);
+        opacityDragFrameRef.current = undefined;
+      }
+      pendingOpacityDragRef.current = undefined;
+    };
+  }, [captureHistory, describeLayerSelection, opacityDrag, setOpacity]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPreviewLayerId(undefined);
+        setRenameState(undefined);
+      }
+    };
+    const handleBlur = () => {
+      setPreviewLayerId(undefined);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
+
+  const deleteSelectedLayers = useCallback(
+    (layerIdsToDelete: string[]) => {
+      if (blockMutation('删除图层')) return;
+      const ids = layerIdsToDelete.filter(
+        (id, index) => layerIdsToDelete.indexOf(id) === index && layerIdSet.has(id),
+      );
+      if (ids.length === 0) return;
+      captureHistory(`删除图层：${describeLayerSelection(ids)}`);
+      const sceneState = useSceneStore.getState();
+      const latestLayers = useLayerStore.getState().layers;
+      const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, ids);
+      const expandedIdSet = new Set(expandedIds);
+      const deletesLocalRepaint = ids.some((id) =>
+        latestLayers.some((layer) => layer.id === id && isLocalRepaintVisibilityLayer(layer)),
+      );
+      if (deletesLocalRepaint) {
+        // Hide the renderer inputs synchronously so the very next frame reflects
+        // deletion. Row removal and resource disposal can reconcile one frame
+        // later without blocking camera input or rebuilding the 14-layer stack.
+        setLayerVisibility(expandedIds, false);
+        // The local-repaint row has a renderer-only twin backed by a live canvas.
+        // Deleting the persisted row must also end that live session, otherwise
+        // SurfacePaintOverlay republishes the orphaned projection after deletion.
+        const currentPreview = sceneState.localRepaintPreviewLayer;
+        const currentSource = sceneState.localRepaintProjectionSource;
+        const deletesCurrentSession = Boolean(
+          (currentPreview && expandedIdSet.has(currentPreview.id)) ||
+          (currentPreview?.replacementTargetLayerId &&
+            expandedIdSet.has(currentPreview.replacementTargetLayerId)) ||
+          (currentSource?.targetLayerId && expandedIdSet.has(currentSource.targetLayerId)),
+        );
+        if (deletesCurrentSession) {
+          sceneState.setLocalRepaintPreviewLayer(undefined);
+          sceneState.setLocalRepaintProjectionSource(undefined);
+          sceneState.setPaintTool('none');
+          sceneState.clearPaintMask();
+        }
+        setMenu(undefined);
+        setSelectedLayerIds([]);
+        setLastSelectedLayerId(undefined);
+        window.requestAnimationFrame(() => {
+          startTransition(() => deleteLayers(expandedIds));
+        });
+        return;
+      }
+      deleteLayers(ids);
+      setMenu(undefined);
+      setSelectedLayerIds([]);
+      setLastSelectedLayerId(undefined);
+    },
+    [blockMutation, captureHistory, deleteLayers, describeLayerSelection, layerIdSet, setLayerVisibility],
+  );
+
+  useEffect(() => {
+    const handleDeleteKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      if (selectedLayerIds.length === 0) return;
+      event.preventDefault();
+      deleteSelectedLayers(selectedLayerIds);
+    };
+    window.addEventListener('keydown', handleDeleteKey);
+    return () => window.removeEventListener('keydown', handleDeleteKey);
+  }, [deleteSelectedLayers, selectedLayerIds]);
+
+  function commitRename() {
+    if (!renameState) return;
+    const nextName = renameState.value.trim();
+    const layer = layers.find((item) => item.id === renameState.layerId);
+    if (!layer || !nextName || nextName === layer.name) {
+      setRenameState(undefined);
+      return;
+    }
+    captureHistory(`重命名图层：${layer.name} -> ${nextName}`);
+    renameLayer(renameState.layerId, nextName);
+    setRenameState(undefined);
+  }
+
+  function clearProjectedEraserMask(layer: Layer) {
+    if (blockMutation('清理蒙版')) return;
+    const latestLayer = useLayerStore.getState().layers.find((item) => item.id === layer.id);
+    if (!latestLayer || !hasClearableProjectedEraserMask(latestLayer)) return;
+    captureHistory(`清理橡皮蒙版：${latestLayer.name}`);
+    // Stop the live multiplier and any deferred high-resolution seam pass
+    // before removing store ownership; otherwise a late eraser task can
+    // republish the just-cleared mask.
+    window.dispatchEvent(
+      new CustomEvent('liclick:clear-projected-eraser-mask', {
+        detail: { layerId: latestLayer.id },
+      }),
+    );
+    const sceneState = useSceneStore.getState();
+    if (useLayerStore.getState().activeProjectedLayerId === latestLayer.id) {
+      sceneState.setPaintTool('none');
+    }
+    updateLayer(latestLayer.id, {
+      maskUrl: undefined,
+      maskSpace: undefined,
+      eraserAlgorithmVersion: undefined,
+      contentRevision: (latestLayer.contentRevision ?? 0) + 1,
+      isBaked: false,
+      needsRebake: true,
+    });
+    pushToast({
+      tone: 'success',
+      title: t('eraserMaskCleared'),
+      description: t('eraserMaskClearedHelp'),
+      dedupeKey: `eraser-mask-cleared:${latestLayer.id}`,
+    });
+  }
+
+  function selectLayer(layerId: string, event: React.MouseEvent<HTMLDivElement>) {
+    setActiveLayer(layerId);
+    setLastSelectedLayerId(layerId);
+
+    if (event.shiftKey && lastSelectedLayerId) {
+      const start = layerIds.indexOf(lastSelectedLayerId);
+      const end = layerIds.indexOf(layerId);
+      if (start >= 0 && end >= 0) {
+        const [from, to] = start < end ? [start, end] : [end, start];
+        setSelectedLayerIds(layerIds.slice(from, to + 1));
+        return;
+      }
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedLayerIds((ids) =>
+        ids.includes(layerId) ? ids.filter((id) => id !== layerId) : [...ids, layerId],
+      );
+      return;
+    }
+
+    setSelectedLayerIds([layerId]);
+  }
+
+  function getAffectedLayerIds(layerId: string) {
+    const selectedIds =
+      selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+    return expandLocalRepaintVisibilityIds(layers, selectedIds);
+  }
+
+  function beginVisibilityDrag(layer: Layer) {
+    const nextVisible = !layer.visible;
+    const ids = getAffectedLayerIds(layer.id);
+    // The renderer's Zustand subscriber applies the visibility uniform
+    // synchronously. React can reconcile the large layer/editor tree at
+    // transition priority so pointer-driven viewport frames stay responsive.
+    startTransition(() => setLayerVisibility(ids, nextVisible));
+    setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
+  }
+
+  function continueVisibilityDrag(layerId: string) {
+    if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
+    const affectedIds = expandLocalRepaintVisibilityIds(layers, [layerId]);
+    affectedIds.forEach((id) => visibilityDrag.touched.add(id));
+    startTransition(() => setLayerVisibility(affectedIds, visibilityDrag.visible));
+    setVisibilityDrag({
+      visible: visibilityDrag.visible,
+      touched: new Set(visibilityDrag.touched),
+    });
+  }
+
+  function beginOpacityDrag(layer: Layer, event: React.PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    event.preventDefault();
+    setActiveLayer(layer.id);
+    setOpacityDrag({
+      layerId: layer.id,
+      startY: event.clientY,
+      startOpacity: layer.opacity,
+      value: layer.opacity,
+      moved: false,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
+  function openLayerMenuAt(layerId: string, x: number, y: number) {
+    const menuWidth = 224;
+    const menuHeight = Math.min(420, window.innerHeight - 24);
+    setMenu({
+      layerId,
+      x: Math.min(Math.max(8, x), window.innerWidth - menuWidth - 8),
+      y: Math.min(Math.max(8, y), window.innerHeight - menuHeight - 8),
+    });
+  }
+
+  function openLayerMenuFromButton(layerId: string, rect: DOMRect) {
+    openLayerMenuAt(layerId, rect.right - 224, rect.bottom + 6);
+  }
+
+  function openLayerMenuFromContext(layer: Layer, event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedLayerIdSet.has(layer.id)) {
+      setSelectedLayerIds([layer.id]);
+      setActiveLayer(layer.id);
+      setLastSelectedLayerId(layer.id);
+    }
+    openLayerMenuAt(layer.id, event.clientX, event.clientY);
+  }
+
+  function beginReplaceLayerImage(layer: Layer) {
+    replaceImageLayerIdRef.current = layer.id;
+    replaceImageInputRef.current?.click();
+  }
+
+  return (
+    <div className="space-y-0">
+      <input
+        ref={replaceImageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          const layerId = replaceImageLayerIdRef.current;
+          event.currentTarget.value = '';
+          replaceImageLayerIdRef.current = undefined;
+          if (!file || !layerId) return;
+          const layer = layerById.get(layerId);
+          if (layer) onLayerImageReplace?.(layer, file);
+        }}
+      />
+      <div className="max-h-[min(72vh,820px)] min-h-[260px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
+        {visibleLayers.map((layer) => (
+          <LayerRow
+            key={layer.id}
+            layer={layer}
+            active={layer.id === activeProjectedLayerId}
+            selected={selectedLayerIdSet.has(layer.id)}
+            dragging={draggingLayerId === layer.id}
+            onSelect={(event) => selectLayer(layer.id, event)}
+            onDoubleClick={() => {
+              setActiveLayer(layer.id);
+              setSelectedLayerIds([layer.id]);
+              setLastSelectedLayerId(layer.id);
+              onLayerDoubleClick?.(layer);
+            }}
+            onVisibilityPointerDown={(event) => {
+              if (event.button !== 0) return;
+              event.stopPropagation();
+              event.preventDefault();
+              beginVisibilityDrag(layer);
+            }}
+            onVisibilityPointerEnter={() => continueVisibilityDrag(layer.id)}
+            onOpacityPointerDown={(event) => beginOpacityDrag(layer, event)}
+            onBlendClick={(event) => {
+              event.stopPropagation();
+              captureHistory(`切换图层混合模式：${layer.name}`);
+              setBlendMode(layer.id, layer.blendMode === 'overlay' ? 'normal' : 'overlay');
+            }}
+            onAdjustClick={(event) => {
+              event.stopPropagation();
+              setActiveLayer(layer.id);
+            }}
+            onMenu={(event) => {
+              event.stopPropagation();
+              openLayerMenuFromButton(layer.id, event.currentTarget.getBoundingClientRect());
+            }}
+            onContextMenu={(event) => openLayerMenuFromContext(layer, event)}
+            onDragStart={() => setDraggingLayerId(layer.id)}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'move';
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (draggingLayerId) {
+                if (blockMutation('移动图层')) {
+                  setDraggingLayerId(undefined);
+                  return;
+                }
+                const rect = event.currentTarget.getBoundingClientRect();
+                const placement = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+                captureHistory(`移动图层：${describeLayerSelection([draggingLayerId])}`);
+                reorderLayer(draggingLayerId, layer.id, placement);
+              }
+              setDraggingLayerId(undefined);
+            }}
+            onDragEnd={() => setDraggingLayerId(undefined)}
+          />
+        ))}
+        {visibleLayers.length === 0 && (
+          <div className="min-h-[68px] border-t border-dashed border-white/35" aria-hidden="true" />
+        )}
+      </div>
+
+      {menu &&
+        createPortal(
+          <LayerMenu
+            x={menu.x}
+            y={menu.y}
+            layer={layerById.get(menu.layerId)}
+            selectedLayers={layers.filter((layer) =>
+              (selectedLayerIdSet.has(menu.layerId)
+                ? selectedLayerIdSet
+                : new Set([menu.layerId])
+              ).has(layer.id),
+            )}
+            onClose={() => setMenu(undefined)}
+            onView={() => {
+              setActiveLayer(menu.layerId);
+              setPreviewLayerId(menu.layerId);
+            }}
+            onDuplicate={() => {
+              if (blockMutation('复制图层')) return;
+              captureHistory(`复制图层：${describeLayerSelection([menu.layerId])}`);
+              duplicateLayer(menu.layerId);
+            }}
+            onCreateEditableUvCopy={(layer) => {
+              if (blockMutation('创建可编辑 UV 副本')) return;
+              captureHistory(`创建可编辑 UV 副本：${layer.name}`);
+              const editableLayer = duplicateContentAwareLayerAsEditableUv(layer.id);
+              if (!editableLayer) return;
+              setSelectedLayerIds([editableLayer.id]);
+              setLastSelectedLayerId(editableLayer.id);
+              pushToast({
+                tone: 'success',
+                title: t('contentAwareEditableCopyDone'),
+                description: '原内容填补底图保持不变；橡皮只会编辑新建副本。',
+                dedupeKey: `content-aware-editable-copy:${layer.id}`,
+              });
+            }}
+            onImageEdit={(layer) => {
+              if (blockMutation('编辑图层图片')) return;
+              onLayerImageEdit?.(layer);
+            }}
+            imageEditAvailable={Boolean(onLayerImageEdit)}
+            onMergeSelectedToUvLayer={(layerIds) => {
+              if (blockMutation('合并图层')) return;
+              onMergeSelectedToUvLayer?.(layerIds);
+            }}
+            onMergeIntoSelectedBlankUvLayer={(layerIds, blankUvLayerId) => {
+              if (blockMutation('合并图层')) return;
+              onMergeIntoSelectedBlankUvLayer?.(layerIds, blankUvLayerId);
+            }}
+            onDownloadImage={(layer) => {
+              void downloadImageAsset(layer.imageUrl, `liclick_layer_${layer.name || layer.id}`);
+            }}
+            onClearEraserMask={clearProjectedEraserMask}
+            onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
+            onDelete={() => {
+              const ids = selectedLayerIds.includes(menu.layerId)
+                ? selectedLayerIds
+                : [menu.layerId];
+              deleteSelectedLayers(ids);
+            }}
+          />,
+          document.body,
+        )}
+
+      {previewLayer &&
+        createPortal(
+          <button
+            type="button"
+            className={cn(
+              'fixed inset-0 z-[92] grid place-items-center bg-black/34 p-4 backdrop-blur-[1px]',
+              previewLayerId ? 'cursor-default' : 'pointer-events-none',
+            )}
+            onClick={() => setPreviewLayerId(undefined)}
+            aria-label={t('view')}
+          >
+            <LayerPreviewImage layer={previewLayer} />
+          </button>,
+          document.body,
+        )}
+
+      {renameState &&
+        createPortal(
+          <div className="fixed inset-0 z-[95] grid place-items-center bg-black/48 px-4 backdrop-blur-sm">
+            <form
+              className="w-full max-w-sm rounded-lg border border-white/16 bg-[#17171f] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
+              onSubmit={(event) => {
+                event.preventDefault();
+                commitRename();
+              }}
+            >
+              <div className="mb-3 text-sm font-semibold text-white">{t('renameLayer')}</div>
+              <input
+                autoFocus
+                value={renameState.value}
+                onChange={(event) => setRenameState({ ...renameState, value: event.target.value })}
+                className="h-10 w-full rounded-md border border-white/30 bg-black/38 px-3 text-sm text-white outline-none focus:border-liclick-pink"
+              />
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="h-9 rounded-md px-3 text-sm font-semibold text-white/68 hover:bg-white/8"
+                  onClick={() => setRenameState(undefined)}
+                >
+                  {t('cancel')}
+                </button>
+                <button
+                  type="submit"
+                  className="h-9 rounded-md bg-white px-3 text-sm font-semibold text-black hover:bg-white/90"
+                >
+                  {t('rename')}
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body,
+        )}
+
+      {opacityDrag &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[96] rounded-md border border-white/16 bg-black/88 px-2.5 py-1.5 text-xs font-semibold text-white shadow-[0_10px_28px_rgba(0,0,0,0.48)]"
+            style={{ left: opacityDrag.x + 12, top: opacityDrag.y - 36 }}
+          >
+            Layer opacity {Math.round(opacityDrag.value * 100)}%
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
+type LayersPanelActionsProps = {
+  onContentAwareRepair?: () => void;
+  onMergeVisibleProjectedToUvLayer?: (layerIds: string[]) => void;
+  adjustmentsOpen?: boolean;
+  onToggleAdjustments?: () => void;
+  mutationLocked?: boolean;
+  onMutationLocked?: (action?: string) => void;
+};
+
+export function LayersPanelActions({
+  onContentAwareRepair,
+  onMergeVisibleProjectedToUvLayer,
+  adjustmentsOpen = false,
+  onToggleAdjustments,
+  mutationLocked = false,
+  onMutationLocked,
+}: LayersPanelActionsProps = {}) {
+  const t = useT();
+  const layers = useInteractionDeferredLayers();
+  const addEmptyLayer = useLayerStore((state) => state.addEmptyLayer);
+  const importedModel = useSceneStore((state) => state.importedModel);
+  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const deleteLayers = useLayerStore((state) => state.deleteLayers);
+  const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
+  const captureHistory = useEditorHistoryStore((state) => state.capture);
+  const pushToast = useToastStore((state) => state.pushToast);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+
+  function blockMutation(action: string) {
+    if (!mutationLocked) return false;
+    setClearConfirmOpen(false);
+    onMutationLocked?.(action);
+    return true;
+  }
+
+  function handleAddLayer() {
+    if (blockMutation('新建图层')) return;
+    captureHistory('创建空图层');
+    addEmptyLayer();
+  }
+
+  function handleFitCamera() {
+    if (!importedModel) {
+      pushToast({ tone: 'warning', title: t('importModelFirst') });
+      return;
+    }
+    fitCameraToImportedModel();
+  }
+
+  const visibleProjectedLayerIds = layers
+    .filter(
+      (layer) =>
+        layer.type === 'projected' &&
+        layer.visible &&
+        layer.imageUrl &&
+        (!layer.objectId || layer.objectId === selectedObjectId),
+    )
+    .map((layer) => layer.id);
+
+  const clearableLayerIds = layers
+    .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
+    .map((layer) => layer.id);
+
+  function handleClearLayers() {
+    if (blockMutation('清空当前模型图层')) return;
+    const latestLayers = useLayerStore.getState().layers;
+    const currentLayerIds = latestLayers
+      .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
+      .map((layer) => layer.id);
+    if (currentLayerIds.length === 0) {
+      setClearConfirmOpen(false);
+      return;
+    }
+
+    const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, currentLayerIds);
+    const expandedIdSet = new Set(expandedIds);
+    captureHistory(`清空当前模型图层（${expandedIds.length} 个）`);
+    setLayerVisibility(expandedIds, false);
+
+    const sceneState = useSceneStore.getState();
+    const currentPreview = sceneState.localRepaintPreviewLayer;
+    const currentSource = sceneState.localRepaintProjectionSource;
+    if (
+      (currentPreview && expandedIdSet.has(currentPreview.id)) ||
+      (currentPreview?.replacementTargetLayerId &&
+        expandedIdSet.has(currentPreview.replacementTargetLayerId)) ||
+      (currentSource?.targetLayerId && expandedIdSet.has(currentSource.targetLayerId))
+    ) {
+      sceneState.setLocalRepaintPreviewLayer(undefined);
+      sceneState.setLocalRepaintProjectionSource(undefined);
+      sceneState.setPaintTool('none');
+      sceneState.clearPaintMask();
+    }
+
+    setClearConfirmOpen(false);
+    window.requestAnimationFrame(() => {
+      startTransition(() => deleteLayers(expandedIds));
+    });
+    pushToast({
+      tone: 'success',
+      title: '图层已清空',
+      description: '已清空当前模型的图层，可使用撤销恢复。',
+      dedupeKey: 'layers-cleared',
+    });
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-1.5">
+        <LayerHeaderButton
+          title="一键清空当前模型图层"
+          disabled={clearableLayerIds.length === 0}
+          onClick={() => {
+            if (blockMutation('清空当前模型图层')) return;
+            setClearConfirmOpen(true);
+          }}
+        >
+          <Trash2 className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton title={`${t('fitCamera')} (F)`} onClick={handleFitCamera}>
+          <Focus className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('contentAwareRepair')}
+          onClick={() => {
+            if (!onContentAwareRepair) {
+              pushToast({
+                tone: 'info',
+                title: t('localRepaint'),
+                description: t('localRepaintToolHelp'),
+                dedupeKey: 'layer-content-aware-repair',
+              });
+              return;
+            }
+            onContentAwareRepair();
+          }}
+        >
+          <PaintBucket className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('layerAdjustments')}
+          active={adjustmentsOpen}
+          disabled={!activeProjectedLayerId || !onToggleAdjustments}
+          onClick={onToggleAdjustments}
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton title={`${t('addLayer')} (Ctrl+Shift+N)`} onClick={handleAddLayer}>
+          <Plus className="h-4 w-4" />
+        </LayerHeaderButton>
+        <LayerHeaderButton
+          title={t('mergeVisibleProjectedLayersToUvLayer')}
+          disabled={visibleProjectedLayerIds.length < 1 || !onMergeVisibleProjectedToUvLayer}
+          onClick={() => {
+            if (blockMutation('合并图层')) return;
+            onMergeVisibleProjectedToUvLayer?.(visibleProjectedLayerIds);
+          }}
+        >
+          <Scissors className="h-4 w-4" />
+        </LayerHeaderButton>
+      </div>
+
+      {clearConfirmOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[98] grid place-items-center bg-black/58 px-4 backdrop-blur-sm"
+            onPointerDown={() => setClearConfirmOpen(false)}
+          >
+            <section
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="clear-layers-title"
+              aria-describedby="clear-layers-description"
+              className="w-full max-w-md overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.62)]"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 border-b border-white/12 px-4 py-4">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-rose-300/20 bg-rose-500/12 text-rose-200">
+                  <Trash2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="clear-layers-title" className="text-base font-semibold text-white">
+                    清空当前模型图层
+                  </h2>
+                  <div className="text-xs text-white/48">共 {clearableLayerIds.length} 个图层</div>
+                </div>
+              </div>
+              <div className="px-4 py-4">
+                <p id="clear-layers-description" className="text-sm leading-6 text-white/64">
+                  将删除当前模型的全部贴图和局部重绘图层。清空后可以使用撤销恢复。
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="h-9 rounded-md px-3 text-sm font-semibold text-white/72 transition hover:bg-white/10 hover:text-white"
+                    onClick={() => setClearConfirmOpen(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="h-9 rounded-md bg-rose-500 px-3 text-sm font-semibold text-white transition hover:bg-rose-400"
+                    onClick={handleClearLayers}
+                    autoFocus
+                  >
+                    全部清空
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function LayerRow({
+  layer,
+  active,
+  selected,
+  dragging,
+  onSelect,
+  onDoubleClick,
+  onVisibilityPointerDown,
+  onVisibilityPointerEnter,
+  onOpacityPointerDown,
+  onBlendClick,
+  onAdjustClick,
+  onMenu,
+  onContextMenu,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+}: {
+  layer: Layer;
+  active: boolean;
+  selected: boolean;
+  dragging: boolean;
+  onSelect: MouseEventHandler<HTMLDivElement>;
+  onDoubleClick: () => void;
+  onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
+  onVisibilityPointerEnter: PointerEventHandler<HTMLButtonElement>;
+  onOpacityPointerDown: PointerEventHandler<HTMLButtonElement>;
+  onBlendClick: MouseEventHandler<HTMLButtonElement>;
+  onAdjustClick: MouseEventHandler<HTMLButtonElement>;
+  onMenu: MouseEventHandler<HTMLButtonElement>;
+  onContextMenu: MouseEventHandler<HTMLDivElement>;
+  onDragStart: () => void;
+  onDragOver: DragEventHandler<HTMLDivElement>;
+  onDrop: DragEventHandler<HTMLDivElement>;
+  onDragEnd: () => void;
+}) {
+  const hasMask = Boolean(layer.maskUrl);
+  const modeLabel =
+    layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
+  const opacityLabel = `Layer opacity ${Math.round(layer.opacity * 100)}%. Drag up or down to adjust.`;
+
+  return (
+    <div
+      role="button"
+      data-layer-id={layer.id}
+      data-layer-type={layer.type}
+      data-layer-role={layer.role ?? ''}
+      tabIndex={0}
+      draggable
+      onClick={onSelect}
+      onContextMenu={onContextMenu}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        onDoubleClick();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect(event as unknown as React.MouseEvent<HTMLDivElement>);
+        }
+      }}
+      onDragStart={(event) => {
+        event.dataTransfer.setData('application/liclick-layer-id', layer.id);
+        event.dataTransfer.effectAllowed = 'move';
+        onDragStart();
+      }}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      className={cn(
+        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition [contain-intrinsic-size:58px] [content-visibility:auto] hover:bg-white/[0.06]',
+        selected && 'bg-white/[0.22]',
+        active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
+        dragging && 'opacity-45',
+      )}
+    >
+      <button
+        type="button"
+        onPointerDown={onVisibilityPointerDown}
+        onPointerEnter={onVisibilityPointerEnter}
+        onClick={(event) => {
+          // pointerdown owns the visibility gesture. Do not let the following
+          // click select the row and reactivate the layer that was just hidden.
+          event.stopPropagation();
+          event.preventDefault();
+        }}
+        data-layer-visibility-id={layer.id}
+        className="grid h-8 w-8 shrink-0 place-items-center rounded text-white transition hover:bg-white/10"
+        title="Toggle visibility"
+        aria-label="Toggle visibility"
+      >
+        {layer.visible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-white/45" />}
+      </button>
+      <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-sm" style={checkerStyle}>
+        <LayerThumbnail layer={layer} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-base font-semibold leading-5 text-white">{layer.name}</div>
+        <div className="mt-1 flex items-center gap-3 text-white">
+          <SmallLayerToggle
+            active={layer.opacity > 0.01}
+            label={opacityLabel}
+            onPointerDown={onOpacityPointerDown}
+            icon={<LayerOpacityGlyph opacity={layer.opacity} />}
+          />
+          <SmallLayerToggle
+            active={layer.blendMode === 'overlay'}
+            label={modeLabel}
+            onClick={onBlendClick}
+            icon={layer.blendMode === 'overlay' ? <LayerOverlayGlyph /> : <LayerBlendGlyph />}
+          />
+          {hasMask ? (
+            <SmallLayerToggle
+              active
+              label="Has mask"
+              onClick={onAdjustClick}
+              icon={<LayerMaskGlyph />}
+            />
+          ) : null}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onMenu}
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-white transition hover:bg-white/18"
+        aria-label="Layer actions"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function LayerOpacityGlyph({ opacity }: { opacity: number }) {
+  const clampedOpacity = Math.max(0, Math.min(1, opacity));
+  if (clampedOpacity <= 0.01) {
+    return <span className="h-3.5 w-3.5 rounded-full border-2 border-current" />;
+  }
+  return (
+    <span
+      className="h-3.5 w-3.5 rounded-full border border-current bg-current"
+      style={{ opacity: 0.32 + clampedOpacity * 0.68 }}
+    />
+  );
+}
+
+function LayerBlendGlyph() {
+  return (
+    <span className="relative h-3.5 w-4">
+      <span className="absolute left-0 top-1 h-2.5 w-2.5 rounded-full border-2 border-current" />
+      <span className="absolute right-0 top-1 h-2.5 w-2.5 rounded-full border-2 border-current bg-black/40" />
+    </span>
+  );
+}
+
+function LayerOverlayGlyph() {
+  return (
+    <span className="relative h-3.5 w-4">
+      <span className="absolute left-0.5 top-1.5 h-2.5 w-2.5 rounded-[2px] border-2 border-current" />
+      <span className="absolute right-0.5 top-0 h-2.5 w-2.5 rounded-[2px] border-2 border-current bg-current/30" />
+    </span>
+  );
+}
+
+function LayerMaskGlyph() {
+  return (
+    <span className="grid h-3.5 w-3.5 place-items-center rounded-[2px] border border-current">
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+    </span>
+  );
+}
+
+function SmallLayerToggle({
+  active,
+  label,
+  icon,
+  onClick,
+  onPointerDown,
+}: {
+  active: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick?: MouseEventHandler<HTMLButtonElement>;
+  onPointerDown?: PointerEventHandler<HTMLButtonElement>;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onPointerDown={onPointerDown}
+      title={label}
+      aria-label={label}
+      className={cn(
+        'grid h-5 w-5 place-items-center rounded-full text-white transition hover:bg-white/18',
+        active ? 'bg-white/22 text-white' : 'text-white/95',
+      )}
+    >
+      {icon}
+    </button>
+  );
+}
+
+function LayerMenu({
+  x,
+  y,
+  layer,
+  selectedLayers,
+  onClose,
+  onView,
+  onDuplicate,
+  onCreateEditableUvCopy,
+  onImageEdit,
+  imageEditAvailable,
+  onMergeSelectedToUvLayer,
+  onMergeIntoSelectedBlankUvLayer,
+  onDownloadImage,
+  onClearEraserMask,
+  onRename,
+  onDelete,
+}: {
+  x: number;
+  y: number;
+  layer?: Layer;
+  selectedLayers: Layer[];
+  onClose: () => void;
+  onView: () => void;
+  onDuplicate: () => void;
+  onCreateEditableUvCopy: (layer: Layer) => void;
+  onImageEdit: (layer: Layer) => void;
+  imageEditAvailable: boolean;
+  onMergeSelectedToUvLayer: (layerIds: string[]) => void;
+  onMergeIntoSelectedBlankUvLayer: (layerIds: string[], blankUvLayerId: string) => void;
+  onDownloadImage: (layer: Layer) => void;
+  onClearEraserMask: (layer: Layer) => void;
+  onRename: (layer: Layer) => void;
+  onDelete: () => void;
+}) {
+  const t = useT();
+  if (!layer) return null;
+  const selectedProjectedLayers = selectedLayers.filter((item) => item.type === 'projected');
+  const selectedMergeSourceLayers = selectedLayers.filter(
+    (item) => item.type === 'projected' || isFlattenableUvMergeSource(item),
+  );
+  const selectedBlankUvLayer = selectedLayers.find((item) => item.type === 'uv' && !item.imageUrl);
+  const isMulti = selectedLayers.length > 1;
+  const eraserPolicy = getEraserTargetPolicy(layer);
+
+  function run(action: () => void) {
+    action();
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed z-[90] max-h-[min(420px,calc(100vh-24px))] w-56 overflow-y-auto rounded-md border border-white/18 bg-[#1f1f20] p-2 text-sm text-white shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
+      style={{ left: x, top: y }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <div className="px-2 pb-2 text-white/86">{t('thisLayer')}</div>
+      <div className="mb-1 h-px bg-white/45" />
+      {isMulti ? (
+        <>
+          <MenuButton
+            onClick={() =>
+              run(() => onMergeSelectedToUvLayer(selectedMergeSourceLayers.map((item) => item.id)))
+            }
+            icon={<Scissors className="h-4 w-4" />}
+            disabled={selectedProjectedLayers.length === 0}
+          >
+            {t('mergeSelectedLayersToUvLayer')}
+          </MenuButton>
+          <MenuButton
+            onClick={() =>
+              selectedBlankUvLayer &&
+              run(() =>
+                onMergeIntoSelectedBlankUvLayer(
+                  selectedMergeSourceLayers.map((item) => item.id),
+                  selectedBlankUvLayer.id,
+                ),
+              )
+            }
+            icon={<Scissors className="h-4 w-4" />}
+            disabled={!selectedBlankUvLayer || selectedProjectedLayers.length === 0}
+          >
+            {t('mergeIntoSelectedBlankUvLayer')}
+          </MenuButton>
+          <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
+            {t('deleteSelectedLayers')}
+          </MenuButton>
+        </>
+      ) : (
+        <>
+          <MenuButton onClick={() => run(onView)} icon={<Eye className="h-4 w-4" />}>
+            {t('view')}
+          </MenuButton>
+          {(layer.type === 'projected' || layer.type === 'uv') && (
+            imageEditAvailable ? (
+              <MenuButton
+                onClick={() => run(() => onImageEdit(layer))}
+                icon={<PencilLine className="h-4 w-4" />}
+                disabled={!layer.imageUrl}
+              >
+                {t('imageEditLayerMenu')}
+              </MenuButton>
+            ) : null
+          )}
+          <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
+            {t('duplicate')}
+            <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">CTRL D</span>
+          </MenuButton>
+          {eraserPolicy.requiresEditableUvCopy && (
+            <MenuButton
+              onClick={() => run(() => onCreateEditableUvCopy(layer))}
+              icon={<Eraser className="h-4 w-4" />}
+            >
+              {t('contentAwareEditableCopy')}
+            </MenuButton>
+          )}
+          {layer.imageUrl && (
+            <MenuButton
+              onClick={() => run(() => onDownloadImage(layer))}
+              icon={<Download className="h-4 w-4" />}
+            >
+              {t('downloadImage')}
+            </MenuButton>
+          )}
+          <MenuButton
+            onClick={() => run(() => onClearEraserMask(layer))}
+            icon={<Eraser className="h-4 w-4" />}
+            disabled={!hasClearableProjectedEraserMask(layer)}
+          >
+            {t('clearEraserMask')}
+          </MenuButton>
+          <MenuButton
+            onClick={() => run(() => onRename(layer))}
+            icon={<TextCursorInput className="h-4 w-4" />}
+          >
+            {t('rename')}
+          </MenuButton>
+          <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
+            {t('delete')}
+          </MenuButton>
+        </>
+      )}
+    </div>
+  );
+}
+
+function MenuButton({
+  children,
+  icon,
+  onClick,
+  disabled,
+}: {
+  children: ReactNode;
+  icon?: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex h-9 w-full items-center gap-2 rounded px-2 text-left font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function LayerHeaderButton({
+  title,
+  children,
+  onClick,
+  disabled,
+  active,
+}: {
+  title: string;
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  active?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className={cn(
+        'grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35',
+        active && 'bg-liclick-pink/18 text-liclick-pink',
+      )}
+    >
+      {children}
+    </button>
+  );
+}

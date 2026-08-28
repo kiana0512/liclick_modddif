@@ -1,0 +1,761 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_NAME="liclick-3d-texture"
+APP_USER="${APP_USER:-liclick}"
+APP_DIR="${APP_DIR:-/opt/${APP_NAME}}"
+WORKSPACE_DIR="${WORKSPACE_DIR:-/var/lib/${APP_NAME}/workspace}"
+ENV_FILE="${ENV_FILE:-/etc/${APP_NAME}.env}"
+SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
+NGINX_SITE="/etc/nginx/sites-available/${APP_NAME}"
+NGINX_LINK="/etc/nginx/sites-enabled/${APP_NAME}"
+SERVER_PORT="${SERVER_PORT:-4517}"
+MOUNT_MODE="${MOUNT_MODE:-nginx}"
+if [[ "${MOUNT_MODE}" == "comfyui" ]]; then
+  PUBLIC_PORT="${PUBLIC_PORT:-46001}"
+else
+  PUBLIC_PORT="${PUBLIC_PORT:-46777}"
+fi
+PUBLIC_PATH="${PUBLIC_PATH:-/liclick/texture}"
+PUBLIC_HOST="${PUBLIC_HOST:-}"
+NODE_MAJOR="${NODE_MAJOR:-22}"
+PUBLIC_URL="${PUBLIC_URL:-}"
+COMFYUI_CUSTOM_NODES_DIR="${COMFYUI_CUSTOM_NODES_DIR:-/data/ai_art_comfyui/apps/ComfyUI/custom_nodes}"
+COMFYUI_RESTART_COMMAND="${COMFYUI_RESTART_COMMAND:-}"
+SOURCE_DIR="${SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+GIT_REPO="${GIT_REPO:-}"
+GIT_REF="${GIT_REF:-main}"
+GIT_REMOTE="${GIT_REMOTE:-origin}"
+UPDATE_FROM_GIT="${UPDATE_FROM_GIT:-0}"
+INSTALL_ATLAS="${INSTALL_ATLAS:-0}"
+ATLAS_NPM_REGISTRY="${ATLAS_NPM_REGISTRY:-https://registry-cnpm.lilithgame.com/}"
+ATLAS_LOGIN_MODE="${ATLAS_LOGIN_MODE:-service-token}"
+ATLAS_TOKEN_FILE="${ATLAS_TOKEN_FILE:-}"
+LICLICK_ENABLE_ATLAS_LOCAL_LOGIN="false"
+LICLICK_SERVE_WEB="${LICLICK_SERVE_WEB:-false}"
+LICLICK_WEB_DIST_DIR="${LICLICK_WEB_DIST_DIR:-${APP_DIR}/apps/web/dist}"
+FEISHU_OAUTH_CLIENT_ID="${FEISHU_OAUTH_CLIENT_ID:-}"
+FEISHU_OAUTH_CLIENT_SECRET="${FEISHU_OAUTH_CLIENT_SECRET:-}"
+FEISHU_OAUTH_AUTHORIZE_URL="${FEISHU_OAUTH_AUTHORIZE_URL:-https://accounts.feishu.cn/open-apis/authen/v1/authorize}"
+FEISHU_OAUTH_TOKEN_URL="${FEISHU_OAUTH_TOKEN_URL:-https://open.feishu.cn/open-apis/authen/v2/oauth/token}"
+FEISHU_OAUTH_USERINFO_URL="${FEISHU_OAUTH_USERINFO_URL:-https://open.feishu.cn/open-apis/authen/v1/user_info}"
+FEISHU_OAUTH_REDIRECT_URL="${FEISHU_OAUTH_REDIRECT_URL:-}"
+FEISHU_OAUTH_SCOPE="${FEISHU_OAUTH_SCOPE:-}"
+FEISHU_OAUTH_TOKEN_AUTH_METHOD="${FEISHU_OAUTH_TOKEN_AUTH_METHOD:-client_secret_post}"
+FEISHU_OAUTH_TOKEN_REQUEST_FORMAT="${FEISHU_OAUTH_TOKEN_REQUEST_FORMAT:-json}"
+FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS="${FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS:-}"
+FEISHU_DIRECTORY_ENRICHMENT_ENABLED="${FEISHU_DIRECTORY_ENRICHMENT_ENABLED:-}"
+FEISHU_TENANT_TOKEN_URL="${FEISHU_TENANT_TOKEN_URL:-}"
+FEISHU_CONTACT_BASE_URL="${FEISHU_CONTACT_BASE_URL:-}"
+FEISHU_BITABLE_SYNC_ENABLED="${FEISHU_BITABLE_SYNC_ENABLED:-}"
+FEISHU_BITABLE_BASE_URL="${FEISHU_BITABLE_BASE_URL:-}"
+FEISHU_BITABLE_APP_TOKEN="${FEISHU_BITABLE_APP_TOKEN:-}"
+FEISHU_BITABLE_TABLE_ID="${FEISHU_BITABLE_TABLE_ID:-}"
+FEISHU_BITABLE_SYNC_INTERVAL_MS="${FEISHU_BITABLE_SYNC_INTERVAL_MS:-}"
+IDAAS_JWT_SSO_ENABLED="${IDAAS_JWT_SSO_ENABLED:-false}"
+IDAAS_JWT_SSO_URL="${IDAAS_JWT_SSO_URL:-https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62}"
+FEISHU_OAUTH_PUBLIC_CLIENT="${FEISHU_OAUTH_PUBLIC_CLIENT:-false}"
+IDAAS_ENTERPRISE_ID="${IDAAS_ENTERPRISE_ID:-lilith}"
+IDAAS_SP_SERVICE_URL="${IDAAS_SP_SERVICE_URL:-}"
+COMFYUI_BASE_URL="${COMFYUI_BASE_URL:-http://127.0.0.1:8188}"
+COMFYUI_TEXTURE_WORKFLOW_PATH="${COMFYUI_TEXTURE_WORKFLOW_PATH:-}"
+LICLICK_MODELVIEW_INPAINT_URL="${LICLICK_MODELVIEW_INPAINT_URL:-https://10.3.34.11/api/v1/services/modelview-inpaint}"
+LICLICK_MODELVIEW_INPAINT_CA_PATH="${LICLICK_MODELVIEW_INPAINT_CA_PATH:-}"
+LICLICK_MODELVIEW_INPAINT_API_KEY="${LICLICK_MODELVIEW_INPAINT_API_KEY:-}"
+LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS="${LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS:-1900000}"
+LICLICK_SUBSTANCE_BAKER_BASE_URL="${LICLICK_SUBSTANCE_BAKER_BASE_URL:-https://10.3.34.11}"
+LICLICK_SUBSTANCE_BAKER_CA_PATH="${LICLICK_SUBSTANCE_BAKER_CA_PATH:-}"
+LICLICK_SUBSTANCE_BAKER_API_KEY="${LICLICK_SUBSTANCE_BAKER_API_KEY:-}"
+LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB="${LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB:-32768}"
+ASSET_SERVICE_BASE_URL="${ASSET_SERVICE_BASE_URL:-https://10.3.34.11}"
+ASSET_SERVICE_API_TOKEN="${ASSET_SERVICE_API_TOKEN:-${ASSET_SERVICE_API_KEY:-}}"
+ASSET_SERVICE_CA_CERT_PATH="${ASSET_SERVICE_CA_CERT_PATH:-}"
+ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED="${ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED:-true}"
+ASSET_SERVICE_REQUEST_TIMEOUT_MS="${ASSET_SERVICE_REQUEST_TIMEOUT_MS:-120000}"
+ASSET_SERVICE_MAX_UPLOAD_BYTES="${ASSET_SERVICE_MAX_UPLOAD_BYTES:-2147483648}"
+ASSET_SERVICE_MAX_ARTIFACT_BYTES="${ASSET_SERVICE_MAX_ARTIFACT_BYTES:-1073741824}"
+BLENDER_EXECUTABLE_PATH="${BLENDER_EXECUTABLE_PATH:-}"
+RETOPOLOGY_PREPARE_TIMEOUT_MS="${RETOPOLOGY_PREPARE_TIMEOUT_MS:-600000}"
+RETOPOLOGY_PREPARE_MAX_FILE_BYTES="${RETOPOLOGY_PREPARE_MAX_FILE_BYTES:-1073741824}"
+RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES="${RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES:-2147483648}"
+LICLICK_AUTO_KILL_PORTS="${LICLICK_AUTO_KILL_PORTS:-1}"
+
+resolve_git_sha() {
+  if [[ -n "${LICLICK_GIT_SHA:-}" ]]; then
+    printf '%s' "${LICLICK_GIT_SHA}"
+    return
+  fi
+  git -C "${SOURCE_DIR}" rev-parse HEAD 2>/dev/null || printf '%s' development
+}
+
+LICLICK_GIT_SHA="$(resolve_git_sha)"
+LICLICK_RELEASE_VERSION="${LICLICK_RELEASE_VERSION:-$(
+  node -e "try{process.stdout.write(require('${SOURCE_DIR}/package.json').version)}catch{process.stdout.write('0.0.0')}"
+)}"
+LICLICK_RELEASE_ID="${LICLICK_RELEASE_ID:-${APP_NAME}-${LICLICK_GIT_SHA:0:8}}"
+LICLICK_BUILD_TIME="${LICLICK_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Please run as root: sudo PUBLIC_URL=https://your-domain.example bash scripts/setup-linux-a100.sh"
+  exit 1
+fi
+
+if [[ -z "${PUBLIC_URL}" ]]; then
+  DETECTED_PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  PUBLIC_HOST="${PUBLIC_HOST:-${DETECTED_PUBLIC_HOST:-127.0.0.1}}"
+  PUBLIC_URL="http://${PUBLIC_HOST}:${PUBLIC_PORT}${PUBLIC_PATH}"
+fi
+
+if [[ -z "${ATLAS_TOKEN_FILE}" ]]; then
+  ATLAS_TOKEN_FILE="${SOURCE_DIR}/secrets/.atlas-ai-gateway-oauth.json"
+fi
+
+PUBLIC_HOST_FROM_URL="$(printf '%s' "${PUBLIC_URL}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*$#\1#')"
+if [[ -z "${PUBLIC_HOST}" ]]; then
+  PUBLIC_HOST="${PUBLIC_HOST_FROM_URL}"
+fi
+
+URL_PATH="$(printf '%s' "${PUBLIC_URL}" | sed -E 's#^[a-zA-Z]+://[^/]*##')"
+if [[ -n "${URL_PATH}" && "${URL_PATH}" != "/" ]]; then
+  PUBLIC_PATH="${URL_PATH%/}"
+fi
+PUBLIC_PATH="/$(printf '%s' "${PUBLIC_PATH}" | sed -E 's#^/+##; s#/+$##')"
+if [[ "${PUBLIC_PATH}" == "/" ]]; then
+  PUBLIC_PATH=""
+fi
+FEISHU_OAUTH_REDIRECT_URL="${FEISHU_OAUTH_REDIRECT_URL:-${PUBLIC_URL%/}/api/auth/feishu/callback}"
+
+case "${PUBLIC_URL}" in
+  https://*) SESSION_COOKIE_SECURE="true" ;;
+  *) SESSION_COOKIE_SECURE="false" ;;
+esac
+
+echo "==> Installing OS packages"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  ca-certificates \
+  curl \
+  gnupg \
+  lsof \
+  rsync \
+  nginx \
+  openssl \
+  psmisc \
+  build-essential \
+  git
+
+port_pids() {
+  local port="$1"
+  {
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -nP -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true
+    fi
+    if command -v fuser >/dev/null 2>&1; then
+      fuser "${port}/tcp" 2>/dev/null || true
+    fi
+    if command -v ss >/dev/null 2>&1; then
+      ss -ltnp "sport = :${port}" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' || true
+    fi
+  } | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u || true
+}
+
+wait_for_port_release() {
+  local port="$1"
+  local attempt
+  for attempt in $(seq 1 30); do
+    if [[ -z "$(port_pids "${port}")" ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+ensure_port_free() {
+  local port="$1"
+  local label="$2"
+  local pids
+  pids="$(port_pids "${port}")"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  if [[ "${LICLICK_AUTO_KILL_PORTS}" != "1" ]]; then
+    echo "ERROR: ${label} port ${port} is occupied by PID(s): ${pids//$'\n'/, }"
+    echo "Run: sudo lsof -ti:${port} | xargs -r sudo kill -9"
+    exit 1
+  fi
+
+  echo "==> ${label} port ${port} is occupied by PID(s): ${pids//$'\n'/, }; stopping them"
+  while read -r pid; do
+    [[ -n "${pid}" ]] && kill "${pid}" 2>/dev/null || true
+  done <<< "${pids}"
+
+  if ! wait_for_port_release "${port}"; then
+    pids="$(port_pids "${port}")"
+    echo "==> ${label} port ${port} still busy; force stopping PID(s): ${pids//$'\n'/, }"
+    while read -r pid; do
+      [[ -n "${pid}" ]] && kill -9 "${pid}" 2>/dev/null || true
+    done <<< "${pids}"
+  fi
+
+  if ! wait_for_port_release "${port}"; then
+    pids="$(port_pids "${port}")"
+    echo "ERROR: Could not free ${label} port ${port}. Remaining PID(s): ${pids//$'\n'/, }"
+    echo "Run: sudo lsof -ti:${port} | xargs -r sudo kill -9"
+    exit 1
+  fi
+}
+
+if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'Number(process.versions.node.split(`.`)[0])')" -lt 20 ]]; then
+  echo "==> Installing Node.js ${NODE_MAJOR}.x"
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+fi
+
+echo "==> Enabling pnpm through corepack"
+corepack enable
+corepack prepare pnpm@9.15.4 --activate
+
+if [[ "${INSTALL_ATLAS}" == "1" ]]; then
+  echo "==> Installing Atlas Skillhub runtime"
+  ATLAS_EXISTING="$(npm root -g 2>/dev/null)/@lilith/atlas-skillhub/dist/index.js"
+  if [[ -f "${ATLAS_EXISTING}" ]]; then
+    echo "Atlas Skillhub already exists at ${ATLAS_EXISTING}"
+  else
+    if ! npm install -g @lilith/atlas-skillhub --registry="${ATLAS_NPM_REGISTRY}"; then
+      echo "WARN: @lilith/atlas-skillhub install failed from ${ATLAS_NPM_REGISTRY}."
+      echo "WARN: Deployment will continue. Configure ATLAS_SKILLHUB_PATH after installing the Atlas runtime manually."
+    fi
+  fi
+fi
+
+echo "==> Creating runtime user and directories"
+id -u "${APP_USER}" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "${APP_USER}"
+install -d -o "${APP_USER}" -g "${APP_USER}" "${WORKSPACE_DIR}"
+install -d "${APP_DIR}"
+
+if [[ -n "${GIT_REPO}" ]]; then
+  SOURCE_DIR="/tmp/${APP_NAME}-source"
+  if [[ -d "${SOURCE_DIR}/.git" ]]; then
+    echo "==> Updating source from ${GIT_REPO}"
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" fetch --all --prune
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" checkout "${GIT_REF}"
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" pull --ff-only origin "${GIT_REF}" || true
+  else
+    echo "==> Cloning source from ${GIT_REPO}"
+    rm -rf "${SOURCE_DIR}"
+    git clone --branch "${GIT_REF}" "${GIT_REPO}" "${SOURCE_DIR}"
+  fi
+fi
+
+if [[ "${UPDATE_FROM_GIT}" == "1" && -d "${SOURCE_DIR}/.git" ]]; then
+  echo "==> Pulling latest source in ${SOURCE_DIR}"
+  git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" fetch "${GIT_REMOTE}" --prune
+  CURRENT_BRANCH="$(git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" rev-parse --abbrev-ref HEAD)"
+  TARGET_REF="${GIT_REF:-${CURRENT_BRANCH}}"
+  if [[ -n "${TARGET_REF}" && "${TARGET_REF}" != "${CURRENT_BRANCH}" ]]; then
+    git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" checkout "${TARGET_REF}"
+  fi
+  git -c safe.directory="${SOURCE_DIR}" -C "${SOURCE_DIR}" pull --ff-only "${GIT_REMOTE}" "${TARGET_REF}"
+fi
+
+echo "==> Copying repository to ${APP_DIR}"
+rsync -a --delete \
+  --exclude ".git" \
+  --exclude "node_modules" \
+  --exclude ".pnpm-store" \
+  --exclude "/workspace" \
+  --exclude "/logs" \
+  --exclude "/secrets/.atlas-ai-gateway-oauth.json" \
+  --exclude "/secrets/*.json" \
+  --exclude "*.tsbuildinfo" \
+  "${SOURCE_DIR}/" "${APP_DIR}/"
+
+cd "${APP_DIR}"
+
+echo "==> Installing workspace dependencies"
+corepack pnpm install --frozen-lockfile
+
+echo "==> Building backend"
+corepack pnpm --filter @liclick/server build
+
+echo "==> Building frontend for ${PUBLIC_URL}"
+VITE_PUBLIC_PATH="${PUBLIC_PATH}" \
+VITE_LICLICK_WORKSPACE_API="${PUBLIC_URL}" \
+VITE_LICLICK_RELEASE_ID="${LICLICK_RELEASE_ID}" \
+VITE_LICLICK_GIT_SHA="${LICLICK_GIT_SHA}" \
+VITE_LICLICK_RELEASE_VERSION="${LICLICK_RELEASE_VERSION}" \
+VITE_LICLICK_BUILD_TIME="${LICLICK_BUILD_TIME}" \
+VITE_LICLICK_RUNTIME_MODE="cloud" \
+corepack pnpm --filter @liclick/web build
+
+env_value() {
+  local key="$1"
+  if [[ -f "${ENV_FILE}" ]]; then
+    grep -E "^${key}=" "${ENV_FILE}" | tail -n 1 | cut -d= -f2- || true
+  fi
+}
+
+# Preserve the existing server-side Feishu configuration when a redeploy does
+# not explicitly provide replacements. In particular, never turn a working
+# deployment into an empty-secret deployment just because the code was updated.
+FEISHU_OAUTH_CLIENT_ID="${FEISHU_OAUTH_CLIENT_ID:-$(env_value FEISHU_OAUTH_CLIENT_ID)}"
+FEISHU_OAUTH_CLIENT_SECRET="${FEISHU_OAUTH_CLIENT_SECRET:-$(env_value FEISHU_OAUTH_CLIENT_SECRET)}"
+FEISHU_OAUTH_SCOPE="${FEISHU_OAUTH_SCOPE:-$(env_value FEISHU_OAUTH_SCOPE)}"
+FEISHU_DIRECTORY_ENRICHMENT_ENABLED="${FEISHU_DIRECTORY_ENRICHMENT_ENABLED:-$(env_value FEISHU_DIRECTORY_ENRICHMENT_ENABLED)}"
+FEISHU_DIRECTORY_ENRICHMENT_ENABLED="${FEISHU_DIRECTORY_ENRICHMENT_ENABLED:-false}"
+FEISHU_TENANT_TOKEN_URL="${FEISHU_TENANT_TOKEN_URL:-$(env_value FEISHU_TENANT_TOKEN_URL)}"
+FEISHU_TENANT_TOKEN_URL="${FEISHU_TENANT_TOKEN_URL:-https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal}"
+FEISHU_CONTACT_BASE_URL="${FEISHU_CONTACT_BASE_URL:-$(env_value FEISHU_CONTACT_BASE_URL)}"
+FEISHU_CONTACT_BASE_URL="${FEISHU_CONTACT_BASE_URL:-https://open.feishu.cn/open-apis/contact/v3}"
+FEISHU_BITABLE_SYNC_ENABLED="${FEISHU_BITABLE_SYNC_ENABLED:-$(env_value FEISHU_BITABLE_SYNC_ENABLED)}"
+FEISHU_BITABLE_SYNC_ENABLED="${FEISHU_BITABLE_SYNC_ENABLED:-false}"
+FEISHU_BITABLE_BASE_URL="${FEISHU_BITABLE_BASE_URL:-$(env_value FEISHU_BITABLE_BASE_URL)}"
+FEISHU_BITABLE_BASE_URL="${FEISHU_BITABLE_BASE_URL:-https://open.feishu.cn/open-apis/bitable/v1}"
+FEISHU_BITABLE_APP_TOKEN="${FEISHU_BITABLE_APP_TOKEN:-$(env_value FEISHU_BITABLE_APP_TOKEN)}"
+FEISHU_BITABLE_TABLE_ID="${FEISHU_BITABLE_TABLE_ID:-$(env_value FEISHU_BITABLE_TABLE_ID)}"
+FEISHU_BITABLE_SYNC_INTERVAL_MS="${FEISHU_BITABLE_SYNC_INTERVAL_MS:-$(env_value FEISHU_BITABLE_SYNC_INTERVAL_MS)}"
+FEISHU_BITABLE_SYNC_INTERVAL_MS="${FEISHU_BITABLE_SYNC_INTERVAL_MS:-30000}"
+SESSION_SECRET="${SESSION_SECRET:-$(env_value SESSION_SECRET)}"
+SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
+ATLAS_PATH="${ATLAS_SKILLHUB_PATH:-$(npm root -g 2>/dev/null)/@lilith/atlas-skillhub/dist/index.js}"
+APP_HOME="$(getent passwd "${APP_USER}" | cut -d: -f6)"
+APP_HOME="${APP_HOME:-/home/${APP_USER}}"
+ATLAS_TOKEN_TARGET="${APP_HOME}/.atlas-ai-gateway-oauth.json"
+
+run_as_app_user() {
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "${APP_USER}" "$@"
+  else
+    runuser -u "${APP_USER}" -- "$@"
+  fi
+}
+
+verify_atlas_token() {
+  run_as_app_user \
+    env HOME="${APP_HOME}" USERPROFILE="${APP_HOME}" \
+    XDG_CONFIG_HOME="${APP_HOME}/.config" \
+    XDG_CACHE_HOME="${APP_HOME}/.cache" \
+    XDG_DATA_HOME="${APP_HOME}/.local/share" \
+    node "${ATLAS_PATH}" gateway status
+}
+
+if [[ "${LICLICK_ENABLE_ATLAS_LOCAL_LOGIN}" == "true" && "${ATLAS_LOGIN_MODE}" == "service-token" ]]; then
+  if [[ -f "${ATLAS_TOKEN_FILE}" ]]; then
+    echo "==> Installing Atlas token cache from ${ATLAS_TOKEN_FILE}"
+    install -d -o "${APP_USER}" -g "${APP_USER}" -m 0700 "${APP_HOME}"
+    install -o "${APP_USER}" -g "${APP_USER}" -m 0600 "${ATLAS_TOKEN_FILE}" "${ATLAS_TOKEN_TARGET}"
+  elif [[ -f "${ATLAS_TOKEN_TARGET}" ]]; then
+    echo "==> Reusing existing Atlas token cache at ${ATLAS_TOKEN_TARGET}"
+  else
+    echo "ERROR: ATLAS_LOGIN_MODE=service-token but no Atlas token cache was found."
+    echo "Put the token at ${ATLAS_TOKEN_FILE}, or set ATLAS_TOKEN_FILE=/path/to/.atlas-ai-gateway-oauth.json."
+    exit 1
+  fi
+
+  echo "==> Verifying Atlas token cache for ${APP_USER}"
+  verify_atlas_token
+fi
+
+echo "==> Writing ${ENV_FILE}"
+# Restrict the file before any secret is written. `install` also creates the
+# parent target with deterministic ownership instead of relying on the shell's
+# umask for a newly-created environment file.
+install -o root -g root -m 0600 /dev/null "${ENV_FILE}"
+cat > "${ENV_FILE}" <<EOF_ENV
+SERVER_PORT=${SERVER_PORT}
+SERVER_HOST=127.0.0.1
+LICLICK_WORKSPACE_DIR=${WORKSPACE_DIR}
+LICLICK_PUBLIC_WORKSPACE_URL=${PUBLIC_URL}
+LICLICK_PUBLIC_PATH=${PUBLIC_PATH}
+LICLICK_FRONTEND_URL=${PUBLIC_URL}
+LICLICK_ALLOWED_ORIGINS=${PUBLIC_URL},http://127.0.0.1,http://localhost
+LICLICK_SERVE_WEB=${LICLICK_SERVE_WEB}
+LICLICK_WEB_DIST_DIR=${LICLICK_WEB_DIST_DIR}
+LICLICK_RELEASE_ID=${LICLICK_RELEASE_ID}
+LICLICK_GIT_SHA=${LICLICK_GIT_SHA}
+LICLICK_RELEASE_VERSION=${LICLICK_RELEASE_VERSION}
+LICLICK_BUILD_TIME=${LICLICK_BUILD_TIME}
+LICLICK_RUNTIME_MODE=cloud
+AUTH_MODE=feishu-oauth
+ATLAS_LOGIN_MODE=${ATLAS_LOGIN_MODE}
+LICLICK_ENABLE_ATLAS_LOCAL_LOGIN=${LICLICK_ENABLE_ATLAS_LOCAL_LOGIN}
+IDAAS_JWT_SSO_ENABLED=${IDAAS_JWT_SSO_ENABLED}
+IDAAS_JWT_SSO_URL=${IDAAS_JWT_SSO_URL}
+FEISHU_OAUTH_PUBLIC_CLIENT=${FEISHU_OAUTH_PUBLIC_CLIENT}
+IDAAS_ENTERPRISE_ID=${IDAAS_ENTERPRISE_ID}
+IDAAS_SP_SERVICE_URL=${IDAAS_SP_SERVICE_URL}
+FEISHU_OAUTH_CLIENT_ID=${FEISHU_OAUTH_CLIENT_ID}
+FEISHU_OAUTH_CLIENT_SECRET=${FEISHU_OAUTH_CLIENT_SECRET}
+FEISHU_OAUTH_AUTHORIZE_URL=${FEISHU_OAUTH_AUTHORIZE_URL}
+FEISHU_OAUTH_TOKEN_URL=${FEISHU_OAUTH_TOKEN_URL}
+FEISHU_OAUTH_USERINFO_URL=${FEISHU_OAUTH_USERINFO_URL}
+FEISHU_OAUTH_REDIRECT_URL=${FEISHU_OAUTH_REDIRECT_URL}
+FEISHU_OAUTH_SCOPE=${FEISHU_OAUTH_SCOPE}
+FEISHU_OAUTH_TOKEN_AUTH_METHOD=${FEISHU_OAUTH_TOKEN_AUTH_METHOD}
+FEISHU_OAUTH_TOKEN_REQUEST_FORMAT=${FEISHU_OAUTH_TOKEN_REQUEST_FORMAT}
+FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS=${FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS}
+FEISHU_DIRECTORY_ENRICHMENT_ENABLED=${FEISHU_DIRECTORY_ENRICHMENT_ENABLED}
+FEISHU_TENANT_TOKEN_URL=${FEISHU_TENANT_TOKEN_URL}
+FEISHU_CONTACT_BASE_URL=${FEISHU_CONTACT_BASE_URL}
+FEISHU_BITABLE_SYNC_ENABLED=${FEISHU_BITABLE_SYNC_ENABLED}
+FEISHU_BITABLE_BASE_URL=${FEISHU_BITABLE_BASE_URL}
+FEISHU_BITABLE_APP_TOKEN=${FEISHU_BITABLE_APP_TOKEN}
+FEISHU_BITABLE_TABLE_ID=${FEISHU_BITABLE_TABLE_ID}
+FEISHU_BITABLE_SYNC_INTERVAL_MS=${FEISHU_BITABLE_SYNC_INTERVAL_MS}
+COMFYUI_BASE_URL=${COMFYUI_BASE_URL}
+COMFYUI_TEXTURE_WORKFLOW_PATH=${COMFYUI_TEXTURE_WORKFLOW_PATH}
+LICLICK_MODELVIEW_INPAINT_URL=${LICLICK_MODELVIEW_INPAINT_URL}
+LICLICK_MODELVIEW_INPAINT_CA_PATH=${LICLICK_MODELVIEW_INPAINT_CA_PATH}
+LICLICK_MODELVIEW_INPAINT_API_KEY=${LICLICK_MODELVIEW_INPAINT_API_KEY}
+LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS=${LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS}
+LICLICK_SUBSTANCE_BAKER_BASE_URL=${LICLICK_SUBSTANCE_BAKER_BASE_URL}
+LICLICK_SUBSTANCE_BAKER_CA_PATH=${LICLICK_SUBSTANCE_BAKER_CA_PATH}
+LICLICK_SUBSTANCE_BAKER_API_KEY=${LICLICK_SUBSTANCE_BAKER_API_KEY}
+LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB=${LICLICK_SUBSTANCE_BAKER_TEXTURE_CACHE_MB}
+ASSET_SERVICE_BASE_URL=${ASSET_SERVICE_BASE_URL}
+ASSET_SERVICE_API_TOKEN=${ASSET_SERVICE_API_TOKEN}
+ASSET_SERVICE_CA_CERT_PATH=${ASSET_SERVICE_CA_CERT_PATH}
+ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED=${ASSET_SERVICE_TLS_REJECT_UNAUTHORIZED}
+ASSET_SERVICE_REQUEST_TIMEOUT_MS=${ASSET_SERVICE_REQUEST_TIMEOUT_MS}
+ASSET_SERVICE_MAX_UPLOAD_BYTES=${ASSET_SERVICE_MAX_UPLOAD_BYTES}
+ASSET_SERVICE_MAX_ARTIFACT_BYTES=${ASSET_SERVICE_MAX_ARTIFACT_BYTES}
+BLENDER_EXECUTABLE_PATH=${BLENDER_EXECUTABLE_PATH}
+RETOPOLOGY_PREPARE_TIMEOUT_MS=${RETOPOLOGY_PREPARE_TIMEOUT_MS}
+RETOPOLOGY_PREPARE_MAX_FILE_BYTES=${RETOPOLOGY_PREPARE_MAX_FILE_BYTES}
+RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES=${RETOPOLOGY_PREPARE_MAX_UPLOAD_BYTES}
+SESSION_COOKIE_NAME=liclick_3d_session
+SESSION_SECRET=${SESSION_SECRET}
+SESSION_MAX_AGE_DAYS=14
+SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE}
+ATLAS_SKILLHUB_PATH=${ATLAS_PATH}
+EOF_ENV
+# systemd reads EnvironmentFile before dropping privileges to User=. The app
+# process therefore does not need direct read permission on this secret file.
+chmod 0600 "${ENV_FILE}"
+chown root:root "${ENV_FILE}"
+
+install_comfyui_mount() {
+  local mount_dir="${COMFYUI_CUSTOM_NODES_DIR}/${APP_NAME}-mount"
+
+  echo "==> Installing ComfyUI mount into ${mount_dir}"
+  install -d "${mount_dir}"
+  cat > "${mount_dir}/__init__.py" <<EOF_COMFYUI_MOUNT
+from __future__ import annotations
+
+from pathlib import Path
+from urllib.parse import urlencode
+
+from aiohttp import ClientSession, web
+
+try:
+    from server import PromptServer
+except Exception as exc:
+    print(f"[Liclick 3D Texture] Failed to import ComfyUI PromptServer: {exc}")
+    WEB_DIRECTORY = "./web"
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}
+else:
+    APP_DIR = Path("${APP_DIR}")
+    WEB_DIST = APP_DIR / "apps" / "web" / "dist"
+    PUBLIC_PATH = "${PUBLIC_PATH}".rstrip("/")
+    BACKEND_URL = "http://127.0.0.1:${SERVER_PORT}"
+    ROUTES = PromptServer.instance.routes
+
+    HOP_BY_HOP_HEADERS = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+        "host",
+    }
+
+    def _safe_static_path(tail: str) -> Path | None:
+        base = WEB_DIST.resolve()
+        candidate = (WEB_DIST / tail.lstrip("/")).resolve()
+        if candidate == base or base in candidate.parents:
+            return candidate
+        return None
+
+    async def _index(_request: web.Request) -> web.StreamResponse:
+        index_path = WEB_DIST / "index.html"
+        if not index_path.exists():
+            return web.Response(status=503, text="Liclick frontend has not been built.")
+        return web.FileResponse(index_path)
+
+    async def _mount_health(_request: web.Request) -> web.StreamResponse:
+        return web.json_response({
+            "ok": True,
+            "mount": PUBLIC_PATH,
+            "webDist": str(WEB_DIST),
+            "backend": BACKEND_URL,
+            "indexExists": (WEB_DIST / "index.html").exists(),
+        })
+
+    async def _static_or_index(request: web.Request) -> web.StreamResponse:
+        tail = request.match_info.get("tail", "")
+        static_path = _safe_static_path(tail)
+        if static_path and static_path.is_file():
+            return web.FileResponse(static_path)
+        return await _index(request)
+
+    async def _proxy(request: web.Request, prefix: str) -> web.StreamResponse:
+        tail = request.match_info.get("tail", "")
+        target = f"{BACKEND_URL}/{prefix}/{tail}".rstrip("/")
+        if request.query:
+            target = f"{target}?{urlencode(request.query, doseq=True)}"
+
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+        }
+        body = await request.read()
+
+        async with ClientSession() as session:
+            async with session.request(
+                request.method,
+                target,
+                data=body if body else None,
+                headers=headers,
+                allow_redirects=False,
+            ) as response:
+                response_body = await response.read()
+                response_headers = {
+                    key: value
+                    for key, value in response.headers.items()
+                    if key.lower() not in HOP_BY_HOP_HEADERS
+                }
+                return web.Response(
+                    status=response.status,
+                    body=response_body,
+                    headers=response_headers,
+                )
+
+    async def _api_proxy(request: web.Request) -> web.StreamResponse:
+        return await _proxy(request, "api")
+
+    async def _workspace_proxy(request: web.Request) -> web.StreamResponse:
+        return await _proxy(request, "workspace")
+
+    ROUTES.get(PUBLIC_PATH)(_index)
+    ROUTES.get(f"{PUBLIC_PATH}/")(_index)
+    ROUTES.get(f"{PUBLIC_PATH}/_liclick_mount_health")(_mount_health)
+    ROUTES.route("*", f"{PUBLIC_PATH}/api/{{tail:.*}}")(_api_proxy)
+    ROUTES.route("*", f"{PUBLIC_PATH}/workspace/{{tail:.*}}")(_workspace_proxy)
+    ROUTES.get(f"{PUBLIC_PATH}/{{tail:.*}}")(_static_or_index)
+
+    print(
+        f"[Liclick 3D Texture] Mounted {PUBLIC_PATH} from {WEB_DIST} "
+        f"and proxied API to {BACKEND_URL}"
+    )
+
+    WEB_DIRECTORY = "./web"
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}
+EOF_COMFYUI_MOUNT
+}
+
+echo "==> Writing systemd service"
+cat > "${SERVICE_FILE}" <<EOF_SERVICE
+[Unit]
+Description=Liclick 3D Texture workspace server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=${ENV_FILE}
+Environment=HOME=/home/${APP_USER}
+ExecStart=/usr/bin/node ${APP_DIR}/apps/server/dist/index.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF_SERVICE
+
+if [[ "${MOUNT_MODE}" == "comfyui" ]]; then
+  install_comfyui_mount
+else
+  echo "==> Writing nginx site"
+  NGINX_LISTEN_OPTIONS=""
+  if ! grep -R "listen[[:space:]]\+${PUBLIC_PORT}[^;]*default_server" /etc/nginx/sites-enabled /etc/nginx/conf.d >/dev/null 2>&1; then
+    NGINX_LISTEN_OPTIONS=" default_server"
+  fi
+  if [[ -z "${PUBLIC_PATH}" ]]; then
+    cat > "${NGINX_SITE}" <<EOF_NGINX_ROOT
+server {
+    listen ${PUBLIC_PORT}${NGINX_LISTEN_OPTIONS};
+    server_name ${PUBLIC_HOST} 127.0.0.1 localhost _;
+
+    client_max_body_size 256m;
+
+    root ${APP_DIR}/apps/web/dist;
+    index index.html;
+
+    location ^~ /api/ {
+        proxy_pass http://127.0.0.1:${SERVER_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location ^~ /workspace/ {
+        proxy_pass http://127.0.0.1:${SERVER_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+EOF_NGINX_ROOT
+  else
+    cat > "${NGINX_SITE}" <<EOF_NGINX
+server {
+    listen ${PUBLIC_PORT}${NGINX_LISTEN_OPTIONS};
+    server_name ${PUBLIC_HOST} 127.0.0.1 localhost _;
+
+    client_max_body_size 256m;
+
+    root ${APP_DIR}/apps/web/dist;
+    index index.html;
+
+    location = ${PUBLIC_PATH} {
+        return 302 ${PUBLIC_PATH}/;
+    }
+
+    location ^~ ${PUBLIC_PATH}/api/ {
+        proxy_pass http://127.0.0.1:${SERVER_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location ^~ ${PUBLIC_PATH}/workspace/ {
+        proxy_pass http://127.0.0.1:${SERVER_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+    }
+
+    location = ${PUBLIC_PATH}/index.html {
+        alias ${APP_DIR}/apps/web/dist/index.html;
+    }
+
+    location ^~ ${PUBLIC_PATH}/ {
+        alias ${APP_DIR}/apps/web/dist/;
+        try_files \$uri \$uri/ ${PUBLIC_PATH}/index.html;
+    }
+}
+EOF_NGINX
+  fi
+
+  ln -sfn "${NGINX_SITE}" "${NGINX_LINK}"
+  if [[ "${NGINX_REMOVE_DEFAULT:-0}" == "1" ]]; then
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+fi
+
+echo "==> Fixing ownership"
+chown -R root:root "${APP_DIR}"
+chown -R "${APP_USER}:${APP_USER}" "${WORKSPACE_DIR}"
+
+echo "==> Starting services"
+systemctl daemon-reload
+systemctl stop "${APP_NAME}.service" 2>/dev/null || true
+ensure_port_free "${SERVER_PORT}" "backend"
+if [[ "${MOUNT_MODE}" != "comfyui" ]]; then
+  systemctl stop nginx 2>/dev/null || true
+  ensure_port_free "${PUBLIC_PORT}" "public nginx"
+fi
+pkill -u "${APP_USER}" -f "atlas-skillhub.*gateway.*login" 2>/dev/null || true
+pkill -u "${APP_USER}" -f "node .*gateway login" 2>/dev/null || true
+systemctl enable --now "${APP_NAME}.service"
+if [[ "${MOUNT_MODE}" == "comfyui" ]]; then
+  if [[ -n "${COMFYUI_RESTART_COMMAND}" ]]; then
+    echo "==> Restarting ComfyUI through COMFYUI_RESTART_COMMAND"
+    bash -lc "${COMFYUI_RESTART_COMMAND}"
+  else
+    echo "==> ComfyUI mount installed. Restart ComfyUI once so it loads ${PUBLIC_PATH}."
+  fi
+else
+  nginx -t
+  systemctl enable --now nginx
+  systemctl reload nginx
+fi
+
+wait_for_url() {
+  local url="$1"
+  local label="$2"
+  local attempt
+  for attempt in $(seq 1 30); do
+    if curl -fsS "${url}" >/dev/null 2>&1; then
+      echo "${label}: ok"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "${label}: failed after 30s"
+  curl -fsS "${url}"
+}
+
+echo "==> Smoke checking backend"
+wait_for_url "http://127.0.0.1:${SERVER_PORT}/api/health" "Backend health"
+
+echo "==> Smoke checking frontend"
+curl -fsSI "http://127.0.0.1:${PUBLIC_PORT}${PUBLIC_PATH}/" || true
+
+cat <<EOF_DONE
+
+Liclick 3D Texture is deployed.
+
+Frontend: ${PUBLIC_URL}
+Backend:  http://127.0.0.1:${SERVER_PORT}
+Public port: ${PUBLIC_PORT}
+Public path: ${PUBLIC_PATH}
+Mount mode: ${MOUNT_MODE}
+Service:  systemctl status ${APP_NAME}.service
+Logs:     journalctl -u ${APP_NAME}.service -f
+
+Important:
+1. ATLAS_LOGIN_MODE=${ATLAS_LOGIN_MODE}. In service-token mode, install a valid Atlas token for ${APP_USER} before testing.
+   Atlas token source: ${ATLAS_TOKEN_FILE}
+2. If MOUNT_MODE=comfyui, restart ComfyUI after deployment if this script did not do it.
+3. Persistent user data is under ${WORKSPACE_DIR}; do not delete it during updates.
+4. If you put HTTPS in front of nginx later, rerun with PUBLIC_URL=https://your-domain.
+
+EOF_DONE

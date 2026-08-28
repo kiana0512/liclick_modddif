@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-21",
+  "environment": "real-employee-auth preview with strict-TLS disk-backed remote retopology simulator",
+  "source": {
+    "filename": "stanford-bunny.fbx",
+    "sizeBytes": 8067084,
+    "sha256": "d93bc888e6bd7d205792a90ac21443286eb189bc15f56326b3b8becff17665e5",
+    "parsedTriangles": 30338
+  },
+  "successfulJobId": "retopology-preview-9aa70bbb-4608-4eb5-949f-888f6af5e9e9",
+  "cancelledJobId": "retopology-preview-035de734-1c59-46e6-9e42-621a4def5d91",
+  "delivery": {
+    "fbx": {
+      "filename": "liclick_preview_game_low.fbx",
+      "sizeBytes": 12460,
+      "sha256": "c0c2d4a07aae2060d4c623e2642a7f9d576ff8f2dc595152ddcfc2a07d214304",
+      "parsedTriangles": 12,
+      "parsedVertices": 36
+    },
+    "blend": {
+      "filename": "liclick_preview_game_low.blend",
+      "sizeBytes": 39,
+      "sha256": "30db0cc54cc07275bee483a800dd9f97462f990bc28f4cd6998e60dbba455597"
+    }
+  },
+  "assertions": {
+    "realEmployeeSession": "passed",
+    "browserHighModelPreview": "passed",
+    "strictTlsCustomCaPin": "passed",
+    "serverProxyUpload": "passed",
+    "v6JobContract": "passed",
+    "formalDualFormatDelivery": "passed",
+    "threeWayArtifactShaVerification": "passed",
+    "browserLowModelPreview": "passed",
+    "jobCancellation": "passed",
+    "historyPersistence": "passed",
+    "simulatedRemoteRestartRecovery": "passed",
+    "freshRecoveryConsoleErrors": 0
+  },
+  "notes": [
+    "The browser uploaded a real parseable FBX to the server; no local triangle simplifier was used or exposed.",
+    "The server connected to the simulated remote worker over HTTPS using a generated CA whose PEM SHA-256 was pinned for that preview process.",
+    "The browser restored and parsed the SHA-verified formal FBX after both the LI3D server and remote worker simulator were restarted.",
+    "This proves the remote boundary, delivery contract and recovery behavior in simulation; it does not prove the production topology algorithm quality or production CA/service deployment."
+  ]
+}

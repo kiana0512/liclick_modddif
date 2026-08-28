@@ -1,0 +1,125 @@
+import assert from 'node:assert/strict';
+import { stdout } from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { createServer } from 'vite';
+
+class TestImageData {
+  constructor(dataOrWidth, widthOrHeight, maybeHeight) {
+    if (typeof dataOrWidth === 'number') {
+      this.width = dataOrWidth;
+      this.height = widthOrHeight;
+      this.data = new Uint8ClampedArray(this.width * this.height * 4);
+      return;
+    }
+    this.data = dataOrWidth;
+    this.width = widthOrHeight;
+    this.height = maybeHeight;
+  }
+}
+
+globalThis.ImageData = TestImageData;
+
+const width = 17;
+const height = 9;
+const source = new ImageData(width, height);
+const mask = new ImageData(width, height);
+for (let y = 0; y < height; y += 1) {
+  for (let x = 0; x < width; x += 1) {
+    const offset = (y * width + x) * 4;
+    const foreground = x >= 7;
+    source.data[offset] = foreground ? 190 : x === 6 ? 80 : 12;
+    source.data[offset + 1] = foreground ? 160 : x === 6 ? 60 : 10;
+    source.data[offset + 2] = foreground ? 120 : x === 6 ? 45 : 16;
+    source.data[offset + 3] = 255;
+    const coverage = x <= 3 ? 0 : x === 4 ? 64 : x === 5 ? 180 : 255;
+    mask.data[offset] = coverage;
+    mask.data[offset + 1] = coverage;
+    mask.data[offset + 2] = coverage;
+    mask.data[offset + 3] = 255;
+  }
+}
+const originalSource = new Uint8ClampedArray(source.data);
+
+const server = await createServer({
+  root: fileURLToPath(new URL('../', import.meta.url)),
+  appType: 'custom',
+  logLevel: 'silent',
+  server: { middlewareMode: true },
+});
+
+try {
+  const { applyCapturePreviewMask, applyCaptureProjectionImage } = await server.ssrLoadModule(
+    '/src/engine/localRepaint/resultPreviewUtils.ts',
+  );
+  const output = applyCapturePreviewMask(source, mask);
+  const pixel = (x, y) =>
+    Array.from(output.data.slice((y * width + x) * 4, (y * width + x) * 4 + 4));
+
+  assert.deepEqual(pixel(3, 4), [0, 0, 0, 0], 'masked background must be fully transparent');
+  assert.equal(pixel(5, 4)[3], 180, 'antialiased capture alpha must be preserved');
+  assert(
+    pixel(5, 4)[0] > 170 && pixel(6, 4)[0] > 170,
+    'dark RGB contamination at the silhouette must be replaced from the subject interior',
+  );
+  assert.deepEqual(
+    pixel(12, 4),
+    [190, 160, 120, 255],
+    'interior material colour must remain unchanged',
+  );
+  assert.deepEqual(
+    source.data,
+    originalSource,
+    'preview processing must not mutate the generation result',
+  );
+  assert.throws(
+    () => applyCapturePreviewMask(source, new ImageData(width - 1, height)),
+    /dimensions must match/,
+  );
+
+  const projection = applyCaptureProjectionImage(source, mask);
+  const projectionPixel = (x, y) =>
+    Array.from(projection.data.slice((y * width + x) * 4, (y * width + x) * 4 + 4));
+  assert.equal(projection.width, source.width, 'projection cleanup must preserve capture width');
+  assert.equal(projection.height, source.height, 'projection cleanup must preserve capture height');
+  assert.equal(
+    projectionPixel(3, 4)[3],
+    255,
+    'projection colour must stay opaque because its capture mask owns coverage',
+  );
+  assert(
+    projectionPixel(3, 4)[0] > 170,
+    'clean subject colour must bleed outside the mask to protect filtered edge samples',
+  );
+  assert.deepEqual(
+    projectionPixel(12, 4),
+    [190, 160, 120, 255],
+    'projection cleanup must preserve interior material colour',
+  );
+  assert.deepEqual(
+    source.data,
+    originalSource,
+    'projection processing must not mutate the generation result',
+  );
+
+  const blendedProjection = applyCaptureProjectionImage(source, mask, { edgeBlend: true });
+  const blendedPixel = (x, y) =>
+    Array.from(
+      blendedProjection.data.slice((y * width + x) * 4, (y * width + x) * 4 + 4),
+    );
+  assert(
+    blendedPixel(5, 4)[3] < blendedPixel(12, 4)[3],
+    'single-view alpha must rise smoothly from the silhouette toward the authoritative core',
+  );
+  assert(
+    blendedPixel(3, 4)[3] > 0 && blendedPixel(3, 4)[3] < 255,
+    'the bled RGB band must keep a small encoding-safe alpha outside the geometry mask',
+  );
+  assert(
+    blendedPixel(3, 4)[0] > 170,
+    'distance-field projection must preserve clean bled edge colour',
+  );
+
+  stdout.write('Generation preview and projection edge decontamination regression test passed.\n');
+} finally {
+  await server.close();
+}

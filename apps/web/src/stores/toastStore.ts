@@ -1,0 +1,108 @@
+import { create } from 'zustand';
+import { createId } from '@/utils/id';
+
+export type ToastTone = 'info' | 'success' | 'warning' | 'error';
+
+export type ToastAction = {
+  label: string;
+  icon?: 'add-layer';
+  onClick: () => void;
+};
+
+export type ToastMessage = {
+  id: string;
+  title: string;
+  description?: string;
+  tone: ToastTone;
+  action?: ToastAction;
+  dedupeKey?: string;
+  durationMs?: number;
+  persistent?: boolean;
+};
+
+type ToastStore = {
+  toasts: ToastMessage[];
+  pushToast: (toast: Omit<ToastMessage, 'id'>) => void;
+  dismissToast: (id: string) => void;
+  dismissToastByDedupeKey: (dedupeKey: string) => void;
+};
+
+const dismissTimers = new Map<string, number>();
+
+const toastPriority: Record<ToastTone, number> = {
+  success: 0,
+  info: 1,
+  warning: 2,
+  error: 3,
+};
+
+function clearDismissTimer(id: string) {
+  const timer = dismissTimers.get(id);
+  if (timer !== undefined) window.clearTimeout(timer);
+  dismissTimers.delete(id);
+}
+
+function defaultDuration(toast: Omit<ToastMessage, 'id'>) {
+  if (toast.dedupeKey?.startsWith('coming-soon:')) return 3000;
+  if (toast.tone === 'error') return 10_000;
+  if (toast.tone === 'warning') return 7000;
+  if (toast.tone === 'success') return 4200;
+  return 5200;
+}
+
+export const useToastStore = create<ToastStore>((set, get) => ({
+  toasts: [],
+  pushToast: (toast) => {
+    const existing = toast.dedupeKey
+      ? get().toasts.find((item) => item.dedupeKey === toast.dedupeKey)
+      : undefined;
+    const activeToast = get().toasts[0];
+    if (
+      !existing &&
+      activeToast &&
+      toastPriority[activeToast.tone] > toastPriority[toast.tone]
+    ) {
+      return;
+    }
+    const id = existing?.id ?? createId('toast');
+    clearDismissTimer(id);
+    if (!existing) {
+      get().toasts.forEach((item) => clearDismissTimer(item.id));
+    }
+    set((state) => {
+      const nextToast = { id, ...toast };
+      if (existing) {
+        const unchanged =
+          existing.title === nextToast.title &&
+          existing.description === nextToast.description &&
+          existing.tone === nextToast.tone &&
+          existing.action?.label === nextToast.action?.label &&
+          existing.action?.icon === nextToast.action?.icon &&
+          existing.action?.onClick === nextToast.action?.onClick &&
+          existing.durationMs === nextToast.durationMs &&
+          existing.persistent === nextToast.persistent;
+        if (unchanged) return state;
+        return { toasts: [nextToast] };
+      }
+      return { toasts: [nextToast] };
+    });
+    if (toast.persistent) return;
+    const timer = window.setTimeout(() => {
+      dismissTimers.delete(id);
+      set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));
+    }, toast.durationMs ?? defaultDuration(toast));
+    dismissTimers.set(id, timer);
+  },
+  dismissToast: (id) => {
+    clearDismissTimer(id);
+    set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) }));
+  },
+  dismissToastByDedupeKey: (dedupeKey) => {
+    get()
+      .toasts.filter((item) => item.dedupeKey === dedupeKey)
+      .forEach((item) => clearDismissTimer(item.id));
+    set((state) => ({
+      toasts: state.toasts.filter((item) => item.dedupeKey !== dedupeKey),
+    }));
+  },
+}));

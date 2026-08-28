@@ -1,0 +1,50 @@
+import { useMemo } from 'react';
+import * as THREE from 'three';
+
+function buildGridGeometry(size: number, step: number, majorEvery: number, major: boolean) {
+  const half = size / 2;
+  const positions: number[] = [];
+  const lineCount = Math.floor(size / step);
+
+  for (let index = -lineCount / 2; index <= lineCount / 2; index += 1) {
+    const value = index * step;
+    const isMajor = Math.abs(index) % majorEvery === 0;
+    if (isMajor !== major) continue;
+
+    positions.push(-half, 0, value, half, 0, value);
+    positions.push(value, 0, -half, value, 0, half);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+export function Grid({ variant = 'default' }: { variant?: 'default' | 'subtle' }) {
+  const minorGeometry = useMemo(() => buildGridGeometry(140, 1, 4, false), []);
+  const majorGeometry = useMemo(() => buildGridGeometry(140, 1, 4, true), []);
+
+  return (
+    <group position={[0, -0.018, 0]} renderOrder={-10} userData={{ liclickViewportHelper: true }}>
+      <lineSegments geometry={minorGeometry} frustumCulled={false}>
+        <lineBasicMaterial
+          color={variant === 'subtle' ? '#26304a' : '#302346'}
+          transparent
+          opacity={variant === 'subtle' ? 0.18 : 0.34}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </lineSegments>
+      <lineSegments geometry={majorGeometry} frustumCulled={false}>
+        <lineBasicMaterial
+          color={variant === 'subtle' ? '#34405c' : '#d4774c'}
+          transparent
+          opacity={variant === 'subtle' ? 0.22 : 0.78}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </lineSegments>
+    </group>
+  );
+}
