@@ -14,6 +14,10 @@ const viewportSource = await readFile(
   new URL('../src/engine/viewport/ViewportCanvas.tsx', import.meta.url),
   'utf8',
 );
+const sceneRootSource = await readFile(
+  new URL('../src/engine/viewport/SceneRoot.tsx', import.meta.url),
+  'utf8',
+);
 
 assert.match(
   source,
@@ -65,8 +69,14 @@ assert.match(
 );
 assert.match(
   viewportSource,
-  /const clearProjectedEraserRuntime[\s\S]*?cancelProjectedEraserBatch\(layerId\)[\s\S]*?disposeUvPaintLayer\(paintLayer\)[\s\S]*?layerRef\.current = undefined[\s\S]*?addEventListener\('liclick:clear-projected-eraser-mask'/,
-  'clearing a mask must cancel deferred refinement and discard the stable live canvas session',
+  /const clearProjectedEraserRuntime[\s\S]*?cancelProjectedEraserBatch\(layerId\)[\s\S]*?clearLiveSurfacePaintPreview\(layerId\)[\s\S]*?syncProjectedLayerLiveEraserPreviewInObject\(model\.group, undefined, undefined\)[\s\S]*?disposeUvPaintLayer\(paintLayer\)[\s\S]*?layerRef\.current = undefined[\s\S]*?addEventListener\('liclick:clear-projected-eraser-mask'/,
+  'clearing a mask must cancel deferred refinement, detach the shared resident mask, and discard the stable live canvas session',
+);
+
+assert.doesNotMatch(
+  sceneRootSource,
+  /const projectedMaterialStructureKey = \[[\s\S]*?liveProjectedEraserMaskTexture\?\.uuid[\s\S]*?\];/,
+  'the transient live eraser texture must not rebuild the complete resident projected material',
 );
 
 console.log('layer context-menu policy regression passed');

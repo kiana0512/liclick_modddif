@@ -11538,8 +11538,22 @@ function SurfacePaintOverlay() {
       const layerId = (event as CustomEvent<{ layerId?: string }>).detail?.layerId;
       if (!layerId) return;
       cancelProjectedEraserBatch(layerId);
+      // Store publication and the paint-layer ref are allowed to advance before
+      // this menu event is handled. Clear both runtime authorities first and
+      // detach the shared resident uniform from the current model regardless of
+      // which layer happens to own layerRef now. Otherwise a stale multiplier
+      // keeps suppressing one projection after the mask row is cleared, and eye
+      // changes on every other resident layer appear unable to restore the stack.
+      clearLiveSurfacePaintPreview(layerId);
+      const model = getTargetModel();
+      if (model) {
+        syncProjectedLayerLiveEraserPreviewInObject(model.group, undefined, undefined);
+      }
       const paintLayer = layerRef.current;
-      if (!paintLayer || paintLayer.layerId !== layerId) return;
+      if (!paintLayer || paintLayer.layerId !== layerId) {
+        invalidate();
+        return;
+      }
       // The runtime canvas uses a stable URL across strokes. Dispose the
       // current session so re-entering the eraser cannot resurrect the old
       // pixels after LayerStore has removed its keep-mask reference.
@@ -11553,7 +11567,7 @@ function SurfacePaintOverlay() {
         'liclick:clear-projected-eraser-mask',
         clearProjectedEraserRuntime,
       );
-  }, [cancelProjectedEraserBatch, invalidate]);
+  }, [cancelProjectedEraserBatch, getTargetModel, invalidate]);
 
   const runProjectedEraserRefinement = useCallback(
     async (batch: PendingProjectedEraserBatch, revision: number) => {

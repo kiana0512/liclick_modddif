@@ -3062,7 +3062,11 @@ function ImportedModel({
     // Base and UV samplers are reserved from the first build. Their texture,
     // opacity and eye-state changes are uniform-only and must never invalidate
     // the 4K projected material structure during an atomic publication.
-    liveProjectedEraserMaskTexture?.uuid ?? '',
+    // The live eraser sampler is reserved too. Its texture and target layer are
+    // patched synchronously by syncProjectedLayerLiveEraserPreviewInObject;
+    // including the transient texture UUID here rebuilt the complete resident
+    // stack on eraser activation and again on clear. A late build could then
+    // publish stale layer visibility after the user reopened other eyes.
     liveTopUvLayer
       ? `${liveTopUvLayer.id}:${liveTopUvLayer.imageUrl ?? ''}:${liveTopUvLayer.contentRevision ?? 0}`
       : '',
