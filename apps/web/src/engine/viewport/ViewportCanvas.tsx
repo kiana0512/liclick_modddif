@@ -17,6 +17,8 @@ import {
 import * as THREE from 'three';
 import { useDragInteractionStore } from '@/stores/dragInteractionStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
+import { paintHistoryBoundary } from '@/engine/paint/paintHistoryBoundary';
+import { stageRefinedStrokeHistory } from '@/engine/paint/refineStrokeHistory';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import {
@@ -3875,6 +3877,7 @@ type UvPaintLayer = {
   paintDefaultResolution: number;
   paintCommitChain: Promise<void>;
   pendingPaintCommits: number;
+  paintHistoryVersion: number;
   pendingBaseImage?: HTMLImageElement;
   paintCanvas: HTMLCanvasElement;
   paintContext: CanvasRenderingContext2D;
@@ -4359,38 +4362,22 @@ type PaintHistoryTile = {
 
 type PendingProjectedEraserBatch = {
   layer: UvPaintLayer;
-  snapshots: ProjectedEraserSnapshot[];
+  strokes: PendingPaintHistoryStroke[];
+  historyEpoch: number;
   revision: number;
   timerId?: number;
   idleCallbackId?: number;
-  latestHistoryTiles?: PaintHistoryTile[];
 };
 
-function appendProjectedEraserSnapshot(
-  snapshots: ProjectedEraserSnapshot[],
-  snapshot: ProjectedEraserSnapshot,
-) {
-  const previous = snapshots.at(-1);
-  const sharesProjection =
-    previous &&
-    previous.model.objectId === snapshot.model.objectId &&
-    previous.maskCanvas.width === snapshot.maskCanvas.width &&
-    previous.maskCanvas.height === snapshot.maskCanvas.height &&
-    previous.objectMatrixWorld.every(
-      (value, index) => Math.abs(value - snapshot.objectMatrixWorld[index]) < 1e-6,
-    ) &&
-    JSON.stringify(previous.camera) === JSON.stringify(snapshot.camera);
-  if (!sharesProjection) {
-    snapshots.push(snapshot);
-    return;
-  }
-  const context = previous.maskCanvas.getContext('2d');
-  if (!context) {
-    snapshots.push(snapshot);
-    return;
-  }
-  context.drawImage(snapshot.maskCanvas, 0, 0);
-}
+type PendingPaintHistoryStroke = {
+  snapshot?: ProjectedEraserSnapshot;
+  historyTiles: PaintHistoryTile[];
+  apply: (context: CanvasRenderingContext2D) => void;
+  refined: boolean;
+  applied: boolean;
+  isRetained: () => boolean;
+  sequence: number;
+};
 
 type ClientPoint = { x: number; y: number; pressure: number };
 
@@ -6519,6 +6506,8 @@ function SurfacePaintOverlay() {
   const cursorCircleRef = useRef<SVGCircleElement>();
   const layerRef = useRef<UvPaintLayer>();
   const paintLayerHandoffPromiseRef = useRef<Promise<void>>();
+  const finishHistoryGestureRef = useRef<() => void>();
+  const paintHistorySequenceRef = useRef(0);
   const paintCommitHandoffLayerIdRef = useRef<string>();
   const raycasterRef = useRef(
     new THREE.Raycaster() as THREE.Raycaster & { firstHitOnly?: boolean },
@@ -7624,6 +7613,7 @@ function SurfacePaintOverlay() {
         paintDefaultResolution: paintResolution,
         paintCommitChain: Promise.resolve(),
         pendingPaintCommits: 0,
+        paintHistoryVersion: 0,
         paintCanvas: paint.canvas,
         paintContext,
         paintTexture,
@@ -11663,6 +11653,7 @@ function SurfacePaintOverlay() {
       // The runtime canvas uses a stable URL across strokes. Dispose the
       // current session so re-entering the eraser cannot resurrect the old
       // pixels after LayerStore has removed its keep-mask reference.
+      paintLayer.paintHistoryVersion += 1;
       disposeUvPaintLayer(paintLayer);
       layerRef.current = undefined;
       invalidate();
@@ -11679,118 +11670,131 @@ function SurfacePaintOverlay() {
     async (batch: PendingProjectedEraserBatch, revision: number) => {
       const isCurrent = () =>
         projectedEraserBatchesRef.current.get(batch.layer.layerId) === batch &&
-        batch.revision === revision;
-      if (!isCurrent() || batch.snapshots.length === 0) return;
+        batch.historyEpoch === paintHistoryBoundary.version &&
+        batch.revision === revision &&
+        !isPaintingRef.current &&
+        batch.layer.pendingPaintCommits === 0 &&
+        !paintHistoryBoundary.busy;
+      if (!isCurrent() || batch.strokes.length === 0) return;
+      const strokes = [...batch.strokes];
       const startedAt = performance.now();
       markEraserPerformanceEvent('projected-refinement-start', {
         layerId: batch.layer.layerId,
         revision,
-        strokeSnapshots: batch.snapshots.length,
+        strokeSnapshots: strokes.length,
       });
-      const snapshots = [...batch.snapshots];
       try {
-        const bakeResult = await bakeProjectedEraserStrokesToUv({
-          snapshots,
-          resolution: getEraserBakeResolution(batch.layer.paintCanvas),
-          runtimeKey: `${batch.layer.layerId}:${revision}`,
+        const refinements: Array<{
+          canvas?: HTMLCanvasElement;
+          alphaBounds?: PaintDirtyRect;
+          bounds?: PaintDirtyRect;
+        }> = [];
+        const keys = new Set<string>();
+        for (let index = 0; index < strokes.length; index += 1) {
+          const stroke = strokes[index];
+          for (const tile of stroke.historyTiles) {
+            keys.add(
+              `${Math.floor(tile.bounds.x / PAINT_HISTORY_TILE_SIZE)}:${Math.floor(tile.bounds.y / PAINT_HISTORY_TILE_SIZE)}`,
+            );
+          }
+          const result = stroke.snapshot
+            ? await bakeProjectedEraserStrokesToUv({
+                snapshots: [stroke.snapshot],
+                resolution: getEraserBakeResolution(batch.layer.paintCanvas),
+                runtimeKey: `${batch.layer.layerId}:${revision}:${index}`,
+              })
+            : undefined;
+          if (!isCurrent()) return;
+          const alphaBounds = result ? await getCanvasAlphaBoundsAsync(result.canvas) : undefined;
+          if (!isCurrent()) return;
+          const bounds =
+            result && alphaBounds
+              ? scaleDirtyRect(
+                  alphaBounds,
+                  result.canvas.width,
+                  result.canvas.height,
+                  batch.layer.paintCanvas.width,
+                  batch.layer.paintCanvas.height,
+                )
+              : undefined;
+          if (bounds)
+            for (const key of getPaintHistoryTileKeysForBounds(batch.layer.paintCanvas, bounds))
+              keys.add(key);
+          refinements.push({ canvas: result?.canvas, alphaBounds, bounds });
+        }
+        const staged = await stageRefinedStrokeHistory({
+          histories: strokes.map((stroke) => stroke.historyTiles),
+          isApplied: (index) => strokes[index].applied,
+          bounds: [...keys]
+            .map((key) => getPaintHistoryTileBounds(batch.layer.paintCanvas, key))
+            .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds)),
+          key: (bounds) => `${bounds.x}:${bounds.y}`,
+          read: (bounds) => copyCanvasRect(batch.layer.paintCanvas, bounds),
+          copy: (canvas) =>
+            copyCanvasRect(canvas, { x: 0, y: 0, width: canvas.width, height: canvas.height }),
+          affects: (index, bounds) => {
+            const refined = refinements[index].bounds;
+            return Boolean(
+              refined &&
+              bounds.x < refined.x + refined.width &&
+              bounds.x + bounds.width > refined.x &&
+              bounds.y < refined.y + refined.height &&
+              bounds.y + bounds.height > refined.y,
+            );
+          },
+          apply: (index, canvas, bounds) => {
+            const context = canvas.getContext('2d')!;
+            context.save();
+            context.translate(-bounds.x, -bounds.y);
+            strokes[index].apply(context);
+            const refined = refinements[index];
+            if (refined.canvas && refined.alphaBounds && refined.bounds) {
+              const a = refined.alphaBounds,
+                b = refined.bounds;
+              context.globalCompositeOperation = 'destination-out';
+              context.drawImage(
+                refined.canvas,
+                a.x,
+                a.y,
+                a.width,
+                a.height,
+                b.x,
+                b.y,
+                b.width,
+                b.height,
+              );
+              if (batch.layer.target === 'projected-mask') {
+                context.globalCompositeOperation = 'destination-over';
+                context.fillStyle = '#000000';
+                context.fillRect(b.x, b.y, b.width, b.height);
+              }
+            }
+            context.restore();
+          },
+          yieldWork: yieldProjectedEraserRefinement,
+          isCurrent,
         });
-        if (!isCurrent()) return;
-        const alphaBounds = await getCanvasAlphaBoundsAsync(bakeResult.canvas);
-        if (!isCurrent()) return;
-        await yieldProjectedEraserRefinement();
-        if (!isCurrent()) return;
         const latestLayer = useLayerStore
           .getState()
           .layers.find((item) => item.id === batch.layer.layerId);
-        if (!latestLayer) {
-          projectedEraserBatchesRef.current.delete(batch.layer.layerId);
-          return;
-        }
-        if (bakeResult.report.coveredPixels <= 0 || !alphaBounds) {
-          projectedEraserBatchesRef.current.delete(batch.layer.layerId);
-          return;
-        }
-
-        const projectedBounds = scaleDirtyRect(
-          alphaBounds,
-          bakeResult.canvas.width,
-          bakeResult.canvas.height,
-          batch.layer.paintCanvas.width,
-          batch.layer.paintCanvas.height,
-        );
-        const touchedTiles = getPaintHistoryTileKeysForBounds(
-          batch.layer.paintCanvas,
-          projectedBounds,
-        );
-        const historyTiles = batch.latestHistoryTiles ?? [];
-        batch.latestHistoryTiles = historyTiles;
-        const historyTilesByKey = new Map(
-          historyTiles.map((tile) => [
-            `${Math.floor(tile.bounds.x / PAINT_HISTORY_TILE_SIZE)}:${Math.floor(
-              tile.bounds.y / PAINT_HISTORY_TILE_SIZE,
-            )}`,
-            tile,
-          ]),
-        );
-        let copiedBeforeTileCount = 0;
-        for (const key of touchedTiles) {
-          if (historyTilesByKey.has(key)) continue;
-          const bounds = getPaintHistoryTileBounds(batch.layer.paintCanvas, key);
-          if (!bounds) continue;
-          const tile: PaintHistoryTile = {
-            bounds,
-            before: copyCanvasRect(batch.layer.paintCanvas, bounds),
-            after: copyCanvasRect(batch.layer.paintCanvas, bounds),
-          };
-          historyTiles.push(tile);
-          historyTilesByKey.set(key, tile);
-          copiedBeforeTileCount += 1;
-          if (copiedBeforeTileCount % 4 === 0) {
-            await yieldProjectedEraserRefinement();
-            if (!isCurrent()) return;
-          }
-        }
-
-        // The interactive UV stamps have already made the eraser feel instant.
-        // This single deferred projection pass only fills missed UV islands and
-        // triangle seams after input has been idle.
-        batch.layer.paintContext.save();
-        batch.layer.paintContext.globalCompositeOperation = 'destination-out';
-        batch.layer.paintContext.drawImage(
-          bakeResult.canvas,
-          alphaBounds.x,
-          alphaBounds.y,
-          alphaBounds.width,
-          alphaBounds.height,
-          projectedBounds.x,
-          projectedBounds.y,
-          projectedBounds.width,
-          projectedBounds.height,
-        );
-        batch.layer.paintContext.restore();
-        if (batch.layer.target === 'projected-mask') {
-          batch.layer.paintContext.save();
-          batch.layer.paintContext.globalCompositeOperation = 'destination-over';
-          batch.layer.paintContext.fillStyle = '#000000';
-          batch.layer.paintContext.fillRect(
-            projectedBounds.x,
-            projectedBounds.y,
-            projectedBounds.width,
-            projectedBounds.height,
+        if (!staged || !isCurrent() || !latestLayer) return;
+        // No await after this point: pixels and every stroke's checkpoints publish atomically.
+        for (const tile of staged.output) {
+          batch.layer.paintContext.clearRect(
+            tile.bounds.x,
+            tile.bounds.y,
+            tile.bounds.width,
+            tile.bounds.height,
           );
-          batch.layer.paintContext.restore();
+          batch.layer.paintContext.drawImage(tile.pixels, tile.bounds.x, tile.bounds.y);
         }
-        for (let index = 0; index < historyTiles.length; index += 1) {
-          const tile = historyTiles[index];
-          if (!tile) continue;
-          tile.after = copyCanvasRect(batch.layer.paintCanvas, tile.bounds);
-          if ((index + 1) % 4 === 0 && index + 1 < historyTiles.length) {
-            await yieldProjectedEraserRefinement();
-            if (!isCurrent()) return;
-          }
-        }
+        strokes.forEach((stroke, index) => {
+          stroke.historyTiles.splice(0, stroke.historyTiles.length, ...staged.updates[index]);
+          stroke.refined = true;
+        });
         projectedEraserBatchesRef.current.delete(batch.layer.layerId);
         markLiveProjectedCanvasTextureUpdated(batch.layer.assetUrl);
+        scheduleTextureUpdate(batch.layer.paintTexture);
         useLayerStore.getState().updateLayer(batch.layer.layerId, {
           ...(batch.layer.target === 'uv-image'
             ? { imageUrl: batch.layer.assetUrl }
@@ -11804,18 +11808,9 @@ function SurfacePaintOverlay() {
         measureEraserPerformanceEvent('projected-refinement-complete', startedAt, {
           layerId: batch.layer.layerId,
           revision,
-          strokeSnapshots: snapshots.length,
-          coveredPixels: bakeResult.report.coveredPixels,
-          historyTiles: historyTiles.length,
+          strokeSnapshots: strokes.length,
+          historyTiles: staged.updates.reduce((count, tiles) => count + tiles.length, 0),
         });
-        if (isPerformanceInstrumentationEnabled()) {
-          console.info('[Liclick Eraser Refinement]', {
-            strokes: snapshots.length,
-            resolution: `${bakeResult.canvas.width}x${bakeResult.canvas.height}`,
-            historyTiles: historyTiles.length,
-            totalMs: performance.now() - startedAt,
-          });
-        }
       } catch (error) {
         if (!isCurrent()) return;
         projectedEraserBatchesRef.current.delete(batch.layer.layerId);
@@ -11824,28 +11819,29 @@ function SurfacePaintOverlay() {
           revision,
           message: error instanceof Error ? error.message : String(error),
         });
-        // The immediate UV result is already committed, so a failed refinement
-        // must never block the editor or replay the same expensive task.
         console.warn('[Liclick 3D Texture] Deferred projected eraser refinement failed:', error);
       }
     },
-    [],
+    [scheduleTextureUpdate],
   );
 
   const scheduleProjectedEraserRefinement = useCallback(
-    (layer: UvPaintLayer, snapshot: ProjectedEraserSnapshot, historyTiles: PaintHistoryTile[]) => {
+    (layer: UvPaintLayer, stroke: PendingPaintHistoryStroke) => {
       let batch = projectedEraserBatchesRef.current.get(layer.layerId);
       if (!batch || batch.layer !== layer) {
         if (batch) cancelProjectedEraserBatch(layer.layerId);
         batch = {
           layer,
-          snapshots: [],
+          strokes: [],
+          historyEpoch: paintHistoryBoundary.version,
           revision: 0,
         };
         projectedEraserBatchesRef.current.set(layer.layerId, batch);
       }
-      appendProjectedEraserSnapshot(batch.snapshots, snapshot);
-      batch.latestHistoryTiles = historyTiles;
+      if (!batch.strokes.includes(stroke)) batch.strokes.push(stroke);
+      batch.strokes = batch.strokes
+        .filter((item) => item.isRetained())
+        .sort((a, b) => a.sequence - b.sequence);
       batch.revision += 1;
       const revision = batch.revision;
       if (batch.timerId !== undefined) window.clearTimeout(batch.timerId);
@@ -11854,6 +11850,11 @@ function SurfacePaintOverlay() {
       batch.idleCallbackId = undefined;
 
       const waitUntilIdle = () => {
+        if (batch.historyEpoch !== paintHistoryBoundary.version) {
+          if (projectedEraserBatchesRef.current.get(layer.layerId) === batch)
+            cancelProjectedEraserBatch(layer.layerId);
+          return;
+        }
         if (
           projectedEraserBatchesRef.current.get(layer.layerId) !== batch ||
           batch.revision !== revision
@@ -11882,7 +11883,14 @@ function SurfacePaintOverlay() {
             batch.timerId = window.setTimeout(waitUntilIdle, 120);
             return;
           }
-          void runProjectedEraserRefinement(batch, revision);
+          void runProjectedEraserRefinement(batch, revision).finally(() => {
+            if (
+              projectedEraserBatchesRef.current.get(layer.layerId) === batch &&
+              batch.revision === revision
+            ) {
+              batch.timerId = window.setTimeout(waitUntilIdle, 120);
+            }
+          });
         };
         if (window.requestIdleCallback) {
           batch.idleCallbackId = window.requestIdleCallback(
@@ -11928,6 +11936,27 @@ function SurfacePaintOverlay() {
 
     if (draft.target === 'paint') {
       if (!layer) return;
+      const historyEpoch = paintHistoryBoundary.version;
+      const layerHistoryVersion = layer.paintHistoryVersion;
+      const sequence = ++paintHistorySequenceRef.current;
+      const isCancelled = () =>
+        historyEpoch !== paintHistoryBoundary.version ||
+        layerHistoryVersion !== layer.paintHistoryVersion;
+      // Reserve the position at pointer-up, not after image decoding/idle work.
+      let restoreStroke: ((side: 'before' | 'after') => void) | undefined;
+      const runtimeStep = {
+        label:
+          draft.paintOperation === 'brush'
+            ? 'UV 画笔'
+            : layer.target === 'projected-mask'
+              ? '投影图层蒙版擦除'
+              : 'UV 橡皮擦',
+        undo: () => restoreStroke?.('before'),
+        redo: () => restoreStroke?.('after'),
+      };
+      const discardHistory = useEditorHistoryStore.getState().captureRuntime(runtimeStep);
+      const pendingRefinement = projectedEraserBatchesRef.current.get(layer.layerId);
+      if (pendingRefinement) pendingRefinement.revision += 1;
       const projectedEraserCommit = (() => {
         if (draft.paintOperation !== 'eraser') return undefined;
         const model = getTargetModel();
@@ -12000,18 +12029,21 @@ function SurfacePaintOverlay() {
             target: layer.target,
           }) &&
           !(await waitForPaintCommitIdle(
-            undefined,
+            isCancelled,
             PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS,
             () =>
+              paintHistoryBoundary.busy ||
               paintCommitHandoffLayerIdRef.current === layer.layerId ||
               useLayerStore.getState().activeProjectedLayerId !== layer.layerId,
             false,
           ))
         ) {
+          discardHistory();
           finishProjectedPreview();
           return;
         }
-        if (!layer.isReady) {
+        if (isCancelled() || !layer.isReady) {
+          discardHistory();
           finishProjectedPreview();
           return;
         }
@@ -12023,6 +12055,7 @@ function SurfacePaintOverlay() {
           .getState()
           .layers.find((item) => item.id === layer.layerId);
         if (!currentLayer) {
+          discardHistory();
           finishProjectedPreview();
           return;
         }
@@ -12030,6 +12063,7 @@ function SurfacePaintOverlay() {
           .getState()
           .layers.find((item) => item.id === layer.layerId);
         if (!latestLayer) {
+          discardHistory();
           finishProjectedPreview();
           return;
         }
@@ -12046,45 +12080,61 @@ function SurfacePaintOverlay() {
           layer.paintCanvas.width,
           layer.paintCanvas.height,
         );
-        layer.paintContext.save();
-        layer.paintContext.globalCompositeOperation =
-          draft.paintOperation === 'eraser' ? 'destination-out' : 'source-over';
-        layer.paintContext.drawImage(
-          paintPreviewCommit,
-          0,
-          0,
-          paintPreviewCommit.width,
-          paintPreviewCommit.height,
-          paintBounds.x,
-          paintBounds.y,
-          paintBounds.width,
-          paintBounds.height,
-        );
-        layer.paintContext.restore();
-        if (draft.paintOperation === 'eraser' && layer.target === 'projected-mask') {
-          // Store projection masks as opaque grayscale instead of transparent
-          // white. Transparent mask edges interpolate both RGB and alpha, and
-          // the projection shader multiplies the two, producing a dark fringe.
-          // Filling black behind the result preserves the exact same coverage
-          // while keeping alpha at one, so linear filtering has no seam.
-          layer.paintContext.save();
-          layer.paintContext.globalCompositeOperation = 'destination-over';
-          layer.paintContext.fillStyle = '#000000';
-          layer.paintContext.fillRect(
+        const applyStroke = (context: CanvasRenderingContext2D) => {
+          context.save();
+          context.globalCompositeOperation =
+            draft.paintOperation === 'eraser' ? 'destination-out' : 'source-over';
+          context.drawImage(
+            paintPreviewCommit,
+            0,
+            0,
+            paintPreviewCommit.width,
+            paintPreviewCommit.height,
             paintBounds.x,
             paintBounds.y,
             paintBounds.width,
             paintBounds.height,
           );
-          layer.paintContext.restore();
-        }
+          context.restore();
+          if (draft.paintOperation === 'eraser' && layer.target === 'projected-mask') {
+            // Store projection masks as opaque grayscale instead of transparent
+            // white. Transparent mask edges interpolate both RGB and alpha, and
+            // the projection shader multiplies the two, producing a dark fringe.
+            // Filling black behind the result preserves the exact same coverage
+            // while keeping alpha at one, so linear filtering has no seam.
+            context.save();
+            context.globalCompositeOperation = 'destination-over';
+            context.fillStyle = '#000000';
+            context.fillRect(paintBounds.x, paintBounds.y, paintBounds.width, paintBounds.height);
+            context.restore();
+          }
+        };
+        applyStroke(layer.paintContext);
 
         const historyTiles: PaintHistoryTile[] = beforeTiles.map(({ bounds, before }) => ({
           bounds,
           before,
           after: copyCanvasRect(layer.paintCanvas, bounds),
         }));
+        const historyStroke: PendingPaintHistoryStroke = {
+          snapshot: projectedEraserCommit,
+          historyTiles,
+          apply: applyStroke,
+          refined: false,
+          applied: true,
+          sequence,
+          isRetained: () => {
+            const history = useEditorHistoryStore.getState();
+            return [...history.past, ...history.future].some(
+              (step) => step.kind === 'runtime' && step.undo === runtimeStep.undo,
+            );
+          },
+        };
         const applyTiles = (side: 'before' | 'after') => {
+          historyStroke.applied = side === 'after';
+          const remaining = [
+            ...(projectedEraserBatchesRef.current.get(layer.layerId)?.strokes ?? []),
+          ];
           cancelProjectedEraserBatch(layer.layerId);
           historyTiles.forEach((tile) => {
             layer.paintContext.clearRect(
@@ -12096,10 +12146,26 @@ function SurfacePaintOverlay() {
             layer.paintContext.drawImage(tile[side], tile.bounds.x, tile.bounds.y);
           });
           markLiveProjectedCanvasTextureUpdated(layer.assetUrl);
-          // Undo/redo changes the authoritative base independently of the
-          // cumulative live multiplier. Rebuild that multiplier from white on
-          // the next stroke so an undone erasure cannot reappear in preview.
-          layer.liveEraserPreviewInitialized = false;
+          // Neutralize the resident multiplier NOW, without a shader rebuild.
+          for (const preview of new Set([layer, layerRef.current])) {
+            if (!preview || preview.layerId !== layer.layerId) continue;
+            preview.liveResultContext.clearRect(
+              0,
+              0,
+              preview.liveResultCanvas.width,
+              preview.liveResultCanvas.height,
+            );
+            preview.liveResultContext.fillStyle = '#ffffff';
+            preview.liveResultContext.fillRect(
+              0,
+              0,
+              preview.liveResultCanvas.width,
+              preview.liveResultCanvas.height,
+            );
+            preview.liveEraserPreviewInitialized = true;
+            markLiveProjectedCanvasTextureUpdated(preview.liveResultUrl);
+            scheduleTextureUpdate(preview.liveResultTexture);
+          }
           // The layer URL remains stable across strokes, so React/store updates
           // alone do not always schedule an R3F frame. Upload and invalidate the
           // resident canvas immediately or a previous stroke can appear to
@@ -12110,12 +12176,19 @@ function SurfacePaintOverlay() {
             .layers.find((item) => item.id === layer.layerId);
           if (!latestLayer) return;
           useLayerStore.getState().updateLayer(layer.layerId, {
+            ...(layer.target === 'uv-image'
+              ? { imageUrl: layer.assetUrl }
+              : { maskUrl: layer.assetUrl, maskSpace: 'uv' as const }),
             contentRevision: (latestLayer.contentRevision ?? 0) + 1,
             isBaked: false,
             needsRebake: layer.target === 'projected-mask',
           });
           useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+          if (!historyStroke.refined && !remaining.includes(historyStroke))
+            remaining.push(historyStroke);
+          remaining.forEach((stroke) => scheduleProjectedEraserRefinement(layer, stroke));
         };
+        restoreStroke = applyTiles;
         markLiveProjectedCanvasTextureUpdated(layer.assetUrl);
         scheduleTextureUpdate(layer.paintTexture);
         useLayerStore.getState().updateLayer(layer.layerId, {
@@ -12128,20 +12201,8 @@ function SurfacePaintOverlay() {
           needsRebake: layer.target === 'projected-mask',
         });
         useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
-        if (historyTiles.length > 0) {
-          useEditorHistoryStore.getState().captureRuntime({
-            label:
-              draft.paintOperation === 'brush'
-                ? 'UV 画笔'
-                : layer.target === 'projected-mask'
-                  ? '投影图层蒙版擦除'
-                  : 'UV 橡皮擦',
-            undo: () => applyTiles('before'),
-            redo: () => applyTiles('after'),
-          });
-        }
-        if (projectedEraserCommit) {
-          scheduleProjectedEraserRefinement(layer, projectedEraserCommit, historyTiles);
+        if (projectedEraserCommit || projectedEraserBatchesRef.current.has(layer.layerId)) {
+          scheduleProjectedEraserRefinement(layer, historyStroke);
         }
         if (draft.paintOperation === 'eraser') {
           measureEraserPerformanceEvent('eraser-commit-complete', commitStartedAt, {
@@ -12177,6 +12238,7 @@ function SurfacePaintOverlay() {
       const queuedCommit = layer.paintCommitChain.then(() => layer.ready).then(finalizePaintStroke);
       layer.paintCommitChain = queuedCommit
         .catch((error) => {
+          discardHistory();
           finishProjectedPreview();
           console.warn('[Liclick 3D Texture] Could not commit UV paint stroke:', error);
           pushToast({
@@ -12192,6 +12254,7 @@ function SurfacePaintOverlay() {
         .finally(() => {
           layer.pendingPaintCommits = Math.max(0, layer.pendingPaintCommits - 1);
         });
+      paintHistoryBoundary.track(layer.paintCommitChain);
       return;
     }
 
@@ -12250,6 +12313,8 @@ function SurfacePaintOverlay() {
   ]);
 
   const commitStrokeHistory = useCallback(() => {
+    finishHistoryGestureRef.current?.();
+    finishHistoryGestureRef.current = undefined;
     const draft = strokeDraftRef.current;
     strokeDraftRef.current = undefined;
     if (!draft?.bounds) return;
@@ -13426,6 +13491,11 @@ function SurfacePaintOverlay() {
         event.stopImmediatePropagation();
         return;
       }
+      if (paintHistoryBoundary.busy) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (isInpaintMode) {
         cancelIdleInpaintArchive();
         const selectionLayer = syncInpaintMaskProjection(result.model);
@@ -13543,6 +13613,11 @@ function SurfacePaintOverlay() {
       }
       isPaintingRef.current = true;
       strokeCanvasRectRef.current = strokeCanvasRect;
+      paintHistoryBoundary.track(
+        new Promise<void>((resolve) => {
+          finishHistoryGestureRef.current = resolve;
+        }),
+      );
       pendingPaintTargetsRef.current = [];
       if (paintInputFrameRef.current !== undefined) {
         window.cancelAnimationFrame(paintInputFrameRef.current);

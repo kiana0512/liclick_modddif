@@ -31,6 +31,7 @@
     "test:multi-model-restore-policy": "node scripts/test-multi-model-restore-policy.mjs",
     "test:multiview-snapshot-cancellation": "node scripts/test-multiview-snapshot-cancellation.mjs",
     "test:paint-history-granularity": "node scripts/test-paint-history-granularity.mjs",
+    "test:paint-history-transactions": "node scripts/test-paint-history-transactions.mjs",
     "test:persistent-texture-editor": "node scripts/test-persistent-texture-editor.mjs",
     "test:reference-click-preview": "node scripts/test-reference-click-preview.mjs",
     "test:reference-preview-fit": "node scripts/test-reference-preview-fit.mjs",

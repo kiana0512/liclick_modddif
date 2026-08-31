@@ -85,7 +85,7 @@ try {
   );
   assert.match(
     viewportSource,
-    /waitForPaintCommitIdle\(\s*undefined,\s*PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS,\s*\(\) =>[\s\S]*?paintCommitHandoffLayerIdRef\.current === layer\.layerId[\s\S]*?false,/,
+    /waitForPaintCommitIdle\(\s*isCancelled,\s*PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS,\s*\(\) =>\s*paintHistoryBoundary\.busy \|\|[\s\S]*?paintCommitHandoffLayerIdRef\.current === layer\.layerId[\s\S]*?false,/,
     'Projected eraser commit must yield during a stroke burst, flush immediately for a layer handoff, and avoid a long requestIdleCallback wait.',
   );
   assert.match(

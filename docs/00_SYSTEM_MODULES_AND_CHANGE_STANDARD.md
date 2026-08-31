@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.9.2`
+> 文档版本：`2.10.0`
 >
 > 生效日期：`2026-08-31`
 >
-> 代码盘点基线：`707f009a + 本次构建体积修复`
+> 代码盘点基线：`add3b82 + 本次橡皮历史事务修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -171,7 +171,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.2.0
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.0
 
 橡皮采用 Modddif 式“编辑当前图层覆盖”语义，不对最终合成画面做破坏性擦除。快捷键为贴图工作区 `E`，目标由 `engine/paint/eraserTargetPolicy.ts` 唯一判定，React 和 Zustand 不得复制类型分支。
 
@@ -188,6 +188,12 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 v1.2.0 的交互调度只优化普通 projected keep-mask：原始鼠标/压感笔事件在每个显示帧仅保留最后一个表面命中，512 代理画布用连续笔刷段补齐帧间路径；复用 pointer-down 画布边界，停止逐帧上传仅用于延迟细化的 projection texture。抬笔后等待 48ms 无输入窗口，再让出一个任务执行持久画布、历史瓦片和图层发布，不再等待可能延迟数秒的 requestIdleCallback；切层/切模型时优先完成旧笔画提交，再释放旧 live mask，交接期间不接收新笔画。高分辨率投影补缝仍在 3000ms 交互空闲后运行。普通/合并 UV 橡皮继续使用密集 BVH/UV 重采样，局部重绘作者 coverage、最终分辨率和覆盖公式均不变。
 
 图层显隐操作同步读取 LayerStore 权威状态，不以延迟 React 快照推导下一次眼睛状态；隐藏活动层会退出画笔/橡皮并选择仍可见的图层。清理 projected eraser mask 时同时取消待提交细化、清除 live surface preview 和 GPU eraser uniform，避免清理后残留遮挡。live eraser 纹理不再参与完整投影材质结构签名，工具切换与清理只更新驻留 uniform；晚到材质不能复活已经关闭的 UV 图层。
+
+v1.3.0 历史事务修复（UI-06/UI-10 → M12 历史与画笔集成）：每次抬笔立即占据一个 runtime 历史位置，图像解码和 48ms idle 提交只填充该位置的前后瓦片，不再次入栈或清空 redo。`engine/paint/paintHistoryBoundary.ts` 统一工具栏与快捷键：等待当前手势和已登记的提交，再按请求顺序执行撤回/重做；等待期间仅拒绝新绘制手势，不阻塞浏览器线程。提交失败移除本笔占位；项目历史重置与清理蒙版通过版本检查淘汰晚到提交。
+
+撤回/重做在同一任务中恢复持久瓦片、将当前及同层重建实例的 live eraser multiplier 重置为白色中性值、上传纹理并 invalidate；保持驻留 shader 结构，重新绑定 image/mask URL 和 contentRevision，随后同步 Project layers。此处中性白值是内部 keep-mask，不是编辑结果中的白模。后台细化仍采用项目原始分辨率和 3000ms idle；`engine/paint/refineStrokeHistory.ts` 从最早瓦片检查点按笔画顺序重放，分别更新每笔的 before/after。已撤回笔画仅更新 redo 检查点，不重新显示；新分支清除不再属于历史的笔画。每四个瓦片让出执行权，完成后无 await 地原子发布全部像素与历史；切换、撤回或新笔画使旧任务失效时不发布半成品。
+
+审计：GPU live 纹理与持久 UV0/alpha 同步恢复；shader、CPU rasterizer、UV Worker、GPU bake 的覆盖公式与 UV/export 消费契约不变。历史事务仅驻留内存，回退只还原提交边界、即时预览复位和逐笔细化实现，已有图层资产仍兼容。新增 `test:paint-history-transactions` 执行真实历史 store/撤回回调和细化函数，覆盖快速三笔撤回重做、按住画笔时撤回、失败占位、项目重置、同层 runtime 重建、重叠擦除/画笔覆盖、新 UV 岛、redo 归属与中途取消；与历史粒度、输入延迟、目标策略、投影显隐和局部重绘兼容回归一起验证。真实模型连续操作及保存重开仍需交互验收，不以数值回归替代视觉结果。
 
 Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容修订；未带字段的旧图层按原 image/mask 读取，首次擦除时惰性升级，不执行批量迁移。项目保存继续使用 Project Command v1、Revision CAS 与现有 verified layer asset 上传，未引入新的命令或资产类别。高分辨率提交失败时保留上一持久版本并显示错误，禁止静默写入低分辨率结果。
 
@@ -524,3 +530,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.9.0` | 2026-08-31 | `2009a6c + 本次一句话诊断与转换分离` | `ALG-GEN-005` v1.5.0：空输入先由 Qwen 输出一句中文修复要求，再以该句调用 Klein 四段英文转换模板；覆盖有证据的接缝、色差、投影和已有文字异常，转换不新增目标。显式输入跳过诊断，全流程共享 65 秒，最终格式最多修正一次；空输入缓存策略升级，诊断不持久化。三图/生成/蒙版/GPU/CPU/Worker/shader/UV/export、Schema 和历史资产不变，无迁移；模拟回归验证，不启动服务或调用真实生图。 |
 | `2.9.1` | 2026-08-31 | `13d4321 + 本次 lint 修复` | M15 发布修复：显式补齐 `@eslint/js` 依赖；M04 提示词 ANSI 清理改用 Node 内置实现并补充回归，修复 CI 正则规则错误。全部质量门禁保留，`ALG-GEN-005` v1.5.0 与业务/Schema/资产契约不变，无迁移。 |
 | `2.9.2` | 2026-08-31 | `707f009a + 本次构建体积修复` | M15：锁定 Terser 生产安全压缩，保留诊断和属性名，新增真实构建等价性回归。编辑器与 JS 总量回到原有体积上限内；不提高门禁，不删除功能，不改变业务算法、Schema 或资产，无迁移。 |
+| `2.10.0` | 2026-08-31 | `add3b82 + 本次橡皮历史事务修复` | UI-06/UI-10、M12、`ALG-ERASE-001` v1.3.0：抬笔预登记历史，撤回等待手势与提交；即时同步持久瓦片和 GPU live mask；细化逐笔重放并原子发布，redo 检查点不串笔。增加真实回调/数值时序回归。原输出分辨率、覆盖公式和资产/Project Schema 不变，无迁移。 |
