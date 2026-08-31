@@ -125,6 +125,15 @@ export default defineConfig({
   // chunks; this keeps route budgets focused on executable payload bytes.
   esbuild: { legalComments: 'none' },
   build: {
+    // Production-only compression: preserve diagnostics and public property
+    // names while removing more redundant expressions than the fast dev tool.
+    minify: 'terser',
+    terserOptions: {
+      compress: { passes: 2, drop_console: false, unsafe: false },
+      mangle: { properties: false },
+      // Licenses remain available in the shipped THIRD_PARTY_NOTICES.txt.
+      format: { comments: false },
+    },
     // The zero-install client already requires modern browser primitives such as
     // Web Workers, WebGL2 and the File System APIs. Avoid transpiling the same
     // code back to legacy syntax that those supported browsers do not need.
