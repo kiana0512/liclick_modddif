@@ -27,7 +27,7 @@ def source_header_value(label: str) -> str:
 
 DOCUMENT_VERSION = source_header_value("文档版本")
 DATE = source_header_value("生效日期")
-BASELINE_COMMIT = source_header_value("代码盘点基线").split()[0]
+BASELINE_COMMIT = source_header_value("代码盘点基线")
 OUTPUT = (
     ROOT
     / "output"
@@ -407,7 +407,7 @@ def add_cover(doc: Document) -> None:
         ("文档版本", DOCUMENT_VERSION),
         ("规范状态", "当前唯一维护准则 / Normative Baseline"),
         ("生效日期", DATE),
-        ("代码盘点基线", BASELINE_COMMIT + " / clean Modernization chain"),
+        ("代码盘点基线", BASELINE_COMMIT),
         ("适用对象", "两位维护者、Codex、后续开发与测试人员"),
     ]
     table = doc.add_table(rows=len(metadata), cols=2)

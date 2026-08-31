@@ -13,6 +13,7 @@ import {
   type LiclickImageSubmission,
 } from '../services/liclickGenerationService.js';
 import { getLiclickUserErrorMessage } from '../services/liclickErrorMessage.js';
+import { polishPrompt, type PromptPolishInput } from '../services/promptPolishService.js';
 import { serverConfig } from '../config.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
@@ -68,6 +69,7 @@ type EditImageJob = {
 
 const generationJobs = new Map<string, GenerationJob>();
 const editImageJobs = new Map<string, EditImageJob>();
+const promptPolishUsers = new Set<string>();
 let jobsLoadPromise: Promise<void> | undefined;
 let writeQueue = Promise.resolve();
 const transientWriteErrorCodes = new Set([
@@ -701,6 +703,119 @@ export async function handleLiclickRoute(
   const user = authenticatedUser ?? (await requireAuth(request, response));
   if (!user) return true;
 
+  if (isLiclickRoute && request.method === 'POST' && segments[2] === 'prompt-polish') {
+    if (promptPolishUsers.has(user.id)) {
+      sendJson(response, 409, { code: 'PROMPT_POLISH_BUSY', error: '智能润色正在处理中。' });
+      return true;
+    }
+    const input = await readJsonBody<PromptPolishInput>(request, 48 * 1024 * 1024);
+    const context = input.context === 'local-repaint' ? input.context : 'general';
+    const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+    const maxLength = context === 'local-repaint' ? 4096 : 12_000;
+    if ((context === 'general' && !prompt) || Array.from(prompt).length > maxLength) {
+      sendJson(response, 400, {
+        code: 'PROMPT_POLISH_INVALID_INPUT',
+        error: `提示词不能为空且不能超过 ${maxLength} 个字符。`,
+      });
+      return true;
+    }
+    if (
+      context === 'local-repaint' &&
+      (![input.currentEffectImage, input.maskImage, input.referenceImage].every(
+        (image) => image && typeof image.name === 'string' && typeof image.dataUrl === 'string',
+      ) ||
+        input.hasMask !== true)
+    ) {
+      sendJson(response, 400, {
+        code: 'PROMPT_POLISH_VISUAL_INPUT_REQUIRED',
+        error: '局部重绘智能润色需要当前效果图、白色蒙版和材质参考图。',
+      });
+      return true;
+    }
+    promptPolishUsers.add(user.id);
+    try {
+      const polishedPrompt = await polishPrompt(
+        {
+          prompt,
+          context,
+          modelName: typeof input.modelName === 'string' ? input.modelName : undefined,
+          objectName: typeof input.objectName === 'string' ? input.objectName : undefined,
+          referenceNames: Array.isArray(input.referenceNames)
+            ? input.referenceNames.filter((name): name is string => typeof name === 'string')
+            : undefined,
+          hasMask: typeof input.hasMask === 'boolean' ? input.hasMask : undefined,
+          currentEffectImage: input.currentEffectImage,
+          maskImage: input.maskImage,
+          referenceImage: input.referenceImage,
+        },
+        user.atlasHomeDir,
+      );
+      sendJson(response, 200, { polishedPrompt });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const authFailure = /401|403|unauthorized|forbidden|login|auth|token|登录|认证|授权/i.test(
+        message,
+      );
+      const timeout = /timeout|timed out|超时/i.test(message);
+      const invalidVisualInput = /PROMPT_POLISH_INVALID_VISUAL_INPUT/.test(message);
+      const invalidResult = /PROMPT_POLISH_(?:EMPTY|INVALID|RESULT_TOO_LONG)/.test(message);
+      const qwenNotConfigured = /PROMPT_POLISH_QWEN_NOT_CONFIGURED/.test(message);
+      const qwenAuthFailure = /PROMPT_POLISH_QWEN_HTTP_(?:401|403)/.test(message);
+      const qwenInvalidRequest = /PROMPT_POLISH_QWEN_HTTP_(?:400|413|415)/.test(message);
+      sendJson(
+        response,
+        qwenNotConfigured || qwenAuthFailure
+          ? 503
+          : authFailure
+            ? 401
+            : qwenInvalidRequest
+              ? 400
+              : timeout
+              ? 504
+              : invalidVisualInput
+                ? 400
+                : invalidResult
+                  ? 502
+                  : 503,
+        {
+          code: qwenNotConfigured
+            ? 'PROMPT_POLISH_QWEN_NOT_CONFIGURED'
+            : qwenAuthFailure
+              ? 'PROMPT_POLISH_QWEN_AUTH_FAILED'
+              : authFailure
+                ? 'PROMPT_POLISH_AUTH_REQUIRED'
+                : qwenInvalidRequest
+                  ? 'PROMPT_POLISH_QWEN_INVALID_REQUEST'
+                  : timeout
+                    ? 'PROMPT_POLISH_TIMEOUT'
+                    : invalidVisualInput
+                      ? 'PROMPT_POLISH_INVALID_VISUAL_INPUT'
+                      : invalidResult
+                        ? 'PROMPT_POLISH_INVALID_RESULT'
+                        : 'PROMPT_POLISH_UNAVAILABLE',
+          error: qwenNotConfigured
+            ? '局部重绘智能润色服务尚未配置，请联系管理员。'
+            : qwenAuthFailure
+              ? '局部重绘智能润色服务鉴权失败，请联系管理员。'
+              : authFailure
+                ? '莉刻登录状态已失效，请重新登录后再试。'
+                : qwenInvalidRequest
+                  ? '局部重绘视觉输入未被智能润色服务接受，请重试。'
+                  : timeout
+                    ? '智能润色响应超时，请稍后重试。'
+                    : invalidVisualInput
+                      ? '智能润色图片格式或大小不符合要求，请重试。'
+                      : invalidResult
+                        ? '智能润色返回的格式不符合要求，请重试。'
+                        : '智能润色暂时不可用，请稍后重试。',
+        },
+      );
+    } finally {
+      promptPolishUsers.delete(user.id);
+    }
+    return true;
+  }
+
   if (isLiclickRoute && request.method === 'GET' && segments[2] === 'status') {
     if (!requirePersonalLiclickAccount(response, user)) return true;
     const result = await checkLiclickApiAccess(user);
@@ -832,10 +947,7 @@ export async function handleLiclickRoute(
     if (!requirePersonalLiclickAccount(response, user)) return true;
     if (user.atlasHomeDir && user.email) {
       const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
-      if (
-        atlasIdentity.email &&
-        user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
-      ) {
+      if (atlasIdentity.email && user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()) {
         sendJson(response, 403, {
           error:
             'Current Atlas / Liclick account does not match this browser session. Please log in again.',
@@ -880,10 +992,7 @@ export async function handleLiclickRoute(
     if (!requirePersonalLiclickAccount(response, user)) return true;
     if (user.atlasHomeDir && user.email) {
       const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
-      if (
-        atlasIdentity.email &&
-        user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
-      ) {
+      if (atlasIdentity.email && user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()) {
         sendJson(response, 403, {
           error:
             'Current Atlas / Liclick account does not match this browser session. Please log in again.',
@@ -916,10 +1025,7 @@ export async function handleLiclickRoute(
       sendJson(response, 409, { error: 'Generation job id is already owned by another user.' });
       return true;
     }
-    if (
-      existingJob &&
-      (existingJob.projectId !== projectId || existingJob.workflow !== workflow)
-    ) {
+    if (existingJob && (existingJob.projectId !== projectId || existingJob.workflow !== workflow)) {
       sendJson(response, 409, { error: 'Generation job id belongs to another project.' });
       return true;
     }

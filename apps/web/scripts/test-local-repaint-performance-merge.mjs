@@ -21,13 +21,25 @@ assert.match(panel, /local-repaint-mask-required/);
 assert.match(panel, /onLocalImageGenerationSettled/);
 assert.match(panel, /displayedTexturePreviewMode/);
 assert.match(panel, /createModelviewApiClient\(\)\.generateInpaint\(/);
-assert.match(panel, /image: \{ path: 'white-model\.png'/);
+assert.match(panel, /image: \{ path: 'current-effect\.png'/);
 assert.match(
   panel,
   /materialImage: \{[\s\S]*path: `\$\{generationId\}-\$\{materialReference\.id\}-material-reference\.png`/,
 );
-assert.match(panel, /const \[whiteModelDataUrl, materialReferenceDataUrl\]/);
-assert.match(panel, /prompt: localRepaintPrompt\.trim\(\) \|\| undefined/);
+assert.match(panel, /mask: \{ path: `\$\{generationId\}-mask\.png`, dataUrl: maskDataUrl \}/);
+assert.match(panel, /const \[currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl\]/);
+assert.match(panel, /prompt: effectivePrompt/);
+assert.match(panel, /prepareLocalRepaintGenerationInput\(\{/);
+assert.match(panel, /currentEffectUrl: flatCurrentEffectUrl/);
+assert.match(panel, /clayPreviewUrl/);
+assert.match(panel, /authoredMaskUrl: currentPaintMaskDataUrl/);
+assert.match(panel, /urlToDataUrl\(preparedGenerationInput\.submittedMaskUrl\)/);
+assert.match(
+  panel,
+  /prepareLocalRepaintPromptPolishInputs\(\{[\s\S]*?currentEffectUrl: promptAnalysisCurrentEffectUrl,[\s\S]*?maskUrl: currentPaintMaskDataUrl/,
+);
+assert.match(panel, /generations\.find\([\s\S]*?metadata\.promptFingerprint === promptFingerprint/);
+assert.match(panel, /生成时自动分析并优化/);
 assert.match(
   panel,
   /maxLength=\{[\s\S]*?isLocalRepaintTab \|\|[\s\S]*?singleViewProvider === 'remote'\)[\s\S]*?\? 4096[\s\S]*?: undefined[\s\S]*?\}/,
@@ -35,7 +47,9 @@ assert.match(
 assert.doesNotMatch(panel, /viewportReference: \{/);
 assert.doesNotMatch(serverInpaint, /input\.viewportReference/);
 assert.doesNotMatch(serverInpaint, /field: 'viewport_reference'/);
-assert.doesNotMatch(panel, /generateInpaint\(\s*\{[\s\S]*paintMask:/);
+assert.match(serverInpaint, /field: 'image' \| 'material_image' \| 'mask'/);
+assert.match(serverInpaint, /inpaint:4input-rseed-r1/);
+assert.match(panel, /resultComposition: 'direct-v1'/);
 assert.match(panel, /cancelledTextureBatchIdsRef/);
 assert.match(panel, /generationBelongsToObject/);
 

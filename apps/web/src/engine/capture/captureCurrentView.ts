@@ -24,12 +24,11 @@ import * as THREE from 'three';
 
 const maxCaptureSize = 2048;
 const defaultFillRatio = 0.96;
-// Local-repaint structure/reference frames are guidance inputs, not exported
-// texture assets. Render both from the exact same frozen camera at a bounded
-// resolution, then let the PNG worker upscale to ModelView's 2K contract. A
-// single 512px GPU pass avoids visible WebGL queue stalls while preserving
-// pixel-perfect alignment between the white and authored-colour inputs.
-const localRepaintInteractiveCaptureSize = 512;
+// Local-repaint structure/reference frames are pixel-authoritative inputs for
+// the remote edit. Keep their real 2K detail; renderSceneToPngUrl already
+// submits the target in 512px tiles and yields between GPU work, so a low-res
+// render followed by worker upscaling is both unnecessary and visibly blurry.
+const localRepaintInteractiveCaptureSize = maxCaptureSize;
 
 function getBoxCorners(box: THREE.Box3) {
   return [
@@ -177,9 +176,7 @@ function createFitObjectCamera(
     sourceCamera instanceof THREE.PerspectiveCamera ? sourceCamera : undefined;
   const fov = sourcePerspective?.fov ?? 35;
   const zoom = sourcePerspective?.zoom ?? 1;
-  const fovRad = THREE.MathUtils.degToRad(
-    sourcePerspective?.getEffectiveFOV() ?? fov,
-  );
+  const fovRad = THREE.MathUtils.degToRad(sourcePerspective?.getEffectiveFOV() ?? fov);
   const horizontalFovRad = 2 * Math.atan(Math.tan(fovRad * 0.5) * aspect);
   const tanHalfVerticalFov = Math.max(Math.tan(fovRad * 0.5), 0.0001);
   const tanHalfHorizontalFov = Math.max(Math.tan(horizontalFovRad * 0.5), 0.0001);
@@ -194,8 +191,7 @@ function createFitObjectCamera(
     distance = Math.max(
       distance,
       towardCamera + Math.abs(offset.dot(frame.up)) / (tanHalfVerticalFov * safeFillRatio),
-      towardCamera +
-        Math.abs(offset.dot(frame.right)) / (tanHalfHorizontalFov * safeFillRatio),
+      towardCamera + Math.abs(offset.dot(frame.right)) / (tanHalfHorizontalFov * safeFillRatio),
     );
   }
   const camera = new THREE.PerspectiveCamera(fov, aspect);
@@ -270,11 +266,7 @@ async function captureClayTarget(
           // before every inter-tile browser frame keeps the live background,
           // grid and helpers continuously visible during snapshot preparation.
           prepareScene: () =>
-            applyTargetOnlyMaterial(
-              passRequest.scene,
-              passRequest.objectId,
-              () => captureMaterial,
-            ),
+            applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId, () => captureMaterial),
         },
       ),
       warnings: [],
@@ -349,6 +341,42 @@ async function captureTargetOnly(passRequest: CapturePassRequest) {
   }
 }
 
+function hideAuthoringOverlaysForPreviewCapture(scene: THREE.Scene) {
+  const visibility = new Map<THREE.Object3D, boolean>();
+  scene.traverse((object) => {
+    if (
+      !object.userData.liclickPaintOverlay &&
+      !object.userData.liclickSelectionGlow &&
+      !object.userData.liclickWireframeOverlay &&
+      object.name !== 'Liclick Live Inpaint Screen Preview'
+    )
+      return;
+    visibility.set(object, object.visible);
+    object.visible = false;
+  });
+  return () => visibility.forEach((visible, object) => (object.visible = visible));
+}
+
+async function captureCleanViewportPreview(
+  passRequest: CapturePassRequest,
+  encodedSize?: { width: number; height: number },
+) {
+  return {
+    url: await renderSceneToPngUrl(passRequest, {
+      applyDisplayTransform: true,
+      tileSize: 512,
+      performancePhasePrefix: 'prompt-polish-preview',
+      encodedWidth: encodedSize?.width,
+      encodedHeight: encodedSize?.height,
+      // Hide only authoring overlays for the exact offscreen draw. Restoring
+      // after every tile prevents the visible viewport from flashing while the
+      // captured image retains its real materials, lighting and background.
+      prepareScene: () => hideAuthoringOverlaysForPreviewCapture(passRequest.scene),
+    }),
+    warnings: [],
+  };
+}
+
 function createFlatTargetCaptureMaterial(sourceMaterial: THREE.Material) {
   if (
     sourceMaterial instanceof THREE.ShaderMaterial &&
@@ -409,46 +437,47 @@ async function captureFlatTarget(
   const temporaryMaterials = new Set<THREE.Material>();
   const mutatedShaderMaterials = new Set<THREE.ShaderMaterial>();
   const restoreUniforms: Array<() => void> = [];
-  const restoreScene = applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId, (source) => {
-    // The authored projection/UV material is already resident and compiled in
-    // the viewport. Cloning it here creates a brand-new shader program and can
-    // block Chromium's main/GPU threads for several seconds on button 2. Flat
-    // capture only changes presentation uniforms, so borrow the resident
-    // program for this single submitted draw and restore its values immediately
-    // afterwards. Camera and model matrices remain the frozen click snapshot.
-    if (
-      source instanceof THREE.ShaderMaterial &&
-      source.uniforms.previewLightingEnabled
-    ) {
-      if (!mutatedShaderMaterials.has(source)) {
-        mutatedShaderMaterials.add(source);
-        const previousValues = new Map<string, unknown>();
-        for (const [name, value] of [
-          ['previewLightingEnabled', 0],
-          ['previewExposure', 1],
-          ['normalPreviewEnabled', 0],
-          ['wirePreviewEnabled', 0],
-        ] as const) {
-          const uniform = source.uniforms[name];
-          if (!uniform) continue;
-          previousValues.set(name, uniform.value);
-          uniform.value = value;
-        }
-        source.uniformsNeedUpdate = true;
-        restoreUniforms.push(() => {
-          previousValues.forEach((value, name) => {
+  const restoreScene = applyTargetOnlyMaterial(
+    passRequest.scene,
+    passRequest.objectId,
+    (source) => {
+      // The authored projection/UV material is already resident and compiled in
+      // the viewport. Cloning it here creates a brand-new shader program and can
+      // block Chromium's main/GPU threads for several seconds on button 2. Flat
+      // capture only changes presentation uniforms, so borrow the resident
+      // program for this single submitted draw and restore its values immediately
+      // afterwards. Camera and model matrices remain the frozen click snapshot.
+      if (source instanceof THREE.ShaderMaterial && source.uniforms.previewLightingEnabled) {
+        if (!mutatedShaderMaterials.has(source)) {
+          mutatedShaderMaterials.add(source);
+          const previousValues = new Map<string, unknown>();
+          for (const [name, value] of [
+            ['previewLightingEnabled', 0],
+            ['previewExposure', 1],
+            ['normalPreviewEnabled', 0],
+            ['wirePreviewEnabled', 0],
+          ] as const) {
             const uniform = source.uniforms[name];
-            if (uniform) uniform.value = value;
-          });
+            if (!uniform) continue;
+            previousValues.set(name, uniform.value);
+            uniform.value = value;
+          }
           source.uniformsNeedUpdate = true;
-        });
+          restoreUniforms.push(() => {
+            previousValues.forEach((value, name) => {
+              const uniform = source.uniforms[name];
+              if (uniform) uniform.value = value;
+            });
+            source.uniformsNeedUpdate = true;
+          });
+        }
+        return source;
       }
-      return source;
-    }
-    const material = createFlatTargetCaptureMaterial(source);
-    temporaryMaterials.add(material);
-    return material;
-  });
+      const material = createFlatTargetCaptureMaterial(source);
+      temporaryMaterials.add(material);
+      return material;
+    },
+  );
   let restored = false;
   const restore = () => {
     if (restored) return;
@@ -524,6 +553,11 @@ export async function captureCurrentColorPreview(
             { ...passRequest, width: interactiveWidth, height: interactiveHeight },
             { width, height },
           )
+        : request.colorMode === 'viewport-clean'
+          ? await captureCleanViewportPreview(
+              { ...passRequest, width: interactiveWidth, height: interactiveHeight },
+              { width, height },
+            )
         : request.colorMode === 'target-only'
           ? await captureTargetOnly(passRequest)
           : await captureColor(passRequest);
@@ -536,14 +570,15 @@ export async function captureCurrentColorPreview(
 }
 
 /**
- * Captures the one colour pass needed by ModelView local repaint and archives
- * the already camera-aligned paint mask. Auxiliary depth is deliberately
- * separate so it can run while the remote request is in flight instead of
- * blocking the Generate button behind mask/normal/depth readbacks.
+ * Captures the one current-effect colour pass needed by ModelView local repaint
+ * and archives the already camera-aligned paint mask. Auxiliary depth is
+ * deliberately separate so it can run while the remote request is in flight
+ * instead of blocking the Generate button behind mask/normal/depth readbacks.
  */
 export async function captureCurrentLocalRepaintView(
   request: CaptureCurrentViewRequest,
   maskUrl: string,
+  options: { archive?: boolean } = {},
 ): Promise<Capture> {
   const size = Math.min(request.resolution, maxCaptureSize);
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
@@ -552,14 +587,18 @@ export async function captureCurrentLocalRepaintView(
   const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect);
   const interactiveWidth = Math.min(width, localRepaintInteractiveCaptureSize);
   const interactiveHeight = Math.min(height, localRepaintInteractiveCaptureSize);
-  const color = await captureClayTarget({
+  const passRequest: CapturePassRequest = {
     gl: viewport.gl,
     scene: viewport.scene,
     camera: captureCamera,
     objectId: request.objectId,
     width: interactiveWidth,
     height: interactiveHeight,
-  }, { width, height });
+  };
+  const color =
+    request.colorMode === 'flat-target'
+      ? await captureFlatTarget(passRequest, { width, height })
+      : await captureClayTarget(passRequest, { width, height });
   const capture: Capture = {
     id: createId('capture'),
     objectId: request.objectId,
@@ -571,7 +610,7 @@ export async function captureCurrentLocalRepaintView(
     createdAt: new Date().toISOString(),
     warnings: color.warnings,
   };
-  useProjectStore.getState().addCapture(capture);
+  if (options.archive !== false) useProjectStore.getState().addCapture(capture);
   return capture;
 }
 
@@ -620,9 +659,9 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
       ? await captureClayTarget(passRequest)
       : request.colorMode === 'flat-target'
         ? await captureFlatTarget(passRequest)
-      : request.colorMode === 'target-only'
-        ? await captureTargetOnly(passRequest)
-        : await captureColor(passRequest);
+        : request.colorMode === 'target-only'
+          ? await captureTargetOnly(passRequest)
+          : await captureColor(passRequest);
   // Preserve all four exact passes and their resolution, while returning one
   // presentation frame between GPU submissions so camera interaction and the
   // progress UI remain responsive during local repaint generation.

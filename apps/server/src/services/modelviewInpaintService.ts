@@ -4,6 +4,7 @@ import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
 import { createHash, randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { serverConfig } from '../config.js';
 import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
 import { maxLocalAssetBytes, saveBinaryAsset, saveUserRecoveryAsset } from './assetFileService.js';
@@ -13,7 +14,7 @@ type ModelviewControlFile = {
   dataUrl: string;
 };
 
-export type ModelviewInpaintInput = {
+type ModelviewGenerationInput = {
   clientGenerationId?: string;
   projectId?: string;
   prompt?: string;
@@ -21,7 +22,11 @@ export type ModelviewInpaintInput = {
   materialImage: ModelviewControlFile;
 };
 
-export type ModelviewSingleViewInput = ModelviewInpaintInput;
+export type ModelviewInpaintInput = ModelviewGenerationInput & {
+  mask: ModelviewControlFile;
+};
+
+export type ModelviewSingleViewInput = ModelviewGenerationInput;
 
 type ModelviewServiceKind = 'inpaint' | 'single-view';
 
@@ -81,11 +86,11 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
     apiKey: serverConfig.modelviewInpaintApiKey,
     timeoutMs: serverConfig.modelviewInpaintTimeoutMs,
     jobPrefix: 'modelview-inpaint',
-    idempotencySuffix: 'inpaint:3input-rseed-r1',
+    idempotencySuffix: 'inpaint:4input-rseed-r1',
     filenameSuffix: 'modelview-int8',
     source: 'modelview-inpaint',
-    workflow: '2026.08.26-740115a-truev3-gguf-3input-rseed-r1',
-    finalNode: 'SaveImage #32',
+    workflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+    finalNode: 'SaveImage #29',
   };
 }
 
@@ -167,7 +172,7 @@ function createIdempotencyKey(jobId: string, service: ModelviewServiceDefinition
 function multipartBody(input: {
   boundary: string;
   files: Array<{
-    field: 'image' | 'material_image';
+    field: 'image' | 'material_image' | 'mask';
     filename: string;
     mime: string;
     image: Buffer;
@@ -200,6 +205,44 @@ function multipartBody(input: {
   }
   chunks.push(Buffer.from(`--${input.boundary}--\r\n`, 'utf8'));
   return Buffer.concat(chunks);
+}
+
+async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { buffer: Buffer }) {
+  try {
+    const [imageMetadata, maskMetadata, maskStats] = await Promise.all([
+      sharp(image.buffer, { failOn: 'error' }).metadata(),
+      sharp(mask.buffer, { failOn: 'error' }).metadata(),
+      sharp(mask.buffer, { failOn: 'error' }).stats(),
+    ]);
+    if (
+      !imageMetadata.width ||
+      !imageMetadata.height ||
+      !maskMetadata.width ||
+      !maskMetadata.height
+    ) {
+      throw new ModelviewInpaintError('当前效果图或蒙版缺少有效尺寸。', 422);
+    }
+    if (
+      imageMetadata.width !== maskMetadata.width ||
+      imageMetadata.height !== maskMetadata.height
+    ) {
+      throw new ModelviewInpaintError(
+        `蒙版尺寸 ${maskMetadata.width}×${maskMetadata.height} 必须与当前效果图 ${imageMetadata.width}×${imageMetadata.height} 完全一致。`,
+        422,
+      );
+    }
+    if ((maskStats.channels[0]?.max ?? 0) <= 0) {
+      throw new ModelviewInpaintError('蒙版红色通道为全黑，请先绘制局部重绘区域。', 422);
+    }
+  } catch (error) {
+    if (error instanceof ModelviewInpaintError) throw error;
+    throw new ModelviewInpaintError(
+      error instanceof Error
+        ? `无法校验当前效果图与蒙版：${error.message}`
+        : '无法校验当前效果图与蒙版。',
+      422,
+    );
+  }
 }
 
 function requestModelview(
@@ -242,7 +285,9 @@ function requestModelview(
       {
         method: 'POST',
         headers,
-        ...(url.protocol === 'https:' ? { ca: serviceTrust(service), rejectUnauthorized: true } : {}),
+        ...(url.protocol === 'https:'
+          ? { ca: serviceTrust(service), rejectUnauthorized: true }
+          : {}),
       },
       (response) => {
         const chunks: Buffer[] = [];
@@ -337,7 +382,7 @@ export function checkModelviewSingleViewServiceStatus() {
 }
 
 async function generateModelviewImage(
-  input: ModelviewInpaintInput,
+  input: ModelviewInpaintInput | ModelviewSingleViewInput,
   userId: string,
   kind: ModelviewServiceKind,
   options: { signal?: AbortSignal },
@@ -346,11 +391,16 @@ async function generateModelviewImage(
   const operationLabel = kind === 'inpaint' ? '局部重绘' : '单视图生成';
   const projectId = input.projectId;
   if (!projectId) throw new ModelviewInpaintError(`${operationLabel}需要当前项目 ID。`, 400);
+  const imageLabel = kind === 'inpaint' ? '当前效果图' : '白模主图';
   if (!input.image?.dataUrl) {
-    throw new ModelviewInpaintError(`${operationLabel}白模主图不能为空。`, 422);
+    throw new ModelviewInpaintError(`${operationLabel}${imageLabel}不能为空。`, 422);
   }
   if (!input.materialImage?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}多视图材质参考图不能为空。`, 422);
+  }
+  const inpaintInput = kind === 'inpaint' ? (input as ModelviewInpaintInput) : undefined;
+  if (inpaintInput && !inpaintInput.mask?.dataUrl) {
+    throw new ModelviewInpaintError(`${operationLabel}蒙版不能为空。`, 422);
   }
   const prompt = input.prompt?.trim() ?? '';
   if (Array.from(prompt).length > 4096) {
@@ -359,11 +409,15 @@ async function generateModelviewImage(
 
   const jobId = input.clientGenerationId || `${service.jobPrefix}-${randomUUID()}`;
   const idempotencyKey = createIdempotencyKey(jobId, service);
-  const image = dataUrlToBuffer(input.image.dataUrl, `${operationLabel}白模主图`);
+  const image = dataUrlToBuffer(input.image.dataUrl, `${operationLabel}${imageLabel}`);
   const materialImage = dataUrlToBuffer(
     input.materialImage.dataUrl,
     `${operationLabel}多视图材质参考图`,
   );
+  const mask = inpaintInput
+    ? dataUrlToBuffer(inpaintInput.mask.dataUrl, `${operationLabel}蒙版`)
+    : undefined;
+  if (mask) await validateInpaintImageAndMask(image, mask);
   const boundaryHash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const boundary = `----Li3DModelview${boundaryHash}`;
   const body = multipartBody({
@@ -371,7 +425,10 @@ async function generateModelviewImage(
     files: [
       {
         field: 'image',
-        filename: safeFilename(input.image.path, 'white-model.png'),
+        filename: safeFilename(
+          input.image.path,
+          kind === 'inpaint' ? 'current-effect.png' : 'white-model.png',
+        ),
         mime: image.mime,
         image: image.buffer,
       },
@@ -381,6 +438,16 @@ async function generateModelviewImage(
         mime: materialImage.mime,
         image: materialImage.buffer,
       },
+      ...(mask && inpaintInput
+        ? [
+            {
+              field: 'mask' as const,
+              filename: safeFilename(inpaintInput.mask.path, 'mask.png'),
+              mime: mask.mime,
+              image: mask.buffer,
+            },
+          ]
+        : []),
     ],
     prompt: prompt || undefined,
   });

@@ -43,7 +43,7 @@ def source_header_value(label: str) -> str:
 
 VERSION = source_header_value("文档版本")
 DATE = source_header_value("生效日期")
-BASELINE = source_header_value("代码盘点基线").split()[0]
+BASELINE = source_header_value("代码盘点基线")
 OUTPUT = ROOT / "output" / "pdf" / f"LI3D_System_Maintenance_Manual_v{VERSION}.pdf"
 SCREENSHOT = ROOT / "docs" / "assets" / "LI3D_EDITOR_UI_BASELINE.png"
 
@@ -321,7 +321,7 @@ def cover_story() -> list:
         [Paragraph("文档版本", TABLE_HEADER), Paragraph(VERSION, TABLE_BODY)],
         [Paragraph("规范状态", TABLE_HEADER), Paragraph("当前唯一维护准则 / Normative Baseline", TABLE_BODY)],
         [Paragraph("生效日期", TABLE_HEADER), Paragraph(DATE, TABLE_BODY)],
-        [Paragraph("代码盘点基线", TABLE_HEADER), Paragraph(BASELINE + " + 盘点时既有工作区修改", TABLE_BODY)],
+        [Paragraph("代码盘点基线", TABLE_HEADER), Paragraph(html.escape(BASELINE), TABLE_BODY)],
         [Paragraph("适用对象", TABLE_HEADER), Paragraph("两位维护者、Codex、后续开发与测试人员", TABLE_BODY)],
     ]
     table = Table(data, colWidths=[1.3 * inch, CONTENT_W - 1.3 * inch], hAlign="LEFT")

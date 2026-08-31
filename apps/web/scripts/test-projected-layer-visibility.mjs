@@ -319,12 +319,12 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /const viewportReference = await captureCurrentColorPreview\([\s\S]*?colorMode: 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
-  'The local-repaint viewport reference must capture frozen-camera BaseColor without PBR lighting.',
+  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
+  'The local-repaint current-effect input must capture frozen-camera BaseColor without PBR lighting.',
 );
 assert.match(
   generatePanelSource,
-  /const completedGeneration: Generation = \{[\s\S]*?syncGeneration\(completedGeneration\);[\s\S]*?setGenerateNotice\(undefined\);[\s\S]*?void Promise\.all\(\[[\s\S]*?persistedResultUrlPromise,[\s\S]*?persistedPaintMaskUrlPromise,[\s\S]*?persistedViewportReferenceUrlPromise,[\s\S]*?\]\)/,
+  /const completedGeneration: Generation = \{[\s\S]*?syncGeneration\(completedGeneration\);[\s\S]*?setGenerateNotice\(undefined\);[\s\S]*?void Promise\.all\(\[[\s\S]*?persistedResultUrlPromise,[\s\S]*?persistedAuthoredMaskUrlPromise,[\s\S]*?persistedSubmittedMaskUrlPromise,[\s\S]*?\]\)/,
   'A returned repaint result must leave the foreground spinner before local persistence continues in the background.',
 );
 assert.match(
@@ -353,8 +353,8 @@ assert.match(
 );
 assert.match(
   captureCurrentViewSource,
-  /localRepaintInteractiveCaptureSize = 512[\s\S]*?mutatedShaderMaterials[\s\S]*?return source;/,
-  'Button 2 must reuse the resident flat shader at a bounded interactive capture size.',
+  /localRepaintInteractiveCaptureSize = maxCaptureSize[\s\S]*?mutatedShaderMaterials[\s\S]*?return source;/,
+  'Button 2 must reuse the resident flat shader while preserving a real 2K source.',
 );
 assert.match(
   captureCurrentViewSource,
@@ -480,7 +480,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /const transientLocalRepaintPreviewLayerId =[\s\S]*?localRepaintPreviewLayer\.contentRevision === undefined[\s\S]*?layer\.id !== transientLocalRepaintPreviewLayerId/,
+  /const transientLocalRepaintPreviewLayerId = useLayerStore\([\s\S]*?getTransientLocalRepaintLayerId\(localRepaintPreviewLayerId, state\.layers\)[\s\S]*?layer\.id !== transientLocalRepaintPreviewLayerId/,
   'A completed local repaint must stay structurally resident while its eraser overlay owns visibility.',
 );
 assert.match(
@@ -565,8 +565,8 @@ assert.doesNotMatch(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView[\s\S]*?captureCurrentColorPreview[\s\S]*?generationPromise[\s\S]*?captureCurrentDepthPreview[\s\S]*?Promise\.all/,
-  'The two aligned colour inputs must submit before the local-only depth guard finishes in parallel.',
+  /captureCurrentLocalRepaintView[\s\S]*?generationPromise[\s\S]*?captureCurrentDepthPreview[\s\S]*?Promise\.all/,
+  'The aligned current-effect input and mask must submit before the local-only depth guard finishes in parallel.',
 );
 assert.match(
   generatePanelSource,
@@ -663,8 +663,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /currentPreviewLayer &&[\s\S]*?!isMatchingLocalRepaintProjectionLayer\([\s\S]*?sceneState\.setLocalRepaintPreviewLayer\(undefined\)/,
-  'Switching repaint layers must unmute the previous persisted row before rebinding its overlay.',
+  /const releasePreviousPreview = async[\s\S]*?await waitForLocalRepaintResidentHandoff\([\s\S]*?state\.setLocalRepaintPreviewLayer\(undefined\)[\s\S]*?await releasePreviousPreview\(\)/,
+  'Switching repaint layers must wait for resident display before releasing the old overlay.',
 );
 assert.doesNotMatch(
   editorPageSource,

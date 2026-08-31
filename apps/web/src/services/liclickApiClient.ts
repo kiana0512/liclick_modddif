@@ -41,6 +41,23 @@ export type LiclickApiConfig = {
   onReferencePreprocessed?: (result: ReferencePreprocessingResult) => void;
 };
 
+export type PromptPolishInput = {
+  prompt: string;
+  context: 'general' | 'local-repaint';
+  modelName?: string;
+  objectName?: string;
+  referenceNames?: string[];
+  hasMask?: boolean;
+  currentEffectImage?: PromptPolishImageInput;
+  maskImage?: PromptPolishImageInput;
+  referenceImage?: PromptPolishImageInput;
+};
+
+export type PromptPolishImageInput = {
+  name: string;
+  dataUrl: string;
+};
+
 export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
   clientGenerationId?: string;
   projectId?: string;
@@ -53,6 +70,7 @@ export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
 };
 
 export type LiclickApiClient = {
+  polishPrompt(input: PromptPolishInput): Promise<string>;
   generateTextureSingleView(input: LiclickGenerateTextureSingleViewInput): Promise<Generation>;
   getGenerationJob(
     jobId: string,
@@ -179,6 +197,19 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
   const getTransport = () => resolveLiclickTransport(config.providerStatus, config.baseUrl);
 
   return {
+    async polishPrompt(input) {
+      const result = await requestJson<{ polishedPrompt: string }>(
+        await getTransport(),
+        '/api/liclick/prompt-polish',
+        {
+          method: 'POST',
+          body: JSON.stringify(input),
+          timeoutMs: 80_000,
+        },
+      );
+      if (!result.polishedPrompt?.trim()) throw new Error('智能润色没有返回可用结果。');
+      return result.polishedPrompt.trim();
+    },
     async generateTextureSingleView(input) {
       const preparedReferences = await prepareReferences(
         input.referenceImages,

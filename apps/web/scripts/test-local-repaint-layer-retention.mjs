@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { createServer } from 'vite';
+import * as THREE from 'three';
 
 const sourceRoot = new URL('../src/', import.meta.url);
-const [sessionLayer, generatePanel, editorPage, viewportCanvas, bottomToolDock] = await Promise.all([
-  readFile(new URL('engine/localRepaint/sessionLayer.ts', sourceRoot), 'utf8'),
-  readFile(new URL('components/panels/GeneratePanel.tsx', sourceRoot), 'utf8'),
-  readFile(new URL('routes/EditorPage.tsx', sourceRoot), 'utf8'),
-  readFile(new URL('engine/viewport/ViewportCanvas.tsx', sourceRoot), 'utf8'),
-  readFile(new URL('components/editor/BottomToolDock.tsx', sourceRoot), 'utf8'),
-]);
+const [sessionLayer, generatePanel, editorPage, viewportCanvas, bottomToolDock] = await Promise.all(
+  [
+    readFile(new URL('engine/localRepaint/sessionLayer.ts', sourceRoot), 'utf8'),
+    readFile(new URL('components/panels/GeneratePanel.tsx', sourceRoot), 'utf8'),
+    readFile(new URL('routes/EditorPage.tsx', sourceRoot), 'utf8'),
+    readFile(new URL('engine/viewport/ViewportCanvas.tsx', sourceRoot), 'utf8'),
+    readFile(new URL('components/editor/BottomToolDock.tsx', sourceRoot), 'utf8'),
+  ],
+);
 
 assert.match(sessionLayer, /preserveActiveProjection\?: boolean/);
 assert.match(
@@ -93,4 +98,128 @@ assert.doesNotMatch(
   'a repeated mask-button click must not unload the active repaint presentation',
 );
 
+const sceneRoot = await readFile(new URL('engine/viewport/SceneRoot.tsx', sourceRoot), 'utf8');
+const idleGate = sceneRoot.slice(
+  sceneRoot.indexOf('const isViewportInteractionBusy = () =>'),
+  sceneRoot.indexOf('const precompileProjectedMaterial ='),
+);
+assert.doesNotMatch(
+  idleGate,
+  /paintTool === 'inpaint-(?:add|subtract)'/,
+  'a selected mask brush must not starve resident publication while the pointer is idle',
+);
+assert.match(
+  idleGate,
+  /isSharedViewportInteractionBusy\(\)/,
+  'actual pointer interactions must still defer uploads and compilation',
+);
+assert.match(
+  viewportCanvas,
+  /await releasePreviousPreview\(\)/,
+  'switching sources must wait for the old layer to become resident',
+);
+assert.match(
+  viewportCanvas,
+  /releasePreviousPreview\(\)\.then/,
+  'clearing a source must also wait for resident handoff',
+);
+
+const server = await createServer({
+  root: fileURLToPath(new URL('../', import.meta.url)),
+  logLevel: 'silent',
+  server: { middlewareMode: true },
+});
+try {
+  const {
+    getTransientLocalRepaintLayerId,
+    isLocalRepaintLayerResident,
+    waitForLocalRepaintResidentHandoff,
+  } = await server.ssrLoadModule('/src/engine/viewport/localRepaintResidentHandoff.ts');
+  assert.equal(getTransientLocalRepaintLayerId('A', []), 'A');
+  assert.equal(
+    getTransientLocalRepaintLayerId('A', [{ id: 'A', contentRevision: 1 }]),
+    undefined,
+    'first published row must become resident even when the live marker still has no revision',
+  );
+  assert.equal(getTransientLocalRepaintLayerId('B', [{ id: 'A' }]), 'B');
+  assert.equal(getTransientLocalRepaintLayerId(undefined, [{ id: 'A' }]), undefined);
+
+  const group = new THREE.Group();
+  const material = new THREE.ShaderMaterial();
+  const geometry = new THREE.BoxGeometry();
+  const body = new THREE.Mesh(geometry, material);
+  group.add(body);
+  assert.equal(isLocalRepaintLayerResident(group, 'A'), false);
+  material.userData.liclickProjectedLayerStackState = { bindings: [{ layerId: 'A' }] };
+  const overlay = new THREE.Mesh(geometry, new THREE.ShaderMaterial());
+  overlay.userData.liclickPaintOverlay = true;
+  group.add(overlay);
+  assert.equal(
+    isLocalRepaintLayerResident(group, 'A'),
+    true,
+    'transparent twin must not count as a background mesh',
+  );
+  assert.equal(isLocalRepaintLayerResident(group, 'B'), false);
+  const secondMesh = new THREE.Mesh(geometry, overlay.material);
+  group.add(secondMesh);
+  assert.equal(
+    isLocalRepaintLayerResident(group, 'A'),
+    false,
+    'partially assigned materials cannot release the old overlay',
+  );
+  secondMesh.removeFromParent();
+  material.userData.liclickDisposedMaterial = true;
+  assert.equal(isLocalRepaintLayerResident(group, 'A'), false);
+  assert.equal(isLocalRepaintLayerResident(new THREE.Group(), 'A'), false);
+
+  let frames = 0;
+  let now = 0;
+  const input = {
+    ready: () => frames >= 3,
+    cancelled: () => false,
+    now: () => now,
+    nextFrame: async () => {
+      frames += 1;
+      now += 16;
+    },
+  };
+  assert.equal(await waitForLocalRepaintResidentHandoff(input), true);
+  assert.equal(frames, 3, 'pending handoff must yield frames instead of busy-spinning');
+  frames = 0;
+  assert.equal(
+    await waitForLocalRepaintResidentHandoff({ ...input, cancelled: () => true }),
+    false,
+  );
+  assert.equal(frames, 0, 'superseded source must not wait or publish');
+  assert.equal(
+    await waitForLocalRepaintResidentHandoff({
+      ...input,
+      ready: () => false,
+      cancelled: () => frames >= 1,
+    }),
+    false,
+  );
+  frames = 0;
+  assert.equal(
+    await waitForLocalRepaintResidentHandoff({
+      ...input,
+      ready: () => false,
+      nextFrame: async () => {
+        frames += 1;
+        now += 5000;
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    frames,
+    2,
+    'failed material preparation must time out without blanking the old layer',
+  );
+  geometry.dispose();
+  material.dispose();
+  overlay.material.dispose();
+} finally {
+  await server.close();
+}
 console.log('Local repaint layer retention regression checks passed.');

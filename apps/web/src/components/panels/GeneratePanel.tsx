@@ -21,11 +21,9 @@ import {
   createGeneratedDisplayPreview,
   createSubjectFilledPreview,
 } from '@/engine/localRepaint/resultPreviewUtils';
-import { blobToDataUrl } from '@/engine/localRepaint/imageUtils';
-import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
-import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
+import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
 import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
@@ -51,6 +49,10 @@ import {
 import { getUserFacingGenerationError } from '@/services/generationErrorMessage';
 import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
 import {
+  LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY,
+  prepareLocalRepaintPromptPolishInputs,
+} from '@/services/localRepaintPromptPolishInputs';
+import {
   hasTrackedModuleAction,
   trackModuleAction,
   trackModuleActionOnce,
@@ -73,7 +75,7 @@ import type { CaptureNormalPreview, CaptureResolution } from '@/engine/capture/c
 import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
-import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
+import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
 import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
@@ -157,6 +159,7 @@ type GenerateNotice = {
   tone: 'info' | 'warning' | 'error';
   message: string;
 };
+
 const resolutionToSize = {
   '1K': 1024,
   '2K': 2048,
@@ -164,7 +167,7 @@ const resolutionToSize = {
   '8K': 8192,
 } as const;
 
-const LOCAL_REPAINT_COMPOSITE_RESOLUTION = 2048;
+const LOCAL_REPAINT_INPUT_RESOLUTION = 2048;
 
 const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
   front: { value: 'front', labelKey: 'frontView' },
@@ -594,6 +597,12 @@ export function GeneratePanel({
   const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   const [localRepaintPrompt, setLocalRepaintPrompt] = useState('');
+  const [promptPolishing, setPromptPolishing] = useState(false);
+  const promptPolishRequestRef = useRef(0);
+  const promptValueRef = useRef({ key: '', value: '' });
+  const localRepaintResolvedPromptCacheRef = useRef(
+    new Map<string, { prompt: string; source: 'user-request' | 'auto-diagnosis' }>(),
+  );
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
     sourceUrl: string;
@@ -709,6 +718,8 @@ export function GeneratePanel({
     : isLocalRepaintTab
       ? localRepaintPrompt
       : liclickPrompt;
+  const promptPolishKey = `${currentProjectId ?? 'none'}:${isLocalRepaintTab ? 'local-repaint' : `${textureViewMode}:${singleViewProvider}`}`;
+  promptValueRef.current = { key: promptPolishKey, value: prompt };
   const imageModel = isTextureMapTab
     ? ('gpt-image-2' as LiclickImageModel)
     : (generationSettings.model as LiclickImageModel);
@@ -1722,6 +1733,120 @@ export function GeneratePanel({
     });
   }
 
+  function writePromptValue(key: string, value: string) {
+    promptValueRef.current = { key, value };
+    if (key.endsWith(':local-repaint')) {
+      setLocalRepaintPrompt(value);
+      return;
+    }
+    const state = useProjectStore.getState();
+    const project = state.projects.find((item) => item.id === state.currentProjectId);
+    if (!project) return;
+    state.updateProjectById(project.id, {
+      settings: {
+        ...project.settings,
+        imageGeneration: {
+          ...defaultImageGenerationSettings,
+          ...project.settings.imageGeneration,
+          textureMapPrompt: value,
+        },
+      },
+    });
+  }
+
+  async function handlePromptPolish() {
+    if (promptPolishing || workflowConfigurationLocked) return;
+    const snapshot = { key: promptPolishKey, value: prompt };
+    if (!isLocalRepaintTab && !snapshot.value.trim()) {
+      pushToast({ tone: 'warning', title: '请先输入需要润色的提示词' });
+      return;
+    }
+    const requestId = ++promptPolishRequestRef.current;
+    setPromptPolishing(true);
+    try {
+      const promptReference = isLocalRepaintTab
+        ? activeReferences.find((reference) => activeSelectedReferenceIds.includes(reference.id))
+        : undefined;
+      if (isLocalRepaintTab && !promptReference) {
+        throw new Error('请先选择一张材质参考图，再进行智能润色。');
+      }
+      if (isLocalRepaintTab && !captureObjectId) throw new Error(t('importModelFirst'));
+      const visualInputs =
+        isLocalRepaintTab && promptReference && captureObjectId
+          ? await prepareLocalRepaintPromptPolishInputs({
+              objectId: captureObjectId,
+              reference: promptReference,
+            })
+          : undefined;
+      const polishedPrompt = await createLiclickApiClient().polishPrompt({
+        prompt: snapshot.value,
+        context: isLocalRepaintTab ? 'local-repaint' : 'general',
+        modelName:
+          textureViewMode === 'single' && singleViewProvider === 'remote'
+            ? '远端单视图模型'
+            : imageModel,
+        objectName: objects.find((object) => object.id === captureObjectId)?.name,
+        referenceNames: promptReference
+          ? [visualInputs?.referenceImage.name ?? promptReference.name]
+          : activeReferences
+              .filter((reference) => activeSelectedReferenceIds.includes(reference.id))
+              .map((reference) => reference.name),
+        hasMask: Boolean(visualInputs),
+        currentEffectImage: visualInputs?.currentEffectImage,
+        maskImage: visualInputs?.maskImage,
+        referenceImage: visualInputs?.referenceImage,
+      });
+      const currentReferenceState = useReferenceStore.getState();
+      const currentSelectedReference = currentReferenceState.references.find((reference) =>
+        currentReferenceState.selectedReferenceIds.includes(reference.id),
+      );
+      const visualContextChanged = Boolean(
+        visualInputs &&
+        (useSceneStore.getState().paintMaskRevision !== visualInputs.paintMaskRevision ||
+          !promptReference ||
+          !currentSelectedReference ||
+          currentSelectedReference.id !== promptReference.id),
+      );
+      if (
+        requestId !== promptPolishRequestRef.current ||
+        promptValueRef.current.key !== snapshot.key ||
+        promptValueRef.current.value !== snapshot.value ||
+        visualContextChanged
+      ) {
+        pushToast({
+          tone: 'warning',
+          title: '润色上下文已发生变化，未自动覆盖',
+          description: '提示词、蒙版或参考图已更新，请再次点击智能润色。',
+        });
+        return;
+      }
+      writePromptValue(snapshot.key, polishedPrompt);
+      pushToast({
+        tone: 'success',
+        title: '智能润色已完成',
+        action: {
+          label: '恢复原文',
+          onClick: () => {
+            if (
+              promptValueRef.current.key === snapshot.key &&
+              promptValueRef.current.value === polishedPrompt
+            ) {
+              writePromptValue(snapshot.key, snapshot.value);
+            }
+          },
+        },
+      });
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: '智能润色失败',
+        description: getUserFacingGenerationError(error, '智能润色暂时不可用，请稍后重试。'),
+      });
+    } finally {
+      if (requestId === promptPolishRequestRef.current) setPromptPolishing(false);
+    }
+  }
+
   function handleCameraViewSelect(view: CameraViewItem) {
     if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
@@ -2617,6 +2742,7 @@ export function GeneratePanel({
     lastCompletedLocalRepaintGenerationIdRef.current = undefined;
     let pendingGeneration: Generation | undefined;
     let requestAbortController: AbortController | undefined;
+    let promptAnalysisCurrentEffectUrl: string | undefined;
     try {
       if (workflowSubmissionLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
         notifyWorkflowOperationLocked();
@@ -2761,14 +2887,11 @@ export function GeneratePanel({
       // This guarantees an immediate visual response even on a cold renderer.
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      // ModelView receives square 1K white-model and textured-preview guidance
-      // frames. They share one frozen camera/model matrix; the selection mask
-      // remains local-only and the authored/generated texture assets retain
-      // their full resolution. Keeping transient guidance at 1K prevents a
-      // multi-megapixel PNG publication from blocking Chromium's main thread.
-      // The selection accumulates camera-specific projections instead of using
-      // model UVs. Reproject their union from the current camera immediately
-      // before submission so it matches the captured frame.
+      // ModelView receives one square 2K composite: authored BaseColor outside
+      // the user's selection and the aligned clay geometry preview inside it.
+      // Qwen receives the clean authored view instead, plus the original
+      // authored mask and full multiview reference, so neither placeholder
+      // shading nor the remote-only blending margin biases its diagnosis.
       document.body.dataset.perfLocalRepaintPhase = 'button2-mask-capture';
       setLocalRepaintPreparation((current) => ({
         startedAt: current?.startedAt ?? Date.now(),
@@ -2779,109 +2902,210 @@ export function GeneratePanel({
         (await useSceneStore.getState().paintMaskCapture?.({
           aspect: captureAspect,
           camera: captureCameraSnapshot.camera,
-          resolution: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
+          resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
         })) ?? useSceneStore.getState().paintMaskDataUrl;
       document.body.dataset.localRepaintButton2MaskCaptureMs = (
         performance.now() - maskCaptureStartedAt
       ).toFixed(1);
       if (!currentPaintMaskDataUrl) throw new Error('无法读取已绘制的局部重绘蒙版。');
       useSceneStore.getState().setPaintMaskDataUrl(currentPaintMaskDataUrl, true);
-      // paintMaskCapture has already produced a renderer-owned PNG. Loading
-      // it into a hidden HTMLImageElement merely to re-check its dimensions
-      // forces a synchronous 2K decode in the image onload task (measured at
-      // 164ms) and freezes the viewport. The mask stays local and its camera
-      // alignment is defined by the frozen capture request, not DOM pixels.
+      // The server validates exact dimensions and the red-channel content before
+      // forwarding the mask. Avoid a duplicate browser decode on the hot path.
       document.body.dataset.perfLocalRepaintPhase = 'button2-view-capture';
       setLocalRepaintPreparation((current) => ({
         startedAt: current?.startedAt ?? Date.now(),
-        detail: '正在准备当前视角白模',
+        detail: '正在准备当前效果图',
       }));
       const viewCaptureStartedAt = performance.now();
       let capture = await captureCurrentLocalRepaintView(
         {
           objectId,
-          resolution: 1024,
+          resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
           framing: 'current',
-          colorMode: 'clay-target',
+          colorMode: 'flat-target',
           aspect: captureAspect,
           cameraSnapshot: captureCameraSnapshot,
         },
         currentPaintMaskDataUrl,
+        { archive: false },
       );
+      const flatCurrentEffectUrl = capture.colorUrl;
+      promptAnalysisCurrentEffectUrl = flatCurrentEffectUrl;
+      let clayPreviewUrl: string | undefined;
+      let preparedGenerationInput: Awaited<
+        ReturnType<typeof prepareLocalRepaintGenerationInput>
+      >;
+      try {
+        const clayPreview = await captureCurrentColorPreview({
+          objectId,
+          resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
+          framing: 'current',
+          colorMode: 'clay-target',
+          aspect: captureAspect,
+          cameraSnapshot: captureCameraSnapshot,
+        });
+        clayPreviewUrl = clayPreview.colorUrl;
+        setLocalRepaintPreparation((current) => ({
+          startedAt: current?.startedAt ?? Date.now(),
+          detail: '正在融合当前效果与蒙版预览',
+        }));
+        preparedGenerationInput = await prepareLocalRepaintGenerationInput({
+          currentEffectUrl: flatCurrentEffectUrl,
+          clayPreviewUrl,
+          authoredMaskUrl: currentPaintMaskDataUrl,
+        });
+      } finally {
+        revokeRegisteredObjectUrl(clayPreviewUrl);
+      }
+      capture = {
+        ...capture,
+        colorUrl: preparedGenerationInput.compositeUrl,
+        // Capture/paintback keeps the authored selection. The expanded mask is
+        // a remote-sampling input only and must never become the interactive
+        // local-repaint brush authorization mask.
+        maskUrl: currentPaintMaskDataUrl,
+      };
+      useProjectStore.getState().addCapture(capture);
       document.body.dataset.localRepaintButton2ViewCaptureMs = (
         performance.now() - viewCaptureStartedAt
       ).toFixed(1);
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      document.body.dataset.perfLocalRepaintPhase = 'button2-viewport-reference-capture';
-      setLocalRepaintPreparation((current) => ({
-        startedAt: current?.startedAt ?? Date.now(),
-        detail: '正在读取当前材质预览',
-      }));
-      const viewportReferenceCaptureStartedAt = performance.now();
-      const viewportReference = await captureCurrentColorPreview({
-        objectId,
-        resolution: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
-        framing: 'current',
-        // ModelView must receive authored BaseColor rather than a PBR-lit
-        // presentation. The generated result is painted back as BaseColor and
-        // receives lighting exactly once from the PBR viewport afterwards.
-        colorMode: 'flat-target',
-        aspect: captureAspect,
-        cameraSnapshot: captureCameraSnapshot,
-      });
-      document.body.dataset.localRepaintButton2ViewportReferenceCaptureMs = (
-        performance.now() - viewportReferenceCaptureStartedAt
-      ).toFixed(1);
       const currentPaintMaskRevision = useSceneStore.getState().paintMaskRevision;
-      // captureCurrentView already archives the exact capture in projectStore.
-      // Writing it a second time duplicated a large four-pass capture record and
-      // forced avoidable subscribers/renders at the hottest point of button 2.
       const generationId = createId('local-repaint');
-      // `renderScenePassesToPngUrl` intentionally returns a fast Blob URL for
-      // immediate submission. A Blob URL dies on reload, so persist the exact
-      // lossless mask in parallel and archive that durable URL with the finished
-      // generation. This prevents repeated background staging failures after a
-      // refresh without adding latency in front of the model request.
-      const persistedPaintMaskUrlPromise = persistGeneratedImage(
+      const persistedAuthoredMaskUrlPromise = persistGeneratedImage(
         'generations',
         currentPaintMaskDataUrl,
-        `${generationId}-mask.png`,
+        `${generationId}-authored-mask.png`,
         undefined,
         currentProject.id,
       ).catch((error) => {
-        console.warn('[Liclick 3D Texture] Could not persist local repaint mask:', error);
+        console.warn('[Liclick 3D Texture] Could not persist authored repaint mask:', error);
         return currentPaintMaskDataUrl;
       });
-      const persistedViewportReferenceUrlPromise = persistGeneratedImage(
+      const persistedSubmittedMaskUrlPromise = persistGeneratedImage(
         'generations',
-        viewportReference.colorUrl,
-        `${generationId}-viewport-reference.png`,
+        preparedGenerationInput.submittedMaskUrl,
+        `${generationId}-submitted-mask.png`,
         undefined,
         currentProject.id,
       ).catch((error) => {
-        console.warn('[Liclick 3D Texture] Could not persist repaint colour reference:', error);
-        return viewportReference.colorUrl;
+        console.warn('[Liclick 3D Texture] Could not persist submitted repaint mask:', error);
+        return preparedGenerationInput.submittedMaskUrl;
       });
+
+      const rawUserPrompt = localRepaintPrompt.trim();
+      const surfaceSignature = useLayerStore
+        .getState()
+        .layers.filter((layer) => !layer.objectId || layer.objectId === objectId)
+        .map((layer) => [
+          layer.id,
+          layer.contentRevision ?? 0,
+          layer.visible ? 1 : 0,
+          layer.opacity,
+        ]);
+      const promptFingerprint = JSON.stringify({
+        prompt: rawUserPrompt,
+        ...(rawUserPrompt ? {} : { autoDiagnosisPolicy: LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY }),
+        projectId: currentProject.id,
+        objectId,
+        referenceId: materialReference.id,
+        paintMaskRevision: currentPaintMaskRevision,
+        camera: capture.camera,
+        objectMatrixWorld: captureObjectMatrixWorld,
+        surfaceSignature,
+        sourceComposition: 'flat-clay-mask-v1',
+      });
+      let resolvedPrompt = localRepaintResolvedPromptCacheRef.current.get(promptFingerprint);
+      if (!resolvedPrompt) {
+        const persistedResolution = useGenerationStore
+          .getState()
+          .generations.find(
+            (candidate) =>
+              candidate.metadata.promptFingerprint === promptFingerprint &&
+              candidate.prompt.trim().length > 0,
+          );
+        if (persistedResolution) {
+          resolvedPrompt = {
+            prompt: persistedResolution.prompt,
+            source:
+              persistedResolution.metadata.promptSource === 'auto-diagnosis'
+                ? 'auto-diagnosis'
+                : 'user-request',
+          };
+          localRepaintResolvedPromptCacheRef.current.set(promptFingerprint, resolvedPrompt);
+        }
+      }
+      if (!resolvedPrompt) {
+        setLocalRepaintPreparation((current) => ({
+          startedAt: current?.startedAt ?? Date.now(),
+          detail: rawUserPrompt ? '正在优化局部重绘提示词' : '正在分析蒙版区域问题',
+        }));
+        setGenerateNotice({
+          tone: 'info',
+          message: rawUserPrompt
+            ? '正在结合蒙版与六视图优化提示词。'
+            : '正在分析蒙版区域问题并生成提示词。',
+        });
+        const visualInputs = await prepareLocalRepaintPromptPolishInputs({
+          objectId,
+          reference: materialReference,
+          cameraSnapshot: captureCameraSnapshot,
+          currentEffectUrl: promptAnalysisCurrentEffectUrl,
+          maskUrl: currentPaintMaskDataUrl,
+          paintMaskRevision: currentPaintMaskRevision,
+        });
+        const optimizedPrompt = await createLiclickApiClient().polishPrompt({
+          prompt: rawUserPrompt,
+          context: 'local-repaint',
+          modelName: 'FLUX.2 Klein',
+          objectName: objects.find((object) => object.id === objectId)?.name,
+          referenceNames: [visualInputs.referenceImage.name || materialReference.name],
+          hasMask: true,
+          currentEffectImage: visualInputs.currentEffectImage,
+          maskImage: visualInputs.maskImage,
+          referenceImage: visualInputs.referenceImage,
+        });
+        if (useSceneStore.getState().paintMaskRevision !== currentPaintMaskRevision) {
+          throw new Error('蒙版在分析期间发生变化，请重新生成。');
+        }
+        resolvedPrompt = {
+          prompt: optimizedPrompt,
+          source: rawUserPrompt ? 'user-request' : 'auto-diagnosis',
+        };
+        const promptCache = localRepaintResolvedPromptCacheRef.current;
+        if (promptCache.size >= 6) {
+          const oldestKey = promptCache.keys().next().value;
+          if (oldestKey) promptCache.delete(oldestKey);
+        }
+        promptCache.set(promptFingerprint, resolvedPrompt);
+      }
+      const effectivePrompt = resolvedPrompt.prompt;
       pendingGeneration = {
         id: generationId,
         mode: 'inpaint',
-        prompt: localRepaintPrompt.trim(),
+        prompt: effectivePrompt,
         referenceIds: [materialReference.id],
         captureId: capture.id,
         status: 'running',
         metadata: {
           provider: 'modelview-int8',
           workflow: 'local-repaint',
-          modelviewWorkflow: '2026.08.26-740115a-truev3-gguf-3input-rseed-r1',
+          modelviewWorkflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
           clientGenerationId: generationId,
           projectId: currentProject.id,
           objectId,
           materialReferenceId: materialReference.id,
           paintMaskRevision: currentPaintMaskRevision,
           paintMaskSource: 'user',
-          sourceColorMode: 'clay-target',
-          viewportReferenceColorMode: 'flat-target',
-          viewportReferenceUrl: viewportReference.colorUrl,
+          authoredMaskUrl: currentPaintMaskDataUrl,
+          submittedMaskUrl: preparedGenerationInput.submittedMaskUrl,
+          promptSource: resolvedPrompt.source,
+          promptFingerprint,
+          userPrompt: rawUserPrompt,
+          sourceColorMode: 'flat-clay-mask-v1',
+          sourceComposition: 'flat-clay-mask-v1',
+          maskExpansionRadius: preparedGenerationInput.dilationRadius,
+          maskFeatherRadius: preparedGenerationInput.featherRadius,
+          resultComposition: 'direct-v1',
           objectMatrixWorld: captureObjectMatrixWorld,
           captureCamera: capture.camera,
           serverSubmitted: false,
@@ -2898,13 +3122,14 @@ export function GeneratePanel({
       setLastCapture(capture);
       setGenerateNotice({
         tone: 'info',
-        message: '正在提交当前视角白模和材质参考图；当前蒙版仅用于结果回贴。',
+        message: '正在提交当前效果图、材质参考图、蒙版和提示词。',
       });
       requestAbortController = new AbortController();
       generationAbortControllersRef.current.set(generationId, requestAbortController);
-      const [whiteModelDataUrl, materialReferenceDataUrl] = await Promise.all([
+      const [currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl] = await Promise.all([
         urlToDataUrl(capture.colorUrl),
         urlToDataUrl(materialReference.url),
+        urlToDataUrl(preparedGenerationInput.submittedMaskUrl),
       ]);
       const generationPromise = createModelviewApiClient().generateInpaint(
         {
@@ -2918,12 +3143,13 @@ export function GeneratePanel({
           materialReferenceRole: isMultiviewReference(materialReference)
             ? 'multi-view'
             : 'single-view',
-          prompt: localRepaintPrompt.trim() || undefined,
-          image: { path: 'white-model.png', dataUrl: whiteModelDataUrl },
+          prompt: effectivePrompt,
+          image: { path: 'current-effect.png', dataUrl: currentEffectDataUrl },
           materialImage: {
             path: `${generationId}-${materialReference.id}-material-reference.png`,
             dataUrl: materialReferenceDataUrl,
           },
+          mask: { path: `${generationId}-mask.png`, dataUrl: maskDataUrl },
         },
         { signal: requestAbortController.signal },
       );
@@ -2963,65 +3189,13 @@ export function GeneratePanel({
         setLastCapture(capture);
       }
       if (isCancelledGeneration(pendingGeneration)) return false;
-      let processedResultUrl = generation.resultUrl;
-      let processedResultBlob: Blob | undefined;
-      let seamHarmonizationBlendWidth: number | undefined;
-      let seamHarmonizationSampleWidth: number | undefined;
-      let seamHarmonizationSampleCount: number | undefined;
-      let seamHarmonizationOuterSampleCount: number | undefined;
-      let seamHarmonizationLocalColorRegions: number | undefined;
-      let seamHarmonizationColorMatchApplied: boolean | undefined;
-      let seamHarmonizationProcessMs: number | undefined;
-      const seamHarmonizationMode = getLocalRepaintSeamMode();
-      const seamHarmonizationVersion = seamHarmonizationMode === 'enhanced' ? 14 : 5;
-      if (generation.resultUrl) {
-        setGenerateNotice({ tone: 'info', message: '正在融合局部重绘结果。' });
-        const processed = await harmonizeLocalRepaintInWorker({
-          generatedUrl: generation.resultUrl,
-          referenceUrl: viewportReference.colorUrl,
-          maskUrl: currentPaintMaskDataUrl,
-          width: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
-          height: LOCAL_REPAINT_COMPOSITE_RESOLUTION,
-          options:
-            seamHarmonizationMode === 'enhanced'
-              ? {
-                  minBlendWidth: 12,
-                  maxBlendWidth: 40,
-                  minSampleWidth: 8,
-                  maxSampleWidth: 32,
-                  edgeOpacity: 1,
-                  localSampleCellSize: 64,
-                  correctionDepth: 96,
-                  coreColorMatchStrength: 1,
-                  enableColorMatch: true,
-                }
-              : {
-                  minBlendWidth: 4,
-                  maxBlendWidth: 8,
-                  edgeOpacity: 1,
-                  enableColorMatch: false,
-                },
-        });
-        if (processed.report.applied) {
-          processedResultBlob = processed.blob;
-          processedResultUrl = await blobToDataUrl(processed.blob);
-          seamHarmonizationBlendWidth = processed.report.blendWidth;
-          seamHarmonizationSampleWidth = processed.report.sampleWidth;
-          seamHarmonizationSampleCount = processed.report.sampledPixels;
-          seamHarmonizationOuterSampleCount = processed.report.outerSampledPixels;
-          seamHarmonizationLocalColorRegions = processed.report.localColorRegions;
-          seamHarmonizationColorMatchApplied = processed.report.colorMatchApplied;
-          seamHarmonizationProcessMs = processed.processMs;
-        }
-      }
-      if (isCancelledGeneration(pendingGeneration)) return false;
       const completedGeneration: Generation = {
         ...generation,
         // Keep one canonical client id from start through completion. Some
         // legacy ModelView responses used the remote id here, leaving the
         // persisted client-id record permanently `running` beside the result.
         id: pendingGeneration.id,
-        resultUrl: processedResultUrl,
+        resultUrl: generation.resultUrl,
         captureId: generation.captureId ?? capture.id,
         metadata: {
           ...pendingGeneration.metadata,
@@ -3029,20 +3203,11 @@ export function GeneratePanel({
           objectMatrixWorld: captureObjectMatrixWorld,
           captureCamera: capture.camera,
           maskUrl: currentPaintMaskDataUrl,
-          viewportReferenceUrl: viewportReference.colorUrl,
           rawResultUrl: generation.resultUrl,
-          harmonizedResultUrl: processedResultUrl,
-          seamHarmonizationVersion,
-          seamHarmonizationMode,
-          seamHarmonizationBlendWidth,
-          seamHarmonizationSampleWidth,
-          seamHarmonizationSampleCount,
-          seamHarmonizationOuterSampleCount,
-          seamHarmonizationLocalColorRegions,
-          seamHarmonizationColorMatchApplied,
-          seamHarmonizationProcessMs,
+          resultComposition: 'direct-v1',
           paintMaskRevision: currentPaintMaskRevision,
-          sourceColorMode: 'clay-target',
+          sourceColorMode: 'flat-clay-mask-v1',
+          sourceComposition: 'flat-clay-mask-v1',
           completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },
       };
@@ -3062,82 +3227,65 @@ export function GeneratePanel({
       pushToast({
         tone: 'success',
         title: '局部生图已生成',
-        description: '结果已显示在重绘效果图中。',
+        description: '结果已显示在局部重绘中。',
       });
       const persistedResultUrlPromise = completedGeneration.resultUrl
         ? persistGeneratedImage(
             'generations',
             completedGeneration.resultUrl,
-            `${generationId}-composited-v${seamHarmonizationVersion}-2k-lab-seam.png`,
-            processedResultBlob,
+            `${generationId}-direct-v1.png`,
+            undefined,
             currentProject.id,
           ).catch((error) => {
             console.warn('[Liclick 3D Texture] Could not localize repaint result:', error);
             return completedGeneration.resultUrl;
           })
         : Promise.resolve(undefined);
-      const persistedRawResultUrlPromise = generation.resultUrl
-        ? persistGeneratedImage(
-            'generations',
-            generation.resultUrl,
-            `${generationId}-raw.png`,
-            undefined,
-            currentProject.id,
-          ).catch((error) => {
-            console.warn('[Liclick 3D Texture] Could not localize raw repaint result:', error);
-            return generation.resultUrl;
-          })
-        : Promise.resolve(undefined);
       void Promise.all([
         persistedResultUrlPromise,
-        persistedRawResultUrlPromise,
-        persistedPaintMaskUrlPromise,
-        persistedViewportReferenceUrlPromise,
+        persistedAuthoredMaskUrlPromise,
+        persistedSubmittedMaskUrlPromise,
       ])
-        .then(
-          async ([
-            persistedResultUrl,
-            persistedRawResultUrl,
-            persistedPaintMaskUrl,
-            persistedViewportReferenceUrl,
-          ]) => {
-            const latestCompletedRecord =
-              useGenerationStore
-                .getState()
-                .generations.find((candidate) => candidate.id === completedGeneration.id) ??
-              completedGeneration;
-            const durableGeneration: Generation = {
-              ...latestCompletedRecord,
-              resultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
-              metadata: {
-                ...completedGeneration.metadata,
-                ...latestCompletedRecord.metadata,
-                maskUrl: persistedPaintMaskUrl,
-                rawResultUrl: persistedRawResultUrl ?? generation.resultUrl,
-                harmonizedResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
-                seamHarmonizationVersion,
-                seamHarmonizationMode,
-                viewportReferenceUrl: persistedViewportReferenceUrl,
-              },
-            };
-            syncGeneration(durableGeneration);
-            // The capture is the canonical camera/depth binding for this
-            // generation. An overlapping editor autosave can legitimately
-            // complete after capture creation; pass the authoritative record
-            // explicitly so a stale snapshot cannot leave generation.captureId
-            // pointing at a missing capture on the next repaint cycle.
-            const latestCaptureProject = useProjectStore
+        .then(async ([persistedResultUrl, persistedAuthoredMaskUrl, persistedSubmittedMaskUrl]) => {
+          const latestCompletedRecord =
+            useGenerationStore
               .getState()
-              .projects.find((project) => project.id === currentProject.id);
-            const authoritativeCaptures = [
-              capture,
-              ...(latestCaptureProject?.captures ?? []).filter(
-                (candidate) => candidate.id !== capture.id,
-              ),
-            ];
-            await saveCriticalProjectState({ captures: authoritativeCaptures });
-          },
-        )
+              .generations.find((candidate) => candidate.id === completedGeneration.id) ??
+            completedGeneration;
+          const durableGeneration: Generation = {
+            ...latestCompletedRecord,
+            resultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+            metadata: {
+              ...completedGeneration.metadata,
+              ...latestCompletedRecord.metadata,
+              maskUrl: persistedAuthoredMaskUrl,
+              authoredMaskUrl: persistedAuthoredMaskUrl,
+              submittedMaskUrl: persistedSubmittedMaskUrl,
+              rawResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+              resultComposition: 'direct-v1',
+            },
+          };
+          syncGeneration(durableGeneration);
+          // The capture is the canonical camera/depth binding for this
+          // generation. An overlapping editor autosave can legitimately
+          // complete after capture creation; pass the authoritative record
+          // explicitly so a stale snapshot cannot leave generation.captureId
+          // pointing at a missing capture on the next repaint cycle.
+          const latestCaptureProject = useProjectStore
+            .getState()
+            .projects.find((project) => project.id === currentProject.id);
+          const authoritativeCapture = {
+            ...capture,
+            maskUrl: persistedAuthoredMaskUrl,
+          };
+          const authoritativeCaptures = [
+            authoritativeCapture,
+            ...(latestCaptureProject?.captures ?? []).filter(
+              (candidate) => candidate.id !== capture.id,
+            ),
+          ];
+          await saveCriticalProjectState({ captures: authoritativeCaptures });
+        })
         .catch((error) => {
           // The completed server result remains usable in memory. The normal
           // project save/recovery path will retry persistence without reviving
@@ -3193,6 +3341,7 @@ export function GeneratePanel({
       setSubmissionActive(submitLocksRef.current.size > 0);
       setLocalRepaintPreparation(undefined);
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
+      revokeRegisteredObjectUrl(promptAnalysisCurrentEffectUrl);
       finish();
     }
   }
@@ -4008,9 +4157,7 @@ export function GeneratePanel({
           metadata: {
             ...generation.metadata,
             alphaMode: 'geometry-mask-separated',
-            projectionEdgeBlendMode: projectionUsesSourceAlpha
-              ? 'distance-field-v1'
-              : undefined,
+            projectionEdgeBlendMode: projectionUsesSourceAlpha ? 'distance-field-v1' : undefined,
           },
         },
         {
@@ -4208,7 +4355,7 @@ export function GeneratePanel({
               options={[
                 { value: 'multi', label: '多视图' },
                 { value: 'single', label: '单视图' },
-                { value: 'repaint', label: '重绘效果图' },
+                { value: 'repaint', label: '局部重绘' },
               ]}
               onChange={(value) => {
                 setTexturePreviewMode(value);
@@ -4266,7 +4413,7 @@ export function GeneratePanel({
               ) : displayedTexturePreviewMode === 'repaint' ? (
                 <div className="grid h-full w-full place-items-center px-5 text-center">
                   <div className="grid gap-1">
-                    <div className="text-sm font-semibold text-white/72">暂无重绘效果图</div>
+                    <div className="text-sm font-semibold text-white/72">暂无局部重绘结果</div>
                     <div className="text-xs text-white/42">完成局部重绘生图后将在这里显示。</div>
                   </div>
                 </div>
@@ -4425,16 +4572,40 @@ export function GeneratePanel({
               </section>
             )}
 
-            <label className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
-              <span className="text-sm font-semibold text-white/88">
-                {isLocalRepaintTab
-                  ? '补充提示词（可选）'
-                  : textureViewMode === 'single' && singleViewProvider === 'remote'
-                    ? '纹理提示词（可选）'
-                    : '纹理提示词'}
-              </span>
+            <section className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-white/88">
+                  {isLocalRepaintTab
+                    ? '补充提示词（可选）'
+                    : textureViewMode === 'single' && singleViewProvider === 'remote'
+                      ? '纹理提示词（可选）'
+                      : '纹理提示词'}
+                </span>
+                {isLocalRepaintTab ? (
+                  <span className="text-[11px] font-medium text-white/46">
+                    生成时自动分析并优化
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    title="智能润色"
+                    aria-label="智能润色"
+                    data-prompt-polish="true"
+                    disabled={promptPolishing || workflowConfigurationLocked || !prompt.trim()}
+                    onClick={() => void handlePromptPolish()}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-white/16 bg-white/6 text-white/76 transition hover:border-liclick-pink/55 hover:bg-liclick-pink/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/40 disabled:cursor-not-allowed disabled:opacity-35"
+                  >
+                    {promptPolishing ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                  </button>
+                )}
+              </div>
               <textarea
                 value={prompt}
+                aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词'}
                 readOnly={workflowConfigurationLocked}
                 aria-readonly={workflowConfigurationLocked}
                 maxLength={
@@ -4447,7 +4618,7 @@ export function GeneratePanel({
                 }
                 placeholder={
                   isLocalRepaintTab
-                    ? '例如：保持原有几何结构，仅将参考图的金属和磨损材质应用到对应部位'
+                    ? '可补充编辑要求；留空则自动分析蒙版区域问题'
                     : undefined
                 }
                 onChange={(event) => {
@@ -4469,7 +4640,7 @@ export function GeneratePanel({
                   workflowConfigurationLocked ? 'cursor-default' : ''
                 }`}
               />
-            </label>
+            </section>
 
             {(isTextureMapTab || isLocalRepaintTab) && (
               <section

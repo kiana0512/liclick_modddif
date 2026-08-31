@@ -89,6 +89,17 @@ const modelviewSingleViewApiKey =
 const modelviewSingleViewTimeoutMs = Number(
   process.env.LICLICK_MODELVIEW_SINGLE_VIEW_TIMEOUT_MS ?? 2_600_000,
 );
+const qwen3VlPlusBaseUrl = serverHttpUrl(
+  process.env.QWEN3_VL_PLUS_API_BASE_URL?.trim() || 'https://llm-proxy.lilith.com/v1',
+  'QWEN3_VL_PLUS_API_BASE_URL',
+);
+const qwen3VlPlusApiKey = process.env.QWEN3_VL_PLUS_API_KEY?.trim() ?? '';
+const qwen3VlPlusModel = process.env.QWEN3_VL_PLUS_MODEL?.trim() || 'qwen3-vl-plus';
+const qwen3VlPlusTimeoutMs = positiveNumber(
+  process.env.QWEN3_VL_PLUS_TIMEOUT_MS,
+  65_000,
+  'QWEN3_VL_PLUS_TIMEOUT_MS',
+);
 const substanceBakerBaseUrl = (
   process.env.LICLICK_SUBSTANCE_BAKER_BASE_URL ?? 'https://10.3.34.11'
 ).replace(/\/$/, '');
@@ -643,6 +654,10 @@ export const serverConfig = {
   modelviewSingleViewCaManaged,
   modelviewSingleViewApiKey,
   modelviewSingleViewTimeoutMs,
+  qwen3VlPlusBaseUrl,
+  qwen3VlPlusApiKey,
+  qwen3VlPlusModel,
+  qwen3VlPlusTimeoutMs,
   substanceBakerBaseUrl,
   substanceBakerCaPath,
   substanceBakerCaManaged,

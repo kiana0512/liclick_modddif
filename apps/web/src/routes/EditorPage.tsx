@@ -596,6 +596,13 @@ function isLocalRepaintGeneration(generation: Generation) {
   return generation.metadata.workflow === 'local-repaint';
 }
 
+function getLocalRepaintAuthoringMaskUrl(generation: Generation, fallback?: string) {
+  const authoredMaskUrl = generation.metadata.authoredMaskUrl;
+  if (typeof authoredMaskUrl === 'string' && authoredMaskUrl.length > 0) return authoredMaskUrl;
+  const legacyMaskUrl = generation.metadata.maskUrl;
+  return typeof legacyMaskUrl === 'string' && legacyMaskUrl.length > 0 ? legacyMaskUrl : fallback;
+}
+
 function getGenerationObjectMatrixWorld(generation: Generation) {
   const value = generation.metadata.objectMatrixWorld;
   if (!Array.isArray(value) || value.length !== 16) return undefined;
@@ -5978,10 +5985,10 @@ export function EditorPage({
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
     // apply button should only bind an already warm source, regardless of which
     // repaint round the user is entering.
-    const generationMaskUrl =
-      typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
-        ? latestLocalRepaintGeneration.metadata.maskUrl
-        : paintMaskDataUrl;
+    const generationMaskUrl = getLocalRepaintAuthoringMaskUrl(
+      latestLocalRepaintGeneration,
+      paintMaskDataUrl,
+    );
     if (!generationMaskUrl) return;
     void getLocalRepaintProjectionImage(latestLocalRepaintGeneration, generationMaskUrl).catch(
       (error) => {
@@ -6059,10 +6066,10 @@ export function EditorPage({
         layer.id === generationResultLayer?.replacementTargetLayerId &&
         isLocalRepaintDestinationLayer(layer, objectId),
     );
-    const generationMaskUrl =
-      typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
-        ? latestLocalRepaintGeneration.metadata.maskUrl
-        : paintMaskDataUrl;
+    const generationMaskUrl = getLocalRepaintAuthoringMaskUrl(
+      latestLocalRepaintGeneration,
+      paintMaskDataUrl,
+    );
     if (!generationMaskUrl) return undefined;
     const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
     if (
@@ -6341,9 +6348,7 @@ export function EditorPage({
           : undefined;
       const generationMaskUrl =
         benchmarkMaskUrl ??
-        (typeof latestLocalRepaintGeneration.metadata.maskUrl === 'string'
-          ? latestLocalRepaintGeneration.metadata.maskUrl
-          : paintMaskDataUrl);
+        getLocalRepaintAuthoringMaskUrl(latestLocalRepaintGeneration, paintMaskDataUrl);
       // Applying an already generated repaint must use the mask archived with
       // that generation. The transient viewport selection is intentionally not
       // guaranteed to survive reloads, tool changes, or a long generation job.

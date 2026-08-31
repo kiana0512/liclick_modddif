@@ -3,7 +3,7 @@ import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
-export type ModelviewInpaintInput = {
+type ModelviewGenerationInput = {
   clientGenerationId: string;
   projectId?: string;
   prompt?: string;
@@ -24,7 +24,14 @@ export type ModelviewInpaintInput = {
   modelViewReferenceId?: string;
 };
 
-export type ModelviewSingleViewInput = ModelviewInpaintInput;
+export type ModelviewInpaintInput = ModelviewGenerationInput & {
+  mask: {
+    path: string;
+    dataUrl: string;
+  };
+};
+
+export type ModelviewSingleViewInput = ModelviewGenerationInput;
 
 async function requestJson<T>(
   path: string,
@@ -141,7 +148,7 @@ export function createModelviewApiClient() {
         metadata: {
           provider: 'modelview-int8',
           workflow: 'local-repaint',
-          modelviewWorkflow: '2026.08.26-740115a-truev3-gguf-3input-rseed-r1',
+          modelviewWorkflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
           clientGenerationId: input.clientGenerationId,
           serverJobId: result.modelviewJobId ?? result.id,
           projectId: input.projectId,

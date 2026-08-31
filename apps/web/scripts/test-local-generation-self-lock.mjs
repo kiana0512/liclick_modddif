@@ -61,8 +61,8 @@ assert.doesNotMatch(
 );
 assert.match(
   generatePanel,
-  /button2-mask-capture'[\s\S]*?detail: '正在准备当前蒙版'[\s\S]*?button2-view-capture'[\s\S]*?detail: '正在准备当前视角白模'/,
-  'The immediate preview must follow mask and frozen-view capture phases.',
+  /button2-mask-capture'[\s\S]*?detail: '正在准备当前蒙版'[\s\S]*?button2-view-capture'[\s\S]*?detail: '正在融合当前效果与蒙版预览'/,
+  'The immediate preview must follow mask, frozen-view capture and composite preparation phases.',
 );
 assert.doesNotMatch(
   generatePanel,

@@ -61,6 +61,10 @@ import {
   syncLocalRepaintGpuOverlayBinding,
   syncLocalRepaintGpuOverlayLighting,
 } from './localRepaintGpuOverlaySync';
+import {
+  isLocalRepaintLayerResident,
+  waitForLocalRepaintResidentHandoff,
+} from './localRepaintResidentHandoff';
 import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
@@ -8834,30 +8838,59 @@ function SurfacePaintOverlay() {
     delete document.body.dataset.localRepaintGpuReadyTarget;
     delete document.body.dataset.localRepaintGpuErrorGeneration;
     delete document.body.dataset.localRepaintGpuErrorTarget;
+    let cancelled = false;
+    const previousOverlay = localRepaintGpuOverlayRef.current;
+    const releasePreviousPreview = async () => {
+      if (!previousOverlay) return true;
+      const ready = await waitForLocalRepaintResidentHandoff({
+        cancelled: () => cancelled,
+        now: () => performance.now(),
+        nextFrame: () =>
+          new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
+        ready: () => {
+          const layer = useLayerStore
+            .getState()
+            .layers.find((item) => item.id === previousOverlay.layerId);
+          return (
+            !layer ||
+            !layer.visible ||
+            !previousOverlay.root.parent ||
+            isLocalRepaintLayerResident(previousOverlay.root.parent, previousOverlay.layerId)
+          );
+        },
+      });
+      if (!ready) {
+        if (!cancelled) {
+          document.body.dataset.localRepaintResidentHandoff = 'pending';
+          reportLocalRepaintPrewarmProgress(1, '上一重绘图层仍在准备，已保留显示，请稍后重试', {
+            done: true,
+            failed: true,
+          });
+        }
+        return false;
+      }
+      if (cancelled || localRepaintGpuOverlayRef.current !== previousOverlay) return false;
+      setLocalRepaintGpuOverlayVisibility(previousOverlay, false, useLayerStore.getState().layers);
+      const state = useSceneStore.getState();
+      if (state.localRepaintPreviewLayer?.id === previousOverlay.layerId)
+        state.setLocalRepaintPreviewLayer(undefined);
+      document.body.dataset.localRepaintResidentHandoff = 'ready';
+      invalidate();
+      return true;
+    };
     if (!source) {
-      clearLocalRepaintGpuOverlay();
-      localRepaintSourceImageRef.current = undefined;
-      localRepaintCompositeRef.current = undefined;
-      localRepaintRuntimeDepthRef.current = undefined;
-      setLocalRepaintAssetsRevision(0);
-      useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
-      return undefined;
-    }
-
-    const sceneState = useSceneStore.getState();
-    const currentPreviewLayer = sceneState.localRepaintPreviewLayer;
-    if (
-      currentPreviewLayer &&
-      !isMatchingLocalRepaintProjectionLayer(
-        currentPreviewLayer,
-        source,
-        source.objectId ?? selectedObjectId ?? 'surface-object',
-      )
-    ) {
-      // A renderer-owned preview mutes the persisted row with the same id. When
-      // switching from repaint B back to repaint A, release B before decoding A;
-      // otherwise B remains hidden while its GPU overlay is being rebound.
-      sceneState.setLocalRepaintPreviewLayer(undefined);
+      void releasePreviousPreview().then((ready) => {
+        if (!ready || cancelled) return;
+        clearLocalRepaintGpuOverlay();
+        localRepaintSourceImageRef.current = undefined;
+        localRepaintCompositeRef.current = undefined;
+        localRepaintRuntimeDepthRef.current = undefined;
+        setLocalRepaintAssetsRevision(0);
+        useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
     // The former delayed-UV-bake path created an empty merge layer before the
@@ -8896,7 +8929,6 @@ function SurfacePaintOverlay() {
       }
     }
 
-    let cancelled = false;
     const sourceDecodeStartedAt = performance.now();
     const previousAssets = localRepaintSourceImageRef.current;
     void Promise.all([
@@ -8931,6 +8963,19 @@ function SurfacePaintOverlay() {
           traceSourceEffect('cancelled-after-falloff');
           return;
         }
+        // Do not overwrite A's cumulative mask or rebind its single GPU overlay
+        // to B until the assigned background material can actually display A.
+        if (
+          previousOverlay &&
+          previousOverlay.sourceKey !==
+            createLocalRepaintSourceKey(
+              source,
+              source.objectId ?? selectedObjectId ?? 'unknown-object',
+            ) &&
+          !(await releasePreviousPreview())
+        )
+          return;
+        if (cancelled) return;
         reportLocalRepaintPrewarmProgress(0.4, '高清图与透明蒙版已解码');
         // Register an asynchronously resized GPU source for interaction. The
         // full-resolution HTML image remains beside it for final quality work.
@@ -8973,6 +9018,7 @@ function SurfacePaintOverlay() {
         // and compiles the material before the first user stroke is accepted.
       })
       .catch((error) => {
+        if (cancelled) return;
         console.warn(
           '[Liclick 3D Texture] Could not prepare local repaint projection source:',
           error,
@@ -9003,7 +9049,7 @@ function SurfacePaintOverlay() {
       cancelled = true;
       traceSourceEffect('cleanup');
     };
-  }, [clearLocalRepaintGpuOverlay, localRepaintProjectionSource, selectedObjectId]);
+  }, [clearLocalRepaintGpuOverlay, invalidate, localRepaintProjectionSource, selectedObjectId]);
 
   const resetPaintMaskRuntime = useCallback(() => {
     const layer = layerRef.current;

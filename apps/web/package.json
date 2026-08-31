@@ -21,6 +21,7 @@
     "test:local-generation-entry-alignment": "node scripts/test-local-generation-entry-alignment.mjs",
     "test:local-generation-self-lock": "node scripts/test-local-generation-self-lock.mjs",
     "test:local-repaint-inward-crossfade": "node scripts/test-local-repaint-inward-crossfade.mjs",
+    "test:local-repaint-generation-input": "node scripts/test-local-repaint-generation-input.mjs",
     "test:local-repaint-layer-retention": "node scripts/test-local-repaint-layer-retention.mjs",
     "test:local-repaint-material-reference": "node scripts/test-local-repaint-material-reference.mjs",
     "test:local-repaint-ordered-composition": "node scripts/test-local-repaint-ordered-composition.mjs",

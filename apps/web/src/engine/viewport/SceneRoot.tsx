@@ -71,6 +71,7 @@ import {
 } from '@/engine/localRepaint/orderedPreviewComposition';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { isViewportInteractionBusy as isSharedViewportInteractionBusy } from './viewportInteractionState';
+import { getTransientLocalRepaintLayerId } from './localRepaintResidentHandoff';
 import {
   createWorkerBackedPreviewTexture,
   getReadyResidentPreviewTexture,
@@ -1228,10 +1229,12 @@ function ImportedModel({
   // material rebuild; the icon can already be visible while the row is still
   // absent (or remains muted by a late build). A brand-new repaint has no
   // resident row yet and can still use the lightweight transient path.
-  const transientLocalRepaintPreviewLayerId =
-    localRepaintPreviewLayer && localRepaintPreviewLayer.contentRevision === undefined
-      ? localRepaintPreviewLayer.id
-      : undefined;
+  // The live marker can retain its pre-publication revision across many strokes.
+  // Consult the authoritative rows, otherwise a completed layer is excluded
+  // until the next generation and its entire array rebuild lands on that click.
+  const transientLocalRepaintPreviewLayerId = useLayerStore((state) =>
+    getTransientLocalRepaintLayerId(localRepaintPreviewLayerId, state.layers),
+  );
   const hasAuthoritativeVisibleTextureLayer = useLayerStore((state) =>
     state.layers.some(
       (layer) =>
@@ -1635,12 +1638,8 @@ function ImportedModel({
     const projectedCandidates = layers.filter(
       (layer) =>
         layer.type === 'projected' &&
-        // The renderer-owned local repaint overlay is the authoritative
-        // foreground while its session marker is alive. Persisting the row
-        // must not also append it to the packed background array on every
-        // pointer-up: that 14 -> 15 structural transition was measured as a
-        // 333-967ms presentation stall. The row joins the resident stack only
-        // after the overlay handoff is complete.
+        // Unpublished strokes stay renderer-only. Once published, warm their
+        // muted resident row during pointer idle, before the next handoff.
         layer.id !== transientLocalRepaintPreviewLayerId &&
         layer.imageUrl &&
         layer.camera &&
@@ -2119,7 +2118,7 @@ function ImportedModel({
     });
     return unsubscribe;
   }, [importedModel, invalidate, visibleLocalRepaintPreviewLayer]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Changing repaint generations changes only SceneStore renderer ownership;
     // LayerStore itself may be unchanged. Re-publish every resident projected
     // layer so the previous generation is immediately unmuted in the background.
@@ -3542,7 +3541,6 @@ function ImportedModel({
     };
     const isViewportInteractionBusy = () => {
       const interaction = projectedPreviewInteractionRef.current;
-      const paintTool = useSceneStore.getState().paintTool;
       const localRepaintPhase = document.body.dataset.perfLocalRepaintPhase;
       const simulatedInteractionIsPrewarm = localRepaintPhase === 's6-interaction-source-bind';
       return Boolean(
@@ -3551,9 +3549,9 @@ function ImportedModel({
         performance.now() - interaction.lastMovedAt < 180 ||
         (document.body.dataset.perfSimulatedViewportInteraction === '1' &&
           !simulatedInteractionIsPrewarm) ||
-        document.body.dataset.perfViewportStressMeasuring === '1' ||
-        paintTool === 'inpaint-add' ||
-        paintTool === 'inpaint-subtract',
+        // Selecting a mask tool is not an active stroke. Keeping it selected
+        // must not starve the previous repaint's resident-material handoff.
+        document.body.dataset.perfViewportStressMeasuring === '1',
       );
     };
     const waitForViewportInteractionIdle = async () => {
@@ -4414,6 +4412,7 @@ function ImportedModel({
                   return;
                 }
                 const latestLayerState = useLayerStore.getState();
+                const latestPreviewLayerId = useSceneStore.getState().localRepaintPreviewLayer?.id;
                 const latestMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
                   latestLayerState.layers,
                   importedModel.objectId,
@@ -4428,7 +4427,7 @@ function ImportedModel({
                     ...toProjectionLayerDisplayInput(layer),
                     visible:
                       layer.visible &&
-                      layer.id !== localRepaintPreviewLayerId &&
+                      layer.id !== latestPreviewLayerId &&
                       isProjectedLayerAboveMergedUv(layer, latestMergedUvBoundaryOrder),
                   }));
                 const latestDisplayMode = useSceneStore.getState().displayMode;
@@ -4651,7 +4650,7 @@ function ImportedModel({
           ...toProjectionLayerDisplayInput(layer),
           visible:
             layer.visible &&
-            layer.id !== localRepaintPreviewLayerId &&
+            layer.id !== authoritativeSceneState.localRepaintPreviewLayer?.id &&
             isProjectedLayerAboveMergedUv(layer, authoritativeMergedUvBoundaryOrder),
         }));
       const authoritativeLighting = getPreviewLighting({
