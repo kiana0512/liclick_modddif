@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.9.0`
+> 文档版本：`2.9.1`
 >
 > 生效日期：`2026-08-31`
 >
-> 代码盘点基线：`2009a6c + 本次局部重绘一句话诊断与提示词转换分离`
+> 代码盘点基线：`13d4321 + 本次 lint 发布修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -463,6 +463,8 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 GitLab CI 依赖安装必须把 pnpm store 与 Prisma engine cache 放入 `$CI_PROJECT_DIR` 下的项目级缓存目录。Prisma engine 下载发生瞬时网络错误时，允许完整的 `pnpm install --frozen-lockfile` 最多重试 3 次并采用有界退避；禁止通过 `--ignore-scripts`、跳过 Prisma engine、放宽测试或使用未冻结 lockfile 伪造通过。此策略只提高 M15 发布验证的网络容错，不改变生产 Prisma schema、数据库协议、Project Command/Revision 或浏览器运行时。
 
+M15 lint 发布修复（2026-08-31）：根工作区显式声明与锁文件一致的 `@eslint/js@9.39.4`，避免依赖提升差异导致 ESLint 配置加载失败。M04 / `ALG-GEN-005` 的提示词终端转义清理由 Node `stripVTControlCharacters` 实现，替代触发 `no-control-regex/no-useless-escape` 的手写正则；保留全部 lint 门禁。回归覆盖 ANSI 颜色、C1 CSI、OSC 标题/超链接清理，以及中文、标点、URL 与段落保留。诊断/转换模板和调用链、算法版本 v1.5.0、GPU/CPU/Worker/shader/UV/export、Schema 与资产均不变，无迁移。回退仅还原依赖声明、锁文件和清理实现，不修改密钥或工程数据。
+
 ## 16. 固定审计卡格式
 
 以后新增或修改算法必须记录：ALG ID、中英文名称、SemVer、状态（production/experimental/deprecated/disabled）、所有调用 UI/use case、输入、输出、单位、颜色空间、矩阵空间、常量、CPU/GPU/Worker/shader 对应实现、持久化字段、回退、迁移、测试、负责人和变更单。
@@ -518,3 +520,4 @@ GitLab CI 依赖安装必须把 pnpm store 与 Prisma engine cache 放入 `$CI_P
 | `2.8.3` | 2026-08-31 | `本次局部重绘页签文案调整` | M04 / UI-05：将“重绘效果图”页签统一命名为“局部重绘”，同步结果提示及空态文案；内部 repaint 标识、生成与预览逻辑不变。无算法或 Schema 版本变化、无迁移；回退仅恢复界面文案。 |
 | `2.8.4` | 2026-08-31 | `本次局部重绘空输入诊断范围收窄` | `ALG-GEN-005` v1.4.2：仅空输入自动诊断收窄至人工接缝和投影引起的局部异常；保留真实结构、有效内容及不确定区域，不主动补字、增件或重设计。空输入缓存增加策略版本以避开旧诊断结果，显式要求与普通润色不变；三图、生成、蒙版、GPU/CPU/Worker/shader/UV/export、Schema、Revision 和历史资产均不变，无迁移。 |
 | `2.9.0` | 2026-08-31 | `2009a6c + 本次一句话诊断与转换分离` | `ALG-GEN-005` v1.5.0：空输入先由 Qwen 输出一句中文修复要求，再以该句调用 Klein 四段英文转换模板；覆盖有证据的接缝、色差、投影和已有文字异常，转换不新增目标。显式输入跳过诊断，全流程共享 65 秒，最终格式最多修正一次；空输入缓存策略升级，诊断不持久化。三图/生成/蒙版/GPU/CPU/Worker/shader/UV/export、Schema 和历史资产不变，无迁移；模拟回归验证，不启动服务或调用真实生图。 |
+| `2.9.1` | 2026-08-31 | `13d4321 + 本次 lint 修复` | M15 发布修复：显式补齐 `@eslint/js` 依赖；M04 提示词 ANSI 清理改用 Node 内置实现并补充回归，修复 CI 正则规则错误。全部质量门禁保留，`ALG-GEN-005` v1.5.0 与业务/Schema/资产契约不变，无迁移。 |

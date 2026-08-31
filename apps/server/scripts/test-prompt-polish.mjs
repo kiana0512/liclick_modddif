@@ -362,6 +362,18 @@ const parsed = parsePolishedPrompt(
   `正在分析：请稍候\n\n\`\`\`text\n${validLocalPrompt}\n\`\`\`\n完成：ok`,
 );
 assert.equal(parsed, validLocalPrompt);
+// Terminal decorations must be removed without changing prompt text or paragraph boundaries.
+for (const decorated of [
+  `\u001b[32m${validLocalPrompt}\u001b[0m`,
+  `\u009b32m${validLocalPrompt}\u009b0m`,
+  `\u001b]0;prompt-polish\u0007${validLocalPrompt}`,
+  `\u001b]8;;https://example.invalid/reference\u0007${validLocalPrompt}\u001b]8;;\u0007`,
+]) {
+  assert.equal(parsePolishedPrompt(decorated), validLocalPrompt);
+}
+const plainPrompt = '修复接缝和色差，保留 CUT-BOT。\n\nKeep [labels], a/b and https://example.invalid/a/b unchanged.';
+assert.equal(parsePolishedPrompt(plainPrompt), plainPrompt);
+assert.equal(parsePolishedPrompt(''), '');
 assert.equal(
   parsePolishedPrompt(
     `_Skill版本: 2.3.2_ | _请求ID: synthetic_ | _会话ID: synthetic_\n\n${validLocalPrompt}`,

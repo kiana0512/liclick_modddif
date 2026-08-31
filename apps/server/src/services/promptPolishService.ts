@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from 'node:util';
 import { runAtlas } from '../auth/atlasAuthService.js';
 import { serverConfig } from '../config.js';
 import sharp from 'sharp';
@@ -24,8 +25,6 @@ export type PromptPolishImageInput = {
 const maxPromptPolishImageBytes = 16 * 1024 * 1024;
 const allowedPromptPolishImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
-const stripAnsiPattern =
-  /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 const statusLinePattern = /^(?:Skill版本|请求ID|会话ID|正在分析|处理中|已完成|完成)\s*[:：.….]*/i;
 const atlasMetadataLinePattern = /^_?Skill版本\s*[:：].*(?:请求ID|会话ID)/i;
 
@@ -349,8 +348,7 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
 }
 
 export function parsePolishedPrompt(stdout: string) {
-  return stdout
-    .replace(stripAnsiPattern, '')
+  return stripVTControlCharacters(stdout)
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .filter((line) => {
