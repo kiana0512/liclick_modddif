@@ -564,6 +564,7 @@ function getImportedModelMatrixWorld(objectId?: string) {
 }
 
 type GeneratePanelProps = {
+  workspaceActive?: boolean;
   localImageGenerationRequestKey?: number;
   onRequestLocalImageGeneration?: () => void;
   onLocalImageGenerationSettled?: (result: LocalImageGenerationSettledResult) => void;
@@ -583,6 +584,7 @@ export type LocalImageGenerationSettledResult =
   | { succeeded: false; generationId?: never };
 
 export function GeneratePanel({
+  workspaceActive = true,
   localImageGenerationRequestKey = 0,
   onRequestLocalImageGeneration,
   onLocalImageGenerationSettled,
@@ -4679,7 +4681,8 @@ export function GeneratePanel({
           </div>
         </div>
       </Panel>
-      {portalRoot &&
+      {workspaceActive &&
+        portalRoot &&
         generatePanelExpanded &&
         createPortal(
           <div
@@ -4691,7 +4694,8 @@ export function GeneratePanel({
           </div>,
           portalRoot,
         )}
-      {portalRoot &&
+      {workspaceActive &&
+        portalRoot &&
         cancelTextureSnapshotConfirmOpen &&
         createPortal(
           <div
@@ -4739,7 +4743,8 @@ export function GeneratePanel({
           </div>,
           portalRoot,
         )}
-      {portalRoot &&
+      {workspaceActive &&
+        portalRoot &&
         cancelConfirmGeneration &&
         createPortal(
           <div
@@ -4796,7 +4801,8 @@ export function GeneratePanel({
           </div>,
           portalRoot,
         )}
-      {portalRoot &&
+      {workspaceActive &&
+        portalRoot &&
         previewImageOpen &&
         displayedPreviewGeneration?.resultUrl &&
         createPortal(

@@ -7542,6 +7542,7 @@ export function EditorPage({
         mode: 'texture',
         content: (
           <GeneratePanel
+            workspaceActive={isActive}
             localImageGenerationRequestKey={localImageGenerationRequestKey}
             onRequestLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}

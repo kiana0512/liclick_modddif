@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.10.1`
+> 文档版本：`2.10.2`
 >
 > 生效日期：`2026-08-31`
 >
@@ -320,6 +320,8 @@ UI-09 剪刀
 
 `ALG-LR-007` v2.0.5 的视角选择属于 UI-06/UI-10 → M08 的纯展示状态：点击底部选择工具退出绘制并恢复 OrbitControls 输入，同时隐藏红色选择蒙版；`paintMaskDataUrl`、`paintMaskHasContent`、revision、capture 和历史均保持不变。再次进入加/减蒙版画笔会恢复蒙版展示。该 flag 不进入 Zustand preferences、Project、Layer、Generation、Capture、对象存储或 Revision；GPU 只切换已有 mask overlay 的可见性，CPU/Worker/shader/UV/export、投影矩阵、颜色和分辨率没有分叉。旧工程无需迁移；回退只移除按钮与 presentation flag，不删除蒙版或资产。
 
+UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面板 Portal 同样受 `EditorPage.isActive` 门禁。进入 UV 时贴图编辑器可继续保留引擎与面板状态，但“局部生图”固定按钮、生成取消确认和结果大图预览均不得越过隐藏工作区显示；回到贴图页后按原状态恢复。此修复仅改变 React 展示生命周期，不改变局部生成算法版本、任务状态、GPU/CPU/Worker/shader、输入蒙版、Project/Layer/Generation/Capture Schema、对象资产或 Revision，无数据迁移；回退只移除 Portal 活跃态门禁。
+
 `ALG-LR-011` 只生成最大 1024 的内存 UI 显示副本，不回写 `Layer.imageUrl`、Generation、对象存储或 Project Revision。GPU/CPU/Worker/shader、投影矩阵、UV raster、持久化与 export compositor 均继续消费原始 source/mask/depth，因此无需数据迁移。回滚只需移除 UI-05/UI-10 显示副本调用；已有图层与资产不变。测试必须证明透明显示不替换投影源、黑色材质与几何边缘不被扣除、普通投射层不再出现黑底、局部重绘层仍仅显示用户涂绘区域。
 
 ## 9. 内容识别补缝
@@ -534,3 +536,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.9.2` | 2026-08-31 | `707f009a + 本次构建体积修复` | M15：锁定 Terser 生产安全压缩，保留诊断和属性名，新增真实构建等价性回归。编辑器与 JS 总量回到原有体积上限内；不提高门禁，不删除功能，不改变业务算法、Schema 或资产，无迁移。 |
 | `2.10.0` | 2026-08-31 | `add3b82 + 本次橡皮历史事务修复` | UI-06/UI-10、M12、`ALG-ERASE-001` v1.3.0：抬笔预登记历史，撤回等待手势与提交；即时同步持久瓦片和 GPU live mask；细化逐笔重放并原子发布，redo 检查点不串笔。增加真实回调/数值时序回归。原输出分辨率、覆盖公式和资产/Project Schema 不变，无迁移。 |
 | `2.10.1` | 2026-09-01 | `本次视角选择工具提交` | UI-06/UI-10、M08、`ALG-LR-007` v2.0.5：贴图底部工具条新增选择/旋转视角按钮；点击退出画笔并隐藏蒙版展示，拖拽恢复 OrbitControls；返回蒙版画笔自动恢复展示。作者蒙版、历史、生成输入、GPU/CPU/Worker/shader/UV/export、Project/Layer/Generation/Capture Schema、Revision 与资产不变，无迁移。 |
+| `2.10.2` | 2026-09-01 | `本次驻留工作区 Portal 门禁提交` | UI-05/UI-13、M04：UV 路由保留贴图编辑器状态时，将 `isActive` 传入生成面板并门禁其全部根节点 Portal，移除 UV 页泄漏的“局部生图”固定按钮及相关弹层；返回贴图页后原状态恢复。生成算法、蒙版、任务、GPU/CPU/Worker/shader、Schema、资产与 Revision 不变，无迁移。 |

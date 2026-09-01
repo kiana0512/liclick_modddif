@@ -27,6 +27,16 @@ assert.match(
 );
 assert.match(
   editorPage,
+  /<GeneratePanel[\s\S]*?workspaceActive=\{isActive\}/,
+  'the retained texture editor must pass its route activity into the generation panel',
+);
+assert.equal(
+  [...generatePanel.matchAll(/workspaceActive &&\s*portalRoot &&/g)].length,
+  4,
+  'all generation-panel portals must stay hidden while the retained editor is inactive',
+);
+assert.match(
+  editorPage,
   /if \(!useSceneStore\.getState\(\)\.paintMaskHasContent\) \{[\s\S]*dedupeKey: 'local-repaint-mask-required',[\s\S]*return;[\s\S]*setLocalRepaintGenerationPresentationActive\(true\)/,
   'the shared UI boundary must reject an empty mask before changing generation presentation state',
 );
